@@ -713,6 +713,7 @@ export function createCoordinationProcess(
                   },
                 }),
               }),
+              inputAttachmentRoot: attachmentConfiguration!.rootDirectory,
             }),
       });
       const directSubmission = createDirectMessageSubmissionService({

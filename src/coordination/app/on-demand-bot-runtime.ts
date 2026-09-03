@@ -37,6 +37,7 @@ import {
   detectReturnedArtifactContentType,
   isReturnedArtifactGenerator,
   MAX_RETURNED_ARTIFACT_BYTES,
+  RETURNED_ARTIFACT_CONTENT_TYPES,
   returnedArtifactMediaType,
 } from "../../returned-artifacts.js";
 import { resolveProviderKey } from "../../agent/provider-credentials.js";
@@ -73,7 +74,8 @@ import type {
 } from "./direct-message.js";
 
 const PERMANENT_RESIDENTS = new Set(["jerry", "forrest"]);
-const ON_DEMAND_BOT_CAPABILITIES = Object.freeze(["messages"] as const);
+const ON_DEMAND_BOT_MESSAGE_CAPABILITIES = Object.freeze(["messages"] as const);
+const ON_DEMAND_BOT_ATTACHMENT_CAPABILITIES = Object.freeze(["attachments", "messages"] as const);
 const TURN_PREFIX = "coord-";
 
 export interface OnDemandBotModelConfiguration {
@@ -101,11 +103,135 @@ export interface OnDemandBotRuntimeOptions {
   leases: CoordinationLeasePort;
   communications?: ResidentCommunicationPort;
   artifactPromotion?: (bot: BotDirectoryRecord) => ResidentArtifactPromotionPort;
+  /** Canonical content-addressed store; paths never enter product Messages or model text. */
+  inputAttachmentRoot?: string;
   loadModelConfiguration?: () => OnDemandBotModelConfiguration;
 }
 
 const MAX_RETURNED_ARTIFACTS = 10;
 const MAX_RETURNED_ARTIFACT_CAPTION_BYTES = 2_048;
+const INPUT_ATTACHMENT_CONTENT_TYPES = new Set<string>(RETURNED_ARTIFACT_CONTENT_TYPES);
+
+function canonicalInputAttachmentRoot(configuredRoot: string): string {
+  if (!isAbsolute(configuredRoot) || configuredRoot === "/" || configuredRoot.includes("\0")) {
+    throw new Error("on-demand Bot attachment root is invalid");
+  }
+  try {
+    const root = resolve(configuredRoot);
+    const entry = lstatSync(root);
+    const canonical = realpathSync(root);
+    const allowedMacSystemAlias = root.startsWith("/var/") && canonical === `/private${root}`;
+    if (
+      !entry.isDirectory() || entry.isSymbolicLink() ||
+      (canonical !== root && !allowedMacSystemAlias)
+    ) {
+      throw new Error("on-demand Bot attachment root is unsafe");
+    }
+    return canonical;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("on-demand Bot attachment")) throw error;
+    throw new Error("on-demand Bot attachment root is unavailable");
+  }
+}
+
+function exactOnDemandInputAttachments(
+  value: readonly ResidentInputAttachment[],
+  canonicalRoot: string,
+  verifyBytes: boolean,
+): readonly ResidentInputAttachment[] {
+  if (!Array.isArray(value) || value.length > 10) {
+    throw new Error("on-demand Bot attachments are invalid");
+  }
+  const seen = new Set<string>();
+  return Object.freeze(value.map((attachment) => {
+    try {
+      try {
+        assertCoordinationId("artifact", attachment.artifactId);
+      } catch {
+        throw new Error("on-demand Bot attachment identity is invalid");
+      }
+      if (
+        seen.has(attachment.artifactId) ||
+        typeof attachment.name !== "string" || attachment.name.length < 1 ||
+        attachment.name.length > 255 || attachment.name.normalize("NFC") !== attachment.name ||
+        attachment.name === "." || attachment.name === ".." ||
+        /^[A-Za-z]:/u.test(attachment.name) || /[\0-\x1f\x7f/\\]/u.test(attachment.name) ||
+        typeof attachment.contentType !== "string" ||
+        !INPUT_ATTACHMENT_CONTENT_TYPES.has(attachment.contentType) ||
+        !Number.isSafeInteger(attachment.byteCount) || attachment.byteCount < 0 ||
+        attachment.byteCount > MAX_RETURNED_ARTIFACT_BYTES ||
+        typeof attachment.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(attachment.sha256) ||
+        typeof attachment.path !== "string" || !isAbsolute(attachment.path) ||
+        attachment.path.length > 4_096 || attachment.path.includes("\0")
+      ) {
+        throw new Error("on-demand Bot attachment metadata is invalid");
+      }
+      const expectedPath = join(
+        canonicalRoot,
+        "objects",
+        "sha256",
+        attachment.sha256.slice(0, 2),
+        attachment.sha256.slice(2, 4),
+        attachment.sha256,
+      );
+      const entry = lstatSync(attachment.path);
+      const canonicalPath = realpathSync(attachment.path);
+      if (
+        canonicalPath !== expectedPath || !entry.isFile() || entry.isSymbolicLink()
+      ) {
+        throw new Error("on-demand Bot attachment escaped canonical storage");
+      }
+      if (verifyBytes) {
+        const fd = openSync(attachment.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        try {
+          const before = fstatSync(fd);
+          if (
+            !before.isFile() || before.dev !== entry.dev || before.ino !== entry.ino ||
+            before.size !== attachment.byteCount
+          ) {
+            throw new Error("on-demand Bot attachment file is invalid");
+          }
+          const bytes = readFileSync(fd);
+          const after = fstatSync(fd);
+          const pathAfter = lstatSync(attachment.path);
+          const detectedType = bytes.length === 0
+            ? "text/plain"
+            : detectReturnedArtifactContentType(bytes);
+          if (
+            bytes.length !== before.size || after.dev !== before.dev || after.ino !== before.ino ||
+            after.size !== before.size || pathAfter.isSymbolicLink() ||
+            pathAfter.dev !== before.dev || pathAfter.ino !== before.ino ||
+            detectedType !== attachment.contentType ||
+            createHash("sha256").update(bytes).digest("hex") !== attachment.sha256
+          ) {
+            throw new Error("on-demand Bot attachment bytes differ from canonical metadata");
+          }
+        } finally {
+          closeSync(fd);
+        }
+      }
+      seen.add(attachment.artifactId);
+      return Object.freeze({ ...attachment, path: canonicalPath });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("on-demand Bot attachment")) throw error;
+      throw new Error("on-demand Bot attachment bytes are unavailable");
+    }
+  }));
+}
+
+function instructionWithInputAttachments(
+  instruction: string,
+  attachments: readonly ResidentInputAttachment[],
+): string {
+  if (attachments.length === 0) return instruction;
+  const manifest = attachments.map((attachment, index) =>
+    `${index + 1}. name=${JSON.stringify(attachment.name)} ` +
+    `type=${attachment.contentType} bytes=${attachment.byteCount} sha256=${attachment.sha256}`
+  ).join("\n");
+  const prefix = instruction.trim().length > 0 ? `${instruction}\n\n` : "";
+  return `${prefix}[Canonical user attachments]\n${manifest}\n` +
+    "Images are attached as vision input. Other admitted files are represented by this verified manifest.";
+}
 
 function exactOnDemandReturnedArtifacts(
   value: unknown,
@@ -305,9 +431,14 @@ function selectionReceipt(
   });
 }
 
-function modelCatalog(config: OnDemandBotModelConfiguration): ResidentModelCatalog {
+function modelCatalog(
+  config: OnDemandBotModelConfiguration,
+  acceptsAttachments = false,
+): ResidentModelCatalog {
   return Object.freeze({
-    capabilities: ON_DEMAND_BOT_CAPABILITIES,
+    capabilities: acceptsAttachments
+      ? ON_DEMAND_BOT_ATTACHMENT_CAPABILITIES
+      : ON_DEMAND_BOT_MESSAGE_CAPABILITIES,
     models: Object.freeze(Object.entries(config.modelAliases)
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([alias, value]) => Object.freeze({
@@ -333,12 +464,13 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
     private readonly history: ConversationHistory,
     private readonly config: OnDemandBotModelConfiguration,
     private readonly returnedArtifactRoot: string,
+    private readonly inputAttachmentRoot: string | null,
   ) {
     this.store = new TurnStore(history);
   }
 
   async modelCatalog(): Promise<ResidentModelCatalog> {
-    return modelCatalog(this.config);
+    return modelCatalog(this.config, this.inputAttachmentRoot !== null);
   }
 
   private chatId(channelId: string): string {
@@ -457,9 +589,22 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
     options: Parameters<ResidentAgentPort["runWithTurn"]>[2],
   ) {
     const origin = options.coordinationOrigin;
-    if ((options.attachments?.length ?? 0) > 0) {
-      throw new Error("processless Bot attachments are unsupported");
+    const rawAttachments = options.attachments ?? [];
+    if (rawAttachments.length > 0 && this.inputAttachmentRoot === null) {
+      throw new Error("processless Bot attachments are unavailable");
     }
+    const attachments = this.inputAttachmentRoot === null
+      ? Object.freeze([])
+      : exactOnDemandInputAttachments(rawAttachments, this.inputAttachmentRoot, true);
+    const instruction = instructionWithInputAttachments(userText, attachments);
+    const vision = attachments
+      .filter((attachment) => attachment.contentType.startsWith("image/"))
+      .map((attachment) => Object.freeze({
+        type: "image" as const,
+        path: attachment.path,
+        mimeType: attachment.contentType,
+        fileName: attachment.name,
+      }));
     if (
       origin.authorityReference !== `bot:${this.bot.id}` ||
       origin.holderPrincipalId !== this.bot.principalId
@@ -518,10 +663,11 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
     let sequence = 0;
     const started = await this.agent.runWithTurn(
       chatId,
-      userText,
+      instruction,
       {
         turnId,
         coordinationOrigin: origin,
+        ...(vision.length > 0 ? { media: vision } : {}),
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
         ...(requested.reasoningEffort ? { effort: requested.reasoningEffort } : {}),
         onDurableStart: async (start) => options.onDurableStart({
@@ -663,6 +809,14 @@ function assertOnDemandBot(
 export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
   const targets = new Map<string, { version: number; target: DirectMessageExecutionTarget }>();
   const modelConfiguration = options.loadModelConfiguration ?? defaultModelConfiguration;
+  const inputAttachmentsEnabled = options.artifactPromotion !== undefined &&
+    options.inputAttachmentRoot !== undefined;
+  let resolvedInputAttachmentRoot: string | null | undefined;
+  const inputAttachmentRoot = () => {
+    if (!inputAttachmentsEnabled) return null;
+    resolvedInputAttachmentRoot ??= canonicalInputAttachmentRoot(options.inputAttachmentRoot!);
+    return resolvedInputAttachmentRoot;
+  };
 
   return Object.freeze({
     async resolve(descriptor: DirectMessageTargetDescriptor): Promise<DirectMessageExecutionTarget | undefined> {
@@ -751,6 +905,7 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
           history,
           config,
           returnedArtifactRoot,
+          inputAttachmentRoot(),
         );
         const adapter = new ResidentCoordinationAdapter(
           port,
@@ -800,7 +955,9 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
             serialize("recoverCompleted", input),
         }),
         holderInstanceId,
-        models: Object.freeze({ modelCatalog: async () => modelCatalog(config) }),
+        models: Object.freeze({
+          modelCatalog: async () => modelCatalog(config, inputAttachmentRoot() !== null),
+        }),
         context: (identity: {
           principalId: string;
           requestId: string;
@@ -817,8 +974,16 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
         workKind: "bot_turn",
         authorityReference: `bot:${bot.id}`,
         actorKind: "specialist_bot",
-        acceptsAttachments: (attachments: readonly ResidentInputAttachment[]) =>
-          attachments.length === 0,
+        acceptsAttachments: (attachments: readonly ResidentInputAttachment[]) => {
+          if (attachments.length === 0) return true;
+          if (!inputAttachmentsEnabled) return false;
+          try {
+            exactOnDemandInputAttachments(attachments, inputAttachmentRoot()!, false);
+            return true;
+          } catch {
+            return false;
+          }
+        },
       });
       targets.set(bot.id, { version: bot.version, target });
       return target;

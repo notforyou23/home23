@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 
 import {
@@ -43,6 +45,7 @@ import {
 const CONVERSATION_ID = "cnv_0198d95f-6c00-7000-8000-000000000971";
 const SPECIALIST_BINDING = "bot-lens-0123456789abcdef";
 const PRIVATE_RESIDENT_SENTINEL = "JERRY_PRIVATE_MEMORY_MUST_NEVER_CROSS";
+const INPUT_ATTACHMENT_PROMPT = "Lens, acknowledge these canonical attachments.";
 const ARTIFACT_PROMPT = "Lens, return your private note as a file.";
 const ARTIFACT_RELATIVE_PATH = "media/returned-artifacts/lens-note.txt";
 const authority = Object.freeze({
@@ -104,7 +107,9 @@ async function startModelFixture() {
           }],
         } }] }), { status: 200, headers: { "content-type": "application/json" } });
       }
-      const answer = prompt === "Lens, give me the concise answer."
+      const answer = prompt.startsWith(INPUT_ATTACHMENT_PROMPT)
+        ? "Lens received the canonical attachments."
+        : prompt === "Lens, give me the concise answer."
         ? "Lens answered from its own durable context."
         : prompt === ARTIFACT_PROMPT
           ? "Lens returned its note."
@@ -157,8 +162,9 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
     getBotByResidentBinding: (binding: string) => botRepository.getBotByResidentBinding(binding),
   });
   const artifactRepository = new SqliteArtifactRepository(database);
+  const artifactRoot = join(runtimeRoot, "artifacts");
   const artifactStore = await LocalArtifactStore.open({
-    rootDirectory: join(runtimeRoot, "artifacts"),
+    rootDirectory: artifactRoot,
     repository: artifactRepository,
   });
   const messagingRepository = new SqliteMessagingRepository(database, {
@@ -247,9 +253,49 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
       principalId: OWNER_ID as "user_owner",
       deviceId: "dev_0198d95f-6c00-7000-8000-000000000970",
       sessionId: "ses_0198d95f-6c00-7000-8000-000000000970",
-      scopes: ["product:read", "message:send"] as const,
+      scopes: ["product:read", "message:send", "attachment:write"] as const,
     } },
   };
+  const inputImageBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const inputTextBytes = Buffer.from("Canonical input note.\n", "utf8");
+  const inputImageSha256 = createHash("sha256").update(inputImageBytes).digest("hex");
+  const inputTextSha256 = createHash("sha256").update(inputTextBytes).digest("hex");
+  const inputImageId = "art_0198d95f-6c00-7000-8000-000000000980";
+  const inputTextId = "art_0198d95f-6c00-7000-8000-000000000981";
+  const ownerArtifactActor = await resolveArtifactActor(owner, participantDirectory);
+  await artifactStore.ingest({
+    artifactId: inputImageId,
+    actor: ownerArtifactActor,
+    originalName: "lens-input.png",
+    declaredContentType: "image/png",
+    expectedSha256: inputImageSha256,
+    content: Readable.from([inputImageBytes]),
+  });
+  await artifactStore.ingest({
+    artifactId: inputTextId,
+    actor: ownerArtifactActor,
+    originalName: "lens-input.txt",
+    declaredContentType: "text/plain",
+    expectedSha256: inputTextSha256,
+    content: Readable.from([inputTextBytes]),
+  });
+  const inputImageReference = await artifactStore.verifiedLocalReference({
+    id: inputImageId,
+    name: "lens-input.png",
+    contentType: "image/png",
+    byteCount: inputImageBytes.length,
+    sha256: inputImageSha256,
+  });
+  const inputTextReference = await artifactStore.verifiedLocalReference({
+    id: inputTextId,
+    name: "lens-input.txt",
+    contentType: "text/plain",
+    byteCount: inputTextBytes.length,
+    sha256: inputTextSha256,
+  });
   let activeWork = 0;
   const beginWork = () => {
     activeWork += 1;
@@ -275,10 +321,23 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
           },
         }),
       }),
+      inputAttachmentRoot: artifactRoot,
     });
     return createDirectMessageSubmissionService({
       messages,
-      context: new SqliteDirectMessageContext(database, messages),
+      context: new SqliteDirectMessageContext(database, messages, async (summaries) =>
+        Object.freeze(await Promise.all(summaries.map(async (summary) => {
+          const reference = await artifactStore.verifiedLocalReference(summary);
+          return Object.freeze({
+            artifactId: reference.id,
+            name: reference.name,
+            contentType: reference.contentType,
+            byteCount: reference.byteCount,
+            sha256: reference.sha256,
+            path: reference.path,
+          });
+        }))),
+      ),
       work,
       leases,
       communications,
@@ -296,13 +355,14 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
   const firstService = makeService();
   const selection = await firstService.selectionOptions({ context: owner, channelId: CHANNEL_ID });
   assert.equal(selection.defaultModel, "fixture-local-model");
-  assert.deepEqual(selection.capabilities, ["messages"]);
+  assert.deepEqual(selection.capabilities, ["attachments", "messages"]);
   assert.equal(existsSync(join(botsRoot, BOT_ID)), false,
     "catalog lookup must not wake or instantiate the Bot");
   const send = (
     service: ReturnType<typeof makeService>,
     suffix: number,
     text: string,
+    attachmentIds: readonly string[] = [],
   ) => service.submitMessage({
     context: owner,
     channelId: CHANNEL_ID,
@@ -311,7 +371,7 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
       messageId: fixtureId("message", 970 + suffix - 1),
       clientMessageId: `client-on-demand-lens-${suffix}`,
       text,
-      attachmentIds: [],
+      attachmentIds: [...attachmentIds],
       mentions: [],
       replyToMessageId: null,
       modelAlias: null,
@@ -397,18 +457,69 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
     "one Bot/channel history must never execute overlapping model turns");
   assert.equal(activeWork, 0);
 
+  const inputTurn = await send(
+    restartedService,
+    5,
+    INPUT_ATTACHMENT_PROMPT,
+    [inputImageId, inputTextId],
+  );
+  const inputResult = await inputTurn.response;
+  assert.equal(inputResult.text, "Lens received the canonical attachments.");
+  assert.equal(model.requests.length, 5);
+  const inputRequest = JSON.stringify(model.requests[4]);
+  for (const term of [
+    INPUT_ATTACHMENT_PROMPT,
+    "[Canonical user attachments]",
+    "lens-input.png",
+    "lens-input.txt",
+    inputImageSha256,
+    inputTextSha256,
+    "[image]",
+  ]) {
+    assert.equal(inputRequest.includes(term), true, `missing canonical input term ${term}`);
+  }
+  for (const privatePath of [inputImageReference.path, inputTextReference.path, artifactRoot]) {
+    assert.equal(inputRequest.includes(privatePath), false,
+      "processless Bot model text must not receive a private attachment path");
+  }
+  const inputPage = await canonicalMessages.listMessages({
+    context: owner,
+    channelId: CHANNEL_ID,
+    limit: 100,
+  });
+  const inputMessage = inputPage.messages.find((message) => message.text === INPUT_ATTACHMENT_PROMPT);
+  assert.deepEqual(inputMessage?.attachments.map((attachment) => ({
+    id: attachment.id,
+    name: attachment.name,
+    contentType: attachment.contentType,
+    byteCount: attachment.byteCount,
+    sha256: attachment.sha256,
+  })), [{
+    id: inputImageId,
+    name: "lens-input.png",
+    contentType: "image/png",
+    byteCount: inputImageBytes.length,
+    sha256: inputImageSha256,
+  }, {
+    id: inputTextId,
+    name: "lens-input.txt",
+    contentType: "text/plain",
+    byteCount: inputTextBytes.length,
+    sha256: inputTextSha256,
+  }], "canonical transcript keeps the exact user text and attachment summaries");
+
   const artifactBytes = Buffer.from("A private Lens note returned through canonical storage.\n", "utf8");
   const artifactOutput = canonicalReturnedArtifactDirectory(
     join(botsRoot, BOT_ID, "workspace"),
   );
   writeFileSync(join(artifactOutput, "lens-note.txt"), artifactBytes, { mode: 0o600 });
   failArtifactResultCommit = true;
-  const artifactTurn = await send(restartedService, 5, ARTIFACT_PROMPT);
+  const artifactTurn = await send(restartedService, 6, ARTIFACT_PROMPT);
   await assert.rejects(artifactTurn.response, /fixture artifact result commit interruption/);
   assert.equal(database.readOne<{ state: string }>(
     "SELECT state FROM works WHERE id = ?", artifactTurn.work.id,
   )?.state, "succeeded");
-  assert.equal(model.requests.length, 6, "one tool call and one final answer must complete the artifact turn");
+  assert.equal(model.requests.length, 7, "one tool call and one final answer must complete the artifact turn");
   assert.equal(database.readOne<{ count: number }>(
     "SELECT count(*) AS count FROM artifacts WHERE owner_principal_id = ?", BOT_ID,
   )?.count, 1);
@@ -420,7 +531,7 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(activeWork, 0);
-  assert.equal(model.requests.length, 6, "artifact recovery must not rerun the processless Bot");
+  assert.equal(model.requests.length, 7, "artifact recovery must not rerun the processless Bot");
   assert.equal(database.readOne<{ count: number }>(
     "SELECT count(*) AS count FROM artifacts WHERE owner_principal_id = ?", BOT_ID,
   )?.count, 1, "artifact recovery must replay the original canonical artifact");
@@ -528,4 +639,8 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
     assert.equal(durableUserTexts.filter((content) => content === phrase).length, 1,
       `durable Bot history duplicated ${JSON.stringify(phrase)}`);
   }
+  const durableInput = durableUserTexts.filter((content) =>
+    JSON.stringify(content).includes(INPUT_ATTACHMENT_PROMPT)
+  );
+  assert.equal(durableInput.length, 1, "the attachment turn is durable exactly once");
 });
