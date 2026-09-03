@@ -1,10 +1,11 @@
 # Lane handoff — Work Execution and Return
 
-- Lane name and state: Lane 2 Work Execution and Return; needs integration
-- Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-work`
+- Lane name and state: Lane 2 Work Execution and Return; integrated
+- Worktree (git toplevel): `/Volumes/Bertha - Data/JTR23-archives/disk-pressure-2026-08-30/home23-inactive/.home23-worktrees/resident-presence-work`
+- Live-checkout alias: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-work`
 - Branch: `codex/resident-presence-work`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- Current HEAD: `12d396b850e2c51b85963526873007514de4f5ea`
+- Current HEAD: `2fb78d42859b0634ce2a6efbed5431da3d9642df`
 - Owned files: `src/work/**`; coding/subagent delivery paths required for detach + one-result return
 - Current objective: first-slice local foreground/background convergence — long Work detaches and returns one result
 
@@ -42,7 +43,7 @@ The path is not wired from `home.ts` (Lane 1 owns that file). Isolated tests con
 
 ## Next concrete action
 
-Integration: Lane 1 admits a second conversation Message while this path's Attempt is running on the Work-scoped chat; Lane 3 supplies the real result-message port.
+Stay recovered. This lane is already cherry-picked onto `codex/resident-presence-core-integration`. First-convergence closure is owned by Core integration. Do not start journeys 2–4 from this lane.
 
 ## Live action still prohibited
 
