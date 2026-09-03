@@ -237,13 +237,14 @@ test('worker_run in a speaking turn creates Work and commits one result off the 
   });
 
   assert.equal(executed, 0);
-  assert.equal(rendered.success, false);
+  assert.equal(rendered.success, true);
+  assert.notEqual(rendered.result.is_error, true);
   assert.ok(createdHandle?.created);
   if (!createdHandle?.created) return;
   const workId = createdHandle.handle.workId;
   assert.equal(setup.work.get(workId)?.channelId, CHANNEL_ID);
   assert.equal(setup.work.get(workId)?.originMessageId, MESSAGE_ID);
-  assert.match(rendered.result.content, /was not started/);
+  assert.match(rendered.result.content, /was handed off/);
   assert.match(rendered.result.content, new RegExp(workId));
   assert.doesNotMatch(rendered.result.content, /do not claim this assignment exists as Work/);
 

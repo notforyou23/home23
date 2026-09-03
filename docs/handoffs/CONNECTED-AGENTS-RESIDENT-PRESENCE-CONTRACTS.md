@@ -1,10 +1,11 @@
 # Lane 3 — Canonical State and Coordination
 
-- **State:** needs integration
-- **Worktree:** `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-contracts`
+- **State:** integrated
+- **Worktree (git toplevel):** `/Volumes/Bertha - Data/JTR23-archives/disk-pressure-2026-08-30/home23-inactive/.home23-worktrees/resident-presence-contracts`
+- **Live-checkout alias:** `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-contracts`
 - **Branch:** `codex/resident-presence-contracts`
 - **Base:** `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- **HEAD:** `f70a42b878707d363929040d5dd89b549c03c354`
+- **HEAD:** `e076c83572aa5dc0e24ce31d487759585d80fcb3`
 - **Owned files:** `src/coordination/**`, migrations, public coordination APIs, canonical contracts, fixtures, matching tests
 - **Objective:** Lock the first-slice shared state-transition contract so other lanes consume one Message / Work / Attempt / office / event authority.
 
@@ -72,7 +73,7 @@ Conversation list summaries still carry a compact activity chip from the older `
 
 ## Next concrete action
 
-Coordinator cherry-picks the round-1 fix commit (and this handoff) onto `codex/resident-presence-core-integration`. Lane 4 regenerates Apple fixtures from digest `2828398f…`.
+Stay recovered. Pack `2828398f…` is already on Core integration and Canary `b8963271`. First-convergence closure is owned by Core integration. Do not start journeys 2–4 from this lane.
 
 ## Prohibited live action
 

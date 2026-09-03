@@ -287,7 +287,8 @@ export function dispatchForegroundDetach(input: {
   const facts = collected.facts;
   const anchors = ports.readChannelState(facts.channelId!);
   if (!anchors) {
-    return { created: false, missing: [...new Set([...missing, 'channelId'])] };
+    if (!missing.includes('channelId')) missing.push('channelId');
+    return { created: false, missing };
   }
 
   const messageIds = [facts.originMessageId!];

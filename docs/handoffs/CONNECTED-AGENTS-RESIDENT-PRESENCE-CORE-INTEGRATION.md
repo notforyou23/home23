@@ -1,54 +1,60 @@
 # Lane handoff — Core integration
 
-- Lane name and state: Core integration; in progress
-- Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-core-integration`
+- Lane name and state: Core integration; in progress (first-convergence closure)
+- Worktree (git toplevel): `/Volumes/Bertha - Data/JTR23-archives/disk-pressure-2026-08-30/home23-inactive/.home23-worktrees/resident-presence-core-integration`
+- Live-checkout alias (same directory): `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-core-integration`
 - Branch: `codex/resident-presence-core-integration`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- HEAD: `378b6475285a781e8b0f10835ae3a50c65cd90a4`
+- HEAD: record after the first-convergence closure commit on this branch (was `80025e606fbaa49f9acf6972a43755f40ad1c712` before that commit)
 - Owned files: integration branch only.
-- Current objective: first convergence — message admitted and answered while Work remains active; one later result. Composed `submitMessage` proof that W2's `runWithTurn` starts while W1 is still executing is in.
+- Current objective: first convergence — a second real Jerry turn while Work remains active; one later result. Do not expand into journeys 2–4. Do not install.
+
+## Recover this lane
+
+```bash
+git -C "/Volumes/Bertha - Data/JTR23-archives/disk-pressure-2026-08-30/home23-inactive/.home23-worktrees/resident-presence-core-integration" status --short --branch
+git -C "/Volumes/Bertha - Data/JTR23-archives/disk-pressure-2026-08-30/home23-inactive/.home23-worktrees/resident-presence-core-integration" rev-parse HEAD
+```
+
+Headquarters still points at the original release `f3ad98dc` (`instances/.house/coordination/active-release.json`). Nothing has touched live Jerry.
 
 ## Integrated so far
 
-**Lane 1 (foreground)** — reviewed clean. Picked as `0e05fba5`…`31137c78`. 18/18 after the Lane 2 pick.
+**Lane 1 (foreground)** — `a8ccc1ecd482d6af3a1ec1a8b2db936c16a6138d`. Picked as `0e05fba5`…`31137c78`. Speaking-only `isRunning`.
 
-**Lane 2 (Work)** — reviewed clean (`22b2fe5d-0ed9-448a-82ff-31ff694a3d00`). Picked as `511c093f`, `99a4ea12`, `21866c45`, `233ef884`, `96967a59`, `80abaa21`. Focused Work / coding tests 70/70 on this branch before this join. Durable cancel survives a new path instance. Detached Attempt stays off the conversation run lock.
+**Lane 2 (Work)** — `2fb78d42859b0634ce2a6efbed5431da3d9642df`. Detached Attempt on `coordination:<channel>:<workId>`.
 
-**Lane 3 (shared contract)** — pack SHA-256 `2828398f3e8a6edc6c75340a2aff07ce2a9cab983b680ad48497bb01b0a2aee8`. 13/13.
+**Lane 3 (shared contract)** — `e076c83572aa5dc0e24ce31d487759585d80fcb3`. Pack SHA-256 `2828398f3e8a6edc6c75340a2aff07ce2a9cab983b680ad48497bb01b0a2aee8`.
 
-**Lane 5 (continuity office)** — isolated, unwired. 24/24.
+**Lane 5 (continuity office)** — `16a97e1b9869f5688e1f45d2c41151fc748f6d98`. Isolated, **unwired**. Stay unwired.
 
-**Lane 4 (Canary)** — first-slice isolated proofs Approved (`1cfa30d8-6cf6-49ff-b86b-821cbe2f1ef3`). Consumes pack `2828398f…` at Canary `b8963271`. Pair with this branch `378b6475`. No device install.
+**Lane 4 (Canary)** — first-slice isolated proofs Approved (`1cfa30d8-6cf6-49ff-b86b-821cbe2f1ef3`). Consumes pack `2828398f…` at Canary `b89632710883aed4adcf9eb4dbe3326f3904e0e0`. Pair with this branch after the closure commit. No device install.
 
-## Second resident turn while Work is running
+## First-convergence closure (this pass)
 
-Canary Product send is `POST /api/v1/channels/:channelId/messages` → `submitMessage`. Isolated composed test `tests/coordination/app/resident-presence-second-turn-while-work.test.ts` holds W1's fake `ResidentAgentPort.runWithTurn` promise, admits M2 (`202`), and asserts W2's `runWithTurn` is invoked on `coordination:<channelId>:<w2>` before W1 resolves. Neither chatId is `ios_` / `mac_` / telegram-numeric. W2 result posts first (`work-result:${w2}`), then W1; replay of the W1 result stays one row.
+1. `tsc --noEmit` is clean. Relationship-ledger typing in `foreground-work-view.ts` matches `RelationshipLedger.listEntries`. Detach missing-fields keep a `string[]` without widening through `Set`.
+2. Successful speaking-turn detach is not an error. `tool-result.ts` omits `is_error` and reports `success: true` when `outcome.created === true`. Missing-fact refusals stay `is_error: true` / `success: false`.
+3. Real isolated proof: `tests/coordination/app/resident-presence-real-runtime-second-turn.test.ts`.
 
-`resident-presence-first-slice.test.ts` still only admits M2 and creates a second Work record — it does not hold W1 open. This composed test is the missing run proof.
+   Canary-style `POST /api/v1/channels/:channelId/messages` → coordination DB → real `ResidentTurnUdsServer` → real `AgentLoop` → holding local-model stub → second HTTP message → second real provider call while W1 is held → W2 result first → W1 result once → replay stays one row.
 
-Production `submitMessage` / `dispatch` did not need a change: `inFlight` is already per `work.id`, `beginWork` is a counter, adapter `active` is per work, and `AgentLoop.isRunning` is speaking-only. A probe that keyed `inFlight` by channelId made this test fail (`W2 runWithTurn must be invoked while W1 is still held`); that probe was reverted and is not in this commit.
+   The earlier composed test with a fake `ResidentAgentPort` remains. It is not this proof.
 
-`src/routes/chat-turn.ts` was not edited. Lane 3 schema, Lane 5, Canary, and the live checkout were not touched. No live restart.
-
-## This join
-
-Lane 1 `onForegroundDetachRequired` now calls Lane 2 `createDetachedAttemptPath.dispatch` through `src/work/foreground-detach.ts`. Lane 3 `messages.sendMessage` is the result port: `kind: "result"` and `workResultIdempotencyKey(workId)` (`work-result:${workId}`). Result Message ids are derived from the Work id (`msg_` + work uuid), the same pattern as direct-message — not minted as origin ids.
-
-Fail-closed: if ports or `channelId` / `conversationId` / `originMessageId` / `principalId` / `targetPrincipalId` / `residentBinding` / `residentInstanceId` / `authorityReference` / `instruction` are missing, no Work is created and the refusal lists the missing facts. No `chn_` / `cnv_` / `msg_` / `bot_` / `user_` ids are minted for origin facts. Manifest watermarks are read from the seeded/live Channel; digests are hashes of the included message ids + instruction.
-
-Attempt `runWithTurn` is only called with `attemptChatId` and `{ coordinationOrigin }`. `isRunning` stays speaking-only (`agent.isRunning`). `markActive` / `clear` track the Attempt chat locally and never mark the conversation `chatId`.
-
-Live Lane 3 ports are constructed in `home.ts` only when `HOME23_COORDINATION_DB_PATH` is set and `openCoordinationDatabase` succeeds (same work/lease/message constructors as `composition.ts`). Exclusive-writer busy or missing Jerry bot facts leave ports null. Unit tests inject ports and never open the live DB.
-
-`src/routes/chat-turn.ts` was not edited. Lane 5 was not wired. Lane 3 schema was not changed. No live restart, DB mutation, or device install.
+`src/routes/chat-turn.ts` was not edited. Lane 5 was not wired. No live restart.
 
 ## Verification
+
+```bash
+npx tsc --noEmit
+```
+
+Exit 0.
 
 ```bash
 node --import tsx --test --test-concurrency=1 tests/work/*.test.ts tests/agent/tools/coding.test.ts
 ```
 
-72 pass (previous 70 plus created-Work and missing-fact).
+72 pass.
 
 ```bash
 node --import tsx --test --test-concurrency=1 \
@@ -61,18 +67,19 @@ node --import tsx --test --test-concurrency=1 \
   tests/work/foreground-detach.test.ts
 ```
 
-20 pass (previous 18 plus the two detach-join cases).
+20 pass.
 
 ```bash
-node --import tsx --test --test-concurrency=1 \
-  tests/coordination/app/resident-presence-second-turn-while-work.test.ts
+node --import tsx --test --test-concurrency=1 --test-timeout=120000 \
+  tests/coordination/app/resident-presence-second-turn-while-work.test.ts \
+  tests/coordination/app/resident-presence-real-runtime-second-turn.test.ts
 ```
 
-1/1 pass. W2's `runWithTurn` started while W1's agent promise was still held. Production code unchanged, so the e2e and first-slice suites were not re-run on this commit.
+2/2 pass.
 
 ## Next concrete action
 
-Lived pair checklist (no device install). Do **not** implement chat-turn 409 on this branch; `src/routes/chat-turn.ts` still reports 409 from pending TurnStore rows on that `chatId`. Coordinator owns that gate.
+Build the complete Canary `Home23` iOS app from `resident-presence-canary` (not only `Home23Shared`). Then stop and ask jtr to authorize a lived install. Do **not** implement chat-turn 409 on this branch. Do **not** start journeys 2–4.
 
 ## Live action still prohibited
 

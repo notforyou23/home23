@@ -447,20 +447,21 @@ export async function executeAndFormatTool(input: {
     const outcome = decision.request
       ? input.context.onForegroundDetachRequired?.(decision.request)
       : undefined;
-    const refused: ToolResult = {
-      content: foregroundDetachRefusal(decision, outcome),
-      is_error: true,
-    };
+    const created = Boolean(outcome && typeof outcome === 'object' && outcome.created === true);
+    const content = foregroundDetachRefusal(decision, outcome);
+    const result: ToolResult = created
+      ? { content }
+      : { content, is_error: true };
     input.onEvent?.({
       type: 'tool_result',
       tool: input.name,
       toolCallId: input.toolCallId,
-      result: refused.content,
-      exactResult: refused.content,
-      success: false,
+      result: content,
+      exactResult: content,
+      success: created,
       sourceEventType: 'runtime.tool_result',
     });
-    return { result: refused, modelContent: refused.content, eventContent: refused.content, success: false };
+    return { result, modelContent: content, eventContent: content, success: created };
   }
   const result = await input.registry.execute(input.name, decision.input, {
     ...input.context,

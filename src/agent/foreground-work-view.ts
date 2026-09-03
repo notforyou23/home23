@@ -3,6 +3,8 @@
  * Uses existing WorkRegistry / relationship-ledger projections only.
  */
 
+import type { RelationshipLedger } from './relationship-ledger.js';
+
 export interface CompactWorkProjection {
   workId: string;
   label: string;
@@ -66,9 +68,7 @@ export function collectForegroundTurnContext(input: {
   workRegistry?: {
     list(filter: { originChatId?: string; active?: boolean; limit?: number }): CompactWorkProjection[];
   } | null;
-  relationshipLedger?: {
-    listEntries(filter: { type?: string; status?: string }): Array<CompactCommitmentProjection & { privacy_class?: string }>;
-  } | null;
+  relationshipLedger?: Pick<RelationshipLedger, 'listEntries'> | null;
 }): string {
   const work = input.workRegistry?.list({
     originChatId: input.chatId,

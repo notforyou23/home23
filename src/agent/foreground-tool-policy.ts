@@ -199,7 +199,7 @@ export function foregroundDetachRefusal(
 ): string {
   if (isDetachOutcome(outcome) && outcome.created) {
     return [
-      `Foreground policy: ${decision.tool} was not started.`,
+      `Foreground policy: ${decision.tool} was handed off.`,
       decision.reason ?? 'This operation must become durable Work before execution.',
       `Work ${outcome.handle.workId} was created and is running off this conversation.`,
       'Use work_list only to inspect Work that is already active.',
