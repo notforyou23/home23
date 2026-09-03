@@ -648,6 +648,11 @@ async function main(): Promise<void> {
 
   // ── Create SessionRouter ──
   const router = new SessionRouter(config.sessions, messageHandler, SESSIONS_DIR);
+  // HTTP / Canary speaking turns never mark a router key. Drain parked
+  // Messages for this chatId when the last speaking turn ends.
+  agent.setOnSpeakingCleared((chatId) => {
+    void router.drainPendingForChat(chatId);
+  });
 
   // ── Bound message handler for adapters ──
   const routerHandler = (msg: IncomingMessage): Promise<void> => router.handleMessage(msg);

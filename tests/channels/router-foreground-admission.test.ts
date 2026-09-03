@@ -167,3 +167,34 @@ test('home-style handler parks instead of busy-replying when speaking is already
   assert.equal(router.queueSizes.get('webhook:ios_chat'), 1);
   rmSync(root, { recursive: true, force: true });
 });
+
+test('HTTP speaking that never marks a router key still drains parked Messages when it clears', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'fg-router-http-drain-'));
+  const started: string[] = [];
+  const replies: string[] = [];
+  let httpSpeaking = true;
+
+  const handler = async (incoming: IncomingMessage): Promise<OutgoingResponse> => {
+    assertCanStartSpeaking({ speakingActive: httpSpeaking });
+    started.push(incoming.text);
+    return { text: `spoke:${incoming.text}`, channel: incoming.channel, chatId: incoming.chatId };
+  };
+
+  const router = new SessionRouter(sessionsConfig('direct'), handler, join(root, 'sessions'));
+  router.registerAdapter({
+    name: 'webhook',
+    async start() {},
+    async stop() {},
+    async send(response) { replies.push(response.text); },
+  });
+
+  await router.handleMessage(message('parked during HTTP speaking'));
+  assert.deepEqual(started, []);
+  assert.equal(router.queueSizes.get('webhook:ios_chat'), 1);
+
+  httpSpeaking = false;
+  await router.drainPendingForChat('ios_chat');
+  assert.deepEqual(started, ['parked during HTTP speaking']);
+  assert.deepEqual(replies, ['spoke:parked during HTTP speaking']);
+  rmSync(root, { recursive: true, force: true });
+});

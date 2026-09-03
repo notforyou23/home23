@@ -47,13 +47,13 @@ Result: 99 passed, 0 failed.
 
 - Lane 2: sink `toolContext.onForegroundDetachRequired` into `createDetachedAttemptPath.dispatch` (or the equivalent public detach API) for `worker_run`, research launch/continue/compile, `generate_image` / `generate_music` / `tts` / `skills_run` / `cron_run` / `brain_synthesize` / `brain_query_export`. Do not execute those tools inside a speaking turn.
 - Lane 2: conversation-foreground `spawn_agent` is forced to `detached` by the speaking-turn policy. Keep joined specialists on Work/coordination chats only.
-- Lane 2: do not mark `router.markSpeakingActive` or `agent.isRunning(conversationChatId)` for a detached Attempt. Attempts must stay on the Work-scoped chat.
+- Lane 2: do not mark `router.markSpeakingActive` or `agent.isRunning(conversationChatId)` for a detached Attempt. Attempts must stay on the Work-scoped chat. `runWithTurn` still `writeStart`s a pending TurnStore envelope on the chatId it is given — keep Attempt `writeStart` off the conversation `chatId`.
 - Lane 3: no schema change was required for this slice. If a canonical compact Work projection other than `WorkRegistry.list({ active: true, originChatId })` is the intended source, publish it; this lane reads the existing registry.
-- Lane 4 / `src/routes/chat-turn.ts` (not owned): HTTP turn start still 409s when `agent.isRunning(chatId)`. After this lane, that means speaking-only. Durable accept-while-speaking for Canary still needs that route to acknowledge and hold, not reject.
+- Lane 4 / `src/routes/chat-turn.ts` (not owned): HTTP 409 is `TurnStore.pendingTurns(chatId)`, not `isRunning`. After this lane `isRunning` is speaking-only, but a coordination Work that `writeStart`s on the conversation chat still leaves a pending row and 409s Canary. Acknowledge-and-hold must get past pending TurnStore rows.
 
 ## Unresolved risk or blocker
 
-`src/routes/chat-turn.ts` is outside this lane and still uses `isRunning` as a 409 gate. Isolated tests do not start a live model. Foreground `require_work` tools are refused until Lane 2 wires the detach sink; they do not silently run.
+`src/routes/chat-turn.ts` is outside this lane. Its 409 is pending TurnStore rows on that `chatId`; `isRunning` is only an `active` flag on that response. Isolated tests do not start a live model. Foreground `require_work` tools are refused until Lane 2 wires the detach sink; they do not silently run and must not be described as existing Work.
 
 ## Next concrete action
 
