@@ -4,9 +4,9 @@
 - Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-core-integration`
 - Branch: `codex/resident-presence-core-integration`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- HEAD: `fe33d8c6d5f5d24717696cffcdff4c705a8e292b`
+- Previous HEAD: `af6f1de84b956840d4676f487e546eed5bdc51ba`
 - Owned files: integration branch only.
-- Current objective: first convergence — message admitted and answered while Work remains active; one later result.
+- Current objective: first convergence — message admitted and answered while Work remains active; one later result. Composed `submitMessage` proof that W2's `runWithTurn` starts while W1 is still executing is in.
 
 ## Integrated so far
 
@@ -18,7 +18,17 @@
 
 **Lane 5 (continuity office)** — isolated, unwired. 24/24.
 
-**Lane 4 (Canary)** — first-slice isolated proofs Approved (`1cfa30d8-6cf6-49ff-b86b-821cbe2f1ef3`). Consumes pack `2828398f…` at Canary `b8963271`. Pair with this branch `fe33d8c6`. No device install.
+**Lane 4 (Canary)** — first-slice isolated proofs Approved (`1cfa30d8-6cf6-49ff-b86b-821cbe2f1ef3`). Consumes pack `2828398f…` at Canary `b8963271`. Pair with this branch after the second-turn-while-work proof. No device install.
+
+## Second resident turn while Work is running
+
+Canary Product send is `POST /api/v1/channels/:channelId/messages` → `submitMessage`. Isolated composed test `tests/coordination/app/resident-presence-second-turn-while-work.test.ts` holds W1's fake `ResidentAgentPort.runWithTurn` promise, admits M2 (`202`), and asserts W2's `runWithTurn` is invoked on `coordination:<channelId>:<w2>` before W1 resolves. Neither chatId is `ios_` / `mac_` / telegram-numeric. W2 result posts first (`work-result:${w2}`), then W1; replay of the W1 result stays one row.
+
+`resident-presence-first-slice.test.ts` still only admits M2 and creates a second Work record — it does not hold W1 open. This composed test is the missing run proof.
+
+Production `submitMessage` / `dispatch` did not need a change: `inFlight` is already per `work.id`, `beginWork` is a counter, adapter `active` is per work, and `AgentLoop.isRunning` is speaking-only. A probe that keyed `inFlight` by channelId made this test fail (`W2 runWithTurn must be invoked while W1 is still held`); that probe was reverted and is not in this commit.
+
+`src/routes/chat-turn.ts` was not edited. Lane 3 schema, Lane 5, Canary, and the live checkout were not touched. No live restart.
 
 ## This join
 
@@ -53,9 +63,16 @@ node --import tsx --test --test-concurrency=1 \
 
 20 pass (previous 18 plus the two detach-join cases).
 
+```bash
+node --import tsx --test --test-concurrency=1 \
+  tests/coordination/app/resident-presence-second-turn-while-work.test.ts
+```
+
+1/1 pass. W2's `runWithTurn` started while W1's agent promise was still held. Production code unchanged, so the e2e and first-slice suites were not re-run on this commit.
+
 ## Next concrete action
 
-Chat-turn 409: `src/routes/chat-turn.ts` still reports 409 from pending TurnStore rows on that `chatId`. Do **not** implement that on this commit. Coordinator owns that gate.
+Lived pair checklist (no device install). Do **not** implement chat-turn 409 on this branch; `src/routes/chat-turn.ts` still reports 409 from pending TurnStore rows on that `chatId`. Coordinator owns that gate.
 
 ## Live action still prohibited
 
