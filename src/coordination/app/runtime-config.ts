@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { DEFAULT_MAXIMUM_ARTIFACT_BYTES } from "../artifacts/index.js";
 import type { CoordinationFeatureFlags } from "./types.js";
 import { disabledCoordinationFeatureFlags } from "./application.js";
+import type { ApnsConfig } from "../../push/types.js";
 
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/i;
 
@@ -40,6 +41,12 @@ export interface CoordinationRuntimeConfig {
     rootDirectory: string;
     maximumBytes: number;
     maximumCountPerMessage: number;
+  }>;
+  push?: Readonly<{
+    /** Independent activation switch; incomplete APNs configuration is fatal. */
+    enabled: boolean;
+    registryPath: string;
+    apns: ApnsConfig;
   }>;
   residents: Readonly<Record<"jerry" | "forrest", {
     enabled: boolean;
@@ -160,6 +167,11 @@ export function loadCoordinationRuntimeConfig(
     "HOME23_COORDINATION_ACTIVITY_ENABLED",
   );
   const activityEnabled = enabled && requestedActivityEnabled;
+  const requestedPushEnabled = exactBoolean(
+    environment.HOME23_COORDINATION_PUSH_ENABLED,
+    "HOME23_COORDINATION_PUSH_ENABLED",
+  );
+  const pushEnabled = enabled && requestedPushEnabled;
   const attachmentRoot = confinedRuntimePath({
     value: environment.HOME23_COORDINATION_ATTACHMENTS_ROOT ??
       resolve(runtimeRoot, "attachments"),
@@ -167,6 +179,30 @@ export function loadCoordinationRuntimeConfig(
     runtimeRoot,
     requireParent: attachmentsEnabled,
   });
+  const pushRegistryPath = confinedRuntimePath({
+    value: environment.HOME23_COORDINATION_PUSH_REGISTRY_PATH ??
+      resolve(runtimeRoot, "connected-agents-device-registry.json"),
+    name: "HOME23_COORDINATION_PUSH_REGISTRY_PATH",
+    runtimeRoot,
+    requireParent: pushEnabled,
+  });
+  const apnsEnvironment = environment.HOME23_COORDINATION_APNS_DEFAULT_ENV ?? "production";
+  const apns = Object.freeze({
+    team_id: environment.HOME23_COORDINATION_APNS_TEAM_ID ?? "",
+    key_id: environment.HOME23_COORDINATION_APNS_KEY_ID ?? "",
+    key_path: environment.HOME23_COORDINATION_APNS_KEY_PATH ?? "",
+    bundle_id: environment.HOME23_COORDINATION_APNS_BUNDLE_ID ?? "",
+    default_env: apnsEnvironment as "sandbox" | "production",
+  });
+  if (pushEnabled && (
+    !/^[A-Z0-9]{10}$/.test(apns.team_id) ||
+    !/^[A-Z0-9]{10}$/.test(apns.key_id) ||
+    !isAbsolute(apns.key_path) ||
+    !/^[A-Za-z0-9][A-Za-z0-9.-]{2,254}$/.test(apns.bundle_id) ||
+    (apnsEnvironment !== "sandbox" && apnsEnvironment !== "production")
+  )) {
+    throw new Error("complete Connected Agents APNs configuration is required when push is enabled");
+  }
   const residents = Object.fromEntries((["jerry", "forrest"] as const).map((slug) => {
     const upper = slug.toUpperCase();
     const residentEnabled = flags[`coordination.resident.${slug}.enabled`] === true;
@@ -197,6 +233,9 @@ export function loadCoordinationRuntimeConfig(
       maximumBytes: DEFAULT_MAXIMUM_ARTIFACT_BYTES,
       maximumCountPerMessage: 10,
     }),
+    ...(pushEnabled
+      ? { push: Object.freeze({ enabled: true, registryPath: pushRegistryPath, apns }) }
+      : {}),
     residents: Object.freeze(residents),
     flags: Object.freeze(flags),
   });

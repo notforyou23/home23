@@ -84,6 +84,10 @@ import {
   type AuthorityEpoch,
 } from "../epochs/index.js";
 import type { AuthorityCapability } from "../import/index.js";
+import { ApnsClient } from "../../push/apns-client.js";
+import { ApnsPusher } from "../../push/apns-pusher.js";
+import { ConnectedAgentsNotificationService } from "../../push/connected-agents.js";
+import { DeviceRegistry } from "../../push/device-registry.js";
 
 export interface DurableAttachmentCompositionOptions {
   /** Independent kill switch. This is deliberately not sourced from live config. */
@@ -450,6 +454,38 @@ export function createCoordinationProcess(
     ? createSqliteActivityReadService({ database, events, messages })
     : undefined;
   const communications = new SqliteCommunicationEventRepository(database);
+  const notificationConfiguration =
+    config.flags["coordination.public_api.enabled"] === true
+      ? config.push
+      : undefined;
+  const notificationClient = notificationConfiguration?.enabled === true
+    ? new ApnsClient(notificationConfiguration.apns)
+    : undefined;
+  const notificationRegistry = notificationConfiguration?.enabled === true
+    ? new DeviceRegistry(notificationConfiguration.registryPath)
+    : undefined;
+  const deviceNotifications = notificationClient && notificationRegistry
+    ? new ConnectedAgentsNotificationService(
+        notificationRegistry,
+        new ApnsPusher(notificationClient, notificationRegistry, "Home23", {
+          connectedAgentsRegistrationIsCurrent: (registration) => {
+            if (!registration.coordination_device_id ||
+                !registration.coordination_session_id) return false;
+            return database.readOne<{ current: number }>(
+              `SELECT 1 AS current
+               FROM client_sessions session
+               JOIN devices device ON device.id = session.device_id
+               WHERE session.id = ? AND session.device_id = ?
+                 AND session.state = 'active' AND device.status = 'active'`,
+              registration.coordination_session_id,
+              registration.coordination_device_id,
+            )?.current === 1;
+          },
+        }),
+        notificationConfiguration!.apns.bundle_id,
+      )
+    : undefined;
+  const notificationCapabilityAvailable = () => deviceNotifications !== undefined;
   let attachmentService: ReturnType<typeof createDurableAttachmentService> | undefined;
   let attachmentStore: LocalArtifactStore | undefined;
   let attachmentInitialization: Promise<void> | undefined;
@@ -496,7 +532,7 @@ export function createCoordinationProcess(
       return createBootstrapService({ repository: new SqliteBootstrapRepository(database), participantDirectory,
         minimumClientBuild: 1, home: { id: "home_00000000-0000-7000-8000-000000000000", name: "Home23", primaryBotId: primary.id },
         connection: { mode: "loopback", displayName: "This Home23", reachable: true },
-        capabilities: { channels: false, attachments: attachmentCapabilityAvailable(), search: false, push: false, eventReplay: true, botLifecycle: botLifecycleCapabilityAvailable() },
+        capabilities: { channels: false, attachments: attachmentCapabilityAvailable(), search: false, push: notificationCapabilityAvailable(), eventReplay: true, botLifecycle: botLifecycleCapabilityAvailable() },
         limits: {
           attachmentBytes: attachmentCapabilityAvailable()
             ? attachmentConfiguration?.maximumBytes ?? 0
@@ -520,7 +556,11 @@ export function createCoordinationProcess(
     close: async () => {
       for (const residentAgent of residentAgents.values()) await residentAgent.close();
     },
-  }, {
+  }, ...(notificationClient === undefined ? [] : [{
+    name: "connected-agents-apns",
+    drain: async () => undefined,
+    close: async () => notificationClient.close(),
+  }]), {
     name: "coordination-database",
     drain: async () => undefined,
     close: async () => database.close(),
@@ -660,6 +700,7 @@ export function createCoordinationProcess(
       const directSubmission = createDirectMessageSubmissionService({
         messages,
         communications,
+        ...(deviceNotifications === undefined ? {} : { notifications: deviceNotifications }),
         context: new SqliteDirectMessageContext(
           database,
           messages,
@@ -704,7 +745,10 @@ export function createCoordinationProcess(
               leases,
               resolveResident,
               authority: { current: () => currentAuthority("messages") },
-              recordMessage: createCanonicalMessageRecorder(communications),
+              recordMessage: createCanonicalMessageRecorder(
+                communications,
+                deviceNotifications,
+              ),
               beginWork: lifecycle.beginWork,
               recoveryIdentity: () => ({
                 requestId: generateCoordinationId("request"),
@@ -760,6 +804,7 @@ export function createCoordinationProcess(
       ...(attachments === undefined ? {} : { attachments }),
       ...(messageSubmission === undefined ? {} : { messageSubmission }),
       ...(activity === undefined ? {} : { activity }),
+      ...(deviceNotifications === undefined ? {} : { deviceNotifications }),
       ...(productionBotLifecycle === undefined ? {} : {
         botLifecycle: productionBotLifecycle.service,
         botLifecycleApi: productionBotLifecycle.api,

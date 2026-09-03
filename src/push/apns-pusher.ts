@@ -1,12 +1,16 @@
 import type { ApnsClient } from './apns-client.js';
 import type { DeviceRegistry } from './device-registry.js';
 import type {
+  DeviceRegistration,
   PushPayload,
   QueryNotificationDeliveryReceipt,
   QueryPushPayload,
   QueryTerminalState,
 } from './types.js';
-import { buildAsyncWorkPayload } from './types.js';
+import {
+  buildAsyncWorkPayload,
+  buildConnectedAgentsMessagePayload,
+} from './types.js';
 
 export interface QueryTerminalNotificationInput {
   operationId: string;
@@ -28,6 +32,7 @@ export interface QueryTerminalNotificationReceipt {
 interface ApnsPusherOptions {
   queryTimeoutMs?: number;
   queryMaxConcurrency?: number;
+  connectedAgentsRegistrationIsCurrent?: (registration: DeviceRegistration) => boolean;
 }
 
 export class ApnsPusher {
@@ -36,6 +41,8 @@ export class ApnsPusher {
   private queryActiveSends = 0;
   private readonly queryTimeoutMs: number;
   private readonly queryMaxConcurrency: number;
+  private readonly connectedAgentsRegistrationIsCurrent:
+    (registration: DeviceRegistration) => boolean;
 
   constructor(
     private client: ApnsClient,
@@ -45,6 +52,8 @@ export class ApnsPusher {
   ) {
     this.queryTimeoutMs = options.queryTimeoutMs ?? 5_000;
     this.queryMaxConcurrency = options.queryMaxConcurrency ?? 4;
+    this.connectedAgentsRegistrationIsCurrent =
+      options.connectedAgentsRegistrationIsCurrent ?? (() => true);
     if (!Number.isSafeInteger(this.queryTimeoutMs)
         || this.queryTimeoutMs < 1 || this.queryTimeoutMs > 30_000) {
       throw new TypeError('query_apns_timeout_invalid');
@@ -53,6 +62,50 @@ export class ApnsPusher {
         || this.queryMaxConcurrency < 1 || this.queryMaxConcurrency > 16) {
       throw new TypeError('query_apns_concurrency_invalid');
     }
+  }
+
+  /**
+   * Wake devices for a canonical assistant Message that is already durable.
+   * The notification is intentionally content-free; the Message API is truth.
+   */
+  async notifyConnectedAgentsMessage(input: {
+    conversationId: string;
+    channelId: string;
+    messageId: string;
+    workId?: string;
+    agent?: string;
+    displayName?: string;
+  }): Promise<void> {
+    const devices = this.registry.lookupConnectedAgentsDevices()
+      .filter((device) => this.connectedAgentsRegistrationIsCurrent(device));
+    if (devices.length === 0) return;
+    const payload = buildConnectedAgentsMessagePayload(input);
+    await Promise.allSettled(devices.map(async (device) => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.queryTimeoutMs);
+      try {
+        const result = await this.client.send(
+          device.device_token,
+          payload,
+          device.env,
+          { signal: controller.signal },
+        );
+        if (result.status === 410) {
+          this.registry.invalidate(device.device_token, device.bundle_id);
+        } else if (result.status >= 400) {
+          console.warn(
+            `[push] connected-agents: ${result.status} ${result.reason ?? ''} for ${device.device_token.slice(0, 8)}…`,
+          );
+        }
+      } catch (error) {
+        console.warn(
+          `[push] connected-agents: send failed for ${device.device_token.slice(0, 8)}…:`,
+          error instanceof Error ? error.message : error,
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+    }));
   }
 
   private async withQuerySendSlot<T>(task: () => Promise<T>): Promise<T> {

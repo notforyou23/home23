@@ -18,7 +18,11 @@ import type { JsonValue } from "../db/index.js";
 import type { MessageProjection, MessageTurnSelection } from "../messages/index.js";
 import type { ContextManifestInput, WorkRecord } from "../work/index.js";
 import { isCanonicalMessagesAuthority, type AuthorityEpoch } from "../epochs/index.js";
-import type { CoordinationLeasePort, CoordinationWorkPort } from "./types.js";
+import type {
+  CoordinationDeviceNotificationPort,
+  CoordinationLeasePort,
+  CoordinationWorkPort,
+} from "./types.js";
 
 const sha256 = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 
@@ -128,6 +132,7 @@ export interface DirectMessageExecutionTarget {
 /** Idempotent, lossless communication evidence for canonical Message commits. */
 export function createCanonicalMessageRecorder(
   communications?: ResidentCommunicationPort,
+  notifications?: Pick<CoordinationDeviceNotificationPort, "notifyMessageCommitted">,
 ) {
   const exactMessage = (message: MessageProjection): Record<string, JsonValue> => {
     let serialized: string | undefined;
@@ -147,8 +152,28 @@ export function createCanonicalMessageRecorder(
     correlationId: string;
     turnSelection?: MessageTurnSelection;
   }): Promise<void> => {
-    if (!communications) return;
     const message = input.message;
+    const notify = () => {
+      if (input.kind !== "assistant_message_committed" || !notifications) return;
+      void notifications.notifyMessageCommitted({
+        conversationId: message.conversationId,
+        channelId: message.channelId,
+        messageId: message.id,
+        ...(message.provenance.workId === null
+          ? {}
+          : { workId: message.provenance.workId }),
+        displayName: message.author.displayName,
+      }).catch((error: unknown) => {
+        console.warn(
+          "[home23-coordination] Connected Agents notification failed:",
+          error instanceof Error ? error.message : error,
+        );
+      });
+    };
+    if (!communications) {
+      notify();
+      return;
+    }
     const rawMessage = exactMessage(message);
     await communications.append({
       event: {
@@ -188,6 +213,7 @@ export function createCanonicalMessageRecorder(
       requestId: input.requestId,
       correlationId: input.correlationId,
     });
+    notify();
   };
 }
 
@@ -203,11 +229,15 @@ export function createDirectMessageSubmissionService(options: {
     Promise<DirectMessageExecutionTarget | undefined>;
   authority: { current(): AuthorityEpoch | null };
   communications?: ResidentCommunicationPort;
+  notifications?: Pick<CoordinationDeviceNotificationPort, "notifyMessageCommitted">;
   beginWork(): () => void;
   recoveryIdentity(): { requestId: string; correlationId: string };
 }) {
   const inFlight = new Map<string, Promise<MessageProjection>>();
-  const recordMessage = createCanonicalMessageRecorder(options.communications);
+  const recordMessage = createCanonicalMessageRecorder(
+    options.communications,
+    options.notifications,
+  );
   const once = (callback: () => void) => {
     let called = false;
     return () => {

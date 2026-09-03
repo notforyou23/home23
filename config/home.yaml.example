@@ -21,6 +21,10 @@ coordination:
   # still required; this setting alone can never activate the capability.
   attachments:
     enabled: false
+  # Authenticated Apple device registration and privacy-minimal completion
+  # wake hints. Requires a complete `apns` block in secrets.yaml.
+  push:
+    enabled: false
   # Registry flags are projected literally. Every value defaults false; flags
   # gate reachability only and never change a canonical authority epoch.
   flags:

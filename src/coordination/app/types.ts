@@ -74,6 +74,31 @@ export interface CoordinationBotLifecyclePort {
   control(input: { context: MessagingActorContext; idempotencyKey: string; botId: string; operation: "archive" | "restore" }): Promise<BotLifecycleReceipt>;
 }
 
+/** Authenticated current-device registration and content-free APNs wake hints. */
+export interface CoordinationDeviceNotificationPort {
+  registerCurrent(input: {
+    context: MessagingActorContext;
+    deviceToken: string;
+    environment: "sandbox" | "production";
+    platform: "ios" | "macos";
+    appBuild: string | null;
+  }): Readonly<{
+    registered: true;
+    deviceId: string;
+    sessionId: string;
+    environment: "sandbox" | "production";
+    updatedAt: string;
+  }>;
+  notifyMessageCommitted(input: {
+    conversationId: string;
+    channelId: string;
+    messageId: string;
+    workId?: string;
+    agent?: string;
+    displayName?: string;
+  }): Promise<void>;
+}
+
 /**
  * M11 owns the durable-before-start Work/Attempt/Lease transaction. M12 only
  * forwards a validated public message intent through this port.
@@ -164,6 +189,7 @@ export interface CoordinationServices {
   channelCoordinator?: CoordinationChannelCoordinatorPort;
   events?: SqliteEventRepository;
   communications?: SqliteCommunicationEventRepository;
+  deviceNotifications?: CoordinationDeviceNotificationPort;
   authorityEpochs?: {
     current(capability: AuthorityCapability): AuthorityEpoch | null;
     listCurrent(): Promise<Readonly<{ epochs: readonly Readonly<{
@@ -200,6 +226,7 @@ export interface CoordinationAdvertisedCapabilities {
   workMutation: boolean;
   activity: boolean;
   botLifecycle: boolean;
+  push: boolean;
   importShadow: boolean;
 }
 

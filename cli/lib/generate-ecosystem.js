@@ -212,6 +212,15 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`const coordinationConfig = homeConfig.coordination || {};`);
   lines.push(`const coordinationEnabled = coordinationConfig.process?.enabled === true;`);
   lines.push(`const coordinationFlags = coordinationConfig.flags || {};`);
+  lines.push(`const coordinationApns = secrets.apns || {};`);
+  lines.push(`const coordinationPushEnabled = coordinationConfig.push?.enabled === true`);
+  lines.push(`  && /^[A-Z0-9]{10}$/.test(String(coordinationApns.team_id || ''))`);
+  lines.push(`  && /^[A-Z0-9]{10}$/.test(String(coordinationApns.key_id || ''))`);
+  lines.push(`  && path.isAbsolute(String(coordinationApns.key_path || ''))`);
+  lines.push(`  && fs.existsSync(String(coordinationApns.key_path || ''))`);
+  lines.push(`  && fs.statSync(String(coordinationApns.key_path || '')).isFile()`);
+  lines.push(`  && /^[A-Za-z0-9][A-Za-z0-9.-]{2,254}$/.test(String(coordinationApns.bundle_id || ''))`);
+  lines.push(`  && ['sandbox', 'production'].includes(String(coordinationApns.default_env || 'production'));`);
   lines.push(`const coordinationRuntimeDir = path.join(HOME23, 'instances', '.house', 'coordination');`);
   lines.push(`const coordinationSocketDir = path.join(os.tmpdir(), 'home23-coord-' + crypto.createHash('sha256').update(HOME23).digest('hex').slice(0, 12));`);
   lines.push(``);
@@ -245,6 +254,12 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`        HOME23_COORDINATION_COMPACTION_ENABLED: String(coordinationFlags['coordination.compaction.enabled'] === true),`);
   lines.push(`        HOME23_COORDINATION_ACTIVITY_ENABLED: String(coordinationConfig.activity?.enabled === true),`);
   lines.push(`        HOME23_COORDINATION_ATTACHMENTS_ENABLED: String(coordinationConfig.attachments?.enabled === true),`);
+  lines.push(`        HOME23_COORDINATION_PUSH_ENABLED: String(coordinationPushEnabled),`);
+  lines.push(`        HOME23_COORDINATION_APNS_TEAM_ID: String(coordinationApns.team_id || ''),`);
+  lines.push(`        HOME23_COORDINATION_APNS_KEY_ID: String(coordinationApns.key_id || ''),`);
+  lines.push(`        HOME23_COORDINATION_APNS_KEY_PATH: String(coordinationApns.key_path || ''),`);
+  lines.push(`        HOME23_COORDINATION_APNS_BUNDLE_ID: String(coordinationApns.bundle_id || ''),`);
+  lines.push(`        HOME23_COORDINATION_APNS_DEFAULT_ENV: String(coordinationApns.default_env || 'production'),`);
   lines.push(`        HOME23_COORDINATION_HOST: '127.0.0.1',`);
   lines.push(`        HOME23_COORDINATION_PORT: String(coordinationConfig.publicApi?.port || 7346),`);
   lines.push(`        HOME23_COORDINATION_DB_PATH: path.join(coordinationRuntimeDir, 'home23-coordination.sqlite3'),`);

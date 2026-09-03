@@ -161,7 +161,7 @@ export function createCoordinationRouter(input: {
         channels: advertised.capabilities.channelsRead,
         attachments: advertised.capabilities.attachments,
         search: advertised.capabilities.search,
-        push: false,
+        push: advertised.capabilities.push,
         eventReplay: advertised.capabilities.eventReplay,
         botLifecycle: advertised.capabilities.botLifecycle,
       },
@@ -171,6 +171,39 @@ export function createCoordinationRouter(input: {
       },
     });
   }));
+
+  router.put(
+    "/api/v1/devices/current/push",
+    productRead,
+    jsonBody,
+    asyncRoute(async (request, response) => {
+      if (!application.capabilities().capabilities.push ||
+          !application.services.deviceNotifications) {
+        throw unavailable("push");
+      }
+      const body = jsonObjectBody(request.body);
+      const allowedKeys = new Set([
+        "deviceToken", "environment", "platform", "appBuild",
+      ]);
+      if (Object.keys(body).some((key) => !allowedKeys.has(key)) ||
+          typeof body.deviceToken !== "string" ||
+          !/^[0-9a-f]{32,256}$/i.test(body.deviceToken) ||
+          (body.environment !== "sandbox" && body.environment !== "production") ||
+          (body.platform !== "ios" && body.platform !== "macos") ||
+          (body.appBuild !== undefined &&
+            (typeof body.appBuild !== "string" ||
+              body.appBuild.length < 1 || body.appBuild.length > 128))) {
+        throw new CoordinationHttpError("request_invalid", 400, false);
+      }
+      response.json(application.services.deviceNotifications.registerCurrent({
+        context: requireCoordinationContext(response),
+        deviceToken: body.deviceToken,
+        environment: body.environment,
+        platform: body.platform,
+        appBuild: body.appBuild === undefined ? null : body.appBuild as string,
+      }));
+    }),
+  );
 
   router.get("/api/v1/authority-epochs", productRead, asyncRoute(async (_request, response) => {
     if (!application.services.authorityEpochs) throw unavailable("bootstrap");

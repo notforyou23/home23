@@ -119,6 +119,9 @@ function capabilityDocument(input: {
         canonicalMessagesAuthority &&
         canonicalBotLifecycleAuthority &&
         input.services.botLifecycleApi !== undefined,
+      push:
+        mutationsEnabled &&
+        input.services.deviceNotifications !== undefined,
       importShadow: false,
     }),
   });
