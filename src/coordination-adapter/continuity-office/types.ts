@@ -111,6 +111,8 @@ export interface ContinuityWorkAdmitRequest {
   instruction: string;
   requestId: string;
   correlationId: string;
+  epoch: number;
+  fencingToken: number;
 }
 
 export interface ContinuityWorkRecord {
@@ -137,6 +139,8 @@ export interface CompleteContinuityWorkInput {
   resultText: string;
   requestId: string;
   correlationId: string;
+  epoch: number;
+  fencingToken: number;
 }
 
 export interface CanonicalWriteAuthority {

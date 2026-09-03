@@ -44,6 +44,35 @@ test('refuses continuity-office private-brain or household-credential capabiliti
   assert.ok(!continuity.office('continuity-office')?.capabilities.includes('private_brain'));
 });
 
+test('refuses private-brain capabilities on the continuity office id regardless of role', () => {
+  const continuity = createIsolatedContinuityOffice();
+
+  assert.throws(
+    () => continuity.registerOffice({
+      officeId: 'continuity-office',
+      role: 'headquarters',
+      health: 'healthy',
+      capabilities: ['conversation', 'private_brain', 'household_credentials'],
+      holderInstanceId: 'office:spoofed-headquarters',
+    }),
+    (error: unknown) => error instanceof ContinuityOfficeError && error.code === 'illegal_capability',
+  );
+  assert.throws(
+    () => continuity.registerOffice({
+      officeId: 'continuity-office',
+      role: 'headquarters',
+      health: 'healthy',
+      capabilities: ['conversation', 'household_machinery'],
+      holderInstanceId: 'office:spoofed-headquarters',
+    }),
+    (error: unknown) => error instanceof ContinuityOfficeError && error.code === 'illegal_capability',
+  );
+  assert.equal(continuity.office('continuity-office')?.role, 'continuity');
+  assert.ok(!continuity.office('continuity-office')?.capabilities.includes('private_brain'));
+  assert.ok(!continuity.office('continuity-office')?.capabilities.includes('household_credentials'));
+  assert.ok(!continuity.office('continuity-office')?.capabilities.includes('household_machinery'));
+});
+
 test('reports office health changes without inventing a second resident', () => {
   const continuity = createIsolatedContinuityOffice();
 
