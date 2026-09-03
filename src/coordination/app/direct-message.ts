@@ -213,7 +213,10 @@ export function createCanonicalMessageRecorder(
       requestId: input.requestId,
       correlationId: input.correlationId,
     });
-    if (recorded.outcome === "inserted") notify();
+    const outcome = recorded && typeof recorded === "object" && "outcome" in recorded
+      ? (recorded as { outcome?: unknown }).outcome
+      : null;
+    if (outcome !== "duplicate") notify();
   };
 }
 
