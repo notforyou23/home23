@@ -783,6 +783,7 @@ export class ResidentTurnUdsServer {
       childResultHandle:{...input.childResultHandle},status:input.status,finishedAt:input.finishedAt,
       channelId:input.channelId,conversationId:input.conversationId,
       originMessageId:input.originMessageId,targetPrincipalId:input.targetPrincipalId,
+      attemptId:input.attemptId,leaseId:input.leaseId,fencingToken:input.fencingToken,
       residentBinding:input.residentBinding,residentInstanceId:input.residentInstanceId,
       authorityReference:input.authorityReference,terminalText:input.terminalText,
       artifacts:returnedArtifactsJson(artifacts),

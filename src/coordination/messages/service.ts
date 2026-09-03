@@ -284,5 +284,18 @@ export function createMessageService(options: CreateMessageServiceOptions) {
     });
   }
 
-  return Object.freeze({ sendMessage, listMessages });
+  async function getMessage(input: {
+    context: MessagingActorContext;
+    messageId: string;
+  }) {
+    assertId("message", input.messageId);
+    const actor = await resolveMessagingActor(
+      input.context,
+      participantDirectory,
+      "product:read",
+    );
+    return repository.getMessage({ messageId: input.messageId, actor });
+  }
+
+  return Object.freeze({ sendMessage, getMessage, listMessages });
 }

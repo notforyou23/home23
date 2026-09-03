@@ -46,6 +46,9 @@ export interface CoordinationWorkDestination {
   channelId: string;
   conversationId: string;
   originMessageId: string;
+  attemptId: string;
+  leaseId: string;
+  fencingToken: number;
   targetPrincipalId: string;
   residentBinding: string;
   residentInstanceId: string;

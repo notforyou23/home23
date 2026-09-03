@@ -3,6 +3,7 @@ export type {
   AppendMessageCommit,
   AppendMessageResult,
   CreateMessageServiceOptions,
+  GetMessageInput,
   ListMessagesInput,
   ListMessagesResult,
   MessageAuthor,

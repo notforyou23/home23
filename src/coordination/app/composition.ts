@@ -998,6 +998,7 @@ export function createCoordinationProcess(
       work,
       leases,
       messages,
+      communications,
       directContext: directMessageContext,
       ...(groupMessageContext === undefined ? {} : { groupContext: groupMessageContext }),
       resolveResident: (residentBinding) => completionTargets.get(residentBinding),

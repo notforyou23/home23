@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { MediaAttachment } from "../../types.js";
 import type {
   ResidentArtifactPromotionPort,
+  ResidentCommunicationPort,
   ResidentLeaseBinding,
 } from "../../coordination-adapter/index.js";
 import type { CoordinationCompletionCommit } from "../../work/receipt-delivery.js";
@@ -11,6 +12,10 @@ import { assertCoordinationId } from "../ids/index.js";
 import { ResidentProtocolError, type JsonValue } from "../resident-protocol/index.js";
 import type { ResidentUdsRequestContext } from "../transport/uds/index.js";
 import { MessagingError, type MessagingActorContext } from "../channels/index.js";
+import {
+  CommunicationEventConflictError,
+  stableCommunicationEventId,
+} from "../communications/index.js";
 import { LeaseError } from "../leases/index.js";
 import type { MessageProjection } from "../messages/index.js";
 import type { WorkRecord } from "../work/index.js";
@@ -37,7 +42,7 @@ export interface SpecialistCompletionResidentTarget {
 export interface SpecialistCompletionConsumerOptions {
   work: { get(workId: string): WorkRecord | null };
   leases: {
-    current(workId: string): Readonly<{
+    assertCompleted(binding: ResidentLeaseBinding): Readonly<{
       work: WorkRecord;
       attempt: Readonly<{
         id: string;
@@ -47,10 +52,16 @@ export interface SpecialistCompletionConsumerOptions {
         fencingToken: number;
       }>;
       lease: Readonly<{ id: string }>;
+      receipt: unknown;
     }>;
-    assertCompleted(binding: ResidentLeaseBinding): unknown;
   };
-  messages: DirectMessageMessagePort;
+  messages: DirectMessageMessagePort & {
+    getMessage(input: {
+      context: MessagingActorContext;
+      messageId: string;
+    }): Promise<MessageProjection | null>;
+  };
+  communications: Pick<ResidentCommunicationPort, "append">;
   directContext: Pick<DirectMessageContextPort, "recover">;
   groupContext?: Pick<GroupChannelMessageContextPort, "recover">;
   resolveResident(residentBinding: string): SpecialistCompletionResidentTarget | undefined;
@@ -153,7 +164,8 @@ export function parseCoordinationCompletionCommit(
   exactKeys(value, [
     "parentWorkId", "childWorkId", "childKind", "childResultHandle", "status",
     "finishedAt", "channelId", "conversationId", "originMessageId",
-    "targetPrincipalId", "residentBinding", "residentInstanceId",
+    "attemptId", "leaseId", "fencingToken", "targetPrincipalId",
+    "residentBinding", "residentInstanceId",
     "authorityReference", "terminalText", "artifacts",
   ], "coordination completion");
   const parentWorkId = exactId("work", value.parentWorkId);
@@ -175,10 +187,17 @@ export function parseCoordinationCompletionCommit(
     invalid("status is invalid");
   }
   const terminalText = nullableText(value.terminalText);
+  const fencingToken = value.fencingToken;
+  if (typeof fencingToken !== "number" || !Number.isSafeInteger(fencingToken) || fencingToken < 1) {
+    invalid("fencingToken is invalid");
+  }
   if (!Array.isArray(value.artifacts) || value.artifacts.length > 10) invalid("artifacts are invalid");
   const artifacts = Object.freeze(value.artifacts.map(exactArtifact));
   if (status !== "completed" && (terminalText !== null || artifacts.length > 0)) {
     invalid("non-successful specialist completion cannot contain a visible result");
+  }
+  if (status === "completed" && terminalText === null && artifacts.length === 0) {
+    invalid("successful specialist completion has no result");
   }
   return Object.freeze({
     parentWorkId,
@@ -190,6 +209,9 @@ export function parseCoordinationCompletionCommit(
     channelId,
     conversationId: exactId("conversation", value.conversationId),
     originMessageId: exactId("message", value.originMessageId),
+    attemptId: exactId("attempt", value.attemptId),
+    leaseId: exactId("lease", value.leaseId),
+    fencingToken,
     targetPrincipalId: exactId("principal", value.targetPrincipalId),
     residentBinding: exactString(value.residentBinding, "residentBinding"),
     residentInstanceId: exactString(value.residentInstanceId, "residentInstanceId"),
@@ -235,6 +257,45 @@ function sameTarget(input: CoordinationCompletionCommit, target: {
     input.residentBinding === target.residentBinding;
 }
 
+function exactResultMessage(
+  message: MessageProjection,
+  input: CoordinationCompletionCommit,
+  parent: WorkRecord,
+  includeResult: boolean,
+): boolean {
+  if (
+    message.channelId !== input.channelId ||
+    message.conversationId !== input.conversationId ||
+    message.author.principalId !== input.targetPrincipalId ||
+    message.kind !== "result" || message.visibility !== "visible" ||
+    message.replyToMessageId !== input.originMessageId ||
+    message.provenance.roundId !== parent.roundId ||
+    message.provenance.workId !== parent.id
+  ) return false;
+  if (!includeResult) return true;
+  return message.text === input.terminalText &&
+    message.attachments.length === input.artifacts.length &&
+    message.attachments.every((attachment, index) => {
+      const artifact = input.artifacts[index];
+      return artifact !== undefined && attachment.name === artifact.fileName &&
+        attachment.contentType === artifact.mimeType &&
+        attachment.byteCount === artifact.byteCount && attachment.sha256 === artifact.sha256;
+    });
+}
+
+function terminalArtifacts(input: CoordinationCompletionCommit): JsonValue[] {
+  return input.artifacts.map((artifact) => ({
+    type: artifact.type,
+    generatedBy: artifact.generatedBy ?? null,
+    path: artifact.path,
+    mimeType: artifact.mimeType ?? null,
+    fileName: artifact.fileName ?? null,
+    byteCount: artifact.byteCount ?? null,
+    sha256: artifact.sha256 ?? null,
+    ...(artifact.caption === undefined ? {} : { caption: artifact.caption }),
+  }));
+}
+
 export function createSpecialistCompletionConsumer(
   options: SpecialistCompletionConsumerOptions,
 ) {
@@ -277,28 +338,30 @@ export function createSpecialistCompletionConsumer(
         }
         throw new ResidentProtocolError("fence_invalid", "specialist completion parent Work did not succeed");
       }
-      const current = options.leases.current(parent.id);
-      if (
-        current.work.id !== parent.id ||
-        current.attempt.holderPrincipalId !== input.targetPrincipalId ||
-        current.attempt.holderInstanceId !== input.residentInstanceId ||
-        current.attempt.authorityReference !== input.authorityReference
-      ) {
-        throw new ResidentProtocolError("fence_invalid", "specialist completion lease differs");
-      }
       const binding: ResidentLeaseBinding = Object.freeze({
         workId: parent.id,
-        attemptId: current.attempt.id,
-        leaseId: current.lease.id,
-        holderPrincipalId: current.attempt.holderPrincipalId,
-        holderInstanceId: current.attempt.holderInstanceId,
-        authorityReference: current.attempt.authorityReference,
-        fencingToken: current.attempt.fencingToken,
+        attemptId: input.attemptId,
+        leaseId: input.leaseId,
+        holderPrincipalId: input.targetPrincipalId,
+        holderInstanceId: input.residentInstanceId,
+        authorityReference: input.authorityReference,
+        fencingToken: input.fencingToken,
         requestId: request.requestId,
         correlationId: request.correlationId,
       });
-      options.leases.assertCompleted(binding);
+      const completed = options.leases.assertCompleted(binding);
+      if (
+        completed.work.id !== parent.id || completed.work.currentAttemptId !== input.attemptId ||
+        completed.attempt.id !== input.attemptId || completed.lease.id !== input.leaseId ||
+        completed.attempt.holderPrincipalId !== input.targetPrincipalId ||
+        completed.attempt.holderInstanceId !== input.residentInstanceId ||
+        completed.attempt.authorityReference !== input.authorityReference ||
+        completed.attempt.fencingToken !== input.fencingToken
+      ) {
+        throw new ResidentProtocolError("fence_invalid", "specialist completion lease differs");
+      }
 
+      let targetDisplayName: string;
       if (parent.kind === "resident_turn") {
         const recovered = await options.directContext.recover(parent);
         if (!sameTarget(input, {
@@ -310,6 +373,7 @@ export function createSpecialistCompletionConsumer(
         })) {
           throw new ResidentProtocolError("fence_invalid", "specialist completion direct context differs");
         }
+        targetDisplayName = recovered.prepared.targetBotDisplayName;
       } else {
         if (!options.groupContext) invalid("group completion context is unavailable");
         const recovered = await options.groupContext.recover(parent);
@@ -324,31 +388,94 @@ export function createSpecialistCompletionConsumer(
         })) {
           throw new ResidentProtocolError("fence_invalid", "specialist completion group context differs");
         }
+        targetDisplayName = target.targetBotDisplayName;
       }
 
+      await options.communications.append({
+        event: {
+          eventId: stableCommunicationEventId(
+            `specialist-terminal:${input.parentWorkId}:${input.childWorkId}`,
+            input.finishedAt,
+          ),
+          conversationId: input.conversationId,
+          channelId: input.channelId,
+          messageId: null,
+          workId: input.parentWorkId,
+          attemptId: input.attemptId,
+          turnId: null,
+          actor: {
+            principalId: input.targetPrincipalId,
+            displayName: targetDisplayName,
+            kind: "resident_bot",
+          },
+          source: {
+            system: "resident_runtime",
+            adapter: "resident_uds",
+            sourceEventType: `specialist.${input.status}`,
+          },
+          kind: input.status === "failed" || input.status === "interrupted"
+            ? "failure"
+            : "subagent_completed",
+          provenance: "resident_authenticated_specialist_terminal",
+          occurredAt: input.finishedAt,
+          payload: {
+            parentWorkId: input.parentWorkId,
+            childWorkId: input.childWorkId,
+            childKind: input.childKind,
+            childResultHandle: { ...input.childResultHandle },
+            status: input.status,
+            terminalText: input.terminalText,
+            artifacts: terminalArtifacts(input),
+          },
+          terminal: true,
+        },
+        requestId: request.requestId,
+        correlationId: request.correlationId,
+      });
       if (input.status !== "completed") {
         return { accepted: true, childWorkId: input.childWorkId, messageId: null, replayed: false };
-      }
-      if (input.terminalText === null && input.artifacts.length === 0) {
-        invalid("successful specialist completion has no result");
       }
       const messagingContext = resident.context({
         principalId: input.targetPrincipalId,
         requestId: request.requestId,
         correlationId: request.correlationId,
       });
-      const primaryMessageId = `msg_${parent.id.slice(4)}`;
-      const page = await options.messages.listMessages({
+      const specialistMessageId = stableMessageId(parent, input.childWorkId);
+      const existing = await options.messages.getMessage({
         context: messagingContext,
-        channelId: input.channelId,
-        limit: 100,
+        messageId: specialistMessageId,
       });
-      if (!page.messages.some((message) => message.id === primaryMessageId)) {
+      if (existing) {
+        if (existing.id !== specialistMessageId || !exactResultMessage(existing, input, parent, true)) {
+          throw new ResidentProtocolError("fence_invalid", "specialist completion Message differs");
+        }
+        await options.recordMessage({
+          message: existing,
+          kind: "assistant_message_committed",
+          requestId: request.requestId,
+          correlationId: request.correlationId,
+        });
+        return {
+          accepted: true,
+          childWorkId: input.childWorkId,
+          messageId: existing.id,
+          replayed: true,
+        };
+      }
+      const primaryMessageId = `msg_${parent.id.slice(4)}`;
+      const primary = await options.messages.getMessage({
+        context: messagingContext,
+        messageId: primaryMessageId,
+      });
+      if (!primary) {
         throw new ResidentProtocolError(
           "server_busy",
           "specialist completion is waiting for the parent answer",
           { retryable: true },
         );
+      }
+      if (primary.id !== primaryMessageId || !exactResultMessage(primary, input, parent, false)) {
+        throw new ResidentProtocolError("fence_invalid", "specialist completion parent answer differs");
       }
       const attachmentIds = input.artifacts.length === 0
         ? Object.freeze([])
@@ -360,7 +487,7 @@ export function createSpecialistCompletionConsumer(
       const result = await options.messages.sendMessage({
         context: messagingContext,
         channelId: input.channelId,
-        messageId: stableMessageId(parent, input.childWorkId),
+        messageId: specialistMessageId,
         authorPrincipalId: input.targetPrincipalId,
         idempotencyKey: `specialist-result:${input.parentWorkId}:${input.childWorkId}`,
         kind: "result",
@@ -386,11 +513,15 @@ export function createSpecialistCompletionConsumer(
       };
     } catch (error) {
       if (error instanceof ResidentProtocolError) throw error;
-      if (error instanceof MessagingError || error instanceof ArtifactError) {
+      if (
+        error instanceof MessagingError || error instanceof ArtifactError ||
+        error instanceof CommunicationEventConflictError
+      ) {
+        const retryable = error instanceof CommunicationEventConflictError ? false : error.retryable;
         throw new ResidentProtocolError(
-          error.retryable ? "internal_error" : "request_invalid",
+          retryable ? "internal_error" : "request_invalid",
           "specialist completion could not be committed",
-          { retryable: error.retryable },
+          { retryable },
         );
       }
       if (error instanceof LeaseError) {

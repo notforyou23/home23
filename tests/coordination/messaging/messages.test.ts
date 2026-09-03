@@ -77,6 +77,15 @@ test("concurrent sends allocate unique gap-free per-Channel sequences", async (t
     "SELECT next_message_sequence AS nextSequence FROM channels WHERE id = ?",
     direct.channel.id,
   )?.nextSequence, 25);
+  const exact = await messages.getMessage({
+    context: ownerContext(499),
+    messageId: committed[0]!.message.id,
+  });
+  assert.equal(exact?.id, committed[0]!.message.id);
+  assert.equal(await messages.getMessage({
+    context: ownerContext(500),
+    messageId: fixtureId("message", 999),
+  }), null);
 });
 
 test("an exact send retry returns the original committed Message without another row or event", async (t) => {

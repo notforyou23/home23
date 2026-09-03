@@ -21,6 +21,7 @@ import type {
 import type {
   AppendMessageCommit,
   AppendMessageResult,
+  GetMessageInput,
   ListMessagesInput,
   ListMessagesResult,
   MessageProjection,
@@ -364,6 +365,23 @@ export class SqliteMessageRepository implements MessageRepository {
       messages: Object.freeze(messages),
       nextBeforeSequence: messages.length === input.limit && first && first > 1 ? first : null,
     });
+  }
+
+  async getMessage(input: GetMessageInput): Promise<MessageProjection | null> {
+    assertStoredActorBinding(this.database, input.actor);
+    const message = this.readMessage(input.messageId);
+    if (!message) return null;
+    const member = this.database.readOne<{ kind: "owner" | "bot" }>(
+      `SELECT kind FROM channel_members
+       WHERE channel_id = ? AND principal_id = ? AND active = 1`,
+      message.channelId,
+      input.actor.principalId,
+    );
+    if (!member) throw new MessagingError("nonmember");
+    if (member.kind !== input.actor.kind) {
+      throw new MessagingError("identity_context_mismatch");
+    }
+    return message;
   }
 
   private assertMessageRelations(

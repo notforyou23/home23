@@ -76,6 +76,11 @@ export interface ListMessagesInput {
   limit: number;
 }
 
+export interface GetMessageInput {
+  messageId: string;
+  actor: ResolvedMessagingActor;
+}
+
 /**
  * M11 integration seam for non-null terminal provenance. M08 supplies no permissive
  * implementation: the Work owner must prove the exact actor/Channel/Round/Work binding
@@ -99,6 +104,7 @@ export interface ListMessagesResult {
 
 export interface MessageRepository {
   appendMessage(input: AppendMessageCommit): Promise<AppendMessageResult>;
+  getMessage(input: GetMessageInput): Promise<MessageProjection | null>;
   listMessages(input: ListMessagesInput): Promise<ListMessagesResult>;
 }
 

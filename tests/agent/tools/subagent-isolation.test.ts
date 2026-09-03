@@ -147,6 +147,7 @@ test('canonical Connected Agents explicit detached mode captures exact durable d
     coordinationDestination: {
       kind: 'coordination', parentWorkId: 'work_456', channelId: 'cnv_forrest',
       conversationId: 'conversation_forrest', originMessageId: 'msg_owner_1',
+      attemptId: 'att_1', leaseId: 'lea_1', fencingToken: 1,
       targetPrincipalId: 'bot_forrest', residentBinding: 'forrest',
       residentInstanceId: 'resident-forrest-1', authorityReference: 'resident:forrest',
     },

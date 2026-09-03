@@ -3,6 +3,7 @@ import { SqliteMessageRepository } from "../messages/repository.js";
 import type {
   AppendMessageCommit,
   AppendMessageResult,
+  GetMessageInput,
   ListMessagesInput,
   ListMessagesResult,
   MessageProvenanceAuthorizationTransactionPort,
@@ -543,6 +544,10 @@ export class SqliteMessagingRepository implements ChannelRepository {
 
   appendMessage(input: AppendMessageCommit): Promise<AppendMessageResult> {
     return this.messages.appendMessage(input);
+  }
+
+  getMessage(input: GetMessageInput) {
+    return this.messages.getMessage(input);
   }
 
   listMessages(input: ListMessagesInput): Promise<ListMessagesResult> {

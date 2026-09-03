@@ -95,6 +95,7 @@ test('canonical coordination origin uses only the exact completion callback', as
     coordinationDestination: {
       kind: 'coordination', parentWorkId: 'wrk_parent_1', channelId: 'chn_1',
       conversationId: 'cnv_1', originMessageId: 'msg_origin_1',
+      attemptId: 'att_1', leaseId: 'lse_1', fencingToken: 1,
       targetPrincipalId: 'bot_jerry', residentBinding: 'jerry',
       residentInstanceId: 'resident-jerry-1', authorityReference: 'resident:jerry',
     },
@@ -115,6 +116,7 @@ test('canonical coordination origin uses only the exact completion callback', as
     childResultHandle: { type: 'subagent_chat', chatId: 'subagent:coordination:chn_1:wrk_parent_1:abcd' },
     status: 'completed', finishedAt: '2026-08-06T12:05:00.000Z',
     channelId: 'chn_1', conversationId: 'cnv_1', originMessageId: 'msg_origin_1',
+    attemptId: 'att_1', leaseId: 'lse_1', fencingToken: 1,
     targetPrincipalId: 'bot_jerry', residentBinding: 'jerry',
     residentInstanceId: 'resident-jerry-1', authorityReference: 'resident:jerry',
     terminalText: 'Here is the result you asked for.',

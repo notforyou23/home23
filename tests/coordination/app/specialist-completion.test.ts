@@ -8,6 +8,7 @@ import {
 import { ResidentProtocolError, type JsonValue } from "../../../src/coordination/resident-protocol/index.js";
 import type { MessageProjection } from "../../../src/coordination/messages/index.js";
 import type { WorkRecord } from "../../../src/coordination/work/index.js";
+import { LeaseError } from "../../../src/coordination/leases/index.js";
 
 const suffix = "0198d95f-6c00-7000-8000-000000000881";
 const parentWorkId = `wrk_${suffix}`;
@@ -73,6 +74,9 @@ function payload(overrides: Record<string, JsonValue> = {}): JsonValue {
     channelId,
     conversationId,
     originMessageId,
+    attemptId: `att_${suffix}`,
+    leaseId: `lse_${suffix}`,
+    fencingToken: 1,
     targetPrincipalId: principalId,
     residentBinding: "jerry",
     residentInstanceId: "home23-jerry-harness",
@@ -85,25 +89,36 @@ function payload(overrides: Record<string, JsonValue> = {}): JsonValue {
 
 function fixture() {
   const sent: Parameters<SpecialistCompletionConsumerOptions["messages"]["sendMessage"]>[0][] = [];
+  const committed = new Map<string, MessageProjection>();
   const recorded: MessageProjection[] = [];
+  const terminalEvents: unknown[] = [];
   let released = 0;
   const options: SpecialistCompletionConsumerOptions = {
     work: { get: (workId) => workId === parentWorkId ? parentWork : null },
     leases: {
-      current: () => ({
-        work: parentWork,
-        attempt: {
-          id: `att_${suffix}`,
-          holderPrincipalId: principalId,
-          holderInstanceId: "home23-jerry-harness",
-          authorityReference: "resident:jerry",
-          fencingToken: 1,
-        },
-        lease: { id: `lse_${suffix}` },
-      }),
-      assertCompleted: () => undefined,
+      assertCompleted: (binding) => {
+        if (
+          binding.attemptId !== `att_${suffix}` || binding.leaseId !== `lse_${suffix}` ||
+          binding.fencingToken !== 1
+        ) throw new LeaseError("stale_fence", "stale");
+        return {
+          work: parentWork,
+          attempt: {
+            id: binding.attemptId,
+            holderPrincipalId: binding.holderPrincipalId,
+            holderInstanceId: binding.holderInstanceId,
+            authorityReference: binding.authorityReference,
+            fencingToken: binding.fencingToken,
+          },
+          lease: { id: binding.leaseId },
+          receipt: {},
+        };
+      },
     },
     messages: {
+      getMessage: async ({ messageId }) => messageId === primaryMessage.id
+        ? primaryMessage
+        : committed.get(messageId) ?? null,
       sendMessage: async (input) => {
         sent.push(input);
         const message: MessageProjection = Object.freeze({
@@ -127,14 +142,16 @@ function fixture() {
           createdAt: "2026-09-03T12:00:04.000Z",
           visibility: "visible",
         });
+        committed.set(message.id, message);
         return {
-          outcome: sent.length === 1 ? "committed" as const : "replayed" as const,
+          outcome: "committed" as const,
           message,
           receipt: { resourceVersion: 9, eventSequence: 19, requestId: `req_${suffix}`, correlationId: `cor_${suffix}` },
         };
       },
       listMessages: async () => ({ messages: Object.freeze([primaryMessage]) }),
     },
+    communications: { append: (input) => { terminalEvents.push(input); } },
     directContext: {
       recover: async () => ({
         originMessageId,
@@ -179,7 +196,10 @@ function fixture() {
     recordMessage: async ({ message }) => { recorded.push(message); },
     beginWork: () => () => { released += 1; },
   };
-  return { consume: createSpecialistCompletionConsumer(options), sent, recorded, released: () => released };
+  return {
+    consume: createSpecialistCompletionConsumer(options), sent, recorded, terminalEvents,
+    released: () => released,
+  };
 }
 
 const request = {
@@ -208,6 +228,29 @@ test("specialist completion rejects a signed resident that spoofs another destin
   assert.equal(state.released(), 1);
 });
 
+test("specialist completion rejects the stale spawning Attempt", async () => {
+  const state = fixture();
+  await assert.rejects(
+    state.consume(payload({ fencingToken: 2 }), request),
+    (error: unknown) => error instanceof ResidentProtocolError && error.code === "fence_invalid",
+  );
+  assert.equal(state.sent.length, 0);
+  assert.equal(state.terminalEvents.length, 0);
+});
+
+test("failed specialist completion records Inspector evidence without a Message", async () => {
+  const state = fixture();
+  const result = await state.consume(payload({ status: "failed", terminalText: null }), request) as Record<string, JsonValue>;
+  assert.equal(result.messageId, null);
+  assert.equal(state.sent.length, 0);
+  assert.equal(state.recorded.length, 0);
+  assert.equal(state.terminalEvents.length, 1);
+  const terminal = state.terminalEvents[0] as { event: { kind: string; messageId: null; payload: { status: string } } };
+  assert.equal(terminal.event.kind, "failure");
+  assert.equal(terminal.event.messageId, null);
+  assert.equal(terminal.event.payload.status, "failed");
+});
+
 test("specialist completion retries the same canonical Message idempotently", async () => {
   const state = fixture();
   const first = await state.consume(payload(), request) as Record<string, JsonValue>;
@@ -215,12 +258,14 @@ test("specialist completion retries the same canonical Message idempotently", as
 
   assert.equal(first.replayed, false);
   assert.equal(replay.replayed, true);
-  assert.equal(state.sent.length, 2);
-  assert.equal(state.sent[0]!.messageId, state.sent[1]!.messageId);
+  assert.equal(state.sent.length, 1);
   assert.equal(state.sent[0]!.idempotencyKey, `specialist-result:${parentWorkId}:${childWorkId}`);
   assert.deepEqual(state.sent[0]!.provenance, { roundId: null, workId: parentWorkId });
   assert.equal(state.sent[0]!.replyToMessageId, originMessageId);
   assert.equal(state.sent[0]!.text, "The specialist found the clean answer.");
   assert.equal(state.recorded.length, 2);
+  assert.equal(state.terminalEvents.length, 2);
+  const terminalEvents = state.terminalEvents as { event: { eventId: string } }[];
+  assert.equal(terminalEvents[0]!.event.eventId, terminalEvents[1]!.event.eventId);
   assert.equal(state.released(), 2);
 });

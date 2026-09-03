@@ -27,6 +27,9 @@ export interface CoordinationCompletionCommit {
   channelId: string;
   conversationId: string;
   originMessageId: string;
+  attemptId: string;
+  leaseId: string;
+  fencingToken: number;
   targetPrincipalId: string;
   residentBinding: string;
   residentInstanceId: string;
@@ -83,10 +86,13 @@ function exactCoordinationDestination(
       destination.channelId,
       destination.conversationId,
       destination.originMessageId,
+      destination.attemptId,
+      destination.leaseId,
       destination.targetPrincipalId,
       destination.residentBinding,
       destination.residentInstanceId,
-    ].every(isNonempty)
+    ].every(isNonempty) ||
+    !Number.isSafeInteger(destination.fencingToken) || destination.fencingToken < 1
   ) return null;
   return destination;
 }
@@ -120,6 +126,9 @@ export function coordinationCompletionCommit(
     channelId: destination.channelId,
     conversationId: destination.conversationId,
     originMessageId: destination.originMessageId,
+    attemptId: destination.attemptId,
+    leaseId: destination.leaseId,
+    fencingToken: destination.fencingToken,
     targetPrincipalId: destination.targetPrincipalId,
     residentBinding: destination.residentBinding,
     residentInstanceId: destination.residentInstanceId,

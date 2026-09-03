@@ -119,6 +119,7 @@ test('canonical specialist result is committed without synthetic history and onl
     coordinationDestination: {
       kind: 'coordination', parentWorkId: 'wrk_parent_1', channelId: 'chn_1',
       conversationId: 'cnv_1', originMessageId: 'msg_1', targetPrincipalId: 'bot_jerry',
+      attemptId: 'att_1', leaseId: 'lse_1', fencingToken: 1,
       residentBinding: 'jerry', residentInstanceId: 'resident-jerry-1',
       authorityReference: 'resident:jerry',
     },
