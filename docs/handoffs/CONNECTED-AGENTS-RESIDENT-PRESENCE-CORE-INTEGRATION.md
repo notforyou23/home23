@@ -4,7 +4,7 @@
 - Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-core-integration`
 - Branch: `codex/resident-presence-core-integration`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- Previous HEAD: `0076f774e7bb25ea57190066bbdaaefa08131a50`
+- HEAD: `fe33d8c6d5f5d24717696cffcdff4c705a8e292b`
 - Owned files: integration branch only.
 - Current objective: first convergence — message admitted and answered while Work remains active; one later result.
 
@@ -18,7 +18,7 @@
 
 **Lane 5 (continuity office)** — isolated, unwired. 24/24.
 
-**Lane 4 (Canary)** — first-slice isolated proofs Approved (`1cfa30d8-6cf6-49ff-b86b-821cbe2f1ef3`). Consumes pack `2828398f…` at Canary `b8963271`. Pair with this branch after the detach-join commit. No device install.
+**Lane 4 (Canary)** — first-slice isolated proofs Approved (`1cfa30d8-6cf6-49ff-b86b-821cbe2f1ef3`). Consumes pack `2828398f…` at Canary `b8963271`. Pair with this branch `fe33d8c6`. No device install.
 
 ## This join
 
