@@ -4,7 +4,7 @@
 - Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-core-integration`
 - Branch: `codex/resident-presence-core-integration`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- Previous HEAD: `af6f1de84b956840d4676f487e546eed5bdc51ba`
+- HEAD: `378b6475285a781e8b0f10835ae3a50c65cd90a4`
 - Owned files: integration branch only.
 - Current objective: first convergence — message admitted and answered while Work remains active; one later result. Composed `submitMessage` proof that W2's `runWithTurn` starts while W1 is still executing is in.
 
@@ -18,7 +18,7 @@
 
 **Lane 5 (continuity office)** — isolated, unwired. 24/24.
 
-**Lane 4 (Canary)** — first-slice isolated proofs Approved (`1cfa30d8-6cf6-49ff-b86b-821cbe2f1ef3`). Consumes pack `2828398f…` at Canary `b8963271`. Pair with this branch after the second-turn-while-work proof. No device install.
+**Lane 4 (Canary)** — first-slice isolated proofs Approved (`1cfa30d8-6cf6-49ff-b86b-821cbe2f1ef3`). Consumes pack `2828398f…` at Canary `b8963271`. Pair with this branch `378b6475`. No device install.
 
 ## Second resident turn while Work is running
 
