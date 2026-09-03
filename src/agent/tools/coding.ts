@@ -10,6 +10,7 @@
 
 import type { ToolContext, ToolDefinition, ToolResult, CodingBridgeRef } from '../types.js';
 import type { BridgeEvent, CodingJobRecord, CodingJobReceipt, CodingIsolation } from '../../acp/types.js';
+import { mustDetachLongTool } from '../../work/detach.js';
 import { TERMINAL_JOB_STATUSES } from '../../acp/types.js';
 
 const MAX_WAIT_SECONDS = 600;
@@ -132,6 +133,12 @@ function normalizeWaitSeconds(raw: unknown): number {
   return Math.min(Math.floor(value), MAX_WAIT_SECONDS);
 }
 
+/** Conversation-foreground turns must detach before any wait. */
+function waitBudget(raw: unknown, chatId: string): number {
+  if (mustDetachLongTool(chatId)) return 0;
+  return normalizeWaitSeconds(raw);
+}
+
 function stringArray(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const items = raw.map(item => String(item)).filter(item => item.length > 0);
@@ -179,7 +186,7 @@ export const codingRunTool: ToolDefinition = {
     if (!bridge) return BRIDGE_UNAVAILABLE;
     const prompt = String(input.prompt ?? '').trim();
     if (!prompt) return { content: 'coding_run requires a non-empty prompt.', is_error: true };
-    const waitSeconds = normalizeWaitSeconds(input.wait_seconds);
+    const waitSeconds = waitBudget(input.wait_seconds, ctx.chatId);
     try {
       const job = await bridge.startJob({
         prompt,
@@ -202,6 +209,7 @@ export const codingRunTool: ToolDefinition = {
         originChatId: ctx.chatId,
         originTurnId: ctx.turnRuntime?.turnId,
         parentWorkId: ctx.parentWorkId,
+        deliveryMode: 'detached',
         label: (input.label ? String(input.label) : undefined) ?? job.label ?? job.prompt.slice(0, 100),
         resultHandle: { type: 'coding_job', jobId: job.id },
       });
@@ -239,7 +247,7 @@ export const codingContinueTool: ToolDefinition = {
     if (!job.sessionId) {
       return { content: `Job ${jobId} has no resumable backend session (no session id was recorded — the backend may not support resume, or the job died before the session started). Start a fresh coding_run instead.`, is_error: true };
     }
-    const waitSeconds = normalizeWaitSeconds(input.wait_seconds);
+    const waitSeconds = waitBudget(input.wait_seconds, ctx.chatId);
     try {
       const resumed = await bridge.startJob({
         backend: job.backend,
@@ -257,6 +265,7 @@ export const codingContinueTool: ToolDefinition = {
         originChatId: ctx.chatId,
         originTurnId: ctx.turnRuntime?.turnId,
         parentWorkId: ctx.parentWorkId,
+        deliveryMode: 'detached',
         label: resumed.label ?? resumed.prompt.slice(0, 100),
         resultHandle: { type: 'coding_job', jobId: resumed.id },
       });

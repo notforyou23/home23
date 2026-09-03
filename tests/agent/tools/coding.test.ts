@@ -98,7 +98,7 @@ function makeFakeBridge(opts: {
   return bridge;
 }
 
-function ctx(codingBridge: CodingBridgeRef | null): ToolContext {
+function ctx(codingBridge: CodingBridgeRef | null, chatId = '12345'): ToolContext {
   return {
     scheduler: null,
     ttsService: null,
@@ -116,7 +116,7 @@ function ctx(codingBridge: CodingBridgeRef | null): ToolContext {
       invalidate: () => undefined
     },
     subAgentTracker: { active: 0, maxConcurrent: 1, queue: [] },
-    chatId: '12345',
+    chatId,
     telegramAdapter: null,
     codingBridge,
     runAgentLoop: null,
@@ -165,7 +165,10 @@ test('coding_run with wait_seconds reaching terminal returns the receipt summary
     diffStat: ' 2 files changed, 14 insertions(+)',
   });
   const bridge = makeFakeBridge({ waited: makeJob({ status: 'completed' }), receipt });
-  const result = await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 30 }, ctx(bridge));
+  const result = await codingRunTool.execute(
+    { prompt: 'fix it', wait_seconds: 30 },
+    ctx(bridge, 'coordination:chn_1:wrk_1'),
+  );
 
   const wait = bridge.calls.find(c => c.method === 'waitForJob');
   assert.ok(wait, 'waitForJob was called');
@@ -177,9 +180,22 @@ test('coding_run with wait_seconds reaching terminal returns the receipt summary
   assert.match(result.content, /home23-agent\/fix-sched/);
 });
 
+test('coding_run on a conversation chat detaches before wait_seconds', async () => {
+  const bridge = makeFakeBridge({ waited: makeJob({ status: 'completed' }), receipt: makeReceipt() });
+  const result = await codingRunTool.execute(
+    { prompt: 'fix it', wait_seconds: 30 },
+    ctx(bridge, 'ios_conv_42'),
+  );
+  assert.equal(bridge.calls.some(c => c.method === 'waitForJob'), false);
+  assert.match(result.content, /results will be delivered when complete/i);
+});
+
 test('coding_run with wait_seconds still running reports job id and hand-off', async () => {
   const bridge = makeFakeBridge({ waited: makeJob({ status: 'running' }) });
-  const result = await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 5 }, ctx(bridge));
+  const result = await codingRunTool.execute(
+    { prompt: 'fix it', wait_seconds: 5 },
+    ctx(bridge, 'coordination:chn_1:wrk_1'),
+  );
   assert.match(result.content, /still running/);
   assert.match(result.content, /cj_20260805T120000_abcd/);
 });
