@@ -1,10 +1,11 @@
 # Lane handoff — Resident Presence
 
-- Lane name and state: Lane 1 Resident Presence; needs integration
-- Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-foreground`
+- Lane name and state: Lane 1 Resident Presence; integrated
+- Worktree (git toplevel): `/Volumes/Bertha - Data/JTR23-archives/disk-pressure-2026-08-30/home23-inactive/.home23-worktrees/resident-presence-foreground`
+- Live-checkout alias: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-foreground`
 - Branch: `codex/resident-presence-foreground`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- Current HEAD: `1e6d7d9df1b2d492b3a6cc4d0bda51212981393b`
+- Current HEAD: `a8ccc1ecd482d6af3a1ec1a8b2db936c16a6138d`
 - Owned files: `src/home.ts`, `src/channels/router.ts`, foreground behavior in `src/agent/**`, `src/coordination-adapter/**` outside Work completion
 - Current objective: first-slice local foreground/background convergence — admit a Message and assemble a speaking turn while Work remains active
 
@@ -57,7 +58,7 @@ Result: 99 passed, 0 failed.
 
 ## Next concrete action
 
-Integration: pair this speaking-lock admission with Lane 2's detached Attempt path so a live Jerry Work stays visible while Canary's next Message starts a new foreground turn.
+Stay recovered. This lane is already cherry-picked onto `codex/resident-presence-core-integration`. First-convergence closure (real UDS+AgentLoop proof, Canary app build) is owned by Core integration. Do not start journeys 2–4 from this lane.
 
 ## Live action still prohibited
 
