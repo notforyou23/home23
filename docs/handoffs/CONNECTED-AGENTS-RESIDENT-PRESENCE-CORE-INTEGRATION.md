@@ -9,17 +9,27 @@
 
 ## Integrated so far
 
-**Lane 1 (foreground)** — reviewed clean. Picked as `0e05fba5`, `e1163b29`, `fe025fa0`, `31137c78`. Focused admission / speaking / tool-policy / router tests 18/18 on this branch. Busy reply is gone. Detach refusal is honest (does not claim Work exists). HTTP speaking drain works. `onForegroundDetachRequired` still only logs until Lane 2 is picked and wired.
+**Lane 1 (foreground)** — reviewed clean. Picked as `0e05fba5`…`31137c78`. 18/18 after the Lane 2 pick.
+
+**Lane 2 (Work)** — reviewed clean (`22b2fe5d-0ed9-448a-82ff-31ff694a3d00`). Picked as `511c093f`, `99a4ea12`, `21866c45`, `233ef884`, `96967a59`, `80abaa21`. Focused Work / coding tests 70/70 on this branch. Durable cancel survives a new path instance. Detached Attempt stays off the conversation run lock.
 
 **Lane 3 (shared contract)** — pack SHA-256 `2828398f3e8a6edc6c75340a2aff07ce2a9cab983b680ad48497bb01b0a2aee8`. 13/13.
 
 **Lane 5 (continuity office)** — isolated, unwired. 24/24.
 
-**Lane 2** — not picked; re-review pending. After pick: wire `onForegroundDetachRequired` to detach, and keep Attempt `writeStart` off the conversation `chatId`.
+**Lane 4** — Canary review clean; fixture regen against `2828398f…` in flight.
 
-**Lane 4** — Canary must regenerate Apple fixtures against `2828398f…` after its review.
+## Not wired yet
+
+`onForegroundDetachRequired` in `src/home.ts` still only logs. `createDetachedAttemptPath` is on this branch but not constructed from live Lane 3 ports. `ForegroundDetachRequest` currently carries `tool`, `reason`, `chatId`, `turnId` only — not `channelId` / `conversationId` / `originMessageId` / instruction. Do not mint those IDs. The next integration commit must use existing ToolContext / Lane 3 facts, keep Attempt `runWithTurn` / `writeStart` off the conversation `chatId`, and attach `CanonicalResultCommit` to `messages.sendMessage` with `work-result:${workId}`.
 
 ## Verification
+
+```bash
+node --import tsx --test --test-concurrency=1 tests/work/*.test.ts tests/agent/tools/coding.test.ts
+```
+
+70 pass.
 
 ```bash
 node --import tsx --test --test-concurrency=1 \
@@ -35,7 +45,7 @@ node --import tsx --test --test-concurrency=1 \
 
 ## Next concrete action
 
-Cherry-pick Lane 2 after re-review, then wire the detach hook on this branch.
+Wire Lane 1 `onForegroundDetachRequired` to Lane 2 `dispatch` on this branch, using existing Lane 3 work/lease/message ports. Do not invent canonical IDs.
 
 ## Live action still prohibited
 
