@@ -12,6 +12,9 @@ import type { MediaAttachment } from '../types.js';
 
 export type AsyncWorkKind = 'coding' | 'subagent' | 'cron';
 
+/** Which hand executes a detached Attempt. Both return as one Jerry Message. */
+export type WorkOffice = 'resident' | 'delegated';
+
 export type AsyncWorkStatus =
   | 'queued' | 'running' | 'blocked'
   | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -84,6 +87,13 @@ export interface AsyncWorkRecord {
   updatedAt: string;              // ISO
   finishedAt?: string;            // ISO
   progressSummary?: string;
+  /**
+   * Bounded Work-only notes (progress, questions, evidence). Never copied
+   * into the conversation transcript by the detach path.
+   */
+  evidenceNotes?: readonly string[];
+  /** Resident Jerry branch vs a scoped delegated hand. Omitted on legacy records. */
+  office?: WorkOffice;
   resultHandle: WorkResultHandle;
   verification: VerificationStatus;
   /**

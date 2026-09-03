@@ -98,6 +98,21 @@ test('boot interruption of an inline hand is terminal and never detached-deliver
   assert.deepEqual(recovered.needsDelivery, []);
 });
 
+test('appendEvidence stays on the Work record and is bounded', (t) => {
+  const reg = makeRegistry(t);
+  const rec = reg.create({
+    kind: 'subagent', originChatId: 'coordination:chn_1:wrk_1', office: 'resident',
+    label: 'branch', resultHandle: { type: 'subagent_chat', chatId: 'coordination:chn_1:wrk_1' },
+  });
+  assert.equal(rec.office, 'resident');
+  reg.appendEvidence(rec.workId, '  question: which file?  ');
+  const noted = reg.get(rec.workId)!;
+  assert.deepEqual(noted.evidenceNotes, ['question: which file?']);
+  assert.equal(noted.progressSummary, 'question: which file?');
+  for (let i = 0; i < 40; i++) reg.appendEvidence(rec.workId, `note ${i}`);
+  assert.equal(reg.get(rec.workId)!.evidenceNotes?.length, 32);
+});
+
 test('noteProgress throttles writes', (t) => {
   const reg = makeRegistry(t);
   const rec = reg.create({ kind: 'coding', originChatId: '123', label: 'x', resultHandle: { type: 'coding_job', jobId: 'cj_p_1' } });

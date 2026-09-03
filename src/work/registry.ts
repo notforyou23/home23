@@ -15,6 +15,7 @@ import {
   type AsyncWorkStatus,
   type AsyncWorkTerminalResult,
   type CoordinationWorkDestination,
+  type WorkOffice,
   type WorkResultHandle,
 } from './types.js';
 import type { WorkStore } from './work-store.js';
@@ -30,6 +31,7 @@ export interface CreateWorkInput {
   parentWorkId?: string;
   coordinationDestination?: CoordinationWorkDestination;
   deliveryMode?: 'detached' | 'inline';
+  office?: WorkOffice;
   label: string;
   resultHandle: WorkResultHandle;
 }
@@ -75,6 +77,7 @@ export class WorkRegistry {
       parentWorkId: input.parentWorkId,
       coordinationDestination: input.coordinationDestination,
       deliveryMode: input.deliveryMode ?? 'detached',
+      office: input.office,
       label: input.label,
       status: 'running',
       startedAt: now,
@@ -190,6 +193,24 @@ export class WorkRegistry {
     this.lastProgressAt.set(workId, now);
     const next = this.store.update(workId, { progressSummary: summary });
     if (next) this.notify(next, 'progress');
+  }
+
+  /**
+   * Append a Work-only evidence/question note. This is never a chat transcript
+   * row. Bound to the last 32 notes on the same Work identity.
+   */
+  appendEvidence(workId: string, note: string): AsyncWorkRecord | undefined {
+    const current = this.store.read(workId);
+    if (!current || TERMINAL_WORK_STATUSES.has(current.status)) return current;
+    const trimmed = note.trim();
+    if (!trimmed) return current;
+    const notes = Object.freeze([...(current.evidenceNotes ?? []), trimmed].slice(-32));
+    const next = this.store.update(workId, {
+      evidenceNotes: notes,
+      progressSummary: trimmed,
+    });
+    if (next) this.notify(next, 'evidence');
+    return next;
   }
 
   private notify(record: AsyncWorkRecord, reason: string): void {
