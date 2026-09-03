@@ -113,7 +113,39 @@ function assertStoredActor(
     return;
   }
   const credential = actor.residentCredential;
-  if (!credential) throw new ArtifactError("identity_context_mismatch");
+  if (!credential) {
+    const processless = database.readOne<{
+      name: string;
+      requiredCapabilitiesJson: string;
+    }>(
+      `SELECT name, required_capabilities_json AS requiredCapabilitiesJson
+       FROM bots
+       WHERE id = ? AND principal_id = ? AND resident_binding LIKE 'bot-%'
+         AND lifecycle = 'active' AND continuing_identity = 1 AND durable_mailbox = 1
+         AND conversation_id IS NOT NULL
+         AND active_instance_id IS NULL AND active_key_version IS NULL
+         AND resident_protocol_version IS NULL AND resident_registered_at IS NULL
+         AND json_array_length(resident_capabilities_json) = 0`,
+      actor.principalId,
+      actor.principalId,
+    );
+    let requiredCapabilities: unknown;
+    try {
+      requiredCapabilities = processless
+        ? JSON.parse(processless.requiredCapabilitiesJson)
+        : null;
+    } catch {
+      throw new ArtifactError("identity_context_mismatch");
+    }
+    if (
+      !processless || actor.displayName !== processless.name ||
+      !Array.isArray(requiredCapabilities) ||
+      !requiredCapabilities.includes("messages")
+    ) {
+      throw new ArtifactError("identity_context_mismatch");
+    }
+    return;
+  }
   const bot = database.readOne<{
     residentBinding: string;
     instanceId: string | null;

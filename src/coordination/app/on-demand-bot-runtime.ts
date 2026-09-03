@@ -1,11 +1,17 @@
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
+  readFileSync,
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
 
 import { ContextManager } from "../../agent/context.js";
 import { ConversationHistory } from "../../agent/history.js";
@@ -20,7 +26,19 @@ import {
   type ReasoningEffort,
 } from "../../agent/reasoning-effort.js";
 import { createSeededToolRegistry } from "../../agent/tools/index.js";
+import { generateImageTool, generateMusicTool } from "../../agent/tools/media.js";
+import {
+  canonicalReturnedArtifactDirectory,
+  returnArtifactTool,
+} from "../../agent/tools/return-artifact.js";
 import type { AgentEvent, AgentResponse, ToolContext } from "../../agent/types.js";
+import type { MediaAttachment } from "../../types.js";
+import {
+  detectReturnedArtifactContentType,
+  isReturnedArtifactGenerator,
+  MAX_RETURNED_ARTIFACT_BYTES,
+  returnedArtifactMediaType,
+} from "../../returned-artifacts.js";
 import { resolveProviderKey } from "../../agent/provider-credentials.js";
 import { loadHomeConfig } from "../../config.js";
 import { TurnStore } from "../../chat/turn-store.js";
@@ -29,6 +47,7 @@ import type {
   ResidentAgentPort,
   ResidentDurableEvent,
   ResidentDurableTerminal,
+  ResidentArtifactPromotionPort,
   ResidentInputAttachment,
   ResidentRun,
 } from "../../coordination-adapter/index.js";
@@ -81,7 +100,101 @@ export interface OnDemandBotRuntimeOptions {
   };
   leases: CoordinationLeasePort;
   communications?: ResidentCommunicationPort;
+  artifactPromotion?: (bot: BotDirectoryRecord) => ResidentArtifactPromotionPort;
   loadModelConfiguration?: () => OnDemandBotModelConfiguration;
+}
+
+const MAX_RETURNED_ARTIFACTS = 10;
+const MAX_RETURNED_ARTIFACT_CAPTION_BYTES = 2_048;
+
+function exactOnDemandReturnedArtifacts(
+  value: unknown,
+  returnedArtifactRoot: string,
+): MediaAttachment[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("on-demand Bot returned artifact descriptors are invalid");
+  const candidates: Record<string, unknown>[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error("on-demand Bot returned artifact descriptor is invalid");
+    }
+    const candidate = raw as Record<string, unknown>;
+    if (isReturnedArtifactGenerator(candidate.generatedBy)) candidates.push(candidate);
+  }
+  if (candidates.length > MAX_RETURNED_ARTIFACTS) {
+    throw new Error("on-demand Bot returned artifact limit exceeded");
+  }
+  const seen = new Set<string>();
+  return candidates.map((candidate) => {
+    const generatedBy = candidate.generatedBy;
+    if (!isReturnedArtifactGenerator(generatedBy)) {
+      throw new Error("on-demand Bot returned artifact generator is invalid");
+    }
+    const path = candidate.path;
+    if (typeof path !== "string" || !isAbsolute(path) || path.length > 4_096 || path.includes("\0")) {
+      throw new Error("on-demand Bot returned artifact path is invalid");
+    }
+    const entry = lstatSync(path);
+    const canonicalPath = realpathSync(path);
+    if (
+      !entry.isFile() || entry.isSymbolicLink() || dirname(canonicalPath) !== returnedArtifactRoot ||
+      seen.has(canonicalPath)
+    ) {
+      throw new Error("on-demand Bot returned artifact escaped its private output directory");
+    }
+    const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      const before = fstatSync(fd);
+      if (
+        !before.isFile() || before.dev !== entry.dev || before.ino !== entry.ino ||
+        before.size < 1 || before.size > MAX_RETURNED_ARTIFACT_BYTES
+      ) {
+        throw new Error("on-demand Bot returned artifact file is invalid");
+      }
+      const bytes = readFileSync(fd);
+      const after = fstatSync(fd);
+      const pathAfter = lstatSync(path);
+      if (
+        bytes.length !== before.size || after.dev !== before.dev || after.ino !== before.ino ||
+        after.size !== before.size || pathAfter.isSymbolicLink() || pathAfter.dev !== before.dev ||
+        pathAfter.ino !== before.ino
+      ) {
+        throw new Error("on-demand Bot returned artifact changed while being verified");
+      }
+      const contentType = detectReturnedArtifactContentType(bytes);
+      const mediaType = returnedArtifactMediaType(contentType, generatedBy);
+      const declaredType = candidate.type === "media" ? candidate.mediaType : candidate.type;
+      const fileName = candidate.fileName;
+      const caption = candidate.caption;
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      if (
+        declaredType !== mediaType || candidate.mimeType !== contentType ||
+        candidate.byteCount !== bytes.length || candidate.sha256 !== sha256 ||
+        typeof fileName !== "string" || fileName !== basename(canonicalPath) ||
+        fileName.normalize("NFC") !== fileName || fileName === "." || fileName === ".." ||
+        /^[A-Za-z]:/u.test(fileName) || /[\0-\x1f\x7f/\\]/u.test(fileName) ||
+        (caption !== undefined && (
+          typeof caption !== "string" || caption.includes("\0") ||
+          Buffer.byteLength(caption, "utf8") > MAX_RETURNED_ARTIFACT_CAPTION_BYTES
+        ))
+      ) {
+        throw new Error("on-demand Bot returned artifact metadata differs from its bytes");
+      }
+      seen.add(canonicalPath);
+      return Object.freeze({
+        type: mediaType,
+        generatedBy,
+        path: canonicalPath,
+        mimeType: contentType,
+        fileName,
+        byteCount: bytes.length,
+        sha256,
+        ...(typeof caption === "string" ? { caption } : {}),
+      });
+    } finally {
+      closeSync(fd);
+    }
+  });
 }
 
 function providerDefinition(
@@ -219,6 +332,7 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
     private readonly agent: AgentLoop,
     private readonly history: ConversationHistory,
     private readonly config: OnDemandBotModelConfiguration,
+    private readonly returnedArtifactRoot: string,
   ) {
     this.store = new TurnStore(history);
   }
@@ -288,6 +402,15 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
       }
     }
     return null;
+  }
+
+  private returnedArtifacts(chatId: string, turnId: string): MediaAttachment[] {
+    return exactOnDemandReturnedArtifacts(
+      this.store.eventsSince(chatId, turnId, -1)
+        .filter((event) => event.kind === "media")
+        .map((event) => event.data),
+      this.returnedArtifactRoot,
+    );
   }
 
   private resolvedSelection(requested: ResidentTurnSelectionRequest): {
@@ -369,11 +492,13 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
           event: Object.freeze({ ...(event.data as unknown as AgentEvent) }),
         }));
       }
+      const media = this.returnedArtifacts(chatId, prior.turnId);
       const response: AgentResponse = Object.freeze({
         text: prior.final.assistant_content!,
         model: prior.start.model ?? "recovered",
         toolCallCount: 0,
         durationMs: 0,
+        ...(media.length > 0 ? { media } : {}),
       });
       return Object.freeze({
         turnId: prior.turnId,
@@ -421,7 +546,14 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
       },
     );
     this.active.set(origin.workId, { chatId, turnId });
-    const response = started.response.finally(() => this.active.delete(origin.workId));
+    const response = started.response.then((result) => {
+      const media = exactOnDemandReturnedArtifacts(result.media, this.returnedArtifactRoot);
+      const { media: _unverifiedMedia, ...safeResult } = result;
+      return Object.freeze({
+        ...safeResult,
+        ...(media.length > 0 ? { media } : {}),
+      });
+    }).finally(() => this.active.delete(origin.workId));
     const terminal = response.then(
       () => terminalFrom(this.store, chatId, turnId,
         this.store.startEnvelope(chatId, turnId)!),
@@ -565,7 +697,10 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
           enginePort: config.enginePort,
         });
         const history = new ConversationHistory(historyPath, config.historyBudget, bot.id);
-        const registry = createSeededToolRegistry([]);
+        const returnedArtifactRoot = canonicalReturnedArtifactDirectory(workspacePath);
+        const registry = createSeededToolRegistry(options.artifactPromotion
+          ? [generateImageTool, generateMusicTool, returnArtifactTool]
+          : []);
         const brainOperations = {
           searchContext: async () => ({
             results: [],
@@ -610,13 +745,19 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
           sessionGapMs: config.sessionGapMs,
         });
         if (config.providerMap) agent.setProviderMap(config.providerMap);
-        const port = new OnDemandBotAgentPort(bot, agent, history, config);
+        const port = new OnDemandBotAgentPort(
+          bot,
+          agent,
+          history,
+          config,
+          returnedArtifactRoot,
+        );
         const adapter = new ResidentCoordinationAdapter(
           port,
           createM11ResidentCoordinationPort(options.leases),
           undefined,
           options.communications,
-          undefined,
+          options.artifactPromotion?.(bot),
           BOT_TURN_EVIDENCE_TAXONOMY,
         );
         executionRuntime = { adapter, port };

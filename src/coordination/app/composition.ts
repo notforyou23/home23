@@ -696,6 +696,24 @@ export function createCoordinationProcess(
         bots: { getBotById: (botId) => botRepository.getBotById(botId) },
         leases,
         communications,
+        ...(artifactRepository === undefined
+          ? {}
+          : {
+              artifactPromotion: (bot) => createResidentArtifactPromotionPort({
+                database,
+                store: () => attachmentStore,
+                participantDirectory,
+                context: (binding) => ({
+                  principalId: binding.holderPrincipalId,
+                  requestId: binding.requestId,
+                  correlationId: binding.correlationId,
+                  identity: {
+                    kind: "on_demand_bot" as const,
+                    bot: { botId: bot.id, residentBinding: bot.residentBinding },
+                  },
+                }),
+              }),
+            }),
       });
       const directSubmission = createDirectMessageSubmissionService({
         messages,

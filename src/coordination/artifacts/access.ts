@@ -91,6 +91,48 @@ async function resolveArtifactIdentity(
     return actor;
   }
 
+  if (context.identity.kind === "on_demand_bot") {
+    const identity = context.identity.bot;
+    if (
+      typeof identity?.botId !== "string" ||
+      typeof identity?.residentBinding !== "string" ||
+      !identity.residentBinding.startsWith("bot-") ||
+      identity.residentBinding === "jerry" ||
+      identity.residentBinding === "forrest" ||
+      identity.botId !== context.principalId
+    ) {
+      invalidIdentity();
+    }
+    const binding = await directory.getBotByResidentBinding(identity.residentBinding);
+    if (
+      !binding ||
+      binding.id !== identity.botId ||
+      binding.principalId !== identity.botId ||
+      binding.residentBinding !== identity.residentBinding ||
+      binding.lifecycle !== "active" ||
+      !binding.continuingIdentity ||
+      !binding.durableMailbox ||
+      binding.conversationId === null ||
+      !binding.requiredCapabilities.includes("messages") ||
+      binding.activeInstanceId !== null ||
+      binding.activeKeyVersion !== null ||
+      binding.residentProtocolVersion !== null ||
+      binding.residentRegisteredAt !== null ||
+      binding.residentCapabilities.length !== 0
+    ) {
+      invalidIdentity();
+    }
+    const actor = Object.freeze({
+      principalId: binding.principalId,
+      kind: "bot" as const,
+      displayName: binding.name,
+      requestId: context.requestId,
+      correlationId: context.correlationId,
+      residentCredential: null,
+    });
+    return actor;
+  }
+
   if (context.identity.kind !== "resident") invalidIdentity();
   const resident = context.identity.resident;
   const credential = resident?.credential;

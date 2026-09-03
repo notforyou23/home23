@@ -22,9 +22,9 @@
  */
 
 import { readFileSync, statSync } from 'node:fs';
-import { resolve as resolvePath, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { load as loadYaml } from 'js-yaml';
+import { getHome23Root } from '../config.js';
 
 /** Env fallbacks per provider — the pre-existing behavior, kept as the floor
  * so credential-free hosts and tests keep working unchanged. */
@@ -43,10 +43,10 @@ let cache: { mtimeMs: number; checkedAt: number; providers: Record<string, strin
 function secretsPath(): string {
   const override = process.env['HOME23_SECRETS_PATH'];
   if (override !== undefined && override !== '') return override;
-  // Resolves from this module's location: src/agent/ and dist/agent/ both sit
-  // two levels under the repo root — cwd-independent (the cwd trap has bitten
-  // this house before).
-  return resolvePath(dirname(fileURLToPath(import.meta.url)), '..', '..', 'config', 'secrets.yaml');
+  // Immutable coordination releases deliberately contain no live config.
+  // HOME23_ROOT is the explicit installation boundary; the module-relative
+  // packaged root remains the public-install fallback when it is absent.
+  return join(getHome23Root(), 'config', 'secrets.yaml');
 }
 
 /** The freshest key secrets.yaml holds for this provider, '' when the file or

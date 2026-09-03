@@ -7,12 +7,12 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { resolve, join } from 'node:path';
+import { isAbsolute, resolve, join } from 'node:path';
 import yaml from 'js-yaml';
 import type { HomeConfig, IdentityLayerConfig, EmbeddedAgentConfig } from './types.js';
 import { validateReasoningEffortConfig } from './agent/reasoning-effort.js';
 
-const HOME23_ROOT = resolve(import.meta.dirname, '..');
+const PACKAGED_HOME23_ROOT = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const { resolveAgentInstancePaths } = require('../shared/agent-instance-paths.cjs');
 
@@ -58,27 +58,40 @@ function normalizeEmbeddedAgentLayers(embeddedAgent?: EmbeddedAgentConfig): Iden
   return layers.length > 0 ? layers : undefined;
 }
 
-export function getAgentPaths(agentName: string) {
-  return resolveAgentInstancePaths(HOME23_ROOT, agentName, { requireConfig: false });
+export function getHome23Root(): string {
+  const configured = process.env.HOME23_ROOT;
+  if (configured === undefined || configured === '') return PACKAGED_HOME23_ROOT;
+  if (!isAbsolute(configured) || configured.includes('\0') || resolve(configured) === '/') {
+    throw new Error('HOME23_ROOT must be an absolute dedicated Home23 directory');
+  }
+  return resolve(configured);
 }
 
-function buildDefaultIdentityLayers(agentName: string, identityFiles: string[]): IdentityLayerConfig[] {
+export function getAgentPaths(agentName: string, home23Root = getHome23Root()) {
+  return resolveAgentInstancePaths(home23Root, agentName, { requireConfig: false });
+}
+
+function buildDefaultIdentityLayers(
+  agentName: string,
+  identityFiles: string[],
+  home23Root: string,
+): IdentityLayerConfig[] {
   return [{
-    basePath: getAgentPaths(agentName).workspaceDir,
+    basePath: getAgentPaths(agentName, home23Root).workspaceDir,
     files: identityFiles,
   }];
 }
 
-function appendSharedSkillsLayer(agentName: string, config: HomeConfig): void {
+function appendSharedSkillsLayer(agentName: string, config: HomeConfig, home23Root: string): void {
   if (!config.chat) return;
 
-  const routingBasePath = join(HOME23_ROOT, 'workspace', 'skills');
+  const routingBasePath = join(home23Root, 'workspace', 'skills');
   const routingFile = 'SKILL_ROUTING.md';
   if (!existsSync(join(routingBasePath, routingFile))) return;
 
   const currentLayers = config.chat.identityLayers && config.chat.identityLayers.length > 0
     ? [...config.chat.identityLayers]
-    : buildDefaultIdentityLayers(agentName, config.chat.identityFiles);
+    : buildDefaultIdentityLayers(agentName, config.chat.identityFiles, home23Root);
 
   const alreadyPresent = currentLayers.some((layer) =>
     resolve(layer.basePath) === resolve(routingBasePath) && layer.files.includes(routingFile)
@@ -92,14 +105,15 @@ function appendSharedSkillsLayer(agentName: string, config: HomeConfig): void {
 }
 
 export function loadConfig(agentName: string): HomeConfig {
+  const home23Root = getHome23Root();
   // Layer 1: Home-level defaults
-  const homeConfig = loadYaml(join(HOME23_ROOT, 'config', 'home.yaml'));
+  const homeConfig = loadYaml(join(home23Root, 'config', 'home.yaml'));
 
   // Layer 2: Agent-specific overrides
-  const agentConfig = loadYaml(getAgentPaths(agentName).configPath);
+  const agentConfig = loadYaml(getAgentPaths(agentName, home23Root).configPath);
 
   // Layer 3: Secrets (API keys, bot tokens — never committed)
-  const secrets = loadYaml(join(HOME23_ROOT, 'config', 'secrets.yaml'));
+  const secrets = loadYaml(join(home23Root, 'config', 'secrets.yaml'));
 
   // Merge: home ← agent ← secrets (global)
   let config = deepMerge(homeConfig, agentConfig);
@@ -126,24 +140,22 @@ export function loadConfig(agentName: string): HomeConfig {
   const typedConfig = config as unknown as HomeConfig;
   const derivedLayers = normalizeEmbeddedAgentLayers(typedConfig.chat?.embeddedAgent);
   if (typedConfig.chat && (!typedConfig.chat.identityLayers || typedConfig.chat.identityLayers.length === 0)) {
-    typedConfig.chat.identityLayers = derivedLayers ?? buildDefaultIdentityLayers(agentName, typedConfig.chat.identityFiles);
+    typedConfig.chat.identityLayers = derivedLayers ??
+      buildDefaultIdentityLayers(agentName, typedConfig.chat.identityFiles, home23Root);
   }
-  appendSharedSkillsLayer(agentName, typedConfig);
+  appendSharedSkillsLayer(agentName, typedConfig, home23Root);
 
   return typedConfig;
 }
 
 /** Home-wide defaults and secrets only; never resolves or reads an agent instance. */
 export function loadHomeConfig(): HomeConfig {
-  const homeConfig = loadYaml(join(HOME23_ROOT, 'config', 'home.yaml'));
-  const secrets = loadYaml(join(HOME23_ROOT, 'config', 'secrets.yaml'));
+  const home23Root = getHome23Root();
+  const homeConfig = loadYaml(join(home23Root, 'config', 'home.yaml'));
+  const secrets = loadYaml(join(home23Root, 'config', 'secrets.yaml'));
   const config = deepMerge(homeConfig, secrets) as unknown as HomeConfig;
   validateReasoningEffortConfig(config);
   return config;
-}
-
-export function getHome23Root(): string {
-  return HOME23_ROOT;
 }
 
 export function getAgentDir(agentName: string): string {

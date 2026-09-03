@@ -8,8 +8,19 @@ import {
   createDirectMessageSubmissionService,
   createOnDemandBotRuntime,
   SqliteDirectMessageContext,
-  type OnDemandBotModelConfiguration,
 } from "../../../src/coordination/app/index.js";
+import { getHome23Root } from "../../../src/config.js";
+import {
+  _resetCredentialCache,
+  freshProviderKey,
+} from "../../../src/agent/provider-credentials.js";
+import { canonicalReturnedArtifactDirectory } from "../../../src/agent/tools/return-artifact.js";
+import {
+  createResidentArtifactPromotionPort,
+  LocalArtifactStore,
+  resolveArtifactActor,
+  SqliteArtifactRepository,
+} from "../../../src/coordination/artifacts/index.js";
 import { createBotDirectory, SqliteBotDirectoryRepository } from "../../../src/coordination/bots/index.js";
 import {
   SqliteBotConversationBindingAdapter,
@@ -32,6 +43,8 @@ import {
 const CONVERSATION_ID = "cnv_0198d95f-6c00-7000-8000-000000000971";
 const SPECIALIST_BINDING = "bot-lens-0123456789abcdef";
 const PRIVATE_RESIDENT_SENTINEL = "JERRY_PRIVATE_MEMORY_MUST_NEVER_CROSS";
+const ARTIFACT_PROMPT = "Lens, return your private note as a file.";
+const ARTIFACT_RELATIVE_PATH = "media/returned-artifacts/lens-note.txt";
 const authority = Object.freeze({
   capability: "messages" as const,
   epoch: 3,
@@ -76,8 +89,25 @@ async function startModelFixture() {
       const current = [...(body.messages ?? [])].reverse()
         .find((message) => message.role === "user");
       const prompt = contentText(current?.content);
+      const returnedArtifact = (body.messages ?? []).some((message) => message.role === "tool");
+      if (prompt === ARTIFACT_PROMPT && !returnedArtifact) {
+        return new Response(JSON.stringify({ choices: [{ message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call-return-artifact",
+            type: "function",
+            function: {
+              name: "return_artifact",
+              arguments: JSON.stringify({ path: ARTIFACT_RELATIVE_PATH }),
+            },
+          }],
+        } }] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       const answer = prompt === "Lens, give me the concise answer."
         ? "Lens answered from its own durable context."
+        : prompt === ARTIFACT_PROMPT
+          ? "Lens returned its note."
         : `Lens answer for: ${prompt}`;
       return new Response(JSON.stringify({
         choices: [{ message: { role: "assistant", content: answer } }],
@@ -126,21 +156,33 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
     resolveAlias: botDirectory.resolveAlias,
     getBotByResidentBinding: (binding: string) => botRepository.getBotByResidentBinding(binding),
   });
+  const artifactRepository = new SqliteArtifactRepository(database);
+  const artifactStore = await LocalArtifactStore.open({
+    rootDirectory: join(runtimeRoot, "artifacts"),
+    repository: artifactRepository,
+  });
   const messagingRepository = new SqliteMessagingRepository(database, {
     botConversationBinding: new SqliteBotConversationBindingAdapter(),
     messageProvenanceAuthorization: new M11MessageProvenanceAuthority(),
+    artifactMessageLink: artifactRepository,
   });
   const canonicalMessages = createMessageService({
     repository: messagingRepository,
     participantDirectory,
+    resolveAttachmentActor: (context) => resolveArtifactActor(context, participantDirectory),
   });
   let failFirstResultCommit = true;
+  let failArtifactResultCommit = false;
   const messages = {
     listMessages: canonicalMessages.listMessages,
     sendMessage: async (input: Parameters<typeof canonicalMessages.sendMessage>[0]) => {
       if (input.kind === "result" && failFirstResultCommit) {
         failFirstResultCommit = false;
         throw new Error("fixture result commit interruption");
+      }
+      if (input.kind === "result" && input.attachmentIds?.length && failArtifactResultCommit) {
+        failArtifactResultCommit = false;
+        throw new Error("fixture artifact result commit interruption");
       }
       return canonicalMessages.sendMessage(input);
     },
@@ -157,19 +199,46 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
     if (previousModelUrl === undefined) delete process.env.LOCAL_LLM_BASE_URL;
     else process.env.LOCAL_LLM_BASE_URL = previousModelUrl;
   });
-  const modelConfiguration: OnDemandBotModelConfiguration = Object.freeze({
-    defaultModel: "fixture-local-model",
-    defaultProvider: "ollama-local",
-    defaultReasoningEffort: "none",
-    modelAliases: Object.freeze({}),
-    apiKey: "",
-    maxTokens: 256,
-    temperature: 0,
-    historyBudget: 50_000,
-    sessionGapMs: 30 * 60 * 1000,
-    enginePort: 3300,
-    cosmo23BaseUrl: "http://127.0.0.1:43210",
+  const configDirectory = join(runtimeRoot, "config");
+  mkdirSync(configDirectory, { recursive: true });
+  writeFileSync(join(configDirectory, "home.yaml"), JSON.stringify({
+    ports: { engine: 43210, dashboard: 3300 },
+    chat: {
+      provider: "ollama-local",
+      model: "fixture-local-model",
+      defaultProvider: "ollama-local",
+      defaultModel: "fixture-local-model",
+      reasoningEffort: "none",
+      maxTokens: 256,
+      temperature: 0,
+      historyDepth: 20,
+      historyBudget: 50_000,
+      sessionGapMs: 30 * 60 * 1000,
+      memorySearch: { enabled: false, timeoutMs: 10, topK: 1 },
+      identityFiles: [],
+      heartbeatRefreshMs: 0,
+    },
+    models: { aliases: {} },
+    providers: { "ollama-local": { baseUrl: model.baseUrl } },
+  }));
+  writeFileSync(join(configDirectory, "secrets.yaml"), JSON.stringify({
+    providers: { xai: { apiKey: "live-root-xai-fixture" } },
+  }));
+  const previousHome23Root = process.env.HOME23_ROOT;
+  const previousSecretsPath = process.env.HOME23_SECRETS_PATH;
+  process.env.HOME23_ROOT = runtimeRoot;
+  delete process.env.HOME23_SECRETS_PATH;
+  _resetCredentialCache();
+  t.after(() => {
+    if (previousHome23Root === undefined) delete process.env.HOME23_ROOT;
+    else process.env.HOME23_ROOT = previousHome23Root;
+    if (previousSecretsPath === undefined) delete process.env.HOME23_SECRETS_PATH;
+    else process.env.HOME23_SECRETS_PATH = previousSecretsPath;
+    _resetCredentialCache();
   });
+  assert.equal(getHome23Root(), runtimeRoot);
+  assert.equal(freshProviderKey("xai", true), "live-root-xai-fixture",
+    "provider rotation reads the live installation, never the immutable release");
   const owner = {
     principalId: OWNER_ID,
     requestId: fixtureId("request", 970),
@@ -192,7 +261,20 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
       bots: { getBotById: (botId) => botRepository.getBotById(botId) },
       leases,
       communications,
-      loadModelConfiguration: () => modelConfiguration,
+      artifactPromotion: (bot) => createResidentArtifactPromotionPort({
+        database,
+        store: () => artifactStore,
+        participantDirectory,
+        context: (binding) => ({
+          principalId: binding.holderPrincipalId,
+          requestId: binding.requestId,
+          correlationId: binding.correlationId,
+          identity: {
+            kind: "on_demand_bot" as const,
+            bot: { botId: bot.id, residentBinding: bot.residentBinding },
+          },
+        }),
+      }),
     });
     return createDirectMessageSubmissionService({
       messages,
@@ -315,6 +397,79 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
     "one Bot/channel history must never execute overlapping model turns");
   assert.equal(activeWork, 0);
 
+  const artifactBytes = Buffer.from("A private Lens note returned through canonical storage.\n", "utf8");
+  const artifactOutput = canonicalReturnedArtifactDirectory(
+    join(botsRoot, BOT_ID, "workspace"),
+  );
+  writeFileSync(join(artifactOutput, "lens-note.txt"), artifactBytes, { mode: 0o600 });
+  failArtifactResultCommit = true;
+  const artifactTurn = await send(restartedService, 5, ARTIFACT_PROMPT);
+  await assert.rejects(artifactTurn.response, /fixture artifact result commit interruption/);
+  assert.equal(database.readOne<{ state: string }>(
+    "SELECT state FROM works WHERE id = ?", artifactTurn.work.id,
+  )?.state, "succeeded");
+  assert.equal(model.requests.length, 6, "one tool call and one final answer must complete the artifact turn");
+  assert.equal(database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM artifacts WHERE owner_principal_id = ?", BOT_ID,
+  )?.count, 1);
+
+  const artifactRecoveryService = makeService();
+  const artifactRecovery = await artifactRecoveryService.recoverResidentWork();
+  assert.deepEqual(artifactRecovery, { discovered: 1, scheduled: 1, refused: 0 });
+  for (let index = 0; index < 100 && activeWork !== 0; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(activeWork, 0);
+  assert.equal(model.requests.length, 6, "artifact recovery must not rerun the processless Bot");
+  assert.equal(database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM artifacts WHERE owner_principal_id = ?", BOT_ID,
+  )?.count, 1, "artifact recovery must replay the original canonical artifact");
+  const artifactPage = await canonicalMessages.listMessages({
+    context: owner,
+    channelId: CHANNEL_ID,
+    limit: 100,
+  });
+  const artifactMessages = artifactPage.messages.filter(
+    (message) => message.provenance.workId === artifactTurn.work.id,
+  );
+  assert.equal(artifactMessages.length, 1);
+  assert.equal(artifactMessages[0]?.text, "Lens returned its note.");
+  assert.deepEqual(artifactMessages[0]?.attachments.map((attachment) => ({
+    name: attachment.name,
+    contentType: attachment.contentType,
+    byteCount: attachment.byteCount,
+  })), [{
+    name: "lens-note.txt",
+    contentType: "text/plain",
+    byteCount: artifactBytes.length,
+  }]);
+  assert.equal(JSON.stringify(artifactMessages[0]).includes(runtimeRoot), false);
+  const artifactActor = await resolveArtifactActor({
+    principalId: BOT_ID,
+    requestId: fixtureId("request", 978),
+    correlationId: fixtureId("correlation", 978),
+    identity: {
+      kind: "on_demand_bot",
+      bot: { botId: BOT_ID, residentBinding: SPECIALIST_BINDING },
+    },
+  }, participantDirectory);
+  const download = await artifactStore.openDownload({
+    artifactId: artifactMessages[0]!.attachments[0]!.id,
+    actor: artifactActor,
+  });
+  const downloaded: Buffer[] = [];
+  for await (const chunk of download.content) downloaded.push(Buffer.from(chunk));
+  assert.deepEqual(Buffer.concat(downloaded), artifactBytes);
+
+  const artifactEvidence = communications.history({
+    afterSequence: 0,
+    limit: 1_000,
+    requestId: fixtureId("request", 979),
+    conversationId: CONVERSATION_ID,
+  });
+  assert.equal(JSON.stringify(artifactEvidence).includes(runtimeRoot), false,
+    "processless artifact evidence must not expose private filesystem paths");
+
   const evidence = communications.history({
     afterSequence: 0,
     limit: 1_000,
@@ -367,7 +522,9 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
   const durableUserTexts = durableMessages
     .filter((record) => record.role === "user")
     .map((record) => record.content);
-  for (const phrase of ["not exposed", firstPrompt, secondPrompt, thirdPrompt, fourthPrompt]) {
+  for (const phrase of [
+    "not exposed", firstPrompt, secondPrompt, thirdPrompt, fourthPrompt, ARTIFACT_PROMPT,
+  ]) {
     assert.equal(durableUserTexts.filter((content) => content === phrase).length, 1,
       `durable Bot history duplicated ${JSON.stringify(phrase)}`);
   }
