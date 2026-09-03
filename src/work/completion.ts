@@ -12,6 +12,7 @@
 import { isHumanOrigin, type AsyncWorkKind, type AsyncWorkRecord } from './types.js';
 import { deliverWorkReceipt, workPushBody, type ReceiptSinks } from './receipt-delivery.js';
 import type { WorkRegistry } from './registry.js';
+import type { AsyncWorkTerminalResult } from './types.js';
 
 export interface CompletionDeps {
   registry: WorkRegistry;
@@ -63,7 +64,7 @@ const deliveryInFlight = new Set<string>();
  */
 export async function handleWorkCompletion(
   work: AsyncWorkRecord,
-  receiptText: string,
+  result: string | AsyncWorkTerminalResult,
   deps: CompletionDeps,
 ): Promise<void> {
   if (deliveryInFlight.has(work.workId)) return;
@@ -71,6 +72,16 @@ export async function handleWorkCompletion(
   try {
     const current = deps.registry.get(work.workId) ?? work;
     if (current.deliveredAt) return;
+    const receiptText = typeof result === 'string' ? result : result.receiptText;
+
+    if (current.originChatId.startsWith('coordination:')) {
+      const route = await deliverWorkReceipt(current, result, deps.sinks);
+      // Missing or invalid producer wiring is recoverable. Leave deliveredAt
+      // empty so boot reconciliation can retry after the bridge is restored.
+      if (route !== 'coordination') return;
+      deps.registry.update(current.workId, { deliveredAt: new Date().toISOString() });
+      return;
+    }
 
     const reviewWanted =
       current.status === 'completed' &&
@@ -78,7 +89,7 @@ export async function handleWorkCompletion(
       isHumanOrigin(current.originChatId);
 
     if (!reviewWanted) {
-      deliverWorkReceipt(current, receiptText, deps.sinks);
+      await deliverWorkReceipt(current, result, deps.sinks);
       deps.registry.update(current.workId, { deliveredAt: new Date().toISOString() });
       return;
     }

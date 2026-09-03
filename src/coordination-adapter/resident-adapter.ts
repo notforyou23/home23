@@ -468,6 +468,14 @@ export class ResidentCoordinationAdapter {
     let replayChain = Promise.resolve();
     const started = await this.agent.runWithTurn(request.chatId, request.instruction, {
       coordinationOrigin: origin,
+      ...(request.communication ? {
+        coordinationDelivery: {
+          conversationId: request.communication.conversationId,
+          targetPrincipalId: request.communication.actor.principalId,
+          targetDisplayName: request.communication.actor.displayName,
+          targetKind: request.communication.actor.kind,
+        },
+      } : {}),
       coordinationRequest: { requestId: request.requestId, correlationId: request.correlationId },
       turnSelection: request.turnSelection,
       attachments: request.attachments,
@@ -597,6 +605,14 @@ export class ResidentCoordinationAdapter {
 
     const started = await this.agent.runWithTurn(request.chatId, request.instruction, {
       coordinationOrigin: origin,
+      ...(request.communication ? {
+        coordinationDelivery: {
+          conversationId: request.communication.conversationId,
+          targetPrincipalId: request.communication.actor.principalId,
+          targetDisplayName: request.communication.actor.displayName,
+          targetKind: request.communication.actor.kind,
+        },
+      } : {}),
       coordinationRequest: { requestId: request.requestId, correlationId: request.correlationId },
       turnSelection: request.turnSelection,
       attachments: request.attachments,

@@ -8,6 +8,7 @@
  * Cron agent-turns use the isolated `cron-<jobId>` chat as origin.
  */
 import { randomBytes } from 'node:crypto';
+import type { MediaAttachment } from '../types.js';
 
 export type AsyncWorkKind = 'coding' | 'subagent' | 'cron';
 
@@ -34,6 +35,30 @@ export type WorkResultHandle =
 
 export type ChatWorkHandle = Extract<WorkResultHandle, { chatId: string }>;
 
+/**
+ * Immutable canonical destination captured when a resident starts detached
+ * work from a Connected Agents turn. The coordination process must re-check
+ * every field against the parent Work before committing the child result.
+ */
+export interface CoordinationWorkDestination {
+  kind: 'coordination';
+  parentWorkId: string;
+  channelId: string;
+  conversationId: string;
+  originMessageId: string;
+  targetPrincipalId: string;
+  residentBinding: string;
+  residentInstanceId: string;
+  authorityReference: string;
+}
+
+/** Lossless producer result; receiptText remains Inspector/history evidence. */
+export interface AsyncWorkTerminalResult {
+  receiptText: string;
+  resultText: string | null;
+  artifacts?: readonly MediaAttachment[];
+}
+
 export function isChatWorkHandle(handle: WorkResultHandle): handle is ChatWorkHandle {
   return handle.type === 'subagent_chat' || handle.type === 'cron_chat';
 }
@@ -46,6 +71,8 @@ export interface AsyncWorkRecord {
   originChatId: string;           // ROOT conversation (resolveRootChatId applied)
   originTurnId?: string;          // turn that launched the work, when known
   parentWorkId?: string;          // set when launched from inside another work item
+  /** Present only for detached work returning to a canonical Connected Agents Message. */
+  coordinationDestination?: CoordinationWorkDestination;
   /** Inline work returns through its parent tool call and must never be recovery-delivered. */
   deliveryMode?: 'detached' | 'inline';
   label: string;

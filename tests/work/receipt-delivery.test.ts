@@ -36,9 +36,9 @@ function capture() {
   return { calls, sinks };
 }
 
-test('ios origin: history + one async_work push carrying workId, tail never on lock screen', () => {
+test('ios origin: history + one async_work push carrying workId, tail never on lock screen', async () => {
   const { calls, sinks } = capture();
-  const route = deliverWorkReceipt(makeWork(), `[Async work completed] scheduler fix\n${SECRET_TAIL}`, sinks);
+  const route = await deliverWorkReceipt(makeWork(), `[Async work completed] scheduler fix\n${SECRET_TAIL}`, sinks);
   assert.equal(route, 'ios');
   assert.equal(calls.history.length, 1);
   assert.equal(calls.history[0].chatId, 'ios_conv_42');
@@ -49,35 +49,77 @@ test('ios origin: history + one async_work push carrying workId, tail never on l
   assert.equal(calls.telegram.length, 0);
 });
 
-test('mac origin routes like ios', () => {
+test('mac origin routes like ios', async () => {
   const { calls, sinks } = capture();
-  const route = deliverWorkReceipt(makeWork({ originChatId: 'mac_dev_jerry_a_b' }), 'text', sinks);
+  const route = await deliverWorkReceipt(makeWork({ originChatId: 'mac_dev_jerry_a_b' }), 'text', sinks);
   assert.equal(route, 'ios');
   assert.equal(calls.push[0].chatId, 'mac_dev_jerry_a_b');
 });
 
-test('numeric origin: history + telegram, no push', () => {
+test('numeric origin: history + telegram, no push', async () => {
   const { calls, sinks } = capture();
-  const route = deliverWorkReceipt(makeWork({ originChatId: '-100123' }), 'full text', sinks);
+  const route = await deliverWorkReceipt(makeWork({ originChatId: '-100123' }), 'full text', sinks);
   assert.equal(route, 'telegram');
   assert.equal(calls.telegram.length, 1);
   assert.equal(calls.push.length, 0);
 });
 
-test('other origins (cron, worker) are history-only', () => {
+test('other origins (cron, worker) are history-only', async () => {
   const { calls, sinks } = capture();
-  const route = deliverWorkReceipt(makeWork({ originChatId: 'cron-agent-daily' }), 'text', sinks);
+  const route = await deliverWorkReceipt(makeWork({ originChatId: 'cron-agent-daily' }), 'text', sinks);
   assert.equal(route, 'none');
   assert.equal(calls.history.length, 1);
   assert.equal(calls.telegram.length, 0);
   assert.equal(calls.push.length, 0);
 });
 
-test('missing sinks degrade to history-only without throwing', () => {
+test('missing sinks degrade to history-only without throwing', async () => {
   const history: string[] = [];
-  const route = deliverWorkReceipt(makeWork(), 'text', { appendHistory: (_c, t) => history.push(t) });
+  const route = await deliverWorkReceipt(makeWork(), 'text', { appendHistory: (_c, t) => history.push(t) });
   assert.equal(route, 'none');
   assert.equal(history.length, 1);
+});
+
+test('canonical coordination origin uses only the exact completion callback', async () => {
+  const history: string[] = [];
+  const commits: unknown[] = [];
+  const work = makeWork({
+    kind: 'subagent',
+    workId: 'aw_child_1',
+    agent: 'jerry',
+    originChatId: 'coordination:chn_1:wrk_parent_1',
+    parentWorkId: 'wrk_parent_1',
+    deliveryMode: 'detached',
+    finishedAt: '2026-08-06T12:05:00.000Z',
+    resultHandle: { type: 'subagent_chat', chatId: 'subagent:coordination:chn_1:wrk_parent_1:abcd' },
+    coordinationDestination: {
+      kind: 'coordination', parentWorkId: 'wrk_parent_1', channelId: 'chn_1',
+      conversationId: 'cnv_1', originMessageId: 'msg_origin_1',
+      targetPrincipalId: 'bot_jerry', residentBinding: 'jerry',
+      residentInstanceId: 'resident-jerry-1', authorityReference: 'resident:jerry',
+    },
+  });
+  const route = await deliverWorkReceipt(work, {
+    receiptText: '[Sub-agent complete] hidden evidence',
+    resultText: 'Here is the result you asked for.',
+    artifacts: [{ type: 'document', path: '/tmp/result.txt', mimeType: 'text/plain' }],
+  }, {
+    appendHistory: (_chatId, text) => history.push(text),
+    commitCoordinationCompletion: (input) => { commits.push(input); },
+  });
+  assert.equal(route, 'coordination');
+  assert.equal(history.length, 0, 'hidden worker receipt never enters chat history');
+  assert.equal(commits.length, 1);
+  assert.deepEqual(commits[0], {
+    parentWorkId: 'wrk_parent_1', childWorkId: 'aw_child_1', childKind: 'subagent',
+    childResultHandle: { type: 'subagent_chat', chatId: 'subagent:coordination:chn_1:wrk_parent_1:abcd' },
+    status: 'completed', finishedAt: '2026-08-06T12:05:00.000Z',
+    channelId: 'chn_1', conversationId: 'cnv_1', originMessageId: 'msg_origin_1',
+    targetPrincipalId: 'bot_jerry', residentBinding: 'jerry',
+    residentInstanceId: 'resident-jerry-1', authorityReference: 'resident:jerry',
+    terminalText: 'Here is the result you asked for.',
+    artifacts: [{ type: 'document', path: '/tmp/result.txt', mimeType: 'text/plain' }],
+  });
 });
 
 test('push body is a concise status line per status', () => {

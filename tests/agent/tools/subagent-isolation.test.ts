@@ -104,27 +104,62 @@ test('canonical Connected Agents spawn_agent without a mode joins the current an
   assert.equal(captured.appends.length, 0, 'joined result returns inline instead of creating a transcript receipt');
 });
 
-test('canonical Connected Agents spawn_agent rejects explicit detached mode', async () => {
+test('canonical Connected Agents explicit detached mode captures exact durable destination', async () => {
   const { ctx, captured } = makeCtx('coordination:cnv_forrest:work_456');
-  let workCreates = 0;
-  let terminalCalls = 0;
-  (ctx as { workRegistry?: unknown }).workRegistry = {
-    create: () => {
-      workCreates++;
-      return { workId: 'aw_forbidden', originChatId: ctx.chatId };
+  const creates: unknown[] = [];
+  const terminal: unknown[] = [];
+  let resolveTerminal!: () => void;
+  const terminalFired = new Promise<void>((resolve) => { resolveTerminal = resolve; });
+  (ctx as { turnRuntime?: unknown }).turnRuntime = {
+    turnId: 'coord-work_456',
+    coordinationOrigin: {
+      kind: 'coordination', workId: 'work_456', attemptId: 'att_1', leaseId: 'lea_1',
+      holderPrincipalId: 'bot_forrest', holderInstanceId: 'resident-forrest-1',
+      authorityReference: 'resident:forrest', fencingToken: 1,
+      channelId: 'cnv_forrest', originMessageId: 'msg_owner_1', roundId: null,
+    },
+    coordinationDelivery: {
+      conversationId: 'conversation_forrest', targetPrincipalId: 'bot_forrest',
+      targetDisplayName: 'Forrest', targetKind: 'resident_bot',
     },
   };
-  (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = () => { terminalCalls++; };
+  ctx.parentWorkId = 'work_456';
+  ctx.agentName = 'forrest';
+  (ctx as { workRegistry?: unknown }).workRegistry = {
+    create: (input: unknown) => { creates.push(input); return { workId: 'aw_detached', originChatId: ctx.chatId }; },
+    complete: () => ({}),
+  };
+  (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = (_workId: string, result: unknown) => {
+    terminal.push(result);
+    resolveTerminal();
+  };
 
   const result = await spawnAgentTool.execute({ task: 'background this', mode: 'detached' }, ctx);
+  await terminalFired;
 
-  assert.equal(result.is_error, true);
-  assert.match(result.content, /Detached specialists are unavailable in Connected Agents conversations/);
-  assert.equal(captured.loopCalls, 0);
-  assert.equal(captured.ctx, null);
+  assert.equal(result.is_error, undefined);
+  assert.match(result.content, /aw_detached/);
+  assert.equal(captured.loopCalls, 1);
   assert.equal(captured.appends.length, 0);
-  assert.equal(workCreates, 0, 'rejection creates no detached Work receipt');
-  assert.equal(terminalCalls, 0, 'rejection schedules no detached delivery');
+  assert.deepEqual(creates, [{
+    kind: 'subagent', originChatId: 'coordination:cnv_forrest:work_456',
+    originTurnId: 'coord-work_456', parentWorkId: 'work_456',
+    coordinationDestination: {
+      kind: 'coordination', parentWorkId: 'work_456', channelId: 'cnv_forrest',
+      conversationId: 'conversation_forrest', originMessageId: 'msg_owner_1',
+      targetPrincipalId: 'bot_forrest', residentBinding: 'forrest',
+      residentInstanceId: 'resident-forrest-1', authorityReference: 'resident:forrest',
+    },
+    deliveryMode: 'detached', label: 'background this',
+    resultHandle: {
+      type: 'subagent_chat',
+      chatId: (creates[0] as { resultHandle: { chatId: string } }).resultHandle.chatId,
+    },
+  }]);
+  assert.deepEqual(terminal, [{
+    receiptText: '[Sub-agent complete] background this\n\nsub result',
+    resultText: 'sub result',
+  }]);
   assert.equal(ctx.subAgentTracker.active, 0);
 });
 
@@ -216,15 +251,15 @@ test('spawn_agent registers async work, surfaces the work id, and reports via on
   const { ctx, captured } = makeCtx('ios_abc_jerry_x_ff');
   const created: unknown[] = [];
   const completed: Array<{ workId: string; status: string }> = [];
-  const terminal: Array<{ workId: string; text: string }> = [];
+  const terminal: Array<{ workId: string; result: unknown }> = [];
   let resolveTerminal!: () => void;
   const terminalFired = new Promise<void>((resolve) => { resolveTerminal = resolve; });
   (ctx as { workRegistry?: unknown }).workRegistry = {
     create: (input: unknown) => { created.push(input); return { workId: 'aw_test_0001', originChatId: 'ios_abc_jerry_x_ff' }; },
     complete: (workId: string, status: string) => { completed.push({ workId, status }); return {}; },
   };
-  (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = (workId: string, text: string) => {
-    terminal.push({ workId, text });
+  (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = (workId: string, result: unknown) => {
+    terminal.push({ workId, result });
     resolveTerminal();
   };
 
@@ -239,7 +274,8 @@ test('spawn_agent registers async work, surfaces the work id, and reports via on
   assert.match(input.resultHandle.chatId, /^subagent:ios_abc_jerry_x_ff:[0-9a-f]{4}$/);
   assert.deepEqual(completed, [{ workId: 'aw_test_0001', status: 'completed' }]);
   assert.equal(terminal[0]?.workId, 'aw_test_0001');
-  assert.match(terminal[0]!.text, /Sub-agent complete/);
+  assert.match((terminal[0]!.result as { receiptText: string }).receiptText, /Sub-agent complete/);
+  assert.equal((terminal[0]!.result as { resultText: string }).resultText, 'sub result');
   // pipeline owns history delivery — no direct parent append in registry mode
   assert.equal(captured.appends.length, 0);
 });

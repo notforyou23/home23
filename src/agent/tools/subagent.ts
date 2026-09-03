@@ -17,6 +17,7 @@ import type {
 import { resolveModelOverride } from '../model-resolution.js';
 import { parseReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from '../reasoning-effort.js';
 import { SUBAGENT_TOOL_GRANTS } from './subagent-grants.js';
+import type { CoordinationWorkDestination } from '../../work/types.js';
 
 /** Leaves room for the loop's 4,000-character tool-result framing. */
 export const JOINED_RESULT_MAX_CHARS = 3_000;
@@ -41,6 +42,28 @@ function releaseTracker(ctx: ToolContext): void {
   }
 }
 
+function coordinationDestination(ctx: ToolContext): CoordinationWorkDestination | null {
+  const origin = ctx.turnRuntime?.coordinationOrigin;
+  const delivery = ctx.turnRuntime?.coordinationDelivery;
+  if (!origin || !delivery || origin.originMessageId === null) return null;
+  if (
+    ctx.chatId !== `coordination:${origin.channelId}:${origin.workId}` ||
+    delivery.targetPrincipalId !== origin.holderPrincipalId ||
+    origin.authorityReference !== `resident:${ctx.agentName}`
+  ) return null;
+  return Object.freeze({
+    kind: 'coordination',
+    parentWorkId: origin.workId,
+    channelId: origin.channelId,
+    conversationId: delivery.conversationId,
+    originMessageId: origin.originMessageId,
+    targetPrincipalId: delivery.targetPrincipalId,
+    residentBinding: ctx.agentName,
+    residentInstanceId: origin.holderInstanceId,
+    authorityReference: origin.authorityReference,
+  });
+}
+
 export const spawnAgentTool: ToolDefinition = {
   name: 'spawn_agent',
   description: 'Bring in a temporary specialist. Joined mode waits and returns the specialist result into the current answer. Detached mode runs durable background work and returns immediately.',
@@ -52,7 +75,7 @@ export const spawnAgentTool: ToolDefinition = {
       mode: {
         type: 'string',
         enum: ['joined', 'detached'],
-        description: 'joined waits for a result needed in this answer; detached continues in the background. Canonical Connected Agents conversations default to joined and do not permit detached delivery; other chats default to detached.',
+        description: 'joined waits for a result needed in this answer; detached continues in the background. Canonical Connected Agents conversations default to joined; explicit detached mode requires their durable canonical completion bridge.',
       },
       tool_grants: {
         type: 'array',
@@ -74,9 +97,13 @@ export const spawnAgentTool: ToolDefinition = {
       return { content: 'spawn_agent mode must be "joined" or "detached".', is_error: true };
     }
     const isCanonicalCoordinationChat = ctx.chatId.startsWith('coordination:');
-    if (isCanonicalCoordinationChat && rawMode === 'detached') {
+    const canonicalDestination = coordinationDestination(ctx);
+    if (
+      isCanonicalCoordinationChat && rawMode === 'detached' &&
+      (!canonicalDestination || !ctx.workRegistry || !ctx.onWorkTerminal)
+    ) {
       return {
-        content: 'Detached specialists are unavailable in Connected Agents conversations; use joined mode so the result returns through the current canonical answer.',
+        content: 'Detached specialist delivery is unavailable for this Connected Agents turn; use joined mode.',
         is_error: true,
       };
     }
@@ -153,7 +180,10 @@ export const spawnAgentTool: ToolDefinition = {
       kind: 'subagent',
       originChatId: ctx.chatId,
       originTurnId: ctx.turnRuntime?.turnId,
-      parentWorkId: ctx.parentWorkId,
+      parentWorkId: canonicalDestination?.parentWorkId ?? ctx.parentWorkId,
+      ...(mode === 'detached' && canonicalDestination
+        ? { coordinationDestination: canonicalDestination }
+        : {}),
       deliveryMode: mode === 'joined' ? 'inline' : 'detached',
       label: headline,
       resultHandle: { type: 'subagent_chat', chatId: subChatId },
@@ -259,7 +289,11 @@ export const spawnAgentTool: ToolDefinition = {
 
         if (work && ctx.onWorkTerminal) {
           ctx.workRegistry!.complete(work.workId, 'completed');
-          ctx.onWorkTerminal(work.workId, text);
+          ctx.onWorkTerminal(work.workId, {
+            receiptText: text,
+            resultText: result.text.trim() ? result.text : null,
+            ...(result.media && result.media.length > 0 ? { artifacts: result.media } : {}),
+          });
         } else if (ctx.conversationHistory) {
           ctx.conversationHistory.append(ctx.chatId, [{
             role: 'assistant' as const,
@@ -278,7 +312,11 @@ export const spawnAgentTool: ToolDefinition = {
         });
         if (work && ctx.onWorkTerminal) {
           ctx.workRegistry!.complete(work.workId, 'failed', message);
-          ctx.onWorkTerminal(work.workId, text);
+          ctx.onWorkTerminal(work.workId, {
+            receiptText: text,
+            resultText: null,
+            artifacts: Object.freeze([]),
+          });
         } else if (ctx.conversationHistory) {
           ctx.conversationHistory.append(ctx.chatId, [{
             role: 'assistant' as const,

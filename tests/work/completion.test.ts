@@ -108,6 +108,31 @@ test('non-human origin delivers history-only without review', async (t) => {
   assert.ok(registry.get(rec.workId)!.deliveredAt);
 });
 
+test('canonical specialist result is committed without synthetic history and only then marked delivered', async (t) => {
+  const { registry, calls, deps } = setup(t);
+  const commits: unknown[] = [];
+  deps.sinks.commitCoordinationCompletion = async (input) => { commits.push(input); };
+  const rec = registry.create({
+    kind: 'subagent', originChatId: 'coordination:chn_1:wrk_parent_1',
+    parentWorkId: 'wrk_parent_1', deliveryMode: 'detached', label: 'specialist',
+    resultHandle: { type: 'subagent_chat', chatId: 'subagent:coordination:chn_1:wrk_parent_1:abcd' },
+    coordinationDestination: {
+      kind: 'coordination', parentWorkId: 'wrk_parent_1', channelId: 'chn_1',
+      conversationId: 'cnv_1', originMessageId: 'msg_1', targetPrincipalId: 'bot_jerry',
+      residentBinding: 'jerry', residentInstanceId: 'resident-jerry-1',
+      authorityReference: 'resident:jerry',
+    },
+  });
+  const done = registry.complete(rec.workId, 'completed');
+  await handleWorkCompletion(done, {
+    receiptText: '[Sub-agent complete] hidden', resultText: 'Canonical answer.',
+  }, deps);
+  assert.equal(calls.history.length, 0);
+  assert.equal(calls.push.length, 0);
+  assert.equal(commits.length, 1);
+  assert.ok(registry.get(rec.workId)!.deliveredAt);
+});
+
 test('already-delivered records are skipped (recovery dedupe)', async (t) => {
   const { registry, calls, deps } = setup(t);
   const rec = registry.create({ kind: 'subagent', originChatId: 'ios_conv_42', label: 'sub', resultHandle: { type: 'subagent_chat', chatId: 'subagent:ios_conv_42:aaaa' } });

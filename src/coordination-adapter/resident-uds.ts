@@ -3,7 +3,12 @@ import { constants as fsConstants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { ConversationHistory } from "../agent/history.js";
-import type { AgentEvent, AgentResponse, CoordinationTurnOrigin } from "../agent/types.js";
+import type {
+  AgentEvent,
+  AgentResponse,
+  CoordinationTurnDeliveryContext,
+  CoordinationTurnOrigin,
+} from "../agent/types.js";
 import type { MediaAttachment } from "../types.js";
 import {
   detectReturnedArtifactContentType,
@@ -101,6 +106,37 @@ function origin(value: JsonValue | undefined): CoordinationTurnOrigin {
   return result as CoordinationTurnOrigin;
 }
 function jsonOrigin(value:CoordinationTurnOrigin):JsonValue{return{...value};}
+
+function coordinationDelivery(value: JsonValue | undefined): CoordinationTurnDeliveryContext | undefined {
+  if (value === undefined) return undefined;
+  const v = object(value);
+  return Object.freeze({
+    conversationId: string(v.conversationId, "conversationId"),
+    targetPrincipalId: string(v.targetPrincipalId, "targetPrincipalId"),
+    targetDisplayName: string(v.targetDisplayName, "targetDisplayName"),
+    targetKind: string(v.targetKind, "targetKind"),
+  });
+}
+
+function jsonCoordinationDelivery(value: CoordinationTurnDeliveryContext | undefined): JsonValue | undefined {
+  return value === undefined ? undefined : { ...value };
+}
+
+function assertCoordinationDelivery(
+  delivery: CoordinationTurnDeliveryContext | undefined,
+  provenance: CoordinationTurnOrigin,
+): void {
+  if (delivery === undefined) return;
+  if (
+    provenance.originMessageId === null ||
+    delivery.targetPrincipalId !== provenance.holderPrincipalId
+  ) {
+    throw new ResidentProtocolError(
+      "fence_invalid",
+      "resident completion destination does not match its Work origin",
+    );
+  }
+}
 
 function exactOrigin(left: CoordinationTurnOrigin | undefined, right: CoordinationTurnOrigin): boolean {
   return left?.kind === right.kind && left.workId === right.workId &&
@@ -736,8 +772,9 @@ export class ResidentTurnUdsServer {
       };
     }
     if(request.method==="POST"&&request.path===COMPLETED_RECOVERY_START){
-      const p=object(request.payload);const chatId=string(p.chatId,"chatId");const turnId=string(p.turnId,"turnId");const provenance=origin(p.origin);
+      const p=object(request.payload);const chatId=string(p.chatId,"chatId");const turnId=string(p.turnId,"turnId");const provenance=origin(p.origin);const delivery=coordinationDelivery(p.coordinationDelivery);
       assertResidentBinding(provenance,this.options.residentSlug,this.options.serverInstanceId);
+      assertCoordinationDelivery(delivery,provenance);
       const requested=turnSelection(p.turnSelection);
       if(turnId!==`coord-${provenance.workId}`)throw new ResidentProtocolError("fence_invalid","resident turn ID does not match its Work origin");
       if(request.fence!==residentFence(provenance)||request.correlationId!==string(p.correlationId,"correlationId"))throw new ResidentProtocolError("fence_invalid","resident turn fence or correlation does not match");
@@ -760,8 +797,9 @@ export class ResidentTurnUdsServer {
       };
     }
     if(request.method==="POST"&&request.path===START){
-      const p=object(request.payload);const chatId=string(p.chatId,"chatId");const rawInstruction=text(p.instruction,"instruction");const attachments=await residentAttachments(p.attachments,this.options.attachmentRoot);const instruction=instructionWithAttachments(rawInstruction,attachments);if(!instruction.trim())throw new ResidentProtocolError("request_invalid","resident instruction or attachment is required");const turnId=string(p.turnId,"turnId");const provenance=origin(p.origin);
+      const p=object(request.payload);const chatId=string(p.chatId,"chatId");const rawInstruction=text(p.instruction,"instruction");const attachments=await residentAttachments(p.attachments,this.options.attachmentRoot);const instruction=instructionWithAttachments(rawInstruction,attachments);if(!instruction.trim())throw new ResidentProtocolError("request_invalid","resident instruction or attachment is required");const turnId=string(p.turnId,"turnId");const provenance=origin(p.origin);const delivery=coordinationDelivery(p.coordinationDelivery);
       assertResidentBinding(provenance,this.options.residentSlug,this.options.serverInstanceId);
+      assertCoordinationDelivery(delivery,provenance);
       const requested=turnSelection(p.turnSelection);
       if(Buffer.byteLength(instruction,"utf8")>MAX_INSTRUCTION_BYTES)throw new ResidentProtocolError("request_invalid","resident instruction is too large");
       if(turnId!==`coord-${provenance.workId}`)throw new ResidentProtocolError("fence_invalid","resident turn ID does not match its Work origin");
@@ -777,7 +815,7 @@ export class ResidentTurnUdsServer {
         if(requested.modelAlias!==null&&!modelOverride){
           throw new ResidentProtocolError("request_invalid","requested resident model is unavailable");
         }
-        const media=attachments.filter((attachment)=>attachment.contentType.startsWith("image/")).map((attachment)=>({type:"image" as const,path:attachment.path,mimeType:attachment.contentType,fileName:attachment.name}));const run=await this.options.agent.runWithTurn(chatId,instruction,{turnId,coordinationOrigin:provenance,onDurableStart:async()=>undefined,onEvent:()=>undefined,...(media.length>0?{media}:{}),...(modelOverride?{modelOverride}:{}),...(requested.reasoningEffort?{effort:requested.reasoningEffort}:{})});this.#responses.set(turnId,run.response);void run.response.finally(()=>setTimeout(()=>this.#responses.delete(turnId),60_000).unref()).catch(()=>undefined);
+        const media=attachments.filter((attachment)=>attachment.contentType.startsWith("image/")).map((attachment)=>({type:"image" as const,path:attachment.path,mimeType:attachment.contentType,fileName:attachment.name}));const run=await this.options.agent.runWithTurn(chatId,instruction,{turnId,coordinationOrigin:provenance,...(delivery?{coordinationDelivery:delivery}:{}),onDurableStart:async()=>undefined,onEvent:()=>undefined,...(media.length>0?{media}:{}),...(modelOverride?{modelOverride}:{}),...(requested.reasoningEffort?{effort:requested.reasoningEffort}:{})});this.#responses.set(turnId,run.response);void run.response.finally(()=>setTimeout(()=>this.#responses.delete(turnId),60_000).unref()).catch(()=>undefined);
       }
       const durable=this.#store.startEnvelope(chatId,turnId);if(!durable)throw new Error("AgentLoop returned before durable turn start");
       if(signal.aborted)throw new ResidentProtocolError("request_cancelled","resident start was cancelled");
@@ -1018,15 +1056,16 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
       await new Promise(resolve=>setTimeout(resolve,EVENT_REPLAY_DELAY_MS));
     }
   }
-  async runWithTurn(chatId:string,userText:string,options:{coordinationOrigin:CoordinationTurnOrigin;coordinationRequest?:{requestId:string;correlationId:string};turnSelection:ResidentTurnSelectionRequest;attachments?:readonly ResidentInputAttachment[];completedRecovery?:true;onDurableStart(start:{turnId:string;chatId:string;persistedAt:string;selection?:ResidentTurnSelectionReceipt}):void|Promise<void>;onEvent(event:ResidentDurableEvent):void}){
+  async runWithTurn(chatId:string,userText:string,options:{coordinationOrigin:CoordinationTurnOrigin;coordinationDelivery?:CoordinationTurnDeliveryContext;coordinationRequest?:{requestId:string;correlationId:string};turnSelection:ResidentTurnSelectionRequest;attachments?:readonly ResidentInputAttachment[];completedRecovery?:true;onDurableStart(start:{turnId:string;chatId:string;persistedAt:string;selection?:ResidentTurnSelectionReceipt}):void|Promise<void>;onEvent(event:ResidentDurableEvent):void}){
     if(options.coordinationOrigin.authorityReference!==`resident:${this.options.residentSlug}`)throw new TypeError("resident authority does not match the configured port");
     const request=options.coordinationRequest;if(!request)throw new Error("resident coordination request identity is required");const turnId=`coord-${options.coordinationOrigin.workId}`;const fence=residentFence(options.coordinationOrigin);const now=()=>this.options.now?.()??Date.now();
     const requested=options.turnSelection??Object.freeze({modelAlias:null,reasoningEffort:null});
     const completedRecovery=options.completedRecovery===true;
     const attachments=(options.attachments??[]).map((attachment)=>({...attachment}));
+    const delivery=jsonCoordinationDelivery(options.coordinationDelivery);
     const payload=(completedRecovery
-      ? {chatId,turnId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,turnSelection:{...requested}}
-      : {chatId,instruction:userText,attachments,turnId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,turnSelection:{...requested}}) as JsonValue;
+      ? {chatId,turnId,origin:jsonOrigin(options.coordinationOrigin),...(delivery?{coordinationDelivery:delivery}:{}),correlationId:request.correlationId,turnSelection:{...requested}}
+      : {chatId,instruction:userText,attachments,turnId,origin:jsonOrigin(options.coordinationOrigin),...(delivery?{coordinationDelivery:delivery}:{}),correlationId:request.correlationId,turnSelection:{...requested}}) as JsonValue;
     const startPath=completedRecovery?COMPLETED_RECOVERY_START:START;
     const startDeadlineAt=now()+this.#startTimeoutMs;let started;let firstStartRequest=true;
     for(;;){

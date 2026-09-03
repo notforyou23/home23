@@ -1,4 +1,9 @@
-import type { AgentEvent, AgentResponse, CoordinationTurnOrigin } from '../agent/types.js';
+import type {
+  AgentEvent,
+  AgentResponse,
+  CoordinationTurnDeliveryContext,
+  CoordinationTurnOrigin,
+} from '../agent/types.js';
 import type { ReasoningEffort } from '../agent/reasoning-effort.js';
 import type { AppendCommunicationEventInput } from '../coordination/communications/index.js';
 import type { HOUSE_RESIDENT_CAPABILITIES } from '../coordination/house-resident-capabilities.js';
@@ -154,6 +159,7 @@ export interface ResidentAgentPort {
     userText: string,
     options: {
       coordinationOrigin: CoordinationTurnOrigin;
+      coordinationDelivery?: CoordinationTurnDeliveryContext;
       coordinationRequest?: { requestId: string; correlationId: string };
       turnSelection: ResidentTurnSelectionRequest;
       attachments?: readonly ResidentInputAttachment[];

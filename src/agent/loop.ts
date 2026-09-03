@@ -927,6 +927,7 @@ export class AgentLoop {
       registry?: ToolRegistry;
       effort?: ReasoningEffort;
       coordinationOrigin?: import('./types.js').CoordinationTurnOrigin;
+      coordinationDelivery?: import('./types.js').CoordinationTurnDeliveryContext;
       onDurableStart?: (start: import('./types.js').DurableTurnStart) => void | Promise<void>;
     } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
@@ -1030,6 +1031,8 @@ export class AgentLoop {
       brainOperations: runBrainOperations as BrainOperationsClient,
       onOperationActivity,
       ...(opts.registry ? { registry: opts.registry } : {}),
+      ...(opts.coordinationOrigin ? { coordinationOrigin: opts.coordinationOrigin } : {}),
+      ...(opts.coordinationDelivery ? { coordinationDelivery: opts.coordinationDelivery } : {}),
     });
     let firstTokenWatchdog: unknown = null;
     try {
@@ -1210,6 +1213,7 @@ export class AgentLoop {
       authenticatedUserMessage: undefined,
       memoryObjectStore: this.memoryStore,
       relationshipLedger: this.relationshipLedger,
+      parentWorkId: turnRuntime?.coordinationOrigin?.workId ?? this.toolContext.parentWorkId,
       onEvent,
       conversationHistory: this.history,
       abortSignal: ac.signal,

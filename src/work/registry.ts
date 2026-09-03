@@ -13,6 +13,7 @@ import {
   type AsyncWorkKind,
   type AsyncWorkRecord,
   type AsyncWorkStatus,
+  type CoordinationWorkDestination,
   type WorkResultHandle,
 } from './types.js';
 import type { WorkStore } from './work-store.js';
@@ -26,6 +27,7 @@ export interface CreateWorkInput {
   originChatId: string;
   originTurnId?: string;
   parentWorkId?: string;
+  coordinationDestination?: CoordinationWorkDestination;
   deliveryMode?: 'detached' | 'inline';
   label: string;
   resultHandle: WorkResultHandle;
@@ -70,6 +72,7 @@ export class WorkRegistry {
       originChatId: resolveRootChatId(input.originChatId),
       originTurnId: input.originTurnId,
       parentWorkId: input.parentWorkId,
+      coordinationDestination: input.coordinationDestination,
       deliveryMode: input.deliveryMode ?? 'detached',
       label: input.label,
       status: 'running',

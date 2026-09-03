@@ -14,7 +14,11 @@ import type { RelationshipLedger } from './relationship-ledger.js';
 import type { MemoryObjectStore } from './memory-objects.js';
 import type { ModelAliases } from './model-resolution.js';
 import type { ReasoningEffort } from './reasoning-effort.js';
-import type { AsyncWorkRecord } from '../work/types.js';
+import type {
+  AsyncWorkRecord,
+  AsyncWorkTerminalResult,
+  CoordinationWorkDestination,
+} from '../work/types.js';
 import type { WorkCancelOutcome } from '../work/cancel.js';
 import type {
   BridgeEvent,
@@ -60,6 +64,9 @@ export interface TurnRuntimeContext {
   onOperationActivity: (activity: OperationActivity) => void;
   /** Immutable per-turn registry override. Absent means the loop's shared registry. */
   registry?: ToolRegistry;
+  /** Exact canonical origin/destination, present only on a resident coordination turn. */
+  coordinationOrigin?: CoordinationTurnOrigin;
+  coordinationDelivery?: CoordinationTurnDeliveryContext;
 }
 
 /** Privacy-safe provenance for a turn leased from the coordination plane. */
@@ -75,6 +82,14 @@ export interface CoordinationTurnOrigin {
   channelId: string;
   originMessageId: string | null;
   roundId: string | null;
+}
+
+/** Canonical conversation/actor identity paired with CoordinationTurnOrigin. */
+export interface CoordinationTurnDeliveryContext {
+  conversationId: string;
+  targetPrincipalId: string;
+  targetDisplayName: string;
+  targetKind: string;
 }
 
 export interface DurableTurnStart {
@@ -119,7 +134,7 @@ export interface ToolContext {
   /** Set when this context belongs to work spawned by another work item (nesting). */
   parentWorkId?: string;
   /** Terminal async-work hook installed by home.ts — runs the completion pipeline. */
-  onWorkTerminal?: (workId: string, resultText: string) => void;
+  onWorkTerminal?: (workId: string, result: string | AsyncWorkTerminalResult) => void;
   runAgentLoop: AgentLoopRunner | null;
   workerConnectorBaseUrl?: string;
   fetch?: typeof fetch;
@@ -172,6 +187,7 @@ export interface WorkRegistryRef {
     originChatId: string;
     originTurnId?: string;
     parentWorkId?: string;
+    coordinationDestination?: CoordinationWorkDestination;
     deliveryMode?: 'detached' | 'inline';
     label: string;
     resultHandle:
