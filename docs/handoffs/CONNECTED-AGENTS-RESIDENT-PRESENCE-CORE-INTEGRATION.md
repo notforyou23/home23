@@ -79,7 +79,7 @@ node --import tsx --test --test-concurrency=1 --test-timeout=120000 \
 
 ## Next concrete action
 
-Build the complete Canary `Home23` iOS app from `resident-presence-canary` (not only `Home23Shared`). Then stop and ask jtr to authorize a lived install. Do **not** implement chat-turn 409 on this branch. Do **not** start journeys 2–4.
+Stop. Isolated first-convergence is closed. Pair this branch (`01eb3c8f` / tip `34392197`) with Canary product `b8963271` / tip `74cf706` and pack `2828398f…`. The complete Canary `Home23` app built unsigned under Xcode 27. Ask jtr to authorize a lived install. Do **not** implement chat-turn 409. Do **not** start journeys 2–4. Do **not** install.
 
 ## Live action still prohibited
 
