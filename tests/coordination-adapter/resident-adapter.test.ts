@@ -299,7 +299,7 @@ test('successful resident generated media is promoted before its immutable termi
       media: [{
         type: 'image',
         generatedBy: 'generate_image',
-        path: '/resident/workspace/media/generated-images/answer.png',
+        path: '/resident/workspace/media/returned-artifacts/answer.png',
         mimeType: 'image/png',
         fileName: 'answer.png',
         byteCount: 68,
@@ -334,7 +334,7 @@ test('non-generated resident image media does not require canonical artifact pro
   assert.equal(h.calls.includes('promote'), false);
 });
 
-test('resident evidence maps losslessly with legacy tool identities and replay idempotency', async (t) => {
+test('resident evidence preserves canonical detail and replay without private artifact paths', async (t) => {
   const database = M11TestDatabase.temporary();
   t.after(() => database.close());
   const communications = new SqliteCommunicationEventRepository(database);
@@ -441,6 +441,21 @@ test('resident evidence maps losslessly with legacy tool identities and replay i
         sourceEventType: 'response.output_text.delta',
         providerEvent: { type: 'response.output_text.delta', delta: 'final exact delta' } },
     },
+    {
+      turnId: 'coord-work-777', sequence: 12, occurredAt: '2026-08-25T16:00:00.012Z',
+      provider: 'openai-codex', model: 'gpt-5.6', reasoningEffort: 'high' as const,
+      event: { type: 'tool_start' as const, tool: 'return_artifact', toolCallId: 'call-artifact',
+        args: { path: '/resident/workspace/media/returned-artifacts/answer.mp3' },
+        providerEvent: { type: 'response.function_call_arguments.done',
+          arguments: '{"path":"/resident/workspace/media/returned-artifacts/answer.mp3"}' } },
+    },
+    {
+      turnId: 'coord-work-777', sequence: 13, occurredAt: '2026-08-25T16:00:00.013Z',
+      provider: 'openai-codex', model: 'gpt-5.6', reasoningEffort: 'high' as const,
+      event: { type: 'media' as const, mediaType: 'document', generatedBy: 'return_artifact' as const,
+        path: '/resident/workspace/media/returned-artifacts/answer.mp3', mimeType: 'audio/mpeg',
+        fileName: 'answer.mp3', byteCount: 128, sha256: 'a'.repeat(64) },
+    },
   ];
   const agent: ResidentAgentPort = {
     modelCatalog: async () => ({
@@ -461,7 +476,7 @@ test('resident evidence maps losslessly with legacy tool identities and replay i
         turnId: 'coord-work-777',
         response: Promise.resolve({ text: 'final exact delta', model: 'gpt-5.6', toolCallCount: 2, durationMs: 9 }),
         terminal: Promise.resolve({
-          status: 'complete', lastSequence: 11, endedAt: '2026-08-25T16:00:00.012Z',
+          status: 'complete', lastSequence: 13, endedAt: '2026-08-25T16:00:00.014Z',
           errorCode: null, errorMessage: null, provider: 'openai-codex', model: 'gpt-5.6',
           reasoningEffort: 'high',
         }),
@@ -496,9 +511,9 @@ test('resident evidence maps losslessly with legacy tool identities and replay i
     'receipt', 'reasoning', 'reasoning', 'tool_call_started', 'tool_call_completed',
     'tool_call_started', 'subagent_started', 'subagent_completed',
     'tool_call_completed', 'tool_call_started', 'tool_call_completed',
-    'assistant_response_delta', 'receipt',
+    'assistant_response_delta', 'tool_call_started', 'media', 'receipt',
   ]);
-  assert.equal(history.events.length, 13, 'reattachment must not duplicate evidence');
+  assert.equal(history.events.length, 15, 'reattachment must not duplicate evidence');
   assert.deepEqual(history.events[0]?.payload, {
     requestedProvider: null, requestedModelAlias: 'sol', requestedModel: null, requestedEffort: 'high',
     resolvedProvider: 'openai-codex', resolvedModel: 'gpt-5.6', resolvedEffort: 'high',
@@ -521,10 +536,13 @@ test('resident evidence maps losslessly with legacy tool identities and replay i
   assert.equal(history.events[9]?.payload.toolCallId, history.events[9]?.eventId);
   assert.equal(history.events[10]?.payload.toolCallId, history.events[9]?.eventId);
   assert.equal(history.events[10]?.parentEventId, history.events[9]?.eventId);
-  assert.equal(history.events[12]?.parentEventId, history.events[11]?.eventId);
-  assert.equal(history.events[12]?.occurredAt, '2026-08-25T16:00:00.012Z');
-  assert.equal(history.events[12]?.source.reasoningEffort, 'high');
-  assert.equal((history.events[12]?.payload.residentTerminal as { lastSequence?: number })?.lastSequence, 11);
+  assert.deepEqual(history.events[12]?.payload.arguments, { privateWorkspaceArtifact: true });
+  assert.equal(JSON.stringify(history.events[12]?.payload).includes('/resident/workspace'), false);
+  assert.equal(JSON.stringify(history.events[13]?.payload).includes('/resident/workspace'), false);
+  assert.equal(history.events[14]?.parentEventId, history.events[13]?.eventId);
+  assert.equal(history.events[14]?.occurredAt, '2026-08-25T16:00:00.014Z');
+  assert.equal(history.events[14]?.source.reasoningEffort, 'high');
+  assert.equal((history.events[14]?.payload.residentTerminal as { lastSequence?: number })?.lastSequence, 13);
   assert.equal(new Set(history.events.map((event) => event.eventId)).size, history.events.length);
 });
 

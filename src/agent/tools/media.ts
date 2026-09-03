@@ -9,16 +9,24 @@ import {
   fsyncSync,
   fstatSync,
   lstatSync,
-  mkdirSync,
   openSync,
   realpathSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { loadConfig } from '../../config.js';
 import { resolveProviderKey } from '../provider-credentials.js';
+import {
+  detectReturnedArtifactContentType,
+  MAX_RETURNED_ARTIFACT_BYTES,
+} from '../../returned-artifacts.js';
+import {
+  canonicalReturnedArtifactDirectory,
+  returnedArtifactResult,
+  writeReturnedArtifactBytes,
+} from './return-artifact.js';
 
 type ImageGeneratorConfig = {
   provider: string;
@@ -194,38 +202,6 @@ function exactImageFormat(buf: Buffer): { mimeType: string; extension: string } 
   throw new Error('Image provider returned an unsupported image format.');
 }
 
-function canonicalGeneratedImageDirectory(workspacePath: string): string {
-  const workspace = resolve(workspacePath);
-  const workspaceEntry = lstatSync(workspace);
-  const canonicalWorkspace = realpathSync(workspace);
-  const allowedMacSystemAlias = workspace.startsWith('/var/') && canonicalWorkspace === `/private${workspace}`;
-  if (
-    !workspaceEntry.isDirectory() ||
-    workspaceEntry.isSymbolicLink() ||
-    (canonicalWorkspace !== workspace && !allowedMacSystemAlias)
-  ) {
-    throw new Error('Generated-image workspace must be a real directory.');
-  }
-
-  const ensureDirectChild = (parent: string, name: string): string => {
-    const child = join(parent, name);
-    try {
-      mkdirSync(child, { recursive: false, mode: 0o700 });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-    const entry = lstatSync(child);
-    const canonical = realpathSync(child);
-    if (!entry.isDirectory() || entry.isSymbolicLink() || canonical !== child) {
-      throw new Error('Generated-image directory must remain inside the resident workspace.');
-    }
-    return canonical;
-  };
-
-  const mediaDirectory = ensureDirectChild(canonicalWorkspace, 'media');
-  return ensureDirectChild(mediaDirectory, 'generated-images');
-}
-
 function writeImageArtifact(
   ctx: ToolContext,
   cfg: ImageGeneratorConfig,
@@ -233,9 +209,12 @@ function writeImageArtifact(
   buf: Buffer,
   extra: Record<string, unknown> = {},
 ): ImageArtifactInfo {
+  if (buf.length < 1 || buf.length > MAX_RETURNED_ARTIFACT_BYTES) {
+    throw new Error('Image provider returned an artifact outside the 25 MB boundary.');
+  }
   const createdAt = new Date().toISOString();
   const safeProvider = cfg.provider.replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
-  const artifactDir = canonicalGeneratedImageDirectory(ctx.workspacePath);
+  const artifactDir = canonicalReturnedArtifactDirectory(ctx.workspacePath);
   const stamp = createdAt.replace(/[:.]/g, '-');
   const format = exactImageFormat(buf);
   const sha256 = createHash('sha256').update(buf).digest('hex');
@@ -298,7 +277,18 @@ function writeImageArtifact(
     };
     writeFileSync(imageFd, buf);
     fsyncSync(imageFd);
-    writeFileSync(receiptFd, JSON.stringify(receipt, null, 2));
+    writeFileSync(receiptFd, JSON.stringify({
+      ...extra,
+      provider: cfg.provider,
+      model: cfg.model,
+      prompt,
+      mimeType: format.mimeType,
+      fileName,
+      byteCount: buf.length,
+      sha256,
+      bytes: buf.length,
+      createdAt,
+    }, null, 2));
     fsyncSync(receiptFd);
     const currentDirectory = lstatSync(artifactDir);
     if (
@@ -345,9 +335,7 @@ function generatedImageMedia(info: ImageArtifactInfo, prompt: string): NonNullab
 function imageResultContent(info: ImageArtifactInfo, details = ''): string {
   return [
     `Image generated via ${info.provider}/${info.model}${details}`,
-    `Path: ${info.path}`,
-    `Receipt: ${info.receiptPath}`,
-    `Bytes: ${info.bytes}`,
+    `Ready to return ${JSON.stringify(info.fileName)} (${info.mimeType}, ${info.bytes} bytes, sha256 ${info.sha256}).`,
   ].join('\n');
 }
 
@@ -509,43 +497,6 @@ async function generateXAIImage(
   };
 }
 
-function inferAudioExtension(url: string | undefined, mimeType: string | null): string {
-  const normalizedMime = mimeType?.split(';')[0]?.trim().toLowerCase() ?? '';
-  if (normalizedMime === 'audio/mpeg' || normalizedMime === 'audio/mp3') return '.mp3';
-  if (normalizedMime === 'audio/wav' || normalizedMime === 'audio/x-wav') return '.wav';
-  if (normalizedMime === 'audio/flac') return '.flac';
-  if (normalizedMime === 'audio/ogg') return '.ogg';
-  if (normalizedMime === 'audio/aac') return '.aac';
-  if (url) {
-    try {
-      const parsed = new URL(url);
-      const ext = extname(parsed.pathname);
-      if (ext && ext.length <= 5) return ext;
-    } catch {
-      // Ignore malformed URLs and fall back to a safe default.
-    }
-  }
-  return '.mp3';
-}
-
-function inferAudioMime(ext: string, fallback?: string | null): string {
-  const normalizedFallback = fallback?.split(';')[0]?.trim();
-  if (normalizedFallback) return normalizedFallback;
-  switch (ext.toLowerCase()) {
-    case '.wav':
-      return 'audio/wav';
-    case '.flac':
-      return 'audio/flac';
-    case '.ogg':
-      return 'audio/ogg';
-    case '.aac':
-      return 'audio/aac';
-    case '.mp3':
-    default:
-      return 'audio/mpeg';
-  }
-}
-
 function formatMusicDuration(rawDuration?: number): string | null {
   if (!rawDuration || !Number.isFinite(rawDuration)) return null;
   const seconds = rawDuration > 1000 ? rawDuration / 1000 : rawDuration;
@@ -677,25 +628,19 @@ async function generateMiniMaxMusic(
   }
 
   let buf: Buffer;
-  let mimeType: string | null = null;
-  let sourceUrl: string | undefined;
-
   if (/^https?:\/\//i.test(audioValue)) {
-    sourceUrl = audioValue;
     const fileRes = await fetch(audioValue, { signal: AbortSignal.timeout(120_000) });
     if (!fileRes.ok) {
       return { content: `Music download failed: HTTP ${fileRes.status}`, is_error: true };
     }
-    mimeType = fileRes.headers.get('content-type');
     buf = Buffer.from(await fileRes.arrayBuffer());
   } else {
     buf = Buffer.from(audioValue, 'hex');
   }
 
-  const ext = inferAudioExtension(sourceUrl, mimeType);
-  const resolvedMimeType = inferAudioMime(ext, mimeType);
-  const filePath = join(ctx.tempDir, `music-${Date.now()}${ext}`);
-  writeFileSync(filePath, buf);
+  if (detectReturnedArtifactContentType(buf) !== 'audio/mpeg') {
+    throw new Error('MiniMax returned unsupported audio; only MP3 can be attached.');
+  }
 
   const details = [
     `model=${model}`,
@@ -705,16 +650,17 @@ async function generateMiniMaxMusic(
     data.extra_info?.music_sample_rate ? `sample_rate=${data.extra_info.music_sample_rate}` : null,
   ].filter(Boolean).join(', ');
 
-  return {
-    content: `Music generated via minimax/${model}${details ? ` (${details})` : ''}`,
-    media: [{
-      type: 'document',
-      path: filePath,
-      mimeType: resolvedMimeType,
-      fileName: `home23-${model}${ext}`,
-      caption: prompt?.slice(0, 200) || 'MiniMax music generation',
-    }],
-  };
+  const artifact = writeReturnedArtifactBytes({
+    workspacePath: ctx.workspacePath,
+    bytes: buf,
+    stem: `music-${model}`,
+    generatedBy: 'generate_music',
+    caption: prompt?.slice(0, 200) || 'MiniMax music generation',
+  });
+  return returnedArtifactResult(
+    artifact,
+    `Music generated via minimax/${model}${details ? ` (${details})` : ''}`,
+  );
 }
 
 export const generateImageTool: ToolDefinition = {
@@ -826,14 +772,18 @@ export const ttsTool: ToolDefinition = {
     try {
       const buf = await ctx.ttsService.speak(text, true);
       if (!buf) return { content: 'TTS returned no audio.', is_error: true };
+      if (detectReturnedArtifactContentType(buf) !== 'audio/mpeg') {
+        throw new Error('TTS returned unsupported audio; only MP3 can be attached.');
+      }
 
-      const filePath = join(ctx.tempDir, `tts-${Date.now()}.mp3`);
-      writeFileSync(filePath, buf);
-
-      return {
-        content: `Voice message generated (${buf.length} bytes)`,
-        media: [{ type: 'voice', path: filePath, mimeType: 'audio/mpeg' }],
-      };
+      const artifact = writeReturnedArtifactBytes({
+        workspacePath: ctx.workspacePath,
+        bytes: buf,
+        stem: 'tts',
+        generatedBy: 'tts',
+        caption: text.slice(0, 200),
+      });
+      return returnedArtifactResult(artifact, 'Voice message generated');
     } catch (err) {
       return { content: `TTS error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
     }

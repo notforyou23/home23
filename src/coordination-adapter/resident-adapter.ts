@@ -6,6 +6,7 @@ import {
   type CommunicationEventInput,
 } from '../coordination/communications/index.js';
 import type { JsonValue } from '../coordination/db/index.js';
+import { isReturnedArtifactGenerator } from '../returned-artifacts.js';
 import type {
   ResidentAgentPort,
   ResidentArtifactPromotionPort,
@@ -178,6 +179,11 @@ function communicationPayload(
   taxonomy: CoordinationExecutionEvidenceTaxonomy,
 ): Record<string, JsonValue> {
   const event = exactJsonRecord(durable.event);
+  if (durable.event.type === 'media') delete event.path;
+  if (durable.event.type === 'tool_start' && durable.event.tool === 'return_artifact') {
+    event.args = { privateWorkspaceArtifact: true };
+    delete event.providerEvent;
+  }
   const common: Record<string, JsonValue> = {
     [taxonomy.sequenceField]: durable.sequence,
     rawEvent: event,
@@ -189,7 +195,9 @@ function communicationPayload(
     case 'tool_start':
       return { ...common, toolCallId: communicationToolCallId(durable, parentEventId, taxonomy),
         tool: durable.event.tool,
-        arguments: event.args ?? null };
+        arguments: durable.event.tool === 'return_artifact'
+          ? { privateWorkspaceArtifact: true }
+          : (event.args ?? null) };
     case 'tool_result':
       return { ...common, toolCallId: communicationToolCallId(durable, parentEventId, taxonomy),
         tool: durable.event.tool,
@@ -198,7 +206,7 @@ function communicationPayload(
     case 'response_chunk':
       return { ...common, delta: durable.event.chunk };
     case 'media':
-      return { ...common, mediaType: durable.event.mediaType, path: durable.event.path,
+      return { ...common, mediaType: durable.event.mediaType,
         caption: durable.event.caption ?? null, toolCallId: durable.event.toolCallId ?? null,
         generatedBy: durable.event.generatedBy ?? null,
         mimeType: durable.event.mimeType ?? null, fileName: durable.event.fileName ?? null,
@@ -665,7 +673,7 @@ export class ResidentCoordinationAdapter {
           if (cancellation === null) {
             await this.coordination.assertCurrent(binding);
             const media = (response.media ?? []).filter(
-              (candidate) => candidate.generatedBy === 'generate_image',
+              (candidate) => isReturnedArtifactGenerator(candidate.generatedBy),
             );
             if (media.length > 0) {
               if (!this.artifactPromotion) {

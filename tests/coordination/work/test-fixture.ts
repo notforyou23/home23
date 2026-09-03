@@ -9,9 +9,11 @@ import { runMutationWithEvent } from "../../../src/coordination/db/transaction.j
 import { COORDINATION_SPINE_MIGRATION_SQL } from "../../../src/coordination/migrations/0001-coordination-spine.js";
 import { CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0002-connected-agents-product-schema.js";
 import { SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0003-search-and-attachment-schema.js";
+import { ATTACHMENT_CREATE_IDEMPOTENCY_MIGRATION_SQL } from "../../../src/coordination/migrations/0005-attachment-create-idempotency.js";
 import { WORK_SCHEMA_DELTA_SQL } from "../../../src/coordination/work/schema-delta.js";
 import { WORK_PRODUCT_CONTROLS_MIGRATION_SQL } from "../../../src/coordination/migrations/0007-work-product-controls.js";
 import { WORK_TURN_SELECTION_MIGRATION_SQL } from "../../../src/coordination/migrations/0009-work-turn-selection.js";
+import { ARTIFACT_AUDIO_MPEG_MIGRATION_SQL } from "../../../src/coordination/migrations/0011-artifact-audio-mpeg.js";
 
 const PREFIX = {
   attempt: "att",
@@ -45,23 +47,36 @@ export const AT = "2026-08-25T16:00:00.000Z";
 export class M11TestDatabase {
   raw: Database.Database;
 
-  constructor(readonly path: string, initialize = true) {
+  constructor(
+    readonly path: string,
+    initialize = true,
+    applyArtifactAudioMigration = true,
+  ) {
     this.raw = new Database(path);
     this.raw.pragma("foreign_keys = ON");
     if (initialize) {
       this.raw.exec(COORDINATION_SPINE_MIGRATION_SQL);
       this.raw.exec(CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL);
       this.raw.exec(SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL);
+      this.raw.exec(ATTACHMENT_CREATE_IDEMPOTENCY_MIGRATION_SQL);
       this.raw.exec(WORK_SCHEMA_DELTA_SQL);
       this.raw.exec(WORK_PRODUCT_CONTROLS_MIGRATION_SQL);
       this.seedProductRows();
       this.raw.exec(WORK_TURN_SELECTION_MIGRATION_SQL);
+      if (applyArtifactAudioMigration) {
+        this.raw.transaction(() => this.raw.exec(ARTIFACT_AUDIO_MPEG_MIGRATION_SQL))();
+      }
     }
   }
 
   static temporary(): M11TestDatabase {
     const directory = mkdtempSync(join(tmpdir(), "home23-m11-"));
     return new M11TestDatabase(join(directory, "coordination.sqlite"));
+  }
+
+  static temporaryBeforeArtifactAudioMigration(): M11TestDatabase {
+    const directory = mkdtempSync(join(tmpdir(), "home23-m10-artifacts-"));
+    return new M11TestDatabase(join(directory, "coordination.sqlite"), true, false);
   }
 
   reopen(): void {

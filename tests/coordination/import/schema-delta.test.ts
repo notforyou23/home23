@@ -100,7 +100,7 @@ test("the M04 proposal remains bound to the accepted contract and materialized s
     IMPORT_SCHEMA_DELTA_PROPOSAL.requires.coordinationSchemaVersion,
     3,
   );
-  assert.equal(COORDINATION_SCHEMA_VERSION, 10);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 11);
   assert.equal(
     IMPORT_SCHEMA_DELTA_PROPOSAL.requires.coordinationSchemaChecksum,
     "ddac2fb83bf73837f5200725697eff7d55a685f18a6c144fc33df17b75f113c2",

@@ -15,6 +15,8 @@ import {
   COORDINATION_CONTRACT_PACK_SHA256,
   COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM,
   COORDINATION_ATTACHMENT_IDEMPOTENCY_MIGRATION_CHECKSUM,
+  COORDINATION_ARTIFACT_AUDIO_MPEG_MIGRATION_CHECKSUM,
+  COORDINATION_BOT_LIFECYCLE_RECEIPTS_MIGRATION_CHECKSUM,
   COORDINATION_COMMUNICATION_EVIDENCE_MIGRATION_CHECKSUM,
   COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
   COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
@@ -49,7 +51,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   );
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 10);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 11);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -73,6 +75,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       "attachment_create_idempotency",
       "attempts",
       "authority_epochs",
+      "bot_lifecycle_receipts",
       "bots",
       "channel_members",
       "channel_membership_history",
@@ -138,6 +141,8 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 7, checksum: COORDINATION_WORK_PRODUCT_CONTROLS_MIGRATION_CHECKSUM },
       { version: 8, checksum: COORDINATION_COMMUNICATION_EVIDENCE_MIGRATION_CHECKSUM },
       { version: 9, checksum: COORDINATION_WORK_TURN_SELECTION_MIGRATION_CHECKSUM },
+      { version: 10, checksum: COORDINATION_BOT_LIFECYCLE_RECEIPTS_MIGRATION_CHECKSUM },
+      { version: 11, checksum: COORDINATION_ARTIFACT_AUDIO_MPEG_MIGRATION_CHECKSUM },
     ],
   );
   assert.deepEqual(

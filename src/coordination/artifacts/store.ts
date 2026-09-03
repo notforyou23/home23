@@ -16,6 +16,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { Readable } from "node:stream";
 import { inflate } from "node:zlib";
 
+import { isStructurallyValidMp3 } from "../../returned-artifacts.js";
 import { assertCoordinationId } from "../ids/index.js";
 import { assertArtifactReadActor, assertArtifactWriteActor } from "./access.js";
 import { ArtifactError } from "./errors.js";
@@ -44,6 +45,7 @@ export const DEFAULT_MAXIMUM_CONCURRENT_ARTIFACT_UPLOADS = 4;
 export const DEFAULT_ARTIFACT_UPLOAD_ADMISSION_TIMEOUT_MS = 15_000;
 export const SUPPORTED_ARTIFACT_CONTENT_TYPES = Object.freeze([
   "application/pdf",
+  "audio/mpeg",
   "image/gif",
   "image/jpeg",
   "image/png",
@@ -60,6 +62,7 @@ export const ARTIFACT_CONTENT_POLICY = Object.freeze({
   maximumStructuredDocumentBytes: 8 * 1024 * 1024,
   profiles: Object.freeze({
     "application/pdf": "header_xref_trailer_startxref_eof",
+    "audio/mpeg": "id3_or_two_complete_mpeg_frames",
     "image/gif": "logical_screen_blocks_image_trailer",
     "image/jpeg": "soi_frame_scan_eoi",
     "image/png": "signature_ihdr_idat_iend",
@@ -116,6 +119,17 @@ function safeQuarantineId(value: string): string {
   return value;
 }
 
+function validMp3FrameHeader(bytes: Buffer, offset = 0): boolean {
+  if (bytes.length < offset + 4 || bytes[offset] !== 0xff || (bytes[offset + 1]! & 0xe0) !== 0xe0) {
+    return false;
+  }
+  const version = (bytes[offset + 1]! >> 3) & 0x03;
+  const layer = (bytes[offset + 1]! >> 1) & 0x03;
+  const bitrate = (bytes[offset + 2]! >> 4) & 0x0f;
+  const sampleRate = (bytes[offset + 2]! >> 2) & 0x03;
+  return version !== 1 && layer !== 0 && bitrate !== 0 && bitrate !== 15 && sampleRate !== 3;
+}
+
 function detectContentType(
   prefix: Buffer,
   validUtf8Text: boolean,
@@ -134,6 +148,9 @@ function detectContentType(
   const gif = prefix.subarray(0, 6).toString("ascii");
   if (gif === "GIF87a" || gif === "GIF89a") return "image/gif";
   if (prefix.subarray(0, 5).toString("ascii") === "%PDF-") return "application/pdf";
+  if (validMp3FrameHeader(prefix) || prefix.subarray(0, 3).toString("ascii") === "ID3") {
+    return "audio/mpeg";
+  }
   if (validUtf8Text && !containsNul) {
     const leadingText = prefix.toString("utf8").replace(/^\uFEFF/u, "").trimStart().toLowerCase();
     if (/^(?:<!doctype\s+html|<html\b|<script\b|<svg\b|<\?xml\b)/u.test(leadingText)) {
@@ -784,6 +801,12 @@ async function validatePdf(handle: OpenFileHandle, byteCount: number): Promise<b
   return /<<[\s\S]*?\/Type\s*\/Catalog\b[\s\S]*?>>/u.test(rootObject);
 }
 
+async function validateMp3(handle: OpenFileHandle, byteCount: number): Promise<boolean> {
+  if (byteCount < 8) return false;
+  const bytes = await readExact(handle, 0, byteCount);
+  return bytes !== null && isStructurallyValidMp3(bytes);
+}
+
 async function validateStoredContent(
   path: string,
   contentType: string,
@@ -803,7 +826,9 @@ async function validateStoredContent(
             ? await validateGif(handle, byteCount)
             : contentType === "application/pdf"
               ? await validatePdf(handle, byteCount)
-              : false;
+              : contentType === "audio/mpeg"
+                ? await validateMp3(handle, byteCount)
+                : false;
     if (!valid) throw new ArtifactError("invalid_content_type");
   } catch (error) {
     if (error instanceof ArtifactError) throw error;

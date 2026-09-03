@@ -1,13 +1,19 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { basename, isAbsolute } from "node:path";
 
 import type {
   ResidentArtifactPromotionPort,
   ResidentLeaseBinding,
 } from "../../coordination-adapter/index.js";
 import type { MediaAttachment } from "../../types.js";
+import {
+  isReturnedArtifactGenerator,
+  returnedArtifactMediaType,
+  type ReturnedArtifactContentType,
+  type ReturnedArtifactGenerator,
+} from "../../returned-artifacts.js";
 import type { MessagingActorContext } from "../channels/index.js";
 import { resolveArtifactActor } from "./access.js";
 import { ArtifactError } from "./errors.js";
@@ -22,14 +28,17 @@ import type {
 } from "./types.js";
 
 const MAX_RESIDENT_ARTIFACTS = 10;
-const IMAGE_CONTENT_TYPES = new Set(["image/gif", "image/jpeg", "image/png"]);
+const RETURNED_ARTIFACT_CONTENT_TYPES = new Set([
+  "application/pdf", "audio/mpeg", "image/gif", "image/jpeg", "image/png", "text/plain",
+]);
 const MAX_UUID_V7_TIMESTAMP = (1n << 48n) - 1n;
 
-type ExactResidentImage = Readonly<{
-  type: "image";
+type ExactResidentArtifact = Readonly<{
+  type: "image" | "voice" | "document";
+  generatedBy: ReturnedArtifactGenerator;
   path: string;
   name: string;
-  contentType: string;
+  contentType: ReturnedArtifactContentType;
   byteCount: number;
   sha256: string;
 }>;
@@ -70,11 +79,13 @@ function formatStableUuidV7(stableKey: string, createdAt: string): string {
   return `art_${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function exactImage(value: MediaAttachment): ExactResidentImage {
+function exactArtifact(value: MediaAttachment): ExactResidentArtifact {
   const candidate = value as MediaAttachment & { generatedBy?: string };
+  const contentType = candidate.mimeType as ReturnedArtifactContentType;
   if (
-    candidate?.type !== "image" ||
-    candidate.generatedBy !== "generate_image" ||
+    !isReturnedArtifactGenerator(candidate.generatedBy) ||
+    !RETURNED_ARTIFACT_CONTENT_TYPES.has(contentType) ||
+    candidate.type !== returnedArtifactMediaType(contentType, candidate.generatedBy) ||
     typeof candidate.path !== "string" ||
     !isAbsolute(candidate.path) ||
     candidate.path.length < 1 ||
@@ -86,10 +97,9 @@ function exactImage(value: MediaAttachment): ExactResidentImage {
     candidate.fileName.normalize("NFC") !== candidate.fileName ||
     candidate.fileName === "." ||
     candidate.fileName === ".." ||
+    basename(candidate.path) !== candidate.fileName ||
     /^[A-Za-z]:/u.test(candidate.fileName) ||
     /[\0-\x1f\x7f/\\]/u.test(candidate.fileName) ||
-    typeof candidate.mimeType !== "string" ||
-    !IMAGE_CONTENT_TYPES.has(candidate.mimeType) ||
     !Number.isSafeInteger(candidate.byteCount) ||
     candidate.byteCount! < 1 ||
     candidate.byteCount! > DEFAULT_MAXIMUM_ARTIFACT_BYTES ||
@@ -99,10 +109,11 @@ function exactImage(value: MediaAttachment): ExactResidentImage {
     throw new ArtifactError("storage_conflict");
   }
   return Object.freeze({
-    type: "image",
+    type: candidate.type,
+    generatedBy: candidate.generatedBy,
     path: candidate.path,
     name: candidate.fileName,
-    contentType: candidate.mimeType,
+    contentType,
     byteCount: candidate.byteCount!,
     sha256: candidate.sha256,
   });
@@ -111,16 +122,16 @@ function exactImage(value: MediaAttachment): ExactResidentImage {
 function stableKey(
   binding: ResidentLeaseBinding,
   ordinal: number,
-  image: ExactResidentImage,
+  artifact: ExactResidentArtifact,
 ): string {
   return [
     binding.workId,
     binding.holderPrincipalId,
     String(ordinal),
-    image.sha256,
-    image.name,
-    image.contentType,
-    String(image.byteCount),
+    artifact.sha256,
+    artifact.name,
+    artifact.contentType,
+    String(artifact.byteCount),
   ].join("\0");
 }
 
@@ -138,14 +149,14 @@ async function *fileChunks(handle: FileHandle, expectedBytes: number): AsyncGene
   if (final.bytesRead !== 0) throw new ArtifactError("storage_integrity");
 }
 
-async function verifySource(handle: FileHandle, image: ExactResidentImage): Promise<void> {
+async function verifySource(handle: FileHandle, artifact: ExactResidentArtifact): Promise<void> {
   const hash = createHash("sha256");
   let bytes = 0;
-  for await (const chunk of fileChunks(handle, image.byteCount)) {
+  for await (const chunk of fileChunks(handle, artifact.byteCount)) {
     bytes += chunk.byteLength;
     hash.update(chunk);
   }
-  if (bytes !== image.byteCount || hash.digest("hex") !== image.sha256) {
+  if (bytes !== artifact.byteCount || hash.digest("hex") !== artifact.sha256) {
     throw new ArtifactError("storage_integrity");
   }
 }
@@ -153,15 +164,15 @@ async function verifySource(handle: FileHandle, image: ExactResidentImage): Prom
 function exactProjection(projection: ArtifactProjection, input: {
   artifactId: string;
   actorPrincipalId: string;
-  image: ExactResidentImage;
+  artifact: ExactResidentArtifact;
 }): boolean {
   return projection.id === input.artifactId &&
     projection.ownerPrincipalId === input.actorPrincipalId &&
-    projection.name === input.image.name &&
-    projection.declaredContentType === input.image.contentType &&
-    projection.detectedContentType === input.image.contentType &&
-    projection.byteCount === input.image.byteCount &&
-    projection.sha256 === input.image.sha256;
+    projection.name === input.artifact.name &&
+    projection.declaredContentType === input.artifact.contentType &&
+    projection.detectedContentType === input.artifact.contentType &&
+    projection.byteCount === input.artifact.byteCount &&
+    projection.sha256 === input.artifact.sha256;
 }
 
 export function createResidentArtifactPromotionPort(input: {
@@ -243,8 +254,8 @@ export function createResidentArtifactPromotionPort(input: {
 
       const artifactIds: string[] = [];
       for (const [ordinal, raw] of media.entries()) {
-        const image = exactImage(raw);
-        const identity = stableKey(binding, ordinal, image);
+        const artifact = exactArtifact(raw);
+        const identity = stableKey(binding, ordinal, artifact);
         const artifactId = formatStableUuidV7(identity, work.createdAt);
         const keyDigest = sha256(
           "home23-resident-artifact-idempotency-key-v1\0",
@@ -257,15 +268,15 @@ export function createResidentArtifactPromotionPort(input: {
         const requestDigest = sha256("home23-resident-artifact-request-v1\0", identity);
         let handle: FileHandle | undefined;
         try {
-          handle = await open(image.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+          handle = await open(artifact.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
           const stat = await handle.stat();
-          if (!stat.isFile() || stat.size !== image.byteCount) {
+          if (!stat.isFile() || stat.size !== artifact.byteCount) {
             throw new ArtifactError("storage_integrity");
           }
           const prior = replay(actor.principalId, keyDigest, requestDigest);
           if (prior) {
-            await verifySource(handle, image);
-            if (!exactProjection(prior, { artifactId, actorPrincipalId: actor.principalId, image })) {
+            await verifySource(handle, artifact);
+            if (!exactProjection(prior, { artifactId, actorPrincipalId: actor.principalId, artifact })) {
               throw new ArtifactError("storage_conflict");
             }
             artifactIds.push(prior.id);
@@ -276,19 +287,19 @@ export function createResidentArtifactPromotionPort(input: {
             projection = await store.ingest({
               artifactId,
               actor,
-              originalName: image.name,
-              declaredContentType: image.contentType,
-              expectedSha256: image.sha256,
-              content: fileChunks(handle, image.byteCount),
+              originalName: artifact.name,
+              declaredContentType: artifact.contentType,
+              expectedSha256: artifact.sha256,
+              content: fileChunks(handle, artifact.byteCount),
               idempotency: { keyDigest, requestDigest },
             });
           } catch (error) {
             const raced = replay(actor.principalId, keyDigest, requestDigest);
             if (!raced) throw error;
-            await verifySource(handle, image);
+            await verifySource(handle, artifact);
             projection = raced;
           }
-          if (!exactProjection(projection, { artifactId, actorPrincipalId: actor.principalId, image })) {
+          if (!exactProjection(projection, { artifactId, actorPrincipalId: actor.principalId, artifact })) {
             throw new ArtifactError("storage_conflict");
           }
           artifactIds.push(projection.id);

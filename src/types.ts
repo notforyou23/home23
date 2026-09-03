@@ -6,6 +6,7 @@
  */
 
 import type { ReasoningEffort } from './agent/reasoning-effort.js';
+import type { ReturnedArtifactGenerator } from './returned-artifacts.js';
 
 // ─── Channel Types ──────────────────────────────────────────
 
@@ -31,7 +32,7 @@ export interface OutgoingResponse {
 export interface MediaAttachment {
   type: 'image' | 'voice' | 'document';
   path: string;
-  generatedBy?: 'generate_image';
+  generatedBy?: ReturnedArtifactGenerator;
   mimeType?: string;
   fileName?: string;
   byteCount?: number;

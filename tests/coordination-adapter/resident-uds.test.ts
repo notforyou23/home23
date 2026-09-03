@@ -24,6 +24,7 @@ const RESUME_CORRELATION_ID = "cor_0198d95f-6c00-7000-8000-0000000000d2";
 test("resident start renews transient connection attempts while the harness comes online", async () => {
   let startAttempts = 0;
   let eventAttempts = 0;
+  let returnUnknownMime = false;
   const client = {
     async request(input: { path: string }) {
       if (input.path === "/internal/v1/turns/start") {
@@ -57,7 +58,21 @@ test("resident start renews transient connection attempts while the harness come
           },
         } };
       }
-      return { payload: { text: "started after retry", model: "fixture", toolCallCount: 0, durationMs: 1 } };
+      return { payload: {
+        text: "started after retry",
+        model: "fixture",
+        toolCallCount: 0,
+        durationMs: 1,
+        ...(returnUnknownMime ? { media: [{
+          type: "document",
+          generatedBy: "return_artifact",
+          path: "/private/resident/workspace/media/returned-artifacts/answer.bin",
+          mimeType: "application/octet-stream",
+          fileName: "answer.bin",
+          byteCount: 1,
+          sha256: "a".repeat(64),
+        }] } : {}),
+      } };
     },
     async close() { return undefined; },
   } as unknown as ResidentUdsClient;
@@ -68,7 +83,7 @@ test("resident start renews transient connection attempts while the harness come
     startTimeoutMs: 1_000,
     retryDelayMs: 1,
   });
-  const started = await port.runWithTurn("coordination:test:startup", "wait for the harness", {
+  const options = {
     coordinationOrigin: {
       kind: "coordination",
       workId: "wrk_0198d95f-6c00-7000-8000-0000000000e1",
@@ -89,11 +104,18 @@ test("resident start renews transient connection attempts while the harness come
     turnSelection: { modelAlias: null, reasoningEffort: null },
     onDurableStart: () => undefined,
     onEvent: () => undefined,
-  });
+  } as const;
+  const started = await port.runWithTurn("coordination:test:startup", "wait for the harness", options);
 
   assert.equal((await started.response).text, "started after retry");
   assert.equal(startAttempts, 3);
   assert.equal(eventAttempts, 2, "durable event replay must renew transient signed reads");
+  returnUnknownMime = true;
+  const invalid = await port.runWithTurn("coordination:test:startup", "wait for the harness", options);
+  await assert.rejects(
+    invalid.response,
+    (error: unknown) => error instanceof ResidentProtocolError && error.code === "request_invalid",
+  );
 });
 
 test("resident port rejects a Work bound to a different resident before transport", async () => {
@@ -295,7 +317,7 @@ test("resident UDS verifies generated images and completed recovery never reruns
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspacePath = join(root, "workspace");
   let residentWorkspacePath = workspacePath;
-  const generatedImagesRoot = join(workspacePath, "media", "generated-images");
+  const generatedImagesRoot = join(workspacePath, "media", "returned-artifacts");
   mkdirSync(generatedImagesRoot, { recursive: true });
   const bytes = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -493,7 +515,7 @@ test("resident UDS verifies generated images and completed recovery never reruns
   writeFileSync(escapedImagePath, bytes, { mode: 0o400 });
   const symlinkedWorkspacePath = join(root, "symlinked-workspace");
   mkdirSync(join(symlinkedWorkspacePath, "media"), { recursive: true });
-  symlinkSync(escapedGeneratedRoot, join(symlinkedWorkspacePath, "media", "generated-images"));
+  symlinkSync(escapedGeneratedRoot, join(symlinkedWorkspacePath, "media", "returned-artifacts"));
   const rejectedCases = [
     { suffix: "b", path: outsidePath, workspace: workspacePath },
     { suffix: "c", path: symlinkPath, workspace: workspacePath },

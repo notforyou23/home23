@@ -16,6 +16,7 @@ import { WORK_PRODUCT_CONTROLS_MIGRATION_SQL } from "./0007-work-product-control
 import { COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL } from "./0008-communication-evidence-indexes.js";
 import { WORK_TURN_SELECTION_MIGRATION_SQL } from "./0009-work-turn-selection.js";
 import { BOT_LIFECYCLE_RECEIPTS_MIGRATION_SQL } from "./0010-bot-lifecycle-receipts.js";
+import { ARTIFACT_AUDIO_MPEG_MIGRATION_SQL } from "./0011-artifact-audio-mpeg.js";
 
 export {
   COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
@@ -74,6 +75,8 @@ export const COORDINATION_WORK_TURN_SELECTION_MIGRATION_CHECKSUM =
   "ff938ea71ba5fbfd131586817a218f7ee14e735cac97ab49f36dbedb40ea963b";
 export const COORDINATION_BOT_LIFECYCLE_RECEIPTS_MIGRATION_CHECKSUM =
   "9c379eaaee0f77abec1a58eeea6b9aaf5b1253cc97da9f477dbe40222c1d5caf";
+export const COORDINATION_ARTIFACT_AUDIO_MPEG_MIGRATION_CHECKSUM =
+  "006ce2f43d7ba2248d11ce2494753ffa430cb7e277b6c246a4aadd8c37fb8849";
 
 export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(
@@ -146,6 +149,13 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
     COORDINATION_BOT_LIFECYCLE_RECEIPTS_MIGRATION_CHECKSUM,
     "748f660e3ccc8b9a13ebd2c0be9ff4bc8f4add027335a355d776e25784969c04",
   ),
+  defineMigration(
+    11,
+    "artifact-audio-mpeg",
+    ARTIFACT_AUDIO_MPEG_MIGRATION_SQL,
+    COORDINATION_ARTIFACT_AUDIO_MPEG_MIGRATION_CHECKSUM,
+    "e594c19ea7b748ef47e3654ffdbfc2809819f269dc6429a429696e46eba43f7b",
+  ),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -165,7 +175,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "d8e6c4553cacbf8a3ab32083d973c0eb3f8b6457335fdca455f9224e1ebcdbfa";
+  "f0608d6fba062352ade088c3d7b2e7467421c26d115a4cd4cfa9444adf681f43";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

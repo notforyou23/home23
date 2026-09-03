@@ -1,10 +1,18 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { ConversationHistory } from "../agent/history.js";
 import type { AgentEvent, AgentResponse, CoordinationTurnOrigin } from "../agent/types.js";
 import type { MediaAttachment } from "../types.js";
+import {
+  detectReturnedArtifactContentType,
+  isReturnedArtifactContentType,
+  isReturnedArtifactGenerator,
+  returnedArtifactMediaType,
+  type ReturnedArtifactContentType,
+  type ReturnedArtifactGenerator,
+} from "../returned-artifacts.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../agent/reasoning-effort.js";
 import type { AgentLoop } from "../agent/loop.js";
 import {
@@ -43,28 +51,24 @@ const MAX_RESIDENT_ATTACHMENTS = 10;
 const MAX_RESIDENT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const RESIDENT_ATTACHMENT_CONTENT_TYPES = new Set([
   "application/pdf",
+  "audio/mpeg",
   "image/gif",
   "image/jpeg",
   "image/png",
   "text/plain",
 ]);
-const GENERATED_IMAGE_CONTENT_TYPES = new Set([
-  "image/gif",
-  "image/jpeg",
-  "image/png",
-]);
-const MAX_GENERATED_IMAGE_CAPTION_BYTES = 2_048;
+const MAX_RETURNED_ARTIFACT_CAPTION_BYTES = 2_048;
 
 function exactHouseResidentCapabilities(value: unknown): boolean {
   return Array.isArray(value) && value.length === HOUSE_RESIDENT_CAPABILITIES.length &&
     HOUSE_RESIDENT_CAPABILITIES.every((capability) => value.includes(capability));
 }
 
-type ResidentGeneratedImage = Readonly<{
-  type: "image";
-  generatedBy: "generate_image";
+type ResidentReturnedArtifact = Readonly<{
+  type: "image" | "voice" | "document";
+  generatedBy: ReturnedArtifactGenerator;
   path: string;
-  mimeType: string;
+  mimeType: ReturnedArtifactContentType;
   fileName: string;
   byteCount: number;
   sha256: string;
@@ -237,7 +241,7 @@ async function residentAttachments(
   return Object.freeze(result);
 }
 
-function safeGeneratedImageFileName(value: unknown, fallback: string): string {
+function safeReturnedArtifactFileName(value: unknown, fallback: string): string {
   const fileName = value === undefined ? fallback : value;
   if (
     typeof fileName !== "string" ||
@@ -249,217 +253,206 @@ function safeGeneratedImageFileName(value: unknown, fallback: string): string {
     /^[A-Za-z]:/u.test(fileName) ||
     /[\0-\x1f\x7f/\\]/u.test(fileName)
   ) {
-    throw new ResidentProtocolError("request_invalid", "resident generated image filename is invalid");
+    throw new ResidentProtocolError("request_invalid", "resident returned artifact filename is invalid");
   }
   return fileName;
 }
 
-function exactImageMime(header: Buffer): string | null {
-  if (header.length >= 8 && header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
-    return "image/png";
-  }
-  if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) {
-    return "image/jpeg";
-  }
-  const signature = header.subarray(0, 6).toString("ascii");
-  if (signature === "GIF87a" || signature === "GIF89a") return "image/gif";
-  return null;
-}
-
-function generatedImageCandidates(value: unknown): Record<string, unknown>[] {
+function returnedArtifactCandidates(value: unknown): Record<string, unknown>[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
-    throw new ResidentProtocolError("request_invalid", "resident generated image descriptors are invalid");
+    throw new ResidentProtocolError("request_invalid", "resident returned artifact descriptors are invalid");
   }
-  const images: Record<string, unknown>[] = [];
+  const artifacts: Record<string, unknown>[] = [];
   for (const raw of value) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      throw new ResidentProtocolError("request_invalid", "resident generated image descriptor is invalid");
+      throw new ResidentProtocolError("request_invalid", "resident returned artifact descriptor is invalid");
     }
     const descriptor = raw as Record<string, unknown>;
-    const mediaType = descriptor.type === "media" ? descriptor.mediaType : (descriptor.type ?? descriptor.mediaType);
-    if (mediaType !== "image" || descriptor.generatedBy !== "generate_image") continue;
-    images.push(descriptor);
+    if (!isReturnedArtifactGenerator(descriptor.generatedBy)) continue;
+    artifacts.push(descriptor);
   }
-  if (images.length > MAX_RESIDENT_ATTACHMENTS) {
-    throw new ResidentProtocolError("request_invalid", "resident generated image limit exceeded");
+  if (artifacts.length > MAX_RESIDENT_ATTACHMENTS) {
+    throw new ResidentProtocolError("request_invalid", "resident returned artifact limit exceeded");
   }
-  return images;
+  return artifacts;
 }
 
-async function residentGeneratedImages(
+async function residentReturnedArtifacts(
   value: unknown,
-  configuredRoot: string | undefined,
-): Promise<readonly ResidentGeneratedImage[]> {
-  const candidates = generatedImageCandidates(value);
+  configuredRoots: readonly { path: string; generatedImageOnly: boolean }[],
+): Promise<readonly ResidentReturnedArtifact[]> {
+  const candidates = returnedArtifactCandidates(value);
   if (candidates.length === 0) return Object.freeze([]);
-  if (!configuredRoot || !isAbsolute(configuredRoot) || configuredRoot.includes("\0")) {
-    throw new ResidentProtocolError("request_invalid", "resident generated image root is unavailable");
+  const roots: Array<{ path: string; generatedImageOnly: boolean }> = [];
+  for (const configured of configuredRoots) {
+    if (!isAbsolute(configured.path) || configured.path.includes("\0")) continue;
+    const root = resolve(configured.path);
+    try {
+      const rootEntry = await lstat(root);
+      const canonicalRoot = await realpath(root);
+      const allowedMacSystemAlias = root.startsWith("/var/") && canonicalRoot === `/private${root}`;
+      if (
+        !rootEntry.isDirectory() || rootEntry.isSymbolicLink() ||
+        (canonicalRoot !== root && !allowedMacSystemAlias)
+      ) continue;
+      roots.push({ path: canonicalRoot, generatedImageOnly: configured.generatedImageOnly });
+    } catch { /* absent roots are simply not eligible */ }
+  }
+  if (roots.length === 0) {
+    throw new ResidentProtocolError("request_invalid", "resident returned artifact root is unavailable");
   }
 
-  const root = resolve(configuredRoot);
-  let canonicalRoot: string;
-  try {
-    const rootEntry = await lstat(root);
-    canonicalRoot = await realpath(root);
-    const allowedMacSystemAlias = root.startsWith("/var/") && canonicalRoot === `/private${root}`;
-    if (
-      !rootEntry.isDirectory() ||
-      rootEntry.isSymbolicLink() ||
-      (canonicalRoot !== root && !allowedMacSystemAlias)
-    ) {
-      throw new Error("invalid root");
-    }
-  } catch {
-    throw new ResidentProtocolError("request_invalid", "resident generated image root is unavailable");
-  }
-
-  const pathPrefix = canonicalRoot.endsWith(sep) ? canonicalRoot : `${canonicalRoot}${sep}`;
   const seen = new Set<string>();
-  const images: ResidentGeneratedImage[] = [];
+  const artifacts: ResidentReturnedArtifact[] = [];
   for (const candidate of candidates) {
     const path = candidate.path;
     if (typeof path !== "string" || path.length === 0 || path.length > 4_096 || path.includes("\0") || !isAbsolute(path)) {
-      throw new ResidentProtocolError("request_invalid", "resident generated image path is invalid");
+      throw new ResidentProtocolError("request_invalid", "resident returned artifact path is invalid");
     }
 
     let handle: Awaited<ReturnType<typeof open>> | undefined;
     try {
       const [entry, canonicalPath] = await Promise.all([lstat(path), realpath(path)]);
+      const generatedBy = candidate.generatedBy;
+      if (!isReturnedArtifactGenerator(generatedBy)) throw new Error("returned artifact generator is invalid");
+      const eligibleRoot = roots.find((root) =>
+        dirname(canonicalPath) === root.path &&
+        (!root.generatedImageOnly || generatedBy === "generate_image")
+      );
       if (
-        !canonicalPath.startsWith(pathPrefix) ||
+        !eligibleRoot ||
         !entry.isFile() ||
         entry.isSymbolicLink() ||
         seen.has(canonicalPath)
       ) {
-        throw new Error("invalid generated image path");
+        throw new Error("invalid returned artifact path");
       }
       handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-      const stat = await handle.stat();
+      const before = await handle.stat();
       if (
-        !stat.isFile() ||
-        stat.dev !== entry.dev ||
-        stat.ino !== entry.ino ||
-        stat.size < 1 ||
-        stat.size > MAX_RESIDENT_ATTACHMENT_BYTES
+        !before.isFile() ||
+        before.dev !== entry.dev ||
+        before.ino !== entry.ino ||
+        before.size < 1 ||
+        before.size > MAX_RESIDENT_ATTACHMENT_BYTES
       ) {
-        throw new Error("invalid generated image file");
+        throw new Error("invalid returned artifact file");
       }
 
       if (candidate.byteCount !== undefined && (
         typeof candidate.byteCount !== "number" ||
         !Number.isSafeInteger(candidate.byteCount) ||
-        candidate.byteCount !== stat.size
+        candidate.byteCount !== before.size
       )) {
-        throw new Error("generated image size differs");
+        throw new Error("returned artifact size differs");
       }
 
-      const hash = createHash("sha256");
-      const buffer = Buffer.allocUnsafe(64 * 1024);
-      let header = Buffer.alloc(0);
-      let offset = 0;
-      while (offset < stat.size) {
-        const read = await handle.read(buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
-        if (read.bytesRead === 0) break;
-        const bytes = buffer.subarray(0, read.bytesRead);
-        if (header.length < 8) header = Buffer.concat([header, bytes.subarray(0, 8 - header.length)]);
-        hash.update(bytes);
-        offset += read.bytesRead;
-      }
-      const sha256 = hash.digest("hex");
-      if (offset !== stat.size || (candidate.sha256 !== undefined && candidate.sha256 !== sha256)) {
-        throw new Error("generated image digest differs");
-      }
-
-      const mimeType = exactImageMime(header);
+      const bytes = await handle.readFile();
+      const after = await handle.stat();
+      const pathAfter = await lstat(canonicalPath);
       if (
-        !mimeType ||
-        !GENERATED_IMAGE_CONTENT_TYPES.has(mimeType) ||
-        (candidate.mimeType !== undefined && candidate.mimeType !== mimeType)
+        bytes.length !== before.size ||
+        after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size ||
+        pathAfter.isSymbolicLink() || pathAfter.dev !== before.dev || pathAfter.ino !== before.ino
       ) {
-        throw new Error("generated image MIME differs");
+        throw new Error("returned artifact changed");
       }
-      const fileName = safeGeneratedImageFileName(candidate.fileName, basename(canonicalPath));
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      if (candidate.sha256 !== undefined && candidate.sha256 !== sha256) {
+        throw new Error("returned artifact digest differs");
+      }
+      const mimeType = detectReturnedArtifactContentType(bytes);
+      const mediaType = returnedArtifactMediaType(mimeType, generatedBy);
+      const declaredMediaType = candidate.type === "media" ? candidate.mediaType : (candidate.type ?? candidate.mediaType);
+      if (declaredMediaType !== mediaType || (candidate.mimeType !== undefined && candidate.mimeType !== mimeType)) {
+        throw new Error("returned artifact MIME differs");
+      }
+      const fileName = safeReturnedArtifactFileName(candidate.fileName, basename(canonicalPath));
       if (fileName !== basename(canonicalPath)) {
-        throw new Error("generated image filename differs");
+        throw new Error("returned artifact filename differs");
       }
       const caption = candidate.caption;
       if (caption !== undefined && (
         typeof caption !== "string" ||
         caption.includes("\0") ||
-        Buffer.byteLength(caption, "utf8") > MAX_GENERATED_IMAGE_CAPTION_BYTES
+        Buffer.byteLength(caption, "utf8") > MAX_RETURNED_ARTIFACT_CAPTION_BYTES
       )) {
-        throw new Error("generated image caption is invalid");
+        throw new Error("returned artifact caption is invalid");
       }
       seen.add(canonicalPath);
-      images.push(Object.freeze({
-        type: "image",
-        generatedBy: "generate_image",
+      artifacts.push(Object.freeze({
+        type: mediaType,
+        generatedBy,
         path: canonicalPath,
         mimeType,
         fileName,
-        byteCount: stat.size,
+        byteCount: before.size,
         sha256,
         ...(typeof caption === "string" ? { caption } : {}),
       }));
     } catch (error) {
       if (error instanceof ResidentProtocolError) throw error;
-      throw new ResidentProtocolError("request_invalid", "resident generated image bytes are invalid");
+      throw new ResidentProtocolError("request_invalid", "resident returned artifact bytes are invalid");
     } finally {
       await handle?.close().catch(() => undefined);
     }
   }
-  return Object.freeze(images);
+  return Object.freeze(artifacts);
 }
 
-function generatedImagesJson(images: readonly ResidentGeneratedImage[]): JsonValue {
-  return images.map((image) => ({
-    type: image.type,
-    generatedBy: image.generatedBy,
-    path: image.path,
-    mimeType: image.mimeType,
-    fileName: image.fileName,
-    byteCount: image.byteCount,
-    sha256: image.sha256,
-    ...(image.caption === undefined ? {} : { caption: image.caption }),
+function returnedArtifactsJson(artifacts: readonly ResidentReturnedArtifact[]): JsonValue {
+  return artifacts.map((artifact) => ({
+    type: artifact.type,
+    generatedBy: artifact.generatedBy,
+    path: artifact.path,
+    mimeType: artifact.mimeType,
+    fileName: artifact.fileName,
+    byteCount: artifact.byteCount,
+    sha256: artifact.sha256,
+    ...(artifact.caption === undefined ? {} : { caption: artifact.caption }),
   }));
 }
 
-function parseResidentGeneratedImages(value: JsonValue | undefined): MediaAttachment[] {
+function parseResidentReturnedArtifacts(value: JsonValue | undefined): MediaAttachment[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > MAX_RESIDENT_ATTACHMENTS) {
-    throw new ResidentProtocolError("request_invalid", "resident generated image response is invalid");
+    throw new ResidentProtocolError("request_invalid", "resident returned artifact response is invalid");
   }
-  const images = value.map((raw) => {
-    const image = object(raw);
-    if (image.type !== "image" || image.generatedBy !== "generate_image") {
-      throw new ResidentProtocolError("request_invalid", "resident generated image type is invalid");
+  return value.map((raw) => {
+    const artifact = object(raw);
+    const generatedBy = artifact.generatedBy;
+    const mimeType = string(artifact.mimeType, "returned artifact MIME");
+    if (
+      !isReturnedArtifactGenerator(generatedBy) ||
+      !isReturnedArtifactContentType(mimeType) ||
+      artifact.type !== returnedArtifactMediaType(mimeType, generatedBy)
+    ) {
+      throw new ResidentProtocolError("request_invalid", "resident returned artifact type is invalid");
     }
-    const path = string(image.path, "generated image path");
-    const mimeType = string(image.mimeType, "generated image MIME");
-    const fileName = safeGeneratedImageFileName(image.fileName, basename(path));
-    const byteCount = nonnegativeSafeInteger(image.byteCount, "generated image byteCount");
-    const sha256 = string(image.sha256, "generated image sha256");
-    const caption = image.caption;
+    const path = string(artifact.path, "returned artifact path");
+    const fileName = safeReturnedArtifactFileName(artifact.fileName, basename(path));
+    const byteCount = nonnegativeSafeInteger(artifact.byteCount, "returned artifact byteCount");
+    const sha256 = string(artifact.sha256, "returned artifact sha256");
+    const caption = artifact.caption;
     if (
       !isAbsolute(path) ||
       path.length > 4_096 ||
       basename(path) !== fileName ||
-      !GENERATED_IMAGE_CONTENT_TYPES.has(mimeType) ||
       byteCount < 1 ||
       byteCount > MAX_RESIDENT_ATTACHMENT_BYTES ||
       !/^[a-f0-9]{64}$/u.test(sha256) ||
       (caption !== undefined && (
         typeof caption !== "string" ||
         caption.includes("\0") ||
-        Buffer.byteLength(caption, "utf8") > MAX_GENERATED_IMAGE_CAPTION_BYTES
+        Buffer.byteLength(caption, "utf8") > MAX_RETURNED_ARTIFACT_CAPTION_BYTES
       ))
     ) {
-      throw new ResidentProtocolError("request_invalid", "resident generated image response is invalid");
+      throw new ResidentProtocolError("request_invalid", "resident returned artifact response is invalid");
     }
     return Object.freeze({
-      type: "image" as const,
-      generatedBy: "generate_image" as const,
+      type: returnedArtifactMediaType(mimeType, generatedBy),
+      generatedBy,
       path,
       mimeType,
       fileName,
@@ -468,7 +461,6 @@ function parseResidentGeneratedImages(value: JsonValue | undefined): MediaAttach
       ...(typeof caption === "string" ? { caption } : {}),
     });
   });
-  return images;
 }
 
 function instructionWithAttachments(
@@ -713,14 +705,17 @@ function residentModelAliases(
 export class ResidentTurnUdsServer {
   readonly #store:TurnStore; readonly #responses=new Map<string,Promise<AgentResponse>>(); readonly #server:ResidentUdsServer;
   readonly #modelAliases:Readonly<ModelAliases>;
-  readonly #generatedImagesRoot:string|undefined;
+  readonly #returnedArtifactRoots:readonly {path:string;generatedImageOnly:boolean}[];
   constructor(private readonly options:ResidentTurnUdsServerOptions){
     this.#store=new TurnStore(options.history);
     this.#modelAliases=residentModelAliases(options.modelAliases,options.agent);
     const workspacePath=options.agent.getWorkspacePath?.();
-    this.#generatedImagesRoot=typeof workspacePath==="string"&&isAbsolute(workspacePath)&&!workspacePath.includes("\0")
-      ? join(resolve(workspacePath),"media","generated-images")
-      : undefined;
+    this.#returnedArtifactRoots=typeof workspacePath==="string"&&isAbsolute(workspacePath)&&!workspacePath.includes("\0")
+      ? Object.freeze([
+          {path:join(resolve(workspacePath),"media","returned-artifacts"),generatedImageOnly:false},
+          {path:join(resolve(workspacePath),"media","generated-images"),generatedImageOnly:true},
+        ])
+      : Object.freeze([]);
     if(options.credential.residentSlug!==options.residentSlug)throw new TypeError("resident credential slug does not match harness");
     this.#server=new ResidentUdsServer({socketPath:options.socketPath,serverInstanceId:options.serverInstanceId,credentials:[options.credential],now:options.now,validateFence:(fence,request)=>request.method==="POST"&&(request.path===START||request.path===COMPLETED_RECOVERY_START)?typeof fence==="string"&&fence.length<512:true,handleRequest:(request,context)=>this.#handle(request,context.signal)});
   }
@@ -833,13 +828,13 @@ export class ResidentTurnUdsServer {
       if(p.completedRecovery===true){
         return{text:final.assistant_content,model:final.model??"recovered",toolCallCount:0,durationMs:0,recovered:true};
       }
-      const media=await residentGeneratedImages(
+      const media=await residentReturnedArtifacts(
         this.#store.eventsSince(chatId,turnId,-1)
           .filter((event)=>event.kind==="media")
           .map((event)=>event.data),
-        this.#generatedImagesRoot,
+        this.#returnedArtifactRoots,
       );
-      return{text:final.assistant_content,model:final.model??"recovered",toolCallCount:0,durationMs:0,recovered:true,...(media.length>0?{media:generatedImagesJson(media)}:{})};
+      return{text:final.assistant_content,model:final.model??"recovered",toolCallCount:0,durationMs:0,recovered:true,...(media.length>0?{media:returnedArtifactsJson(media)}:{})};
     }
     if(p.completedRecovery!==undefined){
       throw new ResidentProtocolError("request_invalid","completed recovery requires a terminal resident turn");
@@ -847,8 +842,8 @@ export class ResidentTurnUdsServer {
     const active=this.#responses.get(turnId);if(active){
       try {
         const response=await active;
-        const media=await residentGeneratedImages(response.media,this.#generatedImagesRoot);
-        return{text:response.text,model:response.model,toolCallCount:response.toolCallCount,durationMs:response.durationMs,...(media.length>0?{media:generatedImagesJson(media)}:{})};
+        const media=await residentReturnedArtifacts(response.media,this.#returnedArtifactRoots);
+        return{text:response.text,model:response.model,toolCallCount:response.toolCallCount,durationMs:response.durationMs,...(media.length>0?{media:returnedArtifactsJson(media)}:{})};
       } catch (error) {
         const terminal=this.#store.finalEnvelope(chatId,turnId);
         if(terminal&&terminal.status!=="complete")throw new ResidentProtocolError("internal_error",terminal.error_message??terminal.error??`resident turn ended ${terminal.status}`);
@@ -1059,7 +1054,7 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
         const remaining=resultDeadlineAt-now();
         if(remaining<1)throw new ResidentProtocolError("deadline_exceeded","resident result did not become terminal before its overall deadline");
         try{
-          const result=await this.options.client.request({method:"GET",path:`/internal/v1/turns/${encodeURIComponent(turnId)}/result`,payload:{chatId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,...(completedRecovery?{completedRecovery:true}:{})},deadlineAtMs:now()+Math.min(this.#requestDeadlineMs,remaining),fence,correlationId:request.correlationId});const value=object(result.payload);const media=parseResidentGeneratedImages(value.media);return{text:string(value.text,"text"),model:string(value.model,"model"),toolCallCount:nonnegativeSafeInteger(value.toolCallCount,"toolCallCount"),durationMs:nonnegativeSafeInteger(value.durationMs,"durationMs"),...(media.length>0?{media}:{})};
+          const result=await this.options.client.request({method:"GET",path:`/internal/v1/turns/${encodeURIComponent(turnId)}/result`,payload:{chatId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,...(completedRecovery?{completedRecovery:true}:{})},deadlineAtMs:now()+Math.min(this.#requestDeadlineMs,remaining),fence,correlationId:request.correlationId});const value=object(result.payload);const media=parseResidentReturnedArtifacts(value.media);return{text:string(value.text,"text"),model:string(value.model,"model"),toolCallCount:nonnegativeSafeInteger(value.toolCallCount,"toolCallCount"),durationMs:nonnegativeSafeInteger(value.durationMs,"durationMs"),...(media.length>0?{media}:{})};
         }catch(caught){
           if(!retryableTransportWait(caught))throw caught;
           const retryRemaining=resultDeadlineAt-now();

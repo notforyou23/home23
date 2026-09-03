@@ -253,7 +253,7 @@ export type AgentEvent =
   | { type: 'response_chunk'; chunk: string; sourceEventType?: string;
       providerEvent?: unknown }
   | { type: 'media'; mediaType: string; path: string; caption?: string;
-      generatedBy?: 'generate_image';
+      generatedBy?: MediaAttachment['generatedBy'];
       mimeType?: string; fileName?: string; byteCount?: number; sha256?: string;
       toolCallId?: string; sourceEventType?: string }
   | { type: 'subagent_start'; subagentId: string; task: string;
