@@ -77,7 +77,7 @@
   "activity": {
     "entries": [
       {
-        "key": "work:wrk_0198d95f-6c00-7000-8000-0000000000d1:progress",
+        "key": "work:obs_0198d95f-6c00-7000-8000-0000000000d9:progress",
         "eventSequence": 131,
         "category": "progress",
         "state": "working",
@@ -88,7 +88,7 @@
         "observationId": "obs_0198d95f-6c00-7000-8000-0000000000d9"
       },
       {
-        "key": "work:wrk_0198d95f-6c00-7000-8000-0000000000d1:completion",
+        "key": "event:evt_0198d95f-6c00-7000-8000-0000000000e4:completion",
         "eventSequence": 134,
         "category": "completion",
         "state": "idle",
