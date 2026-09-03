@@ -4,43 +4,44 @@
 - Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-core-integration`
 - Branch: `codex/resident-presence-core-integration`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- Current HEAD: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91` (coordinator handoff only; no lane commits integrated)
+- Current HEAD: after Lane 5 cherry-pick (see log). Coordinator setup commit `d4ecf3c0`.
 - Owned files: integration branch only; cherry-pick reviewed lane commits here. Do not edit lane worktrees from this branch.
 - Current objective: first convergence — message admitted and answered while Work remains active; one later result.
 
 ## Completed behavior and changed files
 
-Coordinator setup only:
+Cherry-picked reviewed Lane 5 (isolated continuity-office adapter). Not wired into `home.ts`, the router, or Work execution. No live office, no cloud.
 
-- Created disjoint worktrees and `codex/resident-presence-*` branches from the recorded baselines.
-- Recorded the execution-state table in the build plan.
-- Dispatched five grok 4.6 implementers against first-slice briefs.
+| Source | Integration commits |
+|---|---|
+| `b743d7b2` | `a38e6707` feat(continuity-office): add isolated continuity office adapter |
+| `6674d690` | `b2bd0bf7` docs: record continuity lane handoff |
+| `52835ba9` | `faf4c74f` fix: fence writes and park in-flight work |
+| `16a97e1b` | `05bfc4ff` docs: update continuity handoff after review fixes |
 
-Lane worktrees (recover these; do not recreate):
+Lane 5 review: spec ✅, fix round 1 all Important findings addressed, no new Critical/Important breakage. Focused tests 24/24 on this branch after pick.
 
-| Lane | Worktree | Branch |
-|---|---|---|
-| 1 | `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-foreground` | `codex/resident-presence-foreground` |
-| 2 | `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-work` | `codex/resident-presence-work` |
-| 3 | `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-contracts` | `codex/resident-presence-contracts` |
-| 4 | `/Users/jtr/_JTR23_/release/home23/apple-connected-agents-worktrees/resident-presence-canary` | `codex/resident-presence-canary` |
-| 5 | `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-continuity` | `codex/resident-presence-continuity` |
+Lanes 1–4 are still in review / fix. Do not treat Lane 5 as first-convergence completion.
 
 ## Verification
 
-None yet. Integration verification waits for lane commits.
+```bash
+node --import tsx --test --test-concurrency=1 tests/continuity-office/*.test.ts
+```
+
+24 pass, 0 fail (run on this worktree after cherry-pick).
 
 ## Integration requests
 
-None until lane handoffs arrive.
+Lane 3 still owns: `Attempt.officeId`, waiting presentation, `contextRevision`, office registry, office write epoch. Do not invent those here.
 
 ## Unresolved risk or blocker
 
-Cursor workspace move to this worktree failed because the branch is local-only (`git fetch origin` cannot see it). Coordinator continues via absolute paths. Apple reference worktree remains untouched.
+Adapter is isolated. Ingress can accept while headquarters is healthy; write authority does not move. Minors from the Lane 5 review remain deferred.
 
 ## Next concrete action
 
-Review each lane report + handoff + focused test evidence, then cherry-pick reviewed Core commits onto this branch. Canary stays on its own branch against accepted fixtures.
+Wait for Lanes 1–3 re-reviews and Lane 4 first review. Then cherry-pick Core first-convergence commits (1+2+3) and have Canary consume pack `2828398f…`.
 
 ## Live action still prohibited
 
