@@ -8,7 +8,10 @@ import type {
   GroupChannelPreparedContext,
   GroupChannelResidentTarget,
 } from "../../../src/coordination/app/channel-message.js";
-import type { DirectMessageResidentTarget } from "../../../src/coordination/app/direct-message.js";
+import type {
+  DirectMessageExecutionTarget,
+  DirectMessageResidentTarget,
+} from "../../../src/coordination/app/direct-message.js";
 import type { MessagingActorContext } from "../../../src/coordination/channels/index.js";
 import { COORDINATION_MESSAGES_WRITER } from "../../../src/coordination/epochs/index.js";
 import { generateCoordinationId } from "../../../src/coordination/ids/index.js";
@@ -138,12 +141,17 @@ function harness(input: {
   initialResultIndexes?: readonly number[];
   messageOutcome?: "committed" | "replayed";
   admissionReplay?: "coordinating" | "waiting" | "completed" | "failed" | "cancelled";
+  onDemandTargetIndex?: number;
 }) {
   const targets = BOT_IDS.map((botId, index) => Object.freeze({
     targetBotId: botId,
-    targetBotDisplayName: index === 0 ? "Jerry" : "Forrest",
+    targetBotDisplayName: index === input.onDemandTargetIndex
+      ? "Lens"
+      : index === 0 ? "Jerry" : "Forrest",
     targetPrincipalId: botId,
-    residentBinding: index === 0 ? "jerry" : "forrest",
+    residentBinding: index === input.onDemandTargetIndex
+      ? "bot-lens"
+      : index === 0 ? "jerry" : "forrest",
   }));
   const works = targets.map((_, index) =>
     work(index, input.initialStates?.[index] ?? "queued")
@@ -248,6 +256,8 @@ function harness(input: {
     hasResult: (workId) => results.has(workId),
   };
   const residentTargets = new Map<string, DirectMessageResidentTarget>();
+  const executionTargets = new Map<string, DirectMessageExecutionTarget>();
+  const offeredAuthorities: string[] = [];
   for (const [index, target] of targets.entries()) {
     const finish = () => {
       const prior = current.get(works[index]!.id)!;
@@ -287,7 +297,7 @@ function harness(input: {
       );
       return Promise.resolve({ turnId: `turn-${index}`, response, receipt });
     };
-    residentTargets.set(target.residentBinding, {
+    const residentTarget: DirectMessageResidentTarget = {
       resident: {
         execute: run,
         continueAccepted: run,
@@ -338,7 +348,20 @@ function harness(input: {
           },
         },
       }),
-    });
+    };
+    if (index === input.onDemandTargetIndex) {
+      executionTargets.set(target.residentBinding, Object.freeze({
+        execution: residentTarget.resident,
+        holderInstanceId: `on-demand-${index}`,
+        models: residentTarget.models,
+        context: residentTarget.context,
+        workKind: "bot_turn",
+        authorityReference: `bot:${target.targetBotId}`,
+        actorKind: "specialist_bot",
+      }));
+    } else {
+      residentTargets.set(target.residentBinding, residentTarget);
+    }
   }
   const service = createGroupChannelMessageService({
     messages: {
@@ -420,15 +443,18 @@ function harness(input: {
       listSucceededMissingResult: () => [],
     },
     leases: {
-      offer: (request) => ({
-        work: current.get(request.workId)!,
-        attempt: {
-          id: generateCoordinationId("attempt"),
-          authorityReference: request.authorityReference,
-        },
-        lease: { id: generateCoordinationId("lease") },
-        fencingToken: 1,
-      }),
+      offer: (request) => {
+        offeredAuthorities.push(request.authorityReference);
+        return {
+          work: current.get(request.workId)!,
+          attempt: {
+            id: generateCoordinationId("attempt"),
+            authorityReference: request.authorityReference,
+          },
+          lease: { id: generateCoordinationId("lease") },
+          fencingToken: 1,
+        };
+      },
       current: (workId) => {
         const record = current.get(workId)!;
         const targetIndex = works.findIndex((candidate) => candidate.id === workId);
@@ -454,6 +480,7 @@ function harness(input: {
       },
     } as never,
     resolveResident: (binding) => residentTargets.get(binding),
+    resolveExecutionTarget: (target) => executionTargets.get(target.residentBinding),
     authority: {
       current: () => ({
         capability: "messages",
@@ -483,6 +510,7 @@ function harness(input: {
     dispositions,
     executions: () => executions,
     residentInstructions: () => Object.freeze([...residentInstructions]),
+    offeredAuthorities: () => Object.freeze([...offeredAuthorities]),
     workCount: () => current.size,
     coordinatorStarts: () => coordinatorStarts,
     coordinatorReconciles: () => coordinatorReconciles,
@@ -523,6 +551,31 @@ test("group Channel records an explicit pass without fabricating Bot speech", as
   assert.deepEqual(Object.values(testHarness.dispositions[0]!).sort(), ["completed", "passed"]);
   assert.equal(testHarness.executions(), 2);
   assert.equal(testHarness.ended(), 1);
+});
+
+test("group Channel executes a processless Bot under its own authority", async () => {
+  const testHarness = harness({
+    onDemandTargetIndex: 1,
+    responses: [
+      { text: "Jerry answered.", model: "fixture", toolCallCount: 0, durationMs: 1 },
+      { text: "Lens answered on demand.", model: "fixture", toolCallCount: 0, durationMs: 1 },
+    ],
+  });
+  const accepted = await testHarness.service.submitMessage({
+    context: testHarness.context,
+    channelId: CHANNEL_ID,
+    idempotencyKey: "channel-on-demand-message-0001",
+    body: submissionBody(),
+  });
+  const terminal = await accepted.response as { outcome: string };
+
+  assert.equal(terminal.outcome, "completed");
+  assert.ok(testHarness.offeredAuthorities().includes(`bot:${BOT_IDS[1]}`));
+  assert.equal(
+    testHarness.sent.find((entry) => entry.message.author.principalId === BOT_IDS[1])?.message.text,
+    "Lens answered on demand.",
+  );
+  assert.deepEqual(Object.values(testHarness.dispositions[0]!).sort(), ["completed", "completed"]);
 });
 
 test("sequential Channel admits each later Work from the preceding committed result", async () => {

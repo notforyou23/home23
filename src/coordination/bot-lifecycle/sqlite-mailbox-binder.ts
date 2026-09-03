@@ -501,7 +501,8 @@ export class SqlitePersistentMailboxBinder implements PersistentMailboxBinder {
       }
       if (input.to === "archived" && transaction.readOne(
         `SELECT id FROM works pending
-         WHERE pending.target_principal_id = ? AND pending.kind = 'bot_turn'
+         WHERE pending.target_principal_id = ?
+           AND pending.kind IN ('bot_turn', 'channel.bot_turn')
            AND (pending.state IN ('queued', 'leased', 'running') OR (
              pending.state = 'succeeded' AND NOT EXISTS (
                SELECT 1 FROM messages result

@@ -18,8 +18,10 @@ import type {
   CoordinationWorkPort,
 } from "./types.js";
 import type {
+  DirectMessageExecutionTarget,
   DirectMessageMessagePort,
   DirectMessageResidentTarget,
+  DirectMessageTargetDescriptor,
 } from "./direct-message.js";
 
 function responseMessageId(workId: string): string {
@@ -114,6 +116,9 @@ export function createGroupChannelMessageService(options: {
   work: CoordinationWorkPort;
   leases: CoordinationLeasePort;
   resolveResident(residentBinding: string): DirectMessageResidentTarget | undefined;
+  resolveExecutionTarget?(target: DirectMessageTargetDescriptor):
+    DirectMessageExecutionTarget | undefined |
+    Promise<DirectMessageExecutionTarget | undefined>;
   authority: { current(): AuthorityEpoch | null };
   recordMessage(input: {
     message: MessageProjection;
@@ -142,25 +147,49 @@ export function createGroupChannelMessageService(options: {
     }
     return authority!;
   };
-  const residentFor = (residentBinding: string): DirectMessageResidentTarget => {
-    const target = options.resolveResident(residentBinding);
-    if (!target) {
+  const executionTargetFor = async (
+    prepared: GroupChannelPreparedContext,
+    targetContext: GroupChannelResidentTarget,
+  ): Promise<DirectMessageExecutionTarget> => {
+    const descriptor: DirectMessageTargetDescriptor = Object.freeze({
+      channelId: prepared.channelId,
+      conversationId: prepared.conversationId,
+      targetBotId: targetContext.targetBotId,
+      targetBotDisplayName: targetContext.targetBotDisplayName,
+      targetPrincipalId: targetContext.targetPrincipalId,
+      residentBinding: targetContext.residentBinding,
+    });
+    const explicit = await options.resolveExecutionTarget?.(descriptor);
+    if (explicit) return explicit;
+    const resident = options.resolveResident(targetContext.residentBinding);
+    if (!resident) {
       throw new ChannelCoordinatorError(
         "ineligible",
-        "Channel recipient resident is not enabled",
+        "Channel recipient is not enabled",
       );
     }
-    return target;
+    return Object.freeze({
+      execution: resident.resident,
+      holderInstanceId: resident.holderInstanceId,
+      models: resident.models,
+      context: resident.context,
+      workKind: "resident_turn" as const,
+      authorityReference: `resident:${targetContext.residentBinding}`,
+      actorKind: "resident_bot" as const,
+    });
   };
 
   async function assertSelection(
-    targets: readonly GroupChannelResidentTarget[],
+    prepared: GroupChannelPreparedContext,
     selection: MessageTurnSelection,
     identity: { requestId: string; correlationId: string },
   ): Promise<void> {
+    const targets = await Promise.all(prepared.selectedTargets.map((target) =>
+      executionTargetFor(prepared, target)
+    ));
     if (selection.modelAlias === null && selection.reasoningEffort === null) return;
-    const catalogs = await Promise.all(targets.map((prepared) =>
-      residentFor(prepared.residentBinding).models.modelCatalog(identity)
+    const catalogs = await Promise.all(targets.map((target) =>
+      target.models.modelCatalog(identity)
     ));
     if (catalogs.some((catalog) =>
       (selection.modelAlias !== null &&
@@ -227,7 +256,7 @@ export function createGroupChannelMessageService(options: {
   function originFor(input: {
     work: WorkRecord;
     prepared: GroupChannelPreparedContext;
-    target: DirectMessageResidentTarget;
+    target: DirectMessageExecutionTarget;
     targetContext: GroupChannelResidentTarget;
     offer: ReturnType<CoordinationLeasePort["offer"]>;
   }): CoordinationTurnOrigin {
@@ -250,7 +279,7 @@ export function createGroupChannelMessageService(options: {
   function recoveredOrigin(input: {
     work: WorkRecord;
     prepared: GroupChannelPreparedContext;
-    target: DirectMessageResidentTarget;
+    target: DirectMessageExecutionTarget;
     targetContext: GroupChannelResidentTarget;
   }): {
     origin: CoordinationTurnOrigin;
@@ -269,8 +298,7 @@ export function createGroupChannelMessageService(options: {
       current.lease.holderPrincipalId === current.attempt.holderPrincipalId &&
       current.lease.holderInstanceId === current.attempt.holderInstanceId &&
       current.lease.fencingToken === current.attempt.fencingToken &&
-      current.attempt.authorityReference ===
-        `resident:${input.targetContext.residentBinding}`;
+      current.attempt.authorityReference === input.target.authorityReference;
     if (!exactBinding) throw new Error("Channel Work recovery binding is not exact");
     let phase: "offered" | "accepted" | "running" | "completed";
     if (
@@ -338,7 +366,7 @@ export function createGroupChannelMessageService(options: {
         (candidate) => candidate.targetPrincipalId === currentWork.targetPrincipalId,
       );
       if (!targetContext) throw new Error("Channel Work target is outside recovered context");
-      const target = residentFor(targetContext.residentBinding);
+      const target = await executionTargetFor(input.prepared, targetContext);
       let origin: CoordinationTurnOrigin;
       let recoveryPhase: "offered" | "accepted" | "running" | "completed" | null = null;
       if (input.recovery) {
@@ -347,7 +375,7 @@ export function createGroupChannelMessageService(options: {
             workId: currentWork.id,
             holderPrincipalId: targetContext.targetPrincipalId,
             holderInstanceId: target.holderInstanceId,
-            authorityReference: `resident:${targetContext.residentBinding}`,
+            authorityReference: target.authorityReference,
             automatic: true,
             requestId: input.requestId,
             correlationId: input.correlationId,
@@ -368,7 +396,7 @@ export function createGroupChannelMessageService(options: {
           workId: currentWork.id,
           holderPrincipalId: targetContext.targetPrincipalId,
           holderInstanceId: target.holderInstanceId,
-          authorityReference: `resident:${targetContext.residentBinding}`,
+          authorityReference: target.authorityReference,
           automatic: true,
           requestId: input.requestId,
           correlationId: input.correlationId,
@@ -378,6 +406,8 @@ export function createGroupChannelMessageService(options: {
       const residentRequest = {
         chatId: `coordination:${input.prepared.channelId}:${currentWork.id}`,
         instruction: input.prepared.instruction,
+        historyBackfill: Object.freeze([]),
+        attachments: Object.freeze([]),
         origin,
         requestId: input.requestId,
         correlationId: input.correlationId,
@@ -388,21 +418,21 @@ export function createGroupChannelMessageService(options: {
           actor: {
             principalId: targetContext.targetPrincipalId,
             displayName: targetContext.targetBotDisplayName,
-            kind: "resident_bot",
+            kind: target.actorKind,
           },
         },
       };
       let agentResponse: AgentResponse;
       let terminalReceipt: ResidentTerminalReceipt;
       if (recoveryPhase === "completed") {
-        const run = await target.resident.recoverCompleted(residentRequest);
+        const run = await target.execution.recoverCompleted(residentRequest);
         [agentResponse, terminalReceipt] = await Promise.all([run.response, run.receipt]);
       } else {
         const run = recoveryPhase === "running"
-          ? await target.resident.reattach(residentRequest)
+          ? await target.execution.reattach(residentRequest)
           : recoveryPhase === "accepted"
-            ? await target.resident.continueAccepted(residentRequest)
-            : await target.resident.execute(residentRequest);
+            ? await target.execution.continueAccepted(residentRequest)
+            : await target.execution.execute(residentRequest);
         const [response, receipt] = await Promise.allSettled([run.response, run.receipt]);
         if (receipt.status === "rejected") throw receipt.reason;
         if (response.status === "rejected") throw response.reason;
@@ -650,8 +680,7 @@ export function createGroupChannelMessageService(options: {
         replayed: false,
       });
     }
-    for (const target of input.prepared.selectedTargets) residentFor(target.residentBinding);
-    await assertSelection(input.prepared.selectedTargets, input.turnSelection, input.context);
+    await assertSelection(input.prepared, input.turnSelection, input.context);
     const initialPrepared = input.prepared.responseOrder === "sequential"
       ? Object.freeze({
           ...input.prepared,

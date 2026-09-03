@@ -798,6 +798,13 @@ export function createCoordinationProcess(
               work,
               leases,
               resolveResident,
+              resolveExecutionTarget: async (target) => {
+                const bot = await botRepository.getBotById(target.targetBotId);
+                return onDemandBots.resolve({
+                  ...target,
+                  conversationId: bot?.conversationId ?? target.conversationId,
+                });
+              },
               authority: { current: () => currentAuthority("messages") },
               recordMessage: createCanonicalMessageRecorder(
                 communications,

@@ -313,6 +313,80 @@ function appendResult(
   return messageId;
 }
 
+test("group Channel context admits an active processless Bot participant", async () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "parallel");
+    database.raw.prepare(
+      `UPDATE bots SET conversation_id = ?, resident_binding = 'bot-ada',
+         active_instance_id = NULL, active_key_version = NULL,
+         resident_protocol_version = NULL, resident_capabilities_json = '[]',
+         resident_registered_at = NULL, last_heartbeat_at = NULL,
+         reported_availability = NULL
+       WHERE id = ?`,
+    ).run(CONVERSATION_ID, BOT_2);
+    const eventSequence = database.readOne<{ sequence: number }>(
+      "SELECT sequence FROM events WHERE aggregate_kind = 'message' AND aggregate_id = ?",
+      MESSAGE_ID,
+    )?.sequence;
+    assert.ok(eventSequence);
+    const originMessage = Object.freeze({
+      id: MESSAGE_ID,
+      channelId: CHANNEL_ID,
+      conversationId: CONVERSATION_ID,
+      sequence: 1,
+      author: Object.freeze({
+        principalId: OWNER_ID,
+        kind: "owner" as const,
+        displayName: "Owner",
+      }),
+      kind: "text" as const,
+      text: "Ada, answer in this Channel.",
+      mentions: Object.freeze([BOT_2]),
+      attachments: Object.freeze([]),
+      clientMessageId: null,
+      replyToMessageId: null,
+      tombstonesMessageId: null,
+      provenance: Object.freeze({ roundId: null, workId: null }),
+      visibility: "visible" as const,
+      createdAt: AT,
+    });
+    const context = new SqliteGroupChannelMessageContext(database, {
+      async listMessages() {
+        return { messages: Object.freeze([originMessage]) };
+      },
+    });
+    const prepared = await context.prepare({
+      context: {
+        principalId: OWNER_ID,
+        requestId: fixtureId("request", 790),
+        correlationId: fixtureId("correlation", 790),
+        identity: {
+          kind: "owner",
+          auth: {
+            principalId: OWNER_ID,
+            deviceId: "dev_fixture",
+            sessionId: "ses_fixture",
+            scopes: ["product:read", "message:send"],
+          },
+        },
+      },
+      channelId: CHANNEL_ID,
+      originMessage,
+      attachmentIds: [],
+      eventSequence,
+    });
+
+    assert.deepEqual(
+      prepared.selectedTargets.map((target) => [target.targetBotId, target.residentBinding]),
+      [[BOT_2, "bot-ada"]],
+    );
+    assert.deepEqual(prepared.visibleParticipantIds, [BOT_ID, BOT_2]);
+  } finally {
+    database.close();
+  }
+});
+
 test("restart before the first Work repairs the exact parallel admission from the Round event", async () => {
   const database = M11TestDatabase.temporary();
   try {

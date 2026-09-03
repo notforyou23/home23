@@ -100,10 +100,25 @@ implements GroupChannelMessageContextPort {
        JOIN bots b ON b.principal_id = member.principal_id
        WHERE member.channel_id = ? AND member.kind = 'bot' AND member.active = 1
          AND b.lifecycle = 'active' AND b.continuing_identity = 1
-         AND b.durable_mailbox = 1 AND b.resident_protocol_version = 1
-         AND EXISTS (
-           SELECT 1 FROM json_each(b.resident_capabilities_json)
-           WHERE value = 'messages'
+         AND b.durable_mailbox = 1
+         AND (
+           (b.resident_protocol_version = 1 AND EXISTS (
+             SELECT 1 FROM json_each(b.resident_capabilities_json)
+             WHERE value = 'messages'
+           ))
+           OR (
+             b.resident_binding LIKE 'bot-%'
+             AND b.active_instance_id IS NULL AND b.active_key_version IS NULL
+             AND b.resident_protocol_version IS NULL
+             AND b.resident_registered_at IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM json_each(b.resident_capabilities_json)
+             )
+             AND EXISTS (
+               SELECT 1 FROM json_each(b.required_capabilities_json)
+               WHERE value = 'messages'
+             )
+           )
          )
        ORDER BY b.id`,
       channelId,
@@ -127,7 +142,7 @@ implements GroupChannelMessageContextPort {
       if (!target) {
         throw new ChannelCoordinatorError(
           "ineligible",
-          "selected Channel Bot is not a persistent message resident",
+          "selected Channel Bot is not an available message participant",
         );
       }
       return target;
