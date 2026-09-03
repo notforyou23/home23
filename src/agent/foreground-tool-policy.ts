@@ -131,6 +131,7 @@ export function foregroundDetachRefusal(decision: ForegroundToolDecision): strin
   return [
     `Foreground policy: ${decision.tool} was not started.`,
     decision.reason ?? 'This operation must become durable Work before execution.',
-    'Tell the user the assignment is being treated as background Work, or inspect current Work with work_list.',
+    'Detach is not wired yet; do not claim this assignment exists as Work.',
+    'Use work_list only to inspect Work that is already active.',
   ].join(' ');
 }

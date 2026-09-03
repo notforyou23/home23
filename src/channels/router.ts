@@ -232,6 +232,22 @@ export class SessionRouter {
   }
 
   /**
+   * Drain parked Messages for every router key on this conversation chatId.
+   * Used when a speaking turn that did not mark a router key (HTTP) ends.
+   */
+  async drainPendingForChat(chatId: string): Promise<void> {
+    const keys: string[] = [];
+    for (const key of this.queues.keys()) {
+      const sep = key.indexOf(':');
+      const queuedChatId = sep === -1 ? key : key.slice(sep + 1);
+      if (queuedChatId === chatId) keys.push(key);
+    }
+    for (const key of keys) {
+      await this.drainPending(key);
+    }
+  }
+
+  /**
    * Handle an incoming message from any channel.
    * This is the main entry point — channel adapters call this.
    */

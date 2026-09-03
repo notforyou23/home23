@@ -93,3 +93,43 @@ test('coordination Work on the same chatId does not hold the conversation speaki
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('last speaking turn clear notifies so parked router Messages can drain', async () => {
+  const root = join(tmpdir(), `fg-speaking-cleared-${process.pid}-${Math.random()}`);
+  const agent = makeAgent(root);
+  const cleared: string[] = [];
+  agent.setOnSpeakingCleared((chatId) => { cleared.push(chatId); });
+  const responses: Promise<unknown>[] = [];
+  try {
+    (agent as AgentLoop & { run: AgentLoop['run'] }).run = async (
+      _chatId,
+      _userText,
+      _media,
+      _onEvent,
+      _runtime,
+      turnRuntime?: TurnRuntimeContext,
+    ) => {
+      await new Promise((_resolve, reject) => {
+        turnRuntime?.signal.addEventListener('abort', () => reject(turnRuntime.signal.reason), { once: true });
+      });
+      return { text: 'done', model: 'test', toolCallCount: 0, durationMs: 1 };
+    };
+
+    const speaking = await agent.runWithTurn('ios_chat', 'HTTP speaking', {
+      inactivityMs: 5_000,
+      hardDurationMs: 10_000,
+      firstTokenTimeoutMs: 5_000,
+    });
+    responses.push(speaking.response.catch(() => {}));
+    await Promise.resolve();
+    assert.equal(agent.isRunning('ios_chat'), true);
+    assert.deepEqual(cleared, []);
+    agent.stop('ios_chat', speaking.turnId);
+    assert.equal(agent.isRunning('ios_chat'), false);
+    assert.deepEqual(cleared, ['ios_chat']);
+  } finally {
+    agent.stop('ios_chat');
+    await Promise.all(responses);
+    rmSync(root, { recursive: true, force: true });
+  }
+});

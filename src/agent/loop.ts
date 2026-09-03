@@ -398,6 +398,7 @@ export class AgentLoop {
   private pusher: import('../push/apns-pusher.js').ApnsPusher | null = null;
   private codexCredentialsProvider: typeof getCodexCredentials = getCodexCredentials;
   private situationalAwareness?: import('./session-bootstrap.js').SituationalAwarenessConfig;
+  private onSpeakingCleared: ((chatId: string) => void) | null = null;
 
   constructor(opts: {
     apiKey: string;
@@ -853,8 +854,10 @@ export class AgentLoop {
     turnIds?.delete(turnId);
     if (turnIds?.size === 0) this.activeTurnIds.delete(chatId);
     const speaking = this.speakingRuns.get(chatId);
+    const wasLastSpeaking = speaking?.has(turnId) === true && speaking.size === 1;
     speaking?.delete(turnId);
     if (speaking?.size === 0) this.speakingRuns.delete(chatId);
+    if (wasLastSpeaking) this.onSpeakingCleared?.(chatId);
   }
 
   private isExactRunActive(chatId: string, turnId: string, ac: AbortController): boolean {
@@ -883,6 +886,11 @@ export class AgentLoop {
    */
   isRunning(chatId: string): boolean {
     return (this.speakingRuns.get(chatId)?.size ?? 0) > 0;
+  }
+
+  /** Called when the last speaking turn for a chatId ends — drain parked Messages. */
+  setOnSpeakingCleared(handler: ((chatId: string) => void) | null): void {
+    this.onSpeakingCleared = handler;
   }
 
   /** List all active run chatIds. */
