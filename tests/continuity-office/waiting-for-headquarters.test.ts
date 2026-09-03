@@ -15,6 +15,11 @@ function isolatedWithContinuityWrite() {
   return continuity;
 }
 
+function writeFence(continuity: ReturnType<typeof createIsolatedContinuityOffice>) {
+  const authority = continuity.currentAuthority();
+  return { epoch: authority.epoch, fencingToken: authority.fencingToken };
+}
+
 test('labels local-only work waiting for headquarters while headquarters is unavailable', () => {
   const continuity = isolatedWithContinuityWrite();
   const admitted = continuity.admitWork({
@@ -24,6 +29,7 @@ test('labels local-only work waiting for headquarters while headquarters is unav
     instruction: 'Toggle the sauna from the Mini.',
     requestId: 'request_1',
     correlationId: 'correlation_1',
+    ...writeFence(continuity),
   });
 
   assert.equal(admitted.state, 'queued');
@@ -43,6 +49,7 @@ test('never presents waiting local-only work as completed', () => {
     instruction: 'Read the private brain and summarize sleep.',
     requestId: 'request_2',
     correlationId: 'correlation_2',
+    ...writeFence(continuity),
   });
 
   assert.throws(
@@ -51,6 +58,7 @@ test('never presents waiting local-only work as completed', () => {
       resultText: 'Done.',
       requestId: 'request_2b',
       correlationId: 'correlation_2b',
+      ...writeFence(continuity),
     }),
     (error: unknown) => error instanceof ContinuityOfficeError && error.code === 'illegal_state',
   );
@@ -67,6 +75,7 @@ test('allows continuity-capable work to finish at the continuity office', () => 
     instruction: 'Draft the travel note from recent conversation.',
     requestId: 'request_3',
     correlationId: 'correlation_3',
+    ...writeFence(continuity),
   });
 
   assert.equal(admitted.state, 'running');
@@ -80,6 +89,7 @@ test('allows continuity-capable work to finish at the continuity office', () => 
     resultText: 'Draft ready.',
     requestId: 'request_3b',
     correlationId: 'correlation_3b',
+    ...writeFence(continuity),
   });
 
   assert.equal(completed.state, 'succeeded');

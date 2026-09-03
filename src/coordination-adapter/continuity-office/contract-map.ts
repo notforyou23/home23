@@ -6,7 +6,8 @@ import type { ContinuityPresentation, ContinuityWorkRecord } from './types.js';
  * contracts. Extra office fields stay here until Lane 3 adds them.
  *
  * Current WorkRecord (src/coordination/work/types.ts): id, channelId,
- * originMessageId, state, currentAttemptId, nextFencingToken, kind.
+ * originMessageId, state, currentAttemptId, nextFencingToken (next token to
+ * issue; initial 1), kind. The live attempt fence is not this field.
  * Current result delivery: kind "result", idempotencyKey `work-result:${workId}`.
  * Missing from the shared pack (requested in the lane handoff): officeId,
  * presentation "waiting for headquarters", Attempt.officeId, contextRevision,
@@ -46,7 +47,7 @@ export function mapContinuityWorkToCurrentContract(
       originMessageId: work.originMessageId,
       state: work.state,
       currentAttemptId: work.attemptId,
-      nextFencingToken: work.fencingToken ?? 1,
+      nextFencingToken: work.fencingToken === null ? 1 : work.fencingToken + 1,
       kind: work.kind,
     }),
     presentation: work.presentation,

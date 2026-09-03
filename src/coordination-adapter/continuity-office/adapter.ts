@@ -65,10 +65,11 @@ function assertKnownOffice(offices: Map<string, OfficeRecord>, officeId: string)
 }
 
 function assertContinuityCapabilities(
+  officeId: string,
   role: OfficeRecord['role'],
   capabilities: readonly ContinuityCapability[],
 ): void {
-  if (role !== 'continuity') return;
+  if (officeId !== CONTINUITY_OFFICE_ID && role !== 'continuity') return;
   const forbidden = capabilities.find((capability) => (
     FORBIDDEN_CONTINUITY_CAPABILITIES.includes(capability)
   ));
@@ -137,18 +138,19 @@ export function createIsolatedContinuityOffice(
     return `${prefix}_${String(value).padStart(8, '0')}`;
   }
 
-  function requireCanonicalWrite(officeId: string): void {
-    if (authority.officeId !== officeId) {
-      throw new ContinuityOfficeError(
-        'stale_fence',
-        `${officeId} does not hold canonical write authority`,
-      );
+  function requireCanonicalWrite(binding: OfficeFenceBinding): void {
+    if (
+      binding.officeId !== authority.officeId
+      || binding.epoch !== authority.epoch
+      || binding.fencingToken !== authority.fencingToken
+    ) {
+      throw new ContinuityOfficeError('stale_fence', 'office fence is stale');
     }
   }
 
   const api: IsolatedContinuityOffice = {
     registerOffice(declaration) {
-      assertContinuityCapabilities(declaration.role, declaration.capabilities);
+      assertContinuityCapabilities(declaration.officeId, declaration.role, declaration.capabilities);
       const record = freezeOffice(declaration);
       offices.set(record.officeId, record);
       return record;
@@ -156,7 +158,7 @@ export function createIsolatedContinuityOffice(
 
     declareCapabilities(officeId, capabilities) {
       const current = assertKnownOffice(offices, officeId);
-      assertContinuityCapabilities(current.role, capabilities);
+      assertContinuityCapabilities(officeId, current.role, capabilities);
       const updated = freezeOffice({ ...current, capabilities });
       offices.set(officeId, updated);
       return updated;
@@ -248,7 +250,11 @@ export function createIsolatedContinuityOffice(
     },
 
     admitWork(request: ContinuityWorkAdmitRequest) {
-      requireCanonicalWrite(CONTINUITY_OFFICE_ID);
+      requireCanonicalWrite({
+        officeId: CONTINUITY_OFFICE_ID,
+        epoch: request.epoch,
+        fencingToken: request.fencingToken,
+      });
       const createdAt = timestamp();
       const workId = nextId('work', nextWork++);
       const base = {
@@ -286,7 +292,11 @@ export function createIsolatedContinuityOffice(
     },
 
     completeContinuityWork(input: CompleteContinuityWorkInput) {
-      requireCanonicalWrite(CONTINUITY_OFFICE_ID);
+      requireCanonicalWrite({
+        officeId: CONTINUITY_OFFICE_ID,
+        epoch: input.epoch,
+        fencingToken: input.fencingToken,
+      });
       const current = works.get(input.workId);
       if (!current) {
         throw new ContinuityOfficeError('not_found', `unknown work ${input.workId}`);
@@ -296,6 +306,9 @@ export function createIsolatedContinuityOffice(
           'illegal_state',
           'local-only work cannot be completed by the continuity office',
         );
+      }
+      if (current.fencingToken !== authority.fencingToken) {
+        throw new ContinuityOfficeError('stale_fence', 'attempt fence is stale');
       }
       const completed = freezeWork({
         ...current,
@@ -374,6 +387,17 @@ export function createIsolatedContinuityOffice(
       const waitingWorkIds: string[] = [];
       let newlyDeliveredCount = 0;
       for (const record of works.values()) {
+        if (record.state === 'running' && !record.resultDigest) {
+          const parked = freezeWork({
+            ...record,
+            state: 'queued',
+            presentation: WAITING_FOR_HEADQUARTERS,
+            updatedAt: timestamp(),
+          });
+          works.set(record.workId, parked);
+          waitingWorkIds.push(record.workId);
+          continue;
+        }
         if (record.presentation === WAITING_FOR_HEADQUARTERS) {
           waitingWorkIds.push(record.workId);
           continue;
