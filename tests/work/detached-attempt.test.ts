@@ -392,3 +392,71 @@ test('requestCancel revokes the lease and terminalizes Work as cancelled', async
   assert.equal(ctx.leases.current(handle.workId).attempt.state, 'cancelled');
   assert.equal(ctx.registry.get(handle.harnessWorkId)?.status, 'cancelled');
 });
+
+test('restarted path honors durable cancel and does not succeed the Work', async (t) => {
+  let release!: () => void;
+  let started!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const startedAt = new Promise<void>((resolve) => { started = resolve; });
+  t.after(() => release());
+  const ctx = await setup(t, {
+    runner: {
+      async run() {
+        started();
+        await gate;
+        return { text: 'cancelled runners must not succeed the Work' };
+      },
+    },
+  });
+  const first = ctx.path.dispatch(dispatchInput(ctx.generateId, {
+    idempotencyKey: 'detached-attempt-key-06',
+    requestId: fixtureId('request', 48),
+    correlationId: fixtureId('correlation', 48),
+  }));
+  await startedAt;
+  const outcome = ctx.path.requestCancel({
+    registry: ctx.registry,
+    cancelCodingJob: async () => undefined,
+    stopChat: () => true,
+  }, first.harnessWorkId);
+  assert.equal(outcome.status, 'accepted');
+  assert.equal(ctx.work.get(first.workId)?.state, 'cancelling');
+  assert.equal(ctx.leases.current(first.workId).attempt.state, 'cancel_requested');
+
+  let restartRuns = 0;
+  const restarted = createDetachedAttemptPath({
+    registry: ctx.registry,
+    work: ctx.work,
+    leases: ctx.leases,
+    lock: ctx.lock,
+    results: ctx.results,
+    now: () => new Date(AT),
+    runner: {
+      async run() {
+        restartRuns += 1;
+        return { text: 'A restarted path must not succeed a revoked Work.' };
+      },
+    },
+  });
+  const second = restarted.dispatch(dispatchInput(ctx.generateId, {
+    idempotencyKey: 'detached-attempt-key-06',
+    requestId: fixtureId('request', 49),
+    correlationId: fixtureId('correlation', 49),
+  }));
+  const settled = await second.settled;
+  assert.equal(second.workId, first.workId);
+  assert.equal(restartRuns, 0);
+  assert.equal(settled.status, 'cancelled');
+  assert.equal(settled.messageId, null);
+  assert.equal(ctx.results.messages.length, 0);
+  assert.equal(ctx.work.get(first.workId)?.state, 'cancelled');
+  assert.equal(ctx.leases.current(first.workId).attempt.state, 'cancelled');
+  assert.notEqual(ctx.work.get(first.workId)?.state, 'succeeded');
+  assert.equal(ctx.registry.get(first.harnessWorkId)?.status, 'cancelled');
+
+  release();
+  const firstSettled = await first.settled;
+  assert.equal(firstSettled.status, 'cancelled');
+  assert.equal(ctx.results.messages.length, 0);
+  assert.equal(ctx.work.get(first.workId)?.state, 'cancelled');
+});
