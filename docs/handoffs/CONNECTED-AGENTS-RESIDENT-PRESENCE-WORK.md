@@ -4,7 +4,7 @@
 - Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-work`
 - Branch: `codex/resident-presence-work`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- Current HEAD: recorded at commit time in this file's commit
+- Current HEAD: `68a132da748a565069d754cc5d0dcefa13ab771f`
 - Owned files: `src/work/**`; coding/subagent delivery paths required for detach + one-result return
 - Current objective: first-slice local foreground/background convergence — long Work detaches and returns one result
 
