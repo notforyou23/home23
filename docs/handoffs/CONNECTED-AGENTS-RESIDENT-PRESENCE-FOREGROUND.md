@@ -4,7 +4,7 @@
 - Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-foreground`
 - Branch: `codex/resident-presence-foreground`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- Current HEAD: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91` (implementation commit is next on this branch)
+- Current HEAD: `b29ec36a3bb2ce262b7910544520c4aa04c67fe0`
 - Owned files: `src/home.ts`, `src/channels/router.ts`, foreground behavior in `src/agent/**`, `src/coordination-adapter/**` outside Work completion
 - Current objective: first-slice local foreground/background convergence — admit a Message and assemble a speaking turn while Work remains active
 
