@@ -15,7 +15,7 @@ import {
   brainQueryExportTool, brainQueryTool, brainSearchTool, brainStatusTool, brainSynthesizeTool,
 } from './brain.js';
 import { generateImageTool, generateMusicTool, ttsTool } from './media.js';
-import { returnArtifactTool } from './return-artifact.js';
+import { returnArtifactTool, returnTextArtifactTool } from './return-artifact.js';
 import { cronScheduleTool, cronListTool, cronRunTool, cronDeleteTool, cronEnableTool, cronDisableTool, cronUpdateTool } from './cron.js';
 import { selfUpdateTool, selfReadTool } from './identity.js';
 import { spawnAgentTool } from './subagent.js';
@@ -262,6 +262,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(generateMusicTool);
   registry.register(ttsTool);
   registry.register(returnArtifactTool);
+  registry.register(returnTextArtifactTool);
   registry.register(cronScheduleTool);
   registry.register(cronListTool);
   registry.register(cronRunTool);

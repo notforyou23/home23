@@ -30,6 +30,7 @@ import { generateImageTool, generateMusicTool } from "../../agent/tools/media.js
 import {
   canonicalReturnedArtifactDirectory,
   returnArtifactTool,
+  returnTextArtifactTool,
 } from "../../agent/tools/return-artifact.js";
 import type { AgentEvent, AgentResponse, ToolContext } from "../../agent/types.js";
 import type { MediaAttachment } from "../../types.js";
@@ -853,7 +854,7 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
         const history = new ConversationHistory(historyPath, config.historyBudget, bot.id);
         const returnedArtifactRoot = canonicalReturnedArtifactDirectory(workspacePath);
         const registry = createSeededToolRegistry(options.artifactPromotion
-          ? [generateImageTool, generateMusicTool, returnArtifactTool]
+          ? [generateImageTool, generateMusicTool, returnArtifactTool, returnTextArtifactTool]
           : []);
         const brainOperations = {
           searchContext: async () => ({

@@ -193,7 +193,7 @@ function summary(media: MediaAttachment): string {
 
 export const returnArtifactTool: ToolDefinition = {
   name: "return_artifact",
-  description: "Attach one finished PDF, UTF-8 text file, PNG/JPEG/GIF image, or MP3 from the private workspace media/returned-artifacts directory to your answer.",
+  description: "Attach one existing, non-empty PDF, UTF-8 text file, PNG/JPEG/GIF image, or MP3 located directly inside the private workspace media/returned-artifacts directory.",
   input_schema: {
     type: "object",
     properties: {
@@ -210,7 +210,52 @@ export const returnArtifactTool: ToolDefinition = {
       return { content: summary(media), media: [media] };
     } catch {
       return {
-        content: "Artifact return refused: use a real supported file directly inside the private media/returned-artifacts directory.",
+        content: "Artifact return refused: provide a real, non-empty supported file directly inside the private media/returned-artifacts directory.",
+        is_error: true,
+      };
+    }
+  },
+};
+
+export const returnTextArtifactTool: ToolDefinition = {
+  name: "return_text_artifact",
+  description: "Create and attach one new plain-text artifact. Markdown formatting is supported.",
+  input_schema: {
+    type: "object",
+    properties: {
+      name: {
+        type: "string",
+        description: "Short label or stem used for the generated filename.",
+      },
+      content: {
+        type: "string",
+        description: "Complete UTF-8 contents of the returned text artifact.",
+      },
+      caption: {
+        type: "string",
+        description: "Optional short human-readable caption.",
+      },
+    },
+    required: ["name", "content"],
+  },
+  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    try {
+      if (typeof input.name !== "string" || typeof input.content !== "string") {
+        throw new Error("returned text artifact input is invalid");
+      }
+      const name = safeName(input.name);
+      const stem = name.replace(/\.(?:md|txt)$/iu, "");
+      const media = writeReturnedArtifactBytes({
+        workspacePath: ctx.workspacePath,
+        bytes: Buffer.from(input.content, "utf8"),
+        stem,
+        generatedBy: "return_artifact",
+        ...(input.caption === undefined ? {} : { caption: input.caption as string }),
+      });
+      return returnedArtifactResult(media, "Text artifact created");
+    } catch {
+      return {
+        content: "Text artifact return refused: provide a non-empty UTF-8 text or Markdown document with a simple filename.",
         is_error: true,
       };
     }
