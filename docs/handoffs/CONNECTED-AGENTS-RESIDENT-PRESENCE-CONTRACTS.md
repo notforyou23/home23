@@ -4,7 +4,7 @@
 - **Worktree:** `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-contracts`
 - **Branch:** `codex/resident-presence-contracts`
 - **Base:** `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- **HEAD:** pending this commit (see git log on `codex/resident-presence-contracts`)
+- **HEAD:** `f70a42b878707d363929040d5dd89b549c03c354`
 - **Owned files:** `src/coordination/**`, migrations, public coordination APIs, canonical contracts, fixtures, matching tests
 - **Objective:** Lock the first-slice shared state-transition contract so other lanes consume one Message / Work / Attempt / office / event authority.
 
