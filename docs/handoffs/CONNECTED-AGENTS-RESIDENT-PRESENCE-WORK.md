@@ -4,7 +4,7 @@
 - Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-work`
 - Branch: `codex/resident-presence-work`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- Current HEAD: `68a132da748a565069d754cc5d0dcefa13ab771f`
+- Current HEAD: `6ea0548defab396992c0fddaa2b60f69666dc66c`
 - Owned files: `src/work/**`; coding/subagent delivery paths required for detach + one-result return
 - Current objective: first-slice local foreground/background convergence — long Work detaches and returns one result
 
@@ -13,12 +13,12 @@
 Long assignments now have one `create Work → run Attempt → return result` path that does not occupy the conversation run lock.
 
 - `src/work/detach.ts` — conversation vs Attempt chat identity; `mustDetachLongTool` for human chats
-- `src/work/detached-attempt.ts` — calls Lane 3 `createWorkService` + `createLeaseService` (offer/accept/start/terminalize); runs the Attempt on `coordination:<channel>:<workId>` (Jerry branch) or `subagent:coordination:…` (delegated); completion uses existing `handleWorkCompletion` and `work-result:<workId>`
+- `src/work/detached-attempt.ts` — calls Lane 3 `createWorkService` + `createLeaseService` (offer/accept/start/revoke/terminalize); runs the Attempt on `coordination:<channel>:<workId>` (Jerry branch) or `subagent:coordination:…` (delegated); completion uses existing `handleWorkCompletion` and `work-result:<workId>`; terminal Work replays; artifacts stay on the result Message; cancel revokes the lease and terminalizes as `cancelled`
 - `src/work/registry.ts` / `src/work/types.ts` — optional `office`, bounded `evidenceNotes` (Work-only; not transcript rows)
 - `src/agent/tools/coding.ts` — conversation-foreground `coding_run` / `coding_continue` never wait; jobs stay detached
 - Tests: `tests/work/detach.test.ts`, `tests/work/detached-attempt.test.ts`, registry evidence, coding conversation detach
 
-Proved in isolated tests: a speaking-turn conversation lock is not marked by the Attempt; one canonical result Message; a second completion/retry replays the same Message.
+Proved in isolated tests: a speaking-turn conversation lock is not marked by the Attempt; one canonical result Message; a second `dispatch` / restart replays the same Message without a new Attempt; artifact-only success still writes that Message; cancel terminalizes Lane 3 Work/Attempt as `cancelled`.
 
 ## Verification
 
@@ -26,7 +26,7 @@ Proved in isolated tests: a speaking-turn conversation lock is not marked by the
 node --import tsx --test --test-concurrency=1 tests/work/*.test.ts tests/agent/tools/coding.test.ts
 ```
 
-Result: 67 passed, 0 failed.
+Result: 69 passed, 0 failed.
 
 ## Integration requests
 
