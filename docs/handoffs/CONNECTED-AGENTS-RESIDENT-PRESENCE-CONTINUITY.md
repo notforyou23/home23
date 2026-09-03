@@ -4,7 +4,7 @@
 - Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-continuity`
 - Branch: `codex/resident-presence-continuity`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- Current HEAD: `b743d7b2565a3292362c944f2afb5d1d9d170758` (implementation). This handoff is committed after that SHA on the same branch.
+- Current HEAD: `52835ba9e08ab40b3490e75982f0321087d18ed4` (round 1/5 review fix). Prior: implementation `b743d7b2565a3292362c944f2afb5d1d9d170758`, handoff `6674d690615b3cbc3e37722fabce8c060a9cd359`. This handoff update is committed after the fix SHA.
 - Owned files: `src/coordination-adapter/continuity-office/**` and `tests/continuity-office/**` only. Did not edit `src/home.ts`, `src/channels/router.ts`, `src/work/**`, `src/coordination-adapter/index.ts`, or the contract pack.
 - Current objective: isolated continuity-office adapter first slice — office boundary only, no cloud, no live DB, no second Jerry.
 
@@ -17,7 +17,10 @@ In-process isolated adapter `createIsolatedContinuityOffice`:
 - Bounded continuity context: charter/relationship summaries, last 16 conversation turns, active Work, authority limits, freshness markers. Private-brain and household-credential exports are refused.
 - Local-only work is `queued` and presented as `waiting for headquarters`; it cannot be completed by this office. Continuity-capable work may succeed here.
 - Lease/epoch takeover and fencing: continuity cannot take the pen while headquarters is healthy; a stale epoch/fence cannot write; two offices cannot both hold canonical write.
-- Deterministic headquarters-return stub: write authority returns to headquarters, continuity results deliver once via `work-result:${workId}` / `kind: "result"`, waiting work stays waiting.
+- Deterministic headquarters-return stub: write authority returns to headquarters, continuity results deliver once via `work-result:${workId}` / `kind: "result"`, waiting work stays waiting. In-flight `running` continuity-capable work is parked as `waiting for headquarters` (`queued`), not dropped or completed.
+- Write path is fenced: `admitWork` / `completeContinuityWork` require the current epoch and fencing token. A stale token fails; a prior attempt cannot complete after takeover.
+- Continuity office id cannot declare `private_brain` / `household_credentials` / `household_machinery` even if registered with `role: "headquarters"`.
+- Contract map emits `WorkRecord.nextFencingToken` as the next token to issue (`fence + 1`, or `1` when no attempt), not the live attempt fence.
 
 Changed files:
 
@@ -35,7 +38,7 @@ Changed files:
 node --import tsx --test --test-concurrency=1 tests/continuity-office/*.test.ts
 ```
 
-Result: 20 pass, 0 fail. Did not run full `npm test`. No process restart, live DB, release activation, cloud credential, or device install.
+Result: 24 pass, 0 fail (round 1/5 review fixes). Did not run full `npm test`. No process restart, live DB, release activation, cloud credential, or device install.
 
 ## Integration requests
 
@@ -59,7 +62,7 @@ Do not treat this adapter as a second Message/Work/Attempt ledger. Integration s
 
 ## Next concrete action
 
-Coordinator: cherry-pick `b743d7b2565a3292362c944f2afb5d1d9d170758` (and this handoff commit) onto the Core integration branch after review. Do not wire live offices until Lane 3 answers the schema requests.
+Coordinator: cherry-pick `52835ba9e08ab40b3490e75982f0321087d18ed4` (and this handoff commit) onto the Core integration branch after review. Do not wire live offices until Lane 3 answers the schema requests.
 
 ## Live action still prohibited
 
