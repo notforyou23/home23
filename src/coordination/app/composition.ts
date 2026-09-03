@@ -89,6 +89,8 @@ import { ApnsPusher } from "../../push/apns-pusher.js";
 import { ConnectedAgentsNotificationService } from "../../push/connected-agents.js";
 import { DeviceRegistry } from "../../push/device-registry.js";
 
+const RESIDENT_ATTESTATION_INTERVAL_MS = 20_000;
+
 export interface DurableAttachmentCompositionOptions {
   /** Independent kill switch. This is deliberately not sourced from live config. */
   enabled: boolean;
@@ -550,7 +552,40 @@ export function createCoordinationProcess(
   };
   const residentAgents = new Map<string, ResidentUdsAgentPort>();
   const residentInitializers: Array<readonly [string, () => Promise<void>]> = [];
+  const residentAttestationFailures = new Set<string>();
+  let residentAttestationTimer: NodeJS.Timeout | undefined;
+  let residentAttestationRun: Promise<void> | undefined;
+  const refreshResidentAttestations = (): Promise<void> => {
+    if (residentAttestationRun) return residentAttestationRun;
+    const run = Promise.all(residentInitializers.map(async ([residentSlug, initialize]) => {
+      try {
+        await initialize();
+        if (residentAttestationFailures.delete(residentSlug)) {
+          console.log(`[home23-coordination] ${residentSlug} resident attestation recovered`);
+        }
+      } catch (error) {
+        if (!residentAttestationFailures.has(residentSlug)) {
+          residentAttestationFailures.add(residentSlug);
+          console.error(`[home23-coordination] ${residentSlug} resident initialization failed:`,
+            error instanceof Error ? error.message : error);
+        }
+      }
+    })).then(() => undefined).finally(() => {
+      if (residentAttestationRun === run) residentAttestationRun = undefined;
+    });
+    residentAttestationRun = run;
+    return run;
+  };
+  const stopResidentAttestations = async () => {
+    if (residentAttestationTimer) clearInterval(residentAttestationTimer);
+    residentAttestationTimer = undefined;
+    await residentAttestationRun;
+  };
   const lifecycle = createCoordinationLifecycle([{
+    name: "resident-attestation",
+    drain: stopResidentAttestations,
+    close: stopResidentAttestations,
+  }, {
     name: "resident-uds-clients",
     drain: async () => undefined,
     close: async () => {
@@ -853,11 +888,13 @@ export function createCoordinationProcess(
         await server.drain().catch(() => undefined);
         throw error;
       }
-      for (const [residentSlug, initialize] of residentInitializers) {
-        void initialize().catch((error: unknown) => {
-          console.error(`[home23-coordination] ${residentSlug} resident initialization failed:`,
-            error instanceof Error ? error.message : error);
-        });
+      if (residentInitializers.length > 0) {
+        void refreshResidentAttestations();
+        residentAttestationTimer = setInterval(
+          () => { void refreshResidentAttestations(); },
+          RESIDENT_ATTESTATION_INTERVAL_MS,
+        );
+        residentAttestationTimer.unref?.();
       }
       if (messageSubmission) {
         void messageSubmission.recoverResidentWork().then((receipt) => {
