@@ -5,7 +5,7 @@
 - Live-checkout alias (same directory): `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-core-integration`
 - Branch: `codex/resident-presence-core-integration`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- HEAD: record after the first-convergence closure commit on this branch (was `80025e606fbaa49f9acf6972a43755f40ad1c712` before that commit)
+- HEAD: `01eb3c8f4cabc1c45e3efeb10d3b16c37266ca86` (closure work). Branch tip is the subsequent record commit; `git rev-parse HEAD` is authoritative.
 - Owned files: integration branch only.
 - Current objective: first convergence — a second real Jerry turn while Work remains active; one later result. Do not expand into journeys 2–4. Do not install.
 
