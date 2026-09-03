@@ -1,10 +1,11 @@
 # Lane handoff — Continuity Office
 
-- Lane name and state: Lane 5 Continuity Office; needs integration
-- Worktree: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-continuity`
+- Lane name and state: Lane 5 Continuity Office; integrated, unwired
+- Worktree (git toplevel): `/Volumes/Bertha - Data/JTR23-archives/disk-pressure-2026-08-30/home23-inactive/.home23-worktrees/resident-presence-continuity`
+- Live-checkout alias: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-continuity`
 - Branch: `codex/resident-presence-continuity`
 - Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
-- Current HEAD: `52835ba9e08ab40b3490e75982f0321087d18ed4` (round 1/5 review fix). Prior: implementation `b743d7b2565a3292362c944f2afb5d1d9d170758`, handoff `6674d690615b3cbc3e37722fabce8c060a9cd359`. This handoff update is committed after the fix SHA.
+- Current HEAD: `16a97e1b9869f5688e1f45d2c41151fc748f6d98`
 - Owned files: `src/coordination-adapter/continuity-office/**` and `tests/continuity-office/**` only. Did not edit `src/home.ts`, `src/channels/router.ts`, `src/work/**`, `src/coordination-adapter/index.ts`, or the contract pack.
 - Current objective: isolated continuity-office adapter first slice — office boundary only, no cloud, no live DB, no second Jerry.
 
@@ -62,7 +63,7 @@ Do not treat this adapter as a second Message/Work/Attempt ledger. Integration s
 
 ## Next concrete action
 
-Coordinator: cherry-pick `52835ba9e08ab40b3490e75982f0321087d18ed4` (and this handoff commit) onto the Core integration branch after review. Do not wire live offices until Lane 3 answers the schema requests.
+Stay recovered and **unwired**. This adapter is on Core integration but must not be connected to `home.ts`, the router, or Work execution. First-convergence closure does not include headquarters-absent office operation. Do not start journeys 2–4 from this lane.
 
 ## Live action still prohibited
 
