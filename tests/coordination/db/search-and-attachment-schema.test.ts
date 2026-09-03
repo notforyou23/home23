@@ -159,8 +159,8 @@ test("schema v2 migrates atomically to the checksummed M09 and M10 final catalog
     now: () => new Date("2026-08-25T16:01:00.000Z"),
   });
   assert.equal(database.openReceipt.migratedFrom, 2);
-  assert.equal(database.openReceipt.schemaVersion, 9);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 9);
+  assert.equal(database.openReceipt.schemaVersion, 10);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 10);
   assert.equal(database.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   const tables = database.readAll<{ name: string }>(
     "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -214,13 +214,14 @@ test("schema v2 migrates atomically to the checksummed M09 and M10 final catalog
       { version: 7, name: "work-product-controls" },
       { version: 8, name: "communication-evidence-indexes" },
       { version: 9, name: "work-turn-selection" },
+      { version: 10, name: "bot-lifecycle-receipts" },
     ],
   );
   assert.deepEqual(database.readAll("PRAGMA foreign_key_check"), []);
   database.close();
 
   const reopened = openCoordinationDatabase({ path });
-  assert.equal(reopened.openReceipt.migratedFrom, 9);
+  assert.equal(reopened.openReceipt.migratedFrom, 10);
   assert.equal(reopened.openReceipt.startupCheck, "quick_check");
   reopened.close();
 });

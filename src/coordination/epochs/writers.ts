@@ -4,10 +4,11 @@ export const COORDINATION_CANONICAL_WRITER = "home23-coordination" as const;
 export const COORDINATION_MESSAGES_WRITER = COORDINATION_CANONICAL_WRITER;
 export const COORDINATION_ATTACHMENTS_WRITER = COORDINATION_CANONICAL_WRITER;
 export const COORDINATION_ACTIVITY_WRITER = COORDINATION_CANONICAL_WRITER;
+export const COORDINATION_BOT_LIFECYCLE_WRITER = COORDINATION_CANONICAL_WRITER;
 
 function isCanonicalCoordinationAuthority(
   epoch: AuthorityEpoch | null | undefined,
-  capability: "messages" | "attachments" | "activity",
+  capability: "messages" | "attachments" | "activity" | "bot_lifecycle",
 ): boolean {
   return epoch?.capability === capability &&
     epoch.mode === "canonical" &&
@@ -53,4 +54,11 @@ export function isCanonicalActivityAuthority(
   epoch: AuthorityEpoch | null | undefined,
 ): boolean {
   return isCanonicalCoordinationAuthority(epoch, "activity");
+}
+
+/** Lightweight Bot identity/mailbox mutation has an independent rollback lane. */
+export function isCanonicalBotLifecycleAuthority(
+  epoch: AuthorityEpoch | null | undefined,
+): boolean {
+  return isCanonicalCoordinationAuthority(epoch, "bot_lifecycle");
 }

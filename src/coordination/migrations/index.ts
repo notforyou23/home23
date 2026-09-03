@@ -15,6 +15,7 @@ import { WORK_LIFECYCLE_SCHEMA_MIGRATION_SQL } from "./0006-work-lifecycle-schem
 import { WORK_PRODUCT_CONTROLS_MIGRATION_SQL } from "./0007-work-product-controls.js";
 import { COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL } from "./0008-communication-evidence-indexes.js";
 import { WORK_TURN_SELECTION_MIGRATION_SQL } from "./0009-work-turn-selection.js";
+import { BOT_LIFECYCLE_RECEIPTS_MIGRATION_SQL } from "./0010-bot-lifecycle-receipts.js";
 
 export {
   COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
@@ -71,6 +72,8 @@ export const COORDINATION_COMMUNICATION_EVIDENCE_MIGRATION_CHECKSUM =
   "74f89ae90cfb730d0b0ca3ee8cff8a87d994cb566f7f8285d7f501a4d5ccd068";
 export const COORDINATION_WORK_TURN_SELECTION_MIGRATION_CHECKSUM =
   "ff938ea71ba5fbfd131586817a218f7ee14e735cac97ab49f36dbedb40ea963b";
+export const COORDINATION_BOT_LIFECYCLE_RECEIPTS_MIGRATION_CHECKSUM =
+  "9c379eaaee0f77abec1a58eeea6b9aaf5b1253cc97da9f477dbe40222c1d5caf";
 
 export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(
@@ -136,6 +139,13 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
     COORDINATION_WORK_TURN_SELECTION_MIGRATION_CHECKSUM,
     "35949780e04192606ef8615198e3462e4a3d3f8e0a016749e827be4d13e6cdfc",
   ),
+  defineMigration(
+    10,
+    "bot-lifecycle-receipts",
+    BOT_LIFECYCLE_RECEIPTS_MIGRATION_SQL,
+    COORDINATION_BOT_LIFECYCLE_RECEIPTS_MIGRATION_CHECKSUM,
+    "748f660e3ccc8b9a13ebd2c0be9ff4bc8f4add027335a355d776e25784969c04",
+  ),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -155,7 +165,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "4e8b5a509bc73c9d2df5d592ef5abb2e6fac70cdbf94159e6b10aa655f2dbc03";
+  "d8e6c4553cacbf8a3ab32083d973c0eb3f8b6457335fdca455f9224e1ebcdbfa";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

@@ -53,6 +53,8 @@ import { createCoordinationLifecycle } from "./lifecycle.js";
 import {
   createBotLifecycleService,
   derivePersistentBotBinding,
+  SqliteBotLifecycleReceiptStore,
+  SqlitePersistentMailboxBinder,
   type CreateBotLifecycleServiceOptions,
 } from "../bot-lifecycle/index.js";
 import type { CoordinationRuntimeConfig } from "./runtime-config.js";
@@ -72,10 +74,12 @@ import {
   type RetentionReceipt,
   type RetentionStore,
 } from "../retention/index.js";
-import type { PolicyRequest } from "../policy/index.js";
+import { classifyPolicy, type PolicyRequest } from "../policy/index.js";
 import {
   isCanonicalAttachmentsAuthority,
+  isCanonicalBotLifecycleAuthority,
   isCanonicalMessagesAuthority,
+  COORDINATION_BOT_LIFECYCLE_WRITER,
   COORDINATION_MESSAGES_WRITER,
   type AuthorityEpoch,
 } from "../epochs/index.js";
@@ -149,6 +153,61 @@ export type CoordinationProcessProjectionDependencies = Readonly<Pick<
   "channelCoordinator"
 > & { retention?: RetentionCompositionOptions }>;
 
+function composeBotLifecycle(
+  flags: CoordinationFeatureFlags,
+  lifecycleOptions: Partial<BotLifecycleCompositionOptions> | undefined,
+) {
+  if (
+    flags["coordination.process.enabled"] !== true ||
+    flags["coordination.public_api.enabled"] !== true ||
+    flags["coordination.bot_lifecycle.enabled"] !== true ||
+    lifecycleOptions?.enabled !== true ||
+    lifecycleOptions.authority === undefined ||
+    lifecycleOptions.mailboxBinder === undefined ||
+    lifecycleOptions.receipts === undefined ||
+    typeof lifecycleOptions.resolveHttpPolicy !== "function" ||
+    typeof lifecycleOptions.canonicalWriter !== "string" ||
+    lifecycleOptions.canonicalWriter.length === 0
+  ) return undefined;
+  const options = lifecycleOptions as BotLifecycleCompositionOptions;
+  const service = createBotLifecycleService(options);
+  const epoch = async () => {
+    const current = await options.authority.currentEpoch();
+    if (!current) throw new Error("bot lifecycle authority is unavailable");
+    return current.epoch;
+  };
+  const api = Object.freeze({
+    create: async (request: any) => service.create({
+      requestId: request.idempotencyKey,
+      correlationId: request.context.correlationId,
+      actorPrincipalId: "user_owner",
+      displayName: request.displayName,
+      purpose: request.purpose,
+      policy: options.resolveHttpPolicy({
+        operation: "create",
+        target: derivePersistentBotBinding({
+          requestId: request.idempotencyKey,
+          displayName: request.displayName,
+        }),
+      }),
+      expectedAuthorityEpoch: await epoch(),
+    }),
+    control: async (request: any) => service.control({
+      requestId: request.idempotencyKey,
+      correlationId: request.context.correlationId,
+      actorPrincipalId: "user_owner",
+      botId: request.botId,
+      operation: request.operation,
+      policy: options.resolveHttpPolicy({
+        operation: request.operation,
+        target: request.botId,
+      }),
+      expectedAuthorityEpoch: await epoch(),
+    }),
+  });
+  return Object.freeze({ service, api });
+}
+
 function isCompleteAttachmentOptions(
   value: Partial<DurableAttachmentCompositionOptions> | undefined,
 ): value is DurableAttachmentCompositionOptions {
@@ -182,53 +241,7 @@ export async function createCoordinationRuntimeComposition(input: {
   } =
     input.services as CoordinationServices;
 
-  const lifecycleOptions = input.botLifecycle;
-  const botLifecycle =
-    input.flags["coordination.process.enabled"] === true &&
-    input.flags["coordination.public_api.enabled"] === true &&
-    input.flags["coordination.bot_lifecycle.enabled"] === true &&
-    lifecycleOptions?.enabled === true &&
-    lifecycleOptions.authority !== undefined &&
-    lifecycleOptions.mailboxBinder !== undefined &&
-    lifecycleOptions.receipts !== undefined &&
-    typeof lifecycleOptions.resolveHttpPolicy === "function" &&
-    typeof lifecycleOptions.canonicalWriter === "string" &&
-    lifecycleOptions.canonicalWriter.length > 0
-      ? (() => {
-          const service = createBotLifecycleService(lifecycleOptions as BotLifecycleCompositionOptions);
-          const epoch = async () => {
-            const current = await lifecycleOptions.authority!.currentEpoch();
-            if (!current) throw new Error("bot lifecycle authority is unavailable");
-            return current.epoch;
-          };
-          const api = Object.freeze({
-            create: async (request: any) => service.create({
-              requestId: request.idempotencyKey, correlationId: request.context.correlationId,
-              actorPrincipalId: "user_owner", displayName: request.displayName,
-              purpose: request.purpose,
-              policy: lifecycleOptions.resolveHttpPolicy!(
-                {
-                  operation: "create",
-                  target: derivePersistentBotBinding({
-                    requestId: request.idempotencyKey,
-                    displayName: request.displayName,
-                  }),
-                },
-              ),
-              expectedAuthorityEpoch: await epoch(),
-            }),
-            control: async (request: any) => service.control({
-              requestId: request.idempotencyKey, correlationId: request.context.correlationId,
-              actorPrincipalId: "user_owner", botId: request.botId, operation: request.operation,
-              policy: lifecycleOptions.resolveHttpPolicy!(
-                { operation: request.operation, target: request.botId },
-              ),
-              expectedAuthorityEpoch: await epoch(),
-            }),
-          });
-          return Object.freeze({ service, api });
-        })()
-      : undefined;
+  const botLifecycle = composeBotLifecycle(input.flags, input.botLifecycle);
   const composedServices = botLifecycle === undefined
     ? services
     : { ...services, botLifecycle: botLifecycle.service, botLifecycleApi: botLifecycle.api };
@@ -343,6 +356,53 @@ export function createCoordinationProcess(
       )?.sequence ?? 0,
     }),
   });
+  const productionBotLifecycle =
+    isCanonicalMessagesAuthority(currentAuthority("messages")) &&
+    isCanonicalBotLifecycleAuthority(currentAuthority("bot_lifecycle"))
+      ? composeBotLifecycle(config.flags, {
+          enabled: true,
+          canonicalWriter: COORDINATION_BOT_LIFECYCLE_WRITER,
+          authority: {
+            enabled: () =>
+              config.flags["coordination.process.enabled"] === true &&
+              config.flags["coordination.public_api.enabled"] === true &&
+              config.flags["coordination.bot_lifecycle.enabled"] === true &&
+              isCanonicalMessagesAuthority(currentAuthority("messages")) &&
+              isCanonicalBotLifecycleAuthority(currentAuthority("bot_lifecycle")),
+            currentEpoch: async () => currentAuthority("bot_lifecycle"),
+            decide: (request) => classifyPolicy(request, new Date()),
+          },
+          mailboxBinder: new SqlitePersistentMailboxBinder({
+            database,
+          }),
+          receipts: new SqliteBotLifecycleReceiptStore(database),
+          resolveHttpPolicy: ({ operation, target }) => Object.freeze({
+            action: Object.freeze({
+              actorPrincipalId: "user_owner",
+              operation: `bot_lifecycle.${operation}`,
+              target,
+              parameters: Object.freeze({}),
+            }),
+            factSource: Object.freeze({
+              kind: "trusted_policy_boundary" as const,
+              reference: "home23:authenticated-owner-bot-lifecycle:v1",
+            }),
+            standing: Object.freeze({
+              scope: "within" as const,
+              delegation: "within" as const,
+              budget: "within" as const,
+              audience: "within" as const,
+              allowlist: "within" as const,
+            }),
+            impactClasses: Object.freeze([]),
+            contextAccess: Object.freeze({ kind: "none" as const }),
+          }),
+        })
+      : undefined;
+  const botLifecycleCapabilityAvailable = () =>
+    productionBotLifecycle !== undefined &&
+    isCanonicalMessagesAuthority(currentAuthority("messages")) &&
+    isCanonicalBotLifecycleAuthority(currentAuthority("bot_lifecycle"));
   const attachmentConfiguration = config.attachments;
   const attachmentComposed =
     config.flags["coordination.process.enabled"] === true &&
@@ -436,7 +496,7 @@ export function createCoordinationProcess(
       return createBootstrapService({ repository: new SqliteBootstrapRepository(database), participantDirectory,
         minimumClientBuild: 1, home: { id: "home_00000000-0000-7000-8000-000000000000", name: "Home23", primaryBotId: primary.id },
         connection: { mode: "loopback", displayName: "This Home23", reachable: true },
-        capabilities: { channels: false, attachments: attachmentCapabilityAvailable(), search: false, push: false, eventReplay: true, botLifecycle: false },
+        capabilities: { channels: false, attachments: attachmentCapabilityAvailable(), search: false, push: false, eventReplay: true, botLifecycle: botLifecycleCapabilityAvailable() },
         limits: {
           attachmentBytes: attachmentCapabilityAvailable()
             ? attachmentConfiguration?.maximumBytes ?? 0
@@ -700,6 +760,10 @@ export function createCoordinationProcess(
       ...(attachments === undefined ? {} : { attachments }),
       ...(messageSubmission === undefined ? {} : { messageSubmission }),
       ...(activity === undefined ? {} : { activity }),
+      ...(productionBotLifecycle === undefined ? {} : {
+        botLifecycle: productionBotLifecycle.service,
+        botLifecycleApi: productionBotLifecycle.api,
+      }),
       ...(dependencies.channelCoordinator === undefined && composedChannelCoordinator === undefined
         ? {}
         : { channelCoordinator: dependencies.channelCoordinator ?? composedChannelCoordinator }),

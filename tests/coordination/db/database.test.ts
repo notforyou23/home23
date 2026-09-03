@@ -49,7 +49,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   );
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 9);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 10);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {

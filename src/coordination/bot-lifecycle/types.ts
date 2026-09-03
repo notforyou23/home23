@@ -43,6 +43,10 @@ export interface PersistentMailboxBinder {
     residentBinding: string;
     displayName: string;
     purpose: string;
+    atomicReceipt: Pick<
+      BotLifecycleReceipt,
+      "requestId" | "requestDigest" | "authorityEpoch" | "policyDecision"
+    >;
   }): Promise<BotProjection>;
   getByBotId(botId: string): Promise<BotProjection | null>;
   /** Atomic canonical transition; transcript, mailbox, aliases, and Bot ID remain intact. */
@@ -54,6 +58,10 @@ export interface PersistentMailboxBinder {
     correlationId: string;
     actorPrincipalId: "user_owner";
     changedAt: string;
+    atomicReceipt: Pick<
+      BotLifecycleReceipt,
+      "requestId" | "requestDigest" | "authorityEpoch" | "policyDecision"
+    >;
   }): Promise<BotProjection>;
 }
 
@@ -94,4 +102,6 @@ export interface CreateBotLifecycleServiceOptions {
   readonly receipts: BotLifecycleReceiptStore;
   readonly canonicalWriter: string;
   readonly now?: () => Date;
+  /** Core-owned canonical request IDs for durable lifecycle events. */
+  readonly eventRequestId?: () => string;
 }

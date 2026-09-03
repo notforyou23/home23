@@ -2,6 +2,7 @@ import { FEATURE_FLAG_REGISTRY } from "../schema/contract-registry.js";
 import {
   isCanonicalActivityAuthority,
   isCanonicalAttachmentsAuthority,
+  isCanonicalBotLifecycleAuthority,
   isCanonicalMessagesAuthority,
 } from "../epochs/index.js";
 import type {
@@ -60,6 +61,9 @@ function capabilityDocument(input: {
   const canonicalActivityAuthority = isCanonicalActivityAuthority(
     input.services.authorityEpochs?.current("activity"),
   );
+  const canonicalBotLifecycleAuthority = isCanonicalBotLifecycleAuthority(
+    input.services.authorityEpochs?.current("bot_lifecycle"),
+  );
   const messageSubmission =
     mutationsEnabled &&
     canonicalMessagesAuthority &&
@@ -112,6 +116,8 @@ function capabilityDocument(input: {
       botLifecycle:
         mutationsEnabled &&
         input.flags["coordination.bot_lifecycle.enabled"] === true &&
+        canonicalMessagesAuthority &&
+        canonicalBotLifecycleAuthority &&
         input.services.botLifecycleApi !== undefined,
       importShadow: false,
     }),

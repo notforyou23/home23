@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { BotProjection } from "../bots/index.js";
+import { generateCoordinationId } from "../ids/index.js";
 import { BotLifecycleError } from "./errors.js";
 import type {
   BotLifecycleOperation,
@@ -67,7 +68,7 @@ function errorCode(error: unknown): string {
   return "adapter_failure";
 }
 
-function requestFingerprint(value: object): string {
+function canonicalRequestDigest(value: object): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
@@ -111,6 +112,7 @@ function assertCoherentBot(
 
 export function createBotLifecycleService(options: CreateBotLifecycleServiceOptions) {
   const now = options.now ?? (() => new Date());
+  const eventRequestId = options.eventRequestId ?? (() => generateCoordinationId("request"));
 
   async function authorize(
     request: PersistentBotCreateRequest | PersistentBotControlRequest,
@@ -144,14 +146,12 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
   async function priorOrConflict(
     requestId: string,
     operation: BotLifecycleOperation,
-    correlationId: string,
     requestDigest: string,
   ): Promise<BotLifecycleReceipt | null> {
     const prior = await options.receipts.get(requestId);
     if (!prior) return null;
     if (
-      prior.operation !== operation || prior.correlationId !== correlationId ||
-      prior.requestDigest !== requestDigest
+      prior.operation !== operation || prior.requestDigest !== requestDigest
     ) {
       throw new BotLifecycleError("request_id_conflict");
     }
@@ -161,19 +161,24 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
   async function save(receipt: BotLifecycleReceipt): Promise<BotLifecycleReceipt> {
     const stored = await options.receipts.putIfAbsent(Object.freeze(receipt));
     if (
+      stored.requestId !== receipt.requestId ||
       stored.operation !== receipt.operation ||
-      stored.correlationId !== receipt.correlationId ||
-      requestFingerprint(stored) !== requestFingerprint(receipt)
+      stored.requestDigest !== receipt.requestDigest
     ) throw new BotLifecycleError("request_id_conflict");
     return stored;
   }
 
   async function create(request: PersistentBotCreateRequest): Promise<BotLifecycleReceipt> {
-    const digest = requestFingerprint(request);
-    const prior = await priorOrConflict(request.requestId, "create", request.correlationId, digest);
-    if (prior) return prior;
     if (request.actorPrincipalId !== "user_owner") throw new BotLifecycleError("request_invalid");
     const fields = canonicalCreateFields(request);
+    const digest = canonicalRequestDigest({
+      operation: "create",
+      actorPrincipalId: "user_owner",
+      displayName: fields.displayName,
+      purpose: fields.purpose,
+    });
+    const prior = await priorOrConflict(request.requestId, "create", digest);
+    if (prior) return prior;
     const residentBinding = derivePersistentBotBinding({
       requestId: request.requestId,
       displayName: fields.displayName,
@@ -183,12 +188,18 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
     let bot: BotProjection | null = null;
     try {
       bot = await options.mailboxBinder.bindDurableBot({
-        requestId: request.requestId,
+        requestId: eventRequestId(),
         correlationId: request.correlationId,
         actorPrincipalId: request.actorPrincipalId,
         residentBinding,
         displayName: fields.displayName,
         purpose: fields.purpose,
+        atomicReceipt: {
+          requestId: request.requestId,
+          requestDigest: digest,
+          authorityEpoch: epoch.epoch,
+          policyDecision: decision,
+        },
       });
       assertCoherentBot(bot, {
         lifecycle: "active",
@@ -237,12 +248,16 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
     if (request.operation !== "archive" && request.operation !== "restore") {
       throw new BotLifecycleError("request_invalid");
     }
-    const digest = requestFingerprint(request);
-    const prior = await priorOrConflict(request.requestId, request.operation, request.correlationId, digest);
-    if (prior) return prior;
     if (request.actorPrincipalId !== "user_owner" || !request.botId) {
       throw new BotLifecycleError("request_invalid");
     }
+    const digest = canonicalRequestDigest({
+      operation: request.operation,
+      actorPrincipalId: "user_owner",
+      botId: request.botId,
+    });
+    const prior = await priorOrConflict(request.requestId, request.operation, digest);
+    if (prior) return prior;
     const { epoch, decision } = await authorize(request, request.botId);
     const bot = await options.mailboxBinder.getByBotId(request.botId);
     if (!bot || !bot.conversationId) throw new BotLifecycleError("bot_not_found");
@@ -285,10 +300,16 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
         botId: bot.id,
         from: request.operation === "archive" ? "active" : "archived",
         to: lifecycleTarget,
-        requestId: request.requestId,
+        requestId: eventRequestId(),
         correlationId: request.correlationId,
         actorPrincipalId: request.actorPrincipalId,
         changedAt,
+        atomicReceipt: {
+          requestId: request.requestId,
+          requestDigest: digest,
+          authorityEpoch: epoch.epoch,
+          policyDecision: decision,
+        },
       });
       assertCoherentBot(transitioned, {
         lifecycle: lifecycleTarget,
@@ -298,6 +319,7 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
         mailboxId: bot.conversationId,
       });
     } catch (error) {
+      if (error instanceof BotLifecycleError) throw error;
       const receipt = await save({
         requestId: request.requestId,
         requestDigest: digest,

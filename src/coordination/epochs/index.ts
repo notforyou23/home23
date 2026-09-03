@@ -4,10 +4,12 @@ export { validateAuthorityEpochTransition, validateInitialAuthorityEpoch } from 
 export {
   COORDINATION_ACTIVITY_WRITER,
   COORDINATION_ATTACHMENTS_WRITER,
+  COORDINATION_BOT_LIFECYCLE_WRITER,
   COORDINATION_CANONICAL_WRITER,
   COORDINATION_MESSAGES_WRITER,
   isCanonicalActivityAuthority,
   isCanonicalAttachmentsAuthority,
+  isCanonicalBotLifecycleAuthority,
   isCanonicalMessagesAuthority,
 } from "./writers.js";
 export type {
