@@ -86,6 +86,7 @@ import {
 import type { AuthorityCapability } from "../import/index.js";
 import { ApnsClient } from "../../push/apns-client.js";
 import { ApnsPusher } from "../../push/apns-pusher.js";
+import { ConnectedAgentsDeliveryStore } from "../../push/connected-agents-delivery-store.js";
 import { ConnectedAgentsNotificationService } from "../../push/connected-agents.js";
 import { DeviceRegistry } from "../../push/device-registry.js";
 
@@ -470,6 +471,9 @@ export function createCoordinationProcess(
     ? new ConnectedAgentsNotificationService(
         notificationRegistry,
         new ApnsPusher(notificationClient, notificationRegistry, "Home23", {
+          connectedAgentsDeliveryStore: new ConnectedAgentsDeliveryStore(
+            `${notificationConfiguration!.registryPath}.connected-agents-delivery-receipts`,
+          ),
           connectedAgentsRegistrationIsCurrent: (registration) => {
             if (!registration.coordination_device_id ||
                 !registration.coordination_session_id) return false;

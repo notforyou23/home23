@@ -175,7 +175,7 @@ export function createCanonicalMessageRecorder(
       return;
     }
     const rawMessage = exactMessage(message);
-    const recorded = await communications.append({
+    await communications.append({
       event: {
         eventId: stableCommunicationEventId(
           `canonical-message:${message.id}:${input.kind}`,
@@ -213,10 +213,10 @@ export function createCanonicalMessageRecorder(
       requestId: input.requestId,
       correlationId: input.correlationId,
     });
-    const outcome = recorded && typeof recorded === "object" && "outcome" in recorded
-      ? (recorded as { outcome?: unknown }).outcome
-      : null;
-    if (outcome !== "duplicate") notify();
+    // A duplicate communication event can be recovery after the canonical
+    // Message became durable but before its notification delivery was recorded.
+    // The delivery store owns per-device dedupe, so always reconcile delivery.
+    notify();
   };
 }
 

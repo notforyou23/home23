@@ -12,6 +12,7 @@ import {
 import { createCoordinationHttpServer } from "../../../src/coordination/http/index.js";
 import type { MessageProjection } from "../../../src/coordination/messages/index.js";
 import { ApnsPusher } from "../../../src/push/apns-pusher.js";
+import { ConnectedAgentsDeliveryStore } from "../../../src/push/connected-agents-delivery-store.js";
 import { ConnectedAgentsNotificationService } from "../../../src/push/connected-agents.js";
 import { DeviceRegistry } from "../../../src/push/device-registry.js";
 import type { PushPayload } from "../../../src/push/types.js";
@@ -36,6 +37,9 @@ test("canonical push registers the authenticated device and wakes on the durable
       return { status: 200 };
     },
   } as any, registry, "Home23", {
+    connectedAgentsDeliveryStore: new ConnectedAgentsDeliveryStore(
+      join(root, "connected-agents-deliveries"),
+    ),
     connectedAgentsRegistrationIsCurrent: (registration) =>
       registration.coordination_device_id === `dev_${suffix}` &&
       registration.coordination_session_id === `ses_${suffix}`,
@@ -169,4 +173,115 @@ test("canonical push registers the authenticated device and wakes on the durable
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(deliveryCount, 1, "replayed message evidence must not duplicate notifications");
+});
+
+test("canonical push durably retries and duplicate recovery repairs a missing delivery", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-connected-agents-delivery-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const registry = new DeviceRegistry(join(root, "devices.json"));
+  registry.register({
+    device_token: "b".repeat(64),
+    bundle_id: "com.regina6.home23.canary",
+    env: "sandbox",
+    chat_ids: [],
+    connected_agents_notifications: true,
+    coordination_device_id: `dev_${suffix}`,
+    coordination_session_id: `ses_${suffix}`,
+  });
+  const storePath = join(root, "connected-agents-deliveries");
+  const store = new ConnectedAgentsDeliveryStore(storePath);
+  let attempts = 0;
+  let delivered: (() => void) | undefined;
+  const delivery = new Promise<void>((resolve) => { delivered = resolve; });
+  const pusher = new ApnsPusher({
+    send: async () => {
+      attempts += 1;
+      if (attempts === 1) return { status: 503 };
+      if (attempts === 2) throw new Error("temporary network failure");
+      delivered?.();
+      return { status: 200 };
+    },
+  } as any, registry, "Home23", {
+    connectedAgentsDeliveryStore: store,
+    connectedAgentsRetryDelaysMs: [0, 0],
+  });
+  const notifications = new ConnectedAgentsNotificationService(
+    registry,
+    pusher,
+    "com.regina6.home23.canary",
+  );
+  const message: MessageProjection = {
+    id: `msg_${suffix}`,
+    channelId: `chn_${suffix}`,
+    conversationId: `cnv_${suffix}`,
+    sequence: 2,
+    author: {
+      principalId: `bot_${suffix}`,
+      kind: "bot",
+      displayName: "Jerry",
+    },
+    kind: "result",
+    text: "durable answer",
+    mentions: [],
+    clientMessageId: null,
+    replyToMessageId: null,
+    tombstonesMessageId: null,
+    provenance: { roundId: null, workId: `wrk_${suffix}` },
+    createdAt: "2026-09-02T12:00:01.000Z",
+    attachments: [],
+    visibility: "visible",
+  };
+  const recoverDuplicate = createCanonicalMessageRecorder({
+    append: async () => ({ outcome: "duplicate", event: {} }),
+  } as any, notifications);
+  await recoverDuplicate({
+    message,
+    kind: "assistant_message_committed",
+    requestId: `req_${suffix}`,
+    correlationId: `cor_${suffix}`,
+  });
+  await delivery;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(attempts, 3);
+  assert.deepEqual(store.snapshot().map(receipt => ({
+    state: receipt.state,
+    attempts: receipt.attempts,
+  })), [{ state: "delivered", attempts: 3 }]);
+
+  const reopened = new ConnectedAgentsDeliveryStore(storePath);
+  const restartedPusher = new ApnsPusher({
+    send: async () => {
+      attempts += 1;
+      return { status: 200 };
+    },
+  } as any, registry, "Home23", {
+    connectedAgentsDeliveryStore: reopened,
+    connectedAgentsRetryDelaysMs: [0, 0],
+  });
+  await restartedPusher.notifyConnectedAgentsMessage({
+    conversationId: message.conversationId,
+    channelId: message.channelId,
+    messageId: message.id,
+    workId: message.provenance.workId!,
+    displayName: message.author.displayName,
+  });
+  assert.equal(attempts, 3, "durable success must suppress restart replay");
+
+  const invalidMessageId = "msg_0198d95f-6c00-7000-8000-000000000912";
+  const invalidPusher = new ApnsPusher({
+    send: async () => ({ status: 410 }),
+  } as any, registry, "Home23", {
+    connectedAgentsDeliveryStore: reopened,
+    connectedAgentsRetryDelaysMs: [0, 0],
+  });
+  await invalidPusher.notifyConnectedAgentsMessage({
+    conversationId: message.conversationId,
+    channelId: message.channelId,
+    messageId: invalidMessageId,
+    displayName: message.author.displayName,
+  });
+  assert.equal(reopened.snapshot().find(
+    receipt => receipt.message_id === invalidMessageId,
+  )?.state, "invalid");
+  assert.equal(registry.lookupConnectedAgentsDevices().length, 0);
 });
