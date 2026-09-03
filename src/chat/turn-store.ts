@@ -208,10 +208,15 @@ export class TurnStore {
       if (options.activeTurnIds?.has(t.turn_id)) continue;
       const age = now - new Date(t.started_at).getTime();
       if (age >= maxAgeMs) {
+        // listChatIds() necessarily returns the filesystem-safe storage key.
+        // A turn envelope retains the canonical chat identity (notably the
+        // colon-bearing coordination IDs), so terminalize against that exact
+        // identity instead of leaking the storage key into durable state.
+        const durableChatId = t.chat_id || chatId;
         // Find the last event for this turn to get last_seq
-        const events = this.eventsSince(chatId, t.turn_id, -1);
+        const events = this.eventsSince(durableChatId, t.turn_id, -1);
         const last_seq = events.length ? events[events.length - 1]!.seq : 0;
-        this.writeEnd(chatId, t.turn_id, 'orphaned', { last_seq, error: 'process restarted or turn exceeded max age' });
+        this.writeEnd(durableChatId, t.turn_id, 'orphaned', { last_seq, error: 'process restarted or turn exceeded max age' });
         marked.push(t.turn_id);
       }
     }

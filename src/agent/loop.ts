@@ -871,10 +871,16 @@ export class AgentLoop {
   /** Recover stale pending turn envelopes after process restarts or abandoned runs. */
   recoverStaleTurns(maxAgeMs: number = 10 * 60 * 1000): Array<{ chatId: string; turnId: string }> {
     const recovered: Array<{ chatId: string; turnId: string }> = [];
-    for (const chatId of this.history.listChatIds()) {
-      const activeTurnIds = this.activeTurnIds.get(chatId);
-      const turnIds = this.turnStore.sweepOrphans(chatId, maxAgeMs, { activeTurnIds });
+    for (const storageChatId of this.history.listChatIds()) {
+      const pending = this.turnStore.pendingTurns(storageChatId);
+      const activeTurnIds = new Set(
+        pending
+          .filter((turn) => this.activeTurnIds.get(turn.chat_id)?.has(turn.turn_id))
+          .map((turn) => turn.turn_id),
+      );
+      const turnIds = this.turnStore.sweepOrphans(storageChatId, maxAgeMs, { activeTurnIds });
       for (const turnId of turnIds) {
+        const chatId = pending.find((turn) => turn.turn_id === turnId)?.chat_id ?? storageChatId;
         const env = this.turnStore.finalEnvelope(chatId, turnId);
         if (env) {
           turnBus.emit(chatId, turnId, env);
