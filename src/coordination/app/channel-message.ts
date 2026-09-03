@@ -13,6 +13,7 @@ import { MessagingError, type MessagingActorContext } from "../channels/index.js
 import type { MessageProjection, MessageTurnSelection } from "../messages/index.js";
 import type { AuthorityEpoch } from "../epochs/index.js";
 import { isCanonicalMessagesAuthority } from "../epochs/index.js";
+import { workResultIdempotencyKey } from "../contracts/resident-presence.js";
 import type { ContextManifestInput, WorkRecord, WorkTurnSelection } from "../work/index.js";
 import type {
   CoordinationChannelCoordinatorPort,
@@ -527,7 +528,7 @@ export function createGroupChannelMessageService(options: {
         channelId: input.prepared.channelId,
         messageId: responseMessageId(currentWork.id),
         authorPrincipalId: targetContext.targetPrincipalId,
-        idempotencyKey: `work-result:${currentWork.id}`,
+        idempotencyKey: workResultIdempotencyKey(currentWork.id),
         kind: "result",
         text: resultText,
         attachmentIds: terminalReceipt.artifactIds,

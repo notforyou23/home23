@@ -127,7 +127,32 @@
     "residentPrivateContext": "default deny; no generic grant endpoint in v1",
     "network": "loopback plus Tailscale/VPN; no public listener",
     "retention": {"conversations": "retained", "terminalProvenance": "retained", "noisyProgressDays": 30, "deliveryAttemptDetailDays": 90},
-    "history": "cohort-based references/provenance with selective bodies; no required full-corpus duplication"
+    "history": "cohort-based references/provenance with selective bodies; no required full-corpus duplication",
+    "residentPresence": {
+      "firstLivedProof": "jerry",
+      "residents": ["jerry", "forrest"],
+      "messageAdmission": "independent_of_active_work",
+      "workOwnership": "never_blocks_conversational_admission",
+      "workIdentity": {
+        "originMessage": "exactly_one",
+        "accountableResident": "exactly_one",
+        "attempts": "one_or_more_bounded"
+      },
+      "terminalResult": {
+        "kind": "result",
+        "idempotencyKey": "work-result:${workId}",
+        "presentation": "once_in_originating_conversation"
+      },
+      "projections": ["conversation", "activity", "forensics"],
+      "cursor": {
+        "resume": "strictly_after",
+        "duplicate": "no_op",
+        "gap": "cursor_expired_bootstrap_required",
+        "staleOverwrite": "prohibited"
+      },
+      "revisions": "compare_and_set",
+      "officeFence": "lease_fencing_token"
+    }
   },
   "apiOperations": {
     "getCapabilities": {"method": "GET", "path": "/api/v1/capabilities", "authorityCapability": null},

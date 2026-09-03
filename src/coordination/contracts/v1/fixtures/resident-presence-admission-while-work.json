@@ -1,0 +1,73 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "residentBinding": "jerry",
+  "parityResidentBindings": ["jerry", "forrest"],
+  "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+  "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+  "accountableResidentPrincipalId": "bot_0198d95f-6c00-7000-8000-000000000011",
+  "activeWork": {
+    "id": "wrk_0198d95f-6c00-7000-8000-0000000000d1",
+    "originMessageId": "msg_0198d95f-6c00-7000-8000-0000000000c1",
+    "targetPrincipalId": "bot_0198d95f-6c00-7000-8000-000000000011",
+    "roundId": null,
+    "status": "running",
+    "version": 3
+  },
+  "attempt": {
+    "id": "att_0198d95f-6c00-7000-8000-0000000000d2",
+    "workId": "wrk_0198d95f-6c00-7000-8000-0000000000d1",
+    "executorBotId": "bot_0198d95f-6c00-7000-8000-000000000011",
+    "status": "running",
+    "authoritySystem": "resident_turn",
+    "fencingToken": 7,
+    "startedAt": "2026-08-24T16:10:05.000Z"
+  },
+  "lease": {
+    "id": "lse_0198d95f-6c00-7000-8000-0000000000d3",
+    "attemptId": "att_0198d95f-6c00-7000-8000-0000000000d2",
+    "holderId": "resident-jerry-incarnation-1",
+    "fencingToken": 7,
+    "status": "active",
+    "acquiredAt": "2026-08-24T16:10:04.000Z",
+    "expiresAt": "2026-08-24T16:11:04.000Z"
+  },
+  "originMessage": {
+    "id": "msg_0198d95f-6c00-7000-8000-0000000000c1",
+    "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+    "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+    "sequence": 3,
+    "author": {"principalId": "user_owner", "kind": "owner", "displayName": "Owner"},
+    "kind": "text",
+    "text": "Please keep compiling the household notes in the background.",
+    "mentions": [],
+    "attachments": [],
+    "replyToMessageId": null,
+    "visibility": "visible",
+    "clientMessageId": "client-message-rp-origin",
+    "provenance": {"roundId": null, "workId": null},
+    "createdAt": "2026-08-24T16:10:00.000Z"
+  },
+  "admittedMessage": {
+    "id": "msg_0198d95f-6c00-7000-8000-0000000000c2",
+    "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+    "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+    "sequence": 4,
+    "author": {"principalId": "user_owner", "kind": "owner", "displayName": "Owner"},
+    "kind": "text",
+    "text": "While that runs, what is on the calendar this afternoon?",
+    "mentions": [],
+    "attachments": [],
+    "replyToMessageId": null,
+    "visibility": "visible",
+    "clientMessageId": "client-message-rp-admitted",
+    "provenance": {"roundId": null, "workId": null},
+    "createdAt": "2026-08-24T16:10:30.000Z"
+  },
+  "workAfterAdmission": {
+    "id": "wrk_0198d95f-6c00-7000-8000-0000000000d1",
+    "status": "running",
+    "version": 3
+  },
+  "throughEventSequence": 132
+}

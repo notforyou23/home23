@@ -1,0 +1,153 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "residentBinding": "jerry",
+  "parityResidentBindings": ["jerry", "forrest"],
+  "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+  "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+  "conversation": {
+    "messages": [
+      {
+        "id": "msg_0198d95f-6c00-7000-8000-0000000000c1",
+        "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+        "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+        "sequence": 3,
+        "author": {"principalId": "user_owner", "kind": "owner", "displayName": "Owner"},
+        "kind": "text",
+        "text": "Please keep compiling the household notes in the background.",
+        "mentions": [],
+        "attachments": [],
+        "replyToMessageId": null,
+        "visibility": "visible",
+        "clientMessageId": "client-message-rp-origin",
+        "provenance": {"roundId": null, "workId": null},
+        "createdAt": "2026-08-24T16:10:00.000Z"
+      },
+      {
+        "id": "msg_0198d95f-6c00-7000-8000-0000000000c2",
+        "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+        "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+        "sequence": 4,
+        "author": {"principalId": "user_owner", "kind": "owner", "displayName": "Owner"},
+        "kind": "text",
+        "text": "While that runs, what is on the calendar this afternoon?",
+        "mentions": [],
+        "attachments": [],
+        "replyToMessageId": null,
+        "visibility": "visible",
+        "clientMessageId": "client-message-rp-admitted",
+        "provenance": {"roundId": null, "workId": null},
+        "createdAt": "2026-08-24T16:10:30.000Z"
+      },
+      {
+        "id": "msg_0198d95f-6c00-7000-8000-0000000000c3",
+        "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+        "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+        "sequence": 5,
+        "author": {"principalId": "bot_0198d95f-6c00-7000-8000-000000000011", "kind": "bot", "displayName": "Jerry"},
+        "kind": "text",
+        "text": "This afternoon is the 3pm walk-through, then dinner at 7.",
+        "mentions": [],
+        "attachments": [],
+        "replyToMessageId": "msg_0198d95f-6c00-7000-8000-0000000000c2",
+        "visibility": "visible",
+        "clientMessageId": null,
+        "provenance": {"roundId": null, "workId": "wrk_0198d95f-6c00-7000-8000-0000000000d5"},
+        "createdAt": "2026-08-24T16:10:45.000Z"
+      },
+      {
+        "id": "msg_0198d95f-6c00-7000-8000-0000000000c4",
+        "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+        "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+        "sequence": 6,
+        "author": {"principalId": "bot_0198d95f-6c00-7000-8000-000000000011", "kind": "bot", "displayName": "Jerry"},
+        "kind": "result",
+        "text": "The household notes are compiled and ready.",
+        "mentions": [],
+        "attachments": [],
+        "replyToMessageId": "msg_0198d95f-6c00-7000-8000-0000000000c1",
+        "visibility": "visible",
+        "clientMessageId": null,
+        "provenance": {"roundId": null, "workId": "wrk_0198d95f-6c00-7000-8000-0000000000d1"},
+        "createdAt": "2026-08-24T16:18:00.000Z"
+      }
+    ],
+    "excludes": ["attempt", "lease", "workObservation", "communicationEvidence"]
+  },
+  "activity": {
+    "entries": [
+      {
+        "key": "work:wrk_0198d95f-6c00-7000-8000-0000000000d1:progress",
+        "eventSequence": 131,
+        "category": "progress",
+        "state": "working",
+        "label": "Working",
+        "updatedAt": "2026-08-24T16:10:05.000Z",
+        "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+        "workId": "wrk_0198d95f-6c00-7000-8000-0000000000d1",
+        "observationId": "obs_0198d95f-6c00-7000-8000-0000000000d9"
+      },
+      {
+        "key": "work:wrk_0198d95f-6c00-7000-8000-0000000000d1:completion",
+        "eventSequence": 134,
+        "category": "completion",
+        "state": "idle",
+        "label": "Result posted",
+        "updatedAt": "2026-08-24T16:18:00.000Z",
+        "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+        "workId": "wrk_0198d95f-6c00-7000-8000-0000000000d1",
+        "observationId": null
+      }
+    ],
+    "excludes": ["messageBodiesAsAuthority"]
+  },
+  "forensics": {
+    "canonicalEvents": [
+      {
+        "id": "evt_0198d95f-6c00-7000-8000-0000000000e2",
+        "sequence": 132,
+        "schemaVersion": 1,
+        "type": "message.appended",
+        "durability": "durable",
+        "aggregate": {"kind": "message", "id": "msg_0198d95f-6c00-7000-8000-0000000000c2", "version": 1},
+        "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+        "actorPrincipalId": "user_owner",
+        "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+        "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+        "createdAt": "2026-08-24T16:10:30.000Z",
+        "payload": {
+          "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+          "messageId": "msg_0198d95f-6c00-7000-8000-0000000000c2",
+          "channelSequence": 4
+        }
+      },
+      {
+        "id": "evt_0198d95f-6c00-7000-8000-0000000000e4",
+        "sequence": 134,
+        "schemaVersion": 1,
+        "type": "message.appended",
+        "durability": "durable",
+        "aggregate": {"kind": "message", "id": "msg_0198d95f-6c00-7000-8000-0000000000c4", "version": 1},
+        "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+        "actorPrincipalId": "bot_0198d95f-6c00-7000-8000-000000000011",
+        "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+        "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+        "createdAt": "2026-08-24T16:18:00.000Z",
+        "payload": {
+          "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+          "messageId": "msg_0198d95f-6c00-7000-8000-0000000000c4",
+          "channelSequence": 6
+        }
+      }
+    ],
+    "communicationEvents": [
+      {"kind": "user_message_committed", "messageId": "msg_0198d95f-6c00-7000-8000-0000000000c2", "workId": null},
+      {"kind": "assistant_message_committed", "messageId": "msg_0198d95f-6c00-7000-8000-0000000000c4", "workId": "wrk_0198d95f-6c00-7000-8000-0000000000d1"}
+    ]
+  },
+  "sharedAuthority": {
+    "workId": "wrk_0198d95f-6c00-7000-8000-0000000000d1",
+    "eventSequences": [132, 134]
+  },
+  "throughEventSequence": 134
+}
