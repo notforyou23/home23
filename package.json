@@ -24,6 +24,7 @@
     "coordination:bootstrap:jerry": "node scripts/coordination/bootstrap-jerry.mjs",
     "coordination:m14:authority": "node scripts/coordination/m14-authority.mjs",
     "coordination:m31:attachments-authority": "node scripts/coordination/m31-attachments-authority.mjs",
+    "coordination:bot-lifecycle-authority": "node scripts/coordination/bot-lifecycle-authority.mjs",
     "test:coordination:m31-preflight": "node --import tsx --test --test-concurrency=1 tests/coordination/rollout/m31-activation-preflight.test.ts",
     "coordination:m31-preflight:fixture": "node scripts/coordination/m31-activation-preflight.mjs",
     "coordination:release:preflight": "node scripts/coordination/release-candidate-preflight.mjs",
