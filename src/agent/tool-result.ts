@@ -6,6 +6,7 @@ import type {
   ToolContext,
   ToolResult,
 } from './types.js';
+import { applyForegroundToolPolicy, foregroundDetachRefusal } from './foreground-tool-policy.js';
 
 const OPERATION_ID = /^brop_[A-Za-z0-9_-]{32}$/;
 const RESULT_HANDLE = /^brres_[A-Za-z0-9_-]{32}$/;
@@ -441,7 +442,25 @@ export async function executeAndFormatTool(input: {
 }> {
   validateDisplayLimit(input.modelLimit);
   validateDisplayLimit(input.eventLimit);
-  const result = await input.registry.execute(input.name, input.input, {
+  const decision = applyForegroundToolPolicy(input.name, input.input, input.context);
+  if (decision.action === 'require_work') {
+    if (decision.request) input.context.onForegroundDetachRequired?.(decision.request);
+    const refused: ToolResult = {
+      content: foregroundDetachRefusal(decision),
+      is_error: true,
+    };
+    input.onEvent?.({
+      type: 'tool_result',
+      tool: input.name,
+      toolCallId: input.toolCallId,
+      result: refused.content,
+      exactResult: refused.content,
+      success: false,
+      sourceEventType: 'runtime.tool_result',
+    });
+    return { result: refused, modelContent: refused.content, eventContent: refused.content, success: false };
+  }
+  const result = await input.registry.execute(input.name, decision.input, {
     ...input.context,
     parentToolCallId: input.toolCallId,
   });

@@ -502,7 +502,7 @@ test('joined web grant reuses the exact configured resident web definitions', as
 });
 
 test('joined result remains complete through the real parent display boundary', async () => {
-  const { ctx, captured } = makeCtx('parent-chat');
+  const { ctx, captured } = makeCtx('coordination:channel:work');
   const exact = 'z'.repeat(JOINED_RESULT_MAX_CHARS);
   (ctx as { runAgentLoop?: unknown }).runAgentLoop = async (
     _sys: string,

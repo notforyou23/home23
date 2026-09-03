@@ -15,6 +15,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { isForegroundTurnHeld } from '../agent/foreground-admission.js';
 import type { SessionsConfig, SessionRecord, ContentBlock, MediaAttachment } from '../types.js';
 
 /**
@@ -177,18 +178,47 @@ export class SessionRouter {
   }
 
   /**
-   * Mark a router key as having an active agent run.
-   * While active, flushQueue will hold messages instead of processing.
+   * Speaking-turn lock for one conversation key.
+   * Background Work must not call this. While held, already-accepted
+   * messages stay queued so a second model completion cannot start.
    */
-  markRunActive(key: string): void {
+  markSpeakingActive(key: string): void {
     this.activeRuns.add(key);
   }
 
+  markSpeakingComplete(key: string): void {
+    this.activeRuns.delete(key);
+  }
+
+  isSpeaking(key: string): boolean {
+    return this.activeRuns.has(key);
+  }
+
   /**
-   * Mark a router key's agent run as complete.
+   * @deprecated Use markSpeakingActive. Kept so existing callers compile.
+   */
+  markRunActive(key: string): void {
+    this.markSpeakingActive(key);
+  }
+
+  /**
+   * @deprecated Use markSpeakingComplete.
    */
   markRunComplete(key: string): void {
-    this.activeRuns.delete(key);
+    this.markSpeakingComplete(key);
+  }
+
+  /**
+   * Park a Message that was already durably accepted while a speaking turn
+   * is in flight. Does not start another debounce flush.
+   */
+  parkAccepted(key: string, message: IncomingMessage): void {
+    let queue = this.queues.get(key);
+    if (!queue) {
+      queue = [];
+      this.queues.set(key, queue);
+    }
+    queue.push({ message, enqueuedAt: Date.now() });
   }
 
   /**
@@ -217,6 +247,9 @@ export class SessionRouter {
     if (this.config.messageQueue.mode === 'collect') {
       // Collect mode: queue messages and debounce
       this.enqueue(key, message);
+    } else if (this.isSpeaking(key)) {
+      // Durably accepted above; hold until the speaking turn ends.
+      this.parkAccepted(key, message);
     } else {
       // Direct mode: process immediately
       await this.processMessage(message);
@@ -278,9 +311,10 @@ export class SessionRouter {
     const queue = this.queues.get(key);
     if (!queue || queue.length === 0) return;
 
-    // If an agent run is active for this key, hold messages in queue
-    // They'll be drained via drainPending() when the run completes
-    if (this.config.messageQueue.queueDuringRun !== false && this.activeRuns.has(key)) {
+    // Speaking lock only. Background Work must not occupy activeRuns.
+    // Always hold while a speaking turn is in flight — do not honor
+    // queueDuringRun=false as a way to start a second completion.
+    if (this.activeRuns.has(key)) {
       return;
     }
 
@@ -363,6 +397,10 @@ export class SessionRouter {
         console.warn(`[router] No adapter for channel: ${message.channel}`);
       }
     } catch (err) {
+      if (isForegroundTurnHeld(err)) {
+        this.parkAccepted(key, message);
+        return;
+      }
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.appendTurnLog({
         turnId,

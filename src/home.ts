@@ -41,6 +41,8 @@ import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
 import { resolveModelOverride, type ModelAliases, type ModelOverride } from './agent/model-resolution.js';
 import { resolveProviderKey } from './agent/provider-credentials.js';
 import { executeTrackedTurn } from './agent/turn-entrypoint.js';
+import { assertCanStartSpeaking } from './agent/foreground-admission.js';
+import type { ForegroundDetachRequest } from './agent/foreground-tool-policy.js';
 import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
 import { createSeededToolRegistry, createToolRegistry } from './agent/tools/index.js';
@@ -394,6 +396,13 @@ async function main(): Promise<void> {
     brainOperations,
     turnRuntime: null,
     workerConnectorBaseUrl: `http://127.0.0.1:${BRIDGE_PORT}`,
+    onForegroundDetachRequired: (request: ForegroundDetachRequest) => {
+      console.warn(
+        `[foreground] detach required before ${request.tool} on ${request.chatId}`
+        + (request.turnId ? ` turn ${request.turnId}` : '')
+        + `: ${request.reason}`,
+      );
+    },
   };
 
   // ── Model from config.yaml (single source of truth; shared floor) ──
@@ -607,21 +616,13 @@ async function main(): Promise<void> {
       return cmdResult;
     }
 
-    // Safety net: if somehow a message reaches here while agent is busy
-    // (should not happen with queueDuringRun, but defensive)
-    if (agent.isRunning(message.chatId)) {
-      const busyResponse = {
-        text: "I'm still working on something. Send /stop to interrupt me.",
-        channel: message.channel,
-        chatId: message.chatId,
-      };
-      await assimilateOutgoingResponse(message, busyResponse);
-      return busyResponse;
-    }
-
-    // Track active run so router holds incoming messages during processing
+    // Speaking lock only. Active Work must not busy-reject conversation.
+    // If a speaking turn is already in flight, hold this accepted Message.
     const routerKey = `${message.channel}:${message.chatId}`;
-    router.markRunActive(routerKey);
+    assertCanStartSpeaking({ speakingActive: agent.isRunning(message.chatId) });
+
+    // Track the speaking turn so the router holds the next assembled completion.
+    router.markSpeakingActive(routerKey);
 
     try {
       const { response: result } = await executeTrackedTurn(
@@ -639,8 +640,8 @@ async function main(): Promise<void> {
       await assimilateOutgoingResponse(message, response);
       return response;
     } finally {
-      router.markRunComplete(routerKey);
-      // Process any messages that arrived during the run
+      router.markSpeakingComplete(routerKey);
+      // Process any messages that arrived during the speaking turn
       await router.drainPending(routerKey);
     }
   };

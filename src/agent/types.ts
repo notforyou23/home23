@@ -135,6 +135,8 @@ export interface ToolContext {
   parentWorkId?: string;
   /** Terminal async-work hook installed by home.ts — runs the completion pipeline. */
   onWorkTerminal?: (workId: string, result: string | AsyncWorkTerminalResult) => void;
+  /** Foreground policy: a long tool was refused and needs durable Work (Lane 2). */
+  onForegroundDetachRequired?: (request: import('./foreground-tool-policy.js').ForegroundDetachRequest) => void;
   runAgentLoop: AgentLoopRunner | null;
   workerConnectorBaseUrl?: string;
   fetch?: typeof fetch;
