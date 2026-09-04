@@ -148,7 +148,7 @@
   background: var(--glass-secondary);
   padding: 1px 5px;
   border-radius: 3px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--h23-font-mono);
   font-size: 12px;
 }
 .h23-chat-msg.assistant pre {
@@ -157,7 +157,7 @@
   border-radius: 6px;
   padding: 10px 12px;
   overflow-x: auto;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--h23-font-mono);
   font-size: 12px;
   margin: 8px 0;
   line-height: 1.4;
@@ -206,7 +206,7 @@
 .h23-chat-tool-name {
   font-weight: 600;
   color: var(--accent-blue);
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-tool-status {
@@ -222,7 +222,7 @@
 
 .h23-chat-tool-args {
   color: var(--text-muted);
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--h23-font-mono);
   font-size: 11px;
   white-space: pre-wrap;
   max-height: 160px;
@@ -1007,7 +1007,7 @@
 .h23-chat-model-pill {
   padding: 0;
   color: var(--h23-paper-faint);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 11px;
   opacity: 1;
 }
@@ -1079,7 +1079,7 @@
   border-radius: 5px;
   background: rgba(30, 26, 24, 0.70);
   color: var(--h23-accent, #3E7BE0);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-msg.assistant pre {
@@ -1087,7 +1087,7 @@
   border-radius: 12px;
   background: rgba(30, 26, 24, 0.55);
   color: var(--h23-text-body, #333B48);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-thinking {
@@ -1110,13 +1110,13 @@
 
 .h23-chat-tool-name {
   color: var(--h23-accent, #3E7BE0);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-tool-status,
 .h23-chat-tool-args {
   color: var(--h23-text-muted-aa, #697384);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-tool-result {
@@ -1159,7 +1159,7 @@
   border-radius: var(--h23-radius-input, 14px);
   background: var(--h23-glass-input, rgba(30, 26, 24, 0.94));
   color: var(--h23-text-primary, #1B2028);
-  font-family: var(--h23-font-ui, ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif);
+  font-family: var(--h23-font-ui);
   font-size: 14px;
   box-shadow: inset 0 1px 3px rgba(30, 45, 70, 0.05);
 }
@@ -1191,7 +1191,7 @@
 }
 
 .h23-chat-attach-icon {
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', monospace);
+  font-family: var(--h23-font-mono);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -1276,7 +1276,7 @@
 
 .h23-chat-conv-source {
   color: var(--h23-text-muted-aa, #697384);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', monospace);
+  font-family: var(--h23-font-mono);
   font-size: 0.78em;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -1352,7 +1352,7 @@
 
 .h23-chat-overlay-kicker {
   color: var(--h23-accent, #3E7BE0);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 10px;
   letter-spacing: 0.14em;
 }
@@ -1434,7 +1434,7 @@ body:not(.h23-dashboard-page) {
   --shadow-glass: var(--h23-shadow-panel, 0 12px 44px rgba(30, 45, 70, 0.09));
   background: var(--h23-stage, #0a0908) !important;
   color: var(--h23-text-primary, #1B2028);
-  font-family: var(--h23-font-ui, ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif);
+  font-family: var(--h23-font-ui);
 }
 
 body:not(.h23-dashboard-page) #particles-js {
@@ -1636,7 +1636,7 @@ body.h23-chat-page .h23-chat-shared {
   height: 100%;
   background: transparent;
   color: var(--h23-text-body, #333B48);
-  font-family: var(--h23-font-ui, ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif);
+  font-family: var(--h23-font-ui);
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-sidebar,
@@ -1782,7 +1782,7 @@ body.h23-chat-page .h23-chat-sidebar {
 .h23-chat-slot > .h23-chat-shared .h23-chat-thinking-pill {
   padding: 4px 12px;
   color: var(--h23-text-secondary, #5A6474);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 11px;
 }
 
@@ -1879,7 +1879,7 @@ body.h23-chat-page .h23-chat-sidebar {
   border-radius: 5px;
   background: rgba(30, 26, 24, 0.85);
   color: var(--h23-signal);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 0.86em;
 }
 
@@ -1913,7 +1913,7 @@ body.h23-chat-page .h23-chat-sidebar {
 .h23-chat-slot > .h23-chat-shared .h23-chat-thinking-body {
   padding: 0 12px 10px;
   white-space: pre-wrap;
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 12px;
   line-height: 1.45;
   font-style: normal;
@@ -1957,7 +1957,7 @@ body.h23-chat-page .h23-chat-sidebar {
   color: var(--h23-paper-faint);
   font-size: 12px;
   font-weight: 500;
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool-status,
@@ -1993,7 +1993,7 @@ body.h23-chat-page .h23-chat-sidebar {
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool-args,
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool-result {
   color: var(--h23-text-secondary, #5A6474);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 12px;
 }
 
@@ -2311,7 +2311,7 @@ body.h23-chat-page .h23-chat-sidebar {
   border-radius: 0;
   background: transparent;
   color: var(--h23-text-primary, #1B2028);
-  font-family: var(--h23-font-ui, ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif);
+  font-family: var(--h23-font-ui);
   font-size: 16px;
   line-height: 1.4;
   box-shadow: none;

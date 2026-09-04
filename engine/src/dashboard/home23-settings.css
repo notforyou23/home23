@@ -707,7 +707,7 @@ body {
   border-radius: var(--radius-sm);
   padding: 12px 16px;
   margin-top: 12px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--h23-font-mono);
   font-size: 12px;
   color: var(--text-secondary);
   max-height: 200px;
@@ -876,7 +876,7 @@ body {
   padding: 9px 12px;
   border-radius: var(--radius-sm);
   font-size: 13px;
-  font-family: 'SF Mono', monospace;
+  font-family: var(--h23-font-mono);
   outline: none;
   resize: vertical;
   min-height: 92px;
@@ -964,7 +964,7 @@ body {
   padding: 8px 12px;
   border-radius: var(--radius-sm);
   font-size: 13px;
-  font-family: 'SF Mono', monospace;
+  font-family: var(--h23-font-mono);
   outline: none;
 }
 .h23s-provider-key-row input:focus {
@@ -1194,7 +1194,7 @@ body {
   padding: 10px 14px;
   font-size: 13px;
   color: var(--text-muted);
-  font-family: 'SF Mono', monospace;
+  font-family: var(--h23-font-mono);
 }
 
 .h23s-readiness-grid,
@@ -1270,7 +1270,7 @@ body {
   padding: 5px 8px;
   border-radius: 4px;
   font-size: 13px;
-  font-family: 'SF Mono', monospace;
+  font-family: var(--h23-font-mono);
   width: 100%;
   outline: none;
 }
@@ -1369,7 +1369,7 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   color: inherit;
-  font-family: 'SF Mono', monospace;
+  font-family: var(--h23-font-mono);
   font-size: 11px;
   resize: vertical;
 }
