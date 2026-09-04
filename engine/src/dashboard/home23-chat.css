@@ -126,7 +126,7 @@
 
 .h23-chat-msg.user {
   align-self: flex-end;
-  background: rgba(10, 132, 255, 0.2);
+  background: rgba(var(--h23-signal-rgb), 0.2);
   color: var(--text-primary);
   padding: 8px 12px;
   border-radius: 12px 12px 4px 12px;
@@ -148,7 +148,7 @@
   background: var(--glass-secondary);
   padding: 1px 5px;
   border-radius: 3px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--h23-font-mono);
   font-size: 12px;
 }
 .h23-chat-msg.assistant pre {
@@ -157,7 +157,7 @@
   border-radius: 6px;
   padding: 10px 12px;
   overflow-x: auto;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--h23-font-mono);
   font-size: 12px;
   margin: 8px 0;
   line-height: 1.4;
@@ -206,7 +206,7 @@
 .h23-chat-tool-name {
   font-weight: 600;
   color: var(--accent-blue);
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-tool-status {
@@ -222,7 +222,7 @@
 
 .h23-chat-tool-args {
   color: var(--text-muted);
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--h23-font-mono);
   font-size: 11px;
   white-space: pre-wrap;
   max-height: 160px;
@@ -313,7 +313,7 @@
   inset: 0;
   z-index: 1000;
   background:
-    radial-gradient(circle at top left, rgba(10, 132, 255, 0.16), transparent 34%),
+    radial-gradient(circle at top left, rgba(var(--h23-signal-rgb), 0.16), transparent 34%),
     radial-gradient(circle at bottom right, rgba(0, 199, 190, 0.12), transparent 30%),
     rgba(3, 7, 18, 0.72);
   backdrop-filter: none;
@@ -554,7 +554,7 @@
   background: rgba(255, 255, 255, 0.04);
 }
 .h23-chat-conv-item.active {
-  background: rgba(10, 132, 255, 0.08);
+  background: rgba(var(--h23-signal-rgb), 0.08);
   border-left: 2px solid var(--accent-blue);
 }
 
@@ -617,7 +617,7 @@
 
 .h23-chat-shared {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   flex: 1 1 0;
   height: 100%;
   max-height: 100%;
@@ -910,8 +910,8 @@
 .h23-chat-menu,
 .h23-chat-conv-panel,
 .h23-chat-shared {
-  --glass-primary: var(--h23-glass-panel, rgba(30, 26, 24, 0.55));
-  --glass-secondary: var(--h23-glass-input, rgba(30, 26, 24, 0.94));
+  --glass-primary: var(--h23-glass-panel, var(--h23-card));
+  --glass-secondary: var(--h23-glass-input, var(--h23-raised));
   --glass-border: var(--h23-input-border, rgba(27, 32, 40, 0.09));
   --glass-hover: var(--h23-hover-row, rgba(27, 32, 40, 0.04));
   --text-primary: var(--h23-text-primary, #1B2028);
@@ -932,7 +932,7 @@
   padding: 0;
   overflow: hidden;
   border-radius: var(--h23-radius-panel, 20px);
-  background: var(--h23-glass-panel, rgba(30, 26, 24, 0.55));
+  background: var(--h23-glass-panel, var(--h23-card));
   color: var(--h23-text-body, #333B48);
 }
 
@@ -942,7 +942,7 @@
   gap: 12px;
   min-height: 60px;
   padding: 14px 0 12px;
-  border-bottom: 0;
+  border-bottom: 1px solid var(--h23-hairline-7);
   background: transparent;
 }
 
@@ -976,19 +976,20 @@
 .h23-chat-model-pill:hover,
 .h23-chat-effort-pill:hover,
 .h23-chat-thinking-pill:hover {
-  border-color: var(--h23-accent-tint-border, rgba(62, 123, 224, 0.22));
-  background: rgba(30, 26, 24, 0.90);
+  border-color: var(--h23-accent-tint-border, rgba(var(--h23-signal-rgb), 0.22));
+  background: var(--h23-raised);
   color: var(--h23-text-primary, #1B2028);
 }
 
 .h23-chat-agent-avatar {
   position: relative;
-  width: 40px;
-  height: 40px;
-  background: rgba(142, 207, 232, 0.16);
+  width: 38px;
+  height: 38px;
+  background: linear-gradient(145deg, rgba(var(--h23-signal-rgb), 0.28), rgba(var(--h23-signal-rgb), 0.1));
+  border: 1px solid rgba(var(--h23-signal-rgb), 0.25);
   color: var(--h23-signal);
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 800;
   box-shadow: none;
 }
 
@@ -1007,7 +1008,7 @@
 .h23-chat-model-pill {
   padding: 0;
   color: var(--h23-paper-faint);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 11px;
   opacity: 1;
 }
@@ -1023,13 +1024,14 @@
   height: 32px;
   border: 1px solid var(--h23-hairline-10);
   border-radius: 10px;
-  background: rgba(30, 26, 24, 0.55);
+  background: var(--h23-raised);
   color: var(--h23-paper-soft);
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 
 .h23-chat-expand-btn:hover {
   border-color: var(--h23-input-border, rgba(27, 32, 40, 0.09));
-  background: rgba(30, 26, 24, 0.85);
+  background: var(--h23-card-hover);
   color: var(--h23-text-primary, #1B2028);
 }
 
@@ -1050,12 +1052,12 @@
 
 .h23-chat-msg.user {
   max-width: 66%;
-  padding: 12px 17px;
-  border: 1px solid var(--h23-hairline-14);
-  border-radius: 20px;
-  background: var(--h23-surface);
+  padding: 11px 16px;
+  border: 1px solid var(--h23-hairline-10);
+  border-radius: 18px 18px 6px 18px;
+  background: var(--h23-raised);
   color: var(--h23-paper);
-  box-shadow: none;
+  box-shadow: var(--h23-shadow-card);
 }
 
 .h23-chat-msg.assistant,
@@ -1077,17 +1079,17 @@
 .h23-chat-msg.assistant code {
   border: 1px solid var(--h23-hairline, rgba(27, 32, 40, 0.07));
   border-radius: 5px;
-  background: rgba(30, 26, 24, 0.70);
+  background: var(--h23-card-hover);
   color: var(--h23-accent, #3E7BE0);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-msg.assistant pre {
   border: 1px solid var(--h23-hairline, rgba(27, 32, 40, 0.07));
   border-radius: 12px;
-  background: rgba(30, 26, 24, 0.55);
+  background: var(--h23-card);
   color: var(--h23-text-body, #333B48);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-thinking {
@@ -1104,19 +1106,19 @@
   padding: 10px 12px;
   border: 1px solid var(--h23-hairline, rgba(27, 32, 40, 0.07));
   border-radius: 12px;
-  background: rgba(30, 26, 24, 0.55);
+  background: var(--h23-card);
   color: var(--h23-text-body, #333B48);
 }
 
 .h23-chat-tool-name {
   color: var(--h23-accent, #3E7BE0);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-tool-status,
 .h23-chat-tool-args {
   color: var(--h23-text-muted-aa, #697384);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-tool-result {
@@ -1133,15 +1135,16 @@
 }
 
 .h23-chat-error {
-  border: 1px solid rgba(201, 79, 79, 0.18);
+  border: 1px solid rgba(var(--h23-ember-rgb), 0.18);
   border-radius: 10px;
-  background: rgba(201, 79, 79, 0.08);
+  background: rgba(var(--h23-ember-rgb), 0.08);
 }
 
 .h23-chat-input-area {
+  flex-direction: column;
   gap: 10px;
-  padding: 16px 20px 20px;
-  border-top: 0;
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--h23-hairline-7);
   background: transparent;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -1154,19 +1157,21 @@
 .h23-chat-input {
   min-height: 48px;
   max-height: 160px;
-  padding: 12px 16px;
-  border: 1px solid var(--h23-input-border, rgba(27, 32, 40, 0.09));
+  padding: 13px 16px;
+  border: 1px solid var(--h23-hairline-10);
   border-radius: var(--h23-radius-input, 14px);
-  background: var(--h23-glass-input, rgba(30, 26, 24, 0.94));
-  color: var(--h23-text-primary, #1B2028);
-  font-family: var(--h23-font-ui, ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif);
-  font-size: 14px;
-  box-shadow: inset 0 1px 3px rgba(30, 45, 70, 0.05);
+  background: var(--h23-inset);
+  color: var(--h23-paper);
+  font-family: var(--h23-font-ui);
+  font-size: 14.5px;
+  box-shadow: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .h23-chat-input:focus {
-  border-color: var(--h23-accent, #3E7BE0);
-  box-shadow: 0 0 0 3px rgba(62, 123, 224, 0.12), inset 0 1px 3px rgba(30, 45, 70, 0.05);
+  outline: none;
+  border-color: rgba(var(--h23-signal-rgb), 0.45);
+  box-shadow: 0 0 0 3px var(--h23-signal-tint);
 }
 
 .h23-chat-input::placeholder {
@@ -1182,43 +1187,77 @@
 }
 
 .h23-chat-attach-btn {
-  border: 1px solid var(--h23-input-border, rgba(27, 32, 40, 0.09));
-  background: rgba(30, 26, 24, 0.70);
-  color: var(--h23-text-secondary, #5A6474);
-  width: auto;
-  min-width: 68px;
-  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  min-width: 48px;
+  padding: 0;
+  border: 1px solid var(--h23-hairline-10);
+  background: var(--h23-raised);
+  color: var(--h23-paper-soft);
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 
+/* The visible "Attach" text becomes a paperclip glyph; the button keeps its aria-label. */
 .h23-chat-attach-icon {
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', monospace);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  line-height: 1;
-  text-transform: uppercase;
+  display: block;
+  width: 18px;
+  height: 18px;
+  overflow: hidden;
+  font-size: 0;
+  line-height: 0;
+  color: inherit;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20.5 12.5l-7.6 7.6a5 5 0 0 1-7.1-7.1l8.5-8.5a3.2 3.2 0 0 1 4.5 4.5l-8.5 8.5a1.4 1.4 0 0 1-2-2l7.4-7.4'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20.5 12.5l-7.6 7.6a5 5 0 0 1-7.1-7.1l8.5-8.5a3.2 3.2 0 0 1 4.5 4.5l-8.5 8.5a1.4 1.4 0 0 1-2-2l7.4-7.4'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 .h23-chat-attach-btn:hover {
-  background: rgba(255, 255, 255, 0.95);
-  color: var(--h23-text-primary, #1B2028);
+  border-color: var(--h23-hairline-20);
+  background: var(--h23-card-hover);
+  color: var(--h23-paper);
 }
 
 .h23-chat-send-btn {
+  position: relative;
   border: 0;
-  background: var(--h23-accent, #3E7BE0);
-  color: var(--h23-ink);
-  box-shadow: var(--h23-shadow-accent-btn, 0 6px 18px rgba(62, 123, 224, 0.32));
+  background: var(--h23-signal);
+  color: transparent;
+  box-shadow: none;
+  transition: background-color 140ms ease, transform 140ms ease;
+}
+
+/* Replace the text glyph with an arrow-up mask drawn in ink. */
+.h23-chat-send-btn::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 20px;
+  height: 20px;
+  background-color: var(--h23-ink);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19V5M5.5 11.5L12 5l6.5 6.5'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19V5M5.5 11.5L12 5l6.5 6.5'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 .h23-chat-send-btn:hover {
-  background: #326CCB;
+  background: var(--h23-leonardo-ice);
+}
+
+.h23-chat-send-btn:disabled {
+  background: var(--h23-raised);
+  cursor: default;
+}
+
+.h23-chat-send-btn:disabled::before {
+  background-color: var(--h23-paper-faint);
 }
 
 .h23-chat-attach-thumb {
   border-color: var(--h23-input-border, rgba(27, 32, 40, 0.09));
   border-radius: 10px;
-  background: rgba(30, 26, 24, 0.70);
+  background: var(--h23-card-hover);
 }
 
 .h23-chat-attach-thumb-remove {
@@ -1226,20 +1265,20 @@
 }
 
 .h23-chat-drop-overlay {
-  border-color: rgba(62, 123, 224, 0.58);
+  border-color: rgba(var(--h23-signal-rgb), 0.55);
   border-radius: var(--h23-radius-input, 14px);
-  background: rgba(62, 123, 224, 0.13);
-  color: var(--h23-accent, #3E7BE0);
+  background: var(--h23-signal-tint);
+  color: var(--h23-signal);
 }
 
 .h23-chat-menu {
   min-width: 220px;
   padding: 6px;
-  border: 1px solid #fff;
+  border: 1px solid var(--h23-hairline-14);
   border-radius: 14px;
-  background: rgba(30, 26, 24, 0.94);
-  color: var(--h23-text-heading, #232936);
-  box-shadow: 0 16px 48px rgba(20, 30, 50, 0.18);
+  background: var(--h23-raised);
+  color: var(--h23-paper);
+  box-shadow: var(--h23-shadow-pop, 0 16px 48px rgba(0, 0, 0, 0.5));
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
@@ -1256,7 +1295,7 @@
 }
 
 .h23-chat-conv-panel {
-  background: rgba(30, 26, 24, 0.94);
+  background: var(--h23-raised);
   color: var(--h23-text-body, #333B48);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -1276,7 +1315,7 @@
 
 .h23-chat-conv-source {
   color: var(--h23-text-muted-aa, #697384);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', monospace);
+  font-family: var(--h23-font-mono);
   font-size: 0.78em;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -1293,12 +1332,12 @@
   padding: 0 12px;
   border: 1px solid var(--h23-input-border, rgba(27, 32, 40, 0.09));
   border-radius: 10px;
-  background: var(--h23-glass-input, rgba(30, 26, 24, 0.94));
+  background: var(--h23-glass-input, var(--h23-raised));
   color: var(--h23-text-heading, #232936);
 }
 
 .h23-chat-conv-nav:hover {
-  border-color: var(--h23-accent-tint-border, rgba(62, 123, 224, 0.22));
+  border-color: var(--h23-accent-tint-border, rgba(var(--h23-signal-rgb), 0.22));
   color: var(--h23-accent, #3E7BE0);
 }
 
@@ -1313,7 +1352,7 @@
 
 .h23-chat-conv-item.active {
   border-left-color: var(--h23-accent, #3E7BE0);
-  background: var(--h23-accent-tint, rgba(62, 123, 224, 0.1));
+  background: var(--h23-accent-tint, rgba(var(--h23-signal-rgb), 0.1));
 }
 
 .h23-chat-overlay {
@@ -1329,7 +1368,7 @@
   height: min(760px, 86vh);
   border: 1px solid #fff;
   border-radius: var(--h23-radius-overlay, 24px);
-  background: var(--h23-glass-overlay, rgba(30, 26, 24, 0.90));
+  background: var(--h23-glass-overlay, var(--h23-raised));
   color: var(--h23-text-body, #333B48);
   box-shadow: var(--h23-shadow-overlay, 0 32px 90px rgba(20, 30, 50, 0.28));
   -webkit-backdrop-filter: none;
@@ -1352,7 +1391,7 @@
 
 .h23-chat-overlay-kicker {
   color: var(--h23-accent, #3E7BE0);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 10px;
   letter-spacing: 0.14em;
 }
@@ -1379,9 +1418,9 @@
 }
 
 .h23-system-bar {
-  border-color: var(--h23-glass-border, rgba(30, 26, 24, 0.90));
+  border-color: var(--h23-glass-border, var(--h23-raised));
   border-radius: var(--h23-radius-card, 16px);
-  background: var(--h23-glass-card, rgba(30, 26, 24, 0.55));
+  background: var(--h23-glass-card, var(--h23-card));
   color: var(--h23-text-body, #333B48);
   box-shadow: var(--h23-shadow-card, 0 8px 32px rgba(30, 45, 70, 0.07));
 }
@@ -1412,7 +1451,7 @@
 .h23-chat-attach-btn:focus-visible,
 .h23-chat-send-btn:focus-visible,
 .h23-chat-input:focus-visible {
-  outline: 3px solid rgba(62, 123, 224, 0.48);
+  outline: 3px solid rgba(var(--h23-signal-rgb), 0.48);
   outline-offset: 3px;
 }
 
@@ -1420,8 +1459,8 @@
    important declarations only neutralize that legacy dark palette; layout
    and mobile keyboard behavior remain owned by the standalone page. */
 body:not(.h23-dashboard-page) {
-  --glass-primary: var(--h23-glass-panel, rgba(30, 26, 24, 0.85));
-  --glass-secondary: var(--h23-glass-input, rgba(30, 26, 24, 0.94));
+  --glass-primary: var(--h23-glass-panel, var(--h23-card-hover));
+  --glass-secondary: var(--h23-glass-input, var(--h23-raised));
   --glass-border: var(--h23-input-border, rgba(27, 32, 40, 0.09));
   --text-primary: var(--h23-text-primary, #1B2028);
   --text-secondary: var(--h23-text-secondary, #5A6474);
@@ -1434,7 +1473,7 @@ body:not(.h23-dashboard-page) {
   --shadow-glass: var(--h23-shadow-panel, 0 12px 44px rgba(30, 45, 70, 0.09));
   background: var(--h23-stage, #0a0908) !important;
   color: var(--h23-text-primary, #1B2028);
-  font-family: var(--h23-font-ui, ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif);
+  font-family: var(--h23-font-ui);
 }
 
 body:not(.h23-dashboard-page) #particles-js {
@@ -1446,7 +1485,7 @@ body:not(.h23-dashboard-page) .sh-input-bar,
 body:not(.h23-dashboard-page) .sh-drawer,
 body:not(.h23-dashboard-page) .sh-sheet {
   border-color: var(--h23-hairline, rgba(27, 32, 40, 0.07)) !important;
-  background: var(--h23-glass-panel, rgba(30, 26, 24, 0.85)) !important;
+  background: var(--h23-glass-panel, var(--h23-card-hover)) !important;
   color: var(--h23-text-primary, #1B2028) !important;
 }
 
@@ -1493,14 +1532,14 @@ body:not(.h23-dashboard-page) .sh-field-label {
 
 body:not(.h23-dashboard-page) .sh-input {
   border-color: var(--h23-input-border, rgba(27, 32, 40, 0.09));
-  background: var(--h23-glass-input, rgba(30, 26, 24, 0.94));
+  background: var(--h23-glass-input, var(--h23-raised));
   color: var(--h23-text-primary, #1B2028);
   box-shadow: inset 0 1px 3px rgba(30, 45, 70, 0.05);
 }
 
 body:not(.h23-dashboard-page) .sh-input:focus {
   border-color: var(--h23-accent, #3E7BE0);
-  box-shadow: 0 0 0 3px rgba(62, 123, 224, 0.12);
+  box-shadow: 0 0 0 3px rgba(var(--h23-signal-rgb), 0.12);
 }
 
 body:not(.h23-dashboard-page) .sh-input::placeholder {
@@ -1509,7 +1548,7 @@ body:not(.h23-dashboard-page) .sh-input::placeholder {
 
 body:not(.h23-dashboard-page) .sh-sheet-action {
   border-color: var(--h23-input-border, rgba(27, 32, 40, 0.09));
-  background: var(--h23-glass-input, rgba(30, 26, 24, 0.94));
+  background: var(--h23-glass-input, var(--h23-raised));
   color: var(--h23-text-primary, #1B2028);
 }
 
@@ -1599,11 +1638,6 @@ body:not(.h23-dashboard-page) .sh-drawer-header {
     min-width: 44px;
   }
 
-  .h23-chat-attach-btn {
-    width: auto;
-    min-width: 62px;
-    padding-inline: 9px;
-  }
 
   .h23-chat-input {
     min-height: 44px;
@@ -1624,11 +1658,14 @@ body:not(.h23-dashboard-page) .sh-drawer-header {
 /* ── Unified Chat tab / standalone shell ──
    Higher specificity than leftover tile/overlay navy so this surface
    actually paints as Glass Light. */
+/* The shared subtree is messages + input stacked vertically. (A sidebar |
+   stage row layout was sketched here but that DOM never shipped; row made
+   the composer render beside the message list instead of under it.) */
 .h23-chat-slot > .h23-chat-shared,
 #panel-chat .h23-chat-shared,
 body.h23-chat-page .h23-chat-shared {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: stretch;
   flex: 1 1 auto;
   min-height: 0;
@@ -1636,7 +1673,7 @@ body.h23-chat-page .h23-chat-shared {
   height: 100%;
   background: transparent;
   color: var(--h23-text-body, #333B48);
-  font-family: var(--h23-font-ui, ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif);
+  font-family: var(--h23-font-ui);
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-sidebar,
@@ -1650,7 +1687,7 @@ body.h23-chat-page .h23-chat-sidebar {
   flex-direction: column;
   min-height: 0;
   border-right: 1px solid var(--h23-hairline, rgba(27, 32, 40, 0.07));
-  background: rgba(30, 26, 24, 0.55);
+  background: var(--h23-card);
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-sidebar-head {
@@ -1696,7 +1733,7 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-conv-item.active {
-  background: var(--h23-accent-tint, rgba(62, 123, 224, 0.1));
+  background: var(--h23-accent-tint, rgba(var(--h23-signal-rgb), 0.1));
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-conv-preview {
@@ -1772,7 +1809,7 @@ body.h23-chat-page .h23-chat-sidebar {
   min-height: 32px;
   border: 1px solid var(--h23-input-border, rgba(27, 32, 40, 0.09));
   border-radius: 999px;
-  background: rgba(30, 26, 24, 0.55);
+  background: var(--h23-card);
   color: var(--h23-text-heading, #232936);
   box-shadow: none;
 }
@@ -1782,7 +1819,7 @@ body.h23-chat-page .h23-chat-sidebar {
 .h23-chat-slot > .h23-chat-shared .h23-chat-thinking-pill {
   padding: 4px 12px;
   color: var(--h23-text-secondary, #5A6474);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 11px;
 }
 
@@ -1809,7 +1846,7 @@ body.h23-chat-page .h23-chat-sidebar {
 .h23-chat-slot > .h23-chat-shared .h23-chat-sidebar-toggle:hover,
 .h23-chat-slot > .h23-chat-shared .h23-chat-expand-btn:hover {
   border-color: var(--h23-input-border, rgba(27, 32, 40, 0.09));
-  background: rgba(30, 26, 24, 0.85);
+  background: var(--h23-card-hover);
   color: var(--h23-text-primary, #1B2028);
 }
 
@@ -1877,9 +1914,9 @@ body.h23-chat-page .h23-chat-sidebar {
   padding: 1px 5px;
   border: 1px solid var(--h23-hairline, rgba(27, 32, 40, 0.07));
   border-radius: 5px;
-  background: rgba(30, 26, 24, 0.85);
+  background: var(--h23-card-hover);
   color: var(--h23-signal);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 0.86em;
 }
 
@@ -1899,7 +1936,7 @@ body.h23-chat-page .h23-chat-sidebar {
   cursor: pointer;
   padding: 4px 12px;
   border-radius: 99px;
-  background: rgba(30, 26, 24, 0.6);
+  background: var(--h23-card);
   color: var(--h23-paper-faint);
   font-size: 12px;
   font-weight: 600;
@@ -1913,7 +1950,7 @@ body.h23-chat-page .h23-chat-sidebar {
 .h23-chat-slot > .h23-chat-shared .h23-chat-thinking-body {
   padding: 0 12px 10px;
   white-space: pre-wrap;
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 12px;
   line-height: 1.45;
   font-style: normal;
@@ -1957,7 +1994,7 @@ body.h23-chat-page .h23-chat-sidebar {
   color: var(--h23-paper-faint);
   font-size: 12px;
   font-weight: 500;
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool-status,
@@ -1980,9 +2017,9 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-error {
-  border: 1px solid rgba(201, 79, 79, 0.18);
+  border: 1px solid rgba(var(--h23-ember-rgb), 0.18);
   border-radius: 10px;
-  background: rgba(201, 79, 79, 0.08);
+  background: rgba(var(--h23-ember-rgb), 0.08);
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool-body,
@@ -1993,7 +2030,7 @@ body.h23-chat-page .h23-chat-sidebar {
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool-args,
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool-result {
   color: var(--h23-text-secondary, #5A6474);
-  font-family: var(--h23-font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--h23-font-mono);
   font-size: 12px;
 }
 
@@ -2028,7 +2065,7 @@ body.h23-chat-page .h23-chat-sidebar {
   appearance: none;
   border: 1px solid var(--h23-hairline-10);
   border-radius: 8px;
-  background: rgba(30, 26, 24, 0.85);
+  background: var(--h23-card-hover);
   color: var(--h23-paper);
   padding: 4px 8px;
   font-size: 12px;
@@ -2056,7 +2093,7 @@ body.h23-chat-page .h23-chat-sidebar {
   padding: 0;
   border: 0;
   border-radius: 99px;
-  background: rgba(217, 101, 74, 0.15);
+  background: rgba(var(--h23-ember-rgb), 0.15);
   color: transparent;
   font-size: 0;
 }
@@ -2118,7 +2155,7 @@ body.h23-chat-page .h23-chat-sidebar {
   padding: 9px 14px;
   border: 0;
   border-radius: 99px;
-  background: rgba(30, 26, 24, 0.5);
+  background: var(--h23-card);
   color: var(--h23-paper-soft);
   font-size: 13px;
 }
@@ -2142,8 +2179,8 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 @keyframes h23-house-glow-ice {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(142, 207, 232, 0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(142, 207, 232, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--h23-signal-rgb), 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(var(--h23-signal-rgb), 0); }
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-hud-actions {
@@ -2241,7 +2278,7 @@ body.h23-chat-page .h23-chat-sidebar {
   appearance: none;
   border: 1px solid var(--h23-input-border, rgba(27, 32, 40, 0.09));
   border-radius: 999px;
-  background: rgba(30, 26, 24, 0.94);
+  background: var(--h23-raised);
   color: var(--h23-text-heading, #232936);
   padding: 6px 12px;
   font-size: 12px;
@@ -2256,7 +2293,7 @@ body.h23-chat-page .h23-chat-sidebar {
   gap: 6px;
   padding: 8px 16px;
   border-top: 1px solid var(--h23-hairline, rgba(27, 32, 40, 0.07));
-  background: rgba(30, 26, 24, 0.50);
+  background: var(--h23-card);
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-work-row {
@@ -2298,7 +2335,7 @@ body.h23-chat-page .h23-chat-sidebar {
   padding: 9px 10px 9px 18px;
   border: 1px solid var(--h23-hairline-10);
   border-radius: 22px;
-  background: rgba(30, 26, 24, 0.94);
+  background: var(--h23-raised);
   box-shadow: none;
 }
 
@@ -2311,7 +2348,7 @@ body.h23-chat-page .h23-chat-sidebar {
   border-radius: 0;
   background: transparent;
   color: var(--h23-text-primary, #1B2028);
-  font-family: var(--h23-font-ui, ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif);
+  font-family: var(--h23-font-ui);
   font-size: 16px;
   line-height: 1.4;
   box-shadow: none;
@@ -2324,7 +2361,7 @@ body.h23-chat-page .h23-chat-sidebar {
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-input-row:focus-within {
   border-color: var(--h23-accent, #3E7BE0);
-  box-shadow: 0 0 0 3px rgba(62, 123, 224, 0.12);
+  box-shadow: 0 0 0 3px rgba(var(--h23-signal-rgb), 0.12);
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-attach-btn {
@@ -2396,9 +2433,9 @@ body.h23-chat-page .h23-chat-sidebar {
   appearance: none;
   border: 1px solid var(--h23-input-border, rgba(27, 32, 40, 0.09));
   border-radius: 14px;
-  background: rgba(30, 26, 24, 0.55);
+  background: var(--h23-card);
   color: var(--h23-text-body, #333B48);
-  box-shadow: inset 0 1px 0 rgba(30, 26, 24, 0.85);
+  box-shadow: inset 0 1px 0 var(--h23-card-hover);
   cursor: pointer;
   font: 500 14px/1.35 var(--h23-font-ui, ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif);
   text-align: left;
@@ -2406,8 +2443,8 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-starter:hover {
-  border-color: var(--h23-accent-tint-border, rgba(62, 123, 224, 0.22));
-  background: rgba(30, 26, 24, 0.90);
+  border-color: var(--h23-accent-tint-border, rgba(var(--h23-signal-rgb), 0.22));
+  background: var(--h23-raised);
   box-shadow: none;
   transform: translateY(-1px);
 }
@@ -2417,7 +2454,7 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-starter:focus-visible {
-  outline: 3px solid rgba(62, 123, 224, 0.24);
+  outline: 3px solid rgba(var(--h23-signal-rgb), 0.24);
   outline-offset: 2px;
   border-color: var(--h23-accent, #3E7BE0);
 }
@@ -2456,9 +2493,9 @@ body.h23-chat-page .h23-chat-sidebar {
 .h23-chat-menu {
   min-width: 220px;
   padding: 6px;
-  border: 1px solid rgba(30, 26, 24, 0.90);
+  border: 1px solid var(--h23-raised);
   border-radius: 14px;
-  background: rgba(30, 26, 24, 0.94);
+  background: var(--h23-raised);
   color: var(--h23-text-heading, #232936);
   box-shadow: var(--h23-shadow-overlay, 0 32px 90px rgba(20, 30, 50, 0.28));
   backdrop-filter: none;
@@ -2503,7 +2540,7 @@ body.h23-chat-page .h23-chat-sidebar {
     width: min(86vw, 300px);
     max-width: 300px;
     transform: translateX(-110%);
-    background: var(--h23-glass-overlay, rgba(30, 26, 24, 0.90));
+    background: var(--h23-glass-overlay, var(--h23-raised));
     box-shadow: none;
   }
 
@@ -2548,7 +2585,7 @@ body.h23-chat-page .h23-chat-shared {
 .h23-chat-work-open,
 .h23-chat-stop-btn {
   border: 1px solid var(--h23-hairline, rgba(27, 32, 40, 0.12));
-  background: rgba(30, 26, 24, 0.70);
+  background: var(--h23-card-hover);
   color: var(--h23-text-primary, #1B2028);
   border-radius: 8px;
   padding: 4px 10px;
@@ -2562,7 +2599,7 @@ body.h23-chat-page .h23-chat-shared {
   height: 28px;
   padding: 0;
   border-radius: 99px;
-  background: rgba(217, 101, 74, 0.15);
+  background: rgba(var(--h23-ember-rgb), 0.15);
   color: var(--h23-ember);
   border-color: transparent;
 }
@@ -2596,7 +2633,7 @@ body.h23-chat-page .h23-chat-shared {
   padding: 10px 12px;
   border: 1px solid var(--h23-hairline, rgba(27, 32, 40, 0.08));
   border-radius: 10px;
-  background: rgba(30, 26, 24, 0.55);
+  background: var(--h23-card);
 }
 
 .h23-work-label,

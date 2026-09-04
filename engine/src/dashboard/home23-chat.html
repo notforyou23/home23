@@ -10,7 +10,9 @@
   <meta name="theme-color" content="#0a0908">
   <meta name="format-detection" content="telephone=no">
   <title>Home23 — Chat</title>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/home23-dashboard.css">
   <link rel="stylesheet" href="/home23-chat.css">
   <style>
@@ -32,7 +34,7 @@
     }
 
     body {
-      background: var(--h23-stage, #0a0908);
+      background: var(--h23-bg, var(--h23-stage, #0a0908));
     }
 
     #particles-js {
@@ -478,7 +480,7 @@
     }
 
     body.h23-chat-page .sh-shell {
-      background: var(--h23-stage);
+      background: var(--h23-card, var(--h23-stage));
       box-shadow: none;
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
@@ -487,7 +489,7 @@
     body.h23-chat-page .sh-header,
     body.h23-chat-page .sh-input-bar {
       border-color: var(--h23-hairline-7);
-      background: var(--h23-stage);
+      background: var(--h23-card, var(--h23-stage));
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
     }
@@ -529,7 +531,7 @@
 
     body.h23-chat-page .sh-send-btn {
       background: var(--h23-signal);
-      color: var(--h23-ink);
+      color: transparent;
       box-shadow: none;
     }
 
@@ -590,12 +592,13 @@
         right: auto;
         top: 22px;
         bottom: 22px;
-        width: min(880px, calc(100vw - 48px));
+        width: min(1040px, calc(100vw - 48px));
         height: calc(100dvh - 44px);
         margin: 0;
         transform: translateX(-50%);
-        border: 1px solid var(--h23-glass-border);
+        border: 1px solid var(--h23-hairline-10);
         border-radius: var(--h23-radius-panel);
+        box-shadow: var(--h23-shadow-card);
         overflow: hidden;
       }
     }
