@@ -343,10 +343,13 @@ Required expectedOutput: @outputs/raw-anecdotes/archive-org-comments.json.
 
     const plan = await planner.planMission({ forceNew: true });
 
-    expect(plan.agentMissions[0].expectedOutput).to.equal('@outputs/raw-anecdotes/archive-org-comments.json');
+    expect(plan.executionKind).to.equal('tool_loop');
+    expect(plan.claimedBy).to.equal('launch_loop');
+    expect(plan.agentMissions).to.deep.equal([]);
+    expect(plan.shortPlan.constraints[0]).to.include('@outputs/raw-anecdotes/archive-org-comments.json');
     expect(storedTasks).to.have.length(1);
-    expect(storedTasks[0].metadata.expectedOutput).to.equal('@outputs/raw-anecdotes/archive-org-comments.json');
-    expect(storedTasks[0].metadata.researchContract.required).to.equal(true);
+    expect(storedTasks[0].assignedAgentId).to.equal('launch_loop');
+    expect(storedTasks[0].metadata.executionKind).to.equal('tool_loop');
   });
 
   it('does not persist a generic synthesis task when an explicit final markdown phase exists', async () => {
@@ -416,19 +419,12 @@ Read @outputs/raw-anecdotes/archive-org-comments.json and @outputs/validation/ar
 
     const plan = await planner.planMission({ forceNew: true });
 
-    expect(plan.agentMissions.map(mission => mission.expectedOutput)).to.deep.equal([
-      '@outputs/raw-anecdotes/archive-org-comments.json',
-      '@outputs/validation/archive-org-comments-validation.json',
-      '@outputs/final/archive-org-comments-report.md'
-    ]);
-    expect(storedTasks.map(task => task.id)).to.deep.equal([
-      'task:phase1',
-      'task:phase2',
-      'task:phase3'
-    ]);
+    expect(plan.executionKind).to.equal('tool_loop');
+    expect(plan.agentMissions).to.deep.equal([]);
+    expect(plan.taskPhases).to.deep.equal([]);
+    expect(storedTasks.map(task => task.id)).to.deep.equal(['task:research']);
     expect(storedTasks.some(task => task.id === 'task:synthesis_final')).to.equal(false);
-    expect(storedTasks[1].metadata.agentType).to.equal('ide');
-    expect(storedTasks[1].metadata.researchContract.required).to.equal(false);
+    expect(plan.shortPlan.constraints[0]).to.include('PHASE 3 - Synthesize Final Report');
   });
 
   it('falls through to domain-based defaults when planner output is not valid JSON', async () => {

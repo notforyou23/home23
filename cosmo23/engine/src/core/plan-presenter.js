@@ -33,6 +33,19 @@ class PlanPresenter {
       lines.push(`CONTEXT: ${guidedFocus.context}`);
     }
     lines.push('');
+
+    const short = plan.shortPlan;
+    if (short || plan.executionKind === 'tool_loop') {
+      lines.push('RESEARCH PLAN:');
+      lines.push(`  Goal: ${(short && short.goal) || guidedFocus.domain}`);
+      if (short && Array.isArray(short.constraints) && short.constraints.length > 0) {
+        lines.push('  Constraints:');
+        short.constraints.forEach((item) => lines.push(`    - ${item}`));
+      }
+      lines.push(`  Deliverable: ${(short && short.deliverable) || 'Write into this run and Brain.'}`);
+      lines.push('  Execution: research tool loop (not Interactive)');
+      lines.push('');
+    }
     
     // Strategy
     if (plan.strategy) {
