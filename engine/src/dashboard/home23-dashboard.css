@@ -1,39 +1,56 @@
 /* Home23 Dashboard — house language (Home23Theme.swift) */
 
+/* ── Palette ─────────────────────────────────────────────────────────────
+   Every colour on every dashboard page derives from these tokens.
+   Default is "Paper": a warm light canvas with a faded teal / terracotta wash,
+   deep teal signal, terracotta warm, forest grow, brick ember.
+   "Midnight" (indigo stage, violet / amber / mint / coral) is available with
+   <html data-theme="dark">; both blocks define the same token set.
+   ─────────────────────────────────────────────────────────────────────── */
 :root {
-  /* Stage and surface tiers. Opaque tiers (not alpha over black) so cards,
-     controls and popovers read as distinct planes without glass. */
-  --h23-stage: #0b0a09;
-  --h23-stage-deep: #060505;
-  --h23-card: #15120f;
-  --h23-card-hover: #1c1815;
-  --h23-raised: #211c18;
-  --h23-surface: #1e1a18;
-  --h23-inset: #0e0c0b;
-  --h23-paper: #f2ece2;
-  --h23-paper-rgb: 242, 236, 226;
-  --h23-paper-soft: #bfb5aa;
-  --h23-paper-faint: #8e857c;
-  --h23-hairline-7: rgba(242,236,226,0.07);
-  --h23-hairline-10: rgba(242,236,226,0.10);
-  --h23-hairline-14: rgba(242,236,226,0.14);
-  --h23-hairline-20: rgba(242,236,226,0.20);
-  --h23-signal: #8ecfe8;
-  --h23-warm: #e8a44e;
-  --h23-grow: #7fc99a;
-  --h23-ember: #d9654a;
-  --h23-signal-tint: rgba(142, 207, 232, 0.12);
-  --h23-warm-tint: rgba(232, 164, 78, 0.12);
-  --h23-grow-tint: rgba(127, 201, 154, 0.12);
-  --h23-ember-tint: rgba(217, 101, 74, 0.14);
-  --h23-ink: #0a0908;
-  --h23-leonardo-ice: #9fdcff;
-  --h23-florence-amber: #ffd08a;
-  --h23-lamplight: linear-gradient(120deg, rgba(232,164,78,0.12) 0%, rgba(30,26,24,0.55) 55%);
+  /* Stage and surface tiers. Opaque tiers so cards, controls and popovers
+     read as distinct planes. */
+  --h23-stage: #f4f0e8;
+  --h23-stage-rgb: 244, 240, 232;
+  --h23-stage-deep: #ebe6dc;
+  --h23-card: #fcfbf8;
+  --h23-card-hover: #ffffff;
+  --h23-raised: #ffffff;
+  --h23-surface: #f7f4ee;
+  --h23-inset: #eee9df;
+  --h23-paper: #1c1a17;
+  --h23-paper-rgb: 28, 26, 23;
+  --h23-paper-soft: #524d46;
+  --h23-paper-faint: #7d766d;
+  --h23-hairline-7: rgba(var(--h23-paper-rgb), 0.07);
+  --h23-hairline-10: rgba(var(--h23-paper-rgb), 0.10);
+  --h23-hairline-14: rgba(var(--h23-paper-rgb), 0.14);
+  --h23-hairline-20: rgba(var(--h23-paper-rgb), 0.20);
+  --h23-signal: #0f766e;
+  --h23-warm: #c2410c;
+  --h23-grow: #15803d;
+  --h23-ember: #b91c1c;
+  --h23-signal-rgb: 15, 118, 110;
+  --h23-warm-rgb: 194, 65, 12;
+  --h23-grow-rgb: 21, 128, 61;
+  --h23-ember-rgb: 185, 28, 28;
+  --h23-signal-tint: rgba(var(--h23-signal-rgb), 0.10);
+  --h23-warm-tint: rgba(var(--h23-warm-rgb), 0.10);
+  --h23-grow-tint: rgba(var(--h23-grow-rgb), 0.10);
+  --h23-ember-tint: rgba(var(--h23-ember-rgb), 0.10);
+  --h23-ink: #ffffff;
+  --h23-leonardo-ice: #0e5e58;
+  --h23-florence-amber: #b45309;
+  /* The faded wash: teal settling in from the top-left, terracotta from the
+     top-right, over the paper stage. */
+  --h23-wash-signal: 0.16;
+  --h23-wash-warm: 0.11;
+  color-scheme: light;
+  --h23-lamplight: linear-gradient(120deg, rgba(var(--h23-warm-rgb), 0.12) 0%, var(--h23-card) 55%);
   /* Ambient: a warm lamp low on the left, a cool wash top-right, over the stage. */
   --h23-ambient:
-    radial-gradient(900px 540px at 8% -6%, rgba(232, 164, 78, 0.10), transparent 62%),
-    radial-gradient(760px 480px at 96% -12%, rgba(142, 207, 232, 0.06), transparent 60%),
+    radial-gradient(1000px 560px at 6% -8%, rgba(var(--h23-signal-rgb), var(--h23-wash-signal)), transparent 60%),
+    radial-gradient(820px 520px at 98% -14%, rgba(var(--h23-warm-rgb), var(--h23-wash-warm)), transparent 58%),
     var(--h23-stage);
   --h23-radius-card: 16px;
   --h23-radius-input: 22px;
@@ -55,10 +72,10 @@
   --h23-glass-border: var(--h23-hairline-10);
   --h23-glass-blur-card: 0px;
   --h23-glass-blur-overlay: 0px;
-  --h23-shadow-card: 0 1px 0 rgba(242, 236, 226, 0.03) inset, 0 1px 2px rgba(0, 0, 0, 0.25);
+  --h23-shadow-card: 0 1px 2px rgba(var(--h23-paper-rgb), 0.06), 0 8px 24px rgba(var(--h23-paper-rgb), 0.05);
   --h23-shadow-panel: var(--h23-shadow-card);
-  --h23-shadow-overlay: 0 32px 90px rgba(0, 0, 0, 0.65), 0 0 0 1px var(--h23-hairline-10);
-  --h23-shadow-pop: 0 12px 36px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--h23-hairline-14);
+  --h23-shadow-overlay: 0 32px 90px rgba(var(--h23-paper-rgb), 0.28), 0 0 0 1px var(--h23-hairline-10);
+  --h23-shadow-pop: 0 12px 36px rgba(var(--h23-paper-rgb), 0.18), 0 0 0 1px var(--h23-hairline-14);
   --h23-shadow-pill: none;
   --h23-shadow-accent-btn: none;
   --h23-text-primary: var(--h23-paper);
@@ -67,8 +84,8 @@
   --h23-text-secondary: var(--h23-paper-soft);
   --h23-text-muted: var(--h23-paper-faint);
   --h23-accent: var(--h23-signal);
-  --h23-accent-tint: rgba(142, 207, 232, 0.12);
-  --h23-accent-tint-border: rgba(142, 207, 232, 0.22);
+  --h23-accent-tint: rgba(var(--h23-signal-rgb), 0.12);
+  --h23-accent-tint-border: rgba(var(--h23-signal-rgb), 0.22);
   --h23-green: var(--h23-grow);
   --h23-amber: var(--h23-warm);
   --h23-red: var(--h23-ember);
@@ -78,9 +95,9 @@
   --h23-red-aa: var(--h23-ember);
   --h23-hairline: var(--h23-hairline-7);
   --h23-input-border: var(--h23-hairline-10);
-  --h23-hover-row: rgba(242, 236, 226, 0.04);
+  --h23-hover-row: rgba(var(--h23-paper-rgb), 0.04);
   --h23-hover-card: var(--h23-card-hover);
-  --h23-overlay-backdrop: rgba(6, 5, 5, 0.78);
+  --h23-overlay-backdrop: rgba(var(--h23-paper-rgb), 0.42);
   --h23-radius-pill: 999px;
   --h23-radius-panel: 16px;
   --h23-radius-overlay: 20px;
@@ -103,6 +120,45 @@
   --radius-sm: 10px;
   --radius-md: 18px;
   --radius-lg: 18px;
+}
+
+/* Midnight — opt-in dark palette: <html data-theme="dark">. */
+:root[data-theme="dark"] {
+  --h23-stage: #0e1222;
+  --h23-stage-rgb: 14, 18, 34;
+  --h23-stage-deep: #090c1a;
+  --h23-card: #161b30;
+  --h23-card-hover: #1c2239;
+  --h23-raised: #232a45;
+  --h23-surface: #1c2239;
+  --h23-inset: #0b0f1e;
+  --h23-paper: #eef0f9;
+  --h23-paper-rgb: 238, 240, 249;
+  --h23-paper-soft: #b7bdd6;
+  --h23-paper-faint: #8590b0;
+  --h23-signal: #a394ff;
+  --h23-warm: #f6b95c;
+  --h23-grow: #6fe3b1;
+  --h23-ember: #ff7b6e;
+  --h23-signal-rgb: 163, 148, 255;
+  --h23-warm-rgb: 246, 185, 92;
+  --h23-grow-rgb: 111, 227, 177;
+  --h23-ember-rgb: 255, 123, 110;
+  --h23-signal-tint: rgba(var(--h23-signal-rgb), 0.14);
+  --h23-warm-tint: rgba(var(--h23-warm-rgb), 0.14);
+  --h23-grow-tint: rgba(var(--h23-grow-rgb), 0.14);
+  --h23-ember-tint: rgba(var(--h23-ember-rgb), 0.16);
+  --h23-ink: #0e1222;
+  --h23-leonardo-ice: #bfb4ff;
+  --h23-florence-amber: #ffd58f;
+  --h23-wash-signal: 0.16;
+  --h23-wash-warm: 0.10;
+  --h23-shadow-card: 0 1px 0 rgba(var(--h23-paper-rgb), 0.03) inset, 0 1px 2px rgba(0, 0, 0, 0.25);
+  --h23-shadow-panel: var(--h23-shadow-card);
+  --h23-shadow-overlay: 0 32px 90px rgba(0, 0, 0, 0.65), 0 0 0 1px var(--h23-hairline-10);
+  --h23-shadow-pop: 0 12px 36px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--h23-hairline-14);
+  --h23-overlay-backdrop: rgba(6, 5, 5, 0.78);
+  color-scheme: dark;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -769,7 +825,7 @@ body::before {
   z-index: 2;
   padding: 6px 9px;
   border-radius: 7px;
-  border: 1px solid rgba(94, 234, 212, 0.24);
+  border: 1px solid rgba(var(--h23-grow-rgb), 0.24);
   background: rgba(3, 16, 32, 0.76);
   color: rgba(226, 255, 251, 0.82);
   font-size: 0.72rem;
@@ -1945,7 +2001,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-goodlife-problem-state.clear,
 .h23-goodlife-problem-state.resolved {
   color: #9ee8bf;
-  background: rgba(112, 211, 162, 0.12);
+  background: rgba(var(--h23-grow-rgb), 0.12);
 }
 
 .h23-goodlife-needs-user {
@@ -2604,10 +2660,10 @@ body.h23-external-focus #cosmo23-refresh-btn {
 
 .h23-goodlife-worker-receipt-detail {
   margin-top: 10px;
-  border: 1px solid rgba(112, 211, 162, 0.18);
+  border: 1px solid rgba(var(--h23-grow-rgb), 0.18);
   border-radius: 8px;
   padding: 10px;
-  background: rgba(112, 211, 162, 0.055);
+  background: rgba(var(--h23-grow-rgb), 0.055);
 }
 
 .h23-goodlife-worker-receipt-detail p {
@@ -2644,7 +2700,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-goodlife-section-actions button:hover {
-  border-color: rgba(112, 211, 162, 0.35);
+  border-color: rgba(var(--h23-grow-rgb), 0.35);
   color: var(--text-primary);
 }
 
@@ -2669,7 +2725,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-goodlife-mini-actions button:hover {
-  border-color: rgba(112, 211, 162, 0.35);
+  border-color: rgba(var(--h23-grow-rgb), 0.35);
   color: var(--text-primary);
 }
 
@@ -2677,10 +2733,10 @@ body.h23-external-focus #cosmo23-refresh-btn {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  border: 1px solid rgba(112, 211, 162, 0.22);
+  border: 1px solid rgba(var(--h23-grow-rgb), 0.22);
   border-radius: 6px;
   padding: 10px;
-  background: rgba(112, 211, 162, 0.07);
+  background: rgba(var(--h23-grow-rgb), 0.07);
 }
 
 .h23-goodlife-evidence-receipt strong {
@@ -2862,8 +2918,8 @@ body.h23-external-focus #cosmo23-refresh-btn {
   min-height: 34px;
   padding: 0 14px;
   border-radius: 7px;
-  border: 1px solid rgba(94, 234, 212, 0.36);
-  background: rgba(45, 212, 191, 0.14);
+  border: 1px solid rgba(var(--h23-grow-rgb), 0.36);
+  background: rgba(var(--h23-grow-rgb), 0.14);
   color: #b9fff7;
   font-size: 0.82rem;
   font-weight: 600;
@@ -2892,7 +2948,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-worker-capability-card {
   padding: 18px;
   border-radius: 10px;
-  border: 1px solid rgba(94, 234, 212, 0.18);
+  border: 1px solid rgba(var(--h23-grow-rgb), 0.18);
   background:
     linear-gradient(180deg, rgba(15, 118, 110, 0.13), rgba(3, 16, 32, 0.38)),
     rgba(var(--h23-paper-rgb), 0.025);
@@ -2973,16 +3029,16 @@ body.h23-external-focus #cosmo23-refresh-btn {
   min-height: 88px;
   padding: 11px 12px;
   border-radius: 9px;
-  border: 1px solid rgba(94, 234, 212, 0.2);
-  background: rgba(45, 212, 191, 0.075);
+  border: 1px solid rgba(var(--h23-grow-rgb), 0.2);
+  background: rgba(var(--h23-grow-rgb), 0.075);
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
 
 .h23-worker-intent:hover {
-  border-color: rgba(94, 234, 212, 0.42);
-  background: rgba(45, 212, 191, 0.12);
+  border-color: rgba(var(--h23-grow-rgb), 0.42);
+  background: rgba(var(--h23-grow-rgb), 0.12);
 }
 
 .h23-worker-intent strong {
@@ -3382,7 +3438,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 
 .h23-briefs-row:hover,
 .h23-briefs-row.active {
-  border-color: rgba(45, 212, 191, 0.34);
+  border-color: rgba(var(--h23-grow-rgb), 0.34);
   background: rgba(20, 184, 166, 0.1);
 }
 
@@ -3420,7 +3476,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
   width: 100%;
   min-height: 34px;
   margin-bottom: 14px;
-  border: 1px solid rgba(94, 234, 212, 0.26);
+  border: 1px solid rgba(var(--h23-grow-rgb), 0.26);
   border-radius: 7px;
   background: rgba(20, 184, 166, 0.1);
   color: #c8fff8;
@@ -3452,7 +3508,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-briefs-status-pill {
   flex: 0 0 auto;
   padding: 5px 8px;
-  border: 1px solid rgba(94, 234, 212, 0.26);
+  border: 1px solid rgba(var(--h23-grow-rgb), 0.26);
   border-radius: 7px;
   background: rgba(20, 184, 166, 0.1);
   color: #c8fff8;
@@ -3576,7 +3632,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
   border-radius: 8px;
   background:
     linear-gradient(135deg, rgba(16, 22, 31, 0.86), rgba(12, 16, 22, 0.72)),
-    radial-gradient(circle at 78% 18%, rgba(45, 212, 191, 0.2), transparent 34%);
+    radial-gradient(circle at 78% 18%, rgba(var(--h23-grow-rgb), 0.2), transparent 34%);
   box-shadow: 0 22px 60px rgba(0,0,0,0.3);
 }
 
@@ -3765,7 +3821,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-human-card-button:hover {
-  border-color: rgba(45, 212, 191, 0.28);
+  border-color: rgba(var(--h23-grow-rgb), 0.28);
   background: rgba(20, 184, 166, 0.08);
 }
 
@@ -3989,7 +4045,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-human-briefs .h23-human-card-head button {
   min-height: 26px;
   padding: 0 9px;
-  border: 1px solid rgba(94, 234, 212, 0.28);
+  border: 1px solid rgba(var(--h23-grow-rgb), 0.28);
   border-radius: 7px;
   background: rgba(20, 184, 166, 0.1);
   color: rgba(207, 250, 254, 0.9);
@@ -4027,7 +4083,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-human-brief-row:hover {
-  border-color: rgba(45, 212, 191, 0.3);
+  border-color: rgba(var(--h23-grow-rgb), 0.3);
   background: rgba(20, 184, 166, 0.08);
 }
 
@@ -4172,7 +4228,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-resident-action-btn.primary {
-  border-color: rgba(94, 234, 212, 0.44);
+  border-color: rgba(var(--h23-grow-rgb), 0.44);
   background: rgba(20, 184, 166, 0.18);
   color: #b9fff7;
 }
@@ -4249,7 +4305,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-resident-pursuit.active {
-  border-color: rgba(94, 234, 212, 0.24);
+  border-color: rgba(var(--h23-grow-rgb), 0.24);
   background: rgba(20, 184, 166, 0.08);
 }
 
@@ -4523,13 +4579,13 @@ body.h23-dashboard-page .h23-shell-main {
 }
 
 @keyframes h23-house-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(127, 201, 154, 0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(127, 201, 154, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--h23-grow-rgb), 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(var(--h23-grow-rgb), 0); }
 }
 
 @keyframes h23-house-glow-ice {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(142, 207, 232, 0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(142, 207, 232, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--h23-signal-rgb), 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(var(--h23-signal-rgb), 0); }
 }
 
 /* Topbar — stage, hairline, capsules */
@@ -4546,7 +4602,7 @@ body.h23-dashboard-page .h23-topbar {
   border: 0;
   border-bottom: 1px solid var(--h23-hairline-7);
   border-radius: 0;
-  background: rgba(11, 10, 9, 0.92);
+  background: rgba(var(--h23-stage-rgb), 0.92);
   box-shadow: none;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -4688,14 +4744,14 @@ body.h23-dashboard-page .h23-topbar .h23-tab[data-scope-tab="evobrew"] {
 
 body.h23-dashboard-page .h23-topbar .h23-tab:hover {
   border-color: transparent;
-  background: rgba(242, 236, 226, 0.06);
+  background: rgba(var(--h23-paper-rgb), 0.06);
   color: var(--h23-paper);
 }
 
 body.h23-dashboard-page .h23-topbar .h23-tab.active {
   padding: 7px 10px;
   border: 1px solid var(--h23-hairline-10);
-  background: rgba(242, 236, 226, 0.09);
+  background: rgba(var(--h23-paper-rgb), 0.09);
   color: var(--h23-paper);
   font-weight: 700;
   box-shadow: none;
@@ -4797,7 +4853,7 @@ body.h23-dashboard-page .h23-topbar-time {
   margin-left: 2px;
   padding: 3px 9px;
   border-radius: 999px;
-  background: rgba(242, 236, 226, 0.06);
+  background: rgba(var(--h23-paper-rgb), 0.06);
   color: var(--h23-paper);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -4805,8 +4861,8 @@ body.h23-dashboard-page .h23-topbar-time {
 }
 
 @keyframes h23-glass-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(127, 201, 154, 0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(127, 201, 154, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--h23-grow-rgb), 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(var(--h23-grow-rgb), 0); }
 }
 
 /* Main content and Home hierarchy */
@@ -4942,7 +4998,9 @@ body.h23-dashboard-page .h23-human-jerry-context::before {
   flex: 0 0 14px;
   width: 14px;
   height: 14px;
-  background: center / 14px 14px no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23e8a44e' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='4'/%3E%3Cpath d='M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41'/%3E%3C/svg%3E");
+  background-color: var(--h23-warm);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='4'/%3E%3Cpath d='M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='4'/%3E%3Cpath d='M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
 }
 
 body.h23-dashboard-page .h23-human-jerry-context::after {
@@ -5072,13 +5130,25 @@ body.h23-dashboard-page .h23-os-lane-group::after {
   text-align: center;
 }
 
+body.h23-dashboard-page .h23-os-lane-group[data-os-lane="needs-you"] {
+  background: linear-gradient(180deg, rgba(var(--h23-warm-rgb), 0.07), transparent 70%);
+}
+
+body.h23-dashboard-page .h23-os-lane-group[data-os-lane="in-flight"] {
+  background: linear-gradient(180deg, rgba(var(--h23-signal-rgb), 0.07), transparent 70%);
+}
+
+body.h23-dashboard-page .h23-os-lane-group[data-os-lane="verified"] {
+  background: linear-gradient(180deg, rgba(var(--h23-grow-rgb), 0.07), transparent 70%);
+}
+
 body.h23-dashboard-page .h23-os-lane-group[data-os-lane="needs-you"] .h23-os-lane-label {
   color: var(--h23-warm);
 }
 
 body.h23-dashboard-page .h23-os-lane-group[data-os-lane="needs-you"]::after {
   color: var(--h23-warm);
-  background: rgba(232, 164, 78, 0.13);
+  background: rgba(var(--h23-warm-rgb), 0.13);
 }
 
 body.h23-dashboard-page .h23-os-lane-group[data-os-lane="in-flight"] .h23-os-lane-label {
@@ -5087,7 +5157,7 @@ body.h23-dashboard-page .h23-os-lane-group[data-os-lane="in-flight"] .h23-os-lan
 
 body.h23-dashboard-page .h23-os-lane-group[data-os-lane="in-flight"]::after {
   color: var(--h23-signal);
-  background: rgba(142, 207, 232, 0.11);
+  background: rgba(var(--h23-signal-rgb), 0.11);
 }
 
 body.h23-dashboard-page .h23-os-lane-group[data-os-lane="verified"] .h23-os-lane-label {
@@ -5096,7 +5166,7 @@ body.h23-dashboard-page .h23-os-lane-group[data-os-lane="verified"] .h23-os-lane
 
 body.h23-dashboard-page .h23-os-lane-group[data-os-lane="verified"]::after {
   color: var(--h23-grow);
-  background: rgba(127, 201, 154, 0.11);
+  background: rgba(var(--h23-grow-rgb), 0.11);
 }
 
 body.h23-dashboard-page .h23-os-lane {
@@ -5219,7 +5289,7 @@ body.h23-dashboard-page .h23-os-btn.primary {
 
 body.h23-dashboard-page .h23-os-btn.danger {
   border-color: transparent;
-  background: rgba(217, 101, 74, 0.15);
+  background: rgba(var(--h23-ember-rgb), 0.15);
   color: var(--h23-ember);
 }
 
@@ -5254,7 +5324,7 @@ body.h23-dashboard-page .h23-human-card::before {
 body.h23-dashboard-page .h23-human-sensor-strip .h23-human-card {
   position: relative;
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr);
   grid-auto-rows: auto;
   column-gap: 10px;
   row-gap: 0;
@@ -5290,52 +5360,76 @@ body.h23-dashboard-page .h23-human-sensor-strip .h23-human-card[data-home-tile-s
   grid-column: 1 / -1;
 }
 
-body.h23-dashboard-page .h23-human-sensor-strip .h23-human-card::after {
+body.h23-dashboard-page .h23-human-sensor-strip .h23-human-card-head::after {
   content: "›";
-  position: absolute;
-  top: 12px;
-  right: 14px;
+  margin-left: auto;
   color: var(--h23-paper-faint);
   font-size: 15px;
+  font-weight: 500;
   line-height: 1;
   opacity: 0.55;
   transition: opacity 160ms ease, transform 160ms ease;
 }
 
-body.h23-dashboard-page .h23-human-sensor-strip .h23-human-card:hover::after {
+body.h23-dashboard-page .h23-human-sensor-strip .h23-human-card:hover .h23-human-card-head::after {
   opacity: 1;
   transform: translateX(2px);
 }
 
+/* Tile glyph: a tinted disc (::before) with the icon mask drawn over it (::after). */
 body.h23-dashboard-page .h23-human-sensor-strip .h23-human-card::before {
   content: "";
   display: block;
   grid-column: 1;
   grid-row: 1;
-  width: 20px;
-  height: 20px;
+  width: 30px;
+  height: 30px;
   margin: 0;
-  background: center / 20px 20px no-repeat;
+  border-radius: 999px;
+  background: rgba(var(--h23-tile-icon-rgb, var(--h23-signal-rgb)), 0.16);
 }
 
-body.h23-dashboard-page .h23-human-sensor-strip [data-home-tile-id="outside-weather"]::before {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%239fdcff' stroke-width='1.8' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='4'/%3E%3Cpath d='M12 3v2M12 19v2M3 12h2M19 12h2'/%3E%3C/svg%3E");
+body.h23-dashboard-page .h23-human-sensor-strip .h23-human-card::after {
+  content: "";
+  position: static;
+  grid-column: 1;
+  grid-row: 1;
+  place-self: center;
+  width: 16px;
+  height: 16px;
+  background-color: var(--h23-tile-icon-color, var(--h23-signal));
+  -webkit-mask: var(--h23-tile-icon, none) center / 16px 16px no-repeat;
+  mask: var(--h23-tile-icon, none) center / 16px 16px no-repeat;
 }
 
-body.h23-dashboard-page .h23-human-sensor-strip [data-home-tile-id="sauna-control"]::before {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23e8a44e' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M8 21c-2.5-1.5-4-4-4-7 0-4 3-6 3-9 2 1.5 3 3.5 3 5 1-1 2-3 2-5 3 2 6 5.5 6 9 0 3-1.5 5.5-4 7'/%3E%3C/svg%3E");
+body.h23-dashboard-page .h23-human-sensor-strip [data-home-tile-id="outside-weather"] {
+  --h23-tile-icon-color: var(--h23-signal);
+  --h23-tile-icon-rgb: var(--h23-signal-rgb);
+  --h23-tile-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='4'/%3E%3Cpath d='M12 3v2M12 19v2M3 12h2M19 12h2'/%3E%3C/svg%3E");
 }
 
-body.h23-dashboard-page .h23-human-sensor-strip [data-home-tile-id="pool-screenlogic"]::before {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%239fdcff' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M2 12c2-2 4-2 6 0s4 2 6 0 4-2 6 0M2 17c2-2 4-2 6 0s4 2 6 0 4-2 6 0M2 7c2-2 4-2 6 0s4 2 6 0 4-2 6 0'/%3E%3C/svg%3E");
+body.h23-dashboard-page .h23-human-sensor-strip [data-home-tile-id="sauna-control"] {
+  --h23-tile-icon-color: var(--h23-warm);
+  --h23-tile-icon-rgb: var(--h23-warm-rgb);
+  --h23-tile-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M8 21c-2.5-1.5-4-4-4-7 0-4 3-6 3-9 2 1.5 3 3.5 3 5 1-1 2-3 2-5 3 2 6 5.5 6 9 0 3-1.5 5.5-4 7'/%3E%3C/svg%3E");
 }
 
-body.h23-dashboard-page .h23-human-sensor-strip [data-home-sensor-fixed="problems"]::before {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%237fc99a' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z'/%3E%3Cpath d='M9 12l2 2 4-4'/%3E%3C/svg%3E");
+body.h23-dashboard-page .h23-human-sensor-strip [data-home-tile-id="pool-screenlogic"] {
+  --h23-tile-icon-color: var(--h23-signal);
+  --h23-tile-icon-rgb: var(--h23-signal-rgb);
+  --h23-tile-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M2 12c2-2 4-2 6 0s4 2 6 0 4-2 6 0M2 17c2-2 4-2 6 0s4 2 6 0 4-2 6 0M2 7c2-2 4-2 6 0s4 2 6 0 4-2 6 0'/%3E%3C/svg%3E");
 }
 
-body.h23-dashboard-page .h23-human-sensor-strip [data-home-sensor-fixed="good-life"]::before {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23e8a44e' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M12 21s-7-4.5-9-9c-1.2-2.8.5-6 3.5-6 2 0 3.5 1.2 4.5 3 1-1.8 2.5-3 4.5-3 3 0 4.7 3.2 3.5 6-2 4.5-7 9-7 9z'/%3E%3C/svg%3E");
+body.h23-dashboard-page .h23-human-sensor-strip [data-home-sensor-fixed="problems"] {
+  --h23-tile-icon-color: var(--h23-grow);
+  --h23-tile-icon-rgb: var(--h23-grow-rgb);
+  --h23-tile-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z'/%3E%3Cpath d='M9 12l2 2 4-4'/%3E%3C/svg%3E");
+}
+
+body.h23-dashboard-page .h23-human-sensor-strip [data-home-sensor-fixed="good-life"] {
+  --h23-tile-icon-color: var(--h23-warm);
+  --h23-tile-icon-rgb: var(--h23-warm-rgb);
+  --h23-tile-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M12 21s-7-4.5-9-9c-1.2-2.8.5-6 3.5-6 2 0 3.5 1.2 4.5 3 1-1.8 2.5-3 4.5-3 3 0 4.7 3.2 3.5 6-2 4.5-7 9-7 9z'/%3E%3C/svg%3E");
 }
 
 body.h23-dashboard-page .h23-integration-state[hidden] {
@@ -5369,9 +5463,10 @@ body.h23-dashboard-page .h23-human-card-head {
 body.h23-dashboard-page .h23-human-sensor-strip .h23-human-card-head {
   grid-column: 2;
   grid-row: 1;
+  align-items: center;
   justify-content: flex-start;
   min-width: 0;
-  padding-right: 18px;
+  padding-right: 0;
   color: var(--h23-paper-soft);
   font-size: 13px;
   font-weight: 600;
@@ -5448,6 +5543,22 @@ body.h23-dashboard-page .h23-human-card-button[data-problem-severity="clear"] .h
 
 body.h23-dashboard-page .h23-human-card-button[data-problem-severity="open"] .h23-human-value {
   color: var(--h23-warm);
+}
+
+body.h23-dashboard-page .h23-human-sensor-strip [data-home-sensor-fixed="problems"][data-problem-severity="open"] {
+  --h23-tile-icon-color: var(--h23-warm);
+  --h23-tile-icon-rgb: var(--h23-warm-rgb);
+}
+
+body.h23-dashboard-page .h23-human-sensor-strip [data-home-sensor-fixed="problems"][data-problem-severity="chronic"] {
+  --h23-tile-icon-color: var(--h23-ember);
+  --h23-tile-icon-rgb: var(--h23-ember-rgb);
+}
+
+body.h23-dashboard-page .h23-human-sensor-strip [data-home-sensor-fixed="problems"][data-problem-severity="unverifiable"],
+body.h23-dashboard-page .h23-human-sensor-strip [data-home-sensor-fixed="problems"][data-problem-severity="unavailable"] {
+  --h23-tile-icon-color: var(--h23-paper-faint);
+  --h23-tile-icon-rgb: var(--h23-paper-rgb);
 }
 
 body.h23-dashboard-page .h23-human-card-button[data-problem-severity="chronic"] .h23-human-value {
@@ -5558,7 +5669,7 @@ body.h23-dashboard-page .h23-human-sauna-command {
 body.h23-dashboard-page .h23-human-action:hover,
 body.h23-dashboard-page .h23-human-sauna-presets button:hover,
 body.h23-dashboard-page .h23-human-sauna-command:hover {
-  border-color: rgba(232, 164, 78, 0.35);
+  border-color: rgba(var(--h23-warm-rgb), 0.35);
   background: var(--h23-warm-tint);
   color: var(--h23-warm);
 }
@@ -5976,14 +6087,14 @@ body.h23-dashboard-page .h23-human-sauna-control input {
 }
 
 body.h23-dashboard-page .h23-human-action.primary {
-  border-color: rgba(217, 118, 43, 0.3);
-  background: rgba(217, 118, 43, 0.1);
+  border-color: rgba(var(--h23-warm-rgb), 0.3);
+  background: rgba(var(--h23-warm-rgb), 0.1);
   color: var(--h23-amber-aa);
 }
 
 body.h23-dashboard-page .h23-human-action.danger {
-  border-color: rgba(201, 79, 79, 0.28);
-  background: rgba(201, 79, 79, 0.09);
+  border-color: rgba(var(--h23-ember-rgb), 0.28);
+  background: rgba(var(--h23-ember-rgb), 0.09);
   color: var(--h23-red-aa);
 }
 
@@ -6315,8 +6426,8 @@ body.h23-dashboard-page .h23-worker-status.verified,
 body.h23-dashboard-page .h23-goodlife-problem-state.healthy,
 body.h23-dashboard-page .h23-goodlife-status.current,
 body.h23-dashboard-page .h23-goodlife-overlay-status.current {
-  border-color: rgba(30, 158, 111, 0.25);
-  background: rgba(30, 158, 111, 0.1);
+  border-color: rgba(var(--h23-grow-rgb), 0.25);
+  background: rgba(var(--h23-grow-rgb), 0.1);
   color: var(--h23-green-aa);
 }
 
@@ -6325,8 +6436,8 @@ body.h23-dashboard-page .h23-worker-status.failed,
 body.h23-dashboard-page .h23-goodlife-problem-state.failed,
 body.h23-dashboard-page .h23-goodlife-status.conflicted,
 body.h23-dashboard-page .h23-goodlife-overlay-status.conflicted {
-  border-color: rgba(201, 79, 79, 0.25);
-  background: rgba(201, 79, 79, 0.09);
+  border-color: rgba(var(--h23-ember-rgb), 0.25);
+  background: rgba(var(--h23-ember-rgb), 0.09);
   color: var(--h23-red-aa);
 }
 
@@ -6335,8 +6446,8 @@ body.h23-dashboard-page .h23-worker-status.pending,
 body.h23-dashboard-page .h23-goodlife-problem-state.stale,
 body.h23-dashboard-page .h23-goodlife-status.stale,
 body.h23-dashboard-page .h23-goodlife-overlay-status.stale {
-  border-color: rgba(217, 118, 43, 0.25);
-  background: rgba(217, 118, 43, 0.09);
+  border-color: rgba(var(--h23-warm-rgb), 0.25);
+  background: rgba(var(--h23-warm-rgb), 0.09);
   color: var(--h23-amber-aa);
 }
 
@@ -6365,7 +6476,7 @@ body.h23-dashboard-page .h23-cosmo-indicator {
 }
 
 body.h23-dashboard-page .h23-cosmo-indicator:hover {
-  background: rgba(62, 123, 224, 0.15);
+  background: rgba(var(--h23-signal-rgb), 0.15);
   color: var(--h23-accent);
 }
 
@@ -6558,14 +6669,14 @@ body.h23-dashboard-page .h23-brain-storage-status {
 }
 
 body.h23-dashboard-page .h23-brain-storage-status.in-sync {
-  border-color: rgba(30, 158, 111, 0.28);
-  background: rgba(30, 158, 111, 0.1);
+  border-color: rgba(var(--h23-grow-rgb), 0.28);
+  background: rgba(var(--h23-grow-rgb), 0.1);
   color: var(--h23-green-aa);
 }
 
 body.h23-dashboard-page .h23-brain-storage-status.mismatch {
-  border-color: rgba(201, 79, 79, 0.32);
-  background: rgba(201, 79, 79, 0.1);
+  border-color: rgba(var(--h23-ember-rgb), 0.32);
+  background: rgba(var(--h23-ember-rgb), 0.1);
   color: var(--h23-red-aa);
 }
 
@@ -6809,7 +6920,7 @@ body.h23-dashboard-page .h23-brain-map-search:focus,
 body.h23-dashboard-page .h23-problem-editor-form input:focus,
 body.h23-dashboard-page .h23-problem-editor-form textarea:focus {
   outline: none;
-  border-color: rgba(142, 207, 232, 0.45);
+  border-color: rgba(var(--h23-signal-rgb), 0.45);
   box-shadow: 0 0 0 3px var(--h23-signal-tint);
 }
 
@@ -6885,7 +6996,7 @@ body.h23-dashboard-page .h23-worker-intent {
 
 body.h23-dashboard-page .h23-worker-intents button:hover,
 body.h23-dashboard-page .h23-worker-intent:hover {
-  border-color: rgba(142, 207, 232, 0.4);
+  border-color: rgba(var(--h23-signal-rgb), 0.4);
   background: var(--h23-signal-tint);
   color: var(--h23-signal);
 }
@@ -6931,7 +7042,7 @@ body.h23-dashboard-page .h23-agency-evidence-drawer > .h23-workers-section {
 }
 
 body.h23-dashboard-page .h23-agency-warning {
-  border-color: rgba(232, 164, 78, 0.3);
+  border-color: rgba(var(--h23-warm-rgb), 0.3);
   border-radius: 12px;
   background: var(--h23-warm-tint);
   color: var(--h23-paper-soft);
@@ -7065,7 +7176,7 @@ body.h23-dashboard-page .h23-overlay-footer {
 body.h23-dashboard-page .h23-goodlife-brief-action {
   min-height: 34px;
   padding: 0 14px;
-  border-color: rgba(127, 201, 154, 0.35);
+  border-color: rgba(var(--h23-grow-rgb), 0.35);
   border-radius: 10px;
   background: var(--h23-grow-tint);
   color: var(--h23-grow);
@@ -7074,8 +7185,8 @@ body.h23-dashboard-page .h23-goodlife-brief-action {
 }
 
 body.h23-dashboard-page .h23-goodlife-brief-action:hover {
-  border-color: rgba(127, 201, 154, 0.6);
-  background: rgba(127, 201, 154, 0.2);
+  border-color: rgba(var(--h23-grow-rgb), 0.6);
+  background: rgba(var(--h23-grow-rgb), 0.2);
 }
 
 body.h23-dashboard-page .h23-goodlife-mini-actions button {

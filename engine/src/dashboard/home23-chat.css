@@ -126,7 +126,7 @@
 
 .h23-chat-msg.user {
   align-self: flex-end;
-  background: rgba(10, 132, 255, 0.2);
+  background: rgba(var(--h23-signal-rgb), 0.2);
   color: var(--text-primary);
   padding: 8px 12px;
   border-radius: 12px 12px 4px 12px;
@@ -313,7 +313,7 @@
   inset: 0;
   z-index: 1000;
   background:
-    radial-gradient(circle at top left, rgba(10, 132, 255, 0.16), transparent 34%),
+    radial-gradient(circle at top left, rgba(var(--h23-signal-rgb), 0.16), transparent 34%),
     radial-gradient(circle at bottom right, rgba(0, 199, 190, 0.12), transparent 30%),
     rgba(3, 7, 18, 0.72);
   backdrop-filter: none;
@@ -554,7 +554,7 @@
   background: rgba(255, 255, 255, 0.04);
 }
 .h23-chat-conv-item.active {
-  background: rgba(10, 132, 255, 0.08);
+  background: rgba(var(--h23-signal-rgb), 0.08);
   border-left: 2px solid var(--accent-blue);
 }
 
@@ -976,7 +976,7 @@
 .h23-chat-model-pill:hover,
 .h23-chat-effort-pill:hover,
 .h23-chat-thinking-pill:hover {
-  border-color: var(--h23-accent-tint-border, rgba(62, 123, 224, 0.22));
+  border-color: var(--h23-accent-tint-border, rgba(var(--h23-signal-rgb), 0.22));
   background: var(--h23-raised);
   color: var(--h23-text-primary, #1B2028);
 }
@@ -985,8 +985,8 @@
   position: relative;
   width: 38px;
   height: 38px;
-  background: linear-gradient(145deg, rgba(142, 207, 232, 0.28), rgba(142, 207, 232, 0.1));
-  border: 1px solid rgba(142, 207, 232, 0.25);
+  background: linear-gradient(145deg, rgba(var(--h23-signal-rgb), 0.28), rgba(var(--h23-signal-rgb), 0.1));
+  border: 1px solid rgba(var(--h23-signal-rgb), 0.25);
   color: var(--h23-signal);
   font-size: 15px;
   font-weight: 800;
@@ -1135,9 +1135,9 @@
 }
 
 .h23-chat-error {
-  border: 1px solid rgba(201, 79, 79, 0.18);
+  border: 1px solid rgba(var(--h23-ember-rgb), 0.18);
   border-radius: 10px;
-  background: rgba(201, 79, 79, 0.08);
+  background: rgba(var(--h23-ember-rgb), 0.08);
 }
 
 .h23-chat-input-area {
@@ -1170,7 +1170,7 @@
 
 .h23-chat-input:focus {
   outline: none;
-  border-color: rgba(142, 207, 232, 0.45);
+  border-color: rgba(var(--h23-signal-rgb), 0.45);
   box-shadow: 0 0 0 3px var(--h23-signal-tint);
 }
 
@@ -1265,7 +1265,7 @@
 }
 
 .h23-chat-drop-overlay {
-  border-color: rgba(142, 207, 232, 0.55);
+  border-color: rgba(var(--h23-signal-rgb), 0.55);
   border-radius: var(--h23-radius-input, 14px);
   background: var(--h23-signal-tint);
   color: var(--h23-signal);
@@ -1337,7 +1337,7 @@
 }
 
 .h23-chat-conv-nav:hover {
-  border-color: var(--h23-accent-tint-border, rgba(62, 123, 224, 0.22));
+  border-color: var(--h23-accent-tint-border, rgba(var(--h23-signal-rgb), 0.22));
   color: var(--h23-accent, #3E7BE0);
 }
 
@@ -1352,7 +1352,7 @@
 
 .h23-chat-conv-item.active {
   border-left-color: var(--h23-accent, #3E7BE0);
-  background: var(--h23-accent-tint, rgba(62, 123, 224, 0.1));
+  background: var(--h23-accent-tint, rgba(var(--h23-signal-rgb), 0.1));
 }
 
 .h23-chat-overlay {
@@ -1451,7 +1451,7 @@
 .h23-chat-attach-btn:focus-visible,
 .h23-chat-send-btn:focus-visible,
 .h23-chat-input:focus-visible {
-  outline: 3px solid rgba(62, 123, 224, 0.48);
+  outline: 3px solid rgba(var(--h23-signal-rgb), 0.48);
   outline-offset: 3px;
 }
 
@@ -1539,7 +1539,7 @@ body:not(.h23-dashboard-page) .sh-input {
 
 body:not(.h23-dashboard-page) .sh-input:focus {
   border-color: var(--h23-accent, #3E7BE0);
-  box-shadow: 0 0 0 3px rgba(62, 123, 224, 0.12);
+  box-shadow: 0 0 0 3px rgba(var(--h23-signal-rgb), 0.12);
 }
 
 body:not(.h23-dashboard-page) .sh-input::placeholder {
@@ -1733,7 +1733,7 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-conv-item.active {
-  background: var(--h23-accent-tint, rgba(62, 123, 224, 0.1));
+  background: var(--h23-accent-tint, rgba(var(--h23-signal-rgb), 0.1));
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-conv-preview {
@@ -2017,9 +2017,9 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-error {
-  border: 1px solid rgba(201, 79, 79, 0.18);
+  border: 1px solid rgba(var(--h23-ember-rgb), 0.18);
   border-radius: 10px;
-  background: rgba(201, 79, 79, 0.08);
+  background: rgba(var(--h23-ember-rgb), 0.08);
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool-body,
@@ -2093,7 +2093,7 @@ body.h23-chat-page .h23-chat-sidebar {
   padding: 0;
   border: 0;
   border-radius: 99px;
-  background: rgba(217, 101, 74, 0.15);
+  background: rgba(var(--h23-ember-rgb), 0.15);
   color: transparent;
   font-size: 0;
 }
@@ -2179,8 +2179,8 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 @keyframes h23-house-glow-ice {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(142, 207, 232, 0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(142, 207, 232, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--h23-signal-rgb), 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(var(--h23-signal-rgb), 0); }
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-hud-actions {
@@ -2361,7 +2361,7 @@ body.h23-chat-page .h23-chat-sidebar {
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-input-row:focus-within {
   border-color: var(--h23-accent, #3E7BE0);
-  box-shadow: 0 0 0 3px rgba(62, 123, 224, 0.12);
+  box-shadow: 0 0 0 3px rgba(var(--h23-signal-rgb), 0.12);
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-attach-btn {
@@ -2443,7 +2443,7 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-starter:hover {
-  border-color: var(--h23-accent-tint-border, rgba(62, 123, 224, 0.22));
+  border-color: var(--h23-accent-tint-border, rgba(var(--h23-signal-rgb), 0.22));
   background: var(--h23-raised);
   box-shadow: none;
   transform: translateY(-1px);
@@ -2454,7 +2454,7 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-starter:focus-visible {
-  outline: 3px solid rgba(62, 123, 224, 0.24);
+  outline: 3px solid rgba(var(--h23-signal-rgb), 0.24);
   outline-offset: 2px;
   border-color: var(--h23-accent, #3E7BE0);
 }
@@ -2599,7 +2599,7 @@ body.h23-chat-page .h23-chat-shared {
   height: 28px;
   padding: 0;
   border-radius: 99px;
-  background: rgba(217, 101, 74, 0.15);
+  background: rgba(var(--h23-ember-rgb), 0.15);
   color: var(--h23-ember);
   border-color: transparent;
 }
