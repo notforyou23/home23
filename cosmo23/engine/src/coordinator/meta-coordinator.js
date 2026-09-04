@@ -676,7 +676,8 @@ YOUR RESPONSIBILITIES AS META-COORDINATOR:
         goals: subsystems.goals,
         clusterStateStore: subsystems.clusterStateStore,
         pathResolver: subsystems.pathResolver,
-        memory: subsystems.memory || this.memory || this.orchestrator?.memory || null
+        memory: subsystems.memory || this.memory || this.orchestrator?.memory || null,
+        orchestrator: this.orchestrator || subsystems.orchestrator || null
       },
       this.logger
     );

@@ -37,7 +37,22 @@ function isPathSafe(targetPath, runtimePath) {
   if (!runtimePath) return false;
   const resolved = path.resolve(targetPath);
   const base = path.resolve(runtimePath);
-  return resolved.startsWith(base);
+  const relative = path.relative(base, resolved);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function assertSafeWriteParent(basePath, targetPath) {
+  const relativeParent = path.relative(basePath, path.dirname(targetPath));
+  let cursor = basePath;
+  for (const segment of relativeParent.split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, segment);
+    try {
+      const stat = await fs.lstat(cursor);
+      if (stat.isSymbolicLink()) throw new Error('Symlinked output directories are not writable.');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -499,13 +514,19 @@ const executors = {
     if (!runtimePath) return 'Error: Run directory not configured.';
 
     // Force writes to outputs/ subdirectory
-    const targetPath = path.resolve(runtimePath, 'outputs', args.path);
-    if (!isPathSafe(targetPath, runtimePath)) {
-      return `Error: Path "${args.path}" resolves outside the run directory.`;
+    const outputsRoot = path.resolve(runtimePath, 'outputs');
+    const targetPath = path.resolve(outputsRoot, args.path);
+    if (!isPathSafe(targetPath, outputsRoot)) {
+      return `Error: Path "${args.path}" resolves outside outputs/.`;
     }
 
     try {
+      await assertSafeWriteParent(outputsRoot, targetPath);
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      const realParent = await fs.realpath(path.dirname(targetPath));
+      if (!isPathSafe(realParent, outputsRoot)) {
+        return `Error: Path "${args.path}" resolves outside outputs/.`;
+      }
       await fs.writeFile(targetPath, args.content, 'utf-8');
       return `File written: outputs/${args.path} (${Buffer.byteLength(args.content, 'utf-8')} bytes)`;
     } catch (err) {

@@ -50,6 +50,7 @@ const OAUTH_SCOPES = 'org:create_api_key user:profile user:inference';
 // In-memory cache to avoid DB hits on every request
 let tokenCache = null;
 let cacheExpiry = 0;
+let tokenReaders = null;
 
 /**
  * Detect if a token is an OAuth token (from setup-token flow)
@@ -399,42 +400,99 @@ async function storeToken(token, expiresAt = null, refreshToken = null) {
   }
 }
 
+async function readStoredTokenPrisma() {
+  const db = getPrisma();
+  const config = await db.systemConfig.findUnique({ where: { key: OAUTH_DB_KEY } });
+  if (!config) return null;
+  const data = JSON.parse(decryptApiKey(config.value));
+  return {
+    token: data.token,
+    refreshToken: data.refreshToken || null,
+    expiresAt: data.expiresAt || null
+  };
+}
+
+function databaseFilePath() {
+  const raw = process.env.DATABASE_URL || '';
+  if (!raw.startsWith('file:')) return null;
+  const value = raw.slice('file:'.length);
+  return path.isAbsolute(value) ? value : path.resolve(process.cwd(), value);
+}
+
+async function readStoredTokenSqlite() {
+  const dbPath = databaseFilePath();
+  if (!dbPath || !fs.existsSync(dbPath)) return null;
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require('node:sqlite'));
+  } catch {
+    return null;
+  }
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const row = db.prepare('SELECT value FROM SystemConfig WHERE key = ?').get(OAUTH_DB_KEY);
+    if (!row?.value) return null;
+    const data = JSON.parse(decryptApiKey(row.value));
+    return {
+      token: data.token,
+      refreshToken: data.refreshToken || null,
+      expiresAt: data.expiresAt || null
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function defaultTokenReaders() {
+  return {
+    prisma: readStoredTokenPrisma,
+    sqlite: readStoredTokenSqlite,
+    server: async () => null
+  };
+}
+
+function _setTokenReadersForTests(overrides = {}) {
+  tokenReaders = { ...defaultTokenReaders(), ...overrides };
+  tokenCache = null;
+  cacheExpiry = 0;
+}
+
+function _resetOAuthEngineForTests() {
+  tokenReaders = defaultTokenReaders();
+  tokenCache = null;
+  cacheExpiry = 0;
+}
+
+function selectAnthropicCredentialSource({ setup, env } = {}) {
+  if (setup?.token && isOAuthToken(setup.token)) return 'setup';
+  if (env?.authToken || env?.apiKey) return 'env';
+  return 'none';
+}
+
 /**
  * Get current token from database
  * Returns { token, refreshToken, expiresAt } or null
  * Note: Does NOT auto-refresh, use getAnthropicApiKey() for that
  */
 async function getStoredToken() {
-  try {
-    // Check cache first
-    if (tokenCache && Date.now() < cacheExpiry) {
+  if (tokenCache && Date.now() < cacheExpiry) return tokenCache;
+  if (!tokenReaders) tokenReaders = defaultTokenReaders();
+  for (const reader of Object.values(tokenReaders)) {
+    try {
+      const data = await reader();
+      if (!data?.token) continue;
+      tokenCache = {
+        token: data.token,
+        refreshToken: data.refreshToken || null,
+        expiresAt: data.expiresAt || null
+      };
+      cacheExpiry = data.expiresAt || Date.now() + (365 * 24 * 60 * 60 * 1000);
       return tokenCache;
+    } catch (error) {
+      console.error('[OAuth-Engine] Setup token reader failed:', error.message);
     }
-
-    const db = getPrisma();
-    const config = await db.systemConfig.findUnique({
-      where: { key: OAUTH_DB_KEY }
-    });
-
-    if (!config) return null;
-
-    // Decrypt and parse
-    const decrypted = decryptApiKey(config.value);
-    const data = JSON.parse(decrypted);
-
-    // Update cache (even if expired, we might have refresh token)
-    tokenCache = {
-      token: data.token,
-      refreshToken: data.refreshToken || null,
-      expiresAt: data.expiresAt
-    };
-    cacheExpiry = data.expiresAt || Date.now() + (365 * 24 * 60 * 60 * 1000);
-
-    return tokenCache;
-  } catch (error) {
-    console.error('[OAuth-Engine] Error reading token from database:', error.message);
-    return null;
   }
+  return null;
 }
 
 /**
@@ -477,15 +535,10 @@ async function clearToken() {
  */
 async function getAnthropicApiKey() {
   try {
-    const envCredentials = getEnvCredentials();
-    if (envCredentials) {
-      console.log(`[OAuth-Engine] Using ${envCredentials.isOAuth ? 'OAuth token' : 'API key'} from env`);
-      return envCredentials;
-    }
-
-    // Try stored token first
+    // Cosmo Setup owns the selected credential. A stale PM2 token is a
+    // fallback only; letting it win can make a valid browser login look dead.
     let stored = await getStoredToken();
-
+    const envCredentials = getEnvCredentials();
     if (stored && stored.token) {
       const isOAuth = isOAuthToken(stored.token);
 
@@ -506,7 +559,8 @@ async function getAnthropicApiKey() {
             authToken: refreshed.accessToken,
             defaultHeaders: getStealthHeaders(),
             dangerouslyAllowBrowser: true,
-            isOAuth: true
+            isOAuth: true,
+            source: 'setup'
           };
         } catch (refreshError) {
           console.error('[OAuth-Engine] Token refresh failed:', refreshError.message);
@@ -519,12 +573,18 @@ async function getAnthropicApiKey() {
           authToken: stored.token,
           defaultHeaders: getStealthHeaders(),
           dangerouslyAllowBrowser: true,
-          isOAuth: true
+          isOAuth: true,
+          source: 'setup'
         };
       }
     }
 
-    throw new Error('No Anthropic OAuth token configured. Use "Import from Claude CLI" or complete the OAuth flow.');
+    if (envCredentials) {
+      console.log(`[OAuth-Engine] Setup has no token; using ${envCredentials.isOAuth ? 'OAuth token' : 'API key'} from env`);
+      return envCredentials;
+    }
+
+    throw new Error('No Anthropic OAuth token configured. Re-auth in Cosmo Setup.');
   } catch (error) {
     console.error('[OAuth-Engine] Error getting API key:', error.message);
     throw error;
@@ -572,8 +632,10 @@ function prepareSystemPrompt(systemPrompt, isOAuth) {
  * Check OAuth status
  */
 async function getOAuthStatus() {
+  const stored = await getStoredToken();
   const envCredentials = getEnvCredentials();
-  if (envCredentials) {
+
+  if (!stored && envCredentials) {
     return {
       configured: true,
       source: envCredentials.source,
@@ -581,8 +643,6 @@ async function getOAuthStatus() {
       expiresAt: null
     };
   }
-
-  const stored = await getStoredToken();
 
   if (!stored) {
     return {
@@ -597,7 +657,7 @@ async function getOAuthStatus() {
 
   return {
     configured: true,
-    source: 'oauth',
+    source: 'setup',
     valid: !isExpired,
     expiresAt: stored.expiresAt ? new Date(stored.expiresAt).toISOString() : null
   };
@@ -628,6 +688,9 @@ module.exports = {
   // Utilities
   isOAuthToken,
   getStealthHeaders,
+  selectAnthropicCredentialSource,
+  _setTokenReadersForTests,
+  _resetOAuthEngineForTests,
 
   // Constants
   OAUTH_DB_KEY,

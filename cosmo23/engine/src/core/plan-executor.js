@@ -35,6 +35,7 @@ const {
   validateExpectedOutputs: validateTaskExpectedOutputs,
   collectResearchEvidenceFromArtifacts
 } = require('./task-completion-validator');
+const { isToolLoopPlan } = require('../agent/short-plan');
 
 class PlanExecutor {
   constructor(stateStore, agentExecutor, logger, options = {}) {
@@ -68,6 +69,21 @@ class PlanExecutor {
     // Configuration
     this.maxRetries = options.maxRetries || 3;
     this.agentTimeout = options.agentTimeout || 720000; // 12 minutes
+    this.ensureLaunchLoop = typeof options.ensureLaunchLoop === 'function'
+      ? options.ensureLaunchLoop
+      : null;
+  }
+
+  isResearchToolLoopPlan(plan = this.plan) {
+    return isToolLoopPlan(plan) || plan?.metadata?.executionKind === 'tool_loop';
+  }
+
+  async ensureResearchLaunchLoop() {
+    if (typeof this.ensureLaunchLoop !== 'function') {
+      this.logger.error('tool_loop plan has no research-loop owner');
+      return { started: false, reason: 'no_ensure_callback' };
+    }
+    return this.ensureLaunchLoop();
   }
 
   getTaskAgentScope(task = this.activeTask) {
@@ -223,6 +239,17 @@ class PlanExecutor {
 
     if (this.plan.status === 'BLOCKED') {
       return await this.handlePlanBlocked();
+    }
+
+    if (this.isResearchToolLoopPlan(this.plan)) {
+      const loopResult = await this.ensureResearchLaunchLoop();
+      return this.record({
+        action: loopResult?.started ? 'LAUNCH_LOOP_OWNS' : 'LAUNCH_LOOP_MISSING',
+        productLoop: 'research',
+        reused: Boolean(loopResult?.reused),
+        taskId: this.activeTask?.id || 'task:research',
+        reason: loopResult?.reason || null
+      });
     }
     
     // === PHASE MANAGEMENT ===
@@ -784,6 +811,17 @@ class PlanExecutor {
   }
 
   async assignAgent() {
+    if (this.isResearchToolLoopPlan(this.plan) || this.activeTask?.metadata?.executionKind === 'tool_loop') {
+      const loopResult = await this.ensureResearchLaunchLoop();
+      return this.record({
+        action: loopResult?.started ? 'LAUNCH_LOOP_OWNS' : 'LAUNCH_LOOP_MISSING',
+        productLoop: 'research',
+        reused: Boolean(loopResult?.reused),
+        taskId: this.activeTask?.id || null,
+        reason: loopResult?.reason || null
+      });
+    }
+
     const agentType = this.determineAgentType(this.activeTask);
     // HOME23 PATCH — Patch 28: derive contract for old/resumed tasks too.
     const researchContract = this.activeTask.metadata?.researchContract || deriveResearchContract({

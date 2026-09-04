@@ -112,9 +112,17 @@ Important:
 
 1. Configure providers in the setup panel.
 2. Adjust the model catalog if you want different chat model versions.
-3. Launch a run with topic, context, mode, and model-role selections.
-4. Use Watch to follow the active run and open the dashboard.
-5. Use Query to work against finished local brains or imported reference brains.
+3. Launch a run with a question, context, budgets, concurrency, and model-role selections.
+4. Launch opens the Watch desk. A guided run is a drill: goal → parallel phases → next goal until its cycle or time budget settles.
+5. Follow current goals, phase workers, remaining budgets, source receipts, Brain tape, and files on the desk; durable notes steer every later worker.
+6. Use Query to ask the saved Brain. Interactive remains chat-only and never owns the research loop.
+
+Research work is disk-backed while it happens:
+
+- `outputs/stream.jsonl` is the working Brain tape: goals, phases, thoughts, harvests, offshoots, findings, and writeups.
+- `outputs/sources.jsonl` records successful fetches from search, shell/curl, scripts, coding runs, and harvested files.
+- A phase closes only with its own phase-bound markdown writeup under `outputs/`; thoughts, receipts, another phase's file, and temporary dumps cannot close it.
+- One worker runs per open phase up to the launch concurrency limit. A slow phase does not block its siblings from settling.
 
 The Query tab includes the EVOBREW-style Research surface with:
 
