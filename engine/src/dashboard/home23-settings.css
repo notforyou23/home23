@@ -294,9 +294,9 @@ body {
 }
 
 .h23s-scope-chip.scope-roster {
-  color: #c6a7ff;
-  border-color: rgba(198,167,255,0.24);
-  background: rgba(198,167,255,0.08);
+  color: var(--h23-signal);
+  border-color: var(--h23-accent-tint-border);
+  background: var(--h23-accent-tint);
 }
 
 .h23s-panel-title-row {
@@ -2207,9 +2207,9 @@ body.h23-settings-page .h23s-scope-chip.scope-mixed {
 }
 
 body.h23-settings-page .h23s-scope-chip.scope-roster {
-  color: #7654b5;
-  border-color: rgba(118, 84, 181, 0.2);
-  background: rgba(118, 84, 181, 0.08);
+  color: var(--h23-paper-soft);
+  border-color: var(--h23-hairline-14);
+  background: transparent;
 }
 
 body.h23-settings-page .h23s-main {
