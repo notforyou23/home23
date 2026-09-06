@@ -31,11 +31,12 @@ Payload kinds:
   query     — durable brain query (no tools). May remain attached for long provider work.
 
 Delivery:
-  delivery_to MUST be a valid, durable chat ID for the target channel:
+  Home23 sends to your existing owner conversation; use delivery_channel="home23", delivery_to="owner".
+  For external channels delivery_to MUST be a valid, durable chat ID:
     Telegram: a numeric user/group ID like "123456789" or "-5204338402"
     Discord:  a numeric channel ID
   Do NOT use dashboard session IDs (dashboard-jerry-...) — those are ephemeral and stop working.
-  If unsure, leave delivery_to unset and use announce_mode="none" until the owner provides a durable chat ID.`,
+  Use Home23 when enabled; Telegram and Discord remain optional explicit destinations.`,
   input_schema: {
     type: 'object',
     properties: {
@@ -55,7 +56,7 @@ Delivery:
         maximum: CRON_TIMEOUT_MAX_SECONDS,
         description: `Max whole seconds before timeout (${CRON_TIMEOUT_MIN_SECONDS}-${CRON_TIMEOUT_MAX_SECONDS}). Defaults: agentTurn=21600, exec=60, durable query=5400.`,
       },
-      delivery_channel: { type: 'string', description: 'Channel: "telegram", "discord", or "auto" (first available). Default: auto.' },
+      delivery_channel: { type: 'string', description: 'Channel: "home23", "telegram", "discord", or "auto". Defaults to Home23 when enabled.' },
       delivery_to: { type: 'string', description: 'Durable chat ID for delivery (Telegram numeric ID, Discord channel ID). REQUIRED for delivery to work.' },
       announce_mode: { type: 'string', enum: ['none', 'failures', 'summary', 'full'], description: 'When to deliver results (default: failures)' },
       cwd: { type: 'string', description: 'Working directory for exec commands (default: home23 project root)' },
@@ -168,7 +169,8 @@ Delivery:
     }
 
     // Delivery — warn about ephemeral chatIds
-    const deliveryTo = (input.delivery_to as string) || '';
+    const deliveryChannel = (input.delivery_channel as string) || (ctx.home23DeliveryEnabled ? 'home23' : 'auto');
+    const deliveryTo = (input.delivery_to as string) || (deliveryChannel === 'home23' ? 'owner' : '');
     const hasProfile = typeof input.delivery_profile === 'string' && input.delivery_profile !== '';
     if (!input.channel_id && !deliveryTo && !hasProfile) {
       console.warn(`[cron_schedule] Job "${input.name}" created with no delivery_to — delivery will fail.`);
@@ -190,7 +192,7 @@ Delivery:
         ...(typeof input.delivery_profile === 'string' && input.delivery_profile
           ? { profile: input.delivery_profile }
           : {
-              channel: (input.delivery_channel as string) || 'auto',
+              channel: deliveryChannel,
               to: deliveryTo,
             }),
       },
@@ -202,7 +204,7 @@ Delivery:
 
     const warnings: string[] = [];
     if (!input.channel_id && !deliveryTo && !hasProfile) warnings.push('⚠ No delivery_to set — results won\'t be delivered anywhere.');
-    if (!input.channel_id && deliveryTo.startsWith('dashboard-')) warnings.push('⚠ delivery_to is a dashboard session ID — use a Telegram numeric ID instead.');
+    if (!input.channel_id && deliveryTo.startsWith('dashboard-')) warnings.push('⚠ delivery_to is a dashboard session ID — use Home23 owner delivery or a durable external channel ID.');
 
     return { content: `Job "${job.name}" scheduled (id: ${id}, ${kind}, payload: ${payloadKind})${pursuitId ? `, pursuit: ${pursuitId}` : ''}${warnings.length ? '\n' + warnings.join('\n') : ''}` };
   },

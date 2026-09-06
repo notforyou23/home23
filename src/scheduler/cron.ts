@@ -74,6 +74,7 @@ export interface CronJob {
 }
 
 export interface JobResult {
+  deliveryId?: string;
   canonicalRunPending?: boolean;
   media?: import('../types.js').MediaAttachment[];
   status: 'ok' | 'error';
@@ -1105,6 +1106,8 @@ export class CronScheduler {
     }
 
     switch (outcome.status) {
+      case 'queued':
+        return { status: 'unknown', reason: outcome.reason, evidence: { deliveryStatus: 'queued', queuedTargets: outcome.queuedTargets } };
       case 'delivered':
         return {
           status: 'success',

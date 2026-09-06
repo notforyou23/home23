@@ -265,6 +265,7 @@ export interface NeighborPeerConfig {
 }
 
 export interface ChannelsConfig {
+  home23?: { enabled: boolean };
   telegram: TelegramConfig;
   imessage: IMessageConfig;
   discord: DiscordConfig;

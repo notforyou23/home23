@@ -27,6 +27,8 @@ export interface DeliveryFailure extends DeliveryTarget {
 }
 
 export type DeliveryOutcome =
+  | { status: 'queued'; reason: 'saved in durable Home23 outbox'; retryEligible: false; queuedTargets: DeliveryTarget[] }
+
   | {
       status: 'delivered';
       reason: 'at least one adapter send confirmed';
@@ -159,6 +161,7 @@ export class DeliveryManager {
       // dedupe window.
     }
 
+    const queuedTargets: DeliveryTarget[] = [];
     const confirmedTargets: DeliveryTarget[] = [];
     const unavailableTargets: DeliveryTarget[] = [];
     const failedTargets: DeliveryFailure[] = [];
@@ -176,6 +179,7 @@ export class DeliveryManager {
 
       const response: OutgoingResponse = {
         text,
+        deliveryId: result.deliveryId,
         channel: target.channel,
         chatId: target.to,
         durationMs: result.durationMs,
@@ -183,7 +187,8 @@ export class DeliveryManager {
       };
 
       try {
-        await adapter.send(response);
+        const receipt = await adapter.send(response);
+        if (receipt?.status === 'queued') { queuedTargets.push(target); continue; }
         confirmedTargets.push(target);
         this.appendDeliveryLedgerEvent(job, target, result);
         console.log(`[delivery] Job ${job.id} result delivered to ${target.channel}:${target.to}`);
@@ -198,10 +203,13 @@ export class DeliveryManager {
     // (anyDelivered === false) leaves the dedup key unset, so the next identical
     // retry is still eligible to surface. Mirrors the /api/notify path, which
     // also records only after a confirmed delivery.
-    if (this.gate && gateSignal && confirmedTargets.length > 0) {
+    if (this.gate && gateSignal && (confirmedTargets.length > 0 || queuedTargets.length > 0)) {
       this.gate.record(gateSignal);
     }
 
+    if (queuedTargets.length > 0 && confirmedTargets.length === 0 && failedTargets.length === 0 && unavailableTargets.length === 0) {
+      return { status: 'queued', reason: 'saved in durable Home23 outbox', retryEligible: false, queuedTargets };
+    }
     if (confirmedTargets.length > 0) {
       return {
         status: 'delivered',

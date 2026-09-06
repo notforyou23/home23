@@ -59,6 +59,7 @@ export interface IncomingMessage {
 }
 
 export interface OutgoingResponse {
+  deliveryId?: string;
   text: string;
   channel: string;
   chatId: string;
@@ -74,7 +75,7 @@ export interface ChannelAdapter {
   name: string;
   start(): Promise<void>;
   stop(): Promise<void>;
-  send(response: OutgoingResponse): Promise<void>;
+  send(response: OutgoingResponse): Promise<void | { status: 'delivered' | 'queued' }>;
 }
 
 type MessageHandler = (message: IncomingMessage) => Promise<OutgoingResponse>;

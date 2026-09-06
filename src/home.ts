@@ -1,3 +1,4 @@
+import { Home23Adapter } from './channels/home23.js';
 import { runScheduledChannelTurn } from './scheduler/channel-run.js';
 /**
  * Home23 — Agent Harness Entry Point
@@ -393,6 +394,7 @@ async function main(): Promise<void> {
     modelAliases: MODEL_ALIASES,
     restrictedToolSource: registry,
     chatId: '',
+    home23DeliveryEnabled: config.channels?.home23?.enabled === true,
     telegramAdapter: null,   // wired after adapter creation
     runAgentLoop: null,       // wired after agent creation
     brainOperations,
@@ -662,6 +664,16 @@ async function main(): Promise<void> {
   const adapterMap = new Map<string, ChannelAdapter>();
   const enabledAdapters: string[] = [];
 
+  if (config.channels?.home23?.enabled) {
+    const adapter = new Home23Adapter(join(RUNTIME_DIR, 'home23-outbox'), async input => {
+      if (!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
+      await residentCoordinationHarness.notifyOwner(input);
+    });
+    router.registerAdapter(adapter);
+    adapterMap.set(adapter.name, adapter);
+    enabledAdapters.push(adapter.name);
+  }
+
   if (config.channels?.telegram?.enabled) {
     const tc = config.channels.telegram;
     // Per-agent config is authoritative — env is only a last-resort fallback.
@@ -814,7 +826,8 @@ async function main(): Promise<void> {
   const deliveryFailureMessage = (outcome: Awaited<ReturnType<typeof delivery.deliver>>): string => (
     `Delivery ${outcome.status}: ${outcome.reason}`
   );
-  const deliverCronJobResult = async (job: CronJob, jobResult: JobResult) => {
+  const deliverCronJobResult = async (job: CronJob, jobResult: JobResult, runId?: string) => {
+    jobResult.deliveryId = runId ? `cron:${job.id}:${runId}` : undefined;
     const outcome = await delivery.deliver(job, jobResult);
     jobResult.deliveryOutcome = outcome;
     return outcome;
@@ -909,7 +922,7 @@ async function main(): Promise<void> {
             caller?.abortSignal?.throwIfAborted();
             jobResult = { status: 'ok', response: result.text, durationMs, media: result.media };
             if (joined) return jobResult;
-            const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+            const deliveryOutcome = await deliverCronJobResult(job, jobResult, execution?.runId);
             if (deliveryOutcome.retryEligible) {
               jobResult.status = 'error';
               jobResult.error = deliveryFailureMessage(deliveryOutcome);
@@ -942,7 +955,7 @@ async function main(): Promise<void> {
 
           const jobResult: JobResult = { status: 'ok', response: stdout.trim(), durationMs };
           if (joined) return jobResult;
-          const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+          const deliveryOutcome = await deliverCronJobResult(job, jobResult, execution?.runId);
           if (deliveryOutcome.retryEligible) {
             jobResult.status = 'error';
             jobResult.error = deliveryFailureMessage(deliveryOutcome);
@@ -966,7 +979,7 @@ async function main(): Promise<void> {
             durationMs,
           };
           if (joined) return jobResult;
-          const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+          const deliveryOutcome = await deliverCronJobResult(job, jobResult, execution?.runId);
           if (deliveryOutcome.retryEligible) {
             const deliveryFailure = preserveCronBrainQueryDeliveryFailure(
               outcome,
@@ -985,7 +998,7 @@ async function main(): Promise<void> {
           const durationMs = Date.now() - startMs;
           const jobResult: JobResult = { status: 'ok', response: job.payload.text, durationMs };
           if (joined) return jobResult;
-          const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+          const deliveryOutcome = await deliverCronJobResult(job, jobResult, execution?.runId);
           if (deliveryOutcome.retryEligible) {
             jobResult.status = 'error';
             jobResult.error = deliveryFailureMessage(deliveryOutcome);
@@ -1000,7 +1013,9 @@ async function main(): Promise<void> {
         const durationMs = Date.now() - startMs;
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`[scheduler] Job ${job.id} error:`, errorMsg);
-        return { status: 'error', error: errorMsg, durationMs };
+        const failure: JobResult = { status: 'error', error: errorMsg, durationMs };
+        if (!joined) await deliverCronJobResult(job, failure, execution?.runId);
+        return failure;
       }
     };
 
@@ -1014,7 +1029,11 @@ async function main(): Promise<void> {
         const externalJobs: CronJob[] = JSON.parse(raw);
         const { added, updated } = mergeInstallCronJobs({
           scheduler,
-          jobs: externalJobs,
+          jobs: config.channels?.home23?.enabled ? externalJobs.map(job => ({
+            ...job, ...(job.delivery && job.delivery.mode !== 'none' ? {
+              delivery: { mode: job.delivery.mode, channel: 'home23', to: 'owner' },
+            } : {}),
+          })) : externalJobs,
         });
         console.log(`[home] Loaded ${added} new and updated ${updated} cron job(s) from config/cron-jobs.json (${externalJobs.length} total in file)`);
       } catch (err) {
@@ -1705,6 +1724,7 @@ async function main(): Promise<void> {
 
     const ownerTelegramId = config.agent?.owner?.telegramId || null;
     const telegramAdapter = adapterMap.get('telegram');
+    const home23Adapter = adapterMap.get('home23');
 
     // Attention gate (Step 30). Live-problems only POSTs here after autonomous
     // remediation is exhausted (fuse-box critical/emergency), so most traffic is
@@ -1734,10 +1754,16 @@ async function main(): Promise<void> {
     };
     const verdict = attentionGate ? attentionGate.evaluate(signal) : { decision: 'surface' as const, reason: 'gate_disabled' };
 
-    const sendToOwner = async (body: string): Promise<{ delivered: string[]; failed: Array<{channel: string; error: string}> }> => {
+    const sendToOwner = async (body: string): Promise<{ delivered: string[]; queued: string[]; failed: Array<{channel: string; error: string}> }> => {
       const delivered: string[] = [];
+      const queued: string[] = [];
       const failed: Array<{channel: string; error: string}> = [];
-      if (telegramAdapter && ownerTelegramId) {
+      if (home23Adapter) {
+        try {
+          const receipt = await home23Adapter.send({ channel: 'home23', chatId: 'owner', text: body });
+          (receipt?.status === 'queued' ? queued : delivered).push('home23');
+        } catch (err) { failed.push({ channel: 'home23', error: String(err) }); }
+      } else if (telegramAdapter && ownerTelegramId) {
         try {
           await telegramAdapter.send({ channel: 'telegram', chatId: String(ownerTelegramId), text: body });
           delivered.push('telegram');
@@ -1745,7 +1771,7 @@ async function main(): Promise<void> {
           failed.push({ channel: 'telegram', error: err instanceof Error ? err.message : String(err) });
         }
       }
-      return { delivered, failed };
+      return { delivered, queued, failed };
     };
 
     // Opportunistically flush the held-digest when it is due, so aggregated
@@ -1755,8 +1781,8 @@ async function main(): Promise<void> {
       if (attentionGate && attentionGate.shouldFlushAggregate()) {
         const held = attentionGate.drainAggregate();
         if (held.length === 0) return;
-        const { delivered } = await sendToOwner(`🗒️ ${attentionGate.buildDigest(held)}`);
-        if (delivered.length === 0) {
+        const { delivered, queued } = await sendToOwner(`🗒️ ${attentionGate.buildDigest(held)}`);
+        if (delivered.length === 0 && queued.length === 0) {
           for (const s of held) attentionGate.enqueueAggregate(s);
           console.warn(`[notify] digest flush failed to deliver; re-queued ${held.length} held item(s)`);
         }
@@ -1779,11 +1805,11 @@ async function main(): Promise<void> {
     // surface
     const sigil = signal.severity === 'critical' || signal.severity === 'emergency' ? '🚨'
       : signal.severity === 'alert' ? '🚨' : signal.severity === 'info' ? '·' : '⚠️';
-    const { delivered, failed } = await sendToOwner(`${sigil} [${source}] ${text}`);
-    if (delivered.length > 0 && attentionGate) attentionGate.record(signal);
+    const { delivered, queued, failed } = await sendToOwner(`${sigil} [${source}] ${text}`);
+    if ((delivered.length > 0 || queued.length > 0) && attentionGate) attentionGate.record(signal);
     await flushDigestIfDue();
 
-    if (delivered.length === 0) {
+    if (delivered.length === 0 && queued.length === 0) {
       res.status(503).json({
         error: 'no channel delivered',
         tried: failed,
@@ -1791,7 +1817,7 @@ async function main(): Promise<void> {
       });
       return;
     }
-    res.json({ ok: true, gated: verdict.reason, delivered, failed });
+    res.json({ ok: true, gated: verdict.reason, delivered, queued, failed });
   });
 
   // ── Diagnose endpoint — Tier 3 of live-problems. Engine POSTs a problem

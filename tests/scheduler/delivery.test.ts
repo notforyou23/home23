@@ -196,3 +196,13 @@ test('a successful delivery still suppresses an identical repeat within the dedu
   assert.equal(suppressed.status, 'suppressed');
   assert.equal(suppressed.retryEligible, false);
 });
+
+test('durable Home23 queue is pending delivery without turning a completed job into a retry', async () => {
+  const seen: OutgoingResponse[] = [];
+  const adapter: ChannelAdapter = { name: 'home23', async start() {}, async stop() {}, async send(input) { seen.push(input); return { status: 'queued' }; } };
+  const manager = new DeliveryManager(new Map([['home23', adapter]]));
+  const result = await manager.deliver(makeJob({ delivery: { mode: 'full', channel: 'home23', to: 'owner' } }),
+    { status: 'ok', response: 'Morning briefing', durationMs: 1, deliveryId: 'cron:job:run' });
+  assert.equal(result.status, 'queued'); assert.equal(result.retryEligible, false);
+  assert.equal(seen[0]!.deliveryId, 'cron:job:run');
+});

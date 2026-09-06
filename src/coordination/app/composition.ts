@@ -1,3 +1,4 @@
+import { createResidentNotifications } from './resident-notifications.js';
 import { createScheduledChannelTurns } from './scheduled-turns.js';
 import { createBotInvocationService } from './bot-invocations.js';
 import { resolveMessagingActor } from '../channels/access.js';
@@ -1159,6 +1160,9 @@ export function createCoordinationProcess(
           requestId: generateCoordinationId('request'), correlationId: generateCoordinationId('correlation') });
       },
     });
+    const notifyResident = createResidentNotifications({ database, messages,
+      resolveResident: slug => completionTargets.get(slug),
+      recordMessage: createCanonicalMessageRecorder(communications, deviceNotifications) });
     const detachmentPath = "/internal/v1/foreground-detachments";
     completionIngress = new ResidentUdsServer({
       socketPath: config.socketPath,
@@ -1166,7 +1170,7 @@ export function createCoordinationProcess(
       credentials: completionCredentials,
       validateFence: (fence, request) => {
         if (request.method !== "POST") return false;
-        if (request.path === COORDINATION_COMPLETION_PATH || request.path === "/internal/v1/scheduled-turns") return fence === null;
+        if (request.path === COORDINATION_COMPLETION_PATH || request.path === "/internal/v1/scheduled-turns" || request.path === "/internal/v1/resident-notifications") return fence === null;
         if (request.path !== detachmentPath && request.path !== `${detachmentPath}/start` && request.path !== "/internal/v1/channel-operations") return false;
         const payload = request.payload as unknown as { parentOrigin?: CoordinationTurnOrigin; origin?: CoordinationTurnOrigin };
         const origin = request.path === detachmentPath ? payload?.parentOrigin : payload?.origin;
@@ -1174,6 +1178,10 @@ export function createCoordinationProcess(
       },
       handleRequest: (request, context) => {
         if (!isCanonicalMessagesAuthority(currentAuthority("messages"))) throw new MessagingError("authority_unavailable");
+        if (request.method === "POST" && request.path === "/internal/v1/resident-notifications") {
+          const done = lifecycle.beginWork();
+          return notifyResident(context.credential, request.payload).finally(done);
+        }
         if (request.method === "POST" && request.path === "/internal/v1/scheduled-turns") {
           const resident = completionTargets.get('jerry');
           if (config.flags['coordination.channels.enabled'] !== true || !resident || context.credential.residentSlug !== 'jerry' ||

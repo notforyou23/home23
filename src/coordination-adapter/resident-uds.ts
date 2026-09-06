@@ -801,6 +801,14 @@ export class ResidentTurnUdsServer {
       catch (error) { if (path.endsWith('/start') || attempt >= 2 || !retryableTransportWait(error)) throw error; }
     }
   }
+  async notifyOwner(input: import('../channels/home23.js').Home23Notification) {
+    const client = this.options.coordinationClient ?? this.options.coordinationCompletionClient;
+    if (!client) throw new Error('Signed coordinator connection unavailable');
+    const ack = object((await client.request({ method: 'POST', path: '/internal/v1/resident-notifications',
+      payload: { ...input }, fence: null, deadlineAtMs: (this.options.now?.() ?? Date.now()) + 10_000,
+      signal: this.#completionAbort.signal })).payload);
+    if (ack.accepted !== true || ack.messageId !== input.messageId) throw new Error('Home23 delivery acknowledgement differs');
+  }
   async scheduledTurn(input: import('../coordination/app/scheduled-turns.js').ScheduledChannelTurn) {
     const client = this.options.coordinationClient ?? this.options.coordinationCompletionClient;
     if (!client) throw new ResidentProtocolError('connection_lost', 'signed coordinator connection unavailable');

@@ -114,6 +114,7 @@ export interface DurableTurnStart {
 }
 
 export interface ToolContext {
+  home23DeliveryEnabled?: boolean;
   coordinationChannelOperation?: (input: {
     origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown>;
   }) => Promise<unknown>;

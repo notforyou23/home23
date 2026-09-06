@@ -387,3 +387,14 @@ test('existing editorial jobs can change topic binding without losing the active
   assert.match(String((await cronListTool.execute({},context)).content),/pending:pending/);
   assert.match(String((await cronListTool.execute({},context)).content),/topic:chn_/);
 });
+
+test('new schedules default to Home23 owner delivery when enabled while explicit Telegram remains optional', async () => {
+  const jobs: CronJob[] = [];
+  const context = { ...ctx({ addJob: job => jobs.push(job) }), home23DeliveryEnabled: true };
+  const base = { name: 'Home23 reminder', schedule_kind: 'at', at: '2030-01-01T12:00:00Z', message: 'A reminder' };
+  const result = await cronScheduleTool.execute(base, context);
+  assert.notEqual(result.is_error, true);
+  assert.equal(jobs[0]!.delivery?.channel, 'home23'); assert.equal(jobs[0]!.delivery?.to, 'owner');
+  await cronScheduleTool.execute({ ...base, delivery_channel: 'telegram', delivery_to: '123' }, context);
+  assert.equal(jobs[1]!.delivery?.channel, 'telegram');
+});
