@@ -1,3 +1,4 @@
+// Character targets are advisory: never shorten a selected claim or owner statement.
 /**
  * NOW, composed from the life — the second Home23 v2 bootstrap cutover.
  *
@@ -40,7 +41,7 @@ export function composeSeedNow(stateDir: string, budget = DEFAULT_BUDGET): strin
   const open = checkpoint.cells
     .flatMap((c) => (c.predictions ?? []).filter((p) => p.resolvedAt === undefined).map((p) => ({ cell: c.id, ...p })))
     .slice(0, 3)
-    .map((p) => `- [${p.cell}] "${p.claim.slice(0, 120)}" (confidence ${p.confidence}, horizon ${p.horizon})`);
+    .map((p) => `- [${p.cell}] "${p.claim}" (confidence ${p.confidence}, horizon ${p.horizon})`);
 
   // Body/identity events since roughly the last stretch of chain time.
   const since: string[] = [];
@@ -66,7 +67,7 @@ export function composeSeedNow(stateDir: string, budget = DEFAULT_BUDGET): strin
       const claim = d.delta?.['claim'];
       if (typeof claim === 'string') {
         const verb = d.field === 'predictions.append' ? 'expect' : 'believe';
-        freshest = `- you currently ${verb}: [${d.cellId ?? '?'}] ${claim.slice(0, 140)}`;
+        freshest = `- you currently ${verb}: [${d.cellId ?? '?'}] ${claim}`;
       }
     }
   }
@@ -81,13 +82,5 @@ export function composeSeedNow(stateDir: string, budget = DEFAULT_BUDGET): strin
   if (freshest !== null) sections.push(['Freshest thought:', freshest]);
   if (open.length > 0) sections.push(['You are on the record expecting:', ...open]);
 
-  let kept = sections.slice();
-  const render = (s: string[][]): string => s.map((sec) => sec.join('\n')).join('\n\n');
-  let text = render(kept);
-  while (text.length > budget && kept.length > 1) {
-    kept = kept.slice(0, -1);
-    text = render(kept);
-  }
-  if (text.length > budget) text = `${text.slice(0, budget - 1)}…`;
-  return text;
+  return sections.map((section) => section.join('\n')).join('\n\n');
 }

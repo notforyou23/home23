@@ -1,3 +1,4 @@
+// Character targets are advisory: never shorten a selected claim or owner statement.
 /**
  * FACTS from lived estimates — the fourth Home23 v2 cutover, and the one
  * where the rubber meets the road: the individual's own conclusions go
@@ -78,12 +79,5 @@ export function composeLivedFacts(stateDir: string, budget = DEFAULT_BUDGET): st
     ...rows.map((f) => `- [${f.cell}] ${f.claim} (${f.confidence}, ${f.refs} refs, held since ${f.createdAt.slice(0, 10)})`),
   ].join('\n');
 
-  let kept = chosen;
-  let text = render(kept);
-  while (text.length > budget && kept.length > MIN_FACTS) {
-    kept = kept.slice(0, -1);
-    text = render(kept);
-  }
-  if (text.length > budget) text = `${text.slice(0, budget - 1)}…`;
-  return text;
+  return render(chosen);
 }

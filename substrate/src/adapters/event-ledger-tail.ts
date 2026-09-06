@@ -325,7 +325,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
         entity,
         from: typeof parsed['from'] === 'string' ? parsed['from'] : null,
         to: typeof parsed['to'] === 'string' ? parsed['to'] : null,
-        head: text.trim().slice(0, 160),
+        head: text.trim(),
       },
       producedAt: ts,
       endOffset,
@@ -353,7 +353,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
       sourceAuthority: this.authority,
       sourceRef: `dream:${dreamId}`,
       payload: {
-        head: head.trim().slice(0, 160),
+        head: head.trim(),
         contentSha256,
         ...(typeof parsed['cycle'] === 'number' ? { cycle: parsed['cycle'] } : {}),
         ...(typeof parsed['model'] === 'string' ? { model: parsed['model'] } : {}),
@@ -368,7 +368,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
    * agent's ACTUAL conversations with his person — the life itself, not its
    * telemetry. Both voices are observations of lived contact (teaching stays
    * the relationship ledger's deliberate job — no manufactured corrections);
-   * the words ride as a bounded head + the perceived semantic vector, so
+   * the words ride as a complete text + the perceived semantic vector, so
    * both the reservoir AND recruited lobes finally eat meaning. */
   private mapConversationLine(parsed: Record<string, unknown>, line: string, endOffset: number): TailedSourceEvent | null {
     const ts = parsed['ts'];
@@ -392,7 +392,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
       payload: {
         role,
         session,
-        head: text.trim().slice(0, 160),
+        head: text.trim(),
       },
       producedAt: ts,
       endOffset,
@@ -426,7 +426,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
         actor: typeof payload['actor'] === 'string' ? payload['actor'] : null,
         entry_id: entryId || null,
         // Writers since 2026-08-08 carry the teaching's words as a bounded
-        // head — pass them through so the ref carries readable reality.
+        // text — pass them through so the ref carries readable reality.
         ...(typeof head === 'string' && head.length > 0 ? { head } : {}),
       },
       producedAt: ts,

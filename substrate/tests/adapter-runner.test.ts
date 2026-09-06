@@ -472,3 +472,23 @@ test("the machine's heartbeat is not diet: event_ledger.heartbeat lines are filt
   assert.equal(events.length, 1, 'the pulse stays in the ledger, out of the diet');
   assert.equal(events[0]?.eventId, 'real1');
 });
+
+test('complete owner meaning survives stream, cell, checkpoint and session context', async (t) => {
+  const srcDir = makeDir(t, 'complete-src');
+  const stateDir = makeDir(t, 'complete-state');
+  const sourcePath = writeFixture(srcDir, []);
+  const conversationPath = join(srcDir, 'conversation.jsonl');
+  const statement = 'Context about the project. '.repeat(180) + 'Keep the final exception: preserve the original recordings.';
+  writeFileSync(conversationPath, JSON.stringify({ ts: '2026-08-07T10:00:00.000Z', role: 'user', session: 'complete', text: statement }) + '\n');
+  const runner = new SeedRunner({ stateDir, sourcePath, fromEnd: false,
+    extraSources: [{ sourcePath: conversationPath, sourceType: 'conversation-stream', id: 'conversation' }] });
+  runner.start();
+  t.after(() => runner.stop());
+  const report = await runner.tick();
+  assert.equal(report.transitioned, 1);
+  runner.stop();
+  const { composeSeedNow } = await import('../../src/substrate/seed-now.js');
+  const context = composeSeedNow(stateDir, 120);
+  assert.ok(context?.includes(statement), 'the complete original must survive even a tiny legacy character target');
+  assert.equal(readFileSync(conversationPath, 'utf8'), JSON.stringify({ ts: '2026-08-07T10:00:00.000Z', role: 'user', session: 'complete', text: statement }) + '\n');
+});

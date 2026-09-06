@@ -75,5 +75,5 @@ test('bootstrap leads with the lived now when the seed has one; budget respected
   assert.ok(block.includes('NOW@seed (lived, from your chain)'), 'lived section present');
   assert.ok(block.indexOf('NOW@seed') < block.indexOf('machine snapshot'), 'lived now leads; telemetry follows');
   const tiny = composeSeedNow(dir, 220);
-  assert.ok(tiny !== null && tiny.length <= 220 && tiny.includes('where your life stands'), 'whole-section budgeting keeps the header');
+  assert.equal(tiny, composeSeedNow(dir), 'advisory target preserves continuity and commitments');
 });

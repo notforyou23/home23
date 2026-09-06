@@ -293,12 +293,12 @@ export class RelationshipLedger {
         entry_id: entryId,
         agent: this.agent,
         ts: this.now(),
-        // The words ride the event line too (bounded head), not only the
+        // The words ride the event line too (complete text), not only the
         // vector: a Seed's recruited lobe can only reason about a teaching
         // it can read. The full entry stays in the ledger proper — this is
-        // a bounded projection, not a mirror.
+        // a bounded projection, a complete text projection.
         payload: semanticText !== undefined
-          ? { ...payload, head: semanticText.trim().slice(0, 160) }
+          ? { ...payload, head: semanticText.trim() }
           : payload,
         ...(semanticVector !== null ? { semantic_vector: semanticVector } : {}),
       }) + '\n';

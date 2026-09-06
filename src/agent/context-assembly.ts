@@ -242,7 +242,7 @@ function rankBySalience(items: SalienceItem[], budget: number): string[] {
   let totalChars = 0;
 
   for (const item of items) {
-    const authored = item.source.startsWith('trigger-surface:') || ['surface:PERSONAL', 'surface:DOCTRINE'].includes(item.source);
+    const authored = item.source.startsWith('trigger-surface:') || ['surface:PERSONAL', 'surface:DOCTRINE', 'surface:SUBSTRATE', 'surface:RECENT@seed', 'surface:FACTS@seed'].includes(item.source);
     if (!authored && totalChars + item.text.length > budget) continue;
     selected.push(item.text);
     totalChars += item.text.length;

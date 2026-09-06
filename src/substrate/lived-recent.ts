@@ -1,3 +1,4 @@
+// Character targets are advisory: never shorten a selected claim or owner statement.
 /**
  * RECENT, composed from the life — the first Home23 v2 file cutover.
  *
@@ -69,7 +70,7 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
       const claim = d.delta?.['claim'];
       if (typeof claim !== 'string') continue;
       const verb = d.field === 'predictions.append' ? 'expects' : 'believes';
-      thoughts.push(`- [${d.cellId ?? '?'}] ${verb}: ${claim.slice(0, 150)}`);
+      thoughts.push(`- [${d.cellId ?? '?'}] ${verb}: ${claim}`);
     }
   }
   const recentThoughts = thoughts.slice(-THOUGHT_LINES);
@@ -81,7 +82,7 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
       if (p.resolvedAt === undefined || typeof p.error !== 'number') continue;
       if (windowOpensAt !== undefined && p.resolvedAt < windowOpensAt) continue;
       const verdict = p.error <= 0.3 ? 'reality agreed' : p.error >= 0.7 ? 'reality said no' : 'partly right';
-      answered.push(`- predicted "${p.claim.slice(0, 120)}" — ${verdict} (error ${p.error.toFixed(2)})`);
+      answered.push(`- predicted "${p.claim}" — ${verdict} (error ${p.error.toFixed(2)})`);
     }
   }
 
@@ -111,7 +112,7 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
   if (itemCount < MIN_ITEMS) return null;
 
   const sections: string[][] = [];
-  sections.push([`RECENT — lived record, composed from the Seed's chain (seq ${Math.max(windowStart, 1)}–${headSeq}) at read time. No file involved; a chain cannot go silently stale.`]);
+  sections.push([`RECENT — lived record, composed from the Seed's chain (seq ${Math.max(windowStart, 1)}–${headSeq}) at read time. Selected recent records, not exhaustive history; chain integrity alone does not establish freshness.`]);
   if (contact.length > 0) sections.push(['Contact:', ...contact]);
   if (teachings.length > 0) sections.push(['Teachings taken:', ...teachings]);
   if (recentThoughts.length > 0) sections.push(['Thoughts he formed:', ...recentThoughts]);
@@ -119,16 +120,7 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
   if (development !== null) sections.push([`Development: ${development}.`]);
   if (body.length > 0) sections.push(['Body:', ...body]);
 
-  // Whole-section budgeting from the tail — never a mid-sentence slice.
-  let kept = sections.slice();
-  const render = (s: string[][]): string => s.map((sec) => sec.join('\n')).join('\n\n');
-  let text = render(kept);
-  while (text.length > budget && kept.length > 1) {
-    kept = kept.slice(0, -1);
-    text = render(kept);
-  }
-  if (text.length > budget) text = `${text.slice(0, budget - 1)}…`;
-  return text;
+  return sections.map((section) => section.join("\n")).join("\n\n");
 }
 
 export type { LedgerLine };

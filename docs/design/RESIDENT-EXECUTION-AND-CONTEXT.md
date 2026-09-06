@@ -15,3 +15,13 @@ Run `npm run identity:audit -- /absolute/instance/workspace` when maintaining an
 Keep concise current guidance in active files. Preserve historical detail and superseded wording in topic-indexed identity-history, with exact original versions available. Consolidate the affected current section instead of appending another competing rule. Archiving does not revoke an owner instruction. Do not rewrite personality or silently replace explicit decisions with model-generated summaries. `self_update` preserves the prior content by hash and returns a maintenance report after each write; oversized sources produce an advisory to consolidate, not an execution refusal.
 
 No recurring LLM summarization job or new cron is installed by this repair. Maintenance is visible at write time and can be audited across the configured files. Long-term archive retention and automatic semantic reconciliation remain explicit design choices, not silent deletion policies.
+
+## Stream and Seed text integrity
+
+Conversation, house, dream and relationship text projections retain complete text through the adapter and cell reference. Existing hash-chained history is not rewritten: previously shortened records remain shortened unless separately recovered from their original source. World-stream evidence retains complete messages; short display summaries are separate from that evidence.
+
+Seed situation, recent context, session NOW, facts and lived biography preserve complete selected statements. Legacy character targets no longer cut sentences or discard later sections. Selected Seed context also survives the assembly's generic character budget. Relevance ranking and bounded recent-record counts still select a working set; these are not an exhaustive history or a substitute for source retrieval. This change does not load the complete ledger into every prompt or alter the provider context window. Larger complete records can increase prompt and checkpoint sizes; future compaction must preserve qualifications and provenance rather than silently slicing text.
+
+The ledger reader seeks a tail and expands across record boundaries when necessary, retaining complete UTF-8 records and tolerating incomplete final writes. A proposal without a decision receipt in that window is not evidence that the owner was asked or owes an answer.
+
+Verification includes a long owner statement crossing stream ingestion, cell storage, checkpointing and session context, with its final qualification intact under a tiny legacy target; oversized Unicode ledger records and interrupted writes; and existing selection, lifecycle and context tests.

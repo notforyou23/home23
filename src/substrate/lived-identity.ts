@@ -1,3 +1,4 @@
+// Character targets are advisory: never shorten a selected claim or owner statement.
 /**
  * Lived identity — the biography half of who the agent is (v2 cut 7).
  *
@@ -108,13 +109,5 @@ export function composeLivedIdentity(stateDir: string, budget = DEFAULT_BUDGET):
   }
 
   const header = 'This biography is composed from my chain at read time — receipts, not self-description. The constitution above is authored; this half is lived, and it cannot be edited, only lived further.';
-  let kept = lines.slice();
-  const render = (ls: string[]): string => [header, '', ...ls].join('\n');
-  let text = render(kept);
-  while (text.length > budget && kept.length > 1) {
-    kept = kept.slice(0, -1);
-    text = render(kept);
-  }
-  if (text.length > budget) text = `${text.slice(0, budget - 1)}…`;
-  return text;
+  return [header, '', ...lines].join('\n');
 }

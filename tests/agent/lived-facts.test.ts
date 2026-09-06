@@ -71,7 +71,7 @@ test('fewer than two gate-passers → null: no facts surface is claimed at all',
   assert.equal(composeLivedFacts(empty), null, 'no state → null');
 });
 
-test('budget drops whole facts from the low-confidence end, never mid-line', (t) => {
+test('advisory target preserves every selected fact', (t) => {
   const dir = makeSeedDir(t);
   writeFixture(dir, Array.from({ length: 8 }, (_, i) => ({
     claim: `durable observed regularity number ${i} with enough words to cost real budget in the rendering`,
@@ -80,7 +80,8 @@ test('budget drops whole facts from the low-confidence end, never mid-line', (t)
     createdAt: AGED,
   })));
   const tiny = composeLivedFacts(dir, 600);
-  assert.ok(tiny !== null && tiny.length <= 600);
+  assert.equal(tiny, composeLivedFacts(dir));
+  assert.ok(tiny !== null && tiny.includes('regularity number 0'));
   assert.ok(tiny.includes('regularity number 7'), 'highest confidence survives');
   assert.ok(tiny.includes('FACTS (lived)'), 'header survives');
 });

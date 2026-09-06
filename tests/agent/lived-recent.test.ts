@@ -78,11 +78,12 @@ test('too little lived material → null, so the caller falls back to the file',
   assert.equal(composeLivedRecent(dir), null);
 });
 
-test('missing state → null; budget drops whole sections from the tail', (t) => {
+test('missing state returns null; advisory target preserves all selected sections', (t) => {
   const dir = makeSeedDir(t);
   assert.equal(composeLivedRecent(dir), null, 'no state → null');
   writeFixture(dir);
   const tiny = composeLivedRecent(dir, 320);
-  assert.ok(tiny !== null && tiny.length <= 320, 'budget respected');
+  assert.equal(tiny, composeLivedRecent(dir), 'target must not discard teachings or later sections');
+  assert.ok(tiny !== null);
   assert.ok(tiny.includes('composed from the Seed'), 'header survives budgeting');
 });

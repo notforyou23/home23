@@ -71,7 +71,8 @@ test('budget drops whole clauses, never mid-sentence; genesis reader survives a 
   const dir = makeSeedDir(t);
   writeFixture(dir);
   const tiny = composeLivedIdentity(dir, 300);
-  assert.ok(tiny !== null && tiny.length <= 300);
+  assert.equal(tiny, composeLivedIdentity(dir));
+  assert.ok(tiny !== null);
   assert.ok(tiny.includes('I was born'), 'birth clause survives budgeting');
   const genesis = readSeedGenesis(dir);
   assert.ok(genesis !== null && genesis.seedId === 'seed_test_0001' && genesis.bornAt.startsWith('2026-08-07'));

@@ -168,5 +168,13 @@ test('tolerates a torn ledger tail (live mirror) and honors the legacy numeric-b
   appendFileSync(join(dir, 'seed-ledger.jsonl'), '{"seq":1235,"category":"transi', 'utf-8');
   const block = composeSeedSituation(dir, 200);
   assert.ok(block !== null, 'torn tail does not break composition');
-  assert.ok(block.length <= 200, 'legacy numeric budget respected');
+  assert.equal(block, composeSeedSituation(dir), 'legacy target must not remove selected memories');
+});
+
+test('ledger tail retains a complete oversized Unicode record and skips a torn final write', async (t) => {
+  const dir = makeSeedDir(t);
+  const { readSeedLedgerTail } = await import('../../src/substrate/seed-context.js');
+  const reason = '世界🌱'.repeat(60000) + ' final owner qualification';
+  writeFileSync(join(dir, 'seed-ledger.jsonl'), JSON.stringify({ seq: 1, category: 'act', payload: { reason } }) + '\n' + '{"seq":2');
+  assert.equal(readSeedLedgerTail(dir)[0]?.payload.reason, reason);
 });

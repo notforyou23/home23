@@ -1,3 +1,4 @@
+// Character targets are advisory: never shorten a selected claim or owner statement.
 /**
  * Seed → situational awareness: expression.v2 (the surfacing organ, rebuilt).
  *
@@ -35,7 +36,7 @@
  * tails tolerated (the state may be a live mirror).
  */
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { embedTextRawSync } from './embed-at-contact.js';
 import { cachedEmbedRaw, cosine } from './semantic-match.js';
@@ -62,7 +63,7 @@ export interface LedgerLine {
 }
 
 export interface ComposeSeedOptions {
-  /** Character cap for the composed block. */
+  /** Legacy advisory character target; selected statements remain complete. */
   budget?: number;
   /** The incoming message — enables semantic selection. Without it, only
    * fresh high-reach items can surface (session-bootstrap style). */
@@ -76,7 +77,6 @@ export interface ComposeSeedOptions {
   freshWindowSeqs?: number;
 }
 
-const DEFAULT_BUDGET = 1100;
 const DEFAULT_MAX_ITEMS = 5;
 const DEFAULT_FRESH_WINDOW_SEQS = 200;
 /** Match gates, calibrated 2026-08-08 against the 90-turn real-conversation
@@ -133,13 +133,30 @@ export function readSeedCheckpoint(stateDir: string): { cells: SeedCell[]; ledge
 export function readSeedLedgerTail(stateDir: string): LedgerLine[] {
   const path = join(stateDir, 'seed-ledger.jsonl');
   if (!existsSync(path)) return [];
+  // Read a bounded tail from disk, expanding only to retain a complete record.
+  // Never load the whole ledger merely to discard its beginning.
   let raw: string;
+  let fd: number | undefined;
   try {
-    raw = readFileSync(path, 'utf-8');
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    let span = Math.min(size, LEDGER_TAIL_BYTES);
+    for (;;) {
+      const start = size - span;
+      const buffer = Buffer.alloc(span);
+      const count = readSync(fd, buffer, 0, span, start);
+      const firstNewline = buffer.indexOf(10);
+      if (start === 0 || (firstNewline >= 0 && buffer.indexOf(10, firstNewline + 1) >= 0)) {
+        raw = buffer.subarray(start === 0 ? 0 : firstNewline + 1, count).toString('utf8');
+        break;
+      }
+      span = Math.min(size, Math.max(span * 2, 1));
+    }
   } catch {
     return [];
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
-  if (raw.length > LEDGER_TAIL_BYTES) raw = raw.slice(-LEDGER_TAIL_BYTES);
   const lines: LedgerLine[] = [];
   for (const line of raw.split('\n')) {
     if (line.trim() === '') continue;
@@ -162,15 +179,6 @@ function proposalKeyOf(payload: Record<string, unknown>): string {
   const explicit = payload['proposalKey'];
   if (typeof explicit === 'string') return explicit;
   return `${String(payload['op'] ?? '?')}:${targetsOf(payload).sort().join('+')}`;
-}
-
-/** Cap a claim at a word boundary with an honest ellipsis — a mid-word slice
- * reads as a different fact. */
-function trimClaim(text: string, cap = 140): string {
-  if (text.length <= cap) return text;
-  const cut = text.slice(0, cap);
-  const lastSpace = cut.lastIndexOf(' ');
-  return `${(lastSpace > cap * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
 function buildLivedItems(checkpoint: { cells: SeedCell[]; ledgerSeq: number }, tail: LedgerLine[]): LivedItem[] {
@@ -230,7 +238,7 @@ function buildLivedItems(checkpoint: { cells: SeedCell[]; ledgerSeq: number }, t
   for (const cell of checkpoint.cells) {
     for (const p of cell.predictions) {
       predIndex += 1;
-      const claim = trimClaim(p.claim);
+      const claim = p.claim;
       if (p.resolvedAt !== undefined && typeof p.error === 'number') {
         const verdict = p.error <= 0.3
           ? `reality agreed (error ${p.error.toFixed(2)})`
@@ -279,7 +287,7 @@ function buildLivedItems(checkpoint: { cells: SeedCell[]; ledgerSeq: number }, t
     items.push({
       key: `proposal:${line.seq}`,
       kind: 'proposal',
-      text: `Your growth pressure holds a pending ${op} proposal on ${targets} — jtr has not answered it.`,
+      text: `Your growth pressure holds a pending ${op} proposal on ${targets} — no decision receipt appears in the inspected ledger window; this does not establish an outstanding owner action.`,
       matchText: `seed growth: pending ${op} of situation cells ${targets}`,
       reach: 0.7,
       seq: line.seq,
@@ -316,7 +324,7 @@ function buildLivedItems(checkpoint: { cells: SeedCell[]; ledgerSeq: number }, t
   for (const cell of checkpoint.cells) {
     for (const e of cell.estimates) {
       estIndex += 1;
-      const claim = trimClaim(e.claim);
+      const claim = e.claim;
       items.push({
         key: `estimate:${cell.id}:${estIndex}`,
         kind: 'estimate',
@@ -340,7 +348,7 @@ const cachedEmbed = cachedEmbedRaw;
 /** Overload-compatible with the legacy (stateDir, budget) call shape. */
 export function composeSeedSituation(stateDir: string, budgetOrOpts?: number | ComposeSeedOptions): string | null {
   const opts: ComposeSeedOptions = typeof budgetOrOpts === 'number' ? { budget: budgetOrOpts } : (budgetOrOpts ?? {});
-  const budget = opts.budget ?? DEFAULT_BUDGET;
+  // opts.budget remains accepted for configuration compatibility.
   const maxItems = opts.maxItems ?? DEFAULT_MAX_ITEMS;
   const freshWindow = opts.freshWindowSeqs ?? DEFAULT_FRESH_WINDOW_SEQS;
   const embed = opts.embed ?? embedTextRawSync;
@@ -424,7 +432,7 @@ export function composeSeedSituation(stateDir: string, budgetOrOpts?: number | C
   // Budget by dropping whole low-reach items, never by slicing mid-sentence
   // (the DOCTRINE lesson: a truncated fact reads as a different fact).
   const render = (chosen: LivedItem[]): string => [
-    'SUBSTRATE — carried state from your Seed that bears on this message.',
+    `SUBSTRATE — ${chosen.length} selected records from ${pool.length} candidates in the inspected Seed state; not exhaustive memory.`,
     'Use it like memory, not like a report: bring a lived fact in only where it',
     'serves the reply, in your own voice. If none of it fits, ignore all of it —',
     'never recite or summarize this block.',
@@ -434,12 +442,6 @@ export function composeSeedSituation(stateDir: string, budgetOrOpts?: number | C
     `(receipted state, chain seq ${checkpoint.ledgerSeq})`,
   ].join('\n');
 
-  let chosen = selected;
-  let text = render(chosen);
-  while (text.length > budget && chosen.length > 1) {
-    chosen = chosen.slice(0, -1);
-    text = render(chosen);
-  }
-  if (text.length > budget) text = `${text.slice(0, budget - 1)}…`;
-  return text;
+  // The character target is advisory. Selected memories retain their complete meaning.
+  return render(selected);
 }
