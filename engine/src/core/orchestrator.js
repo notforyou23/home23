@@ -7696,6 +7696,7 @@ class Orchestrator {
           fileSize: saveResult.size || 0,
           memorySource: sidecarsWritten ? 'sidecar' : 'inline',
           ...(sidecarsWritten?.manifest && {
+            memoryGeneration: sidecarsWritten.manifest.generation,
             memoryRevision: sidecarsWritten.manifest.currentRevision,
             baseRevision: sidecarsWritten.manifest.baseRevision,
             deltaEpoch: sidecarsWritten.manifest.activeDeltaEpoch,

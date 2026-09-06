@@ -114,6 +114,50 @@ test('read-only proof streams the exact live brain through the production source
   assert.deepEqual(await fs.readdir(state.tempRoot), []);
 });
 
+test('read-only proof accepts legacy manifest snapshots without generation only on exact revision and counts', async (t) => {
+  const { verifyReadOnlyPersistence } = await import('../../scripts/verify-brain-persistence.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  const snapshotPath = path.join(state.brainDir, 'brain-snapshot.json');
+  await fs.writeFile(snapshotPath, `${JSON.stringify({
+    nodeCount: 2,
+    edgeCount: 1,
+    currentRevision: state.manifest.currentRevision,
+    savedAt: new Date().toISOString(),
+  })}\n`);
+
+  const result = await verifyReadOnlyPersistence({
+    home23Root: state.home23Root,
+    agent: 'jerry',
+    brainDir: state.brainDir,
+    tempRoot: state.tempRoot,
+  });
+
+  assert.equal(result.selectedAuthority, 'manifest-v1');
+  assert.equal(result.snapshot.status, 'valid');
+  assert.equal(result.snapshot.revision, state.manifest.currentRevision);
+  assert.equal(result.snapshot.generation, null);
+  assert.equal(result.snapshot.matchesStreamed, true);
+  assert.equal(
+    result.snapshot.generationCompatibility,
+    'legacy-missing-generation-exact-revision-and-counts',
+  );
+
+  await fs.writeFile(snapshotPath, `${JSON.stringify({
+    nodeCount: 2,
+    edgeCount: 1,
+    currentRevision: state.manifest.currentRevision,
+    generation: 'wrong-generation',
+    savedAt: new Date().toISOString(),
+  })}\n`);
+  await assert.rejects(verifyReadOnlyPersistence({
+    home23Root: state.home23Root,
+    agent: 'jerry',
+    brainDir: state.brainDir,
+    tempRoot: state.tempRoot,
+  }), (error) => error.code === 'snapshot_stale');
+});
+
 test('read-only proof supports the production-selected legacy sidecar generation', async (t) => {
   const { verifyReadOnlyPersistence } = await import('../../scripts/verify-brain-persistence.mjs');
   const state = await legacyFixture();
@@ -229,7 +273,6 @@ test('missing, stale, zero, or disagreeing snapshot evidence fails closed', asyn
     ['missing', null, 'snapshot_counts_invalid'],
     ['stale', { nodeCount: 2, edgeCount: 1, currentRevision: 999 }, 'snapshot_stale'],
     ['missing revision', 'missing-revision', 'snapshot_stale'],
-    ['missing generation', 'missing-generation', 'snapshot_stale'],
     ['wrong generation', 'wrong-generation', 'snapshot_stale'],
     ['zero', { nodeCount: 0, edgeCount: 0 }, 'snapshot_counts_invalid'],
     ['string node count', { nodeCount: '2', edgeCount: 1 }, 'snapshot_counts_invalid'],
@@ -247,9 +290,7 @@ test('missing, stale, zero, or disagreeing snapshot evidence fails closed', asyn
     else {
       const value = snapshot === 'missing-revision'
         ? { nodeCount: 2, edgeCount: 1, generation: state.manifest.generation }
-        : snapshot === 'missing-generation'
-          ? { nodeCount: 2, edgeCount: 1, currentRevision: state.manifest.currentRevision }
-          : snapshot === 'wrong-generation'
+        : snapshot === 'wrong-generation'
             ? {
               nodeCount: 2, edgeCount: 1,
               currentRevision: state.manifest.currentRevision,

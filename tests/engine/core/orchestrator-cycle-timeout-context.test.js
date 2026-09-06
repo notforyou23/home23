@@ -45,6 +45,7 @@ test('saveState and loadState delegate memory graph persistence to revisioned so
   assert.match(source, /const \{ loadMemoryRevision \} = require\('\.\/memory-persistence'\);/);
   assert.match(source, /await loadMemoryRevision\(this\.logsDir/);
   assert.match(source, /memoryRevision: sidecarsWritten\.manifest\.currentRevision/);
+  assert.match(source, /memoryGeneration: sidecarsWritten\.manifest\.generation/);
   assert.match(source, /baseRevision: sidecarsWritten\.manifest\.baseRevision/);
   assert.match(source, /deltaEpoch: sidecarsWritten\.manifest\.activeDeltaEpoch/);
   assert.match(source, /persistence\.mode === 'legacy-delta'/);

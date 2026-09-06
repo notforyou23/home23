@@ -290,6 +290,7 @@ function snapshotEvidence({ streamed, snapshot, totals, requiredForAcceptance, n
       : totals.nodes === streamed.nodes && totals.edges === streamed.edges,
     requiredForAcceptance,
     notRequiredReason,
+    generationCompatibility: snapshot.generationCompatibility ?? null,
   };
 }
 
@@ -320,9 +321,12 @@ function validateStreamed({ streamed, inventory, snapshot }) {
         || snapshotExpected.revision !== inventory.manifest.currentRevision) {
       throw typedError('snapshot_stale');
     }
-    if (snapshotExpected.generation === null || snapshotExpected.generation === undefined
-        || snapshotExpected.generation !== inventory.manifest.generation) {
+    if (snapshotExpected.generation === null || snapshotExpected.generation === undefined) {
+      snapshot.generationCompatibility = 'legacy-missing-generation-exact-revision-and-counts';
+    } else if (snapshotExpected.generation !== inventory.manifest.generation) {
       throw typedError('snapshot_stale');
+    } else {
+      snapshot.generationCompatibility = 'exact-generation';
     }
   } else if (inventory.authority === 'legacy-resident-sidecars') {
     expected = { nodes, edges };
