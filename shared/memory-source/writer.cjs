@@ -379,20 +379,27 @@ function normalizeCapturedView(input) {
 async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
   const view = normalizeCapturedView(capturedView);
   await options.beforeLock?.();
-  return withMemorySourceLock(brainDir, { lockRoot: options.lockRoot }, async () => {
-    const previous = await readManifest(brainDir);
-    const baseRevision = (previous?.currentRevision || 0) + 1;
-    const generation = `g-${baseRevision}-${randomUUID()}`;
-    const epoch = `e-${baseRevision + 1}-${randomUUID()}`;
-    const nodeFile = `memory-nodes.base-${baseRevision}.jsonl.gz`;
-    const edgeFile = `memory-edges.base-${baseRevision}.jsonl.gz`;
-    const deltaFile = `memory-delta.${epoch}.jsonl`;
+  const previous = await readManifest(brainDir);
+  const previousDigest = previous
+    ? sourceDescriptorDigest(createDescriptor(await fsp.realpath(brainDir), previous))
+    : null;
+  const baseRevision = (previous?.currentRevision || 0) + 1;
+  const generation = `g-${baseRevision}-${randomUUID()}`;
+  const epoch = `e-${baseRevision + 1}-${randomUUID()}`;
+  const nodeFile = `memory-nodes.base-${baseRevision}.${generation}.jsonl.gz`;
+  const edgeFile = `memory-edges.base-${baseRevision}.${generation}.jsonl.gz`;
+  const deltaFile = `memory-delta.${epoch}.jsonl`;
+  let published = false;
+  let deltaHandle = null;
+  try {
+    await inject(options, 'afterSourceSnapshot');
     const nodes = await writeJsonlGzAtomic(path.join(brainDir, nodeFile), view.nodes, options);
     const edges = await writeJsonlGzAtomic(path.join(brainDir, edgeFile), view.edges, options);
-    const deltaHandle = await fsp.open(path.join(brainDir, deltaFile), 'wx', 0o600);
+    deltaHandle = await fsp.open(path.join(brainDir, deltaFile), 'wx', 0o600);
     await deltaHandle.sync();
     const deltaStat = await deltaHandle.stat({ bigint: true });
     await deltaHandle.close();
+    deltaHandle = null;
     await fsyncDirectory(brainDir);
     await inject(options, 'afterBaseFiles');
     const manifest = {
@@ -426,10 +433,37 @@ async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
       ann: { indexFile: null, metaFile: null, builtFromRevision: null },
       summary: view.summary,
     };
-    await inject(options, 'beforeManifestRename');
-    await writeManifestAtomic(brainDir, manifest);
-    return Object.freeze({ baseRevision, deltaEpoch: epoch, nodes, edges, manifest });
-  });
+    const result = await withMemorySourceLock(brainDir, {
+      lockRoot: options.lockRoot,
+      signal: options.signal,
+      lockTimeoutMs: options.lockTimeoutMs,
+      _testHooks: options._testHooks,
+    }, async () => {
+      const current = await readManifest(brainDir);
+      const currentDigest = current
+        ? sourceDescriptorDigest(createDescriptor(await fsp.realpath(brainDir), current))
+        : null;
+      if ((previous === null) !== (current === null)
+          || (previous && (current.generation !== previous.generation
+            || current.currentRevision !== previous.currentRevision
+            || currentDigest !== previousDigest))) {
+        throw memorySourceError('source_changed', 'memory source changed during base rewrite', {
+          retryable: true,
+        });
+      }
+      await inject(options, 'beforeManifestRename');
+      await writeManifestAtomic(brainDir, manifest);
+      published = true;
+      return Object.freeze({ baseRevision, deltaEpoch: epoch, nodes, edges, manifest });
+    });
+    return result;
+  } finally {
+    await deltaHandle?.close().catch(() => {});
+    if (!published) {
+      await Promise.all([nodeFile, edgeFile, deltaFile].map((file) =>
+        fsp.rm(path.join(brainDir, file), { force: true }).catch(() => {})));
+    }
+  }
 }
 
 async function advanceAnnBuiltFromRevision(brainDir, update = {}) {

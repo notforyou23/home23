@@ -132,6 +132,47 @@ test('a failed full rewrite leaves the old manifest and delta authoritative', as
   await source.close();
 });
 
+test('a source change during staged full rewrite fails closed and removes staged files', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const before = await readManifest(dir);
+
+  await assert.rejects(() => rewriteMemoryBase(dir, replacementCapturedView(), {
+    lockRoot,
+    _testHooks: {
+      async afterBaseFiles() {
+        await appendMemoryRevision(dir, {
+          nodes: [{ id: 'concurrent', concept: 'concurrent committed canary' }],
+        }, {
+          lockRoot,
+          summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+        });
+      },
+    },
+  }), { code: 'source_changed', retryable: true });
+
+  const after = await readManifest(dir);
+  assert.equal(after.generation, before.generation);
+  assert.equal(after.currentRevision, before.currentRevision + 1);
+  const source = await openMemorySource(dir);
+  assert.deepEqual(await concepts(source), [
+    'concurrent committed canary',
+    'old committed canary',
+  ].sort());
+  await source.close();
+
+  const entries = await fsp.readdir(dir);
+  assert.deepEqual(
+    entries.filter((entry) => entry.includes('.tmp')).sort(),
+    [],
+    'failed staged full rewrite must not leave atomic tmp files',
+  );
+  assert.deepEqual(
+    entries.filter((entry) => entry.includes('g-2-')).sort(),
+    [],
+    'failed staged full rewrite must remove unpublished generation files',
+  );
+});
+
 test('uncommitted appended bytes are ignored and truncated by the next append', async () => {
   const { dir, lockRoot } = await createCommittedFixture();
   await assert.rejects(() => appendMemoryRevision(dir, {
