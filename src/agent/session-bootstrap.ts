@@ -81,9 +81,10 @@ export function buildBootstrapBlock(
     const filePath = join(workspacePath, filename);
     if (!existsSync(filePath)) continue;
     try {
-      const content = readFileSync(filePath, 'utf-8').trim().slice(0, maxBytes);
+      const content = readFileSync(filePath, 'utf-8').trim();
       if (!content) continue;
       sections.push(`— ${filename} —\n${content}`);
+      if (content.length > maxBytes) console.warn(`[bootstrap] ${filename}: ${content.length} chars exceeds maintenance target ${maxBytes}; loaded complete source`);
     } catch {
       // skip unreadable files; never block a turn on bootstrap
     }

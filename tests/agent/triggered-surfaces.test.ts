@@ -99,7 +99,7 @@ test('a missing triggered-surface file is a silent no-op', async () => {
   }
 });
 
-test('surface loader budgets section-aware — no blind mid-sentence slice (DOCTRINE bug)', async () => {
+test('triggered authored doctrine survives both the file target and aggregate context limit', async () => {
   // DOCTRINE.md is a DOMAIN_SURFACE with a 2500 budget. A >2500 file used to be
   // sliced mid-content; now whole sections are kept and an omission is marked.
   const big = '# Doctrine\n' + Array.from({ length: 30 }, (_, i) => `## Rule ${i}\n${'principle '.repeat(30)}`).join('\n');
@@ -114,7 +114,8 @@ test('surface loader budgets section-aware — no blind mid-sentence slice (DOCT
     ]);
     assert.match(withDoctrine.block, /Relevant context \(DOCTRINE\)/);
     // Budgeted output carries the honest omission diagnostic, not a mid-word cut.
-    assert.match(withDoctrine.block, /identity-budget: kept \d+\/\d+ chars of DOCTRINE\.md/);
+    assert.ok(withDoctrine.block.includes(big.trim()));
+    assert.ok(withDoctrine.block.endsWith('[/SITUATIONAL AWARENESS]'));
     void r;
   } finally {
     rmSync(dir, { recursive: true, force: true });

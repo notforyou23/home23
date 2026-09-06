@@ -22,6 +22,12 @@ export const workListTool: ToolDefinition = {
     additionalProperties: false,
   },
   async execute(input, ctx) {
+    if (ctx.turnRuntime?.coordinationOrigin && ctx.coordinationChannelOperation && ctx.parentToolCallId) {
+      const operation = typeof input.work_id === 'string' ? 'work_status' : 'work_list';
+      const result = await ctx.coordinationChannelOperation({ origin: ctx.turnRuntime.coordinationOrigin,
+        invocationId: ctx.parentToolCallId, args: { ...input, operation } });
+      return { content: JSON.stringify(result, null, 2) };
+    }
     if (!ctx.workRegistry) return UNAVAILABLE;
     const rawLimit = Number(input.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0
@@ -44,12 +50,20 @@ export const workStatusTool: ToolDefinition = {
   input_schema: {
     type: 'object',
     properties: {
-      work_id: { type: 'string', description: 'Exact aw_... work ID returned by spawn_agent or work_list' },
+      work_id: { type: 'string', description: 'Exact work ID returned by work_list; canonical wrk_... IDs are supported on connected resident turns' },
     },
     required: ['work_id'],
     additionalProperties: false,
   },
   async execute(input, ctx) {
+    const requestedId = exactWorkId(input);
+    if (!requestedId) return { content: 'work_id is required.', is_error: true };
+    if (requestedId.startsWith('wrk_') && ctx.turnRuntime?.coordinationOrigin && ctx.coordinationChannelOperation && ctx.parentToolCallId) {
+      const operation = typeof input.work_id === 'string' ? 'work_status' : 'work_list';
+      const result = await ctx.coordinationChannelOperation({ origin: ctx.turnRuntime.coordinationOrigin,
+        invocationId: ctx.parentToolCallId, args: { ...input, operation } });
+      return { content: JSON.stringify(result, null, 2) };
+    }
     if (!ctx.workRegistry) return UNAVAILABLE;
     const workId = exactWorkId(input);
     if (!workId) return { content: 'work_id is required.', is_error: true };

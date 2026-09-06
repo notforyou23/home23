@@ -163,4 +163,31 @@ for (const [laterMessages, legacySnapshot] of [[2,false],[102,false],[2,true]] a
   assert.equal(work.get(review)?.state,'succeeded');assert.equal(outcomes.pending().length,0);
   assert.equal(database.readOne<{n:number}>("SELECT count(*) AS n FROM messages WHERE work_id=? AND kind='result'",review)?.n,1);
   database.reopen();await service.processResidentOutcomes();assert.equal(residentAttachments,2);
+  const recovered = await new SqliteDirectMessageContext(database, messages).recover(work.get(review)!);
+  assert.match(recovered.prepared.instruction, /INTERNAL WORK OUTCOME/);
+  assert.ok(JSON.stringify(recovered.prepared.historyBackfill).includes(`Latest correction ${laterMessages-1}`));
+  const row = outcomes.forReview(review)!;
+  const snapshot = JSON.parse(row.prepared!);
+  const parent = work.get(review)!;
+  const lease = database.readOne<{ id: string; fencingToken: number }>('SELECT id, fencing_token AS fencingToken FROM leases WHERE attempt_id = ?', parent.currentAttemptId)!;
+  const child = work.create({ principalId: parent.principalId, targetPrincipalId: parent.targetPrincipalId,
+    channelId: parent.channelId, originMessageId: parent.originMessageId, roundId: null,
+    kind: 'resident_work_thread', idempotencyKey: 'review-child-recovery', maxAutomaticOffers: 1,
+    requestId: fixtureId('request', 888), correlationId: fixtureId('correlation', 888), manifest: snapshot.manifest,
+    plannedInvocation: { parentOrigin: { kind: 'coordination', workId: parent.id,
+      attemptId: parent.currentAttemptId!, leaseId: lease.id, fencingToken: lease.fencingToken,
+      holderPrincipalId: BOT_ID, holderInstanceId: 'resident-1', authorityReference: 'resident:jerry',
+      channelId: CHANNEL_ID, originMessageId: parent.originMessageId, roundId: null },
+      residentSlug: 'jerry', invocationId: 'recovery-child', toolName: 'coding_run', canonicalArgs: { prompt: 'Continue the existing repair' },
+      executionInstruction: 'Continue the existing repair', title: 'Repair', summary: 'Repair', recoveryPolicy: 'safe_before_start' },
+  }).work;
+  const recoveredChild = await new SqliteDirectMessageContext(database, messages).recover(child);
+  assert.match(recoveredChild.prepared.instruction, /INTERNAL WORK OUTCOME/);
+  assert.ok(JSON.stringify(recoveredChild.prepared.historyBackfill).includes(`Latest correction ${laterMessages-1}`));
+  database.reopen();
+  assert.equal((await new SqliteDirectMessageContext(database, messages).recover(work.get(child.id)!)).originMessageId, parent.originMessageId);
+  snapshot.manifest.digests.context = 'tampered';
+  outcomes.update(row, 'prepared_json', JSON.stringify(snapshot));
+  await assert.rejects(new SqliteDirectMessageContext(database, messages).recover(work.get(review)!), /invalid_relation/);
+
 });

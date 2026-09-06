@@ -52,7 +52,9 @@
     "test:resident-outcomes": "node --import tsx --test --test-concurrency=1 tests/agent/codex-progress-timeout.test.ts tests/agent/delegation-capabilities.test.ts tests/coordination/app/resident-outcomes.test.ts tests/coordination/app/resident-outcomes-e2e.test.ts",
     "test:connected-harness": "node --import tsx --test --test-concurrency=2 tests/agent/async-turn-recovery.test.ts tests/agent/codex-fetch.test.ts tests/agent/foreground-admission.test.ts tests/agent/foreground-speaking-lock.test.ts tests/agent/foreground-tool-policy.test.ts tests/agent/foreground-work-view.test.ts tests/agent/historical-context.test.ts tests/agent/tools/media-cancellation.test.ts tests/channels/router-foreground-admission.test.ts tests/continuity-office/bounded-context.test.ts tests/continuity-office/contract-map.test.ts tests/continuity-office/fencing.test.ts tests/continuity-office/ingress.test.ts tests/continuity-office/office-registry.test.ts tests/continuity-office/reconciliation.test.ts tests/continuity-office/waiting-for-headquarters.test.ts tests/contracts/working-thread-instruction-contract.test.cjs tests/legacy-bridge-auth-gateway.test.ts tests/skills/joined-runtime.test.ts",
     "test:source-reconciliation": "node --test tests/cli/home23-ios.test.mjs tests/cli/source-status.test.mjs",
-    "source:status": "node scripts/release/source-status.mjs"
+    "source:status": "node scripts/release/source-status.mjs",
+    "test:resident-repairs": "node --import tsx --test --test-concurrency=2 tests/acp/source-authority.test.ts tests/agent/identity-maintenance.test.ts tests/agent/identity-assembly.test.ts tests/agent/tools/coding.test.ts tests/coordination/app/resident-outcomes-e2e.test.ts tests/agent/triggered-surfaces.test.ts tests/coordination/app/channel-operations.test.ts",
+    "identity:audit": "node --import tsx scripts/identity-audit.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

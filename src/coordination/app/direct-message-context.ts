@@ -307,9 +307,38 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       ...messageIds,
       manifest.channelWatermark,
     )?.count ?? 0;
+    // Review descendants inherit a later, coordinator-saved context snapshot.
+    // Bind it through canonical parent lineage; do not relax ordinary foreground recovery.
+    let reviewSnapshot: { instruction: string; manifest: { messageIds: string[]; digests: { context: string; source: string }; watermarks: { channelSequence: number; eventSequence: number } }; channelId: string; targetPrincipalId: string } | undefined;
+    if (this.database.readOne("SELECT name FROM sqlite_master WHERE type='table' AND name='resident_outcomes'")) {
+      const saved = this.database.readOne<{ prepared: string }>(`
+        WITH RECURSIVE lineage(id, depth) AS (
+          SELECT ?, 0 UNION ALL
+          SELECT p.parent_work_id, l.depth + 1 FROM lineage l
+          JOIN work_planned_invocations p ON p.work_id = l.id
+          JOIN works parent ON parent.id = p.parent_work_id
+          WHERE l.depth < 64 AND parent.channel_id = ? AND parent.target_principal_id = ?
+            AND parent.principal_id = ? AND parent.origin_message_id = ?
+        ) SELECT o.prepared_json AS prepared FROM lineage l
+          JOIN resident_outcomes o ON o.review_work_id = l.id
+          WHERE o.prepared_json IS NOT NULL ORDER BY l.depth LIMIT 1`,
+        work.id, work.channelId, work.targetPrincipalId, work.principalId, work.originMessageId);
+      if (saved) {
+        const value = JSON.parse(saved.prepared);
+        if (value.channelId !== work.channelId || value.targetPrincipalId !== work.targetPrincipalId ||
+            value.manifest?.digests?.context !== manifest.contextDigest ||
+            value.manifest?.digests?.source !== manifest.sourceDigest ||
+            value.manifest?.watermarks?.channelSequence !== manifest.channelWatermark ||
+            value.manifest?.watermarks?.eventSequence !== manifest.eventWatermark ||
+            typeof value.instruction !== 'string' || !Array.isArray(value.manifest.messageIds) ||
+            value.manifest.messageIds.length !== messageIds.length ||
+            !value.manifest.messageIds.every((id: string) => messageIds.includes(id))) throw new MessagingError('invalid_relation');
+        reviewSnapshot = value;
+      }
+    }
     const canonicalManifest = directMessageManifest({
       channelId: work.channelId,
-      messageIds: rows.map((row) => row.id),
+      messageIds: reviewSnapshot ? reviewSnapshot.manifest.messageIds : rows.map((row) => row.id),
       attachmentIds: artifactIds,
       channelSequence: manifest.channelWatermark,
       eventSequence: manifest.eventWatermark,
@@ -317,9 +346,9 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     if (
       rows.length !== messageIds.length ||
       rows.some((row) => !messageIds.includes(row.id)) ||
-      rows.at(-1)?.id !== work.originMessageId ||
+      (!reviewSnapshot && rows.at(-1)?.id !== work.originMessageId) ||
       rows.at(-1)?.sequence !== manifest.channelWatermark ||
-      originEventSequence !== manifest.eventWatermark ||
+      (!reviewSnapshot && originEventSequence !== manifest.eventWatermark) ||
       tombstonedAfterSnapshot !== 0 ||
       canonicalManifest.digests.context !== manifest.contextDigest ||
       canonicalManifest.digests.source !== manifest.sourceDigest
@@ -345,8 +374,8 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     }
     const attachments = await this.materialize(attachmentRows);
     const transcript = rows.filter((message) => message.text !== null);
-    const origin = rows.at(-1)!;
-    const instruction = origin.text ?? "";
+    const origin = rows.find(row => row.id === work.originMessageId)!;
+    const instruction = reviewSnapshot?.instruction ?? origin.text ?? "";
     const historyBackfill: readonly DirectMessageHistoryEntry[] = Object.freeze(transcript
       .filter((message) => message.id !== work.originMessageId)
       .map((message) => Object.freeze({

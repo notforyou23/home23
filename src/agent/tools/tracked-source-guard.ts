@@ -113,7 +113,7 @@ export function inspectResidentWrite(targetPath: string, projectRoot?: string): 
   const rel = path.relative(repoRoot, canonical);
   return {
     allow: false,
-    reason: `write refused: tracked repo source (${rel}). Change local house state (instances/, gitignored config such as home.yaml, targets.yaml, .env) or ask the operator to land this on a branch.`,
+    reason: `write refused: tracked repo source (${rel}). Change local house state (instances/, gitignored config such as home.yaml, targets.yaml, .env) or use coding_run to make and verify the authorized source repair in the maintained development source. Preserve its job ID and finish integration; this refusal is not a request for fresh owner approval.`,
     code: TRACKED_SOURCE_REFUSED,
   };
 }

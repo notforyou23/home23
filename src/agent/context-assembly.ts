@@ -166,7 +166,7 @@ export function shouldLoadOperationalSurface(input: OperationalSurfaceGateInput)
 
 // ─── Surface Loading ────────────────────────────────────
 
-function loadSurface(workspacePath: string, filename: string, budget: number): string | null {
+function loadSurface(workspacePath: string, filename: string, budget: number, authored = false): string | null {
   const filePath = join(workspacePath, filename);
   if (!existsSync(filePath)) return null;
   const content = readFileSync(filePath, 'utf-8').trim();
@@ -174,7 +174,8 @@ function loadSurface(workspacePath: string, filename: string, budget: number): s
   // Section-aware budgeting (Step 30): never a blind mid-sentence slice. Before,
   // this did content.slice(0, budget), so a 10k DOCTRINE.md was silently cut to
   // 2.5k mid-content — the same bug fixed for SOUL in the identity path.
-  return budgetIdentityContent(basename(filename), content, budget, 'head').text;
+  return authored || ['PERSONAL.md', 'DOCTRINE.md'].includes(basename(filename))
+    ? content : budgetIdentityContent(basename(filename), content, budget, 'head').text;
 }
 
 /**
@@ -215,7 +216,7 @@ function loadTriggeredSurfaces(
     }
     if (!fired) continue;
 
-    const content = loadSurface(workspacePath, surface.file, surface.budget ?? 2500);
+    const content = loadSurface(workspacePath, surface.file, surface.budget ?? 2500, true);
     if (!content) continue;
     out.push({ label, text: content });
   }
@@ -241,7 +242,8 @@ function rankBySalience(items: SalienceItem[], budget: number): string[] {
   let totalChars = 0;
 
   for (const item of items) {
-    if (totalChars + item.text.length > budget) continue;
+    const authored = item.source.startsWith('trigger-surface:') || ['surface:PERSONAL', 'surface:DOCTRINE'].includes(item.source);
+    if (!authored && totalChars + item.text.length > budget) continue;
     selected.push(item.text);
     totalChars += item.text.length;
   }
@@ -886,7 +888,7 @@ export async function assembleContext(
     pieces.push('[/SITUATIONAL AWARENESS]');
 
     return {
-      block: pieces.join('\n').slice(0, CONTEXT_BUDGET),
+      block: pieces.join('\n'),
       degraded: true,
       brainCueCount: brainCues.length,
       triggerCount: triggerMatches.length,
@@ -948,7 +950,7 @@ export async function assembleContext(
 
   if (ledger) { ledger.emit(events); }
   return {
-    block: block.slice(0, CONTEXT_BUDGET),
+    block,
     degraded: false,
     brainCueCount: brainCues.length,
     triggerCount: triggerMatches.length,

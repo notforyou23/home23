@@ -200,7 +200,8 @@ export interface PromptSourceInfo {
     layer?: string;            // one of the six IdentityLayer names
     rawBytes?: number;         // size of the file on disk (trimmed)
     includedBytes?: number;    // size of the retained content actually injected
-    budget?: number;           // the char budget applied
+    budget?: number;           // authored-source maintenance target
+    maintenanceNeeded?: boolean;
     truncated?: boolean;       // whether any section was dropped / boundary-cut
     omittedSections?: string[];// heading titles of dropped sections
   }>;

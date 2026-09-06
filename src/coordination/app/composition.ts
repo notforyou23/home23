@@ -1119,6 +1119,18 @@ export function createCoordinationProcess(
       invoke: botInvocations.call,
       channels,
       listBots: () => botDirectory.listVisibleBots(),
+      workDiagnostics: (principalId, args) => {
+        const id = typeof args.work_id === 'string' ? args.work_id : null;
+        if (args.operation === 'work_status' && !id) throw new Error('work_id is required');
+        const limit = Math.min(100, Math.max(1, Math.floor(Number(args.limit) || 20)));
+        const rows = database.readAll(`SELECT w.id, w.channel_id AS channelId, w.state,
+          w.terminal_reason AS terminalReason, w.current_attempt_id AS attemptId,
+          p.parent_work_id AS parentWorkId, json_extract(p.assignment_json, '$.toolName') AS toolName
+          FROM works w LEFT JOIN work_planned_invocations p ON p.work_id = w.id
+          WHERE w.target_principal_id = ? ${id ? 'AND w.id = ?' : args.include_terminal === true ? '' : "AND w.state NOT IN ('succeeded','failed','cancelled')"}
+          ORDER BY w.created_at DESC LIMIT ?`, principalId, ...(id ? [id] : []), limit);
+        return { registry: 'canonical', work: rows };
+      },
       botOperation: async (context, args, key) => {
         if (!productionBotLifecycle || !botLifecycleCapabilityAvailable()) throw new Error('Bot lifecycle unavailable');
         const actor = await resolveMessagingActor(context, participantDirectory, 'message:send');

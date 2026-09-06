@@ -230,3 +230,10 @@ export function resolveBudget(
   }
   return def ?? { budget: FALLBACK_IDENTITY_BUDGET, strategy: 'head' };
 }
+
+/** Authored identity is not disposable retrieval context. Targets trigger maintenance, never omission. */
+export function loadAuthoredIdentity(filename: string, raw: string, target: number): BudgetedContent {
+  const text = raw.trim();
+  return { text, rawBytes: text.length, includedBytes: text.length, budget: target,
+    truncated: false, omittedSections: [], omittedBytes: 0 };
+}

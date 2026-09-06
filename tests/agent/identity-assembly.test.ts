@@ -50,7 +50,7 @@ test('SOUL.md that fits the budget reaches the prompt whole (companion doctrine 
   }
 });
 
-test('an over-budget file emits a visible omission diagnostic and records it', () => {
+test('an over-target authored file reaches the prompt whole and retains its maintenance target', () => {
   const big = '# Mission\n' + Array.from({ length: 40 }, (_, i) => `## Section ${i}\n${'detail '.repeat(30)}`).join('\n');
   const ws = workspace({ 'MISSION.md': big });
   try {
@@ -59,13 +59,13 @@ test('an over-budget file emits a visible omission diagnostic and records it', (
       identityBudgets: { 'MISSION.md': 500 },
     });
     const prompt = cm.getSystemPrompt('anthropic');
-    assert.match(prompt, /identity-budget: kept \d+\/\d+ chars of MISSION\.md; kept sections:.*omitted \d+ section/);
+    assert.ok(prompt.includes(big.trim()));
     const info = cm.getPromptSourceInfo();
-    assert.equal(info.anyTruncated, true);
+    assert.equal(info.anyTruncated, false);
     const m = info.loadedFiles.find(f => f.filename === 'MISSION.md')!;
-    assert.equal(m.truncated, true);
-    assert.ok((m.omittedSections?.length ?? 0) > 0);
-    assert.ok(m.includedBytes! < m.rawBytes!);
+    assert.equal(m.truncated, false);
+    assert.equal(m.omittedSections?.length, 0);
+    assert.equal(m.includedBytes, m.rawBytes);
     assert.equal(m.budget, 500);
   } finally {
     rmSync(ws, { recursive: true, force: true });

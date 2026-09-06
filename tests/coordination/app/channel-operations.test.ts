@@ -28,3 +28,17 @@ test('signed channel operations derive Jerry identity and retry the same canonic
   valid = false;
   await assert.rejects(consume(credential, { ...input, invocationId: 'new' }), /stale fence/);
 });
+
+test('resident diagnostics bind the principal to the authenticated origin and retain fence validation', async () => {
+ let valid = true; let observed: unknown;
+ const consume = createChannelOperationConsumer({ channels: {} as any,
+ authorize: () => { if (!valid) throw new Error('stale fence'); },
+ context: () => { throw new Error('No channel mutation context needed'); },
+ listBots: async () => [], botOperation: async () => { throw new Error('unused'); },
+ workDiagnostics: (principal,args) => { observed = principal; return {registry:'canonical',work:[]}; },
+ });
+ const request={origin:{holderPrincipalId:'forrest-principal'},invocationId:'read-work',args:{operation:'work_list',principalId:'forged'}};
+ assert.deepEqual(await consume({residentSlug:'forrest',instanceId:'instance',keyVersion:1},request),{registry:'canonical',work:[]});
+ assert.equal(observed,'forrest-principal');valid=false;
+ await assert.rejects(consume({residentSlug:'forrest',instanceId:'instance',keyVersion:1},request),/stale fence/);
+});

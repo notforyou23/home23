@@ -194,7 +194,7 @@ export const codingRunTool: ToolDefinition = {
     type: 'object',
     properties: {
       prompt: { type: 'string', description: 'The full coding task for the backend session' },
-      backend: { type: 'string', description: 'Backend id (default from acp config, usually claude-code)' },
+      backend: { type: 'string', description: 'Omit to use the configured default. Use coding_backends to discover enabled backends; never guess an id.' },
       cwd: { type: 'string', description: 'Working directory for the job (default: project root)' },
       label: { type: 'string', description: 'Short human label for the job' },
       model: { type: 'string', description: 'Backend model override' },
@@ -204,7 +204,7 @@ export const codingRunTool: ToolDefinition = {
       append_system_prompt: { type: 'string', description: 'Extra instructions where supported by the backend (not portable; include essential constraints in prompt)' },
       allowed_tools: { type: 'array', items: { type: 'string' }, description: 'Backend tool allowlist (allowlist permission mode)' },
       disallowed_tools: { type: 'array', items: { type: 'string' }, description: 'Backend tools to deny' },
-      max_budget_usd: { type: 'number', description: 'Backend-supported spend cap in USD; not enforced by every backend' },
+      max_budget_usd: { type: 'number', exclusiveMinimum: 0, description: 'Positive USD cap, Claude Code only. Omit for Codex, Grok and Cursor; zero is not a default.' },
     },
     required: ['prompt'],
     additionalProperties: false,
@@ -419,9 +419,27 @@ export const codingBackendsTool: ToolDefinition = {
     const backends = bridge.listBackends();
     if (backends.length === 0) return { content: 'No coding backends configured.' };
     const lines = backends.map(b =>
-      `- ${b.id}: ${b.available ? `installed (binary found: ${b.bin})` : 'NOT INSTALLED (binary not found)'}${b.defaultModel ? ` default model ${b.defaultModel}` : ''}`,
+      `- ${b.id}${'enabled' in b && !b.enabled ? " [disabled]" : ""}${'isDefault' in b && b.isDefault ? " [default]" : ""}: ${b.available ? `installed (binary found: ${b.bin})` : 'NOT INSTALLED (binary not found)'}${b.defaultModel ? ` default model ${b.defaultModel}` : ''}`,
     );
-    lines.push('The default backend comes from acp.defaultAgent (usually claude-code); codex requires the Codex CLI to be installed before it can run jobs. This list only reports binary resolution; it does not probe authentication, balance, or provider health.');
+    lines.push('Use acp.defaultAgent, not a guessed backend; codex requires the Codex CLI to be installed. Codex accepts model and sandbox configuration, but not effort, append_system_prompt, tool lists or max_budget_usd. Claude Code accepts those optional controls; Grok does not accept max_budget_usd. Omit unsupported options. This list only reports binary resolution; it does not probe authentication, balance, or provider health.');
     return { content: lines.join('\n') };
   },
 };
+
+/** Match advertised choices to this resident's configuration, before a model constructs a call. */
+export function configuredCodingRunTool(config: { defaultAgent: string; allowedAgents: string[] }): ToolDefinition {
+  const schema = structuredClone(codingRunTool.input_schema) as { properties: Record<string, Record<string, unknown>> };
+  const enabled = config.allowedAgents.length ? config.allowedAgents : ['codex', 'claude-code', 'grok-build', 'cursor'];
+  schema.properties.backend!.enum = enabled;
+  schema.properties.backend!.description = `Configured default: ${config.defaultAgent}. Omit backend to use it.`;
+  const controls: Record<string, string[]> = {
+    effort: ['claude-code','grok-build'], append_system_prompt: ['claude-code','grok-build'],
+    allowed_tools: ['claude-code','grok-build'], disallowed_tools: ['claude-code','grok-build'], max_budget_usd: ['claude-code'],
+  };
+  for (const [key, supported] of Object.entries(controls)) {
+    const available = enabled.filter(id => supported.includes(id));
+    if (!available.length) delete schema.properties[key];
+    else schema.properties[key]!.description += ` Supported only by ${available.join(', ')}; omit for other backends.`;
+  }
+  return { ...codingRunTool, input_schema: schema };
+}

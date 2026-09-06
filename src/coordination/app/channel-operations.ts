@@ -11,12 +11,14 @@ export function createChannelOperationConsumer(options: {
   context(origin: CoordinationTurnOrigin): MessagingActorContext;
   channels: ReturnType<typeof createChannelService>;
   listBots(): Promise<unknown>;
+  workDiagnostics?(principalId: string, args: Record<string, unknown>): unknown;
   invoke?(credential: DetachmentCredential, input: { origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown> }): Promise<unknown>;
   botOperation(context: MessagingActorContext, args: Record<string, unknown>, key: string): Promise<unknown>;
 }) {
   return async (credential: DetachmentCredential, raw: unknown) => {
     const input = raw as { origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown> };
-    if (credential.residentSlug !== 'jerry' || !input?.origin ||
+    const diagnostics = ['work_list', 'work_status'].includes(String(input?.args?.operation));
+    if ((!diagnostics && credential.residentSlug !== 'jerry') || !input?.origin ||
         typeof input.invocationId !== 'string' || !input.invocationId || input.invocationId.length > 256 ||
         !input.args || typeof input.args !== 'object' || Array.isArray(input.args)) {
       throw new WorkError('ineligible', 'channel operation requires the authenticated executive resident');
@@ -26,6 +28,10 @@ export function createChannelOperationConsumer(options: {
       return options.invoke(credential, input);
     }
     options.authorize(credential, input.origin);
+    if (diagnostics) {
+      if (!options.workDiagnostics) throw new Error('Canonical work diagnostics unavailable');
+      return options.workDiagnostics(input.origin.holderPrincipalId, input.args);
+    }
     const context = options.context(input.origin);
     const args = input.args;
     const key = `${input.origin.workId}:${input.origin.attemptId}:${input.invocationId}`;

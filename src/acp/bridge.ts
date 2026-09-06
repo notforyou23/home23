@@ -13,6 +13,7 @@
  * resumed jobs run wherever the caller says (the original job's cwd).
  */
 
+import { codingSourceRoot } from './source-authority.js';
 import { spawn, exec, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
@@ -199,12 +200,12 @@ export class ACPBridge {
     return this.store.getReceipt(id);
   }
 
-  listBackends(): Array<{ id: string; available: boolean; bin: string | null; defaultModel?: string }> {
+  listBackends(): Array<{ id: string; available: boolean; bin: string | null; defaultModel?: string; enabled: boolean; isDefault: boolean }> {
     return listBackendIds().map(id => {
       const backend = getBackend(id)!;
       const backendCfg = this.config.backends?.[id] ?? {};
       const bin = backend.resolveBin(backendCfg.bin);
-      return { id, available: bin !== null, bin, defaultModel: backendCfg.model };
+      return { id, available: bin !== null, bin, defaultModel: backendCfg.model, enabled: this.config.allowedAgents.length === 0 || this.config.allowedAgents.includes(id), isDefault: id === this.config.defaultAgent };
     });
   }
 
@@ -280,7 +281,7 @@ export class ACPBridge {
       throw new Error(`Concurrent coding-job limit reached (${active}/${maxConcurrent}); wait for or cancel a running job`);
     }
 
-    const requestedCwd = opts.cwd ? path.resolve(opts.cwd) : this.projectRoot;
+    const requestedCwd = resumeSource ? resumeSource.cwd : codingSourceRoot(this.projectRoot, opts.cwd);
     // Only backends that accept an externally supplied id for a NEW session
     // (claude --session-id, grok --session-id) get one pre-generated. Cursor
     // has no such flag: it mints its own chat id and reports it on the init
@@ -551,7 +552,7 @@ export class ACPBridge {
     if (opts.resumeSessionId) return 'none';
     const repo = detectGitRepo(requestedCwd);
     if (!repo) return 'none';
-    const homeRepo = detectGitRepo(this.projectRoot);
+    const homeRepo = detectGitRepo(codingSourceRoot(this.projectRoot));
     return homeRepo && repo.repoRoot === homeRepo.repoRoot ? 'worktree' : 'checkpoint';
   }
 

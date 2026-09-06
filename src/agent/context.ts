@@ -13,7 +13,7 @@ import type { IdentityLayerConfig } from '../types.js';
 import { buildSystemPrompt } from '../agents/system-prompt.js';
 import { composeLivedIdentity } from '../substrate/lived-identity.js';
 import {
-  budgetIdentityContent,
+  budgetIdentityContent, loadAuthoredIdentity,
   classifyIdentityLayer,
   resolveBudget,
   IDENTITY_LAYER_ORDER,
@@ -127,13 +127,13 @@ export class ContextManager implements ContextManagerRef {
           const raw = readFileSync(filePath, 'utf-8').trim();
           if (filename === 'HEARTBEAT.md') this.heartbeatLastLoad = Date.now();
           const { budget, strategy } = resolveBudget(filename, this.config.identityBudgets);
-          const budgeted = budgetIdentityContent(filename, raw, budget, strategy);
+          const budgeted = loadAuthoredIdentity(filename, raw, budget);
           loaded.push({ filename, label, layer: idLayer, budgeted });
           if (budgeted.truncated) anyTruncated = true;
           loadedFiles.push({ layerIndex, basePath: layer.basePath, filename, filePath, label,
             exists: true, included: true, layer: idLayer,
             rawBytes: budgeted.rawBytes, includedBytes: budgeted.includedBytes,
-            budget: budgeted.budget, truncated: budgeted.truncated,
+            budget: budgeted.budget, maintenanceNeeded: raw.length > budget, truncated: budgeted.truncated,
             omittedSections: budgeted.omittedSections });
         } catch {
           loadedFiles.push({ layerIndex, basePath: layer.basePath, filename, filePath, label,

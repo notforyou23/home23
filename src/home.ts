@@ -278,7 +278,7 @@ async function main(): Promise<void> {
   const providersCfg = config.providers as Record<string, { apiKey?: string }> | undefined;
   const braveApiKey = providersCfg?.brave?.apiKey || process.env.BRAVE_API_KEY || process.env.BRAVE_SEARCH_API_KEY;
   const searxngUrl = (config.search as { searxngUrl?: string } | undefined)?.searxngUrl || process.env.SEARXNG_URL;
-  const registry = createToolRegistry({ web: { braveApiKey, searxngUrl } });
+  const registry = createToolRegistry({ web: { braveApiKey, searxngUrl }, coding: normalizeBridgeConfig(config.acp) });
   console.log(`[home] Tool registry: ${registry.size} tools (brave=${braveApiKey ? 'yes' : 'no'}, searxng=${searxngUrl || 'default'})`);
 
   // ── Temp dir for media ──

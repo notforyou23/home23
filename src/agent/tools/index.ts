@@ -31,7 +31,7 @@ import { promoteToMemoryTool } from './promote.js';
 import { relationshipTools } from './relationship.js';
 import { workerListTool, workerRunTool, workerStatusTool, workerReceiptTool, workerPromoteMemoryTool } from './workers.js';
 import {
-  codingRunTool,
+  codingRunTool, configuredCodingRunTool,
   codingContinueTool,
   codingStatusTool,
   codingResultTool,
@@ -248,7 +248,7 @@ export function resolveSubAgentTools(
 }
 
 /** Create a fully loaded registry with all tools. */
-export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolRegistry {
+export function createToolRegistry(opts: { web?: WebToolsConfig; coding?: { defaultAgent: string; allowedAgents: string[] } } = {}): ToolRegistry {
   const registry = new ToolRegistry();
 
   registry.register(taskContextTool);
@@ -313,7 +313,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(workerReceiptTool);
   registry.register(workerPromoteMemoryTool);
   // Coding-backend bridge — 7 tools (see docs/design/STEP29)
-  registry.register(codingRunTool);
+  registry.register(opts.coding ? configuredCodingRunTool(opts.coding) : codingRunTool);
   registry.register(codingContinueTool);
   registry.register(codingStatusTool);
   registry.register(codingResultTool);

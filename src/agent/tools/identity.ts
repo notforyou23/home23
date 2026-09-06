@@ -2,6 +2,7 @@
  * Identity tools — read and update the agent's own identity files.
  */
 
+import { inspectIdentitySource, preserveIdentitySource } from '../identity-maintenance.js';
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
@@ -32,6 +33,7 @@ export const selfUpdateTool: ToolDefinition = {
     const filePath = join(ctx.workspacePath, file);
 
     try {
+      const preserved = preserveIdentitySource(ctx.workspacePath, file);
       if (mode === 'append') {
         appendFileSync(filePath, '\n' + content);
       } else {
@@ -41,7 +43,10 @@ export const selfUpdateTool: ToolDefinition = {
       // Invalidate context cache so system prompt rebuilds with new content
       ctx.contextManager.invalidate();
 
-      return { content: `Updated ${file} (${mode})` };
+      const audit = inspectIdentitySource(ctx.workspacePath, file);
+      return { content: `Updated ${file} (${mode}).` + ('maintenanceNeeded' in audit && audit.maintenanceNeeded
+        ? ' This file exceeds its active-context target. Consolidate current guidance and move historical detail to an indexed archive, preserving source and exact references; do not drop owner instructions or append another duplicate correction.' : ''),
+        metadata: { preserved, audit } };
     } catch (err) {
       return { content: `Error updating ${file}: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
     }
