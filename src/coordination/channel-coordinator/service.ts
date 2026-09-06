@@ -336,7 +336,7 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
         target.targetPrincipalId,
         round.id,
       )?.count ?? 0;
-      if (!alreadyInRound && competing > 0) {
+      if (!alreadyInRound && competing > 0 && !isOwnerMessage(input.plan)) {
         throw new ChannelCoordinatorError("turn_in_progress", "Bot already has an active turn");
       }
       createPlannedWork({
@@ -425,6 +425,16 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       requestId: input.requestId,
       correlationId: input.correlationId,
     });
+  }
+
+  // A separate owner message starts a separate bounded Round. Bot turn limits
+  // constrain autonomous follow-ups, not the owner's ability to keep talking.
+  function isOwnerMessage(plan: CoordinatorAdmissionPlan): boolean {
+    return options.database.readOne<{ kind: string }>(
+      `SELECT author_kind AS kind FROM messages
+       WHERE id = ? AND channel_id = ? AND author_principal_id = ?`,
+      plan.originMessageId, plan.channelId, plan.actorPrincipalId,
+    )?.kind === "owner";
   }
 
   function start(input: ChannelTurnTrigger): CoordinatorDispatch {
@@ -535,7 +545,7 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
           input.channelId,
           target.targetPrincipalId,
         )?.count ?? 0;
-        if (active > 0) {
+        if (active > 0 && !isOwnerMessage(plan)) {
           throw new ChannelCoordinatorError("turn_in_progress", "Bot already has an active turn");
         }
       }
@@ -589,7 +599,7 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
            AND state IN ('queued','leased','running','cancelling')`,
         input.channelId, botId,
       )?.count ?? 0;
-      if (!duplicate && active > 0) {
+      if (!duplicate && active > 0 && !isOwnerMessage(plan)) {
         throw new ChannelCoordinatorError("turn_in_progress", "Bot already has an active turn");
       }
     }

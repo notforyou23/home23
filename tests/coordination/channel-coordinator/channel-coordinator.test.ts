@@ -361,7 +361,7 @@ test("stale authority and stale lease fences fail closed without duplicate execu
   } finally { database.close(); }
 });
 
-test("explicit pass completes, partial failure fails, and active-turn loop is rejected", () => {
+test("explicit pass completes, partial failure fails, and another owner message gets its own Round", () => {
   const database = M11TestDatabase.temporary();
   try {
     prepare(database);
@@ -382,13 +382,19 @@ test("explicit pass completes, partial failure fails, and active-turn loop is re
     const mixed = services.coordinator.start(trigger({ eventId: fixtureId("event", 2), messageId: secondMessage, manifest: manifestInput({ messageIds: [secondMessage], counts: { messages: 1, artifacts: 0 } }) }));
     const loopMessage = fixtureId("message", 4);
     appendOwnerMessage(database, loopMessage, 3, 4);
-    assert.throws(
-      () => services.coordinator.start(trigger({
-        eventId: fixtureId("event", 4), messageId: loopMessage, mentionedBotIds: [BOT_ID],
-        manifest: manifestInput({ messageIds: [loopMessage], counts: { messages: 1, artifacts: 0 } }),
-      })),
-      (error: unknown) => error instanceof ChannelCoordinatorError && error.code === "turn_in_progress",
-    );
+    const followup = services.coordinator.start(trigger({
+      eventId: fixtureId("event", 4), messageId: loopMessage, mentionedBotIds: [BOT_ID],
+      manifest: manifestInput({ messageIds: [loopMessage], counts: { messages: 1, artifacts: 0 } }),
+    }));
+    assert.notEqual(followup.round.id, mixed.round.id);
+    assert.equal(followup.works.length, 1);
+    assert.equal(followup.works[0]!.work.originMessageId, loopMessage);
+    const followupReplay = services.coordinator.admissionReplay(trigger({
+      eventId: fixtureId("event", 4), messageId: loopMessage, mentionedBotIds: [BOT_ID],
+      manifest: manifestInput({ messageIds: [loopMessage], counts: { messages: 1, artifacts: 0 } }),
+    }));
+    assert.equal(followupReplay?.round.id, followup.round.id);
+    assert.equal(followupReplay?.works[0]?.id, followup.works[0]!.work.id);
     for (const [index, entry] of mixed.works.entries()) {
       terminalize(services, entry.work.id, entry.work.targetPrincipalId, index === 0 ? "succeeded" : "failed", 830 + index);
     }

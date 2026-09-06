@@ -68,24 +68,29 @@ test("loopback product API traverses canonical temp-db Bots, Channels, Messages,
   assert.equal(topicResponse.status, 201);
   const topic = (await topicResponse.json() as any).channel;
   assert.equal(topic.members.length, 2); // owner plus one helper
+  const topicMessage = await fetch(`${address.origin}/api/v1/channels/${topic.id}/messages`, {
+    method: "POST", headers: headers("topic-message-before-save"),
+    body: JSON.stringify({ messageId: fixtureId("message", 702), clientMessageId: "client-702", text: "Existing channel discussion", attachmentIds: [], mentions: [], replyToMessageId: null }),
+  });
+  assert.equal(topicMessage.status, 202);
   const updateBody = {...topicBody, title: "Practice and repertoire", lifecycle: "active", memberBotIds: [fixture.bots.jerry.id, fixture.bots.forrest.id]};
   const update = (version: number, key: string, body = updateBody) => fetch(`${address.origin}/api/v1/channels/${topic.id}`, {method: "PATCH", headers: {...headers(key), "if-match": String(version)}, body: JSON.stringify(body)});
-  const edited = await update(1, "topic-edit-0000001");
+  const edited = await update(2, "topic-edit-0000001");
   assert.equal(edited.status, 200);
   const editedChannel = (await edited.json() as any).channel;
-  assert.equal(editedChannel.version, 2);
+  assert.equal(editedChannel.version, 3);
   assert.equal(editedChannel.members.length, 3);
-  const replayed = await update(1, "topic-edit-0000001");
+  const replayed = await update(2, "topic-edit-0000001");
   assert.equal(replayed.status, 200);
-  assert.equal((await replayed.json() as any).channel.version, 2);
+  assert.equal((await replayed.json() as any).channel.version, 3);
   assert.equal((await update(1, "topic-stale-000001")).status, 409);
-  const archivedTopicResponse = await update(2, "topic-archive-001", {...updateBody, lifecycle: "archived", memberBotIds: [fixture.bots.jerry.id]});
+  const archivedTopicResponse = await update(3, "topic-archive-001", {...updateBody, lifecycle: "archived", memberBotIds: [fixture.bots.jerry.id]});
   assert.equal(archivedTopicResponse.status, 200);
   const archivedChannel = (await archivedTopicResponse.json() as any).channel;
   assert.equal(archivedChannel.lifecycle, "archived");
   assert.equal(archivedChannel.members.length, 2);
   assert.equal(archivedChannel.conversationId, topic.conversationId);
-  const restored = await update(3, "topic-restore-001");
+  const restored = await update(4, "topic-restore-001");
   assert.equal(restored.status, 200);
   assert.equal((await restored.json() as any).channel.lifecycle, "active");
   const missingVersion = await fetch(`${address.origin}/api/v1/channels/${topic.id}`, {method: "PATCH", headers: headers("topic-no-version1"), body: JSON.stringify(updateBody)});

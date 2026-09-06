@@ -36,6 +36,11 @@ import {
   fixtureId,
 } from "../work/test-fixture.js";
 
+import { createGroupChannelMessageService } from "../../../src/coordination/app/channel-message.js";
+import { SqliteGroupChannelMessageContext } from "../../../src/coordination/app/channel-message-context.js";
+import { createChannelCoordinator } from "../../../src/coordination/channel-coordinator/index.js";
+import { createRoundService } from "../../../src/coordination/rounds/index.js";
+
 const CONVERSATION_ID = "cnv_0198d95f-6c00-7000-8000-000000000961";
 const canonicalMessagesAuthority = Object.freeze({
   capability: "messages" as const,
@@ -83,12 +88,19 @@ async function waitUntil(predicate: () => boolean, label: string): Promise<void>
   assert.ok(predicate(), label);
 }
 
-test("submitMessage starts a second resident runWithTurn while Work 1 is still executing", async (t) => {
+for (const channelKind of ["direct", "group"] as const) {
+test(`${channelKind} submitMessage starts a second resident runWithTurn while Work 1 is still executing`, async (t) => {
   const database = M11TestDatabase.temporary();
   t.after(() => database.close());
   database.raw.prepare("INSERT INTO conversation_handles (id, channel_id, created_at) VALUES (?, ?, ?)")
     .run(CONVERSATION_ID, CHANNEL_ID, AT);
   database.raw.prepare("UPDATE bots SET conversation_id = ? WHERE id = ?").run(CONVERSATION_ID, BOT_ID);
+
+  if (channelKind === "group") {
+    database.raw.prepare("INSERT INTO authority_epochs VALUES ('messages', 3, 'canonical', 'home23-coordination', 41, 1, '{}', ?)").run(AT);
+    database.raw.prepare(`UPDATE channels SET kind = 'group', responder_mode = 'mention_or_coordinator',
+      coordinator_bot_id = ?, response_order = 'sequential', max_bot_turns = 2 WHERE id = ?`).run(BOT_ID, CHANNEL_ID);
+  }
 
   const botRecord = Object.freeze({
     id: BOT_ID, principalId: BOT_ID, name: "Jerry", purpose: "Persistent resident",
@@ -198,14 +210,13 @@ test("submitMessage starts a second resident runWithTurn while Work 1 is still e
     activeBackgroundWork += 1;
     return () => { activeBackgroundWork -= 1; };
   };
-  const service = createDirectMessageSubmissionService({
-    messages, context: new SqliteDirectMessageContext(database, messages), work, leases,
-    communications,
-    resolveResident: (residentBinding) => residentBinding === "jerry" ? {
+  const serviceOptions = {
+    messages, work, leases, communications,
+    resolveResident: (residentBinding: string) => residentBinding === "jerry" ? {
       resident,
       holderInstanceId: "resident-1",
       models: agent,
-      context: ({ principalId, requestId, correlationId }) => residentBindingContext({
+      context: ({ principalId, requestId, correlationId }: { principalId: string; requestId: string; correlationId: string }) => residentBindingContext({
         residentBinding,
         principalId,
         requestId,
@@ -217,17 +228,32 @@ test("submitMessage starts a second resident runWithTurn while Work 1 is still e
     recoveryIdentity: () => ({
       requestId: fixtureId("request", 964), correlationId: fixtureId("correlation", 964),
     }),
+  };
+
+  const directService = createDirectMessageSubmissionService({
+    ...serviceOptions, context: new SqliteDirectMessageContext(database, messages),
   });
+  const rounds = createRoundService({ database, generateId, now: () => new Date(AT) });
+  const groupService = createGroupChannelMessageService({
+    ...serviceOptions,
+    context: new SqliteGroupChannelMessageContext(database, messages),
+    coordinator: createChannelCoordinator({ database, rounds, work, enabled: true,
+      expectedAuthorityWriter: "home23-coordination", now: () => new Date(AT) }),
+    recordMessage: async () => undefined,
+    now: () => new Date(AT),
+  });
+  const service = channelKind === "group" ? groupService : directService;
 
   const application = createCoordinationApplication({
     flags: { ...disabledCoordinationFeatureFlags(), "coordination.process.enabled": true,
-      "coordination.public_api.enabled": true, "coordination.resident.jerry.enabled": true },
+      "coordination.public_api.enabled": true, "coordination.channels.enabled": true, "coordination.resident.jerry.enabled": true },
     services: {
       auth: { validateAccessToken: async () => owner.identity.auth },
       messageSubmission: {
         submitMessage: async (input) => service.submitMessage(input),
-        selectionOptions: async (input) => service.selectionOptions(input),
+        selectionOptions: async (input) => directService.selectionOptions(input),
       },
+      channelCoordinator: groupService.channelCoordinator,
       work, leases, events: new SqliteEventRepository(database),
       communications,
       authorityEpochs: {
@@ -266,6 +292,8 @@ test("submitMessage starts a second resident runWithTurn while Work 1 is still e
     const body = await accepted.json() as {
       message: { id: string; provenance: { workId: string | null } };
       work: { id: string; state: string };
+      works: Array<{ id: string; state: string }>;
+      round: { id: string };
       replayed: boolean;
     };
     return { status: accepted.status, body };
@@ -277,9 +305,9 @@ test("submitMessage starts a second resident runWithTurn while Work 1 is still e
     clientMessageId: "client-rp-second-turn-m1",
     text: "Start the long assignment.",
   });
-  assert.equal(first.status, 202);
+  assert.equal(first.status, 202, JSON.stringify(first.body));
   assert.equal(first.body.replayed, false);
-  const w1 = first.body.work.id;
+  const w1 = (channelKind === "group" ? first.body.works[0]!.id : first.body.work.id);
   assert.match(w1, /^wrk_/);
   await waitUntil(
     () => runStarts.some((start) => start.workId === w1) &&
@@ -297,9 +325,9 @@ test("submitMessage starts a second resident runWithTurn while Work 1 is still e
     clientMessageId: "client-rp-second-turn-m2",
     text: "Ask something else while that assignment is still running.",
   });
-  assert.equal(second.status, 202, "M2 must be accepted while W1 is still executing");
+  assert.equal(second.status, 202, `M2 must be accepted while W1 is still executing: ${JSON.stringify(second.body)}`);
   assert.equal(second.body.replayed, false);
-  const w2 = second.body.work.id;
+  const w2 = (channelKind === "group" ? second.body.works[0]!.id : second.body.work.id);
   assert.match(w2, /^wrk_/);
   assert.notEqual(w2, w1);
   assert.equal(
@@ -370,7 +398,7 @@ test("submitMessage starts a second resident runWithTurn while Work 1 is still e
     clientMessageId: null,
     replyToMessageId: first.body.message.id,
     tombstonesMessageId: null,
-    provenance: { roundId: null, workId: w1 },
+    provenance: { roundId: channelKind === "group" ? first.body.round.id : null, workId: w1 },
   };
   const replayed = await messages.sendMessage(replayRequest);
   assert.equal(replayed.outcome, "replayed");
@@ -378,3 +406,5 @@ test("submitMessage starts a second resident runWithTurn while Work 1 is still e
   assert.equal(resultCount(w1), 1, "replay of the W1 result must not create a second result row");
   assert.equal(resultCount(w2), 1);
 });
+
+}

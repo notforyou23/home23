@@ -502,6 +502,20 @@ export class SqliteMessagingRepository implements ChannelRepository {
         );
         if (update.changes !== 1) throw new MessagingError("version_conflict");
         this.replaceActiveMembers(transaction, current, input.channel);
+        // Messages advance the Channel resource version but have their own
+        // event aggregates. Channel events therefore need an independent,
+        // gap-free version allocated inside this same write transaction.
+        const event = {
+          ...this.channelEvent(
+            "channel.updated", input.channel, input,
+            { channelVersion: input.channel.version },
+          ),
+          aggregateVersion: (transaction.readOne<{ version: number }>(
+            `SELECT coalesce(max(aggregate_version), 0) AS version
+             FROM events WHERE aggregate_kind = 'channel' AND aggregate_id = ?`,
+            input.channel.id,
+          )?.version ?? 0) + 1,
+        };
         insertMessagingIdempotency(transaction, {
           actor: input.actor,
           claim: input.idempotency,
@@ -509,18 +523,13 @@ export class SqliteMessagingRepository implements ChannelRepository {
           resultRef: channelResultRef(input.channel, {
             aggregateKind: "channel",
             aggregateId: input.channel.id,
-            aggregateVersion: input.channel.version,
+            aggregateVersion: event.aggregateVersion,
           }),
           createdAt: input.channel.updatedAt,
         });
         return {
           value: input.channel,
-          event: this.channelEvent(
-            "channel.updated",
-            input.channel,
-            input,
-            { channelVersion: input.channel.version },
-          ),
+          event,
         };
       });
       return Object.freeze({

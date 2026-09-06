@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createMessageService } from "../../../src/coordination/messages/index.js";
 
 import {
   MessagingError,
@@ -574,4 +575,54 @@ test('authenticated Jerry manages member channels with his own durable authorshi
   await assert.rejects(channels.updateChannel({ ...input, channelId: created.channel.id,
     expectedVersion: created.channel.version, lifecycle: 'active', idempotencyKey: channelKey(904) }),
     (error: unknown) => error instanceof MessagingError && error.code === 'version_conflict');
+});
+
+
+test("settings and helper membership save after messages without gaps in channel events", async (t) => {
+  const fixture = await createMessagingFixture();
+  t.after(fixture.close);
+  const channels = createChannelService({ repository: fixture.repository,
+    participantDirectory: fixture.directory, cursorSigningKey: Buffer.alloc(32, 0x23),
+    now: () => fixture.clock.value });
+  const messages = createMessageService({ repository: fixture.repository,
+    participantDirectory: fixture.directory, now: () => fixture.clock.value });
+  const created = await channels.createGroupChannel({ context: ownerContext(901),
+    memberBotIds: [fixture.bots.jerry.id], title: "Working channel", purpose: "Original purpose",
+    pinned: false, responderPolicy: { mode: "mentions_only", coordinatorBotId: null,
+      responseOrder: "sequential", maxBotTurns: 4 }, idempotencyKey: channelKey(901) });
+  const append = (suffix: number) => messages.sendMessage({ context: ownerContext(suffix),
+    channelId: created.channel.id, messageId: fixtureId("message", suffix),
+    authorPrincipalId: OWNER_ID, idempotencyKey: `channel-history-message-${suffix}`,
+    kind: "text", text: "Conversation before editing", mentions: [],
+    clientMessageId: `history-${suffix}`, replyToMessageId: null, tombstonesMessageId: null,
+    provenance: { roundId: null, workId: null } });
+  await append(902);
+  await append(903);
+  const update = { context: ownerContext(904), channelId: created.channel.id, expectedVersion: 3,
+    idempotencyKey: channelKey(904), title: "Updated channel", purpose: "Updated purpose",
+    memberBotIds: [fixture.bots.jerry.id, fixture.bots.forrest.id], pinned: true,
+    lifecycle: "active" as const, responderPolicy: { mode: "mention_or_coordinator" as const,
+      coordinatorBotId: fixture.bots.forrest.id, responseOrder: "sequential" as const, maxBotTurns: 4 } };
+  const saved = await channels.updateChannel(update);
+  assert.equal(saved.channel.version, 4);
+  assert.equal(saved.channel.title, update.title);
+  assert.equal(saved.channel.responderPolicy.coordinatorBotId, fixture.bots.forrest.id);
+  assert.equal(saved.channel.members.length, 3);
+  assert.equal(saved.channel.conversationId, created.channel.conversationId);
+  await append(905);
+  const replay = await channels.updateChannel(update);
+  assert.equal(replay.outcome, "replayed");
+  assert.equal(replay.channel.version, 4);
+  assert.equal(replay.receipt.eventSequence, saved.receipt.eventSequence);
+  const archived = await channels.updateChannel({ ...update, context: ownerContext(906),
+    expectedVersion: 5, idempotencyKey: channelKey(906), lifecycle: "archived" });
+  assert.equal(archived.channel.version, 6);
+  assert.deepEqual(fixture.database.readAll<{ aggregateVersion: number }>(
+    "SELECT aggregate_version AS aggregateVersion FROM events WHERE aggregate_kind = 'channel' AND aggregate_id = ? ORDER BY sequence",
+    created.channel.id).map(row => row.aggregateVersion), [1, 2, 3]);
+  assert.equal(fixture.database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM messages WHERE channel_id = ?", created.channel.id)?.count, 3);
+  assert.equal(fixture.database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM channel_membership_history WHERE channel_id = ? AND principal_id = ? AND active = 1",
+    created.channel.id, fixture.bots.forrest.id)?.count, 1);
 });
