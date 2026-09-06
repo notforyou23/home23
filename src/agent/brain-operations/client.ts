@@ -720,7 +720,18 @@ export class BrainOperationsClient {
       const lostResponse = error instanceof TypeError
         || ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'operation_start_timeout'].includes(code || '');
       if (lostResponse && !typed.httpStatus && !signal?.aborted) {
-        return this.requestJson<BrainOperationRecord>('/home23/api/brain-operations', init, deadline);
+        try {
+          return await this.requestJson<BrainOperationRecord>('/home23/api/brain-operations', init, deadline);
+        } catch (retryError) {
+          try { return await this.findRequest(requestId, operationType, signal); }
+          catch {
+            // No response is not proof that admission failed. Keep the exact
+            // requester-scoped identity, including when the lookup is unavailable.
+            throw Object.assign(retryError instanceof Error ? retryError : new Error(String(retryError)), {
+              requestId, operationType, admissionUncertain: true,
+            });
+          }
+        }
       }
       const refreshable = ['target_not_found', 'target_not_available', 'target_mismatch',
         'target_ambiguous'].includes(code || '') || code === 'route_not_found';
@@ -761,8 +772,21 @@ export class BrainOperationsClient {
       return { ...last, attachmentState: 'detached' };
     };
     const canonicalTerminal = async (status: BrainOperationRecord): Promise<BrainOperationResult> => {
-      const payload = await this.getResult(operationId, options.signal?.aborted ? undefined : options.signal);
-      return { ...status, ...payload, attachmentState: 'closed' };
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const payload = await this.getResult(operationId, options.signal?.aborted ? undefined : options.signal);
+          return { ...status, ...payload, attachmentState: 'closed' };
+        } catch (error) {
+          const typed = error as { code?: string; httpStatus?: number };
+          const retryable = error instanceof TypeError || typed.code === 'result_timeout'
+            || (typed.httpStatus ?? 0) >= 500;
+          if (retryable && attempt < 2 && !options.signal?.aborted) continue;
+          if (!retryable) throw error;
+          throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
+            operation: status,
+          });
+        }
+      }
     };
     const emitActivity = (
       event: BrainOperationNotification,
@@ -820,7 +844,7 @@ export class BrainOperationsClient {
       if (status && TERMINAL.has(status.state)) return canonicalTerminal(status);
       const reason = attachmentSignal.reason as { code?: string; message?: string } | undefined;
       const code = reason?.code || reason?.message || 'transport_disconnect';
-      if (!DURABLE_OPERATION_TYPES.has(options.operationType)) {
+      if (!DURABLE_OPERATION_TYPES.has(options.operationType) && code !== 'wait_deadline') {
         const cancelled = await this.cancel(operationId);
         if (TERMINAL.has(cancelled.state)) return canonicalTerminal(cancelled);
         last = cancelled;
@@ -983,6 +1007,14 @@ export class BrainOperationsClient {
     }
   }
 
+  async findRequest(requestId: string, operationType: string, signal?: AbortSignal): Promise<BrainOperationRecord> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/.test(requestId) || !Object.hasOwn(PARAMETER_FIELDS, operationType)) throw invalid();
+    return this.requestJson<BrainOperationRecord>(
+      `/home23/api/brain-operations/requests/${encodeURIComponent(requestId)}?operationType=${encodeURIComponent(operationType)}`, {},
+      { code: 'status_timeout', timeoutMs: this.options.statusReadMs ?? 10_000, signal },
+    );
+  }
+
   async getOperation(operationId: string, signal?: AbortSignal): Promise<BrainOperationRecord> {
     return this.requestJson<BrainOperationRecord>(
       `/home23/api/brain-operations/${encodeURIComponent(operationId)}`, {},
@@ -999,10 +1031,6 @@ export class BrainOperationsClient {
 
   async resumeOperation(operationId: string, signal?: AbortSignal): Promise<BrainOperationResult> {
     const initial = await this.getOperation(operationId, signal);
-    if (TERMINAL.has(initial.state)) {
-      const payload = await this.getResult(operationId, signal);
-      return { ...initial, ...payload, attachmentState: 'closed' };
-    }
     const sixHour = new Set([
       'pgs', 'synthesis', 'research_compile', 'research_stop',
       'research_launch', 'research_continue', 'research_watch',
@@ -1026,6 +1054,7 @@ export class BrainOperationsClient {
     if (action === 'status') return this.getOperation(operationId, signal);
     if (action === 'result') {
       const status = await this.getOperation(operationId, signal);
+      if (TERMINAL.has(status.state)) return this.waitJoined(status, this.options.shortWaitMs ?? 5 * 60_000, signal);
       const payload = await this.getResult(operationId, signal);
       return { ...status, ...payload, attachmentState: 'closed' };
     }

@@ -188,6 +188,20 @@ function toolFailure(label: string, error: unknown): ToolResult {
     ? String((error as { code: unknown }).code)
     : 'brain_operation_error';
   const message = error instanceof Error ? error.message : String(error);
+  const admission = error as { admissionUncertain?: boolean; requestId?: string; operationType?: string } | null;
+  if (admission?.admissionUncertain && admission.requestId && admission.operationType) {
+    return {
+      content: `${label}: admission response is pending; execution state is not yet confirmed. Recover the same request with brain_status {action:"wait",requestId:"${admission.requestId}",operationType:"${admission.operationType}"}; do not repeat the operation.`,
+      metadata: { requestId: admission.requestId, operationType: admission.operationType, admissionUncertain: true, code },
+    };
+  }
+  const operation = (error as { operation?: BrainOperationResult } | null)?.operation;
+  if (operation?.operationId && !['failed', 'cancelled', 'interrupted'].includes(operation.state)) {
+    return {
+      content: `${label}: operation=${operation.operationId} state=${operation.state}. Result delivery is pending (${code}). Recover this exact result with brain_status {action:"wait",operationId:"${operation.operationId}"}; do not start another operation.`,
+      metadata: { operationId: operation.operationId, state: operation.state, code, resultPending: true },
+    };
+  }
   return {
     content: `${label}: ${code}: ${message}`,
     is_error: true,
@@ -295,6 +309,10 @@ function federateRelationshipHits(
 
 /** Hits-first search view. Pretty-printed evidence dumps starve the ranked hits at the 4k display cap. */
 export function formatBrainSearchContent(value: Record<string, unknown>): string {
+  if (value.state === 'queued' || value.state === 'running') {
+    return `brain_search: still running. operation=${value.operationId}. Recover the eventual result with brain_status {action:"wait",operationId:"${value.operationId}"}; do not repeat the search.`;
+  }
+
   const hits = Array.isArray(value.results) ? value.results
     : Array.isArray(value.hits) ? value.hits
     : [];
@@ -829,11 +847,16 @@ async function executeBrainStatus(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   try {
-    assertToolKeys(input, ['target', 'operationId', 'action', 'offset']);
+    assertToolKeys(input, ['target', 'operationId', 'requestId', 'operationType', 'action', 'offset']);
     const turn = runtime(ctx);
-    if (hasOwn(input, 'operationId')) {
-      if (hasOwn(input, 'target')) throw invalidRequest();
-      const operationId = requiredOperationId(input);
+    if (hasOwn(input, 'operationType') && !hasOwn(input, 'requestId')) throw invalidRequest();
+    if (hasOwn(input, 'operationId') || hasOwn(input, 'requestId')) {
+      if (hasOwn(input, 'target') || (hasOwn(input, 'operationId') && hasOwn(input, 'requestId'))) throw invalidRequest();
+      const operationId = hasOwn(input, 'requestId')
+        ? (await turn.brainOperations.findRequest(
+          requiredToolText(input, 'requestId', 256), requiredToolText(input, 'operationType', 128), turn.signal,
+        )).operationId
+        : requiredOperationId(input);
       const action = parsedWhenPresent(input, 'action', (value) =>
         optionalEnum(value, 'action', ['status', 'result', 'wait', 'cancel'] as const)) ?? 'status';
       const offset = parsedWhenPresent(input, 'offset', (value) =>
@@ -1020,6 +1043,8 @@ export const brainStatusTool: ToolDefinition = {
         type: 'string', pattern: BRAIN_OPERATION_ID_PATTERN,
         description: 'Exact operation ID returned by a prior brain tool call; never invent one.',
       },
+      requestId: { type: 'string', description: 'Exact request ID from an uncertain admission receipt; use with operationType instead of operationId.' },
+      operationType: { type: 'string', description: 'Operation type from the same admission receipt.' },
       action: { type: 'string', enum: ['status', 'result', 'wait', 'cancel'] },
       offset: {
         type: 'integer', minimum: 0,

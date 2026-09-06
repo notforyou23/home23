@@ -1078,7 +1078,7 @@ test('brain_status exposes status, result, wait, and exact cancel by operation I
   assert.match(inspectedStatus.content, /2026-07-13T02:00:48.805Z/);
   assert.match(inspectedStatus.content, /completedWorkUnits.*470/s);
   assert.deepEqual(Object.keys((brainStatusTool.input_schema as any).properties)
-    .filter((key) => ['operationType', 'waitMs'].includes(key)), []);
+    .filter((key) => ['waitMs'].includes(key)), []);
 });
 
 test('brain_status result fails malformed partial envelopes closed', async () => {
@@ -1338,4 +1338,42 @@ test('brain_status offset is ignored for non-result actions', async () => {
     { operationId: CONTINUE_OPERATION_ID, action: 'status', offset: 50 }, ctx);
   assert.notEqual(result.is_error, true);
   assert.ok(result.content.startsWith('short answer'));
+});
+
+
+test('pending search reports its handle instead of an empty ranking', () => {
+  const text = formatBrainSearchContent({ state: 'running', operationId: CONTINUE_OPERATION_ID });
+  assert.match(text, /still running/);
+  assert.match(text, /brain_status/);
+  assert.doesNotMatch(text, /0 hit/);
+});
+
+test('uncertain admission is recoverable through brain_status by exact request', async () => {
+  const ctx = makeCtx({ brainOperations: {
+    search: async () => { throw Object.assign(new Error('timeout'), {
+      admissionUncertain: true, requestId: 'saved-request', operationType: 'search',
+    }); },
+    findRequest: async (requestId, operationType) => {
+      assert.equal(requestId, 'saved-request');
+      assert.equal(operationType, 'search');
+      return { operationId: CONTINUE_OPERATION_ID };
+    },
+    resumeOperation: async (operationId) => {
+      assert.equal(operationId, CONTINUE_OPERATION_ID);
+      return completeOperation(operationId, 'Recovered memories');
+    },
+  } });
+  const pending = await brainSearchTool.execute({ query: 'memory' }, ctx);
+  assert.notEqual(pending.is_error, true);
+  assert.equal(pending.metadata?.requestId, 'saved-request');
+  const result = await brainStatusTool.execute({ requestId: 'saved-request', operationType: 'search', action: 'wait' }, ctx);
+  assert.notEqual(result.is_error, true);
+  assert.match(result.content, /Recovered memories/);
+});
+
+test('canonical search failure remains an error even when it carries an operation', async () => {
+  const ctx = makeCtx({ brainOperations: {
+    search: async () => { throw Object.assign(new Error('failed'), { operation: { operationId: CONTINUE_OPERATION_ID, state: 'failed' } }); },
+  } });
+  assert.equal((await brainSearchTool.execute({ query: 'memory' }, ctx)).is_error, true);
 });

@@ -2320,8 +2320,10 @@ test('short waits use five minutes while query and PGS attachments retain their 
     assert.ok(scheduled.includes(fixture.expected), fixture.kind);
     if (fixture.kind === 'search') {
       clock.advance(fixture.expected + 1);
-      await assert.rejects(pending, /cancelled/);
-      assert.equal(cancelCalls, 1, 'the short attachment deadline cancels short work');
+      const detached = await pending;
+      assert.equal(detached.state, 'running');
+      assert.equal(detached.attachmentState, 'detached');
+      assert.equal(cancelCalls, 0, 'an observer deadline preserves the admitted search');
     } else {
       controller.abort(Object.assign(new Error('operator_stop'), { code: 'operator_stop' }));
       const detached = await pending;
@@ -2743,4 +2745,90 @@ test('joined observation failure cannot become a completed or failed Work result
   client.start=async()=>initial;let reads=0;
   client.wait=async()=>{if(++reads===1)throw new TypeError('observer unavailable');return {...initial,state:'complete',attachmentState:'closed'};};
   assert.equal((await client.synthesize({trigger:'tool'})).state,'complete');assert.equal(reads,2);
+});
+
+
+test('terminal result transport failure retries the same durable result without starting again', async () => {
+  const completed = record('op-result-recovery', 2, 'complete', { answer: 'Recovered memory' });
+  let reads = 0;
+  const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry',
+    fetchImpl: async (url, init) => {
+      assert.notEqual(init?.method, 'POST');
+      if (String(url).endsWith('/result')) {
+        if (++reads < 3) throw new TypeError('response lost');
+        return new Response(JSON.stringify(resultEnvelope(completed)));
+      }
+      return new Response(JSON.stringify(completed));
+    },
+  });
+  const result = await client.resumeOperation(completed.operationId);
+  assert.equal(result.result?.answer, 'Recovered memory');
+  assert.equal(reads, 3);
+});
+
+test('exhausted result delivery retains the exact completed operation for recovery', async () => {
+  const completed = record('op-result-pending', 2, 'complete');
+  const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry',
+    fetchImpl: async (url) => {
+      if (String(url).endsWith('/result')) throw new TypeError('response lost');
+      return new Response(JSON.stringify(completed));
+    },
+  });
+  await assert.rejects(client.resumeOperation(completed.operationId), (error: any) => {
+    assert.equal(error.operation.operationId, completed.operationId);
+    assert.equal(error.operation.state, 'complete');
+    return true;
+  });
+});
+
+
+test('two lost admission responses recover by request identity without a third submission', async () => {
+  let posts = 0;
+  const bodies: string[] = [];
+  const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry',
+    fetchImpl: async (url, init) => {
+      if (init?.method === 'POST') {
+        posts++;
+        bodies.push(String(init.body));
+        throw new TypeError('response lost');
+      }
+      const request = JSON.parse(bodies[0]);
+      assert.match(String(url), new RegExp(`/requests/${request.requestId}\\?operationType=search$`));
+      return new Response(JSON.stringify(record('op-admission-recovered', 1, 'running')));
+    },
+  });
+  const admitted = await client.start('search', { query: 'memory' });
+  assert.equal(admitted.operationId, 'op-admission-recovered');
+  assert.equal(posts, 2);
+  assert.equal(bodies[0], bodies[1]);
+});
+
+test('unavailable admission lookup preserves request identity for a later client', async () => {
+  const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry',
+    fetchImpl: async () => { throw new TypeError('offline'); },
+  });
+  await assert.rejects(client.start('search', { requestId: 'recover-me', query: 'memory' }), (error: any) => {
+    assert.equal(error.admissionUncertain, true);
+    assert.equal(error.requestId, 'recover-me');
+    assert.equal(error.operationType, 'search');
+    return true;
+  });
+});
+
+
+test('explicit result recovery also retries transient delivery failures', async () => {
+  const completed = record('brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 2, 'complete', { answer: 'Recovered result' });
+  let reads = 0;
+  const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry',
+    fetchImpl: async (url) => {
+      if (String(url).endsWith('/result')) {
+        if (++reads === 1) throw new TypeError('response lost');
+        return new Response(JSON.stringify(resultEnvelope(completed)));
+      }
+      return new Response(JSON.stringify(completed));
+    },
+  });
+  const result = await client.inspectOperation(completed.operationId, 'result');
+  assert.equal(result.result?.answer, 'Recovered result');
+  assert.equal(reads, 2);
 });

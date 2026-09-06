@@ -519,9 +519,18 @@ function createBrainOperationsRouter(options = {}) {
 
   router.post('/', asyncRoute(async (req, res) => {
     assertNoQuery(req);
-    const started = await coordinator.start(validateStartBody(req.body));
+    const started = await coordinator.start(validateStartBody(req.body), { acknowledgeAdmission: true });
     if (started?.requesterAgent !== requesterAgent) throw routeError('operation_store_corrupt');
     res.status(202).json(started);
+  }));
+
+  router.get('/requests/:requestId', asyncRoute(async (req, res) => {
+    if (Object.keys(req.query).length !== 1 || typeof req.query.operationType !== 'string') {
+      throw routeError('invalid_request');
+    }
+    const record = await coordinator.findRequest(req.params.requestId, req.query.operationType);
+    if (record.requesterAgent !== requesterAgent) throw routeError('operation_store_corrupt');
+    res.json(record);
   }));
 
   router.get('/:operationId/events', asyncRoute(async (req, res) => {

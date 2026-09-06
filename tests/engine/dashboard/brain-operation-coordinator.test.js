@@ -5595,3 +5595,22 @@ test('real coordinator and local adapter complete a non-source operation through
   assert.deepEqual(completed.result, { exported: 'canonical local' });
   assert.equal(completed.canonicalEvidence, false);
 });
+
+
+test('HTTP admission returns a durable handle before worker startup and replay reuses it', async (t) => {
+  const fixture = makeFixture(t);
+  const gate = deferred();
+  fixture.worker.blockStart = gate;
+  t.after(() => gate.resolve());
+  const input = request({ requestId: 'slow-admission' });
+  const admitted = await fixture.coordinator.start(input, { acknowledgeAdmission: true });
+  assert.equal(admitted.state, 'queued');
+  assert.equal((await fixture.store.get(admitted.operationId)).requestId, 'slow-admission');
+  assert.equal((await fixture.coordinator.findRequest('slow-admission', input.operationType)).operationId, admitted.operationId);
+  await assert.rejects(fixture.coordinator.findRequest('absent-admission', input.operationType), typedCode('operation_not_found'));
+  const replay = await fixture.coordinator.start(input, { acknowledgeAdmission: true });
+  assert.equal(replay.operationId, admitted.operationId);
+  gate.resolve();
+  await waitForState(fixture, admitted.operationId, 'running');
+  assert.equal(fixture.worker.startCalls.length, 1);
+});

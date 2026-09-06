@@ -1316,7 +1316,16 @@ class BrainOperationCoordinator {
     });
   }
 
-  async start(rawInput) {
+  async findRequest(requestId, operationType) {
+    assertIdentifier(requestId, 'requestId');
+    if (!Object.hasOwn(this.operationAuthority, operationType)) throw coordinatorError('invalid_request');
+    const key = buildBrainOperationIdempotencyKey(this.requesterAgent, requestId, operationType);
+    const record = await this.store.findByIdempotencyKey(key);
+    if (!record) throw coordinatorError('operation_not_found');
+    return record;
+  }
+
+  async start(rawInput, { acknowledgeAdmission = false } = {}) {
     if (this.stopped) throw coordinatorError('coordinator_stopped');
     const normalized = this._normalizeStartInput(rawInput);
     const idempotencyKey = buildBrainOperationIdempotencyKey(
@@ -1351,6 +1360,15 @@ class BrainOperationCoordinator {
       sourcePinDigest: null,
       canonicalEvidence: policy.canonicalEvidence !== false,
     });
+    if (acknowledgeAdmission) {
+      // The durable receipt must not wait for source pinning or worker startup.
+      // Dispatch owns failure publication and uncertain-start reconciliation.
+      if (created.created) {
+        const runtime = this._ensureRuntime(created.record);
+        runtime.admissionPromise = this._dispatchCreatedOperation(created, policy).catch(() => {});
+      }
+      return created.record;
+    }
     return this._dispatchCreatedOperation(created, policy);
   }
 
@@ -2779,6 +2797,7 @@ class BrainOperationCoordinator {
     this.stopped = true;
     const settlements = [];
     for (const [operationId, runtime] of this.runtimes) {
+      if (runtime.admissionPromise) settlements.push(runtime.admissionPromise);
       if (runtime.pumpPromise) settlements.push(runtime.pumpPromise);
       if (runtime.workerStartPromise) {
         settlements.push(runtime.workerStartPromise);

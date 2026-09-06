@@ -1012,3 +1012,28 @@ test('a failing synthesis join degrades to answerUnavailableReason, not an error
     assert.equal(body.result.generationMarker, `generation-42-${'b'.repeat(24)}`);
   });
 });
+
+
+test('HTTP start acknowledges admission and exact request lookup is requester bound', async () => {
+  const fixture = fakes();
+  fixture.coordinator.start = async (_input, options) => {
+    assert.deepEqual(options, { acknowledgeAdmission: true });
+    return record();
+  };
+  fixture.coordinator.findRequest = async (requestId, operationType) => {
+    assert.equal(requestId, 'lost-response');
+    assert.equal(operationType, 'search');
+    return record();
+  };
+  await withRouter(fixture, async (baseUrl) => {
+    const started = await fetch(baseUrl, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: 'lost-response', operationType: 'search', parameters: { query: 'memory' } }) });
+    assert.equal(started.status, 202);
+    const recovered = await fetch(`${baseUrl}/requests/lost-response?operationType=search`);
+    assert.equal(recovered.status, 200);
+    assert.equal((await recovered.json()).operationId, (await started.json()).operationId);
+    fixture.coordinator.findRequest = async () => record({ requesterAgent: 'forrest' });
+    const foreign = await fetch(`${baseUrl}/requests/lost-response?operationType=search`);
+    assert.notEqual(foreign.status, 200);
+  });
+});
