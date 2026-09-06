@@ -41,3 +41,64 @@ test('dispatch_to_worker posts to worker connector', async () => {
   assert.match(parsed.collaborationHandoff.whyThisMatters, /Live problem lp_1/);
   assert.ok(parsed.collaborationHandoff.reviewLens.some(line => /technically correct/.test(line)));
 });
+
+test('dispatch_to_worker identifies connector transport failures and exposes the cause code without retrying', async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    throw new TypeError('fetch failed', {
+      cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9'), { code: 'ECONNREFUSED' }),
+    });
+  };
+
+  try {
+    const result = await runRemediator(
+      { type: 'dispatch_to_worker', args: { worker: 'systems' } },
+      {
+        workerConnectorBaseUrl: 'http://127.0.0.1:9',
+        agentName: 'forrest',
+        problem: { id: 'lp_transport', title: 'host check', severity: 'warn' },
+      }
+    );
+
+    assert.equal(attempts, 1);
+    assert.equal(result.outcome, 'failed');
+    assert.equal(result.failureType, 'worker_connector_transport');
+    assert.match(result.detail, /^worker_connector_transport code=ECONNREFUSED:/);
+    assert.match(result.detail, /connect ECONNREFUSED/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('dispatch_to_worker keeps HTTP worker/provider failures distinct from connector transport', async () => {
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.statusCode = 400;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: 'Error calling gpt-5.5: fetch failed' }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  try {
+    const result = await runRemediator(
+      { type: 'dispatch_to_worker', args: { worker: 'systems' } },
+      {
+        workerConnectorBaseUrl: `http://127.0.0.1:${port}`,
+        agentName: 'forrest',
+        problem: { id: 'lp_provider', title: 'host check', severity: 'warn' },
+      }
+    );
+
+    assert.equal(result.outcome, 'failed');
+    assert.equal(result.failureType, 'worker_receipt_or_provider');
+    assert.equal(result.detail, 'worker receipt/provider failure: Error calling gpt-5.5: fetch failed');
+    assert.doesNotMatch(result.detail, /worker_connector_transport/);
+  } finally {
+    await new Promise((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
+  }
+});

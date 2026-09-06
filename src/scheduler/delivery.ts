@@ -17,6 +17,53 @@ import { getAgentDir } from '../config.js';
 
 export type { DeliveryProfiles };
 
+export interface DeliveryTarget {
+  channel: string;
+  to: string;
+}
+
+export interface DeliveryFailure extends DeliveryTarget {
+  error: string;
+}
+
+export type DeliveryOutcome =
+  | {
+      status: 'delivered';
+      reason: 'at least one adapter send confirmed';
+      retryEligible: boolean;
+      confirmedTargets: DeliveryTarget[];
+      unavailableTargets: DeliveryTarget[];
+      failedTargets: DeliveryFailure[];
+    }
+  | {
+      status: 'skipped_by_policy';
+      reason: string;
+      retryEligible: false;
+    }
+  | {
+      status: 'suppressed';
+      reason: string;
+      retryEligible: false;
+    }
+  | {
+      status: 'no_target';
+      reason: string;
+      retryEligible: true;
+    }
+  | {
+      status: 'no_adapter';
+      reason: string;
+      retryEligible: true;
+      unavailableTargets: DeliveryTarget[];
+    }
+  | {
+      status: 'failed';
+      reason: string;
+      retryEligible: true;
+      failedTargets: DeliveryFailure[];
+      unavailableTargets: DeliveryTarget[];
+    };
+
 // ─── DeliveryManager ─────────────────────────────────────────
 
 export class DeliveryManager {
@@ -48,18 +95,41 @@ export class DeliveryManager {
    * Respects job.delivery.mode — if 'none' or missing, does nothing.
    * Supports profile (expanded from the profiles map), channels[] (multi), and channel/to (single).
    */
-  async deliver(job: CronJob, result: JobResult): Promise<void> {
+  async deliver(job: CronJob, result: JobResult): Promise<DeliveryOutcome> {
     if (!job.delivery || job.delivery.mode === 'none') {
-      return;
+      return { status: 'skipped_by_policy', reason: 'job has no delivery target or delivery mode is none', retryEligible: false };
     }
 
     if (job.delivery.mode === 'failures' && result.status !== 'error') {
-      return;
+      return { status: 'skipped_by_policy', reason: 'failure-only delivery skipped successful job result', retryEligible: false };
     }
 
     const text = this.formatText(job, result);
     if (!text) {
-      return;
+      return { status: 'skipped_by_policy', reason: 'delivery policy produced no sendable content', retryEligible: false };
+    }
+
+    const targets: DeliveryTarget[] = [];
+
+    if (job.delivery.profile) {
+      const profile = this.profiles[job.delivery.profile];
+      if (!profile) {
+        console.warn(`[delivery] Job ${job.id} references unknown profile "${job.delivery.profile}"`);
+      } else {
+        for (const target of profile.channels) targets.push({ channel: target.channel, to: target.to });
+      }
+    } else if (job.delivery.channels && job.delivery.channels.length > 0) {
+      for (const target of job.delivery.channels) {
+        targets.push({ channel: target.channel, to: target.to });
+      }
+    } else if (job.delivery.channel) {
+      targets.push({ channel: job.delivery.channel, to: job.delivery.to ?? 'scheduler' });
+    }
+
+    if (targets.length === 0) {
+      const reason = `job has delivery mode "${job.delivery.mode}" but no channel configured`;
+      console.warn(`[delivery] Job ${job.id} ${reason}`);
+      return { status: 'no_target', reason, retryEligible: true };
     }
 
     // Attention gate (dedup-only for configured deliveries). A configured cron
@@ -78,8 +148,9 @@ export class DeliveryManager {
       };
       const verdict = this.gate.evaluate(gateSignal);
       if (verdict.decision === 'suppress') {
-        console.log(`[delivery] Job ${job.id} suppressed by attention gate (${verdict.reason}${verdict.detail ? `: ${verdict.detail}` : ''})`);
-        return;
+        const reason = `${verdict.reason}${verdict.detail ? `: ${verdict.detail}` : ''}`;
+        console.log(`[delivery] Job ${job.id} suppressed by attention gate (${reason})`);
+        return { status: 'suppressed', reason, retryEligible: false };
       }
       // 'surface' (the normal path) and 'aggregate' both proceed to send here —
       // a jtr-configured delivery is never held. We arm dedup (record()) only
@@ -88,29 +159,9 @@ export class DeliveryManager {
       // dedupe window.
     }
 
-    const targets: Array<{ channel: string; to: string }> = [];
-
-    if (job.delivery.profile) {
-      const profile = this.profiles[job.delivery.profile];
-      if (!profile) {
-        console.warn(`[delivery] Job ${job.id} references unknown profile "${job.delivery.profile}"`);
-      } else {
-        for (const t of profile.channels) targets.push({ channel: t.channel, to: t.to });
-      }
-    } else if (job.delivery.channels && job.delivery.channels.length > 0) {
-      for (const t of job.delivery.channels) {
-        targets.push({ channel: t.channel, to: t.to });
-      }
-    } else if (job.delivery.channel) {
-      targets.push({ channel: job.delivery.channel, to: job.delivery.to ?? 'scheduler' });
-    }
-
-    if (targets.length === 0) {
-      console.warn(`[delivery] Job ${job.id} has delivery mode "${job.delivery.mode}" but no channel configured`);
-      return;
-    }
-
-    let anyDelivered = false;
+    const confirmedTargets: DeliveryTarget[] = [];
+    const unavailableTargets: DeliveryTarget[] = [];
+    const failedTargets: DeliveryFailure[] = [];
     for (const target of targets) {
       // 'auto' channel: pick the first available adapter
       const adapter = target.channel === 'auto'
@@ -119,6 +170,7 @@ export class DeliveryManager {
 
       if (!adapter) {
         console.warn(`[delivery] No adapter registered for channel "${target.channel}" (job ${job.id}), skipping`);
+        unavailableTargets.push(target);
         continue;
       }
 
@@ -132,13 +184,13 @@ export class DeliveryManager {
 
       try {
         await adapter.send(response);
-        anyDelivered = true;
+        confirmedTargets.push(target);
         this.appendDeliveryLedgerEvent(job, target, result);
         console.log(`[delivery] Job ${job.id} result delivered to ${target.channel}:${target.to}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[delivery] Failed to deliver job ${job.id} to ${target.channel}:${target.to}: ${msg}`);
-        this.lastDeliveryError = msg;
+        failedTargets.push({ ...target, error: msg });
       }
     }
 
@@ -146,13 +198,36 @@ export class DeliveryManager {
     // (anyDelivered === false) leaves the dedup key unset, so the next identical
     // retry is still eligible to surface. Mirrors the /api/notify path, which
     // also records only after a confirmed delivery.
-    if (this.gate && gateSignal && anyDelivered) {
+    if (this.gate && gateSignal && confirmedTargets.length > 0) {
       this.gate.record(gateSignal);
     }
-  }
 
-  /** Last delivery error from the most recent deliver() call. Null if success or no attempt. */
-  lastDeliveryError: string | null = null;
+    if (confirmedTargets.length > 0) {
+      return {
+        status: 'delivered',
+        reason: 'at least one adapter send confirmed',
+        retryEligible: failedTargets.length > 0 || unavailableTargets.length > 0,
+        confirmedTargets,
+        unavailableTargets,
+        failedTargets,
+      };
+    }
+    if (failedTargets.length > 0) {
+      return {
+        status: 'failed',
+        reason: 'all adapter send attempts failed',
+        retryEligible: true,
+        failedTargets,
+        unavailableTargets,
+      };
+    }
+    return {
+      status: 'no_adapter',
+      reason: 'no configured delivery target has a registered adapter',
+      retryEligible: true,
+      unavailableTargets,
+    };
+  }
 
   private appendDeliveryLedgerEvent(
     job: CronJob,

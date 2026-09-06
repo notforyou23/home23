@@ -1,3 +1,4 @@
+import { channelManageTool, botInvokeTool } from './channels.js';
 /**
  * COSMO Home 2.3 — Tool Registry
  *
@@ -7,6 +8,7 @@
  */
 
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import { taskContextTool } from './task-context.js';
 import { shellTool } from './shell.js';
 import { readFileTool, writeFileTool, editFileTool, listFilesTool, searchFilesTool } from './files.js';
 import { webBrowseTool, createWebSearchTool, type WebToolsConfig } from './web.js';
@@ -15,9 +17,15 @@ import {
   brainQueryExportTool, brainQueryTool, brainSearchTool, brainStatusTool, brainSynthesizeTool,
 } from './brain.js';
 import { generateImageTool, generateMusicTool, ttsTool } from './media.js';
+import { returnArtifactTool, returnTextArtifactTool } from './return-artifact.js';
 import { cronScheduleTool, cronListTool, cronRunTool, cronDeleteTool, cronEnableTool, cronDisableTool, cronUpdateTool } from './cron.js';
 import { selfUpdateTool, selfReadTool } from './identity.js';
 import { spawnAgentTool } from './subagent.js';
+import {
+  SUBAGENT_TOOL_GRANTS,
+  SUBAGENT_TOOL_NAMES,
+  type SubAgentToolGrant,
+} from './subagent-grants.js';
 import { workCancelTool, workListTool, workStatusTool } from './work.js';
 import { promoteToMemoryTool } from './promote.js';
 import { relationshipTools } from './relationship.js';
@@ -49,6 +57,7 @@ import {
   agencyTickTool,
 } from './agency.js';
 import { skillsAuditTool, skillsGetTool, skillsListTool, skillsRunTool, skillsSuggestTool } from './skills.js';
+import { contactTools } from './contact.js';
 import {
   listBrainsTool,
   listResearchRunsTool,
@@ -128,7 +137,14 @@ export class ToolRegistry {
       return { content: `Unknown tool: ${name}`, is_error: true };
     }
     try {
-      return await tool.execute(input, ctx);
+      const result = await tool.execute(input, ctx);
+      if (name !== 'task_context' && ctx.conversationHistory?.taskContext) {
+        try {
+          const id = ctx.conversationHistory.taskContext.save(ctx.chatId, 'tool', JSON.stringify({ name, input, content: result.content, is_error: result.is_error ?? false }));
+          return { ...result, contextEvidenceId: id };
+        } catch (error) { console.warn('[task-context] Result archive unavailable:', error instanceof Error ? error.message : String(error)); }
+      }
+      return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { content: `Tool error (${name}): ${message}`, is_error: true };
@@ -154,6 +170,7 @@ export function createSeededToolRegistry(tools: readonly ToolDefinition[]): Tool
  * so it is enumerated rather than filtered from the full registry.
  */
 const WORKER_TOOL_GRANT_GROUPS = {
+  context: () => [taskContextTool],
   shell: () => [shellTool],
   files: () => [readFileTool, writeFileTool, editFileTool, listFilesTool, searchFilesTool],
   cron: () => [
@@ -197,10 +214,44 @@ export function resolveWorkerTools(
   return tools;
 }
 
+/**
+ * Temporary sub-agents are hands, not resident agents. Joined runs therefore
+ * receive an explicit, closed grant list rather than inheriting the resident's
+ * registry. Cron is intentionally absent: a foreground hand must not create a
+ * lifecycle that outlives the turn which brought it in.
+ */
+export { SUBAGENT_TOOL_GRANTS, type SubAgentToolGrant } from './subagent-grants.js';
+
+export function resolveSubAgentTools(
+  grants: readonly string[],
+  source?: Pick<ToolRegistry, 'get'>,
+): ToolDefinition[] {
+  const unknown = grants.filter((grant) => !SUBAGENT_TOOL_GRANTS.includes(grant as SubAgentToolGrant));
+  if (unknown.length > 0) {
+    throw new Error(`Unknown sub-agent tool grant(s): ${unknown.join(', ')}`);
+  }
+
+  const selected = new Set(grants as readonly SubAgentToolGrant[]);
+  if (selected.size > 0 && !source) {
+    throw new Error('Configured sub-agent tool source is unavailable');
+  }
+  const tools: ToolDefinition[] = [];
+  for (const grant of SUBAGENT_TOOL_GRANTS) {
+    if (!selected.has(grant)) continue;
+    for (const name of SUBAGENT_TOOL_NAMES[grant]) {
+      const tool = source!.get(name);
+      if (!tool) throw new Error(`Configured sub-agent tool is unavailable: ${name}`);
+      tools.push(tool);
+    }
+  }
+  return tools;
+}
+
 /** Create a fully loaded registry with all tools. */
 export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolRegistry {
   const registry = new ToolRegistry();
 
+  registry.register(taskContextTool);
   registry.register(shellTool);
   registry.register(readFileTool);
   registry.register(writeFileTool);
@@ -221,6 +272,8 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(generateImageTool);
   registry.register(generateMusicTool);
   registry.register(ttsTool);
+  registry.register(returnArtifactTool);
+  registry.register(returnTextArtifactTool);
   registry.register(cronScheduleTool);
   registry.register(cronListTool);
   registry.register(cronRunTool);
@@ -252,6 +305,8 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(getBrainGraphTool);
   registry.register(compileBrainTool);
   registry.register(compileSectionTool);
+  registry.register(channelManageTool);
+  registry.register(botInvokeTool);
   registry.register(workerListTool);
   registry.register(workerRunTool);
   registry.register(workerStatusTool);
@@ -282,6 +337,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(agencyTickTool);
   registry.register(promoteToMemoryTool);
   for (const tool of relationshipTools) registry.register(tool);
+  for (const tool of contactTools) registry.register(tool);
 
   return registry;
 }

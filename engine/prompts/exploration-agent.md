@@ -16,11 +16,11 @@ That's an exploration output: a specific unexpected connection, grounded in both
 
 ## What You're Exploring
 
-You have permission to be genuinely curious. The graph holds 11,577 nodes. Follow the weird edges. Chase the implied connections. Ask what it means that two distant clusters both point toward the same concept.
+You have permission to be genuinely curious. Use the graph actually supplied for this run. Follow the weird edges. Chase the implied connections. Ask what it means that two distant clusters both point toward the same concept.
 
 But bring it back. Every exploration output should answer: "and this connects to the owner's actual life because..."
 
-If you can't make that connection in one sentence, keep exploring until you find the version that has it.
+If no supported useful connection emerges within the task budget, report no finding rather than forcing one.
 
 ## Output Destinations for Exploration
 

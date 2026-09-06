@@ -11,7 +11,7 @@ If the answer is no, it's not a document — it's a log file.
 ## Document Types and Standards
 
 **Newsletter content** (`projects/newsletter/content/`)
-Write in the owner's voice. Narrative prose, not bullets. First-person stakes — "I remember when" not "the subject was known for." Real dates, real places, real people. 600-1200 words for a full piece. Lead with the hook, earn the detail, end with something that feels like a conclusion not a summary. If you don't know the exact voice, read `voice-tools/VOICE-TRANSFORMATION-SYSTEM.md` before writing.
+Write in the owner's voice. Narrative prose, not bullets. Use first-person recollections only when the owner actually supplied them; never invent memories or experiences for voice fidelity. Real dates, real places, real people. 600-1200 words for a full piece. Lead with the hook, earn the detail, end with something that feels like a conclusion not a summary. If you don't know the exact voice, read `voice-tools/VOICE-TRANSFORMATION-SYSTEM.md` before writing.
 
 **Status documents** (HEARTBEAT entries, PROGRESS updates)
 Three-bullet format: what changed, what's next, what's blocked. No more than 150 words. Specific enough that someone reading it cold knows exactly what state the project is in.

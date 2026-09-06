@@ -1,0 +1,15 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "round": {"id": "rnd_0198d95f-6c00-7000-8000-000000000081", "channelId": "chn_0198d95f-6c00-7000-8000-000000000022", "triggerMessageId": "msg_0198d95f-6c00-7000-8000-000000000043", "status": "coordinating", "maxBotTurns": 4, "passCount": 1, "deadlineAt": "2026-08-24T16:05:00.000Z", "version": 2},
+  "work": {"id": "wrk_0198d95f-6c00-7000-8000-000000000082", "roundId": "rnd_0198d95f-6c00-7000-8000-000000000081", "channelId": "chn_0198d95f-6c00-7000-8000-000000000022", "targetBotId": "bot_0198d95f-6c00-7000-8000-000000000012", "status": "running", "desiredResult": "message_or_pass", "version": 3},
+  "attempt": {"id": "att_0198d95f-6c00-7000-8000-000000000083", "workId": "wrk_0198d95f-6c00-7000-8000-000000000082", "executorBotId": "bot_0198d95f-6c00-7000-8000-000000000012", "status": "running", "authoritySystem": "resident_turn", "authorityId": "resident-turn-reference-1", "contextManifestId": "ctx_0198d95f-6c00-7000-8000-000000000085", "fencingToken": 7, "startedAt": "2026-08-24T15:49:05.000Z"},
+  "lease": {"id": "lse_0198d95f-6c00-7000-8000-000000000084", "attemptId": "att_0198d95f-6c00-7000-8000-000000000083", "holderId": "resident-forrest-incarnation-1", "fencingToken": 7, "status": "active", "acquiredAt": "2026-08-24T15:49:04.000Z", "expiresAt": "2026-08-24T15:50:04.000Z"},
+  "contextManifest": {"id": "ctx_0198d95f-6c00-7000-8000-000000000085", "workId": "wrk_0198d95f-6c00-7000-8000-000000000082", "channelId": "chn_0198d95f-6c00-7000-8000-000000000022", "throughSequence": 1, "messageCount": 1, "messageIdsDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "attachmentIdsDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "privacyBoundary": "channel_only"},
+  "workObservation": {"id": "obs_0198d95f-6c00-7000-8000-000000000095", "authoritySystem": "resident_turn", "authorityId": "resident-turn-reference-1", "sourceVersion": "1", "observedState": "running", "observedAt": "2026-08-24T15:49:30.000Z", "sourceUpdatedAt": "2026-08-24T15:49:28.000Z", "freshness": "current", "terminal": false, "safeSummary": "Checking one source."},
+  "activity": {"state": "working", "label": "Checking one source", "workId": "wrk_0198d95f-6c00-7000-8000-000000000082", "observationId": "obs_0198d95f-6c00-7000-8000-000000000095", "updatedAt": "2026-08-24T15:49:30.000Z"},
+  "outbox": {"id": "obx_0198d95f-6c00-7000-8000-000000000087", "topic": "resident_wake", "aggregateId": "wrk_0198d95f-6c00-7000-8000-000000000082", "state": "claimed", "attemptCount": 1},
+  "delivery": {"id": "dlv_0198d95f-6c00-7000-8000-000000000086", "eventSequence": 128, "deviceId": "dev_0198d95f-6c00-7000-8000-000000000071", "state": "pending", "attemptCount": 0},
+  "authorityEpoch": {"capability": "messages", "epoch": 2, "mode": "canonical", "writer": "home23-coordination", "effectiveAtEventSequence": 120, "rollbackEpoch": 1},
+  "throughEventSequence": 128
+}

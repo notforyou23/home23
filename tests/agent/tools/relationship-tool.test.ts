@@ -120,6 +120,30 @@ test('relationship_recall lists active entries, filterable by query', async () =
   assert.doesNotMatch(filtered.content, /migration/);
 });
 
+test('relationship_recall matches a phrase fragment and does not treat internal as withheld', async () => {
+  const ledger = freshLedger();
+  const c = ctx({ relationshipLedger: ledger });
+  await relationshipNoteTool.execute({
+    type: 'correction',
+    title: 'There is no he. I am Jerry.',
+    statement: 'There is no he. I am Jerry. The seed, the lobe, this room—I am them.',
+    privacy: 'internal',
+  }, c);
+  await relationshipNoteTool.execute({
+    type: 'preference',
+    title: 'private health',
+    statement: 'a sensitive medical detail',
+    privacy: 'sensitive',
+  }, c);
+
+  const recalled = await relationshipRecallTool.execute({
+    query: 'There is no he. I am Jerry. The seed, the lobe, this room—I am them.',
+  }, c);
+  assert.match(recalled.content, /There is no he/);
+  assert.doesNotMatch(recalled.content, /sensitive medical/);
+  assert.doesNotMatch(recalled.content, /withheld/);
+});
+
 test('relationship_update supersede / resolve / remove all work', async () => {
   const ledger = freshLedger();
   const c = ctx({ relationshipLedger: ledger });

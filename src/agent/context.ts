@@ -24,6 +24,7 @@ import {
 
 export interface ContextConfig {
   workspacePath: string;
+  projectRoot?: string;
   identityFiles: string[];
   identityLayers?: IdentityLayerConfig[];
   heartbeatRefreshMs: number;
@@ -83,7 +84,7 @@ export class ContextManager implements ContextManagerRef {
 
   getSystemPrompt(provider?: string): string {
     this.refreshHeartbeatIfNeeded();
-    const p = provider ?? 'anthropic';
+    const p = provider ?? (this.lastProvider || 'anthropic');
     if (this.dirty || p !== this.lastProvider) {
       this.rebuild(p);
     }
@@ -97,7 +98,7 @@ export class ContextManager implements ContextManagerRef {
   getPromptSourceInfo(): PromptSourceInfo {
     this.refreshHeartbeatIfNeeded();
     if (this.dirty) {
-      this.rebuild();
+      this.rebuild(this.lastProvider || 'anthropic');
     }
     return this.promptSourceInfo;
   }
@@ -171,16 +172,15 @@ export class ContextManager implements ContextManagerRef {
 
     const identity = layerBlocks.join('\n\n---\n\n');
 
-    // The system prompt is cached between rebuilds, so this timestamp is the
-    // BUILD time, not the current turn's time — label it as such and point
-    // at the live sources so a stale value is never mistaken for "now".
+    // Keep rebuild timestamps in diagnostics, outside the reusable prompt.
+    // Refreshing unchanged files must not invalidate the prefix cache.
     const contextBlock = [
       `[CONTEXT]`,
-      `Time at prompt build: ${formatContextTimestamp(new Date(), this.config.timezone)} — static; for the current moment trust session context (NOW) or the machine clock`,
+      `Timezone: ${this.config.timezone ? `(${this.config.timezone})` : "not configured; use explicitly labeled UTC"}. For the current time use session context (NOW) or the machine clock.`,
       `Machine: ${hostname()}`,
       `User: ${this.config.ownerName ?? 'unknown'}${this.config.ownerTelegramId ? ` (Telegram ID: ${this.config.ownerTelegramId})` : ''}`,
       `Engine: http://localhost:${this.config.enginePort}`,
-      `Project root: ${this.config.workspacePath.replace(/\/workspace$/, '')}`,
+      ...(this.config.projectRoot ? [`Project root: ${this.config.projectRoot}`] : []),
       `Workspace: ${this.config.workspacePath}`,
     ].join('\n');
 
@@ -206,7 +206,7 @@ export class ContextManager implements ContextManagerRef {
     const heartbeatPath = this.findHeartbeatPath();
     if (!heartbeatPath || !existsSync(heartbeatPath)) return;
 
-    // Heartbeat changed — force full rebuild to get fresh timestamp too
+    // Re-read heartbeat content after the refresh interval.
     this.dirty = true;
   }
 

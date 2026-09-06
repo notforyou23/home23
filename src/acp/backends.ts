@@ -85,9 +85,31 @@ function otherEvent(line: string): BridgeEvent {
   return { kind: 'other', raw: bounded(line, OTHER_RAW_MAX) };
 }
 
+/** Reject controls that this adapter cannot enforce instead of silently dropping them. */
+export function validateBackendOptions(backend: string, opts: CodingBackendOptions): void {
+  const supported: Record<string, string[]> = {
+    'claude-code': ['effort', 'appendSystemPrompt', 'maxBudgetUsd', 'addDirs', 'allowedTools', 'disallowedTools'],
+    'grok-build': ['effort', 'appendSystemPrompt', 'allowedTools', 'disallowedTools'],
+    codex: ['sandbox'],
+    cursor: ['addDirs'],
+  };
+  for (const key of ['effort', 'appendSystemPrompt', 'maxBudgetUsd', 'addDirs', 'allowedTools', 'disallowedTools', 'sandbox'] as const) {
+    const value = opts[key];
+    const present = Array.isArray(value) ? value.length > 0 : value !== undefined && value !== '';
+    if (present && !supported[backend]?.includes(key)) throw new Error(`${backend} does not support ${key}; no job was launched`);
+  }
+  if ((opts.allowedTools?.length || opts.disallowedTools?.length) && opts.permissionMode !== 'allowlist') {
+    throw new Error(`${backend} tool restrictions require allowlist permission mode; refusing to ignore them`);
+  }
+  if (opts.maxBudgetUsd !== undefined && (!Number.isFinite(opts.maxBudgetUsd) || opts.maxBudgetUsd <= 0)) {
+    throw new Error('maxBudgetUsd must be a finite positive number');
+  }
+}
+
 // ─── claude-code ─────────────────────────────────────────────
 
 function buildClaudeArgs(opts: CodingBackendOptions): string[] {
+  validateBackendOptions('claude-code', opts);
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
   else if (opts.newSessionId) args.push('--session-id', opts.newSessionId);
@@ -186,6 +208,7 @@ const claudeCodeBackend: CodingBackend = {
 // ─── grok-build ──────────────────────────────────────────────
 
 function buildGrokArgs(opts: CodingBackendOptions): string[] {
+  validateBackendOptions('grok-build', opts);
   // --single consumes the next argv token as its prompt, so keep the prompt
   // adjacent; placing flags between them makes Grok parse the first flag as text.
   const args = ['--single', opts.prompt];
@@ -277,6 +300,7 @@ const grokBuildBackend: CodingBackend = {
 // ─── codex ───────────────────────────────────────────────────
 
 function buildCodexArgs(opts: CodingBackendOptions): string[] {
+  validateBackendOptions('codex', opts);
   // cwd comes from spawn(); never pass -C / --cd.
   const args = opts.resumeSessionId
     ? ['exec', 'resume', opts.resumeSessionId, '--json', '--skip-git-repo-check']
@@ -369,6 +393,7 @@ const codexBackend: CodingBackend = {
 // ─── cursor ──────────────────────────────────────────────────
 
 function buildCursorArgs(opts: CodingBackendOptions): string[] {
+  validateBackendOptions('cursor', opts);
   // cwd comes from spawn(); never pass --workspace.
   const args = ['-p', '--output-format', 'stream-json', '--trust'];
   // Cursor exposes no --session-id: the CLI mints the chat id itself and

@@ -113,6 +113,7 @@ test('AgentLoop Codex OAuth GPT-5.6 turn sends Responses reasoning effort', asyn
       start(controller) {
         controller.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"ok"}\n\n'));
         controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n'));
         controller.close();
       },
     });
@@ -128,8 +129,206 @@ test('AgentLoop Codex OAuth GPT-5.6 turn sends Responses reasoning effort', asyn
     });
     const started = await agent.runWithTurn('reasoning-chat', 'hello', { effort: 'xhigh' });
     await started.response;
-    assert.deepEqual(body?.reasoning, { effort: 'xhigh' });
+    assert.deepEqual(body?.reasoning, { effort: 'xhigh', summary: 'auto' });
     assert.equal(Object.hasOwn(body ?? {}, 'reasoning_effort'), false);
+    const status = new TurnStore(history).statusForTurn('reasoning-chat', started.turnId);
+    assert.equal(status?.runtime_model.reasoning_effort, 'xhigh');
+  } finally {
+    globalThis.fetch = previousFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AgentLoop Codex OAuth emits thinking events from reasoning summary SSE', async () => {
+  const root = join(tmpdir(), `chat-turn-codex-thinking-${Date.now()}`);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  const agent = new AgentLoop({
+    apiKey: '',
+    model: 'gpt-5.6-terra',
+    provider: 'openai-codex',
+    registry: {
+      getAnthropicTools: () => [],
+      getOpenAITools: () => [],
+      get: () => undefined,
+      execute: async () => ({ content: '' }),
+    } as any,
+    contextManager: {
+      getSystemPrompt: () => 'You are a test agent.',
+      getPromptSourceInfo: () => ({ loadedFiles: [] }),
+    } as any,
+    history,
+    toolContext: {} as any,
+    workspacePath: join(root, 'workspace'),
+  });
+  const previousFetch = globalThis.fetch;
+  const reasoning: Array<{ content: string; provenance: string }> = [];
+
+  globalThis.fetch = (async (_url, init) => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const enc = new TextEncoder();
+        controller.enqueue(enc.encode('data: {"type":"response.reasoning_summary_text.delta","delta":"Need "}\n\n'));
+        controller.enqueue(enc.encode('data: {"type":"response.reasoning_summary_text.delta","delta":"the files."}\n\n'));
+        controller.enqueue(enc.encode('data: {"type":"response.reasoning_summary_text.done","text":"Need the files."}\n\n'));
+        controller.enqueue(enc.encode('data: {"type":"response.output_text.delta","delta":"ok"}\n\n'));
+        controller.enqueue(enc.encode('data: [DONE]\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    (agent as any).codexCredentialsProvider = async () => ({
+      accessToken: 'access-test',
+      refreshToken: 'refresh-test',
+      expires: Date.now() + 60_000,
+      accountId: 'acct-test',
+    });
+    const started = await agent.runWithTurn('thinking-chat', 'hello', {
+      effort: 'high',
+      onEvent: (event) => {
+        if (event.type === 'thinking') reasoning.push({
+          content: String(event.content || ''), provenance: event.provenance,
+        });
+      },
+    });
+    await started.response;
+    assert.equal(reasoning.map(event => event.content).join(''), 'Need the files.');
+    assert.ok(reasoning.every(event => event.provenance === 'provider_reasoning_summary'));
+  } finally {
+    globalThis.fetch = previousFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AgentLoop Codex OAuth prefers full reasoning_text over summary titles', async () => {
+  const root = join(tmpdir(), `chat-turn-codex-full-thinking-${Date.now()}`);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  const agent = new AgentLoop({
+    apiKey: '',
+    model: 'gpt-5.6-terra',
+    provider: 'openai-codex',
+    registry: {
+      getAnthropicTools: () => [],
+      getOpenAITools: () => [],
+      get: () => undefined,
+      execute: async () => ({ content: '' }),
+    } as any,
+    contextManager: {
+      getSystemPrompt: () => 'You are a test agent.',
+      getPromptSourceInfo: () => ({ loadedFiles: [] }),
+    } as any,
+    history,
+    toolContext: {} as any,
+    workspacePath: join(root, 'workspace'),
+  });
+  const previousFetch = globalThis.fetch;
+  const reasoning: Array<{ content: string; provenance: string }> = [];
+
+  globalThis.fetch = (async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const enc = new TextEncoder();
+        controller.enqueue(enc.encode('data: {"type":"response.reasoning_text.delta","delta":"The operator wants the full live thought stream. "}\n\n'));
+        controller.enqueue(enc.encode('data: {"type":"response.reasoning_text.delta","delta":"Do not collapse that into a title."}\n\n'));
+        controller.enqueue(enc.encode('data: {"type":"response.reasoning_text.done","text":"The operator wants the full live thought stream. Do not collapse that into a title."}\n\n'));
+        controller.enqueue(enc.encode('data: {"type":"response.reasoning_summary_text.delta","delta":"**Planning concise natural response**"}\n\n'));
+        controller.enqueue(enc.encode('data: {"type":"response.reasoning_summary_text.done","text":"**Planning concise natural response**"}\n\n'));
+        controller.enqueue(enc.encode('data: {"type":"response.output_text.delta","delta":"ok"}\n\n'));
+        controller.enqueue(enc.encode('data: [DONE]\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    (agent as any).codexCredentialsProvider = async () => ({
+      accessToken: 'access-test',
+      refreshToken: 'refresh-test',
+      expires: Date.now() + 60_000,
+      accountId: 'acct-test',
+    });
+    const started = await agent.runWithTurn('full-thinking-chat', 'hello', {
+      effort: 'high',
+      onEvent: (event) => {
+        if (event.type === 'thinking') reasoning.push({
+          content: String(event.content || ''), provenance: event.provenance,
+        });
+      },
+    });
+    await started.response;
+    const full = reasoning.filter(event => event.provenance === 'provider_verbatim_reasoning')
+      .map(event => event.content).join('');
+    const summary = reasoning.filter(event => event.provenance === 'provider_reasoning_summary')
+      .map(event => event.content).join('');
+    assert.match(full, /full live thought stream/);
+    assert.match(summary, /Planning concise natural response/);
+  } finally {
+    globalThis.fetch = previousFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AgentLoop Codex OAuth retries once without reasoning when the endpoint rejects it', async () => {
+  const root = join(tmpdir(), `chat-turn-codex-reasoning-retry-${Date.now()}`);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  const agent = new AgentLoop({
+    apiKey: '',
+    model: 'gpt-5.5',
+    provider: 'openai-codex',
+    registry: {
+      getAnthropicTools: () => [],
+      getOpenAITools: () => [],
+      get: () => undefined,
+      execute: async () => ({ content: '' }),
+    } as any,
+    contextManager: {
+      getSystemPrompt: () => 'You are a test agent.',
+      getPromptSourceInfo: () => ({ loadedFiles: [] }),
+    } as any,
+    history,
+    toolContext: {} as any,
+    workspacePath: join(root, 'workspace'),
+  });
+  const previousFetch = globalThis.fetch;
+  const bodies: Array<Record<string, unknown>> = [];
+
+  globalThis.fetch = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    bodies.push(body);
+    if (bodies.length === 1) {
+      return new Response('{"detail":"Unsupported parameter: reasoning.summary"}', { status: 400 });
+    }
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"ok"}\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"status":"completed"}}\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    (agent as any).codexCredentialsProvider = async () => ({
+      accessToken: 'access-test',
+      refreshToken: 'refresh-test',
+      expires: Date.now() + 60_000,
+      accountId: 'acct-test',
+    });
+    const started = await agent.runWithTurn('reasoning-retry', 'hello', { effort: 'medium' });
+    const result = await started.response;
+    assert.equal(result.text, 'ok');
+    assert.deepEqual(bodies[0]?.reasoning, { effort: 'medium', summary: 'auto' });
+    assert.equal(Object.hasOwn(bodies[1] ?? {}, 'reasoning'), false);
   } finally {
     globalThis.fetch = previousFetch;
     rmSync(root, { recursive: true, force: true });

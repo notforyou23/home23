@@ -36,6 +36,11 @@ function buildExecutionContext(projectRoot: string, ctx: ToolContext): Record<st
     enginePort: ctx.enginePort,
     chatId: ctx.chatId,
     browser: ctx.browser,
+    abortSignal: ctx.abortSignal,
+    onEvent: ctx.onEvent,
+    coordinationWorkDestination: ctx.coordinationWorkDestination,
+    parentWorkId: ctx.parentWorkId,
+    invocationId: ctx.parentToolCallId,
   };
 }
 
@@ -127,7 +132,11 @@ export async function executeSharedSkill(
 
   const startedAt = Date.now();
   try {
+    ctx.abortSignal?.throwIfAborted();
+    // Await the actual action, even when cancellation was requested. Arbitrary actions
+    // cannot be declared stopped by racing their promise against an abort timer.
     const result = await mod.executeSkill(skillId, action, params, buildExecutionContext(projectRoot, ctx));
+    ctx.abortSignal?.throwIfAborted();
     recordTelemetry(projectRoot, 'skills_run', ctx, {
       skillId,
       action,

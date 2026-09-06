@@ -109,6 +109,19 @@ function makeOrchestratorFake(runDir, lockRoot, graph, cycleCount, logs) {
   };
 }
 
+async function saveStateAndSettleBackup(fake) {
+  const result = await Orchestrator.prototype.saveState.call(fake);
+  // saveState deliberately leaves the interval-gated brain backup running in
+  // the background on the cycle path. Real-save tests own temporary run dirs,
+  // so settle that explicit lifecycle promise before their teardown removes
+  // the directory. Otherwise the copy can race rmSync and intermittently
+  // recreate an entry beneath it (ENOTEMPTY).
+  if (fake._backupPromise && typeof fake._backupPromise.then === 'function') {
+    await fake._backupPromise;
+  }
+  return result;
+}
+
 test('writeSnapshot/readSnapshot round-trip the contract shape atomically in the state dir', (t) => {
   const dir = makeBrainDir(t, 'roundtrip');
   const snap = {
@@ -254,7 +267,7 @@ test('real saveState: growth stamps brain-snapshot.json and a 90 percent drop at
   const logs = [];
 
   // First save on a fresh run dir: baseline is zero, save passes and stamps the snapshot.
-  const first = await Orchestrator.prototype.saveState.call(
+  const first = await saveStateAndSettleBackup(
     makeOrchestratorFake(runDir, lockRoot, memoryGraph('grow', 200), 2, logs),
   );
   assert.equal(first.saved, true);
@@ -274,7 +287,7 @@ test('real saveState: growth stamps brain-snapshot.json and a 90 percent drop at
   // 90% drop at cycle 50 (the old dead guard only ran at cycle <= 1): refused, nothing rewritten.
   const stateBefore = fs.readFileSync(path.join(runDir, 'state.json.gz'));
   const manifestBefore = fs.readFileSync(path.join(runDir, 'memory-manifest.json'));
-  const refused = await Orchestrator.prototype.saveState.call(
+  const refused = await saveStateAndSettleBackup(
     makeOrchestratorFake(runDir, lockRoot, memoryGraph('drop', 20), 50, logs),
   );
   assert.equal(refused.saved, false);
@@ -299,7 +312,7 @@ test('real saveState: growth stamps brain-snapshot.json and a 90 percent drop at
   assert.equal(readSnapshot(runDir).nodes, 200, 'refused save must not touch the snapshot');
 
   // Normal growth save afterwards passes and re-stamps the snapshot.
-  const second = await Orchestrator.prototype.saveState.call(
+  const second = await saveStateAndSettleBackup(
     makeOrchestratorFake(runDir, lockRoot, memoryGraph('regrow', 210), 51, logs),
   );
   assert.equal(second.saved, true);
@@ -326,7 +339,7 @@ test('real saveState refuses with persistence_guard_failed when the existing sta
   const logs = [];
   const stateBefore = fs.readFileSync(path.join(runDir, 'state.json.gz'));
 
-  const refused = await Orchestrator.prototype.saveState.call(
+  const refused = await saveStateAndSettleBackup(
     makeOrchestratorFake(runDir, lockRoot, memoryGraph('unreadable', 20), 5, logs),
   );
   assert.equal(refused.saved, false);
@@ -374,7 +387,7 @@ test('refused saves reuse the memoized cold-path baseline instead of re-resolvin
   // ONE orchestrator instance across both saves — the memo lives on `this`.
   const fake = makeOrchestratorFake(runDir, lockRoot, memoryGraph('shrunk', 20), 50, logs);
 
-  const first = await Orchestrator.prototype.saveState.call(fake);
+  const first = await saveStateAndSettleBackup(fake);
   assert.equal(first.saved, false);
   assert.equal(first.reason, 'catastrophic_node_drop');
   assert.equal(first.existingNodes, 200);
@@ -388,7 +401,7 @@ test('refused saves reuse the memoized cold-path baseline instead of re-resolvin
   fs.rmSync(path.join(runDir, 'memory-nodes.jsonl.gz'));
   fs.rmSync(path.join(runDir, 'memory-edges.jsonl.gz'));
 
-  const second = await Orchestrator.prototype.saveState.call(fake);
+  const second = await saveStateAndSettleBackup(fake);
   assert.equal(second.saved, false, 'refused save must reuse the memoized baseline, not re-stream');
   assert.equal(second.reason, 'catastrophic_node_drop');
   assert.equal(second.existingNodes, 200);
@@ -404,7 +417,7 @@ test('a successful save refreshes the memoized baseline to the just-saved counts
   const logs = [];
 
   const fake = makeOrchestratorFake(runDir, lockRoot, memoryGraph('grow', 200), 2, logs);
-  const result = await Orchestrator.prototype.saveState.call(fake);
+  const result = await saveStateAndSettleBackup(fake);
 
   assert.equal(result.saved, true);
   assert.deepEqual(fake._knownGoodCache, { count: 200, source: 'snapshot' },
@@ -427,7 +440,7 @@ test('cache provenance is honest when the snapshot stamp fails: last-save, not s
   fs.mkdirSync(path.join(runDir, 'brain-snapshot.json'));
 
   const fake = makeOrchestratorFake(runDir, lockRoot, memoryGraph('grow', 200), 2, logs);
-  const result = await Orchestrator.prototype.saveState.call(fake);
+  const result = await saveStateAndSettleBackup(fake);
 
   assert.equal(result.saved, true);
   assert.deepEqual(fake._knownGoodCache, { count: 200, source: 'last-save' },
@@ -445,13 +458,13 @@ test('operator escape hatch survives memoization: editing brain-snapshot.json do
 
   // ONE long-lived orchestrator instance: warm cache, then a legitimate prune.
   const fake = makeOrchestratorFake(runDir, lockRoot, memoryGraph('big', 200), 2, logs);
-  const grow = await Orchestrator.prototype.saveState.call(fake);
+  const grow = await saveStateAndSettleBackup(fake);
   assert.equal(grow.saved, true);
 
   // Legitimate prune to 60 nodes: refused every cycle (60 < 50% of 200).
   fake.cycleCount = 50;
   fake.memory = { exportGraph: () => memoryGraph('pruned', 60) };
-  const refused = await Orchestrator.prototype.saveState.call(fake);
+  const refused = await saveStateAndSettleBackup(fake);
   assert.equal(refused.saved, false);
   assert.equal(refused.reason, 'catastrophic_node_drop');
   assert.equal(refused.existingNodes, 200);
@@ -465,7 +478,7 @@ test('operator escape hatch survives memoization: editing brain-snapshot.json do
   });
 
   fake.cycleCount = 51;
-  const approved = await Orchestrator.prototype.saveState.call(fake);
+  const approved = await saveStateAndSettleBackup(fake);
   assert.equal(approved.saved, true,
     'edited snapshot must take effect on the very next save, no restart');
   assert.equal(approved.existingNodes, 60, 'baseline comes from the operator-edited snapshot');

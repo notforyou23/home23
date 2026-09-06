@@ -1,0 +1,25 @@
+{
+  "message": {
+    "id": "msg_0198d95f-6c00-7000-8000-0000000000c4",
+    "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+    "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+    "sequence": 7,
+    "author": {
+      "principalId": "bot_0198d95f-6c00-7000-8000-000000000011",
+      "kind": "bot",
+      "displayName": "Jerry"
+    },
+    "kind": "result",
+    "text": "The household archive is healthy and the verification receipt is attached.",
+    "mentions": [],
+    "attachments": [],
+    "replyToMessageId": "msg_0198d95f-6c00-7000-8000-0000000000c2",
+    "visibility": "visible",
+    "clientMessageId": null,
+    "provenance": {
+      "roundId": null,
+      "workId": "wrk_0198d95f-6c00-7000-8000-0000000000d7"
+    },
+    "createdAt": "2026-08-24T15:03:00.000Z"
+  }
+}

@@ -89,6 +89,8 @@ test('recoverStaleTurns orphans stale pending turns across chats and skips the a
   const { agent, history } = makeAgent(root);
   const staleStartedAt = new Date(Date.now() - 20 * 60 * 1000).toISOString();
   const freshStartedAt = new Date().toISOString();
+  const activeCoordinationChat = 'coordination:chn_active:wrk_active';
+  const staleCoordinationChat = 'coordination:chn_stale:wrk_stale';
 
   try {
     history.appendRecord('stale-chat', {
@@ -99,10 +101,18 @@ test('recoverStaleTurns orphans stale pending turns across chats and skips the a
       role: 'assistant',
       started_at: staleStartedAt,
     });
-    history.appendRecord('active-chat', {
+    history.appendRecord(activeCoordinationChat, {
       type: 'turn',
       turn_id: 't-active',
-      chat_id: 'active-chat',
+      chat_id: activeCoordinationChat,
+      status: 'pending',
+      role: 'assistant',
+      started_at: staleStartedAt,
+    });
+    history.appendRecord(staleCoordinationChat, {
+      type: 'turn',
+      turn_id: 't-stale-coordination',
+      chat_id: staleCoordinationChat,
       status: 'pending',
       role: 'assistant',
       started_at: staleStartedAt,
@@ -115,13 +125,21 @@ test('recoverStaleTurns orphans stale pending turns across chats and skips the a
       role: 'assistant',
       started_at: freshStartedAt,
     });
-    (agent as any).activeTurnIds.set('active-chat', new Set(['t-active']));
+    (agent as any).activeTurnIds.set(activeCoordinationChat, new Set(['t-active']));
 
     const recovered = agent.recoverStaleTurns(10 * 60 * 1000);
 
-    assert.deepEqual(recovered, [{ chatId: 'stale-chat', turnId: 't-stale' }]);
+    assert.deepEqual(recovered, [
+      { chatId: staleCoordinationChat, turnId: 't-stale-coordination' },
+      { chatId: 'stale-chat', turnId: 't-stale' },
+    ]);
     assert.equal(new TurnStore(history).pendingTurns('stale-chat').length, 0);
-    assert.equal(new TurnStore(history).pendingTurns('active-chat').length, 1);
+    assert.equal(new TurnStore(history).pendingTurns(activeCoordinationChat).length, 1);
+    assert.equal(new TurnStore(history).pendingTurns(staleCoordinationChat).length, 0);
+    assert.equal(
+      new TurnStore(history).finalEnvelope(staleCoordinationChat, 't-stale-coordination')?.chat_id,
+      staleCoordinationChat,
+    );
     assert.equal(new TurnStore(history).pendingTurns('fresh-chat').length, 1);
     const jsonl = readFileSync(join(root, 'conversations', 'test-agent__stale-chat.jsonl'), 'utf-8');
     assert.match(jsonl, /"status":"orphaned"/);
@@ -1252,4 +1270,19 @@ test('operator-stopped run that returns normally still writes terminal stopped e
     if (response) await response.catch(() => {});
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test('canonical coordinated turns remain under coordinator recovery even when absent from AgentLoop activity', () => {
+  const root = join(tmpdir(), `chat-turn-coordinator-${Date.now()}`);
+  const { agent, history } = makeAgent(root);
+  try {
+    history.appendRecord('coordination:pending', {
+      type: 'turn', turn_id: 'coord-root', chat_id: 'coordination:pending', status: 'pending', role: 'assistant',
+      started_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      coordination_origin: { kind: 'coordination', workId: 'wrk_pending' },
+    });
+    assert.deepEqual(agent.recoverStaleTurns(1, { preserveCoordination: true }), []);
+    assert.equal(new TurnStore(history).pendingTurns('coordination:pending').length, 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

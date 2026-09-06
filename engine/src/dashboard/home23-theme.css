@@ -1,0 +1,95 @@
+/* Shared appearance. House tokens remain the source for existing components. */
+:root {
+  color-scheme: dark;
+  --h23-surface-rgb: 30, 26, 24;
+  --h23-paper-rgb: 242, 236, 226;
+  --h23-signal-rgb: 142, 207, 232;
+  --h23-highlight-rgb: 255, 255, 255;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --h23-stage: #f3f5f8;
+  --h23-stage-deep: #e8edf3;
+  --h23-raised: #ffffff;
+  --h23-surface: #ffffff;
+  --h23-surface-rgb: 255, 255, 255;
+  --h23-paper: #202b3c;
+  --h23-paper-soft: #4e5c70;
+  --h23-paper-faint: #5d6a7c;
+  --h23-paper-rgb: 32, 43, 60;
+  --h23-highlight-rgb: 32, 43, 60;
+  --h23-signal: #245db5;
+  --h23-signal-rgb: 36, 93, 181;
+  --h23-leonardo-ice: #1c4e9b;
+  --h23-florence-amber: #855414;
+  --h23-warm: #855414;
+  --h23-grow: #247348;
+  --h23-ember: #b13b32;
+  --h23-ink: #ffffff;
+  --h23-lamplight: none;
+  --h23-glass-card: #ffffff;
+  --h23-glass-panel: #ffffff;
+  --h23-glass-input: #ffffff;
+  --h23-hover-card: #f7f9fc;
+  --h23-shadow-card: 0 2px 8px rgba(32, 43, 60, 0.04);
+  --h23-shadow-panel: 0 3px 12px rgba(32, 43, 60, 0.05);
+  --h23-shadow-overlay: 0 24px 80px rgba(32, 43, 60, 0.2);
+  --h23-overlay-backdrop: rgba(32, 43, 60, 0.3);
+}
+
+.h23-theme-toggle {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--h23-hairline-14);
+  border-radius: 10px;
+  background: var(--h23-glass-input);
+  color: var(--h23-paper);
+  font: 600 12px/1.2 var(--h23-font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.h23-theme-toggle:hover { background: var(--h23-hover-card); }
+.h23-theme-toggle:focus-visible {
+  outline: 2px solid var(--h23-signal);
+  outline-offset: 3px;
+}
+.h23-theme-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  padding-top: max(6px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--h23-hairline-10);
+  background: var(--h23-stage);
+}
+.h23-theme-toolbar a {
+  color: var(--h23-paper);
+  font-weight: 700;
+  text-decoration: none;
+}
+body.h23-chat-page .sh-shell > .h23-chat-slot { height: auto; min-height: 0; }
+@media (min-width: 641px) {
+  body.h23-dashboard-page .h23-topbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px 14px;
+  }
+  body.h23-dashboard-page .h23-topbar-brand { grid-area: 1 / 1; }
+  body.h23-dashboard-page .h23-topbar .h23-tabs-primary {
+    grid-area: 1 / 2;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  body.h23-dashboard-page .h23-topbar > .h23-theme-toggle {
+    grid-area: 1 / 3;
+    justify-self: end;
+  }
+  body.h23-dashboard-page .h23-linked-tabs { grid-area: 2 / 2; border: 0; padding: 0; }
+  body.h23-dashboard-page .h23-topbar-runtime { grid-area: 2 / 3; }
+}
+@media (max-width: 640px) {
+  .h23-theme-toggle { min-height: 44px; }
+}

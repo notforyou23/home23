@@ -13,15 +13,17 @@ For each noticing, return:
 - type: gap|stale|time-sensitive|connection|emotional
 - subject: one sentence describing what you noticed
 - evidence: specific node IDs / cluster IDs / edge weights and short concept snippets
-- implication: why this matters to Jason’s work routing / next actions
+- implication: why this matters to the owner's work routing / next actions
 - routing: bridge-chat|newsletter|heartbeat|morning-briefing|reminder
 - priority: high|medium|low
 
 Routing rules:
 - gap: Jerry-related → newsletter; project-related → heartbeat; personal → bridge-chat
 - stale: project → heartbeat; personal → bridge-chat
-- time-sensitive: ALWAYS bridge-chat or reminder; ALWAYS high priority
+- time-sensitive: verify the date and current relevance before proposing bridge-chat or reminder; use high priority only for a supported urgent need
 - connection: unexpected cross-domain → morning-briefing or newsletter
 - emotional: personal pattern → bridge-chat
+
+A routing field is a proposal, not permission to send. Return no noticings when evidence is insufficient. Missing or old entries do not prove personal events or emotional states.
 
 Hard constraints: do not mutate memory; do not exceed 5 items; be specific (IDs/snippets), not vague.

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Ajv from 'ajv';
@@ -11,6 +12,7 @@ import {
   brainSearchTool,
   brainStatusTool,
   brainSynthesizeTool,
+  formatBrainSearchContent,
 } from '../../../src/agent/tools/brain.js';
 import type { BrainOperationsClient } from '../../../src/agent/brain-operations/client.js';
 import { optionalJsonObject } from '../../../src/agent/brain-operations/input-validation.js';
@@ -228,6 +230,88 @@ test('brain_search uses the turn-scoped client and forwards an explicit sibling 
     (result.metadata?.sourceEvidence as any).authoritySummary.authorityClasses.narrative,
     1,
   );
+});
+
+test('brain_search returns ranked snippets, not a 50k JSON dump that starves later hits', async () => {
+  const wall = 'philosophical fragment '.repeat(2000);
+  const result = await brainSearchTool.execute({
+    query: 'brain search truncated dump results quality',
+  }, makeCtx({ brainOperations: {
+    search: async () => ({
+      results: [
+        { id: 'wrong-1', concept: wall, similarity: 0.41 },
+        { id: 'useful-2', concept: 'brain_search dumps pretty JSON so hits die at the 4k cap', similarity: 0.83 },
+        { id: 'useful-3', concept: 'identity-budget tail kept April LEARNINGS', similarity: 0.77 },
+      ],
+      operationId: 'op-search-dump',
+      evidence: { sourceHealth: 'healthy', retrievalMode: 'semantic' },
+    }),
+  } }));
+  assert.ok(result.content.length < 4000, `search content must fit the model cap, got ${result.content.length}`);
+  assert.match(result.content, /useful-2/);
+  assert.match(result.content, /useful-3/);
+  assert.match(result.content, /id=wrong-1/);
+  assert.equal(result.content.includes(wall), false, 'full concept wall must not be dumped');
+  assert.equal(/"authoritySummary"/.test(result.content), false);
+  assert.equal(result.metadata?.pageable, false);
+});
+
+test('brain_search packs twenty hits under the 4k cap with rank fields and no offset advice', async () => {
+  const hits = Array.from({ length: 20 }, (_, i) => ({
+    id: `hit-${i}`,
+    concept: `identity correction fragment ${i} ${'word '.repeat(80)}`,
+    similarity: 0.9 - i * 0.01,
+    finalRankScore: 800 - i,
+    matchKind: i === 0 ? 'exact_phrase' : 'semantic',
+    sourceDomain: i === 0 ? 'identity' : 'artifact_log',
+    componentScores: {
+      similarity: 0.9 - i * 0.01,
+      lexical: i === 0 ? 80 : 0.2,
+      retrieval: 1.2,
+      identityPenalty: i === 0 ? 1 : 0.12,
+      kindBoost: i === 0 ? 800 : 0,
+    },
+  }));
+  const formatted = formatBrainSearchContent({
+    results: hits,
+    evidence: { sourceHealth: 'healthy', retrievalMode: 'logical-source-scan', completeCoverage: true },
+  });
+  assert.ok(formatted.length < 4000, `formatted search exceeded cap: ${formatted.length}`);
+  assert.match(formatted, /finalRankScore=/);
+  assert.match(formatted, /matchKind=exact_phrase/);
+  assert.match(formatted, /sourceDomain=/);
+  assert.match(formatted, /identityPenalty=/);
+  assert.doesNotMatch(formatted, /offset=/);
+  assert.doesNotMatch(formatted, /use offset/i);
+  assert.match(formatted, /not pageable/i);
+});
+
+test('brain_search federates an internal relationship correction into the ranked list', async () => {
+  const result = await brainSearchTool.execute({
+    query: 'There is no he. I am Jerry.',
+  }, makeCtx({
+    brainOperations: {
+      search: async () => ({
+        results: [{ id: 'ann-sludge', concept: 'COZ shakedown table', similarity: 0.92 }],
+        evidence: { sourceHealth: 'healthy', retrievalMode: 'semantic-ann', completeCoverage: true },
+      }),
+    },
+    relationshipLedger: {
+      searchEntries: () => ({
+        entries: [{
+          id: 'rel_correction',
+          type: 'correction',
+          title: 'There is no he. I am Jerry.',
+          statement: 'There is no he. I am Jerry. The seed, the lobe, this room—I am them.',
+        }],
+        withheldMatching: 0,
+      }),
+    } as never,
+  }));
+  assert.match(result.content, /rel_correction/);
+  assert.match(result.content, /matchKind=relationship/);
+  assert.match(result.content, /withheldMatching=0/);
+  assert.doesNotMatch(result.content, /sensitive medical|private health/);
 });
 
 test('brain_query forwards an explicit sibling target and returns operation provenance', async () => {
@@ -795,11 +879,11 @@ test('provider-compatible schemas expose action fields while runtime defers cros
 test('the runtime prompt has one canonical brain doctrine with bounded PGS and no bypass', () => {
   assert.equal(CORE_RUNTIME_PROMPT.match(/### Brain tools/g)?.length, 1);
   assert.doesNotMatch(CORE_RUNTIME_PROMPT, /## Brain Integration/);
-  assert.match(CORE_RUNTIME_PROMPT, /PGS levels are cumulative/i);
-  assert.match(CORE_RUNTIME_PROMPT, /fresh starts/i);
-  assert.match(CORE_RUNTIME_PROMPT, /continue resumes/i);
-  assert.match(CORE_RUNTIME_PROMPT, /targeted limits/i);
-  assert.match(CORE_RUNTIME_PROMPT, /empty scoped result.*not.*full-brain absence/is);
+  assert.match(readFileSync('docs/reference/HOSTED-PGS.md', 'utf8'), /PGS levels are cumulative/i);
+  assert.match(readFileSync('docs/reference/HOSTED-PGS.md', 'utf8'), /fresh starts/i);
+  assert.match(readFileSync('docs/reference/HOSTED-PGS.md', 'utf8'), /continue resumes/i);
+  assert.match(readFileSync('docs/reference/HOSTED-PGS.md', 'utf8'), /targeted limits/i);
+  assert.match(readFileSync('docs/reference/HOSTED-PGS.md', 'utf8'), /empty scoped result.*not.*full-brain absence/is);
   assert.match(CORE_RUNTIME_PROMPT, /priorContext is direct-query only/i);
   assert.doesNotMatch(CORE_RUNTIME_PROMPT, /brain is unreachable.*shell \+ curl/is);
 });
@@ -1203,10 +1287,12 @@ test('JSON metadata validation preserves dangerous keys without prototype mutati
 
 test('runtime prompt teaches durable brain waits without obsolete short latency promises', () => {
   assert.match(CORE_RUNTIME_PROMPT, /ordinary (?:query )?attachment(?:s)? wait for up to 90 minutes/i);
-  assert.match(CORE_RUNTIME_PROMPT, /PGS.*launch.*detached.*immediately/i);
+  assert.match(readFileSync('docs/reference/HOSTED-PGS.md', 'utf8'), /PGS.*launch.*detached.*immediately/i);
   assert.match(CORE_RUNTIME_PROMPT, /brain_status \{action:"status",operationId:/i);
   assert.match(CORE_RUNTIME_PROMPT, /chat Stop.*detach.*durable/i);
-  assert.match(CORE_RUNTIME_PROMPT, /only brain_status action:"cancel".*cancels/i);
+  assert.match(CORE_RUNTIME_PROMPT, /read docs\/reference\/HOSTED-PGS\.md/);
+  assert.match(CORE_RUNTIME_PROMPT, /Outside a joined Working Thread, use brain_status action:"cancel"/);
+  assert.match(CORE_RUNTIME_PROMPT, /stopping that Work requests cancellation and waits for confirmation/);
   assert.match(CORE_RUNTIME_PROMPT, /verified operation activity.*renews.*turn lease/i);
   assert.match(CORE_RUNTIME_PROMPT, /own-brain health.*brain_status \{\}/i);
   assert.match(CORE_RUNTIME_PROMPT, /own-brain (?:search|lookup).*omit.*target/i);

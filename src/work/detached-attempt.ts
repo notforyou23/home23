@@ -1,0 +1,1026 @@
+/**
+ * One create-Work → run-Attempt → return-result path for long assignments.
+ *
+ * Calls Lane 3 Work/lease APIs. Execution is scheduled on a Work-scoped chat
+ * so the conversation run lock is not held for the life of the Attempt.
+ * Completion is idempotent: one canonical Jerry result Message.
+ */
+import { createHash, randomBytes } from 'node:crypto';
+
+import { generateCoordinationId } from '../coordination/ids/index.js';
+import type {
+  ContextManifestInput,
+  CancelQueuedWorkInput,
+  CancelQueuedWorkResult,
+  CreateWorkInput as CanonicalCreateWorkInput,
+  CreateWorkResult,
+  WorkRecord,
+} from '../coordination/work/index.js';
+import type {
+  LeaseBindingInput,
+  OfferLeaseInput,
+  OfferLeaseResult,
+  ReasonedLeaseBindingInput,
+  TerminalizeInput,
+  TerminalizeResult,
+} from '../coordination/leases/index.js';
+import type { MediaAttachment } from '../types.js';
+import type { ForegroundDetachRequest } from '../agent/foreground-tool-policy.js';
+import { handleWorkCompletion, type CompletionDeps } from './completion.js';
+import { requestAsyncWorkCancel, type WorkCancelDeps, type WorkCancelOutcome } from './cancel.js';
+import {
+  delegatedAttemptChatId,
+  residentAttemptChatId,
+} from './detach.js';
+import type { WorkRegistry } from './registry.js';
+import type { CoordinationCompletionCommit, ReceiptSinks } from './receipt-delivery.js';
+import {
+  TERMINAL_WORK_STATUSES,
+  type AsyncWorkRecord,
+  type AsyncWorkTerminalResult,
+  type CoordinationWorkDestination,
+  type WorkOffice,
+} from './types.js';
+
+const ARTIFACT_ID_RE =
+  /^art_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const TERMINAL_CANONICAL_STATES = new Set(['succeeded', 'failed', 'cancelled']);
+const CANCEL_IN_PROGRESS_WORK = new Set(['cancelling', 'cancelled']);
+const CANCEL_IN_PROGRESS_ATTEMPT = new Set(['cancel_requested', 'cancelled']);
+
+function honestArtifactSummary(label: string, artifacts: readonly MediaAttachment[]): string {
+  const names = artifacts.map((artifact) =>
+    (artifact.fileName || artifact.path.split('/').pop() || artifact.type).slice(0, 80));
+  const listed = names.slice(0, 8).join(', ');
+  const extra = names.length > 8 ? `, +${names.length - 8} more` : '';
+  return `Work finished: ${label} (${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}: ${listed}${extra})`;
+}
+
+function artifactIdsFromMedia(artifacts: readonly MediaAttachment[]): string[] {
+  return artifacts.map((artifact) => artifact.path).filter((path) => ARTIFACT_ID_RE.test(path));
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function canonicalTimestamp(date: Date): string {
+  const value = date.toISOString();
+  if (value.length !== 24) throw new Error('detached Attempt timestamps require UTC milliseconds');
+  return value;
+}
+
+export interface ConversationRunLock {
+  isRunning(chatId: string): boolean;
+  markActive(chatId: string): void;
+  clear(chatId: string): void;
+}
+
+export interface DetachedDispatchAuthority {
+  principalId: string;
+  targetPrincipalId: string;
+  residentBinding: string;
+  residentInstanceId: string;
+  authorityReference: string;
+  channelId: string;
+  conversationId: string;
+  originMessageId: string;
+  conversationChatId: string;
+  instruction: string;
+}
+
+export interface DetachedAttemptDispatchInput extends DetachedDispatchAuthority {
+  office: WorkOffice;
+  label: string;
+  manifest: ContextManifestInput;
+  idempotencyKey: string;
+  requestId: string;
+  correlationId: string;
+  workKind?: string;
+  presentation?: { title: string; summary: string };
+  execute?: ForegroundDetachRequest['execute'];
+  maxAutomaticOffers?: number;
+  deadlineAt?: string;
+}
+
+export interface CanonicalResultCommit {
+  commit(input: {
+    workId: string;
+    channelId: string;
+    conversationId: string;
+    originMessageId: string;
+    text: string | null;
+    artifactIds: readonly string[];
+    idempotencyKey: string;
+  }): Promise<{ messageId: string; replayed: boolean }>;
+}
+
+export interface DetachedAttemptRunner {
+  run(input: {
+    attemptChatId: string;
+    conversationChatId: string;
+    office: WorkOffice;
+    instruction: string;
+    authority: Readonly<DetachedDispatchAuthority>;
+    destination: CoordinationWorkDestination;
+    onProgress: (summary: string) => void;
+    onEvidence: (note: string) => void;
+    execute?: ForegroundDetachRequest['execute'];
+  }): Promise<{
+    text: string;
+    artifacts?: readonly MediaAttachment[];
+  }>;
+}
+
+export interface DetachedAttemptWorkPort {
+  create(input: CanonicalCreateWorkInput): CreateWorkResult;
+  get(workId: string): WorkRecord | null;
+  listResidentRecoverable?(kind: string, limit?: number): readonly WorkRecord[];
+  cancelQueued(input: CancelQueuedWorkInput): CancelQueuedWorkResult;
+  recoverOrphan?(workId: string): 'failed' | 'cancelled' | null;
+}
+
+export interface DetachedAttemptLeasePort {
+  offer(input: OfferLeaseInput): OfferLeaseResult;
+  accept(input: LeaseBindingInput): { work: WorkRecord; attempt: { id: string }; lease: { id: string } };
+  start(input: LeaseBindingInput): { work: WorkRecord; attempt: { id: string }; lease: { id: string } };
+  current(workId: string): {
+    work: WorkRecord;
+    attempt: {
+      id: string;
+      state: string;
+      holderPrincipalId: string;
+      holderInstanceId: string;
+      authorityReference: string;
+      fencingToken: number;
+    };
+    lease: { id: string };
+  };
+  revoke(input: ReasonedLeaseBindingInput): unknown;
+  reject(input: ReasonedLeaseBindingInput): unknown;
+  expire(input: ReasonedLeaseBindingInput): unknown;
+  terminalize(input: TerminalizeInput): TerminalizeResult;
+}
+
+export interface DetachedAttemptResult {
+  workId: string;
+  harnessWorkId: string;
+  messageId: string | null;
+  replayed: boolean;
+  text: string | null;
+  artifactIds: readonly string[];
+  status: 'completed' | 'failed' | 'cancelled';
+}
+
+export interface DetachedAttemptHandle {
+  workId: string;
+  harnessWorkId: string;
+  attemptId: string;
+  leaseId: string;
+  fencingToken: number;
+  attemptChatId: string;
+  conversationChatId: string;
+  office: WorkOffice;
+  authority: Readonly<DetachedDispatchAuthority>;
+  settled: Promise<DetachedAttemptResult>;
+}
+
+export interface DetachedAttemptPathDeps {
+  registry: WorkRegistry;
+  work: DetachedAttemptWorkPort;
+  leases: DetachedAttemptLeasePort;
+  runner: DetachedAttemptRunner;
+  results: CanonicalResultCommit;
+  lock: ConversationRunLock;
+  now?: () => Date;
+  resolveArtifactIds?: (input: {
+    artifacts: readonly MediaAttachment[];
+    binding: LeaseBindingInput;
+  }) => readonly string[] | Promise<readonly string[]>;
+}
+
+function bindingFor(
+  input: DetachedAttemptDispatchInput,
+  offer: OfferLeaseResult,
+): LeaseBindingInput {
+  return {
+    workId: offer.work.id,
+    attemptId: offer.attempt.id,
+    leaseId: offer.lease.id,
+    holderPrincipalId: input.targetPrincipalId,
+    holderInstanceId: input.residentInstanceId,
+    fencingToken: offer.fencingToken,
+    requestId: input.requestId,
+    correlationId: input.correlationId,
+  };
+}
+
+function destinationFor(
+  input: DetachedAttemptDispatchInput,
+  workId: string,
+  binding: LeaseBindingInput,
+): CoordinationWorkDestination {
+  return Object.freeze({
+    kind: 'coordination',
+    parentWorkId: workId,
+    channelId: input.channelId,
+    conversationId: input.conversationId,
+    originMessageId: input.originMessageId,
+    attemptId: binding.attemptId,
+    leaseId: binding.leaseId,
+    fencingToken: binding.fencingToken,
+    targetPrincipalId: input.targetPrincipalId,
+    residentBinding: input.residentBinding,
+    residentInstanceId: input.residentInstanceId,
+    authorityReference: input.authorityReference,
+  });
+}
+
+function attemptChatFor(office: WorkOffice, channelId: string, workId: string): string {
+  return office === 'delegated'
+    ? delegatedAttemptChatId(channelId, workId, randomBytes(16).toString('hex'))
+    : residentAttemptChatId(channelId, workId);
+}
+
+export function createDetachedAttemptPath(deps: DetachedAttemptPathDeps) {
+  const now = deps.now ?? (() => new Date());
+  const inflight = new Map<string, DetachedAttemptHandle>();
+  const completed = new Map<string, DetachedAttemptResult>();
+  const completedByWork = new Map<string, DetachedAttemptResult>();
+  const bindings = new Map<string, LeaseBindingInput>();
+  const cancelRequested = new Set<string>();
+  const lastMessage = new Map<string, { messageId: string; replayed: boolean }>();
+
+  const resultSink = (artifactIds: readonly string[]): ReceiptSinks => ({
+    appendHistory: () => {
+      throw new Error('detached Attempt must not append conversation transcript rows');
+    },
+    commitCoordinationCompletion: async (commit: CoordinationCompletionCommit) => {
+      const summaryArtifacts = commit.artifacts.length > 0
+        ? commit.artifacts
+        : artifactIds.map((id) => ({ type: 'document' as const, path: id, fileName: id }));
+      const text = commit.terminalText?.trim()
+        || (artifactIds.length > 0 ? honestArtifactSummary(commit.childWorkId, summaryArtifacts) : '');
+      if (commit.status !== 'completed' || (!text && artifactIds.length === 0)) return;
+      const committed = await deps.results.commit({
+        workId: commit.parentWorkId,
+        channelId: commit.channelId,
+        conversationId: commit.conversationId,
+        originMessageId: commit.originMessageId,
+        text: text || null,
+        artifactIds,
+        idempotencyKey: `work-result:${commit.parentWorkId}`,
+      });
+      lastMessage.set(commit.childWorkId, committed);
+    },
+  });
+
+  const completionDeps = (artifactIds: readonly string[]): CompletionDeps => ({
+    registry: deps.registry,
+    sinks: resultSink(artifactIds),
+    review: { coding: false, subagent: false, cron: false },
+    isChatBusy: (chatId) => deps.lock.isRunning(chatId),
+    waitForIdleMs: 0,
+    idlePollMs: 1,
+    runReviewTurn: async () => {
+      throw new Error('detached Attempt completion must not run a conversation review turn');
+    },
+  });
+
+  async function deliver(
+    harness: AsyncWorkRecord,
+    result: string | AsyncWorkTerminalResult,
+    artifactIds: readonly string[],
+  ): Promise<void> {
+    await handleWorkCompletion(harness, result, completionDeps(artifactIds));
+  }
+
+  function findHarness(workId: string): AsyncWorkRecord | undefined {
+    return deps.registry.list({}).find((record) => record.parentWorkId === workId);
+  }
+
+  function cacheResult(result: DetachedAttemptResult): DetachedAttemptResult {
+    completed.set(result.harnessWorkId, result);
+    completedByWork.set(result.workId, result);
+    return result;
+  }
+
+  function currentLease(workId: string): ReturnType<DetachedAttemptLeasePort['current']> | undefined {
+    try {
+      return deps.leases.current(workId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  function bindingFromCurrent(
+    workId: string,
+    requestId: string,
+    correlationId: string,
+  ): LeaseBindingInput | undefined {
+    const current = currentLease(workId);
+    if (!current) return undefined;
+    return {
+      workId,
+      attemptId: current.attempt.id,
+      leaseId: current.lease.id,
+      holderPrincipalId: current.attempt.holderPrincipalId,
+      holderInstanceId: current.attempt.holderInstanceId,
+      fencingToken: current.attempt.fencingToken,
+      requestId,
+      correlationId,
+    };
+  }
+
+  function hasDurableCancel(workId: string): boolean {
+    const work = deps.work.get(workId);
+    if (work && CANCEL_IN_PROGRESS_WORK.has(work.state)) return true;
+    const attemptState = currentLease(workId)?.attempt.state;
+    return Boolean(attemptState && CANCEL_IN_PROGRESS_ATTEMPT.has(attemptState));
+  }
+
+  function wasCancelled(harnessWorkId: string, workId: string): boolean {
+    return cancelRequested.has(harnessWorkId)
+      || cancelRequested.has(workId)
+      || hasDurableCancel(workId);
+  }
+
+  function cancelledReceipt(input: DetachedAttemptDispatchInput): TerminalizeInput['receipt'] {
+    return {
+      status: 'cancelled',
+      sourceReference: input.authorityReference,
+      resultDigest: null,
+      artifactIds: [],
+      timestamp: canonicalTimestamp(now()),
+    };
+  }
+
+  function rememberCancel(workId: string, harnessWorkId?: string): void {
+    cancelRequested.add(workId);
+    if (harnessWorkId) cancelRequested.add(harnessWorkId);
+  }
+
+  function mapCanonicalStatus(state: string | undefined): DetachedAttemptResult['status'] | undefined {
+    if (state === 'succeeded') return 'completed';
+    if (state === 'failed') return 'failed';
+    if (state === 'cancelled') return 'cancelled';
+    return undefined;
+  }
+
+  function persistableArtifacts(
+    media: readonly MediaAttachment[],
+    artifactIds: readonly string[],
+  ): MediaAttachment[] {
+    const have = new Set(artifactIdsFromMedia(media));
+    const extras = artifactIds
+      .filter((id) => !have.has(id))
+      .map((id) => ({ type: 'document' as const, path: id, fileName: id }));
+    return [...media, ...extras];
+  }
+
+  async function resolveIds(
+    media: readonly MediaAttachment[],
+    binding: LeaseBindingInput,
+  ): Promise<string[]> {
+    const fromMedia = artifactIdsFromMedia(media);
+    const resolved = deps.resolveArtifactIds
+      ? [...await deps.resolveArtifactIds({ artifacts: media, binding })]
+      : [];
+    return [...new Set([...fromMedia, ...resolved])];
+  }
+
+  async function replayTerminal(
+    workId: string,
+    input: DetachedAttemptDispatchInput,
+    harness: AsyncWorkRecord | undefined,
+  ): Promise<DetachedAttemptResult> {
+    const cached = completedByWork.get(workId)
+      ?? (harness ? completed.get(harness.workId) : undefined);
+    const work = deps.work.get(workId);
+    const status = cached?.status
+      ?? mapCanonicalStatus(work?.state)
+      ?? (harness?.status === 'completed' ? 'completed'
+        : harness?.status === 'cancelled' ? 'cancelled'
+        : harness?.status === 'failed' ? 'failed'
+        : 'completed');
+    const text = cached?.text ?? harness?.terminalResult?.resultText ?? null;
+    const artifactIds = cached?.artifactIds
+      ?? artifactIdsFromMedia(harness?.terminalResult?.artifacts ?? []);
+    let messageId = cached?.messageId ?? null;
+    if (status === 'completed' && (text || artifactIds.length > 0)) {
+      const committed = await deps.results.commit({
+        workId,
+        channelId: harness?.coordinationDestination?.channelId ?? input.channelId,
+        conversationId: harness?.coordinationDestination?.conversationId ?? input.conversationId,
+        originMessageId: harness?.coordinationDestination?.originMessageId ?? input.originMessageId,
+        text,
+        artifactIds,
+        idempotencyKey: `work-result:${workId}`,
+      });
+      messageId = committed.messageId;
+    }
+    return cacheResult(Object.freeze({
+      workId,
+      harnessWorkId: harness?.workId ?? cached?.harnessWorkId ?? `replay:${workId}`,
+      messageId,
+      replayed: true,
+      text,
+      artifactIds: Object.freeze([...artifactIds]),
+      status,
+    }));
+  }
+
+  function replayHandle(
+    input: DetachedAttemptDispatchInput,
+    authority: Readonly<DetachedDispatchAuthority>,
+    workId: string,
+    harness: AsyncWorkRecord | undefined,
+  ): DetachedAttemptHandle {
+    const dest = harness?.coordinationDestination;
+    let current: ReturnType<DetachedAttemptLeasePort['current']> | undefined;
+    try {
+      current = deps.leases.current(workId);
+    } catch {
+      current = undefined;
+    }
+    const attemptChatId = harness?.resultHandle.type === 'subagent_chat'
+      ? harness.resultHandle.chatId
+      : attemptChatFor(input.office, input.channelId, workId);
+    return {
+      workId,
+      harnessWorkId: harness?.workId ?? `replay:${workId}`,
+      attemptId: dest?.attemptId ?? current?.attempt.id ?? '',
+      leaseId: dest?.leaseId ?? current?.lease.id ?? '',
+      fencingToken: dest?.fencingToken ?? current?.attempt.fencingToken ?? 0,
+      attemptChatId,
+      conversationChatId: input.conversationChatId,
+      office: input.office,
+      authority,
+      settled: replayTerminal(workId, input, harness),
+    };
+  }
+
+  async function finishCancelled(
+    input: DetachedAttemptDispatchInput,
+    workId: string,
+    harness: AsyncWorkRecord | undefined,
+    binding: LeaseBindingInput,
+  ): Promise<DetachedAttemptResult> {
+    const cached = completedByWork.get(workId)
+      ?? (harness ? completed.get(harness.workId) : undefined);
+    if (cached?.status === 'cancelled') return cached;
+
+    rememberCancel(workId, harness?.workId);
+
+    if (harness && !TERMINAL_WORK_STATUSES.has(harness.status)) {
+      deps.registry.complete(harness.workId, 'cancelled', undefined, Object.freeze({
+        receiptText: `[Async work cancelled] ${harness.label}\n(work ${harness.workId})`,
+        resultText: null,
+        artifacts: Object.freeze([]),
+      }));
+    }
+
+    const latest = deps.work.get(workId);
+    if (latest && latest.state !== 'cancelled') {
+      try {
+        deps.leases.terminalize({
+          ...binding,
+          receipt: cancelledReceipt(input),
+        });
+      } catch (error) {
+        if (deps.work.get(workId)?.state !== 'cancelled') throw error;
+      }
+    }
+
+    return cacheResult(Object.freeze({
+      workId,
+      harnessWorkId: harness?.workId ?? cached?.harnessWorkId ?? `cancel:${workId}`,
+      messageId: null,
+      replayed: latest?.state === 'cancelled',
+      text: null,
+      artifactIds: Object.freeze([]),
+      status: 'cancelled' as const,
+    }));
+  }
+
+  function cancelInProgressHandle(
+    input: DetachedAttemptDispatchInput,
+    authority: Readonly<DetachedDispatchAuthority>,
+    workId: string,
+    harness: AsyncWorkRecord | undefined,
+  ): DetachedAttemptHandle {
+    const binding = bindingFromCurrent(workId, input.requestId, input.correlationId);
+    if (!binding) {
+      throw new Error('durable cancel is missing the current Lane 3 lease binding');
+    }
+    rememberCancel(workId, harness?.workId);
+    const dest = harness?.coordinationDestination;
+    const attemptChatId = harness?.resultHandle.type === 'subagent_chat'
+      ? harness.resultHandle.chatId
+      : attemptChatFor(input.office, input.channelId, workId);
+    const handle: DetachedAttemptHandle = {
+      workId,
+      harnessWorkId: harness?.workId ?? `cancel:${workId}`,
+      attemptId: dest?.attemptId ?? binding.attemptId,
+      leaseId: dest?.leaseId ?? binding.leaseId,
+      fencingToken: dest?.fencingToken ?? binding.fencingToken,
+      attemptChatId,
+      conversationChatId: input.conversationChatId,
+      office: input.office,
+      authority,
+      settled: finishCancelled(input, workId, harness, binding)
+        .finally(() => inflight.delete(workId)),
+    };
+    inflight.set(workId, handle);
+    return handle;
+  }
+
+  async function settle(
+    input: DetachedAttemptDispatchInput,
+    authority: Readonly<DetachedDispatchAuthority>,
+    binding: LeaseBindingInput,
+    destination: CoordinationWorkDestination,
+    harness: AsyncWorkRecord,
+    attemptChatId: string,
+  ): Promise<DetachedAttemptResult> {
+    const cached = completed.get(harness.workId) ?? completedByWork.get(binding.workId);
+    if (cached) return cached;
+
+    let status: DetachedAttemptResult['status'] = 'failed';
+    let text: string | null = null;
+    let receiptText = `[Async work failed] ${harness.label}\n(work ${harness.workId})`;
+    let artifactIds: string[] = [];
+    let media: MediaAttachment[] = [];
+
+    if (wasCancelled(harness.workId, binding.workId)) {
+      status = 'cancelled';
+      text = null;
+      artifactIds = [];
+      media = [];
+      receiptText = `[Async work cancelled] ${harness.label}\n(work ${harness.workId})`;
+    } else {
+      try {
+        deps.lock.markActive(attemptChatId);
+        try {
+          const ran = await deps.runner.run({
+            attemptChatId,
+            conversationChatId: input.conversationChatId,
+            office: input.office,
+            instruction: input.instruction,
+            authority,
+            destination,
+            execute: input.execute,
+            onProgress: (summary) => deps.registry.noteProgress(harness.workId, summary),
+            onEvidence: (note) => {
+              deps.registry.appendEvidence(harness.workId, note);
+            },
+          });
+          media = [...(ran.artifacts ?? [])];
+          artifactIds = await resolveIds(media, binding);
+          const trimmed = ran.text.trim();
+          if (!trimmed && media.length === 0 && artifactIds.length === 0) {
+            throw new Error('successful detached Attempt produced no answer');
+          }
+          text = trimmed || honestArtifactSummary(harness.label, persistableArtifacts(media, artifactIds));
+          receiptText = `[Attempt complete] ${harness.label}`;
+          status = 'completed';
+        } finally {
+          deps.lock.clear(attemptChatId);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        receiptText = `[Async work failed] ${harness.label}\n\nError: ${message}\n(work ${harness.workId})`;
+        status = 'failed';
+        text = null;
+        artifactIds = [];
+        media = [];
+      }
+    }
+
+    if (wasCancelled(harness.workId, binding.workId)) {
+      status = 'cancelled';
+      text = null;
+      artifactIds = [];
+      media = [];
+      receiptText = `[Async work cancelled] ${harness.label}\n(work ${harness.workId})`;
+    }
+
+    const persisted = persistableArtifacts(media, artifactIds);
+    const terminal: AsyncWorkTerminalResult = Object.freeze({
+      receiptText,
+      resultText: text,
+      artifacts: Object.freeze(persisted.map((artifact) => Object.freeze({ ...artifact }))),
+    });
+    const harnessStatus = status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : 'failed';
+    const done = deps.registry.complete(
+      harness.workId,
+      harnessStatus,
+      status === 'failed' ? receiptText : undefined,
+      terminal,
+    );
+
+    try {
+      deps.leases.terminalize({
+        ...binding,
+        receipt: {
+          status: status === 'completed' ? 'succeeded' : status === 'cancelled' ? 'cancelled' : 'failed',
+          sourceReference: input.authorityReference,
+          resultDigest: status === 'completed' && text ? sha256(text) : null,
+          artifactIds: status === 'completed' ? artifactIds : [],
+          timestamp: canonicalTimestamp(now()),
+        },
+      });
+    } catch (error) {
+      // Stop can revoke the lease after the last runner-side cancellation
+      // check. Reconcile the already-persisted harness immediately so the
+      // live process cannot strand Work in `stopping` until another restart.
+      const recovered = await reconcilePersisted(harness.workId);
+      if (recovered) return recovered;
+      throw error;
+    }
+
+    await deliver(done, terminal, status === 'completed' ? artifactIds : []);
+    const message = lastMessage.get(harness.workId);
+    return cacheResult(Object.freeze({
+      workId: binding.workId,
+      harnessWorkId: harness.workId,
+      messageId: message?.messageId ?? null,
+      replayed: message?.replayed ?? false,
+      text,
+      artifactIds: Object.freeze([...artifactIds]),
+      status,
+    }));
+  }
+
+  function dispatch(input: DetachedAttemptDispatchInput): DetachedAttemptHandle {
+    if (!input.instruction.trim()) {
+      throw new TypeError('detached Attempt instruction is required');
+    }
+    if (input.authorityReference !== `resident:${input.residentBinding}`) {
+      throw new TypeError('authority reference must be resident:<binding>');
+    }
+
+    const authority = Object.freeze({
+      principalId: input.principalId,
+      targetPrincipalId: input.targetPrincipalId,
+      residentBinding: input.residentBinding,
+      residentInstanceId: input.residentInstanceId,
+      authorityReference: input.authorityReference,
+      channelId: input.channelId,
+      conversationId: input.conversationId,
+      originMessageId: input.originMessageId,
+      conversationChatId: input.conversationChatId,
+      instruction: input.instruction,
+    });
+
+    const created = deps.work.create({
+      principalId: input.principalId,
+      targetPrincipalId: input.targetPrincipalId,
+      channelId: input.channelId,
+      originMessageId: input.originMessageId,
+      roundId: null,
+      kind: input.workKind ?? 'resident_turn',
+      idempotencyKey: input.idempotencyKey,
+      manifest: input.manifest,
+      maxAutomaticOffers: input.maxAutomaticOffers ?? 2,
+      requestId: input.requestId,
+      correlationId: input.correlationId,
+      ...(input.presentation ? { presentation: input.presentation } : {}),
+    });
+
+    const workId = created.work.id;
+    const flying = inflight.get(workId);
+    if (flying) return flying;
+
+    const latest = deps.work.get(workId) ?? created.work;
+    const existingHarness = findHarness(workId);
+    if (
+      TERMINAL_CANONICAL_STATES.has(latest.state)
+      || (existingHarness && TERMINAL_WORK_STATUSES.has(existingHarness.status))
+    ) {
+      return replayHandle(input, authority, workId, existingHarness);
+    }
+    if (hasDurableCancel(workId) || wasCancelled(existingHarness?.workId ?? workId, workId)) {
+      return cancelInProgressHandle(input, authority, workId, existingHarness);
+    }
+
+    let binding: LeaseBindingInput;
+    if (created.replayed && created.work.currentAttemptId) {
+      const current = deps.leases.current(workId);
+      binding = {
+        workId,
+        attemptId: current.attempt.id,
+        leaseId: current.lease.id,
+        holderPrincipalId: current.attempt.holderPrincipalId,
+        holderInstanceId: current.attempt.holderInstanceId,
+        fencingToken: current.attempt.fencingToken,
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+      };
+    } else {
+      const offer = deps.leases.offer({
+        workId,
+        holderPrincipalId: input.targetPrincipalId,
+        holderInstanceId: input.residentInstanceId,
+        authorityReference: input.authorityReference,
+        automatic: true,
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+      });
+      binding = bindingFor(input, offer);
+      deps.leases.accept(binding);
+      deps.leases.start(binding);
+    }
+
+    const destination = destinationFor(input, workId, binding);
+    const reuseHarness = existingHarness && !TERMINAL_WORK_STATUSES.has(existingHarness.status)
+      ? existingHarness
+      : undefined;
+    const attemptChatId = reuseHarness?.resultHandle.type === 'subagent_chat'
+      ? reuseHarness.resultHandle.chatId
+      : attemptChatFor(input.office, input.channelId, workId);
+    const harness = reuseHarness ?? deps.registry.create({
+      kind: 'subagent',
+      originChatId: residentAttemptChatId(input.channelId, workId),
+      parentWorkId: workId,
+      coordinationDestination: destination,
+      deliveryMode: 'detached',
+      office: input.office,
+      label: input.label,
+      resultHandle: { type: 'subagent_chat', chatId: attemptChatId },
+    });
+    bindings.set(harness.workId, binding);
+    if (!reuseHarness) {
+      deps.registry.appendEvidence(
+        harness.workId,
+        `detached ${input.office} attempt ${binding.attemptId} off ${input.conversationChatId}`,
+      );
+      if (input.deadlineAt) {
+        deps.registry.appendEvidence(harness.workId, `deadline ${input.deadlineAt}`);
+      }
+    }
+
+    const handle: DetachedAttemptHandle = {
+      workId,
+      harnessWorkId: harness.workId,
+      attemptId: binding.attemptId,
+      leaseId: binding.leaseId,
+      fencingToken: binding.fencingToken,
+      attemptChatId,
+      conversationChatId: input.conversationChatId,
+      office: input.office,
+      authority,
+      settled: settle(input, authority, binding, destination, harness, attemptChatId)
+        .finally(() => inflight.delete(workId)),
+    };
+    inflight.set(workId, handle);
+    return handle;
+  }
+
+  async function replayCompletion(harnessWorkId: string): Promise<DetachedAttemptResult | undefined> {
+    const harness = deps.registry.get(harnessWorkId);
+    const cached = completed.get(harnessWorkId)
+      ?? (harness?.parentWorkId ? completedByWork.get(harness.parentWorkId) : undefined);
+    if (!harness) return cached;
+    const artifactIds = cached?.artifactIds
+      ?? artifactIdsFromMedia(harness.terminalResult?.artifacts ?? []);
+    const terminal = harness.terminalResult ?? {
+      receiptText: `[Async work ${harness.status}] ${harness.label}\n(work ${harness.workId})`,
+      resultText: cached?.text ?? null,
+      artifacts: Object.freeze(persistableArtifacts([], artifactIds)),
+    };
+    await deliver(harness, terminal, artifactIds);
+    if (!cached) return undefined;
+    const again = await deps.results.commit({
+      workId: cached.workId,
+      channelId: harness.coordinationDestination?.channelId ?? '',
+      conversationId: harness.coordinationDestination?.conversationId ?? '',
+      originMessageId: harness.coordinationDestination?.originMessageId ?? '',
+      text: cached.text,
+      artifactIds,
+      idempotencyKey: `work-result:${cached.workId}`,
+    });
+    return cacheResult(Object.freeze({
+      ...cached,
+      messageId: again.messageId,
+      replayed: true,
+    }));
+  }
+
+  /**
+   * Close a canonical Working Thread whose in-process resident runner was lost
+   * across a harness restart. The persisted coordination destination is the
+   * authority: an interrupted hidden hand becomes failed/cancelled Work and
+   * never becomes an assistant Message or a manufactured success.
+   */
+  function reconcileInterrupted(harnessWorkId: string): DetachedAttemptResult | undefined {
+    const harness = deps.registry.get(harnessWorkId);
+    const destination = harness?.coordinationDestination;
+    if (
+      !harness || harness.kind !== 'subagent' || harness.status !== 'interrupted' ||
+      harness.deliveryMode !== 'detached' || !destination ||
+      harness.parentWorkId !== destination.parentWorkId
+    ) return undefined;
+    const parent = deps.work.get(destination.parentWorkId);
+    if (!parent || parent.kind !== 'resident_work_thread') return undefined;
+    const alreadyTerminal = mapCanonicalStatus(parent.state);
+    if (alreadyTerminal) {
+      const recovered = cacheResult(Object.freeze({
+        workId: parent.id,
+        harnessWorkId,
+        messageId: null,
+        replayed: true,
+        text: null,
+        artifactIds: Object.freeze([]),
+        status: alreadyTerminal,
+      }));
+      deps.registry.update(harnessWorkId, { deliveredAt: canonicalTimestamp(now()) });
+      return recovered;
+    }
+    const binding = bindingFromCurrent(
+      parent.id,
+      generateCoordinationId('request'),
+      generateCoordinationId('correlation'),
+    );
+    if (!binding || binding.attemptId !== destination.attemptId ||
+        binding.leaseId !== destination.leaseId ||
+        binding.holderPrincipalId !== destination.targetPrincipalId ||
+        binding.holderInstanceId !== destination.residentInstanceId ||
+        binding.fencingToken !== destination.fencingToken) {
+      return undefined;
+    }
+    const cancelled = hasDurableCancel(parent.id);
+    const status = cancelled ? 'cancelled' as const : 'failed' as const;
+    deps.leases.terminalize({
+      ...binding,
+      receipt: {
+        status,
+        sourceReference: destination.authorityReference,
+        resultDigest: null,
+        artifactIds: [],
+        timestamp: canonicalTimestamp(now()),
+      },
+    });
+    // Work/Activity now owns the durable terminal truth. Suppress the generic
+    // async-work delivery path, which must not turn restart failure into chat.
+    deps.registry.update(harnessWorkId, { deliveredAt: canonicalTimestamp(now()) });
+    return cacheResult(Object.freeze({
+      workId: parent.id,
+      harnessWorkId,
+      messageId: null,
+      replayed: false,
+      text: null,
+      artifactIds: Object.freeze([]),
+      status,
+    }));
+  }
+
+  /**
+   * Finish the two durable commit windows around a resident Working Thread:
+   * the hidden harness terminal record may reach disk before the canonical
+   * lease, and the canonical lease may reach terminal before result delivery.
+   * Cancellation always wins while the canonical root is still active.
+   */
+  async function reconcilePersisted(harnessWorkId: string): Promise<DetachedAttemptResult | undefined> {
+    const harness = deps.registry.get(harnessWorkId);
+    const destination = harness?.coordinationDestination;
+    if (
+      !harness || harness.kind !== 'subagent' || harness.deliveryMode !== 'detached' ||
+      !destination || harness.parentWorkId !== destination.parentWorkId
+    ) return undefined;
+    if (harness.status === 'interrupted') return reconcileInterrupted(harnessWorkId);
+    if (!TERMINAL_WORK_STATUSES.has(harness.status)) return undefined;
+
+    let parent = deps.work.get(destination.parentWorkId);
+    if (!parent || parent.kind !== 'resident_work_thread') return undefined;
+    const parentId = parent.id;
+    const artifactIds = artifactIdsFromMedia(harness.terminalResult?.artifacts ?? []);
+    const harnessStatus: DetachedAttemptResult['status'] = harness.status === 'completed'
+      ? 'completed'
+      : harness.status === 'cancelled' ? 'cancelled' : 'failed';
+    const cancelled = hasDurableCancel(parent.id);
+    let status: DetachedAttemptResult['status'] = cancelled ? 'cancelled' : harnessStatus;
+
+    if (!mapCanonicalStatus(parent.state)) {
+      const binding = bindingFromCurrent(
+        parent.id,
+        generateCoordinationId('request'),
+        generateCoordinationId('correlation'),
+      );
+      if (!binding || binding.attemptId !== destination.attemptId ||
+          binding.leaseId !== destination.leaseId ||
+          binding.holderPrincipalId !== destination.targetPrincipalId ||
+          binding.holderInstanceId !== destination.residentInstanceId ||
+          binding.fencingToken !== destination.fencingToken) return undefined;
+      const text = status === 'completed' ? harness.terminalResult?.resultText?.trim() || null : null;
+      if (status === 'completed' && !text && artifactIds.length === 0) status = 'failed';
+      try {
+        deps.leases.terminalize({
+          ...binding,
+          receipt: {
+            status: status === 'completed' ? 'succeeded' : status,
+            sourceReference: destination.authorityReference,
+            resultDigest: status === 'completed' && text ? sha256(text) : null,
+            artifactIds: status === 'completed' ? artifactIds : [],
+            timestamp: canonicalTimestamp(now()),
+          },
+        });
+      } catch (error) {
+        // A concurrent owner Stop may revoke the lease after our read. Re-read
+        // canonical truth and let cancellation win rather than posting a late result.
+        parent = deps.work.get(parentId);
+        if (parent && hasDurableCancel(parent.id) && !mapCanonicalStatus(parent.state)) {
+          deps.leases.terminalize({
+            ...binding,
+            receipt: {
+              status: 'cancelled',
+              sourceReference: destination.authorityReference,
+              resultDigest: null,
+              artifactIds: [],
+              timestamp: canonicalTimestamp(now()),
+            },
+          });
+          status = 'cancelled';
+        } else if (!mapCanonicalStatus(parent?.state)) {
+          throw error;
+        }
+      }
+      parent = deps.work.get(parentId) ?? parent;
+    }
+
+    if (!parent) return undefined;
+    status = mapCanonicalStatus(parent.state) ?? status;
+    const text = status === 'completed' ? harness.terminalResult?.resultText?.trim() || null : null;
+    const resultArtifacts = status === 'completed' ? artifactIds : [];
+    if (status === 'completed' && harness.status === 'completed' && (text || resultArtifacts.length > 0)) {
+      await deliver(harness, harness.terminalResult!, resultArtifacts);
+    } else {
+      // Failure/cancellation is Work/Activity truth, never an unsolicited chat result.
+      deps.registry.update(harnessWorkId, { deliveredAt: canonicalTimestamp(now()) });
+    }
+    const message = lastMessage.get(harnessWorkId);
+    return cacheResult(Object.freeze({
+      workId: parentId,
+      harnessWorkId,
+      messageId: message?.messageId ?? null,
+      replayed: mapCanonicalStatus(parent.state) !== undefined,
+      text,
+      artifactIds: Object.freeze(resultArtifacts),
+      status,
+    }));
+  }
+
+  /** Close the narrow crash window after the canonical lease starts but before its harness is persisted. */
+  function reconcileCanonicalOrphan(workId: string): DetachedAttemptResult | undefined {
+    if (findHarness(workId)) return undefined;
+    const status = deps.work.recoverOrphan?.(workId) ?? null;
+    if (status === null) return undefined;
+    return cacheResult(Object.freeze({
+      workId,
+      harnessWorkId: `orphan:${workId}`,
+      messageId: null,
+      replayed: false,
+      text: null,
+      artifactIds: Object.freeze([]),
+      status,
+    }));
+  }
+
+  return Object.freeze({
+    dispatch,
+    replayCompletion,
+    reconcileInterrupted,
+    reconcilePersisted,
+    reconcileCanonicalOrphan,
+    noteProgress: (harnessWorkId: string, summary: string) =>
+      deps.registry.noteProgress(harnessWorkId, summary),
+    appendEvidence: (harnessWorkId: string, note: string) =>
+      deps.registry.appendEvidence(harnessWorkId, note),
+    requestCancel: (cancel: WorkCancelDeps, harnessWorkId: string): WorkCancelOutcome => {
+      const harness = deps.registry.get(harnessWorkId);
+      if (!harness) return requestAsyncWorkCancel(cancel, harnessWorkId);
+      if (TERMINAL_WORK_STATUSES.has(harness.status)) {
+        return requestAsyncWorkCancel(cancel, harnessWorkId);
+      }
+      cancelRequested.add(harnessWorkId);
+      if (harness.parentWorkId) cancelRequested.add(harness.parentWorkId);
+      const stored = bindings.get(harnessWorkId)
+        ?? (harness.parentWorkId
+          ? bindingFromCurrent(
+            harness.parentWorkId,
+            generateCoordinationId('request'),
+            generateCoordinationId('correlation'),
+          )
+          : undefined);
+      if (stored) {
+        try {
+          deps.leases.revoke({ ...stored, reasonCode: 'operator_cancel' });
+        } catch {
+          // already revoked / not the current running lease
+        }
+      }
+      return requestAsyncWorkCancel(cancel, harnessWorkId);
+    },
+    getHarness: (harnessWorkId: string) => deps.registry.get(harnessWorkId),
+  });
+}

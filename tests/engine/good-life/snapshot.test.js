@@ -8,28 +8,79 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { buildGoodLifeSnapshot } = require('../../../engine/src/good-life/snapshot.js');
 
-test('Good Life snapshot excludes its own diagnostic live-problems from viability counts', () => {
+test('Good Life snapshot excludes agenda handoff workflows from operational viability counts', () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-snapshot-'));
   try {
     writeFileSync(join(dir, 'live-problems.json'), JSON.stringify({
       problems: [
         {
-          id: 'agenda_ag-good-life',
+          id: 'legacy-good-life-handoff',
+          seedOrigin: 'agenda',
           state: 'open',
           claim: 'Agenda action: Diagnose Good Life repair drift using instances/jerry/brain/good-life-state.json',
+          verifier: { type: 'fix_recipe_recorded', args: { problemId: 'legacy-good-life-handoff' } },
         },
         {
-          id: 'agenda_ag-real',
-          state: 'open',
+          id: 'legacy-operational-handoff',
+          seedOrigin: 'agenda',
+          state: 'chronic',
           claim: 'Agenda action: Check what process started around the CPU signal',
+          verifier: { type: 'fix_recipe_recorded', args: { problemId: 'legacy-operational-handoff' } },
+        },
+        {
+          id: 'explicit-handoff',
+          problemKind: 'agenda_handoff',
+          state: 'open',
+          claim: 'Agenda action: audit the dashboard workflow',
         },
       ],
     }));
 
     const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
-    assert.equal(snapshot.liveProblems.open, 1);
-    assert.equal(snapshot.liveProblems.total, 1);
+    assert.equal(snapshot.liveProblems.open, 0);
+    assert.equal(snapshot.liveProblems.chronic, 0);
+    assert.equal(snapshot.liveProblems.total, 0);
     assert.equal(snapshot.liveProblems.goodLifeDiagnostics, 1);
+    assert.deepEqual(snapshot.liveProblems.agendaWorkflows, {
+      open: 2,
+      chronic: 1,
+      resolved: 0,
+      unverifiable: 0,
+      total: 3,
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Good Life snapshot preserves non-agenda live-problem counts', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-operational-'));
+  try {
+    writeFileSync(join(dir, 'live-problems.json'), JSON.stringify({
+      problems: [
+        { id: 'agenda_lookalike-operational', state: 'open', seedOrigin: 'system' },
+        { id: 'disk-pressure', state: 'chronic', seedOrigin: 'promoter' },
+        { id: 'weather-current', state: 'resolved', seedOrigin: 'system' },
+        { id: 'manual-check', state: 'unverifiable', seedOrigin: 'user' },
+      ],
+    }));
+
+    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    assert.deepEqual(snapshot.liveProblems, {
+      open: 1,
+      chronic: 1,
+      resolved: 1,
+      unverifiable: 1,
+      total: 4,
+      goodLifeDiagnostics: 0,
+      agendaWorkflows: {
+        open: 0,
+        chronic: 0,
+        resolved: 0,
+        unverifiable: 0,
+        total: 0,
+      },
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -287,7 +338,18 @@ test('Good Life snapshot includes latest machine host pressure evidence', () => 
       payload: { at: '2026-05-10T08:54:40.024Z', loadAvg: [10.348, 7.56, 6.69], cpuCount: 10 },
     })}\n`);
     writeFileSync(join(channelsDir, 'machine.memory.jsonl'), `${JSON.stringify({
-      payload: { at: '2026-05-10T08:54:40.024Z', total: 17179869184, free: 372604928, freePct: 2.2 },
+      payload: {
+        at: '2026-05-10T08:54:40.024Z',
+        total: 17179869184,
+        free: 372604928,
+        freePct: 2.2,
+        rawTotal: 17179869184,
+        rawFree: 372604928,
+        rawFreePct: 2.2,
+        pressureFreePct: 42,
+        pressureTotalBytes: 17179869184,
+        memoryPressure: { source: 'memory_pressure -Q', freePct: 42, totalBytes: 17179869184 },
+      },
     })}\n`);
     writeFileSync(join(channelsDir, 'machine.swap.jsonl'), `${JSON.stringify({
       payload: {
@@ -314,6 +376,9 @@ test('Good Life snapshot includes latest machine host pressure evidence', () => 
 
     assert.equal(snapshot.host.cpu.loadRatio, 1.03);
     assert.equal(snapshot.host.memory.freePct, 2.2);
+    assert.equal(snapshot.host.memory.rawFreePct, 2.2);
+    assert.equal(snapshot.host.memory.pressureFreePct, 42);
+    assert.equal(snapshot.host.memory.pressureSource, 'memory_pressure -Q');
     assert.equal(snapshot.host.swap.usedPct, 91.6);
     assert.equal(snapshot.host.process.topMemoryProcess.pm2Name, 'home23-jerry');
     assert.equal(snapshot.host.process.topMemoryProcess.rssBytes, 1073741824);

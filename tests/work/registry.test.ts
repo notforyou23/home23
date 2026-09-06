@@ -55,6 +55,64 @@ test('complete is terminal-once and maps cancel intent', (t) => {
   assert.equal(again.status, 'cancelled'); // terminal-once: second transition ignored
 });
 
+test('inline terminal states atomically count as delivered and never enter boot delivery', (t) => {
+  const reg = makeRegistry(t);
+  const success = reg.create({
+    kind: 'subagent', originChatId: '123', deliveryMode: 'inline', label: 'success',
+    resultHandle: { type: 'subagent_chat', chatId: `subagent:123:${'a'.repeat(32)}` },
+  });
+  const failure = reg.create({
+    kind: 'subagent', originChatId: '123', deliveryMode: 'inline', label: 'failure',
+    resultHandle: { type: 'subagent_chat', chatId: `subagent:123:${'b'.repeat(32)}` },
+  });
+  const cancel = reg.create({
+    kind: 'subagent', originChatId: '123', deliveryMode: 'inline', label: 'cancel',
+    resultHandle: { type: 'subagent_chat', chatId: `subagent:123:${'c'.repeat(32)}` },
+  });
+
+  const succeeded = reg.completeInline(success.workId, 'completed');
+  const failed = reg.completeInline(failure.workId, 'failed', 'boom');
+  reg.requestCancel(cancel.workId);
+  const cancelled = reg.completeInline(cancel.workId, 'failed', 'operator_stop');
+
+  for (const record of [succeeded, failed, cancelled]) {
+    assert.ok(record.finishedAt);
+    assert.equal(record.deliveredAt, record.finishedAt);
+  }
+  assert.deepEqual([succeeded.status, failed.status, cancelled.status], ['completed', 'failed', 'cancelled']);
+  const recovered = reg.reconcileOnBoot({ jobs: [] });
+  assert.deepEqual(recovered.needsDelivery, []);
+});
+
+test('boot interruption of an inline hand is terminal and never detached-delivered', (t) => {
+  const reg = makeRegistry(t);
+  const running = reg.create({
+    kind: 'subagent', originChatId: 'ios_parent', deliveryMode: 'inline', label: 'lost inline hand',
+    resultHandle: { type: 'subagent_chat', chatId: `subagent:ios_parent:${'d'.repeat(32)}` },
+  });
+
+  const recovered = reg.reconcileOnBoot({ jobs: [] });
+  const interrupted = reg.get(running.workId)!;
+  assert.equal(interrupted.status, 'interrupted');
+  assert.equal(interrupted.deliveredAt, interrupted.finishedAt);
+  assert.deepEqual(recovered.needsDelivery, []);
+});
+
+test('appendEvidence stays on the Work record and is bounded', (t) => {
+  const reg = makeRegistry(t);
+  const rec = reg.create({
+    kind: 'subagent', originChatId: 'coordination:chn_1:wrk_1', office: 'resident',
+    label: 'branch', resultHandle: { type: 'subagent_chat', chatId: 'coordination:chn_1:wrk_1' },
+  });
+  assert.equal(rec.office, 'resident');
+  reg.appendEvidence(rec.workId, '  question: which file?  ');
+  const noted = reg.get(rec.workId)!;
+  assert.deepEqual(noted.evidenceNotes, ['question: which file?']);
+  assert.equal(noted.progressSummary, 'question: which file?');
+  for (let i = 0; i < 40; i++) reg.appendEvidence(rec.workId, `note ${i}`);
+  assert.equal(reg.get(rec.workId)!.evidenceNotes?.length, 32);
+});
+
 test('noteProgress throttles writes', (t) => {
   const reg = makeRegistry(t);
   const rec = reg.create({ kind: 'coding', originChatId: '123', label: 'x', resultHandle: { type: 'coding_job', jobId: 'cj_p_1' } });
@@ -86,6 +144,35 @@ test('reconcileOnBoot: subagent work interrupted, undelivered terminal coding wo
   assert.ok(backfilled);
   assert.equal(backfilled!.originChatId, 'ios_a_jerry_b_c');
   assert.equal(backfilled!.status, 'running');
+});
+
+test('create keeps cron origin on the cron chat itself', (t) => {
+  const reg = makeRegistry(t);
+  const rec = reg.create({
+    kind: 'cron',
+    originChatId: 'cron-heartbeat',
+    label: 'Heartbeat',
+    resultHandle: { type: 'cron_chat', chatId: 'cron-heartbeat' },
+  });
+  assert.equal(rec.kind, 'cron');
+  assert.equal(rec.originChatId, 'cron-heartbeat');
+  assert.equal(rec.resultHandle.type, 'cron_chat');
+  assert.equal(rec.status, 'running');
+});
+
+test('reconcileOnBoot: leftover cron work is interrupted', (t) => {
+  const reg = makeRegistry(t);
+  const cron = reg.create({
+    kind: 'cron',
+    originChatId: 'cron-heartbeat',
+    label: 'Heartbeat',
+    resultHandle: { type: 'cron_chat', chatId: 'cron-heartbeat' },
+  });
+  const result = reg.reconcileOnBoot({ jobs: [] });
+  const done = reg.get(cron.workId)!;
+  assert.equal(done.status, 'interrupted');
+  assert.match(String(done.error || ''), /cron|harness restarted/i);
+  assert.equal(result.interrupted.some((w) => w.workId === cron.workId), true);
 });
 
 test('reconcileOnBoot: coding work whose job vanished is interrupted', (t) => {

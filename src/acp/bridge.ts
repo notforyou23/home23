@@ -17,7 +17,8 @@ import { spawn, exec, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { buildChildEnv, getBackend, listBackendIds } from './backends.js';
+import { buildChildEnv, getBackend, listBackendIds, validateBackendOptions } from './backends.js';
+import { acquireWorkspaceLease, releaseWorkspaceLease } from './workspace-lease.js';
 import { CodingJobStore } from './job-store.js';
 import {
   createCheckpoint,
@@ -224,7 +225,8 @@ export class ACPBridge {
     if (!this.config.enabled) {
       throw new Error('Coding bridge is disabled (acp.enabled: false); enable it in config to run coding jobs');
     }
-    const prompt = bounded(String(opts.prompt ?? '').trim(), PROMPT_MAX);
+    const prompt = String(opts.prompt ?? '').trim();
+    if (prompt.length > PROMPT_MAX) throw new Error(`Coding job prompt exceeds ${PROMPT_MAX} characters; shorten it without dropping scope or authority`);
     if (!prompt) throw new Error('Coding job prompt is empty');
 
     const backendId = opts.backend || this.config.defaultAgent;
@@ -250,12 +252,26 @@ export class ACPBridge {
     if (opts.resumeSessionId && !backend.supportsResume) {
       throw new Error(`Backend "${backendId}" does not support session resume`);
     }
+    if (Boolean(opts.resumeSessionId) !== Boolean(opts.resumedFromJobId)) throw new Error('Continuation requires both a source job ID and its session ID');
+    let resumeSource: CodingJobRecord | undefined;
     if (opts.resumeSessionId && opts.resumedFromJobId) {
       const source = this.store.getJob(opts.resumedFromJobId);
       if (!source) throw new Error(`Cannot resume from unknown source job ${opts.resumedFromJobId}`);
       if (!isTerminal(source.status)) {
         throw new Error(`Cannot resume from source job ${source.id} while it is ${source.status}; wait for it to finish or cancel it first`);
       }
+      if (source.backend !== backendId || path.resolve(opts.cwd ?? this.projectRoot) !== path.resolve(source.cwd)) {
+        throw new Error('A continuation must use the source job backend and workspace');
+      }
+      if (source.sessionId !== opts.resumeSessionId) throw new Error('Continuation session does not match source job');
+      const saved = source.executionOptions;
+      if (!saved) throw new Error('Legacy source job has no saved execution settings; start a new job with explicit supported controls');
+      if (saved && (saved.permissionMode !== this.config.permissionMode
+        || saved.sandbox !== backendCfg.sandbox
+        || JSON.stringify(saved.extraArgs ?? []) !== JSON.stringify(backendCfg.extraArgs ?? []))) {
+        throw new Error('Coding execution configuration changed since the source job; review the current policy before starting a new job instead of restoring stale permissions');
+      }
+      resumeSource = source;
     }
 
     const active = this.store.listJobs().filter(job => !isTerminal(job.status)).length;
@@ -265,6 +281,29 @@ export class ACPBridge {
     }
 
     const requestedCwd = opts.cwd ? path.resolve(opts.cwd) : this.projectRoot;
+    // Only backends that accept an externally supplied id for a NEW session
+    // (claude --session-id, grok --session-id) get one pre-generated. Cursor
+    // has no such flag: it mints its own chat id and reports it on the init
+    // line, which the stream handler then persists as the resume handle.
+    const newSessionId = (backendId === 'claude-code' || backendId === 'grok-build') && !opts.resumeSessionId ? randomUUID() : undefined;
+    const backendOpts: CodingBackendOptions = {
+      prompt,
+      cwd: requestedCwd,
+      model: opts.model ?? backendCfg.model,
+      effort: opts.effort,
+      resumeSessionId: opts.resumeSessionId,
+      newSessionId,
+      permissionMode: this.config.permissionMode,
+      allowedTools: opts.allowedTools,
+      disallowedTools: opts.disallowedTools,
+      appendSystemPrompt: opts.appendSystemPrompt,
+      addDirs: opts.addDirs,
+      maxBudgetUsd: opts.maxBudgetUsd,
+      sandbox: backendCfg.sandbox,
+      extraArgs: backendCfg.extraArgs,
+      ...resumeSource?.executionOptions,
+    };
+    validateBackendOptions(backendId, backendOpts);
     const jobId = this.store.newJobId();
     const isolation = this.resolveIsolation(opts, requestedCwd);
 
@@ -272,7 +311,11 @@ export class ACPBridge {
     let worktree: WorktreeInfo | undefined;
     let checkpoint: CheckpointInfo | undefined;
     let effectiveIsolation: CodingIsolation = isolation;
-    if (isolation === 'worktree') {
+    if (resumeSource) {
+      worktree = resumeSource.worktree;
+      checkpoint = resumeSource.checkpoint;
+      effectiveIsolation = resumeSource.isolation;
+    } else if (isolation === 'worktree') {
       const repo = detectGitRepo(requestedCwd);
       if (repo) {
         worktree = createJobWorktree({
@@ -289,27 +332,8 @@ export class ACPBridge {
       else effectiveIsolation = 'none';
     }
 
-    // Only backends that accept an externally supplied id for a NEW session
-    // (claude --session-id, grok --session-id) get one pre-generated. Cursor
-    // has no such flag: it mints its own chat id and reports it on the init
-    // line, which the stream handler then persists as the resume handle.
-    const newSessionId = (backendId === 'claude-code' || backendId === 'grok-build') && !opts.resumeSessionId ? randomUUID() : undefined;
-    const backendOpts: CodingBackendOptions = {
-      prompt,
-      cwd,
-      model: opts.model ?? backendCfg.model,
-      effort: opts.effort,
-      resumeSessionId: opts.resumeSessionId,
-      newSessionId,
-      permissionMode: this.config.permissionMode,
-      allowedTools: opts.allowedTools,
-      disallowedTools: opts.disallowedTools,
-      appendSystemPrompt: opts.appendSystemPrompt,
-      addDirs: opts.addDirs,
-      maxBudgetUsd: opts.maxBudgetUsd,
-      sandbox: backendCfg.sandbox,
-      extraArgs: backendCfg.extraArgs,
-    };
+    backendOpts.cwd = cwd;
+    const { prompt: _prompt, cwd: _cwd, resumeSessionId: _resume, newSessionId: _newSession, ...executionOptions } = backendOpts;
     const args = backend.buildArgs(backendOpts);
 
     const record: CodingJobRecord = {
@@ -320,9 +344,10 @@ export class ACPBridge {
       prompt,
       label: opts.label,
       cwd,
-      requestedCwd,
+      requestedCwd: resumeSource?.requestedCwd ?? requestedCwd,
       model: backendOpts.model,
-      effort: opts.effort,
+      effort: backendOpts.effort,
+      executionOptions,
       sessionId: newSessionId ?? opts.resumeSessionId,
       resumedFromJobId: opts.resumedFromJobId,
       startedAt: new Date().toISOString(),
@@ -332,7 +357,9 @@ export class ACPBridge {
       requestedBy: opts.requestedBy,
       argv: [bin, ...args.slice(0, -1), '<prompt>'],
     };
-    this.store.createJob(record);
+    const workspaceLease = acquireWorkspaceLease(this.projectRoot, cwd, path.join(this.store.jobDir(jobId), 'job.json'));
+    record.workspaceLease = workspaceLease;
+    try { this.store.createJob(record); } catch (error) { releaseWorkspaceLease(workspaceLease); throw error; }
 
     const runtime: JobRuntime = {
       jobId,
@@ -350,10 +377,12 @@ export class ACPBridge {
     };
     this.runtimes.set(jobId, runtime);
 
-    const eventsFd = openSync(this.store.eventsPath(jobId), 'a');
-    const stderrFd = openSync(this.store.stderrPath(jobId), 'a');
+    let eventsFd: number | undefined;
+    let stderrFd: number | undefined;
     let child: ChildProcess;
     try {
+      eventsFd = openSync(this.store.eventsPath(jobId), 'a');
+      stderrFd = openSync(this.store.stderrPath(jobId), 'a');
       child = spawn(bin, args, {
         cwd,
         env: unprivilegedChildEnv(buildChildEnv(this.config)),
@@ -361,8 +390,8 @@ export class ACPBridge {
         stdio: ['ignore', eventsFd, stderrFd],
       });
     } catch (err) {
-      closeSync(eventsFd);
-      closeSync(stderrFd);
+      if (eventsFd !== undefined) closeSync(eventsFd);
+      if (stderrFd !== undefined) closeSync(stderrFd);
       runtime.errorMessage = bounded(`spawn failed: ${(err as Error).message}`, ERROR_MAX);
       this.finalize(jobId, runtime);
       return this.store.getJob(jobId)!;
@@ -420,6 +449,7 @@ export class ACPBridge {
       this.drainNewData(id, runtime);
       runtime.silent = false;
     }
+    this.store.updateJob(id, { cancelRequestedAt: job.cancelRequestedAt ?? new Date().toISOString() });
     runtime.cancelRequested = true;
 
     const pgid = job.pgid ?? job.pid;
@@ -472,8 +502,8 @@ export class ACPBridge {
       this.drainNewData(job.id, runtime);
       runtime.silent = false;
 
-      const alive = job.pid !== undefined && pidAlive(job.pid);
-      if (alive && !runtime.resultEvent) {
+      const alive = job.pgid !== undefined ? pidAlive(-job.pgid) : job.pid !== undefined && pidAlive(job.pid);
+      if (alive) {
         // Leave any partial trailing line in runtime.carry — the live child
         // will finish writing it and the re-attached tailer will read it whole.
         runtime.tailTimer = setInterval(() => this.pollJob(job.id), TAIL_POLL_MS);
@@ -485,6 +515,7 @@ export class ACPBridge {
           Math.max(timeoutMs - elapsed, 5000),
         );
         runtime.timeoutTimer.unref?.();
+        if (job.cancelRequestedAt) await this.cancelJob(job.id);
         resumed.push(job.id);
         this.log(`job ${job.id} re-attached (pid ${job.pid} alive)`);
       } else {
@@ -536,7 +567,7 @@ export class ACPBridge {
       toolUseCount: 0,
       lastText: '',
       sessionFromStream: false,
-      cancelRequested: false,
+      cancelRequested: Boolean(job.cancelRequestedAt),
       exited: false,
       finalized: false,
       silent: false,
@@ -613,13 +644,9 @@ export class ACPBridge {
     if (!runtime || runtime.finalized) return;
     const consumed = this.drainNewData(jobId, runtime);
 
-    if (runtime.resultEvent) {
-      this.flushCarry(runtime);
-      this.finalize(jobId, runtime);
-      return;
-    }
-
-    const dead = runtime.exited || (runtime.pid !== undefined && !pidAlive(runtime.pid));
+    const dead = runtime.pgid !== undefined
+      ? !pidAlive(-runtime.pgid)
+      : runtime.exited || (runtime.pid !== undefined && !pidAlive(runtime.pid));
     if (dead && consumed === 0) {
       this.flushCarry(runtime);
       this.finalize(jobId, runtime);
@@ -656,9 +683,9 @@ export class ACPBridge {
 
     const result = runtime.resultEvent;
     let status: CodingJobStatus;
-    if (result) status = result.ok ? 'completed' : 'failed';
-    else if (runtime.cancelRequested) status = 'cancelled';
-    else if (runtime.errorMessage) status = 'failed';
+    if (runtime.cancelRequested) status = 'cancelled';
+    else if (runtime.errorMessage || (runtime.exitCode != null && runtime.exitCode !== 0)) status = 'failed';
+    else if (result) status = result.ok ? 'completed' : 'failed';
     else status = 'interrupted';
 
     const finishedAt = new Date().toISOString();
@@ -698,6 +725,7 @@ export class ACPBridge {
       exitCode: runtime.exitCode ?? null,
       error: runtime.errorMessage ? bounded(runtime.errorMessage, ERROR_MAX) : job.error,
     });
+    releaseWorkspaceLease(job.workspaceLease);
     this.runtimes.delete(jobId);
     this.log(`job ${jobId} finished: ${status} (${receipt.eventsCount} events, ${receipt.toolUseCount} tool uses)`);
     this.emit({ type: 'job_finished', job: updated, receipt });

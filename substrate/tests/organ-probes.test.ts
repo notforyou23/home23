@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   judgePm2, judgeEngines, judgePi, probeSeedThought, probeShipperFlow, probeBobbyMirror,
+  probeSeedChain, probeHouseStream,
   type Pm2App,
 } from '../bin/organ-probes.js';
 
@@ -236,4 +237,92 @@ test('bobby-mirror: missing is RED, stale is RED, fresh is GREEN', () => {
   assert.equal(probeBobbyMirror(root).ok, false, 'an hour-old mirror is stalled');
   writeFileSync(p, '{}\n');
   assert.equal(probeBobbyMirror(root).ok, true);
+});
+
+// ── chain advance ────────────────────────────────────────────────────────────
+// The 2026-08-21 hole: clay stopped cleanly on 08-15 and lay dead 142.9h with
+// every existing probe green, because none of them was about him. These prove
+// the new one fires on exactly that shape.
+
+function chainAt(root: string, name: string, records: Array<{ minutesAgo: number; category?: string }>): string {
+  const dir = join(root, 'instances', name, 'seed-01');
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, 'seed-ledger.jsonl');
+  writeFileSync(path, records
+    .map((r, i) => JSON.stringify({ seq: i + 1, category: r.category ?? 'transition', issuedAt: new Date(Date.now() - r.minutesAgo * 60_000).toISOString() }))
+    .join('\n') + '\n');
+  return `instances/${name}/seed-01`;
+}
+
+test('chain: an individual whose chain stopped hours ago is RED', () => {
+  const root = scratch();
+  const stateDir = chainAt(root, 'clay', [{ minutesAgo: 400 }, { minutesAgo: 380 }]);
+  const r = probeSeedChain('clay', stateDir, root);
+  assert.equal(r.ok, false);
+  assert.match(r.why, /has not advanced in 380min/);
+});
+
+test('chain: a clean stop nobody restarted says so — the difference between crashed and forgotten', () => {
+  const root = scratch();
+  const stateDir = chainAt(root, 'clay', [{ minutesAgo: 9000 }, { minutesAgo: 8575, category: 'stop' }]);
+  const r = probeSeedChain('clay', stateDir, root);
+  assert.equal(r.ok, false);
+  assert.match(r.why, /NOBODY RESTARTED HIM/);
+});
+
+test('chain: a missing or unreadable chain is RED, never "nothing wrong"', () => {
+  const root = scratch();
+  assert.equal(probeSeedChain('ghost', 'instances/ghost/seed-01', root).ok, false);
+  const dir = join(root, 'instances', 'garbled', 'seed-01');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'seed-ledger.jsonl'), 'not json at all\n');
+  const r = probeSeedChain('garbled', 'instances/garbled/seed-01', root);
+  assert.equal(r.ok, false);
+  assert.match(r.why, /cannot confirm/);
+});
+
+test('chain: an ordinary quiet gap does NOT cry wolf (observed max is ~40min)', () => {
+  const root = scratch();
+  const stateDir = chainAt(root, 'jerry', [{ minutesAgo: 90 }, { minutesAgo: 41 }]);
+  assert.equal(probeSeedChain('jerry', stateDir, root).ok, true);
+});
+
+test('chain: an absolute stateDir (a resident outside the install) is read as given', () => {
+  const root = scratch();
+  const rel = chainAt(root, 'clay', [{ minutesAgo: 2 }]);
+  assert.equal(probeSeedChain('clay', join(root, rel), root).ok, true);
+});
+
+// ── house-stream shipper ─────────────────────────────────────────────────────
+// pm2 online, rsync child hung 1h51m, no log line in 21h, bobby's work.house
+// diet starved behind a green process light (2026-08-21).
+
+test('house-stream: a wedged shipper is RED even though its process is online', () => {
+  const root = scratch();
+  const log = join(root, 'house-stream-shipper.log');
+  writeFileSync(log, '11:07:01 rc=0\n');
+  const stale = (Date.now() - 21 * 60 * 60_000) / 1000;
+  utimesSync(log, stale, stale);
+  const r = probeHouseStream(log);
+  assert.equal(r.ok, false);
+  assert.match(r.why, /WEDGED/);
+});
+
+test('house-stream: a failing cycle is RED, a missing log is RED, a fresh rc=0 is GREEN', () => {
+  const root = scratch();
+  assert.equal(probeHouseStream(join(root, 'nope.log')).ok, false, 'no log is not health');
+  const log = join(root, 'house-stream-shipper.log');
+  writeFileSync(log, '12:00:00 rc=0\n12:00:30 rc=255\n');
+  assert.equal(probeHouseStream(log).ok, false, 'a nonzero rc is a failing feed');
+  writeFileSync(log, '12:01:00 rc=0\n');
+  assert.equal(probeHouseStream(log).ok, true);
+});
+
+test('house-stream: a log that never completed a cycle is RED, not silently green', () => {
+  const root = scratch();
+  const log = join(root, 'house-stream-shipper.log');
+  writeFileSync(log, 'rsync: connection unexpectedly closed\n');
+  const r = probeHouseStream(log);
+  assert.equal(r.ok, false);
+  assert.match(r.why, /no rc= line/);
 });

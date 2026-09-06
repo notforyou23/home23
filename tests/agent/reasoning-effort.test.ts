@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_REASONING_EFFORT,
   REASONING_EFFORTS,
+  anthropicThinkingConfig,
+  modelSupportsReasoningEffort,
   parseReasoningEffort,
+  reasoningEffortsForModel,
   resolveConfiguredReasoningEffort,
+  responsesReasoningConfig,
   validateReasoningEffortConfig,
 } from '../../src/agent/reasoning-effort.js';
 import { resolveModelOverride } from '../../src/agent/model-resolution.js';
@@ -18,6 +22,15 @@ test('accepts exactly the six reasoning effort values', () => {
   for (const value of ['', 'LOW', 'ultra', 1, null]) {
     assert.throws(() => parseReasoningEffort(value), /none, low, medium, high, xhigh, max/);
   }
+});
+
+test('GPT-6 Astra exposes only its documented reasoning efforts', () => {
+  assert.deepEqual(reasoningEffortsForModel('gpt-6-astra'), [
+    'low', 'medium', 'high', 'xhigh', 'max',
+  ]);
+  assert.equal(modelSupportsReasoningEffort('gpt-6-astra', 'none'), false);
+  assert.equal(modelSupportsReasoningEffort('gpt-6-astra', 'low'), true);
+  assert.equal(modelSupportsReasoningEffort('gpt-5.6-sol', 'none'), true);
 });
 
 test('model alias resolution carries an alias effort override', () => {
@@ -34,7 +47,7 @@ test('model-specific configuration overrides the chat default', () => {
   assert.equal(resolveConfiguredReasoningEffort('gpt-5.6-terra'), DEFAULT_REASONING_EFFORT);
 });
 
-test('config effort validation rejects invalid chat, model, and alias values', () => {
+test('config effort validation rejects invalid chat, model, and alias values', async () => {
   assert.throws(
     () => validateReasoningEffortConfig({ chat: { reasoningEffort: 'ultra' } }),
     /chat\.reasoningEffort/,
@@ -47,4 +60,30 @@ test('config effort validation rejects invalid chat, model, and alias values', (
     () => validateReasoningEffortConfig({ models: { aliases: { gpt56: { reasoningEffort: 'ultra' } } } }),
     /models\.aliases\.gpt56\.reasoningEffort/,
   );
+  assert.throws(
+    () => validateReasoningEffortConfig({
+      chat: { defaultModel: 'gpt-6-astra', reasoningEffort: 'none' },
+    }),
+    /unavailable for gpt-6-astra/,
+  );
+  assert.throws(
+    () => validateReasoningEffortConfig({
+      models: { aliases: { astra: { model: 'gpt-6-astra', reasoningEffort: 'none' } } },
+    }),
+    /models\.aliases\.astra\.reasoningEffort is unavailable/,
+  );
+});
+
+test('Responses reasoning requests a visible summary except at effort none', () => {
+  assert.equal(responsesReasoningConfig('none'), undefined);
+  assert.deepEqual(responsesReasoningConfig('xhigh'), { effort: 'xhigh', summary: 'auto' });
+});
+
+test('Anthropic thinking budgets stay below max_tokens and skip effort none', () => {
+  assert.equal(anthropicThinkingConfig('none', 16384), undefined);
+  assert.deepEqual(anthropicThinkingConfig('medium', 16384), {
+    thinking: { type: 'enabled', budget_tokens: 8000 },
+    maxTokens: 16384,
+  });
+  assert.equal(anthropicThinkingConfig('high', 16384)?.maxTokens, 20096);
 });

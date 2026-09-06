@@ -63,7 +63,8 @@ Use progressive disclosure:
 
 ## Curation rules
 
-- Descriptions must read like trigger text, not generic summaries.
+- Keep descriptions short and specific about when the skill adds value.
+- Set `routing: "manual"` in the manifest (or frontmatter for docs-only skills) to retain a reference without automatic suggestions; it remains discoverable and can be requested by exact ID.
 - Add `category`, `keywords`, and `triggers` to every skill.
 - Add `requiresTools`, `dependsOn`, or `composes` whenever the skill relies on other house surfaces.
 - `SKILL.md` should include:

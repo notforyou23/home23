@@ -13,9 +13,13 @@ import {
   type AsyncWorkKind,
   type AsyncWorkRecord,
   type AsyncWorkStatus,
+  type AsyncWorkTerminalResult,
+  type CoordinationWorkDestination,
+  type WorkOffice,
   type WorkResultHandle,
 } from './types.js';
 import type { WorkStore } from './work-store.js';
+import { workBus } from './work-bus.js';
 
 const PROGRESS_THROTTLE_MS = 15_000;
 
@@ -25,7 +29,11 @@ export interface CreateWorkInput {
   originChatId: string;
   originTurnId?: string;
   parentWorkId?: string;
+  coordinationDestination?: CoordinationWorkDestination;
+  deliveryMode?: 'detached' | 'inline';
+  office?: WorkOffice;
   label: string;
+  taskBrief?: string;
   resultHandle: WorkResultHandle;
 }
 
@@ -65,10 +73,15 @@ export class WorkRegistry {
       workId: newWorkId(),
       kind: input.kind,
       agent: this.agent,
-      originChatId: resolveRootChatId(input.originChatId),
+      originChatId: (input.parentWorkId ? this.get(input.parentWorkId)?.originChatId : undefined)
+        ?? resolveRootChatId(input.originChatId),
       originTurnId: input.originTurnId,
       parentWorkId: input.parentWorkId,
+      coordinationDestination: input.coordinationDestination,
+      deliveryMode: input.deliveryMode ?? 'detached',
+      office: input.office,
       label: input.label,
+      taskBrief: input.taskBrief,
       status: 'running',
       startedAt: now,
       updatedAt: now,
@@ -76,6 +89,7 @@ export class WorkRegistry {
       verification: 'none',
     };
     this.store.write(record);
+    this.notify(record, 'created');
     return record;
   }
 
@@ -96,7 +110,9 @@ export class WorkRegistry {
   }
 
   update(workId: string, patch: Partial<AsyncWorkRecord>): AsyncWorkRecord | undefined {
-    return this.store.update(workId, patch);
+    const next = this.store.update(workId, patch);
+    if (next) this.notify(next, 'updated');
+    return next;
   }
 
   /** Record operator cancel intent so a kill that lands as 'failed' reports 'cancelled'. */
@@ -108,18 +124,66 @@ export class WorkRegistry {
    * Terminal transition, exactly once. A second call returns the record
    * unchanged — recovery and live listeners can race safely.
    */
-  complete(workId: string, status: AsyncWorkStatus, error?: string): AsyncWorkRecord {
+  complete(
+    workId: string,
+    status: AsyncWorkStatus,
+    error?: string,
+    terminalResult?: AsyncWorkTerminalResult,
+  ): AsyncWorkRecord {
+    return this.completeTerminal(workId, status, error, false, terminalResult);
+  }
+
+  /**
+   * Terminalize foreground work and mark its result delivered in one durable
+   * store write. Boot reconciliation must never replay this result through the
+   * detached completion pipeline.
+   */
+  completeInline(workId: string, status: AsyncWorkStatus, error?: string): AsyncWorkRecord {
+    return this.completeTerminal(workId, status, error, true);
+  }
+
+  private completeTerminal(
+    workId: string,
+    status: AsyncWorkStatus,
+    error: string | undefined,
+    deliveredInline: boolean,
+    terminalResult?: AsyncWorkTerminalResult,
+  ): AsyncWorkRecord {
     const current = this.store.read(workId);
     if (!current) throw new Error(`unknown work id: ${workId}`);
     if (TERMINAL_WORK_STATUSES.has(current.status)) return current;
     const mapped: AsyncWorkStatus =
       status === 'failed' && this.cancelRequested.has(workId) ? 'cancelled' : status;
     this.cancelRequested.delete(workId);
-    return this.store.update(workId, {
+    const finishedAt = new Date().toISOString();
+    const durableTerminal = current.coordinationDestination
+      ? mapped === 'completed'
+        ? terminalResult
+        : {
+            receiptText: terminalResult?.receiptText ??
+              `[Async work ${mapped}] ${current.label}${error ? `\n\nError: ${error}` : ''}\n(work ${current.workId})`,
+            resultText: null,
+            artifacts: Object.freeze([]),
+          }
+      : terminalResult;
+    const done = this.store.update(workId, {
       status: mapped,
-      finishedAt: new Date().toISOString(),
+      finishedAt,
+      ...(durableTerminal
+        ? {
+            terminalResult: Object.freeze({
+              receiptText: durableTerminal.receiptText,
+              resultText: durableTerminal.resultText,
+              artifacts: Object.freeze((durableTerminal.artifacts ?? []).map((artifact) =>
+                Object.freeze({ ...artifact }))),
+            }),
+          }
+        : {}),
+      ...(deliveredInline ? { deliveredAt: finishedAt } : {}),
       ...(error ? { error } : {}),
     })!;
+    this.notify(done, 'terminal');
+    return done;
   }
 
   /** Throttled progress note (disk write at most every 15s per work item). */
@@ -130,7 +194,30 @@ export class WorkRegistry {
     const current = this.store.read(workId);
     if (!current || TERMINAL_WORK_STATUSES.has(current.status)) return;
     this.lastProgressAt.set(workId, now);
-    this.store.update(workId, { progressSummary: summary });
+    const next = this.store.update(workId, { progressSummary: summary });
+    if (next) this.notify(next, 'progress');
+  }
+
+  /**
+   * Append a Work-only evidence/question note. This is never a chat transcript
+   * row. Bound to the last 32 notes on the same Work identity.
+   */
+  appendEvidence(workId: string, note: string): AsyncWorkRecord | undefined {
+    const current = this.store.read(workId);
+    if (!current || TERMINAL_WORK_STATUSES.has(current.status)) return current;
+    const trimmed = note.trim();
+    if (!trimmed) return current;
+    const notes = Object.freeze([...(current.evidenceNotes ?? []), trimmed].slice(-32));
+    const next = this.store.update(workId, {
+      evidenceNotes: notes,
+      progressSummary: trimmed,
+    });
+    if (next) this.notify(next, 'evidence');
+    return next;
+  }
+
+  private notify(record: AsyncWorkRecord, reason: string): void {
+    workBus.emit(record, reason);
   }
 
   /**
@@ -149,7 +236,13 @@ export class WorkRegistry {
     for (const rec of this.store.list()) {
       if (TERMINAL_WORK_STATUSES.has(rec.status)) continue;
       if (rec.kind === 'subagent') {
-        interrupted.push(this.complete(rec.workId, 'interrupted', 'harness restarted while sub-agent was running'));
+        interrupted.push(rec.deliveryMode === 'inline'
+          ? this.completeInline(rec.workId, 'interrupted', 'harness restarted while sub-agent was running')
+          : this.complete(rec.workId, 'interrupted', 'harness restarted while sub-agent was running'));
+        continue;
+      }
+      if (rec.kind === 'cron') {
+        interrupted.push(this.complete(rec.workId, 'interrupted', 'harness restarted while cron agent-turn was running'));
         continue;
       }
       const jobId = rec.resultHandle.type === 'coding_job' ? rec.resultHandle.jobId : null;
@@ -176,7 +269,7 @@ export class WorkRegistry {
     }
 
     const needsDelivery = this.store.list().filter(
-      r => TERMINAL_WORK_STATUSES.has(r.status) && !r.deliveredAt,
+      r => TERMINAL_WORK_STATUSES.has(r.status) && r.deliveryMode !== 'inline' && !r.deliveredAt,
     );
     return { needsDelivery, interrupted, backfilled };
   }

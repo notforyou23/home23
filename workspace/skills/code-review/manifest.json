@@ -2,7 +2,7 @@
   "id": "code-review",
   "version": "1.0.0",
   "name": "Code Review",
-  "description": "Review a patch, diff, PR, or implementation for bugs, regressions, risky assumptions, and missing tests.",
+  "description": "Review a diff or PR for concrete behavioral defects and Home23 invariants.",
   "layer": "skill",
   "runtime": "docs",
   "category": "coding",
@@ -28,10 +28,7 @@
     "list_files"
   ],
   "dependsOn": [],
-  "composes": [
-    "source-validation",
-    "knowledge-structuring"
-  ],
+  "composes": [],
   "actions": [
     "review"
   ]

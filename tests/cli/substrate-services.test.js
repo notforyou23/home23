@@ -152,6 +152,54 @@ test('declared substrate shippers are generated, with nothing machine-specific i
   assert.equal(app.autorestart, true, 'a shipper that dies must come back');
 });
 
+test('a declared resident seed is supervised — the six-day hole (2026-08-21)', (t) => {
+  const root = makeInstall({
+    home: {
+      substrate: {
+        seeds: [
+          {
+            name: 'clay',
+            stateDir: 'instances/clay/seed-01',
+            env: {
+              SEED_NAME: 'clay',
+              SEED_SOURCE: 'instances/forrest/brain/event-ledger.jsonl',
+              SEED_POLL_MS: '5000',
+              SEED_SELF_FORMATION: '1',
+              NOT_A_SEED_VAR: 'should not travel',
+            },
+          },
+        ],
+      },
+    },
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const app = loadApps(root).find((a) => a.name === 'home23-clay-seed');
+
+  assert.ok(app, 'an individual who is not an agent must still be supervised');
+  assert.match(app.script, /substrate\/bin\/seed-runner\.ts$/);
+  // PM2 picks bun for .ts and then ignores node_args — the trap that
+  // crash-loops a runner.
+  assert.equal(app.interpreter, 'node');
+  assert.equal(app.node_args, '--import tsx');
+  assert.equal(app.autorestart, true, 'the whole point: he comes back');
+  // The lock is mechanical: a stopping runner must release before its
+  // replacement asks, and SIGINT must have time to close the checkpoint.
+  assert.equal(app.kill_timeout, 30000);
+  assert.ok(app.restart_delay >= 15000);
+  assert.match(app.out_file, /logs\/clay-seed-out\.log$/);
+  // Paths resolve against the install; the repo carries no machine paths.
+  assert.equal(app.env.SEED_STATE_DIR, join(root, 'instances', 'clay', 'seed-01'));
+  assert.equal(app.env.SEED_SOURCE, join(root, 'instances', 'forrest', 'brain', 'event-ledger.jsonl'));
+  assert.equal(app.env.SEED_POLL_MS, '5000');
+  assert.equal(app.env.NOT_A_SEED_VAR, undefined, 'only SEED_* travels — env is not a grab bag');
+});
+
+test('no resident seeds declared, none emitted', (t) => {
+  const root = makeInstall();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(loadApps(root).some((a) => a.name === 'home23-clay-seed'), false);
+});
+
 test('no shippers declared, none emitted', (t) => {
   const root = makeInstall();
   t.after(() => rmSync(root, { recursive: true, force: true }));

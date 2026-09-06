@@ -45,7 +45,7 @@ node cli/home23.js update
 
 Dashboard is the operating surface. Standalone chat is `/home23/chat`. Telegram, Discord, and iMessage are per-agent in Settings.
 
-`update` pulls the latest Home23 release and restarts Home23 processes. It does not start or update Cosmo.
+For ordinary installations, `update` pulls the latest Home23 release and restarts Home23 processes. Managed packaged installations use the [managed release workflow](docs/reference/MANAGED-RELEASES.md); the ordinary updater refuses those installations. Neither path starts or updates Cosmo.
 
 First agent listens on 5001–5004 (engine, dash, MCP, harness bridge). The next agent gets 5011–5014.
 

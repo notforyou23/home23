@@ -4,6 +4,7 @@ name: Knowledge Structuring
 version: 1.0.0
 layer: skill
 runtime: docs
+routing: manual
 author: home23
 description: Turn messy notes, findings, or context into a framework, matrix, outline, or clean handoff structure.
 category: research

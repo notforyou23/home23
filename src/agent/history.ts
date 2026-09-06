@@ -1,3 +1,4 @@
+import { estimateContextChars } from './context-pressure.js';
 /**
  * COSMO Home 2.3 — Conversation History
  *
@@ -5,8 +6,12 @@
  * Handles context window truncation with atomic tool-pair handling.
  */
 
-import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, renameSync } from 'node:fs';
+import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { open, readdir } from 'node:fs/promises';
+import { setImmediate as yieldToIo } from 'node:timers/promises';
+import { StringDecoder } from 'node:string_decoder';
+import { atomicContextWrite, digest, TaskContextStore } from './task-context.js';
 
 // Anthropic message types (simplified for storage)
 export interface StoredMessage {
@@ -103,12 +108,14 @@ export class ConversationHistory {
   private dir: string;
   private maxChars: number;
   private namespace: string;
+  readonly taskContext: TaskContextStore;
 
   constructor(dir: string, maxChars: number = 400_000, namespace: string = 'default') {
     this.dir = dir;
     this.maxChars = maxChars;
     this.namespace = namespace;
     mkdirSync(dir, { recursive: true });
+    this.taskContext = new TaskContextStore(join(dir, 'task-context', digest(namespace)));
   }
 
   /** Load all stored records for a chat (messages + session boundaries). */
@@ -117,7 +124,9 @@ export class ConversationHistory {
     if (!existsSync(filePath)) return [];
 
     try {
-      const raw = readFileSync(filePath, 'utf-8').trim();
+      const source = readFileSync(filePath, 'utf-8');
+      const checkpoint = this.contextCheckpoint(chatId, source);
+      const raw = (checkpoint ? checkpoint.records.map(r => JSON.stringify(r)).join('\n') + '\n' + source.slice(checkpoint.sourceChars) : source).trim();
       if (!raw) return [];
 
       // Per-line parse — skip bad lines instead of losing all history
@@ -145,9 +154,8 @@ export class ConversationHistory {
         console.warn(`[history] Skipped ${badLines} corrupted line(s) in ${chatId}`);
       }
       return records;
-    } catch {
-      console.warn(`[history] Failed to load history for ${chatId}`);
-      return [];
+    } catch (error) {
+      throw new Error(`History unavailable for ${chatId}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -189,6 +197,68 @@ export class ConversationHistory {
     } catch {
       return [];
     }
+  }
+
+  /** Bounded janitor-only scan. Oversized/incomplete snapshots never authorize recovery. */
+  async scanForRecovery(chatId: string, consume: (record: unknown) => void, onDeferred: (reason: string) => void = () => {}): Promise<((commit: () => void) => boolean) | null> {
+    const path = this.filePath(chatId);
+    const defer = (reason: string): null => { onDeferred(reason); return null; };
+    const handle = await open(path, 'r').catch(() => null);
+    if (!handle) return defer('open_failed');
+    try {
+      const before = await handle.stat();
+      const same = (s: typeof before): boolean => s.dev === before.dev && s.ino === before.ino
+        && s.size === before.size && s.mtimeMs === before.mtimeMs && s.ctimeMs === before.ctimeMs;
+      const buffer = Buffer.alloc(64 * 1024);
+      const decoder = new StringDecoder('utf8');
+      let carry = '';
+      let position = 0;
+      while (position < before.size) {
+        const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, before.size - position), position);
+        if (!bytesRead) return defer('short_read');
+        position += bytesRead;
+        carry += decoder.write(buffer.subarray(0, bytesRead));
+        let newline: number;
+        while ((newline = carry.indexOf('\n')) !== -1) {
+          const line = carry.slice(0, newline);
+          carry = carry.slice(newline + 1);
+          if (line.length > 1024 * 1024) return defer('record_too_large');
+          let record: unknown;
+          if (!line.trim()) continue;
+          try { record = JSON.parse(line); } catch { return defer('malformed_record'); }
+          try { consume(record); } catch (error) {
+            return defer(error instanceof Error && error.message === 'invalid_turn_metadata' ? 'invalid_turn_metadata' : 'metadata_limit');
+          }
+        }
+        if (carry.length > 1024 * 1024) return defer('record_too_large');
+        await yieldToIo();
+      }
+      carry += decoder.end();
+      // A partial final record may be an in-progress append: defer the entire journal.
+      if (carry.trim()) return defer('incomplete_record');
+      if (!same(await handle.stat())) return defer('journal_changed');
+      return (commit) => {
+        // No yield between this fresh path check and terminal appends. Renames,
+        // completions and new starts during the scan invalidate its authority.
+        try {
+          if (!same(statSync(path))) { defer('journal_changed'); return false; }
+        } catch { defer('stat_failed'); return false; }
+        commit();
+        return true;
+      };
+    } catch {
+      return defer('read_failed');
+    } finally { await handle.close(); }
+  }
+
+  async listChatIdsForRecovery(): Promise<string[]> {
+    const prefix = `${this.namespace.replace(/[^a-zA-Z0-9_-]/g, '_')}__`;
+    return (await readdir(this.dir).catch(() => []))
+      .filter(f => f.startsWith(prefix) && f.endsWith('.jsonl'))
+      .map(f => f.slice(prefix.length, -'.jsonl'.length))
+      // Rotated archives contain dots and cannot round-trip through filePath().
+      // The legacy reader already skipped these nonexistent sanitized aliases.
+      .filter(chatId => chatId === chatId.replace(/[^a-zA-Z0-9_-]/g, '_'));
   }
 
   /** List all chatIds stored for this namespace. */
@@ -255,26 +325,32 @@ export class ConversationHistory {
             .filter((b): b is Extract<ContentBlock, { type: 'tool_use' }> => b.type === 'tool_use')
             .map(b => b.name);
 
-          const summary: StoredMessage = {
-            role: 'assistant',
-            content: `[Used tools: ${toolNames.join(', ')}]`,
-          };
-
           rest.shift();
 
+          const receipts: string[] = [];
           while (rest.length > 0) {
             const next = rest[0]!;
             if (typeof next.content !== 'string' && Array.isArray(next.content)) {
-              const hasMatchingResult = next.content.some(
-                b => b.type === 'tool_result' && toolIds.includes((b as { tool_use_id: string }).tool_use_id)
+              const matching = next.content.filter(
+                (b): b is Extract<ContentBlock, { type: 'tool_result' }> =>
+                  b.type === 'tool_result' && toolIds.includes((b as { tool_use_id: string }).tool_use_id),
               );
-              if (hasMatchingResult) {
+              if (matching.length > 0) {
+                for (const block of matching) {
+                  receipts.push(String(block.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 400));
+                }
                 rest.shift();
                 continue;
               }
             }
             break;
           }
+
+          const receiptLines = toolNames.map((name, i) => `${name}: ${receipts[i] ?? ''}`.trim());
+          const summary: StoredMessage = {
+            role: 'assistant',
+            content: `[Used tools: ${toolNames.join(', ')}]\n${receiptLines.join('\n')}`.trim(),
+          };
 
           rest.unshift(summary);
           continue;
@@ -294,29 +370,68 @@ export class ConversationHistory {
     return result;
   }
 
-  /** Rewrite the history file with provided records. Strips thinking blocks and base64 image data on the way out, same as append(). */
-  compact(chatId: string, records: HistoryRecord[]): void {
-    const filePath = this.filePath(chatId);
-    const stripped = records.map(r => {
-      if ('type' in r && r.type === 'session_boundary') return r;
-      return stripImageData(stripThinking(r as StoredMessage));
-    });
-    const content = stripped.map(r => JSON.stringify(r)).join('\n') + '\n';
-    writeFileSync(filePath, content);
+  /** Build the active model view without rewriting canonical messages or turn events. */
+  compact(chatId: string, records: HistoryRecord[], expectedRevision?: string): void {
+    if (expectedRevision !== undefined && this.revision(chatId) !== expectedRevision) throw new Error('History changed during compaction; retry against current history');
+    const file = this.filePath(chatId);
+    const source = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    this.archiveCurrent(chatId);
+    const stripped = records.map(r => 'type' in r && r.type === 'session_boundary' ? r : stripImageData(stripThinking(r as StoredMessage)));
+    atomicContextWrite(`${file}.context.json`, { version: 1, sourceChars: source.length, sourceHash: digest(source), records: stripped, compactedAt: new Date().toISOString() });
   }
 
-  /** Move history aside so the next load() returns empty. Used by cron jobs with sessionHistory="fresh". */
+  recordContextStatus(chatId: string, status: unknown): void { atomicContextWrite(`${this.filePath(chatId)}.pressure.json`, status); }
+  contextStatus(chatId: string): unknown {
+    const file = `${this.filePath(chatId)}.pressure.json`;
+    return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null;
+  }
+
+  revision(chatId: string): string {
+    const file = this.filePath(chatId);
+    return digest((existsSync(file) ? readFileSync(file, 'utf8') : '') + '\0' + (existsSync(`${file}.context.json`) ? readFileSync(`${file}.context.json`, 'utf8') : ''));
+  }
+
+  archiveCurrent(chatId: string): string[] {
+    const file = this.filePath(chatId);
+    if (!existsSync(file)) return [];
+    const raw = readFileSync(file, 'utf8');
+    const ids: string[] = [];
+    for (let offset = 0; offset < raw.length; offset += 31000) ids.push(this.taskContext.save(chatId, 'transcript', raw.slice(offset, offset + 32000)));
+    return ids;
+  }
+
+  private contextCheckpoint(chatId: string, source: string): { sourceChars: number; records: HistoryRecord[] } | null {
+    const file = `${this.filePath(chatId)}.context.json`;
+    if (!existsSync(file)) return null;
+    const checkpoint = JSON.parse(readFileSync(file, 'utf8'));
+    if (checkpoint.version !== 1 || !Number.isSafeInteger(checkpoint.sourceChars) || checkpoint.sourceChars < 0 || checkpoint.sourceChars > source.length || !Array.isArray(checkpoint.records)
+      || checkpoint.records.some((record: any) => !record || typeof record !== 'object'
+        || (record.type !== 'session_boundary' && (!['user', 'assistant'].includes(record.role)
+          || !(typeof record.content === 'string' || (Array.isArray(record.content) && record.content.every((block: any) => block && typeof block.type === 'string'))))))
+      || digest(source.slice(0, checkpoint.sourceChars)) !== checkpoint.sourceHash) throw new Error('Context checkpoint does not match canonical history; original transcript retained');
+    return checkpoint;
+  }
+
+  reset(chatId: string): void { this.rotate(chatId); }
+
+  /** Move canonical history and its active view aside; begin a fresh task scope. */
   rotate(chatId: string): void {
     const filePath = this.filePath(chatId);
-    if (!existsSync(filePath)) return;
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const archivePath = filePath.replace(/\.jsonl$/, `.${ts}.jsonl`);
+    const moved: Array<[string, string]> = [];
     try {
-      renameSync(filePath, archivePath);
-      console.log(`[history] Rotated ${filePath} → ${archivePath}`);
-    } catch {
-      // Best-effort; if rename fails, leave in place — next run will still see old history
-      console.warn(`[history] Failed to rotate ${filePath}`);
+      for (const suffix of ['', '.context.json', '.pressure.json']) {
+        const source = `${filePath}${suffix}`;
+        const target = `${archivePath}${suffix}`;
+        if (existsSync(source)) { renameSync(source, target); moved.push([source, target]); }
+      }
+      this.taskContext.reset(chatId);
+    } catch (error) {
+      for (const [source, target] of moved.reverse()) {
+        try { renameSync(target, source); } catch (rollbackError) { console.error('[history] Rotation rollback failed:', rollbackError); }
+      }
+      throw new Error(`Failed to rotate history safely: ${filePath}`, { cause: error });
     }
   }
 
@@ -335,7 +450,7 @@ export class ConversationHistory {
       if ('type' in r && r.type === 'session_boundary') return sum + 50;
       const m = r as StoredMessage;
       if (typeof m.content === 'string') return sum + m.content.length;
-      return sum + JSON.stringify(m.content).length;
+      return sum + estimateContextChars(m.content);
     }, 0);
   }
 }

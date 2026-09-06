@@ -9,6 +9,13 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ModelAliases } from '../agent/model-resolution.js';
+import {
+  modelSupportsReasoningEffort,
+  parseReasoningEffort,
+  reasoningEffortsForModel,
+  REASONING_EFFORTS,
+  type ReasoningEffort,
+} from '../agent/reasoning-effort.js';
 
 export interface ChatTurnConfig {
   agentName: string;
@@ -39,12 +46,23 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
   return async (req: Request, res: Response): Promise<void> => {
     if (!checkAuth(req, res, config.token)) return;
 
-    const { chatId, message, model, images } = req.body ?? {};
+    const { chatId, message, model, effort: requestedEffort, images } = req.body ?? {};
     if (!chatId || typeof chatId !== 'string') {
       res.status(400).json({ error: 'chatId required' }); return;
     }
     if (!message || typeof message !== 'string') {
       res.status(400).json({ error: 'message required' }); return;
+    }
+
+    let effort: ReasoningEffort | undefined;
+    try {
+      effort = parseReasoningEffort(requestedEffort, 'effort');
+    } catch (error) {
+      res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+        code: 'reasoning_effort_invalid',
+      });
+      return;
     }
 
     const ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -117,6 +135,15 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
         modelOverride = { model };
       }
     }
+    const selectedModel = modelOverride?.model ?? config.agent.getModel();
+    const selectedEffort = effort ?? modelOverride?.reasoningEffort ?? config.agent.getReasoningEffort();
+    if (!modelSupportsReasoningEffort(selectedModel, selectedEffort)) {
+      res.status(400).json({
+        error: `reasoning effort ${selectedEffort} is unavailable for ${selectedModel}`,
+        code: 'reasoning_effort_unsupported',
+      });
+      return;
+    }
 
     // Generate turnId early so image filenames can use it.
     const turnId = `t_${Date.now()}_${randomUUID().slice(0, 8)}`;
@@ -144,6 +171,7 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
       const { turnId: actualTurnId, response } = await config.agent.runWithTurn(chatId, message, {
         turnId,
         modelOverride,
+        effort,
         media: media.length > 0 ? media : undefined,
       });
 
@@ -342,11 +370,14 @@ export function createModelsHandler(config: ChatTurnConfig) {
       alias,
       provider: val.provider,
       model: val.model,
+      reasoningEfforts: reasoningEffortsForModel(val.model),
     }));
     res.json({
       models,
       defaultModel: config.agent.getModel(),
       defaultProvider: config.agent.getProvider(),
+      defaultReasoningEffort: config.agent.getReasoningEffort(),
+      reasoningEfforts: REASONING_EFFORTS,
     });
   };
 }

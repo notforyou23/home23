@@ -698,6 +698,95 @@ test('global merge lets a higher-authority keyword candidate displace a semantic
   assert.deepEqual(result.results.map((row) => row.id), ['current']);
 });
 
+test('context mode skips the full-brain scan when ANN is missing', async () => {
+  const dir = await createBrain({
+    nodes: [{ id: 'exact', concept: 'context canary', embedding: [1, 0] }],
+  });
+  const source = await openMemorySource(dir);
+  let scans = 0;
+  const original = source.iterateNodes.bind(source);
+  source.iterateNodes = async function* iterateNodes(opts) {
+    scans += 1;
+    yield* original(opts);
+  };
+  const cacheRoot = await tempDir('home23-memory-search-cache-');
+  const service = createMemorySearchService({
+    brainDir: dir,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => null,
+    deltaOverlayCache: createMemoryDeltaOverlayCache({ cacheRoot }),
+    logger: { warn() {} },
+  });
+  try {
+    const result = await service.search({
+      sourcePin: source,
+      identity: { operationId: 'test-search', requesterAgent: 'jerry', brainId: 'jerry' },
+      query: 'context canary',
+      topK: 5,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+      mode: 'context',
+    });
+    assert.equal(scans, 0);
+    assert.equal(result.evidence.fallback.route, 'context-fast');
+    assert.equal(result.evidence.fallback.reason, 'ann_missing');
+    assert.equal(result.evidence.fallback.completeness, 'incomplete');
+    assert.equal(result.evidence.completeCoverage, false);
+    assert.equal(result.stats.retrievalMode, 'context-fast');
+    assert.equal(result.results.length, 0);
+  } finally {
+    await source.close();
+  }
+});
+
+test('context mode still uses a stale ANN instead of scanning the corpus', async () => {
+  const dir = await createBrain({
+    nodes: [{ id: 'hit', concept: 'stale index canary', embedding: [1, 0] }],
+  });
+  const base = await readManifest(dir);
+  await markAnn(dir, { builtFromRevision: base.currentRevision });
+  await appendRevision(dir, {
+    nodes: [{ id: 'newer', concept: 'unindexed newer node', embedding: [0, 1] }],
+  }, { nodeCount: 2, edgeCount: 0, clusterCount: 1 });
+  const source = await openMemorySource(dir);
+  let scans = 0;
+  const original = source.iterateNodes.bind(source);
+  source.iterateNodes = async function* iterateNodes(opts) {
+    scans += 1;
+    yield* original(opts);
+  };
+  const cacheRoot = await tempDir('home23-memory-search-cache-');
+  const service = createMemorySearchService({
+    brainDir: dir,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2,
+      skipped: 0,
+      labels: [{ id: 'hit', concept: 'stale index canary' }],
+      search: () => [{ node: { id: 'hit', concept: 'stale index canary' }, similarity: 0.99 }],
+    }),
+    deltaOverlayCache: createMemoryDeltaOverlayCache({ cacheRoot }),
+    logger: { warn() {} },
+  });
+  try {
+    const result = await service.search({
+      sourcePin: source,
+      identity: { operationId: 'test-search', requesterAgent: 'jerry', brainId: 'jerry' },
+      query: 'stale index canary',
+      topK: 5,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+      mode: 'context',
+    });
+    assert.equal(scans, 0);
+    assert.equal(result.results.some((row) => row.id === 'hit'), true);
+    assert.equal(result.evidence.matchOutcome, 'matches');
+    assert.notEqual(result.evidence.fallback?.reason, 'exhaustive_requested');
+  } finally {
+    await source.close();
+  }
+});
+
 test('explicit exhaustive search uses the logical source fallback', async () => {
   const dir = await createBrain({
     nodes: [{ id: 'exact', concept: 'exhaustive canary', embedding: [1, 0] }],
@@ -856,6 +945,84 @@ test('bounded ANN label absence falls back to logical source before claiming no 
   assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
   assert.equal(result.evidence.sourceHealth, 'degraded');
   assert.equal(result.evidence.fallback.reason, 'exact_canary_missing');
+});
+
+test('exact phrase outranks ANN neighbors and survives truncated labels', async () => {
+  const phrase = 'There is no he. I am Jerry. The seed, the lobe, this room—I am them.';
+  const exact = {
+    id: '331616',
+    concept: `${'prefix '.repeat(100)} ${phrase}`,
+    embedding: [0, 1],
+    tag: 'identity',
+  };
+  const sludge = {
+    id: '326864',
+    concept: 'COZ shakedown verifier table artifact_deliverable',
+    embedding: [1, 0],
+    tag: 'artifact_log',
+    authorityClass: 'artifact_log',
+    type: 'artifact_log',
+  };
+  const dir = await createBrain({ nodes: [exact, sludge] });
+  await markAnn(dir);
+  const exactLabel = projectAnnLabel(exact);
+  const sludgeLabel = projectAnnLabel(sludge);
+  assert.equal(exactLabel.concept.includes('There is no he'), false);
+
+  const result = await sourceSearch({
+    dir,
+    query: phrase,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2,
+      count: 2,
+      skipped: 0,
+      labels: [exactLabel, sludgeLabel],
+      search: () => [
+        { node: sludgeLabel, similarity: 0.99 },
+        { node: exactLabel, similarity: 0.41 },
+      ],
+    }),
+    request: { topK: 5, minSimilarity: 0.1, noiseFloor: 0.1 },
+  });
+
+  assert.equal(result.results[0]?.id, '331616');
+  assert.equal(result.results[0]?.matchKind, 'exact_phrase');
+  assert.equal(typeof result.results[0]?.finalRankScore, 'number');
+  assert.ok(result.results[0].finalRankScore >= (result.results[1]?.finalRankScore ?? 0));
+  assert.equal(result.evidence.fallback.reason, 'exact_phrase_missing');
+});
+
+test('identity queries downrank artifact_log sludge below an exact phrase hit', async () => {
+  const phrase = 'I am Jerry. The seed, the lobe, this room—I am them.';
+  const exact = {
+    id: 'identity-now',
+    concept: phrase,
+    embedding: [0, 1],
+    tag: 'identity',
+  };
+  const sludge = {
+    id: '326870',
+    concept: 'legacy COZ document shakedown artifact_deliverable verifier table',
+    embedding: [1, 0],
+    tag: 'artifact_log',
+    authorityClass: 'artifact_log',
+  };
+  const dir = await createBrain({ nodes: [exact, sludge] });
+  const result = await sourceSearch({
+    dir,
+    query: phrase,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => null,
+    request: { topK: 5, minSimilarity: 0.1, noiseFloor: 0.1 },
+  });
+  assert.equal(result.results[0]?.id, 'identity-now');
+  assert.equal(result.results[0]?.matchKind, 'exact_phrase');
+  const sludgeRow = result.results.find((row) => row.id === '326870');
+  if (sludgeRow) {
+    assert.ok(sludgeRow.finalRankScore < result.results[0].finalRankScore);
+    assert.ok((sludgeRow.componentScores?.identityPenalty ?? 1) < 1);
+  }
 });
 
 test('missing ANN reports a degraded complete logical source scan with one approved mode', async () => {

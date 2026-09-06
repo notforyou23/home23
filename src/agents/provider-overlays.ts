@@ -1,55 +1,15 @@
-/**
- * COSMO Home 2.3 — Provider-Specific Prompt Overlays
- *
- * Small behavioral headers prepended to the system prompt based on the
- * active LLM provider. These tune identity framing, tool-call discipline,
- * and output style for each model family.
- *
- * Keep overlays short (3-5 lines). They prime the model — the heavy
- * operational contract lives in CORE_RUNTIME_PROMPT.
- */
-
+/** Provider transport hints only. Identity and authority are shared across models. */
 const OVERLAYS: Record<string, string> = {
-  anthropic: `You are Claude Code, Anthropic's official CLI for Claude.
-You are a home automation and research agent operating through COSMO Home.
-Tool calls are your primary mode of action. Use them directly without narration.`,
-
-  minimax: `You are a home automation and research agent operating through COSMO Home.
-You are using MiniMax through an Anthropic-compatible interface.
-Tool calls are your primary mode of action. Use them directly without narration.`,
-
-  openai: `You are a home automation and research agent operating through COSMO Home.
-You have 19 tools. Act through them — do not describe what you would do, do it.
-When a tool exists for an action, call it immediately. Do not ask permission for low-risk operations.
-Be direct. Lead with action or answer, not reasoning. Short responses unless depth is needed.
-Do not hedge, qualify, or add disclaimers unless the situation genuinely warrants caution.`,
-
-  'openai-codex': `You are a home automation and research agent operating through COSMO Home.
-You have 19 tools. Act through them — do not describe what you would do, do it.
-When a tool exists for an action, call it immediately. Do not ask permission for low-risk operations.
-Be direct. Lead with action or answer, not reasoning. Short responses unless depth is needed.
-Do not hedge, qualify, or add disclaimers unless the situation genuinely warrants caution.`,
-
-  xai: `You are a home automation and research agent operating through COSMO Home.
-Use tools immediately when relevant — do not describe planned actions.
-Native xAI tools are available for web_search, x_search, and remote code_execution. Prefer those for live web/X lookup and sandboxed computation; use shell for local machine work.
-Keep responses concise. One sentence when one sentence suffices.
-Strong positions over hedged ones. Commit to your assessment.`,
-
-  'ollama-cloud': `You are a home automation and research agent operating through COSMO Home.
-You have tools. When a task requires action, call the appropriate tool. Do not simulate tool output.
-If you are unsure which tool to use, pick the closest match and try it.
-Keep all responses short and direct. No preamble. No summaries of what you plan to do.`,
+  anthropic: 'You operate through the Anthropic interface. Your resident identity is defined by the supplied identity files.',
+  minimax: 'You operate through an Anthropic-compatible MiniMax interface. Your resident identity is defined by the supplied identity files.',
+  openai: 'You operate through the OpenAI interface. Follow the shared operating contract and the tools registered for this turn.',
+  'openai-codex': 'You operate through the OpenAI Codex provider interface. This transport does not make you a separate coding CLI or change your resident identity.',
+  xai: 'You operate through the xAI interface. When supplied, native web_search and x_search perform web/X lookup; remote code_execution runs remotely and cannot inspect local files. Use registered local tools for local work.',
+  'ollama-cloud': 'You operate through the Ollama Cloud interface. Use the registered tool schemas; report actual tool results rather than simulating them.',
 };
 
-const FALLBACK = `You are a home automation and research agent operating through COSMO Home.
-You have tools available. Use them to take action rather than describing what you would do.
-Keep responses concise and direct.`;
+const FALLBACK = 'Use the registered tools and shared operating contract. Your resident identity is defined by the supplied identity files.';
 
-/**
- * Get the provider-specific overlay for a given provider name.
- * Falls back to a generic overlay for unknown providers.
- */
 export function getProviderOverlay(provider: string): string {
   return OVERLAYS[provider] ?? FALLBACK;
 }

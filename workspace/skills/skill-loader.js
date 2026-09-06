@@ -115,6 +115,7 @@ function buildSkillRecord(name) {
     requiresTools: normalizeStringArray(manifest?.requiresTools || skillMd?.meta?.requiresTools || skillMd?.meta?.requires_tools),
     dependsOn: normalizeStringArray(manifest?.dependsOn || skillMd?.meta?.dependsOn || skillMd?.meta?.depends_on),
     composes: normalizeStringArray(manifest?.composes || skillMd?.meta?.composes),
+    routing: (manifest?.routing ?? skillMd?.meta?.routing) === "manual" ? "manual" : "auto",
     hooks,
     actions,
     sideEffects: Boolean(manifest?.sideEffects || skillMd?.meta?.sideEffects || actions.some((action) => SIDE_EFFECT_ACTIONS.has(action))),
@@ -158,6 +159,7 @@ function listSkills() {
     version: skill.meta.version,
     runtime: skill.meta.runtime,
     category: skill.meta.category,
+    routing: skill.meta.routing,
     keywords: skill.meta.keywords,
     triggers: skill.meta.triggers,
     requiresTools: skill.meta.requiresTools,
@@ -187,6 +189,7 @@ function getSkillInfo(skillName) {
     author: skill.meta.author,
     runtime: skill.meta.runtime,
     category: skill.meta.category,
+    routing: skill.meta.routing,
     entry: skill.meta.entry,
     actions: skill.meta.actions,
     keywords: skill.meta.keywords,
@@ -480,8 +483,9 @@ async function executeSkill(skillName, action, params = {}, context = {}) {
 function scoreSkillForTask(skill, task) {
   const text = String(task || "").toLowerCase();
   const words = new Set(text.match(/[a-z0-9_-]+/g) || []);
-  let score = 0;
-  const reasons = [];
+  const named = words.has(skill.id.toLowerCase());
+  let score = named ? 20 : 0;
+  const reasons = named ? [`named skill: ${skill.id}`] : [];
 
   for (const trigger of skill.meta.triggers) {
     const normalized = trigger.toLowerCase();
@@ -526,6 +530,7 @@ function scoreSkillForTask(skill, task) {
     id: skill.id,
     name: skill.meta.name,
     category: skill.meta.category,
+    routing: skill.meta.routing,
     runtime: skill.meta.runtime,
     description: skill.meta.description,
     actions: skill.meta.actions,
@@ -536,7 +541,9 @@ function scoreSkillForTask(skill, task) {
 
 function suggestSkills(task, options = {}) {
   const limit = Math.max(1, Math.min(Number(options.limit || 5), 20));
+  const namedSkills = new Set(String(task || "").toLowerCase().match(/[a-z0-9_-]+/g) || []);
   const suggestions = Object.values(loadSkills())
+    .filter((skill) => skill.meta.routing !== "manual" || namedSkills.has(skill.id.toLowerCase()))
     .map((skill) => scoreSkillForTask(skill, task))
     .filter((skill) => skill.score > 0)
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
@@ -681,6 +688,7 @@ function renderRegistry() {
     lines.push(`- **ID:** \`${skill.id}\``);
     lines.push(`- **Type:** ${skill.type}`);
     lines.push(`- **Runtime:** ${skill.runtime}`);
+    if (skill.routing === "manual") lines.push("- **Routing:** manual (only suggested when named)");
     lines.push(`- **Category:** ${skill.category}`);
     lines.push(`- **Operational:** ${skill.hasEntry ? "yes" : "no"}`);
     lines.push(`- **Has SKILL.md:** ${skill.hasSkillMd ? "yes" : "no"}`);

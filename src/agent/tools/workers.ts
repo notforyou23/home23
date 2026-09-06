@@ -1,7 +1,9 @@
+import { runWorker } from '../../workers/runner.js';
 import type { ToolContext, ToolDefinition } from '../types.js';
+import { resolveHarnessBridgeUrl } from '../harness-bridge-url.js';
 
 function baseUrl(ctx: ToolContext): string {
-  return ctx.workerConnectorBaseUrl || `http://127.0.0.1:${process.env.HOME23_BRIDGE_PORT || '5004'}`;
+  return resolveHarnessBridgeUrl(ctx);
 }
 
 function fetcher(ctx: ToolContext): typeof fetch {
@@ -52,6 +54,22 @@ export const workerRunTool: ToolDefinition = {
   async execute(input, ctx) {
     const worker = String(input.worker || '');
     const prompt = String(input.prompt || '');
+    // Canonical Work must execute in the resident's joined context. The legacy
+    // HTTP bridge starts with a fresh context and loses the parent and signal.
+    if (ctx.coordinationWorkDestination) {
+      const result = await runWorker({
+        projectRoot: ctx.projectRoot,
+        request: { worker, prompt, requestedBy: 'house-agent', requester: ctx.agentName,
+          collaborationHandoff: input.collaborationHandoff as import('../../workers/types.js').WorkerRunRequest['collaborationHandoff'] },
+        ctx,
+      });
+      const receipt = result.receipt;
+      return {
+        content: JSON.stringify(receipt),
+        media: result.media,
+        is_error: receipt.status === 'failed' || receipt.status === 'blocked' || receipt.status === 'cancelled' || receipt.verifierStatus === 'fail',
+      };
+    }
     const data = await jsonRequest(ctx, `/api/workers/${encodeURIComponent(worker)}/runs`, {
       method: 'POST',
       body: JSON.stringify({

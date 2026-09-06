@@ -8,6 +8,7 @@ import { exec } from 'node:child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
 import { refuseResidentWrite } from './tracked-source-guard.js';
+import { clipToolOutput } from './clip-output.js';
 
 function resolvePath(inputPath: string, workspacePath: string): string {
   if (inputPath.startsWith('/')) return inputPath;
@@ -38,10 +39,16 @@ export const readFileTool: ToolDefinition = {
       if (offset > 0) lines = lines.slice(offset);
       if (limit) lines = lines.slice(0, limit);
       const result = lines.join('\n');
-      if (result.length > 8000) {
-        return { content: result.slice(0, 8000) + `\n\n(truncated, ${content.length} total chars, ${content.split('\n').length} total lines)` };
-      }
-      return { content: result };
+      const nextOffset = offset + lines.length;
+      const totalLines = content.split('\n').length;
+      const recovery = limit
+        ? `Continue with read_file path=${JSON.stringify(path)} offset=${nextOffset} limit=${limit}.`
+        : `Continue with read_file path=${JSON.stringify(path)} offset=${nextOffset} limit=80.`;
+      const clipped = clipToolOutput(
+        result,
+        `${recovery} File has ${totalLines} lines / ${content.length} chars.`,
+      );
+      return { content: clipped };
     } catch (err) {
       return { content: `Error reading ${path}: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
     }
@@ -137,7 +144,15 @@ export const listFilesTool: ToolDefinition = {
       }, (_error, stdout) => {
         const files = stdout.trim().split('\n').filter(Boolean);
         if (files.length === 0) resolve({ content: 'No files matched.' });
-        else resolve({ content: files.join('\n') + (files.length >= 200 ? '\n(truncated at 200)' : '') });
+        else {
+          const listed = files.join('\n') + (files.length >= 200 ? '\n(truncated at 200 paths from rg)' : '');
+          resolve({
+            content: clipToolOutput(
+              listed,
+              `Narrow the glob or cwd; ${files.length} path(s) matched. This listing may be incomplete.`,
+            ),
+          });
+        }
       });
     });
   },
@@ -213,7 +228,12 @@ export const searchFilesTool: ToolDefinition = {
           });
           return;
         }
-        resolve({ content: out.slice(0, 6000) });
+        resolve({
+          content: clipToolOutput(
+            out,
+            `Raise max_results or narrow glob/path. Showing a clipped page of matches, not the full set.`,
+          ),
+        });
       });
     });
   },

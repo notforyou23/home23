@@ -1,6 +1,6 @@
 # Skills Registry
 
-Generated from live skill discovery. Total: 19 skills.
+Generated from live skill discovery. Total: 20 skills.
 
 ## autoresearch
 
@@ -67,11 +67,11 @@ Generated from live skill discovery. Total: 19 skills.
 - **Has manifest:** yes
 - **Has scripts:** no
 - **Hooks:** none
-- **Description:** Review a patch, diff, PR, or implementation for bugs, regressions, risky assumptions, and missing tests.
+- **Description:** Review a diff or PR for concrete behavioral defects and Home23 invariants.
 - **Actions:** review
 - **Triggers:** review this diff | review this pr | what bugs do you see | check this implementation for regressions
 - **Requires tools:** read_file, search_files, list_files
-- **Composes:** source-validation, knowledge-structuring
+- **Composes:** none
 - **Depends on:** none
 
 ## coding-agent
@@ -85,11 +85,47 @@ Generated from live skill discovery. Total: 19 skills.
 - **Has manifest:** yes
 - **Has scripts:** no
 - **Hooks:** none
-- **Description:** Delegate a substantial coding task to a specialized coding runtime or worker when the job is too large for an inline pass.
+- **Description:** Delegate coding through Home23 coding jobs, with isolation and verified integration.
 - **Actions:** brief, model-selection, handoff
 - **Triggers:** delegate this coding task | spin up a worker for this feature | use a coding agent | hand this off to codex
-- **Requires tools:** spawn_agent
-- **Composes:** workflow-automation
+- **Requires tools:** coding_backends, coding_run, coding_jobs, coding_status, coding_result, coding_continue, coding_cancel
+- **Composes:** none
+- **Depends on:** none
+
+## contact
+
+- **ID:** `contact`
+- **Type:** rich
+- **Runtime:** docs
+- **Category:** contact
+- **Operational:** no
+- **Has SKILL.md:** yes
+- **Has manifest:** no
+- **Has scripts:** no
+- **Hooks:** none
+- **Description:** Use Jerry's world-contact tools for Mac, house, intake, browser completion, phone shortcuts, and governed comms.
+- **Actions:** attention, house, capture, comms
+- **Triggers:** what's on my calendar | what needs me | turn on the lights | remember this file | draft a message | run a shortcut | check the house
+- **Requires tools:** attention_scan, mac_read, house_get_entity, house_call_safe_service, capture_artifact, browser_workflow, comms_draft
+- **Composes:** none
+- **Depends on:** none
+
+## contact
+
+- **ID:** `contact`
+- **Type:** rich
+- **Runtime:** docs
+- **Category:** contact
+- **Operational:** no
+- **Has SKILL.md:** yes
+- **Has manifest:** no
+- **Has scripts:** no
+- **Hooks:** none
+- **Description:** Use Jerry's world-contact tools for Mac, house, intake, browser completion, phone shortcuts, and governed comms.
+- **Actions:** attention, house, capture, comms
+- **Triggers:** what's on my calendar | what needs me | turn on the lights | remember this file | draft a message | run a shortcut | check the house
+- **Requires tools:** attention_scan, mac_read, house_get_entity, house_call_safe_service, capture_artifact, browser_workflow, comms_draft
+- **Composes:** none
 - **Depends on:** none
 
 ## deep-research-synthesizer
@@ -103,18 +139,19 @@ Generated from live skill discovery. Total: 19 skills.
 - **Has manifest:** yes
 - **Has scripts:** no
 - **Hooks:** none
-- **Description:** Turn many sources or brain outputs into one coherent synthesis with contradictions, confidence, and next actions.
+- **Description:** Optional reference for source-grounded synthesis with uncertainty and retrieval limits.
 - **Actions:** synthesize
 - **Triggers:** synthesize this research | pull these sources together | what do all these findings say | summarize the research with contradictions
-- **Requires tools:** research_list_brains, research_search_all_brains, research_query_brain, web_search
-- **Composes:** knowledge-structuring
-- **Depends on:** source-validation
+- **Requires tools:** none
+- **Composes:** none
+- **Depends on:** none
 
 ## knowledge-structuring
 
 - **ID:** `knowledge-structuring`
 - **Type:** rich
 - **Runtime:** docs
+- **Routing:** manual (only suggested when named)
 - **Category:** research
 - **Operational:** no
 - **Has SKILL.md:** yes
@@ -211,7 +248,7 @@ Generated from live skill discovery. Total: 19 skills.
 - **Has manifest:** yes
 - **Has scripts:** no
 - **Hooks:** none
-- **Description:** Validate claims and sources for credibility, recency, provenance, and likely bias before you rely on them.
+- **Description:** Audit a disputed claim or source for provenance and evidential limits.
 - **Actions:** validate
 - **Triggers:** is this source trustworthy | validate this claim | check the source quality | is this a primary source
 - **Requires tools:** web_search, web_browse
@@ -241,6 +278,7 @@ Generated from live skill discovery. Total: 19 skills.
 - **ID:** `workflow-automation`
 - **Type:** rich
 - **Runtime:** docs
+- **Routing:** manual (only suggested when named)
 - **Category:** automation
 - **Operational:** no
 - **Has SKILL.md:** yes

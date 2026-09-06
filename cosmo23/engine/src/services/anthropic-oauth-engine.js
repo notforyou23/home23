@@ -22,13 +22,14 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const https = require('https');
-const { PrismaClient } = require('@prisma/client');
 const { encryptApiKey, decryptApiKey } = require('./encryption');
 
 // Lazy-load Prisma client
 let prisma = null;
 function getPrisma() {
   if (!prisma) {
+    // HOME23 PATCH: API-key clients can load without the optional OAuth database.
+    const { PrismaClient } = require('@prisma/client');
     prisma = new PrismaClient();
   }
   return prisma;

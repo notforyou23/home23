@@ -10,11 +10,13 @@
 
 import type { ToolContext, ToolDefinition, ToolResult, CodingBridgeRef } from '../types.js';
 import type { BridgeEvent, CodingJobRecord, CodingJobReceipt, CodingIsolation } from '../../acp/types.js';
+import { mustDetachLongTool } from '../../work/detach.js';
 import { TERMINAL_JOB_STATUSES } from '../../acp/types.js';
 
 const MAX_WAIT_SECONDS = 600;
 const RESULT_TAIL_RUN_MAX = 4000;
 const RESULT_TAIL_FULL_MAX = 8000;
+const CONTAINED_WAIT_POLL_MS = 30_000;
 
 const BRIDGE_UNAVAILABLE: ToolResult = {
   content: 'Coding bridge unavailable (acp disabled or not configured).',
@@ -95,18 +97,20 @@ function renderEventsTail(events: BridgeEvent[]): string {
   return events.map(e => `- ${renderEvent(e)}`).join('\n');
 }
 
-function mergeInstructions(receipt: Pick<CodingJobReceipt, 'worktree' | 'checkpoint'>): string[] {
+function integrationNotes(receipt: Pick<CodingJobReceipt, 'worktree' | 'checkpoint'>): string[] {
   const lines: string[] = [];
   if (receipt.worktree) {
-    const { repoRoot, path, branch } = receipt.worktree;
-    lines.push(`Worktree: ${path} (branch ${branch})`);
-    lines.push(`To merge: git -C ${repoRoot} merge ${branch}`);
-    lines.push(`To discard: git -C ${repoRoot} worktree remove ${path} --force && git -C ${repoRoot} branch -D ${branch}`);
+    const { repoRoot, path, branch, baseCommit } = receipt.worktree;
+    lines.push(`Worktree: ${path} (branch ${branch}, base ${baseCommit})`);
+    lines.push(`Integration target: ${repoRoot}. Inspect committed and uncommitted changes in the job workspace, then integrate only the authorized diff into the current target state and verify it.`);
+    lines.push('The worktree started from committed HEAD; local uncommitted and untracked files were not copied. A worktree is not a machine sandbox. Preserve the job workspace until its work is integrated or explicitly discarded.');
   }
-  if (receipt.checkpoint?.stashCommit) {
-    lines.push(`Checkpoint: git -C ${receipt.checkpoint.repoRoot} stash apply ${receipt.checkpoint.stashCommit} restores the pre-job dirty state.`);
-  } else if (receipt.checkpoint) {
-    lines.push(`Checkpoint: tree was clean at ${receipt.checkpoint.headCommit.slice(0, 12)}; git -C ${receipt.checkpoint.repoRoot} diff ${receipt.checkpoint.headCommit} shows what the job changed.`);
+  if (receipt.checkpoint) {
+    const { repoRoot, headCommit, stashCommit, dirty } = receipt.checkpoint;
+    lines.push(`Checkpoint: ${repoRoot}, base ${headCommit}, pre-job working tree ${dirty ? 'modified' : 'clean'}.`);
+    if (stashCommit) lines.push(`Tracked-state checkpoint object: ${stashCommit}. It excludes untracked and ignored files; inspect it alongside the current diff before recovering selected changes.`);
+    else if (dirty) lines.push('No tracked-state checkpoint object was created; untracked files are not backed up by this checkpoint.');
+    lines.push('Checkpoint mode edits the original checkout. It does not isolate writes or automatically restore pre-job state.');
   }
   return lines;
 }
@@ -120,7 +124,7 @@ function receiptSummary(receipt: CodingJobReceipt, resultTailMax: number): strin
   if (receipt.label) lines.push(`Label: ${receipt.label}`);
   if (receipt.exitCode !== undefined && receipt.exitCode !== null) lines.push(`Exit code: ${receipt.exitCode}`);
   if (receipt.sessionId) lines.push(`Session: ${receipt.sessionId} (resumable via coding_continue)`);
-  lines.push(...mergeInstructions(receipt));
+  lines.push(...integrationNotes(receipt));
   if (receipt.diffStat) lines.push(`Diff:\n${bound(receipt.diffStat, 2000)}`);
   lines.push('', `Result:\n${bound(receipt.resultTail, resultTailMax)}`);
   return lines.join('\n');
@@ -132,6 +136,12 @@ function normalizeWaitSeconds(raw: unknown): number {
   return Math.min(Math.floor(value), MAX_WAIT_SECONDS);
 }
 
+/** Conversation-foreground turns must detach before any wait. */
+function waitBudget(raw: unknown, chatId: string): number {
+  if (mustDetachLongTool(chatId)) return 0;
+  return normalizeWaitSeconds(raw);
+}
+
 function stringArray(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const items = raw.map(item => String(item)).filter(item => item.length > 0);
@@ -140,12 +150,37 @@ function stringArray(raw: unknown): string[] | undefined {
 
 /** Shared wait-then-report path for coding_run / coding_continue. */
 async function awaitOrHandOff(bridge: CodingBridgeRef, job: CodingJobRecord, waitSeconds: number, ctx: ToolContext): Promise<ToolResult> {
+  if (ctx.coordinationWorkDestination) {
+    let current = job;
+    let sequence = 0;
+    while (!isTerminal(current)) {
+      if (ctx.abortSignal?.aborted) {
+        await bridge.cancelJob(job.id).catch(() => undefined);
+        ctx.abortSignal.throwIfAborted();
+      }
+      current = await bridge.waitForJob(job.id, CONTAINED_WAIT_POLL_MS);
+      ctx.turnRuntime?.onWorkActivity?.({
+        workId: ctx.coordinationWorkDestination.parentWorkId,
+        sequence: ++sequence,
+        state: current.status,
+        phase: `coding:${job.id}`,
+      });
+    }
+    const receipt = bridge.getReceipt(job.id);
+    const content = receipt
+      ? receiptSummary(receipt, RESULT_TAIL_RUN_MAX)
+      : `${jobSummary(current)}\n\n(no receipt persisted)`;
+    return {
+      content,
+      ...(current.status === 'completed' ? {} : { is_error: true }),
+    };
+  }
   if (waitSeconds > 0) {
     const settled = await bridge.waitForJob(job.id, waitSeconds * 1000);
     if (isTerminal(settled)) {
       const receipt = bridge.getReceipt(job.id);
-      if (receipt) return { content: receiptSummary(receipt, RESULT_TAIL_RUN_MAX) };
-      return { content: `${jobSummary(settled)}\n\n(no receipt persisted — use coding_status for the event tail)` };
+      if (receipt) return { content: receiptSummary(receipt, RESULT_TAIL_RUN_MAX), ...(receipt.status !== 'completed' ? { is_error: true } : {}) };
+      return { content: `${jobSummary(settled)}\n\n(no receipt persisted — use coding_status for the event tail)`, ...(settled.status !== 'completed' ? { is_error: true } : {}) };
     }
     return { content: `Job ${job.id} still running after ${waitSeconds}s in ${describeLocation(settled)}. Results will be delivered when complete; check coding_status ${job.id}.` };
   }
@@ -154,7 +189,7 @@ async function awaitOrHandOff(bridge: CodingBridgeRef, job: CodingJobRecord, wai
 
 export const codingRunTool: ToolDefinition = {
   name: 'coding_run',
-  description: 'Delegate substantial multi-file coding work to a headless Claude Code (or Codex) session with full machine authority. Use for real implementation tasks — refactors, features, bug fixes across files — rather than single-file edits you can do directly. For Home23 self-modification the job runs in an isolated git worktree by default, so the live checkout is never touched. Returns a durable job id; results are delivered when the job completes.',
+  description: 'Start a detached CLI coding job when a separate session helps. Home23 jobs default to a Git worktree from committed HEAD (local changes are not copied); this is not a machine sandbox. Returns a durable job ID. Inspect the receipt and integrate authorized changes before claiming completion.',
   input_schema: {
     type: 'object',
     properties: {
@@ -166,10 +201,10 @@ export const codingRunTool: ToolDefinition = {
       effort: { type: 'string', description: 'Reasoning effort override (backend-specific)' },
       isolation: { type: 'string', enum: ['worktree', 'checkpoint', 'none'], description: 'Isolation mode; defaults to worktree inside the Home23 checkout' },
       wait_seconds: { type: 'number', description: 'Seconds to wait for completion before returning (0 = return immediately, max 600)' },
-      append_system_prompt: { type: 'string', description: 'Extra system-prompt text appended to the backend session' },
+      append_system_prompt: { type: 'string', description: 'Extra instructions where supported by the backend (not portable; include essential constraints in prompt)' },
       allowed_tools: { type: 'array', items: { type: 'string' }, description: 'Backend tool allowlist (allowlist permission mode)' },
       disallowed_tools: { type: 'array', items: { type: 'string' }, description: 'Backend tools to deny' },
-      max_budget_usd: { type: 'number', description: 'Spend cap for the job in USD' },
+      max_budget_usd: { type: 'number', description: 'Backend-supported spend cap in USD; not enforced by every backend' },
     },
     required: ['prompt'],
     additionalProperties: false,
@@ -179,7 +214,7 @@ export const codingRunTool: ToolDefinition = {
     if (!bridge) return BRIDGE_UNAVAILABLE;
     const prompt = String(input.prompt ?? '').trim();
     if (!prompt) return { content: 'coding_run requires a non-empty prompt.', is_error: true };
-    const waitSeconds = normalizeWaitSeconds(input.wait_seconds);
+    const waitSeconds = waitBudget(input.wait_seconds, ctx.chatId);
     try {
       const job = await bridge.startJob({
         prompt,
@@ -199,9 +234,11 @@ export const codingRunTool: ToolDefinition = {
       // is real. The registry resolves subagent: chats to the root conversation.
       ctx.workRegistry?.create({
         kind: 'coding',
+        taskBrief: prompt,
         originChatId: ctx.chatId,
         originTurnId: ctx.turnRuntime?.turnId,
-        parentWorkId: ctx.parentWorkId,
+        parentWorkId: ctx.coordinationWorkDestination?.parentWorkId ?? ctx.parentWorkId,
+        deliveryMode: ctx.coordinationWorkDestination ? 'inline' : 'detached',
         label: (input.label ? String(input.label) : undefined) ?? job.label ?? job.prompt.slice(0, 100),
         resultHandle: { type: 'coding_job', jobId: job.id },
       });
@@ -239,8 +276,11 @@ export const codingContinueTool: ToolDefinition = {
     if (!job.sessionId) {
       return { content: `Job ${jobId} has no resumable backend session (no session id was recorded — the backend may not support resume, or the job died before the session started). Start a fresh coding_run instead.`, is_error: true };
     }
-    const waitSeconds = normalizeWaitSeconds(input.wait_seconds);
+    if (!job.executionOptions) return { content: 'Legacy coding job has no saved execution settings. Inspect its original invocation and start a new job with explicit supported controls; continuation was not started.', is_error: true };
+    const waitSeconds = waitBudget(input.wait_seconds, ctx.chatId);
     try {
+      const previousBrief = ctx.workRegistry?.list?.().find(work =>
+        work.resultHandle.type === 'coding_job' && work.resultHandle.jobId === job.id)?.taskBrief ?? job.prompt;
       const resumed = await bridge.startJob({
         backend: job.backend,
         prompt,
@@ -250,17 +290,21 @@ export const codingContinueTool: ToolDefinition = {
         resumedFromJobId: job.id,
         label: job.label,
         model: job.model,
+        effort: job.effort,
         requestedBy: ctx.chatId,
       });
       ctx.workRegistry?.create({
         kind: 'coding',
+        taskBrief: `${previousBrief}\n\nCurrent follow-up: ${prompt}`,
         originChatId: ctx.chatId,
         originTurnId: ctx.turnRuntime?.turnId,
-        parentWorkId: ctx.parentWorkId,
+        parentWorkId: ctx.coordinationWorkDestination?.parentWorkId ?? ctx.parentWorkId,
+        deliveryMode: ctx.coordinationWorkDestination ? 'inline' : 'detached',
         label: resumed.label ?? resumed.prompt.slice(0, 100),
         resultHandle: { type: 'coding_job', jobId: resumed.id },
       });
-      return await awaitOrHandOff(bridge, resumed, waitSeconds, ctx);
+      const result = await awaitOrHandOff(bridge, resumed, waitSeconds, ctx);
+      return result;
     } catch (err) {
       return errorResult('coding_continue failed', err);
     }
@@ -291,7 +335,7 @@ export const codingStatusTool: ToolDefinition = {
 
 export const codingResultTool: ToolDefinition = {
   name: 'coding_result',
-  description: 'Fetch the final receipt of a finished coding job: result text, diff stat, cost, and worktree/checkpoint merge or rollback instructions.',
+  description: 'Fetch a finished coding job receipt: result, status, diff summary, and workspace/checkpoint provenance. A receipt does not establish integration or deployment.',
   input_schema: {
     type: 'object',
     properties: {
@@ -309,9 +353,9 @@ export const codingResultTool: ToolDefinition = {
       const job = bridge.getJob(jobId);
       if (!job) return { content: `No coding job found with id ${jobId}. Use coding_jobs to list known jobs.`, is_error: true };
       const events = bridge.readEventsTail(jobId, 10);
-      return { content: `Job ${jobId} not finished — status ${job.status}.\n\nRecent events:\n${renderEventsTail(events)}` };
+      return { content: `Job ${jobId} ${isTerminal(job) ? 'has no persisted receipt' : 'not finished'} — status ${job.status}.\n\nRecent events:\n${renderEventsTail(events)}`, ...(isTerminal(job) && job.status !== 'completed' ? { is_error: true } : {}) };
     }
-    return { content: receiptSummary(receipt, RESULT_TAIL_FULL_MAX) };
+    return { content: receiptSummary(receipt, RESULT_TAIL_FULL_MAX), ...(receipt.status !== 'completed' ? { is_error: true } : {}) };
   },
 };
 

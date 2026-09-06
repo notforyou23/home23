@@ -5,7 +5,7 @@ version: 1.0.0
 layer: skill
 runtime: docs
 author: home23
-description: Validate claims and sources for credibility, recency, provenance, and likely bias before you rely on them.
+description: Audit a disputed claim or source for provenance and evidential limits.
 category: research
 keywords:
   - source
@@ -24,44 +24,10 @@ capabilities:
   - validate: inspect a claim or source for trustworthiness and limits
 ---
 
-# Source Validation
+# Source validation
 
-Use this skill before you promote a claim to fact.
+Use for an explicit audit of a source or disputed claim. Ordinary research follows the core evidence standard without loading this reference.
 
-## When to use
+Trace the claim to its closest primary evidence. Check authorship, dates, context, and whether supposedly independent reports repeat the same source. Distinguish what the source establishes from the author's interpretation and your inference.
 
-Use `source-validation` for:
-- checking whether a source is primary or derivative
-- validating recency-sensitive claims
-- spotting bias, missing provenance, or circular citation
-- comparing multiple sources on the same claim
-
-## Workflow
-
-1. Identify the claim being validated.
-2. Find the closest primary source available.
-3. Check date, authorship, and provenance.
-4. Look for disagreement or unsupported jumps in secondary summaries.
-5. Rate confidence and explain why.
-
-## Output
-
-- Claim
-- Best supporting source
-- Source type: primary, secondary, tertiary
-- Risks or bias
-- Confidence
-
-## Gotchas
-
-- Popularity is not evidence.
-- A recent article can still be derivative and weak.
-- If the claim is unsettled, report the uncertainty instead of forcing a verdict.
-
-## Examples
-
-```text
-Validate this claim before we cite it:
-"Company X signed the deal on April 12."
-Prefer the primary filing or official announcement over commentary.
-```
+Return the claim, the supporting or contradicting evidence, and the material limits. Link usable sources. Popularity and recent publication alone do not establish reliability; report unresolved uncertainty plainly.

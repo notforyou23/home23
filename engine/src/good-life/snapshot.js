@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const topology = require('../system/home23-process-topology.js');
+const { isAgendaHandoffProblem } = require('../live-problems/store.js');
 
 const { classifyHome23Process } = topology;
 
@@ -128,10 +129,23 @@ function summarizeLiveProblems(orchestrator, runtimeRoot) {
   const list = orchestrator?.liveProblems?.store?.all?.()
     || readJson(path.join(runtimeRoot || '', 'live-problems.json'))?.problems
     || [];
-  const out = { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0, goodLifeDiagnostics: 0 };
+  const out = {
+    open: 0,
+    chronic: 0,
+    resolved: 0,
+    unverifiable: 0,
+    total: 0,
+    goodLifeDiagnostics: 0,
+    agendaWorkflows: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+  };
   for (const p of Array.isArray(list) ? list : []) {
-    if (isGoodLifeDiagnosticProblem(p)) {
-      out.goodLifeDiagnostics++;
+    if (isAgendaHandoffProblem(p)) {
+      if (isGoodLifeDiagnosticProblem(p)) out.goodLifeDiagnostics++;
+      out.agendaWorkflows.total++;
+      if (p.state === 'open') out.agendaWorkflows.open++;
+      else if (p.state === 'chronic') out.agendaWorkflows.chronic++;
+      else if (p.state === 'resolved') out.agendaWorkflows.resolved++;
+      else if (p.state === 'unverifiable') out.agendaWorkflows.unverifiable++;
       continue;
     }
     out.total++;
@@ -164,6 +178,22 @@ function summarizeHostPressure(runtimeRoot) {
       freePct: Number.isFinite(Number(memory.freePct)) ? Number(memory.freePct) : null,
       freeBytes: Number.isFinite(Number(memory.free)) ? Number(memory.free) : null,
       totalBytes: Number.isFinite(Number(memory.total)) ? Number(memory.total) : null,
+      rawFreePct: Number.isFinite(Number(memory.rawFreePct ?? memory.freePct))
+        ? Number(memory.rawFreePct ?? memory.freePct)
+        : null,
+      rawFreeBytes: Number.isFinite(Number(memory.rawFree ?? memory.free))
+        ? Number(memory.rawFree ?? memory.free)
+        : null,
+      rawTotalBytes: Number.isFinite(Number(memory.rawTotal ?? memory.total))
+        ? Number(memory.rawTotal ?? memory.total)
+        : null,
+      pressureFreePct: Number.isFinite(Number(memory.pressureFreePct ?? memory.memoryPressure?.freePct))
+        ? Number(memory.pressureFreePct ?? memory.memoryPressure?.freePct)
+        : null,
+      pressureTotalBytes: Number.isFinite(Number(memory.pressureTotalBytes ?? memory.memoryPressure?.totalBytes))
+        ? Number(memory.pressureTotalBytes ?? memory.memoryPressure?.totalBytes)
+        : null,
+      pressureSource: memory.memoryPressure?.source || null,
     } : null,
     swap: swap ? {
       at: toIsoTime(swap.at),
@@ -318,8 +348,7 @@ function latestChannelPayload(file) {
 
 function isGoodLifeDiagnosticProblem(problem) {
   const claim = String(problem?.claim || '');
-  const id = String(problem?.id || '');
-  return id.startsWith('agenda_') && /Agenda action: Diagnose Good Life /i.test(claim);
+  return isAgendaHandoffProblem(problem) && /Agenda action: Diagnose Good Life /i.test(claim);
 }
 
 function summarizeGoals(goals, runtimeRoot) {

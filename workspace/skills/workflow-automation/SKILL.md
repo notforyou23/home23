@@ -4,6 +4,7 @@ name: Workflow Automation
 version: 1.0.0
 layer: skill
 runtime: docs
+routing: manual
 author: home23
 description: Break a multi-step goal into execution stages, map those stages to Home23 tools and skills, and set safe execution order.
 category: automation

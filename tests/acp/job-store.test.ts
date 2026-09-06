@@ -26,7 +26,7 @@ test('createJob/updateJob round-trip atomically without leaving tmp files', () =
   try {
     const store = new CodingJobStore(dir);
     const id = store.newJobId();
-    assert.match(id, /^cj_\d{8}T\d{6}Z_[0-9a-f]{4}$/);
+    assert.match(id, /^cj_\d{8}T\d{6}Z_[0-9a-f]{16}$/);
 
     store.createJob(record(id));
     assert.equal(store.getJob(id)?.status, 'running');
@@ -125,4 +125,15 @@ test('receipt round-trip', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('job IDs cannot escape storage and duplicate creation cannot overwrite a receipt', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'home23-acp-store-'));
+  try {
+    const store = new CodingJobStore(dir);
+    for (const id of ['../escape', 'cj_x/../../escape', '/tmp/escape']) assert.throws(() => store.jobDir(id));
+    store.createJob(record('cj_unique'));
+    assert.throws(() => store.createJob(record('cj_unique', { prompt: 'overwrite' })), /EEXIST/);
+    assert.equal(store.getJob('cj_unique')?.prompt, 'do the thing');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -1,0 +1,8 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "pairingSession": {"id": "pair_0198d95f-6c00-7000-8000-000000000073", "state": "redeemed", "expiresAt": "2026-08-24T16:10:00.000Z", "redeemedAt": "2026-08-24T16:02:00.000Z"},
+  "device": {"id": "dev_0198d95f-6c00-7000-8000-000000000071", "principalId": "user_owner", "platform": "macos", "name": "Owner Mac", "appBuild": "1.0.0", "status": "active", "lastSeenAt": "2026-08-24T16:02:00.000Z"},
+  "clientSession": {"id": "ses_0198d95f-6c00-7000-8000-000000000072", "deviceId": "dev_0198d95f-6c00-7000-8000-000000000071", "principalId": "user_owner", "state": "active", "scopes": ["product:read", "message:send", "attachment:write"], "accessExpiresAt": "2026-08-24T16:17:00.000Z", "refreshExpiresAt": "2026-09-23T16:02:00.000Z"},
+  "tokenDelivery": "returned_once_and_never_logged"
+}

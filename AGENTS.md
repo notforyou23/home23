@@ -8,6 +8,8 @@ If you are working inside an existing live installation and `AGENTS.local.md` ex
 
 ## Before You Edit
 
+If `instances/.house/source-authority.json` exists, run `npm run source:status` and use its maintained development source. An installation checkout or an old task worktree is not automatically the source for new changes. Read `docs/reference/SOURCE-AUTHORITY.md`.
+
 1. Check repository state:
    ```bash
    git status --short --branch
@@ -17,6 +19,7 @@ If you are working inside an existing live installation and `AGENTS.local.md` ex
    - `docs/design/COSMO23-VENDORED-PATCHES.md` before changing anything under `cosmo23/`.
    - The matching `docs/design/*` file for feature areas with design docs.
 3. Protect local state. Do not delete or overwrite runtime data unless the operator explicitly asks.
+4. If `instances/.house/coordination/active-release.json` exists, read `docs/reference/MANAGED-RELEASES.md` before build, update, launcher or deployment work. Verify the selected package and actual process paths; prepare and build changes in isolation. A working checkout is not necessarily the deployed source baseline.
 
 ## Public vs Local State
 

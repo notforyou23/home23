@@ -190,6 +190,10 @@ export class TelegramAdapter implements ChannelAdapter {
     }
   }
 
+  async sendText(chatId: string, text: string): Promise<void> {
+    await this.send({ channel: 'telegram', chatId, text });
+  }
+
   // ── Typing Indicator ──────────────────────────────────────
 
   async sendTyping(chatId: string): Promise<void> {

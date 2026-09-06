@@ -5,7 +5,7 @@ version: 1.0.0
 layer: skill
 runtime: docs
 author: home23
-description: Guidance for when to delegate coding work to a specialized coding runtime or worker.
+description: Delegate coding through Home23 coding jobs, with isolation and verified integration.
 category: coding
 keywords:
   - coding
@@ -25,48 +25,15 @@ capabilities:
   - handoff: define ownership and expected outputs clearly
 ---
 
-# Coding Agent
+# Coding and delegation
 
-Use this skill when coding work is large enough that it benefits from a dedicated worker or coding runtime.
+Choose the route by the outcome and coordination cost. A capable model can handle a substantial change directly; file count alone is not a reason to delegate. Use independent agents for separable investigation, implementation, or review, not obligatory stages.
 
-## When to use
+- Direct work: enough context is already present and delegation would delay the critical path.
+- `coding_run`: a detached CLI coding session, with Git worktree/checkpoint options. Read [coding jobs](references/coding-jobs.md) before launching or integrating one.
+- `spawn_agent`: a background Home23 run with shared identity and machine access, normally a fresh chat. Read [subagents and workers](references/subagents-and-workers.md) for context, model selection, and lifecycle limits.
+- `worker_run`: a reusable configured worker with its own contract; inspect `worker_list` first.
 
-Use `coding-agent` for:
-- feature builds large enough to split from the main loop
-- bounded refactors with clear file ownership
-- implementation work that needs a concise brief before delegation
+Give the child the intended outcome, relevant facts and paths, owned files, existing work to preserve, authority and limits, and completion evidence. It may discover the cause itself. Keep briefing proportional; do not require an elaborate template or solve the task before delegating.
 
-## Workflow
-
-1. Decide whether the task is large enough to justify delegation.
-2. Define ownership in file or module terms.
-3. Write a brief with success criteria, constraints, and required verification.
-4. Choose the right runtime or worker type for the job.
-5. Review the result and integrate only after the expected checks pass.
-
-## Rules
-
-- Keep the task concrete and bounded.
-- Specify ownership: which files or module slice the worker owns.
-- Say what success looks like.
-- Avoid delegating the immediate blocking step if the main loop can just do it faster.
-
-## Home23 mapping
-
-- In Home23, this usually means using the agent's existing sub-agent tooling rather than inventing a new shell script.
-- If the work is small, just edit directly instead of invoking this pattern.
-
-## Gotchas
-
-- Do not delegate the immediate blocking step if inline work is faster.
-- A weak brief creates weak execution. State ownership and success criteria explicitly.
-- If the task is mostly reading or deciding, this skill is probably the wrong tool.
-
-## Examples
-
-```text
-Use coding-agent for this change:
-- Owns: src/agent/tools/skills.ts and workspace/skills/*
-- Goal: add skills telemetry and audit commands
-- Verify: npm run build and node workspace/skills/index.js audit
-```
+Remain responsible for the result. A launch or successful child message is not a finished parent task. Inspect relevant evidence, integrate within the original authorization, and check the resulting behavior. Preserve exact handles and avoid duplicate final delivery.

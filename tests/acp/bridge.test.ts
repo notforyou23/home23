@@ -322,19 +322,23 @@ test('startJob permits a resume from a terminal source job', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
   const bridge = makeBridge(root, happyCli(root));
   try {
-    const source = await bridge.startJob({ prompt: 'finish this' });
+    const source = await bridge.startJob({ prompt: 'finish this', effort: 'high', appendSystemPrompt: 'Only edit the assigned module.', maxBudgetUsd: 2 });
     const finished = await bridge.waitForJob(source.id, 15_000);
     assert.equal(finished.status, 'completed');
     const resumed = await bridge.startJob({
       prompt: 'follow up',
       cwd: source.cwd,
       isolation: 'none',
-      resumeSessionId: source.sessionId,
+      resumeSessionId: finished.sessionId,
       resumedFromJobId: source.id,
     });
     const done = await bridge.waitForJob(resumed.id, 15_000);
     assert.equal(done.status, 'completed');
     assert.equal(done.resumedFromJobId, source.id);
+    assert.deepEqual(done.executionOptions, finished.executionOptions);
+    assert.equal(done.effort, 'high');
+    assert.ok(done.argv?.includes('Only edit the assigned module.'));
+    assert.ok(done.argv?.includes('--max-budget-usd'));
   } finally {
     bridge.dispose();
     rmSync(root, { recursive: true, force: true });
@@ -428,6 +432,14 @@ test('a job inside the Home23 checkout auto-isolates into a worktree', async (t)
     const receipt = bridge.getReceipt(started.id)!;
     assert.deepEqual(receipt.worktree, started.worktree);
     assert.match(receipt.diffStat ?? '', /job-artifact\.txt/);
+    const continued = await bridge.startJob({ prompt: 'finish the follow-up', cwd: done.cwd,
+      isolation: 'none', resumeSessionId: done.sessionId, resumedFromJobId: done.id });
+    const continuedDone = await bridge.waitForJob(continued.id, 15_000);
+    assert.equal(continuedDone.status, 'completed');
+    assert.equal(continuedDone.isolation, 'worktree');
+    assert.equal(continuedDone.requestedCwd, root);
+    assert.deepEqual(bridge.getReceipt(continued.id)?.worktree, started.worktree);
+
   } finally {
     bridge.dispose();
     rmSync(root, { recursive: true, force: true });
@@ -495,4 +507,115 @@ test('normalizeBridgeConfig fails closed when absent, defaults when present, map
   // 'ask' must gate (allowlist), never silently widen to bypassPermissions.
   assert.equal(normalizeBridgeConfig({ permissionMode: 'ask' }).permissionMode, 'allowlist');
   assert.equal(normalizeBridgeConfig({ permissionMode: 'plan' }).permissionMode, 'plan');
+});
+
+
+test('continuation cannot restore saved permissions over changed current configuration', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-policy-'));
+  const bin = happyCli(root);
+  const original = makeBridge(root, bin, { permissionMode: 'allowlist' });
+  let changed: ACPBridge | undefined;
+  try {
+    const source = await original.startJob({ prompt: 'inspect only', allowedTools: ['Read'] });
+    const done = await original.waitForJob(source.id, 15_000);
+    original.dispose();
+    changed = makeBridge(root, bin, { permissionMode: 'bypassPermissions' });
+    await assert.rejects(changed.startJob({ prompt: 'continue', cwd: done.cwd, isolation: 'none',
+      resumeSessionId: done.sessionId, resumedFromJobId: done.id }), /configuration changed/);
+    assert.equal(changed.listJobs().length, 1);
+  } finally {
+    original.dispose();
+    changed?.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('success events do not release the workspace until process exit; competing bridges are refused', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-lifetime-'));
+  const bin = writeFakeCli(root, 'slow-exit.js', `console.log(${JSON.stringify(FIXTURE_RESULT)}); setTimeout(() => process.exit(0), 1600);`);
+  const bridge = makeBridge(root, bin);
+  const other = makeBridge(root, bin);
+  try {
+    const job = await bridge.startJob({ prompt: 'first' });
+    await new Promise(resolve => setTimeout(resolve, 650));
+    assert.equal(bridge.getJob(job.id)?.status, 'running');
+    await assert.rejects(other.startJob({ prompt: 'competing' }), /reserved/);
+    assert.equal((await bridge.waitForJob(job.id, 5000)).status, 'completed');
+    const next = await other.startJob({ prompt: 'after exit' });
+    assert.equal((await other.waitForJob(next.id, 5000)).status, 'completed');
+  } finally { bridge.dispose(); other.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('nonzero exit overrides an earlier success event', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-exit-'));
+  const bridge = makeBridge(root, writeFakeCli(root, 'bad-exit.js', `console.log(${JSON.stringify(FIXTURE_RESULT)}); setTimeout(() => process.exit(1), 200);`));
+  try {
+    const job = await bridge.startJob({ prompt: 'check exit' });
+    assert.equal((await bridge.waitForJob(job.id, 5000)).status, 'failed');
+  } finally { bridge.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('recovery reattaches a live process even after its success event', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-reattach-'));
+  const bin = writeFakeCli(root, 'slow-exit.js', `console.log(${JSON.stringify(FIXTURE_RESULT)}); setTimeout(() => process.exit(0), 1600);`);
+  const first = makeBridge(root, bin);
+  const second = makeBridge(root, bin);
+  try {
+    const job = await first.startJob({ prompt: 'survive detach' });
+    await new Promise(resolve => setTimeout(resolve, 600));
+    first.dispose();
+    const recovery = await second.recover();
+    assert.ok(recovery.resumed.includes(job.id));
+    assert.equal(second.getJob(job.id)?.status, 'running');
+    assert.equal((await second.waitForJob(job.id, 5000)).status, 'completed');
+  } finally { first.dispose(); second.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('legacy resumes and unsupported controls refuse admission without creating a job', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-admission-'));
+  const bridge = makeBridge(root, happyCli(root));
+  try {
+    await assert.rejects(bridge.startJob({ prompt: 'x', allowedTools: ['Bash'] }), /require allowlist/);
+    await assert.rejects(bridge.startJob({ prompt: 'x', resumeSessionId: 'unknown' }), /source job ID/);
+    const job = await bridge.startJob({ prompt: 'original' });
+    const done = await bridge.waitForJob(job.id, 5000);
+    const file = path.join(root, 'coding-jobs', job.id, 'job.json');
+    const stored = JSON.parse(readFileSync(file, 'utf8'));
+    delete stored.executionOptions;
+    writeFileSync(file, JSON.stringify(stored));
+    await assert.rejects(bridge.startJob({ prompt: 'follow up', resumeSessionId: done.sessionId, resumedFromJobId: job.id }), /saved execution options|execution policy|legacy/i);
+  } finally { bridge.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a surviving child process keeps the workspace reserved after its CLI leader exits', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-descendant-'));
+  const bin = writeFakeCli(root, 'descendant.js', `
+    require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 1600)'], { stdio: 'ignore' }).unref();
+    console.log(${JSON.stringify(FIXTURE_RESULT)});
+    setTimeout(() => process.exit(0), 100);
+  `);
+  const bridge = makeBridge(root, bin);
+  try {
+    const job = await bridge.startJob({ prompt: 'child process' });
+    await new Promise(resolve => setTimeout(resolve, 650));
+    assert.equal(bridge.getJob(job.id)?.status, 'running');
+    await assert.rejects(bridge.startJob({ prompt: 'competing' }), /reserved/);
+    assert.equal((await bridge.waitForJob(job.id, 5000)).status, 'completed');
+  } finally { bridge.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('cancellation intent survives detachment and recovery', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-cancel-recover-'));
+  const bin = writeFakeCli(root, 'cancel-delay.js', `process.on('SIGTERM', () => setTimeout(() => process.exit(0), 300)); console.log(${JSON.stringify(FIXTURE_RESULT)}); setTimeout(() => process.exit(0), 10000);`);
+  const first = makeBridge(root, bin);
+  const second = makeBridge(root, bin);
+  try {
+    const job = await first.startJob({ prompt: 'cancel me' });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    await first.cancelJob(job.id);
+    assert.ok(first.getJob(job.id)?.cancelRequestedAt);
+    first.dispose();
+    await second.recover();
+    assert.equal((await second.waitForJob(job.id, 5000)).status, 'cancelled');
+  } finally { first.dispose(); second.dispose(); rmSync(root, { recursive: true, force: true }); }
 });

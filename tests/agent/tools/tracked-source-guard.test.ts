@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { test, after } from 'node:test';
+const fixtures: string[] = [];
+after(() => { for (const root of fixtures) rmSync(root, { recursive: true, force: true }); });
 
 import { editFileTool, writeFileTool } from '../../../src/agent/tools/files.js';
 import { extractShellWriteTargets, refuseShellWrite } from '../../../src/agent/tools/shell-write-guard.js';
@@ -16,9 +18,9 @@ function git(cwd: string, args: string[]): void {
 }
 
 function houseFixture() {
-  const scratch = path.join(process.cwd(), 'tmp');
-  mkdirSync(scratch, { recursive: true });
+  const scratch = tmpdir();
   const root = mkdtempSync(path.join(scratch, 'home23-write-guard-'));
+  fixtures.push(root);
   git(root, ['init', '--template=', '-b', 'main']);
   git(root, ['config', 'user.email', 'guard@test']);
   git(root, ['config', 'user.name', 'Guard Test']);
@@ -46,8 +48,8 @@ function houseFixture() {
   return { root, ctx };
 }
 
-test('live Home23 checkout refuses tracked source and allows ignored house files', () => {
-  const root = process.cwd();
+test('selected Home23 checkout refuses tracked source and allows ignored house files', () => {
+  const root = process.env.HOME23_TEST_PRIMARY_CHECKOUT ?? houseFixture().root;
   assert.equal(inspectResidentWrite(path.join(root, 'src/agent/tools/web.ts'), root).allow, false);
   assert.equal(inspectResidentWrite(path.join(root, 'engine/.env'), root).allow, true);
   assert.equal(inspectResidentWrite(path.join(root, 'instances/jerry/workspace/NOTE.md'), root).allow, true);

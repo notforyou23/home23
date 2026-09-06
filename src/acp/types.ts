@@ -25,7 +25,7 @@ export type CodingIsolation = 'worktree' | 'checkpoint' | 'none';
 /** Persisted as coding-jobs/<jobId>/job.json (atomic tmp+rename). */
 export interface CodingJobRecord {
   schema: 'home23.coding-job.v1';
-  id: string;                    // "cj_<ISO-compact>_<4hex>"
+  id: string;                    // "cj_<ISO-compact>_<16hex>"
   backend: string;               // 'claude-code' | 'codex' | future
   status: CodingJobStatus;
   prompt: string;                // original prompt (bounded to 20k chars)
@@ -38,6 +38,7 @@ export interface CodingJobRecord {
   resumedFromJobId?: string;     // set by coding_continue
   pid?: number;
   pgid?: number;
+  cancelRequestedAt?: string;
   startedAt: string;             // ISO
   finishedAt?: string;           // ISO
   exitCode?: number | null;
@@ -45,6 +46,9 @@ export interface CodingJobRecord {
   worktree?: WorktreeInfo;
   checkpoint?: CheckpointInfo;
   requestedBy?: string;          // chatId or caller tag
+  workspaceLease?: import('./workspace-lease.js').WorkspaceLease;
+  /** Effective backend settings retained for continuation; absent on legacy jobs. */
+  executionOptions?: Omit<CodingBackendOptions, 'prompt' | 'cwd' | 'resumeSessionId' | 'newSessionId'>;
   argv?: string[];               // exact CLI invocation, prompt elided
   error?: string;                // spawn/parse failure detail
 }

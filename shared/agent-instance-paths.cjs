@@ -11,11 +11,28 @@ function pathError(code, message, details = {}) {
   return error;
 }
 
-function loadYaml(filePath) {
+function loadYaml(filePath, options = {}) {
   if (!fs.existsSync(filePath)) return {};
   try {
-    return yaml.load(fs.readFileSync(filePath, 'utf8')) || {};
-  } catch {
+    const parsed = yaml.load(fs.readFileSync(filePath, 'utf8'));
+    if (parsed === undefined || parsed === null) return {};
+    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+      if (options.strict === true) {
+        throw pathError('agent_config_invalid', 'agent config must be a YAML mapping', {
+          configPath: filePath,
+        });
+      }
+      return {};
+    }
+    return parsed;
+  } catch (error) {
+    if (options.strict === true) {
+      if (error?.code === 'agent_config_invalid') throw error;
+      throw pathError('agent_config_invalid', error?.message || 'agent config is invalid', {
+        configPath: filePath,
+        cause: error,
+      });
+    }
     return {};
   }
 }
@@ -67,7 +84,7 @@ function resolveAgentInstancePaths(home23Root, agentName, options = {}) {
   if (options.requireConfig === true && !hasConfig) {
     throw pathError('agent_config_missing', `agent config is missing for ${name}`, { agentName: name, configPath });
   }
-  const config = hasConfig ? loadYaml(configPath) : {};
+  const config = hasConfig ? loadYaml(configPath, { strict: options.requireConfig === true }) : {};
   const configuredRoot = configuredInstanceRoot(root, name, config);
   const localRoot = localInstanceRoot(root, name);
   const storageMode = configuredRoot === localRoot ? 'local' : 'external';

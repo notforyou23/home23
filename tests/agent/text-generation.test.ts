@@ -184,8 +184,46 @@ test('GPT-5.6 Codex text generation sends Responses reasoning and no Chat Comple
         expires: Date.now() + 60_000, accountId: 'acct-test',
       }),
     });
-    assert.deepEqual(body?.reasoning, { effort: 'xhigh' });
+    assert.deepEqual(body?.reasoning, { effort: 'xhigh', summary: 'auto' });
     assert.equal(Object.hasOwn(body ?? {}, 'reasoning_effort'), false);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test('GPT-6 Astra Codex text generation sends a supported Responses effort without sampling fields', async () => {
+  const prevFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+  let body: Record<string, unknown> | undefined;
+
+  globalThis.fetch = (async (_url, init) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"ok"}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    await generateText({
+      provider: 'openai-codex',
+      model: 'gpt-6-astra',
+      prompt: 'probe',
+      reasoningEffort: 'max',
+      temperature: 0.1,
+      codexCredentialsProvider: async () => ({
+        accessToken: 'access-test', refreshToken: 'refresh-test',
+        expires: Date.now() + 60_000, accountId: 'acct-test',
+      }),
+    });
+    assert.deepEqual(body?.reasoning, { effort: 'max', summary: 'auto' });
+    assert.equal(Object.hasOwn(body ?? {}, 'reasoning_effort'), false);
+    assert.equal(Object.hasOwn(body ?? {}, 'temperature'), false);
+    assert.equal(Object.hasOwn(body ?? {}, 'top_p'), false);
   } finally {
     globalThis.fetch = prevFetch;
   }

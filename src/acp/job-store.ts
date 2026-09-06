@@ -49,11 +49,12 @@ export class CodingJobStore {
 
   newJobId(now = new Date()): string {
     const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-    const suffix = Math.random().toString(16).slice(2, 6).padEnd(4, '0');
+    const suffix = randomUUID().replace(/-/g, '').slice(0, 16);
     return `cj_${stamp}_${suffix}`;
   }
 
   jobDir(id: string): string {
+    if (!/^cj_[A-Za-z0-9_-]+$/.test(id)) throw new Error('Invalid coding job ID');
     return path.join(this.jobsDir, id);
   }
 
@@ -74,7 +75,7 @@ export class CodingJobStore {
   }
 
   createJob(record: CodingJobRecord): void {
-    mkdirSync(this.jobDir(record.id), { recursive: true });
+    mkdirSync(this.jobDir(record.id));
     writeJsonAtomic(this.jobJsonPath(record.id), record);
   }
 
@@ -90,7 +91,7 @@ export class CodingJobStore {
     try {
       const raw = readFileSync(this.jobJsonPath(id), 'utf-8');
       const parsed = JSON.parse(raw) as CodingJobRecord;
-      return parsed && typeof parsed === 'object' && parsed.id ? parsed : undefined;
+      return parsed && typeof parsed === 'object' && parsed.id === id ? parsed : undefined;
     } catch {
       return undefined;
     }

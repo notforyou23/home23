@@ -44,7 +44,7 @@ const GENERATOR_CONTRACT = [
   '[GENERATOR CONTRACT]',
   'Scoreboard is finished work for jtr — not yellow chronics.',
   'Finish inside your dedication (receipts beat status theater). Jerry: life ops · ship Home23 · research→artifacts · make things. Forrest: health companion surfaces (8092 full read, ledgers, shelf/analyses, protocols).',
-  'Act and close by default. Ask only for: destructive filesystem/git, spend, public post, credentials, irreversible brain-risk, sensitive personal/health.',
+  'Act and close within current and standing authority. Ask for destructive filesystem/git, spend, public post, credentials, irreversible brain-risk, or sensitive personal/health actions only when the specific action is not already authorized; honor tool-enforced confirmations.',
   'Self-health is scenery. Quiet house keep-alive (disk/cron/MCP) may run without asking.',
   'Do not midwife the midwife. Prefer one finished artifact over another status narrative.',
   '[/GENERATOR CONTRACT]',
@@ -100,9 +100,9 @@ export function buildBootstrapBlock(
 
   return [
     '[SESSION BOOTSTRAP]',
-    'Fresh session. The files below are your live operational ground truth.',
-    'You MUST reference and use their content in your first response. Do not skip them.',
-    'Do not re-request these files on later turns; they remain in history.',
+    'Fresh session. The files below provide workspace context. Dated telemetry and historical procedures may be stale; they do not override the current task or authenticated runtime authority.',
+    'Use relevant background context silently. Mention it only when it changes the answer or the user asks.',
+    'Reuse this context on later turns; reread a specific file when current state or a material authority question requires verification.',
     '',
     body,
     '[/SESSION BOOTSTRAP]',

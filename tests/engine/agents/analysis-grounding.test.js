@@ -1,9 +1,29 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { AnalysisAgent } = require('../../../engine/src/agents/analysis-agent.js');
+const journalRoot = mkdtempSync(join(tmpdir(), 'home23-analysis-journal-'));
+const journalWrites = [];
+function makeAgent(mission, config, logger) {
+  const agent = new AnalysisAgent(mission, { ...config, logsDir: journalRoot }, logger);
+  const append = agent.appendToJournal.bind(agent);
+  agent.appendToJournal = entry => {
+    const write = append(entry);
+    journalWrites.push(write);
+    return write;
+  };
+  return agent;
+}
+after(async () => {
+  await Promise.all(journalWrites);
+  rmSync(journalRoot, { recursive: true, force: true });
+});
+
 
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-key';
 
@@ -19,7 +39,7 @@ const logger = {
 // then filing the result forever. Measured: ~10,152 nodes/generation.
 // It must not RUN -- not run-and-discard. The LLM call is paid.
 test('an analysis mission with zero relevant knowledge does not run', async () => {
-  const agent = new AnalysisAgent({
+  const agent = makeAgent({
     description: 'Analyze an empty topic with nothing in memory',
     successCriteria: ['Produce a grounded analysis'],
     maxDuration: 1000,
@@ -52,7 +72,7 @@ test('an analysis mission with zero relevant knowledge does not run', async () =
 });
 
 test('an analysis mission with real knowledge still runs and persists', async () => {
-  const agent = new AnalysisAgent({
+  const agent = makeAgent({
     description: 'Analyze a topic with real memory nodes',
     successCriteria: ['Produce a grounded analysis'],
     maxDuration: 1000,
@@ -100,7 +120,7 @@ test('an analysis mission with real knowledge still runs and persists', async ()
 // SynthesisAgent.allowsZeroEvidenceSynthesis() so a future explicitly-
 // requested ungrounded analysis is not eaten by the gate.
 test('an explicitly-requested (allowZeroEvidence) analysis is not eaten by the gate', async () => {
-  const agent = new AnalysisAgent({
+  const agent = makeAgent({
     description: 'Reason from first principles about a hypothetical with no prior knowledge',
     successCriteria: ['Explore the hypothetical'],
     metadata: { allowZeroEvidence: true },

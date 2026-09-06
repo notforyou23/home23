@@ -114,7 +114,7 @@ export class CommandHandler {
 
   private cmdReset(chatId: string): string {
     this.captureSessionMemory(chatId);
-    this.ctx.history.compact(chatId, []);
+    this.ctx.history.reset(chatId);
     return 'Conversation cleared.';
   }
 
@@ -426,7 +426,7 @@ export class CommandHandler {
           this.ctx.agent.getModel(),
           this.ctx.agent.getProvider(),
         );
-        if (!result.compacted) return `No compaction needed (${result.reason})`;
+        if (!result.compacted) return `Context unchanged: ${result.reason}`;
         const parts = [`Compacted: ${result.tokensBefore} → ${result.tokensAfter} chars`];
         if (result.extractedLearnings) parts.push('Learnings extracted to daily memory');
         if (result.summary) parts.push(`Summary: ${result.summary.slice(0, 100)}...`);
@@ -436,10 +436,7 @@ export class CommandHandler {
       }
     }
 
-    // Fallback: dumb truncation
-    const truncated = this.ctx.history.truncate(records);
-    this.ctx.history.compact(chatId, truncated);
-    return `Compacted: ${records.length} → ${truncated.length} records`;
+    return 'Compaction is unavailable; original history retained.';
   }
 
   private cmdRefresh(): string {

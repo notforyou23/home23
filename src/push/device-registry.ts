@@ -35,6 +35,8 @@ const DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_DELIVERY_RECEIPT_BYTES = 4 * 1024;
 
 const INSTALLATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
+const COORDINATION_DEVICE_ID_PATTERN = /^dev_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const COORDINATION_SESSION_ID_PATTERN = /^ses_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$/;
 const CREDENTIAL_ID_PATTERN = /^qncred_[A-Za-z0-9_-]{32}$/;
 const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
@@ -90,7 +92,18 @@ function validateLegacyDevice(value: unknown): asserts value is DeviceRegistrati
           || !INSTALLATION_ID_PATTERN.test(value.installation_id)))
       || (value.query_notifications !== undefined
         && typeof value.query_notifications !== 'boolean')
-      || (value.query_notifications === true && value.installation_id === undefined)) {
+      || (value.query_notifications === true && value.installation_id === undefined)
+      || (value.connected_agents_notifications !== undefined
+        && typeof value.connected_agents_notifications !== 'boolean')
+      || (value.coordination_device_id !== undefined
+        && (typeof value.coordination_device_id !== 'string'
+          || !COORDINATION_DEVICE_ID_PATTERN.test(value.coordination_device_id)))
+      || (value.coordination_session_id !== undefined
+        && (typeof value.coordination_session_id !== 'string'
+          || !COORDINATION_SESSION_ID_PATTERN.test(value.coordination_session_id)))
+      || (value.connected_agents_notifications === true
+        && (value.coordination_device_id === undefined
+          || value.coordination_session_id === undefined))) {
     throw registryError('device_registry_corrupt');
   }
 }
@@ -519,6 +532,9 @@ export class DeviceRegistry {
     capabilities_hash?: string;
     installation_id?: string;
     query_notifications?: boolean;
+    connected_agents_notifications?: boolean;
+    coordination_device_id?: string;
+    coordination_session_id?: string;
   }): DeviceRegistration {
     if (input.installation_id !== undefined
         && !INSTALLATION_ID_PATTERN.test(input.installation_id)) {
@@ -527,10 +543,33 @@ export class DeviceRegistry {
     if (input.query_notifications === true && input.installation_id === undefined) {
       throw registryError('device_registry_corrupt');
     }
+    if ((input.coordination_device_id !== undefined
+          && !COORDINATION_DEVICE_ID_PATTERN.test(input.coordination_device_id))
+        || (input.coordination_session_id !== undefined
+          && !COORDINATION_SESSION_ID_PATTERN.test(input.coordination_session_id))
+        || (input.connected_agents_notifications === true
+          && (input.coordination_device_id === undefined
+            || input.coordination_session_id === undefined))) {
+      throw registryError('device_registry_corrupt');
+    }
     const file = this.load();
-    const now = new Date().toISOString();
+    const now = this.timestamp();
     const key = `${input.bundle_id}::${input.device_token}`;
-    const idx = file.devices.findIndex(d => `${d.bundle_id}::${d.device_token}` === key);
+    let idx = file.devices.findIndex(d => `${d.bundle_id}::${d.device_token}` === key);
+    if (input.connected_agents_notifications === true && input.coordination_device_id) {
+      const priorDeviceIndex = file.devices.findIndex((device) =>
+        device.bundle_id === input.bundle_id &&
+        device.coordination_device_id === input.coordination_device_id
+      );
+      if (priorDeviceIndex >= 0 && priorDeviceIndex !== idx) {
+        if (idx >= 0) file.devices.splice(idx, 1);
+        idx = priorDeviceIndex > idx && idx >= 0 ? priorDeviceIndex - 1 : priorDeviceIndex;
+        file.devices[idx] = {
+          ...file.devices[idx]!,
+          device_token: input.device_token,
+        };
+      }
+    }
     if (input.query_notifications === true && input.installation_id) {
       for (let position = 0; position < file.devices.length; position += 1) {
         if (position === idx) continue;
@@ -557,6 +596,10 @@ export class DeviceRegistry {
         capabilities_hash: input.capabilities_hash ?? existing.capabilities_hash,
         installation_id: input.installation_id ?? existing.installation_id,
         query_notifications: input.query_notifications ?? existing.query_notifications,
+        connected_agents_notifications: input.connected_agents_notifications ??
+          existing.connected_agents_notifications,
+        coordination_device_id: input.coordination_device_id ?? existing.coordination_device_id,
+        coordination_session_id: input.coordination_session_id ?? existing.coordination_session_id,
       };
       file.devices[idx] = updated;
       this.save(file);
@@ -576,6 +619,9 @@ export class DeviceRegistry {
       capabilities_hash: input.capabilities_hash,
       installation_id: input.installation_id,
       query_notifications: input.query_notifications,
+      connected_agents_notifications: input.connected_agents_notifications,
+      coordination_device_id: input.coordination_device_id,
+      coordination_session_id: input.coordination_session_id,
     };
     file.devices.push(fresh);
     this.save(file);
@@ -619,9 +665,11 @@ export class DeviceRegistry {
     const removeSet = new Set(chatIds);
     const removed_chat_ids = existing.chat_ids.filter(chatId => removeSet.has(chatId));
     const remaining_chat_ids = existing.chat_ids.filter(chatId => !removeSet.has(chatId));
-    const updated_at = new Date().toISOString();
+    const updated_at = this.timestamp();
 
-    if (remaining_chat_ids.length === 0 && existing.query_notifications !== true) {
+    if (remaining_chat_ids.length === 0 &&
+        existing.query_notifications !== true &&
+        existing.connected_agents_notifications !== true) {
       file.devices.splice(idx, 1);
       this.save(file);
       return {
@@ -651,6 +699,15 @@ export class DeviceRegistry {
   /** Devices subscribed to a chat_id. */
   lookupByChatId(chatId: string): DeviceRegistration[] {
     return this.load().devices.filter(d => d.chat_ids.includes(chatId));
+  }
+
+  /** Canonical devices registered by an authenticated coordination session. */
+  lookupConnectedAgentsDevices(): DeviceRegistration[] {
+    return this.load().devices.filter((device) =>
+      device.connected_agents_notifications === true &&
+      device.coordination_device_id !== undefined &&
+      device.coordination_session_id !== undefined
+    );
   }
 
   /** Exact capable APNs devices for explicitly subscribed installation IDs. */

@@ -11,6 +11,7 @@ const read = (relativePath) => fs.readFileSync(path.join(HOME23_ROOT, relativePa
 const html = read('engine/src/dashboard/home23-dashboard.html');
 const js = read('engine/src/dashboard/home23-dashboard.js');
 const css = read('engine/src/dashboard/home23-dashboard.css');
+const themeCss = read('engine/src/dashboard/home23-theme.css');
 const chatJs = read('engine/src/dashboard/home23-chat.js');
 const chatCss = read('engine/src/dashboard/home23-chat.css');
 const settingsHtml = read('engine/src/dashboard/home23-settings.html');
@@ -857,10 +858,11 @@ test('glass dashboard replaces the dark sidebar shell with the complete top navi
   assert.doesNotMatch(html, /class="h23-sidebar"/);
   assert.doesNotMatch(html, /class="h23-system-rail"/);
 
-  for (const label of ['Home', 'Agency', 'Briefs', 'Workers', 'Query', 'Brain Map']) {
+  for (const label of ['Home', 'Chat', 'Agency', 'Briefs', 'Workers', 'Query', 'Brain Map']) {
     assert.match(html, new RegExp(`data-tab-label="${label}"`));
   }
-  assert.match(html, /href="\/home23\/chat"[^>]*data-scope-tab="chat"[^>]*data-tab-label="Chat"/);
+  assert.match(html, /id="dashboard-tab-chat"[^>]*data-tab="chat"[^>]*data-tab-label="Chat"/);
+  assert.match(html, /href="\/home23\/chat"/);
   assert.match(html, /id="settings-btn"[^>]*data-scope-tab="settings"[^>]*data-tab-label="Settings"/);
   assert.match(html, /id="cosmo23-btn"[^>]*data-scope-tab="cosmo23"[^>]*data-tab-label="cosmo23"/);
   assert.match(html, /id="evobrew-btn"[^>]*data-scope-tab="evobrew"[^>]*data-tab-label="evobrew"/);
@@ -883,13 +885,13 @@ test('Home uses the approved fixed hero, sensor strip, and chat-first hierarchy'
 test('Home regions are correctly nested with five sensor cards and Chat first', () => {
   const home = findById(htmlTree, 'human-home');
   assert.ok(home, 'missing #human-home');
-  assert.equal(home.children.length, 3, '#human-home must have only hero, sensor strip, and main grid');
-
-  const [hero, sensorStrip, mainGrid] = home.children;
-  assert.ok(hasClass(hero, 'h23-human-hero'), 'Home first region must be the Jerry hero');
-  assert.ok(hasClass(sensorStrip, 'h23-human-sensor-strip'), 'Home second region must be the sensor strip');
+  const hero = home.children.find((node) => hasClass(node, 'h23-human-hero'));
+  const sensorStrip = home.children.find((node) => hasClass(node, 'h23-human-sensor-strip'));
+  const mainGrid = home.children.find((node) => hasClass(node, 'h23-human-main-grid'));
+  assert.ok(hero, 'Home must include the Jerry hero');
+  assert.ok(sensorStrip, 'Home must include the sensor strip');
+  assert.ok(mainGrid, 'Home must include the Chat-first main grid');
   assert.equal(sensorStrip.attrs.get('data-home-sensor-layout'), 'true');
-  assert.ok(hasClass(mainGrid, 'h23-human-main-grid'), 'Home third region must be the Chat-first main grid');
 
   assert.ok(findDescendant(hero, (node) => hasClass(node, 'h23-human-hero-copy')));
   assert.ok(findDescendant(hero, (node) => node.attrs.get('id') === 'tz1-time'));
@@ -905,17 +907,17 @@ test('Home regions are correctly nested with five sensor cards and Chat first', 
   assert.ok(findDescendant(sensorStrip.children[4], (node) => node.attrs.get('id') === 'human-goodlife-value'));
 
   assert.equal(mainGrid.children.length, 2, 'main grid must contain Chat and the Vibe/Briefs side stack');
-  assert.ok(findDescendant(mainGrid.children[0], (node) => node.attrs.get('id') === 'chat-slot-tile'), 'Chat must be first');
+  assert.equal(mainGrid.children[0].attrs.get('id'), 'chat-home-preview', 'Chat must be first');
   assert.ok(findDescendant(mainGrid.children[1], (node) => node.attrs.get('id') === 'home-vibe-image'));
   assert.ok(findDescendant(mainGrid.children[1], (node) => node.attrs.get('id') === 'human-briefs-list'));
 });
 
 test('the redesign preserves production chat, operator, COSMO, and Brain Map hooks', () => {
   for (const id of [
-    'chat-shared-template', 'chat-slot-tile', 'chat-slot-overlay',
-    'chat-attach-btn', 'chat-attach-input', 'chat-conv-panel',
+    'chat-shared-template', 'chat-slot-tab', 'chat-home-preview',
+    'chat-attach-btn', 'chat-attach-input', 'chat-conv-list',
     'problems-overlay', 'goodlife-overlay', 'brain-storage-overlay',
-    'home-vibe-detail-modal', 'chat-overlay', 'problem-editor-overlay',
+    'home-vibe-detail-modal', 'problem-editor-overlay',
     'cosmo23-frame-wrap', 'brain-map-container',
   ]) assert.match(html, new RegExp(`id="${id}"`));
 
@@ -1096,7 +1098,7 @@ test('sensor layout always places managed cards before fixed Problems and Good L
 test('native dashboard tabs expose and synchronize tablist relationships', () => {
   const primaryTabs = walk(htmlTree).find((node) => hasClass(node, 'h23-tabs-primary'));
   assert.equal(primaryTabs?.attrs.get('role'), 'tablist');
-  for (const tabKey of ['home', 'agency', 'briefs', 'workers', 'query', 'brain-map', 'settings', 'cosmo23']) {
+  for (const tabKey of ['home', 'chat', 'agency', 'briefs', 'work', 'workers', 'query', 'brain-map', 'settings', 'cosmo23']) {
     const tab = walk(htmlTree).find((node) => node.attrs.get('data-tab') === tabKey
       || (tabKey === 'settings' && node.attrs.get('id') === 'settings-btn')
       || (tabKey === 'cosmo23' && node.attrs.get('id') === 'cosmo23-btn'));
@@ -1107,8 +1109,10 @@ test('native dashboard tabs expose and synchronize tablist relationships', () =>
   }
   const panelLabels = new Map([
     ['panel-home', 'dashboard-tab-home'],
+    ['panel-chat', 'dashboard-tab-chat'],
     ['panel-agency', 'dashboard-tab-agency'],
     ['panel-briefs', 'dashboard-tab-briefs'],
+    ['panel-work', 'dashboard-tab-work'],
     ['panel-workers', 'dashboard-tab-workers'],
     ['panel-query', 'dashboard-tab-query'],
     ['panel-brain-map', 'dashboard-tab-brain-map'],
@@ -1122,7 +1126,7 @@ test('native dashboard tabs expose and synchronize tablist relationships', () =>
   const cosmoPanel = findById(htmlTree, 'cosmo23-frame-wrap');
   assert.equal(cosmoPanel?.attrs.get('role'), 'tabpanel');
   assert.equal(cosmoPanel?.attrs.get('aria-labelledby'), 'cosmo23-btn');
-  for (const scope of ['chat', 'evobrew']) {
+  for (const scope of ['evobrew']) {
     const link = walk(htmlTree).find((node) => node.attrs.get('data-scope-tab') === scope);
     assert.equal(link?.tag, 'a');
     assert.notEqual(link?.attrs.get('role'), 'tab');
@@ -1420,7 +1424,7 @@ test('overlay focus, Tab, Escape, and scroll restoration follow actual paint ord
   const overlays = new Map();
   for (const id of [
     'problems-overlay', 'goodlife-overlay', 'brain-storage-overlay',
-    'home-vibe-detail-modal', 'chat-overlay', 'problem-editor-overlay',
+    'home-vibe-detail-modal', 'problem-editor-overlay',
   ]) {
     const overlay = document.createElement(id, { display: 'none' });
     overlay.setAttribute('aria-hidden', id === 'home-vibe-detail-modal' ? 'true' : 'false');
@@ -1496,7 +1500,7 @@ test('overlay visual-stack normalization is idempotent under observer feedback',
   const overlays = [];
   for (const id of [
     'problems-overlay', 'goodlife-overlay', 'brain-storage-overlay',
-    'home-vibe-detail-modal', 'chat-overlay', 'problem-editor-overlay',
+    'home-vibe-detail-modal', 'problem-editor-overlay',
   ]) {
     const overlay = document.createElement(id, { display: 'none' });
     overlay.setAttribute('aria-hidden', id === 'home-vibe-detail-modal' ? 'true' : 'false');
@@ -1636,10 +1640,11 @@ test('Home Problems card executes clear, open, chronic, unverifiable, and unavai
 
   assert.doesNotMatch(css, /h23-human-card-button:first-of-type\s+\.h23-human-value/);
   for (const [severity, token] of [
-    ['clear', '--h23-green-aa'],
-    ['open', '--h23-amber-aa'],
-    ['chronic', '--h23-red-aa'],
-    ['unverifiable', '--h23-text-secondary'],
+    ['clear', '--h23-grow'],
+    ['open', '--h23-warm'],
+    ['chronic', '--h23-ember'],
+    ['unverifiable', '--h23-paper-faint'],
+    ['unavailable', '--h23-paper-faint'],
   ]) {
     assert.match(css, new RegExp(`data-problem-severity=["']${severity}["'][\\s\\S]{0,500}var\\(${token}\\)`));
   }
@@ -2175,7 +2180,7 @@ test('dashboard and Chat UI copy contain no emoji iconography', () => {
   }
 });
 
-test('all six dashboard overlays expose dialog semantics and unified keyboard lifecycle', () => {
+test('all five dashboard overlays expose dialog semantics and unified keyboard lifecycle', () => {
   assert.match(js, /setupDashboardOverlayAccessibility/);
   assert.match(js, /closeTopmostDashboardOverlay/);
 
@@ -2184,7 +2189,6 @@ test('all six dashboard overlays expose dialog semantics and unified keyboard li
     'goodlife-overlay',
     'brain-storage-overlay',
     'home-vibe-detail-modal',
-    'chat-overlay',
     'problem-editor-overlay',
   ]) {
     const overlay = fragmentFromId(html, id, '<!--');
@@ -2203,7 +2207,6 @@ test('overlay dialogs have real dismiss, labelling, focus, Escape, and scroll-lo
     'goodlife-overlay',
     'brain-storage-overlay',
     'home-vibe-detail-modal',
-    'chat-overlay',
     'problem-editor-overlay',
   ];
 
@@ -2253,7 +2256,7 @@ test('overlay dialogs have real dismiss, labelling, focus, Escape, and scroll-lo
       && candidate.values.length === overlayIds.length
       && candidate.values.every((id) => overlayIds.includes(id))
   ));
-  assert.ok(directOverlayList || referencedOverlayConstant, 'topmost close must be limited to the six dashboard overlays');
+  assert.ok(directOverlayList || referencedOverlayConstant, 'topmost close must be limited to the five dashboard overlays');
   assert.match(closeTopmost, /(?:\.at\(\s*-1\s*\)|\.findLast\(|\.reverse\(\)|\[\s*[^\]]+\.length\s*-\s*1\s*\])/);
   assert.match(closeTopmost, /(?:aria-hidden|hidden|getComputedStyle|classList\.contains)/);
   assert.match(closeTopmost, /(?:\.click\(\)|closeProblemsPanel|closeGoodLifeOperator|closeBrainStoragePanel|closeVibeImageDetail)/);
@@ -2273,69 +2276,30 @@ test('opening or revealing an overlay moves focus inside it before keyboard trap
   );
 });
 
-test('dashboard installs the approved light-glass tokens and uses them on rendered surfaces', () => {
-  const approvedTokens = {
-    '--h23-bg': 'linear-gradient(160deg, #EAEEF4 0%, #E4EAF2 40%, #E9EDF0 100%)',
-    '--h23-bg-wash-1': 'radial-gradient(900px 480px at 82% -8%, rgba(120, 170, 255, 0.16), transparent 60%)',
-    '--h23-bg-wash-2': 'radial-gradient(700px 420px at 4% 108%, rgba(110, 210, 200, 0.13), transparent 60%)',
-    '--h23-glass-card': 'rgba(255, 255, 255, 0.58)',
-    '--h23-glass-panel': 'rgba(255, 255, 255, 0.62)',
-    '--h23-glass-overlay': 'rgba(255, 255, 255, 0.9)',
-    '--h23-glass-input': 'rgba(255, 255, 255, 0.85)',
-    '--h23-glass-border': 'rgba(255, 255, 255, 0.9)',
-    '--h23-glass-blur-card': '20px',
-    '--h23-glass-blur-panel': '24px',
-    '--h23-glass-blur-overlay': '30px',
-    '--h23-shadow-card': '0 8px 32px rgba(30, 45, 70, 0.07)',
-    '--h23-shadow-panel': '0 12px 44px rgba(30, 45, 70, 0.09)',
-    '--h23-shadow-overlay': '0 32px 90px rgba(20, 30, 50, 0.28)',
-    '--h23-shadow-pill': '0 2px 8px rgba(30, 45, 70, 0.08)',
-    '--h23-shadow-accent-btn': '0 6px 18px rgba(62, 123, 224, 0.32)',
-    '--h23-text-primary': '#1B2028',
-    '--h23-text-body': '#333B48',
-    '--h23-text-heading': '#232936',
-    '--h23-text-secondary': '#5A6474',
-    '--h23-text-muted': '#8A93A3',
-    '--h23-accent': '#3E7BE0',
-    '--h23-accent-tint': 'rgba(62, 123, 224, 0.1)',
-    '--h23-accent-tint-border': 'rgba(62, 123, 224, 0.22)',
-    '--h23-green': '#1E9E6F',
-    '--h23-green-pulse': '#2EB88A',
-    '--h23-amber': '#D9762B',
-    '--h23-red': '#C94F4F',
-    '--h23-text-muted-aa': '#697384',
-    '--h23-green-aa': '#177F5B',
-    '--h23-amber-aa': '#A9571C',
-    '--h23-red-aa': '#B53F3F',
-    '--h23-hairline': 'rgba(27, 32, 40, 0.07)',
-    '--h23-input-border': 'rgba(27, 32, 40, 0.09)',
-    '--h23-hover-row': 'rgba(27, 32, 40, 0.04)',
-    '--h23-hover-card': 'rgba(255, 255, 255, 0.78)',
-    '--h23-overlay-backdrop': 'rgba(30, 42, 64, 0.32)',
-    '--h23-radius-pill': '999px',
-    '--h23-radius-input': '14px',
-    '--h23-radius-card': '16px',
-    '--h23-radius-panel': '20px',
-    '--h23-radius-overlay': '24px',
-    '--h23-font-ui': "'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
-    '--h23-font-mono': "'IBM Plex Mono', ui-monospace, monospace",
-    '--h23-gutter': '24px',
-    '--h23-gap': '16px',
-    '--h23-card-pad': '22px 24px',
+test('both themes provide readable semantic text and shared surface tokens', () => {
+  const dark = Object.fromEntries([...css.matchAll(/(--h23-[\w-]+):\s*(#[0-9a-f]{6})\s*;/gi)].map(m => [m[1], m[2]]));
+  const light = Object.fromEntries([...themeCss.matchAll(/(--h23-[\w-]+):\s*(#[0-9a-f]{6})\s*;/gi)].map(m => [m[1], m[2]]));
+  const luminance = hex => {
+    const channels = hex.slice(1).match(/../g).map(v => parseInt(v, 16) / 255)
+      .map(v => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
   };
-
-  for (const [token, value] of Object.entries(approvedTokens)) {
-    assert.match(css, new RegExp(`${token}:\\s*${cssValuePattern(value)}\\s*;`, 'i'), `missing ${token}`);
+  for (const [name, palette] of [['dark', dark], ['light', light]]) {
+    for (const foreground of ['paper', 'paper-soft', 'paper-faint', 'signal', 'grow', 'warm', 'ember']) {
+      for (const background of ['stage', 'surface', 'raised']) {
+        const a = luminance(palette[`--h23-${foreground}`]);
+        const b = luminance(palette[`--h23-${background}`]);
+        assert.ok((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) >= 4.5,
+          `${name} ${foreground} on ${background} must meet normal-text AA contrast`);
+      }
+    }
   }
-
-  assert.match(html, /family=Instrument\+Sans:wght@400;500;600;700/);
+  assert.notEqual(light['--h23-stage'], dark['--h23-stage']);
+  assert.match(themeCss, /:root\[data-theme="light"\]/);
+  assert.match(css, /--h23-bg:\s*var\(--h23-stage\)/);
+  assert.match(css, /--h23-text-primary:\s*var\(--h23-paper\)/);
+  assert.match(css, /--h23-font-ui:.*system-ui/);
   assert.match(css, /body\.h23-dashboard-page[\s\S]*background:\s*var\(--h23-bg\)/);
-  assert.match(css, /\.h23-human-card[^\{]*\{[^}]*background:\s*var\(--h23-glass-card\)/);
-  assert.match(css, /\.h23-topbar[^\{]*\{[^}]*background:\s*var\(--h23-glass-panel\)/);
-
-  const dashboardScopedCss = css.slice(css.indexOf('body.h23-dashboard-page'));
-  assert.doesNotMatch(dashboardScopedCss, /background-size:\s*88px 88px/);
-  assert.doesNotMatch(dashboardScopedCss, /rgba\(255,\s*255,\s*255,\s*0\.025\) 1px/);
 });
 
 test('glass override selectors stay dashboard-scoped while tokens remain shareable', () => {
@@ -2427,7 +2391,7 @@ test('standalone Chat remaps every legacy light-shell alias and control state', 
   }
 });
 
-test('related Home23 pages declare isolated light-theme scopes and approved type', () => {
+test('related Home23 pages retain isolated scopes and production fonts', () => {
   const pages = [
     [settingsHtml, 'h23-settings-page'],
     [standaloneChatHtml, 'h23-chat-page'],
@@ -2437,13 +2401,13 @@ test('related Home23 pages declare isolated light-theme scopes and approved type
 
   for (const [page, scope] of pages) {
     assert.match(page, new RegExp(`<body[^>]*class="[^"]*\\b${scope}\\b[^"]*"`), `${scope} body scope is missing`);
-    assert.match(page, /family=Instrument\+Sans:wght@400;500;600;700&family=IBM\+Plex\+Mono:wght@400;500;600/);
+    assert.match(page, /family=IBM\+Plex\+Mono:wght@400;500;600/);
     assert.doesNotMatch(page, /(?:prototype|support-runtime)\.js/i);
   }
 
   assert.match(settingsCss, /Glass Light settings surface/);
   assert.match(settingsCss, /body\.h23-settings-page\s*\{/);
-  assert.match(standaloneChatHtml, /Glass Light standalone Chat surface/);
+  assert.match(standaloneChatHtml, /font-family:\s*var\(--h23-font-ui\)/);
   assert.match(vibeGalleryHtml, /Glass Light Vibe gallery surface/);
   assert.match(welcomeHtml, /Glass Light welcome surface/);
 });
@@ -2467,9 +2431,10 @@ test('full Settings light-theme shell retains every control-surface route and pr
 
 test('standalone Chat, Vibe gallery, and Welcome retain their production bindings', () => {
   for (const id of [
-    'sh-menu-btn', 'sh-title', 'sh-new-btn', 'chat-messages', 'chat-attach-tray',
+    'chat-slot-standalone', 'chat-shared-template', 'chat-messages', 'chat-attach-tray',
     'chat-attach-btn', 'chat-attach-input', 'chat-input', 'chat-send-btn',
-    'sh-drawer', 'chat-conv-list', 'sh-sheet', 'chat-agent-select', 'chat-model-select',
+    'chat-sidebar', 'chat-conv-list',     'chat-agent-select', 'chat-model-select', 'chat-effort-select',
+    'chat-work-strip', 'chat-turn-hud', 'chat-stop-btn',
   ]) assert.match(standaloneChatHtml, new RegExp(`id="${id}"`), `missing standalone Chat control #${id}`);
 
   for (const id of [
@@ -2479,7 +2444,7 @@ test('standalone Chat, Vibe gallery, and Welcome retain their production binding
 
   assert.match(welcomeHtml, /href="\/home23\/setup"/);
   assert.match(welcomeHtml, /id="welcome-version"/);
-  assert.match(standaloneChatHtml, /body\.h23-chat-page \.sh-shell\s*\{[^}]*background:\s*var\(--h23-glass-card\)/);
+  assert.match(standaloneChatHtml, /body\.h23-chat-page \.sh-shell\s*\{[^}]*background:\s*var\(--h23-stage\)/);
   assert.match(vibeGalleryHtml, /body\.h23-vibe-page \.h23-vg-card\s*\{[^}]*background:\s*var\(--h23-glass-card\)/);
   assert.match(welcomeHtml, /body\.h23-welcome-page \.welcome-card\s*\{[^}]*background:\s*var\(--h23-glass-overlay\)/);
 });
@@ -2493,17 +2458,17 @@ test('Welcome contains no visible emoji iconography', () => {
 
 test('standalone Chat page scope wins shared important paint rules and exposes select focus', () => {
   const pageStyle = standaloneChatHtml.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
-  const scoped = pageStyle.slice(pageStyle.indexOf('Glass Light standalone Chat surface'));
+  const scoped = pageStyle;
 
-  assert.match(scoped, /body\.h23-chat-page\s*\{[^}]*background:\s*var\(--h23-bg-wash-1\),\s*var\(--h23-bg-wash-2\),\s*var\(--h23-bg\)\s*!important/);
-  assert.match(scoped, /body\.h23-chat-page #particles-js\s*\{[^}]*display:\s*block\s*!important[^}]*opacity:\s*0\.1\s*!important/);
+  assert.match(scoped, /body\.h23-chat-page\s*\{[^}]*background:\s*var\(--h23-stage\)\s*!important/);
+  assert.match(scoped, /body\.h23-chat-page #particles-js\s*\{[^}]*display:\s*none\s*!important/);
   assert.match(
     scoped,
-    /body\.h23-chat-page :is\(\.sh-drawer, \.sh-sheet\)\s*\{[^}]*background:\s*var\(--h23-glass-overlay\)\s*!important/,
+    /body\.h23-chat-page :is\(\.sh-drawer, \.sh-sheet\)\s*\{[^}]*background:\s*var\(--h23-raised\)\s*!important/,
   );
   assert.match(
     scoped,
-    /body\.h23-chat-page :is\(\.h23-chat-agent-select, \.h23-chat-model-select\):focus-visible\s*\{[^}]*outline:/,
+    /body\.h23-chat-page :is\(\.h23-chat-agent-select, \.h23-chat-model-select, \.h23-chat-effort-select\):focus-visible\s*\{[^}]*outline:/,
   );
 });
 
@@ -2607,12 +2572,12 @@ test('reduced-motion preference causally prevents particle canvas initialization
   );
 });
 
-test('active navigation, sensor hover, and Vibe overlay match approved details', () => {
+test('active navigation, sensor hover, and Vibe overlay use theme-aware affordances', () => {
   const activeTab = css.match(/body\.h23-dashboard-page \.h23-topbar \.h23-tab\.active\s*\{([^}]+)\}/)?.[1] || '';
-  assert.match(activeTab, /padding:\s*7px 16px/);
+  assert.match(activeTab, /color:\s*var\(--h23-signal\)/);
   assert.match(activeTab, /font-weight:\s*600/);
-  assert.match(activeTab, /background:\s*rgba\(255,\s*255,\s*255,\s*0\.9\)/);
-  assert.match(activeTab, /border:\s*1px solid rgba\(255,\s*255,\s*255,\s*1\)/);
+  assert.match(activeTab, /background:\s*var\(--h23-accent-tint\)/);
+  assert.match(activeTab, /border:\s*1px solid var\(--h23-accent-tint-border\)/);
 
   const sensorHover = css.match(/body\.h23-dashboard-page \.h23-human-sensor-strip button\.h23-human-card:hover\s*\{([^}]+)\}/)?.[1] || '';
   assert.match(sensorHover, /background:\s*var\(--h23-hover-card\)/);
@@ -2672,9 +2637,10 @@ test('glass top bar suppresses legacy decorative tab-label icons', () => {
 });
 
 test('Chat remains the first explicit track in the glass Home main grid', () => {
-  const chatRule = css.match(/body\.h23-dashboard-page \.h23-human-main-grid > \.h23-human-card-chat\s*\{([^}]+)\}/)?.[1] || '';
-  assert.match(chatRule, /order:\s*0\s*;/);
-  assert.match(chatRule, /grid-column:\s*auto\s*;/);
+  const previewRule = css.match(/body\.h23-dashboard-page \.h23-human-main-grid > \.h23-human-card-chat\.h23-chat-home-preview\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(previewRule, /order:\s*0\s*;/);
+  assert.match(previewRule, /grid-column:\s*auto\s*;/);
+  assert.match(previewRule, /max-height:\s*none\s*;/);
 });
 
 test('glass dashboard removes the legacy page inset', () => {
@@ -2682,9 +2648,9 @@ test('glass dashboard removes the legacy page inset', () => {
   assert.match(pageRule, /padding:\s*0\s*;/);
 });
 
-test('desktop hero extends through the content gutter while phone spacing stays inset', () => {
+test('hero keeps content-aligned margins on desktop and phone', () => {
   const heroRule = css.match(/body\.h23-dashboard-page \.h23-human-hero\s*\{([^}]+)\}/)?.[1] || '';
-  assert.match(heroRule, /margin-inline:\s*calc\(var\(--h23-gutter\) \* -1\)\s*;/);
+  assert.match(heroRule, /margin-inline:\s*0\s*;/);
 
   const glassRules = css.slice(css.indexOf('Glass Light dashboard system'));
   const phoneRules = glassRules.match(/@media\s*\(max-width:\s*640px\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
@@ -2700,7 +2666,7 @@ test('compact Home sauna card keeps actions while hiding redundant metric tiles'
   }
   assert.match(js, /renderHumanSensor\(['"]sauna['"],\s*payload/, 'Sauna metric renderer must remain wired');
 
-  const compactRule = css.match(/body\.h23-dashboard-page \.h23-human-sensor-strip \.h23-human-card-sauna #human-sauna-metrics\s*\{([^}]+)\}/)?.[1] || '';
+  const compactRule = css.match(/body\.h23-dashboard-page \.h23-human-sensor-strip \.h23-human-card-sauna #human-sauna-metrics\s*(?:,[^{]+)?\{([^}]+)\}/)?.[1] || '';
   assert.match(compactRule, /display:\s*none\s*;/);
 });
 
@@ -2926,11 +2892,11 @@ test('full Settings description overrides the legacy pale dark-theme text', () =
 });
 
 test('standalone desktop Chat uses explicit viewport-safe fixed-shell geometry', () => {
-  const lightScope = standaloneChatHtml.slice(standaloneChatHtml.indexOf('Glass Light standalone Chat surface'));
-  const desktopRule = lightScope.match(/@media\s*\(min-width:\s*820px\)\s*\{[\s\S]*?body\.h23-chat-page \.sh-shell\s*\{([^}]+)\}/)?.[1] || '';
-  assert.match(desktopRule, /left:\s*50%\s*;/);
-  assert.match(desktopRule, /right:\s*auto\s*;/);
-  assert.match(desktopRule, /width:\s*min\(880px,\s*calc\(100vw - 48px\)\)\s*;/);
+  const lightScope = standaloneChatHtml.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
+  const desktopRule = lightScope.match(/@media\s*\(min-width:\s*820px\)\s*\{\s*body\.h23-chat-page \.sh-shell\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(desktopRule, /left:\s*16px\s*;/);
+  assert.match(desktopRule, /right:\s*16px\s*;/);
+  assert.match(desktopRule, /width:\s*auto\s*;/);
   assert.match(desktopRule, /margin:\s*0\s*;/);
-  assert.match(desktopRule, /transform:\s*translateX\(-50%\)\s*;/);
+  assert.match(desktopRule, /transform:\s*none\s*;/);
 });

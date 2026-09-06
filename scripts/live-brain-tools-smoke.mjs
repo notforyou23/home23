@@ -4615,7 +4615,7 @@ function validatedOperationDelayEvidence(fixture, scenario, {
 const ISOLATED_RECEIPT_ROLES = Object.freeze(['dashboard', 'cosmo', 'mcp']);
 const ISOLATED_CHILD_INHERITED_ENV_KEYS = new Set([
   'LANG', 'LC_ALL', 'LC_CTYPE', 'PATH', 'TEMP', 'TMP', 'TMPDIR', 'TZ',
-  '__CF_USER_TEXT_ENCODING',
+  '__CF_USER_TEXT_ENCODING', 'HOME23_TEST_PRIMARY_CHECKOUT',
 ]);
 const ISOLATED_CHILD_REQUIRED_ENV_KEYS = Object.freeze([
   'HOME23_ISOLATED_FIXTURE_CHILD',

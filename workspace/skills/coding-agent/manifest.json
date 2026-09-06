@@ -2,7 +2,7 @@
   "id": "coding-agent",
   "version": "1.0.0",
   "name": "Coding Agent",
-  "description": "Delegate a substantial coding task to a specialized coding runtime or worker when the job is too large for an inline pass.",
+  "description": "Delegate coding through Home23 coding jobs, with isolation and verified integration.",
   "layer": "skill",
   "runtime": "docs",
   "category": "coding",
@@ -22,12 +22,16 @@
     "hand this off to codex"
   ],
   "requiresTools": [
-    "spawn_agent"
+    "coding_backends",
+    "coding_run",
+    "coding_jobs",
+    "coding_status",
+    "coding_result",
+    "coding_continue",
+    "coding_cancel"
   ],
   "dependsOn": [],
-  "composes": [
-    "workflow-automation"
-  ],
+  "composes": [],
   "actions": [
     "brief",
     "model-selection",

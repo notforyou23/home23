@@ -1794,6 +1794,76 @@ test('runtime maintenance posture preserves context, persistence, and headroom c
   assert.deepEqual(posture.missingDoctrine, []);
 });
 
+test('runtime maintenance uses Darwin pressure capacity without escalating from raw free alone', () => {
+  const posture = buildRuntimeMaintenancePosture({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        actions: { maintenanceRatio: 0.1 },
+        host: {
+          memory: { freePct: 1.8, rawFreePct: 1.8, pressureFreePct: 42 },
+          swap: { usedPct: 13.36 },
+        },
+      },
+    }),
+    issueArc: {
+      rows: [
+        { number: 48, title: 'Maintenance', directives: [] },
+        { number: 49, title: 'Memory', directives: [] },
+      ],
+    },
+    doctrineAdoption: {
+      entries: [{
+        status: 'adopted',
+        sourceIssues: [48, 49],
+        implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+      }],
+    },
+    freshness: { status: 'current' },
+    now: NOW,
+  });
+
+  assert.equal(posture.pressure, 'healthy');
+  assert.equal(posture.status, 'contracted');
+  assert.equal(posture.resourceHeadroom.memoryRawFreePct, 1.8);
+  assert.equal(posture.resourceHeadroom.memoryPressureFreePct, 42);
+  assert.match(posture.resourceHeadroom.evidence, /memory pressure 42% free capacity/);
+  assert.doesNotMatch(posture.resourceHeadroom.evidence, /memory 1\.8% free/);
+});
+
+test('runtime maintenance preserves legacy raw-free pressure fallback', () => {
+  const posture = buildRuntimeMaintenancePosture({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        host: { memory: { freePct: 2.9 }, swap: { usedPct: 13.36 } },
+      },
+    }),
+    issueArc: {
+      rows: [
+        { number: 48, title: 'Maintenance', directives: [] },
+        { number: 49, title: 'Memory', directives: [] },
+      ],
+    },
+    doctrineAdoption: {
+      entries: [{
+        status: 'adopted',
+        sourceIssues: [48, 49],
+        implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+      }],
+    },
+    freshness: { status: 'current' },
+    now: NOW,
+  });
+
+  assert.equal(posture.pressure, 'critical');
+  assert.equal(posture.status, 'pressure_critical');
+});
+
 test('Good Life operator includes runtime maintenance posture in handoff and insights', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState({

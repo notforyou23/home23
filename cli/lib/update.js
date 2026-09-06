@@ -11,7 +11,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { ensureSystemHealth } from './system-health.js';
@@ -364,6 +364,15 @@ function checkUncommittedChanges(home23Root) {
 // ── Main ─────────────────────────────────────────────────────────────
 
 export async function runUpdate(home23Root, checkOnly = false) {
+  // A packaged resident release can be newer than this checkout. Refuse before
+  // fetching, migrating, building or stopping anything; even a malformed
+  // pointer needs operator inspection, not fallback to the checkout.
+  let managed = false;
+  try { lstatSync(join(home23Root, 'instances', '.house', 'coordination', 'active-release.json')); managed = true; }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (managed) {
+    throw new Error('Managed release detected. Use the managed release preparation and verification workflow in docs/reference/MANAGED-RELEASES.md; the ordinary updater cannot update or assess this deployment.');
+  }
   console.log('');
   console.log('Home23 Update');
   console.log('═══════════════════════════════════════════════════');

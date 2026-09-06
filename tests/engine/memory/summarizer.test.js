@@ -56,6 +56,151 @@ function attachMutationApi(memoryNetwork) {
   return memoryNetwork;
 }
 
+function makeCandidateNode(index, overrides = {}) {
+  return {
+    id: `candidate-${index}`,
+    concept: `candidate memory ${index}`,
+    embedding: [index + 1, 1],
+    created: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
+    weight: index + 1,
+    accessCount: index,
+    activation: index / 10,
+    ...overrides,
+  };
+}
+
+async function capturePairwiseCandidates(summarizer, nodes) {
+  const nodeIdByEmbedding = new Map(nodes.map((node) => [node.embedding, node.id]));
+  const candidateIds = new Set();
+  let comparisons = 0;
+  const cosineSimilarity = summarizer.cosineSimilarity;
+
+  summarizer.cosineSimilarity = function captureCandidates(a, b) {
+    comparisons += 1;
+    candidateIds.add(nodeIdByEmbedding.get(a));
+    candidateIds.add(nodeIdByEmbedding.get(b));
+    return cosineSimilarity.call(this, a, b);
+  };
+
+  try {
+    const clusters = await summarizer.clusterSimilarMemories(nodes, 2);
+    return { candidateIds, comparisons, clusters };
+  } finally {
+    summarizer.cosineSimilarity = cosineSimilarity;
+  }
+}
+
+test('clusterSimilarMemories bounds the default candidate set before pairwise clustering', async () => {
+  const logger = makeLogger();
+  const summarizer = new MemorySummarizer({}, logger, {});
+  const nodes = Array.from({ length: 515 }, (_, index) => makeCandidateNode(index));
+
+  const { candidateIds, comparisons, clusters } = await capturePairwiseCandidates(summarizer, nodes);
+
+  assert.equal(candidateIds.size, 512);
+  assert.equal(comparisons, 512 * 511 / 2);
+  assert.deepEqual(clusters, []);
+});
+
+test('clusterSimilarMemories honors configured maxCandidateNodes override', async () => {
+  const logger = makeLogger();
+  const summarizer = new MemorySummarizer({}, logger, {
+    memory: {
+      consolidation: {
+        maxCandidateNodes: 4,
+      },
+    },
+  });
+  const nodes = Array.from({ length: 10 }, (_, index) => makeCandidateNode(index));
+
+  const { candidateIds, comparisons } = await capturePairwiseCandidates(summarizer, nodes);
+
+  assert.equal(candidateIds.size, 4);
+  assert.equal(comparisons, 6);
+});
+
+test('clusterSimilarMemories filters consolidated nodes before bounding candidates', async () => {
+  const logger = makeLogger();
+  const summarizer = new MemorySummarizer({}, logger, {
+    memory: {
+      consolidation: {
+        maxCandidateNodes: 4,
+      },
+    },
+  });
+  const consolidated = Array.from({ length: 3 }, (_, index) => makeCandidateNode(index, {
+    id: `consolidated-${index}`,
+    consolidatedAt: '2026-08-01T00:00:00.000Z',
+  }));
+  const unconsolidated = Array.from({ length: 6 }, (_, index) => makeCandidateNode(index + 3));
+
+  const { candidateIds } = await capturePairwiseCandidates(
+    summarizer,
+    [...consolidated, ...unconsolidated],
+  );
+
+  assert.equal(candidateIds.size, 4);
+  assert.ok(consolidated.every((node) => !candidateIds.has(node.id)));
+  assert.ok(
+    logger.entries.some((entry) =>
+      entry.message === 'Filtered consolidated nodes from clustering' &&
+      entry.data.total === 9 &&
+      entry.data.unconsolidated === 6 &&
+      entry.data.skipped === 3
+    )
+  );
+});
+
+test('clusterSimilarMemories logs candidates deferred before pairwise clustering', async () => {
+  const logger = makeLogger();
+  const summarizer = new MemorySummarizer({}, logger, {
+    memory: {
+      consolidation: {
+        maxCandidateNodes: 3,
+      },
+    },
+  });
+  const nodes = Array.from({ length: 8 }, (_, index) => makeCandidateNode(index));
+
+  await capturePairwiseCandidates(summarizer, nodes);
+
+  assert.ok(
+    logger.entries.some((entry) =>
+      entry.message === 'Memory consolidation candidates deferred before clustering' &&
+      entry.data.eligibleCandidates === 8 &&
+      entry.data.selectedCandidates === 3 &&
+      entry.data.deferredCandidates === 5 &&
+      entry.data.maxCandidateNodes === 3
+    )
+  );
+});
+
+test('clusterSimilarMemories selection is deterministic and rotates fairly across deferred candidates', async () => {
+  const nodes = Array.from({ length: 8 }, (_, index) => makeCandidateNode(index));
+  const makeSummarizer = () => new MemorySummarizer({}, makeLogger(), {
+    memory: {
+      consolidation: {
+        maxCandidateNodes: 4,
+      },
+    },
+  });
+  const firstSummarizer = makeSummarizer();
+  const comparisonSummarizer = makeSummarizer();
+
+  const firstRun = await capturePairwiseCandidates(firstSummarizer, nodes);
+  const secondRun = await capturePairwiseCandidates(firstSummarizer, nodes);
+  const comparisonRun = await capturePairwiseCandidates(comparisonSummarizer, nodes);
+
+  assert.deepEqual([...firstRun.candidateIds], [...comparisonRun.candidateIds]);
+  assert.ok(firstRun.candidateIds.has('candidate-0'), 'oldest candidate is considered immediately');
+  assert.ok(firstRun.candidateIds.has('candidate-7'), 'highest-value candidate is considered immediately');
+  assert.equal(
+    [...firstRun.candidateIds].filter((id) => secondRun.candidateIds.has(id)).length,
+    0,
+  );
+  assert.equal(new Set([...firstRun.candidateIds, ...secondRun.candidateIds]).size, nodes.length);
+});
+
 test('createConsolidatedMemoryGPT5 caps large clusters before sending model prompt', async () => {
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-key';
   const logger = makeLogger();

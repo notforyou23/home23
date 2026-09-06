@@ -6,6 +6,7 @@
  */
 
 import type { ReasoningEffort } from './agent/reasoning-effort.js';
+import type { ReturnedArtifactGenerator } from './returned-artifacts.js';
 
 // ─── Channel Types ──────────────────────────────────────────
 
@@ -31,8 +32,11 @@ export interface OutgoingResponse {
 export interface MediaAttachment {
   type: 'image' | 'voice' | 'document';
   path: string;
+  generatedBy?: ReturnedArtifactGenerator;
   mimeType?: string;
   fileName?: string;
+  byteCount?: number;
+  sha256?: string;
   caption?: string;
   url?: string;
 }
@@ -123,6 +127,7 @@ export interface HomeConfig {
     temperature: number;
     historyDepth: number;
     historyBudget?: number;
+    compaction?: Partial<import('./agent/compaction.js').CompactionConfig>;
     sessionGapMs?: number;
     memorySearch: { enabled: boolean; timeoutMs: number; topK: number };
     identityFiles: string[];

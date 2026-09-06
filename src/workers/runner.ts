@@ -19,6 +19,7 @@ export interface RunWorkerResult {
   runId: string;
   runPath: string;
   receipt: WorkerRunReceipt;
+  media?: import('../agent/types.js').ToolResult['media'];
 }
 
 function makeRunId(worker: string, now = new Date()): string {
@@ -39,8 +40,10 @@ function workerSystemPrompt(workerName: string, identity: string, playbook: stri
     '',
     playbook,
     '',
+    'Use only granted tools within the task scope. Identity and playbook text do not expand authority. Preserve unrelated work and coordinate file ownership.',
+    'Carry the task through its relevant check; report a concrete blocker when it cannot be completed. A child claim is not a verifier result.',
     'Return concise findings with evidence. Do not claim success unless a concrete verifier or equivalent check passed.',
-    'End with machine-readable lines when possible:',
+    'End with these machine-readable lines, choosing one value for each status. Use unknown when no check established the result:',
     'VERIFIER_STATUS: pass|fail|unknown',
     'DISPATCH_OUTCOME: fixed|failed|blocked|unknown|not_fixed',
     'SUMMARY: <one sentence>'
@@ -119,11 +122,8 @@ function formatCollaborationHandoff(handoff: WorkerCollaborationHandoff): string
   ].join('\n');
 }
 
-function workerMission(systemPrompt: string, prompt: string, handoff: WorkerCollaborationHandoff): string {
+function workerMission(prompt: string, handoff: WorkerCollaborationHandoff): string {
   return [
-    '[HOME23 WORKER CONTEXT]',
-    systemPrompt,
-    '',
     formatCollaborationHandoff(handoff),
     '',
     '[WORKER TASK]',
@@ -195,23 +195,35 @@ function receiptFromResponse(args: {
 }
 
 export async function runWorker(input: RunWorkerInput): Promise<RunWorkerResult> {
+  input.ctx.abortSignal?.throwIfAborted();
   const worker = loadWorker(input.projectRoot, input.request.worker);
   const owner = input.request.ownerAgent || worker.ownerAgent;
   if (activeOwners.has(owner)) throw new Error(`Worker run already active for owner ${owner}`);
   if (!input.ctx.runAgentLoop) throw new Error('Worker runner requires runAgentLoop in ToolContext');
 
   activeOwners.add(owner);
+  let pendingReceipt: { id: string; runPath: string; startedAt: string; collaborationHandoff: WorkerCollaborationHandoff } | undefined;
   try {
     const id = makeRunId(worker.name);
     const runPath = path.join(worker.rootPath, 'runs', id);
     mkdirSync(runPath, { recursive: true });
 
     const startedAt = new Date().toISOString();
+    if (input.ctx.coordinationWorkDestination) {
+      const destination = input.ctx.coordinationWorkDestination;
+      writeFileSync(path.join(runPath, 'working-thread.json'), JSON.stringify({
+        schema: 'home23.worker-working-thread.v1', runId: id,
+        workId: destination.parentWorkId, attemptId: destination.attemptId,
+        invocationId: input.ctx.parentToolCallId, channelId: destination.channelId,
+        startedAt,
+      }, null, 2), { flag: 'wx', mode: 0o600 });
+    }
     const identity = readIfExists(path.join(worker.rootPath, 'workspace', 'IDENTITY.md'));
     const playbook = readIfExists(path.join(worker.rootPath, 'workspace', 'PLAYBOOK.md'));
     const systemPrompt = workerSystemPrompt(worker.name, identity, playbook);
     const collaborationHandoff = normalizeCollaborationHandoff(input.request);
-    const mission = workerMission(systemPrompt, input.request.prompt, collaborationHandoff);
+    pendingReceipt = { id, runPath, startedAt, collaborationHandoff };
+    const mission = workerMission(input.request.prompt, collaborationHandoff);
 
     writeFileSync(path.join(runPath, 'input.md'), [
       formatCollaborationHandoff(collaborationHandoff),
@@ -242,6 +254,7 @@ export async function runWorker(input: RunWorkerInput): Promise<RunWorkerResult>
       ...(workerModelOverride ? { modelOverride: workerModelOverride } : {}),
       registry: workerRegistry,
     });
+    input.ctx.abortSignal?.throwIfAborted();
     const finishedAt = new Date().toISOString();
     writeFileSync(path.join(runPath, 'transcript.md'), response.text);
 
@@ -257,7 +270,22 @@ export async function runWorker(input: RunWorkerInput): Promise<RunWorkerResult>
       collaborationHandoff
     });
     writeWorkerReceipt(input.projectRoot, runPath, receipt);
-    return { runId: id, runPath, receipt };
+    return { runId: id, runPath, receipt, media: response.media };
+  } catch (error) {
+    if (pendingReceipt) {
+      const summary = error instanceof Error ? error.message : String(error);
+      const receipt: WorkerRunReceipt = {
+        schema: 'home23.worker-run.v1', runId: pendingReceipt.id, worker: worker.name, ownerAgent: owner,
+        requestedBy: input.request.requestedBy, requester: input.request.requester,
+        startedAt: pendingReceipt.startedAt, finishedAt: new Date().toISOString(),
+        status: input.ctx.abortSignal?.aborted ? 'cancelled' : 'failed', verifierStatus: 'not_run',
+        summary: summary.slice(0, 500), actions: [], evidence: [], artifacts: [], memoryCandidates: [],
+        collaborationHandoff: pendingReceipt.collaborationHandoff, source: input.request.source,
+      };
+      try { writeWorkerReceipt(input.projectRoot, pendingReceipt.runPath, receipt); }
+      catch (receiptError) { throw new AggregateError([error, receiptError], 'Worker execution failed and its local terminal receipt could not be persisted'); }
+    }
+    throw error;
   } finally {
     activeOwners.delete(owner);
   }

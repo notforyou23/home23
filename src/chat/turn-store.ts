@@ -9,6 +9,7 @@ import {
   isTurnEvent,
 } from './turn-types.js';
 import { enrichTerminalEnvelope } from './history-projection.js';
+import type { ReasoningEffort } from '../agent/reasoning-effort.js';
 
 /**
  * Turn lifecycle on top of the conversation JSONL.
@@ -22,6 +23,8 @@ export class TurnStore {
     activity_deadline_at?: string;
     hard_deadline_at?: string;
     first_token_deadline_at?: string;
+    reasoning_effort?: ReasoningEffort;
+    coordination_origin?: import('../agent/types.js').CoordinationTurnOrigin;
   } = {}): TurnEnvelope {
     const env: TurnEnvelope = {
       type: 'turn',
@@ -36,9 +39,34 @@ export class TurnStore {
       first_token_deadline_at: extras.first_token_deadline_at,
       model,
       provider,
+      reasoning_effort: extras.reasoning_effort,
+      coordination_origin: extras.coordination_origin,
     };
     this.history.appendRecord(chatId, env);
     return env;
+  }
+
+  /** One fresh journal read for fenced replay; no cache can outlive a journal append. */
+  replaySnapshot(chatId: string, turn_id: string): {
+    start: TurnEnvelope | null; final: TurnEnvelope | null; events: TurnEvent[];
+  } {
+    const records = this.history.loadRaw(chatId);
+    let start: TurnEnvelope | null = null;
+    let final: TurnEnvelope | null = null;
+    const events: TurnEvent[] = [];
+    for (const record of records) {
+      if (isTurnEnvelope(record) && record.turn_id === turn_id) {
+        if (record.status === 'pending') start ??= record;
+        else final = record;
+      } else if (isTurnEvent(record) && record.turn_id === turn_id) events.push(record);
+    }
+    return { start, final: final ? enrichTerminalEnvelope(records, final) : null, events };
+  }
+
+  startEnvelope(chatId: string, turn_id: string): TurnEnvelope | null {
+    return this.history.loadRaw(chatId).find(
+      record => isTurnEnvelope(record) && record.turn_id === turn_id && record.status === 'pending',
+    ) as TurnEnvelope | undefined ?? null;
   }
 
   writeEnd(chatId: string, turn_id: string, status: Exclude<TurnStatus, 'pending'>, extras: {
@@ -180,12 +208,60 @@ export class TurnStore {
       runtime_model: {
         provider,
         model,
+        reasoning_effort: start?.reasoning_effort ?? final?.reasoning_effort ?? null,
       },
       stop_reason: final?.stop_reason ?? null,
       error_code: final?.error_code ?? (status === 'error' ? 'provider_error' : null),
       error_message: final?.error_message ?? final?.error ?? null,
       recoverable: status !== 'complete',
     };
+  }
+
+  /** Async janitor path; retain metadata only, never materialize message/event bodies. */
+  async sweepOrphansAsync(chatId: string, maxAgeMs: number, preserve: (turn: TurnEnvelope) => boolean, onDeferred: (reason: string) => void = () => {}): Promise<TurnEnvelope[]> {
+    const turns = new Map<string, TurnEnvelope>();
+    const lastSeq = new Map<string, number>();
+    const scalar = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
+    let retainedBytes = 0;
+    const metadataBytes = (turn: TurnEnvelope | undefined): number => turn ? 2 * (turn.turn_id.length + turn.chat_id.length + turn.started_at.length) + 256 : 0;
+    const commit = await this.history.scanForRecovery(chatId, record => {
+      if (isTurnEnvelope(record)) {
+        if (!scalar(record.turn_id, 256) || !scalar(record.chat_id, 512)
+          || record.chat_id.replace(/[^a-zA-Z0-9_-]/g, '_') !== chatId.replace(/[^a-zA-Z0-9_-]/g, '_')
+          || !['pending', 'accepted', 'running', 'awaiting_model', 'streaming', 'tool_running', 'stopping', 'stopped', 'complete', 'error', 'timeout', 'orphaned'].includes(record.status)) throw new Error('invalid_turn_metadata');
+        if (record.status === 'pending') {
+          if (!scalar(record.started_at, 64) || !Number.isFinite(Date.parse(record.started_at))) throw new Error('invalid_turn_metadata');
+          retainedBytes -= metadataBytes(turns.get(record.turn_id));
+          retainedBytes += 2 * (record.turn_id.length + record.chat_id.length + record.started_at.length) + 256;
+          if (retainedBytes > 4 * 1024 * 1024) throw new Error('metadata_limit');
+          turns.set(record.turn_id, {
+            type: 'turn', role: 'assistant', status: 'pending',
+            turn_id: record.turn_id, chat_id: record.chat_id, started_at: record.started_at,
+            coordination_origin: record.coordination_origin?.kind === 'coordination'
+              ? { kind: 'coordination' } as TurnEnvelope['coordination_origin'] : undefined,
+          });
+        } else { retainedBytes -= metadataBytes(turns.get(record.turn_id)); turns.delete(record.turn_id); lastSeq.delete(record.turn_id); }
+      } else if (isTurnEvent(record)) {
+        if (!scalar(record.turn_id, 256) || !Number.isSafeInteger(record.seq) || record.seq < 0) throw new Error('invalid_turn_metadata');
+        if (turns.has(record.turn_id)) lastSeq.set(record.turn_id, record.seq);
+      }
+      // Corrupt or pathological journals must not exhaust the harness heap.
+      if (turns.size + lastSeq.size > 100_000) throw new Error('metadata_limit');
+    }, onDeferred);
+    const recovered: TurnEnvelope[] = [];
+    commit?.(() => {
+      for (const turn of turns.values()) {
+        // Bound synchronous terminal writes; remaining orphans wait for the next sweep.
+        if (recovered.length >= 32) break;
+        if (turn.status !== 'pending' || preserve(turn)) continue;
+        if (Date.now() - Date.parse(turn.started_at) < maxAgeMs || !Number.isFinite(Date.parse(turn.started_at))) continue;
+        recovered.push(this.writeEnd(turn.chat_id || chatId, turn.turn_id, 'orphaned', {
+          last_seq: lastSeq.get(turn.turn_id) ?? 0,
+          error: 'process restarted or turn exceeded max age',
+        }));
+      }
+    });
+    return recovered;
   }
 
   /** Mark any pending turn older than maxAgeMs as orphaned. Returns the turn_ids marked. */
@@ -196,10 +272,15 @@ export class TurnStore {
       if (options.activeTurnIds?.has(t.turn_id)) continue;
       const age = now - new Date(t.started_at).getTime();
       if (age >= maxAgeMs) {
+        // listChatIds() necessarily returns the filesystem-safe storage key.
+        // A turn envelope retains the canonical chat identity (notably the
+        // colon-bearing coordination IDs), so terminalize against that exact
+        // identity instead of leaking the storage key into durable state.
+        const durableChatId = t.chat_id || chatId;
         // Find the last event for this turn to get last_seq
-        const events = this.eventsSince(chatId, t.turn_id, -1);
+        const events = this.eventsSince(durableChatId, t.turn_id, -1);
         const last_seq = events.length ? events[events.length - 1]!.seq : 0;
-        this.writeEnd(chatId, t.turn_id, 'orphaned', { last_seq, error: 'process restarted or turn exceeded max age' });
+        this.writeEnd(durableChatId, t.turn_id, 'orphaned', { last_seq, error: 'process restarted or turn exceeded max age' });
         marked.push(t.turn_id);
       }
     }
@@ -211,7 +292,8 @@ function statusFromPending(active: boolean, lastEvent: TurnEvent | null): Exclud
   if (lastEvent?.kind === 'response_chunk') return 'streaming';
   if (lastEvent?.kind === 'tool_start') return 'tool_running';
   if (lastEvent?.kind === 'tool_result') return 'running';
-  if (lastEvent?.kind === 'thinking' || lastEvent?.kind === 'cache' || lastEvent?.kind === 'status') return 'awaiting_model';
+  if (lastEvent?.kind === 'thinking' || lastEvent?.kind === 'cache' || lastEvent?.kind === 'status'
+      || lastEvent?.kind === 'subagent_start' || lastEvent?.kind === 'subagent_result') return 'awaiting_model';
   return active ? 'running' : 'accepted';
 }
 

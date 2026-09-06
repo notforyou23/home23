@@ -29,5 +29,6 @@
   ],
   "actions": [
     "structure"
-  ]
+  ],
+  "routing": "manual"
 }

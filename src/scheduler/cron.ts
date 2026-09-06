@@ -13,6 +13,7 @@ import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { SchedulerConfig } from '../types.js';
 import { parseReasoningEffort } from '../agent/reasoning-effort.js';
+import type { DeliveryOutcome } from './delivery.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -22,7 +23,7 @@ export type ScheduleSpec =
   | { kind: 'at'; at: string };
 
 export type JobPayload =
-  | { kind: 'agentTurn'; message?: string; messagePath?: string; model?: string; effort?: import('../agent/reasoning-effort.js').ReasoningEffort; timeoutSeconds?: number; sessionHistory?: 'persistent' | 'fresh' }
+  | { kind: 'agentTurn'; channelId?: string; message?: string; messagePath?: string; model?: string; effort?: import('../agent/reasoning-effort.js').ReasoningEffort; timeoutSeconds?: number; sessionHistory?: 'persistent' | 'fresh' }
   | { kind: 'exec'; command: string; timeoutSeconds?: number }
   | { kind: 'query'; message: string; mode?: string; model?: string; timeoutSeconds?: number }
   | { kind: 'systemEvent'; text: string };
@@ -36,6 +37,7 @@ export interface DeliveryConfig {
 }
 
 export interface JobState {
+  activeChannelRun?: { runId: string; startedAtMs: number; input?: import('../coordination/app/scheduled-turns.js').ScheduledChannelTurn };
   nextRunAtMs: number;
   lastRunAtMs?: number;
   lastStatus?: 'ok' | 'error';
@@ -72,16 +74,26 @@ export interface CronJob {
 }
 
 export interface JobResult {
+  canonicalRunPending?: boolean;
+  media?: import('../types.js').MediaAttachment[];
   status: 'ok' | 'error';
   response?: string;
   error?: string;
   durationMs: number;
+  deliveryOutcome?: DeliveryOutcome;
   semanticStatus?: Exclude<JobSemanticStatus, 'withheld'>;
   outcomeLayers?: Partial<Record<JobOutcomeLayer, JobOutcomeLayerReceipt>>;
   artifacts?: string[];
 }
 
-export type JobHandler = (job: CronJob) => Promise<JobResult>;
+export interface JobExecutionContext {
+  runId: string;
+  canonicalTurn?: import('../coordination/app/scheduled-turns.js').ScheduledChannelTurn;
+  persistCanonicalTurn?(input: import('../coordination/app/scheduled-turns.js').ScheduledChannelTurn): void;
+  /** In-process canonical caller authority; never read from persisted/model job fields. */
+  caller?: Pick<import('../agent/types.js').ToolContext, 'abortSignal' | 'onEvent' | 'coordinationWorkDestination' | 'turnRuntime' | 'parentWorkId' | 'parentToolCallId'>;
+}
+export type JobHandler = (job: CronJob, execution?: JobExecutionContext) => Promise<JobResult>;
 
 export type JobDecisionAction = 'run' | 'repair' | 'skip' | 'catch_up' | 'defer' | 'escalate';
 export type JobSemanticStatus = 'satisfied' | 'failed' | 'unknown' | 'withheld';
@@ -287,6 +299,7 @@ export function nextMatch(expr: string, after: Date, tz: string = 'America/New_Y
 export class CronScheduler {
   private config: SchedulerConfig;
   private handler: JobHandler;
+  private readonly activeJobs = new Set<string>();
   private runtimeDir: string;
   private jobs: Map<string, CronJob> = new Map();
   private tickTimer: ReturnType<typeof setInterval> | null = null;
@@ -453,7 +466,7 @@ export class CronScheduler {
     }
   }
 
-  async runJobNow(id: string): Promise<JobResult> {
+  async runJobNow(id: string, caller?: JobExecutionContext['caller']): Promise<JobResult> {
     if (!this.ensureOwnership()) {
       return {
         status: 'error',
@@ -476,7 +489,7 @@ export class CronScheduler {
       return this.withholdJob(job, decision);
     }
 
-    return await this.executeJob(job, decision);
+    return await this.executeJob(job, decision, caller);
   }
 
   // ─── Tick Loop ─────────────────────────────────────────
@@ -493,7 +506,7 @@ export class CronScheduler {
     const dueJobs: CronJob[] = [];
 
     for (const job of this.jobs.values()) {
-      if (job.enabled && now >= job.state.nextRunAtMs) {
+      if (job.state.activeChannelRun || (job.enabled && now >= job.state.nextRunAtMs)) {
         dueJobs.push(job);
       }
     }
@@ -503,14 +516,22 @@ export class CronScheduler {
       const hasForegroundDue = dueJobs.some((job) => this.queueClass(job) !== 'background');
       const maxJobsPerTick = Math.max(1, Math.floor(this.config.maxConcurrentJobsPerTick ?? 4));
       const maxAgentTurns = Math.max(1, Math.floor(this.config.maxConcurrentAgentTurns ?? 1));
-      let scheduledAgentTurns = 0;
+      let scheduledAgentTurns = [...this.activeJobs].filter(id=>this.jobs.get(id)?.payload.kind==='agentTurn').length;
       dueJobs.sort((a, b) => this.queuePriority(a) - this.queuePriority(b));
 
       // Pre-compute next run BEFORE firing to prevent double-fire
       // (if a job takes >30s, the next tick would see it as still due).
       // One-shot 'at' jobs: disable here so the next tick won't re-queue.
       for (const job of dueJobs) {
-        const decision = hasForegroundDue && this.queueClass(job) === 'background'
+        if (this.activeJobs.has(job.id)) {
+          const decision = this.deferInFlightJob(job, now, 'scheduled');
+          this.appendDecisionLog(decision);
+          this.withholdJob(job, decision);
+          continue;
+        }
+        const decision = job.state.activeChannelRun
+          ? { ...this.decideJobPreflight(job, now, 'scheduled'), action: 'run' as const, reason: 'reattach durable scheduled channel run', willExecute: true, durableState: 'allowed_after_decision' as const }
+          : hasForegroundDue && this.queueClass(job) === 'background'
           ? this.deferBackgroundJob(job, now)
           : this.decideJobPreflight(job, now, 'scheduled');
         if (!decision.willExecute) {
@@ -519,7 +540,7 @@ export class CronScheduler {
           continue;
         }
 
-        if (runnable.length >= maxJobsPerTick) {
+        if (runnable.length + this.activeJobs.size >= maxJobsPerTick) {
           const capacityDecision = this.deferJobForTickCapacity(job, now, maxJobsPerTick);
           this.appendDecisionLog(capacityDecision);
           this.withholdJob(job, capacityDecision);
@@ -534,6 +555,9 @@ export class CronScheduler {
         }
         this.appendDecisionLog(decision);
 
+        if (job.payload.kind === 'agentTurn' && job.payload.channelId && !job.state.activeChannelRun) {
+          job.state.activeChannelRun = {runId: `sched-run-${randomUUID()}`, startedAtMs: now};
+        }
         if (job.schedule.kind === 'at') {
           job.enabled = false;
         }
@@ -546,34 +570,57 @@ export class CronScheduler {
           scheduledAgentTurns++;
         }
       }
-      this.saveJobs();
+      if (!this.saveJobs()) return;
 
-      // Fire all due jobs concurrently (don't block tick)
-      await Promise.allSettled(runnable.map(({ job, decision }) => this.executeJob(job, decision).catch(err => {
+      // The active-job set owns overlap/capacity while handlers settle. A slow
+      // non-channel job must not keep the scheduler tick open either.
+      for (const { job, decision } of runnable) {
+        void this.executeJob(job, decision).catch(err => {
           console.error(`[scheduler] Unhandled error executing job ${job.id}:`, err);
-      })));
+        });
+      }
     }
     } finally {
       this.tickInProgress = false;
     }
   }
 
-  private async executeJob(job: CronJob, decision?: JobDecision): Promise<JobResult> {
-    const startMs = Date.now();
-    const runId = `sched-run-${randomUUID().slice(0, 12)}`;
+  private async executeJob(job: CronJob, decision?: JobDecision, caller?: JobExecutionContext['caller']): Promise<JobResult> {
+    if (this.activeJobs.has(job.id)) return { status: 'error', error: 'This scheduled job already has an active run.', durationMs: 0 };
+    caller?.abortSignal?.throwIfAborted();
+    this.activeJobs.add(job.id);
+    if (!caller && job.payload.kind === 'agentTurn' && job.payload.channelId && !job.state.activeChannelRun) {
+      job.state.activeChannelRun={runId:`sched-run-${randomUUID()}`,startedAtMs:Date.now()};
+    }
+    const active = !caller ? job.state.activeChannelRun : undefined;
+    if (active && !this.saveJobs()) { this.activeJobs.delete(job.id); return {status:'error',error:'Cannot persist scheduled channel run before dispatch',durationMs:0,canonicalRunPending:true}; }
+    const startMs = active?.startedAtMs ?? Date.now();
+    const runId = active?.runId ?? `sched-run-${randomUUID()}`;
     let result: JobResult;
 
     try {
-      result = await this.handler(job);
+      result = await this.handler(job, { runId, caller,
+        ...(active ? {canonicalTurn:active.input,persistCanonicalTurn:(input) => {
+          if(input.runId!==active.runId||input.jobId!==job.id) throw new Error('Scheduled channel run identity changed');
+          if(active.input && JSON.stringify(active.input)!==JSON.stringify(input)) throw new Error('Scheduled channel run payload changed');
+          active.input=input;
+          if(!this.saveJobs()) throw new Error('Cannot persist exact scheduled channel input');
+        }} : {}),
+      });
+      caller?.abortSignal?.throwIfAborted();
     } catch (err) {
       const durationMs = Date.now() - startMs;
       result = {
         status: 'error',
         error: err instanceof Error ? err.message : String(err),
+        ...(active ? {canonicalRunPending:true} : {}),
         durationMs,
       };
     }
 
+    try {
+    if (active && result.canonicalRunPending) return result;
+    if (active) delete job.state.activeChannelRun;
     // Update job state
     job.state.lastRunAtMs = startMs;
     job.state.lastStatus = result.status;
@@ -629,6 +676,7 @@ export class CronScheduler {
     const statusTag = result.status === 'ok' ? 'OK' : 'ERROR';
     console.log(`[scheduler] Job ${job.id} ${statusTag} semantic=${outcome.semanticStatus} (${result.durationMs}ms)`);
     return result;
+    } finally { this.activeJobs.delete(job.id); }
   }
 
   private decideJobPreflight(job: CronJob, now: number, source: JobDecision['source']): JobDecision {
@@ -742,6 +790,34 @@ export class CronScheduler {
       overdueMs: Number.isFinite(dueAtMs) ? Math.max(0, now - dueAtMs) : 0,
       consecutiveErrors: job.state.consecutiveErrors,
       inputFreshness: { status: 'current', reason: 'load-shedding deferral, not input failure' },
+      sourceIssue: 71,
+      resourceContract: this.buildResourceContract(job),
+      nextReviewAtMs,
+    };
+  }
+
+  private deferInFlightJob(job: CronJob, now: number, source: JobDecision['source']): JobDecision {
+    const dueAtMs = Number(job.state?.nextRunAtMs);
+    const nextReviewAtMs = job.schedule.kind === 'at'
+      ? now + 60_000
+      : this.computeNextRun(job);
+    return {
+      schema: 'home23.scheduler.job-decision.v1',
+      decisionId: `sched-dec-${randomUUID().slice(0, 12)}`,
+      jobId: job.id,
+      jobName: job.name,
+      decidedAt: new Date(now).toISOString(),
+      source,
+      action: 'defer',
+      reason: `job instance withheld because the same job is still in flight`,
+      durableState: 'withheld_after_decision',
+      willExecute: false,
+      scheduleKind: job.schedule.kind,
+      payloadKind: job.payload.kind,
+      dueAt: Number.isFinite(dueAtMs) ? new Date(dueAtMs).toISOString() : null,
+      overdueMs: Number.isFinite(dueAtMs) ? Math.max(0, now - dueAtMs) : 0,
+      consecutiveErrors: job.state.consecutiveErrors,
+      inputFreshness: { status: 'current', reason: 'duplicate suppression, not input failure' },
       sourceIssue: 71,
       resourceContract: this.buildResourceContract(job),
       nextReviewAtMs,
@@ -941,7 +1017,6 @@ export class CronScheduler {
   ): JobOutcomeReceipt {
     const decisionAction = options.decision?.action ?? 'run';
     const deliveryConfigured = Boolean(job.delivery && job.delivery.mode !== 'none');
-    const deliveryFailed = result.error?.startsWith('Delivery failed:') ?? false;
     const processLayer: JobOutcomeLayerReceipt = options.withheld
       ? { status: 'skipped', reason: `process not invoked because scheduler decision was ${decisionAction}` }
       : result.status === 'ok'
@@ -972,13 +1047,7 @@ export class CronScheduler {
       artifact: Array.isArray(result.artifacts) && result.artifacts.length > 0
         ? { status: 'success', reason: 'handler reported durable artifact output', evidence: { artifacts: result.artifacts } }
         : { status: 'unknown', reason: 'no artifact contract or artifact output was reported' },
-      delivery: !deliveryConfigured
-        ? { status: 'not_applicable', reason: 'job has no delivery target or delivery mode is none' }
-        : deliveryFailed
-          ? { status: 'failed', reason: result.error ?? 'delivery failed' }
-          : result.status === 'ok'
-            ? { status: 'success', reason: 'configured delivery completed or was skipped by delivery policy' }
-            : { status: 'unknown', reason: 'handler failed before delivery success could be established' },
+      delivery: this.deliveryOutcomeLayer(job, result, options.withheld, decisionAction, deliveryConfigured),
       intent: result.semanticStatus === 'satisfied'
         ? { status: 'success', reason: 'handler reported intended outcome satisfied' }
         : result.semanticStatus === 'failed'
@@ -987,7 +1056,7 @@ export class CronScheduler {
     };
 
     for (const [layer, receipt] of Object.entries(result.outcomeLayers ?? {}) as Array<[JobOutcomeLayer, JobOutcomeLayerReceipt]>) {
-      if (receipt?.status && receipt.reason) {
+      if (layer !== 'delivery' && receipt?.status && receipt.reason) {
         layers[layer] = receipt;
       }
     }
@@ -1005,6 +1074,81 @@ export class CronScheduler {
       resourceContract: options.decision?.resourceContract ?? this.buildResourceContract(job),
       layers,
     };
+  }
+
+  private deliveryOutcomeLayer(
+    job: CronJob,
+    result: JobResult,
+    withheld: boolean,
+    decisionAction: JobDecisionAction,
+    deliveryConfigured: boolean,
+  ): JobOutcomeLayerReceipt {
+    if (!deliveryConfigured) {
+      return { status: 'not_applicable', reason: 'job has no delivery target or delivery mode is none' };
+    }
+    if (withheld) {
+      return {
+        status: 'skipped',
+        reason: `delivery not attempted because scheduler withheld execution: ${decisionAction}`,
+        evidence: { deliveryStatus: 'withheld' },
+      };
+    }
+
+    const outcome = result.deliveryOutcome;
+    if (!outcome) {
+      return {
+        status: 'unknown',
+        reason: result.status === 'error'
+          ? 'handler failed before it recorded a delivery outcome'
+          : 'handler did not record a delivery outcome',
+      };
+    }
+
+    switch (outcome.status) {
+      case 'delivered':
+        return {
+          status: 'success',
+          reason: outcome.reason,
+          evidence: {
+            deliveryStatus: outcome.status,
+            confirmedTargets: outcome.confirmedTargets,
+            unavailableTargets: outcome.unavailableTargets,
+            failedTargets: outcome.failedTargets,
+          },
+        };
+      case 'skipped_by_policy':
+      case 'suppressed':
+        return {
+          status: 'skipped',
+          reason: outcome.reason,
+          evidence: { deliveryStatus: outcome.status },
+        };
+      case 'no_target':
+        return {
+          status: 'failed',
+          reason: outcome.reason,
+          evidence: { deliveryStatus: outcome.status },
+        };
+      case 'no_adapter':
+        return {
+          status: 'failed',
+          reason: outcome.reason,
+          evidence: {
+            deliveryStatus: outcome.status,
+            unavailableTargets: outcome.unavailableTargets,
+          },
+        };
+      case 'failed':
+        return {
+          status: 'failed',
+          reason: outcome.reason,
+          evidence: {
+            deliveryStatus: outcome.status,
+            failedTargets: outcome.failedTargets,
+            unavailableTargets: outcome.unavailableTargets,
+          },
+        };
+    }
   }
 
   private deriveSemanticStatus(
@@ -1117,7 +1261,7 @@ export class CronScheduler {
           job.state.nextRunAtMs = this.computeNextRun(job);
         }
         // Auto-prune disabled one-shot jobs older than 7 days
-        if (job.schedule.kind === 'at' && !job.enabled && job.state.lastRunAtMs) {
+        if (job.schedule.kind === 'at' && !job.enabled && job.state.lastRunAtMs && !job.state.activeChannelRun) {
           const age = Date.now() - job.state.lastRunAtMs;
           if (age > 7 * 24 * 60 * 60 * 1000) {
             pruned++;

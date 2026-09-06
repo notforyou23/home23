@@ -173,7 +173,8 @@ const BUILTIN_MODEL_CATALOG = {
         { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', kind: 'chat' },
         { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark', kind: 'chat' },
         { id: 'gpt-5.4', label: 'GPT-5.4', kind: 'chat', contextWindowTokens: 272000 },
-        { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', kind: 'chat', contextWindowTokens: 272000 }
+        { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', kind: 'chat', contextWindowTokens: 272000 },
+        { id: 'gpt-6-astra', label: 'GPT-6 Astra', kind: 'chat', maxOutputTokens: 128000, contextWindowTokens: 1050000 }
       ]
     }
   },

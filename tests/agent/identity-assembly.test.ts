@@ -59,7 +59,7 @@ test('an over-budget file emits a visible omission diagnostic and records it', (
       identityBudgets: { 'MISSION.md': 500 },
     });
     const prompt = cm.getSystemPrompt('anthropic');
-    assert.match(prompt, /identity-budget: kept \d+\/\d+ chars of MISSION\.md; omitted \d+ section/);
+    assert.match(prompt, /identity-budget: kept \d+\/\d+ chars of MISSION\.md; kept sections:.*omitted \d+ section/);
     const info = cm.getPromptSourceInfo();
     assert.equal(info.anyTruncated, true);
     const m = info.loadedFiles.find(f => f.filename === 'MISSION.md')!;
@@ -137,7 +137,7 @@ test('formatContextTimestamp labels the degraded UTC forms instead of emitting a
   assert.ok(formatContextTimestamp(date, 'Not/AZone').includes('is invalid'));
 });
 
-test('the system prompt context block carries the agent-local build time, not a bare UTC stamp', () => {
+test('unchanged identity refresh preserves cached bytes and keeps clock guidance explicit', () => {
   const ws = workspace({ 'SOUL.md': SOUL });
   try {
     const cm = new ContextManager({
@@ -145,7 +145,10 @@ test('the system prompt context block carries the agent-local build time, not a 
       timezone: 'America/New_York',
     });
     const prompt = cm.getSystemPrompt('anthropic');
-    assert.ok(prompt.includes('Time at prompt build:'), 'timestamp is labeled as build time');
+    assert.ok(!prompt.includes('Time at prompt build:'), 'build timestamp stays outside the cached prefix');
+    cm.invalidate();
+    assert.equal(cm.getSystemPrompt('anthropic'), prompt, 'an unchanged refresh preserves the complete prefix');
+    assert.match(prompt, /current time use session context/);
     assert.ok(prompt.includes('(America/New_York)'), 'agent timezone labeled in the context block');
     assert.ok(!/Current time: \d{4}-\d{2}-\d{2}T[\d:.]+Z\n/.test(prompt), 'the old bare-UTC line is gone');
   } finally {

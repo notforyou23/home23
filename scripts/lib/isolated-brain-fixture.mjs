@@ -135,7 +135,7 @@ const FIXTURE_OWNER_FILE = 'fixture-owner.json';
 const PRODUCTION_OPERATION_DELAY_MS = 3_000;
 const CHILD_INHERITED_ENV_ALLOWLIST = Object.freeze([
   'LANG', 'LC_ALL', 'LC_CTYPE', 'PATH', 'TEMP', 'TMP', 'TMPDIR', 'TZ',
-  '__CF_USER_TEXT_ENCODING',
+  '__CF_USER_TEXT_ENCODING', 'HOME23_TEST_PRIMARY_CHECKOUT',
 ]);
 const CHILD_BINDING_ENV_KEYS = Object.freeze([
   'HOME23_ISOLATED_FIXTURE_CHILD',
@@ -169,12 +169,12 @@ const TEST_DELAY_SEAMS = new WeakMap();
 const CONTROLLED_OPERATION_CONTEXT = new AsyncLocalStorage();
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-function derivePrimaryCheckoutRoot() {
+function derivePrimaryCheckoutRoot(repositoryRoot = REPOSITORY_ROOT) {
   try {
-    const dotGit = path.join(REPOSITORY_ROOT, '.git');
+    const dotGit = path.join(repositoryRoot, '.git');
     const dotGitStat = lstatSync(dotGit);
     if (dotGitStat.isDirectory() && !dotGitStat.isSymbolicLink()) {
-      return realpathSync(REPOSITORY_ROOT);
+      return realpathSync(repositoryRoot);
     }
     if (!dotGitStat.isFile() || dotGitStat.isSymbolicLink() || dotGitStat.size > 4_096) {
       return null;
@@ -182,7 +182,7 @@ function derivePrimaryCheckoutRoot() {
     const pointer = readFileSync(dotGit, 'utf8').trim();
     const gitdir = /^gitdir:\s*(.+)$/.exec(pointer)?.[1];
     if (!gitdir) return null;
-    const worktreeGitDir = realpathSync(path.resolve(REPOSITORY_ROOT, gitdir));
+    const worktreeGitDir = realpathSync(path.resolve(repositoryRoot, gitdir));
     const commonFile = path.join(worktreeGitDir, 'commondir');
     const commonStat = lstatSync(commonFile);
     if (!commonStat.isFile() || commonStat.isSymbolicLink() || commonStat.size > 4_096) {
@@ -201,7 +201,13 @@ function derivePrimaryCheckoutRoot() {
   }
 }
 
-const PRIMARY_CHECKOUT_ROOT = derivePrimaryCheckoutRoot();
+// Packaged candidates deliberately have no .git. Test operators may identify the
+// real installation checkout explicitly; it must still pass the exact Git-root
+// checks above. Both that live root and the candidate remain excluded from fixtures.
+const EXPLICIT_TEST_CHECKOUT = process.env.HOME23_TEST_PRIMARY_CHECKOUT;
+const PRIMARY_CHECKOUT_ROOT = EXPLICIT_TEST_CHECKOUT
+  ? derivePrimaryCheckoutRoot(path.resolve(EXPLICIT_TEST_CHECKOUT))
+  : derivePrimaryCheckoutRoot();
 const CONTROLLED_PROVIDER = 'controlled';
 const CONTROLLED_QUERY_MODEL = 'controlled-query';
 const CONTROLLED_PGS_MODEL = 'controlled-pgs';

@@ -1,3 +1,4 @@
+import { assertCoordinationId } from '../../coordination/ids/index.js';
 /**
  * Cron tools — schedule, list, delete, enable, disable, and update recurring/one-shot tasks.
  */
@@ -59,6 +60,7 @@ Delivery:
       announce_mode: { type: 'string', enum: ['none', 'failures', 'summary', 'full'], description: 'When to deliver results (default: failures)' },
       cwd: { type: 'string', description: 'Working directory for exec commands (default: home23 project root)' },
       message_path: { type: 'string', description: 'Path to a prompt file (alternative to message). Relative paths resolve from the home23 project root. Preferred for long prompts — makes them editable as files.' },
+      channel_id: { type: 'string', description: 'Canonical topic channel ID for a scheduled agentTurn. The run, Activity and final result live there and reattach after restart.' },
       session_history: { type: 'string', enum: ['persistent', 'fresh'], description: 'Session lifecycle for agentTurn jobs. "fresh" rotates chat history before each run (cleanest for stateless jobs). Default: "persistent".' },
       delivery_profile: { type: 'string', description: 'Name of a delivery profile from config.yaml deliveryProfiles. If set, overrides delivery_channel/delivery_to.' },
       pursuit_id: { type: 'string', description: 'Resident agency pursuit ID that justifies recurring work. Required for cron/every jobs during agency bootcamp.' },
@@ -129,6 +131,10 @@ Delivery:
         is_error: true,
       };
     }
+    if (input.channel_id !== undefined) {
+      try { if(typeof input.channel_id !== 'string') throw new Error('invalid channel'); assertCoordinationId('channel',input.channel_id); } catch { return {content:'channel_id must be a canonical channel ID.',is_error:true}; }
+    }
+    if (input.channel_id && payloadKind !== 'agentTurn') return {content:'channel_id requires agentTurn.',is_error:true};
     const model = typeof input.model === 'string' ? input.model : undefined;
     const cwd = typeof input.cwd === 'string' ? input.cwd : undefined;
 
@@ -151,6 +157,7 @@ Delivery:
     } else {
       payload = {
         kind: 'agentTurn',
+        ...(typeof input.channel_id === 'string' ? {channelId:input.channel_id} : {}),
         ...(msg ? { message: msg } : {}),
         ...(msgPath ? { messagePath: msgPath } : {}),
         ...(model ? { model } : {}),
@@ -163,9 +170,9 @@ Delivery:
     // Delivery — warn about ephemeral chatIds
     const deliveryTo = (input.delivery_to as string) || '';
     const hasProfile = typeof input.delivery_profile === 'string' && input.delivery_profile !== '';
-    if (!deliveryTo && !hasProfile) {
+    if (!input.channel_id && !deliveryTo && !hasProfile) {
       console.warn(`[cron_schedule] Job "${input.name}" created with no delivery_to — delivery will fail.`);
-    } else if (deliveryTo.startsWith('dashboard-')) {
+    } else if (!input.channel_id && deliveryTo.startsWith('dashboard-')) {
       console.warn(`[cron_schedule] Job "${input.name}" has ephemeral dashboard chatId as delivery_to — this won't survive browser close.`);
     }
 
@@ -194,8 +201,8 @@ Delivery:
     ctx.scheduler.addJob(job);
 
     const warnings: string[] = [];
-    if (!deliveryTo && !hasProfile) warnings.push('⚠ No delivery_to set — results won\'t be delivered anywhere.');
-    if (deliveryTo.startsWith('dashboard-')) warnings.push('⚠ delivery_to is a dashboard session ID — use a Telegram numeric ID instead.');
+    if (!input.channel_id && !deliveryTo && !hasProfile) warnings.push('⚠ No delivery_to set — results won\'t be delivered anywhere.');
+    if (!input.channel_id && deliveryTo.startsWith('dashboard-')) warnings.push('⚠ delivery_to is a dashboard session ID — use a Telegram numeric ID instead.');
 
     return { content: `Job "${job.name}" scheduled (id: ${id}, ${kind}, payload: ${payloadKind})${pursuitId ? `, pursuit: ${pursuitId}` : ''}${warnings.length ? '\n' + warnings.join('\n') : ''}` };
   },
@@ -220,7 +227,7 @@ export const cronListTool: ToolDefinition = {
 
     const showDisabled = input.show_disabled === true;
     let jobs = ctx.scheduler.getJobs();
-    if (!showDisabled) jobs = jobs.filter(j => j.enabled);
+    if (!showDisabled) jobs = jobs.filter(j => j.enabled || j.state.activeChannelRun);
     if (jobs.length === 0) return { content: showDisabled ? 'No scheduled jobs.' : 'No enabled jobs. Use show_disabled=true to see all.' };
 
     const lines = jobs.map(j => {
@@ -233,7 +240,7 @@ export const cronListTool: ToolDefinition = {
         : s.kind === 'every' ? `every ${(Number(s.everyMs) / 1000)}s`
         : s.kind === 'at' ? `at ${s.at}`
         : String(s.kind);
-      const deliver = j.delivery
+      const deliver = j.payload.kind === 'agentTurn' && j.payload.channelId ? `→ topic:${j.payload.channelId}` : j.delivery
         ? (j.delivery.profile
           ? `→ profile:${j.delivery.profile}`
           : j.delivery.channels && j.delivery.channels.length > 0
@@ -242,7 +249,7 @@ export const cronListTool: ToolDefinition = {
         : '';
       const errs = j.state.consecutiveErrors > 0 ? ` [${j.state.consecutiveErrors} errors]` : '';
       const lastStatus = j.state.lastStatus ? ` last:${j.state.lastStatus}` : '';
-      return `[${j.id}] ${j.name} — ${status}, ${sched}, next: ${nextRun} ${deliver}${errs}${lastStatus}`;
+      return `[${j.id}] ${j.name} — ${status}, ${sched}, next: ${nextRun} ${deliver}${errs}${lastStatus}${j.state.activeChannelRun ? ` pending:${j.state.activeChannelRun.runId}` : ''}`;
     });
 
     return { content: lines.join('\n') };
@@ -271,7 +278,10 @@ export const cronRunTool: ToolDefinition = {
     const job = ctx.scheduler.getJob(id);
     if (!job) return { content: `Job not found: ${id}`, is_error: true };
 
-    const result = await ctx.scheduler.runJobNow(id);
+    const result = await ctx.scheduler.runJobNow(id, ctx.coordinationWorkDestination ? {
+      abortSignal: ctx.abortSignal, onEvent: ctx.onEvent, coordinationWorkDestination: ctx.coordinationWorkDestination,
+      turnRuntime: ctx.turnRuntime, parentWorkId: ctx.parentWorkId,
+    } : undefined);
     const updated = ctx.scheduler.getJob(id) || job;
     const next = updated.state.nextRunAtMs ? new Date(updated.state.nextRunAtMs).toISOString() : 'unknown';
     const parts = [
@@ -283,7 +293,7 @@ export const cronRunTool: ToolDefinition = {
     ];
     if (result.error) parts.push(`error: ${result.error}`);
     if (result.response) parts.push(`response: ${result.response.slice(0, 1200)}`);
-    return { content: parts.join('\n'), is_error: result.status !== 'ok' };
+    return { content: parts.join('\n'), is_error: result.status !== 'ok', media: result.media };
   },
 };
 
@@ -392,6 +402,7 @@ export const cronUpdateTool: ToolDefinition = {
       model: { type: 'string', description: 'New model alias override' },
       effort: { type: 'string', enum: [...REASONING_EFFORTS], description: 'New reasoning effort for agentTurn jobs' },
       message_path: { type: 'string', description: 'New messagePath for agentTurn jobs (clears any inline message when set)' },
+      channel_id: { type: 'string', description: 'Canonical topic channel ID for a scheduled agentTurn. The run, Activity and final result live there and reattach after restart.' },
       session_history: { type: 'string', enum: ['persistent', 'fresh'], description: 'New sessionHistory value' },
       delivery_profile: { type: 'string', description: 'New delivery profile name (replaces channel/to when set; pass empty string to clear and fall back to channel/to)' },
     },
@@ -407,6 +418,12 @@ export const cronUpdateTool: ToolDefinition = {
     const job = ctx.scheduler.getJob(id);
     if (!job) return { content: `Job not found: ${id}`, is_error: true };
 
+    if (input.channel_id !== undefined) {
+      if (job.payload.kind !== 'agentTurn') return {content:'channel_id requires an agentTurn job.',is_error:true};
+      if (input.channel_id !== '') {
+        try { if(typeof input.channel_id !== 'string') throw new Error('invalid channel'); assertCoordinationId('channel',input.channel_id); } catch { return {content:'channel_id must be a canonical channel ID, or empty to clear future routing.',is_error:true}; }
+      }
+    }
     const changes: string[] = [];
 
     let effort: ReasoningEffort | undefined;
@@ -421,6 +438,10 @@ export const cronUpdateTool: ToolDefinition = {
       }
     }
 
+    if (typeof input.channel_id === 'string' && job.payload.kind === 'agentTurn') {
+      if(input.channel_id) job.payload.channelId=input.channel_id; else delete job.payload.channelId;
+      changes.push(input.channel_id ? `topic channel → ${input.channel_id}` : 'topic channel cleared for future runs');
+    }
     if (typeof input.name === 'string') { job.name = input.name; changes.push(`name → "${input.name}"`); }
     if (typeof input.message === 'string') {
       if (job.payload.kind === 'exec') {

@@ -307,24 +307,13 @@ test('cursor resume passes --resume <chatId> and keeps the prompt last', () => {
   assert.equal(args[args.length - 1], 'fix the bug');
 });
 
-test('cursor withholds --force outside bypass and invents no allow/deny or effort flags', () => {
-  const gated = cursor.buildArgs(baseOpts({
-    permissionMode: 'allowlist',
-    allowedTools: ['Bash(git:*)'],
-    disallowedTools: ['WebFetch'],
-    effort: 'high',
-    maxBudgetUsd: 5,
-    appendSystemPrompt: 'be terse',
-  }));
+test('cursor withholds force outside bypass and rejects unsupported controls', () => {
+  const gated = cursor.buildArgs(baseOpts({ permissionMode: 'allowlist' }));
   assert.equal(gated.includes('--force'), false);
-  assert.equal(gated.includes('--yolo'), false);
-  for (const unsupported of ['--allow', '--deny', '--allowedTools', '--disallowedTools',
-    '--effort', '--reasoning-effort', '--max-budget-usd', '--append-system-prompt']) {
-    assert.equal(gated.includes(unsupported), false, `unsupported flag leaked: ${unsupported}`);
+  for (const options of [{ effort: 'high' }, { allowedTools: ['Bash'] },
+    { disallowedTools: ['WebFetch'] }, { maxBudgetUsd: 5 }, { appendSystemPrompt: 'be terse' }]) {
+    assert.throws(() => cursor.buildArgs(baseOpts(options as never)), /does not support/);
   }
-  assert.deepEqual(gated, ['-p', '--output-format', 'stream-json', '--trust', 'fix the bug']);
-
-  // plan/ask are real cursor modes and map straight through.
   assert.equal(cursor.buildArgs(baseOpts({ permissionMode: 'plan' })).join(' ').includes('--mode plan'), true);
   assert.equal(cursor.buildArgs(baseOpts({ permissionMode: 'ask' })).join(' ').includes('--mode ask'), true);
 });

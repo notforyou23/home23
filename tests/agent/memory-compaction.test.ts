@@ -128,3 +128,48 @@ test('pre-compaction hook does not skip non-Claude providers', async () => {
   assert.equal(result.extractedLearnings, true);
   assert.equal(seenProvider, 'ollama-cloud');
 });
+
+for (const failure of [false, true]) test(`compaction preserves late constraints and original history on failure=${failure}`, async () => {
+  const { CompactionManager } = await import('../../src/agent/compaction.js');
+  const requests: string[] = [];
+  const writes: unknown[] = [];
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.OLLAMA_CLOUD_API_KEY;
+  process.env.OLLAMA_CLOUD_API_KEY = 'test-key';
+  const marker = 'USER LIMIT: only edit /tmp/owned.ts; do not deploy; retain cj_exact_123.';
+  const messages = [
+    { role: 'user' as const, content: 'Context '.repeat(5000) + marker },
+    { role: 'assistant' as const, content: 'Proposed plan only; no files changed.' },
+    { role: 'user' as const, content: 'Correction: stop the deployment and finish only the local check.' },
+    { role: 'assistant' as const, content: 'Current reply.' },
+  ];
+  globalThis.fetch = (async (_url, init) => {
+    requests.push(String(init?.body));
+    return Response.json({ message: { content: failure ? '' : 'Local check pending; no deployment authorized. Handle cj_exact_123.' } });
+  }) as typeof fetch;
+  try {
+    const manager = new CompactionManager({
+      client: {} as never, provider: 'ollama-cloud', model: 'kimi-k2.6',
+      history: { estimateChars: (items: unknown[]) => JSON.stringify(items).length, compact: (_id: string, records: unknown) => writes.push(records) } as never,
+      memory: {} as never,
+      hooks: { preCompaction: async () => ({ extractedLearnings: false }), postCompaction: async () => ({ recoveryBundle: null }) },
+      config: { keepRecentMessages: 2 },
+    });
+    const result = await manager.compact('test', messages);
+    if (failure) {
+      assert.equal(result.result.compacted, false);
+      assert.deepEqual(result.messages, messages);
+      assert.equal(writes.length, 0, 'failed summarization must not rewrite history');
+    } else {
+      assert.equal(result.result.compacted, true);
+      assert.equal(writes.length, 1);
+      assert.ok(requests.some(request => request.includes(marker)), 'constraint after character 500 must reach summarizer');
+      assert.ok(result.messages.some(message => String(message.content).includes('Correction: stop the deployment')));
+      assert.ok(requests.length >= 3, 'all segments reach summarization and chronological combination');
+      assert.equal(result.messages.at(-1)?.content, 'Current reply.');
+    }
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.OLLAMA_CLOUD_API_KEY; else process.env.OLLAMA_CLOUD_API_KEY = previousKey;
+  }
+});

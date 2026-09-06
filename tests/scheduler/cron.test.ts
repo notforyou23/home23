@@ -59,6 +59,46 @@ test('due cron jobs write a preflight decision receipt before the handler runs',
   assert.equal(savedJobs[0].state.consecutiveNoConsequence, 1);
 });
 
+test('configured delivery is unknown until the handler records a delivery outcome', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-unproven-delivery-'));
+  const job = makeDueJob({ delivery: { mode: 'summary', channel: 'telegram', to: 'jtr' } });
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  const scheduler = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' }, async (): Promise<JobResult> => {
+    return { status: 'ok', response: 'Morning review reminder.', durationMs: 1 };
+  }, dir);
+
+  await (scheduler as any).tick();
+
+  const runLog = readJsonl(join(dir, 'cron-runs', 'job-1.jsonl'));
+  assert.equal(runLog[0].outcome.layers.delivery.status, 'unknown');
+  assert.match(runLog[0].outcome.layers.delivery.reason, /did not record a delivery outcome/);
+});
+
+test('configured delivery receipt records a missing adapter as failed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-no-adapter-delivery-'));
+  const job = makeDueJob({ delivery: { mode: 'summary', channel: 'telegram', to: 'jtr' } });
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  const scheduler = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' }, async (): Promise<JobResult> => {
+    return {
+      status: 'error',
+      error: 'Delivery no_adapter: no configured delivery target has a registered adapter',
+      durationMs: 1,
+      deliveryOutcome: {
+        status: 'no_adapter',
+        reason: 'no configured delivery target has a registered adapter',
+        retryEligible: true,
+        unavailableTargets: [{ channel: 'telegram', to: 'jtr' }],
+      },
+    };
+  }, dir);
+
+  await (scheduler as any).tick();
+
+  const runLog = readJsonl(join(dir, 'cron-runs', 'job-1.jsonl'));
+  assert.equal(runLog[0].outcome.layers.delivery.status, 'failed');
+  assert.equal(runLog[0].outcome.layers.delivery.evidence.deliveryStatus, 'no_adapter');
+});
+
 test('scheduler start delays first automatic tick to avoid startup stampede', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-cron-start-delay-'));
   const job = makeDueJob();
@@ -246,6 +286,7 @@ test('background cron jobs defer under mixed due load without counting as failur
     id: 'background-work',
     name: 'Background work',
     queueClass: 'background',
+    delivery: { mode: 'summary', channel: 'telegram', to: 'jtr' },
   } as Partial<CronJob>);
   writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([scheduled, background], null, 2));
 
@@ -269,6 +310,8 @@ test('background cron jobs defer under mixed due load without counting as failur
   assert.equal(runLog.length, 1);
   assert.equal(runLog[0].withheld, true);
   assert.equal(runLog[0].status, 'ok');
+  assert.equal(runLog[0].outcome.layers.delivery.status, 'skipped');
+  assert.equal(runLog[0].outcome.layers.delivery.evidence.deliveryStatus, 'withheld');
 
   const savedJobs = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'));
   const savedBackground = savedJobs.find((job: CronJob) => job.id === 'background-work');
@@ -447,4 +490,117 @@ test('only one scheduler instance owns a runtime cron lease at a time', async ()
   await (third as any).tick();
 
   assert.deepEqual(calls, ['first:job-1', 'third:job-1']);
+});
+
+test('manual canonical run retains caller and run identity, and rejects overlapping execution', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-joined-'));
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const controller = new AbortController();
+  const caller = { abortSignal: controller.signal, parentWorkId: 'wrk_root' };
+  let calls = 0;
+  let observedRunId = '';
+  const scheduler = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' }, async (_job, execution) => {
+    calls++;
+    assert.equal(execution?.caller, caller);
+    observedRunId = execution!.runId;
+    await gate;
+    return { status: 'ok', response: 'checked', durationMs: 1 };
+  }, dir);
+  scheduler.addJob(makeDueJob());
+  const first = scheduler.runJobNow('job-1', caller);
+  const second = await scheduler.runJobNow('job-1', caller);
+  assert.equal(second.status, 'error');
+  assert.match(second.error!, /active run/);
+  release();
+  assert.equal((await first).status, 'ok');
+  assert.equal(calls, 1);
+  assert.ok(observedRunId.startsWith('sched-run-'));
+  assert.equal(scheduler.getRecentRuns('job-1', 1)[0]?.runId, observedRunId);
+});
+
+test('a pending canonical one-shot survives scheduler restart with its exact resolved input', async () => {
+  const dir = mkdtempSync(join(tmpdir(),'home23-canonical-schedule-'));
+  const config={timezone:'America/New_York',jobsFile:'cron-jobs.json',runsDir:'cron-runs'};
+  writeFileSync(join(dir,'cron-jobs.json'),JSON.stringify([makeDueJob({schedule:{kind:'at',at:new Date(Date.now()-1000).toISOString()},payload:{kind:'agentTurn',channelId:'chn_topic',message:'Original'}})]));
+  let savedInput: unknown;
+  let scheduler=new CronScheduler(config,async (job,execution)=>{
+    const before=JSON.parse(readFileSync(join(dir,'cron-jobs.json'),'utf8'))[0];
+    assert.equal(before.state.activeChannelRun.runId,execution!.runId,'run ID durable before dispatch');
+    const input={runId:execution!.runId,jobId:job.id,channelId:'chn_topic',prompt:'Resolved editorial source'};
+    execution!.persistCanonicalTurn!(input); savedInput=input;
+    return {status:'error',error:'Connection lost after admission',canonicalRunPending:true,durationMs:1};
+  },dir);
+  await (scheduler as any).tick(); scheduler.stop();
+  assert.equal(readJsonl(join(dir,'cron-runs','job-1.jsonl')).length,0,'lost response is not a terminal run');
+  const saved=JSON.parse(readFileSync(join(dir,'cron-jobs.json'),'utf8'));assert.equal(saved[0].enabled,false);
+  saved[0].payload.message='New prompt for future runs';writeFileSync(join(dir,'cron-jobs.json'),JSON.stringify(saved));
+  let resumed=0;
+  scheduler=new CronScheduler(config,async (_job,execution)=>{
+    resumed++;assert.deepEqual(execution!.canonicalTurn,savedInput);
+    return {status:'ok',response:'Canonical result',durationMs:2};
+  },dir);
+  await (scheduler as any).tick();scheduler.stop();
+  assert.equal(resumed,1);
+  assert.equal(JSON.parse(readFileSync(join(dir,'cron-jobs.json'),'utf8'))[0].state.activeChannelRun,undefined);
+  assert.equal(readJsonl(join(dir,'cron-runs','job-1.jsonl')).length,1);
+});
+
+test('a never-settling job cannot freeze later scheduler ticks', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-detached-tick-'));
+  const stuck = makeDueJob({ id: 'stuck', name: 'Stuck job' } as Partial<CronJob>);
+  const later = makeDueJob({
+    id: 'later',
+    name: 'Later job',
+    state: { nextRunAtMs: Date.now() + 60_000, consecutiveErrors: 0 },
+  } as Partial<CronJob>);
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([stuck, later], null, 2));
+
+  const calls: string[] = [];
+  const scheduler = new CronScheduler({
+    timezone: 'America/New_York',
+    jobsFile: 'cron-jobs.json',
+    runsDir: 'cron-runs',
+  }, async (job): Promise<JobResult> => {
+    calls.push(job.id);
+    if (job.id === 'stuck') return await new Promise<JobResult>(() => {});
+    return { status: 'ok', durationMs: 1 };
+  }, dir);
+
+  await (scheduler as any).tick();
+  scheduler.getJob('later')!.state.nextRunAtMs = Date.now() - 1;
+  await (scheduler as any).tick();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.deepEqual(calls, ['stuck', 'later']);
+  assert.equal(readJsonl(join(dir, 'cron-runs', 'later.jsonl'))[0].status, 'ok');
+});
+
+test('a recurring due instance is withheld while the same job remains in flight', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-inflight-dedupe-'));
+  const job = makeDueJob({ id: 'recurring', name: 'Recurring job' } as Partial<CronJob>);
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  let calls = 0;
+  const scheduler = new CronScheduler({
+    timezone: 'America/New_York',
+    jobsFile: 'cron-jobs.json',
+    runsDir: 'cron-runs',
+  }, async (): Promise<JobResult> => {
+    calls++;
+    return await new Promise<JobResult>(() => {});
+  }, dir);
+
+  await (scheduler as any).tick();
+  scheduler.getJob('recurring')!.state.nextRunAtMs = Date.now() - 1;
+  await (scheduler as any).tick();
+
+  assert.equal(calls, 1);
+  const decisions = readJsonl(join(dir, 'cron-decisions.jsonl'));
+  assert.equal(decisions.length, 2);
+  assert.equal(decisions[1].action, 'defer');
+  assert.match(decisions[1].reason, /same job is still in flight/);
+  const receipt = readJsonl(join(dir, 'cron-runs', 'recurring.jsonl'))[0];
+  assert.equal(receipt.withheld, true);
+  assert.equal(receipt.status, 'ok');
+  assert.equal(receipt.outcome.semanticStatus, 'withheld');
 });

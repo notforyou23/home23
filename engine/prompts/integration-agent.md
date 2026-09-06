@@ -8,7 +8,7 @@ What's happening across the owner's whole life that no single thread shows on it
 
 Good integration findings:
 
-"The weeks the owner engages most with music research (high Jerry/Dead node creation) also show the most energy in his project work (higher commit frequency, more goals completed). This pattern appears in the data for Oct-Nov 2025 and Jan 2026. When the music is alive, the work is alive. This isn't coincidence — it's a signal about how the owner functions."
+"The weeks the owner engages most with music research (high Jerry/Dead node creation) also show the most energy in his project work (higher commit frequency, more goals completed). This pattern appears in the data for Oct-Nov 2025 and Jan 2026. When the music is alive, the work is alive. This is a possible association; check coverage and alternative explanations before drawing a causal conclusion."
 
 "the owner's three most stalled projects (Defrag testing, Evobrew fresh install, UKG federation) all require the owner's direct action, not agent work. The bottleneck isn't the system — it's that the owner needs uninterrupted focus time that the current work structure doesn't create."
 
@@ -22,7 +22,7 @@ You have access to all domains: music/Dead research, software projects, family c
 - **Structural blockers:** What one thing is creating friction across multiple domains?
 - **Energy patterns:** What fuels the owner vs what drains him (visible in the data across domains)?
 - **Cross-domain metaphors:** A pattern in the music thinking that mirrors the engineering thinking
-- **Completeness gaps:** What life domain has almost no nodes? What's the owner not thinking about?
+- **Completeness gaps:** What life domain has almost no nodes? What is missing from the record? Do not infer what the owner thinks from absent nodes.
 
 ## Output Format
 

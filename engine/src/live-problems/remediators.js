@@ -16,6 +16,13 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+function transportErrorDetail(err) {
+  const cause = err?.cause instanceof Error ? err.cause : null;
+  const code = cause?.code || err?.code || 'unknown';
+  const message = cause?.message || err?.message || String(err);
+  return `worker_connector_transport code=${code}: ${message}`;
+}
+
 /**
  * PM2 processes we are willing to autonomously restart.
  * Pattern: `home23-<anything>` for engine-managed processes only.
@@ -405,14 +412,24 @@ const remediators = {
         }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { outcome: 'failed', detail: data.error || `worker connector HTTP ${res.status}` };
+      if (!res.ok) {
+        return {
+          outcome: 'failed',
+          failureType: 'worker_receipt_or_provider',
+          detail: `worker receipt/provider failure: ${data.error || `worker connector HTTP ${res.status}`}`,
+        };
+      }
       return {
         outcome: 'dispatched',
         turnId: data.runId || null,
         detail: data.receipt?.summary || `worker ${worker} dispatched`,
       };
     } catch (err) {
-      return { outcome: 'failed', detail: `worker dispatch call failed: ${err.message}` };
+      return {
+        outcome: 'failed',
+        failureType: 'worker_connector_transport',
+        detail: transportErrorDetail(err),
+      };
     }
   },
 

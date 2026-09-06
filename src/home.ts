@@ -1,3 +1,4 @@
+import { runScheduledChannelTurn } from './scheduler/channel-run.js';
 /**
  * Home23 — Agent Harness Entry Point
  *
@@ -36,10 +37,13 @@ import { DeliveryManager } from './scheduler/delivery.js';
 import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
+import { startResidentCoordinationHarness } from './coordination-adapter/index.js';
 import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
 import { resolveModelOverride, type ModelAliases, type ModelOverride } from './agent/model-resolution.js';
 import { resolveProviderKey } from './agent/provider-credentials.js';
-import { executeTrackedTurn } from './agent/turn-entrypoint.js';
+import { executeTrackedTurn, createTrackedAgentRunner } from './agent/turn-entrypoint.js';
+import { assertCanStartSpeaking } from './agent/foreground-admission.js';
+import type { ForegroundDetachRequest } from './agent/foreground-tool-policy.js';
 import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
 import { createSeededToolRegistry, createToolRegistry } from './agent/tools/index.js';
@@ -51,6 +55,7 @@ import { requestAsyncWorkCancel } from './work/cancel.js';
 import { handleWorkCompletion, type CompletionDeps } from './work/completion.js';
 import type { ReceiptSinks } from './work/receipt-delivery.js';
 import type { AsyncWorkRecord } from './work/types.js';
+import { finishCronAgentTurn, startCronAgentTurn } from './work/cron-work.js';
 import { createAsyncWorkRouter } from './routes/async-work.js';
 import { AttentionGate, type OutboundSignal } from './agent/attention/attention-gate.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
@@ -95,6 +100,7 @@ import {
 } from './routes/query-notifications.js';
 import { ConversationMetadataStore } from './chat/conversation-metadata.js';
 import { createChatHistoryHandler, createChatListHandler, createChatMetadataHandler } from './routes/chat-history.js';
+import { createLegacyBridgeAuthMiddleware } from './routes/legacy-bridge-auth.js';
 import { createRealtimeSessionHandler, createRealtimeSessionTextParser } from './routes/chat-realtime.js';
 import { resolveQueryNotebookBridgeToken } from './query-notebook-credential-config.js';
 import { syncSharedSkillsRegistry } from './skills/runtime.js';
@@ -219,6 +225,7 @@ async function main(): Promise<void> {
   // ── Resolve ports and ENGINE_BASE from config ──
   const DASHBOARD_PORT = config.ports?.dashboard ?? 5002;
   const ENGINE_WS_PORT = config.ports?.engine ?? 5001;
+  const BRIDGE_PORT = config.ports?.bridge ?? 5004;
   ENGINE_BASE = `http://localhost:${DASHBOARD_PORT}`;
 
   console.log('');
@@ -253,6 +260,7 @@ async function main(): Promise<void> {
 
   const contextManager = new ContextManager({
     workspacePath,
+    projectRoot: PROJECT_ROOT,
     identityFiles,
     identityLayers: config.chat.identityLayers,
     identityBudgets: config.chat.identityBudgets,
@@ -276,6 +284,8 @@ async function main(): Promise<void> {
   // ── Temp dir for media ──
   const tempDir = join(RUNTIME_DIR, 'tmp');
   mkdirSync(tempDir, { recursive: true });
+  mkdirSync(join(workspacePath, 'intake'), { recursive: true });
+  mkdirSync(join(workspacePath, 'comms', 'drafts'), { recursive: true });
 
   let agencyKernelPromise: Promise<any> | null = null;
   const getAgencyKernel = async () => {
@@ -381,11 +391,20 @@ async function main(): Promise<void> {
     contextManager,
     subAgentTracker,
     modelAliases: MODEL_ALIASES,
+    restrictedToolSource: registry,
     chatId: '',
     telegramAdapter: null,   // wired after adapter creation
     runAgentLoop: null,       // wired after agent creation
     brainOperations,
     turnRuntime: null,
+    workerConnectorBaseUrl: `http://127.0.0.1:${BRIDGE_PORT}`,
+    onForegroundDetachRequired: (request: ForegroundDetachRequest) => {
+      console.warn(
+        `[foreground] detach required before ${request.tool} on ${request.chatId}`
+        + (request.turnId ? ` turn ${request.turnId}` : '')
+        + `: ${request.reason}`,
+      );
+    },
   };
 
   // ── Model from config.yaml (single source of truth; shared floor) ──
@@ -474,6 +493,7 @@ async function main(): Promise<void> {
     model: startupModel,
     apiKey: authToken,
     baseURL: startupBaseURL,
+    config: config.chat.compaction,
   });
 
   const agent = new AgentLoop({
@@ -507,15 +527,7 @@ async function main(): Promise<void> {
   (compaction as unknown as { memory: import('./agent/memory.js').MemoryManager }).memory = agent.getMemory();
 
   // Wire sub-agent runner
-  toolContext.runAgentLoop = async (_systemPrompt, userMessage, tools, ctx, options) => {
-    const registry = options?.registry
-      ?? (tools.length > 0 ? createSeededToolRegistry(tools) : undefined);
-    return (await executeTrackedTurn(agent, ctx.chatId, userMessage, {
-      modelOverride: options?.modelOverride,
-      effort: options?.effort,
-      ...(registry ? { registry } : {}),
-    })).response;
-  };
+  toolContext.runAgentLoop = createTrackedAgentRunner(agent);
 
   // Give AgentLoop the provider map so runtime setModel can rebuild the client
   // with the correct apiKey + baseURL when switching between anthropic-SDK providers.
@@ -527,6 +539,12 @@ async function main(): Promise<void> {
     xai: { apiKey: resolveApiKey('xai'), baseURL: resolveBaseUrl('xai') },
     'ollama-cloud': { apiKey: resolveApiKey('ollama-cloud'), baseURL: resolveBaseUrl('ollama-cloud') },
   });
+  const residentCoordinationHarness = await startResidentCoordinationHarness({
+    agent,
+    history,
+    modelAliases: MODEL_ALIASES,
+    exactToolRuntime: { registry, context: toolContext },
+  });
 
   const CHAT_TURN_ORPHAN_MAX_AGE_MS = 10 * 60 * 1000;
   const CHAT_TURN_ORPHAN_SWEEP_MS = 60 * 1000;
@@ -536,10 +554,13 @@ async function main(): Promise<void> {
     const suffix = recovered.length > 5 ? `, +${recovered.length - 5} more` : '';
     console.warn(`[chat-turn] ${source} recovered ${recovered.length} stale pending turn(s): ${sample}${suffix}`);
   };
-  logRecoveredTurns('startup', agent.recoverStaleTurns(CHAT_TURN_ORPHAN_MAX_AGE_MS));
-  const chatTurnRecoveryInterval = setInterval(() => {
-    logRecoveredTurns('janitor', agent.recoverStaleTurns(CHAT_TURN_ORPHAN_MAX_AGE_MS));
-  }, CHAT_TURN_ORPHAN_SWEEP_MS);
+  const recoverTurns = (source: string): void => {
+    void agent.recoverStaleTurnsAsync(CHAT_TURN_ORPHAN_MAX_AGE_MS, { preserveCoordination: true })
+      .then(recovered => logRecoveredTurns(source, recovered))
+      .catch(error => console.warn('[chat-turn] Recovery sweep failed:', error));
+  };
+  recoverTurns('startup');
+  const chatTurnRecoveryInterval = setInterval(() => recoverTurns('janitor'), CHAT_TURN_ORPHAN_SWEEP_MS);
   chatTurnRecoveryInterval.unref?.();
 
   // ── Command Handler ──
@@ -594,21 +615,13 @@ async function main(): Promise<void> {
       return cmdResult;
     }
 
-    // Safety net: if somehow a message reaches here while agent is busy
-    // (should not happen with queueDuringRun, but defensive)
-    if (agent.isRunning(message.chatId)) {
-      const busyResponse = {
-        text: "I'm still working on something. Send /stop to interrupt me.",
-        channel: message.channel,
-        chatId: message.chatId,
-      };
-      await assimilateOutgoingResponse(message, busyResponse);
-      return busyResponse;
-    }
-
-    // Track active run so router holds incoming messages during processing
+    // Speaking lock only. Active Work must not busy-reject conversation.
+    // If a speaking turn is already in flight, hold this accepted Message.
     const routerKey = `${message.channel}:${message.chatId}`;
-    router.markRunActive(routerKey);
+    assertCanStartSpeaking({ speakingActive: agent.isRunning(message.chatId) });
+
+    // Track the speaking turn so the router holds the next assembled completion.
+    router.markSpeakingActive(routerKey);
 
     try {
       const { response: result } = await executeTrackedTurn(
@@ -626,14 +639,19 @@ async function main(): Promise<void> {
       await assimilateOutgoingResponse(message, response);
       return response;
     } finally {
-      router.markRunComplete(routerKey);
-      // Process any messages that arrived during the run
+      router.markSpeakingComplete(routerKey);
+      // Process any messages that arrived during the speaking turn
       await router.drainPending(routerKey);
     }
   };
 
   // ── Create SessionRouter ──
   const router = new SessionRouter(config.sessions, messageHandler, SESSIONS_DIR);
+  // HTTP / Canary speaking turns never mark a router key. Drain parked
+  // Messages for this chatId when the last speaking turn ends.
+  agent.setOnSpeakingCleared((chatId) => {
+    void router.drainPendingForChat(chatId);
+  });
 
   // ── Bound message handler for adapters ──
   const routerHandler = (msg: IncomingMessage): Promise<void> => router.handleMessage(msg);
@@ -793,15 +811,29 @@ async function main(): Promise<void> {
 
   // ── Delivery Manager & Cron Scheduler ──
   const delivery = new DeliveryManager(adapterMap, config.deliveryProfiles ?? {}, attentionGate);
+  const deliveryFailureMessage = (outcome: Awaited<ReturnType<typeof delivery.deliver>>): string => (
+    `Delivery ${outcome.status}: ${outcome.reason}`
+  );
+  const deliverCronJobResult = async (job: CronJob, jobResult: JobResult) => {
+    const outcome = await delivery.deliver(job, jobResult);
+    jobResult.deliveryOutcome = outcome;
+    return outcome;
+  };
   let scheduler: CronScheduler | null = null;
 
   if (config.scheduler) {
-    const cronHandler = async (job: CronJob): Promise<JobResult> => {
+    const cronHandler = async (job: CronJob, execution?: import('./scheduler/cron.js').JobExecutionContext): Promise<JobResult> => {
       const startMs = Date.now();
-      const cronChatId = `cron-${job.id}`;
+      const caller = execution?.caller;
+      const joined = caller?.coordinationWorkDestination;
+      const cronChatId = joined ? `cron-${job.id}:${execution!.runId}` : `cron-${job.id}`;
 
       try {
         if (job.payload.kind === 'agentTurn') {
+          if (!joined && execution?.canonicalTurn) return runScheduledChannelTurn(execution.canonicalTurn,execution,input=>{
+            if(!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
+            return residentCoordinationHarness.scheduledTurn(input);
+          });
           // Full AgentLoop — 19 tools, isolated chat history per job
           const timeoutMs = (job.payload.timeoutSeconds ?? 21_600) * 1000;
 
@@ -828,6 +860,12 @@ async function main(): Promise<void> {
             return { status: 'error', error: 'agentTurn payload has neither message nor readable messagePath', durationMs };
           }
 
+          if (!joined && job.payload.channelId && execution) return runScheduledChannelTurn({runId:execution.runId,jobId:job.id,
+            channelId:job.payload.channelId,prompt:resolvedMessage,timeoutMs,...(job.payload.model?{modelAlias:job.payload.model}:{}),
+            ...(job.payload.effort?{reasoningEffort:job.payload.effort}:{})},execution,input=>{
+              if(!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
+              return residentCoordinationHarness.scheduledTurn(input);
+            });
           if (job.payload.sessionHistory === 'fresh') {
             agent.getHistory().rotate(cronChatId);
           }
@@ -844,27 +882,49 @@ async function main(): Promise<void> {
             }
             cronModelOverride = resolved;
           }
-          const { response: result } = await executeTrackedTurn(
-            agent,
-            cronChatId,
-            resolvedMessage,
-            {
-              hardDurationMs: timeoutMs,
-              ...(cronModelOverride ? { modelOverride: cronModelOverride } : {}),
-              ...(job.payload.effort ? { effort: job.payload.effort } : {}),
-            },
-          );
-          const durationMs = Date.now() - startMs;
+          const cronWork = toolContext.workRegistry
+            ? startCronAgentTurn(toolContext.workRegistry as WorkRegistry, job)
+            : null;
+          let jobResult: JobResult | undefined;
+          try {
+            const { response: result } = await executeTrackedTurn(
+              agent,
+              cronChatId,
+              resolvedMessage,
+              {
+                signal: caller?.abortSignal,
+                onEvent: caller?.onEvent,
+                coordinationOrigin: caller?.turnRuntime?.coordinationOrigin,
+                coordinationWorkDestination: joined,
+                parentWorkId: caller?.parentWorkId,
+                hardDurationMs: timeoutMs,
+                settlementTimeoutMs: timeoutMs,
+                ...(cronModelOverride ? { modelOverride: cronModelOverride } : {}),
+                ...(job.payload.effort ? { effort: job.payload.effort } : {}),
+              },
+            );
+            const durationMs = Date.now() - startMs;
 
-          const jobResult: JobResult = { status: 'ok', response: result.text, durationMs };
-          delivery.lastDeliveryError = null;
-          await delivery.deliver(job, jobResult);
-          if (delivery.lastDeliveryError) {
-            jobResult.status = 'error';
-            jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+            if (result.terminalStatus && result.terminalStatus !== 'complete') throw new Error(`Scheduled turn ${result.terminalStatus}`);
+            caller?.abortSignal?.throwIfAborted();
+            jobResult = { status: 'ok', response: result.text, durationMs, media: result.media };
+            if (joined) return jobResult;
+            const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+            if (deliveryOutcome.retryEligible) {
+              jobResult.status = 'error';
+              jobResult.error = deliveryFailureMessage(deliveryOutcome);
+            }
+            await assimilateCronResult(job, jobResult);
+            return jobResult;
+          } finally {
+            if (cronWork && toolContext.workRegistry) {
+              finishCronAgentTurn(
+                toolContext.workRegistry as WorkRegistry,
+                cronWork.workId,
+                jobResult ?? { status: 'error', error: 'cron agent-turn interrupted' },
+              );
+            }
           }
-          await assimilateCronResult(job, jobResult);
-          return jobResult;
         }
 
         if (job.payload.kind === 'exec') {
@@ -872,6 +932,7 @@ async function main(): Promise<void> {
           const execCwd = (job.payload as Record<string, unknown>).cwd as string | undefined;
           const { stdout } = await execAsync(job.payload.command, {
             timeout: timeoutMs,
+            signal: caller?.abortSignal,
             encoding: 'utf-8',
             cwd: execCwd || PROJECT_ROOT,
             env: unprivilegedChildEnv(),
@@ -880,21 +941,23 @@ async function main(): Promise<void> {
           const durationMs = Date.now() - startMs;
 
           const jobResult: JobResult = { status: 'ok', response: stdout.trim(), durationMs };
-          delivery.lastDeliveryError = null;
-          await delivery.deliver(job, jobResult);
-          if (delivery.lastDeliveryError) {
+          if (joined) return jobResult;
+          const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+          if (deliveryOutcome.retryEligible) {
             jobResult.status = 'error';
-            jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+            jobResult.error = deliveryFailureMessage(deliveryOutcome);
           }
           await assimilateCronResult(job, jobResult);
           return jobResult;
         }
 
         if (job.payload.kind === 'query') {
+
           const outcome = await runCronBrainQueryJob(
-            brainOperations,
+            joined ? brainOperations.withWorkingThread(`${joined.parentWorkId}:cron:${caller?.parentToolCallId ?? execution!.runId}:${job.id}`) : brainOperations,
             job.payload,
             MODEL_ALIASES,
+            {signal:caller?.abortSignal},
           );
           const durationMs = Date.now() - startMs;
 
@@ -902,12 +965,12 @@ async function main(): Promise<void> {
             ...outcome,
             durationMs,
           };
-          delivery.lastDeliveryError = null;
-          await delivery.deliver(job, jobResult);
-          if (delivery.lastDeliveryError) {
+          if (joined) return jobResult;
+          const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+          if (deliveryOutcome.retryEligible) {
             const deliveryFailure = preserveCronBrainQueryDeliveryFailure(
               outcome,
-              delivery.lastDeliveryError,
+              deliveryFailureMessage(deliveryOutcome),
             );
             jobResult.status = deliveryFailure.status;
             jobResult.error = deliveryFailure.error;
@@ -921,6 +984,12 @@ async function main(): Promise<void> {
           console.log(`[scheduler] System event: ${job.payload.text}`);
           const durationMs = Date.now() - startMs;
           const jobResult: JobResult = { status: 'ok', response: job.payload.text, durationMs };
+          if (joined) return jobResult;
+          const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+          if (deliveryOutcome.retryEligible) {
+            jobResult.status = 'error';
+            jobResult.error = deliveryFailureMessage(deliveryOutcome);
+          }
           await assimilateCronResult(job, jobResult);
           return jobResult;
         }
@@ -1000,10 +1069,27 @@ async function main(): Promise<void> {
   const workRegistry = new WorkRegistry({ store: workStore, agent: AGENT_NAME });
   toolContext.workRegistry = workRegistry;
 
-  const asyncWorkRaw = (config as { asyncWork?: { review?: { coding?: boolean; subagent?: boolean }; reviewIdleTimeoutMs?: number } }).asyncWork ?? {};
+  toolContext.coordinationChannelOperation = async (input) => {
+    if (!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
+    return residentCoordinationHarness.channelOperation(input);
+  };
+
+  toolContext.onForegroundDetachRequired = async (request) => {
+    if (!residentCoordinationHarness) return { created: false, missing: ['signed resident coordinator connection'] };
+    try {
+      const acknowledgement = await residentCoordinationHarness.admitForegroundDetachment(request);
+      return { created: true, handle: { workId: acknowledgement.workId } };
+    } catch (error) {
+      console.warn(`[work] Durable admission failed: ${error instanceof Error ? error.message : String(error)}`);
+      return { created: false, missing: ['durable Working Thread admission was not acknowledged'] };
+    }
+  };
+
+  const asyncWorkRaw = (config as { asyncWork?: { review?: { coding?: boolean; subagent?: boolean; cron?: boolean }; reviewIdleTimeoutMs?: number } }).asyncWork ?? {};
   const workReview = {
     coding: asyncWorkRaw.review?.coding ?? true,
     subagent: asyncWorkRaw.review?.subagent ?? false,
+    cron: asyncWorkRaw.review?.cron ?? false,
   };
 
   // Sinks are built per delivery, so an unconfigured token / not-yet-installed
@@ -1034,6 +1120,10 @@ async function main(): Promise<void> {
         pusher.notifyAsyncWork({ chatId: input.chatId, workId: input.workId, status: input.status, body: input.body })
           .catch((err) => console.warn(`[work] iOS push failed: ${err instanceof Error ? err.message : String(err)}`));
       };
+    }
+    if (residentCoordinationHarness) {
+      sinks.commitCoordinationCompletion = (input) =>
+        residentCoordinationHarness.commitCoordinationCompletion(input);
     }
     return sinks;
   };
@@ -1102,6 +1192,13 @@ async function main(): Promise<void> {
           label: job.label ?? job.prompt.slice(0, 100),
           resultHandle: { type: 'coding_job', jobId: job.id },
         });
+      if (work.deliveryMode === 'inline') {
+        // A coding job inside a canonical Working Thread is a hidden execution
+        // hand. Its events stay under the root and it never posts an
+        // intermediate assistant Message into the originating conversation.
+        workRegistry.completeInline(work.workId, job.status as AsyncWorkRecord['status'], job.error);
+        return;
+      }
       const done = workRegistry.complete(work.workId, job.status as AsyncWorkRecord['status'], job.error);
       void handleWorkCompletion(done, codingReceiptText(done, job, receipt), completionDeps());
     });
@@ -1132,18 +1229,26 @@ async function main(): Promise<void> {
       console.log(`[work] boot reconcile: ${reconciled.interrupted.length} interrupted, ${reconciled.backfilled.length} backfilled, ${reconciled.needsDelivery.length} to deliver`);
     }
     for (const work of reconciled.needsDelivery) {
-      let text = `[Async work ${work.status}] ${work.label}\n(work ${work.workId})`;
+      let terminal: string | import('./work/types.js').AsyncWorkTerminalResult =
+        work.terminalResult ?? {
+          receiptText: `[Async work ${work.status}] ${work.label}\n(work ${work.workId})`,
+          resultText: null,
+          artifacts: Object.freeze([]),
+        };
       if (work.resultHandle.type === 'coding_job' && codingBridge) {
         const job = codingBridge.getJob(work.resultHandle.jobId);
         const receipt = codingBridge.getReceipt(work.resultHandle.jobId);
-        if (job) text = codingReceiptText(work, job, receipt);
+        if (job) terminal = codingReceiptText(work, job, receipt);
       }
       if (work.status === 'interrupted') {
-        text = `[Async work interrupted] ${work.label} — the harness restarted while this was running.` +
+        const receiptText = `[Async work interrupted] ${work.label} — the harness restarted while this was running.` +
           (work.resultHandle.type === 'coding_job' ? ` Job ${work.resultHandle.jobId} may be resumable via coding_continue.` : '') +
           `\n(work ${work.workId})`;
+        terminal = work.originChatId.startsWith('coordination:')
+          ? { receiptText, resultText: null, artifacts: Object.freeze([]) }
+          : receiptText;
       }
-      void handleWorkCompletion(work, text, completionDeps());
+      void handleWorkCompletion(work, terminal, completionDeps());
     }
   } catch (err) {
     console.warn(`[work] boot reconcile failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1219,7 +1324,6 @@ async function main(): Promise<void> {
   }
 
   // ── Evobrew Bridge (standalone Express server) ──
-  const BRIDGE_PORT = config.ports?.bridge ?? 5004;
   const bridgeToken = resolveQueryNotebookBridgeToken(config, process.env);
   let queryCredentialAuthority;
   try {
@@ -1265,6 +1369,14 @@ async function main(): Promise<void> {
       pusher: apnsPusher,
     }),
   );
+  const coordinationOrigin = process.env.HOME23_COORDINATION_ENABLED === 'true'
+    ? `http://127.0.0.1:${process.env.HOME23_COORDINATION_PORT ?? '7346'}`
+    : undefined;
+  const legacyBridgeAuth = createLegacyBridgeAuthMiddleware({
+    staticToken: bridgeToken || undefined,
+    coordinationOrigin,
+  });
+  bridgeApp.use(['/api/chat', '/api/device/register', '/api/device/registry'], legacyBridgeAuth);
   bridgeApp.use(express.json({ limit: '90mb' }));
 
   const bridgeConfig = {
@@ -1291,7 +1403,7 @@ async function main(): Promise<void> {
           events: codingBridge.readEventsTail(work.resultHandle.jobId, 30),
         };
       }
-      if (work.resultHandle.type === 'subagent_chat') {
+      if (work.resultHandle.type === 'subagent_chat' || work.resultHandle.type === 'cron_chat') {
         try { return { messages: history.load(work.resultHandle.chatId).slice(-5) }; } catch { return { messages: [] }; }
       }
       return null;
@@ -2031,6 +2143,9 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string): Promise<void> => {
     if (!shutdownGuard.begin(signal)) return;
+    clearInterval(chatTurnRecoveryInterval);
+    agent.stopRecoverySweep();
+    agent.stop(undefined, undefined, 'harness_shutdown');
 
     console.log(`\n[home] Received ${signal}, shutting down...`);
 
@@ -2050,6 +2165,12 @@ async function main(): Promise<void> {
       await bridge.stop();
     } catch (err) {
       console.error('[home] Error closing bridge server:', err);
+    }
+
+    try {
+      await residentCoordinationHarness?.close();
+    } catch (err) {
+      console.error('[home] Error closing resident coordination socket:', err);
     }
 
     try {

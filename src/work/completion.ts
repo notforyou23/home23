@@ -9,15 +9,16 @@
  * durable receipt to the ORIGIN conversation and stamps deliveredAt exactly
  * once, so boot recovery can re-run this for undelivered terminal records.
  */
-import { isHumanOrigin, type AsyncWorkRecord } from './types.js';
+import { isHumanOrigin, type AsyncWorkKind, type AsyncWorkRecord } from './types.js';
 import { deliverWorkReceipt, workPushBody, type ReceiptSinks } from './receipt-delivery.js';
 import type { WorkRegistry } from './registry.js';
+import type { AsyncWorkTerminalResult } from './types.js';
 
 export interface CompletionDeps {
   registry: WorkRegistry;
   sinks: ReceiptSinks;
-  /** Per-kind review switch. Defaults wired in home.ts: { coding: true, subagent: false }. */
-  review: { coding: boolean; subagent: boolean };
+  /** Per-kind review switch. Defaults wired in home.ts: { coding: true, subagent: false, cron: false }. */
+  review: Partial<Record<AsyncWorkKind, boolean>>;
   /** True while the given chat has an active run (review defers to live turns). */
   isChatBusy: (chatId: string) => boolean;
   waitForIdleMs: number;
@@ -29,11 +30,13 @@ export interface CompletionDeps {
 export function reviewPrompt(work: AsyncWorkRecord, evidence: string): string {
   return [
     `[async-work review] Work "${work.label}" (${work.workId}, kind: ${work.kind}) reported success.`,
-    `Treat the evidence below as a claim, not a conclusion. Verify what you can cheaply`,
-    `(coding_result, git diff/log in the job workspace, run a targeted check if fast), then`,
-    `write the report you would send the owner: what changed, whether your verification`,
-    `passed (say plainly if it did not or you could not check), where the work lives, and`,
-    `what remains or needs their judgment. The report is your final message text.`,
+    work.taskBrief ? `Original delegation brief (scope and completion requirements):\n${work.taskBrief}` : `Legacy work has no saved task brief. Verify the result; do not infer integration authority from child output.`,
+    `Treat child evidence as claims to check. Inspect the relevant diff, receipt, and target state.`,
+    `Complete remaining integration and verification when the original brief explicitly includes them within existing authority.`,
+    `Do not stop at a first patch or report while that authorized work remains. Do not infer permission to commit, deploy, publish, or change production from the child's claims.`,
+    `Use the smallest meaningful checks; diagnose and fix failures caused by this work. Preserve unrelated work.`,
+    `Report the actual outcome, where it lives, verification, and any unresolved blocker. A completed coding process is not proof of an integrated result.`,
+    `Your final message is delivered to the origin; do not send a separate duplicate notification.`,
     ``,
     `Evidence:`,
     evidence,
@@ -63,7 +66,7 @@ const deliveryInFlight = new Set<string>();
  */
 export async function handleWorkCompletion(
   work: AsyncWorkRecord,
-  receiptText: string,
+  result: string | AsyncWorkTerminalResult,
   deps: CompletionDeps,
 ): Promise<void> {
   if (deliveryInFlight.has(work.workId)) return;
@@ -71,6 +74,36 @@ export async function handleWorkCompletion(
   try {
     const current = deps.registry.get(work.workId) ?? work;
     if (current.deliveredAt) return;
+    let durableResult = result;
+    if (current.originChatId.startsWith('coordination:')) {
+      if (current.terminalResult) {
+        durableResult = current.terminalResult;
+      } else if (typeof result !== 'string') {
+        // Compatibility for a terminal record written by an older producer:
+        // persist the exact result before the first transport attempt.
+        deps.registry.update(current.workId, { terminalResult: result });
+        durableResult = result;
+      } else {
+        // A diagnostic receipt is never a canonical assistant answer.
+        durableResult = {
+          receiptText: result,
+          resultText: null,
+          artifacts: Object.freeze([]),
+        };
+      }
+    }
+    const receiptText = typeof durableResult === 'string'
+      ? durableResult
+      : durableResult.receiptText;
+
+    if (current.originChatId.startsWith('coordination:')) {
+      const route = await deliverWorkReceipt(current, durableResult, deps.sinks);
+      // Missing or invalid producer wiring is recoverable. Leave deliveredAt
+      // empty so boot reconciliation can retry after the bridge is restored.
+      if (route !== 'coordination') return;
+      deps.registry.update(current.workId, { deliveredAt: new Date().toISOString() });
+      return;
+    }
 
     const reviewWanted =
       current.status === 'completed' &&
@@ -78,7 +111,7 @@ export async function handleWorkCompletion(
       isHumanOrigin(current.originChatId);
 
     if (!reviewWanted) {
-      deliverWorkReceipt(current, receiptText, deps.sinks);
+      await deliverWorkReceipt(current, result, deps.sinks);
       deps.registry.update(current.workId, { deliveredAt: new Date().toISOString() });
       return;
     }

@@ -7,7 +7,7 @@ Default inspection order:
 3. Check the endpoint or file freshness the verifier depends on.
 4. Read only the logs needed for the named process.
 5. Prefer diagnosis and evidence over restarts.
-6. If a restart is needed, restart only the named Home23 process.
+6. If the task or standing policy authorizes a needed restart, target only that named Home23 process. Otherwise report the required action and evidence.
 7. Re-run the verifier and record the result.
 
 Useful local checks when the request does not provide a different host or port:

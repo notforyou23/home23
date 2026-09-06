@@ -1,12 +1,20 @@
 import type { ApnsClient } from './apns-client.js';
+import type {
+  ConnectedAgentsDeliveryPosition,
+  ConnectedAgentsDeliveryStore,
+} from './connected-agents-delivery-store.js';
 import type { DeviceRegistry } from './device-registry.js';
 import type {
+  DeviceRegistration,
   PushPayload,
   QueryNotificationDeliveryReceipt,
   QueryPushPayload,
   QueryTerminalState,
 } from './types.js';
-import { buildAsyncWorkPayload } from './types.js';
+import {
+  buildAsyncWorkPayload,
+  buildConnectedAgentsMessagePayload,
+} from './types.js';
 
 export interface QueryTerminalNotificationInput {
   operationId: string;
@@ -25,9 +33,30 @@ export interface QueryTerminalNotificationReceipt {
   pending: string[];
 }
 
+export interface ConnectedAgentsMessageNotification {
+  conversationId: string;
+  channelId: string;
+  messageId: string;
+  createdAt: string;
+  workId?: string;
+  agent?: string;
+  displayName?: string;
+}
+
+interface ConnectedAgentsQueuedDelivery {
+  input: ConnectedAgentsMessageNotification;
+  resolve(): void;
+  reject(error: unknown): void;
+}
+
 interface ApnsPusherOptions {
+  connectedAgentsBadgeCount?: (registration: DeviceRegistration) => number;
   queryTimeoutMs?: number;
   queryMaxConcurrency?: number;
+  connectedAgentsRegistrationIsCurrent?: (registration: DeviceRegistration) => boolean;
+  connectedAgentsDeliveryStore?: ConnectedAgentsDeliveryStore;
+  connectedAgentsMaximumAttempts?: number;
+  connectedAgentsRetryDelaysMs?: readonly number[];
 }
 
 export class ApnsPusher {
@@ -35,7 +64,18 @@ export class ApnsPusher {
   private readonly querySendWaiters: Array<() => void> = [];
   private queryActiveSends = 0;
   private readonly queryTimeoutMs: number;
+  private readonly connectedAgentsBadgeCount: ((registration: DeviceRegistration) => number) | undefined;
   private readonly queryMaxConcurrency: number;
+  private readonly connectedAgentsRegistrationIsCurrent:
+    (registration: DeviceRegistration) => boolean;
+  private readonly connectedAgentsDeliveryStore: ConnectedAgentsDeliveryStore | undefined;
+  private readonly connectedAgentsMaximumAttempts: number;
+  private readonly connectedAgentsRetryDelaysMs: readonly number[];
+  private readonly connectedAgentsDeliveries = new Map<string, Promise<void>>();
+  private readonly connectedAgentsQueue: ConnectedAgentsQueuedDelivery[] = [];
+  private readonly connectedAgentsDrainWaiters: Array<() => void> = [];
+  private connectedAgentsQueueRunning = false;
+  private connectedAgentsQueueBlocked: unknown;
 
   constructor(
     private client: ApnsClient,
@@ -43,8 +83,14 @@ export class ApnsPusher {
     private agentName: string,
     options: ApnsPusherOptions = {},
   ) {
+    this.connectedAgentsBadgeCount = options.connectedAgentsBadgeCount;
     this.queryTimeoutMs = options.queryTimeoutMs ?? 5_000;
     this.queryMaxConcurrency = options.queryMaxConcurrency ?? 4;
+    this.connectedAgentsRegistrationIsCurrent =
+      options.connectedAgentsRegistrationIsCurrent ?? (() => true);
+    this.connectedAgentsDeliveryStore = options.connectedAgentsDeliveryStore;
+    this.connectedAgentsMaximumAttempts = options.connectedAgentsMaximumAttempts ?? 3;
+    this.connectedAgentsRetryDelaysMs = options.connectedAgentsRetryDelaysMs ?? [250, 1_000];
     if (!Number.isSafeInteger(this.queryTimeoutMs)
         || this.queryTimeoutMs < 1 || this.queryTimeoutMs > 30_000) {
       throw new TypeError('query_apns_timeout_invalid');
@@ -53,6 +99,239 @@ export class ApnsPusher {
         || this.queryMaxConcurrency < 1 || this.queryMaxConcurrency > 16) {
       throw new TypeError('query_apns_concurrency_invalid');
     }
+    if (!Number.isSafeInteger(this.connectedAgentsMaximumAttempts)
+        || this.connectedAgentsMaximumAttempts < 1
+        || this.connectedAgentsMaximumAttempts > 5
+        || this.connectedAgentsRetryDelaysMs.length < this.connectedAgentsMaximumAttempts - 1
+        || this.connectedAgentsRetryDelaysMs.some(delay =>
+          !Number.isSafeInteger(delay) || delay < 0 || delay > 30_000)) {
+      throw new TypeError('connected_agents_delivery_retry_invalid');
+    }
+  }
+
+  private connectedAgentsDelivery(
+    input: Parameters<typeof buildConnectedAgentsMessagePayload>[0],
+    device: DeviceRegistration,
+  ): Promise<void> {
+    const deviceId = device.coordination_device_id;
+    const store = this.connectedAgentsDeliveryStore;
+    if (!deviceId || !store) {
+      return Promise.reject(new Error('connected_agents_delivery_store_unavailable'));
+    }
+    const key = `${input.messageId}\0${deviceId}\0${device.bundle_id}`;
+    const existing = this.connectedAgentsDeliveries.get(key);
+    if (existing) return existing;
+    const delivery = this.deliverConnectedAgentsMessage(input, device, deviceId, store)
+      .finally(() => {
+        if (this.connectedAgentsDeliveries.get(key) === delivery) {
+          this.connectedAgentsDeliveries.delete(key);
+        }
+      });
+    this.connectedAgentsDeliveries.set(key, delivery);
+    return delivery;
+  }
+
+  private connectedAgentsPosition(
+    input: ConnectedAgentsMessageNotification,
+  ): ConnectedAgentsDeliveryPosition {
+    return Object.freeze({
+      created_at: input.createdAt,
+      message_id: input.messageId,
+    });
+  }
+
+  private scheduleConnectedAgentsDelivery(
+    input: ConnectedAgentsMessageNotification,
+  ): Promise<void> {
+    const delivery = new Promise<void>((resolve, reject) => {
+      this.connectedAgentsQueue.push({ input: { ...input }, resolve, reject });
+    });
+    if (!this.connectedAgentsQueueRunning) {
+      this.connectedAgentsQueueRunning = true;
+      setImmediate(() => { void this.runConnectedAgentsQueue(); });
+    }
+    return delivery;
+  }
+
+  private async runConnectedAgentsQueue(): Promise<void> {
+    while (this.connectedAgentsQueue.length > 0) {
+      const queued = this.connectedAgentsQueue.shift()!;
+      if (this.connectedAgentsQueueBlocked !== undefined) {
+        queued.reject(this.connectedAgentsQueueBlocked);
+        continue;
+      }
+      try {
+        await this.processConnectedAgentsMessage(queued.input);
+        queued.resolve();
+      } catch (error) {
+        // A storage/infrastructure failure must not allow a later Message to
+        // advance the durable checkpoint past this gap. Restart reconciliation
+        // will retry from the last completed canonical Message.
+        this.connectedAgentsQueueBlocked = error;
+        queued.reject(error);
+      }
+    }
+    this.connectedAgentsQueueRunning = false;
+    this.connectedAgentsDrainWaiters.splice(0).forEach(resolve => resolve());
+  }
+
+  private async processConnectedAgentsMessage(
+    input: ConnectedAgentsMessageNotification,
+  ): Promise<void> {
+    const store = this.connectedAgentsDeliveryStore;
+    if (!store) throw new Error('connected_agents_delivery_store_unavailable');
+    const position = this.connectedAgentsPosition(input);
+    store.initializeCheckpoint(null);
+    if (!store.isAfterCheckpoint(position)) return;
+    const devices = this.registry.lookupConnectedAgentsDevices()
+      .filter((device) => this.connectedAgentsRegistrationIsCurrent(device));
+    const outcomes = await Promise.allSettled(
+      devices.map(device => this.connectedAgentsDelivery(input, device)),
+    );
+    const failures = outcomes.filter(
+      (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+    );
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map(failure => failure.reason),
+        'connected_agents_notification_delivery_failed',
+      );
+    }
+    store.advanceCheckpoint(position);
+  }
+
+  private async deliverConnectedAgentsMessage(
+    input: Parameters<typeof buildConnectedAgentsMessagePayload>[0],
+    device: DeviceRegistration,
+    deviceId: string,
+    store: ConnectedAgentsDeliveryStore,
+  ): Promise<void> {
+    let receipt = store.begin({
+      messageId: input.messageId,
+      deviceId,
+      bundleId: device.bundle_id,
+      maximumAttempts: this.connectedAgentsMaximumAttempts,
+    });
+    if (receipt.state === 'delivered'
+        || receipt.state === 'invalid'
+        || receipt.state === 'failed') return;
+    while (true) {
+      try {
+        const payload = buildConnectedAgentsMessagePayload({ ...input,
+          ...(this.connectedAgentsBadgeCount ? { badge: this.connectedAgentsBadgeCount(device) } : {}),
+        });
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), this.queryTimeoutMs);
+        timeout.unref?.();
+        let result: Awaited<ReturnType<ApnsClient['send']>>;
+        try {
+          result = await this.client.send(
+            device.device_token,
+            payload,
+            device.env,
+            { signal: controller.signal },
+          );
+        } finally {
+          clearTimeout(timeout);
+        }
+        if (result.status >= 200 && result.status < 300) {
+          store.finish({
+            messageId: input.messageId,
+            deviceId,
+            bundleId: device.bundle_id,
+            state: 'delivered',
+          });
+          return;
+        }
+        if (result.status === 410) {
+          store.finish({
+            messageId: input.messageId,
+            deviceId,
+            bundleId: device.bundle_id,
+            state: 'invalid',
+          });
+          this.registry.invalidate(device.device_token, device.bundle_id);
+          return;
+        }
+        const retryable = result.status === 0 || result.status === 429 || result.status >= 500;
+        if (!retryable || receipt.attempts >= this.connectedAgentsMaximumAttempts) {
+          store.finish({
+            messageId: input.messageId,
+            deviceId,
+            bundleId: device.bundle_id,
+            state: 'failed',
+            errorCode: retryable ? 'retry_exhausted' : `apns_${result.status}`,
+          });
+          return;
+        }
+        receipt = store.finish({
+          messageId: input.messageId,
+          deviceId,
+          bundleId: device.bundle_id,
+          state: 'retryable',
+          errorCode: `apns_${result.status}`,
+        });
+      } catch (error) {
+        if (receipt.attempts >= this.connectedAgentsMaximumAttempts) {
+          store.finish({
+            messageId: input.messageId,
+            deviceId,
+            bundleId: device.bundle_id,
+            state: 'failed',
+            errorCode: 'retry_exhausted',
+          });
+          return;
+        }
+        receipt = store.finish({
+          messageId: input.messageId,
+          deviceId,
+          bundleId: device.bundle_id,
+          state: 'retryable',
+          errorCode: (error as { name?: string }).name === 'AbortError'
+            ? 'apns_timeout' : 'apns_unavailable',
+        });
+      }
+      const delay = this.connectedAgentsRetryDelaysMs[receipt.attempts - 1] ?? 0;
+      if (delay > 0) await new Promise<void>(resolve => setTimeout(resolve, delay));
+      receipt = store.begin({
+        messageId: input.messageId,
+        deviceId,
+        bundleId: device.bundle_id,
+        maximumAttempts: this.connectedAgentsMaximumAttempts,
+      });
+      if (receipt.state === 'delivered'
+          || receipt.state === 'invalid'
+          || receipt.state === 'failed') return;
+    }
+  }
+
+  /**
+   * Wake devices for a canonical assistant Message that is already durable.
+   * The notification is intentionally content-free; the Message API is truth.
+   */
+  notifyConnectedAgentsMessage(input: ConnectedAgentsMessageNotification): Promise<void> {
+    return this.scheduleConnectedAgentsDelivery(input);
+  }
+
+  /** Queue a canonical startup snapshot before accepting later live deliveries. */
+  reconcileConnectedAgentsMessages(
+    messages: readonly ConnectedAgentsMessageNotification[],
+  ): Promise<void> {
+    const ordered = [...messages].sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt)
+      || left.messageId.localeCompare(right.messageId));
+    const deliveries = ordered.map(message => this.scheduleConnectedAgentsDelivery(message));
+    return Promise.all(deliveries).then(() => undefined);
+  }
+
+  /** Graceful shutdown waits only for already-queued durable delivery work. */
+  drainConnectedAgentsDeliveries(): Promise<void> {
+    if (!this.connectedAgentsQueueRunning && this.connectedAgentsQueue.length === 0) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      this.connectedAgentsDrainWaiters.push(resolve);
+    });
   }
 
   private async withQuerySendSlot<T>(task: () => Promise<T>): Promise<T> {

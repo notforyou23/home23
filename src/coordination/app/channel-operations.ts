@@ -1,0 +1,61 @@
+import type { CoordinationTurnOrigin } from '../../agent/types.js';
+import type { createChannelService } from '../channels/service.js';
+import type { MessagingActorContext, ResponderPolicy } from '../channels/types.js';
+import { WorkError } from '../work/errors.js';
+import type { DetachmentCredential } from './foreground-detachments.js';
+
+/** Only the signed, live Jerry turn can exercise the standing channel mandate.
+ * User/session credentials are never borrowed. Canonical events remain authored by Jerry. */
+export function createChannelOperationConsumer(options: {
+  authorize(credential: DetachmentCredential, origin: CoordinationTurnOrigin): unknown;
+  context(origin: CoordinationTurnOrigin): MessagingActorContext;
+  channels: ReturnType<typeof createChannelService>;
+  listBots(): Promise<unknown>;
+  invoke?(credential: DetachmentCredential, input: { origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown> }): Promise<unknown>;
+  botOperation(context: MessagingActorContext, args: Record<string, unknown>, key: string): Promise<unknown>;
+}) {
+  return async (credential: DetachmentCredential, raw: unknown) => {
+    const input = raw as { origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown> };
+    if (credential.residentSlug !== 'jerry' || !input?.origin ||
+        typeof input.invocationId !== 'string' || !input.invocationId || input.invocationId.length > 256 ||
+        !input.args || typeof input.args !== 'object' || Array.isArray(input.args)) {
+      throw new WorkError('ineligible', 'channel operation requires the authenticated executive resident');
+    }
+    if (['bot_invoke', 'bot_result', 'bot_stop'].includes(String(input.args.operation))) {
+      if (!options.invoke) throw new Error('Bot invocation runtime unavailable');
+      return options.invoke(credential, input);
+    }
+    options.authorize(credential, input.origin);
+    const context = options.context(input.origin);
+    const args = input.args;
+    const key = `${input.origin.workId}:${input.origin.attemptId}:${input.invocationId}`;
+    const text = (name: string) => {
+      if (typeof args[name] !== 'string') throw new WorkError('invalid_request', `${name} is required`);
+      return args[name] as string;
+    };
+    const members = () => {
+      if (!Array.isArray(args.memberBotIds) || args.memberBotIds.some(id => typeof id !== 'string'))
+        throw new WorkError('invalid_request', 'memberBotIds is required');
+      return args.memberBotIds as string[];
+    };
+    switch (args.operation) {
+      case 'bot_create': case 'bot_archive': case 'bot_restore':
+        return options.botOperation(context, args, key);
+      case 'bot_list': return { bots: await options.listBots() };
+      case 'list': return options.channels.listChannels({ context, cursor: typeof args.cursor === 'string' ? args.cursor : null, limit: typeof args.limit === 'number' ? args.limit : 50 });
+      case 'get': return options.channels.getChannel({ context, channelId: text('channelId') });
+      case 'create': return options.channels.createGroupChannel({
+        context, idempotencyKey: key, title: text('title'), purpose: text('purpose'),
+        memberBotIds: [...new Set([...members(), context.principalId])],
+        pinned: args.pinned === true, responderPolicy: (args.responderPolicy ?? { mode: 'mention_or_coordinator', coordinatorBotId: context.principalId, responseOrder: 'sequential', maxBotTurns: 4 }) as ResponderPolicy,
+      });
+      case 'update': return options.channels.updateChannel({
+        context, idempotencyKey: key, channelId: text('channelId'), expectedVersion: args.expectedVersion as number,
+        title: text('title'), purpose: text('purpose'), memberBotIds: members(),
+        responderPolicy: args.responderPolicy as ResponderPolicy, pinned: args.pinned as boolean,
+        lifecycle: args.lifecycle as 'active' | 'archived',
+      });
+      default: throw new WorkError('invalid_request', 'unknown channel operation');
+    }
+  };
+}

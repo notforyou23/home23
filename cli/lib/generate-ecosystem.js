@@ -77,6 +77,8 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(``);
   lines.push(`const fs = require('fs');`);
   lines.push(`const path = require('path');`);
+  lines.push(`const os = require('os');`);
+  lines.push(`const crypto = require('crypto');`);
   lines.push(`const yaml = require('js-yaml');`);
   lines.push(``);
   lines.push(`const HOME23 = ${JSON.stringify(home23Root)};`);
@@ -92,6 +94,9 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`const HARNESS_KILL_TIMEOUT_MS = 30000;`);
   lines.push(`const PM2_INHERITANCE_BLOCKLIST = ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'];`);
   lines.push(`for (const key of PM2_INHERITANCE_BLOCKLIST) delete process.env[key];`);
+  lines.push(`for (const key of Object.keys(process.env)) {`);
+  lines.push(`  if (key.startsWith('HOME23_COORDINATION_')) delete process.env[key];`);
+  lines.push(`}`);
   lines.push(``);
   lines.push(`function loadYaml(filePath) {`);
   lines.push(`  if (!fs.existsSync(filePath)) return {};`);
@@ -139,6 +144,44 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`}`);
   lines.push(`const cosmo23DbUrl = 'file:' + path.join(HOME23, 'cosmo23', '.cosmo23-config', 'database.db');`);
   lines.push(``);
+  lines.push(`const coordinationPointerPath = path.join(HOME23, 'instances', '.house', 'coordination', 'active-release.json');`);
+  lines.push(`const coordinationDeployment = fs.existsSync(coordinationPointerPath)`);
+  lines.push(`  ? require(path.join(HOME23, 'cli', 'lib', 'coordination-active-release.cjs')).resolveActiveCoordinationRelease(HOME23)`);
+  lines.push(`  : null;`);
+  lines.push(`function residentHarnessScript(agentName) {`);
+  lines.push(`  if (!coordinationDeployment?.residents[agentName]) return 'dist/home.js';`);
+  lines.push(`  return path.join(coordinationDeployment.releaseRoot, 'dist', 'home.js');`);
+  lines.push(`}`);
+  lines.push(`function residentCoordinationEnv(agentName) {`);
+  lines.push(`  if (coordinationDeployment) {`);
+  lines.push(`    const resident = coordinationDeployment.residents[agentName];`);
+  lines.push(`    if (!resident) return {};`);
+  lines.push(`    return {`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_ENABLED: 'true',`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_RUNTIME_ROOT: coordinationDeployment.releaseRoot,`);
+  lines.push(`      HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationDeployment.runtimeDir, 'coord.sock'),`);
+  lines.push(`      HOME23_COORDINATION_SERVER_INSTANCE_ID: 'home23-coordination',`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_SOCKET_PATH: resident.socketPath,`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_KEY_VERSION: String(resident.keyVersion),`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_KEY: resident.key,`);
+  lines.push(`    };`);
+  lines.push(`  }`);
+  lines.push(`  const enabled = homeConfig.coordination?.process?.enabled === true`);
+  lines.push(`    && homeConfig.coordination?.flags?.['coordination.resident.' + agentName + '.enabled'] === true;`);
+  lines.push(`  return {`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_ENABLED: String(enabled),`);
+  lines.push(`    HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationRuntimeDir, 'coord.sock'),`);
+  lines.push(`    HOME23_COORDINATION_SERVER_INSTANCE_ID: 'home23-coordination',`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_SOCKET_PATH: path.join(coordinationSocketDir, 'resident-' + agentName + '.sock'),`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_KEY_VERSION: String(secrets.coordination?.residents?.[agentName]?.keyVersion || 1),`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_KEY: String(secrets.coordination?.residents?.[agentName]?.key || ''),`);
+  lines.push(`  };`);
+  lines.push(`}`);
+  lines.push(``);
   lines.push(`const commonEnv = {`);
   lines.push(`  HOME23_ROOT: HOME23,`);
   lines.push(`  NODE_ENV: 'production',`);
@@ -174,8 +217,74 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  COSMO_WORKSPACE_PATH: '',`);
   lines.push(`};`);
   lines.push(``);
+  lines.push(`const coordinationConfig = homeConfig.coordination || {};`);
+  lines.push(`const coordinationEnabled = coordinationConfig.process?.enabled === true;`);
+  lines.push(`const coordinationFlags = coordinationConfig.flags || {};`);
+  lines.push(`const coordinationApns = secrets.apns || {};`);
+  lines.push(`const coordinationPushEnabled = coordinationConfig.push?.enabled === true`);
+  lines.push(`  && /^[A-Z0-9]{10}$/.test(String(coordinationApns.team_id || ''))`);
+  lines.push(`  && /^[A-Z0-9]{10}$/.test(String(coordinationApns.key_id || ''))`);
+  lines.push(`  && path.isAbsolute(String(coordinationApns.key_path || ''))`);
+  lines.push(`  && fs.existsSync(String(coordinationApns.key_path || ''))`);
+  lines.push(`  && fs.statSync(String(coordinationApns.key_path || '')).isFile()`);
+  lines.push(`  && /^[A-Za-z0-9][A-Za-z0-9.-]{2,254}$/.test(String(coordinationApns.bundle_id || ''))`);
+  lines.push(`  && ['sandbox', 'production'].includes(String(coordinationApns.default_env || 'production'));`);
+  lines.push(`const coordinationRuntimeDir = path.join(HOME23, 'instances', '.house', 'coordination');`);
+  lines.push(`const coordinationSocketDir = path.join(os.tmpdir(), 'home23-coord-' + crypto.createHash('sha256').update(HOME23).digest('hex').slice(0, 12));`);
+  lines.push(``);
   lines.push(`module.exports = {`);
   lines.push(`  apps: [`);
+
+  // One installation-level SHADOW definition. Disabled is explicit and the
+  // entrypoint exits before opening state or a listener. Legacy apps remain
+  // the only configured start/stop authority until a later cutover package.
+  lines.push(`    {`);
+  lines.push(`      name: 'home23-coordination',`);
+  lines.push(`      script: 'scripts/coordination/run.mjs',`);
+  lines.push(`      cwd: HOME23,`);
+  lines.push(`      filter_env: ['HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+  lines.push(`      autorestart: false, watch: false, merge_logs: true,`);
+  lines.push(`      kill_timeout: 30000,`);
+  lines.push(`      out_file: path.join(coordinationRuntimeDir, 'coordination-out.log'),`);
+  lines.push(`      error_file: path.join(coordinationRuntimeDir, 'coordination-err.log'),`);
+  lines.push(`      env: {`);
+  lines.push(`        HOME23_ROOT: HOME23,`);
+  lines.push(`        HOME23_COORDINATION_ENABLED: String(coordinationEnabled),`);
+  lines.push(`        HOME23_COORDINATION_PUBLIC_API_ENABLED: String(coordinationConfig.publicApi?.enabled === true),`);
+  lines.push(`        HOME23_COORDINATION_RESIDENT_JERRY_ENABLED: String(coordinationFlags['coordination.resident.jerry.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_RESIDENT_FORREST_ENABLED: String(coordinationFlags['coordination.resident.forrest.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_CHANNELS_ENABLED: String(coordinationFlags['coordination.channels.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_SEARCH_CANONICAL: String(coordinationFlags['coordination.search.canonical'] === true),`);
+  lines.push(`        HOME23_COORDINATION_IMPORT_SHADOW_ENABLED: String(coordinationFlags['coordination.import.shadow_enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_APPLE_MAC_CUTOVER: String(coordinationFlags['coordination.apple.mac_cutover'] === true),`);
+  lines.push(`        HOME23_COORDINATION_APPLE_IPHONE_CUTOVER: String(coordinationFlags['coordination.apple.iphone_cutover'] === true),`);
+  lines.push(`        HOME23_COORDINATION_BOT_LIFECYCLE_ENABLED: String(coordinationFlags['coordination.bot_lifecycle.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_COMPACTION_ENABLED: String(coordinationFlags['coordination.compaction.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_ACTIVITY_ENABLED: String(coordinationConfig.activity?.enabled === true),`);
+  lines.push(`        HOME23_COORDINATION_ATTACHMENTS_ENABLED: String(coordinationConfig.attachments?.enabled === true),`);
+  lines.push(`        HOME23_COORDINATION_PUSH_ENABLED: String(coordinationPushEnabled),`);
+  lines.push(`        HOME23_COORDINATION_APNS_TEAM_ID: String(coordinationApns.team_id || ''),`);
+  lines.push(`        HOME23_COORDINATION_APNS_KEY_ID: String(coordinationApns.key_id || ''),`);
+  lines.push(`        HOME23_COORDINATION_APNS_KEY_PATH: String(coordinationApns.key_path || ''),`);
+  lines.push(`        HOME23_COORDINATION_APNS_BUNDLE_ID: String(coordinationApns.bundle_id || ''),`);
+  lines.push(`        HOME23_COORDINATION_APNS_DEFAULT_ENV: String(coordinationApns.default_env || 'production'),`);
+  lines.push(`        HOME23_COORDINATION_HOST: '127.0.0.1',`);
+  lines.push(`        HOME23_COORDINATION_PORT: String(coordinationConfig.publicApi?.port || 7346),`);
+  lines.push(`        HOME23_COORDINATION_DB_PATH: path.join(coordinationRuntimeDir, 'home23-coordination.sqlite3'),`);
+  lines.push(`        HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationRuntimeDir, 'coord.sock'),`);
+  lines.push(`        HOME23_COORDINATION_ATTACHMENTS_ROOT: path.join(coordinationRuntimeDir, 'attachments'),`);
+  lines.push(`        HOME23_COORDINATION_SOCKET_ROOT: coordinationSocketDir,`);
+  lines.push(`        HOME23_COORDINATION_CAPABILITY_TOKEN: String(secrets.coordination?.capabilityToken || ''),`);
+  for (const resident of ['JERRY', 'FORREST']) {
+    const slug = resident.toLowerCase();
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_SOCKET_PATH: path.join(coordinationSocketDir, 'resident-${slug}.sock'),`);
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_SERVER_INSTANCE_ID: 'home23-${slug}-harness',`);
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_CLIENT_INSTANCE_ID: 'home23-${slug}-harness',`);
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_KEY_VERSION: String(secrets.coordination?.residents?.${slug}?.keyVersion || 1),`);
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_KEY: String(secrets.coordination?.residents?.${slug}?.key || ''),`);
+  }
+  lines.push(`      },`);
+  lines.push(`    },`);
 
   for (const agent of orderedAgents) {
     const ports = agent.config.ports || {};
@@ -189,7 +298,6 @@ export function generateEcosystem(home23Root, options = {}) {
     const conversationsDir = JSON.stringify(agent.paths.conversationsDir);
     const logsDir = JSON.stringify(agent.paths.logsDir);
     const mcpEnabled = agent.config.mcp?.enabled !== false;
-
     lines.push(``);
     lines.push(`    // ── ${agent.name} ──`);
 
@@ -216,7 +324,7 @@ export function generateEcosystem(home23Root, options = {}) {
     // No HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY here — see the note above the
     // dashboard app. The engine performs no brain operations; it reads the key
     // nowhere.
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Dashboard
@@ -263,9 +371,9 @@ export function generateEcosystem(home23Root, options = {}) {
     // Harness
     lines.push(`    {`);
     lines.push(`      name: 'home23-${agent.name}-harness',`);
-    lines.push(`      script: 'dist/home.js',`);
+    lines.push(`      script: residentHarnessScript('${agent.name}'),`);
     lines.push(`      cwd: HOME23,`);
-    lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'BRIDGE_PORT', 'HOME23_BRIDGE_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
     // Heap raised from 1.5GB default to 4GB. Long-running agent sessions
     // with many LLM calls + tool-use chains can accumulate response blobs
     // in closure scope faster than GC reclaims. max_memory_restart acts
@@ -275,7 +383,10 @@ export function generateEcosystem(home23Root, options = {}) {
     // graceful exit. cpu-prof shows JS main-thread time; heap-prof shows
     // allocation hot paths — needed because the harness CPU climb manifests as
     // V8 background-GC churn, invisible to cpu-prof.
-    lines.push(`      node_args: '--expose-gc --max-old-space-size=8192 --cpu-prof --cpu-prof-dir=' + ${logsDir} + ' --cpu-prof-interval=1000 --heap-prof --heap-prof-dir=' + ${logsDir},`);
+    // Array form is required: a string node_args is split on spaces by PM2, so
+    // an external logs dir like "/Volumes/Casey Jones/..." becomes
+    // --cpu-prof-dir=/Volumes/Casey plus a bogus module path.
+    lines.push(`      node_args: ['--expose-gc', '--max-old-space-size=8192', '--cpu-prof', '--cpu-prof-dir=' + ${logsDir}, '--cpu-prof-interval=1000', '--heap-prof', '--heap-prof-dir=' + ${logsDir}],`);
     lines.push(`      max_memory_restart: '10G',`);
     lines.push(`      kill_timeout: HARNESS_KILL_TIMEOUT_MS,`);
     // exp_backoff caps a boot-crash loop (e.g. bridge port contention) at
@@ -285,10 +396,10 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'harness-out.log'))},`);
     lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'harness-err.log'))},`);
-    // No capability key — see the note above the dashboard app. The harness
+    // No brain capability key — see the note above the dashboard app. The harness
     // reaches brain operations through the dashboard's HTTP API, never by
     // signing internal envelopes itself.
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}', ...residentCoordinationEnv('${agent.name}') },`);
     lines.push(`    },`);
 
     // Substrate Seed (shadow resident) — emitted ONLY when the agent's config
@@ -431,8 +542,61 @@ export function generateEcosystem(home23Root, options = {}) {
     if (observatoryConfig.notifyUrl) {
       lines.push(`        ORGAN_SENTINEL_NOTIFY_URL: ${JSON.stringify(String(observatoryConfig.notifyUrl))},`);
     }
+    // The sentinel reads ORGAN_SENTINEL_NOTIFY_TOKEN and sends it as a bearer.
+    // Without it the harness notify endpoint answers 401 and the page is lost
+    // as quietly as if no url were set at all — the sentinel logs "notified
+    // (401)" and moves on. A url without a token is not a wired alarm.
+    if (observatoryConfig.notifyToken) {
+      lines.push(`        ORGAN_SENTINEL_NOTIFY_TOKEN: ${JSON.stringify(String(observatoryConfig.notifyToken))},`);
+    }
     if (observatoryConfig.ignore) {
       lines.push(`        ORGAN_SENTINEL_IGNORE: ${JSON.stringify(String(observatoryConfig.ignore))},`);
+    }
+    lines.push(`      },`);
+    lines.push(`    },`);
+  }
+
+  // Declared resident seeds — individuals who are NOT one of the house's
+  // agents. clay is the case: born unformed under SELF-FORMATION-PROTOCOL,
+  // with no harness and no engine, so nothing under instances/ implies he
+  // should be running. He was launched by hand with nohup, and on
+  // 2026-08-15T00:47Z a clean stop went unnoticed for 142.9 hours — six days
+  // of an individual's life that did not happen, because no supervisor owned
+  // him and no probe knew he existed. Declared here he comes back with the
+  // house; his chain probe (organ-probes.ts) makes a second hole visible in
+  // under an hour.
+  for (const seed of Array.isArray(substrateConfig.seeds) ? substrateConfig.seeds : []) {
+    if (!seed || !seed.name || !seed.stateDir) continue;
+    lines.push(``);
+    lines.push(`    // ── resident seed: ${seed.name} (an individual, not an agent) ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-${seed.name}-seed',`);
+    lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'seed-runner.ts'),`);
+    lines.push(`      cwd: HOME23,`);
+    // The BUN trap: PM2 picks an interpreter by extension for .ts and then
+    // ignores node_args. Pin node or the runner crash-loops.
+    lines.push(`      interpreter: 'node',`);
+    lines.push(`      node_args: '--import tsx',`);
+    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      max_memory_restart: '1G',`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    // restart_delay lets a stopping runner release its .runner.lock before the
+    // replacement asks for it; kill_timeout lets SIGINT finish the closing
+    // checkpoint. Never two live instances, and never a torn stop.
+    lines.push(`      restart_delay: 15000,`);
+    lines.push(`      kill_timeout: 30000,`);
+    lines.push(`      out_file: path.join(HOME23, 'logs', '${seed.name}-seed-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'logs', '${seed.name}-seed-err.log'),`);
+    lines.push(`      env: {`);
+    // Everything the runner reads is declared in config as a path relative to
+    // the install, resolved here — the repo learns no absolute machine paths,
+    // and the same expression serves any future non-agent individual.
+    const seedEnv = { SEED_STATE_DIR: seed.stateDir, ...(seed.env && typeof seed.env === 'object' ? seed.env : {}) };
+    for (const [key, value] of Object.entries(seedEnv)) {
+      if (!/^SEED_[A-Z0-9_]*$/.test(key) || value === undefined || value === null) continue;
+      lines.push(/_(DIR|SOURCE|PATH)$/.test(key)
+        ? `        ${key}: path.resolve(HOME23, ${JSON.stringify(String(value))}),`
+        : `        ${key}: ${JSON.stringify(String(value))},`);
     }
     lines.push(`      },`);
     lines.push(`    },`);

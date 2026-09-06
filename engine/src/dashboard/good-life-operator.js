@@ -567,8 +567,13 @@ function summarizeHostPressureForOperator(host) {
   const parts = [];
   const swapPct = finiteCount(host.swap?.usedPct);
   if (swapPct != null) parts.push(`swap ${Math.round(swapPct)}% used`);
-  const freePct = finiteCount(host.memory?.freePct);
-  if (freePct != null) parts.push(`memory ${Number(freePct).toFixed(freePct < 10 ? 1 : 0)}% free`);
+  const pressureFreePct = finiteCount(host.memory?.pressureFreePct ?? host.memory?.memoryPressure?.freePct);
+  const rawFreePct = finiteCount(host.memory?.rawFreePct ?? host.memory?.freePct);
+  if (pressureFreePct != null) {
+    parts.push(`memory pressure ${Number(pressureFreePct).toFixed(pressureFreePct < 10 ? 1 : 0)}% free capacity`);
+  } else if (rawFreePct != null) {
+    parts.push(`memory ${Number(rawFreePct).toFixed(rawFreePct < 10 ? 1 : 0)}% free`);
+  }
 
   const topMemory = host.process?.topMemoryProcess;
   const topMemoryBytes = formatBytes(topMemory?.rssBytes || host.process?.topRssBytes);
@@ -1441,10 +1446,12 @@ function buildPublishingDistributionReadiness({ issueArc = null, doctrineAdoptio
 
 function classifyRuntimePressure({ host = null, budget = null } = {}) {
   const swapPct = finiteCount(host?.swap?.usedPct);
-  const freePct = finiteCount(host?.memory?.freePct);
-  if (swapPct == null && freePct == null && !budget?.pressureRest) return 'unknown';
-  if ((swapPct != null && swapPct >= 85) || (freePct != null && freePct <= 3)) return 'critical';
-  if ((swapPct != null && swapPct >= 70) || (freePct != null && freePct <= 10) || budget?.pressureRest) return 'strained';
+  const pressureFreePct = finiteCount(host?.memory?.pressureFreePct ?? host?.memory?.memoryPressure?.freePct);
+  const rawFreePct = finiteCount(host?.memory?.rawFreePct ?? host?.memory?.freePct);
+  const memoryPct = pressureFreePct ?? rawFreePct;
+  if (swapPct == null && memoryPct == null && !budget?.pressureRest) return 'unknown';
+  if ((swapPct != null && swapPct >= 85) || (memoryPct != null && memoryPct <= 3)) return 'critical';
+  if ((swapPct != null && swapPct >= 70) || (memoryPct != null && memoryPct <= 10) || budget?.pressureRest) return 'strained';
   return 'healthy';
 }
 
@@ -1509,6 +1516,8 @@ function buildRuntimeMaintenancePosture({
       evidence: pressureEvidence || null,
       swapUsedPct: finiteCount(host?.swap?.usedPct),
       memoryFreePct: finiteCount(host?.memory?.freePct),
+      memoryRawFreePct: finiteCount(host?.memory?.rawFreePct ?? host?.memory?.freePct),
+      memoryPressureFreePct: finiteCount(host?.memory?.pressureFreePct ?? host?.memory?.memoryPressure?.freePct),
       maintenanceRatio,
       topMemoryProcess: host?.process?.topMemoryProcess || null,
       topCpuProcess: host?.process?.topProcess || null,

@@ -6,6 +6,8 @@
  * the turn endpoints read them via HistoryStore.loadRaw().
  */
 
+import type { ReasoningEffort } from '../agent/reasoning-effort.js';
+
 export type TurnStatus =
   | 'pending'
   | 'accepted'
@@ -34,6 +36,8 @@ export interface TurnEnvelope {
   first_token_deadline_at?: string;
   model?: string;
   provider?: string;
+  /** Resolved per-turn effort passed to the provider adapter. */
+  reasoning_effort?: ReasoningEffort;
   stop_reason?: string;
   error?: string;
   error_code?: string;
@@ -42,6 +46,8 @@ export interface TurnEnvelope {
   assistant_content?: string;
   /** Max seq of any event belonging to this turn. Written on status-end records. */
   last_seq?: number;
+  /** Coordination provenance only; never contains prompts or resident private state. */
+  coordination_origin?: import('../agent/types.js').CoordinationTurnOrigin;
 }
 
 export interface TurnEvent {
@@ -49,7 +55,8 @@ export interface TurnEvent {
   turn_id: string;
   seq: number;
   ts: string;
-  kind: 'thinking' | 'tool_start' | 'tool_result' | 'response_chunk' | 'media' | 'subagent_result' | 'cache' | 'status';
+  kind: 'thinking' | 'tool_start' | 'tool_result' | 'response_chunk' | 'media'
+    | 'subagent_start' | 'subagent_result' | 'cache' | 'status';
   data: Record<string, unknown>;
 }
 
@@ -86,6 +93,7 @@ export interface TurnStatusResponse {
   runtime_model: {
     provider: string | null;
     model: string | null;
+    reasoning_effort: ReasoningEffort | null;
   };
   stop_requested_at?: string | null;
   stop_reason?: string | null;

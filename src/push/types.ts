@@ -13,6 +13,9 @@ export interface DeviceRegistration {
   capabilities_hash?: string;
   installation_id?: string;   // stable Keychain installation identity
   query_notifications?: boolean; // capability only; never operation authority
+  connected_agents_notifications?: boolean;
+  coordination_device_id?: string;
+  coordination_session_id?: string;
 }
 
 /** Durable Query-notebook credential enrollment. Independent of APNs registration. */
@@ -100,6 +103,51 @@ export interface AsyncWorkPushPayload {
   agent: string;
 }
 
+/** Privacy-minimal wake hint for one already-durable canonical Message. */
+export interface ConnectedAgentsMessagePushPayload {
+  aps: {
+    alert: { title: string; body: 'Reply ready' };
+    'mutable-content': 1;
+    sound: 'default';
+    badge?: number;
+  };
+  kind: 'connected_agents_message';
+  conversationId: string;
+  channelId: string;
+  messageId: string;
+  workId?: string;
+  agent?: string;
+  displayName?: string;
+}
+
+export function buildConnectedAgentsMessagePayload(input: {
+  conversationId: string;
+  channelId: string;
+  messageId: string;
+  workId?: string;
+  agent?: string;
+  displayName?: string;
+  badge?: number;
+}): ConnectedAgentsMessagePushPayload {
+  if (input.badge !== undefined && (!Number.isSafeInteger(input.badge) || input.badge < 0 || input.badge > 99_999)) throw new TypeError('invalid notification badge');
+  const title = input.displayName ?? 'Home23';
+  return {
+    aps: {
+      alert: { title, body: 'Reply ready' },
+      'mutable-content': 1,
+      sound: 'default',
+      ...(input.badge === undefined ? {} : { badge: input.badge }),
+    },
+    kind: 'connected_agents_message',
+    conversationId: input.conversationId,
+    channelId: input.channelId,
+    messageId: input.messageId,
+    ...(input.workId === undefined ? {} : { workId: input.workId }),
+    ...(input.agent === undefined ? {} : { agent: input.agent }),
+    ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+  };
+}
+
 export function buildAsyncWorkPayload(input: {
   agentName: string;
   chatId: string;
@@ -121,4 +169,5 @@ export function buildAsyncWorkPayload(input: {
   };
 }
 
-export type PushPayload = ChatPushPayload | QueryPushPayload | AsyncWorkPushPayload;
+export type PushPayload = ChatPushPayload | QueryPushPayload | AsyncWorkPushPayload |
+  ConnectedAgentsMessagePushPayload;

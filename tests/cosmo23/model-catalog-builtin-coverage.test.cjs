@@ -55,3 +55,17 @@ test('bare legacy catalog rows for observed models normalize via built-in defaul
     }
   }
 });
+
+test('built-in Codex catalog exposes GPT-6 Astra with its documented limits', () => {
+  const models = BUILTIN_MODEL_CATALOG.providers['openai-codex'].models;
+  assert.equal(models[0].id, 'gpt-5.6-sol', 'adding Astra must not reorder the existing default inventory');
+  const astra = models
+    .find((model) => model.id === 'gpt-6-astra');
+  assert.deepEqual(astra, {
+    id: 'gpt-6-astra',
+    label: 'GPT-6 Astra',
+    kind: 'chat',
+    maxOutputTokens: 128000,
+    contextWindowTokens: 1050000,
+  });
+});

@@ -2208,7 +2208,7 @@ test('automatic context search uses the shared client canonical bounded route', 
     },
   });
   const result = await client.searchContext({ query: 'canary', topK: 8 }, controller.signal);
-  assert.deepEqual(requestBody, { query: 'canary', topK: 8 });
+  assert.deepEqual(requestBody, { query: 'canary', topK: 8, mode: 'context' });
   assert.equal((result.sourceEvidence as Record<string, unknown>).sourceHealth, 'healthy');
 });
 
@@ -2682,4 +2682,65 @@ test('progress, phase, and terminal notifications never masquerade as operation 
     { type: 'phase', eventSequence: 2, sequence: 2, state: 'running', phase: 'synthesizing', updatedAt: '2026-07-10T12:00:02.000Z', lastProgressAt: null },
     { type: 'terminal', eventSequence: 3, sequence: 3, state: 'complete', phase: 'done', updatedAt: '2026-07-10T12:00:03.000Z', lastProgressAt: '2026-07-10T12:00:02.500Z' },
   ]);
+});
+
+test('Working Thread operation identity survives a new client without changing the request', async () => {
+  const bodies: string[] = [];
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    bodies.push(String(init?.body));
+    return new Response(JSON.stringify(record('op-stable-work', 1, 'queued')));
+  };
+  for (let i = 0; i < 2; i++) {
+    const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl })
+      .withWorkingThread('wrk_root:call_research');
+    await client.start('synthesis', { trigger: 'tool', reason: 'fixture' });
+  }
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0], bodies[1]);
+  assert.match(JSON.parse(bodies[0]!).requestId, /^work-[a-f0-9]{64}$/);
+});
+
+test('Working Thread does not treat detached operation observation as completion', async () => {
+  const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry', reconnectDelayMs: 1 })
+    .withWorkingThread('wrk_root:call_research');
+  const started = { ...record('op-joined', 1, 'running'), operationType: 'synthesis' };
+  client.start = async () => started;
+  let waits = 0;
+  client.wait = async () => {
+    waits++;
+    return waits === 1 ? { ...started, attachmentState: 'detached' } :
+      { ...started, state: 'complete', attachmentState: 'closed' };
+  };
+  assert.equal((await client.synthesize({ trigger: 'tool' })).state, 'complete');
+  assert.equal(waits, 2);
+});
+
+test('Working Thread Stop waits for confirmed operation cancellation', async () => {
+  const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry', reconnectDelayMs: 1 })
+    .withWorkingThread('wrk_root:call_research');
+  const started = { ...record('op-cancel-joined', 1, 'running'), operationType: 'synthesis' };
+  client.start = async () => started;
+  const controller = new AbortController(); controller.abort();
+  let cancellations = 0;
+  client.cancel = async () => { cancellations++; return { ...started, state: cancellations < 2 ? 'running' : 'cancelled' }; };
+  client.getResult = async () => ({ ...record('op-cancel-joined', 2, 'cancelled') });
+  const result = await client.synthesize({ trigger: 'tool' }, controller.signal);
+  assert.equal(result.state, 'cancelled');
+  assert.equal(cancellations, 2);
+});
+
+test('joined admission survives repeated lost responses with one request identity',async()=>{
+  const bodies:string[]=[];
+  const client=new BrainOperationsClient({baseUrl:'http://fixture',callerAgent:'jerry',reconnectDelayMs:1,
+    fetchImpl:async(_url,init)=>{bodies.push(String(init?.body));if(bodies.length<3)throw new TypeError('lost response');return new Response(JSON.stringify(record('op-admit-retry',1,'running')));}})
+    .withWorkingThread('work:exact-call');
+  await client.start('synthesis',{trigger:'tool'});
+  assert.equal(bodies.length,3);assert.equal(new Set(bodies).size,1);
+});
+test('joined observation failure cannot become a completed or failed Work result',async()=>{
+  const client=new BrainOperationsClient({baseUrl:'http://fixture',callerAgent:'jerry',reconnectDelayMs:1}).withWorkingThread('work:observe');
+  const initial={...record('op-observation',1,'running'),operationType:'synthesis'};
+  client.start=async()=>initial;let reads=0;
+  client.wait=async()=>{if(++reads===1)throw new TypeError('observer unavailable');return {...initial,state:'complete',attachmentState:'closed'};};
+  assert.equal((await client.synthesize({trigger:'tool'})).state,'complete');assert.equal(reads,2);
 });

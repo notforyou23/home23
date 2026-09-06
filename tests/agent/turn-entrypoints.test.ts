@@ -103,6 +103,32 @@ test('executeTrackedTurn forwards a per-turn registry override and never calls r
   assert.equal(captured?.registry, registry);
 });
 
+test('executeTrackedTurn preserves canonical Working Thread context for nested turns', async () => {
+  let captured: Record<string, unknown> | null = null;
+  const destination = {
+    kind: 'coordination' as const, parentWorkId: 'wrk_root', channelId: 'chn_root',
+    conversationId: 'cnv_root', originMessageId: 'msg_root', attemptId: 'att_root',
+    leaseId: 'lse_root', fencingToken: 1, targetPrincipalId: 'bot_jerry',
+    residentBinding: 'jerry', residentInstanceId: 'resident-1', authorityReference: 'resident:jerry',
+  };
+  const agent = {
+    runWithTurn: async (_chatId: string, _userText: string, options: Record<string, unknown>) => {
+      captured = options;
+      return {
+        turnId: 'turn-nested',
+        response: Promise.resolve({ text: 'done', model: 'test', toolCallCount: 0, durationMs: 1 }),
+      };
+    },
+  };
+
+  await executeTrackedTurn(agent as never, 'subagent:coordination:root:child', 'nested', {
+    parentWorkId: destination.parentWorkId,
+    coordinationWorkDestination: destination,
+  });
+  assert.equal(captured?.parentWorkId, destination.parentWorkId);
+  assert.deepEqual(captured?.coordinationWorkDestination, destination);
+});
+
 test('runWithTurn freezes a per-turn registry override without mutating the shared registry', async () => {
   const root = join(tmpdir(), `turn-registry-override-${process.pid}-${Math.random()}`);
   mkdirSync(join(root, 'workspace'), { recursive: true });
@@ -154,4 +180,53 @@ test('runWithTurn freezes a per-turn registry override without mutating the shar
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('runWithTurn awaits durable-start handoff after persistence and before resident execution', async () => {
+  const root = join(tmpdir(), `turn-durable-handoff-${process.pid}-${Math.random()}`);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  const order: string[] = [];
+  const agent = new AgentLoop({
+    apiKey: 'test-key', model: 'gpt-default', provider: 'openai',
+    registry: createSeededToolRegistry([]),
+    contextManager: { getSystemPrompt: () => 'test', getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
+    history, toolContext: {} as never, workspacePath: join(root, 'workspace'),
+  });
+  try {
+    (agent as unknown as { run: AgentLoop['run'] }).run = async () => {
+      order.push('run');
+      return { text: 'done', model: 'test', toolCallCount: 0, durationMs: 1 };
+    };
+    const started = await agent.runWithTurn('coordination:test', 'visible instruction', {
+      onDurableStart: ({ turnId }) => {
+        const persisted = history.loadRaw('coordination:test') as Array<{ turn_id?: string; status?: string }>;
+        assert.ok(persisted.some(record => record.turn_id === turnId && record.status === 'pending'));
+        order.push('handoff');
+      },
+    });
+    await started.response;
+    assert.deepEqual(order, ['handoff', 'run']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('tracked canonical cron cancellation stops the exact child and waits for its settlement', async () => {
+  const controller = new AbortController();
+  let finish!: (value: any) => void;
+  const response = new Promise<any>(resolve => { finish = resolve; });
+  const stops: unknown[] = [];
+  const agent = { runWithTurn: async () => ({ turnId: 'cron-child', response }),
+    stop: (chatId: string, turnId: string) => { stops.push([chatId, turnId]); } };
+  let settled = false;
+  const pending = executeTrackedTurn(agent as never, 'cron-exact', 'check', { signal: controller.signal })
+    .finally(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  assert.deepEqual(stops, [['cron-exact', 'cron-child']]);
+  assert.equal(settled, false);
+  finish({ text: '', model: 'fake', toolCallCount: 0, durationMs: 1, terminalStatus: 'stopped' });
+  await pending;
+  assert.equal(settled, true);
 });

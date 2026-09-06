@@ -432,6 +432,27 @@ export class RelationshipLedger {
     return list.sort(byNewestFirst);
   }
 
+  /**
+   * Query-aware recall: token/phrase match, not full-string substring.
+   * withheldMatching counts only sensitive entries that matched the query.
+   */
+  searchEntries(query: string, opts: {
+    type?: RelationshipEntryType;
+    status?: RelationshipEntryStatus;
+    excludePrivacy?: PrivacyClass[];
+  } = {}): { entries: RelationshipEntry[]; withheldMatching: number } {
+    const exclude = new Set(opts.excludePrivacy ?? []);
+    const all = this.listEntries({ type: opts.type, status: opts.status ?? 'active' });
+    const matching = query.trim() ? all.filter(e => entryMatchesQuery(e, query)) : all;
+    const withheldMatching = matching.filter(e => exclude.has(e.privacy_class)).length;
+    const visible = matching.filter(e => !exclude.has(e.privacy_class));
+    const tokens = tokenize(query);
+    const nowMs = Date.parse(this.now());
+    visible.sort((a, b) => (scoreEntry(b, tokens, nowMs) - scoreEntry(a, tokens, nowMs))
+      || byNewestFirst(a, b));
+    return { entries: visible, withheldMatching };
+  }
+
   // ── mutate (no path here elevates actor to 'jtr') ────────
 
   supersede(
@@ -627,6 +648,41 @@ function tokenize(query: string): string[] {
   return Array.from(new Set(
     query.toLowerCase().split(/[^a-z0-9]+/).map(t => t.trim()).filter(t => t.length >= 2),
   ));
+}
+
+export function normalizeRelationshipText(text: string): string {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[\u2010-\u2015\u2212]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Token/phrase match for recall — a quoted identity sentence must still hit. */
+export function entryMatchesQuery(entry: RelationshipEntry, query: string): boolean {
+  const q = query.trim();
+  if (!q) return true;
+  const hay = normalizeRelationshipText([
+    entry.title,
+    entry.statement,
+    entry.why ?? '',
+    ...entry.triggers,
+    ...entry.applies_to,
+  ].join(' '));
+  const needle = normalizeRelationshipText(q);
+  if (needle.length >= 8 && hay.includes(needle)) return true;
+  const tokens = tokenize(q);
+  if (tokens.length === 0) return false;
+  if (tokens.length >= 3) {
+    for (let i = 0; i <= tokens.length - 3; i++) {
+      const window = tokens.slice(i, i + 3).join(' ');
+      if (hay.includes(window)) return true;
+    }
+  }
+  const hits = tokens.filter(t => hay.includes(t)).length;
+  return hits >= Math.min(3, Math.ceil(tokens.length * 0.4));
 }
 
 function scoreEntry(entry: RelationshipEntry, tokens: string[], nowMs: number): number {

@@ -1,0 +1,34 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "conversations": [
+    {
+      "id": "cnv_0198d95f-6c00-7000-8000-000000000031",
+      "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+      "kind": "direct",
+      "title": "Jerry",
+      "latestMessage": {"id": "msg_0198d95f-6c00-7000-8000-000000000042", "sequence": 2, "preview": "The contract boundary is ready for review.", "authorPrincipalId": "bot_0198d95f-6c00-7000-8000-000000000011", "createdAt": "2026-08-24T15:45:00.000Z"},
+      "unread": {"count": 0, "readThroughSequence": 2},
+      "activity": {"state": "idle", "label": null, "workId": null},
+      "pinned": true,
+      "archived": false,
+      "version": 5,
+      "updatedAt": "2026-08-24T15:45:00.000Z"
+    },
+    {
+      "id": "cnv_0198d95f-6c00-7000-8000-000000000032",
+      "channelId": "chn_0198d95f-6c00-7000-8000-000000000022",
+      "kind": "group",
+      "title": "House planning",
+      "latestMessage": {"id": "msg_0198d95f-6c00-7000-8000-000000000044", "sequence": 2, "preview": "Forrest recorded the source receipt.", "authorPrincipalId": "bot_0198d95f-6c00-7000-8000-000000000012", "createdAt": "2026-08-24T15:50:00.000Z"},
+      "unread": {"count": 1, "readThroughSequence": 1},
+      "activity": {"state": "working", "label": "Checking one source", "workId": "wrk_0198d95f-6c00-7000-8000-000000000082"},
+      "pinned": false,
+      "archived": false,
+      "version": 2,
+      "updatedAt": "2026-08-24T15:50:00.000Z"
+    }
+  ],
+  "nextCursor": null,
+  "throughEventSequence": 127
+}

@@ -36,6 +36,7 @@ export interface CronBrainQueryJobOutcome {
 }
 
 export interface CronBrainQueryJobOptions {
+  signal?: AbortSignal;
   setTimeout?: (callback: () => void, delayMs: number) => unknown;
   clearTimeout?: (handle: unknown) => void;
 }
@@ -234,7 +235,7 @@ export async function runCronBrainQueryJob(
     const timeoutSeconds = validateCronTimeoutSeconds(payload.timeoutSeconds)
       ?? DEFAULT_CRON_BRAIN_QUERY_TIMEOUT_SECONDS;
     deadline = createWaitDeadline(timeoutSeconds, options);
-    const result = await runCronBrainQuery(client, payload, aliases, deadline.signal);
+    const result = await runCronBrainQuery(client, payload, aliases, options.signal ? AbortSignal.any([deadline.signal,options.signal]) : deadline.signal);
     return {
       status: 'ok',
       response: result.text,

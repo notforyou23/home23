@@ -1,0 +1,166 @@
+import { parseHistoricalContext } from '../../../src/agent/historical-context.js';
+import { createResidentOutcomeStore } from '../../../src/coordination/app/resident-outcomes.js';
+import { RESIDENT_OUTCOMES_MIGRATION_SQL } from '../../../src/coordination/migrations/0014-resident-outcomes.js';
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import test from "node:test";
+
+import { ResidentCoordinationAdapter, createM11ResidentCoordinationPort } from "../../../src/coordination-adapter/index.js";
+import { createCoordinationApplication, createDirectMessageSubmissionService, disabledCoordinationFeatureFlags, SqliteDirectMessageContext } from "../../../src/coordination/app/index.js";
+import { createCoordinationHttpServer } from "../../../src/coordination/http/index.js";
+import { SqliteBotConversationBindingAdapter, SqliteMessagingRepository } from "../../../src/coordination/channels/index.js";
+import { SqliteEventRepository } from "../../../src/coordination/events/index.js";
+import { SqliteCommunicationEventRepository } from "../../../src/coordination/communications/index.js";
+import { createLeaseService, LeaseError } from "../../../src/coordination/leases/index.js";
+import { createMessageService } from "../../../src/coordination/messages/index.js";
+import { createUnreadService, SqliteUnreadRepository } from "../../../src/coordination/unread/index.js";
+import { createWorkService, M11MessageProvenanceAuthority } from "../../../src/coordination/work/index.js";
+import type { ResidentAgentPort } from "../../../src/coordination-adapter/index.js";
+import { AT, BOT_ID, CHANNEL_ID, M11TestDatabase, OWNER_ID, createFixtureIdGenerator, fixtureId } from "../work/test-fixture.js";
+import type { AuthorityEpoch } from "../../../src/coordination/epochs/index.js";
+
+const CONVERSATION_ID = "cnv_0198d95f-6c00-7000-8000-000000000901";
+const canonicalMessagesAuthority = Object.freeze({
+  capability: "messages" as const,
+  epoch: 3,
+  mode: "canonical" as const,
+  writer: "home23-coordination",
+  effectiveAtEventSequence: 41,
+  rollbackEpoch: 1,
+});
+
+for (const [laterMessages, legacySnapshot] of [[2,false],[102,false],[2,true]] as const) test(`outcome follow-through preserves the strict resident history boundary with ${laterMessages} later messages, legacy snapshot ${legacySnapshot}`, async (t) => {
+  const database = M11TestDatabase.temporary();
+  t.after(() => database.close());
+  database.raw.prepare("INSERT INTO conversation_handles (id, channel_id, created_at) VALUES (?, ?, ?)")
+    .run(CONVERSATION_ID, CHANNEL_ID, AT);
+  database.raw.prepare("UPDATE bots SET conversation_id = ? WHERE id = ?").run(CONVERSATION_ID, BOT_ID);
+
+  const botRecord = Object.freeze({
+    id: BOT_ID, principalId: BOT_ID, name: "Jerry", purpose: "Persistent resident",
+    lifecycle: "active" as const, conversationId: CONVERSATION_ID, residentBinding: "jerry",
+    continuingIdentity: true, durableMailbox: true, requiredCapabilities: Object.freeze(["messages"]),
+    activeInstanceId: "resident-1", activeKeyVersion: 1, residentProtocolVersion: 1,
+    residentCapabilities: Object.freeze(["messages"]), residentRegisteredAt: AT,
+    lastHeartbeatAt: AT, reportedAvailability: "available" as const, availability: "available" as const,
+    version: 1, createdAt: AT, updatedAt: AT,
+  });
+  const directory = {
+    listVisibleBots: async () => [botRecord],
+    resolveAlias: async (_namespace: string, value: string) => value === "jerry" ? botRecord : null,
+    getBotByResidentBinding: async (value: string) => value === "jerry" ? botRecord : null,
+  };
+  const repository = new SqliteMessagingRepository(database, {
+    botConversationBinding: new SqliteBotConversationBindingAdapter(),
+    messageProvenanceAuthorization: new M11MessageProvenanceAuthority(),
+  });
+  const messages = createMessageService({ repository, participantDirectory: directory, now: () => new Date(AT) });
+  const generateId = createFixtureIdGenerator(30_000);
+  const work = createWorkService({ database, generateId, now: () => new Date(AT) });
+  const leases = createLeaseService({ database, generateId, now: () => new Date(AT), leaseTtlMs: 60_000 });
+  const communications = new SqliteCommunicationEventRepository(database);
+  let resolveAgent!: (response: { text: string; model: string; toolCallCount: number; durationMs: number }) => void;
+  const agentResponse = new Promise<{ text: string; model: string; toolCallCount: number; durationMs: number }>((resolve) => {
+    resolveAgent = resolve;
+  });
+  let residentAttachments = 0; let initialReviewRejected = false;
+  const instructions:string[]=[]; const histories:unknown[]=[];
+  const agent: ResidentAgentPort = {
+    async modelCatalog() {
+      return {
+        models: [{ alias: "sol", provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" }],
+        defaultModel: "gpt-5.6-terra",
+        defaultProvider: "openai-codex",
+        defaultReasoningEffort: "medium",
+        reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      };
+    },
+    async runWithTurn(chatId, _text, options) {
+      if (legacySnapshot && residentAttachments === 1 && !initialReviewRejected) { initialReviewRejected = true; throw new Error('fixture pre-admission interruption'); }
+      parseHistoricalContext(options.historyBackfill, options.coordinationOrigin.originMessageId);
+      residentAttachments += 1; instructions.push(_text); histories.push(options.historyBackfill);
+      const turnId = `coord-${options.coordinationOrigin.workId}`;
+      const selected = options.turnSelection.modelAlias === "sol"
+        ? { provider: "openai-codex", model: "gpt-5.6-sol" }
+        : { provider: "openai-codex", model: "gpt-5.6-terra" };
+      const actualEffort = options.turnSelection.reasoningEffort ?? "medium";
+      await options.onDurableStart({
+        turnId, chatId, persistedAt: AT,
+        selection: {
+          requestedProvider: null,
+          requestedModelAlias: options.turnSelection.modelAlias,
+          requestedModel: null,
+          requestedEffort: options.turnSelection.reasoningEffort,
+          resolvedProvider: selected.provider,
+          resolvedModel: selected.model,
+          resolvedEffort: actualEffort,
+          actualProvider: selected.provider,
+          actualModel: selected.model,
+          actualEffort,
+        },
+      });
+      options.onEvent({
+        turnId,
+        sequence: 1,
+        occurredAt: AT,
+        provider: "fixture",
+        model: "test-executor",
+        reasoningEffort: actualEffort,
+        event: { type: "status", status: "working", sourceEventType: "runtime.status" },
+      });
+      return { turnId, response: agentResponse };
+    },
+    stop: () => ({ stopped: true }),
+  };
+  const resident = new ResidentCoordinationAdapter(
+    agent,
+    createM11ResidentCoordinationPort(leases),
+    () => new Date(AT),
+    communications,
+  );
+  const owner = {
+    principalId: OWNER_ID, requestId: fixtureId("request", 900), correlationId: fixtureId("correlation", 900),
+    identity: { kind: "owner" as const, auth: {
+      principalId: OWNER_ID as "user_owner", deviceId: "dev_0198d95f-6c00-7000-8000-000000000900",
+      sessionId: "ses_0198d95f-6c00-7000-8000-000000000900", scopes: ["product:read", "message:send"] as const,
+    } },
+  };
+  let activeBackgroundWork = 0;
+  const beginWork = () => {
+    activeBackgroundWork += 1;
+    return () => { activeBackgroundWork -= 1; };
+  };
+  const residentContext = ({ principalId, requestId, correlationId }: {
+    residentBinding: string; principalId: string; requestId: string; correlationId: string;
+  }) => ({
+    principalId, requestId, correlationId,
+    identity: { kind: "resident", resident: { requestId, correlationId, credential: {
+      residentSlug: "jerry", role: "resident", instanceId: "resident-1", keyVersion: 1,
+    } } },
+  } as const);
+
+  database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+  const outcomes=createResidentOutcomeStore(database);
+  const service=createDirectMessageSubmissionService({messages,context:new SqliteDirectMessageContext(database,messages),work,leases,communications,outcomes,
+    resolveResident:()=>({resident,holderInstanceId:'resident-1',models:agent,context:input=>residentContext({...input,residentBinding:'jerry'})}),
+    authority:{current:()=>canonicalMessagesAuthority},beginWork,recoveryIdentity:()=>({requestId:fixtureId('request',999),correlationId:fixtureId('correlation',999)})});
+  const accepted=await service.submitMessage({context:owner,channelId:CHANNEL_ID,idempotencyKey:'outcome-origin-0001',body:{messageId:fixtureId('message',900),clientMessageId:'client-outcome',text:'Review the work and preserve my changes.',attachmentIds:[],mentions:[],replyToMessageId:null}});
+  resolveAgent({text:'Evidence report',model:'gpt-5.6-terra',toolCallCount:0,durationMs:1});await accepted.response;
+  for(let n=0;n<laterMessages;n++)await messages.sendMessage({context:owner,channelId:CHANNEL_ID,messageId:fixtureId('message',50000+n),authorPrincipalId:OWNER_ID,idempotencyKey:`outcome-latest-${n}`,kind:'text',text:`Latest correction ${n}: do not publish`,mentions:[],clientMessageId:null,replyToMessageId:null,tombstonesMessageId:null,provenance:{roundId:null,workId:null}});
+  outcomes.enqueue('specialist:fixture',accepted.work.id,{status:'completed',result:'Untrusted worker evidence'});
+  await service.processResidentOutcomes();const review=outcomes.pending()[0].reviewWorkId!;assert.ok(review);
+  if (legacySnapshot) {
+    await service.awaitSettlement(review).catch(() => undefined);
+    const row=outcomes.forReview(review)!; const prepared=JSON.parse(row.prepared!);
+    const original=await messages.getMessage!({context:owner,messageId:accepted.work.originMessageId!});
+    prepared.historyBackfill.unshift({messageId:original.id,sequence:original.sequence,role:'user',text:original.text,createdAt:original.createdAt});
+    outcomes.update(row,'prepared_json',JSON.stringify(prepared));
+    await service.processResidentOutcomes();
+  }
+  await service.awaitSettlement(review);await service.processResidentOutcomes();
+  assert.equal(residentAttachments,2);assert.match(instructions[1],/INTERNAL WORK OUTCOME/);
+  assert.match(instructions[1],/preserve my changes/);assert.ok(JSON.stringify(histories[1]).includes(`Latest correction ${laterMessages-1}`));
+  assert.equal(work.get(review)?.state,'succeeded');assert.equal(outcomes.pending().length,0);
+  assert.equal(database.readOne<{n:number}>("SELECT count(*) AS n FROM messages WHERE work_id=? AND kind='result'",review)?.n,1);
+  database.reopen();await service.processResidentOutcomes();assert.equal(residentAttachments,2);
+});

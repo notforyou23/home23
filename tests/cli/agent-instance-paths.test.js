@@ -57,6 +57,22 @@ test('resolver keeps ordinary local agents on instances/<agent>', () => {
   }
 });
 
+test('required agent config parsing fails closed on malformed YAML', () => {
+  const root = makeInstall();
+  try {
+    const instanceDir = join(root, 'instances', 'jerry');
+    fs.mkdirSync(instanceDir, { recursive: true });
+    fs.writeFileSync(join(instanceDir, 'config.yaml'), 'ports: [unterminated\n', 'utf8');
+    assert.throws(
+      () => resolveAgentInstancePaths(root, 'jerry', { requireConfig: true }),
+      (error) => error?.code === 'agent_config_invalid'
+        && /unexpected end of the stream|flow sequence/i.test(error.message),
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('resolver maps a configured system.instanceRoot onto an external runtime root', () => {
   const root = makeInstall();
   const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-agent-external-root-'));

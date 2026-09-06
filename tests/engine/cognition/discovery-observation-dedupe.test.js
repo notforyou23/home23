@@ -60,6 +60,43 @@ test('DiscoveryEngine allows repeated machine observation bucket after dedupe wi
   assert.equal(d.pop(1)[0].key, 'observation:machine.memory:memory:low');
 });
 
+test('DiscoveryEngine prefers Darwin pressure capacity buckets over raw free percent', () => {
+  const cases = [
+    [10, 'critical'],
+    [20, 'severe'],
+    [35, 'low'],
+    [50, 'tight'],
+    [50.1, 'normal'],
+  ];
+
+  for (const [pressureFreePct, bucket] of cases) {
+    const d = engine();
+    const at = `2026-05-01T12:00:${String(Math.floor(pressureFreePct)).padStart(2, '0')}.000Z`;
+    assert.equal(d.injectObservation({
+      channelId: 'machine.memory',
+      flag: 'COLLECTED',
+      confidence: 0.95,
+      sourceRef: `mem:${pressureFreePct}`,
+      producedAt: at,
+      payload: { freePct: 1.8, rawFreePct: 1.8, pressureFreePct },
+    }), true);
+    assert.equal(d.pop(1)[0].key, `observation:machine.memory:memory:${bucket}`);
+  }
+});
+
+test('DiscoveryEngine retains legacy raw-free memory buckets without pressure capacity', () => {
+  const d = engine();
+  assert.equal(d.injectObservation({
+    channelId: 'machine.memory',
+    flag: 'COLLECTED',
+    confidence: 0.95,
+    sourceRef: 'mem:legacy',
+    producedAt: '2026-05-01T12:00:00.000Z',
+    payload: { freePct: 4.9 },
+  }), true);
+  assert.equal(d.pop(1)[0].key, 'observation:machine.memory:memory:severe');
+});
+
 test('DiscoveryEngine does not enqueue Good Life telemetry as deep-thought material', () => {
   const d = engine();
 

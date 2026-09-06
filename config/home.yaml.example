@@ -3,6 +3,41 @@ home:
   version: 1.0.0
   primaryAgent: ""
 
+# M12 shadow composition. The process definition is generated exactly once,
+# but exits without opening its database, socket, or listener until enabled.
+# Legacy Home23 processes and routes remain authoritative.
+coordination:
+  process:
+    enabled: false
+  publicApi:
+    enabled: false
+    host: 127.0.0.1
+    port: 7346
+  # Independent read-surface kill switch. Canonical Activity authority is
+  # still required; this setting alone can never activate the capability.
+  activity:
+    enabled: false
+  # Independent admission kill switch. Canonical attachments authority is
+  # still required; this setting alone can never activate the capability.
+  attachments:
+    enabled: false
+  # Authenticated Apple device registration and privacy-minimal completion
+  # wake hints. Requires a complete `apns` block in secrets.yaml.
+  push:
+    enabled: false
+  # Registry flags are projected literally. Every value defaults false; flags
+  # gate reachability only and never change a canonical authority epoch.
+  flags:
+    coordination.resident.jerry.enabled: false
+    coordination.resident.forrest.enabled: false
+    coordination.channels.enabled: false
+    coordination.search.canonical: false
+    coordination.import.shadow_enabled: false
+    coordination.apple.mac_cutover: false
+    coordination.apple.iphone_cutover: false
+    coordination.bot_lifecycle.enabled: false
+    coordination.compaction.enabled: false
+
 evobrew:
   port: 3415
 
@@ -102,6 +137,7 @@ providers:
       - gpt-5.3-codex-spark
       - gpt-5.4
       - gpt-5.4-mini
+      - gpt-6-astra
   minimax:
     baseUrl: https://api.minimax.io/anthropic
     defaultModels:
@@ -370,6 +406,9 @@ models:
     codex:
       provider: openai-codex
       model: gpt-5.5
+    astra:
+      provider: openai-codex
+      model: gpt-6-astra
 
 skills:
   x-research:

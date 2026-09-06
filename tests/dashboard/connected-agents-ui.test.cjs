@@ -1,0 +1,126 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+
+const root = process.cwd();
+const read = (name) => fs.readFileSync(path.join(root, 'engine/src/dashboard', name), 'utf8');
+
+test('Connected Agents is a product surface with explicit Legacy rollback', () => {
+  const html = read('connected-agents.html');
+  const js = read('connected-agents.js');
+  const css = read('connected-agents.css');
+  const server = read('server.js');
+  for (const noun of ['Inbox', 'Bots', 'Channels', 'New Bot', 'New Channel', 'Details']) assert.match(html, new RegExp(noun));
+  assert.match(html, /\/home23\/legacy/);
+  assert.match(server, /connected-agents\.html/);
+  assert.match(server, /this\.app\.get\('\/home23\/legacy'/);
+  assert.match(js, /name\?\.toLowerCase\(\) === "jerry"/);
+  assert.match(js, /\/channels\/\$\{encodeURIComponent\(state\.selected\)\}\/messages/);
+  assert.match(js, /readCursorMutation/);
+  assert.match(js, /botLifecycle/);
+  assert.match(js, /data-control="\$\{lifecycleOperation\}"/);
+  assert.match(js, /bot\.lifecycle === "active"/);
+  assert.match(js, /bot\.lifecycle === "archived"/);
+  assert.match(js, /data-restore-bot/);
+  assert.match(js, /controlBot\(button\.dataset\.restoreBot, "restore"\)/);
+  assert.match(js, /"jerry", "forrest"/);
+  assert.doesNotMatch(js, /data-control="(?:start|stop|restart)"/);
+  assert.doesNotMatch(js, /state\.provisioning|residentBinding,\s*purpose|requiredCapabilities:\s*\["messages"\]|is provisioning|Getting ready/);
+  assert.match(js, /scheduleRefresh/);
+  assert.match(js, /15000/);
+  assert.match(js, /className = "ca-message owner pending"/);
+  assert.match(js, /Your draft has been kept/);
+  assert.match(js, /Results may be incomplete/);
+  assert.match(js, /Verified isolated execution is not available/);
+  assert.match(html, /data-scope="attachments"/);
+  assert.match(html, /id="channel-dialog"/);
+  assert.match(html, /id="connection-banner"/);
+  assert.match(css, /prefers-color-scheme:\s*dark/);
+  assert.match(css, /prefers-reduced-motion:\s*reduce/);
+  assert.match(css, /@media \(max-width:\s*680px\)/);
+  assert.match(css, /safe-area-inset-bottom/);
+  assert.doesNotMatch(`${html}\n${js}`, /\b(rounds|leases|workers|processes)\b/i);
+  assert.doesNotMatch(html, /KPI|control center|Places|task center/i);
+  assert.doesNotMatch(js, /fixture|sample data|mock/i);
+});
+
+test('browser token is tab scoped and every product call uses the canonical facade', () => {
+  const html = read('connected-agents.html');
+  const js = read('connected-agents.js');
+  assert.match(js, /sessionStorage\.getItem\("home23:product-token"\)/);
+  assert.doesNotMatch(js, /localStorage[^\n]*product-token|product-token[^\n]*localStorage/);
+  assert.match(js, /const API = "\/home23\/api\/product"/);
+  assert.match(js, /headers\.authorization = `Bearer \$\{state\.token\}`/);
+  assert.match(html, /Legacy dashboard/);
+});
+
+test('model and effort controls use resident options and capture exact retry identity', () => {
+  const html = read('connected-agents.html');
+  const js = read('connected-agents.js');
+  const selection = read('connected-agents-selection.js');
+  const css = read('connected-agents.css');
+  assert.match(html, /connected-agents-selection\.js/);
+  assert.match(js, /\/execution-options/);
+  assert.match(js, /composer-model/);
+  assert.match(js, /composer-effort/);
+  assert.match(js, /modelSelection/);
+  assert.match(js, /Selection\.capture/);
+  assert.match(js, /Selection\.requestFields\(record\)/);
+  assert.match(js, /Saved for this conversation and captured for each send/);
+  assert.match(selection, /home23:connected-agents:execution:/);
+  assert.match(selection, /modelAlias/);
+  assert.match(selection, /reasoningEffort/);
+  assert.match(css, /\.ca-execution-controls/);
+});
+
+test('search, keyboard, responsive navigation, and details stay conversation-first', () => {
+  const html = read('connected-agents.html');
+  const js = read('connected-agents.js');
+  assert.match(html, /<kbd>⌘ K<\/kbd>/);
+  assert.match(js, /event\.metaKey \|\| event\.ctrlKey/);
+  assert.match(js, /ArrowDown/);
+  assert.match(js, /focus\(\{ preventScroll: true \}\)/);
+  assert.match(js, /openConversation\(r\.dataset\.channel, r\.dataset\.message\)/);
+  assert.match(js, /classList\.remove\("open"\)/);
+  assert.match(js, /On this Mac/);
+  assert.doesNotMatch(js, /isolated environment is ready|runs on iPhone/i);
+});
+
+test('calm transcript and exact turn Inspector share canonical communication evidence', () => {
+  const html = read('connected-agents.html');
+  const js = read('connected-agents.js');
+  const projection = read('connected-agents-inspector.js');
+  const css = read('connected-agents.css');
+  assert.match(html, /id="inspector-pane"/);
+  assert.match(html, /connected-agents-inspector\.js/);
+  assert.match(js, /\/communications\/events\?after=/);
+  assert.match(js, /limit=25&conversationId=/);
+  assert.match(js, /cursor_expired/);
+  assert.match(js, /must not be treated as complete across the gap/);
+  assert.match(js, /Show full arguments/);
+  assert.match(js, /Show full result/);
+  assert.match(js, /Show full event/);
+  assert.match(js, /Copy exact value/);
+  assert.match(js, /Selection receipt/);
+  assert.match(js, /Requested/);
+  assert.match(js, /Resolved/);
+  assert.match(js, /Actual/);
+  assert.match(js, /Cancel response/);
+  assert.match(js, /Retry response/);
+  assert.match(js, /Export full evidence/);
+  assert.match(js, /Export compact conversation/);
+  assert.match(js, /Another turn is live/);
+  assert.match(js, /New events/);
+  assert.match(js, /history\.pushState/);
+  assert.match(js, /window\.addEventListener\("popstate"/);
+  assert.match(projection, /conflicting_duplicate/);
+  assert.match(projection, /Provider reasoning — verbatim/);
+  assert.match(projection, /Unclassified reasoning event/);
+  assert.match(projection, /integrityConflicts/);
+  assert.doesNotMatch(projection, /sanitize|redact|truncate/i);
+  assert.match(css, /\.ca-turn-glance/);
+  assert.match(css, /\.ca-inspector-pane/);
+  assert.match(css, /--event-depth/);
+  assert.match(css, /@media \(max-width:\s*680px\)[\s\S]*\.ca-inspector-pane/);
+});

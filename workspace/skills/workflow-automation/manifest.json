@@ -39,5 +39,6 @@
     "plan",
     "map-tools",
     "sequence"
-  ]
+  ],
+  "routing": "manual"
 }

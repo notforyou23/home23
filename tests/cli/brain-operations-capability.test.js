@@ -896,14 +896,18 @@ test('every PM2 launcher and watchdog scrub list blocks inherited brain capabili
   assert.doesNotMatch(startSource, /restartOnline\s*:\s*true/);
 });
 
-test('crash-left capability lock and atomic temp files remain ignored', () => {
+test('crash-left capability lock and atomic temp files remain ignored', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-ignore-contract-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  execFileSync('git', ['init', '--template='], { cwd: root, stdio: 'pipe' });
+  writeFileSync(join(root, '.gitignore'), readFileSync(join(process.cwd(), '.gitignore')));
   for (const candidate of [
     'config/.brain-operations-capability.lock',
     'config/secrets.yaml.1234.00000000-0000-4000-8000-000000000000.tmp',
     'ecosystem.config.cjs.1234.00000000-0000-4000-8000-000000000000.tmp',
   ]) {
     assert.doesNotThrow(() => execFileSync('git', ['check-ignore', '-q', candidate], {
-      cwd: process.cwd(),
+      cwd: root,
       stdio: 'pipe',
     }), candidate);
   }

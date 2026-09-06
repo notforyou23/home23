@@ -16,6 +16,12 @@ const PROVIDERS = [
   'minimax',
 ] as const;
 
+type CodexTerminalProbe = {
+  toolExecutions: number;
+  terminalStatus?: unknown;
+  assistantHistoryCount?: number;
+};
+
 function sse(events: Array<Record<string, unknown>>): Response {
   return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), {
     status: 200,
@@ -32,13 +38,18 @@ function finalAnthropicMessage(provider: string, content: Array<Record<string, u
     content,
     stop_reason: content.some(block => block.type === 'tool_use') ? 'tool_use' : 'end_turn',
     stop_sequence: null,
-    usage: { input_tokens: 1, output_tokens: 1 },
+    usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 1200, cache_creation_input_tokens: 0 },
   };
 }
 
-function messageStream(message: Record<string, unknown>) {
+function messageStream(
+  message: Record<string, unknown>,
+  events: Array<Record<string, unknown>> = [],
+) {
   return {
-    async *[Symbol.asyncIterator]() {},
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) yield event;
+    },
     async finalMessage() { return message; },
   };
 }
@@ -52,8 +63,20 @@ function makeBrainOperations() {
   return base;
 }
 
-async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
+async function runProvider(
+  provider: typeof PROVIDERS[number],
+  options: {
+    emptyCodexFinalOnce?: boolean;
+    oauth?: boolean;
+    outputItemCodexFinal?: boolean;
+    terminalCodexFinal?: boolean;
+    codexTerminalCase?: 'failed' | 'incomplete' | 'eof';
+    codexTerminalProbe?: CodexTerminalProbe;
+  } = {},
+): Promise<{
   toolEvents: Array<Record<string, unknown>>;
+  thinkingEvents: Array<Record<string, unknown>>;
+  cacheEvents: Array<Record<string, unknown>>;
   contexts: Array<Record<string, unknown>>;
   providerRequests: Array<Record<string, unknown>>;
   nativeToolResult: unknown;
@@ -64,6 +87,8 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
   const contexts: Array<Record<string, unknown>> = [];
   const providerRequests: Array<Record<string, unknown>> = [];
   const toolEvents: Array<Record<string, unknown>> = [];
+  const thinkingEvents: Array<Record<string, unknown>> = [];
+  const cacheEvents: Array<Record<string, unknown>> = [];
   const tool = {
     name: TOOL_NAME,
     description: 'returns one typed failure',
@@ -83,6 +108,7 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
       ],
     },
     execute: async (_input: Record<string, unknown>, context: Record<string, unknown>) => {
+      if (options.codexTerminalProbe) options.codexTerminalProbe.toolExecutions += 1;
       contexts.push(context);
       return { content: 'typed failure', is_error: true };
     },
@@ -117,7 +143,7 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
         : provider === 'ollama-cloud' ? 'ollama-test'
           : 'gpt-5.5';
   const agent = new AgentLoop({
-    apiKey: 'test-key',
+    apiKey: options.oauth ? 'sk-ant-oat01-test-only' : 'test-key',
     model,
     provider,
     registry: registry as never,
@@ -130,6 +156,7 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
     workspacePath: join(root, 'workspace'),
   });
 
+  if (options.oauth) (agent as any).isOAuth = true;
   const originalFetch = globalThis.fetch;
   const envKeys = ['OPENAI_API_KEY', 'OLLAMA_CLOUD_API_KEY', 'XAI_API_KEY'] as const;
   const priorEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
@@ -156,7 +183,16 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
             if (sdkCall === 1) {
               return messageStream(finalAnthropicMessage(provider, [{
                 type: 'tool_use', id: 'tool-1', name: TOOL_NAME, input: {},
-              }]));
+              }]), provider === 'anthropic' ? [
+                {
+                  type: 'content_block_delta',
+                  delta: { type: 'thinking_delta', thinking: 'Checking the local tool first. ' },
+                },
+                {
+                  type: 'content_block_delta',
+                  delta: { type: 'thinking_delta', thinking: 'Then I will report the typed failure honestly.' },
+                },
+              ] : []);
             }
             const messages = request.messages as Array<Record<string, unknown>>;
             const last = messages.at(-1) as { content?: Array<Record<string, unknown>> };
@@ -182,13 +218,80 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
       providerRequests.push(body);
 
       if (provider === 'openai-codex') {
-        if (providerCall === 1) return sse([{
-          type: 'response.output_item.done',
-          item: { type: 'function_call', call_id: 'call-1', name: TOOL_NAME, arguments: '{}' },
-        }]);
+        if (providerCall === 1 && options.codexTerminalCase) {
+          const stagedEvents: Array<Record<string, unknown>> = [
+            { type: 'response.output_text.delta', delta: 'Partial output.' },
+            {
+              type: 'response.output_item.done',
+              item: { type: 'function_call', call_id: 'call-terminal', name: TOOL_NAME, arguments: '{}' },
+            },
+          ];
+          if (options.codexTerminalCase === 'failed') {
+            stagedEvents.push({
+              type: 'response.failed',
+              response: {
+                status: 'failed',
+                error: { code: 'server_error', message: 'upstream exploded' },
+              },
+            });
+            return sse(stagedEvents);
+          }
+          if (options.codexTerminalCase === 'incomplete') {
+            stagedEvents.push({
+              type: 'response.incomplete',
+              response: {
+                status: 'incomplete',
+                incomplete_details: { reason: 'max_output_tokens' },
+              },
+            });
+            return sse(stagedEvents);
+          }
+          return sse(stagedEvents);
+        }
+        if (providerCall === 1) return sse([
+          { type: 'response.reasoning_summary_text.delta', delta: 'Need the tool.' },
+          { type: 'response.reasoning_summary_text.done', text: 'Need the tool.' },
+          {
+            type: 'response.output_item.done',
+            item: { type: 'function_call', call_id: 'call-1', name: TOOL_NAME, arguments: '{}' },
+          },
+          { type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 2000, output_tokens: 20, input_tokens_details: { cached_tokens: 1500 } } } },
+        ]);
+        if (providerCall === 2 && options.emptyCodexFinalOnce) {
+          return sse([{ type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 2000, output_tokens: 20, input_tokens_details: { cached_tokens: 1500 } } } }]);
+        }
         const items = body.input as Array<Record<string, unknown>>;
         nativeToolResult = items.find(item => item.type === 'function_call_output');
-        return sse([{ type: 'response.output_text.done', text: 'done' }]);
+        if (options.outputItemCodexFinal) {
+          return sse([
+            {
+              type: 'response.output_item.done',
+              item: {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'done' }],
+              },
+            },
+            { type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 2000, output_tokens: 20, input_tokens_details: { cached_tokens: 1500 } } } },
+          ]);
+        }
+        if (options.terminalCodexFinal) {
+          return sse([{
+            type: 'response.completed',
+            response: {
+              status: 'completed',
+              output: [{
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'done' }],
+              }],
+            },
+          }]);
+        }
+        return sse([
+          { type: 'response.output_text.done', text: 'done' },
+          { type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 2000, output_tokens: 20, input_tokens_details: { cached_tokens: 1500 } } } },
+        ]);
       }
       if (provider === 'xai') {
         if (providerCall === 1) return sse([
@@ -219,11 +322,11 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
         if (providerCall === 1) {
           return Response.json({ choices: [{ message: {
             role: 'assistant', content: null, tool_calls: [toolCall],
-          } }] });
+          } }], usage: { prompt_tokens: 2000, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 0 } } });
         }
         const messages = body.messages as Array<Record<string, unknown>>;
         nativeToolResult = messages.find(message => message.role === 'tool');
-        return Response.json({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+        return Response.json({ choices: [{ message: { role: 'assistant', content: 'done' } }], usage: { prompt_tokens: 2100, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 1800 } } });
       }
       if (provider === 'ollama-cloud') {
         if (providerCall === 1) {
@@ -238,17 +341,28 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
       throw new Error(`unexpected real provider request: ${url}`);
     }) as typeof fetch;
 
-    const started = await agent.runWithTurn(`chat-${provider}`, 'run the failure tool', {
+    const chatId = `chat-${provider}`;
+    const started = await agent.runWithTurn(chatId, 'run the failure tool', {
       firstTokenTimeoutMs: 60_000,
       inactivityMs: 60_000,
       hardDurationMs: 120_000,
       onEvent: event => {
         if (event.type === 'tool_result') toolEvents.push(event as unknown as Record<string, unknown>);
+        if (event.type === 'thinking') thinkingEvents.push(event as unknown as Record<string, unknown>);
+        if (event.type === 'cache') cacheEvents.push(event as unknown as Record<string, unknown>);
       },
     });
-    const result = await started.response;
+    const result = await started.response.catch(error => {
+      if (options.codexTerminalProbe) {
+        const records = history.loadRaw(chatId) as Array<Record<string, unknown>>;
+        options.codexTerminalProbe.terminalStatus = records.findLast(record => record.type === 'turn')?.status;
+        options.codexTerminalProbe.assistantHistoryCount = records.filter(record =>
+          record.role === 'assistant' && !Object.hasOwn(record, 'type')).length;
+      }
+      throw error;
+    });
     assert.equal(result.text, 'done');
-    return { toolEvents, contexts, providerRequests, nativeToolResult };
+    return { toolEvents, thinkingEvents, cacheEvents, contexts, providerRequests, nativeToolResult };
   } finally {
     globalThis.fetch = originalFetch;
     for (const key of envKeys) {
@@ -284,6 +398,63 @@ for (const provider of PROVIDERS) {
     }
   });
 }
+
+test('openai-codex requests a reasoning summary and emits thinking events', async () => {
+  const result = await runProvider('openai-codex');
+  assert.deepEqual(result.providerRequests[0]?.reasoning, { effort: 'medium', summary: 'auto' });
+  assert.equal(result.thinkingEvents.map(event => event.content).join(''), 'Need the tool.');
+});
+
+test('openai-codex recovers one empty final response instead of committing a placeholder', async () => {
+  const result = await runProvider('openai-codex', { emptyCodexFinalOnce: true });
+  assert.equal(result.providerRequests.length, 3);
+  assert.match(JSON.stringify(result.providerRequests[2]?.input), /no visible answer text was returned/);
+});
+
+test('openai-codex accepts final text carried only by the completed message item', async () => {
+  const result = await runProvider('openai-codex', { outputItemCodexFinal: true });
+  assert.equal(result.providerRequests.length, 2);
+});
+
+test('openai-codex accepts final text carried only by the terminal response', async () => {
+  const result = await runProvider('openai-codex', { terminalCodexFinal: true });
+  assert.equal(result.providerRequests.length, 2);
+});
+
+for (const terminalCase of ['failed', 'incomplete', 'eof'] as const) {
+  test(`openai-codex rejects ${terminalCase} terminal state`, async () => {
+    const probe: CodexTerminalProbe = { toolExecutions: 0 };
+    const expectedMessage = terminalCase === 'failed'
+      ? /openai-codex response failed.*server_error.*upstream exploded/i
+      : terminalCase === 'incomplete'
+        ? /openai-codex response incomplete.*max_output_tokens/i
+        : /openai-codex response stream ended before response\.completed/i;
+    await assert.rejects(
+      runProvider('openai-codex', { codexTerminalCase: terminalCase, codexTerminalProbe: probe }),
+      expectedMessage,
+    );
+    assert.deepEqual(probe, {
+      toolExecutions: 0,
+      terminalStatus: 'error',
+      assistantHistoryCount: 0,
+    });
+  });
+}
+
+test('anthropic enables extended thinking for default effort', async () => {
+  const result = await runProvider('anthropic');
+  assert.deepEqual(result.providerRequests[0]?.thinking, { type: 'enabled', budget_tokens: 8000 });
+  assert.equal(result.providerRequests[0]?.temperature, 1);
+  assert.equal(
+    result.thinkingEvents.map(event => event.content).join(''),
+    'Checking the local tool first. Then I will report the typed failure honestly.',
+  );
+});
+
+test('minimax does not enable anthropic extended thinking', async () => {
+  const result = await runProvider('minimax');
+  assert.equal(result.providerRequests[0]?.thinking, undefined);
+});
 
 test('xAI receives an object-root schema without unsupported composition keywords', async () => {
   const result = await runProvider('xai');
@@ -380,11 +551,13 @@ async function runGrokZdrScenario(rejectPreviousResponseId: boolean): Promise<{
       if (xaiCall === 1) {
         return sse([
           { type: 'response.created', response: { id: 'xai-response-zdr-1' } },
-          { type: 'response.reasoning_summary_text.delta', delta: 'Need' },
-          { type: 'response.reasoning_summary_text.delta', delta: ' the' },
-          { type: 'response.reasoning_summary_text.delta', delta: ' local' },
-          { type: 'response.reasoning_summary_text.delta', delta: ' result.' },
-          { type: 'response.reasoning_summary_text.done', text: 'Need the local result.' },
+          { type: 'response.reasoning_text.delta', delta: 'Need' },
+          { type: 'response.reasoning_text.delta', delta: ' the' },
+          { type: 'response.reasoning_text.delta', delta: ' local' },
+          { type: 'response.reasoning_text.delta', delta: ' result.' },
+          { type: 'response.reasoning_text.done', text: 'Need the local result.' },
+          { type: 'response.reasoning_summary_text.delta', delta: '**Need the local result**' },
+          { type: 'response.reasoning_summary_text.done', text: '**Need the local result**' },
           {
             type: 'response.output_item.done',
             item: {
@@ -416,10 +589,12 @@ async function runGrokZdrScenario(rejectPreviousResponseId: boolean): Promise<{
       }
 
       return sse([
-        { type: 'response.reasoning_summary_text.delta', delta: 'Use' },
-        { type: 'response.reasoning_summary_text.delta', delta: ' that' },
-        { type: 'response.reasoning_summary_text.delta', delta: ' result.' },
-        { type: 'response.reasoning_summary_text.done', text: 'Use that result.' },
+        { type: 'response.reasoning_text.delta', delta: 'Use' },
+        { type: 'response.reasoning_text.delta', delta: ' that' },
+        { type: 'response.reasoning_text.delta', delta: ' result.' },
+        { type: 'response.reasoning_text.done', text: 'Use that result.' },
+        { type: 'response.reasoning_summary_text.delta', delta: '**Use that result**' },
+        { type: 'response.reasoning_summary_text.done', text: '**Use that result**' },
         {
           type: 'response.output_item.done',
           item: {
@@ -498,21 +673,23 @@ test('xAI Grok continues a local tool call statelessly under ZDR', async () => {
   ]);
 });
 
-test('xAI Grok coalesces thinking while preserving tool/result/final-answer event order', async () => {
+test('xAI Grok preserves both reasoning channels and stable tool/result identity in order', async () => {
   const result = await runGrokZdrScenario(false);
-  assert.deepEqual(result.events, [
-    { type: 'thinking', content: 'Need the local result.' },
-    { type: 'tool_start', tool: GROK_ZDR_TOOL, args: { topic: 'zdr' } },
-    {
-      type: 'tool_result',
-      tool: GROK_ZDR_TOOL,
-      result: 'local result for ZDR',
-      success: true,
-    },
-    { type: 'thinking', content: 'Use that result.' },
-    { type: 'response_chunk', chunk: 'Final ' },
-    { type: 'response_chunk', chunk: 'answer.' },
-  ]);
+  assert.equal(result.events.filter(event => event.type === 'cache').length, 2);
+  const full = result.events.filter(event => event.type === 'thinking'
+      && event.provenance === 'provider_verbatim_reasoning')
+    .map(event => event.content).join('');
+  const summaries = result.events.filter(event => event.type === 'thinking'
+      && event.provenance === 'provider_reasoning_summary')
+    .map(event => event.content).join('');
+  assert.equal(full, 'Need the local result.Use that result.');
+  assert.equal(summaries, '**Need the local result****Use that result**');
+  const toolStart = result.events.find(event => event.type === 'tool_start')!;
+  const toolResult = result.events.find(event => event.type === 'tool_result')!;
+  assert.equal(toolStart.toolCallId, 'call-1');
+  assert.equal(toolResult.toolCallId, toolStart.toolCallId);
+  assert.equal(toolResult.exactResult, 'local result for ZDR');
+  assert.deepEqual(toolStart.args, { topic: 'zdr' });
 
   const responseChunks = result.events
     .filter(event => event.type === 'response_chunk')
@@ -723,5 +900,53 @@ for (const terminalCase of ['failed', 'incomplete', 'eof'] as const) {
     assert.equal(result.records.some(record => record.type === 'turn' && record.status === 'complete'), false);
     assert.equal(result.records.some(record =>
       record.role === 'assistant' && !Object.hasOwn(record, 'type')), false);
+  });
+}
+
+
+test('Anthropic caches the actual stable OAuth prompt and the growing tool conversation', async () => {
+  const result = await runProvider('anthropic', { oauth: true });
+  assert.equal(result.providerRequests.length, 2);
+  for (const request of result.providerRequests) {
+    assert.deepEqual(request.cache_control, { type: 'ephemeral' });
+    const system = request.system as Array<Record<string, any>>;
+    assert.match(system[0]!.text, /Claude Code/);
+    assert.equal(system[0]!.cache_control, undefined);
+    assert.equal(system[1]!.text, 'You are a test agent.');
+    assert.deepEqual(system[1]!.cache_control, { type: 'ephemeral' });
+  }
+  assert.equal(result.cacheEvents.length, 2, 'tool round and final response both report usage');
+  assert.equal(result.cacheEvents[0]!.read, 1200);
+  assert.equal(result.cacheEvents[0]!.inputTotal, 1300);
+});
+
+test('OpenAI keeps a stable routing key through tools and reports both misses and hits', async () => {
+  const result = await runProvider('openai');
+  assert.match(String(result.providerRequests[0]!.prompt_cache_key), /^home23-v1-[a-f0-9]{64}$/);
+  assert.equal(result.providerRequests[0]!.prompt_cache_key, result.providerRequests[1]!.prompt_cache_key);
+  assert.deepEqual(result.cacheEvents.map(event => event.read), [0, 1800]);
+  assert.deepEqual(result.cacheEvents.map(event => event.write), [null, null]);
+  assert.deepEqual(result.cacheEvents.map(event => event.inputTotal), [2000, 2100]);
+});
+
+test('Codex reports terminal cached-token usage without assuming public API cache options', async () => {
+  const result = await runProvider('openai-codex');
+  assert.deepEqual(result.cacheEvents.map(event => event.read), [1500, 1500]);
+  for (const request of result.providerRequests) {
+    assert.equal(request.prompt_cache_key, undefined);
+    assert.equal(request.cache_control, undefined);
+  }
+});
+
+for (const provider of ['minimax', 'ollama-cloud', 'xai'] as const) {
+  test(`${provider} does not receive unsupported native cache controls`, async () => {
+    const result = await runProvider(provider);
+    for (const request of result.providerRequests) {
+      assert.equal(request.cache_control, undefined);
+      assert.equal(request.prompt_cache_key, undefined);
+      assert.equal(request.prompt_cache_options, undefined);
+    }
+    assert.equal(result.cacheEvents.length, 2);
+    if (provider !== 'minimax') assert.ok(result.cacheEvents.every(event => event.read === null));
   });
 }

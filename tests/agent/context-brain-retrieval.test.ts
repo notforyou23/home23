@@ -222,6 +222,47 @@ test('complete exact-keyword supplementation is usable hybrid retrieval without 
   }
 });
 
+test('fast incomplete index matches are usable without a false brain warning', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'context-fast-index-'));
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  try {
+    const result = await assembleContext('stale canary', 'chat-fast', [], {
+      workspacePath: workspace,
+      brainDir: join(root, 'brain'),
+      enginePort: 5002,
+      sessionId: 'chat-fast',
+      signal: new AbortController().signal,
+      contextSearch: async () => ({
+        results: [{ id: 'fast-1', concept: 'fast index canary', similarity: 0.88 }],
+        sourceEvidence: {
+          sourceHealth: 'degraded',
+          matchOutcome: 'matches',
+          completeCoverage: false,
+          fallback: {
+            route: 'context-fast',
+            reason: 'ann_stale',
+            completeness: 'incomplete',
+          },
+        },
+      }),
+      triggerIndex: { evaluate: () => [] } as never,
+    });
+    assert.equal(result.degraded, false);
+    assert.equal(result.sourceHealth, 'degraded');
+    assert.match(result.block, /successful fast brain retrieval/i);
+    assert.match(result.block, /fast index canary/);
+    assert.doesNotMatch(result.block, /brain retrieval degraded|success is not yet established/i);
+    assert.equal(result.events.some((event) => event.event_type === 'RetrievalDegraded'), false);
+    const posture = result.events.find((event) => event.event_type === 'MemoryActivationPosture');
+    assert.equal(posture?.payload.retrievalInterpretation, 'successful_fast');
+    assert.equal(typeof posture?.payload.retrievalMs, 'number');
+    assert.equal(posture?.payload.stage, 'fast');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('degraded source can preserve partial cues without claiming a healthy route', async () => {
   const root = mkdtempSync(join(tmpdir(), 'context-partial-cues-'));
   const workspace = join(root, 'workspace');
@@ -246,6 +287,49 @@ test('degraded source can preserve partial cues without claiming a healthy route
     assert.match(result.block, /success is not yet established/);
     assert.equal(result.retrievalError, 'source reported degraded');
     assert.ok(result.events.some((event) => event.event_type === 'RetrievalDegraded'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('retrieval-eval detector matches isolation phrasing', async () => {
+  const { isRetrievalEvalTurn, retrievalEvalDisclosure } = await import('../../src/agent/retrieval-eval.js');
+  assert.equal(isRetrievalEvalTurn('retrieval-eval: search only the quoted phrase'), true);
+  assert.equal(isRetrievalEvalTurn('fresh retrieval of identity correction'), true);
+  assert.equal(isRetrievalEvalTurn('prove brain_search finds the ledger correction'), true);
+  assert.equal(isRetrievalEvalTurn('what did we talk about yesterday?'), false);
+  assert.match(retrievalEvalDisclosure(), /\[RETRIEVAL EVAL\]/);
+});
+
+test('skipBrainEnrichment does not call contextSearch', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'context-eval-skip-'));
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  let searched = false;
+  try {
+    const result = await assembleContext(
+      'retrieval-eval: There is no he. I am Jerry.',
+      'chat-eval',
+      [],
+      {
+        workspacePath: workspace,
+        brainDir: join(root, 'brain'),
+        enginePort: 5002,
+        sessionId: 'chat-eval',
+        signal: new AbortController().signal,
+        skipBrainEnrichment: true,
+        contextSearch: async () => {
+          searched = true;
+          throw new Error('contextSearch must not run during retrieval-eval');
+        },
+        triggerIndex: { evaluate: () => [] } as never,
+      },
+    );
+    assert.equal(searched, false);
+    assert.equal(result.brainCueCount, 0);
+    assert.doesNotMatch(result.block, /CONTINUITY ENRICHMENT|automatic pre-turn brain cues/);
+    const posture = result.events.find((event) => event.event_type === 'MemoryActivationPosture');
+    assert.equal(posture?.payload.searchAttempted, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

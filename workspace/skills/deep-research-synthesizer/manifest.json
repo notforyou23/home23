@@ -2,7 +2,7 @@
   "id": "deep-research-synthesizer",
   "version": "1.0.0",
   "name": "Deep Research Synthesizer",
-  "description": "Turn many sources or brain outputs into one coherent synthesis with contradictions, confidence, and next actions.",
+  "description": "Optional reference for source-grounded synthesis with uncertainty and retrieval limits.",
   "layer": "skill",
   "runtime": "docs",
   "category": "research",
@@ -21,18 +21,9 @@
     "what do all these findings say",
     "summarize the research with contradictions"
   ],
-  "requiresTools": [
-    "research_list_brains",
-    "research_search_all_brains",
-    "research_query_brain",
-    "web_search"
-  ],
-  "dependsOn": [
-    "source-validation"
-  ],
-  "composes": [
-    "knowledge-structuring"
-  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [],
   "actions": [
     "synthesize"
   ]

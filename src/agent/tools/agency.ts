@@ -1,7 +1,8 @@
 import type { ToolContext, ToolDefinition } from '../types.js';
+import { resolveHarnessBridgeUrl } from '../harness-bridge-url.js';
 
 function baseUrl(ctx: ToolContext): string {
-  return ctx.workerConnectorBaseUrl || `http://127.0.0.1:${process.env.HOME23_BRIDGE_PORT || '5004'}`;
+  return resolveHarnessBridgeUrl(ctx);
 }
 
 function fetcher(ctx: ToolContext): typeof fetch {
@@ -23,7 +24,7 @@ async function jsonRequest(ctx: ToolContext, path: string, init?: RequestInit): 
 
 export const agencyListTool: ToolDefinition = {
   name: 'agency_list',
-  description: 'Show Jerry resident agency state and active/watch pursuits.',
+  description: 'Show this agent\'s resident agency state and active/watch pursuits.',
   input_schema: { type: 'object', properties: {}, additionalProperties: false },
   async execute(_input, ctx) {
     const state = await jsonRequest(ctx, '/api/agency/state');
@@ -34,7 +35,7 @@ export const agencyListTool: ToolDefinition = {
 
 export const agencyBriefTool: ToolDefinition = {
   name: 'agency_brief',
-  description: 'Answer the resident success-test question from live agency state: what Jerry is following, what changed, what he is doing next, and what he needs from jtr.',
+  description: 'Answer the resident success-test question from live agency state: what this agent is following, what changed, what it is doing next, and what it needs from jtr.',
   input_schema: { type: 'object', properties: {}, additionalProperties: false },
   async execute(_input, ctx) {
     const data = await jsonRequest(ctx, '/api/agency/brief') as { text?: string };

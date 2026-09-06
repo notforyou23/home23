@@ -1,0 +1,9 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "legacySource": {"id": "legacy_0198d95f-6c00-7000-8000-000000000091", "residentBotId": "bot_0198d95f-6c00-7000-8000-000000000011", "layout": "session", "locatorDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sourceWatermark": {"recordCount": 24, "lastRecordDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}, "privacyClass": "resident_private", "state": "cataloged"},
+  "cohort": {"id": "imp_0198d95f-6c00-7000-8000-000000000092", "name": "recent", "selector": {"maximumAgeDays": 90}, "manifestDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "state": "enabled"},
+  "item": {"id": "imi_0198d95f-6c00-7000-8000-000000000093", "cohortId": "imp_0198d95f-6c00-7000-8000-000000000092", "sourceId": "legacy_0198d95f-6c00-7000-8000-000000000091", "sourceRecordDigest": "1111111111111111111111111111111111111111111111111111111111111111", "targetType": "message", "targetId": "msg_0198d95f-6c00-7000-8000-000000000041", "state": "verified", "bodyImported": false, "provenance": {"mode": "immutable_reference", "speakerPrincipalId": "user_owner", "privacyPreserved": true}},
+  "alias": {"id": "alias_0198d95f-6c00-7000-8000-000000000094", "namespace": "legacy-session", "aliasDigest": "2222222222222222222222222222222222222222222222222222222222222222", "targetType": "message", "targetId": "msg_0198d95f-6c00-7000-8000-000000000041", "active": true},
+  "authorityEpoch": {"capability": "messages", "epoch": 1, "mode": "shadow", "writer": "legacy", "effectiveAtEventSequence": null, "rollbackEpoch": null}
+}

@@ -50,6 +50,7 @@ async function receiptFixture() {
 }
 
 async function primaryCheckoutRoot() {
+  if (process.env.HOME23_TEST_PRIMARY_CHECKOUT) return fs.realpath(process.env.HOME23_TEST_PRIMARY_CHECKOUT);
   const linkedRoot = await fs.realpath(process.cwd());
   const gitEntry = path.join(linkedRoot, '.git');
   if ((await fs.lstat(gitEntry)).isDirectory()) return null;
@@ -621,6 +622,7 @@ test('direct isolated child invocation rejects a fixture root containing the liv
   ], {
     PATH: process.env.PATH || '/usr/bin:/bin',
     HOME23_ISOLATED_FIXTURE_CHILD: '1',
+    ...(process.env.HOME23_TEST_PRIMARY_CHECKOUT ? { HOME23_TEST_PRIMARY_CHECKOUT: process.env.HOME23_TEST_PRIMARY_CHECKOUT } : {}),
   });
   assert.notEqual(result.code, 0, result.stderr);
   const failure = JSON.parse(result.stderr.trim().split('\n').at(-1));
@@ -1503,4 +1505,36 @@ test('isolated launcher exercises production query, pinned PGS, and lifecycle re
     assert.throws(() => process.kill(pid, 0), (error) => error.code === 'ESRCH');
   }
   launched = null;
+});
+
+
+test('invalid explicit packaged-test checkout fails closed before fixture mutation', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'home23-invalid-checkout-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const script = `
+    const { main } = await import('./scripts/live-brain-tools-smoke.mjs');
+    try {
+      await main(['--scenario', 'zero-result', '--isolated-fixture', process.env.FIXTURE_ROOT,
+        '--controlled-provider', '--query', 'none', '--tag', 'none', '--zero-policy', 'healthy-no-match',
+        '--output', process.env.RECEIPT_OUTPUT]);
+      process.exitCode = 1;
+    } catch (error) {
+      if (error.code !== 'isolated_fixture_live_root_authority_unavailable') throw error;
+    }
+  `;
+  const state = await receiptFixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: process.cwd(), env: { ...process.env, HOME23_TEST_PRIMARY_CHECKOUT: root,
+        FIXTURE_ROOT: root, RECEIPT_OUTPUT: path.join(state.context.receiptRunDir, 'must-not-exist.jsonl'),
+        HOME23_RECEIPT_RUN_DIR: state.context.receiptRunDir, HOME23_RECEIPT_RUN_ID: state.context.receiptRunId,
+        HOME23_RECEIPT_AUTHORITY: 'isolated-controlled', HOME23_RECEIPT_IMPLEMENTATION_COMMIT: 'a'.repeat(40) },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = ''; child.stderr.on('data', data => { stderr += data; });
+    child.on('error', reject); child.on('exit', code => resolve({ code, stderr }));
+  });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(await fs.readdir(root), []);
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cronScheduleTool } from '../../../src/agent/tools/cron.js';
+import { cronScheduleTool, cronUpdateTool, cronListTool } from '../../../src/agent/tools/cron.js';
 import {
   CRON_TIMEOUT_MAX_SECONDS,
   preserveCronBrainQueryDeliveryFailure,
@@ -372,4 +372,18 @@ test('cron query guidance has no lightweight latency promise', () => {
   const lightweightQuery = /(?:\bquery\b[^\n]{0,100}\blightweight\b|\blightweight\b[^\n]{0,100}\bquery\b)/i;
   assert.doesNotMatch(cronScheduleTool.description, lightweightQuery);
   assert.doesNotMatch(CORE_RUNTIME_PROMPT, lightweightQuery);
+});
+
+
+test('existing editorial jobs can change topic binding without losing the active run or prompt',async()=>{
+  const original: any={id:'editorial',name:'Editorial',enabled:false,payload:{kind:'agentTurn',message:'Existing prompt'},state:{nextRunAtMs:1,consecutiveErrors:0,
+    activeChannelRun:{runId:'pending',input:{prompt:'Frozen active prompt'}}},schedule:{kind:'every',everyMs:60000}};
+  const active=original.state.activeChannelRun;let saved=false;
+  const context=ctx({addJob:()=>{}});context.scheduler={getJob:()=>original,getJobs:()=>[original],saveJob:()=>{saved=true;}} as any;
+  const id='chn_0198d95f-6c00-7000-8000-000000000002';
+  const result=await cronUpdateTool.execute({job_id:'editorial',channel_id:id},context);
+  assert.ok(!result.is_error);assert.equal(saved,true);assert.equal(original.payload.channelId,id);assert.equal(original.payload.message,'Existing prompt');
+  assert.equal(original.state.activeChannelRun,active);
+  assert.match(String((await cronListTool.execute({},context)).content),/pending:pending/);
+  assert.match(String((await cronListTool.execute({},context)).content),/topic:chn_/);
 });

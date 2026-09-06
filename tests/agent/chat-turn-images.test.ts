@@ -9,6 +9,8 @@ import { createTurnStartHandler } from '../../src/routes/chat-turn.js';
 function makeFakeAgent(captured: { media?: unknown }) {
   return {
     isRunning: () => false,
+    getModel: () => 'gpt-5.6-sol',
+    getReasoningEffort: () => 'medium',
     runWithTurn: async (_chatId: string, _userText: string, opts: any) => {
       captured.media = opts?.media;
       return { turnId: 'turn-test', response: Promise.resolve({}) };

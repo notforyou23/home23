@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isEventGap, parseOperationEvents, validateEventGap } from './sse.js';
 import {
@@ -270,6 +270,7 @@ function validateCallerParameters(operationType: string, parameters: Record<stri
 }
 
 export interface BrainOperationsClientOptions {
+  joinedWorkInvocation?: string;
   baseUrl: string;
   callerAgent: string;
   fetchImpl?: typeof fetch;
@@ -440,6 +441,11 @@ export class BrainOperationsClient {
     return new BrainOperationsClient({ ...this.options, onActivity });
   }
 
+  withWorkingThread(invocation: string): BrainOperationsClient {
+    if (!invocation) throw new Error('Working Thread invocation identity required');
+    return new BrainOperationsClient({ ...this.options, joinedWorkInvocation: invocation });
+  }
+
   async query(request: BrainQueryRequest, signal?: AbortSignal): Promise<BrainOperationResult> {
     const operationType = request.enablePGS === true ? 'pgs' : 'query';
     const { enablePGS: _routingOnly, ...parameters } = request;
@@ -461,17 +467,18 @@ export class BrainOperationsClient {
   }
 
   async searchContext(
-    request: { query: string; topK: number },
+    request: { query: string; topK: number; mode?: 'context' },
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
-    assertExactKeys(request, ['query', 'topK'], 'contextSearch', { requireAll: true });
+    assertExactKeys(request, ['query', 'topK', 'mode'], 'contextSearch');
     const query = requiredBoundedText(request.query, 'query', 12_000);
     const topK = optionalFiniteInteger(request.topK, 'topK', 1, 100);
     if (topK === undefined) throw invalid('topK_invalid');
+    if (request.mode !== undefined && request.mode !== 'context') throw invalid('mode_invalid');
     const value = await this.requestJson<Record<string, unknown>>('/api/memory/search', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query, topK }),
+      body: JSON.stringify({ query, topK, mode: 'context' }),
     }, {
       code: 'context_search_timeout',
       timeoutMs: this.options.statusReadMs ?? 10_000,
@@ -596,7 +603,33 @@ export class BrainOperationsClient {
     signal?: AbortSignal,
   ): Promise<BrainOperationResult> {
     const started = await this.start(operationType, parameters, signal);
-    return this.wait(started.operationId, { operationType, initial: started, signal, waitMs });
+    return this.waitJoined(started, waitMs, signal);
+  }
+
+  private async waitJoined(started: BrainOperationRecord, waitMs: number, signal?: AbortSignal): Promise<BrainOperationResult> {
+    const operationType = started.operationType;
+    let last = started;
+    while (true) {
+      if (this.options.joinedWorkInvocation && signal?.aborted) {
+        // A canonical Stop waits for actual operation cancellation. A detached
+        // observer is not evidence that the provider stopped.
+        try {
+          last = await this.cancel(started.operationId);
+          if (TERMINAL.has(last.state)) return { ...last, ...(await this.getResult(last.operationId)), attachmentState: 'closed' };
+        } catch { /* Retain the live join while cancellation is unconfirmed. */ }
+        await new Promise(resolve => setTimeout(resolve, Math.max(250, this.options.reconnectDelayMs ?? 1000)));
+        continue;
+      }
+      try {
+        const result = await this.wait(started.operationId, { operationType, initial: last, signal, waitMs });
+        if (!this.options.joinedWorkInvocation || TERMINAL.has(result.state)) return result;
+        last = result;
+      } catch(error) {
+        if (!this.options.joinedWorkInvocation) throw error;
+        // An unavailable observer is not an operation terminal receipt.
+      }
+      await new Promise(resolve => setTimeout(resolve, Math.max(250, this.options.reconnectDelayMs ?? 1000)));
+    }
   }
 
   private unwrap(operation: BrainOperationResult): Record<string, unknown> {
@@ -627,9 +660,9 @@ export class BrainOperationsClient {
       throw new Error('authoritative_fields_forbidden');
     }
     validateCallerParameters(operationType, parameters);
-    const requestId = hasOwn(parameters, 'requestId')
-      ? parameters.requestId as string
-      : randomUUID();
+    const requestId = this.options.joinedWorkInvocation
+      ? `work-${createHash('sha256').update(this.options.joinedWorkInvocation + ':' + operationType).digest('hex')}`
+      : hasOwn(parameters, 'requestId') ? parameters.requestId as string : randomUUID();
     const targetPresent = hasOwn(parameters, 'target');
     const target = targetPresent
       ? parameters.target as BrainTargetSelector | { runId: string }
@@ -662,6 +695,23 @@ export class BrainOperationsClient {
     const deadline = {
       code: 'operation_start_timeout', timeoutMs: this.options.statusReadMs ?? 10_000, signal,
     };
+    if (this.options.joinedWorkInvocation) {
+      signal?.throwIfAborted();
+      let uncertain = false;
+      for (;;) {
+        try {
+          // Once admission is sent, retain the stable request ID until its outcome
+          // is known. Parent cancellation is applied to that operation by waitJoined.
+          return await this.requestJson<BrainOperationRecord>('/home23/api/brain-operations', init, {...deadline, signal:undefined});
+        } catch(error) {
+          const typed=error as {code?:string;httpStatus?:number};
+          const retryable=error instanceof TypeError || !typed.httpStatus && ['ECONNRESET','ECONNREFUSED','EPIPE','operation_start_timeout'].includes(typed.code??'') || (typed.httpStatus??0)>=500;
+          if(!retryable && !uncertain) throw error;
+          uncertain=true;
+          await new Promise(resolve=>setTimeout(resolve,Math.max(250,this.options.reconnectDelayMs??1000)));
+        }
+      }
+    }
     try {
       return await this.requestJson<BrainOperationRecord>('/home23/api/brain-operations', init, deadline);
     } catch (error) {
@@ -964,7 +1014,7 @@ export class BrainOperationsClient {
       : ninetyMinute
         ? (this.options.queryWaitMs ?? 90 * 60_000)
         : (this.options.shortWaitMs ?? 5 * 60_000);
-    return this.wait(operationId, { operationType: initial.operationType, waitMs, initial, signal });
+    return this.waitJoined(initial, waitMs, signal);
   }
 
   async inspectOperation(

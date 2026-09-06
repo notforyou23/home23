@@ -1,3 +1,4 @@
+import { IDEMPOTENT_OPERATION_TOOLS } from './operation-work-policy.js';
 import type { BrainOperationResult } from './brain-operations/types.js';
 import type { ToolRegistry } from './tools/index.js';
 import type {
@@ -6,6 +7,7 @@ import type {
   ToolContext,
   ToolResult,
 } from './types.js';
+import { applyForegroundToolPolicy, foregroundDetachRefusal } from './foreground-tool-policy.js';
 
 const OPERATION_ID = /^brop_[A-Za-z0-9_-]{32}$/;
 const RESULT_HANDLE = /^brres_[A-Za-z0-9_-]{32}$/;
@@ -213,7 +215,12 @@ function validateDisplayLimit(limit: number): void {
 export function recoverableExcerpt(
   content: string,
   limit: number,
-  reference: { resultHandle?: string | null; operationId?: string | null; contentOffset?: number },
+  reference: {
+    resultHandle?: string | null;
+    operationId?: string | null;
+    contentOffset?: number;
+    pageable?: boolean;
+  },
 ): string {
   validateDisplayLimit(limit);
   if (content.length <= limit) return content;
@@ -242,6 +249,24 @@ export function recoverableExcerpt(
       consumed -= 1;
     }
     return `${prefix}${teachingMarker(base + consumed)}`;
+  }
+  if (!reference.operationId) {
+    const recovery = reference.pageable === false
+      ? 'Re-call this tool with a narrower query or a smaller limit. This tool does not support offset paging.'
+      : 'Re-call this tool with a narrower query, offset, or limit.';
+    const recallMarker = (shownEnd: number): string =>
+      `\n\n[OUTPUT TRUNCATED: chars ${base}-${shownEnd} of ${total}; this is a display cap, not a missing result. ${recovery} Do not treat this page as complete.]`;
+    const recallBudget = recallMarker(total).length;
+    if (limit - recallBudget >= 64) {
+      const prefixLength = limit - recallBudget;
+      let prefix = content.slice(0, prefixLength);
+      let consumed = prefix.length;
+      if (/[\uD800-\uDBFF]$/.test(prefix)) {
+        prefix = `${prefix.slice(0, -1)}…`;
+        consumed -= 1;
+      }
+      return `${prefix}${recallMarker(base + consumed)}`;
+    }
   }
   const locator = [
     reference.resultHandle ? `handle=${reference.resultHandle}` : null,
@@ -379,27 +404,158 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
       error: operation.error,
       resultArtifact: operation.resultArtifact,
       sourceEvidence: operation.sourceEvidence,
+      pageable: true,
     },
   };
 }
 
-function visibleContent(result: ToolResult, limit: number): string {
+function visibleContent(result: ToolResult, limit: number, toolName?: string): string {
   const operationId = typeof result.metadata?.operationId === 'string'
     ? result.metadata.operationId
     : null;
   const contentOffset = typeof result.metadata?.contentOffset === 'number'
     ? result.metadata.contentOffset
     : 0;
+  const pageable = result.metadata?.pageable !== false
+    && (Boolean(operationId) || toolName === 'brain_status');
   return recoverableExcerpt(result.content, limit, {
     resultHandle: result.resultHandle,
-    operationId,
+    operationId: pageable ? operationId : null,
     contentOffset,
+    pageable: result.metadata?.pageable === false ? false : undefined,
   });
+}
+
+export async function executePlannedTool(input: {
+  registry: ToolRegistry; name: string; toolCallId: string;
+  canonicalArgs: Record<string, unknown>; context: ToolContext; assignmentLabel?: string;
+  destination: NonNullable<ToolContext['coordinationWorkDestination']>;
+  attemptChatId: string; abortController: AbortController; onEvent: AgentEventCallback;
+  beforeExecute?: () => Promise<void>;
+  coordinationOrigin?: import('./types.js').CoordinationTurnOrigin;
+  modelOverride?: import('./model-resolution.js').ModelOverride;
+  effort?: import('./reasoning-effort.js').ReasoningEffort;
+}) {
+  const { destination, attemptChatId, abortController, onEvent } = input;
+  const origin = input.coordinationOrigin ?? {
+    kind: 'coordination' as const,
+    workId: destination.parentWorkId,
+    attemptId: destination.attemptId,
+    leaseId: destination.leaseId,
+    holderPrincipalId: destination.targetPrincipalId,
+    holderInstanceId: destination.residentInstanceId,
+    authorityReference: destination.authorityReference,
+    fencingToken: destination.fencingToken,
+    channelId: destination.channelId,
+    originMessageId: destination.originMessageId,
+    roundId: null,
+  };
+  const delivery = {
+    conversationId: destination.conversationId,
+    targetPrincipalId: destination.targetPrincipalId,
+    targetDisplayName: input.context.residentBinding ?? input.context.agentName,
+    targetKind: 'resident_bot',
+  };
+  const onOperationActivity: NonNullable<ToolContext['onOperationActivity']> = (activity) => {
+    onEvent({
+      type: 'status',
+      status: 'brain_operation_active',
+      message: `${activity.operationId} ${activity.state} ${activity.phase ?? ''}`.trim(),
+      sourceEventType: 'runtime.promoted_operation_activity',
+    });
+  };
+  const onWorkActivity: NonNullable<NonNullable<ToolContext['turnRuntime']>['onWorkActivity']> = (activity) => {
+    onEvent({
+      type: 'status',
+      status: 'joined_work_active',
+      message: `${activity.workId} ${activity.state} ${activity.phase ?? ''}`.trim(),
+      sourceEventType: 'runtime.promoted_work_activity',
+    });
+  };
+  const baseBrainOperations = input.context.brainOperations;
+  let workBrainOperations = baseBrainOperations?.withActivityHandler
+    ? baseBrainOperations.withActivityHandler(onOperationActivity)
+    : baseBrainOperations;
+  if (IDEMPOTENT_OPERATION_TOOLS.has(input.name)) {
+    if (!workBrainOperations?.withWorkingThread) throw new Error('Joined operation runtime is unavailable');
+    workBrainOperations = workBrainOperations.withWorkingThread(`${destination.parentWorkId}:${input.toolCallId}`);
+  }
+  const exactContext: ToolContext = {
+    ...input.context,
+    chatId: attemptChatId,
+    coordinationWorkDestination: destination,
+    parentWorkId: destination.parentWorkId,
+    onForegroundDetachRequired: undefined,
+    onEvent,
+    abortSignal: abortController.signal,
+    parentToolCallId: input.toolCallId,
+    brainOperations: workBrainOperations,
+    onOperationActivity,
+    turnRuntime: {
+      ...(input.context.turnRuntime ?? {}),
+      turnId: `resident-work-${destination.parentWorkId.slice(4)}`,
+      abortController,
+      signal: abortController.signal,
+      brainOperations: workBrainOperations,
+      onOperationActivity,
+      onWorkActivity,
+      coordinationOrigin: origin,
+      coordinationDelivery: delivery,
+      coordinationWorkDestination: destination,
+      parentWorkId: destination.parentWorkId,
+    },
+  };
+  onEvent({ type: 'tool_start', tool: input.name, args: input.canonicalArgs,
+    toolCallId: input.toolCallId, sourceEventType: 'runtime.promoted_tool_call' });
+  await input.beforeExecute?.();
+  abortController.signal.throwIfAborted();
+  const result = await input.registry.execute(input.name, input.canonicalArgs, exactContext);
+  onEvent({ type: 'tool_result', tool: input.name, toolCallId: input.toolCallId,
+    result: result.content, exactResult: result.content, success: result.is_error !== true,
+    resultHandle: result.resultHandle, sourceEventType: 'runtime.promoted_tool_result' });
+  if (result.is_error === true) throw new Error(result.content || `${input.name} failed`);
+  if (!input.context.runAgentLoop) {
+    throw new Error('Working Thread owner-result synthesis is unavailable');
+  }
+  // An explicit empty seeded registry is mandatory. In Home, omitting
+  // this override for an empty tool list falls back to the resident's
+  // unrestricted shared registry.
+  const { createSeededToolRegistry } = await import('./tools/index.js');
+  const synthesisRegistry = createSeededToolRegistry([]);
+  const assignment = input.assignmentLabel ?? 'the assigned work';
+  const synthesis = await input.context.runAgentLoop(
+    '',
+    [
+      `[Working Thread owner-result contract for ${input.context.residentBinding ?? input.context.agentName}]`,
+      'Write the single final result for the owner from the completed tool evidence below.',
+      'Use only the supplied evidence. Be concise and useful: say what was accomplished, the verified outcome, and anything genuinely remaining.',
+      'Do not expose tool receipts, internal IDs, absolute paths, backend commands, or execution machinery.',
+      'Do not call tools. Do not claim success beyond the evidence.',
+      '',
+      `Assignment: ${assignment}`,
+      '',
+      'Completed tool evidence:',
+      result.content.slice(0, 24_000),
+    ].join('\n'),
+    [],
+    exactContext,
+    { registry: synthesisRegistry, ...(input.modelOverride ? { modelOverride: input.modelOverride } : {}), ...(input.effort ? { effort: input.effort } : {}) },
+  );
+  const ownerText = synthesis.text.trim();
+  if (!ownerText) throw new Error('Working Thread owner-result synthesis returned no answer');
+  if (
+    /\b(?:wrk|aw|att|lse|brop|cj|job)_[A-Za-z0-9._:-]+\b/u.test(ownerText) ||
+    /(?:^|\s)(?:git\s+-C\s+|\/(?:Users|Volumes|private|tmp|var)\/)/mu.test(ownerText)
+  ) {
+    throw new Error('Working Thread owner-result synthesis exposed internal execution details');
+  }
+  return { text: ownerText.slice(0, 8_000), artifacts: result.media };
 }
 
 export async function executeAndFormatTool(input: {
   registry: ToolRegistry;
   name: string;
+  toolCallId: string;
   input: Record<string, unknown>;
   context: ToolContext;
   onEvent?: AgentEventCallback;
@@ -413,16 +569,70 @@ export async function executeAndFormatTool(input: {
 }> {
   validateDisplayLimit(input.modelLimit);
   validateDisplayLimit(input.eventLimit);
-  const result = await input.registry.execute(input.name, input.input, input.context);
+  const decision = applyForegroundToolPolicy(input.name, input.input, {
+    ...input.context,
+    parentToolCallId: input.toolCallId,
+  });
+  if (decision.action === 'require_work' || decision.action === 'refuse') {
+    const exactRequest = decision.action === 'require_work' && decision.request
+      ? {
+          ...decision.request,
+          canonicalArgs: decision.input,
+          parentOrigin: input.context.turnRuntime?.coordinationOrigin,
+          execute: (execution: Parameters<NonNullable<import('./foreground-tool-policy.js').ForegroundDetachRequest['execute']>>[0]) => executePlannedTool({ ...execution, registry: input.registry,
+            name: input.name, toolCallId: input.toolCallId, canonicalArgs: decision.input,
+            context: input.context, assignmentLabel: decision.request?.assignmentLabel }),
+        }
+      : undefined;
+    const outcome = exactRequest
+      ? await input.context.onForegroundDetachRequired?.(exactRequest)
+      : undefined;
+    const created = Boolean(outcome && typeof outcome === 'object' && outcome.created === true);
+    const content = foregroundDetachRefusal(decision, outcome);
+    const result: ToolResult = created
+      ? { content }
+      : { content, is_error: true };
+    input.onEvent?.({
+      type: 'tool_result',
+      tool: input.name,
+      toolCallId: input.toolCallId,
+      result: content,
+      exactResult: content,
+      success: created,
+      sourceEventType: 'runtime.tool_result',
+    });
+    return { result, modelContent: content, eventContent: content, success: created };
+  }
+  let context = input.context;
+  if (context.coordinationWorkDestination && IDEMPOTENT_OPERATION_TOOLS.has(input.name)) {
+    const base = context.turnRuntime?.brainOperations ?? context.brainOperations;
+    if (!base?.withWorkingThread) throw new Error('Joined operation runtime unavailable');
+    const brainOperations = base.withWorkingThread(`${context.coordinationWorkDestination.parentWorkId}:${input.toolCallId}`);
+    context = { ...context, brainOperations,
+      turnRuntime: context.turnRuntime ? { ...context.turnRuntime, brainOperations } : context.turnRuntime };
+  }
+  const result = await input.registry.execute(input.name, decision.input, {
+    ...context,
+    parentToolCallId: input.toolCallId,
+  });
   const success = result.is_error !== true;
-  const modelContent = visibleContent(result, input.modelLimit);
-  const eventContent = visibleContent(result, input.eventLimit);
+  const evidence = result.contextEvidenceId && input.registry.get('task_context')
+    ? `\n[Retained task evidence: ${result.contextEvidenceId}; use task_context read to recover details.]` : '';
+  // Context pages carry cursors/offsets; clipping their JSON would silently
+  // destroy the recovery path. task_context bounds entries, notes and pages.
+  const modelContent = input.name === 'task_context'
+    ? result.content
+    : visibleContent(result, input.modelLimit, input.name) + evidence;
+  const eventContent = visibleContent(result, input.eventLimit, input.name);
   const eventMetadata = projectBrainToolEventMetadata(input.name, result);
   input.onEvent?.({
     type: 'tool_result',
     tool: input.name,
+    toolCallId: input.toolCallId,
     result: eventContent,
+    exactResult: result.content,
     success,
+    sourceEventType: 'runtime.tool_result',
     ...eventMetadata,
   });
   return { result, modelContent, eventContent, success };

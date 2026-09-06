@@ -1,0 +1,70 @@
+# Lane handoff — Continuity Office
+
+- Lane name and state: Lane 5 Continuity Office; integrated, unwired
+- Worktree (git toplevel): `/Volumes/Bertha - Data/JTR23-archives/disk-pressure-2026-08-30/home23-inactive/.home23-worktrees/resident-presence-continuity`
+- Live-checkout alias: `/Users/jtr/_JTR23_/release/home23/.home23-worktrees/resident-presence-continuity`
+- Branch: `codex/resident-presence-continuity`
+- Base: `f3ad98dc190697dafeb5ab6894f01a2c70e02c91`
+- Current HEAD: `16a97e1b9869f5688e1f45d2c41151fc748f6d98`
+- Owned files: `src/coordination-adapter/continuity-office/**` and `tests/continuity-office/**` only. Did not edit `src/home.ts`, `src/channels/router.ts`, `src/work/**`, `src/coordination-adapter/index.ts`, or the contract pack.
+- Current objective: isolated continuity-office adapter first slice — office boundary only, no cloud, no live DB, no second Jerry.
+
+## Completed behavior and changed files
+
+In-process isolated adapter `createIsolatedContinuityOffice`:
+
+- Authenticated ingress with clientMessageId replay; unauthenticated requests store nothing.
+- Office registry for headquarters + continuity-office with health and capability declarations. Continuity cannot declare `private_brain`, `household_credentials`, or `household_machinery`.
+- Bounded continuity context: charter/relationship summaries, last 16 conversation turns, active Work, authority limits, freshness markers. Private-brain and household-credential exports are refused.
+- Local-only work is `queued` and presented as `waiting for headquarters`; it cannot be completed by this office. Continuity-capable work may succeed here.
+- Lease/epoch takeover and fencing: continuity cannot take the pen while headquarters is healthy; a stale epoch/fence cannot write; two offices cannot both hold canonical write.
+- Deterministic headquarters-return stub: write authority returns to headquarters, continuity results deliver once via `work-result:${workId}` / `kind: "result"`, waiting work stays waiting. In-flight `running` continuity-capable work is parked as `waiting for headquarters` (`queued`), not dropped or completed.
+- Write path is fenced: `admitWork` / `completeContinuityWork` require the current epoch and fencing token. A stale token fails; a prior attempt cannot complete after takeover.
+- Continuity office id cannot declare `private_brain` / `household_credentials` / `household_machinery` even if registered with `role: "headquarters"`.
+- Contract map emits `WorkRecord.nextFencingToken` as the next token to issue (`fence + 1`, or `1` when no attempt), not the live attempt fence.
+
+Changed files:
+
+- `src/coordination-adapter/continuity-office/adapter.ts`
+- `src/coordination-adapter/continuity-office/constants.ts`
+- `src/coordination-adapter/continuity-office/contract-map.ts`
+- `src/coordination-adapter/continuity-office/errors.ts`
+- `src/coordination-adapter/continuity-office/index.ts`
+- `src/coordination-adapter/continuity-office/types.ts`
+- `tests/continuity-office/*.test.ts`
+
+## Verification
+
+```bash
+node --import tsx --test --test-concurrency=1 tests/continuity-office/*.test.ts
+```
+
+Result: 24 pass, 0 fail (round 1/5 review fixes). Did not run full `npm test`. No process restart, live DB, release activation, cloud credential, or device install.
+
+## Integration requests
+
+Lane 3 owns shared schema. This lane mapped to current contracts and did not edit the pack. Please add or confirm:
+
+1. `Attempt.officeId` (and optionally Work.officeId) so an Attempt names its office. Current `AttemptRecord` has holder/instance/authority/fencing only.
+2. Client/Activity presentation `waiting for headquarters` without a new terminal Work state. This adapter keeps `Work.state = queued` and holds the phrase on a local presentation field.
+3. `Attempt.contextRevision` and Attempt deadline (build plan: every Attempt names office, authority, lease, fencing token, deadline, and context revision).
+4. Durable office registry (office id, role, health, capabilities) if clients must read it from canonical state.
+5. Office-level canonical write epoch/writer distinct from capability `AuthorityEpoch` (`messages` / `attachments` / …). Dual-canonical-writer remains forbidden.
+6. Ingress presentation `accepted by a continuity office` if Canary must show which office accepted the Message.
+
+Do not treat this adapter as a second Message/Work/Attempt ledger. Integration should project through Lane 3 APIs.
+
+## Unresolved risk or blocker
+
+- Isolated only. Not wired into `home.ts`, the channel router, or Work execution.
+- Lane 3 fixtures for office/waiting/epoch were not published at this baseline (`f3ad98dc`). The local mapper will need a follow-up if Lane 3 chooses a different field than `queued` + presentation.
+- Authenticated ingress can accept while headquarters is still healthy; canonical write stays with headquarters. Integration may want the door closed or proxied when HQ holds the pen.
+- No model runner and no cloud Attempt executor, per first-slice limits.
+
+## Next concrete action
+
+Stay recovered and **unwired**. This adapter is on Core integration but must not be connected to `home.ts`, the router, or Work execution. First-convergence closure does not include headquarters-absent office operation. Do not start journeys 2–4 from this lane.
+
+## Live action still prohibited
+
+No process restart, live DB mutation, release activation, cloud credential or paid resource, private-brain export, or physical Canary install.

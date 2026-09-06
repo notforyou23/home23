@@ -139,6 +139,25 @@ test('contract fixtures validate against their manifest schemas', () => {
   }
 });
 
+test('chat turn status requires one valid resolved runtime effort', () => {
+  const manifest = loadManifest();
+  const entry = manifest.entries.find((candidate) => candidate.id === 'chat-turn-status');
+  assert.ok(entry, 'chat-turn-status manifest entry is required');
+  const fixture = loadJson(repoPath('contracts', entry.fixture));
+  const { createContractValidator } = require('./contract-validator.cjs');
+  const validator = createContractValidator(process.cwd());
+  const { reasoning_effort: _omitted, ...runtimeWithoutEffort } = fixture.runtime_model;
+
+  assert.equal(validator.validateValue(entry, {
+    ...fixture,
+    runtime_model: runtimeWithoutEffort,
+  }).valid, false, 'resolved effort must not be omitted by the active bridge runtime');
+  assert.equal(validator.validateValue(entry, {
+    ...fixture,
+    runtime_model: { ...fixture.runtime_model, reasoning_effort: 'ultra' },
+  }).valid, false, 'unknown resolved effort must be rejected');
+});
+
 test('Query notebook manifest entries publish exact protected route truth', () => {
   const manifest = loadManifest();
   assert.equal(manifest.contractVersion, '2026.07.14');

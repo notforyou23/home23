@@ -7,7 +7,8 @@ import { inferProviderFromModel } from './model-resolution.js';
 import { resolveProviderKey, isAuthError, refreshFromBroker } from './provider-credentials.js';
 import {
   DEFAULT_REASONING_EFFORT,
-  isGpt56Model,
+  supportsResponsesReasoning,
+  responsesReasoningConfig,
   type ReasoningEffort,
 } from './reasoning-effort.js';
 
@@ -254,8 +255,8 @@ async function generateCodexText(
     max_output_tokens: opts.maxTokens ?? 800,
     stream: true,
     store: false,
-    ...(isGpt56Model(opts.model || '')
-      ? { reasoning: { effort: opts.reasoningEffort ?? DEFAULT_REASONING_EFFORT } }
+    ...(supportsResponsesReasoning(opts.model || '')
+      ? { reasoning: responsesReasoningConfig(opts.reasoningEffort ?? DEFAULT_REASONING_EFFORT) }
       : {}),
   };
 

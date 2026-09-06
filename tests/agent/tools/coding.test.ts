@@ -15,6 +15,7 @@ import type { BridgeEvent, CodingJobRecord, CodingJobReceipt } from '../../../sr
 function makeJob(overrides: Partial<CodingJobRecord> = {}): CodingJobRecord {
   return {
     schema: 'home23.coding-job.v1',
+    executionOptions: { permissionMode: 'bypassPermissions' },
     id: 'cj_20260805T120000_abcd',
     backend: 'claude-code',
     status: 'running',
@@ -98,7 +99,7 @@ function makeFakeBridge(opts: {
   return bridge;
 }
 
-function ctx(codingBridge: CodingBridgeRef | null): ToolContext {
+function ctx(codingBridge: CodingBridgeRef | null, chatId = '12345'): ToolContext {
   return {
     scheduler: null,
     ttsService: null,
@@ -116,7 +117,7 @@ function ctx(codingBridge: CodingBridgeRef | null): ToolContext {
       invalidate: () => undefined
     },
     subAgentTracker: { active: 0, maxConcurrent: 1, queue: [] },
-    chatId: '12345',
+    chatId,
     telegramAdapter: null,
     codingBridge,
     runAgentLoop: null,
@@ -165,7 +166,10 @@ test('coding_run with wait_seconds reaching terminal returns the receipt summary
     diffStat: ' 2 files changed, 14 insertions(+)',
   });
   const bridge = makeFakeBridge({ waited: makeJob({ status: 'completed' }), receipt });
-  const result = await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 30 }, ctx(bridge));
+  const result = await codingRunTool.execute(
+    { prompt: 'fix it', wait_seconds: 30 },
+    ctx(bridge, 'coordination:chn_1:wrk_1'),
+  );
 
   const wait = bridge.calls.find(c => c.method === 'waitForJob');
   assert.ok(wait, 'waitForJob was called');
@@ -177,9 +181,22 @@ test('coding_run with wait_seconds reaching terminal returns the receipt summary
   assert.match(result.content, /home23-agent\/fix-sched/);
 });
 
+test('coding_run on a conversation chat detaches before wait_seconds', async () => {
+  const bridge = makeFakeBridge({ waited: makeJob({ status: 'completed' }), receipt: makeReceipt() });
+  const result = await codingRunTool.execute(
+    { prompt: 'fix it', wait_seconds: 30 },
+    ctx(bridge, 'ios_conv_42'),
+  );
+  assert.equal(bridge.calls.some(c => c.method === 'waitForJob'), false);
+  assert.match(result.content, /results will be delivered when complete/i);
+});
+
 test('coding_run with wait_seconds still running reports job id and hand-off', async () => {
   const bridge = makeFakeBridge({ waited: makeJob({ status: 'running' }) });
-  const result = await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 5 }, ctx(bridge));
+  const result = await codingRunTool.execute(
+    { prompt: 'fix it', wait_seconds: 5 },
+    ctx(bridge, 'coordination:chn_1:wrk_1'),
+  );
   assert.match(result.content, /still running/);
   assert.match(result.content, /cj_20260805T120000_abcd/);
 });
@@ -202,7 +219,7 @@ test('coding_continue refuses a running source job without starting a second pro
 
 test('coding_continue resumes in the SAME cwd with isolation none', async () => {
   const bridge = makeFakeBridge({
-    job: makeJob({ status: 'completed', sessionId: 'sess-42', label: 'sched-fix', model: 'claude-opus-4-8' }),
+    job: makeJob({ status: 'completed', sessionId: 'sess-42', label: 'sched-fix', model: 'claude-opus-4-8', effort: 'high' }),
   });
   const result = await codingContinueTool.execute({ job_id: 'cj_20260805T120000_abcd', prompt: 'now add tests' }, ctx(bridge));
 
@@ -218,6 +235,7 @@ test('coding_continue resumes in the SAME cwd with isolation none', async () => 
   assert.equal(args.resumedFromJobId, 'cj_20260805T120000_abcd');
   assert.equal(args.label, 'sched-fix');
   assert.equal(args.model, 'claude-opus-4-8');
+  assert.equal(args.effort, 'high');
   assert.equal(args.requestedBy, '12345');
 });
 
@@ -258,8 +276,9 @@ test('coding_result renders the finished receipt with worktree merge instruction
 
   assert.match(result.content, /All tests green/);
   assert.match(result.content, /2 files changed/);
-  assert.match(result.content, /git -C \/tmp\/home23 merge home23-agent\/fix-sched/);
-  assert.match(result.content, /worktree remove/);
+  assert.match(result.content, /Integration target: \/tmp\/home23/);
+  assert.match(result.content, /local uncommitted and untracked files were not copied/);
+  assert.doesNotMatch(result.content, /git .*merge|--force|branch -D/);
 });
 
 test('coding_result renders checkpoint rollback instructions', async () => {
@@ -268,8 +287,9 @@ test('coding_result renders checkpoint rollback instructions', async () => {
   });
   const bridge = makeFakeBridge({ receipt });
   const result = await codingResultTool.execute({ job_id: 'cj_20260805T120000_abcd' }, ctx(bridge));
-  assert.match(result.content, /git stash apply|stash apply fedcba9876543210/);
-  assert.match(result.content, /pre-job dirty state/);
+  assert.match(result.content, /Tracked-state checkpoint object: fedcba9876543210/);
+  assert.match(result.content, /excludes untracked and ignored files/);
+  assert.doesNotMatch(result.content, /stash apply.*restores/);
 });
 
 test('coding_cancel cancels and reports the resulting status', async () => {
@@ -339,12 +359,91 @@ test('coding_continue also registers async work for the resumed job', async () =
   (context as { workRegistry?: unknown }).workRegistry = {
     create: (input: Record<string, unknown>) => { created.push(input); return { workId: 'aw_c_2', originChatId: '12345' }; },
     complete: () => ({}),
+    list: () => [{ resultHandle: { type: 'coding_job', jobId: 'cj_20260805T120000_abcd' }, taskBrief: 'Original authority plus earlier follow-ups' }],
   };
 
   await codingContinueTool.execute({ job_id: 'cj_20260805T120000_abcd', prompt: 'follow up', wait_seconds: 0 }, context);
   assert.equal(created.length, 1);
   assert.equal(created[0].kind, 'coding');
+  assert.match(String(created[0].taskBrief), /Original authority plus earlier follow-ups/);
+  assert.match(String(created[0].taskBrief), /Current follow-up: follow up/);
   assert.equal(created[0].originChatId, '12345');
+});
+
+test('coding inside a canonical Working Thread remains an inline hidden hand under the wrk root', async () => {
+  const bridge = makeFakeBridge({
+    waited: makeJob({ status: 'completed', finishedAt: '2026-08-05T12:05:00.000Z' }),
+    receipt: makeReceipt(),
+  });
+  const created: Array<Record<string, unknown>> = [];
+  const context = ctx(bridge);
+  (context as { parentWorkId?: string }).parentWorkId = 'wrk_root';
+  (context as { coordinationWorkDestination?: unknown }).coordinationWorkDestination = {
+    kind: 'coordination', parentWorkId: 'wrk_root', channelId: 'chn_root',
+    conversationId: 'cnv_root', originMessageId: 'msg_root', attemptId: 'att_root',
+    leaseId: 'lse_root', fencingToken: 1, targetPrincipalId: 'bot_jerry',
+    residentBinding: 'jerry', residentInstanceId: 'resident-1', authorityReference: 'resident:jerry',
+  };
+  (context as { workRegistry?: unknown }).workRegistry = {
+    create: (input: Record<string, unknown>) => { created.push(input); return { workId: 'aw_hidden_coding', originChatId: context.chatId }; },
+    complete: () => ({}),
+  };
+
+  const result = await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 0 }, context);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].parentWorkId, 'wrk_root');
+  assert.equal(created[0].deliveryMode, 'inline');
+  assert.equal(created[0].coordinationDestination, undefined);
+  assert.equal(result.is_error, undefined);
+  assert.equal(bridge.calls.some((call) => call.method === 'waitForJob'), true,
+    'canonical root joins the coding job even when the model requested no wait');
+});
+
+test('coding failure and cancellation remain contained terminal errors under the canonical root', async () => {
+  for (const status of ['failed', 'cancelled'] as const) {
+    const bridge = makeFakeBridge({
+      waited: makeJob({ status, finishedAt: '2026-08-05T12:05:00.000Z', error: status }),
+      receipt: makeReceipt({ status, resultTail: `${status} evidence` }),
+    });
+    const context = ctx(bridge);
+    context.coordinationWorkDestination = {
+      kind: 'coordination', parentWorkId: 'wrk_root', channelId: 'chn_root',
+      conversationId: 'cnv_root', originMessageId: 'msg_root', attemptId: 'att_root',
+      leaseId: 'lse_root', fencingToken: 1, targetPrincipalId: 'bot_jerry',
+      residentBinding: 'jerry', residentInstanceId: 'resident-1', authorityReference: 'resident:jerry',
+    };
+    context.workRegistry = {
+      create: () => ({ workId: `aw_${status}`, originChatId: context.chatId }),
+      complete: () => ({}),
+      completeInline: () => ({}),
+      get: () => undefined,
+      list: () => [],
+    };
+    let interimDeliveries = 0;
+    context.onWorkTerminal = () => { interimDeliveries += 1; };
+    const result = await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 0 }, context);
+    assert.equal(result.is_error, true);
+    assert.match(result.content, new RegExp(status));
+    assert.equal(interimDeliveries, 0);
+  }
+});
+
+test('cancelling a canonical root propagates to its joined coding job', async () => {
+  const bridge = makeFakeBridge();
+  const controller = new AbortController();
+  controller.abort(new Error('owner stopped the Working Thread'));
+  const context = ctx(bridge);
+  context.abortSignal = controller.signal;
+  context.coordinationWorkDestination = {
+    kind: 'coordination', parentWorkId: 'wrk_root', channelId: 'chn_root',
+    conversationId: 'cnv_root', originMessageId: 'msg_root', attemptId: 'att_root',
+    leaseId: 'lse_root', fencingToken: 1, targetPrincipalId: 'bot_jerry',
+    residentBinding: 'jerry', residentInstanceId: 'resident-1', authorityReference: 'resident:jerry',
+  };
+  const result = await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 0 }, context);
+  assert.equal(result.is_error, true);
+  assert.equal(bridge.calls.some((call) => call.method === 'cancelJob'), true);
+  assert.equal(bridge.calls.some((call) => call.method === 'waitForJob'), false);
 });
 
 test('coding_run without a registry still starts the job (registry optional)', async () => {
@@ -352,4 +451,33 @@ test('coding_run without a registry still starts the job (registry optional)', a
   const result = await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 0 }, ctx(bridge));
   assert.ok(!result.is_error);
   assert.equal(bridge.calls.filter(c => c.method === 'startJob').length, 1);
+});
+
+
+test('terminal coding failures are errors both after waiting and when fetching receipts', async () => {
+  for (const status of ['failed', 'cancelled', 'interrupted'] as const) {
+    const bridge = makeFakeBridge({ waited: makeJob({ status }), receipt: makeReceipt({ status, resultTail: 'partial work only' }) });
+    const waited = await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 1 }, { ...ctx(bridge), chatId: 'worker:terminal-receipt' });
+    const fetched = await codingResultTool.execute({ job_id: 'cj_20260805T120000_abcd' }, ctx(bridge));
+    for (const result of [waited, fetched]) {
+      assert.equal(result.is_error, true, status);
+      assert.match(result.content, /partial work only/);
+    }
+  }
+});
+
+test('terminal job without a receipt is not described as still running', async () => {
+  const bridge = makeFakeBridge({ job: makeJob({ status: 'failed' }) });
+  const result = await codingResultTool.execute({ job_id: 'cj_20260805T120000_abcd' }, ctx(bridge));
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /has no persisted receipt.*failed/);
+  assert.doesNotMatch(result.content, /not finished/);
+});
+
+test('untracked-only checkpoint never claims the tree was clean or backed up', async () => {
+  const bridge = makeFakeBridge({ receipt: makeReceipt({ checkpoint: { repoRoot: '/tmp/home23', headCommit: 'abc123', dirty: true } }) });
+  const result = await codingResultTool.execute({ job_id: 'cj_20260805T120000_abcd' }, ctx(bridge));
+  assert.match(result.content, /pre-job working tree modified/);
+  assert.match(result.content, /untracked files are not backed up/);
+  assert.doesNotMatch(result.content, /tree was clean/);
 });

@@ -3760,3 +3760,8 @@ APPEND AT END OF FILE (preceded by one blank line):
 **What changed (lib surface):** `lib/brain-provider-runtime.js` — `createHome23BrainProviderRuntime` now returns a registry **facade** (same frozen API: `get`/`getExact`/`has`/`availability`/`assertPairAvailable`) that fingerprints `config/secrets.yaml` + `config/home.yaml` (mtime+size, throttled by `credentialCheckMs`, default 15s) before delegating, and rebuilds the inner registry when the fingerprint changes. The fingerprint is adopted only on successful rebuild — a torn or invalid write keeps the previous registry serving and retries. `home`/`providerConfig` became accessors tracking the current build. New optional `credentialCheckMs` param is a test seam.
 
 **Effect standalone:** API-identical for all consumers (`engine/src/dashboard/server.js` passes `providerRegistry` downstream — the facade travels). Rotation pickup ≤ ~15s with no restart. **Tests:** `tests/cosmo23/brain-provider-runtime.test.cjs` adds a rotation case (rebuild with rotated key, accessor tracking, torn-write resilience); registry + runtime suites 11/11 green.
+
+
+## 2026-09-05: Keep OAuth database dependency lazy
+
+`server/services/anthropic-oauth.js` and `engine/src/services/anthropic-oauth-engine.js` resolve `@prisma/client` only when its database client is first requested. Loading the shared Anthropic client for API-key use must not require the optional OAuth database package. OAuth database access still requires the real dependency and fails if unavailable. The Anthropic request tests exercise client loading and request behavior in the packaged installation without Prisma.

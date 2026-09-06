@@ -46,7 +46,7 @@ test('public README is the house, not a Cosmo brochure or brain-tool inventory',
 
 test('agent PGS guidance explains targeted union expansion and exact reuse', () => {
   for (const relativePath of [
-    'src/agents/system-prompt.ts',
+    'docs/reference/HOSTED-PGS.md',
     'cli/templates/COSMO_RESEARCH.md',
     'docs/design/STEP16-AGENT-COSMO-TOOLKIT-DESIGN.md',
   ]) {
@@ -66,15 +66,19 @@ test('agent guidance never treats configured model selection as credential healt
 
 test('agent guidance keeps PGS background-safe and distinguishes liveness from batch progress', () => {
   const prompt = read('src/agents/system-prompt.ts');
-  assert.match(prompt, /PGS launches detached immediately/i);
+  assert.match(prompt, /docs\/reference\/HOSTED-PGS\.md/);
+  const guide = read('docs/reference/HOSTED-PGS.md');
+  assert.match(guide, /PGS launches detached immediately/i);
   assert.match(prompt, /Chat Stop detaches durable work without cancelling it/i);
   assert.match(prompt, /Judge provider liveness from lastProviderActivityAt/i);
   assert.match(prompt, /lastProgressAt records committed batch progress and may legitimately lag/i);
-  assert.match(prompt, /Only brain_status action:"cancel" for the exact operation ID cancels durable work/i);
+  assert.match(prompt, /Outside a joined Working Thread, use brain_status action:"cancel" for the exact operation ID to cancel durable work/i);
+  assert.match(prompt, /stopping that Work requests cancellation and waits for confirmation/i);
 });
 
-test('agent guidance resumes retryable stalled PGS from its exact mode-aware durable lineage', () => {
-  const prompt = read('src/agents/system-prompt.ts');
+test('the referenced guide preserves retryable stalled PGS exact mode-aware lineage', () => {
+  assert.match(read('src/agents/system-prompt.ts'), /docs\/reference\/HOSTED-PGS\.md/);
+  const prompt = read('docs/reference/HOSTED-PGS.md');
   assert.match(prompt, /retryable provider_stalled/i);
   assert.match(prompt, /successful\/reused work and pending work/i);
   assert.match(prompt, /resume only when the exact original inputs are available/i);

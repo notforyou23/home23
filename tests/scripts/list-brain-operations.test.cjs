@@ -15,6 +15,10 @@ async function fixture() {
   await fs.mkdir(path.join(home23Root, 'instances', 'jerry', 'runtime', 'brain-operations'), {
     recursive: true,
   });
+  await fs.writeFile(
+    path.join(home23Root, 'instances', 'jerry', 'config.yaml'),
+    'name: jerry\n',
+  );
   await fs.mkdir(receiptRunDir, { mode: 0o700 });
   await fs.writeFile(path.join(receiptRunDir, 'run-authority.json'), `${JSON.stringify({
     schemaVersion: 1,

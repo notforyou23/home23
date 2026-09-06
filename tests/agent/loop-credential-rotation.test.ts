@@ -76,8 +76,12 @@ async function withAgent(
   const secretsPath = join(root, 'secrets.yaml');
   mkdirSync(root, { recursive: true });
   const prevSecrets = process.env.HOME23_SECRETS_PATH;
+  const prevAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
+  const prevAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
   const prevFetch = globalThis.fetch;
   process.env.HOME23_SECRETS_PATH = secretsPath;
+  delete process.env.ANTHROPIC_AUTH_TOKEN;
+  delete process.env.ANTHROPIC_API_KEY;
   try {
     writeSecrets(secretsPath, 'sk-ant-oat01-GEN1');
     _resetCredentialCache();
@@ -86,6 +90,10 @@ async function withAgent(
     globalThis.fetch = prevFetch;
     if (prevSecrets === undefined) delete process.env.HOME23_SECRETS_PATH;
     else process.env.HOME23_SECRETS_PATH = prevSecrets;
+    if (prevAnthropicAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+    else process.env.ANTHROPIC_AUTH_TOKEN = prevAnthropicAuthToken;
+    if (prevAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prevAnthropicApiKey;
     _resetCredentialCache();
     rmSync(root, { recursive: true, force: true });
   }

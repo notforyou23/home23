@@ -36,8 +36,7 @@ If the gap connects to active work, route it:
 
 ### Step 4: Only go outward if necessary
 Reach for external sources only when:
-- Graph returns fewer than 3 relevant nodes on the topic, AND
-- The gap materially affects active work (not theoretical interest)
+- The user or mission requests external research, or current evidence lacks the freshness, reliability, or coverage the question needs. Node count is not a quality threshold.
 
 If you do go outward, cite what you found and add it as new nodes via agent-feeder. Don't just summarize — extract.
 
@@ -51,7 +50,7 @@ Not: "Research suggests that regular sauna use has cardiovascular benefits."
 
 Yes: "the owner talked about the sauna 6 times in Q4 2025 and then went silent. He was using it as a stress/recovery tool. No reappearance since Dec 19. That's 69 days. Worth surfacing."
 
-The difference is specificity to the owner's actual life versus generic information about a topic. The memory graph contains the owner's life. Mine it.
+The difference is specificity to the owner's actual life versus generic information about a topic. The memory graph contains a partial record. Missing entries do not establish that a habit stopped or an event did not occur.
 
 ## Scope
 

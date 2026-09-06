@@ -4,6 +4,7 @@ const DEFAULT_CONSOLIDATION_MAX_NODES = 80;
 const DEFAULT_CONSOLIDATION_MAX_CHARS = 50000;
 const DEFAULT_CONSOLIDATION_MAX_CONCEPT_CHARS = 600;
 const DEFAULT_CONSOLIDATION_MAX_CLUSTERS_PER_RUN = 4;
+const DEFAULT_CONSOLIDATION_MAX_CANDIDATE_NODES = 512;
 const COMPOST_MODES = new Set(['off', 'dry-run', 'apply']);
 
 /**
@@ -35,6 +36,11 @@ class MemorySummarizer {
     this.consolidationMaxClustersPerRun = Number.isFinite(consolidation.maxClustersPerRun)
       ? consolidation.maxClustersPerRun
       : DEFAULT_CONSOLIDATION_MAX_CLUSTERS_PER_RUN;
+    this.consolidationMaxCandidateNodes = Number.isFinite(consolidation.maxCandidateNodes)
+      ? Math.max(3, Math.floor(consolidation.maxCandidateNodes))
+      : DEFAULT_CONSOLIDATION_MAX_CANDIDATE_NODES;
+    this.candidateSelectionRun = 0;
+    this.candidateLastConsidered = new WeakMap();
   }
 
   /**
@@ -627,37 +633,48 @@ the specific instances.`,
     if (unconsolidatedNodes.length < 3) {
       return [];
     }
+
+    const candidateNodes = this.selectConsolidationCandidates(unconsolidatedNodes);
+    const deferredCandidates = unconsolidatedNodes.length - candidateNodes.length;
+    if (deferredCandidates > 0) {
+      this.logger?.info?.('Memory consolidation candidates deferred before clustering', {
+        eligibleCandidates: unconsolidatedNodes.length,
+        selectedCandidates: candidateNodes.length,
+        deferredCandidates,
+        maxCandidateNodes: this.consolidationMaxCandidateNodes,
+      });
+    }
     
     const clusters = [];
     const used = new Set();
 
-    for (let i = 0; i < unconsolidatedNodes.length; i++) {
+    for (let i = 0; i < candidateNodes.length; i++) {
       if (used.has(i)) continue;
 
-      const cluster = [unconsolidatedNodes[i]];
+      const cluster = [candidateNodes[i]];
       used.add(i);
 
-      for (let j = i + 1; j < unconsolidatedNodes.length; j++) {
+      for (let j = i + 1; j < candidateNodes.length; j++) {
         if (used.has(j)) continue;
 
         // Skip nodes with null embeddings
-        if (!unconsolidatedNodes[i].embedding || !unconsolidatedNodes[j].embedding) {
+        if (!candidateNodes[i].embedding || !candidateNodes[j].embedding) {
           this.logger?.debug?.('Skipping similarity check for node with null embedding in summarizer', {
             nodeI: i,
             nodeJ: j,
-            hasIEmbedding: Boolean(unconsolidatedNodes[i].embedding),
-            hasJEmbedding: Boolean(unconsolidatedNodes[j].embedding)
+            hasIEmbedding: Boolean(candidateNodes[i].embedding),
+            hasJEmbedding: Boolean(candidateNodes[j].embedding)
           });
           continue;
         }
 
         const similarity = this.cosineSimilarity(
-          unconsolidatedNodes[i].embedding,
-          unconsolidatedNodes[j].embedding
+          candidateNodes[i].embedding,
+          candidateNodes[j].embedding
         );
 
         if (similarity >= threshold) {
-          cluster.push(unconsolidatedNodes[j]);
+          cluster.push(candidateNodes[j]);
           used.add(j);
         }
       }
@@ -668,6 +685,88 @@ the specific instances.`,
     }
 
     return clusters;
+  }
+
+  selectConsolidationCandidates(nodes) {
+    const maxCandidateNodes = this.consolidationMaxCandidateNodes;
+    if (nodes.length <= maxCandidateNodes) {
+      return nodes;
+    }
+
+    const records = nodes.map((node, index) => ({
+      node,
+      index,
+      lastConsidered: this.candidateLastConsidered.get(node) ?? -1,
+    }));
+    const cohorts = new Map();
+    for (const record of records) {
+      const cohort = cohorts.get(record.lastConsidered) || [];
+      cohort.push(record);
+      cohorts.set(record.lastConsidered, cohort);
+    }
+
+    const selected = [];
+    const cohortRuns = [...cohorts.keys()].sort((a, b) => a - b);
+    for (const cohortRun of cohortRuns) {
+      const prioritized = this.prioritizeConsolidationCandidateCohort(cohorts.get(cohortRun));
+      for (const record of prioritized) {
+        selected.push(record.node);
+        if (selected.length >= maxCandidateNodes) break;
+      }
+      if (selected.length >= maxCandidateNodes) break;
+    }
+
+    const selectionRun = this.candidateSelectionRun++;
+    for (const node of selected) {
+      this.candidateLastConsidered.set(node, selectionRun);
+    }
+    return selected;
+  }
+
+  prioritizeConsolidationCandidateCohort(records) {
+    const oldestFirst = [...records].sort((a, b) => (
+      this.compareCandidateCreated(a, b) || this.compareCandidateStable(a, b)
+    ));
+    const highestValueFirst = [...records].sort((a, b) => (
+      this.compareCandidateValue(b, a)
+      || this.compareCandidateCreated(a, b)
+      || this.compareCandidateStable(a, b)
+    ));
+    const prioritized = [];
+    const included = new Set();
+
+    for (let index = 0; index < records.length; index++) {
+      for (const record of [oldestFirst[index], highestValueFirst[index]]) {
+        if (!record || included.has(record.node)) continue;
+        included.add(record.node);
+        prioritized.push(record);
+      }
+    }
+
+    return prioritized;
+  }
+
+  compareCandidateCreated(a, b) {
+    const time = (record) => {
+      const value = record.node?.created;
+      const parsed = value instanceof Date ? value.getTime() : new Date(value).getTime();
+      return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+    };
+    return time(a) - time(b);
+  }
+
+  compareCandidateValue(a, b) {
+    const value = (record, field) => (
+      Number.isFinite(record.node?.[field]) ? record.node[field] : 0
+    );
+    return value(a, 'weight') - value(b, 'weight')
+      || value(a, 'accessCount') - value(b, 'accessCount')
+      || value(a, 'activation') - value(b, 'activation');
+  }
+
+  compareCandidateStable(a, b) {
+    const stableId = (record) => `${typeof record.node?.id}:${String(record.node?.id ?? '')}`;
+    return stableId(a).localeCompare(stableId(b)) || a.index - b.index;
   }
 
   /**

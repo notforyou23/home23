@@ -24,7 +24,7 @@ export class TTSService {
    *
    * Returns an audio/mpeg buffer on success, or null if skipped.
    */
-  async speak(text: string, tagged?: boolean): Promise<Buffer | null> {
+  async speak(text: string, tagged?: boolean, signal?: AbortSignal): Promise<Buffer | null> {
     if (!this.isEnabled()) return null;
 
     // In 'tagged' mode, only speak messages that are explicitly tagged
@@ -33,10 +33,10 @@ export class TTSService {
     }
 
     if (this.config.provider === 'elevenlabs') {
-      return this.speakElevenLabs(text);
+      return this.speakElevenLabs(text, signal);
     }
     if (this.config.provider === 'minimax') {
-      return this.speakMiniMax(text);
+      return this.speakMiniMax(text, signal);
     }
 
     console.warn(`[tts] Unknown provider: ${this.config.provider}`);
@@ -52,11 +52,12 @@ export class TTSService {
 
   // ─── Provider Implementations ─────────────────────────────
 
-  private async speakElevenLabs(text: string): Promise<Buffer> {
+  private async speakElevenLabs(text: string, signal?: AbortSignal): Promise<Buffer> {
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${this.config.voiceId}`;
 
     const res = await fetch(url, {
       method: 'POST',
+      signal,
       headers: {
         'xi-api-key': this.config.apiKey!,
         'Content-Type': 'application/json',
@@ -85,13 +86,14 @@ export class TTSService {
    * Model: speech-2.8-hd (default), speech-2.8-turbo for lower latency.
    * Voice: voice_id string (e.g. "English_Graceful_Lady").
    */
-  private async speakMiniMax(text: string): Promise<Buffer> {
+  private async speakMiniMax(text: string, signal?: AbortSignal): Promise<Buffer> {
     const url = 'https://api.minimax.io/v1/t2a_v2';
     const model = this.config.modelId || 'speech-2.8-hd';
     const voiceId = this.config.voiceId || 'English_ReservedYoungMan';
 
     const res = await fetch(url, {
       method: 'POST',
+      signal,
       headers: {
         'Authorization': `Bearer ${this.config.apiKey!}`,
         'Content-Type': 'application/json',

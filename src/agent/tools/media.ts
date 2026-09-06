@@ -2,11 +2,31 @@
  * Media tools — image generation, music generation, and text-to-speech.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import {
+  closeSync,
+  constants as fsConstants,
+  fsyncSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { loadConfig } from '../../config.js';
 import { resolveProviderKey } from '../provider-credentials.js';
+import {
+  detectReturnedArtifactContentType,
+  MAX_RETURNED_ARTIFACT_BYTES,
+} from '../../returned-artifacts.js';
+import {
+  canonicalReturnedArtifactDirectory,
+  returnedArtifactResult,
+  writeReturnedArtifactBytes,
+} from './return-artifact.js';
 
 type ImageGeneratorConfig = {
   provider: string;
@@ -161,9 +181,26 @@ type ImageArtifactInfo = {
   path: string;
   receiptPath: string;
   mimeType: string;
+  fileName: string;
+  byteCount: number;
+  sha256: string;
   bytes: number;
   createdAt: string;
 };
+
+function exactImageFormat(buf: Buffer): { mimeType: string; extension: string } {
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return { mimeType: 'image/png', extension: '.png' };
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return { mimeType: 'image/jpeg', extension: '.jpg' };
+  }
+  const signature = buf.subarray(0, 6).toString('ascii');
+  if (signature === 'GIF87a' || signature === 'GIF89a') {
+    return { mimeType: 'image/gif', extension: '.gif' };
+  }
+  throw new Error('Image provider returned an unsupported image format.');
+}
 
 function writeImageArtifact(
   ctx: ToolContext,
@@ -172,35 +209,138 @@ function writeImageArtifact(
   buf: Buffer,
   extra: Record<string, unknown> = {},
 ): ImageArtifactInfo {
+  if (buf.length < 1 || buf.length > MAX_RETURNED_ARTIFACT_BYTES) {
+    throw new Error('Image provider returned an artifact outside the 25 MB boundary.');
+  }
   const createdAt = new Date().toISOString();
   const safeProvider = cfg.provider.replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
-  const artifactDir = join(ctx.workspacePath, 'media', 'generated-images');
-  mkdirSync(artifactDir, { recursive: true });
+  const artifactDir = canonicalReturnedArtifactDirectory(ctx.workspacePath);
   const stamp = createdAt.replace(/[:.]/g, '-');
-  const filePath = join(artifactDir, `${stamp}-${safeProvider}.png`);
-  const receiptPath = filePath.replace(/\.png$/, '.json');
-  writeFileSync(filePath, buf);
-  const receipt: ImageArtifactInfo & Record<string, unknown> = {
-    provider: cfg.provider,
-    model: cfg.model,
-    prompt,
-    path: filePath,
-    receiptPath,
-    mimeType: 'image/png',
-    bytes: buf.length,
-    createdAt,
-    ...extra,
+  const format = exactImageFormat(buf);
+  const sha256 = createHash('sha256').update(buf).digest('hex');
+  let fileName = '';
+  let filePath = '';
+  let receiptPath = '';
+  let createdImagePath = '';
+  let createdReceiptPath = '';
+  let imageFd: number | undefined;
+  let receiptFd: number | undefined;
+  const createFlags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW;
+  const directoryFd = openSync(
+    artifactDir,
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
+  const directoryEntry = fstatSync(directoryFd);
+  let complete = false;
+  try {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const stem = `${stamp}-${safeProvider}-${randomBytes(6).toString('hex')}`;
+      fileName = `${stem}${format.extension}`;
+      filePath = join(artifactDir, fileName);
+      receiptPath = join(artifactDir, `${stem}.json`);
+      try {
+        imageFd = openSync(filePath, createFlags, 0o600);
+        createdImagePath = filePath;
+        try {
+          receiptFd = openSync(receiptPath, createFlags, 0o600);
+          createdReceiptPath = receiptPath;
+        } catch (error) {
+          closeSync(imageFd);
+          imageFd = undefined;
+          unlinkSync(createdImagePath);
+          createdImagePath = '';
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+          throw error;
+        }
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+        throw error;
+      }
+    }
+    if (imageFd === undefined || receiptFd === undefined) {
+      throw new Error('Could not reserve a unique generated-image artifact name.');
+    }
+    const receipt: ImageArtifactInfo & Record<string, unknown> = {
+      ...extra,
+      provider: cfg.provider,
+      model: cfg.model,
+      prompt,
+      path: filePath,
+      receiptPath,
+      mimeType: format.mimeType,
+      fileName,
+      byteCount: buf.length,
+      sha256,
+      bytes: buf.length,
+      createdAt,
+    };
+    writeFileSync(imageFd, buf);
+    fsyncSync(imageFd);
+    writeFileSync(receiptFd, JSON.stringify({
+      ...extra,
+      provider: cfg.provider,
+      model: cfg.model,
+      prompt,
+      mimeType: format.mimeType,
+      fileName,
+      byteCount: buf.length,
+      sha256,
+      bytes: buf.length,
+      createdAt,
+    }, null, 2));
+    fsyncSync(receiptFd);
+    const currentDirectory = lstatSync(artifactDir);
+    if (
+      !currentDirectory.isDirectory() ||
+      currentDirectory.isSymbolicLink() ||
+      currentDirectory.dev !== directoryEntry.dev ||
+      currentDirectory.ino !== directoryEntry.ino ||
+      realpathSync(artifactDir) !== artifactDir
+    ) {
+      throw new Error('Generated-image directory changed during artifact creation.');
+    }
+    fsyncSync(directoryFd);
+    complete = true;
+    return receipt;
+  } finally {
+    if (imageFd !== undefined) closeSync(imageFd);
+    if (receiptFd !== undefined) closeSync(receiptFd);
+    if (!complete) {
+      if (createdImagePath) {
+        try { unlinkSync(createdImagePath); } catch { /* best-effort rollback of our exclusive file */ }
+      }
+      if (createdReceiptPath) {
+        try { unlinkSync(createdReceiptPath); } catch { /* best-effort rollback of our exclusive file */ }
+      }
+      try { fsyncSync(directoryFd); } catch { /* best-effort durability of rollback */ }
+    }
+    closeSync(directoryFd);
+  }
+}
+
+function mediaSignal(ctx: ToolContext, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return ctx.abortSignal ? AbortSignal.any([ctx.abortSignal, timeout]) : timeout;
+}
+
+function generatedImageMedia(info: ImageArtifactInfo, prompt: string): NonNullable<ToolResult['media']>[number] {
+  return {
+    type: 'image',
+    path: info.path,
+    generatedBy: 'generate_image',
+    mimeType: info.mimeType,
+    fileName: info.fileName,
+    byteCount: info.byteCount,
+    sha256: info.sha256,
+    caption: prompt.slice(0, 200),
   };
-  writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
-  return receipt;
 }
 
 function imageResultContent(info: ImageArtifactInfo, details = ''): string {
   return [
     `Image generated via ${info.provider}/${info.model}${details}`,
-    `Path: ${info.path}`,
-    `Receipt: ${info.receiptPath}`,
-    `Bytes: ${info.bytes}`,
+    `Ready to return ${JSON.stringify(info.fileName)} (${info.mimeType}, ${info.bytes} bytes, sha256 ${info.sha256}).`,
   ].join('\n');
 }
 
@@ -224,7 +364,7 @@ async function generateMiniMaxImage(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    signal: mediaSignal(ctx, 120_000),
   });
 
   if (!res.ok) {
@@ -239,7 +379,7 @@ async function generateMiniMaxImage(
     return { content: `No image returned from MiniMax ${cfg.model}.`, is_error: true };
   }
 
-  const fileRes = await fetch(imageUrl, { signal: AbortSignal.timeout(60_000) });
+  const fileRes = await fetch(imageUrl, { signal: mediaSignal(ctx, 60_000) });
   if (!fileRes.ok) {
     return { content: `Image download failed: HTTP ${fileRes.status}`, is_error: true };
   }
@@ -248,7 +388,7 @@ async function generateMiniMaxImage(
 
   return {
     content: imageResultContent(artifact, aspect ? ` (${aspect})` : ''),
-    media: [{ type: 'image', path: artifact.path, mimeType: artifact.mimeType, caption: prompt.slice(0, 200) }],
+    media: [generatedImageMedia(artifact, prompt)],
   };
 }
 
@@ -275,7 +415,7 @@ async function generateOpenAIImage(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
+    signal: mediaSignal(ctx, 60_000),
   });
 
   if (!res.ok) {
@@ -291,7 +431,7 @@ async function generateOpenAIImage(
   if (imgData.b64_json) {
     buf = Buffer.from(imgData.b64_json, 'base64');
   } else if (imgData.url) {
-    const fileRes = await fetch(imgData.url, { signal: AbortSignal.timeout(60_000) });
+    const fileRes = await fetch(imgData.url, { signal: mediaSignal(ctx, 60_000) });
     if (!fileRes.ok) {
       return { content: `Image download failed: HTTP ${fileRes.status}`, is_error: true };
     }
@@ -305,7 +445,7 @@ async function generateOpenAIImage(
 
   return {
     content: imageResultContent(artifact, details),
-    media: [{ type: 'image', path: artifact.path, mimeType: artifact.mimeType, caption: prompt.slice(0, 200) }],
+    media: [generatedImageMedia(artifact, prompt)],
   };
 }
 
@@ -329,7 +469,7 @@ async function generateXAIImage(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    signal: mediaSignal(ctx, 120_000),
   });
 
   if (!res.ok) {
@@ -345,7 +485,7 @@ async function generateXAIImage(
   if (imgData.b64_json) {
     buf = Buffer.from(imgData.b64_json, 'base64');
   } else if (imgData.url) {
-    const fileRes = await fetch(imgData.url, { signal: AbortSignal.timeout(60_000) });
+    const fileRes = await fetch(imgData.url, { signal: mediaSignal(ctx, 60_000) });
     if (!fileRes.ok) {
       return { content: `Image download failed: HTTP ${fileRes.status}`, is_error: true };
     }
@@ -358,45 +498,8 @@ async function generateXAIImage(
 
   return {
     content: imageResultContent(artifact, aspect ? ` (${aspect})` : ''),
-    media: [{ type: 'image', path: artifact.path, mimeType: artifact.mimeType, caption: prompt.slice(0, 200) }],
+    media: [generatedImageMedia(artifact, prompt)],
   };
-}
-
-function inferAudioExtension(url: string | undefined, mimeType: string | null): string {
-  const normalizedMime = mimeType?.split(';')[0]?.trim().toLowerCase() ?? '';
-  if (normalizedMime === 'audio/mpeg' || normalizedMime === 'audio/mp3') return '.mp3';
-  if (normalizedMime === 'audio/wav' || normalizedMime === 'audio/x-wav') return '.wav';
-  if (normalizedMime === 'audio/flac') return '.flac';
-  if (normalizedMime === 'audio/ogg') return '.ogg';
-  if (normalizedMime === 'audio/aac') return '.aac';
-  if (url) {
-    try {
-      const parsed = new URL(url);
-      const ext = extname(parsed.pathname);
-      if (ext && ext.length <= 5) return ext;
-    } catch {
-      // Ignore malformed URLs and fall back to a safe default.
-    }
-  }
-  return '.mp3';
-}
-
-function inferAudioMime(ext: string, fallback?: string | null): string {
-  const normalizedFallback = fallback?.split(';')[0]?.trim();
-  if (normalizedFallback) return normalizedFallback;
-  switch (ext.toLowerCase()) {
-    case '.wav':
-      return 'audio/wav';
-    case '.flac':
-      return 'audio/flac';
-    case '.ogg':
-      return 'audio/ogg';
-    case '.aac':
-      return 'audio/aac';
-    case '.mp3':
-    default:
-      return 'audio/mpeg';
-  }
 }
 
 function formatMusicDuration(rawDuration?: number): string | null {
@@ -405,7 +508,7 @@ function formatMusicDuration(rawDuration?: number): string | null {
   return `${Math.round(seconds * 10) / 10}s`;
 }
 
-async function draftMiniMaxLyrics(prompt: string, cfg: MusicGeneratorConfig): Promise<string> {
+async function draftMiniMaxLyrics(prompt: string, cfg: MusicGeneratorConfig, ctx: ToolContext): Promise<string> {
   const res = await fetch(`${cfg.textBaseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
@@ -430,7 +533,7 @@ async function draftMiniMaxLyrics(prompt: string, cfg: MusicGeneratorConfig): Pr
         },
       ],
     }),
-    signal: AbortSignal.timeout(120_000),
+    signal: mediaSignal(ctx, 120_000),
   });
 
   if (!res.ok) {
@@ -485,7 +588,7 @@ async function generateMiniMaxMusic(
 
   let generatedLyrics = false;
   if (!lyrics && !input.instrumental && prompt) {
-    lyrics = await draftMiniMaxLyrics(prompt, cfg);
+    lyrics = await draftMiniMaxLyrics(prompt, cfg, ctx);
     generatedLyrics = true;
   }
 
@@ -507,7 +610,7 @@ async function generateMiniMaxMusic(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(240_000),
+    signal: mediaSignal(ctx, 240_000),
   });
 
   if (!res.ok) {
@@ -530,25 +633,19 @@ async function generateMiniMaxMusic(
   }
 
   let buf: Buffer;
-  let mimeType: string | null = null;
-  let sourceUrl: string | undefined;
-
   if (/^https?:\/\//i.test(audioValue)) {
-    sourceUrl = audioValue;
-    const fileRes = await fetch(audioValue, { signal: AbortSignal.timeout(120_000) });
+    const fileRes = await fetch(audioValue, { signal: mediaSignal(ctx, 120_000) });
     if (!fileRes.ok) {
       return { content: `Music download failed: HTTP ${fileRes.status}`, is_error: true };
     }
-    mimeType = fileRes.headers.get('content-type');
     buf = Buffer.from(await fileRes.arrayBuffer());
   } else {
     buf = Buffer.from(audioValue, 'hex');
   }
 
-  const ext = inferAudioExtension(sourceUrl, mimeType);
-  const resolvedMimeType = inferAudioMime(ext, mimeType);
-  const filePath = join(ctx.tempDir, `music-${Date.now()}${ext}`);
-  writeFileSync(filePath, buf);
+  if (detectReturnedArtifactContentType(buf) !== 'audio/mpeg') {
+    throw new Error('MiniMax returned unsupported audio; only MP3 can be attached.');
+  }
 
   const details = [
     `model=${model}`,
@@ -558,16 +655,17 @@ async function generateMiniMaxMusic(
     data.extra_info?.music_sample_rate ? `sample_rate=${data.extra_info.music_sample_rate}` : null,
   ].filter(Boolean).join(', ');
 
-  return {
-    content: `Music generated via minimax/${model}${details ? ` (${details})` : ''}`,
-    media: [{
-      type: 'document',
-      path: filePath,
-      mimeType: resolvedMimeType,
-      fileName: `home23-${model}${ext}`,
-      caption: prompt?.slice(0, 200) || 'MiniMax music generation',
-    }],
-  };
+  const artifact = writeReturnedArtifactBytes({
+    workspacePath: ctx.workspacePath,
+    bytes: buf,
+    stem: `music-${model}`,
+    generatedBy: 'generate_music',
+    caption: prompt?.slice(0, 200) || 'MiniMax music generation',
+  });
+  return returnedArtifactResult(
+    artifact,
+    `Music generated via minimax/${model}${details ? ` (${details})` : ''}`,
+  );
 }
 
 export const generateImageTool: ToolDefinition = {
@@ -677,16 +775,20 @@ export const ttsTool: ToolDefinition = {
     }
 
     try {
-      const buf = await ctx.ttsService.speak(text, true);
+      const buf = await ctx.ttsService.speak(text, true, ctx.abortSignal);
       if (!buf) return { content: 'TTS returned no audio.', is_error: true };
+      if (detectReturnedArtifactContentType(buf) !== 'audio/mpeg') {
+        throw new Error('TTS returned unsupported audio; only MP3 can be attached.');
+      }
 
-      const filePath = join(ctx.tempDir, `tts-${Date.now()}.mp3`);
-      writeFileSync(filePath, buf);
-
-      return {
-        content: `Voice message generated (${buf.length} bytes)`,
-        media: [{ type: 'voice', path: filePath, mimeType: 'audio/mpeg' }],
-      };
+      const artifact = writeReturnedArtifactBytes({
+        workspacePath: ctx.workspacePath,
+        bytes: buf,
+        stem: 'tts',
+        generatedBy: 'tts',
+        caption: text.slice(0, 200),
+      });
+      return returnedArtifactResult(artifact, 'Voice message generated');
     } catch (err) {
       return { content: `TTS error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
     }

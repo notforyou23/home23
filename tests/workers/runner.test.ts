@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -218,4 +218,45 @@ test('runWorker preserves explicit collaboration handoff intent', async () => {
 
   assert.deepEqual(result.receipt.collaborationHandoff?.sourceIssues, [78, 99]);
   assert.equal(result.receipt.collaborationHandoff?.constraints[0], 'Keep the existing operator tone.');
+});
+
+
+test('canonical worker keeps root, cancellation, and generated attachments in its joined context', async () => {
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'home23-joined-worker-'));
+  seedWorker(projectRoot);
+  const controller = new AbortController();
+  const destination = { parentWorkId: 'wrk_root', attemptId: 'att_root', channelId: 'chn_group' } as never;
+  const media = [{ type: 'image', path: '/fixture/image.png' }] as never;
+  const ctx = fakeContext(projectRoot, async (_system, _mission, _tools, child) => {
+    assert.equal(child.coordinationWorkDestination, destination);
+    assert.equal(child.parentWorkId, 'wrk_root');
+    assert.equal(child.abortSignal, controller.signal);
+    assert.equal(child.parentToolCallId, 'call_worker');
+    return { text: 'VERIFIER_STATUS: pass\nDISPATCH_OUTCOME: fixed\nSUMMARY: verified',
+      media, model: 'fake', toolCallCount: 0, durationMs: 1 };
+  });
+  Object.assign(ctx, { coordinationWorkDestination: destination, parentWorkId: 'wrk_root',
+    parentToolCallId: 'call_worker', abortSignal: controller.signal });
+  const result = await runWorker({ projectRoot, request: { worker: 'systems', prompt: 'check', requestedBy: 'house-agent' }, ctx });
+  assert.deepEqual(result.media, media);
+  const linkage = JSON.parse(readFileSync(path.join(result.runPath, 'working-thread.json'), 'utf8'));
+  assert.equal(linkage.workId, 'wrk_root');
+  assert.equal(linkage.invocationId, 'call_worker');
+  controller.abort(new Error('stop'));
+  await assert.rejects(runWorker({ projectRoot, request: { worker: 'systems', prompt: 'check', requestedBy: 'house-agent' }, ctx }), /stop/);
+});
+
+
+test('cancelled joined worker records an inspectable terminal receipt', async () => {
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'home23-worker-cancel-receipt-'));
+  seedWorker(projectRoot);
+  const controller = new AbortController();
+  const ctx = fakeContext(projectRoot, async () => { controller.abort(new Error('owner stopped')); throw controller.signal.reason; });
+  ctx.abortSignal = controller.signal;
+  await assert.rejects(runWorker({ projectRoot, request: { worker: 'systems', prompt: 'check', requestedBy: 'house-agent' }, ctx }), /owner stopped/);
+  const runsRoot = path.join(projectRoot, 'instances', 'workers', 'systems', 'runs');
+  const run = readdirSync(runsRoot)[0]!;
+  const receipt = JSON.parse(readFileSync(path.join(runsRoot, run, 'receipt.json'), 'utf8'));
+  assert.equal(receipt.status, 'cancelled');
+  assert.equal(receipt.verifierStatus, 'not_run');
 });

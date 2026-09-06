@@ -1,0 +1,51 @@
+{
+  "works": [
+    {
+      "id": "wrk_0198d95f-6c00-7000-8000-0000000000d6",
+      "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+      "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+      "originMessageId": "msg_0198d95f-6c00-7000-8000-0000000000c1",
+      "accountableResident": {
+        "principalId": "bot_0198d95f-6c00-7000-8000-000000000011",
+        "residentBinding": "jerry",
+        "displayName": "Jerry"
+      },
+      "kind": "resident_work_thread",
+      "title": "Validate the restored publishing cycle",
+      "summary": "Validate the restored publishing cycle, keep publishing disabled until it passes, and report the result.",
+      "state": "running",
+      "cancelAvailable": true,
+      "retryAvailable": false,
+      "createdAt": "2026-08-24T16:10:01.000Z",
+      "updatedAt": "2026-08-24T16:12:00.000Z",
+      "terminalAt": null,
+      "retryOfWorkId": null,
+      "retriedByWorkIds": [],
+      "finalResultMessageId": null
+    },
+    {
+      "id": "wrk_0198d95f-6c00-7000-8000-0000000000d7",
+      "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+      "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+      "originMessageId": "msg_0198d95f-6c00-7000-8000-0000000000c2",
+      "accountableResident": {
+        "principalId": "bot_0198d95f-6c00-7000-8000-000000000011",
+        "residentBinding": "jerry",
+        "displayName": "Jerry"
+      },
+      "kind": "resident_work_thread",
+      "title": "Check the household archive",
+      "summary": "Check the household archive and return one concise result.",
+      "state": "succeeded",
+      "cancelAvailable": false,
+      "retryAvailable": false,
+      "createdAt": "2026-08-24T15:00:00.000Z",
+      "updatedAt": "2026-08-24T15:03:00.000Z",
+      "terminalAt": "2026-08-24T15:03:00.000Z",
+      "retryOfWorkId": null,
+      "retriedByWorkIds": [],
+      "finalResultMessageId": "msg_0198d95f-6c00-7000-8000-0000000000c4"
+    }
+  ],
+  "nextCursor": null
+}

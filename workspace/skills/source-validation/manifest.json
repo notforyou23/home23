@@ -2,7 +2,7 @@
   "id": "source-validation",
   "version": "1.0.0",
   "name": "Source Validation",
-  "description": "Validate claims and sources for credibility, recency, provenance, and likely bias before you rely on them.",
+  "description": "Audit a disputed claim or source for provenance and evidential limits.",
   "layer": "skill",
   "runtime": "docs",
   "category": "research",

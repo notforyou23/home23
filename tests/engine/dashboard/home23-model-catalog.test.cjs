@@ -112,7 +112,16 @@ test('pure builder exposes only Home23 exact chat pairs with COSMO provider capa
       ...BUILTIN_EXECUTION_DEFAULTS['openai-codex'],
     },
   );
-  assert.equal(Object.hasOwn(authority.executionCatalog.providers, 'ollama-local'), false);
+  assert.equal(Object.hasOwn(authority.executionCatalog.providers, 'ollama-local'), true);
+  assert.deepEqual(
+    authority.executionCatalog.providers['ollama-local'].executionDefaults,
+    BUILTIN_EXECUTION_DEFAULTS['ollama-local'],
+  );
+  assert.deepEqual(
+    authority.executionCatalog.providers['ollama-local'].models,
+    [],
+    'a reviewed provider may expose capabilities without inventing unconfigured model pairs',
+  );
   assert.deepEqual(authority.executionCatalog.defaults.embeddings, {
     ...BUILTIN_MODEL_CATALOG.defaults.embeddings,
     dimensions: 1536,

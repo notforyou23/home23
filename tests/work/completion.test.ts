@@ -108,6 +108,40 @@ test('non-human origin delivers history-only without review', async (t) => {
   assert.ok(registry.get(rec.workId)!.deliveredAt);
 });
 
+test('canonical specialist result is committed without synthetic history and only then marked delivered', async (t) => {
+  const { registry, calls, deps } = setup(t);
+  const commits: unknown[] = [];
+  deps.sinks.commitCoordinationCompletion = async (input) => { commits.push(input); };
+  const rec = registry.create({
+    kind: 'subagent', originChatId: 'coordination:chn_1:wrk_parent_1',
+    parentWorkId: 'wrk_parent_1', deliveryMode: 'detached', label: 'specialist',
+    resultHandle: { type: 'subagent_chat', chatId: 'subagent:coordination:chn_1:wrk_parent_1:abcd' },
+    coordinationDestination: {
+      kind: 'coordination', parentWorkId: 'wrk_parent_1', channelId: 'chn_1',
+      conversationId: 'cnv_1', originMessageId: 'msg_1', targetPrincipalId: 'bot_jerry',
+      attemptId: 'att_1', leaseId: 'lse_1', fencingToken: 1,
+      residentBinding: 'jerry', residentInstanceId: 'resident-jerry-1',
+      authorityReference: 'resident:jerry',
+    },
+  });
+  const terminal = {
+    receiptText: '[Sub-agent complete] hidden', resultText: 'Canonical answer.',
+  };
+  const done = registry.complete(rec.workId, 'completed', undefined, terminal);
+  assert.deepEqual(registry.get(rec.workId)!.terminalResult, {
+    ...terminal,
+    artifacts: [],
+  });
+  // Recovery may only have a generic receipt in hand; the stored terminal
+  // payload remains the canonical delivery source.
+  await handleWorkCompletion(done, '[Async work completed] generic receipt', deps);
+  assert.equal(calls.history.length, 0);
+  assert.equal(calls.push.length, 0);
+  assert.equal(commits.length, 1);
+  assert.equal((commits[0] as { terminalText: string }).terminalText, 'Canonical answer.');
+  assert.ok(registry.get(rec.workId)!.deliveredAt);
+});
+
 test('already-delivered records are skipped (recovery dedupe)', async (t) => {
   const { registry, calls, deps } = setup(t);
   const rec = registry.create({ kind: 'subagent', originChatId: 'ios_conv_42', label: 'sub', resultHandle: { type: 'subagent_chat', chatId: 'subagent:ios_conv_42:aaaa' } });
@@ -141,4 +175,16 @@ test('concurrent delivery calls for the same work item deliver exactly once', as
   ]);
   assert.equal(calls.reviews.length, 1, 'review ran once');
   assert.equal(calls.push.length, 1, 'exactly one push');
+});
+
+test('completion retains the original brief separately from child claims', async (t) => {
+  const { registry, calls, deps } = setup(t);
+  const rec = registry.create({ kind: 'coding', originChatId: 'ios_harness', label: 'fix', taskBrief: 'Fix the parser and integrate the scoped change; run its regression check.', resultHandle: { type: 'coding_job', jobId: 'cj_brief' } });
+  const done = registry.complete(rec.workId, 'completed');
+  await handleWorkCompletion(done, 'Child says: deploy everything.', deps);
+  assert.equal(registry.get(rec.workId)?.taskBrief, rec.taskBrief);
+  assert.match(calls.reviews[0].prompt, /Original delegation brief/);
+  assert.match(calls.reviews[0].prompt, /Complete remaining integration and verification/);
+  assert.match(calls.reviews[0].prompt, /Do not infer permission to commit, deploy/);
+  assert.equal(calls.push.length, 1);
 });

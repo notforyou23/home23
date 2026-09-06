@@ -1,3 +1,4 @@
+import type { HistoricalContextEntry } from './historical-context.js';
 /**
  * COSMO Home 2.3 — Agent Types
  *
@@ -14,7 +15,11 @@ import type { RelationshipLedger } from './relationship-ledger.js';
 import type { MemoryObjectStore } from './memory-objects.js';
 import type { ModelAliases } from './model-resolution.js';
 import type { ReasoningEffort } from './reasoning-effort.js';
-import type { AsyncWorkRecord } from '../work/types.js';
+import type {
+  AsyncWorkRecord,
+  AsyncWorkTerminalResult,
+  CoordinationWorkDestination,
+} from '../work/types.js';
 import type { WorkCancelOutcome } from '../work/cancel.js';
 import type {
   BridgeEvent,
@@ -35,6 +40,7 @@ export interface ToolDefinition {
 }
 
 export interface ToolResult {
+  contextEvidenceId?: string;
   content: string;
   media?: MediaAttachment[];
   is_error?: boolean;
@@ -50,17 +56,67 @@ export interface SubAgentTracker {
   queue: Array<{ task: string; chatId: string; resolve: () => void }>;
 }
 
+export type SubAgentExecutionMode = 'joined' | 'detached';
+
 export interface TurnRuntimeContext {
+  /** Meaningful provider progress renews inactivity, never the hard deadline. */
+  onProviderActivity?: (sequence: number) => void;
   turnId: string;
   abortController: AbortController;
   signal: AbortSignal;
   brainOperations: BrainOperationsClient;
   onOperationActivity: (activity: OperationActivity) => void;
+  /** Keeps a turn's inactivity lease alive while an honestly joined durable child advances. */
+  onWorkActivity?: (activity: {
+    workId: string;
+    sequence: number;
+    state: string;
+    phase: string | null;
+  }) => void;
+  delegatedContext?: { systemPrompt: string; workspacePath: string };
   /** Immutable per-turn registry override. Absent means the loop's shared registry. */
   registry?: ToolRegistry;
+  /** Exact canonical origin/destination, present only on a resident coordination turn. */
+  coordinationOrigin?: CoordinationTurnOrigin;
+  coordinationDelivery?: CoordinationTurnDeliveryContext;
+  historyBackfill?: readonly HistoricalContextEntry[];
+  coordinationWorkDestination?: CoordinationWorkDestination;
+  parentWorkId?: string;
+}
+
+/** Privacy-safe provenance for a turn leased from the coordination plane. */
+export interface CoordinationTurnOrigin {
+  kind: 'coordination';
+  workId: string;
+  attemptId: string;
+  leaseId: string;
+  holderPrincipalId: string;
+  holderInstanceId: string;
+  authorityReference: string;
+  fencingToken: number;
+  channelId: string;
+  originMessageId: string | null;
+  roundId: string | null;
+}
+
+/** Canonical conversation/actor identity paired with CoordinationTurnOrigin. */
+export interface CoordinationTurnDeliveryContext {
+  conversationId: string;
+  targetPrincipalId: string;
+  targetDisplayName: string;
+  targetKind: string;
+}
+
+export interface DurableTurnStart {
+  turnId: string;
+  chatId: string;
+  persistedAt: string;
 }
 
 export interface ToolContext {
+  coordinationChannelOperation?: (input: {
+    origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown>;
+  }) => Promise<unknown>;
   scheduler: CronScheduler | null;
   ttsService: TTSService | null;
   browser: BrowserController | null;
@@ -75,7 +131,18 @@ export interface ToolContext {
   subAgentTracker: SubAgentTracker;
   /** Configured short names accepted by model-selecting tools. */
   modelAliases?: ModelAliases;
+  /** Configured resident definitions from which restricted hand grants are selected. */
+  restrictedToolSource?: Pick<ToolRegistry, 'get'>;
   chatId: string;
+  /** Existing coordination facts when the caller already has them. Never minted here. */
+  channelId?: string;
+  conversationId?: string;
+  originMessageId?: string;
+  principalId?: string;
+  targetPrincipalId?: string;
+  residentBinding?: string;
+  residentInstanceId?: string;
+  authorityReference?: string;
   /** Actual channel/user turn data, set by the loop rather than tool input. */
   authenticatedUserMessage?: {
     chatId: string;
@@ -93,13 +160,24 @@ export interface ToolContext {
   requestWorkCancel?: (workId: string) => WorkCancelOutcome;
   /** Set when this context belongs to work spawned by another work item (nesting). */
   parentWorkId?: string;
+  /**
+   * Immutable canonical root for a durable Connected Agents Working Thread.
+   * Nested tools inherit this verbatim; temporary aw_ records never replace it.
+   */
+  coordinationWorkDestination?: CoordinationWorkDestination;
   /** Terminal async-work hook installed by home.ts — runs the completion pipeline. */
-  onWorkTerminal?: (workId: string, resultText: string) => void;
+  onWorkTerminal?: (workId: string, result: string | AsyncWorkTerminalResult) => void;
+  /** Foreground policy: a long tool was refused and needs durable Work (Lane 2). */
+  onForegroundDetachRequired?: (
+    request: import('./foreground-tool-policy.js').ForegroundDetachRequest,
+  ) => import('./foreground-tool-policy.js').ForegroundDetachOutcome | void | Promise<import('./foreground-tool-policy.js').ForegroundDetachOutcome | void>;
   runAgentLoop: AgentLoopRunner | null;
   workerConnectorBaseUrl?: string;
   fetch?: typeof fetch;
   onEvent?: AgentEventCallback;
-  conversationHistory?: { append(chatId: string, records: unknown[]): void };
+  /** Stable parent tool-call identity for nested runtime activity. */
+  parentToolCallId?: string;
+  conversationHistory?: { append(chatId: string, records: unknown[]): void; taskContext?: import('./task-context.js').TaskContextStore; archiveCurrent?(chatId: string): string[]; contextStatus?(chatId: string): unknown };
   abortSignal?: AbortSignal;
   brainOperations: BrainOperationsClient;
   onOperationActivity?: (activity: OperationActivity) => void;
@@ -141,16 +219,28 @@ export interface ContextManagerRef {
 /** Minimal interface to the async-work registry (Step 31) — avoids importing the full class */
 export interface WorkRegistryRef {
   create(input: {
-    kind: 'coding' | 'subagent';
+    kind: 'coding' | 'subagent' | 'cron';
     originChatId: string;
     originTurnId?: string;
     parentWorkId?: string;
+    coordinationDestination?: CoordinationWorkDestination;
+    deliveryMode?: 'detached' | 'inline';
     label: string;
-    resultHandle: { type: 'coding_job'; jobId: string } | { type: 'subagent_chat'; chatId: string };
+    taskBrief?: string;
+    resultHandle:
+      | { type: 'coding_job'; jobId: string }
+      | { type: 'subagent_chat'; chatId: string }
+      | { type: 'cron_chat'; chatId: string };
   }): { workId: string; originChatId: string };
   get(workId: string): AsyncWorkRecord | undefined;
   list(filter?: { originChatId?: string; active?: boolean; limit?: number }): AsyncWorkRecord[];
-  complete(workId: string, status: 'completed' | 'failed' | 'cancelled' | 'interrupted', error?: string): unknown;
+  complete(
+    workId: string,
+    status: 'completed' | 'failed' | 'cancelled' | 'interrupted',
+    error?: string,
+    terminalResult?: AsyncWorkTerminalResult,
+  ): unknown;
+  completeInline(workId: string, status: 'completed' | 'failed' | 'cancelled' | 'interrupted', error?: string): unknown;
 }
 
 /** Minimal interface to the ACP coding bridge — avoids importing the full class */
@@ -187,6 +277,7 @@ export interface TelegramAdapterRef {
   sendPhoto(chatId: string, filePath: string, caption?: string): Promise<void>;
   sendVoice(chatId: string, filePath: string): Promise<void>;
   sendDocument(chatId: string, filePath: string, caption?: string): Promise<void>;
+  sendText?(chatId: string, text: string): Promise<void>;
 }
 
 /** Function signature for spawning sub-agent loops */
@@ -204,19 +295,48 @@ export type AgentLoopRunner = (
 
 // ─── Agent Events (streaming) ───────────────────────────────
 
+export type ReasoningProvenance =
+  | 'provider_verbatim_reasoning'
+  | 'provider_reasoning_summary'
+  | 'agent_authored_explanation';
+
 export type AgentEvent =
-  | { type: 'thinking'; content: string }
-  | { type: 'tool_start'; tool: string; args: unknown }
+  | { type: 'thinking'; content: string; provenance: ReasoningProvenance;
+      sourceEventType: string; providerEvent?: unknown }
+  | { type: 'tool_start'; tool: string; args: unknown; toolCallId: string;
+      parentActivityId?: string; sourceEventType?: string; providerEvent?: unknown }
   | { type: 'tool_result'; tool: string; result: string; success: boolean;
-      resultHandle?: string; toolMetadata?: BrainToolEventMetadata }
-  | { type: 'response_chunk'; chunk: string }
-  | { type: 'media'; mediaType: string; path: string; caption?: string }
-  | { type: 'subagent_result'; task: string; result: string }
-  | { type: 'cache'; read: number; write: number; input: number; output: number }
+      toolCallId: string; exactResult?: string; resultHandle?: string;
+      toolMetadata?: BrainToolEventMetadata; sourceEventType?: string; providerEvent?: unknown }
+  | { type: 'response_chunk'; chunk: string; sourceEventType?: string;
+      providerEvent?: unknown }
+  | { type: 'media'; mediaType: string; path: string; caption?: string;
+      generatedBy?: MediaAttachment['generatedBy'];
+      mimeType?: string; fileName?: string; byteCount?: number; sha256?: string;
+      toolCallId?: string; sourceEventType?: string }
+  | { type: 'subagent_start'; subagentId: string; task: string;
+      parentToolCallId?: string; label?: string; sourceEventType?: string }
+  | { type: 'subagent_result'; subagentId: string; task: string; result: string;
+      success: boolean; parentToolCallId?: string; sourceEventType?: string }
+  | { type: 'cache'; read: number | null; write: number | null; input: number | null; output: number | null; inputTotal?: number | null; provider?: string; model?: string;
+      sourceEventType?: string }
   | { type: 'status'; status: string; message?: string;
-      activity_deadline_at?: string; hard_deadline_at?: string };
+      activity_deadline_at?: string; hard_deadline_at?: string; sourceEventType?: string };
 
 export type AgentEventCallback = (event: AgentEvent) => void;
+
+/** Exact envelope persisted by AgentLoop before it is fanned out to observers. */
+export interface DurableAgentEvent {
+  turnId: string;
+  sequence: number;
+  occurredAt: string;
+  provider: string | null;
+  model: string | null;
+  reasoningEffort: ReasoningEffort | null;
+  event: AgentEvent;
+}
+
+export type DurableAgentEventCallback = (event: DurableAgentEvent) => void;
 
 export interface BrainToolEventMetadata {
   operationId: string;
@@ -233,6 +353,8 @@ export interface BrainToolEventMetadata {
 // ─── Agent Response ─────────────────────────────────────────
 
 export interface AgentResponse {
+  /** Durable tracked-turn outcome; absent only for legacy direct runners. */
+  terminalStatus?: import('../chat/turn-types.js').TurnStatus;
   text: string;
   media?: MediaAttachment[];
   model: string;

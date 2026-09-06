@@ -38,13 +38,13 @@ Before creating any goal, verify:
 
 ## Work Loop Enforcement
 
-Multi-step goals route through the planner first. Always.
+Use the planner for meaningful dependencies or uncertainty; follow the runtime routing contract.
 
-A goal like "prepare newsletter issue for publication" is not one action. It's a sequence: review content, verify facts, format for platform, stage for publish, get the owner sign-off. The planner breaks it down. Each step has its own deliverable and done condition.
+A goal like "prepare newsletter issue for publication" is not one action. It's a sequence: review content, verify facts, format for platform, stage for publish, use the applicable publication authority. The planner breaks it down. Each step has its own deliverable and done condition.
 
 Single-step goals (send a reminder, update a status, answer a factual question) can execute directly.
 
-If you're unsure whether something is single-step or multi-step: if it takes more than one tool call to complete, it's multi-step. Route it.
+Tool-call count does not determine planning needs. Keep straightforward work with one executor.
 
 ---
 
@@ -82,12 +82,4 @@ Reject goals that have:
 
 ## Using HEARTBEAT Context
 
-When HEARTBEAT.md is loaded, it's not background reading. It's the authoritative list of what matters.
-
-- UKG is critical — federation layer is next.
-- the newsletter Issue 1 is ready to publish — the owner final review needed.
-- COSMO Home is Phase 2 active — validation before family rollout.
-- Evobrew needs fresh install testing before promotion.
-- a project is waiting on the owner testing.
-
-Goals you create should push these forward, not compete with them. New work justifies itself against what's already in flight.
+Use relevant HEARTBEAT context with its timestamp and source. Confirm changing project state before acting. Do not treat example projects or an old status note as current priorities. Proposals should advance the assigned mission and avoid competing with active work.
