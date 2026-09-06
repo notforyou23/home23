@@ -6,6 +6,12 @@ Home23 is an installable AI operating system. The public repo must stay portable
 
 If you are working inside an existing live installation and `AGENTS.local.md` exists, read it after this file. `AGENTS.local.md` is intentionally ignored by Git and may contain machine-specific operator context.
 
+## Working Autonomy
+
+Carry implementation requests through the source changes, necessary cleanup and integration, verification, and local Git checkpoints needed for the requested outcome. Review and commit only the task's changes; preserve unrelated work. Do not turn an audit or explanation into implementation. Respect explicit task limits, including requests not to commit.
+
+Use judgment for routine choices. Ask only for a consequential decision outside the task's authorization; authorization already given remains valid. Production activation, service restarts, destructive data changes, pushes and publishing require authorization covering that action. Implementation alone does not authorize them.
+
 ## Before You Edit
 
 If `instances/.house/source-authority.json` exists, run `npm run source:status` and use its maintained development source. An installation checkout or an old task worktree is not automatically the source for new changes. Read `docs/reference/SOURCE-AUTHORITY.md`.
@@ -14,7 +20,7 @@ If `instances/.house/source-authority.json` exists, run `npm run source:status` 
    ```bash
    git status --short --branch
    ```
-2. Read the docs for the area you are touching:
+2. Read the documentation relevant to the area and operation. Reuse material already read during the task; refresh it when the source, scope, or relevant facts change. Do not read every design document as a ritual:
    - `README.md` and `docs/ONBOARDING.md` for install/start behavior.
    - `docs/design/COSMO23-VENDORED-PATCHES.md` before changing anything under `cosmo23/`.
    - The matching `docs/design/*` file for feature areas with design docs.
@@ -76,7 +82,7 @@ The generated `instances/`, local `config/*.yaml`/`*.json`, and `ecosystem.confi
 - Do not run broad destructive PM2 commands such as `pm2 stop all` or `pm2 delete all`.
 - Do not use destructive Git cleanup commands unless explicitly requested.
 - Do not commit local runtime files, secrets, keys, private certs, chat logs, or machine-specific operator handoffs.
-- Keep fixes scoped. Avoid feature work unless the user asks for it.
+- Include cleanup, consolidation and supporting changes needed for the requested outcome. Explain material scope changes; ask before pursuing unrelated product direction.
 - After code changes, run the smallest meaningful verification first, then broaden when release or onboarding behavior changed.
 
 ## Verification
