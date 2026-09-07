@@ -28,3 +28,13 @@ Restart recovery cannot reconstruct an exit code the old harness never persisted
 The completion pipeline prevents overlapping deliveries within one process and remembers delivered receipts. External notification delivery is not a transactional exactly-once guarantee across a crash. A worker receipt, a reviewed report, and an integrated user outcome are separate evidence.
 
 Codex/Cursor launches do not enforce `effort`, appended-system-prompt, tool allow/deny, or budget fields. Model capability and tool permissions are separate: a more capable model does not gain broader authority automatically.
+
+Codex coding models are restricted to `gpt-5.6-sol` (default minimum) and
+`gpt-6-astra`. Older or unknown configured models, overrides and continuation
+settings fail before launch, with no downgrade. Extra CLI arguments cannot
+override model, profile or provider selection; config arguments support only
+quoted reasoning effort/summary values.
+
+A detached coding CLI can still be killed by PM2 descendant-tree termination.
+Never restart its managed host from a coding child; prepare the cutover and
+run it from an independent operator terminal after active work drains.

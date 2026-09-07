@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 export function compareDefinitions({ root, release, residents, saved, running }) {
   const problems = [], processes = [];
@@ -50,7 +50,11 @@ export function status(root) {
   if(!raw.equals(fs.readFileSync(pointerFile))) throw new Error('Pointer changed during inspection');
   return { observedAt:new Date().toISOString(),releaseId:pointer.releaseId,...compareDefinitions({root,release,residents,saved,running}) };
 }
-if(process.argv[1] && import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href) {
+export function isMain(entry = process.argv[1]) {
+  try { return !!entry && fs.realpathSync(entry) === fs.realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+}
+if(isMain()) {
   try { const result=status(process.argv[2] || process.cwd());console.log(JSON.stringify(result,null,2));process.exitCode=result.ok?0:1; }
   catch { console.error('Release inspection failed; inspect pointer, launcher files and PM2 locally. No deployment changes made.');process.exitCode=2; }
 }

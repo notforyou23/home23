@@ -26,6 +26,32 @@ import type {
 const SUMMARY_MAX = 300;
 const OTHER_RAW_MAX = 500;
 const RESULT_TEXT_MAX = 4000;
+export const CODEX_MODELS = ['gpt-5.6-sol', 'gpt-6-astra'] as const;
+export const DEFAULT_CODEX_MODEL = CODEX_MODELS[0];
+
+export function resolveCodexModel(model?: string): string {
+  const selected = model ?? DEFAULT_CODEX_MODEL;
+  if (!(CODEX_MODELS as readonly string[]).includes(selected)) {
+    throw new Error(`Unsupported Codex model "${selected}". Minimum contract: Sol 5.6. Supported models: ${CODEX_MODELS.join(', ')}; no job was launched and no downgrade was attempted`);
+  }
+  return selected;
+}
+
+function validateCodexExtraArgs(args: string[] = []): void {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (/^(?:--(?:model|profile|oss|local-provider)(?:=|$)|-[mp])/.test(arg)) {
+      throw new Error('Codex extraArgs must not override model or provider selection; use the supported model field');
+    }
+    if (arg === '-c' || arg === '--config' || arg.startsWith('--config=') || arg.startsWith('-c')) {
+      const value = arg === '-c' || arg === '--config' ? args[++i] : arg.replace(/^(?:--config=|-c=?)/, '');
+      if (!value || !/^model_reasoning_(?:effort|summary)\s*=\s*"[a-z_]+"$/.test(value)) {
+        throw new Error('Codex extraArgs config accepts only model_reasoning_effort or model_reasoning_summary; model/provider overrides are not allowed');
+      }
+    }
+  }
+}
+
 const SELECTABLE_BACKEND_IDS = ['codex', 'cursor'] as const;
 
 export type SelectableCodingBackendId = typeof SELECTABLE_BACKEND_IDS[number];
@@ -88,6 +114,10 @@ function otherEvent(line: string): BridgeEvent {
 
 /** Reject controls that this adapter cannot enforce instead of silently dropping them. */
 export function validateBackendOptions(backend: string, opts: CodingBackendOptions): void {
+  if (backend === 'codex') {
+    resolveCodexModel(opts.model);
+    validateCodexExtraArgs(opts.extraArgs);
+  }
   const supported: Record<string, string[]> = {
     'claude-code': ['effort', 'appendSystemPrompt', 'maxBudgetUsd', 'addDirs', 'allowedTools', 'disallowedTools'],
     'grok-build': ['effort', 'appendSystemPrompt', 'allowedTools', 'disallowedTools'],
@@ -323,7 +353,7 @@ function buildCodexArgs(opts: CodingBackendOptions): string[] {
   if (opts.sandbox) args.push('--sandbox', opts.sandbox);
   else if (opts.permissionMode === 'bypassPermissions') args.push('--dangerously-bypass-approvals-and-sandbox');
   else args.push('--full-auto');
-  if (opts.model) args.push('--model', opts.model);
+  args.push('--model', resolveCodexModel(opts.model));
   if (opts.extraArgs?.length) args.push(...opts.extraArgs);
   args.push(opts.prompt);
   return args;

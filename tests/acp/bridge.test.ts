@@ -316,7 +316,7 @@ test('startJob permits a resume from a terminal source job', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
   const bridge = makeBridge(root, happyCli(root));
   try {
-    const source = await bridge.startJob({ prompt: 'finish this', model: 'gpt-5' });
+    const source = await bridge.startJob({ prompt: 'finish this', model: 'gpt-5.6-sol' });
     const finished = await bridge.waitForJob(source.id, 15_000);
     assert.equal(finished.status, 'completed');
     const resumed = await bridge.startJob({
@@ -330,7 +330,7 @@ test('startJob permits a resume from a terminal source job', async () => {
     assert.equal(done.status, 'completed');
     assert.equal(done.resumedFromJobId, source.id);
     assert.deepEqual(done.executionOptions, finished.executionOptions);
-    assert.equal(done.model, 'gpt-5');
+    assert.equal(done.model, 'gpt-5.6-sol');
     assert.equal(done.effort, undefined);
     assert.equal(done.argv?.includes('--max-budget-usd'), false);
   } finally {
@@ -617,4 +617,18 @@ test('cancellation intent survives detachment and recovery', async () => {
     await second.recover();
     assert.equal((await second.waitForJob(job.id, 5000)).status, 'cancelled');
   } finally { first.dispose(); second.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Codex rejects older explicit and configured models before creating jobs or workspaces', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-model-'));
+  try {
+    const bridge = makeBridge(root, happyCli(root));
+    await assert.rejects(bridge.startJob({ prompt: 'must not run', model: 'gpt-5.5' }), /Unsupported Codex model/);
+    assert.deepEqual(bridge.listJobs(), []);
+    bridge.dispose();
+    const configured = makeBridge(root, happyCli(root), { backends: { codex: { bin: happyCli(root), model: 'gpt-5' } } });
+    await assert.rejects(configured.startJob({ prompt: 'must not run' }), /Unsupported Codex model/);
+    assert.deepEqual(configured.listJobs(), []);
+    configured.dispose();
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
