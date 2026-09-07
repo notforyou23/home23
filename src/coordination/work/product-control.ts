@@ -52,8 +52,7 @@ export interface ProductWorkProjection {
 
 export interface ProductWorkListProjection {
   works: readonly ProductWorkProjection[];
-  /** Reserved for stable pagination; the first bounded product slice is one page. */
-  nextCursor: null;
+  nextCursor: string | null;
 }
 
 export interface ProductWorkMutationResult {
@@ -67,6 +66,7 @@ export interface ProductWorkControlPort {
     context: MessagingActorContext;
     conversationId?: string;
     limit?: number;
+    cursor?: string;
   }): ProductWorkListProjection;
   get(input: { context: MessagingActorContext; workId: string }): ProductWorkProjection;
   cancel(input: { context: MessagingActorContext; workId: string; idempotencyKey: string }): ProductWorkMutationResult;
@@ -250,10 +250,12 @@ export function createProductWorkControl(options: {
     }).work;
   };
   const service: ProductWorkControlPort = {
-    list({ context, conversationId, limit = 50 }) {
+    list({ context, conversationId, limit = 50, cursor }) {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
         throw new WorkError("invalid_request", "Work list limit must be between 1 and 100");
       }
+      if (cursor !== undefined && !/^work-offset:[0-9]{1,7}$/.test(cursor)) throw new WorkError("invalid_request", "Invalid Work cursor");
+      const offset = cursor ? Number(cursor.slice("work-offset:".length)) : 0;
       if (conversationId !== undefined) assertCoordinationId("conversation", conversationId);
       const rows = options.database.readAll<{ id: string }>(
         `SELECT w.id
@@ -269,20 +271,21 @@ export function createProductWorkControl(options: {
             AND (? IS NULL OR h.id = ?)
           ORDER BY CASE WHEN w.state IN ('queued', 'leased', 'running', 'cancelling') THEN 0 ELSE 1 END,
                    w.updated_at DESC, w.id DESC
-          LIMIT ?`,
+          LIMIT ? OFFSET ?`,
         context.principalId,
         context.identity.kind === 'owner' ? context.principalId : '',
         context.principalId,
         conversationId ?? null,
         conversationId ?? null,
-        limit,
+        limit + 1,
+        offset,
       );
-      const works = rows.map(({ id }) => {
+      const works = rows.slice(0, limit).map(({ id }) => {
         const work = options.work.get(id);
         if (!work) throw new Error("listed Work disappeared during projection");
         return projection(options.database, work);
       });
-      return Object.freeze({ works: Object.freeze(works), nextCursor: null });
+      return Object.freeze({ works: Object.freeze(works), nextCursor: rows.length > limit ? `work-offset:${offset + limit}` : null });
     },
     recoverCancellations(identity) {
       let discovered = 0;

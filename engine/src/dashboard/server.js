@@ -2577,6 +2577,8 @@ class DashboardServer {
           agent: req.query.agent,
           type: req.query.type,
           compact: req.query.compact,
+          offset: req.query.offset,
+          q: req.query.q,
         });
         res.json(data);
       } catch (err) {

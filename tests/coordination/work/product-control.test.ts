@@ -123,6 +123,13 @@ test("Working Thread list is owner-scoped, excludes speaking turns, and projects
   const listed = s.control.list({ context: context(123), limit: 50 });
   assert.deepEqual(listed.works.map((work) => work.id), [newer.id, older.id]);
   assert.equal(listed.nextCursor, null);
+  const firstPage = s.control.list({ context: context(123), limit: 1 });
+  assert.equal(firstPage.nextCursor, 'work-offset:1');
+  const secondPage = s.control.list({ context: context(123), limit: 1, cursor: firstPage.nextCursor! });
+  assert.deepEqual([...firstPage.works, ...secondPage.works].map(w => w.id), [newer.id, older.id]);
+  assert.equal(secondPage.nextCursor, null);
+  assert.deepEqual(s.control.list({ context: context(125, BOT_ID), cursor: firstPage.nextCursor! }).works, []);
+  assert.throws(() => s.control.list({ context: context(123), cursor: 'work-offset:-1' }), WorkError);
   assert.equal(listed.works.some((work) => work.id === s.queued.id), false,
     "ordinary resident speaking Work must not appear as a Working Thread");
   assert.deepEqual(listed.works[1], {

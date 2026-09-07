@@ -241,3 +241,38 @@ test('Briefs service formats machine JSON artifacts as reader-grade documents', 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('all report pages remain searchable and old report details stay reachable', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-brief-pages-'));
+  try {
+    for (let i = 0; i < 270; i++) {
+      const file = path.join(root, 'instances/jerry/workspace/reports', `${String(i).padStart(3, '0')}.md`);
+      write(file, `# Report ${i}\n\n${i === 0 ? 'rare archival finding' : 'saved report'}`);
+      fs.utimesSync(file, 1700000000 + i, 1700000000 + i);
+    }
+    write(path.join(root, 'instances/jerry/workspace/sessions/note.md'), '# A conversation note\n\nKeep in Notes.');
+    const service = new Home23BriefsService({ home23Root: root });
+    let timerRan = false;
+    setImmediate(() => { timerRan = true; });
+    const reports = await service.list({ limit: 60, type: 'all_reports', compact: true });
+    assert.equal(timerRan, true, 'large scans must yield to other dashboard requests');
+    assert.equal(reports.total, 270);
+    assert.equal(reports.items.some(item => item.type === 'session'), false);
+    assert.equal((await service.list({ type: 'session' })).total, 1);
+    let offset = 0, ids = [];
+    do {
+      const page = await service.list({ limit: 60, offset, type: 'report', compact: true });
+      assert.equal(page.total, 270);
+      ids.push(...page.items.map(item => item.id));
+      offset = page.nextOffset;
+    } while (offset !== null);
+    assert.equal(new Set(ids).size, 270);
+    const search = await service.list({ q: 'rare archival finding', type: 'report' });
+    assert.equal(search.total, 1);
+    assert.equal(search.items[0].title, 'Report 0');
+    const detail = await service.get(search.items[0].id);
+    assert.equal(detail.ok, true);
+    assert.match(detail.item.text, /rare archival finding/);
+    assert.equal((await service.list({ agent: 'forrest' })).total, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

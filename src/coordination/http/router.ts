@@ -674,6 +674,7 @@ export function createCoordinationRouter(input: {
     response.json(application.services.workControl.list({
       context: requireCoordinationContext(response),
       ...(conversationId === null ? {} : { conversationId }),
+      ...(nullableQuery(request.query.cursor) === null ? {} : { cursor: nullableQuery(request.query.cursor)! }),
       limit: integerQuery(request.query.limit, 50),
     }));
   }));

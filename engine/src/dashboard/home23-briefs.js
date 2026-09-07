@@ -437,10 +437,10 @@ function fileTypeFromExt(file) {
   return ['.md', '.markdown', '.txt', '.json'].includes(ext);
 }
 
-function collectFiles(dir, maxFiles = 160) {
+async function collectFiles(dir, maxFiles = 160) {
   const out = [];
   const stack = [dir];
-  while (stack.length && out.length < maxFiles) {
+  while (stack.length) {
     const current = stack.pop();
     let entries = [];
     try {
@@ -449,27 +449,36 @@ function collectFiles(dir, maxFiles = 160) {
       continue;
     }
     for (const entry of entries) {
+      if (out.length % 100 === 0) await new Promise(resolve => setImmediate(resolve));
       if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) {
         stack.push(full);
       } else if (entry.isFile() && fileTypeFromExt(full)) {
         out.push(full);
-        if (out.length >= maxFiles) break;
+
       }
     }
   }
-  return out
-    .map((file) => ({ file, stat: safeStat(file) }))
-    .filter((item) => item.stat?.isFile())
-    .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)
-    .map((item) => item.file);
+  const found = [];
+  for (const file of out) {
+    if (found.length % 100 === 0) await new Promise(resolve => setImmediate(resolve));
+    const stat = safeStat(file);
+    if (stat?.isFile()) found.push({ file, stat });
+  }
+  return found.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs).slice(0, maxFiles).map(item => item.file);
 }
 
 function compactBriefItem(item) {
-  if (!item || typeof item !== 'object') return item;
-  const { text, html, ...rest } = item;
-  return rest;
+  // Do not touch lazy body getters while listing compact pages.
+  const { id, agent, type, title, timestamp, status, summary, sourcePath, provenance } = item;
+  return { id, agent, type, title, timestamp, status, summary, sourcePath, provenance };
+}
+
+function readPreview(file, maxBytes = 4096) {
+  const fd = fs.openSync(file, 'r');
+  try { const buffer = Buffer.alloc(maxBytes); const count = fs.readSync(fd, buffer, 0, maxBytes, 0); return buffer.subarray(0, count).toString('utf8'); }
+  finally { fs.closeSync(fd); }
 }
 
 function jobShouldBeBrief(job, row) {
@@ -493,27 +502,41 @@ class Home23BriefsService {
     const agentFilter = options.agent ? String(options.agent).toLowerCase() : '';
     const typeFilter = options.type ? String(options.type).toLowerCase() : '';
     const compact = options.compact === true || options.compact === '1' || options.compact === 'true';
-    const perAgentBudget = Math.max(limit, Math.min(MAX_LIMIT, limit * 2));
+    const offset = Math.max(0, Number.parseInt(options.offset, 10) || 0);
+    const query = String(options.q || '').trim().toLowerCase();
+    const perAgentBudget = Infinity;
 
     let items = [];
     for (const agent of this.agents) {
       if (agentFilter && agentFilter !== agent) continue;
-      items.push(...this.collectAgentFiles(agent, perAgentBudget));
+      items.push(...await this.collectAgentFiles(agent, perAgentBudget, typeFilter));
       items.push(...this.collectCronBriefs(agent));
     }
     if (!agentFilter || agentFilter === 'forrest' || agentFilter === 'jerry') {
-      items.push(...this.collectWorkerReceipts(agentFilter));
+      items.push(...await this.collectWorkerReceipts(agentFilter));
     }
     if (typeFilter) {
-      items = items.filter((item) => item.type === typeFilter);
+      items = items.filter((item) => typeFilter === 'all_reports' ? item.type !== 'session' : item.type === typeFilter);
     }
 
+    if (query) {
+      const matches = [];
+      for (let index = 0; index < items.length; index++) {
+        if (index % 50 === 0) await new Promise(resolve => setImmediate(resolve));
+        const item = items[index];
+        if ([item.title, item.summary, item.agent].join(' ').toLowerCase().includes(query)) matches.push(item);
+      }
+      items = matches;
+    }
+    if (options.id) items = items.filter(item => item.id === options.id);
     items.sort((a, b) => Date.parse(b.timestamp || 0) - Date.parse(a.timestamp || 0) || a.title.localeCompare(b.title));
-    const selected = items.slice(0, limit);
+    const selected = items.slice(offset, offset + limit);
     return {
       ok: true,
       generatedAt: new Date().toISOString(),
       count: selected.length,
+      total: items.length,
+      nextOffset: offset + selected.length < items.length ? offset + selected.length : null,
       items: compact ? selected.map(compactBriefItem) : selected,
     };
   }
@@ -521,51 +544,64 @@ class Home23BriefsService {
   async get(id) {
     const target = String(id || '');
     if (!target) return { ok: false, error: 'missing_id' };
-    const list = await this.list({ limit: MAX_LIMIT });
+    const list = await this.list({ limit: 1, id: target });
     const item = list.items.find((candidate) => candidate.id === target);
     if (!item) return { ok: false, error: 'not_found' };
     return { ok: true, item };
   }
 
-  collectAgentFiles(agent, maxItems = DEFAULT_LIMIT) {
+  async collectAgentFiles(agent, maxItems = DEFAULT_LIMIT, typeFilter = '') {
     const items = [];
     const candidates = [];
     for (const source of AGENT_SOURCE_DIRS) {
+      if (typeFilter === 'all_reports' ? source.type === 'session' : typeFilter && typeFilter !== source.type) continue;
       const dir = path.join(this.home23Root, 'instances', agent, source.rel);
       if (!exists(dir)) continue;
-      for (const file of collectFiles(dir, Math.max(40, maxItems))) {
+      for (const file of await collectFiles(dir, Math.max(40, maxItems))) {
         const stat = safeStat(file);
         if (stat?.isFile()) candidates.push({ file, source, stat });
       }
     }
     candidates.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
     for (const { file, source, stat } of candidates.slice(0, maxItems)) {
-      const rawText = safeReadText(file);
-      if (!rawText.trim()) continue;
+      if (items.length % 100 === 0) await new Promise(resolve => setImmediate(resolve));
+      if (!stat.size || stat.size > MAX_FILE_BYTES) continue;
       const fallbackTitle = path.basename(file).replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
-      const normalized = source.type === 'session'
-        ? (normalizeSessionMarkdown(rawText, fallbackTitle) || { title: markdownTitle(rawText, fallbackTitle), text: rawText })
-        : path.extname(file).toLowerCase() === '.json'
-        ? jsonDocumentToMarkdown(file, rawText, fallbackTitle)
-        : { title: markdownTitle(rawText, fallbackTitle), text: rawText };
-      const text = normalized.text;
-      const title = markdownTitle(text, normalized.title || fallbackTitle);
+      let preview, normalized;
+      const getPreview = () => {
+        if (preview === undefined) { try { preview = readPreview(file); } catch { preview = ''; } }
+        return preview;
+      };
+      const content = () => {
+        if (normalized) return normalized;
+        const rawText = safeReadText(file);
+        normalized = source.type === 'session'
+          ? (normalizeSessionMarkdown(rawText, fallbackTitle) || { title: markdownTitle(rawText, fallbackTitle), text: rawText })
+          : path.extname(file).toLowerCase() === '.json'
+          ? jsonDocumentToMarkdown(file, rawText, fallbackTitle)
+          : { title: markdownTitle(rawText, fallbackTitle), text: rawText };
+        return normalized;
+      };
+      let previewDocument;
+      const display = () => {
+        if (previewDocument) return previewDocument;
+        if (path.extname(file).toLowerCase() === '.json') return content();
+        const text = getPreview();
+        previewDocument = source.type === 'session'
+          ? normalizeSessionMarkdown(text, fallbackTitle)
+          : null;
+        return previewDocument || { title: markdownTitle(text, fallbackTitle), text };
+      };
       items.push({
-        id: hashId(['file', agent, source.type, path.relative(this.home23Root, file), stat?.mtimeMs]),
-        agent,
-        type: source.type,
-        title,
-        timestamp: normalizeDate(null, stat?.mtimeMs || Date.now()),
-        status: 'available',
-        summary: normalized.summary || textSummary(text),
-        text,
-        html: renderMarkdown(text),
+        id: hashId(['file', agent, source.type, path.relative(this.home23Root, file), stat.mtimeMs]),
+        agent, type: source.type,
+        get title() { return display().title; },
+        timestamp: normalizeDate(null, stat.mtimeMs), status: 'available',
+        get summary() { return display().summary || textSummary(display().text); },
+        get text() { return content().text; },
+        get html() { return renderMarkdown(content().text); },
         sourcePath: file,
-        provenance: {
-          kind: 'agent-file',
-          sourcePath: file,
-          relPath: path.relative(this.home23Root, file),
-        },
+        provenance: { kind: 'agent-file', sourcePath: file, relPath: path.relative(this.home23Root, file) },
       });
     }
     return items;
@@ -618,7 +654,7 @@ class Home23BriefsService {
     return items;
   }
 
-  collectWorkerReceipts(agentFilter = '') {
+  async collectWorkerReceipts(agentFilter = '') {
     const workersDir = path.join(this.home23Root, 'instances', 'workers');
     if (!exists(workersDir)) return [];
     const items = [];
@@ -636,7 +672,8 @@ class Home23BriefsService {
       } catch {
         continue;
       }
-      for (const runEntry of runs.slice(-80)) {
+      for (const runEntry of runs) {
+        if (items.length % 50 === 0) await new Promise(resolve => setImmediate(resolve));
         const receiptPath = path.join(runsDir, runEntry.name, 'receipt.json');
         const receipt = safeReadJson(receiptPath, null);
         if (!receipt) continue;
