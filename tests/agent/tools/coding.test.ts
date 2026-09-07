@@ -325,9 +325,9 @@ test('coding_backends reports installed binaries without claiming provider healt
   assert.match(result.content, /codex \[default\]: installed \(binary found: \/opt\/homebrew\/bin\/codex\)/);
   assert.match(result.content, /default model gpt-5/);
   assert.match(result.content, /cursor: NOT INSTALLED \(binary not found\) default model auto/);
-  assert.match(result.content, /grok-build \[disabled\].*legacy adapter only/);
-  assert.match(result.content, /Supported selectable coding backends are codex and cursor only/);
-  assert.match(result.content, /Explicit claude-code or grok-build launches are rejected/i);
+  assert.doesNotMatch(result.content, /grok-build|claude-code/);
+  assert.match(result.content, /Supported coding backends are codex and cursor only/);
+  assert.match(result.content, /gpt-5.6-sol.*gpt-6-astra.*rejected without fallback/);
   assert.match(result.content, /does not probe authentication, balance, or provider health/i);
 });
 

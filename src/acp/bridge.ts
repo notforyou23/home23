@@ -4,9 +4,9 @@
  * Jobs are spawned DETACHED with stdout redirected straight into the job's
  * events.jsonl: the file is simultaneously the durability layer and the
  * streaming source. The bridge tails it for live BridgeEvents; after a harness
- * restart, recover() replays the same file to reconstruct what happened while
- * Home23 was down. A restart therefore never kills a running coding job — the
- * child keeps writing, and the new bridge process re-attaches.
+ * restart, recover() replays the same file. Detachment survives parent exit,
+ * but not supervisor descendant-tree termination (for example PM2 treekill).
+ * Never use a child coding job to restart its own managed host.
  *
  * Isolation policy: new jobs inside the Home23 checkout run in a disposable
  * git worktree; jobs in any other git repo get a stash-create checkpoint;
@@ -19,6 +19,8 @@ import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
   buildChildEnv,
+  DEFAULT_CODEX_MODEL,
+  resolveCodexModel,
   getBackend,
   isSelectableBackendId,
   listBackendIds,
@@ -218,8 +220,7 @@ export class ACPBridge {
   }
 
   listBackends(): Array<{ id: string; available: boolean; bin: string | null; defaultModel?: string; enabled: boolean; isDefault: boolean; selectable: boolean; note?: string }> {
-    const visible = new Set([...listSelectableBackendIds(), ...this.config.allowedAgents, this.config.defaultAgent]);
-    return listBackendIds().filter(id => visible.has(id)).map(id => {
+    return listSelectableBackendIds().map(id => {
       const backend = getBackend(id)!;
       const backendCfg = this.config.backends?.[id] ?? {};
       const bin = backend.resolveBin(backendCfg.bin);
@@ -228,7 +229,7 @@ export class ACPBridge {
         id,
         available: bin !== null,
         bin,
-        defaultModel: backendCfg.model,
+        defaultModel: backendCfg.model ?? (id === 'codex' ? DEFAULT_CODEX_MODEL : undefined),
         enabled: selectable && this.config.allowedAgents.includes(id),
         isDefault: selectable && id === this.config.defaultAgent,
         selectable,
@@ -332,6 +333,7 @@ export class ACPBridge {
       extraArgs: backendCfg.extraArgs,
       ...resumeSource?.executionOptions,
     };
+    if (backendId === 'codex') backendOpts.model = resolveCodexModel(backendOpts.model);
     validateBackendOptions(backendId, backendOpts);
     const jobId = this.store.newJobId();
     const isolation = this.resolveIsolation(opts, requestedCwd);

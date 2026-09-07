@@ -131,11 +131,11 @@ test('claude-code appends system prompt, add-dirs, extraArgs before the final pr
 });
 
 test('codex argv for a new job bypasses sandbox by default and keeps prompt last', () => {
-  const args = codex.buildArgs(baseOpts({ model: 'gpt-5' }));
+  const args = codex.buildArgs(baseOpts({ model: 'gpt-5.6-sol' }));
   assert.deepEqual(args, [
     'exec', '--json', '--skip-git-repo-check',
     '--dangerously-bypass-approvals-and-sandbox',
-    '--model', 'gpt-5',
+    '--model', 'gpt-5.6-sol',
     'fix the bug',
   ]);
 });
@@ -501,4 +501,18 @@ test('buildChildEnv strips provider secrets, honors safe passthrough, augments P
   for (const dir of ['/opt/homebrew/bin', '/usr/local/bin', '.local/bin']) {
     assert.ok(env.PATH?.includes(dir), `PATH missing ${dir}: ${env.PATH}`);
   }
+});
+
+test('Codex pins the minimum known contract and rejects model/config escape routes', () => {
+  assert.ok(codex.buildArgs(baseOpts()).includes('gpt-5.6-sol'));
+  for (const model of ['gpt-5.6-sol', 'gpt-6-astra']) {
+    assert.ok(codex.buildArgs(baseOpts({ model })).includes(model));
+  }
+  for (const model of ['gpt-5', 'gpt-5.5', 'gpt-5.6', 'gpt-6', 'gpt-7', '']) {
+    assert.throws(() => codex.buildArgs(baseOpts({ model })), /Unsupported Codex model/);
+  }
+  for (const extraArgs of [['--model', 'gpt-5.5'], ['--model=gpt-5.5'], ['-mgpt-5.5'], ['--profile', 'old'], ['--oss'], ['-c', 'model="gpt-5.5"'], ['--config=model_provider="other"'], ['-cmodel="gpt-5"'], ['-c', 'model_reasoning_effort="high"\nmodel="gpt-5"']]) {
+    assert.throws(() => codex.buildArgs(baseOpts({ extraArgs })), /extraArgs/);
+  }
+  assert.ok(codex.buildArgs(baseOpts({ extraArgs: ['-c', 'model_reasoning_effort="high"'] })).includes('gpt-5.6-sol'));
 });

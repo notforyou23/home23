@@ -73,3 +73,26 @@ A previous package is not automatically a rollback plan. Prove compatibility wit
 ## Tooling regression checks
 
 `npm run test:managed-release` covers launcher selection, invalid managed state, native runtime requirements, preparation conflicts, source isolation, escaping paths, updater/build guards and stale/failed verification receipts. Machine-specific release IDs, device builds, credentials and cutover receipts belong in ignored local operator documents, not this portable guide.
+
+### Rebinding stale PM2 registrations
+
+`node scripts/release/rebind.mjs check PLAN.json` inspects a restart-phase
+plan with `root`, selected `releaseId`, exact `expectedRunning` rows from
+`status(root).processes.map(p => ({name:p.name,...p.running[0]}))`, and a new
+`receipt` path. `execute` performs only the scoped restart phase after the
+operator's cutover preparation, admission fence, active-work drain and DB
+backup/integrity checks are complete. It does not choose or update a release.
+
+Run it from an independent operator terminal. It refuses target-process
+ancestry and nonterminal coding jobs, including detached coding children.
+PM2 tree termination crosses process groups; detachment alone is not a safe
+activation mechanism. Do not disable supervision to bypass this guard.
+
+Existing PM2 registrations can retain `pm_exec_path` after ecosystem
+start/restart. The helper deletes only each named managed registration and
+starts it from the verified saved ecosystem definition. It never deletes
+application data or invokes a blanket PM2 operation. Failure leaves a partial
+receipt for forward recovery, with no automatic database rollback. The final
+check calls the exported `status()` function and requires actual registered
+executable, cwd and resident runtime to match, with online PIDs. Separately
+verify OS process paths and resident behavioral readiness before acceptance.

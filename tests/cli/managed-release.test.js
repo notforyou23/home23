@@ -79,3 +79,31 @@ test('failed verification cannot become a passing receipt', async t=>{
   assert.equal(verify({preparation,receiptDir,allowedChanges:[],checks:[{command:process.execPath,args:['-e','process.exit(2)'],timeoutMs:2000}]}).ok,false);
   assert.throws(()=>checkReceipt(path.join(receiptDir,'verification.json')),/failed/);
 });
+
+test('status CLI executes through a directory symlink and fails closed instead of silently succeeding', t => {
+  const root = fixture(t), alias = path.join(root, 'alias');
+  fs.symlinkSync(path.resolve('scripts/release'), alias);
+  assert.throws(() => execFileSync(process.execPath, [path.join(alias, 'status.mjs'), root], { stdio: 'pipe' }), e => {
+    assert.equal(e.status, 2);
+    assert.match(e.stderr.toString(), /Release inspection failed/);
+    return true;
+  });
+});
+
+test('managed rebind rejects own-host ancestry and limits commands to named registrations', async () => {
+  const { assertIndependent, restartCommands } = await import('../../scripts/release/rebind.mjs');
+  assert.throws(() => assertIndependent([10], 30, id => ({30:20,20:10})[id]), /descendant/);
+  assert.doesNotThrow(() => assertIndependent([10], 30, () => 1));
+  assert.throws(() => restartCommands('/install', ['all']), /Unmanaged/);
+  assert.deepEqual(restartCommands('/install', ['home23-jerry-harness']), [
+    ['delete', 'home23-jerry-harness'],
+    ['start', '/install/ecosystem.config.cjs', '--only', 'home23-jerry-harness', '--update-env'],
+  ]);
+});
+
+test('restart helper can be imported by an operator stdin command', () => {
+  const moduleUrl = new URL('../../scripts/release/rebind.mjs', import.meta.url).href;
+  assert.doesNotThrow(() => execFileSync(process.execPath, ['--input-type=module', '-'], {
+    input: `await import(${JSON.stringify(moduleUrl)});`, stdio: ['pipe', 'pipe', 'pipe'],
+  }));
+});

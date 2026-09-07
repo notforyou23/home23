@@ -31,3 +31,13 @@ Inspect both committed and uncommitted changes in the job workspace. A branch me
 The completion pipeline may deliver a review and receipt to the origin chat. Avoid repeating that as a second final result. A build or child receipt is evidence of that step, not proof of deployment, integration, or a physical outcome.
 
 For enforced guarantees, the regression command, and remaining limits, see `docs/reference/CODING-HARNESS.md`.
+
+Codex coding models are restricted to `gpt-5.6-sol` (default minimum) and
+`gpt-6-astra`. Older or unknown configured models, overrides and continuation
+settings fail before launch, with no downgrade. Extra CLI arguments cannot
+override model, profile or provider selection; config arguments support only
+quoted reasoning effort/summary values.
+
+A detached coding CLI can still be killed by PM2 descendant-tree termination.
+Never restart its managed host from a coding child; prepare the cutover and
+run it from an independent operator terminal after active work drains.

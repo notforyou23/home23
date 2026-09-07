@@ -198,7 +198,7 @@ export const codingRunTool: ToolDefinition = {
       backend: { type: 'string', description: 'Omit to use the configured default. Use coding_backends to discover enabled backends; never guess an id.' },
       cwd: { type: 'string', description: 'Working directory for the job (default: project root)' },
       label: { type: 'string', description: 'Short human label for the job' },
-      model: { type: 'string', description: 'Backend model override' },
+      model: { type: 'string', description: 'Codex supports gpt-5.6-sol (default minimum) and gpt-6-astra only; older or unknown overrides are rejected without fallback. Cursor accepts its configured CLI model identifiers.' },
       effort: { type: 'string', description: 'Legacy backend field; current Codex/Cursor launches reject this option. Select Cursor parameterized models when Cursor reasoning controls are needed.' },
       isolation: { type: 'string', enum: ['worktree', 'checkpoint', 'none'], description: 'Isolation mode; defaults to worktree inside the Home23 checkout' },
       wait_seconds: { type: 'number', description: 'Seconds to wait for completion before returning (0 = return immediately, max 600)' },
@@ -417,12 +417,12 @@ export const codingBackendsTool: ToolDefinition = {
   async execute(_input, ctx) {
     const bridge = getBridge(ctx);
     if (!bridge) return BRIDGE_UNAVAILABLE;
-    const backends = bridge.listBackends();
+    const backends = bridge.listBackends().filter(b => isSelectableBackendId(b.id));
     if (backends.length === 0) return { content: 'No coding backends configured.' };
     const lines = backends.map(b =>
       `- ${b.id}${'enabled' in b && !b.enabled ? " [disabled]" : ""}${'isDefault' in b && b.isDefault ? " [default]" : ""}: ${b.available ? `installed (binary found: ${b.bin})` : 'NOT INSTALLED (binary not found)'}${b.defaultModel ? ` default model ${b.defaultModel}` : ''}${'selectable' in b && !b.selectable ? ` (${b.note ?? 'not selectable'})` : ''}`,
     );
-    lines.push('Supported selectable coding backends are codex and cursor only. Explicit claude-code or grok-build launches are rejected even if old config or receipts mention them. Codex accepts model and sandbox configuration plus configured extraArgs; Cursor accepts model and add-dir/extraArgs. Omit effort, append_system_prompt, allowed_tools, disallowed_tools and max_budget_usd for current backends. This list only reports binary resolution; it does not probe authentication, balance, or provider health.');
+    lines.push('Supported coding backends are codex and cursor only. Codex models: gpt-5.6-sol (default minimum) and gpt-6-astra; older or unknown overrides are rejected without fallback. Codex accepts model and sandbox configuration plus configured extraArgs; Cursor accepts model and add-dir/extraArgs. Omit effort, append_system_prompt, allowed_tools, disallowed_tools and max_budget_usd for current backends. This list only reports binary resolution; it does not probe authentication, balance, or provider health.');
     return { content: lines.join('\n') };
   },
 };
