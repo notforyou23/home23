@@ -1,3 +1,4 @@
+import {TelegramAdapter} from '../../../src/channels/telegram.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,rmSync,readFileSync} from 'node:fs';
@@ -26,4 +27,20 @@ test('helper scheduled commands execute directly, retain results across service 
  runtime.scheduler.addJob({...job,id:'announced'});
  assert.equal((await runtime.scheduler.runJobNow('announced')).status,'ok');
  assert.equal(delivered.length,1);assert.match(delivered[0]!,/already-executed/);assert.match(delivered[0]!,/actual-execution/);
+});
+
+
+test('helper cancellation reaches its tracked runner and messaging reuses the configured adapter without polling',async t=>{
+ const root=mkdtempSync('/private/tmp/home23-helper-connections-');t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const original=TelegramAdapter.prototype.sendText;let observed:unknown;
+ TelegramAdapter.prototype.sendText=async function(chatId,text){observed={token:(this as any).config.botToken,chatId,text};};
+ t.after(()=>{TelegramAdapter.prototype.sendText=original;});
+ const services=createHelperServices({root,botRoot:root,workspace:join(root,'workspace'),agentName:'bot-helper',enginePort:1,
+ config:{channels:{telegram:{enabled:true,botToken:'fixture-token',streaming:'off'}}} as HomeConfig});t.after(()=>services.close());
+ const stopped:string[]=[];const ctx={...services.context} as ToolContext;
+ services.attach({stop:(id:string)=>{stopped.push(id);return {stopped:true};}} as any,ctx);
+ await ctx.telegramAdapter!.sendText!('fixture-recipient','fixture-message');
+ assert.deepEqual(observed,{token:'fixture-token',chatId:'fixture-recipient',text:'fixture-message'});
+ const work=ctx.workRegistry!.create({kind:'subagent',originChatId:'helper-test',label:'Child',resultHandle:{type:'subagent_chat',chatId:'helper-child'}});
+ assert.equal(ctx.requestWorkCancel!(work.workId).status,'accepted');assert.deepEqual(stopped,['helper-child']);
 });

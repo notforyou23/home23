@@ -1,3 +1,5 @@
+import { TelegramAdapter } from '../../channels/telegram.js';
+import { requestAsyncWorkCancel } from '../../work/cancel.js';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
@@ -89,10 +91,21 @@ export function createHelperServices(input: {
     browser:config?.browser?.enabled?new BrowserController(config.browser):null,
     ttsService:tts.enabled&&tts.apiKey?new TTSService(tts as HomeConfig['tts']):null,
     codingBridge:bridge,workRegistry,subAgentTracker:{active:0,maxConcurrent:config?.agent?.maxSubAgents??3,queue:[]}};
+  if (config?.channels?.telegram?.enabled) {
+    const tc=config.channels.telegram,botToken=tc.botToken||process.env.TELEGRAM_BOT_TOKEN;
+    if (!botToken) throw new Error('House Telegram is enabled but has no configured token');
+    // Sending shares the configured house adapter; Core must not create another inbound poller.
+    const adapter=new TelegramAdapter({...tc,botToken,streaming:tc.streaming as 'partial'|'off'},async()=>{},join(input.botRoot,'state'));
+    context.telegramAdapter={sendText:adapter.sendText.bind(adapter),sendTyping:adapter.sendTyping.bind(adapter),
+      sendPhoto:adapter.sendPhoto.bind(adapter),sendVoice:adapter.sendVoice.bind(adapter),sendDocument:adapter.sendDocument.bind(adapter)};
+  }
   return {registry,context,
-    async initialize() { if(bridge) await bridge.recover(); },
+    async initialize() { if(bridge) await bridge.recover(); workRegistry.reconcileOnBoot({jobs:bridge?.listJobs()??[]}); },
     attach(agent:AgentLoop,ctx:ToolContext) {
       ctx.runAgentLoop=createTrackedAgentRunner(agent);
+      ctx.requestWorkCancel=workId=>requestAsyncWorkCancel({registry:workRegistry,
+        cancelCodingJob:async jobId=>{if(bridge) await bridge.cancelJob(jobId);},
+        stopChat:chatId=>agent.stop(chatId).stopped},workId);
       const workers=createWorkerHandlers({projectRoot:input.root,ctx});
       ctx.workerConnectorBaseUrl='http://home23-helper.local';
       ctx.fetch=async(url,init)=>{
