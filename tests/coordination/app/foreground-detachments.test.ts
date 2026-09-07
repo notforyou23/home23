@@ -1,5 +1,28 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+
+function newerOwnerMessage(f: ReturnType<typeof setup>) {
+ f.database.mutateWithEvent(tx => { tx.run(`INSERT INTO messages(id,channel_id,channel_sequence,author_principal_id,author_kind,
+ author_display_name,kind,body_text,stored_visibility,created_at)
+ VALUES(?,?,2,'user_owner','owner','Owner','text','Take a beat. Just respond.','visible',?)`
+ ,fixtureId('message',900),CHANNEL_ID,AT);
+ return {value:undefined,event:{type:'message.appended',aggregateKind:'message',aggregateId:fixtureId('message',900),aggregateVersion:1,
+ channelId:CHANNEL_ID,actorPrincipalId:OWNER_ID,requestId:fixtureId('request',900),correlationId:fixtureId('correlation',900),payload:{},createdAt:AT}}; });
+}
+
+test('new owner direction prevents an older review from launching another worker', t => {
+ const f=setup();t.after(()=>f.database.close());newerOwnerMessage(f);
+ assert.throws(()=>f.consumer.admit({credential:f.credential,request:f.request}),/Owner direction changed/);
+ assert.equal(f.database.readOne<{n:number}>("SELECT count(*) AS n FROM works WHERE kind='resident_work_thread'")?.n,0);
+ assert.equal(f.scheduled.length,0);
+});
+
+test('a queued child cannot cross the execution boundary after newer owner direction', t => {
+ const f=setup();t.after(()=>f.database.close());const ack=f.consumer.admit({credential:f.credential,request:f.request});
+ newerOwnerMessage(f);const origin=f.start(ack.workId);
+ assert.throws(()=>f.consumer.start({credential:f.credential,origin,invocationId:f.request.invocationId}),/Owner direction changed/);
+ assert.equal(f.work.getInvocationExecution(ack.workId),null);
+});
 import { createForegroundDetachmentConsumer } from '../../../src/coordination/app/foreground-detachments.js';
 import { createWorkService } from '../../../src/coordination/work/service.js';
 import { createLeaseService } from '../../../src/coordination/leases/index.js';

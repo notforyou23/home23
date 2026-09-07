@@ -301,7 +301,7 @@ export function foregroundDetachRefusal(
     return [
       `Foreground policy: ${decision.tool} was handed off.`,
       decision.reason ?? 'This operation must become durable Work before execution.',
-      'A Working Thread was created and is running separately from this conversation.',
+      'A Working Thread was accepted for separate execution. Admission does not confirm that execution has started.',
       'Use work_list only to inspect Work that is already active.',
     ].join(' ');
   }

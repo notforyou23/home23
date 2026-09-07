@@ -17,7 +17,7 @@
 import { readFileSync, readdirSync, statSync, existsSync, openSync, readSync, closeSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { shippableTurn } from '../src/conversation-turn.js';
+import { canonicalContactTurn, isLegacyConversationSession, shippableTurn } from '../src/conversation-turn.js';
 import { onPi, unreachableWhy } from '../src/pi-host.js';
 import { join } from 'node:path';
 
@@ -105,7 +105,6 @@ function probePm2(): ProbeResult[] {
 
 // ── shipper flow: output follows input. If a real conversation file is newer
 // than the stream's tail by more than the window, the life-feed is BEHIND.
-const REAL_SESSION = /^[a-z0-9-]+__(ios_|dashboard-|-?\d+\.jsonl$)/;
 
 /** Newest ts among records the SHIPPER would actually ship, across the real
  * session files. Byte-tails each file so this stays cheap in the 60s sentinel.
@@ -113,7 +112,7 @@ const REAL_SESSION = /^[a-z0-9-]+__(ios_|dashboard-|-?\d+\.jsonl$)/;
 function newestShippableTurnTs(convDir: string, entries: string[]): number | null {
   let newest: number | null = null;
   for (const name of entries) {
-    if (!name.endsWith('.jsonl') || !REAL_SESSION.test(name)) continue;
+    if (!isLegacyConversationSession(name)) continue;
     let raw: string;
     try { raw = tailBytes(join(convDir, name), 256 * 1024); } catch { continue; }
     for (const line of raw.split('\n')) {
@@ -136,7 +135,7 @@ export function probeShipperFlow(agent: string, root: string = ROOT): ProbeResul
     let newestInput = 0;
     let matched = 0;
     for (const name of entries) {
-      if (!name.endsWith('.jsonl') || !REAL_SESSION.test(name)) continue;
+      if (!isLegacyConversationSession(name)) continue;
       matched++;
       const m = statSync(join(convDir, name)).mtimeMs;
       if (m > newestInput) newestInput = m;
@@ -146,7 +145,31 @@ export function probeShipperFlow(agent: string, root: string = ROOT): ProbeResul
     // naming change — meant the life-feed probe reported health while
     // measuring nothing. A shipper with no input to follow is unproven,
     // not proven-good.
-    if (matched === 0) {
+    const streamPath = join(root, 'instances', agent, 'substrate', 'conversation-stream.jsonl');
+    const canonicalPath = join(root, 'instances', '.house', 'coordination', 'resident-contact', `${agent}.jsonl`);
+    const hasAppSessions = entries.some(name => name.startsWith(`${agent}__coordination_`) && name.endsWith('.jsonl'));
+    if (hasAppSessions && !existsSync(canonicalPath)) {
+      return { organ, ok: false, why: 'app conversations present but canonical resident contact feed is missing' };
+    }
+    let canonicalCount = 0;
+    if (existsSync(canonicalPath)) {
+      const cursorPath = join(root, 'instances', '.house', 'coordination', 'resident-contact', 'cursor.json');
+      if (!existsSync(cursorPath)) return { organ, ok: false, why: 'canonical contact projection has no progress receipt' };
+      const cursor = JSON.parse(readFileSync(cursorPath, 'utf8'));
+      const checkedAt = Date.parse(cursor.checkedAt);
+      if (!Number.isFinite(checkedAt) || Date.now() - checkedAt > 300_000) return { organ, ok: false, why: 'canonical contact projection is not being checked by Core' };
+      if (cursor.caughtUp !== true) return { organ, ok: false, why: 'canonical contact projection is recovering missed input' };
+      const raw = readFileSync(canonicalPath, 'utf8');
+      if (raw && !raw.endsWith('\n')) return { organ, ok: false, why: 'canonical contact source has an incomplete record' };
+      const contacts = raw.split('\n').filter(Boolean).map(line => canonicalContactTurn(JSON.parse(line)));
+      if (contacts.some(turn => turn === null)) return { organ, ok: false, why: 'canonical contact provenance is invalid' };
+      canonicalCount = contacts.length;
+      const shipped = new Set((existsSync(streamPath) ? readFileSync(streamPath, 'utf8') : '').split('\n').filter(Boolean)
+        .map(line => JSON.parse(line).contactId).filter((id): id is string => typeof id === 'string'));
+      const missing = contacts.filter(turn => !shipped.has(turn!.contactId!));
+      if (missing.length) return { organ, ok: false, why: `${missing.length} canonical conversation turn(s) unshipped` };
+    }
+    if (matched === 0 && canonicalCount === 0) {
       return {
         organ, ok: false,
         why: entries.length === 0
@@ -154,7 +177,6 @@ export function probeShipperFlow(agent: string, root: string = ROOT): ProbeResul
           : `${entries.length} file(s) present but NONE match the session pattern — probe is measuring nothing`,
       };
     }
-    const streamPath = join(root, 'instances', agent, 'substrate', 'conversation-stream.jsonl');
     const lines = tailLines(streamPath, 1);
     const tailTs = lines.length > 0 ? Date.parse((JSON.parse(lines[0] as string) as { ts?: string }).ts ?? '') : NaN;
 
@@ -167,7 +189,7 @@ export function probeShipperFlow(agent: string, root: string = ROOT): ProbeResul
     // using the shipper's own exported predicate so the two cannot drift.
     const newestTurnTs = newestShippableTurnTs(convDir, entries);
     if (newestTurnTs === null) {
-      return { organ, ok: true, why: `no shippable turn in window (input ${ageMin(newestInput)}min old)` };
+      return { organ, ok: true, why: canonicalCount > 0 ? `all ${canonicalCount} canonical turns shipped` : `no shippable turn in window (input ${ageMin(newestInput)}min old)` };
     }
     if (Number.isNaN(tailTs)) return { organ, ok: false, why: 'stream has no readable tail — the life-feed is not writing' };
     const lagMin = Math.round((newestTurnTs - tailTs) / 60_000);

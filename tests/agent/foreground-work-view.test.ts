@@ -3,7 +3,16 @@ import { test } from 'node:test';
 import {
   buildForegroundWorkView,
   collectForegroundTurnContext,
+  collectCanonicalWorkContext,
 } from '../../src/agent/foreground-work-view.js';
+
+test('connected turns see assignment meaning and owner direction independently of legacy foreground classification', async () => {
+ const view=await collectCanonicalWorkContext(async()=>({registry:'canonical',work:[{id:'wrk_a',state:'running',title:'Fix resume',summary:'Activate and verify the running launcher'}],ownerMessageSequence:12,unseenOwnerMessages:[{text:'Just respond. Stop launching repairs.'}]}));
+ assert.match(view,/Fix resume/);assert.match(view,/Activate and verify/);assert.match(view,/Stop launching repairs/);
+ assert.match(view,/blocked without a revisit for a pause/); assert.match(view,/owner_message_sequence=12/);
+ const unavailable=await collectCanonicalWorkContext(async()=>{throw new Error('offline');});
+ assert.match(unavailable,/UNAVAILABLE/);assert.doesNotMatch(unavailable,/Active Work:\n- none/);
+});
 
 test('compact view uses existing Work and commitment projections', () => {
   const view = buildForegroundWorkView({

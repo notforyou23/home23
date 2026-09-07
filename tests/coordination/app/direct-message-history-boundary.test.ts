@@ -25,7 +25,7 @@ for (const resident of ['jerry', 'forrest']) {
     const identity = {requestId:fixtureId('request',50),correlationId:fixtureId('correlation',50)};
     const prepared = await context.prepare({context:{principalId:OWNER_ID,...identity},channelId:CHANNEL_ID,originMessage:origin,attachmentIds:[]});
     assert.equal(prepared.instruction,texts[2]);
-    assert.deepEqual(prepared.historyBackfill.map(entry=>({role:entry.role,text:entry.text})),oversized ? [{role:'assistant',text:texts[1]}] : [{role:'user',text:'not exposed'},{role:'user',text:oldAssignment},{role:'assistant',text:texts[1]}]);
+    assert.deepEqual(prepared.historyBackfill.map(entry=>({role:entry.role,text:entry.text})),oversized ? [{role:'user',text:'not exposed'},{role:'assistant',text:texts[1]}] : [{role:'user',text:'not exposed'},{role:'user',text:oldAssignment},{role:'assistant',text:texts[1]}]);
     assert(Buffer.byteLength(JSON.stringify(prepared.historyBackfill),'utf8')<=65536);
     assert(!prepared.historyBackfill.some(entry=>entry.messageId===origin.id));
     const work = createWorkService({database,generateId:createFixtureIdGenerator(),now:()=>new Date(AT)}).create({principalId:OWNER_ID,targetPrincipalId:BOT_ID,channelId:CHANNEL_ID,originMessageId:origin.id,roundId:null,kind:'resident_turn',idempotencyKey:`history-boundary-${resident}`,manifest:prepared.manifest,maxAutomaticOffers:1,...identity}).work;

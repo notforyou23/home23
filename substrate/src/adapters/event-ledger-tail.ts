@@ -382,17 +382,21 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     // Agent-generic voices: 'jtr' for the person, 'self' for the agent's own
     // turns. (Chains born before 2026-08-09 carry 'jerry' for self — legacy
     // labels stay as history; readers accept both.)
-    const voice = role === 'user' ? 'jtr' : 'self';
+    const canonical = parsed['contactId'] !== undefined;
+    const voice = canonical ? parsed['voice'] : role === 'user' ? 'jtr' : 'self';
+    if (voice !== 'jtr' && voice !== 'self' && voice !== 'peer') return null;
+    if (canonical && (typeof parsed['contactId'] !== 'string' || typeof parsed['sourceRef'] !== 'string')) return null;
     return {
-      eventId: `conv_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`,
+      eventId: `conv_${createHash('sha256').update(canonical ? String(parsed['contactId']) : line, 'utf-8').digest('hex').slice(0, 16)}`,
       category: 'observation',
       sourceAuthority: this.authority,
-      sourceRef: `conversation.${voice}:${session}`,
+      sourceRef: `conversation.${voice}:${canonical ? String(parsed['sourceRef']) : session}`,
       ...(semanticVector !== null ? { semanticVector } : {}),
       payload: {
         role,
         session,
         head: text.trim(),
+        ...(canonical ? { contactId: parsed['contactId'], sourceRef: parsed['sourceRef'], actor: parsed['actor'] } : {}),
       },
       producedAt: ts,
       endOffset,

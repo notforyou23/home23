@@ -26,7 +26,7 @@ import {
   SUBAGENT_TOOL_NAMES,
   type SubAgentToolGrant,
 } from './subagent-grants.js';
-import { workCancelTool, workListTool, workStatusTool } from './work.js';
+import { workCancelTool, workListTool, workReportOutcomeTool, workStatusTool } from './work.js';
 import { promoteToMemoryTool } from './promote.js';
 import { relationshipTools } from './relationship.js';
 import { workerListTool, workerRunTool, workerStatusTool, workerReceiptTool, workerPromoteMemoryTool } from './workers.js';
@@ -292,6 +292,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig; coding?: { defa
   registry.register(workListTool);
   registry.register(workStatusTool);
   registry.register(workCancelTool);
+  registry.register(workReportOutcomeTool);
   // COSMO 2.3 research toolkit — 11 tools (see docs/design/STEP16)
   registry.register(listBrainsTool);
   registry.register(listResearchRunsTool);

@@ -1,4 +1,8 @@
 import { createResidentNotifications } from './resident-notifications.js';
+import { createResidentContactProjection } from './resident-contact.js';
+import { projectResidentWork } from './resident-work-projection.js';
+import { createResidentAssignments } from './resident-assignments.js';
+import { dirname, join } from 'node:path';
 import { createScheduledChannelTurns } from './scheduled-turns.js';
 import { createBotInvocationService } from './bot-invocations.js';
 import { resolveMessagingActor } from '../channels/access.js';
@@ -336,6 +340,10 @@ export function createCoordinationProcess(
     path: config.databasePath,
     applicationVersion: "home23-coordination-m12-shadow",
   });
+  const residentContact = createResidentContactProjection(database,
+    join(dirname(config.databasePath), 'resident-contact'),
+    Object.entries(config.residents).filter(([, value]) => value.enabled).map(([slug]) => slug));
+  const residentAssignments = createResidentAssignments(database);
   const rootKey = createHash("sha256").update("home23-coordination-auth-v1\0").update(config.capabilityToken).digest();
   const channelCursorKey = createHash("sha256").update("home23-coordination-channel-cursor-v1\0").update(config.capabilityToken).digest();
   const searchCursorKey = createHash("sha256").update("home23-coordination-search-cursor-v1\0").update(config.capabilityToken).digest();
@@ -1117,20 +1125,49 @@ export function createCoordinationProcess(
     reconcileScheduledTurns = scheduledTurns.reconcile;
     const channelOperations = createChannelOperationConsumer({
       authorize: detachments.authorize,
+      authorizeRead: detachments.authorizeRead,
+      assertCurrentDirection: id => { residentAssignments.assertOpen(id); detachments.assertCurrentDirection(id); },
       invoke: botInvocations.call,
       channels,
       listBots: () => botDirectory.listVisibleBots(),
-      workDiagnostics: (principalId, args) => {
+      reportOutcome: residentAssignments.report,
+      cancelWork: async (context, workId, idempotencyKey) => {
+        const assigned = work.get(workId);
+        if (!assigned || assigned.targetPrincipalId !== context.principalId) throw new Error('Work is outside this resident assignment scope');
+        return stoppedWorkControl.cancel({ context, workId, idempotencyKey });
+      },
+      workDiagnostics: (principalId, args, origin) => {
         const id = typeof args.work_id === 'string' ? args.work_id : null;
         if (args.operation === 'work_status' && !id) throw new Error('work_id is required');
         const limit = Math.min(100, Math.max(1, Math.floor(Number(args.limit) || 20)));
         const rows = database.readAll(`SELECT w.id, w.channel_id AS channelId, w.state,
           w.terminal_reason AS terminalReason, w.current_attempt_id AS attemptId,
-          p.parent_work_id AS parentWorkId, json_extract(p.assignment_json, '$.toolName') AS toolName
+          p.parent_work_id AS parentWorkId, json_extract(p.assignment_json, '$.toolName') AS toolName,
+          coalesce(t.title, substr(m.body_text,1,160), 'Work') AS title,
+          coalesce(t.summary, m.body_text) AS summary, m.id AS originMessageId,
+          m.body_text AS originalRequest, w.created_at AS createdAt, w.terminal_at AS terminalAt
           FROM works w LEFT JOIN work_planned_invocations p ON p.work_id = w.id
+          LEFT JOIN work_thread_presentations t ON t.work_id=w.id
+          LEFT JOIN messages m ON m.id=w.origin_message_id
           WHERE w.target_principal_id = ? ${id ? 'AND w.id = ?' : args.include_terminal === true ? '' : "AND w.state NOT IN ('succeeded','failed','cancelled')"}
+          ${!id && args.assignments_only === true ? "AND (w.kind='resident_work_thread' OR t.work_id IS NOT NULL)" : ''}
           ORDER BY w.created_at DESC LIMIT ?`, principalId, ...(id ? [id] : []), limit);
-        return { registry: 'canonical', work: rows };
+        const unseenOwnerMessages = database.readAll(`SELECT m.id AS messageId,m.channel_sequence AS sequence,m.body_text AS text,m.created_at AS createdAt
+          FROM works w JOIN context_manifests c ON c.id=w.context_manifest_id
+          JOIN messages m ON m.channel_id=w.channel_id AND m.channel_sequence>c.channel_watermark
+          WHERE w.id=? AND m.author_kind='owner' AND m.kind='text' AND m.stored_visibility='visible'
+            AND NOT EXISTS(SELECT 1 FROM events e WHERE e.aggregate_kind='scheduled_channel_run'
+              AND e.aggregate_version=1 AND json_extract(e.payload_json,'$.messageId')=m.id)
+          ORDER BY m.channel_sequence`, origin.workId);
+        const assignments = residentAssignments.list(principalId, args.include_terminal === true, limit);
+        const ownerContact = database.readOne<{ messageId: string; text: string }>(`SELECT m.id AS messageId,m.body_text AS text
+          FROM works w JOIN messages m ON m.id=w.origin_message_id WHERE w.id=?
+          AND w.kind IN ('resident_turn','channel.bot_turn') AND m.author_kind='owner' AND m.kind='text' AND m.body_text IS NOT NULL AND m.stored_visibility='visible'
+          AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.review_work_id=w.id)
+          AND NOT EXISTS(SELECT 1 FROM events e WHERE e.aggregate_kind='scheduled_channel_run'
+            AND e.aggregate_version=1 AND json_extract(e.payload_json,'$.messageId')=m.id)`, origin.workId);
+        return { registry: 'canonical', work: !id && args.assignments_only === true ? assignments : rows,
+          assignments, unseenOwnerMessages, ...residentAssignments.direction(origin.workId), ownerContact: ownerContact ?? null };
       },
       botOperation: async (context, args, key) => {
         if (!productionBotLifecycle || !botLifecycleCapabilityAvailable()) throw new Error('Bot lifecycle unavailable');
@@ -1280,7 +1317,14 @@ export function createCoordinationProcess(
         await server.drain().catch(() => undefined);
         throw error;
       }
-      outcomeTimer = setInterval(() => { try { reconcileScheduledTurns?.(); } catch (error) { console.error('[scheduled-turns]', error); } try { reconcileJoinedStops(); } catch(error) { console.error('[joined-stop]',error); } void reconcileBotInvocations?.().catch(error => console.error('[bot-invocations]', error)); void processResidentOutcomes?.().catch(error => console.error('[resident-outcomes]', error)); }, 2_000);
+      outcomeTimer = setInterval(() => {
+        try { residentContact.pump(); } catch (error) { console.error('[resident-contact]', error); }
+        try { projectResidentWork(database, join(dirname(config.databasePath), 'resident-contact'), Object.entries(config.residents).filter(([, value]) => value.enabled).map(([slug]) => slug)); } catch (error) { console.error('[resident-work]', error); }
+        try { reconcileScheduledTurns?.(); } catch (error) { console.error('[scheduled-turns]', error); }
+        try { reconcileJoinedStops(); } catch(error) { console.error('[joined-stop]',error); }
+        void reconcileBotInvocations?.().catch(error => console.error('[bot-invocations]', error));
+        void processResidentOutcomes?.().catch(error => console.error('[resident-outcomes]', error));
+      }, 2_000);
       outcomeTimer.unref?.();
       if (residentInitializers.length > 0) {
         void refreshResidentAttestations();

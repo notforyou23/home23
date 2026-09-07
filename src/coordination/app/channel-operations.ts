@@ -8,32 +8,43 @@ import type { DetachmentCredential } from './foreground-detachments.js';
  * User/session credentials are never borrowed. Canonical events remain authored by Jerry. */
 export function createChannelOperationConsumer(options: {
   authorize(credential: DetachmentCredential, origin: CoordinationTurnOrigin): unknown;
+  authorizeRead?(credential: DetachmentCredential, origin: CoordinationTurnOrigin): unknown;
+  assertCurrentDirection?(workId: string): void;
   context(origin: CoordinationTurnOrigin): MessagingActorContext;
   channels: ReturnType<typeof createChannelService>;
   listBots(): Promise<unknown>;
-  workDiagnostics?(principalId: string, args: Record<string, unknown>): unknown;
+  workDiagnostics?(principalId: string, args: Record<string, unknown>, origin: CoordinationTurnOrigin): unknown;
+  cancelWork?(context: MessagingActorContext, workId: string, key: string): Promise<unknown>;
+  reportOutcome?(context: MessagingActorContext, origin: CoordinationTurnOrigin, args: Record<string, unknown>, key: string): unknown;
   invoke?(credential: DetachmentCredential, input: { origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown> }): Promise<unknown>;
   botOperation(context: MessagingActorContext, args: Record<string, unknown>, key: string): Promise<unknown>;
 }) {
   return async (credential: DetachmentCredential, raw: unknown) => {
     const input = raw as { origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown> };
     const diagnostics = ['work_list', 'work_status'].includes(String(input?.args?.operation));
-    if ((!diagnostics && credential.residentSlug !== 'jerry') || !input?.origin ||
+    const residentWorkControl = diagnostics || ['work_cancel','work_report_outcome'].includes(String(input?.args?.operation));
+    if ((!residentWorkControl && credential.residentSlug !== 'jerry') || !input?.origin ||
         typeof input.invocationId !== 'string' || !input.invocationId || input.invocationId.length > 256 ||
         !input.args || typeof input.args !== 'object' || Array.isArray(input.args)) {
       throw new WorkError('ineligible', 'channel operation requires the authenticated executive resident');
     }
     if (['bot_invoke', 'bot_result', 'bot_stop'].includes(String(input.args.operation))) {
       if (!options.invoke) throw new Error('Bot invocation runtime unavailable');
+      if (input.args.operation === 'bot_invoke') {
+        options.authorize(credential, input.origin);
+        options.assertCurrentDirection?.(input.origin.workId);
+      }
       return options.invoke(credential, input);
     }
-    options.authorize(credential, input.origin);
+    if (diagnostics) (options.authorizeRead ?? options.authorize)(credential, input.origin);
+    else options.authorize(credential, input.origin);
     if (diagnostics) {
       if (!options.workDiagnostics) throw new Error('Canonical work diagnostics unavailable');
-      return options.workDiagnostics(input.origin.holderPrincipalId, input.args);
+      return options.workDiagnostics(input.origin.holderPrincipalId, input.args, input.origin);
     }
     const context = options.context(input.origin);
     const args = input.args;
+    if (!['work_cancel', 'work_report_outcome', 'get', 'list', 'bot_list'].includes(String(args.operation))) options.assertCurrentDirection?.(input.origin.workId);
     const key = `${input.origin.workId}:${input.origin.attemptId}:${input.invocationId}`;
     const text = (name: string) => {
       if (typeof args[name] !== 'string') throw new WorkError('invalid_request', `${name} is required`);
@@ -45,6 +56,12 @@ export function createChannelOperationConsumer(options: {
       return args.memberBotIds as string[];
     };
     switch (args.operation) {
+      case 'work_report_outcome':
+        if (!options.reportOutcome) throw new Error('Assignment conclusions unavailable');
+        return options.reportOutcome(context, input.origin, args, key);
+      case 'work_cancel':
+        if (!options.cancelWork) throw new Error('Canonical work cancellation unavailable');
+        return options.cancelWork(context, text('work_id'), key);
       case 'bot_create': case 'bot_archive': case 'bot_restore':
         return options.botOperation(context, args, key);
       case 'bot_list': return { bots: await options.listBots() };

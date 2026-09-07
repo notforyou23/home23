@@ -43,6 +43,8 @@ export interface DirectMessageChannelContext {
   targetPrincipalId: string;
   residentBinding: string;
   instruction: string;
+  /** Original canonical request, never a recursively wrapped runtime prompt. */
+  originalOwnerRequest?: string;
   historyBackfill: readonly DirectMessageHistoryEntry[];
   attachments: readonly ResidentInputAttachment[];
   manifest: ContextManifestInput;
@@ -545,8 +547,14 @@ export function createDirectMessageSubmissionService(options: {
                 messageId: m.id, sequence: m.sequence, role: m.author.principalId === source.targetPrincipalId ? 'assistant' as const : 'user' as const,
                 text: m.text!, createdAt: m.createdAt,
               }));
+              const originalMessage = page.messages.find(message => message.id === source.originMessageId)
+                ?? await options.messages.getMessage?.({ context: target.context({ principalId: source.targetPrincipalId, ...identity }), messageId: source.originMessageId });
+              const original = originalMessage?.text ?? recovered.prepared.originalOwnerRequest
+                ?? (recovered.prepared.instruction.startsWith('INTERNAL WORK OUTCOME') ? null : recovered.prepared.instruction);
+              if (original === null) throw new Error('Canonical original request unavailable; refusing to wrap an internal outcome as owner intent');
               prepared = { ...recovered.prepared,
-                instruction: residentOutcomeInstruction(recovered.prepared.instruction, row.evidence),
+                originalOwnerRequest: original,
+                instruction: residentOutcomeInstruction(original, row.evidence, source.id),
                 historyBackfill: boundHistoricalContext(history),
                 manifest: directMessageManifest({ channelId: source.channelId, messageIds: [...new Set([source.originMessageId, ...page.messages.map(m => m.id)])],
                   attachmentIds: recovered.prepared.manifest.artifactIds,

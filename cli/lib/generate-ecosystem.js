@@ -454,6 +454,7 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'conversation-shipper-err.log'))},`);
     lines.push(`      env: {`);
     lines.push(`        SHIPPER_CONVERSATIONS_DIR: ${JSON.stringify(agent.paths.conversationsDir)},`);
+    lines.push(`        SHIPPER_COORDINATION_SOURCE: path.join(HOME23, 'instances', '.house', 'coordination', 'resident-contact', ${JSON.stringify(agent.name + '.jsonl')}),`);
     lines.push(`        SHIPPER_STREAM_PATH: ${streamPath},`);
     lines.push(`        SHIPPER_BACKFILL_BYTES: '${backfillBytes}',`);
     lines.push(`      },`);

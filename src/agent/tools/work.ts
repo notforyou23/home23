@@ -79,12 +79,18 @@ export const workCancelTool: ToolDefinition = {
   input_schema: {
     type: 'object',
     properties: {
-      work_id: { type: 'string', description: 'Exact active aw_... work ID to cancel' },
+      work_id: { type: 'string', description: 'Exact active work ID to cancel; canonical wrk_... IDs are supported on connected resident turns' },
     },
     required: ['work_id'],
     additionalProperties: false,
   },
   async execute(input, ctx) {
+    const requestedId = exactWorkId(input);
+    if (requestedId?.startsWith('wrk_') && ctx.turnRuntime?.coordinationOrigin && ctx.coordinationChannelOperation && ctx.parentToolCallId) {
+      const result = await ctx.coordinationChannelOperation({ origin: ctx.turnRuntime.coordinationOrigin,
+        invocationId: ctx.parentToolCallId, args: { work_id: requestedId, operation: 'work_cancel' } });
+      return { content: JSON.stringify(result, null, 2) };
+    }
     if (!ctx.workRegistry || !ctx.requestWorkCancel) return UNAVAILABLE;
     const workId = exactWorkId(input);
     if (!workId) return { content: 'work_id is required.', is_error: true };
@@ -96,5 +102,24 @@ export const workCancelTool: ToolDefinition = {
       return { content: `Work ${workId} is already terminal (${outcome.work.status}).`, is_error: true };
     }
     return { content: `Cancellation requested for work ${workId}.` };
+  },
+};
+
+export const workReportOutcomeTool: ToolDefinition = {
+  name: 'work_report_outcome',
+  description: 'Record this resident\'s assessment of an existing canonical assignment. Complete requires inspected evidence; a blocked assignment remains open and can return when dependencies finish or at the specified revisit time. This does not launch work.',
+  input_schema: { type: 'object', properties: {
+    work_id: { type: 'string', description: 'Existing canonical assignment or execution ID' },
+    state: { type: 'string', enum: ['active','blocked','complete','cancelled'] },
+    summary: { type: 'string', description: 'What was achieved or what remains; report the actual outcome' },
+    evidence: { type: 'array', items: { type: 'string' }, description: 'Inspected file, artifact, or receipt references; required for completion' },
+    wait_for: { type: 'array', items: { type: 'string' }, description: 'Other existing Work IDs whose termination warrants reconsidering the blocker' },
+    revisit_at: { type: 'string', description: 'Optional exact ISO time when reconsideration is warranted' },
+    owner_message_sequence: { type: 'integer', description: 'After reading changed owner direction in work_list, acknowledge its exact ownerMessageSequence here. Active permits continuation; a pause stays blocked without an automatic revisit.' },
+  }, required: ['work_id','state','summary','evidence'], additionalProperties: false },
+  async execute(input, ctx) {
+    if (!ctx.turnRuntime?.coordinationOrigin || !ctx.coordinationChannelOperation || !ctx.parentToolCallId) return UNAVAILABLE;
+    return { content: JSON.stringify(await ctx.coordinationChannelOperation({ origin: ctx.turnRuntime.coordinationOrigin,
+      invocationId: ctx.parentToolCallId, args: { ...input, operation: 'work_report_outcome' } }), null, 2) };
   },
 };

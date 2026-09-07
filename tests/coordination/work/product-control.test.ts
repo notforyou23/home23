@@ -139,6 +139,8 @@ test("Working Thread list is owner-scoped, excludes speaking turns, and projects
     title: "Assignment 121",
     summary: "Independent assignment 121",
     state: "succeeded",
+    assignmentState: "needs_review",
+    assignmentSummary: null,
     cancelAvailable: false,
     retryAvailable: false,
     createdAt: AT,

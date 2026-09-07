@@ -84,3 +84,24 @@ export function collectForegroundTurnContext(input: {
     : [];
   return buildForegroundWorkView({ work, commitments });
 }
+
+/** Current canonical assignments are available to app conversation and work
+ * returns alike. A read failure is an omission, never a claim of no work. */
+export async function collectCanonicalWorkContext(read: () => Promise<unknown>, onOwnerContact?: (contact: { messageId: string; text: string }) => void,
+  relationshipLedger?: Pick<RelationshipLedger, 'listEntries'>): Promise<string> {
+  try {
+    const result = await read() as { registry?: string; work?: Array<Record<string, unknown>>; unseenOwnerMessages?: unknown[]; ownerMessageSequence?: number; ownerContact?: { messageId: string; text: string } | null };
+    if (result?.registry !== 'canonical' || !Array.isArray(result.work)) throw new Error('Invalid canonical work view');
+    if (result.ownerContact && typeof result.ownerContact.messageId === 'string' && typeof result.ownerContact.text === 'string') onOwnerContact?.(result.ownerContact);
+    const rows = result.work.map(row => ({ workId: String(row.id), label: String(row.title ?? row.id),
+      status: row.assignmentState ? `${row.assignmentState}; execution ${row.state}` : String(row.state), kind: typeof row.toolName === 'string' ? row.toolName : 'assignment',
+      progressSummary: typeof (row.conclusion as { summary?: string } | null)?.summary === 'string' ? (row.conclusion as { summary: string }).summary : typeof row.summary === 'string' ? row.summary : undefined }));
+    const correction = result.unseenOwnerMessages?.length
+      ? `\n[OWNER DIRECTION CHANGED]\nThese canonical owner messages arrived after this turn's prepared context. Read them before deciding what to do. Before another launch, record work_report_outcome with owner_message_sequence=${result.ownerMessageSequence}: active only when continuation fits the new direction, blocked without a revisit for a pause, cancelled when stopped.\n${JSON.stringify(result.unseenOwnerMessages)}\n[/OWNER DIRECTION CHANGED]` : '';
+    const commitments = relationshipLedger ? [...relationshipLedger.listEntries({ type: 'promise', status: 'active' }),
+      ...relationshipLedger.listEntries({ type: 'thread', status: 'active' })].filter(entry => entry.privacy_class !== 'sensitive') : [];
+    return `${buildForegroundWorkView({ work: rows, commitments })}\nSource: current canonical assignments. Descriptions state intent; execution state and heartbeats do not establish meaningful progress or completion.${correction}`;
+  } catch {
+    return '[CURRENT WORK UNAVAILABLE] The canonical assignment view could not be read. Do not infer that no work is active; inspect work_list before starting recovery.';
+  }
+}

@@ -6,6 +6,7 @@ import { canonicalTimestamp, sha256 } from "./canonical.js";
 import { WorkError } from "./errors.js";
 import type { M11Database, WorkRecord } from "./types.js";
 import type { createWorkService } from "./service.js";
+import { createResidentAssignments } from '../app/resident-assignments.js';
 
 type WorkService = ReturnType<typeof createWorkService>;
 
@@ -37,6 +38,8 @@ export interface ProductWorkProjection {
   title: string;
   summary: string;
   state: "queued" | "running" | "stopping" | "succeeded" | "failed" | "cancelled";
+  assignmentState?: string;
+  assignmentSummary?: string | null;
   cancelAvailable: boolean;
   retryAvailable: boolean;
   createdAt: string;
@@ -147,7 +150,8 @@ function isWorkingThread(database: M11Database, work: WorkRecord): boolean {
   return work.kind === PRODUCT_WORK_THREAD_KIND || !!database.readOne('SELECT work_id FROM work_thread_presentations WHERE work_id = ?',work.id);
 }
 function assertAccess(database: M11Database, work: WorkRecord, context: MessagingActorContext): void {
-  if (work.principalId !== context.principalId && !(context.identity.kind === 'owner' && database.readOne('SELECT id FROM channels WHERE id = ? AND owner_principal_id = ?',work.channelId,context.principalId))) throw new WorkError("ineligible", "Work is outside the authenticated principal scope");
+  const assignedResident = context.identity.kind === 'resident' && work.targetPrincipalId === context.principalId;
+  if (work.principalId !== context.principalId && !assignedResident && !(context.identity.kind === 'owner' && database.readOne('SELECT id FROM channels WHERE id = ? AND owner_principal_id = ?',work.channelId,context.principalId))) throw new WorkError("ineligible", "Work is outside the authenticated principal scope");
   const member = database.readOne<{ count: number }>(
     "SELECT count(*) AS count FROM channel_members WHERE channel_id = ? AND principal_id = ? AND active = 1",
     work.channelId, context.principalId,
@@ -165,7 +169,7 @@ function projection(database: M11Database, work: WorkRecord): ProductWorkProject
     "SELECT retry_work_id AS retryWorkId FROM work_retry_provenance WHERE source_work_id = ? ORDER BY created_at, retry_work_id",
     work.id,
   ).map((row) => row.retryWorkId);
-  const state = work.state === "leased" || work.state === "running" ? "running"
+  const state = work.state === "leased" ? "queued" : work.state === "running" ? "running"
     : work.state === "cancelling" ? "stopping" : work.state;
   const expired = work.state === "queued" && work.currentAttemptId === null && database.readOne<{ state: string }>(
     "SELECT state FROM attempts WHERE work_id = ? ORDER BY ordinal DESC LIMIT 1", work.id,
@@ -173,6 +177,7 @@ function projection(database: M11Database, work: WorkRecord): ProductWorkProject
   const summary = safeWorkText(shown.durableSummary ?? shown.originText, 280);
   const title = safeWorkText(shown.durableTitle ?? shown.originText, 88) || `${shown.displayName} work`;
   const workingThread = isWorkingThread(database,work);
+  const assessment = workingThread ? createResidentAssignments(database).latest(work.id) : null;
   return Object.freeze({
     id: work.id,
     channelId: work.channelId,
@@ -189,6 +194,10 @@ function projection(database: M11Database, work: WorkRecord): ProductWorkProject
     title,
     summary: summary || title,
     state,
+    ...(workingThread ? {
+      assignmentState: assessment?.state ?? (['succeeded','failed','cancelled'].includes(work.state) ? 'needs_review' : 'active'),
+      assignmentSummary: assessment?.summary ?? null,
+    } : {}),
     cancelAvailable: work.state === "queued" || work.state === "running" || (workingThread && work.state === "leased"),
     retryAvailable: !workingThread && (work.state === "failed" || work.state === "cancelled" || expired),
     createdAt: work.createdAt, updatedAt: work.updatedAt, terminalAt: work.terminalAt,

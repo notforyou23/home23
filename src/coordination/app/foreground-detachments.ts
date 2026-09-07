@@ -5,6 +5,7 @@ import { canonicalJson, sha256 } from '../work/canonical.js';
 import { WorkError } from '../work/errors.js';
 import { createWorkService } from '../work/service.js';
 import type { M11Database } from '../work/types.js';
+import { createResidentAssignments } from './resident-assignments.js';
 
 export interface DetachmentCredential { residentSlug: string; instanceId: string; keyVersion: number; role?: string }
 
@@ -29,13 +30,14 @@ export function createForegroundDetachmentConsumer(options: {
   resolveResident: (slug: string) => { clientInstanceId: string; serverInstanceId: string; keyVersion: number } | null | undefined;
 }) {
   const now = options.now ?? (() => new Date());
+  const assignments = createResidentAssignments(options.database);
   function verifyCredential(credential: DetachmentCredential) {
     const resident = options.resolveResident(credential.residentSlug);
     if (!resident || resident.clientInstanceId !== credential.instanceId || resident.keyVersion !== credential.keyVersion)
       throw new WorkError('ineligible', 'resident credential is not the configured harness');
     return resident;
   }
-  function verify(credential: DetachmentCredential, origin: CoordinationTurnOrigin) {
+  function verify(credential: DetachmentCredential, origin: CoordinationTurnOrigin, readOnly = false) {
     const resident = verifyCredential(credential);
     const row = options.database.readOne<{ id: string; principalId: string; targetPrincipalId: string; channelId: string; originMessageId: string | null; roundId: string | null; kind: string; contextManifestId: string }>(
       `SELECT w.id, w.principal_id AS principalId, w.target_principal_id AS targetPrincipalId,
@@ -47,10 +49,12 @@ export function createForegroundDetachmentConsumer(options: {
        AND a.holder_principal_id = ? AND l.holder_principal_id = a.holder_principal_id
        AND a.holder_instance_id = ? AND l.holder_instance_id = a.holder_instance_id
        AND a.authority_reference = ? AND w.target_principal_id = a.holder_principal_id
-       AND w.state = 'running' AND a.state = 'running' AND l.state = 'active' AND l.expires_at > ?
+       AND ((w.state = 'running' AND a.state = 'running' AND l.state = 'active')
+         OR (? = 1 AND w.state='leased' AND a.state IN ('offered','accepted') AND l.state IN ('offered','active')))
+       AND l.expires_at > ?
        AND b.lifecycle = 'active' AND b.resident_binding = ? AND b.active_instance_id = ? AND b.active_key_version = ?`,
       origin.workId, origin.attemptId, origin.leaseId, origin.fencingToken, origin.fencingToken,
-      origin.holderPrincipalId, origin.holderInstanceId, origin.authorityReference, now().toISOString(),
+      origin.holderPrincipalId, origin.holderInstanceId, origin.authorityReference, readOnly ? 1 : 0, now().toISOString(),
       credential.residentSlug, resident.serverInstanceId, credential.keyVersion);
     if (!row || origin.holderInstanceId !== resident.serverInstanceId || origin.authorityReference !== `resident:${credential.residentSlug}` ||
       row.channelId !== origin.channelId || row.originMessageId !== origin.originMessageId || row.roundId !== origin.roundId) {
@@ -58,8 +62,14 @@ export function createForegroundDetachmentConsumer(options: {
     }
     return row;
   }
+  function assertCurrentDirection(workId: string) {
+    const current = assignments.direction(workId);
+    if (current.ownerMessageSequence > current.acknowledgedSequence) throw new WorkError('ineligible', 'Owner direction changed. Read work_list, reconcile the new messages, and record the appropriate work_report_outcome with owner_message_sequence before another launch. A pause does not authorize recovery.');
+  }
   return {
     authorize: verify,
+    authorizeRead: (credential: DetachmentCredential, origin: CoordinationTurnOrigin) => verify(credential, origin, true),
+    assertCurrentDirection,
     admit(input: { credential: DetachmentCredential; request: unknown }): ForegroundDetachmentAck {
       const request = parseForegroundDetachmentRequest(input.request);
       const resident = verifyCredential(input.credential);
@@ -89,6 +99,8 @@ export function createForegroundDetachmentConsumer(options: {
          artifact_count AS artifactCount, channel_watermark AS channelWatermark, event_watermark AS eventWatermark,
          context_digest AS contextDigest, source_digest AS sourceDigest FROM context_manifests WHERE id = ?`, parent.contextManifestId);
       if (!manifest) throw new WorkError('invalid_manifest', 'parent manifest unavailable');
+      assignments.assertOpen(parent.id);
+      assertCurrentDirection(parent.id);
       const created = options.work.create({
         principalId: parent.principalId, targetPrincipalId: parent.targetPrincipalId, channelId: parent.channelId,
         originMessageId: parent.originMessageId, roundId: parent.roundId, kind: 'resident_work_thread',
@@ -110,6 +122,10 @@ export function createForegroundDetachmentConsumer(options: {
       const planned = options.work.getPlannedInvocation(input.origin.workId);
       if (planned && planned.recoveryPolicy !== 'safe_before_start' && planned.invocationId === input.invocationId && options.work.getInvocationExecution(input.origin.workId))
         return { started: true };
+      if (!options.work.getInvocationExecution(input.origin.workId)) {
+        assignments.assertOpen(input.origin.workId);
+        assertCurrentDirection(input.origin.workId);
+      }
       return options.work.markInvocationStarted({ origin: input.origin, invocationId: input.invocationId,
         requestId: generateCoordinationId('request'), correlationId: generateCoordinationId('correlation') });
     },

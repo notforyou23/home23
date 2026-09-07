@@ -1,0 +1,161 @@
+import type { CoordinationTurnOrigin } from '../../agent/types.js';
+import type { MessagingActorContext } from '../channels/types.js';
+import type { M11Database } from '../work/types.js';
+import { canonicalJson } from '../work/canonical.js';
+
+export type AssignmentState = 'active' | 'blocked' | 'complete' | 'cancelled';
+export interface AssignmentConclusion {
+  workId: string; state: AssignmentState; summary: string; evidence: string[];
+  waitFor: string[]; revisitAt: string | null; invocationKey: string; recordedAt: string;
+  observedOwnerMessageSequence?: number;
+}
+
+/** Shared assignment conclusions live in Core's existing event journal. They
+ * are distinct from execution terminal state and from the resident's private
+ * Seed/development. A delivered explanation does not close an assignment. */
+export function createResidentAssignments(database: M11Database) {
+  const hasOutcomeStore = !!database.readOne("SELECT name FROM sqlite_master WHERE type='table' AND name='resident_outcomes'");
+  function root(workId: string): string {
+    const seen = new Set<string>();
+    let current = workId;
+    for (let depth = 0; depth < 64; depth++) {
+      if (seen.has(current)) throw new Error('Assignment lineage cycle');
+      seen.add(current);
+      const review = hasOutcomeStore ? database.readOne<{ source: string }>('SELECT source_work_id AS source FROM resident_outcomes WHERE review_work_id=?', current) : undefined;
+      if (review) { current = review.source; continue; }
+      const parent = database.readOne<{ id: string }>('SELECT parent_work_id AS id FROM work_planned_invocations WHERE work_id=?', current);
+      if (!parent) return current;
+      const upstream = hasOutcomeStore ? database.readOne<{ source: string }>('SELECT source_work_id AS source FROM resident_outcomes WHERE review_work_id=?', parent.id) : undefined;
+      if (upstream) { current = upstream.source; continue; }
+      if (database.readOne('SELECT work_id FROM work_planned_invocations WHERE work_id=?', parent.id)) { current = parent.id; continue; }
+      return current;
+    }
+    throw new Error('Assignment lineage exceeds supported depth');
+  }
+  function latest(workId: string): (AssignmentConclusion & { eventSequence: number }) | null {
+    const record = database.readOne<{ payload: string; sequence: number }>(`SELECT payload_json AS payload,sequence FROM events
+      WHERE aggregate_kind='resident_assignment' AND aggregate_id=? ORDER BY aggregate_version DESC LIMIT 1`, root(workId));
+    return record ? { ...JSON.parse(record.payload), eventSequence: record.sequence } : null;
+  }
+  function assertOpen(workId: string) {
+    const conclusion = latest(workId);
+    if (conclusion && conclusion.state !== 'active') throw new Error(`Assignment is ${conclusion.state}; assess the current direction with work_report_outcome before another launch`);
+    const stopped = database.readOne<{ state: string; sequence: number }>(`SELECT w.state,
+      (SELECT coalesce(max(sequence),0) FROM events WHERE aggregate_kind='work' AND aggregate_id=w.id) AS sequence
+      FROM works w WHERE w.id=?`, root(workId));
+    if (stopped?.state === 'cancelled' && (!conclusion || stopped.sequence > conclusion.eventSequence)) throw new Error('Assignment was cancelled; a late result cannot restart it');
+  }
+  function direction(workId: string) {
+    const row = database.readOne<{ prepared: number; current: number }>(`SELECT c.channel_watermark AS prepared,
+      coalesce((SELECT max(m.channel_sequence) FROM messages m WHERE m.channel_id=w.channel_id
+        AND m.author_kind='owner' AND m.kind='text' AND m.stored_visibility='visible'
+        AND NOT EXISTS(SELECT 1 FROM events e WHERE e.aggregate_kind='scheduled_channel_run'
+          AND e.aggregate_version=1 AND json_extract(e.payload_json,'$.messageId')=m.id)),0) AS current
+      FROM works w JOIN context_manifests c ON c.id=w.context_manifest_id WHERE w.id=?`, workId);
+    if (!row) throw new Error('Work context unavailable');
+    const acknowledged = database.readOne<{ sequence: number }>(`SELECT max(CAST(json_extract(payload_json,'$.ownerMessageSequence') AS INTEGER)) AS sequence
+      FROM events WHERE aggregate_kind='resident_assignment' AND (json_extract(payload_json,'$.originWorkId')=?
+        OR (json_extract(payload_json,'$.originWorkId')=(SELECT parent_work_id FROM work_planned_invocations WHERE work_id=?)
+          AND sequence < (SELECT min(sequence) FROM events WHERE aggregate_kind='work' AND aggregate_id=?)))`, workId, workId, workId)?.sequence ?? 0;
+    return { ownerMessageSequence: row.current, acknowledgedSequence: Math.max(row.prepared, acknowledged) };
+  }
+  function report(context: MessagingActorContext, origin: CoordinationTurnOrigin, args: Record<string, unknown>, invocationKey: string) {
+    if (typeof args.work_id !== 'string') throw new Error('work_id is required');
+    const workId = root(args.work_id);
+    const work = database.readOne<{ principal: string; channel: string }>('SELECT target_principal_id AS principal,channel_id AS channel FROM works WHERE id=?', workId);
+    if (!work || work.principal !== context.principalId) throw new Error('Assignment is outside this resident scope');
+    const state = args.state as AssignmentState;
+    if (!['active','blocked','complete','cancelled'].includes(state)) throw new Error('Invalid assignment state');
+    if (typeof args.summary !== 'string' || !args.summary.trim() || args.summary.length > 4000) throw new Error('Provide a bounded outcome summary');
+    const strings = (value: unknown, maximum: number): string[] => {
+      if (value === undefined) return [];
+      if (!Array.isArray(value) || value.length > maximum || value.some(item => typeof item !== 'string' || !item.trim() || item.length > 4096)) throw new Error('Invalid outcome references');
+      return [...new Set(value as string[])];
+    };
+    const evidence = strings(args.evidence, 16), waitFor = strings(args.wait_for, 16);
+    if (state === 'complete' && !evidence.length) throw new Error('Completion requires inspected evidence references');
+    for (const id of waitFor) {
+      const dependency = database.readOne<{ principal: string }>('SELECT target_principal_id AS principal FROM works WHERE id=?', id);
+      if (!dependency || dependency.principal !== context.principalId || root(id) === workId) throw new Error('Dependency must be another existing assignment of this resident');
+    }
+    const revisitAt = args.revisit_at === undefined || args.revisit_at === null ? null : String(args.revisit_at);
+    if (revisitAt !== null && (!Number.isFinite(Date.parse(revisitAt)) || new Date(revisitAt).toISOString() !== revisitAt)) throw new Error('revisit_at must be an ISO timestamp');
+    if (args.owner_message_sequence !== undefined && (typeof args.owner_message_sequence !== 'number' || !Number.isSafeInteger(args.owner_message_sequence) || args.owner_message_sequence < 0)) throw new Error('Invalid owner message sequence');
+    const ownerMessageSequence = typeof args.owner_message_sequence === 'number' ? args.owner_message_sequence : null;
+    const value = { workId, state, summary: args.summary, evidence, waitFor, revisitAt, invocationKey, originWorkId: origin.workId, ownerMessageSequence };
+    const prior = database.readOne<{ payload: string }>(`SELECT payload_json AS payload FROM events WHERE aggregate_kind='resident_assignment'
+      AND json_extract(payload_json,'$.invocationKey')=?`, invocationKey);
+    if (prior) {
+      const { recordedAt, observedOwnerMessageSequence, ...saved } = JSON.parse(prior.payload);
+      if (canonicalJson(saved) !== canonicalJson(value)) throw new Error('Assignment conclusion replay changed');
+      return { ...saved, recordedAt, replayed: true };
+    }
+    const current = direction(origin.workId);
+    if ((current.ownerMessageSequence > current.acknowledgedSequence || ownerMessageSequence !== null)
+        && ownerMessageSequence !== current.ownerMessageSequence) throw new Error('Read work_list and reconcile the latest owner messages; include its ownerMessageSequence in this assessment');
+    if (revisitAt !== null && Date.parse(revisitAt) <= Date.now()) throw new Error('revisit_at must be in the future');
+    if (state !== 'blocked' && (waitFor.length || revisitAt !== null)) throw new Error('Revisit conditions belong to a blocked assignment');
+    if (state === 'active') {
+      const previous = latest(workId);
+      const cancelled = database.readOne<{ sequence: number }>(`SELECT max(e.sequence) AS sequence FROM works w JOIN events e
+        ON e.aggregate_kind='work' AND e.aggregate_id=w.id WHERE w.id=? AND w.state='cancelled'`, workId)?.sequence;
+      if (previous?.state === 'complete' || previous?.state === 'cancelled' || cancelled) {
+        const freshRequest = database.readOne(`SELECT m.id FROM works w JOIN messages m ON m.id=w.origin_message_id
+          JOIN events e ON e.aggregate_kind='message' AND e.aggregate_id=m.id AND e.aggregate_version=1
+          WHERE w.id=? AND w.channel_id=? AND w.kind IN ('resident_turn','channel.bot_turn')
+            AND m.author_kind='owner' AND m.kind='text' AND m.stored_visibility='visible'
+            AND e.sequence>? AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.review_work_id=w.id)
+            AND NOT EXISTS(SELECT 1 FROM events s WHERE s.aggregate_kind='scheduled_channel_run' AND s.aggregate_version=1
+              AND json_extract(s.payload_json,'$.messageId')=m.id)`, origin.workId, work.channel, Math.max(cancelled ?? 0, previous?.eventSequence ?? 0));
+        if (!freshRequest) throw new Error('Reopening a stopped or completed assignment requires a newer canonical owner request; a late result is insufficient');
+      }
+    }
+    if (state === 'complete') {
+      for (const active of database.readAll<{ id: string }>(`SELECT id FROM works WHERE target_principal_id=? AND id<>?
+        AND kind='resident_work_thread' AND state IN ('queued','leased','running','cancelling')`, context.principalId, origin.workId)) {
+        if (root(active.id) === workId) throw new Error('Assignment still has an active execution');
+      }
+    }
+    const recordedAt = new Date().toISOString();
+    database.mutateWithEvent(tx => ({ value: undefined, event: { type: 'activity.updated', aggregateKind: 'resident_assignment',
+      aggregateId: workId, aggregateVersion: (tx.readOne<{ version: number }>("SELECT coalesce(max(aggregate_version),0) AS version FROM events WHERE aggregate_kind='resident_assignment' AND aggregate_id=?", workId)?.version ?? 0) + 1,
+      channelId: work.channel, actorPrincipalId: context.principalId, requestId: context.requestId,
+      correlationId: context.correlationId, payload: { ...value, recordedAt, observedOwnerMessageSequence: current.ownerMessageSequence }, createdAt: recordedAt } }));
+    return { ...value, recordedAt, replayed: false };
+  }
+  function list(principalId: string, includeClosed = false, limit = 20) {
+    const works = database.readAll<{ id: string }>(`SELECT w.id FROM works w
+      LEFT JOIN work_thread_presentations p ON p.work_id=w.id
+      WHERE w.target_principal_id=? AND (w.kind='resident_work_thread' OR p.work_id IS NOT NULL)
+        AND (w.state IN ('queued','leased','running','cancelling') OR w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1))
+      ORDER BY w.created_at DESC LIMIT 1000`, principalId);
+    const roots = [...new Set(works.map(work => root(work.id)))];
+    const result = [];
+    for (const id of roots) {
+      const conclusion = latest(id);
+      if (!includeClosed && (conclusion?.state === 'complete' || conclusion?.state === 'cancelled')) continue;
+      const work = database.readOne<Record<string, unknown>>(`SELECT w.id,w.channel_id AS channelId,w.state,
+        w.origin_message_id AS originMessageId,coalesce(p.title,substr(m.body_text,1,160),'Assignment') AS title,
+        coalesce(p.summary,m.body_text) AS summary,m.body_text AS originalRequest,w.created_at AS createdAt,
+        w.terminal_reason AS terminalReason FROM works w LEFT JOIN work_thread_presentations p ON p.work_id=w.id
+        LEFT JOIN messages m ON m.id=w.origin_message_id WHERE w.id=?`, id)!;
+      result.push({ ...work, assignmentState: conclusion?.state ?? (['succeeded','failed','cancelled'].includes(String(work.state)) ? 'needs_review' : 'active'), conclusion });
+      if (result.length >= limit) break;
+    }
+    return result;
+  }
+  function revisits() {
+    const records = database.readAll<{ id: string }>("SELECT DISTINCT aggregate_id AS id FROM events WHERE aggregate_kind='resident_assignment'");
+    return records.flatMap(({ id }) => {
+      const value = latest(id);
+      if (!value || value.state !== 'blocked') return [];
+      const due = value.revisitAt !== null && Date.parse(value.revisitAt) <= Date.now();
+      const dependenciesReady = value.waitFor.length > 0 && value.waitFor.every(workId => {
+        const work = database.readOne<{ state: string }>('SELECT state FROM works WHERE id=?', workId);
+        return work && ['succeeded','failed','cancelled'].includes(work.state);
+      });
+      return due || dependenciesReady ? [value] : [];
+    });
+  }
+  return { root, latest, report, list, revisits, assertOpen, direction };
+}

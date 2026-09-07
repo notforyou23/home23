@@ -811,10 +811,18 @@ async function main() {
       logger.info('[agency] artifact registry receipts wired to resident spine');
     }
     if (agencyKernel.config.enabled) {
+      const { reconcileCanonicalWork } = await import('./agency/canonical-work.js');
+      const canonicalWorkPath = path.join(home23RepoRoot, 'instances', '.house', 'coordination', 'resident-contact', `${agentNameForAgency}.work.json`);
+      let agencyTickRunning = false;
       const runAgencyTick = () => {
-        agencyKernel.tick({ reason: 'resident_engine_tick' }).catch((err) => {
+        if (agencyTickRunning) return;
+        agencyTickRunning = true;
+        Promise.resolve().then(() => {
+          reconcileCanonicalWork(agencyKernel, canonicalWorkPath, agentNameForAgency);
+          return agencyKernel.tick({ reason: 'resident_engine_tick' });
+        }).catch((err) => {
           logger.warn?.('[agency] resident tick failed:', err?.message || err);
-        });
+        }).finally(() => { agencyTickRunning = false; });
       };
       agencyTickTimer = setInterval(runAgencyTick, agencyKernel.config.residentTickMs);
       if (typeof agencyTickTimer.unref === 'function') agencyTickTimer.unref();

@@ -25,6 +25,33 @@ export interface ShippableTurn {
   role: 'user' | 'assistant';
   text: string;
   ts: string;
+  contactId?: string;
+  sourceRef?: string;
+  session?: string;
+  voice?: 'jtr' | 'self' | 'peer';
+  actor?: { principalId: string; kind: 'owner' | 'bot'; displayName: string };
+}
+
+/** Harness task files contain private runtime instructions. Current app
+ * contact comes from Core's canonical projection, never from those files. */
+export function isLegacyConversationSession(name: string): boolean {
+  return /^[a-z0-9-]+__(ios_|dashboard-|mac_|tv_|-?\d+\.jsonl$)/.test(name) && name.endsWith('.jsonl');
+}
+
+export function canonicalContactTurn(rec: Record<string, unknown>): ShippableTurn | null {
+  if (rec.schema !== 'home23.resident.contact.v1') return null;
+  const actor = rec.actor as ShippableTurn['actor'];
+  if (!actor || typeof actor.principalId !== 'string' || typeof actor.displayName !== 'string'
+    || !['owner', 'bot'].includes(actor.kind) || !['jtr', 'self', 'peer'].includes(String(rec.voice))
+    || (rec.voice === 'jtr') !== (actor.kind === 'owner')
+    || (rec.voice === 'self') !== (rec.role === 'assistant')
+    || typeof rec.contactId !== 'string' || rec.contactId !== `message:${rec.messageId}`
+    || rec.sourceRef !== `coordination.message:${rec.messageId}`
+    || typeof rec.session !== 'string' || rec.session !== `coordination:${rec.channelId}`) return null;
+  if ((rec.role !== 'user' && rec.role !== 'assistant') || typeof rec.content !== 'string'
+    || !rec.content.trim() || typeof rec.ts !== 'string' || !Number.isFinite(Date.parse(rec.ts))) return null;
+  return { role: rec.role, text: rec.content, ts: rec.ts, contactId: rec.contactId, sourceRef: rec.sourceRef as string,
+    session: rec.session, voice: rec.voice as ShippableTurn['voice'], actor };
 }
 
 export function shippableTurn(rec: Record<string, unknown>): ShippableTurn | null {

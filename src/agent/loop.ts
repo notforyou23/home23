@@ -36,7 +36,7 @@ import type { MediaAttachment } from '../types.js';
 import { getCodexCredentials, getCodexHeaders } from './codex-auth.js';
 import { assembleContext } from './context-assembly.js';
 import { isSpeakingConversationRun, isForegroundConversation } from './foreground-admission.js';
-import { collectForegroundTurnContext } from './foreground-work-view.js';
+import { collectCanonicalWorkContext, collectForegroundTurnContext } from './foreground-work-view.js';
 import {
   isRetrievalEvalTurn,
   retrievalEvalDisclosure,
@@ -494,7 +494,7 @@ export class AgentLoop {
 
     const lines: string[] = [];
     for (const msg of messages) {
-      const role = msg.role === 'user' ? 'User' : 'Agent';
+      const role = msg.role === 'user' ? (chatId.startsWith('coordination:') ? 'Runtime input (see canonical conversation for authorship)' : 'User') : 'Agent';
       const content = typeof msg.content === 'string'
         ? msg.content
         : (msg.content as Array<{ type: string; text?: string }>)
@@ -537,7 +537,7 @@ export class AgentLoop {
 
     const lines: string[] = [];
     for (const msg of sessionMessages) {
-      const role = msg.role === 'user' ? 'User' : 'Agent';
+      const role = msg.role === 'user' ? (chatId.startsWith('coordination:') ? 'Runtime input (see canonical conversation for authorship)' : 'User') : 'Agent';
       const content = typeof msg.content === 'string'
         ? msg.content
         : (msg.content as Array<{ type: string; text?: string }>)
@@ -1444,12 +1444,10 @@ export class AgentLoop {
       // Keep the incoming request even if pressure blocks the first model call.
       turnMessages.push(userMsg);
       const userMessageRef = `turn:${activeTurnId}:user`;
-      this.authenticatedUserTurns.set(userMessageRef, { chatId, userText });
-      runContext.authenticatedUserMessage = {
-        chatId,
-        messageRef: userMessageRef,
-        text: userText,
-      };
+      if (isForegroundConversation({ chatId, coordinationOrigin: turnRuntime?.coordinationOrigin })) {
+        this.authenticatedUserTurns.set(userMessageRef, { chatId, userText });
+        runContext.authenticatedUserMessage = { chatId, messageRef: userMessageRef, text: userText };
+      }
 
       let truncated = storedHistory.filter((record): record is StoredMessage => 'role' in record);
       let didTruncate = false;
@@ -1517,7 +1515,16 @@ export class AgentLoop {
             rawSystemPrompt += `\n\n${assembly.block}`;
           }
 
-        if (isForegroundConversation({
+        if (turnRuntime?.coordinationOrigin && runContext.coordinationChannelOperation) {
+          rawSystemPrompt += `\n\n${await collectCanonicalWorkContext(() => runContext.coordinationChannelOperation!({
+            origin: turnRuntime.coordinationOrigin!, invocationId: `current-work:${activeTurnId}`,
+            args: { operation: 'work_list', assignments_only: true, limit: 8 },
+          }), contact => {
+            if (contact.messageId !== turnRuntime.coordinationOrigin!.originMessageId) return;
+            this.authenticatedUserTurns.set(userMessageRef, { chatId, userText: contact.text });
+            runContext.authenticatedUserMessage = { chatId, messageRef: userMessageRef, text: contact.text };
+          }, this.relationshipLedger)}`;
+        } else if (isForegroundConversation({
           chatId,
           coordinationOrigin: turnRuntime?.coordinationOrigin,
         })) {
