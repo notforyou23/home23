@@ -347,14 +347,20 @@ const grokBuildBackend: CodingBackend = {
 function buildCodexArgs(opts: CodingBackendOptions): string[] {
   validateBackendOptions('codex', opts);
   // cwd comes from spawn(); never pass -C / --cd.
-  const args = opts.resumeSessionId
-    ? ['exec', 'resume', opts.resumeSessionId, '--json', '--skip-git-repo-check']
-    : ['exec', '--json', '--skip-git-repo-check'];
+  const args = ['exec', '--json', '--skip-git-repo-check'];
   if (opts.sandbox) args.push('--sandbox', opts.sandbox);
   else if (opts.permissionMode === 'bypassPermissions') args.push('--dangerously-bypass-approvals-and-sandbox');
-  else args.push('--full-auto');
+  else {
+    // The former --full-auto alias is absent in current Codex. Preserve its
+    // workspace-write sandbox and on-request approval policy explicitly.
+    args.unshift('--ask-for-approval', 'on-request');
+    args.push('--sandbox', 'workspace-write');
+  }
   args.push('--model', resolveCodexModel(opts.model));
   if (opts.extraArgs?.length) args.push(...opts.extraArgs);
+  // --sandbox is an exec option, not a resume option. Keep execution policy
+  // on the parent command for both fresh and continued sessions.
+  if (opts.resumeSessionId) args.push('resume', opts.resumeSessionId);
   args.push(opts.prompt);
   return args;
 }

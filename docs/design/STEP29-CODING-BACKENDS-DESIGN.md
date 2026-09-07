@@ -12,6 +12,11 @@ Known supported contracts are `gpt-5.6-sol` (the default and minimum) and
 `gpt-6-astra`. Older and unknown identifiers fail before workspace or job
 creation. Config defaults, explicit overrides and saved continuation settings
 all pass the same validation. No fallback or downgrade is attempted.
+Execution-policy options precede the `resume SESSION_ID` subcommand, because
+Codex accepts `--sandbox` on `exec`, not on `exec resume`. Continuation retains
+the saved sandbox. Without an explicit sandbox, allowlist mode uses
+`--ask-for-approval on-request` and `--sandbox workspace-write` instead of the
+removed `--full-auto` alias; bypass mode retains its explicit bypass flag.
 Codex extraArgs cannot select another model, profile or provider. Config
 arguments are limited to quoted `model_reasoning_effort` and
 `model_reasoning_summary` values. Existing unsupported config must be corrected

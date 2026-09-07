@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { buildChildEnv, getBackend, listBackendIds, listSelectableBackendIds, unsupportedBackendMessage } from '../../src/acp/backends.js';
 import type { BridgeConfig, CodingBackendOptions } from '../../src/acp/types.js';
@@ -140,9 +141,11 @@ test('codex argv for a new job bypasses sandbox by default and keeps prompt last
   ]);
 });
 
-test('codex allowlist mode falls back to --full-auto; sandbox config overrides both', () => {
+test('codex allowlist mode preserves workspace sandbox and approvals; explicit sandbox overrides', () => {
   const fullAuto = codex.buildArgs(baseOpts({ permissionMode: 'allowlist' }));
-  assert.ok(fullAuto.includes('--full-auto'));
+  assert.deepEqual(fullAuto.slice(0, 3), ['--ask-for-approval', 'on-request', 'exec']);
+  assert.equal(fullAuto[fullAuto.indexOf('--sandbox') + 1], 'workspace-write');
+  assert.equal(fullAuto.includes('--full-auto'), false);
   assert.equal(fullAuto.includes('--dangerously-bypass-approvals-and-sandbox'), false);
 
   const sandboxed = codex.buildArgs(baseOpts({ sandbox: 'danger-full-access' }));
@@ -151,11 +154,42 @@ test('codex allowlist mode falls back to --full-auto; sandbox config overrides b
   assert.equal(sandboxed.includes('--full-auto'), false);
 });
 
-test('codex resume argv starts with exec resume <sessionId>', () => {
+test('codex resume keeps exec options before the subcommand and prompt last', () => {
   const args = codex.buildArgs(baseOpts({ resumeSessionId: 'thread-1' }));
-  assert.deepEqual(args.slice(0, 3), ['exec', 'resume', 'thread-1']);
+  assert.equal(args[0], 'exec');
+  assert.deepEqual(args.slice(-3), ['resume', 'thread-1', 'fix the bug']);
   assert.ok(args.includes('--json'));
   assert.equal(args[args.length - 1], 'fix the bug');
+});
+
+for (const sandbox of ['read-only', 'workspace-write', 'danger-full-access'] as const) {
+  test(`codex continuation preserves explicit ${sandbox} policy on exec`, () => {
+    const fresh = codex.buildArgs(baseOpts({ sandbox, model: 'gpt-6-astra' }));
+    const resumed = codex.buildArgs(baseOpts({ sandbox, model: 'gpt-6-astra', resumeSessionId: 'thread-1' }));
+    assert.deepEqual(resumed.slice(0, -3), fresh.slice(0, -1));
+    assert.ok(resumed.indexOf('--sandbox') < resumed.indexOf('resume'));
+    assert.equal(resumed[resumed.indexOf('--sandbox') + 1], sandbox);
+    assert.equal(resumed.includes('--dangerously-bypass-approvals-and-sandbox'), false);
+  });
+}
+
+test('installed Codex parser accepts fresh and resume execution policies without running a model', {
+  skip: !process.env.HOME23_TEST_CODEX_BIN,
+}, () => {
+  for (const resumeSessionId of [undefined, '00000000-0000-4000-8000-000000000000']) {
+    for (const options of [
+      { sandbox: 'read-only' as const },
+      { sandbox: 'workspace-write' as const },
+      { sandbox: 'danger-full-access' as const },
+      { permissionMode: 'allowlist' as const },
+      { permissionMode: 'bypassPermissions' as const },
+    ]) {
+      const args = codex.buildArgs(baseOpts({ ...options, resumeSessionId }));
+      const result = spawnSync(process.env.HOME23_TEST_CODEX_BIN!, [...args, '--help'], { encoding: 'utf8', timeout: 10000 });
+      assert.equal(result.status, 0, `${JSON.stringify(args)}: ${result.stderr}`);
+      assert.match(result.stdout, /Usage: codex exec/);
+    }
+  }
 });
 
 test('claude-code parseEvents handles init, mixed assistant blocks, and result', () => {
