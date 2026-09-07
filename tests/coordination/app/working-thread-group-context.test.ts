@@ -1,3 +1,5 @@
+import { RESIDENT_OUTCOMES_MIGRATION_SQL } from '../../../src/coordination/migrations/0014-resident-outcomes.js';
+import { createResidentOutcomeStore } from '../../../src/coordination/app/resident-outcomes.js';
 import { createForegroundDetachmentConsumer } from '../../../src/coordination/app/foreground-detachments.js';
 import { createDirectMessageSubmissionService, SqliteDirectMessageContext } from '../../../src/coordination/app/index.js';
 import { SqliteMessagingRepository, SqliteBotConversationBindingAdapter } from '../../../src/coordination/channels/index.js';
@@ -215,14 +217,34 @@ function harness(
 }
 
 
-test('group Working Thread retains selected resident, parent round, exact dispatch and one originating result', async t => {
+for (const fromReview of [false, true]) test(`group Working Thread ${fromReview ? 'from saved review' : 'from ordinary turn'} retains exact dispatch and one originating result`, async t => {
   const database=M11TestDatabase.temporary();t.after(()=>database.close());prepare(database,'parallel');
   database.raw.prepare("UPDATE bots SET active_instance_id='resident-1',active_key_version=1 WHERE id=?").run(BOT_ID);
   const services=harness(database,80000);
   const started=services.coordinator.start(trigger(admissionPlan(database,'parallel')));
-  const parent=started.works.find(row=>row.work.targetPrincipalId===BOT_ID)!.work;
+  let parent=started.works.find(row=>row.work.targetPrincipalId===BOT_ID)!.work;
   assert.equal(parent.kind,'channel.bot_turn');
   const ids={requestId:fixtureId('request',81000),correlationId:fixtureId('correlation',81000)};
+  let savedReview: { row: NonNullable<ReturnType<ReturnType<typeof createResidentOutcomeStore>['forReview']>>; store: ReturnType<typeof createResidentOutcomeStore>; prepared: Record<string, unknown> } | undefined;
+  if (fromReview) {
+    database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+    const source = parent;
+    // Core saves review context at the current global event watermark, which
+    // includes Work events after the last channel Message.
+    const eventWatermark = database.readOne<{seq:number}>('SELECT max(sequence) AS seq FROM events')!.seq;
+    const manifest = directMessageManifest({channelId:CHANNEL_ID,messageIds:[MESSAGE_ID],attachmentIds:[],channelSequence:1,eventSequence:eventWatermark});
+    parent = services.work.create({principalId:source.principalId,targetPrincipalId:source.targetPrincipalId,
+      channelId:source.channelId,originMessageId:source.originMessageId,roundId:source.roundId,
+      kind:'resident_turn',idempotencyKey:'group-review-idempotency',manifest,maxAutomaticOffers:1,...ids}).work;
+    const store = createResidentOutcomeStore(database);
+    store.enqueue('work:'+source.id,source.id,{status:'succeeded'});
+    const row = store.pending().find(r=>r.sourceWorkId===source.id)!;
+    const prepared = {channelId:CHANNEL_ID,conversationId:CONVERSATION_ID,targetPrincipalId:BOT_ID,
+      instruction:'Review the saved outcome and follow through',manifest};
+    store.update(row,'review_work_id',parent.id);store.update(row,'prepared_json',JSON.stringify(prepared));
+    savedReview={row,store,prepared};
+  }
+
   const offered=services.leases.offer({workId:parent.id,holderPrincipalId:BOT_ID,holderInstanceId:'resident-1',authorityReference:'resident:jerry',automatic:true,...ids});
   const binding={workId:parent.id,attemptId:offered.attempt.id,leaseId:offered.lease.id,holderPrincipalId:BOT_ID,holderInstanceId:'resident-1',fencingToken:offered.fencingToken,...ids};
   services.leases.accept(binding);services.leases.start(binding);
@@ -234,6 +256,16 @@ test('group Working Thread retains selected resident, parent round, exact dispat
   assert.equal(child.roundId,parent.roundId);assert.equal(services.work.getPlannedInvocation(child.id)?.parentOrigin.workId,parent.id);
   const recovered=await services.context.recover(child);
   assert.equal(recovered.selectedTargets.length,1);assert.equal(recovered.selectedTargets[0]?.residentBinding,'jerry');
+  if (savedReview) {
+    assert.equal(recovered.instruction,'Review the saved outcome and follow through');
+    savedReview.store.update(savedReview.row,'prepared_json',JSON.stringify({...savedReview.prepared,targetPrincipalId:BOT_2}));
+    await assert.rejects(services.context.recover(child),/invalid_relation/);
+    savedReview.store.update(savedReview.row,'prepared_json',JSON.stringify(savedReview.prepared));
+    savedReview.store.update(savedReview.row,'review_work_id',savedReview.row.sourceWorkId);
+    await assert.rejects(services.context.recover(child),/invalid_relation/);
+    savedReview.store.update(savedReview.row,'review_work_id',parent.id);
+  }
+
   await assert.rejects(services.context.recover({...child,targetPrincipalId:fixtureId('bot',999)}));
   const botRepository=new SqliteBotDirectoryRepository(database);
   const directory=createBotDirectory({repository:botRepository,now:()=>new Date(AT),availabilityPolicy:{degradedAfterMs:30000,offlineAfterMs:120000}});
