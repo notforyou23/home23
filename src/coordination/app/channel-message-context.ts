@@ -670,9 +670,6 @@ implements GroupChannelMessageContextPort {
       ...messageIds,
     );
     const boundary = rows.at(-1);
-    const event = boundary
-      ? this.eventFor(boundary.id, manifest.eventWatermark)
-      : null;
     const tombstonedAfterSnapshot = this.database.readOne<{ count: number }>(
       `SELECT count(*) AS count FROM messages tombstone
        WHERE tombstone.channel_id = ?
@@ -682,9 +679,47 @@ implements GroupChannelMessageContextPort {
       ...messageIds,
       manifest.channelWatermark,
     )?.count ?? 0;
+    // Review children inherit Core's later saved snapshot, not the original
+    // round's narrower reply-only context. Require an exact canonical lineage
+    // and manifest match before accepting that broader snapshot.
+    let reviewSnapshot: { instruction: string; messageIds: string[] } | undefined;
+    if (work.kind === "resident_work_thread" && this.database.readOne("SELECT name FROM sqlite_master WHERE type='table' AND name='resident_outcomes'")) {
+      const saved = this.database.readOne<{ prepared: string }>(`
+        WITH RECURSIVE lineage(id, depth) AS (
+          SELECT ?, 0 UNION ALL
+          SELECT p.parent_work_id, l.depth + 1 FROM lineage l
+          JOIN work_planned_invocations p ON p.work_id = l.id
+          JOIN works parent ON parent.id = p.parent_work_id
+          WHERE l.depth < 64 AND parent.channel_id = ? AND parent.target_principal_id = ?
+            AND parent.principal_id = ? AND parent.origin_message_id = ? AND parent.round_id = ?
+        ) SELECT o.prepared_json AS prepared FROM lineage l
+          JOIN resident_outcomes o ON o.review_work_id = l.id
+          WHERE o.prepared_json IS NOT NULL ORDER BY l.depth LIMIT 1`,
+        work.id, work.channelId, work.targetPrincipalId, work.principalId, work.originMessageId, work.roundId);
+      if (saved) {
+        const value = JSON.parse(saved.prepared);
+        const snapshot = value.manifest;
+        if (value.channelId !== work.channelId || value.targetPrincipalId !== work.targetPrincipalId ||
+            value.conversationId !== admission.conversationId ||
+            snapshot?.digests?.context !== manifest.contextDigest ||
+            snapshot?.digests?.source !== manifest.sourceDigest ||
+            snapshot?.watermarks?.channelSequence !== manifest.channelWatermark ||
+            snapshot?.watermarks?.eventSequence !== manifest.eventWatermark ||
+            typeof value.instruction !== 'string' || !Array.isArray(snapshot.messageIds) ||
+            snapshot.messageIds.length !== messageIds.length ||
+            new Set(snapshot.messageIds).size !== messageIds.length ||
+            !snapshot.messageIds.every((id: string) => messageIds.includes(id))) {
+          throw new MessagingError('invalid_relation');
+        }
+        reviewSnapshot = { instruction: value.instruction, messageIds: snapshot.messageIds };
+      }
+    }
+    const event = boundary && !reviewSnapshot
+      ? this.eventFor(boundary.id, manifest.eventWatermark)
+      : null;
     const canonicalManifest = directMessageManifest({
       channelId: work.channelId,
-      messageIds: rows.map((row) => row.id),
+      messageIds: reviewSnapshot?.messageIds ?? rows.map((row) => row.id),
       attachmentIds: artifactIds,
       channelSequence: manifest.channelWatermark,
       eventSequence: manifest.eventWatermark,
@@ -694,14 +729,14 @@ implements GroupChannelMessageContextPort {
       rows.some((row) => !messageIds.includes(row.id)) ||
       !rows.some((row) => row.id === work.originMessageId) ||
       boundary?.sequence !== manifest.channelWatermark ||
-      event === null ||
+      (!reviewSnapshot && event === null) ||
       tombstonedAfterSnapshot !== 0 ||
       canonicalManifest.digests.context !== manifest.contextDigest ||
       canonicalManifest.digests.source !== manifest.sourceDigest
     ) {
       throw new MessagingError("invalid_relation");
     }
-    for (const row of rows.filter((candidate) => candidate.sequence >
+    for (const row of rows.filter((candidate) => !reviewSnapshot && candidate.sequence >
       rows.find((candidate) => candidate.id === work.originMessageId)!.sequence)) {
       const sourceWork = row.workId === null
         ? undefined
@@ -721,7 +756,7 @@ implements GroupChannelMessageContextPort {
         throw new MessagingError("invalid_relation");
       }
     }
-    const instruction = rows.find(message => message.id === work.originMessageId)?.text ?? "";
+    const instruction = reviewSnapshot?.instruction ?? rows.find(message => message.id === work.originMessageId)?.text ?? "";
     const attachments = await this.storedAttachments(
       work.originMessageId,
       work.channelId,
