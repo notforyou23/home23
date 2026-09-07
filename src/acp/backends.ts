@@ -7,12 +7,9 @@
  * finalizes; everything CLI-specific lives here.
  *
  * Env policy (buildChildEnv): spawned CLIs inherit a scrubbed environment.
- * Home23's Anthropic tokens ARE forwarded on purpose — Home23 is the provider
- * authority (Step 21) and its ANTHROPIC_AUTH_TOKEN is auto-refreshed and
- * lineage-monitored, while the claude CLI's own keychain OAuth on this machine
- * is revoked. Everything else secret (OpenAI/xAI/Ollama keys, bot tokens,
- * encryption material) is stripped: codex uses its own ~/.codex/auth.json and
- * no coding CLI needs Home23's infrastructure secrets.
+ * Home23 does not forward provider secrets to coding CLI children. Codex and
+ * Cursor use their own CLI authentication state. Legacy backend adapters remain
+ * present only so old job receipts and event streams stay readable.
  */
 
 import { existsSync } from 'node:fs';
@@ -29,12 +26,16 @@ import type {
 const SUMMARY_MAX = 300;
 const OTHER_RAW_MAX = 500;
 const RESULT_TEXT_MAX = 4000;
+const SELECTABLE_BACKEND_IDS = ['codex', 'cursor'] as const;
 
-// Secrets that must never reach a coding CLI child. Anthropic tokens are
-// deliberately NOT here (see file-top comment). ANTHROPIC_BASE_URL is stripped
-// because a nested Claude Code session may set it and misroute the child.
+export type SelectableCodingBackendId = typeof SELECTABLE_BACKEND_IDS[number];
+
+// Secrets that must never reach a coding CLI child. ANTHROPIC_BASE_URL is
+// stripped because a nested legacy session may set it and misroute the child.
 const STRIPPED_ENV_KEYS = [
   'OPENAI_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
   'XAI_API_KEY',
   'OLLAMA_CLOUD_API_KEY',
   'TELEGRAM_BOT_TOKEN',
@@ -104,6 +105,20 @@ export function validateBackendOptions(backend: string, opts: CodingBackendOptio
   if (opts.maxBudgetUsd !== undefined && (!Number.isFinite(opts.maxBudgetUsd) || opts.maxBudgetUsd <= 0)) {
     throw new Error('maxBudgetUsd must be a finite positive number');
   }
+}
+
+export function listSelectableBackendIds(): SelectableCodingBackendId[] {
+  return [...SELECTABLE_BACKEND_IDS];
+}
+
+export function isSelectableBackendId(id: string): id is SelectableCodingBackendId {
+  return (SELECTABLE_BACKEND_IDS as readonly string[]).includes(id);
+}
+
+export function unsupportedBackendMessage(id: string): string {
+  const known = listBackendIds().includes(id);
+  const legacy = known ? ' It is retained only for historical job receipts and is not launchable.' : '';
+  return `Unsupported coding backend "${id}". Supported coding backends: ${SELECTABLE_BACKEND_IDS.join(', ')}.${legacy}`;
 }
 
 // ─── claude-code ─────────────────────────────────────────────
@@ -530,6 +545,7 @@ const cursorBackend: CodingBackend = {
   // acp.backends.cursor.bin to override.
   binCandidates: ['cursor-agent', '/Users/jtr/.local/bin/cursor-agent'],
   supportsResume: true,
+  waitForProcessGroupExit: false,
   resolveBin(configBin?: string): string | null {
     return resolveBinFrom(this.binCandidates, configBin);
   },

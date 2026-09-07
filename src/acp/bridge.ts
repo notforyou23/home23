@@ -15,10 +15,17 @@
 
 import { codingSourceRoot } from './source-authority.js';
 import { spawn, exec, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { buildChildEnv, getBackend, listBackendIds, validateBackendOptions } from './backends.js';
+import {
+  buildChildEnv,
+  getBackend,
+  isSelectableBackendId,
+  listBackendIds,
+  listSelectableBackendIds,
+  unsupportedBackendMessage,
+  validateBackendOptions,
+} from './backends.js';
 import { acquireWorkspaceLease, releaseWorkspaceLease } from './workspace-lease.js';
 import { CodingJobStore } from './job-store.js';
 import {
@@ -54,6 +61,7 @@ const HOOK_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_CONCURRENT = 3;
 const DEFAULT_JOB_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const TAIL_CHUNK_BYTES = 1 << 20;
+const DEFAULT_SELECTABLE_BACKEND = 'codex';
 
 export interface ACPBridgeOptions {
   config: BridgeConfig;              // already-normalized
@@ -106,11 +114,20 @@ export function normalizeBridgeConfig(raw: unknown): BridgeConfig {
   if (permissionMode === 'ask') permissionMode = 'allowlist';
   const num = (value: unknown, fallback: number): number =>
     typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+  const rawDefault = typeof src.defaultAgent === 'string' && src.defaultAgent ? src.defaultAgent : DEFAULT_SELECTABLE_BACKEND;
+  const configuredAllowed = Array.isArray(src.allowedAgents) ? src.allowedAgents.map(String) : listSelectableBackendIds();
+  const allowedAgents = configuredAllowed.filter(isSelectableBackendId);
+  if (allowedAgents.length === 0) allowedAgents.push(...listSelectableBackendIds());
+  const defaultAgent = isSelectableBackendId(rawDefault) && allowedAgents.includes(rawDefault)
+    ? rawDefault
+    : allowedAgents.includes(DEFAULT_SELECTABLE_BACKEND)
+      ? DEFAULT_SELECTABLE_BACKEND
+      : allowedAgents[0] ?? DEFAULT_SELECTABLE_BACKEND;
   return {
     // Absent block → disabled (opt-in). Present block → enabled unless explicit false.
     enabled: present && src.enabled !== false,
-    defaultAgent: typeof src.defaultAgent === 'string' && src.defaultAgent ? src.defaultAgent : 'grok-build',
-    allowedAgents: Array.isArray(src.allowedAgents) ? src.allowedAgents.map(String) : ['grok-build', 'claude-code', 'codex', 'cursor'],
+    defaultAgent,
+    allowedAgents,
     permissionMode,
     maxConcurrentJobs: num(src.maxConcurrentJobs, DEFAULT_MAX_CONCURRENT),
     jobTimeoutMs: num(src.jobTimeoutMs, DEFAULT_JOB_TIMEOUT_MS),
@@ -200,12 +217,23 @@ export class ACPBridge {
     return this.store.getReceipt(id);
   }
 
-  listBackends(): Array<{ id: string; available: boolean; bin: string | null; defaultModel?: string; enabled: boolean; isDefault: boolean }> {
-    return listBackendIds().map(id => {
+  listBackends(): Array<{ id: string; available: boolean; bin: string | null; defaultModel?: string; enabled: boolean; isDefault: boolean; selectable: boolean; note?: string }> {
+    const visible = new Set([...listSelectableBackendIds(), ...this.config.allowedAgents, this.config.defaultAgent]);
+    return listBackendIds().filter(id => visible.has(id)).map(id => {
       const backend = getBackend(id)!;
       const backendCfg = this.config.backends?.[id] ?? {};
       const bin = backend.resolveBin(backendCfg.bin);
-      return { id, available: bin !== null, bin, defaultModel: backendCfg.model, enabled: this.config.allowedAgents.length === 0 || this.config.allowedAgents.includes(id), isDefault: id === this.config.defaultAgent };
+      const selectable = isSelectableBackendId(id);
+      return {
+        id,
+        available: bin !== null,
+        bin,
+        defaultModel: backendCfg.model,
+        enabled: selectable && this.config.allowedAgents.includes(id),
+        isDefault: selectable && id === this.config.defaultAgent,
+        selectable,
+        note: selectable ? undefined : 'legacy adapter only; explicit launches are rejected',
+      };
     });
   }
 
@@ -231,12 +259,14 @@ export class ACPBridge {
     if (!prompt) throw new Error('Coding job prompt is empty');
 
     const backendId = opts.backend || this.config.defaultAgent;
+    if (!isSelectableBackendId(backendId)) {
+      throw new Error(unsupportedBackendMessage(backendId));
+    }
     const backend = getBackend(backendId);
     if (!backend) {
       throw new Error(`Unknown coding backend "${backendId}". Known backends: ${listBackendIds().join(', ')}`);
     }
-    // Empty allowedAgents = all built-ins allowed.
-    if (this.config.allowedAgents.length > 0 && !this.config.allowedAgents.includes(backendId)) {
+    if (!this.config.allowedAgents.includes(backendId)) {
       throw new Error(`Backend "${backendId}" is not in allowedAgents: [${this.config.allowedAgents.join(', ')}]`);
     }
     const backendCfg = this.config.backends?.[backendId] ?? {};
@@ -282,11 +312,9 @@ export class ACPBridge {
     }
 
     const requestedCwd = resumeSource ? resumeSource.cwd : codingSourceRoot(this.projectRoot, opts.cwd);
-    // Only backends that accept an externally supplied id for a NEW session
-    // (claude --session-id, grok --session-id) get one pre-generated. Cursor
-    // has no such flag: it mints its own chat id and reports it on the init
-    // line, which the stream handler then persists as the resume handle.
-    const newSessionId = (backendId === 'claude-code' || backendId === 'grok-build') && !opts.resumeSessionId ? randomUUID() : undefined;
+    // Current launchable backends report their own session/thread id on stdout.
+    // The stream handler persists that backend-issued handle for continuation.
+    const newSessionId = undefined;
     const backendOpts: CodingBackendOptions = {
       prompt,
       cwd: requestedCwd,
@@ -645,7 +673,10 @@ export class ACPBridge {
     if (!runtime || runtime.finalized) return;
     const consumed = this.drainNewData(jobId, runtime);
 
-    const dead = runtime.pgid !== undefined
+    const waitForProcessGroupExit = runtime.backend.waitForProcessGroupExit !== false;
+    const dead = !waitForProcessGroupExit && runtime.exited
+      ? true
+      : runtime.pgid !== undefined
       ? !pidAlive(-runtime.pgid)
       : runtime.exited || (runtime.pid !== undefined && !pidAlive(runtime.pid));
     if (dead && consumed === 0) {

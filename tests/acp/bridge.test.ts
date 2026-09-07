@@ -1,7 +1,7 @@
 /**
- * Bridge lifecycle tests against a FAKE claude-code CLI: a node script that
+ * Bridge lifecycle tests against a FAKE Codex CLI: a node script that
  * ignores its argv and prints canned stream-json lines. Pointing the
- * claude-code backend's config bin at the fake exercises the REAL arg builder,
+ * codex backend's config bin at the fake exercises the REAL arg builder,
  * detached spawn, events.jsonl tail, finalize, cancel, and recovery paths.
  */
 
@@ -15,14 +15,11 @@ import { ACPBridge, normalizeBridgeConfig } from '../../src/acp/bridge.js';
 import type { BridgeLifecycleEvent, CodingJobRecord } from '../../src/acp/types.js';
 
 const FIXTURE_LINES = [
-  JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-fixture-1', model: 'claude-fake' }),
-  JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Working on it' }] } }),
-  JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls' } }] } }),
+  JSON.stringify({ type: 'thread.started', thread_id: 'sess-fixture-1' }),
+  JSON.stringify({ type: 'item.completed', item: { item_type: 'agent_message', text: 'Working on it' } }),
+  JSON.stringify({ type: 'item.completed', item: { item_type: 'command_execution', command: 'ls' } }),
 ];
-const FIXTURE_RESULT = JSON.stringify({
-  type: 'result', subtype: 'success', is_error: false, result: 'All done',
-  total_cost_usd: 0.12, num_turns: 3, duration_ms: 250,
-});
+const FIXTURE_RESULT = JSON.stringify({ type: 'turn.completed' });
 
 function writeFakeCli(dir: string, name: string, body: string): string {
   const file = path.join(dir, name);
@@ -32,9 +29,10 @@ function writeFakeCli(dir: string, name: string, body: string): string {
 }
 
 function happyCli(dir: string): string {
-  return writeFakeCli(dir, 'fake-claude.js', [
+  return writeFakeCli(dir, 'fake-codex.js', [
     `const lines = ${JSON.stringify(FIXTURE_LINES)};`,
     'for (const l of lines) process.stdout.write(l + "\\n");',
+    `process.stdout.write(${JSON.stringify(JSON.stringify({ type: 'item.completed', item: { item_type: 'agent_message', text: 'All done' } }))} + "\\n");`,
     'setTimeout(() => {',
     `  process.stdout.write(${JSON.stringify(FIXTURE_RESULT)} + "\\n");`,
     '  process.exit(0);',
@@ -59,9 +57,9 @@ function grokErrorCli(dir: string): string {
 function makeBridge(root: string, bin: string, configOverrides: Record<string, unknown> = {}): ACPBridge {
   return new ACPBridge({
     config: normalizeBridgeConfig({
-      defaultAgent: 'claude-code',
-      allowedAgents: ['claude-code', 'grok-build', 'codex'],
-      backends: { 'claude-code': { bin } },
+      defaultAgent: 'codex',
+      allowedAgents: ['codex', 'cursor'],
+      backends: { codex: { bin } },
       ...configOverrides,
     }),
     jobsDir: path.join(root, 'coding-jobs'),
@@ -88,15 +86,15 @@ test('startJob → waitForJob completes with receipt, events on disk, ordered li
 
     const started = await bridge.startJob({ prompt: 'do the thing', label: 'happy path' });
     assert.equal(started.status, 'running');
-    assert.equal(started.backend, 'claude-code');
+    assert.equal(started.backend, 'codex');
     assert.ok(started.pid && started.pid > 0);
     assert.equal(started.pgid, started.pid);
     // Prompt is elided from the recorded argv but present as job.prompt.
     assert.equal(started.argv?.[started.argv.length - 1], '<prompt>');
     assert.equal(started.prompt, 'do the thing');
-    // claude-code new jobs pre-generate the session id for later resume.
-    assert.match(started.sessionId ?? '', /^[0-9a-f-]{36}$/);
-    assert.ok(started.argv?.includes('--session-id'));
+    // Codex reports its thread id from the stream; the bridge must not invent one.
+    assert.equal(started.sessionId, undefined);
+    assert.equal(started.argv?.includes('--session-id'), false);
 
     const done = await bridge.waitForJob(started.id, 15_000);
     assert.equal(done.status, 'completed');
@@ -108,10 +106,10 @@ test('startJob → waitForJob completes with receipt, events on disk, ordered li
     assert.ok(receipt);
     assert.equal(receipt!.status, 'completed');
     assert.equal(receipt!.resultTail, 'All done');
-    assert.equal(receipt!.costUsd, 0.12);
-    assert.equal(receipt!.numTurns, 3);
+    assert.equal(receipt!.costUsd, undefined);
+    assert.equal(receipt!.numTurns, undefined);
     assert.equal(receipt!.toolUseCount, 1);
-    assert.equal(receipt!.eventsCount, 4);
+    assert.equal(receipt!.eventsCount, 5);
 
     // Raw stream is durable on disk.
     const eventsFile = path.join(root, 'coding-jobs', started.id, 'events.jsonl');
@@ -124,7 +122,7 @@ test('startJob → waitForJob completes with receipt, events on disk, ordered li
     assert.equal(seen[0]!.type, 'job_started');
     assert.equal(seen[seen.length - 1]!.type, 'job_finished');
     const kinds = seen.filter(e => e.type === 'job_event').map(e => (e as { event: { kind: string } }).event.kind);
-    assert.deepEqual(kinds, ['session', 'text', 'tool_use', 'result']);
+    assert.deepEqual(kinds, ['session', 'text', 'tool_use', 'text', 'result']);
 
     // Normalized tail reader agrees with the live parse.
     const tail = bridge.readEventsTail(started.id, 10);
@@ -154,26 +152,16 @@ test('cancelJob stops the process and labels the job cancelled', async () => {
   }
 });
 
-test('a Grok streaming error finalizes failed with the provider message in its receipt', async () => {
+test('legacy Grok launches are rejected before spawn while its parser remains readable', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
   const bin = grokErrorCli(root);
   const bridge = makeBridge(root, bin, { backends: { 'grok-build': { bin } } });
   try {
-    const started = await bridge.startJob({ prompt: 'do the thing', backend: 'grok-build' });
-    const done = await bridge.waitForJob(started.id, 15_000);
-    assert.equal(done.status, 'failed');
-    const receipt = bridge.getReceipt(started.id);
-    assert.equal(receipt?.status, 'failed');
-    assert.match(receipt?.resultTail ?? '', /402 Payment Required: usage balance exhausted/);
-    const result = bridge.readEventsTail(started.id, 10).at(-1);
-    assert.deepEqual(result, {
-      kind: 'result',
-      ok: false,
-      text: '402 Payment Required: usage balance exhausted',
-      costUsd: undefined,
-      numTurns: undefined,
-      durationMs: undefined,
-    });
+    await assert.rejects(
+      bridge.startJob({ prompt: 'do the thing', backend: 'grok-build' }),
+      /Unsupported coding backend "grok-build".*historical job receipts/,
+    );
+    assert.equal(bridge.listJobs().length, 0);
   } finally {
     bridge.dispose();
     rmSync(root, { recursive: true, force: true });
@@ -190,7 +178,7 @@ test('recover finalizes dead jobs: completed with result, interrupted without', 
       const record: CodingJobRecord = {
         schema: 'home23.coding-job.v1',
         id,
-        backend: 'claude-code',
+      backend: 'codex',
         status: 'running',
         prompt: 'orphaned work',
         cwd: root,
@@ -216,7 +204,7 @@ test('recover finalizes dead jobs: completed with result, interrupted without', 
     // Session id recovered from the replayed stream — resume handle survives.
     assert.equal(completed?.sessionId, 'sess-fixture-1');
     const receipt = bridge.getReceipt('cj_20260805T000000Z_dead');
-    assert.equal(receipt?.resultTail, 'All done');
+    assert.equal(receipt?.resultTail, 'Working on it');
     assert.equal(receipt?.eventsCount, 4);
     assert.equal(receipt?.toolUseCount, 1);
 
@@ -240,7 +228,7 @@ test('recover flushes a torn terminal line (child killed mid-write) → complete
     const record: CodingJobRecord = {
       schema: 'home23.coding-job.v1',
       id,
-      backend: 'claude-code',
+        backend: 'codex',
       status: 'running',
       prompt: 'torn write',
       cwd: root,
@@ -258,7 +246,7 @@ test('recover flushes a torn terminal line (child killed mid-write) → complete
     await bridge.recover();
     const job = bridge.getJob(id);
     assert.equal(job?.status, 'completed', 'torn terminal line is flushed and recognized');
-    assert.equal(bridge.getReceipt(id)?.resultTail, 'All done');
+    assert.equal(bridge.getReceipt(id)?.resultTail, 'Working on it');
     assert.equal(bridge.getReceipt(id)?.eventsCount, 4);
     bridge.dispose();
   } finally {
@@ -293,12 +281,18 @@ test('startJob refuses a resume from a running source job', async () => {
   let resumedId: string | undefined;
   try {
     const source = await bridge.startJob({ prompt: 'keep working' });
+    let sessionId = source.sessionId;
+    for (let attempt = 0; !sessionId && attempt < 20; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+      sessionId = bridge.getJob(source.id)?.sessionId;
+    }
+    assert.equal(sessionId, 'sess-fixture-1');
     try {
       const resumed = await bridge.startJob({
         prompt: 'follow up',
         cwd: source.cwd,
         isolation: 'none',
-        resumeSessionId: source.sessionId,
+        resumeSessionId: sessionId,
         resumedFromJobId: source.id,
       });
       resumedId = resumed.id;
@@ -322,7 +316,7 @@ test('startJob permits a resume from a terminal source job', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
   const bridge = makeBridge(root, happyCli(root));
   try {
-    const source = await bridge.startJob({ prompt: 'finish this', effort: 'high', appendSystemPrompt: 'Only edit the assigned module.', maxBudgetUsd: 2 });
+    const source = await bridge.startJob({ prompt: 'finish this', model: 'gpt-5' });
     const finished = await bridge.waitForJob(source.id, 15_000);
     assert.equal(finished.status, 'completed');
     const resumed = await bridge.startJob({
@@ -336,9 +330,9 @@ test('startJob permits a resume from a terminal source job', async () => {
     assert.equal(done.status, 'completed');
     assert.equal(done.resumedFromJobId, source.id);
     assert.deepEqual(done.executionOptions, finished.executionOptions);
-    assert.equal(done.effort, 'high');
-    assert.ok(done.argv?.includes('Only edit the assigned module.'));
-    assert.ok(done.argv?.includes('--max-budget-usd'));
+    assert.equal(done.model, 'gpt-5');
+    assert.equal(done.effort, undefined);
+    assert.equal(done.argv?.includes('--max-budget-usd'), false);
   } finally {
     bridge.dispose();
     rmSync(root, { recursive: true, force: true });
@@ -353,8 +347,9 @@ test('disabled config and validation failures reject with clear messages', async
     disabled.dispose();
 
     const bridge = makeBridge(root, happyCli(root), { allowedAgents: ['codex'] });
-    await assert.rejects(bridge.startJob({ prompt: 'x', backend: 'claude-code' }), /not in allowedAgents/);
-    await assert.rejects(bridge.startJob({ prompt: 'x', backend: 'no-such-backend' }), /Unknown coding backend/);
+    await assert.rejects(bridge.startJob({ prompt: 'x', backend: 'claude-code' }), /Unsupported coding backend "claude-code"/);
+    await assert.rejects(bridge.startJob({ prompt: 'x', backend: 'cursor' }), /not in allowedAgents/);
+    await assert.rejects(bridge.startJob({ prompt: 'x', backend: 'no-such-backend' }), /Unsupported coding backend "no-such-backend"/);
     await assert.rejects(bridge.startJob({ prompt: '   ' }), /prompt is empty/);
     bridge.dispose();
   } finally {
@@ -384,10 +379,12 @@ test('listBackends reports availability from resolved bins', async () => {
   const bridge = makeBridge(root, bin);
   try {
     const backends = bridge.listBackends();
-    const claude = backends.find(b => b.id === 'claude-code')!;
-    assert.equal(claude.available, true);
-    assert.equal(claude.bin, bin);
-    assert.ok(backends.some(b => b.id === 'codex'));
+    const codex = backends.find(b => b.id === 'codex')!;
+    assert.equal(codex.available, true);
+    assert.equal(codex.bin, bin);
+    assert.equal(codex.selectable, true);
+    assert.equal(codex.enabled, true);
+    assert.ok(backends.some(b => b.id === 'cursor'));
   } finally {
     bridge.dispose();
     rmSync(root, { recursive: true, force: true });
@@ -496,14 +493,16 @@ test('normalizeBridgeConfig fails closed when absent, defaults when present, map
   // Present-but-empty block opts in with full defaults.
   const present = normalizeBridgeConfig({});
   assert.equal(present.enabled, true);
-  assert.equal(present.defaultAgent, 'grok-build');
-  assert.deepEqual(present.allowedAgents, ['grok-build', 'claude-code', 'codex', 'cursor']);
+  assert.equal(present.defaultAgent, 'codex');
+  assert.deepEqual(present.allowedAgents, ['codex', 'cursor']);
   assert.equal(present.permissionMode, 'bypassPermissions');
   assert.equal(present.maxConcurrentJobs, 3);
   assert.equal(present.jobTimeoutMs, 6 * 60 * 60 * 1000);
 
   assert.equal(normalizeBridgeConfig({ enabled: false }).enabled, false);
   assert.equal(normalizeBridgeConfig({ enabled: true }).enabled, true);
+  assert.deepEqual(normalizeBridgeConfig({ defaultAgent: 'grok-build', allowedAgents: ['grok-build', 'codex'] }).allowedAgents, ['codex']);
+  assert.equal(normalizeBridgeConfig({ defaultAgent: 'grok-build', allowedAgents: ['grok-build', 'codex'] }).defaultAgent, 'codex');
   // 'ask' must gate (allowlist), never silently widen to bypassPermissions.
   assert.equal(normalizeBridgeConfig({ permissionMode: 'ask' }).permissionMode, 'allowlist');
   assert.equal(normalizeBridgeConfig({ permissionMode: 'plan' }).permissionMode, 'plan');
@@ -516,7 +515,7 @@ test('continuation cannot restore saved permissions over changed current configu
   const original = makeBridge(root, bin, { permissionMode: 'allowlist' });
   let changed: ACPBridge | undefined;
   try {
-    const source = await original.startJob({ prompt: 'inspect only', allowedTools: ['Read'] });
+    const source = await original.startJob({ prompt: 'inspect only' });
     const done = await original.waitForJob(source.id, 15_000);
     original.dispose();
     changed = makeBridge(root, bin, { permissionMode: 'bypassPermissions' });
@@ -575,7 +574,7 @@ test('legacy resumes and unsupported controls refuse admission without creating 
   const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-admission-'));
   const bridge = makeBridge(root, happyCli(root));
   try {
-    await assert.rejects(bridge.startJob({ prompt: 'x', allowedTools: ['Bash'] }), /require allowlist/);
+    await assert.rejects(bridge.startJob({ prompt: 'x', allowedTools: ['Bash'] }), /codex does not support allowedTools/);
     await assert.rejects(bridge.startJob({ prompt: 'x', resumeSessionId: 'unknown' }), /source job ID/);
     const job = await bridge.startJob({ prompt: 'original' });
     const done = await bridge.waitForJob(job.id, 5000);

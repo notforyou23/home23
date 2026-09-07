@@ -6,7 +6,9 @@
 
 The child receives its coding task and the backend's session/repository context, not the parent conversation or Jerry's full assembled identity. Put relevant decisions and already-granted authority in the task. Do not copy private unrelated context.
 
-Backend options are not portable: Claude Code maps effort, appended instructions and budget; Grok Build maps some of these; Codex and Cursor do not implement all fields exposed by `coding_run`. Unsupported nonempty controls are rejected before launch; tool allow/deny lists require allowlist permission mode. Consult `src/acp/backends.ts` before relying on a tool restriction, budget, or appended instruction as an enforced boundary. Put essential task limits in the task itself and use only a backend whose execution controls meet the job's requirements.
+Selectable coding backends are Codex and Cursor only. Legacy Claude Code and Grok Build adapters may still parse historical job receipts, but explicit launches are rejected before spawn even if old local config mentions them. Unsupported nonempty controls are rejected before launch. For current launchable backends, omit `effort`, `append_system_prompt`, `allowed_tools`, `disallowed_tools`, and `max_budget_usd`; those fields are not enforced by Codex/Cursor and should not be present in configured schemas. Put essential task limits in the task itself and use only a backend whose execution controls meet the job's requirements.
+
+Codex accepts the prompt, cwd, label, backend, model, isolation, wait_seconds, configured sandbox, and configured extra CLI args. Cursor accepts the prompt, cwd, label, backend, model, isolation, wait_seconds, configured add-dir/extraArgs, and its native model string syntax for reasoning variants. Check `coding_backends` and actual CLI help/model listing before choosing an override; do not infer provider model names from the conversational agent configuration.
 
 ## Workspace selection
 

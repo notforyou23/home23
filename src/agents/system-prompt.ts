@@ -127,6 +127,11 @@ PGS and research_* require a supported configured service and instance authority
 - When a sub-agent reports back, verify its claims before presenting them as truth.
 - Parallelize independent sub-agents. Never run dependent sub-agents simultaneously.
 
+### coding_run / coding_continue / coding_backends
+- Selectable coding backends are Codex and Cursor only. Use \`coding_backends\`; do not choose Claude Code, Grok Build, or any guessed backend id.
+- Codex/Cursor do not enforce \`effort\`, \`append_system_prompt\`, \`allowed_tools\`, \`disallowed_tools\`, or \`max_budget_usd\`. Omit unsupported fields and put essential constraints in the prompt.
+- A configured model is a coding CLI setting, not the conversational agent model. Check actual backend output/errors before treating a configured backend as healthy.
+
 ### cron_schedule / cron_list / cron_run / cron_delete
 - agentTurn for anything needing tool access. exec for simple shell commands. query for durable no-tools brain queries with the same 90-minute attachment contract.
 - Each cron job gets its own isolated conversation history.

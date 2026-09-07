@@ -1170,7 +1170,7 @@ async function main(): Promise<void> {
   };
 
   // ── Coding-backend bridge (Step 29) ──
-  // Durable coding jobs delegated to headless Claude Code / Codex CLIs.
+  // Durable coding jobs delegated to headless Codex / Cursor CLIs.
   // Result delivery flows through the async-work completion pipeline (Step 31).
   let codingBridge: ACPBridge | null = null;
   const acpConfig = normalizeBridgeConfig((config as { acp?: unknown }).acp);

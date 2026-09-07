@@ -281,23 +281,23 @@ agency:
   residentTickMs: 60000
 
 # Coding-backend bridge (Step 29) — durable coding jobs delegated to headless
-# Claude Code / Codex CLIs. Usually set per-agent in instances/<name>/config.yaml.
+# Codex / Cursor CLIs. Usually set per-agent in instances/<name>/config.yaml.
 # acp:
 #   enabled: true                        # master switch for the bridge + coding_* tools
-#   defaultAgent: claude-code            # backend used when coding_run omits `backend`
-#   allowedAgents: [claude-code, codex]  # backends jobs may target
-#   permissionMode: bypassPermissions    # 'bypassPermissions' (full authority) or 'allowlist' (honors allowed/disallowed tool lists)
+#   defaultAgent: codex                  # backend used when coding_run omits `backend`
+#   allowedAgents: [codex, cursor]       # only selectable launch backends
+#   permissionMode: bypassPermissions    # 'bypassPermissions' (full authority) or backend-native gating
 #   maxConcurrentJobs: 3                 # concurrent running jobs before startJob refuses
 #   jobTimeoutMs: 3600000                # hard per-job timeout in milliseconds
 #   backends:
-#     claude-code:
-#       bin: claude                      # binary path override (default: search PATH)
-#       model: claude-sonnet-4-7         # default model for this backend
-#       extraArgs: []                    # extra CLI args appended verbatim
 #     codex:
 #       bin: codex                       # Codex CLI binary (jobs fail fast when not installed)
-#       model: gpt-5.5                   # default model for this backend
+#       model: gpt-5.5                   # default model for this backend; omit to use CLI config
 #       sandbox: danger-full-access      # codex sandbox mode
+#       extraArgs: []                    # extra CLI args appended verbatim
+#     cursor:
+#       bin: cursor-agent                # Cursor Agent CLI binary; do not use the GUI `cursor` launcher
+#       model: auto                      # default model for this backend; Cursor supports parameterized model strings
 #       extraArgs: []                    # extra CLI args appended verbatim
 #   envPassthrough: []                   # env var names forwarded to job children (secrets are NOT forwarded by default)
 #   hooks:

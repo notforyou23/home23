@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   codingRunTool,
+  configuredCodingRunTool,
   codingContinueTool,
   codingStatusTool,
   codingResultTool,
@@ -17,7 +18,7 @@ function makeJob(overrides: Partial<CodingJobRecord> = {}): CodingJobRecord {
     schema: 'home23.coding-job.v1',
     executionOptions: { permissionMode: 'bypassPermissions' },
     id: 'cj_20260805T120000_abcd',
-    backend: 'claude-code',
+    backend: 'codex',
     status: 'running',
     prompt: 'fix the flaky scheduler test',
     cwd: '/tmp/home23/.home23-worktrees/fix-sched',
@@ -91,8 +92,9 @@ function makeFakeBridge(opts: {
     listBackends() {
       bridge.calls.push({ method: 'listBackends', args: [] });
       return [
-        { id: 'claude-code', available: true, bin: '/usr/local/bin/claude', defaultModel: 'claude-sonnet-4-7' },
-        { id: 'codex', available: false, bin: null },
+        { id: 'codex', available: true, bin: '/opt/homebrew/bin/codex', defaultModel: 'gpt-5', enabled: true, isDefault: true, selectable: true },
+        { id: 'cursor', available: false, bin: null, defaultModel: 'auto', enabled: true, isDefault: false, selectable: true },
+        { id: 'grok-build', available: true, bin: '/Users/jtr/.local/bin/grok', defaultModel: 'grok-4.6', enabled: false, isDefault: false, selectable: false, note: 'legacy adapter only; explicit launches are rejected' },
       ];
     },
   };
@@ -219,7 +221,7 @@ test('coding_continue refuses a running source job without starting a second pro
 
 test('coding_continue resumes in the SAME cwd with isolation none', async () => {
   const bridge = makeFakeBridge({
-    job: makeJob({ status: 'completed', sessionId: 'sess-42', label: 'sched-fix', model: 'claude-opus-4-8', effort: 'high' }),
+    job: makeJob({ status: 'completed', sessionId: 'sess-42', label: 'sched-fix', model: 'gpt-5' }),
   });
   const result = await codingContinueTool.execute({ job_id: 'cj_20260805T120000_abcd', prompt: 'now add tests' }, ctx(bridge));
 
@@ -227,15 +229,15 @@ test('coding_continue resumes in the SAME cwd with isolation none', async () => 
   const start = bridge.calls.find(c => c.method === 'startJob');
   assert.ok(start, 'startJob was called');
   const args = start!.args[0] as Record<string, unknown>;
-  assert.equal(args.backend, 'claude-code');
+  assert.equal(args.backend, 'codex');
   assert.equal(args.prompt, 'now add tests');
   assert.equal(args.cwd, '/tmp/home23/.home23-worktrees/fix-sched');
   assert.equal(args.isolation, 'none');
   assert.equal(args.resumeSessionId, 'sess-42');
   assert.equal(args.resumedFromJobId, 'cj_20260805T120000_abcd');
   assert.equal(args.label, 'sched-fix');
-  assert.equal(args.model, 'claude-opus-4-8');
-  assert.equal(args.effort, 'high');
+  assert.equal(args.model, 'gpt-5');
+  assert.equal(args.effort, undefined);
   assert.equal(args.requestedBy, '12345');
 });
 
@@ -312,7 +314,7 @@ test('coding_jobs lists jobs compactly with shortened cwd', async () => {
   const list = bridge.calls.find(c => c.method === 'listJobs');
   assert.ok(list, 'listJobs was called');
   assert.deepEqual(list!.args[0], { status: undefined, limit: 5 });
-  assert.match(result.content, /cj_a \[running\] claude-code "sched-fix"/);
+  assert.match(result.content, /cj_a \[running\] codex "sched-fix"/);
   assert.match(result.content, /\.\/\.home23-worktrees\/fix-sched/);
   assert.match(result.content, /cj_b \[completed\]/);
 });
@@ -320,12 +322,24 @@ test('coding_jobs lists jobs compactly with shortened cwd', async () => {
 test('coding_backends reports installed binaries without claiming provider health', async () => {
   const bridge = makeFakeBridge();
   const result = await codingBackendsTool.execute({}, ctx(bridge));
-  assert.match(result.content, /claude-code: installed \(binary found: \/usr\/local\/bin\/claude\)/);
-  assert.match(result.content, /default model claude-sonnet-4-7/);
-  assert.match(result.content, /codex: NOT INSTALLED \(binary not found\)/);
-  assert.match(result.content, /acp\.defaultAgent/);
-  assert.match(result.content, /codex requires the Codex CLI/i);
+  assert.match(result.content, /codex \[default\]: installed \(binary found: \/opt\/homebrew\/bin\/codex\)/);
+  assert.match(result.content, /default model gpt-5/);
+  assert.match(result.content, /cursor: NOT INSTALLED \(binary not found\) default model auto/);
+  assert.match(result.content, /grok-build \[disabled\].*legacy adapter only/);
+  assert.match(result.content, /Supported selectable coding backends are codex and cursor only/);
+  assert.match(result.content, /Explicit claude-code or grok-build launches are rejected/i);
   assert.match(result.content, /does not probe authentication, balance, or provider health/i);
+});
+
+test('configured coding_run schema exposes only Codex/Cursor and omits unsupported controls', () => {
+  const schema = configuredCodingRunTool({
+    defaultAgent: 'codex',
+    allowedAgents: ['grok-build', 'codex', 'cursor', 'claude-code'],
+  }).input_schema as { properties: Record<string, unknown> };
+  assert.deepEqual((schema.properties.backend as { enum: string[] }).enum, ['codex', 'cursor']);
+  for (const field of ['effort', 'append_system_prompt', 'allowed_tools', 'disallowed_tools', 'max_budget_usd']) {
+    assert.equal(schema.properties[field], undefined, `${field} should not be advertised for Codex/Cursor`);
+  }
 });
 
 // ─── Step 31: async-work registration at the tool boundary ──────

@@ -270,7 +270,7 @@ export interface CodingBridgeRef {
   readEventsTail(id: string, maxEvents?: number): BridgeEvent[];
   cancelJob(id: string): Promise<CodingJobRecord>;
   waitForJob(id: string, timeoutMs: number): Promise<CodingJobRecord>;
-  listBackends(): Array<{ id: string; available: boolean; bin: string | null; defaultModel?: string }>;
+  listBackends(): Array<{ id: string; available: boolean; bin: string | null; defaultModel?: string; enabled: boolean; isDefault: boolean; selectable: boolean; note?: string }>;
 }
 
 /** Minimal interface for TelegramAdapter — avoids importing the full class */

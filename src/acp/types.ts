@@ -2,7 +2,7 @@
  * Coding-backend bridge contract (Step 29).
  *
  * Shared types for the rebuilt ACP bridge: durable coding jobs delegated to
- * headless Claude Code / Codex CLIs. Everything here is a plain-data contract
+ * headless Codex / Cursor CLIs. Everything here is a plain-data contract
  * between backends.ts, job-store.ts, worktrees.ts, bridge.ts, and the
  * coding_* agent tools.
  */
@@ -26,7 +26,7 @@ export type CodingIsolation = 'worktree' | 'checkpoint' | 'none';
 export interface CodingJobRecord {
   schema: 'home23.coding-job.v1';
   id: string;                    // "cj_<ISO-compact>_<16hex>"
-  backend: string;               // 'claude-code' | 'codex' | future
+  backend: string;               // 'codex' | 'cursor' | historical legacy ids
   status: CodingJobStatus;
   prompt: string;                // original prompt (bounded to 20k chars)
   label?: string;
@@ -111,7 +111,7 @@ export interface CodingBackendOptions {
   effort?: string;
   /** Resume an existing backend session (coding_continue). */
   resumeSessionId?: string;
-  /** Pre-generated session id for new claude-code jobs so resume works later. */
+  /** Historical field for backends that accepted caller-generated session ids. */
   newSessionId?: string;
   permissionMode: string;        // 'bypassPermissions' (default) | 'allowlist' | raw claude mode
   allowedTools?: string[];
@@ -136,12 +136,14 @@ export interface CodingBackend {
   parseEvent(line: string): BridgeEvent | null;
   /**
    * Parse one raw stdout line into zero or more normalized events (a single
-   * claude-code assistant line can carry text AND tool_use blocks). Additive
+   * a backend assistant line can carry text AND tool_use blocks). Additive
    * (Step 29); parseEvent stays as a first-event wrapper.
    */
   parseEvents?(line: string): BridgeEvent[];
   /** True when this backend can resume a session by id. */
   supportsResume: boolean;
+  /** True unless the backend can leave non-work helper processes after its CLI leader exits. */
+  waitForProcessGroupExit?: boolean;
 }
 
 // ─── Config (mirrors ACPConfig in src/types.ts) ──────────────

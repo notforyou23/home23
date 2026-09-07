@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { test } from 'node:test';
-import { buildChildEnv, getBackend, listBackendIds } from '../../src/acp/backends.js';
+import { buildChildEnv, getBackend, listBackendIds, listSelectableBackendIds, unsupportedBackendMessage } from '../../src/acp/backends.js';
 import type { BridgeConfig, CodingBackendOptions } from '../../src/acp/types.js';
 
 const grok = getBackend('grok-build')!;
@@ -21,15 +21,17 @@ function baseOpts(overrides: Partial<CodingBackendOptions> = {}): CodingBackendO
 function config(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
   return {
     enabled: true,
-    defaultAgent: 'claude-code',
-    allowedAgents: ['claude-code', 'codex'],
+    defaultAgent: 'codex',
+    allowedAgents: ['codex', 'cursor'],
     permissionMode: 'bypassPermissions',
     ...overrides,
   };
 }
 
-test('registry exposes all built-in backends and Grok first', () => {
+test('registry keeps legacy parsers but only Codex/Cursor are selectable', () => {
   assert.deepEqual(listBackendIds(), ['grok-build', 'claude-code', 'codex', 'cursor']);
+  assert.deepEqual(listSelectableBackendIds(), ['codex', 'cursor']);
+  assert.match(unsupportedBackendMessage('grok-build'), /historical job receipts/);
   assert.equal(grok.supportsResume, true);
   assert.equal(claude.supportsResume, true);
   assert.equal(codex.supportsResume, true);
@@ -450,7 +452,7 @@ test('resolveBin honors an existing absolute config bin and falls back to candid
   if (resolved !== null) assert.ok(path.isAbsolute(resolved));
 });
 
-test('buildChildEnv keeps Anthropic auth, strips other secrets, honors passthrough, augments PATH', (t) => {
+test('buildChildEnv strips provider secrets, honors safe passthrough, augments PATH', (t) => {
   const saved: Record<string, string | undefined> = {};
   const set = (key: string, value: string) => {
     saved[key] = process.env[key];
@@ -475,11 +477,12 @@ test('buildChildEnv keeps Anthropic auth, strips other secrets, honors passthrou
     }
   });
 
-  const env = buildChildEnv(config({ envPassthrough: ['OPENAI_API_KEY'] }));
+  set('HOME23_SAFE_CHILD_VAR', 'safe-value');
+  const env = buildChildEnv(config({ envPassthrough: ['HOME23_SAFE_CHILD_VAR'] }));
 
-  // Home23 is the provider authority: its Anthropic tokens are the CLI's auth.
-  assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'anthropic-token-keep');
-  assert.equal(env.ANTHROPIC_API_KEY, 'anthropic-key-keep');
+  // Coding CLIs use their own auth stores; Home23 provider secrets are not forwarded.
+  assert.equal(Object.hasOwn(env, 'ANTHROPIC_AUTH_TOKEN'), false);
+  assert.equal(Object.hasOwn(env, 'ANTHROPIC_API_KEY'), false);
   assert.equal(Object.hasOwn(env, 'ANTHROPIC_BASE_URL'), false);
   assert.equal(Object.hasOwn(env, 'XAI_API_KEY'), false);
   assert.equal(Object.hasOwn(env, 'OLLAMA_CLOUD_API_KEY'), false);
@@ -488,8 +491,9 @@ test('buildChildEnv keeps Anthropic auth, strips other secrets, honors passthrou
   assert.equal(Object.hasOwn(env, 'DATABASE_URL'), false);
   assert.equal(Object.hasOwn(env, 'HOME23_BRIDGE_TOKEN'), false);
   assert.equal(Object.hasOwn(env, 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'), false);
-  // envPassthrough re-adds on top of the strip list.
-  assert.equal(env.OPENAI_API_KEY, 'openai-strip');
+  assert.equal(Object.hasOwn(env, 'OPENAI_API_KEY'), false);
+  // envPassthrough re-adds only explicitly safe variables.
+  assert.equal(env.HOME23_SAFE_CHILD_VAR, 'safe-value');
   // macOS keychain fallback needs USER.
   assert.equal(env.USER, process.env.USER);
   assert.equal(env.HOME, process.env.HOME);

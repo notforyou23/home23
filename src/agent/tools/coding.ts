@@ -1,6 +1,6 @@
 /**
  * Coding tools — delegate real coding work to headless CLI backends
- * (Claude Code / Codex) through the ACP bridge (Step 29).
+ * (Codex / Cursor) through the ACP bridge (Step 29).
  *
  * All tools operate against ctx.codingBridge (CodingBridgeRef). Jobs are
  * durable and detached; results are delivered by the bridge's job_finished
@@ -12,6 +12,7 @@ import type { ToolContext, ToolDefinition, ToolResult, CodingBridgeRef } from '.
 import type { BridgeEvent, CodingJobRecord, CodingJobReceipt, CodingIsolation } from '../../acp/types.js';
 import { mustDetachLongTool } from '../../work/detach.js';
 import { TERMINAL_JOB_STATUSES } from '../../acp/types.js';
+import { isSelectableBackendId, listSelectableBackendIds } from '../../acp/backends.js';
 
 const MAX_WAIT_SECONDS = 600;
 const RESULT_TAIL_RUN_MAX = 4000;
@@ -198,13 +199,13 @@ export const codingRunTool: ToolDefinition = {
       cwd: { type: 'string', description: 'Working directory for the job (default: project root)' },
       label: { type: 'string', description: 'Short human label for the job' },
       model: { type: 'string', description: 'Backend model override' },
-      effort: { type: 'string', description: 'Reasoning effort override (backend-specific)' },
+      effort: { type: 'string', description: 'Legacy backend field; current Codex/Cursor launches reject this option. Select Cursor parameterized models when Cursor reasoning controls are needed.' },
       isolation: { type: 'string', enum: ['worktree', 'checkpoint', 'none'], description: 'Isolation mode; defaults to worktree inside the Home23 checkout' },
       wait_seconds: { type: 'number', description: 'Seconds to wait for completion before returning (0 = return immediately, max 600)' },
-      append_system_prompt: { type: 'string', description: 'Extra instructions where supported by the backend (not portable; include essential constraints in prompt)' },
-      allowed_tools: { type: 'array', items: { type: 'string' }, description: 'Backend tool allowlist (allowlist permission mode)' },
-      disallowed_tools: { type: 'array', items: { type: 'string' }, description: 'Backend tools to deny' },
-      max_budget_usd: { type: 'number', exclusiveMinimum: 0, description: 'Positive USD cap, Claude Code only. Omit for Codex, Grok and Cursor; zero is not a default.' },
+      append_system_prompt: { type: 'string', description: 'Legacy backend field; current Codex/Cursor launches reject this option. Put essential constraints in prompt.' },
+      allowed_tools: { type: 'array', items: { type: 'string' }, description: 'Legacy backend field; current Codex/Cursor launches reject this option.' },
+      disallowed_tools: { type: 'array', items: { type: 'string' }, description: 'Legacy backend field; current Codex/Cursor launches reject this option.' },
+      max_budget_usd: { type: 'number', exclusiveMinimum: 0, description: 'Legacy backend field; current Codex/Cursor launches reject this option. Omit it.' },
     },
     required: ['prompt'],
     additionalProperties: false,
@@ -419,9 +420,9 @@ export const codingBackendsTool: ToolDefinition = {
     const backends = bridge.listBackends();
     if (backends.length === 0) return { content: 'No coding backends configured.' };
     const lines = backends.map(b =>
-      `- ${b.id}${'enabled' in b && !b.enabled ? " [disabled]" : ""}${'isDefault' in b && b.isDefault ? " [default]" : ""}: ${b.available ? `installed (binary found: ${b.bin})` : 'NOT INSTALLED (binary not found)'}${b.defaultModel ? ` default model ${b.defaultModel}` : ''}`,
+      `- ${b.id}${'enabled' in b && !b.enabled ? " [disabled]" : ""}${'isDefault' in b && b.isDefault ? " [default]" : ""}: ${b.available ? `installed (binary found: ${b.bin})` : 'NOT INSTALLED (binary not found)'}${b.defaultModel ? ` default model ${b.defaultModel}` : ''}${'selectable' in b && !b.selectable ? ` (${b.note ?? 'not selectable'})` : ''}`,
     );
-    lines.push('Use acp.defaultAgent, not a guessed backend; codex requires the Codex CLI to be installed. Codex accepts model and sandbox configuration, but not effort, append_system_prompt, tool lists or max_budget_usd. Claude Code accepts those optional controls; Grok does not accept max_budget_usd. Omit unsupported options. This list only reports binary resolution; it does not probe authentication, balance, or provider health.');
+    lines.push('Supported selectable coding backends are codex and cursor only. Explicit claude-code or grok-build launches are rejected even if old config or receipts mention them. Codex accepts model and sandbox configuration plus configured extraArgs; Cursor accepts model and add-dir/extraArgs. Omit effort, append_system_prompt, allowed_tools, disallowed_tools and max_budget_usd for current backends. This list only reports binary resolution; it does not probe authentication, balance, or provider health.');
     return { content: lines.join('\n') };
   },
 };
@@ -429,12 +430,14 @@ export const codingBackendsTool: ToolDefinition = {
 /** Match advertised choices to this resident's configuration, before a model constructs a call. */
 export function configuredCodingRunTool(config: { defaultAgent: string; allowedAgents: string[] }): ToolDefinition {
   const schema = structuredClone(codingRunTool.input_schema) as { properties: Record<string, Record<string, unknown>> };
-  const enabled = config.allowedAgents.length ? config.allowedAgents : ['codex', 'claude-code', 'grok-build', 'cursor'];
+  const configured = (config.allowedAgents.length ? config.allowedAgents : listSelectableBackendIds()).filter(isSelectableBackendId);
+  const enabled = configured.length ? configured : listSelectableBackendIds();
+  const defaultAgent = isSelectableBackendId(config.defaultAgent) && enabled.includes(config.defaultAgent) ? config.defaultAgent : enabled[0];
   schema.properties.backend!.enum = enabled;
-  schema.properties.backend!.description = `Configured default: ${config.defaultAgent}. Omit backend to use it.`;
+  schema.properties.backend!.description = `Configured default: ${defaultAgent}. Omit backend to use it.`;
   const controls: Record<string, string[]> = {
-    effort: ['claude-code','grok-build'], append_system_prompt: ['claude-code','grok-build'],
-    allowed_tools: ['claude-code','grok-build'], disallowed_tools: ['claude-code','grok-build'], max_budget_usd: ['claude-code'],
+    effort: [], append_system_prompt: [],
+    allowed_tools: [], disallowed_tools: [], max_budget_usd: [],
   };
   for (const [key, supported] of Object.entries(controls)) {
     const available = enabled.filter(id => supported.includes(id));
