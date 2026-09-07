@@ -317,7 +317,7 @@ test('explicit online restart is serialized and recorded as restarted', async (t
     services: [SHARED_SERVICES[1]],
     restartOnline: true,
     dependencies: {
-      listProcesses: async () => [onlineRow('home23-cosmo23', pid)],
+      listProcesses: async () => [onlineRow(SHARED_SERVICES[1].name, pid)],
       startService: async () => { throw new Error('start must not handle an explicit restart'); },
       restartService: async () => {
         restarts += 1;
@@ -334,10 +334,9 @@ test('explicit online restart is serialized and recorded as restarted', async (t
   assert.equal(result.services[0].after[0].pid, 8201);
 });
 
-test('shared startup contract covers Evobrew, COSMO, and ScreenLogic in order', () => {
+test('shared startup covers Evobrew and ScreenLogic without owning Cosmo', () => {
   assert.deepEqual(SHARED_SERVICES.map(({ name }) => name), [
     'home23-evobrew',
-    'home23-cosmo23',
     'home23-screenlogic',
   ]);
 });
@@ -382,27 +381,12 @@ test('home23 start delegates one coordinated shared-service startup pass', async
   assert.doesNotMatch(source, /execSync\(`pm2 start \$\{ecosystemPath\}`/);
 });
 
-test('other automatic COSMO startup entry points share the coordinator lock', async () => {
-  const updateSource = await readFile(new URL('../../cli/lib/update.js', import.meta.url), 'utf8');
-  const dashboardSource = await readFile(new URL('../../engine/src/dashboard/server.js', import.meta.url), 'utf8');
-  const settingsSource = await readFile(
-    new URL('../../engine/src/dashboard/home23-settings-api.js', import.meta.url),
-    'utf8',
-  );
-
-  assert.match(updateSource, /coordinateSharedServiceStartup/);
-  assert.doesNotMatch(updateSource, /execSync\(`pm2 start \$\{ecosystemPath\}`/);
-  assert.match(dashboardSource, /coordinateSharedServiceStartup/);
-  assert.doesNotMatch(
-    dashboardSource,
-    /execFileSync\('pm2', \['start', ecosystemPath, '--only', 'home23-cosmo23'/,
-  );
-  assert.match(settingsSource, /coordinateSharedServiceStartup/);
-  assert.match(settingsSource, /restartOnline: true/);
-  assert.doesNotMatch(
-    settingsSource,
-    /execSync\(`pm2 start \$\{ecosystemPath\} --only home23-cosmo23/,
-  );
+test('Home23 does not automatically start or restart external Cosmo', async () => {
+  const source = await readFile(new URL('../../engine/src/dashboard/server.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /checkAndStartCosmo23|COSMO watchdog/);
+  const settings = await readFile(new URL('../../engine/src/dashboard/home23-settings-api.js', import.meta.url), 'utf8');
+  assert.match(settings, /cosmo_is_independently_managed/);
+  assert.doesNotMatch(settings, /service => service.name === 'home23-cosmo23'/);
 });
 
 test('npm pm2:start routes through the coordinated Home23 CLI', async () => {

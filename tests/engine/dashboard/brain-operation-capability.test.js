@@ -13,7 +13,7 @@ const {
   issueCapability,
   verifyCapability,
 } = require('../../../shared/brain-operations/capability.cjs');
-const { CapabilityNonceStore } = require('../../../cosmo23/server/lib/capability-nonce-store.js');
+const { CapabilityNonceStore } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('server/lib/capability-nonce-store.js'));
 
 const TEST_KEY = '1'.repeat(64);
 const NOW = 1_700_000;

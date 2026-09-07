@@ -137,13 +137,6 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`const screenlogicVenvPython = path.join(HOME23, 'runtime', 'screenlogic-venv', 'bin', 'python');`);
   lines.push(`const screenlogicPython = screenlogicConfig.python || (fs.existsSync(screenlogicVenvPython) ? screenlogicVenvPython : 'python3');`);
   lines.push(``);
-  lines.push(`// Cosmo23 OAuth encryption key — read from secrets.yaml (init generates it)`);
-  lines.push(`const cosmo23EncryptionKey = secrets.cosmo23?.encryptionKey || '';`);
-  lines.push(`if (!cosmo23EncryptionKey) {`);
-  lines.push(`  console.warn('[ecosystem] Warning: cosmo23 encryption key not found in secrets.yaml. Run "home23 init" to generate.');`);
-  lines.push(`}`);
-  lines.push(`const cosmo23DbUrl = 'file:' + path.join(HOME23, 'cosmo23', '.cosmo23-config', 'database.db');`);
-  lines.push(``);
   lines.push(`const coordinationPointerPath = path.join(HOME23, 'instances', '.house', 'coordination', 'active-release.json');`);
   lines.push(`const coordinationDeployment = fs.existsSync(coordinationPointerPath)`);
   lines.push(`  ? require(path.join(HOME23, 'cli', 'lib', 'coordination-active-release.cjs')).resolveActiveCoordinationRelease(HOME23)`);
@@ -339,11 +332,11 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'dashboard-out.log'))},`);
     lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'dashboard-err.log'))},`);
-    // HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY is granted to EXACTLY two apps:
-    // this dashboard and home23-cosmo23. It is not a config value — it is the
+    // HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY is granted here only to the
+    // dashboard. The independently configured Cosmo worker shares this protocol. It is not a config value — it is the
     // signing secret for /api/internal/brain-operations/*, so possession IS
     // authorization. The dashboard needs it (server.js + brain-operations/
-    // coordinator.js read it); cosmo23 needs it (server/index.js reads it).
+    // coordinator.js read it); the external worker provisions its own grant.
     // The engine, harness, and MCP server read it nowhere and must not hold
     // it — they held it from 2026-08-08 (ac4095a9, where it rode along with
     // unrelated supervision fixes, undocumented and untested) until it was
@@ -738,40 +731,6 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`      },`);
   lines.push(`    },`);
 
-  // Cosmo23 — shared process (one per installation)
-  // Derive the primary agent's dashboard port for the Home23 Settings link
-  const primaryDashPort = orderedAgents.find(agent => agent.name === primaryAgent)?.config.ports?.dashboard
-    || orderedAgents[0]?.config.ports?.dashboard
-    || 5002;
-  lines.push(``);
-  lines.push(`    // ── cosmo23 (shared) ──`);
-  lines.push(`    {`);
-  lines.push(`      name: 'home23-cosmo23',`);
-  lines.push(`      script: 'server/index.js',`);
-  lines.push(`      cwd: path.join(HOME23, 'cosmo23'),`);
-  lines.push(`      filter_env: ['HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
-  lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-  lines.push(`      out_file: path.join(HOME23, 'logs', 'cosmo23-out.log'),`);
-  lines.push(`      error_file: path.join(HOME23, 'logs', 'cosmo23-err.log'),`);
-  lines.push(`      env: {`);
-  lines.push(`        ...commonEnv,`);
-  lines.push(`        HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey,`);
-  lines.push(`        HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey,`);
-  lines.push(`        COSMO23_PORT: String(homeConfig.cosmo23?.ports?.app || 43210),`);
-  lines.push(`        COSMO23_WS_PORT: String(homeConfig.cosmo23?.ports?.websocket || 43240),`);
-  lines.push(`        COSMO23_DASHBOARD_PORT: String(homeConfig.cosmo23?.ports?.dashboard || 43244),`);
-  lines.push(`        COSMO23_MCP_HTTP_PORT: String(homeConfig.cosmo23?.ports?.mcp || 43247),`);
-  lines.push(`        COSMO23_CONFIG_DIR: path.join(HOME23, 'cosmo23', '.cosmo23-config'),`);
-  lines.push(`        DATABASE_URL: cosmo23DbUrl,`);
-  lines.push(`        ENCRYPTION_KEY: cosmo23EncryptionKey,`);
-  lines.push(`        COSMO_RUNTIME_DIR: path.join(HOME23, 'cosmo23', 'runs'),`);
-  lines.push(`        COSMO_REFERENCE_RUNS_PATHS: homeConfig.cosmo23?.source ? homeConfig.cosmo23.source + '/runs' : '',`);
-  lines.push(`        HOME23_MANAGED: 'true',`);
-  lines.push(`        HOME23_DASHBOARD_PORT: '${primaryDashPort}',`);
-  lines.push(`        NODE_ENV: 'production',`);
-  lines.push(`      },`);
-  lines.push(`    },`);
-
   lines.push(`  ],`);
   lines.push(`};`);
   lines.push(``);
@@ -814,7 +773,6 @@ export function generateEcosystem(home23Root, options = {}) {
         ...(agent.config.mcp?.enabled !== false ? [`home23-${agent.name}-mcp`] : []),
         `home23-${agent.name}-harness`,
       ]),
-      'home23-cosmo23',
     ],
   };
 }

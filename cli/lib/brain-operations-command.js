@@ -110,7 +110,7 @@ function rowStatus(row) {
 }
 
 function expectedEnvironment(name, capabilityKey, authorityKey) {
-  const requiresCapability = name === 'home23-cosmo23' || name.endsWith('-dash');
+  const requiresCapability = name.endsWith('-dash');
   return {
     [CAPABILITY_ENV]: requiresCapability ? capabilityKey : undefined,
     [AUTHORITY_ENV]: authorityKey,
@@ -442,11 +442,10 @@ export function buildScopedPm2RefreshArgs(receipt, rendererAuthorizedProcessName
 }
 
 function isRendererAuthorizedScope(configured) {
-  if (!Array.isArray(configured) || configured.length < 4
-      || new Set(configured).size !== configured.length
-      || configured.at(-1) !== 'home23-cosmo23') return false;
+  if (!Array.isArray(configured) || configured.length < 3
+      || new Set(configured).size !== configured.length) return false;
   let index = 0;
-  while (index < configured.length - 1) {
+  while (index < configured.length) {
     const engineName = configured[index];
     if (!/^home23-[a-z0-9][a-z0-9-]*$/.test(engineName)
         || engineName === 'home23-cosmo23'
@@ -456,5 +455,5 @@ function isRendererAuthorizedScope(configured) {
     if (configured[index] !== `${engineName}-harness`) return false;
     index += 1;
   }
-  return index === configured.length - 1;
+  return index === configured.length;
 }

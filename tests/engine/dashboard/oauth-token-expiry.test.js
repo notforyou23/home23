@@ -53,7 +53,7 @@ test('the poller never skips the sync for research, and defers restarts with a l
     'utf8',
   );
   const start = src.indexOf('OAuth refresh poller (STEP 18)');
-  const end = src.indexOf('COSMO 2.3 health watchdog');
+  const end = src.indexOf('Home23 update check');
   assert.ok(start > 0 && end > start, 'poller block markers must exist');
   const block = src.slice(start, end);
   assert.ok(

@@ -80,7 +80,6 @@ function planModelAuthorityRuntimeTargets({
     ? agentNames
     : [agent];
   const targets = [];
-  if (affectsManagedCosmo) targets.push('home23-cosmo23');
   for (const name of dashboards) {
     const normalized = typeof name === 'string' ? name.trim() : '';
     if (normalized) targets.push(`home23-${normalized}-dash`);
@@ -131,12 +130,9 @@ function createSettingsRouter(home23Root, options = {}) {
     : () => getCurrentDashboardAgent();
   const seedModelAuthority = typeof options.seedModelAuthority === 'function'
     ? options.seedModelAuthority
-    : async () => {
-      const moduleUrl = pathToFileURL(
-        path.join(home23Root, 'cli', 'lib', 'cosmo23-config.js'),
-      ).href;
-      const { seedCosmo23Config: seed } = await import(moduleUrl);
-      return seed(home23Root);
+    : async ({ agent } = {}) => {
+      const { loadHome23ModelAuthority } = require('./home23-model-catalog.js');
+      return loadHome23ModelAuthority({ home23Root, agent: agent || resolveCurrentDashboardAgent() });
     };
   const onModelAuthorityChanged = typeof options.onModelAuthorityChanged === 'function'
     ? options.onModelAuthorityChanged
@@ -245,22 +241,6 @@ function createSettingsRouter(home23Root, options = {}) {
     } catch {
       return '0.6.0';
     }
-  }
-
-  function seedCosmo23Config() {
-    const { execSync } = require('child_process');
-    // loadHome23ModelAuthority requires an absolute root; '.' broke every
-    // provider-key save through the Settings UI (2026-07-16). Passed via env
-    // to avoid shell-quoting the path.
-    execSync(`node --input-type=module -e "
-      import { seedCosmo23Config } from './cli/lib/cosmo23-config.js';
-      await seedCosmo23Config(process.env.HOME23_SEED_ROOT);
-    "`, {
-      cwd: home23Root,
-      stdio: 'pipe',
-      timeout: 10000,
-      env: { ...process.env, HOME23_SEED_ROOT: home23Root },
-    });
   }
 
   function discoverAgents() {
@@ -997,13 +977,11 @@ function createSettingsRouter(home23Root, options = {}) {
         }
         return { changed };
       });
-      seedCosmo23Config();
       regenerateEcosystem();
       regenerateEvobrewConfig();
       targets = [
         ...discoverAgents().flatMap(name => [`home23-${name}`, `home23-${name}-harness`]),
         'home23-evobrew',
-        'home23-cosmo23',
       ];
     } catch (err) {
       return res.status(500).json({ ok: false, error: err.message });
@@ -1663,42 +1641,19 @@ function createSettingsRouter(home23Root, options = {}) {
     }
   });
 
-  // ── COSMO 2.3 process management ──
-
-  router.get('/cosmo23/status', (req, res) => {
+  // Cosmo owns its process; Home23 only observes the configured service.
+  router.get('/cosmo23/status', async (_req, res) => {
+    const home = loadHomeConfig();
+    const baseUrl = home.cosmo23?.baseUrl || `http://127.0.0.1:${home.cosmo23?.ports?.app || 43210}`;
     try {
-      const { execSync } = require('child_process');
-      const jlist = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', timeout: 5000 }));
-      const proc = jlist.find(p => p.name === 'home23-cosmo23');
-      if (!proc) return res.json({ running: false, reason: 'not_in_pm2' });
-      res.json({ running: proc.pm2_env?.status === 'online', pid: proc.pid, status: proc.pm2_env?.status });
-    } catch (err) {
-      res.json({ running: false, reason: 'pm2_error', error: err.message });
+      const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/status`, { signal: AbortSignal.timeout(5000) });
+      res.json({ running: response.ok, managed: false, baseUrl });
+    } catch {
+      res.json({ running: false, managed: false, baseUrl, reason: 'unavailable' });
     }
   });
-
-  router.post('/cosmo23/restart', async (req, res) => {
-    try {
-      // Seed config before starting
-      const { seedCosmo23Config } = await import(path.join(home23Root, 'cli', 'lib', 'cosmo23-config.js'));
-      await seedCosmo23Config(home23Root);
-      const { pathToFileURL } = require('url');
-      const sharedStart = await import(pathToFileURL(
-        path.join(home23Root, 'cli', 'lib', 'shared-service-start.js')
-      ).href);
-      const cosmoService = sharedStart.SHARED_SERVICES.find(
-        service => service.name === 'home23-cosmo23'
-      );
-      if (!cosmoService) throw new Error('COSMO shared-service definition is missing');
-      await sharedStart.coordinateSharedServiceStartup({
-        home23Root,
-        services: [cosmoService],
-        restartOnline: true,
-      });
-      res.json({ ok: true, status: 'started' });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
-    }
+  router.post('/cosmo23/restart', (_req, res) => {
+    res.status(410).json({ ok: false, error: 'cosmo_is_independently_managed' });
   });
 
   // ── Task 4: Models + System API ──
@@ -2483,7 +2438,6 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       { name: 'feeder', path: path.join(home23Root, 'feeder') },
       { name: 'harness', path: home23Root },
       { name: 'evobrew', path: path.join(home23Root, 'evobrew') },
-      { name: 'cosmo23', path: path.join(home23Root, 'cosmo23') },
     ];
 
     for (const dir of dirs) {

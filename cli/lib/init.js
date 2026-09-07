@@ -8,7 +8,6 @@
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 
 // Modules that depend on root npm packages (js-yaml, proper-lockfile, ...)
 // must be imported lazily, after `npm install` has run. On a fresh clone
@@ -121,79 +120,11 @@ export async function runInit(home23Root, options = {}) {
   }
   console.log('');
 
-  const { ensureBrainOperationsCapabilityKey, updateHome23Secrets } =
+  const { ensureBrainOperationsCapabilityKey } =
     await import('./brain-operations-capability.js');
 
   const brainOperationsCapability = await ensureBrainOperationsCapabilityKey(home23Root);
   console.log(`  Brain operations capability: configured${brainOperationsCapability.permissionsRepaired ? ' (permissions repaired)' : ''}`);
-
-  // Merge secrets.yaml — never clobber existing provider keys or agent bot tokens
-  console.log('Preparing config/secrets.yaml...');
-  const encryptionUpdate = await updateHome23Secrets(home23Root, (secrets) => {
-    if (!secrets.cosmo23) secrets.cosmo23 = {};
-    if (!secrets.cosmo23.encryptionKey) {
-      secrets.cosmo23.encryptionKey = randomBytes(32).toString('hex');
-      return { changed: true, value: true };
-    }
-    return { changed: false, value: false };
-  });
-  if (encryptionUpdate.value) {
-    console.log('  Generated cosmo23 encryption key');
-  } else {
-    console.log('  Encryption key exists');
-  }
-  console.log('  done');
-
-  const cosmo23Dir = join(home23Root, 'cosmo23');
-  const cosmo23EngineDir = join(cosmo23Dir, 'engine');
-  if (existsSync(join(cosmo23Dir, 'package.json'))) {
-    console.log('Installing COSMO 2.3 dependencies...');
-    execSync('npm install', { cwd: cosmo23Dir, stdio: 'inherit' });
-    if (existsSync(join(cosmo23EngineDir, 'package.json'))) {
-      console.log('Installing COSMO 2.3 engine dependencies...');
-      execSync('npm install', { cwd: cosmo23EngineDir, stdio: 'inherit' });
-    }
-    execSync('npx prisma generate', { cwd: cosmo23Dir, stdio: 'inherit' });
-
-    // Create the Prisma SQLite database (required for OAuth token storage)
-    console.log('Creating COSMO 2.3 database...');
-    try {
-      const dbPath = join(cosmo23Dir, 'prisma', 'dev.db');
-      if (!existsSync(dbPath)) {
-        execSync(`DATABASE_URL="file:${dbPath}" npx prisma db push`, {
-          cwd: cosmo23Dir, stdio: 'pipe', timeout: 30000,
-        });
-      }
-      // Verify the DB file actually exists after creation
-      if (existsSync(dbPath)) {
-        console.log('  done');
-      } else {
-        console.log('  WARNING: prisma db push ran but dev.db not found');
-        console.error(`  Fix manually: cd cosmo23 && DATABASE_URL="file:./prisma/dev.db" npx prisma db push`);
-      }
-    } catch (err) {
-      console.log('  FAILED (OAuth sign-in will not work until this is fixed)');
-      console.error(`  Fix manually: cd cosmo23 && DATABASE_URL="file:./prisma/dev.db" npx prisma db push`);
-    }
-
-    // Create config directory for cosmo23
-    const cosmo23ConfigDir = join(cosmo23Dir, '.cosmo23-config');
-    if (!existsSync(cosmo23ConfigDir)) {
-      mkdirSync(cosmo23ConfigDir, { recursive: true });
-    }
-  }
-
-  // Seed cosmo23 config with Home23 API keys
-  console.log('');
-  console.log('Seeding COSMO 2.3 config...');
-  try {
-    const { seedCosmo23Config } = await import('./cosmo23-config.js');
-    await seedCosmo23Config(home23Root);
-  } catch (err) {
-    if (String(err?.code || '').startsWith('capability_') || err?.code === 'preparation_state_changed') throw err;
-    console.log('  FAILED (non-fatal, COSMO will still work via env vars)');
-    console.error(`  ${err.message?.split('\n')[0] || 'unknown error'}`);
-  }
 
   // Generate ecosystem.config.cjs (no-op if no agents exist yet)
   console.log('');

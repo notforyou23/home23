@@ -28,13 +28,13 @@ test('model authority runtime refresh plans only the exact affected services', (
     agentNames: ['jerry', 'forrest'],
     globalCatalogChanged: false,
     affectsManagedCosmo: true,
-  }), ['home23-cosmo23', 'home23-jerry-dash']);
+  }), ['home23-jerry-dash']);
   assert.deepEqual(planModelAuthorityRuntimeTargets({
     agent: 'jerry',
     agentNames: ['jerry', 'forrest', 'jerry'],
     globalCatalogChanged: true,
     affectsManagedCosmo: true,
-  }), ['home23-cosmo23', 'home23-jerry-dash', 'home23-forrest-dash']);
+  }), ['home23-jerry-dash', 'home23-forrest-dash']);
 });
 
 test('production model authority refresh awaits current reload and exact service restarts', async () => {
@@ -52,12 +52,12 @@ test('production model authority refresh awaits current reload and exact service
     },
   });
   assert.deepEqual(calls, [
-    'restart:home23-cosmo23,home23-forrest-dash',
+    'restart:home23-forrest-dash',
     'reload:jerry',
   ]);
   assert.deepEqual(result, {
     refreshed: ['home23-jerry-dash'],
-    restarted: ['home23-cosmo23', 'home23-forrest-dash'],
+    restarted: ['home23-forrest-dash'],
   });
 
   await assert.rejects(() => applyModelAuthorityRuntimeRefresh({
@@ -137,7 +137,7 @@ async function withSettingsServer(fn, options = {}) {
     onModelAuthorityChanged: async (change) => {
       calls.push({ type: 'refresh', change });
       if (options.refreshError) throw options.refreshError;
-      return { scheduled: ['home23-cosmo23', `home23-${change.agent}-dash`] };
+      return { scheduled: [`home23-${change.agent}-dash`] };
     },
     recycleManagedProcess: () => false,
   };
@@ -224,7 +224,7 @@ test('Query settings persist exact provider and model identity for all three rol
     const body = await response.json();
     assert.equal(body.ok, true);
     assert.deepEqual(body.runtimeRefresh, {
-      scheduled: ['home23-cosmo23', 'home23-jerry-dash'],
+      scheduled: ['home23-jerry-dash'],
     });
     assert.deepEqual(readAgent(root).query, {
       defaultProvider: 'openai-codex',
@@ -361,7 +361,7 @@ test('model catalog and Chat changes reseed and schedule runtime refresh as one 
     const body = await response.json();
     assert.equal(body.ok, true);
     assert.deepEqual(body.runtimeRefresh, {
-      scheduled: ['home23-cosmo23', 'home23-jerry-dash'],
+      scheduled: ['home23-jerry-dash'],
     });
     const stored = readAgent(root);
     assert.deepEqual(

@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { createResearchRunsReader } = require('../../../engine/src/dashboard/brain-operations/research-runs-reader.js');
-const { writeCanonicalRunMetadataAtomic } = require('../../../cosmo23/server/lib/research-run-metadata.js');
+const { writeCanonicalRunMetadataAtomic } = require('../../../shared/research-runtime/server/lib/research-run-metadata.js');
 
 async function fixture() {
   const home23Root = await fs.realpath(

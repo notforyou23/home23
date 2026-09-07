@@ -1658,15 +1658,15 @@ function showCosmoOfflineOverlay() {
     overlay.innerHTML = `
       <div class="h23-cosmo-offline-kicker">Research engine</div>
       <div class="h23-cosmo-offline-title">COSMO 2.3 is offline</div>
-      <div class="h23-cosmo-offline-detail" id="cosmo23-offline-detail">The research engine process is not running.</div>
-      <button class="h23-cosmo-offline-action" id="cosmo23-restart-btn" type="button">Start COSMO 2.3</button>
+      <div class="h23-cosmo-offline-detail" id="cosmo23-offline-detail">Cosmo is currently unavailable.</div>
+      <button class="h23-cosmo-offline-action" id="cosmo23-restart-btn" type="button">Check connection</button>
       <div class="h23-cosmo-offline-status" id="cosmo23-restart-status" role="status" aria-live="polite"></div>
     `;
     const wrap = document.getElementById('cosmo23-frame-wrap');
     if (wrap) wrap.appendChild(overlay);
 
     // Wire restart button
-    overlay.querySelector('#cosmo23-restart-btn').addEventListener('click', restartCosmo23);
+    overlay.querySelector('#cosmo23-restart-btn').addEventListener('click', updateCosmoIndicator);
   }
   overlay.style.display = 'flex';
   // Hide iframe behind overlay
@@ -1679,39 +1679,6 @@ function hideCosmoOfflineOverlay() {
   if (overlay) overlay.style.display = 'none';
   const frame = document.getElementById('cosmo23-frame');
   if (frame) frame.style.visibility = 'visible';
-}
-
-async function restartCosmo23() {
-  const btn = document.getElementById('cosmo23-restart-btn');
-  const status = document.getElementById('cosmo23-restart-status');
-  if (btn) { btn.disabled = true; btn.textContent = 'Starting...'; }
-  if (status) status.textContent = '';
-  try {
-    const res = await fetch('/home23/api/settings/cosmo23/restart', { method: 'POST' });
-    const data = await res.json();
-    if (data.ok) {
-      if (status) status.textContent = 'Started. Connecting...';
-      // Give it a moment to bind the port, then recheck
-      setTimeout(async () => {
-        await updateCosmoIndicator();
-        if (cosmoOnline) {
-          hideCosmoOfflineOverlay();
-          cosmo23Loaded = false;
-          const frame = document.getElementById('cosmo23-frame');
-          if (frame && cosmo23Url) { frame.src = cosmo23Url; cosmo23Loaded = true; }
-        } else {
-          if (status) status.textContent = 'Process started but not yet responding. Try refreshing in a few seconds.';
-          if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
-        }
-      }, 3000);
-    } else {
-      if (status) status.textContent = `Error: ${data.error || 'unknown'}`;
-      if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
-    }
-  } catch (err) {
-    if (status) status.textContent = `Failed: ${err.message}`;
-    if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
-  }
 }
 
 // ── COSMO status indicator ──

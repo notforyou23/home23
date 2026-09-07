@@ -3,7 +3,7 @@
 const {
   flattenCatalogModels,
   getModelCapabilities,
-} = require('../../../../cosmo23/server/config/model-catalog.js');
+} = require('../../../../shared/research-runtime/server/config/model-catalog.js');
 
 const QUERY_KEYS = Object.freeze([
   'query', 'mode', 'modelSelection', 'topK', 'priorContext', 'enableSynthesis',

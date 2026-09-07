@@ -57,7 +57,6 @@ const ROLE_SPECS = {
 
 const SHARED_SERVICE_NAMES = new Set([
   'home23-evobrew',
-  'home23-cosmo23',
 ]);
 
 const SUPPORT_SERVICE_NAMES = new Set([
@@ -140,6 +139,7 @@ function annotateHome23ProcessList(processes = []) {
 
 function roleFromName(name) {
   if (!name) return { role: 'unknown', agentName: null };
+  if (name === 'cosmo23' || name === 'home23-cosmo23') return { role: 'external-workload', agentName: null };
   if (SHARED_SERVICE_NAMES.has(name)) return { role: 'shared-service', agentName: null };
   if (SUPPORT_SERVICE_NAMES.has(name)) return { role: 'support-service', agentName: null };
 
@@ -163,7 +163,7 @@ function roleFromScript(script) {
   if (normalized.endsWith('/mcp/http-server.js')) return { role: 'agent-mcp' };
   if (normalized.endsWith('/substrate/bin/seed-runner.ts')) return { role: 'agent-seed' };
   if (normalized.endsWith('/evobrew/server/server.js')) return { role: 'shared-service' };
-  if (normalized.endsWith('/cosmo23/server/index.js')) return { role: 'shared-service' };
+  if (normalized.endsWith('/cosmo23/server/index.js')) return { role: 'external-workload' };
   if (normalized.endsWith('/scripts/screenlogic_bridge.py')) return { role: 'support-service' };
   if (normalized.endsWith('/scripts/chrome-cdp.sh')) return { role: 'support-service' };
   if (normalized.includes('openclaw-node')) return { role: 'external-workload' };

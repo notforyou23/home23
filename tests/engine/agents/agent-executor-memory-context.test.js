@@ -7,7 +7,7 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const engineExecutorModule = require('../../../engine/src/agents/agent-executor');
-const cosmoExecutorModule = require('../../../cosmo23/engine/src/agents/agent-executor');
+const cosmoExecutorModule = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/agents/agent-executor'));
 const { rewriteMemoryBase } = require('../../../shared/memory-source');
 const {
   createMemoryDeltaOverlayCache,

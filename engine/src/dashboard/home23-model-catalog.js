@@ -6,7 +6,7 @@ const yaml = require('js-yaml');
 const {
   BUILTIN_EXECUTION_DEFAULTS,
   BUILTIN_MODEL_CATALOG,
-} = require('../../../cosmo23/server/config/model-catalog.js');
+} = require('../../../shared/research-runtime/server/config/model-catalog.js');
 
 const SAFE_AGENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const SAFE_PROVIDER = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;

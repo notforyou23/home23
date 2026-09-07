@@ -130,7 +130,7 @@ HOME23_LIVE_CONTRACTS_ACTIONS=1 npm run test:contracts:live
 
 - PM2 missing: `npm install -g pm2`
 - TypeScript build failure: run `npx tsc --noEmit` for exact errors
-- COSMO OAuth DB missing: `cd cosmo23 && DATABASE_URL="file:./prisma/dev.db" npx prisma db push`
+- Cosmo OAuth unavailable: check the independently installed Cosmo service at `cosmo23.baseUrl`; its database and provider setup belong to that installation.
 - PDF/DOCX ingestion unavailable: recreate `engine/.venv-markitdown` and install `markitdown[pdf] openai`
 - Local embeddings unavailable: start Ollama and run `ollama pull nomic-embed-text`
 

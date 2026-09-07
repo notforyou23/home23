@@ -8,17 +8,17 @@ const require = createRequire(import.meta.url);
 const yaml = require('js-yaml');
 const {
   createBrainProviderClientRegistry,
-} = require('../../../cosmo23/lib/brain-provider-client-registry.js');
+} = require('../../../shared/research-runtime/lib/brain-provider-client-registry.js');
 const {
   BUILTIN_MODEL_CATALOG,
   normalizeModelCatalog,
-} = require('../../../cosmo23/server/config/model-catalog.js');
+} = require('../../../shared/research-runtime/server/config/model-catalog.js');
 const {
   ProviderCompletionError,
-} = require('../../../cosmo23/lib/provider-completion.js');
+} = require('../../../shared/research-runtime/lib/provider-completion.js');
 const {
   SYNTHESIS_OPERATION_LIMITS,
-} = require('../../../cosmo23/lib/brain-operation-limits.js');
+} = require('../../../shared/research-runtime/lib/brain-operation-limits.js');
 const {
   createSynthesisProviderAdapter,
   resolveSynthesisConfig,

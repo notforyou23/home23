@@ -115,10 +115,10 @@ test('flags name and script role mismatches', () => {
 test('classifies shared and support services separately from agent roles', () => {
   assert.equal(
     classifyHome23Process({
-      name: 'home23-cosmo23',
+      name: 'cosmo23',
       script: `${ROOT}/cosmo23/server/index.js`,
     }).role,
-    'shared-service'
+    'external-workload'
   );
   assert.equal(
     classifyHome23Process({

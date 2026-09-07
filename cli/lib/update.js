@@ -237,8 +237,6 @@ function installDepsWhereChanged(home23Root, preHashes) {
     { path: home23Root, label: 'home23 (root)' },
     { path: join(home23Root, 'engine'), label: 'engine' },
     { path: join(home23Root, 'evobrew'), label: 'evobrew' },
-    { path: join(home23Root, 'cosmo23'), label: 'cosmo23' },
-    { path: join(home23Root, 'cosmo23', 'engine'), label: 'cosmo23/engine' },
   ];
 
   let installed = 0;
@@ -266,19 +264,6 @@ function installDepsWhereChanged(home23Root, preHashes) {
 }
 
 // ── Prisma ───────────────────────────────────────────────────────────
-
-function runPrismaGenerate(home23Root) {
-  const cosmo23Dir = join(home23Root, 'cosmo23');
-  const schemaPath = join(cosmo23Dir, 'prisma', 'schema.prisma');
-  if (!existsSync(schemaPath)) return;
-
-  console.log('  Running prisma generate...');
-  try {
-    execSync('npx prisma generate', { cwd: cosmo23Dir, stdio: 'pipe', timeout: 30000 });
-  } catch (err) {
-    console.warn(`  Prisma generate failed: ${err.message}`);
-  }
-}
 
 // ── TypeScript build ─────────────────────────────────────────────────
 
@@ -451,8 +436,6 @@ export async function runUpdate(home23Root, checkOnly = false) {
     home23Root,
     join(home23Root, 'engine'),
     join(home23Root, 'evobrew'),
-    join(home23Root, 'cosmo23'),
-    join(home23Root, 'cosmo23', 'engine'),
   ];
   const preHashes = {};
   for (const dir of depDirs) {
@@ -492,7 +475,6 @@ export async function runUpdate(home23Root, checkOnly = false) {
   installDepsWhereChanged(home23Root, preHashes);
 
   // Step 9: Prisma generate
-  runPrismaGenerate(home23Root);
 
   // Step 10: Build TypeScript
   try {

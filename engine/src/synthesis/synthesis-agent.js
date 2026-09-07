@@ -13,13 +13,13 @@ const {
 } = require('../../../shared/memory-source/confined-file.cjs');
 const {
   requireCompleteProviderResult,
-} = require('../../../cosmo23/lib/provider-completion.js');
+} = require('../../../shared/research-runtime/lib/provider-completion.js');
 const {
   throwIfAborted,
-} = require('../../../cosmo23/lib/provider-execution.js');
+} = require('../../../shared/research-runtime/lib/provider-execution.js');
 const {
   SYNTHESIS_OPERATION_LIMITS,
-} = require('../../../cosmo23/lib/brain-operation-limits.js');
+} = require('../../../shared/research-runtime/lib/brain-operation-limits.js');
 const { writeFileDurableSync } = require('../utils/durable-write.js');
 
 const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;

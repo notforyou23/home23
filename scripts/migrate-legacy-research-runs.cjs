@@ -24,7 +24,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
-const { persistResearchState } = require('../cosmo23/lib/memory-sidecar.js');
+const { persistResearchState } = require(require('./lib/cosmo-source.cjs').cosmoSourcePath('lib/memory-sidecar.js'));
 
 const MAX_GZ_BYTES = 64 * 1024 * 1024;
 const MAX_RAW_BYTES = 512 * 1024 * 1024;
@@ -98,7 +98,7 @@ async function main() {
   const apply = args.includes('--apply');
   const named = args.filter((value) => value !== '--apply');
   const home23Root = path.resolve(__dirname, '..');
-  const runsRoot = path.join(home23Root, 'cosmo23', 'runs');
+  const runsRoot = require('./lib/cosmo-source.cjs').cosmoSourcePath('runs');
   const targets = named.length > 0
     ? named
     : fs.readdirSync(runsRoot, { withFileTypes: true })

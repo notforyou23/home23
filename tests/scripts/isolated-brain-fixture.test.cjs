@@ -622,6 +622,7 @@ test('direct isolated child invocation rejects a fixture root containing the liv
   ], {
     PATH: process.env.PATH || '/usr/bin:/bin',
     HOME23_ISOLATED_FIXTURE_CHILD: '1',
+    COSMO23_SOURCE_ROOT: process.env.COSMO23_SOURCE_ROOT,
     ...(process.env.HOME23_TEST_PRIMARY_CHECKOUT ? { HOME23_TEST_PRIMARY_CHECKOUT: process.env.HOME23_TEST_PRIMARY_CHECKOUT } : {}),
   });
   assert.notEqual(result.code, 0, result.stderr);

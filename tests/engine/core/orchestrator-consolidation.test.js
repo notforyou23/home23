@@ -4,9 +4,9 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { Orchestrator } = require('../../../engine/src/core/orchestrator.js');
-const { Orchestrator: CosmoOrchestrator } = require('../../../cosmo23/engine/src/core/orchestrator.js');
+const { Orchestrator: CosmoOrchestrator } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/core/orchestrator.js'));
 const { MemorySummarizer } = require('../../../engine/src/memory/summarizer.js');
-const { MemorySummarizer: CosmoMemorySummarizer } = require('../../../cosmo23/engine/src/memory/summarizer.js');
+const { MemorySummarizer: CosmoMemorySummarizer } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/memory/summarizer.js'));
 const { planConsolidationBacklogCompost } = require('../../../engine/src/memory/consolidation-backlog.js');
 
 function makeLogger() {

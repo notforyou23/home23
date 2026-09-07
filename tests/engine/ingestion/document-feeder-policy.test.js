@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { DocumentFeeder } = require('../../../engine/src/ingestion/document-feeder');
-const { DocumentFeeder: CosmoDocumentFeeder } = require('../../../cosmo23/engine/src/ingestion/document-feeder');
+const { DocumentFeeder: CosmoDocumentFeeder } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/ingestion/document-feeder'));
 const { DocumentCompiler } = require('../../../engine/src/ingestion/document-compiler');
 
 function makeFeeder(config = {}, logs = []) {
@@ -214,7 +214,7 @@ for (const [name, Feeder] of [['Root', DocumentFeeder], ['COSMO', CosmoDocumentF
 }
 
 test('COSMO feeder status endpoint reads the durable authoritative status snapshot', () => {
-  const source = fs.readFileSync(path.join(process.cwd(), 'cosmo23/server/index.js'), 'utf8');
+  const source = fs.readFileSync(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('server/index.js'), 'utf8');
   assert.match(source, /readDurableIngestionQueueStats/);
   assert.doesNotMatch(source.slice(source.indexOf("app.get('/api/feeder/status'"), source.indexOf("app.post('/api/feeder/ingest'")), /createReadStream\(pendingJsonlPath\)/);
 });

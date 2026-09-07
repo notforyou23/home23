@@ -1677,7 +1677,7 @@ export function createControlledNegativeTargetClient({ Client, callerAgent } = {
   if (typeof Client !== 'function' || typeof callerAgent !== 'string' || !callerAgent) {
     throw typedError('negative_target_client_invalid');
   }
-  const { resolveCanonicalTarget } = require('../cosmo23/server/lib/brain-registry.js');
+  const { resolveCanonicalTarget } = require('../shared/research-runtime/server/lib/brain-registry.js');
   const { authorizeBrainOperation } = require('../shared/brain-operations/authority.cjs');
   const entry = ({ id, ownerAgent, kind = 'resident', lifecycle = 'resident' }) => {
     const canonicalRoot = `/controlled-negative/${id}`;
@@ -4635,6 +4635,7 @@ const ISOLATED_CHILD_REQUIRED_ENV_KEYS = Object.freeze([
   'HOME23_ISOLATED_FIXTURE_ROOT_INO',
   'HOME23_ISOLATED_FIXTURE_START_TOKEN',
   'NODE_PATH',
+  'COSMO23_SOURCE_ROOT',
 ]);
 
 function exactIsolatedRoleMap(value) {
@@ -5183,6 +5184,16 @@ async function executeIsolatedLifecycleScenario({
     signal,
   );
 
+  // Provider admission and durable progress publication are asynchronous.
+  // Exercise lifecycle changes only after their progress receipt is visible.
+  const progressDeadline = Date.now() + 10_000;
+  let progress = await client.getOperation(initial.operationId, signal);
+  while (!Number.isFinite(Date.parse(progress.lastProgressAt)) && Date.now() < progressDeadline) {
+    await sleep(10, signal);
+    progress = await client.getOperation(initial.operationId, signal);
+  }
+  if (!Number.isFinite(Date.parse(progress.lastProgressAt))) throw typedError('operation_progress_timestamp_missing');
+
   if (synthesis) {
     const restartsBefore = Number(telemetryBefore.dashboard?.coordinatorRestarts || 0);
     const restarted = await fixture.restartCoordinator();
@@ -5197,7 +5208,7 @@ async function executeIsolatedLifecycleScenario({
     });
     const reconciled = await restartedClient.getOperation(initial.operationId, signal);
     if (!['running', 'complete'].includes(reconciled.state)) {
-      throw typedError('synthesis_restart_reconcile_invalid');
+      throw typedError('synthesis_restart_reconcile_invalid', JSON.stringify({ state: reconciled.state, error: reconciled.error, diagnostics: await readIsolatedOperationDiagnostics(fixture) }));
     }
     let reattached = reconciled;
     let reattachAttempts = 0;
@@ -5353,7 +5364,9 @@ async function executeIsolatedLifecycleScenario({
     ...(activityCollector ? { onActivity: activityCollector.listener('restart-reconcile') } : {}),
   });
   const reconciled = await restartedClient.getOperation(initial.operationId, signal);
-  if (!['running', 'interrupted'].includes(reconciled.state)) {
+  // The independent worker can finish while its dashboard client restarts.
+  // A durable completion is valid recovery, not a failed reconciliation.
+  if (!['running', 'interrupted', 'complete'].includes(reconciled.state)) {
     throw typedError('restart_reconcile_invalid');
   }
   const reattachment = TERMINAL.has(reconciled.state)

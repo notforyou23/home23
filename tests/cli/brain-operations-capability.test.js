@@ -32,7 +32,6 @@ import {
 import { generateEcosystem } from '../../cli/lib/generate-ecosystem.js';
 import { startEcosystemProcesses } from '../../cli/lib/shared-service-start.js';
 import { ensureSystemHealth } from '../../cli/lib/system-health.js';
-import { seedCosmo23Config } from '../../cli/lib/cosmo23-config.js';
 import * as capabilitySecretModule from '../../cli/lib/brain-operations-capability.js';
 import authorityAttestation from '../../shared/memory-authority-attestation.cjs';
 
@@ -94,12 +93,11 @@ function targetNames() {
     'home23-forrest-dash',
     'home23-forrest-mcp',
     'home23-forrest-harness',
-    'home23-cosmo23',
   ];
 }
 
 function capabilityTargetNames() {
-  return ['home23-jerry-dash', 'home23-forrest-dash', 'home23-cosmo23'];
+  return ['home23-jerry-dash', 'home23-forrest-dash'];
 }
 
 function processesWithoutCapability() {
@@ -735,15 +733,13 @@ test('PM2 inspection failure is fail-closed and refresh guard only permits exact
       'home23-attacker',
       'home23-attacker-dash',
       'home23-attacker-harness',
-      'home23-cosmo23',
-    ];
+      ];
     const jerryOnlyScope = [
       'home23-jerry',
       'home23-jerry-dash',
       'home23-jerry-mcp',
       'home23-jerry-harness',
-      'home23-cosmo23',
-    ];
+      ];
     for (const bad of [
       { ...base, restartRequired: false },
       { ...base, liveEnvVerified: false },
@@ -754,7 +750,7 @@ test('PM2 inspection failure is fail-closed and refresh guard only permits exact
       { ...base, changedProcessNames: ['home23-jerry-harness'] },
       { ...base, changedProcessNames: ['unrelated-service'] },
       { ...base, changedProcessNames: ['home23-attacker-dash'] },
-      { ...base, changedProcessNames: ['home23-cosmo23', 'home23-cosmo23'] },
+      { ...base, changedProcessNames: ['home23-cosmo23'] },
       { ...base, changedProcessNames: ['home23-cosmo23', 'home23-jerry-dash'] },
       { ...base, changedProcessNames: [...targetNames()].reverse() },
       { ...base, configuredProcessNames: [...targetNames()].reverse() },
@@ -941,7 +937,6 @@ test('init, start, update, COSMO seed, and system health propagate preparation f
     writeFileSync(secretsPath, 'null\n', { mode: 0o640 });
     chmodSync(secretsPath, 0o640);
     const before = readFileSync(secretsPath);
-    await assert.rejects(seedCosmo23Config(root), /capability_secret_invalid/);
     await assert.rejects(ensureSystemHealth(root), /capability_secret_invalid/);
     assert.deepEqual(readFileSync(secretsPath), before);
     assert.equal(modeOf(secretsPath), '0640');
@@ -989,12 +984,11 @@ test('Task 2 secret writers share one lock and preserve capability plus concurre
         return { changed: true, value: 'provider-added' };
       }),
       ensureBrainOperationsCapabilityKey(root),
-      seedCosmo23Config(root),
     ]);
     const secrets = readSecrets(root);
     assert.match(secrets.brainOperations.capabilityKey, /^[a-f0-9]{64}$/);
     assert.equal(secrets.providers.race.apiKey, 'preserve-race-field');
-    assert.match(secrets.cosmo23.encryptionKey, /^[a-f0-9]{64}$/);
+    assert.equal(secrets.cosmo23, undefined);
     assert.equal(modeOf(join(root, 'config', 'secrets.yaml')), '0600');
   } finally {
     rmSync(root, { recursive: true, force: true });

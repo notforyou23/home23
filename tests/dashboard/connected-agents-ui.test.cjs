@@ -6,15 +6,15 @@ const test = require('node:test');
 const root = process.cwd();
 const read = (name) => fs.readFileSync(path.join(root, 'engine/src/dashboard', name), 'utf8');
 
-test('Connected Agents is a product surface with explicit Legacy rollback', () => {
+test('retained Connected Agents assets preserve their contract alongside the current dashboard', () => {
   const html = read('connected-agents.html');
   const js = read('connected-agents.js');
   const css = read('connected-agents.css');
   const server = read('server.js');
   for (const noun of ['Inbox', 'Bots', 'Channels', 'New Bot', 'New Channel', 'Details']) assert.match(html, new RegExp(noun));
   assert.match(html, /\/home23\/legacy/);
-  assert.match(server, /connected-agents\.html/);
-  assert.match(server, /this\.app\.get\('\/home23\/legacy'/);
+  assert.match(server, /home23-dashboard\.html/);
+  assert.match(server, /this\.app\.get\('\/home23'/);
   assert.match(js, /name\?\.toLowerCase\(\) === "jerry"/);
   assert.match(js, /\/channels\/\$\{encodeURIComponent\(state\.selected\)\}\/messages/);
   assert.match(js, /readCursorMutation/);

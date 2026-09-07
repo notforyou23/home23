@@ -1141,6 +1141,8 @@ async function writeJsonlGzAtomic(filePath, records, options = {}) {
 }
 
 module.exports = {
+  NON_CLOSING_READ_STREAM_FS,
+  stopReadStreams,
   createQuotaBackpressuredJsonlGzipWriter,
   limitError,
   readJsonl,

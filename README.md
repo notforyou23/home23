@@ -10,7 +10,7 @@ Chat is the front door. The house keeps living when you leave.
 
 v2 Seeds are real and opt-in. Recent memory, session grounding, facts, and biography compose from the chain at read time. Files are fallbacks. A fact has to earn its place. Birth is a deliberate act — `agent create` does not mint a Seed.
 
-Cosmo is not the house. If a Cosmo URL is configured and up, the house can open it. Home23 does not start, seed, or watchdog Cosmo. A `cosmo23/` tree on disk is location, not ownership.
+Cosmo is not the house. If a Cosmo URL is configured and up, the house can open it. Home23 does not start, seed, or watchdog Cosmo. Cosmo source and product tests live in its own repository. See [Cosmo separation](docs/reference/COSMO-SEPARATION.md).
 
 ## Install
 

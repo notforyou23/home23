@@ -8,7 +8,7 @@ import { gzipSync } from 'node:zlib';
 
 const require = createRequire(import.meta.url);
 const { MCPBridge: EngineMCPBridge } = require('../../../engine/src/agents/mcp-bridge');
-const { MCPBridge: CosmoMCPBridge } = require('../../../cosmo23/engine/src/agents/mcp-bridge');
+const { MCPBridge: CosmoMCPBridge } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/agents/mcp-bridge'));
 const {
   appendMemoryRevision,
   rewriteMemoryBase,

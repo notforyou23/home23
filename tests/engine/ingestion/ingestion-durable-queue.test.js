@@ -12,7 +12,7 @@ const {
   readDurableIngestionQueueStats,
 } = require('../../../shared/ingestion-durable-queue.cjs');
 const { IngestionManifest } = require('../../../engine/src/ingestion/ingestion-manifest.js');
-const { IngestionManifest: CosmoIngestionManifest } = require('../../../cosmo23/engine/src/ingestion/ingestion-manifest.js');
+const { IngestionManifest: CosmoIngestionManifest } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/ingestion/ingestion-manifest.js'));
 
 function tempRun(t) {
   const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-durable-ingestion-'));

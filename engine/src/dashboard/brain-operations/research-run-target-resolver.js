@@ -4,7 +4,7 @@ const path = require('node:path');
 
 const {
   loadCanonicalRunMetadata,
-} = require('../../../../cosmo23/server/lib/research-run-metadata.js');
+} = require('../../../../shared/research-runtime/server/lib/research-run-metadata.js');
 const {
   buildResearchRunTarget,
 } = require('../../../../shared/brain-operations/research-run-target.cjs');

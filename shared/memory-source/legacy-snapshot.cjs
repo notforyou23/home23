@@ -6,7 +6,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 const { StringDecoder } = require('node:string_decoder');
-const { createQuotaBackpressuredJsonlGzipWriter } = require('./jsonl.cjs');
+const { createQuotaBackpressuredJsonlGzipWriter, NON_CLOSING_READ_STREAM_FS, stopReadStreams } = require('./jsonl.cjs');
 const {
   createOperationScratchQuota,
   getOperationScratchQuotaCleanup,
@@ -208,6 +208,7 @@ async function streamSnapshot({
   const input = fs.createReadStream(null, {
     fd: openedFile.handle.fd,
     autoClose: false,
+        fs: NON_CLOSING_READ_STREAM_FS,
     start: 0,
     end: inputBytes - 1,
   });
@@ -242,6 +243,7 @@ async function streamSnapshot({
     throw error;
   } finally {
     signal?.removeEventListener('abort', abort);
+    await stopReadStreams(input, decoded);
   }
 }
 
@@ -285,6 +287,7 @@ async function digestOpenedRegularFile(root, basename, { signal, maxReadBytes } 
       stream = fs.createReadStream(null, {
         fd: opened.handle.fd,
         autoClose: false,
+        fs: NON_CLOSING_READ_STREAM_FS,
         start: 0,
         end: byteLimit - 1,
         signal,
@@ -310,7 +313,7 @@ async function digestOpenedRegularFile(root, basename, { signal, maxReadBytes } 
     throwIfAborted(signal);
     return Object.freeze({ bytes: byteLimit, sha256: hash.digest('hex') });
   } finally {
-    stream?.destroy();
+    if (stream) await stopReadStreams(stream, stream);
     await opened.handle.close().catch(() => {});
   }
 }

@@ -453,7 +453,7 @@ test('cross-brain synthesis denial crosses the production client, router, coordi
   } = require('../../shared/brain-operations/authority.cjs');
   const {
     resolveCanonicalTarget,
-  } = require('../../cosmo23/server/lib/brain-registry.js');
+  } = require('../../shared/research-runtime/server/lib/brain-registry.js');
   const { BrainOperationsClient } = await import('../../dist/agent/brain-operations/client.js');
   const { readResponseJsonBounded } = await import('../../scripts/live-brain-tools-smoke.mjs');
 

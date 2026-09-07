@@ -17,7 +17,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 const { NetworkMemory: RootNetworkMemory } = require('../../../engine/src/memory/network-memory.js');
-const { NetworkMemory: CosmoNetworkMemory } = require('../../../cosmo23/engine/src/memory/network-memory.js');
+const { NetworkMemory: CosmoNetworkMemory } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/memory/network-memory.js'));
 Module._load = originalLoad;
 
 function config() {

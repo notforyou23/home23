@@ -109,7 +109,7 @@ export function generateEvobrewConfig(home23Root) {
   }
 
   // Scan cosmo23 runs for research brains
-  const cosmo23RunsDir = join(home23Root, 'cosmo23', 'runs');
+  const cosmo23RunsDir = join(process.env.COSMO23_ROOT || homeConfig.cosmo23?.source || join(home23Root, 'external-research'), 'runs');
   const researchBrains = {};
   if (existsSync(cosmo23RunsDir)) {
     for (const name of readdirSync(cosmo23RunsDir).sort()) {

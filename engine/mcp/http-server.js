@@ -199,7 +199,7 @@ async function buildInstalledBrainCatalog(home23Root) {
   const {
     buildCanonicalCatalog,
     parseReferenceRunsPaths,
-  } = require('../../cosmo23/server/lib/brain-registry.js');
+  } = require('../../shared/research-runtime/server/lib/brain-registry.js');
   const agentsPath = path.join(home23Root, 'config', 'agents.json');
   let manifest = [];
   if (fs.existsSync(agentsPath)) manifest = JSON.parse(fs.readFileSync(agentsPath, 'utf8'));
@@ -212,7 +212,11 @@ async function buildInstalledBrainCatalog(home23Root) {
   const configuredResidentRoots = Object.fromEntries(
     agentPaths.map((entry) => [entry.agentName, entry.brainDir]),
   );
-  const cosmoRoot = path.join(home23Root, 'cosmo23');
+  const homeConfigPath = path.join(home23Root, 'config', 'home.yaml');
+  const homeConfig = fs.existsSync(homeConfigPath)
+    ? yaml.load(fs.readFileSync(homeConfigPath, 'utf8')) || {} : {};
+  const cosmoRoot = path.resolve(process.env.COSMO23_ROOT || homeConfig.cosmo23?.source
+    || path.join(home23Root, 'external-research'));
   const localRunsPath = path.join(cosmoRoot, 'runs');
   return buildCanonicalCatalog({
     instancesRoot: path.join(home23Root, 'instances'),

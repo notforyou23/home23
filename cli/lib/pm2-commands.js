@@ -275,10 +275,6 @@ export async function runStop(home23Root, agentName) {
       // Not running
     }
     try {
-      execSync('pm2 stop home23-cosmo23', { stdio: 'pipe' });
-      console.log('  home23-cosmo23: stopped');
-    } catch { /* not running */ }
-    try {
       execSync('pm2 stop home23-screenlogic', { stdio: 'pipe' });
       console.log('  home23-screenlogic: stopped');
     } catch { /* not running */ }

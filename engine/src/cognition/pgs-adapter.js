@@ -1,5 +1,5 @@
 /**
- * PGS Adapter — wraps cosmo23/pgs-engine for Home23 autonomous cognition
+ * PGS Adapter — uses the Home23-owned PGS library for Home23 autonomous cognition
  *
  * Phase 3 of the thinking-machine-cycle rebuild. See
  * docs/superpowers/specs/2026-04-18-pgs-extraction.md.
@@ -80,9 +80,9 @@ class PGSAdapter {
 
   _tryLoadPGS() {
     try {
-      // Vendored in this repo at cosmo23/pgs-engine. Use absolute resolution
+      // Home23 owns this inherited PGS implementation. Use absolute resolution
       // so the module loads from its source dir regardless of engine CWD.
-      const pgsModulePath = path.resolve(__dirname, '..', '..', '..', 'cosmo23', 'pgs-engine', 'src', 'index.js');
+      const pgsModulePath = path.resolve(__dirname, '..', '..', '..', 'shared', 'research-runtime', 'pgs-engine', 'src', 'index.js');
       const pgsModule = require(pgsModulePath);
       this.PGSEngine = pgsModule.PGSEngine;
       this.engine = new this.PGSEngine({

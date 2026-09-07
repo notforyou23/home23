@@ -4,7 +4,7 @@ const { TextDecoder } = require('node:util');
 const {
   PGS_OPERATION_LIMITS,
   QUERY_OPERATION_LIMITS,
-} = require('../../../../cosmo23/lib/brain-operation-limits');
+} = require('../../../../shared/research-runtime/lib/brain-operation-limits.js');
 const {
   createVerifiedFollowUpSupportRequest,
   verifyVerifiedFollowUpSupportResponse,

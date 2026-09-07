@@ -23,7 +23,7 @@ const {
   createSettingsRouter,
   OAUTH_INTERACTIVE_FLOW_TIMEOUT_MS,
 } = require('../../../engine/src/dashboard/home23-settings-api.js');
-const { CALLBACK_TIMEOUT_MS } = require('../../../cosmo23/lib/oauth-codex.cjs');
+const { CALLBACK_TIMEOUT_MS } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('lib/oauth-codex.cjs'));
 
 // The dashboard used a flat 15s abort on a route that waits for a human to
 // finish a browser sign-in, so it always gave up first — the operator saw a

@@ -6,7 +6,7 @@ const require = createRequire(import.meta.url);
 const {
   BUILTIN_MODEL_CATALOG,
   normalizeModelCatalog,
-} = require('../../../cosmo23/server/config/model-catalog.js');
+} = require('../../../shared/research-runtime/server/config/model-catalog.js');
 const {
   createDashboardSynthesisOperationRuntime,
   persistSynthesisSelection,

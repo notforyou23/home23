@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const {
   buildCanonicalCatalog,
   MUTATION_BOUNDARY_KINDS,
-} = require('../../../cosmo23/server/lib/brain-registry');
+} = require('../../../shared/research-runtime/server/lib/brain-registry.js');
 const { createMemorySearchService } = require('../../../engine/src/dashboard/memory-search.js');
 const { createBrainSourceService } = require('../../../engine/src/dashboard/brain-source-api.js');
 const { createGraphExportExecutor } = require('../../../engine/src/dashboard/brain-operations/graph-export-executor.js');

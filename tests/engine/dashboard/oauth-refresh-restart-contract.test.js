@@ -11,12 +11,12 @@ const serverSource = readFileSync(
 );
 
 // The OAuth-refresh poller block: from the shared-secrets restart comment to
-// the COSMO watchdog section that follows it.
+// the Home23 update section that follows it.
 function oauthRefreshRegion() {
   const start = serverSource.indexOf('Shared provider secrets affect every running Home23');
-  const end = serverSource.indexOf('COSMO 2.3 health watchdog');
+  const end = serverSource.indexOf('Home23 update check');
   assert.ok(start > 0, 'OAuth refresh block marker must exist');
-  assert.ok(end > start, 'COSMO watchdog marker must follow the OAuth refresh block');
+  assert.ok(end > start, 'Home23 update marker must follow the OAuth refresh block');
   return serverSource.slice(start, end);
 }
 

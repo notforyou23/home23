@@ -159,7 +159,7 @@ test('known production writers no longer perform direct read-modify-write on sec
     oauth: fs.readFileSync(path.join(repoRoot, 'engine/src/dashboard/server.js'), 'utf8'),
     agent: fs.readFileSync(path.join(repoRoot, 'cli/lib/agent-create.js'), 'utf8'),
     tiles: fs.readFileSync(path.join(repoRoot, 'engine/src/dashboard/home23-tiles.js'), 'utf8'),
-    cosmo: fs.readFileSync(path.join(repoRoot, 'cosmo23/server/index.js'), 'utf8'),
+    cosmo: fs.readFileSync(require('../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('server/index.js'), 'utf8'),
   };
   assert.doesNotMatch(sources.settings, /saveYaml\(secretsPath,/);
   assert.doesNotMatch(sources.oauth, /writeFileSync\(secretsPath,/);

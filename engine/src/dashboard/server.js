@@ -1010,7 +1010,7 @@ class DashboardServer {
       buildCanonicalCatalog,
       parseReferenceRunsPaths,
       resolveCanonicalTarget,
-    } = require('../../../cosmo23/server/lib/brain-registry.js');
+    } = require('../../../shared/research-runtime/server/lib/brain-registry.js');
     const { OPERATION_AUTHORITY, authorizeBrainOperation } =
       require('../../../shared/brain-operations/authority.cjs');
     const { BrainOperationStore } = require('./brain-operations/operation-store.js');
@@ -1023,7 +1023,7 @@ class DashboardServer {
     const { createProviderOperationRuntime } =
       require('./brain-operations/provider-operation-runtime.js');
     const { createHome23BrainProviderRuntime } =
-      require('../../../cosmo23/lib/brain-provider-runtime.js');
+      require('../../../shared/research-runtime/lib/brain-provider-runtime.js');
     const { loadHome23ModelAuthority } = require('./home23-model-catalog.js');
     const { createMemorySourcePinProvider } = require('../../../shared/memory-source');
     const { createOperationScratchQuota } = require('../../../shared/memory-source');
@@ -1084,8 +1084,9 @@ class DashboardServer {
     const configuredCosmoPort = Number(
       process.env.COSMO23_PORT || providerRuntime?.home?.cosmo23?.ports?.app || 43210,
     );
+    const configuredCosmoUrl = (providerRuntime?.home?.cosmo23?.baseUrl || `http://127.0.0.1:${configuredCosmoPort}`).replace(/\/$/, '');
     const remoteWorker = createCosmoBrainOperationWorkerClient({
-      baseUrl: `http://127.0.0.1:${configuredCosmoPort}`,
+      baseUrl: configuredCosmoUrl,
       capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
       sourceOperationTypes: [
         'query', 'pgs', 'research_compile', 'research_intelligence',
@@ -1122,7 +1123,7 @@ class DashboardServer {
         throw error;
       }
       const configuredAgentNames = manifest.map((agent) => agent?.name);
-      const cosmoRoot = path.join(home23Root, 'cosmo23');
+      const cosmoRoot = path.resolve(process.env.COSMO23_ROOT || providerRuntime?.home?.cosmo23?.source || path.join(home23Root, 'external-research'));
       const localRunsPath = path.join(cosmoRoot, 'runs');
       const referenceRunsPaths = parseReferenceRunsPaths(
         process.env.COSMO_REFERENCE_RUNS_PATHS || process.env.COSMO_REFERENCE_RUNS_PATH || '',
@@ -1149,7 +1150,7 @@ class DashboardServer {
       // subprocess runs without touching any metadata record.
       probeLiveRun: async () => {
         try {
-          const response = await fetch(`http://127.0.0.1:${configuredCosmoPort}/api/status`, {
+          const response = await fetch(`${configuredCosmoUrl}/api/status`, {
             signal: AbortSignal.timeout(2_000),
           });
           if (!response.ok) return { active: false, runName: null };
@@ -1273,7 +1274,7 @@ class DashboardServer {
     const loadAuthority = dependencies.loadAuthority
       || require('./home23-model-catalog.js').loadHome23ModelAuthority;
     const createProviderRuntime = dependencies.createProviderRuntime
-      || require('../../../cosmo23/lib/brain-provider-runtime.js').createHome23BrainProviderRuntime;
+      || require('../../../shared/research-runtime/lib/brain-provider-runtime.js').createHome23BrainProviderRuntime;
     const home23Root = this.getHome23Root();
     const authority = loadAuthority({ home23Root, agent: requesterAgent });
     const providerRuntime = createProviderRuntime({
@@ -3139,58 +3140,6 @@ class DashboardServer {
       }, pollInterval);
     } catch (err) {
       console.warn('[OAuth refresh] setup failed:', err.message);
-    }
-
-    // ── COSMO 2.3 health watchdog ──
-    // After a machine crash/restart, PM2 may restore the dashboard but not cosmo23
-    // (if it wasn't in the saved list). Check every 2 minutes; if cosmo23 is
-    // unreachable, start it via the ecosystem config.
-    try {
-      const home23RootForWatchdog = this.getHome23Root();
-      const cosmoWatchdogPort = parseInt(process.env.COSMO23_PORT || '43210', 10);
-      const cosmoWatchdogUrl = `http://localhost:${cosmoWatchdogPort}`;
-
-      // Initial check after 15s (give processes time to settle on boot)
-      setTimeout(() => {
-        checkAndStartCosmo23();
-        // Then check every 2 minutes
-        setInterval(checkAndStartCosmo23, 2 * 60 * 1000);
-      }, 15_000);
-
-      async function checkAndStartCosmo23() {
-        try {
-          const res = await fetch(`${cosmoWatchdogUrl}/api/status`, { signal: AbortSignal.timeout(5000) });
-          if (res.ok) return; // healthy
-        } catch { /* unreachable — try to start */ }
-
-        // Check PM2 state before starting (avoid double-start race)
-        try {
-          const { execFileSync } = require('child_process');
-          const { parsePm2JlistOutput } = require(path.join(home23RootForWatchdog, 'scripts', 'home23-pm2-watchdog.cjs'));
-          const jlist = parsePm2JlistOutput(execFileSync('pm2', ['jlist'], { encoding: 'utf8', env: cleanPm2Env(), timeout: 5000 }));
-          const proc = jlist.find(p => p.name === 'home23-cosmo23');
-          if (proc && proc.pm2_env?.status === 'online') return; // PM2 says online, just slow to respond
-
-          console.log('[COSMO watchdog] cosmo23 not responding — starting...');
-          const { pathToFileURL } = require('url');
-          const sharedStart = await import(pathToFileURL(
-            path.join(home23RootForWatchdog, 'cli', 'lib', 'shared-service-start.js')
-          ).href);
-          const cosmoService = sharedStart.SHARED_SERVICES.find(
-            service => service.name === 'home23-cosmo23'
-          );
-          if (!cosmoService) throw new Error('COSMO shared-service definition is missing');
-          await sharedStart.coordinateSharedServiceStartup({
-            home23Root: home23RootForWatchdog,
-            services: [cosmoService],
-          });
-          console.log('[COSMO watchdog] cosmo23 started');
-        } catch (err) {
-          console.warn('[COSMO watchdog] failed to start cosmo23:', err.message);
-        }
-      }
-    } catch (err) {
-      console.warn('[COSMO watchdog] setup failed:', err.message);
     }
 
     // ── Home23 update check ──
@@ -8938,251 +8887,6 @@ You are empowered to explore and understand. The user trusts you to discover the
       } catch (error) {
         console.error('Query failed:', error);
         res.status(500).json({ error: error.message });
-      }
-    });
-
-    // ── POST /api/pgs — Progressive Graph Search ──
-    // Four-phase coverage-optimized query: partition → route → sweep → synthesize.
-    // Pulls the full memory graph, feeds it to PGSEngine (from cosmo23/pgs-engine),
-    // returns synthesized findings + absences + cross-domain connections.
-    this.app.post('/api/pgs', async (req, res) => {
-      try {
-        const {
-          query,
-          mode = 'full',
-          maxPartitions,
-          // Dual model control — sweeps can use a cheaper/faster model
-          // (many parallel calls) while synthesis uses a stronger model
-          // for the single cross-partition reasoning pass.
-          sweepModel,
-          synthesisModel,
-          // Optional provider override — routes to a specific adapter
-          // (minimax / anthropic / openai / openai-codex / xai / ollama-cloud).
-          // Usually UnifiedClient picks the right one from the model name.
-          sweepProvider,
-          synthesisProvider,
-          // Optional per-call max_tokens override
-          sweepMaxTokens,
-          synthesisMaxTokens,
-        } = req.body || {};
-        if (!query) return res.status(400).json({ error: 'query is required' });
-
-        // Lazy-load PGS engine + UnifiedClient shim (avoids startup cost when PGS unused)
-        let PGSEngine;
-        try {
-          PGSEngine = require('../../../cosmo23/pgs-engine/src/index').PGSEngine;
-        } catch (err) {
-          return res.status(500).json({
-            error: 'PGS engine not found',
-            detail: err.message,
-            hint: 'cosmo23/pgs-engine/src/index.js must exist relative to engine/',
-          });
-        }
-
-        // Build provider shim over UnifiedClient. Caller can pass any model
-        // from any configured provider — we resolve the provider from the
-        // model name via home.yaml lookup, then route directly to the
-        // correct generate*() method. This bypasses getModelAssignment()
-        // so PGS works with any model regardless of engine config state.
-        const { UnifiedClient } = require('../core/unified-client');
-
-        // The dashboard process doesn't have a direct config object (it only
-        // receives logsDir at construction). Load the engine config fresh so
-        // UnifiedClient can initialize all providers. COSMO_CONFIG_PATH points
-        // to base-engine.yaml; we merge home.yaml providers/secrets underneath
-        // using the same loader the engine itself uses.
-        let unifiedConfig = {};
-        try {
-          const yaml = require('js-yaml');
-          const fsSync = require('fs');
-          const cfgPath = process.env.COSMO_CONFIG_PATH;
-          if (cfgPath && fsSync.existsSync(cfgPath)) {
-            unifiedConfig = yaml.load(fsSync.readFileSync(cfgPath, 'utf8')) || {};
-          }
-          // Merge home.yaml providers + secrets.yaml keys into the config so
-          // UnifiedClient's provider init (which looks at config.providers.*)
-          // finds credentials.
-          const engineRoot = path.resolve(__dirname, '..', '..');
-          const homeRoot = path.join(engineRoot, '..', 'config');
-          const homePath = path.join(homeRoot, 'home.yaml');
-          const secretsPath = path.join(homeRoot, 'secrets.yaml');
-          if (fsSync.existsSync(homePath)) {
-            const home = yaml.load(fsSync.readFileSync(homePath, 'utf8')) || {};
-            unifiedConfig.providers = { ...(unifiedConfig.providers || {}), ...(home.providers || {}) };
-          }
-          if (fsSync.existsSync(secretsPath)) {
-            const secrets = yaml.load(fsSync.readFileSync(secretsPath, 'utf8')) || {};
-            const provSecrets = secrets.providers || {};
-            for (const [name, sec] of Object.entries(provSecrets)) {
-              unifiedConfig.providers[name] = {
-                ...(unifiedConfig.providers[name] || {}),
-                ...sec,
-                enabled: true,
-              };
-            }
-          }
-        } catch (e) {
-          console.warn('[PGS] Could not load engine config, provider routing may be limited:', e.message);
-        }
-
-        const unified = new UnifiedClient(unifiedConfig, this.logger);
-
-        // Load provider → defaultModels map from home.yaml once
-        const resolveProviderForModel = (() => {
-          let cache = null;
-          return (modelName) => {
-            if (!modelName) return null;
-            if (!cache) {
-              try {
-                const yaml = require('js-yaml');
-                const fsSync = require('fs');
-                const engineRoot = path.resolve(__dirname, '..', '..');
-                const homePath = path.join(engineRoot, '..', 'config', 'home.yaml');
-                const home = fsSync.existsSync(homePath)
-                  ? yaml.load(fsSync.readFileSync(homePath, 'utf8'))
-                  : {};
-                cache = home.providers || {};
-              } catch { cache = {}; }
-            }
-            const modelLower = modelName.toLowerCase();
-            for (const [name, prov] of Object.entries(cache)) {
-              const defaultModels = (prov.defaultModels || []).map(m => String(m));
-              if (defaultModels.includes(modelName)) return name;
-              if (defaultModels.map(m => m.toLowerCase()).includes(modelLower)) return name;
-            }
-            return null;
-          };
-        })();
-
-        // Defaults: use engine's quantumReasoner model assignment (MiniMax-M3
-        // in the current config) for sweeps, and the same for synthesis unless
-        // the user passed a stronger model. Works out of the box.
-        const cfgAssignments = this.config?.models?.modelAssignments || {};
-        const defaultFast = cfgAssignments['quantumReasoner.branches']?.model
-          || this.config?.models?.defaultModel
-          || 'MiniMax-M3';
-        const defaultStrong = cfgAssignments['synthesis']?.model
-          || this.config?.models?.strategicModel
-          || defaultFast;
-
-        const effectiveSweepModel = sweepModel || defaultFast;
-        const effectiveSynthesisModel = synthesisModel || defaultStrong;
-
-        // Resolve provider from model name if caller didn't pin one explicitly
-        const effectiveSweepProvider = sweepProvider || resolveProviderForModel(effectiveSweepModel) || 'openai';
-        const effectiveSynthesisProvider = synthesisProvider || resolveProviderForModel(effectiveSynthesisModel) || 'openai';
-
-        const buildProvider = (kind, modelName, providerName, maxTokensOverride) => ({
-          async generate({ instructions, input, maxTokens, reasoningEffort }) {
-            const finalMaxTokens = maxTokensOverride || maxTokens || (kind === 'synthesis' ? 8000 : 4000);
-            const finalReasoning = reasoningEffort || (kind === 'synthesis' ? 'high' : 'medium');
-            const callOpts = {
-              component: 'pgsEngine',
-              purpose: kind,
-              model: modelName,
-              instructions: instructions || '',
-              messages: [{ role: 'user', content: input || '' }],
-              max_completion_tokens: finalMaxTokens,
-              reasoningEffort: finalReasoning,
-            };
-            // Route to the explicit provider method — bypasses getModelAssignment()
-            // which returns null when config has no pgsEngine.* assignment.
-            const assignment = { provider: providerName, model: modelName };
-            let response;
-            try {
-              if (providerName === 'anthropic') {
-                response = await unified.generateAnthropic(assignment, callOpts);
-              } else if (providerName === 'minimax') {
-                response = await unified.generateMiniMax(assignment, callOpts);
-              } else if (providerName === 'xai') {
-                response = await unified.generateXAI(assignment, callOpts);
-              } else if (providerName === 'ollama-cloud') {
-                response = await unified.generateWithChatClient(unified.ollamaCloudClient, 'ollama-cloud', assignment, callOpts);
-              } else if (providerName === 'groq') {
-                response = await unified.generateWithChatClient(unified.groqClient, 'groq', assignment, callOpts);
-              } else if (providerName === 'huggingface') {
-                response = await unified.generateWithChatClient(unified.hfClient, 'huggingface', assignment, callOpts);
-              } else if (providerName === 'local') {
-                response = await unified.generateLocal(assignment, callOpts);
-              } else {
-                // OpenAI / OpenAI-Codex / unknown → parent GPT5Client via generate()
-                response = await unified.generate(callOpts);
-              }
-            } catch (err) {
-              return { content: `[PGS ${kind} error: ${err.message}]` };
-            }
-            return { content: response.content || '' };
-          },
-        });
-
-        const sweepProviderShim = buildProvider('sweep', effectiveSweepModel, effectiveSweepProvider, sweepMaxTokens);
-        const synthesisProviderShim = buildProvider('synthesis', effectiveSynthesisModel, effectiveSynthesisProvider, synthesisMaxTokens);
-
-        console.log(`[PGS] Models: sweep=${effectiveSweepModel} (${effectiveSweepProvider}), synthesis=${effectiveSynthesisModel} (${effectiveSynthesisProvider})`);
-
-        // Embedding provider — uses engine's network-memory embed helper when available
-        let embeddingProvider = null;
-        if (this.orchestrator?.memory?.embed) {
-          const memRef = this.orchestrator.memory;
-          embeddingProvider = {
-            embed: (text) => memRef.embed(text),
-          };
-        }
-
-        // Pull the full memory graph
-        const state = await this.loadState();
-        const nodes = state?.memory?.nodes || [];
-        const edges = state?.memory?.edges || [];
-        if (nodes.length === 0) {
-          return res.status(503).json({ error: 'Brain graph empty — no nodes loaded' });
-        }
-
-        const pgs = new PGSEngine({
-          sweepProvider: sweepProviderShim,
-          synthesisProvider: synthesisProviderShim,
-          embeddingProvider,
-          config: maxPartitions ? { maxSweepPartitions: Number(maxPartitions) } : {},
-          onEvent: (e) => console.log(`[PGS] ${e.type}: ${JSON.stringify(e).slice(0, 200)}`),
-        });
-
-        const result = await pgs.execute(query, { nodes, edges }, { mode });
-
-        // Extract structured fields PGSEngine may return
-        const payload = {
-          answer: result.answer || null,
-          synthesis: result.synthesis || result.answer || null,
-          partitions: result.partitions || result.metadata?.partitions || [],
-          sweeps: result.sweeps || result.metadata?.sweeps || [],
-          absences: result.absences || [],
-          crossDomain: result.crossDomain || result.metadata?.crossDomain || [],
-          metadata: {
-            ...(result.metadata || {}),
-            models: {
-              sweep: effectiveSweepModel,
-              sweepProvider: effectiveSweepProvider,
-              synthesis: effectiveSynthesisModel,
-              synthesisProvider: effectiveSynthesisProvider,
-            },
-          },
-        };
-
-        // Log the PGS query alongside other queries
-        try {
-          const queryLogPath = path.join(this.logsDir, 'queries.jsonl');
-          await fs.appendFile(queryLogPath, JSON.stringify({
-            timestamp: new Date().toISOString(),
-            kind: 'pgs',
-            query,
-            mode,
-            answerLength: (payload.answer || '').length,
-            partitionCount: payload.partitions.length,
-          }) + '\n');
-        } catch { /* non-fatal */ }
-
-        res.json(payload);
-      } catch (error) {
-        console.error('[/api/pgs] Failed:', error);
-        res.status(500).json({ error: error.message, stack: error.stack?.split('\n').slice(0, 5).join('\n') });
       }
     });
 

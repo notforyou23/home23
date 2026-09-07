@@ -15,7 +15,6 @@ import { dirname, join } from 'node:path';
 
 export const SHARED_SERVICES = Object.freeze([
   Object.freeze({ name: 'home23-evobrew', label: 'Evobrew' }),
-  Object.freeze({ name: 'home23-cosmo23', label: 'COSMO 2.3' }),
   Object.freeze({ name: 'home23-screenlogic', label: 'ScreenLogic bridge' }),
 ]);
 

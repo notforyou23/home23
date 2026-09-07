@@ -1,0 +1,528 @@
+'use strict';
+
+const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits.js');
+const {
+  projectQueryEvidenceNode,
+  projectRetainedQueryEvidenceEdge,
+  projectionRecordLimits,
+  queryEvidenceIdentifier,
+  truncateUtf8,
+} = require('./query-evidence-projector.js');
+const {
+  redactPrivatePaths,
+  serializeProviderRecord,
+} = require('./provider-record-sanitizer.js');
+const {
+  projectMemoryAuthority,
+  scoreMemoryAuthority,
+} = require('../../memory-authority.cjs');
+const {
+  memoryAuthorityAttestationPayload,
+  verifyMemoryAuthorityAttestation,
+} = require('../../memory-authority-attestation.cjs');
+const {
+  summarizeRetrievalAuthority,
+  attestRetrievalAuthoritySummary,
+} = require('../../memory-source/contracts.cjs');
+
+const COOPERATIVE_YIELD_EVERY = 1_000;
+const CANDIDATE_OVERSAMPLE = 4;
+
+function typed(code, message, retryable = false) {
+  return Object.assign(new Error(message), { code, retryable });
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason;
+}
+
+async function yieldForCancellation(count, signal) {
+  if (count % COOPERATIVE_YIELD_EVERY !== 0) return;
+  await new Promise((resolve) => setImmediate(resolve));
+  throwIfAborted(signal);
+}
+
+function boundedLimits(overrides = {}) {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    throw typed('invalid_request', 'Projection limits must be an object');
+  }
+  const result = {};
+  for (const [key, ceiling] of Object.entries(QUERY_OPERATION_LIMITS)) {
+    const value = Object.prototype.hasOwnProperty.call(overrides, key)
+      ? overrides[key]
+      : ceiling;
+    if (!Number.isSafeInteger(value) || value <= 0 || value > ceiling) {
+      throw typed('invalid_request', `Invalid projection limit: ${key}`);
+    }
+    result[key] = value;
+  }
+  for (const key of Object.keys(overrides)) {
+    if (!Object.prototype.hasOwnProperty.call(QUERY_OPERATION_LIMITS, key)) {
+      throw typed('invalid_request', `Unknown projection limit: ${key}`);
+    }
+  }
+  return Object.freeze(result);
+}
+
+function serializeRecord(record, maxRecordBytes, kind) {
+  return serializeProviderRecord(record, {
+    maxBytes: maxRecordBytes,
+    label: `Pinned ${kind} record`,
+    redactPaths: true,
+  });
+}
+function identifierValue(record, fields) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return undefined;
+  for (const field of fields) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, field);
+    if (!descriptor) continue;
+    if (!Object.hasOwn(descriptor, 'value')) {
+      throw typed('source_invalid', 'Accessor-backed Query evidence is unsafe');
+    }
+    if (descriptor.value !== null && descriptor.value !== undefined) return descriptor.value;
+  }
+  return undefined;
+}
+function nodeId(node) {
+  const value = identifierValue(node, ['id', 'nodeId', 'key']);
+  if ((typeof value !== 'string' && !Number.isSafeInteger(value)) || String(value).length === 0) {
+    throw typed('source_invalid', 'Query evidence node ID is invalid');
+  }
+  return queryEvidenceIdentifier(value);
+}
+
+function queryTerms(query) {
+  return [...new Set(String(query || '').toLowerCase().split(/[^a-z0-9_:-]+/)
+    .filter(term => term.length >= 2))].slice(0, 128);
+}
+
+function nodeText(node) {
+  const values = [
+    node.content, node.concept, node.statement, node.text, node.summary, node.title,
+    node.keyPhrase,
+    node.type, node.tag, Array.isArray(node.tags) ? node.tags.join(' ') : '',
+  ];
+  return values.filter(value => typeof value === 'string').join(' ').toLowerCase();
+}
+
+function nonNullFields(value) {
+  return Object.fromEntries(Object.entries(value || {}).filter(([, field]) => field !== null));
+}
+
+function authenticatedProviderNode(node) {
+  if (!verifyMemoryAuthorityAttestation(node)) return node;
+  let payload;
+  try {
+    payload = memoryAuthorityAttestationPayload(node);
+  } catch {
+    throw typed('source_invalid', 'Authenticated pinned node cannot be projected safely');
+  }
+  const provenance = {
+    ...nonNullFields(payload.provenance),
+    ...(Object.keys(payload.provenanceAuthority).length > 0
+      ? { authority: nonNullFields(payload.provenanceAuthority) }
+      : {}),
+    node_profile: nonNullFields(payload.profile),
+  };
+  const metadata = nonNullFields(payload.metadata);
+  const evidenceLinks = Array.isArray(payload.evidenceLinks) ? payload.evidenceLinks : [];
+  return {
+    id: payload.identity,
+    ...nonNullFields(payload.content),
+    ...nonNullFields(payload.classification),
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+    ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
+    ...(evidenceLinks.length > 0 ? { evidence: { evidence_links: evidenceLinks } } : {}),
+  };
+}
+
+function projectAuthenticatedProviderNode(providerNode, recordLimits) {
+  const status = typeof providerNode?.metadata?.status === 'string'
+    ? truncateUtf8(providerNode.metadata.status, 128).value
+    : null;
+  const metadata = status ? { status } : null;
+  const metadataReserve = metadata
+    ? Buffer.byteLength(JSON.stringify({ metadata }), 'utf8') + 8
+    : 0;
+  const maxRecordBytes = recordLimits.maxRecordBytes - metadataReserve;
+  if (maxRecordBytes <= 1) {
+    throw typed('result_too_large', 'Authenticated Query evidence record limit is too small');
+  }
+  const projected = projectQueryEvidenceNode(providerNode, {
+    maxRecordBytes,
+    maxContentBytes: Math.min(recordLimits.maxContentBytes, maxRecordBytes - 1),
+  });
+  return serializeRecord({
+    ...projected.value,
+    ...(metadata ? { metadata } : {}),
+  }, recordLimits.maxRecordBytes, 'node');
+}
+
+function scoreNode(node, authorityNode, terms, { query, nowMs } = {}) {
+  const text = nodeText(node);
+  let matched = 0;
+  for (const term of terms) if (text.includes(term)) matched += 1;
+  const coverage = terms.length ? matched / terms.length : 0;
+  const salience = Number(node.salience ?? node.weight ?? node.activation ?? 0);
+  const boundedSalience = Number.isFinite(salience) ? Math.max(0, Math.min(1, salience)) : 0;
+  const relevance = coverage * 4 + matched * 0.25 + boundedSalience;
+  return scoreMemoryAuthority(authorityNode, relevance, { query, nowMs });
+}
+
+function projectProviderAuthority(node) {
+  const profile = projectMemoryAuthority(node, { limit: 2 });
+  return Object.freeze({
+    schema: profile.schema,
+    domain: profile.retrievalDomain,
+    retrievalDomain: profile.retrievalDomain,
+    authorityClass: profile.authorityClass,
+    semanticTime: profile.semanticTime,
+    operationalAuthority: profile.operationalAuthority === true,
+    requiresFreshVerification: profile.requiresFreshVerification === true,
+    sourceChain: profile.sourceChain.slice(0, 2).map(link => Object.freeze({
+      kind: link.kind,
+      ref: redactPrivatePaths(link.ref),
+    })),
+  });
+}
+
+function summarizeNodeAuthorities(authorities) {
+  const summary = {
+    verifiedCurrentState: 0,
+    jtrCorrection: 0,
+    artifactLog: 0,
+    workerReceipt: 0,
+    generatedDoctrine: 0,
+    narrative: 0,
+    requiresFreshVerification: 0,
+  };
+  const fields = {
+    verified_current_state: 'verifiedCurrentState',
+    jtr_correction: 'jtrCorrection',
+    artifact_log: 'artifactLog',
+    worker_receipt: 'workerReceipt',
+    generated_doctrine: 'generatedDoctrine',
+    narrative: 'narrative',
+  };
+  for (const authority of Array.isArray(authorities) ? authorities : []) {
+    const field = fields[authority?.authorityClass];
+    if (field) summary[field] += 1;
+    if (authority?.requiresFreshVerification === true) summary.requiresFreshVerification += 1;
+  }
+  return Object.freeze(summary);
+}
+
+function compareCandidate(left, right) {
+  if (left.score !== right.score) return left.score - right.score;
+  return right.id.localeCompare(left.id);
+}
+
+class BoundedMinHeap {
+  constructor(limit) {
+    this.limit = limit;
+    this.rows = [];
+  }
+
+  _swap(a, b) {
+    [this.rows[a], this.rows[b]] = [this.rows[b], this.rows[a]];
+  }
+
+  _up(index) {
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (compareCandidate(this.rows[parent], this.rows[index]) <= 0) break;
+      this._swap(parent, index);
+      index = parent;
+    }
+  }
+
+  _down(index) {
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      let smallest = index;
+      if (left < this.rows.length
+          && compareCandidate(this.rows[left], this.rows[smallest]) < 0) smallest = left;
+      if (right < this.rows.length
+          && compareCandidate(this.rows[right], this.rows[smallest]) < 0) smallest = right;
+      if (smallest === index) break;
+      this._swap(index, smallest);
+      index = smallest;
+    }
+  }
+
+  add(candidate) {
+    if (this.rows.length < this.limit) {
+      this.rows.push(candidate);
+      this._up(this.rows.length - 1);
+      return { added: candidate, removed: null };
+    }
+    if (compareCandidate(candidate, this.rows[0]) <= 0) {
+      return { added: null, removed: null };
+    }
+    const removed = this.rows[0];
+    this.rows[0] = candidate;
+    this._down(0);
+    return { added: candidate, removed };
+  }
+
+  removeMinimum() {
+    if (this.rows.length === 0) return null;
+    const removed = this.rows[0];
+    const last = this.rows.pop();
+    if (this.rows.length > 0) {
+      this.rows[0] = last;
+      this._down(0);
+    }
+    return removed;
+  }
+
+  valuesBestFirst() {
+    return [...this.rows].sort((left, right) => {
+      const comparison = compareCandidate(right, left);
+      return comparison || left.id.localeCompare(right.id);
+    });
+  }
+}
+
+function normalizedBucketPart(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_.:-]+/g, '-');
+  return normalized ? normalized.slice(0, 96) : null;
+}
+
+function candidateBucket(record) {
+  const type = normalizedBucketPart(record.type);
+  const tag = normalizedBucketPart(record.tag)
+    || (Array.isArray(record.tags) ? normalizedBucketPart(record.tags[0]) : null);
+  if (type && tag) return `type:${type}|tag:${tag}`;
+  if (type) return `type:${type}`;
+  if (tag) return `tag:${tag}`;
+  return 'untyped';
+}
+
+function diverseBestFirst(candidates) {
+  const groups = new Map();
+  for (const candidate of candidates) {
+    const bucket = candidateBucket(candidate.record);
+    if (!groups.has(bucket)) groups.set(bucket, []);
+    groups.get(bucket).push(candidate);
+  }
+  const orderedGroups = [...groups.entries()].sort((left, right) => {
+    const comparison = compareCandidate(right[1][0], left[1][0]);
+    return comparison || left[0].localeCompare(right[0]);
+  });
+  const offsets = new Map(orderedGroups.map(([bucket]) => [bucket, 0]));
+  const output = [];
+  while (true) {
+    let added = false;
+    for (const [bucket, rows] of orderedGroups) {
+      const offset = offsets.get(bucket);
+      if (offset >= rows.length) continue;
+      output.push(rows[offset]);
+      offsets.set(bucket, offset + 1);
+      added = true;
+    }
+    if (!added) break;
+  }
+  return output;
+}
+
+function effectiveRecordLimits(mode, selectedLimits) {
+  const configured = projectionRecordLimits(mode);
+  const maxRecordBytes = Math.min(configured.maxRecordBytes, selectedLimits.maxRecordBytes);
+  if (maxRecordBytes <= 1) {
+    throw typed('result_too_large', 'Query evidence record limit is too small');
+  }
+  return Object.freeze({
+    maxRecordBytes,
+    maxContentBytes: Math.min(configured.maxContentBytes, maxRecordBytes - 1),
+  });
+}
+
+async function projectPinnedQuery({
+  sourcePin,
+  query,
+  mode = 'full',
+  signal,
+  limits = {},
+  sourceSummary,
+  onNodeScanned = null,
+  onEdgeScanned = null,
+  nowMs = Date.now(),
+} = {}) {
+  const projectionStartedAt = performance.now();
+  if (!sourcePin || typeof sourcePin.iterateNodes !== 'function'
+      || typeof sourcePin.iterateEdges !== 'function') {
+    throw typed('source_pin_required', 'Pinned source iterators are required');
+  }
+  if (typeof query !== 'string' || !query.trim()) {
+    throw typed('invalid_request', 'Query is required');
+  }
+  const selectedLimits = boundedLimits(limits);
+  const recordLimits = effectiveRecordLimits(mode, selectedLimits);
+  const terms = queryTerms(query);
+  const candidateLimit = Math.min(
+    QUERY_OPERATION_LIMITS.maxNodes * CANDIDATE_OVERSAMPLE,
+    selectedLimits.maxNodes * CANDIDATE_OVERSAMPLE,
+  );
+  const heap = new BoundedMinHeap(candidateLimit);
+  let nodesScanned = 0;
+  let nodesDroppedForByteBudget = 0;
+
+  throwIfAborted(signal);
+  for await (const rawNode of sourcePin.iterateNodes({ signal })) {
+    throwIfAborted(signal);
+    nodesScanned += 1;
+    const rawId = nodeId(rawNode);
+    if (rawId === null) {
+      if (typeof onNodeScanned === 'function') onNodeScanned(nodesScanned);
+      await yieldForCancellation(nodesScanned, signal);
+      continue;
+    }
+    const authenticated = verifyMemoryAuthorityAttestation(rawNode);
+    const providerNode = authenticatedProviderNode(rawNode);
+    const projected = authenticated
+      ? projectAuthenticatedProviderNode(providerNode, recordLimits)
+      : projectQueryEvidenceNode(providerNode, recordLimits);
+    const id = nodeId(projected.value);
+    if (id === null || id !== rawId) {
+      if (typeof onNodeScanned === 'function') onNodeScanned(nodesScanned);
+      await yieldForCancellation(nodesScanned, signal);
+      continue;
+    }
+    const authority = projectProviderAuthority(rawNode);
+    heap.add({
+      id,
+      score: scoreNode(authenticated ? providerNode : projected.value, rawNode, terms, {
+        query,
+        nowMs,
+      }),
+      record: projected.value,
+      authority,
+      bytes: projected.bytes + Buffer.byteLength(JSON.stringify({ id, ...authority }), 'utf8'),
+    });
+    if (typeof onNodeScanned === 'function') onNodeScanned(nodesScanned);
+    await yieldForCancellation(nodesScanned, signal);
+  }
+
+  const selectedRows = [];
+  let retainedNodeBytes = 0;
+  for (const candidate of diverseBestFirst(heap.valuesBestFirst())) {
+    if (selectedRows.length >= selectedLimits.maxNodes) break;
+    if (retainedNodeBytes + candidate.bytes > selectedLimits.maxProjectionBytes) {
+      nodesDroppedForByteBudget += 1;
+      continue;
+    }
+    selectedRows.push(candidate);
+    retainedNodeBytes += candidate.bytes;
+  }
+  selectedRows.sort((left, right) => compareCandidate(right, left));
+  const nodes = selectedRows.map(row => row.record);
+  const nodeAuthorities = selectedRows.map(row => Object.freeze({ id: row.id, ...row.authority }));
+  if (nodes.length === 0 && heap.rows.length > 0) {
+    throw typed('result_too_large', 'No pinned query candidate fits the projection byte limit');
+  }
+  const retainedIds = new Set(nodes.map(nodeId).filter(Boolean));
+  const edges = [];
+  let edgeBytes = 0;
+  let edgesScanned = 0;
+  let edgesDroppedForByteBudget = 0;
+  for await (const rawEdge of sourcePin.iterateEdges({ signal })) {
+    throwIfAborted(signal);
+    edgesScanned += 1;
+    const projected = projectRetainedQueryEvidenceEdge(rawEdge, recordLimits, retainedIds);
+    if (projected === null) {
+      if (typeof onEdgeScanned === 'function') onEdgeScanned(edgesScanned);
+      await yieldForCancellation(edgesScanned, signal);
+      continue;
+    }
+    if (edges.length < selectedLimits.maxEdges) {
+      if (retainedNodeBytes + edgeBytes + projected.bytes
+          > selectedLimits.maxProjectionBytes) {
+        edgesDroppedForByteBudget += 1;
+      } else {
+        edges.push(projected.value);
+        edgeBytes += projected.bytes;
+      }
+    }
+    if (typeof onEdgeScanned === 'function') onEdgeScanned(edgesScanned);
+    await yieldForCancellation(edgesScanned, signal);
+  }
+  throwIfAborted(signal);
+
+  const droppedForByteBudget = nodesDroppedForByteBudget + edgesDroppedForByteBudget;
+  const byteBudgetTruncated = droppedForByteBudget > 0;
+
+  const summary = sourceSummary !== undefined
+    ? sourceSummary
+    : typeof sourcePin.summarize === 'function'
+      ? await sourcePin.summarize({ signal })
+      : sourcePin.descriptor?.summary || null;
+  throwIfAborted(signal);
+  const sourceRevision = sourcePin.revision
+    ?? sourcePin.descriptor?.cutoffRevision
+    ?? sourcePin.evidence?.deltaWatermark?.revision
+    ?? null;
+  const authoritySummary = summarizeRetrievalAuthority(nodeAuthorities);
+  const evidence = typeof sourcePin.getEvidence === 'function'
+    ? sourcePin.getEvidence({
+      operation: 'query_projection',
+      retrievalMode: 'logical-source-scan',
+      indexCoverage: {
+        complete: false,
+        indexedRevision: null,
+        currentRevision: sourceRevision,
+        coveredThroughRevision: sourceRevision,
+        deltaRecords: sourcePin.descriptor?.activeDelta?.count ?? 0,
+        distinctChangedNodes: 0,
+        distinctUpsertedNodes: 0,
+        distinctRemovedNodes: 0,
+        edgeOnlyRecords: 0,
+        route: 'pinned-query-projection',
+        completeness: 'complete',
+      },
+      stageTimingsMs: {
+        response: performance.now() - projectionStartedAt,
+      },
+      returnedTotals: { nodes: nodes.length, edges: edges.length },
+      completeCoverage: true,
+      filteredTotal: 0,
+      byteBudgetTruncated,
+      droppedForByteBudget,
+      authoritySummary,
+    })
+    : sourcePin.evidence || null;
+  if (evidence) attestRetrievalAuthoritySummary(evidence, nodeAuthorities);
+
+  return Object.freeze({
+    nodes,
+    nodeAuthorities,
+    edges,
+    summary,
+    sourceRevision,
+    sourceEvidence: evidence,
+    stats: Object.freeze({
+      nodesScanned,
+      edgesScanned,
+      nodesRetained: nodes.length,
+      edgesRetained: edges.length,
+      maxRetainedNodes: nodes.length,
+      maxRetainedEdges: edges.length,
+      maxRetainedBytes: retainedNodeBytes + edgeBytes,
+      retainedBytes: retainedNodeBytes + edgeBytes,
+      byteBudgetTruncated,
+      droppedForByteBudget,
+      nodesDroppedForByteBudget,
+      edgesDroppedForByteBudget,
+    }),
+  });
+}
+
+module.exports = {
+  COOPERATIVE_YIELD_EVERY,
+  authenticatedProviderNode,
+  boundedLimits,
+  projectPinnedQuery,
+  summarizeNodeAuthorities,
+};

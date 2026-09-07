@@ -42,6 +42,10 @@ evobrew:
   port: 3415
 
 cosmo23:
+  # Independently installed research service; Home23 does not start or update it.
+  baseUrl: http://127.0.0.1:43210
+  # Optional local source path for discovery of existing research runs.
+  # source: /absolute/path/to/cosmo23
   ports:
     app: 43210
     websocket: 43240

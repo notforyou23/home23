@@ -118,7 +118,7 @@ test('agent create records fresh onboarding purpose, imports, and primary agent'
     const capabilityTargets = ecosystem.apps.filter((app) => app.env?.[capabilityEnv]);
     assert.deepEqual(
       capabilityTargets.map((app) => app.name).sort(),
-      ['home23-ada-dash', 'home23-cosmo23'],
+      ['home23-ada-dash'],
     );
     assert.ok(capabilityTargets.every((app) => app.env[capabilityEnv] === 'e'.repeat(64)));
     for (const app of ecosystem.apps.filter((entry) => !capabilityTargets.includes(entry))) {

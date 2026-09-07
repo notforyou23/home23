@@ -12,7 +12,7 @@ const {
 } = require('../../../engine/src/dashboard/brain-source-api.js');
 const {
   requestAbortController: cosmoRequestAbortController,
-} = require('../../../cosmo23/server/lib/brain-source-router.js');
+} = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('server/lib/brain-source-router.js'));
 
 const implementations = [
   ['dashboard', dashboardRequestAbortController],

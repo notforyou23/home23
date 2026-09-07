@@ -15,11 +15,11 @@ const {
   BUILTIN_EXECUTION_DEFAULTS,
   BUILTIN_MODEL_CATALOG,
   normalizeModelCatalog,
-} = require('../../../cosmo23/server/config/model-catalog.js');
+} = require('../../../shared/research-runtime/server/config/model-catalog.js');
 const {
   createBrainProviderClientRegistry,
   pairKey,
-} = require('../../../cosmo23/lib/brain-provider-client-registry.js');
+} = require('../../../shared/research-runtime/lib/brain-provider-client-registry.js');
 
 function baseHome() {
   return {

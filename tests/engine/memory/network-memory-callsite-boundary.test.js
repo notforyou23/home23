@@ -5,7 +5,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { cosmoSourcePath } = require('../../../scripts/lib/cosmo-source.cjs');
+const read = (relativePath) => fs.readFileSync(relativePath.startsWith('cosmo23/') ? cosmoSourcePath(relativePath.slice(8)) : path.join(root, relativePath), 'utf8');
 
 function sliceBetween(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);

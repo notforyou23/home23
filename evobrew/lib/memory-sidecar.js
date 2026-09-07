@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const readline = require('readline');
-const { openCosmoMemorySource } = require('../../cosmo23/lib/memory-source-adapter');
+const { openCosmoMemorySource } = require('../../shared/research-runtime/lib/memory-source-adapter.js');
 
 const NODES_FILE = 'memory-nodes.jsonl.gz';
 const EDGES_FILE = 'memory-edges.jsonl.gz';

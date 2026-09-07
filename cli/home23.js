@@ -90,7 +90,9 @@ Commands:
   } else if (command === 'logs') {
     const { runLogs } = await import('./lib/pm2-commands.js');
     await runLogs(HOME23_ROOT, args[1]);
-  } else if (command === 'evobrew' || command === 'cosmo23') {
+  } else if (command === 'cosmo23') {
+    console.log('Cosmo is independently installed and updated. Home23 connects through cosmo23.baseUrl in config/home.yaml.');
+  } else if (command === 'evobrew') {
     console.log(`${command} is now bundled with Home23 and updates automatically.`);
     console.log('Run "home23 update" to update everything.');
   } else if (command === 'update') {

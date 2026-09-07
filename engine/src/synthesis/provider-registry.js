@@ -3,16 +3,16 @@
 const {
   flattenCatalogModels,
   getModelCapabilities,
-} = require('../../../cosmo23/server/config/model-catalog.js');
+} = require('../../../shared/research-runtime/server/config/model-catalog.js');
 const {
   requireCompleteProviderResult,
-} = require('../../../cosmo23/lib/provider-completion.js');
+} = require('../../../shared/research-runtime/lib/provider-completion.js');
 const {
   throwIfAborted,
-} = require('../../../cosmo23/lib/provider-execution.js');
+} = require('../../../shared/research-runtime/lib/provider-execution.js');
 const {
   SYNTHESIS_OPERATION_LIMITS,
-} = require('../../../cosmo23/lib/brain-operation-limits.js');
+} = require('../../../shared/research-runtime/lib/brain-operation-limits.js');
 
 const DEFAULT_SYNTHESIS_SELECTION = Object.freeze({
   provider: 'minimax',

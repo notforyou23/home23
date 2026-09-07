@@ -111,28 +111,27 @@ async function withCapabilityFailureSettingsServer(fn, options = {}) {
   }
 }
 
-test('COSMO settings restart propagates capability preparation failure without restarting', async () => {
+test('Cosmo restart is retired without changing the external process', async () => {
   await withCapabilityFailureSettingsServer(async (baseUrl, root) => {
     const response = await fetch(`${baseUrl}/home23/api/settings/cosmo23/restart`, { method: 'POST' });
-    assert.equal(response.status, 500);
+    assert.equal(response.status, 410);
     const body = await response.json();
     assert.equal(body.ok, false);
-    assert.match(body.error, /capability_secret_invalid/);
+    assert.match(body.error, /cosmo_is_independently_managed/);
     assert.equal(fs.existsSync(path.join(root, 'restart-called')), false);
   });
 });
 
-test('provider settings propagate COSMO capability seeding failure and do not report success', async () => {
+test('Home23 provider settings do not depend on retired Cosmo configuration seeding', async () => {
   await withCapabilityFailureSettingsServer(async (baseUrl, root) => {
     const response = await fetch(`${baseUrl}/home23/api/settings/providers`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ providers: { openai: { apiKey: 'test-key' } } }),
     });
-    assert.equal(response.status, 500);
+    assert.equal(response.status, 200);
     const body = await response.json();
-    assert.equal(body.ok, false);
-    assert.match(body.error, /capability_secret_invalid/);
+    assert.equal(body.ok, true);
     assert.equal(fs.existsSync(path.join(root, 'restart-called')), false);
   });
 });

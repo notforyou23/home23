@@ -4011,6 +4011,7 @@ test('isolated fixture delay proof is bound to exact accepted operations and pro
     'HOME23_ISOLATED_FIXTURE_ROOT_DEV',
     'HOME23_ISOLATED_FIXTURE_ROOT_INO',
     'HOME23_ISOLATED_FIXTURE_START_TOKEN',
+    'COSMO23_SOURCE_ROOT',
     'NODE_PATH',
     'PATH',
   ].sort();

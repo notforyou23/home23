@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { IngestionManifest } = require('../../../engine/src/ingestion/ingestion-manifest.js');
-const { IngestionManifest: CosmoIngestionManifest } = require('../../../cosmo23/engine/src/ingestion/ingestion-manifest.js');
+const { IngestionManifest: CosmoIngestionManifest } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/ingestion/ingestion-manifest.js'));
 
 for (const [label, Manifest] of [
   ['root', IngestionManifest],

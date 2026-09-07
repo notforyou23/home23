@@ -83,31 +83,31 @@ const {
 } = require('../../engine/mcp/http-server.js');
 const {
   createBrainProviderClientRegistry,
-} = require('../../cosmo23/lib/brain-provider-client-registry.js');
+} = require('../../shared/research-runtime/lib/brain-provider-client-registry.js');
 const {
   createCosmoBrainOperationRuntime,
-} = require('../../cosmo23/server/lib/brain-operation-runtime.js');
+} = require(require('./cosmo-source.cjs').cosmoSourcePath('server/lib/brain-operation-runtime.js'));
 const {
   createResearchCompileProviderAdapter,
-} = require('../../cosmo23/server/lib/research-compile-provider-adapter.js');
+} = require(require('./cosmo-source.cjs').cosmoSourcePath('server/lib/research-compile-provider-adapter.js'));
 const {
   createResearchOperationExecutors,
-} = require('../../cosmo23/server/lib/research-operation-executors.js');
+} = require(require('./cosmo-source.cjs').cosmoSourcePath('server/lib/research-operation-executors.js'));
 const {
   readPinnedIntelligence,
-} = require('../../cosmo23/server/lib/research-pinned-source-reader.js');
+} = require(require('./cosmo-source.cjs').cosmoSourcePath('server/lib/research-pinned-source-reader.js'));
 const {
   createRequesterOutputWriter,
-} = require('../../cosmo23/server/lib/research-requester-output-writer.js');
+} = require(require('./cosmo-source.cjs').cosmoSourcePath('server/lib/research-requester-output-writer.js'));
 const {
   createBrainOperationRoutes,
-} = require('../../cosmo23/server/lib/brain-operation-routes.js');
+} = require(require('./cosmo-source.cjs').cosmoSourcePath('server/lib/brain-operation-routes.js'));
 const {
   getModelCapabilities,
-} = require('../../cosmo23/server/config/model-catalog.js');
+} = require('../../shared/research-runtime/server/config/model-catalog.js');
 const {
   requireCompleteProviderResult,
-} = require('../../cosmo23/lib/provider-completion.js');
+} = require('../../shared/research-runtime/lib/provider-completion.js');
 const {
   createMemorySourcePinProvider,
   createOperationScratchQuota,
@@ -155,6 +155,7 @@ const CHILD_BINDING_ENV_KEYS = Object.freeze([
   'HOME23_ISOLATED_FIXTURE_ROOT_INO',
   'HOME23_ISOLATED_FIXTURE_START_TOKEN',
   'NODE_PATH',
+  'COSMO23_SOURCE_ROOT',
 ]);
 const FIXTURE_OWNER_FIELDS = Object.freeze([
   'schemaVersion', 'receiptRunId', 'authority', 'implementationCommit',
@@ -1020,7 +1021,7 @@ function unavailableResearchProcessManager() {
 }
 
 async function runCosmoChild(config) {
-  const { QueryEngine } = require('../../cosmo23/lib/query-engine.js');
+  const { QueryEngine } = require(require('./cosmo-source.cjs').cosmoSourcePath('lib/query-engine.js'));
   const telemetry = freshTelemetry();
   const modelCatalog = controlledCatalog();
   const providerRegistry = createControlledRegistry(config, telemetry);
@@ -1659,7 +1660,7 @@ async function waitReady(file, child, timeoutMs = CHILD_READY_TIMEOUT_MS) {
 function knownDependencyPaths() {
   const nodePaths = [
     path.join(REPOSITORY_ROOT, 'node_modules'),
-    path.join(REPOSITORY_ROOT, 'cosmo23', 'node_modules'),
+    require('./cosmo-source.cjs').cosmoSourcePath('node_modules'),
   ];
   const dotGit = path.join(REPOSITORY_ROOT, '.git');
   try {
@@ -1670,7 +1671,7 @@ function knownDependencyPaths() {
       const checkoutRoot = path.dirname(path.resolve(gitDirectory, '../..'));
       nodePaths.push(
         path.join(checkoutRoot, 'node_modules'),
-        path.join(checkoutRoot, 'cosmo23', 'node_modules'),
+        require('./cosmo-source.cjs').cosmoSourcePath('node_modules'),
       );
     }
   } catch { /* normal checkout has a .git directory */ }
@@ -1705,6 +1706,7 @@ function createChildEnvironment(config, configBinding) {
     HOME23_ISOLATED_FIXTURE_ROOT_INO: config.fixtureRootIdentity.ino,
     HOME23_ISOLATED_FIXTURE_START_TOKEN: config.startToken,
     NODE_PATH: dependencies.join(path.delimiter),
+    COSMO23_SOURCE_ROOT: require('./cosmo-source.cjs').cosmoSourcePath('.'),
   });
   return childEnv;
 }

@@ -6,6 +6,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const {
   createQuotaBackpressuredJsonlGzipWriter,
+  NON_CLOSING_READ_STREAM_FS,
+  stopReadStreams,
   readJsonl,
 } = require('./jsonl.cjs');
 const {
@@ -264,6 +266,7 @@ async function digestPublishedFile(projectionRoot, entry, { signal, maxReadBytes
       stream = fs.createReadStream(null, {
         fd: opened.handle.fd,
         autoClose: false,
+        fs: NON_CLOSING_READ_STREAM_FS,
         start: 0,
         end: entry.bytes - 1,
         signal,
@@ -292,7 +295,7 @@ async function digestPublishedFile(projectionRoot, entry, { signal, maxReadBytes
     await assertOpenedFilePathIdentity(opened, portableFileIdentity(opened.stat));
     throwIfAborted(signal);
   } finally {
-    stream?.destroy();
+    if (stream) await stopReadStreams(stream, stream);
     await opened.handle.close().catch(() => {});
   }
 }

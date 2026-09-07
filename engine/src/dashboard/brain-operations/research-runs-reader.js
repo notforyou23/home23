@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const {
   loadCanonicalRunMetadata,
-} = require('../../../../cosmo23/server/lib/research-run-metadata.js');
+} = require('../../../../shared/research-runtime/server/lib/research-run-metadata.js');
 const {
   resolveAgentInstancePaths,
 } = require('../../../../shared/agent-instance-paths.cjs');

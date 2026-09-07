@@ -202,7 +202,7 @@ test('the RECENT.md surface is still readable by context assembly, independent o
   );
   assert.match(
     contextAssemblySource,
-    /function loadSurface\(workspacePath: string, filename: string, budget: number\): string \| null \{\s*\n\s*const filePath = join\(workspacePath, filename\);\s*\n\s*if \(!existsSync\(filePath\)\) return null;\s*\n\s*const content = readFileSync\(filePath, 'utf-8'\)/,
+    /function loadSurface\(workspacePath: string, filename: string, budget: number, authored = false\): string \| null \{\s*\n\s*const filePath = join\(workspacePath, filename\);\s*\n\s*if \(!existsSync\(filePath\)\) return null;\s*\n\s*const content = readFileSync\(filePath, 'utf-8'\)/,
     'the surface loader must read the file straight off disk, not query the brain/memory graph'
   );
   assert.match(
