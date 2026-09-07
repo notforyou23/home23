@@ -41,7 +41,7 @@ WITH boundary AS (
       (SELECT min(sequence) FROM events),
       coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'events'), 0) + 1
     ) AS retention_floor_sequence,
-    (SELECT count(*) FROM events) AS retained_event_count,
+    (SELECT retained_count FROM event_retention_count WHERE singleton = 1) AS retained_event_count,
     EXISTS (SELECT 1 FROM events WHERE sequence = ?) AS cursor_retained
 ), page AS (
   SELECT * FROM events

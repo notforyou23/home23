@@ -1,3 +1,4 @@
+import { EVENT_RETENTION_COUNT_MIGRATION_SQL } from "../../../src/coordination/migrations/0015-event-retention-count.js";
 import Database from "better-sqlite3";
 
 import {
@@ -123,6 +124,7 @@ export class TestMessagingDatabase {
   constructor(applyMessagingProposal = true) {
     this.raw.pragma("foreign_keys = ON");
     this.raw.exec(COORDINATION_SPINE_MIGRATION_SQL);
+    this.raw.exec(EVENT_RETENTION_COUNT_MIGRATION_SQL);
     applyAcceptedProposal(
       this.raw,
       AUTH_SCHEMA_DELTA_PROPOSAL as unknown as SchemaProposal,

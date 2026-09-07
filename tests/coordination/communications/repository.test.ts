@@ -285,3 +285,29 @@ test("a retained global sequence gap returns explicit bootstrap-required reset",
     assert.equal(result.error.details.retentionFloorSequence, 2);
   }
 });
+
+
+test("retention count remains exact through insert rollback, pruning, and interior gaps", (t) => {
+  const path = temporaryDatabase(t);
+  const database = openCoordinationDatabase({ path });
+  const repository = new SqliteCommunicationEventRepository(database);
+  repository.append(appendInput());
+  repository.append(appendInput({ eventId: `cevt_${UUID_2}` }));
+  repository.append(appendInput({ eventId: "cevt_0198d95f-6c00-7000-8000-000000000023" }));
+  database.close();
+  const raw = new Database(path);
+  const count = () => raw.prepare("SELECT retained_count AS n FROM event_retention_count").get() as { n: number };
+  assert.equal(count().n, 3);
+  raw.exec("BEGIN; DELETE FROM events WHERE sequence = 2;");
+  assert.equal(count().n, 2);
+  raw.exec("ROLLBACK");
+  assert.equal(count().n, 3);
+  raw.exec("DELETE FROM events WHERE sequence = 2");
+  assert.equal(count().n, 2);
+  raw.close();
+  const reopened = openCoordinationDatabase({ path });
+  t.after(() => reopened.close());
+  const result = new SqliteCommunicationEventRepository(reopened).history({ afterSequence: 0, limit: 10, requestId: REQUEST_ID });
+  assert.equal(result.kind, "reset");
+  if (result.kind === "reset") assert.equal(result.error.details.reason, "sequence_gap");
+});

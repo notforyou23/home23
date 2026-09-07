@@ -185,7 +185,7 @@ export class SqliteCommunicationEventRepository {
          coalesce((SELECT min(sequence) FROM events),
            coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'events'), 0) + 1
          ) AS retentionFloorSequence,
-         (SELECT count(*) FROM events) AS retainedEventCount`,
+         (SELECT retained_count FROM event_retention_count WHERE singleton = 1) AS retainedEventCount`,
     );
     if (!boundary) throw new Error("communication event boundary query returned no row");
     if (input.afterSequence > boundary.currentSequence) {

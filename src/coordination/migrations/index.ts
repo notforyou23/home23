@@ -1,3 +1,4 @@
+import { EVENT_RETENTION_COUNT_MIGRATION_SQL } from './0015-event-retention-count.js';
 import { RESIDENT_OUTCOMES_MIGRATION_SQL } from './0014-resident-outcomes.js';
 import { PLANNED_INVOCATIONS_MIGRATION_SQL } from './0013-planned-invocations.js';
 import { createHash } from "node:crypto";
@@ -170,6 +171,7 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
   ),
   defineMigration(13, 'planned-invocations', PLANNED_INVOCATIONS_MIGRATION_SQL, '415a67e278c9e42503293ec32bfedb5c9e5a6c1f942489fdd212ef09e9a334c1', '06f23d074a6a7937b8daef6f544154d4d1cb2148d36ee92ef131fde86b22d972'),
   defineMigration(14, 'resident-outcomes', RESIDENT_OUTCOMES_MIGRATION_SQL, '726089aaa4cf18a3d8285e54e52df5ce6b4ffddf1d8aac3fe13d95a7fe222c42', '6ed74df1e2f0f29e8b707905b6d863469f23b49966ebe7587b47856814638e89'),
+  defineMigration(15, 'event-retention-count', EVENT_RETENTION_COUNT_MIGRATION_SQL, 'ad7ee2e588c159d64df0f955a03c221fc85cc598603a03b4c6f459aa2eff0123', '31ecd08c0414e273df1e4a80232fef7928e0ebb305d0e9635e90c833a3baf763'),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -189,7 +191,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "9a62b74892485fa4e2b633f3950a87dd9b0750dd13728999ff541a93fa159687";
+  "04b7da07e546f691afcd069795ee2e95bf406e0931afd9a52d25edaf973aa891";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

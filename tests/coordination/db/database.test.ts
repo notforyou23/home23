@@ -52,7 +52,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   );
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 14);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 15);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -88,6 +88,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       "delivery_attempts",
       "devices",
       "direct_channel_pairs",
+      "event_retention_count",
       "events",
       "idempotency_records",
       "import_batches",
@@ -150,6 +151,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 12, checksum: COORDINATION_WORK_THREAD_PRESENTATION_MIGRATION_CHECKSUM },
       { version: 13, checksum: "415a67e278c9e42503293ec32bfedb5c9e5a6c1f942489fdd212ef09e9a334c1" },
       { version: 14, checksum: "726089aaa4cf18a3d8285e54e52df5ce6b4ffddf1d8aac3fe13d95a7fe222c42" },
+      { version: 15, checksum: "ad7ee2e588c159d64df0f955a03c221fc85cc598603a03b4c6f459aa2eff0123" },
     ],
   );
   assert.deepEqual(
