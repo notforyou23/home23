@@ -159,7 +159,7 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       maxAutomaticOffers: 2,
       requestId: input.requestId,
       correlationId: input.correlationId,
-      turnSelection: input.plan.turnSelection,
+      turnSelection: input.target.turnSelection ?? input.plan.turnSelection,
       ...(options.presentation?.(input.plan.originMessageId) ? {presentation:options.presentation(input.plan.originMessageId)} : {}),
     });
     if (!created.replayed) {

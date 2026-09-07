@@ -170,6 +170,13 @@ implements GroupChannelMessageContextPort {
     return this.materialize(rows);
   }
 
+  selectionTarget(input: { context: MessagingActorContext; channelId: string; botId: string }) {
+    const channel = this.channel(input.channelId, input.context.principalId);
+    const target = this.targets(input.channelId).find(target => target.targetBotId === input.botId);
+    if (!target) throw new MessagingError("invalid_relation");
+    return { channelId: input.channelId, conversationId: channel.conversationId, ...target };
+  }
+
   private channel(channelId: string, principalId?: string): GroupChannelRow {
     const row = this.database.readOne<GroupChannelRow>(
       `SELECT h.id AS conversationId, c.responder_mode AS responderMode,

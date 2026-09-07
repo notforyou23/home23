@@ -1055,7 +1055,13 @@ export function createCoordinationProcess(
         },
         selectionOptions: (
           input: Parameters<NonNullable<CoordinationMessageSubmissionPort["selectionOptions"]>>[0],
-        ) => directSubmission.selectionOptions(input),
+        ) => {
+          if (input.botId) {
+            if (!groupSubmission) throw new MessagingError("request_invalid");
+            return groupSubmission.selectionOptions(input);
+          }
+          return directSubmission.selectionOptions(input);
+        },
         recoverResidentWork: async () => {
           const direct = await directSubmission.recoverResidentWork();
           const group = groupSubmission === undefined

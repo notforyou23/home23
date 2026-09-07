@@ -47,6 +47,7 @@ function once(callback: () => void): () => void {
 }
 
 export interface GroupChannelResidentTarget {
+  turnSelection?: WorkTurnSelection;
   targetBotId: string;
   targetBotDisplayName: string;
   targetPrincipalId: string;
@@ -84,6 +85,7 @@ export interface GroupChannelRecoveredPlan {
 }
 
 export interface GroupChannelMessageContextPort {
+  selectionTarget?(input: { context: MessagingActorContext; channelId: string; botId: string }): DirectMessageTargetDescriptor;
   isScheduledOrigin?(prepared: GroupChannelPreparedContext): boolean;
   loadOrigin(input: {
     context: MessagingActorContext;
@@ -169,7 +171,7 @@ export function createGroupChannelMessageService(options: {
     return authority!;
   };
   const executionTargetFor = async (
-    prepared: GroupChannelPreparedContext,
+    prepared: Pick<GroupChannelPreparedContext, "channelId" | "conversationId">,
     targetContext: GroupChannelResidentTarget,
   ): Promise<DirectMessageExecutionTarget> => {
     const descriptor: DirectMessageTargetDescriptor = Object.freeze({
@@ -213,11 +215,11 @@ export function createGroupChannelMessageService(options: {
     )) {
       throw new MessagingError("request_invalid");
     }
-    if (selection.modelAlias === null && selection.reasoningEffort === null) return;
+    if (selection.modelAlias === null && selection.reasoningEffort === null && !prepared.selectedTargets.some(target => target.turnSelection)) return;
     const catalogs = await Promise.all(targets.map((target) =>
       target.models.modelCatalog(identity)
     ));
-    if (catalogs.some((catalog) => !catalogAcceptsTurnSelection(catalog, selection))) {
+    if (catalogs.some((catalog, index) => !catalogAcceptsTurnSelection(catalog, prepared.selectedTargets[index]?.turnSelection ?? selection))) {
       throw new MessagingError("request_invalid");
     }
   }
@@ -814,6 +816,14 @@ export function createGroupChannelMessageService(options: {
   return Object.freeze({
     channelCoordinator,
 
+    async selectionOptions(input: { context: MessagingActorContext; channelId: string; botId?: string }) {
+      assertAuthority();
+      if (!input.botId || !options.context.selectionTarget) throw new MessagingError("request_invalid");
+      const target = options.context.selectionTarget({ ...input, botId: input.botId });
+      const execution = await executionTargetFor(target, target);
+      return { channelId: target.channelId, conversationId: target.conversationId, targetBotId: target.targetBotId, ...await execution.models.modelCatalog(input.context) };
+    },
+
     async submitMessage(input: {
       context: MessagingActorContext;
       channelId: string;
@@ -828,6 +838,7 @@ export function createGroupChannelMessageService(options: {
         throw new MessagingError("request_invalid");
       }
       const turnSelection = Object.freeze({
+        ...(input.body.botSelections !== undefined ? { botSelections: input.body.botSelections } : {}),
         modelAlias: input.body.modelAlias,
         reasoningEffort: input.body.reasoningEffort,
       });
@@ -883,13 +894,19 @@ export function createGroupChannelMessageService(options: {
         correlationId: input.context.correlationId,
         turnSelection,
       });
-      const prepared = await options.context.prepare({
+      const basePrepared = await options.context.prepare({
         context: input.context,
         channelId: input.channelId,
         originMessage: appended.message,
         attachmentIds: input.body.attachmentIds,
         eventSequence: appended.receipt.eventSequence,
       });
+      for (const botId of Object.keys(input.body.botSelections ?? {})) {
+        if (!options.context.selectionTarget) throw new MessagingError("request_invalid");
+        options.context.selectionTarget({ context: input.context, channelId: input.channelId, botId });
+      }
+      const prepared = { ...basePrepared, selectedTargets: basePrepared.selectedTargets.map(target => ({ ...target,
+        ...(input.body.botSelections?.[target.targetBotId] ? { turnSelection: input.body.botSelections[target.targetBotId] } : {}) })) };
       const started = await startPrepared({
         context: input.context,
         prepared,
@@ -929,8 +946,9 @@ export function createGroupChannelMessageService(options: {
           const works = admission.works;
           if (works.some((work) => {
             const candidate = options.work.getTurnSelection(work.id);
-            return candidate.modelAlias !== turnSelection.modelAlias ||
-              candidate.reasoningEffort !== turnSelection.reasoningEffort;
+            const expected = recoveredPlan.prepared.selectedTargets.find(target => target.targetPrincipalId === work.targetPrincipalId)?.turnSelection ?? turnSelection;
+            return candidate.modelAlias !== expected.modelAlias ||
+              candidate.reasoningEffort !== expected.reasoningEffort;
           })) {
             throw new Error("Channel Round has inconsistent turn selection");
           }

@@ -459,7 +459,9 @@ export function createCoordinationRouter(input: {
         throw unavailable("modelSelection");
       }
       const metadata = requireCoordinationMetadata(response);
+      if (request.query.botId !== undefined && typeof request.query.botId !== "string") throw new CoordinationHttpError("request_invalid", 400, false);
       const options = await application.services.messageSubmission.selectionOptions({
+        ...(typeof request.query.botId === "string" ? { botId: request.query.botId } : {}),
         context: requireCoordinationContext(response),
         channelId: pathParameter(request.params.channelId),
       });
@@ -511,6 +513,7 @@ export function createCoordinationRouter(input: {
           attachmentIds: body.attachmentIds,
           mentions: body.mentions,
           replyToMessageId: body.replyToMessageId,
+          ...(body.botSelections !== undefined ? { botSelections: body.botSelections as import("../messages/types.js").MessageTurnSelection["botSelections"] } : {}),
           modelAlias: modelAlias as string | null,
           reasoningEffort: requestedEffort as ReasoningEffort | null,
         },

@@ -683,6 +683,7 @@ export function createDirectMessageSubmissionService(options: {
         modelAlias: string | null; reasoningEffort: import("../../agent/reasoning-effort.js").ReasoningEffort | null };
     }) {
       assertAuthority();
+      if ("botSelections" in input.body) throw new MessagingError("request_invalid");
       const turnSelection = Object.freeze({
         modelAlias: input.body.modelAlias ?? null,
         reasoningEffort: input.body.reasoningEffort ?? null,

@@ -71,7 +71,10 @@ function parseTarget(value: unknown): CoordinatorAdmissionTarget {
   if (targetBotId !== targetPrincipalId) {
     throw new Error("durable Channel admission target identity is not exact");
   }
+  const selected = row.turnSelection === undefined ? undefined : object(row.turnSelection, "target selection");
+  if (selected && ((selected.modelAlias !== null && (typeof selected.modelAlias !== "string" || !selected.modelAlias.length || selected.modelAlias.length > 256 || /[\0\r\n]/u.test(selected.modelAlias))) || (selected.reasoningEffort !== null && (typeof selected.reasoningEffort !== "string" || !REASONING_EFFORTS.has(selected.reasoningEffort))))) throw new Error("Invalid target turn selection");
   return Object.freeze({
+    ...(selected ? { turnSelection: { modelAlias: selected.modelAlias as string | null, reasoningEffort: selected.reasoningEffort as CoordinatorAdmissionPlan["turnSelection"]["reasoningEffort"] } } : {}),
     targetBotId,
     targetPrincipalId,
     targetBotDisplayName: string(row.targetBotDisplayName, "target display name", 160),
@@ -173,7 +176,7 @@ export function coordinatorAdmissionPlanJson(plan: CoordinatorAdmissionPlan): Js
     originEventId: parsed.originEventId,
     actorPrincipalId: parsed.actorPrincipalId,
     visibleParticipantIds: [...parsed.visibleParticipantIds],
-    selectedTargets: parsed.selectedTargets.map((target) => ({ ...target })),
+    selectedTargets: parsed.selectedTargets.map(({ turnSelection, ...target }) => ({ ...target, ...(turnSelection ? { turnSelection: { ...turnSelection } } : {}) })),
     responseOrder: parsed.responseOrder,
     standingReference: parsed.standingReference,
     manifest: {

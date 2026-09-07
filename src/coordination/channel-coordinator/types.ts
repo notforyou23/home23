@@ -28,6 +28,7 @@ export interface CoordinatorStandingScope {
 }
 
 export interface CoordinatorAdmissionTarget {
+  turnSelection?: WorkTurnSelection;
   targetBotId: string;
   targetBotDisplayName: string;
   targetPrincipalId: string;

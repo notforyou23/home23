@@ -113,6 +113,7 @@ export interface CoordinationMessageSubmissionRequest {
   replyToMessageId: string | null;
   modelAlias: string | null;
   reasoningEffort: ReasoningEffort | null;
+  botSelections?: import("../messages/types.js").MessageTurnSelection["botSelections"];
   readonly [additionalProperty: string]: unknown;
 }
 
@@ -124,6 +125,7 @@ export interface CoordinationMessageSubmissionPort {
     body: CoordinationMessageSubmissionRequest;
   }): Promise<Readonly<Record<string, unknown> & { response?: Promise<unknown> }>>;
   selectionOptions?(input: {
+    botId?: string;
     context: MessagingActorContext;
     channelId: string;
   }): Promise<Readonly<Record<string, unknown>>>;

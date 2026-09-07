@@ -28,6 +28,7 @@ export interface MessageProvenance {
  * It is not Message content and is omitted entirely for the legacy default.
  */
 export interface MessageTurnSelection {
+  botSelections?: Readonly<Record<string, { modelAlias: string | null; reasoningEffort: ReasoningEffort | null }>>;
   modelAlias: string | null;
   reasoningEffort: ReasoningEffort | null;
 }

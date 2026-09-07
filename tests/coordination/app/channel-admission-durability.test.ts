@@ -980,3 +980,173 @@ test("scheduled provenance requires matching coordinator journal, not a text cla
     assert.equal(context.isScheduledOrigin({ ...prepared, originMessageId: fixtureId("message", 992) }), false);
   } finally { database.close(); }
 });
+
+test("application recovery preserves different recipient choices after zero-Work crash", async () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "parallel");
+    const initial = admissionPlan(database, "parallel");
+    const plan = { ...initial, selectedTargets: initial.selectedTargets.map(target => ({ ...target,
+      turnSelection: { modelAlias: "gpt-5.6", reasoningEffort: target.residentBinding === "jerry" ? "high" as const : "low" as const } })) };
+    const crashed = harness(database, 35_000, (point) => {
+      if (point === "after_round_created") throw new Error("simulated caller loss after Round");
+    });
+    assert.throws(
+      () => crashed.coordinator.start(trigger(plan)),
+      /simulated caller loss after Round/u,
+    );
+    const durableRoundId = roundId(database);
+    assert.equal(roundWorks(database, durableRoundId).length, 0);
+    database.raw.prepare(
+      `INSERT INTO authority_epochs VALUES (
+        'messages', 2, 'canonical', 'home23-coordination', 1, 1, '{}', ?
+      )`,
+    ).run(AT);
+
+    database.reopen();
+    const restarted = harness(database, 36_000);
+    const selections: Array<Readonly<{
+      binding: string;
+      modelAlias: string | null;
+      reasoningEffort: string | null;
+    }>> = [];
+    const residentTargets = new Map(
+      plan.selectedTargets.map((target, index) => {
+        const agent: ResidentAgentPort = {
+          async modelCatalog() {
+            return {
+              models: [{
+                alias: "gpt-5.6",
+                provider: "fixture",
+                model: "gpt-5.6",
+                reasoningEffort: "max",
+              }],
+              defaultModel: "fixture-default",
+              defaultProvider: "fixture",
+              defaultReasoningEffort: "medium",
+              reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+            };
+          },
+          async runWithTurn(chatId, _text, options) {
+            selections.push(Object.freeze({
+              binding: target.residentBinding,
+              modelAlias: options.turnSelection.modelAlias,
+              reasoningEffort: options.turnSelection.reasoningEffort,
+            }));
+            const turnId = `recovered-${target.residentBinding}`;
+            await options.onDurableStart({
+              turnId,
+              chatId,
+              persistedAt: AT,
+              selection: {
+                requestedProvider: null,
+                requestedModelAlias: options.turnSelection.modelAlias,
+                requestedModel: null,
+                requestedEffort: options.turnSelection.reasoningEffort,
+                resolvedProvider: "fixture",
+                resolvedModel: "gpt-5.6",
+                resolvedEffort: "max",
+                actualProvider: "fixture",
+                actualModel: "gpt-5.6",
+                actualEffort: "max",
+              },
+            });
+            return {
+              turnId,
+              response: Promise.resolve({
+                text: "",
+                model: "gpt-5.6",
+                toolCallCount: 0,
+                durationMs: 1,
+              }),
+            };
+          },
+          stop: () => ({ stopped: true }),
+        };
+        return [target.residentBinding, {
+          resident: new ResidentCoordinationAdapter(
+            agent,
+            createM11ResidentCoordinationPort(restarted.leases),
+            () => new Date(AT),
+          ),
+          holderInstanceId: `resident-${index + 1}`,
+          models: agent,
+          context: ({ principalId, requestId, correlationId }: {
+            principalId: string;
+            requestId: string;
+            correlationId: string;
+          }) => ({
+            principalId,
+            requestId,
+            correlationId,
+            identity: {
+              kind: "resident" as const,
+              resident: {
+                requestId,
+                correlationId,
+                credential: {
+                  residentSlug: target.residentBinding,
+                  role: "resident" as const,
+                  instanceId: `resident-${index + 1}`,
+                  keyVersion: 1,
+                },
+              },
+            },
+          }),
+        }] as const;
+      }),
+    );
+    let resolveEnded!: () => void;
+    const ended = new Promise<void>((resolve) => { resolveEnded = resolve; });
+    const service = createGroupChannelMessageService({
+      messages: {
+        async sendMessage() {
+          throw new Error("an explicit pass must not fabricate a result Message");
+        },
+        async listMessages() {
+          throw new Error("durable recovery must not resnapshot mutable Messages");
+        },
+      },
+      context: restarted.context,
+      coordinator: restarted.coordinator,
+      work: restarted.work,
+      leases: restarted.leases,
+      resolveResident: (binding) => residentTargets.get(binding),
+      authority: {
+        current: () => ({
+          capability: "messages" as const,
+          epoch: 2,
+          mode: "canonical" as const,
+          writer: "home23-coordination",
+          effectiveAtEventSequence: 1,
+          rollbackEpoch: 1,
+        }),
+      },
+      recordMessage: async () => undefined,
+      beginWork: () => () => resolveEnded(),
+      recoveryIdentity: () => ({
+        requestId: fixtureId("request", 1_500),
+        correlationId: fixtureId("correlation", 1_500),
+      }),
+      now: () => new Date(AT),
+    });
+    const receipt = await service.recoverResidentWork();
+    assert.deepEqual(receipt, { discovered: 1, scheduled: 1, refused: 0 });
+    await ended;
+
+    assert.deepEqual(
+      selections.sort((left, right) => left.binding.localeCompare(right.binding)),
+      [
+        { binding: "ada", modelAlias: "gpt-5.6", reasoningEffort: "low" },
+        { binding: "jerry", modelAlias: "gpt-5.6", reasoningEffort: "high" },
+      ],
+    );
+    assert.deepEqual(
+      roundWorks(database, durableRoundId).map((work) => work.state),
+      ["succeeded", "succeeded"],
+    );
+    assert.equal(restarted.rounds.get(durableRoundId)?.state, "completed");
+  } finally {
+    database.close();
+  }
+});

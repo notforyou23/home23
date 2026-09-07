@@ -616,3 +616,28 @@ test("deadline and cancellation terminalize durably and cancel queued Work", () 
     }
   } finally { database.close(); }
 });
+
+test("each channel recipient retains its own model through durable admission and replay", () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database);
+    const clock = { value: new Date(AT) };
+    const live = harness(database, clock);
+    const input = trigger();
+    const choices = new Map([
+      [BOT_ID, { modelAlias: "sol", reasoningEffort: "high" as const }],
+      [BOT_2, { modelAlias: "terra", reasoningEffort: "low" as const }],
+    ]);
+    const request = { ...input, admissionPlan: { ...input.admissionPlan,
+      selectedTargets: input.admissionPlan.selectedTargets.map(target => ({ ...target, turnSelection: choices.get(target.targetBotId)! })) } };
+    const admitted = live.coordinator.start(request);
+    assert.equal(admitted.works.length, 2);
+    for (const { work } of admitted.works) assert.deepEqual(live.work.getTurnSelection(work.id), choices.get(work.targetPrincipalId));
+    const recovered = harness(database, clock, 20_000);
+    const replayed = recovered.coordinator.start(request);
+    assert.equal(replayed.replayed, true);
+    for (const { work } of replayed.works) assert.deepEqual(recovered.work.getTurnSelection(work.id), choices.get(work.targetPrincipalId));
+    assert.throws(() => recovered.coordinator.start({ ...request, admissionPlan: { ...request.admissionPlan,
+      selectedTargets: request.admissionPlan.selectedTargets.map(target => ({ ...target, turnSelection: { modelAlias: "changed", reasoningEffort: "low" as const } })) } }));
+  } finally { database.close(); }
+});

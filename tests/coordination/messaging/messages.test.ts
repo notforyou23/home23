@@ -677,3 +677,18 @@ test("an event append failure rolls back Message, mentions, idempotency, and seq
     "SELECT count(*) AS count FROM events",
   )?.count, eventCountBefore);
 });
+
+test("recipient model choices are canonical idempotency intent, not message text", async (t) => {
+  const fixture = await createMessagingFixture(); t.after(fixture.close);
+  const channels = createChannelService({repository: fixture.repository, participantDirectory: fixture.directory, cursorSigningKey: Buffer.alloc(32, 0x23), now: () => fixture.clock.value});
+  const messages = createMessageService({repository: fixture.repository, participantDirectory: fixture.directory, now: () => fixture.clock.value});
+  const direct = await channels.createDirectConversation({context: ownerContext(951), memberBotIds: [fixture.bots.jerry.principalId], pinned: false, idempotencyKey: channelKey(951)});
+  const choices = { [fixture.bots.jerry.principalId]: {modelAlias: "sol", reasoningEffort: "high" as const}, [fixture.bots.forrest.principalId]: {modelAlias: "terra", reasoningEffort: null} };
+  const request = {context: ownerContext(952), channelId: direct.channel.id, messageId: fixtureId("message", 952), authorPrincipalId: OWNER_ID, idempotencyKey: sendKey(952), kind: "text" as const, text: "Compare the two answers.", mentions: [], clientMessageId: "recipient-models-952", replyToMessageId: null, tombstonesMessageId: null, provenance: {roundId: null, workId: null}, turnSelection: {modelAlias: null, reasoningEffort: null, botSelections: choices}};
+  const first = await messages.sendMessage(request);
+  assert.equal(first.message.text, request.text);
+  const replay = await messages.sendMessage({...request, turnSelection: {...request.turnSelection, botSelections: Object.fromEntries(Object.entries(choices).reverse())}});
+  assert.equal(replay.outcome, "replayed");
+  await assert.rejects(messages.sendMessage({...request, turnSelection: {...request.turnSelection, botSelections: {[fixture.bots.jerry.principalId]: {modelAlias: "changed", reasoningEffort: null}}}}), (error: unknown) => error instanceof MessagingError && error.code === "idempotency_conflict");
+  await assert.rejects(messages.sendMessage({...request, turnSelection: {...request.turnSelection, botSelections: {[fixture.bots.jerry.principalId]: "bad"} as never}}), (error: unknown) => error instanceof MessagingError && error.code === "request_invalid");
+});

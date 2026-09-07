@@ -91,7 +91,7 @@ function canonicalTurnSelection(
   if (value === undefined) return null;
   if (
     !value || typeof value !== "object" ||
-    Object.keys(value).sort().join(",") !== "modelAlias,reasoningEffort"
+    Object.keys(value).some(key => !["modelAlias", "reasoningEffort", "botSelections"].includes(key))
   ) {
     throw new MessagingError("request_invalid");
   }
@@ -109,8 +109,17 @@ function canonicalTurnSelection(
   ) {
     throw new MessagingError("request_invalid");
   }
-  if (value.modelAlias === null && value.reasoningEffort === null) return null;
-  return Object.freeze({ ...value });
+  let botSelections: MessageTurnSelection["botSelections"];
+  if (value.botSelections !== undefined) {
+    if (!value.botSelections || typeof value.botSelections !== "object" || Array.isArray(value.botSelections) || Object.keys(value.botSelections).length > 32) throw new MessagingError("request_invalid");
+    const pairs = Object.entries(value.botSelections).sort(([a], [b]) => a.localeCompare(b)).map(([id, selection]) => {
+      if (!/^bot_[0-9a-f-]{36}$/.test(id) || !selection || typeof selection !== "object" || "botSelections" in selection) throw new MessagingError("request_invalid");
+      return [id, canonicalTurnSelection(selection) ?? { modelAlias: null, reasoningEffort: null }] as const;
+    });
+    if (pairs.length) botSelections = Object.freeze(Object.fromEntries(pairs));
+  }
+  if (value.modelAlias === null && value.reasoningEffort === null && !botSelections) return null;
+  return Object.freeze({ modelAlias: value.modelAlias, reasoningEffort: value.reasoningEffort, ...(botSelections ? { botSelections } : {}) });
 }
 
 function sameResolvedActor(
