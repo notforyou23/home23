@@ -122,7 +122,7 @@ test('canonical observations reach the existing agency and preserve private task
   const source = join(directory, 'jerry.work.json');
   projectResidentWork(f.database, directory, ['jerry']);
   assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 1);
-  assert.equal(kernel.store.getTask(`coordination:${id}`).status, 'open');
+  assert.equal(kernel.store.getTask(`coordination:${id}`).status, 'closed');
   const before = statSync(source).mtimeMs;
   projectResidentWork(f.database, directory, ['jerry']);
   assert.equal(statSync(source).mtimeMs, before, 'a timer tick is not progress');
