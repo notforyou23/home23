@@ -168,6 +168,10 @@ Delivery:
       };
     }
 
+    if (ctx.schedulerUsesCurrentChannel && payload.kind !== 'systemEvent') {
+      payload.channelId = typeof input.channel_id === 'string' ? input.channel_id : ctx.channelId;
+    }
+
     // Delivery — warn about ephemeral chatIds
     const deliveryChannel = (input.delivery_channel as string) || (ctx.home23DeliveryEnabled ? 'home23' : 'auto');
     const deliveryTo = (input.delivery_to as string) || (deliveryChannel === 'home23' ? 'owner' : '');
@@ -440,7 +444,7 @@ export const cronUpdateTool: ToolDefinition = {
       }
     }
 
-    if (typeof input.channel_id === 'string' && job.payload.kind === 'agentTurn') {
+    if (typeof input.channel_id === 'string' && (job.payload.kind === 'agentTurn' || (ctx.schedulerUsesCurrentChannel && job.payload.kind !== 'systemEvent'))) {
       if(input.channel_id) job.payload.channelId=input.channel_id; else delete job.payload.channelId;
       changes.push(input.channel_id ? `topic channel → ${input.channel_id}` : 'topic channel cleared for future runs');
     }

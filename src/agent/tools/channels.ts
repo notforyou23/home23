@@ -2,11 +2,13 @@ import type { ToolContext, ToolDefinition } from '../types.js';
 
 export const channelManageTool: ToolDefinition = {
   name: 'channel_manage',
-  description: 'Manage Connected Agents topic/group channels through Jerry’s standing household authority. List or inspect channels, create one, or update subject, purpose, members, responder policy, pinning and archive/restore state. Read current state/version before updating. Use operation bot_list to discover IDs, bot_create to create a durable helper, and bot_archive or bot_restore to manage its lifecycle. Archiving preserves history; this tool does not permanently delete conversations.',
+  description: 'Manage Connected Agents topic/group channels through the owner’s standing household authority. List or inspect channels, create one, or update subject, purpose, members, responder policy, pinning and archive/restore state. Read current state/version before updating. Use operation bot_list to discover IDs, bot_create to create a durable helper, and bot_archive or bot_restore to manage its lifecycle. Use history to retrieve earlier channel messages beyond the current context, paging with beforeSequence. Use project_read to read the channel’s shared instructions and memory; project_write saves one document with its expectedRevision from the read. Archiving preserves history; this tool does not permanently delete conversations.',
   input_schema: { type: 'object', required: ['operation'], properties: {
-    operation: { type: 'string', enum: ['list', 'get', 'create', 'update', 'bot_list', 'bot_create', 'bot_archive', 'bot_restore'] },
+    operation: { type: 'string', enum: ['list', 'get', 'create', 'update', 'bot_list', 'bot_create', 'bot_archive', 'bot_restore', 'project_read', 'project_write', 'history'] },
+    beforeSequence: { type: 'integer', description: 'Read older history before this channel message sequence.' },
     botId: { type: 'string' }, displayName: { type: 'string' },
     channelId: { type: 'string' }, cursor: { type: 'string' }, limit: { type: 'integer' },
+    name: { type: 'string', enum: ['AGENTS.md', 'MEMORY.md', 'LEARNINGS.md'] }, text: { type: 'string' }, expectedRevision: { type: 'string' },
     title: { type: 'string' }, purpose: { type: 'string' },
     memberBotIds: { type: 'array', items: { type: 'string' } },
     expectedVersion: { type: 'integer' }, pinned: { type: 'boolean' },

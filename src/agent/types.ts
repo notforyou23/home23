@@ -114,6 +114,10 @@ export interface DurableTurnStart {
 }
 
 export interface ToolContext {
+  personalWorkspacePath?: string;
+  artifactWorkspacePath?: string;
+  schedulerUsesCurrentChannel?: boolean;
+  agencyRequest?: (path: string, init?: RequestInit) => Promise<unknown>;
   home23DeliveryEnabled?: boolean;
   coordinationChannelOperation?: (input: {
     origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown>;

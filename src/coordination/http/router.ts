@@ -556,6 +556,24 @@ export function createCoordinationRouter(input: {
     }),
   );
 
+  router.get("/api/v1/channels/:channelId/project", productRead, asyncRoute(async (request, response) => {
+    if (!application.capabilities().capabilities.channelsRead || !application.services.projects) throw unavailable("channelsRead");
+    response.json(await application.services.projects.read(requireCoordinationContext(response), pathParameter(request.params.channelId)));
+  }));
+  router.put("/api/v1/channels/:channelId/project", messageSend, jsonBody, asyncRoute(async (request, response) => {
+    if (!application.capabilities().capabilities.channelMutation || !application.services.projects) throw unavailable("channelMutation");
+    const body = jsonObjectBody(request.body);
+    if (typeof body.name !== 'string' || typeof body.text !== 'string' || typeof body.expectedRevision !== 'string') throw new CoordinationHttpError('request_invalid', 400, false);
+    try {
+      response.json(await application.services.projects.write(requireCoordinationContext(response), {
+        channelId: pathParameter(request.params.channelId), name: body.name, text: body.text, expectedRevision: body.expectedRevision,
+      }));
+    } catch (error) {
+      if ((error as { code?: string }).code === 'continuity_conflict') throw new CoordinationHttpError('continuity_conflict', 409, false);
+      throw error;
+    }
+  }));
+
   router.get("/api/v1/search", productRead, asyncRoute(async (request, response) => {
     if (!application.capabilities().capabilities.search || !application.services.search) {
       throw unavailable("search");

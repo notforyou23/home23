@@ -150,7 +150,7 @@ function isWorkingThread(database: M11Database, work: WorkRecord): boolean {
   return work.kind === PRODUCT_WORK_THREAD_KIND || !!database.readOne('SELECT work_id FROM work_thread_presentations WHERE work_id = ?',work.id);
 }
 function assertAccess(database: M11Database, work: WorkRecord, context: MessagingActorContext): void {
-  const assignedResident = context.identity.kind === 'resident' && work.targetPrincipalId === context.principalId;
+  const assignedResident = (context.identity.kind === 'resident' || context.identity.kind === 'on_demand_bot') && work.targetPrincipalId === context.principalId;
   if (work.principalId !== context.principalId && !assignedResident && !(context.identity.kind === 'owner' && database.readOne('SELECT id FROM channels WHERE id = ? AND owner_principal_id = ?',work.channelId,context.principalId))) throw new WorkError("ineligible", "Work is outside the authenticated principal scope");
   const member = database.readOne<{ count: number }>(
     "SELECT count(*) AS count FROM channel_members WHERE channel_id = ? AND principal_id = ? AND active = 1",

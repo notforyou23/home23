@@ -270,6 +270,7 @@ function validateCallerParameters(operationType: string, parameters: Record<stri
 }
 
 export interface BrainOperationsClientOptions {
+  contextSearch?: (request: { query: string; topK: number; mode?: 'context' }, signal?: AbortSignal) => Promise<Record<string, unknown>>;
   joinedWorkInvocation?: string;
   baseUrl: string;
   callerAgent: string;
@@ -475,6 +476,7 @@ export class BrainOperationsClient {
     const topK = optionalFiniteInteger(request.topK, 'topK', 1, 100);
     if (topK === undefined) throw invalid('topK_invalid');
     if (request.mode !== undefined && request.mode !== 'context') throw invalid('mode_invalid');
+    if (this.options.contextSearch) return this.options.contextSearch(request, signal);
     const value = await this.requestJson<Record<string, unknown>>('/api/memory/search', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

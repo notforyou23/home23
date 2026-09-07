@@ -692,7 +692,7 @@ export function createDirectMessageSubmissionService(options: {
       let workTransferred = false;
       try {
         if (
-          input.context.identity.kind !== "owner" ||
+          (input.context.identity.kind !== "owner" && input.context.identity.kind !== "on_demand_bot") ||
           (input.body.text === null && input.body.attachmentIds.length === 0)
         ) {
           throw new MessagingError("request_invalid");

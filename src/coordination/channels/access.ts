@@ -169,14 +169,14 @@ export async function resolveVisibleBots(
   }]));
 }
 
-/** Jerry's standing household mandate; binding validity is checked by the resolver and repository. */
+/** Household mandate shared by resolved, active house agents. The resolver and repository still validate identity. */
 export function isChannelManager(actor: ResolvedMessagingActor): boolean {
   return (actor.kind === 'owner' && actor.principalId === 'user_owner') ||
-    (actor.kind === 'bot' && actor.residentCredential?.residentBinding === 'jerry');
+    actor.kind === 'bot';
 }
 
 
 /** The transport/resolver still verifies the actual credential and membership. */
 export function isExecutiveInitiator(context: MessagingActorContext): boolean {
-  return context.identity.kind === 'resident' && context.identity.resident.credential.residentSlug === 'jerry';
+  return context.identity.kind === 'resident' || context.identity.kind === 'on_demand_bot';
 }

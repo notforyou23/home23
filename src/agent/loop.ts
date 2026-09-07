@@ -1,3 +1,4 @@
+import { projectContinuityPrompt, type ProjectContinuity } from '../coordination/projects/continuity.js';
 import { parseHistoricalContext, historicalContextBlock, type HistoricalContextEntry } from './historical-context.js';
 import { cacheableSystemPrompt, cacheUsage, promptCacheKey } from './prompt-cache.js';
 import { estimateContextChars } from './context-pressure.js';
@@ -375,6 +376,8 @@ export class AgentLoop {
   private currentModelReasoningEffort?: ReasoningEffort;
   private maxTokens: number;
   private temperature: number;
+  invalidateContext(): void { this.contextManager.invalidate(); }
+
   private registry: ToolRegistry;
   private contextManager: ContextManager;
   private history: ConversationHistory;
@@ -1345,6 +1348,7 @@ export class AgentLoop {
       contextManager: this.contextManager,
       chatId,
       authenticatedUserMessage: undefined,
+      channelId: turnRuntime?.coordinationOrigin?.channelId ?? this.toolContext.channelId,
       workspacePath: turnRuntime?.delegatedContext?.workspacePath ?? this.toolContext.workspacePath,
       memoryObjectStore: this.memoryStore,
       relationshipLedger: this.relationshipLedger,
@@ -1458,6 +1462,19 @@ export class AgentLoop {
       // are kept separate so the static prefix hits cache on every call.
       const staticSystemPrompt = turnRuntime?.delegatedContext?.systemPrompt ?? this.contextManager.getSystemPrompt(runtimeProvider);
       let rawSystemPrompt = staticSystemPrompt;
+      if (turnRuntime?.coordinationOrigin && runContext.coordinationChannelOperation && !turnRuntime.delegatedContext) {
+        const project = await runContext.coordinationChannelOperation({
+          origin: turnRuntime.coordinationOrigin, invocationId: `project-context:${activeTurnId}`,
+          args: { operation: 'project_context' },
+        }) as ProjectContinuity;
+        if (project?.available && Array.isArray(project.documents) && project.workspacePath) {
+          rawSystemPrompt += `\n\n${projectContinuityPrompt(project)}`;
+          runContext.personalWorkspacePath = this.workspacePath;
+          runContext.artifactWorkspacePath = this.toolContext.artifactWorkspacePath ?? this.workspacePath;
+          runContext.workspacePath = project.workspacePath;
+        }
+      }
+
 
       // ── Session Bootstrap (situational + temporal awareness) ──
       // Fresh session OR resumed after idle-gap → inject the files listed in

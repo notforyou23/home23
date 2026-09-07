@@ -72,3 +72,25 @@ test('only an idempotent operation can reclaim execution permission under the cu
  assert.throws(()=>f.consumer.start({credential:f.credential,origin:{...origin,fencingToken:origin.fencingToken+1},invocationId:request.invocationId}),/current authenticated resident fence/);
  assert.equal(f.database.readOne<{n:number}>('SELECT count(*) AS n FROM work_invocation_starts WHERE work_id=?',ack.workId)?.n,1);
 });
+
+
+test('a processless helper uses its own active Work fence and cannot borrow a resident identity',t=>{
+ const database=M11TestDatabase.temporary();t.after(()=>database.close());
+ const name='bot-lens',instance=`home23-core-on-demand:${BOT_ID}`;
+ database.raw.prepare("UPDATE bots SET resident_binding=?,active_instance_id=NULL,active_key_version=NULL,resident_protocol_version=NULL,resident_registered_at=NULL,last_heartbeat_at=NULL,reported_availability=NULL WHERE id=?").run(name,BOT_ID);
+ const now=()=>new Date(AT),generateId=createFixtureIdGenerator();
+ const work=createWorkService({database,generateId,now}),leases=createLeaseService({database,generateId,now,leaseTtlMs:60000});
+ const ids={requestId:fixtureId('request',950),correlationId:fixtureId('correlation',950)};
+ const w=work.create({principalId:OWNER_ID,targetPrincipalId:BOT_ID,channelId:CHANNEL_ID,originMessageId:MESSAGE_ID,roundId:null,kind:'bot_turn',idempotencyKey:'helper-fence-current-work',manifest:manifestInput(),maxAutomaticOffers:1,...ids}).work;
+ const offered=leases.offer({workId:w.id,holderPrincipalId:BOT_ID,holderInstanceId:instance,authorityReference:`bot:${BOT_ID}`,automatic:true,...ids});
+ const binding={workId:w.id,attemptId:offered.attempt.id,leaseId:offered.lease.id,holderPrincipalId:BOT_ID,holderInstanceId:instance,fencingToken:offered.fencingToken,...ids};
+ leases.accept(binding);leases.start(binding);
+ const origin:CoordinationTurnOrigin={kind:'coordination',...binding,authorityReference:`bot:${BOT_ID}`,channelId:CHANNEL_ID,originMessageId:MESSAGE_ID,roundId:null};
+ const consumer=createForegroundDetachmentConsumer({database,work,now,resolveResident:()=>null,schedule:()=>{}});
+ const credential={residentSlug:name,instanceId:instance,keyVersion:1,role:'on_demand_bot'};
+ consumer.authorize(credential,origin);
+ assert.throws(()=>consumer.authorize({...credential,residentSlug:'jerry'},origin),/current canonical Work fence/);
+ assert.throws(()=>consumer.authorize(credential,{...origin,fencingToken:origin.fencingToken+1}),/current canonical Work fence/);
+ leases.revoke({...binding,reasonCode:'owner_stop'});
+ assert.throws(()=>consumer.authorize(credential,origin),/current canonical Work fence/);
+});

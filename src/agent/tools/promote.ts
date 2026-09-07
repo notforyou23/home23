@@ -82,7 +82,7 @@ Each promotion must include: what changed (before/after/why), when it should res
     try {
       // Lazy-load to avoid circular deps
       const { MemoryObjectStore } = await import('../memory-objects.js');
-      const brainDir = ctx.workspacePath.replace('/workspace', '/brain');
+      const brainDir = (ctx.personalWorkspacePath ?? ctx.workspacePath).replace('/workspace', '/brain');
       const store = ctx.memoryObjectStore ?? new MemoryObjectStore(brainDir);
 
       const type = input.type as string;

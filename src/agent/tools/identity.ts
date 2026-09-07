@@ -30,10 +30,10 @@ export const selfUpdateTool: ToolDefinition = {
       return { content: `Invalid file path: ${file}. Must be relative to workspace.`, is_error: true };
     }
 
-    const filePath = join(ctx.workspacePath, file);
+    const filePath = join((ctx.personalWorkspacePath ?? ctx.workspacePath), file);
 
     try {
-      const preserved = preserveIdentitySource(ctx.workspacePath, file);
+      const preserved = preserveIdentitySource((ctx.personalWorkspacePath ?? ctx.workspacePath), file);
       if (mode === 'append') {
         appendFileSync(filePath, '\n' + content);
       } else {
@@ -43,7 +43,7 @@ export const selfUpdateTool: ToolDefinition = {
       // Invalidate context cache so system prompt rebuilds with new content
       ctx.contextManager.invalidate();
 
-      const audit = inspectIdentitySource(ctx.workspacePath, file);
+      const audit = inspectIdentitySource((ctx.personalWorkspacePath ?? ctx.workspacePath), file);
       return { content: `Updated ${file} (${mode}).` + ('maintenanceNeeded' in audit && audit.maintenanceNeeded
         ? ' This file exceeds its active-context target. Consolidate current guidance and move historical detail to an indexed archive, preserving source and exact references; do not drop owner instructions or append another duplicate correction.' : ''),
         metadata: { preserved, audit } };
@@ -68,7 +68,7 @@ export const selfReadTool: ToolDefinition = {
 
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const file = input.file as string;
-    const filePath = join(ctx.workspacePath, file);
+    const filePath = join((ctx.personalWorkspacePath ?? ctx.workspacePath), file);
 
     if (!existsSync(filePath)) {
       return { content: `File not found: ${file}`, is_error: true };

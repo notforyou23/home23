@@ -214,7 +214,7 @@ function writeImageArtifact(
   }
   const createdAt = new Date().toISOString();
   const safeProvider = cfg.provider.replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
-  const artifactDir = canonicalReturnedArtifactDirectory(ctx.workspacePath);
+  const artifactDir = canonicalReturnedArtifactDirectory((ctx.artifactWorkspacePath ?? ctx.workspacePath));
   const stamp = createdAt.replace(/[:.]/g, '-');
   const format = exactImageFormat(buf);
   const sha256 = createHash('sha256').update(buf).digest('hex');
@@ -656,7 +656,7 @@ async function generateMiniMaxMusic(
   ].filter(Boolean).join(', ');
 
   const artifact = writeReturnedArtifactBytes({
-    workspacePath: ctx.workspacePath,
+    workspacePath: (ctx.artifactWorkspacePath ?? ctx.workspacePath),
     bytes: buf,
     stem: `music-${model}`,
     generatedBy: 'generate_music',
@@ -782,7 +782,7 @@ export const ttsTool: ToolDefinition = {
       }
 
       const artifact = writeReturnedArtifactBytes({
-        workspacePath: ctx.workspacePath,
+        workspacePath: (ctx.artifactWorkspacePath ?? ctx.workspacePath),
         bytes: buf,
         stem: 'tts',
         generatedBy: 'tts',

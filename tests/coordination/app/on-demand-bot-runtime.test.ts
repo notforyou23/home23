@@ -424,6 +424,8 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
 
   const occurrences = (value: string, needle: string) => value.split(needle).length - 1;
   const firstRequest = JSON.stringify(model.requests[0]);
+  const advertised = (model.requests[0] as any).tools.map((tool:any)=>tool.function.name);
+  for (const name of ["read_file","write_file","skills_list","skills_run","coding_run","channel_manage","cron_schedule","spawn_agent"]) assert.ok(advertised.includes(name), `Helper missing ${name}`);
   assert.equal(occurrences(firstRequest, "not exposed"), 1);
   assert.equal(occurrences(firstRequest, firstPrompt), 1);
 

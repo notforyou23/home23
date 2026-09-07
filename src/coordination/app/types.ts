@@ -186,6 +186,7 @@ export interface CoordinationServices {
   activity?: CoordinationActivityReadPort;
   bots?: CoordinationBotDirectoryPort;
   channels?: CoordinationChannelPort;
+  projects?: import('../projects/continuity.js').ProjectContinuityStore;
   messages?: CoordinationMessagePort;
   attachments?: CoordinationAttachmentPort;
   /** Optional internal M16 seam. Presence never advertises or activates Channels. */

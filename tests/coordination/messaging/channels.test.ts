@@ -569,9 +569,10 @@ test('authenticated Jerry manages member channels with his own durable authorshi
   const event = fixture.database.readOne<{ actor: string }>(
     "SELECT actor_principal_id AS actor FROM events WHERE type = 'channel.created' AND channel_id = ?", created.channel.id);
   assert.equal(event?.actor, fixture.bots.jerry.id);
-  await assert.rejects(channels.createGroupChannel({ ...input,
-    context: residentContext(fixture.bots.forrest, 'forrest', 903), idempotencyKey: channelKey(903) }),
-    (error: unknown) => error instanceof MessagingError && error.code === 'identity_context_mismatch');
+  const forrestCreated = await channels.createGroupChannel({ ...input,
+    memberBotIds: [fixture.bots.forrest.id],
+    context: residentContext(fixture.bots.forrest, 'forrest', 903), idempotencyKey: channelKey(903) });
+  assert.equal(fixture.database.readOne<{actor:string}>("SELECT actor_principal_id AS actor FROM events WHERE type='channel.created' AND channel_id=?",forrestCreated.channel.id)?.actor,fixture.bots.forrest.id);
   await assert.rejects(channels.updateChannel({ ...input, channelId: created.channel.id,
     expectedVersion: created.channel.version, lifecycle: 'active', idempotencyKey: channelKey(904) }),
     (error: unknown) => error instanceof MessagingError && error.code === 'version_conflict');

@@ -172,7 +172,7 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
   function authorizedActor(request: PersistentBotCreateRequest | PersistentBotControlRequest) {
     return request.actorPrincipalId === 'user_owner' ||
       (request.executiveActor?.principalId === request.actorPrincipalId &&
-       request.executiveActor.residentCredential?.residentBinding === 'jerry' && isChannelManager(request.executiveActor));
+       isChannelManager(request.executiveActor));
   }
 
   async function create(request: PersistentBotCreateRequest): Promise<BotLifecycleReceipt> {

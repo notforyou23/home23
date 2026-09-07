@@ -1,3 +1,5 @@
+import { createHelperServices } from './helper-services.js';
+import type { HomeConfig } from '../../types.js';
 import {
   closeSync,
   constants as fsConstants,
@@ -27,12 +29,8 @@ import {
   REASONING_EFFORTS,
   type ReasoningEffort,
 } from "../../agent/reasoning-effort.js";
-import { createSeededToolRegistry } from "../../agent/tools/index.js";
-import { generateImageTool, generateMusicTool } from "../../agent/tools/media.js";
 import {
   canonicalReturnedArtifactDirectory,
-  returnArtifactTool,
-  returnTextArtifactTool,
 } from "../../agent/tools/return-artifact.js";
 import type { AgentEvent, AgentResponse, ToolContext } from "../../agent/types.js";
 import type { MediaAttachment } from "../../types.js";
@@ -44,7 +42,7 @@ import {
   returnedArtifactMediaType,
 } from "../../returned-artifacts.js";
 import { resolveProviderKey } from "../../agent/provider-credentials.js";
-import { loadHomeConfig } from "../../config.js";
+import { loadHomeConfig, loadConfig, getHome23Root } from "../../config.js";
 import { TurnStore } from "../../chat/turn-store.js";
 import { isTurnEnvelope, type TurnEnvelope } from "../../chat/turn-types.js";
 import type {
@@ -82,6 +80,8 @@ const ON_DEMAND_BOT_ATTACHMENT_CAPABILITIES = Object.freeze(["attachments", "mes
 const TURN_PREFIX = "coord-";
 
 export interface OnDemandBotModelConfiguration {
+  projectRoot?: string;
+  services?: HomeConfig;
   defaultModel: string;
   defaultProvider: string;
   defaultReasoningEffort: ReasoningEffort;
@@ -105,6 +105,9 @@ export interface OnDemandBotRuntimeOptions {
   };
   leases: CoordinationLeasePort;
   communications?: ResidentCommunicationPort;
+  channelOperation?: NonNullable<ToolContext['coordinationChannelOperation']>;
+  scheduledTurn?: (bot: BotDirectoryRecord, input: import('./scheduled-turns.js').ScheduledChannelTurn) => Promise<unknown>;
+
   artifactPromotion?: (bot: BotDirectoryRecord) => ResidentArtifactPromotionPort;
   /** Canonical content-addressed store; paths never enter product Messages or model text. */
   inputAttachmentRoot?: string;
@@ -338,6 +341,9 @@ function providerDefinition(
 
 function defaultModelConfiguration(): OnDemandBotModelConfiguration {
   const config = loadHomeConfig();
+  const primary = (config as unknown as { home?: { primaryAgent?: string } }).home?.primaryAgent;
+  // Service configuration is shared; authored resident identity layers are never copied.
+  const services = primary && /^[a-z0-9][a-z0-9-]*$/.test(primary) ? loadConfig(primary) : config;
   const defaultModel = config.chat.defaultModel ?? config.chat.model;
   const defaultProvider = config.chat.defaultProvider ?? config.chat.provider;
   const providers = config.providers as Record<string, unknown> | undefined;
@@ -355,6 +361,7 @@ function defaultModelConfiguration(): OnDemandBotModelConfiguration {
     }];
   }));
   return Object.freeze({
+    projectRoot: getHome23Root(), services,
     defaultModel,
     defaultProvider,
     defaultReasoningEffort: config.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
@@ -365,11 +372,11 @@ function defaultModelConfiguration(): OnDemandBotModelConfiguration {
     apiKey,
     ...(configured.baseUrl ? { baseURL: configured.baseUrl } : {}),
     providerMap,
-    maxTokens: Math.min(config.chat.maxTokens ?? 8192, 16_384),
+    maxTokens: config.chat.maxTokens ?? 8192,
     temperature: config.chat.temperature,
     historyBudget: config.chat.historyBudget ?? 200_000,
     sessionGapMs: config.chat.sessionGapMs ?? 30 * 60 * 1000,
-    enginePort: config.ports?.dashboard ?? 3300,
+    enginePort: services.ports?.dashboard ?? 3300,
     cosmo23BaseUrl: `http://127.0.0.1:${config.ports?.engine ?? 43210}`,
   });
 }
@@ -668,13 +675,21 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
       ? `${TURN_PREFIX}${origin.workId}`
       : `${TURN_PREFIX}${origin.workId}-recovery-${priorTurnIds.length}`;
     let sequence = 0;
+    this.agent.invalidateContext();
     const started = await this.agent.runWithTurn(
       chatId,
       instruction,
       {
         turnId,
         coordinationOrigin: origin,
-        coordinationWorkDestination: options.coordinationWorkDestination,
+        coordinationDelivery: options.coordinationDelivery,
+        historyBackfill: options.historyBackfill?.filter(entry => !this.history.load(chatId).some(record =>
+          'role' in record && typeof record.content === 'string' && record.content === entry.text)),
+        coordinationWorkDestination: options.coordinationWorkDestination ?? (options.coordinationDelivery && origin.originMessageId ? {
+          kind:'coordination',parentWorkId:origin.workId,channelId:origin.channelId,conversationId:options.coordinationDelivery.conversationId,
+          originMessageId:origin.originMessageId,attemptId:origin.attemptId,leaseId:origin.leaseId,fencingToken:origin.fencingToken,
+          targetPrincipalId:this.bot.id,residentBinding:this.bot.residentBinding,residentInstanceId:origin.holderInstanceId,authorityReference:origin.authorityReference,
+        } : undefined),
         parentWorkId: options.coordinationWorkDestination?.parentWorkId,
         ...(vision.length > 0 ? { media: vision } : {}),
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
@@ -816,6 +831,8 @@ function assertOnDemandBot(
 
 /** Core-owned lazy runtime. Construction has no process, timer, or workspace side effect. */
 export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
+  const warm = new Map<string, () => Promise<void>>();
+  const serviceRuntimes = new Set<ReturnType<typeof createHelperServices>>();
   const targets = new Map<string, { version: number; target: DirectMessageExecutionTarget }>();
   const modelConfiguration = options.loadModelConfiguration ?? defaultModelConfiguration;
   const inputAttachmentsEnabled = options.artifactPromotion !== undefined &&
@@ -828,6 +845,10 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
   };
 
   return Object.freeze({
+    async resume(descriptors: readonly DirectMessageTargetDescriptor[]) {
+      for (const descriptor of descriptors) { await this.resolve(descriptor); await warm.get(descriptor.targetBotId)?.(); }
+    },
+    close() { for (const service of serviceRuntimes) service.close(); },
     async stopRevoked(botId: string, binding: Parameters<ResidentCoordinationAdapter['stopRevoked']>[0]) {
       return await targets.get(botId)?.target.execution.stopRevoked?.(binding) ?? false;
     },
@@ -836,12 +857,13 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
       const bot = await options.bots.getBotById(descriptor.targetBotId);
       assertOnDemandBot(bot, descriptor);
       const cached = targets.get(bot.id);
-      if (cached?.version === bot.version) return cached.target;
+      if (cached) return cached.target;
 
       const config = modelConfiguration();
       let executionRuntime: {
         adapter: ResidentCoordinationAdapter;
         port: OnDemandBotAgentPort;
+        ready: Promise<void>;
       } | null = null;
       const requireExecutionRuntime = () => {
         if (executionRuntime) return executionRuntime;
@@ -857,22 +879,24 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
 
         const contextManager = new ContextManager({
           workspacePath,
-          identityFiles: ["IDENTITY.md"],
-          identityLayers: [{ basePath: workspacePath, files: ["IDENTITY.md"] }],
+          identityFiles: ["IDENTITY.md", "AGENTS.md", "MEMORY.md", "LEARNINGS.md", "HEARTBEAT.md"],
+          identityLayers: [
+            { basePath: workspacePath, files: ["IDENTITY.md", "AGENTS.md", "MEMORY.md", "LEARNINGS.md", "HEARTBEAT.md"] },
+            ...(config.projectRoot ? [{ basePath: join(config.projectRoot, 'workspace', 'skills'), files: ['SKILL_ROUTING.md'] }] : []),
+          ],
+          projectRoot: config.projectRoot,
+          timezone: config.services?.agent?.timezone,
+          ownerName: config.services?.agent?.owner?.name,
           heartbeatRefreshMs: 0,
           enginePort: config.enginePort,
         });
         const history = new ConversationHistory(historyPath, config.historyBudget, bot.id);
         const returnedArtifactRoot = canonicalReturnedArtifactDirectory(workspacePath);
-        const registry = createSeededToolRegistry(options.artifactPromotion
-          ? [generateImageTool, generateMusicTool, returnArtifactTool, returnTextArtifactTool]
-          : []);
-        const brainOperations = {
-          searchContext: async () => ({
-            results: [],
-            sourceEvidence: { sourceHealth: "healthy", matchOutcome: "no_match" },
-          }),
-        } as unknown as ToolContext["brainOperations"];
+        const services = createHelperServices({root:config.projectRoot??botRoot,botRoot,workspace:workspacePath,
+          agentName:bot.residentBinding,config:config.services,enginePort:config.enginePort,
+          ...(options.scheduledTurn?{schedule:(input)=>options.scheduledTurn!(bot,input)}:{})});
+        serviceRuntimes.add(services);
+        const registry = services.registry;
         const toolContext: ToolContext = {
           scheduler: null,
           ttsService: null,
@@ -891,8 +915,10 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
           chatId: "",
           telegramAdapter: null,
           runAgentLoop: null,
-          brainOperations,
+          brainOperations: services.context.brainOperations!,
           turnRuntime: null,
+          ...services.context,
+          coordinationChannelOperation: options.channelOperation,
         };
         const agent = new AgentLoop({
           apiKey: config.apiKey || "on-demand-local",
@@ -911,6 +937,8 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
           sessionGapMs: config.sessionGapMs,
         });
         if (config.providerMap) agent.setProviderMap(config.providerMap);
+        services.attach(agent, toolContext);
+        const ready = services.initialize().then(() => services.start());
         const port = new OnDemandBotAgentPort(
           bot,
           agent,
@@ -927,9 +955,10 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
           options.artifactPromotion?.(bot),
           BOT_TURN_EVIDENCE_TAXONOMY,
         );
-        executionRuntime = { adapter, port };
+        executionRuntime = { adapter, port, ready };
         return executionRuntime;
       };
+      warm.set(bot.id, () => requireExecutionRuntime().ready);
       const serial = new Map<string, Promise<void>>();
       const serialize = async (
         operation: "execute" | "continueAccepted" | "reattach" | "recoverCompleted",
@@ -939,6 +968,7 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
         const prior = serial.get(key) ?? Promise.resolve();
         const start = prior.catch(() => undefined).then(async () => {
           const runtime = requireExecutionRuntime();
+          await runtime.ready;
           runtime.port.backfillCanonicalHistory(key, input.historyBackfill);
           return runtime.adapter[operation](input);
         });

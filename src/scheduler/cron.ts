@@ -24,8 +24,8 @@ export type ScheduleSpec =
 
 export type JobPayload =
   | { kind: 'agentTurn'; channelId?: string; message?: string; messagePath?: string; model?: string; effort?: import('../agent/reasoning-effort.js').ReasoningEffort; timeoutSeconds?: number; sessionHistory?: 'persistent' | 'fresh' }
-  | { kind: 'exec'; command: string; timeoutSeconds?: number }
-  | { kind: 'query'; message: string; mode?: string; model?: string; timeoutSeconds?: number }
+  | { kind: 'exec'; channelId?: string; command: string; timeoutSeconds?: number }
+  | { kind: 'query'; channelId?: string; message: string; mode?: string; model?: string; timeoutSeconds?: number }
   | { kind: 'systemEvent'; text: string };
 
 export interface DeliveryConfig {
@@ -556,7 +556,7 @@ export class CronScheduler {
         }
         this.appendDecisionLog(decision);
 
-        if (job.payload.kind === 'agentTurn' && job.payload.channelId && !job.state.activeChannelRun) {
+        if ('channelId' in job.payload && job.payload.channelId && !job.state.activeChannelRun) {
           job.state.activeChannelRun = {runId: `sched-run-${randomUUID()}`, startedAtMs: now};
         }
         if (job.schedule.kind === 'at') {
@@ -590,7 +590,7 @@ export class CronScheduler {
     if (this.activeJobs.has(job.id)) return { status: 'error', error: 'This scheduled job already has an active run.', durationMs: 0 };
     caller?.abortSignal?.throwIfAborted();
     this.activeJobs.add(job.id);
-    if (!caller && job.payload.kind === 'agentTurn' && job.payload.channelId && !job.state.activeChannelRun) {
+    if (!caller && 'channelId' in job.payload && job.payload.channelId && !job.state.activeChannelRun) {
       job.state.activeChannelRun={runId:`sched-run-${randomUUID()}`,startedAtMs:Date.now()};
     }
     const active = !caller ? job.state.activeChannelRun : undefined;

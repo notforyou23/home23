@@ -155,7 +155,7 @@ function inspectWorkspaceArtifact(pathValue: unknown, ctx: ToolContext): MediaAt
   if (typeof pathValue !== "string" || pathValue.length < 1 || pathValue.length > 4_096 || pathValue.includes("\0")) {
     throw new Error("artifact path is invalid");
   }
-  const root = canonicalReturnedArtifactDirectory(ctx.workspacePath);
+  const root = canonicalReturnedArtifactDirectory(ctx.artifactWorkspacePath ?? ctx.workspacePath);
   const declared = isAbsolute(pathValue) ? resolve(pathValue) : resolve(ctx.workspacePath, pathValue);
   const entry = lstatSync(declared);
   const canonical = realpathSync(declared);
@@ -246,7 +246,7 @@ export const returnTextArtifactTool: ToolDefinition = {
       const name = safeName(input.name);
       const stem = name.replace(/\.(?:md|txt)$/iu, "");
       const media = writeReturnedArtifactBytes({
-        workspacePath: ctx.workspacePath,
+        workspacePath: ctx.artifactWorkspacePath ?? ctx.workspacePath,
         bytes: Buffer.from(input.content, "utf8"),
         stem,
         generatedBy: "return_artifact",

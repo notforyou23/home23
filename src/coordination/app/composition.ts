@@ -1,3 +1,5 @@
+import type { MessagingActorContext } from '../channels/types.js';
+import { ProjectContinuityStore } from '../projects/continuity.js';
 import { boundHistoricalContext } from '../../agent/historical-context.js';
 import { createResidentNotifications } from './resident-notifications.js';
 import { createResidentContactProjection } from './resident-contact.js';
@@ -456,6 +458,13 @@ export function createCoordinationProcess(
       : { artifactMessageLink: artifactRepository }),
   });
   const channels = createChannelService({ repository: messagingRepository, participantDirectory, cursorSigningKey: channelCursorKey });
+  const projects = new ProjectContinuityStore(config.botRootDirectory,
+    (context, channelId) => channels.getChannel({context, channelId}),
+    async id => (await botRepository.getBotById(id))?.residentBinding.startsWith('bot-') === true);
+  let helperRuntime: ReturnType<typeof createOnDemandBotRuntime> | undefined;
+  let helperScheduledTurn: ((bot: import('../bots/index.js').BotDirectoryRecord, input: import('./scheduled-turns.js').ScheduledChannelTurn) => Promise<unknown>) | undefined;
+  let helperChannelOperation: import('../../agent/types.js').ToolContext['coordinationChannelOperation'];
+
   const messages = createMessageService({
     repository: messagingRepository,
     participantDirectory,
@@ -728,6 +737,10 @@ export function createCoordinationProcess(
     drain: stopResidentAttestations,
     close: stopResidentAttestations,
   }, {
+    name: "helper-services",
+    drain: async () => helperRuntime?.close(),
+    close: async () => helperRuntime?.close(),
+  }, {
     name: "resident-uds-clients",
     drain: async () => undefined,
     close: async () => {
@@ -893,11 +906,19 @@ export function createCoordinationProcess(
     {
       const resolveResident = (residentBinding: string) =>
         residentTargets.get(residentBinding);
-      const onDemandBots = createOnDemandBotRuntime({
+      const onDemandBots = helperRuntime = createOnDemandBotRuntime({
         botsRootDirectory: config.botRootDirectory,
         bots: { getBotById: (botId) => botRepository.getBotById(botId) },
         leases,
         communications,
+        scheduledTurn: (bot, input) => {
+          if (!helperScheduledTurn) throw new Error('House scheduler is starting');
+          return helperScheduledTurn(bot, input);
+        },
+        channelOperation: input => {
+          if (!helperChannelOperation) throw new Error('House channel services are starting');
+          return helperChannelOperation(input);
+        },
         ...(artifactRepository === undefined
           ? {}
           : {
@@ -1100,9 +1121,13 @@ export function createCoordinationProcess(
         void dispatchWorkingThread?.(workId).catch((error) => console.error("[home23-coordination] Working Thread dispatch failed", error));
       }); },
     });
-    const executiveContext = (origin: CoordinationTurnOrigin) => {
-      const resident = completionTargets.get('jerry');
-      if (!resident) throw new Error('Executive resident unavailable');
+    const executiveContext = (origin: CoordinationTurnOrigin): MessagingActorContext => {
+      const helper = database.readOne<{id:string; residentBinding:string}>("SELECT id,resident_binding AS residentBinding FROM bots WHERE id=? AND lifecycle='active' AND resident_binding LIKE 'bot-%'",origin.holderPrincipalId);
+      if (helper && origin.authorityReference===`bot:${helper.id}`) return {principalId:helper.id,
+        requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation'),
+        identity:{kind:'on_demand_bot',bot:{botId:helper.id,residentBinding:helper.residentBinding}}};
+      const resident = completionTargets.get(origin.authorityReference.replace(/^resident:/,''));
+      if (!resident) throw new Error('House agent unavailable');
       return resident.context({ principalId: origin.holderPrincipalId,
         requestId: generateCoordinationId('request'), correlationId: generateCoordinationId('correlation') });
     };
@@ -1110,10 +1135,12 @@ export function createCoordinationProcess(
       database, work, leases, channels, submit: messageSubmission, beginWork: lifecycle.beginWork,
       authorize: detachments.authorize, context: executiveContext,
       currentCredential: (credential, origin) => {
-        const resident = completionTargets.get('jerry');
-        return credential.residentSlug === 'jerry' && !!resident &&
-          resident.clientInstanceId === credential.instanceId && resident.keyVersion === credential.keyVersion &&
-          origin.holderInstanceId === resident.serverInstanceId && origin.authorityReference === 'resident:jerry';
+        if (credential.role==='on_demand_bot') return credential.instanceId===`home23-core-on-demand:${origin.holderPrincipalId}` &&
+          origin.holderInstanceId===credential.instanceId && origin.authorityReference===`bot:${origin.holderPrincipalId}` &&
+          !!database.readOne("SELECT id FROM bots WHERE id=? AND resident_binding=? AND lifecycle='active' AND active_instance_id IS NULL",origin.holderPrincipalId,credential.residentSlug);
+        const resident = completionTargets.get(credential.residentSlug);
+        return !!resident && resident.clientInstanceId===credential.instanceId && resident.keyVersion===credential.keyVersion &&
+          origin.holderInstanceId===resident.serverInstanceId && origin.authorityReference===`resident:${credential.residentSlug}`;
       },
       stopChild: workId => stopInvokedBot?.(workId) ?? Promise.resolve(),
     });
@@ -1121,16 +1148,29 @@ export function createCoordinationProcess(
     const scheduledTurns = createScheduledChannelTurns({database, channels, submit: messageSubmission, beginWork: lifecycle.beginWork,
       expireWork: workId => {
         const current = work.get(workId);
-        const resident = completionTargets.get('jerry');
-        if (!current || !resident) throw new Error('Scheduled execution unavailable');
-        workControl.cancel({workId,idempotencyKey:`scheduled-deadline:${workId}`,
-          context:resident.context({principalId:current.principalId,requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')})});
+        if (!current) throw new Error('Scheduled execution unavailable');
+        const bot = database.readOne<{residentBinding:string}>("SELECT resident_binding AS residentBinding FROM bots WHERE principal_id=?",current.targetPrincipalId);
+        if (!bot) throw new Error('Scheduling agent unavailable');
+        const ids = {principalId:current.targetPrincipalId,requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')};
+        const context: MessagingActorContext = bot.residentBinding.startsWith('bot-')
+          ? {...ids,identity:{kind:'on_demand_bot',bot:{botId:current.targetPrincipalId,residentBinding:bot.residentBinding}}}
+          : completionTargets.get(bot.residentBinding)!.context(ids);
+        workControl.cancel({workId,idempotencyKey:`scheduled-deadline:${workId}`,context});
       },
-      context: () => {
+      context: (botId) => {
+        if (botId) {
+          const bot=database.readOne<{residentBinding:string}>("SELECT resident_binding AS residentBinding FROM bots WHERE id=? AND lifecycle='active'",botId);
+          if (!bot) throw new Error('Scheduling agent is unavailable');
+          if (bot.residentBinding.startsWith('bot-')) return {principalId:botId,requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation'),identity:{kind:'on_demand_bot',bot:{botId,residentBinding:bot.residentBinding}}};
+          const resident=completionTargets.get(bot.residentBinding);
+          if (!resident) throw new Error('Scheduling resident unavailable');
+          return resident.context({principalId:botId,requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')});
+        }
         const resident = completionTargets.get('jerry');
         if (!resident) throw new Error('Executive resident unavailable');
         return resident.context({principalId:database.readOne<{id:string}>("SELECT id FROM bots WHERE resident_binding = 'jerry' AND lifecycle = 'active'")!.id,requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')});
       }});
+    helperScheduledTurn=(bot,input)=>scheduledTurns.run(input,bot.id);
     reconcileScheduledTurns = scheduledTurns.reconcile;
     const channelOperations = createChannelOperationConsumer({
       authorize: detachments.authorize,
@@ -1181,14 +1221,14 @@ export function createCoordinationProcess(
       botOperation: async (context, args, key) => {
         if (!productionBotLifecycle || !botLifecycleCapabilityAvailable()) throw new Error('Bot lifecycle unavailable');
         const actor = await resolveMessagingActor(context, participantDirectory, 'message:send');
-        if (actor.residentCredential?.residentBinding !== 'jerry') throw new Error('Executive authority required');
+        if (actor.kind !== 'bot') throw new Error('House agent authority required');
         const operation = String(args.operation).replace('bot_', '') as 'create' | 'archive' | 'restore';
         const target = operation === 'create'
           ? derivePersistentBotBinding({ requestId: key, displayName: String(args.displayName ?? '') })
           : String(args.botId ?? '');
         const policy = {
           action: { actorPrincipalId: actor.principalId, operation: `bot_lifecycle.${operation}`, target, parameters: {} },
-          factSource: { kind: 'trusted_policy_boundary' as const, reference: 'home23:signed-jerry-household-mandate:v1' },
+          factSource: { kind: 'trusted_policy_boundary' as const, reference: 'home23:house-agent-mandate:v1' },
           standing: { scope: 'within' as const, delegation: 'within' as const, budget: 'within' as const,
             audience: 'within' as const, allowlist: 'within' as const },
           impactClasses: [], contextAccess: { kind: 'none' as const },
@@ -1199,13 +1239,23 @@ export function createCoordinationProcess(
           ? productionBotLifecycle.service.create({ ...common, displayName: String(args.displayName ?? ''), purpose: String(args.purpose ?? '') })
           : productionBotLifecycle.service.control({ ...common, botId: target, operation });
       },
-      context: (origin) => {
-        const resident = completionTargets.get('jerry');
-        if (!resident) throw new Error('Executive resident unavailable');
-        return resident.context({ principalId: origin.holderPrincipalId,
-          requestId: generateCoordinationId('request'), correlationId: generateCoordinationId('correlation') });
+      history: (context,args,origin) => messages.listMessages({context,
+        channelId: typeof args.channelId==='string'?args.channelId:origin.channelId,
+        limit: Math.min(100,Math.max(1,Number(args.limit)||50)),
+        ...(Number.isSafeInteger(args.beforeSequence)?{beforeSequence:args.beforeSequence as number}:{})}),
+      project: (context, origin, args) => {
+        const channelId = typeof args.channelId==='string' ? args.channelId : origin.channelId;
+        return args.operation==='project_write'
+          ? projects.write(context,{channelId,name:String(args.name??''),text:args.text as string,expectedRevision:String(args.expectedRevision??'')})
+          : projects.read(context,channelId);
       },
+      context: executiveContext,
     });
+    helperChannelOperation = input => {
+      const bot = database.readOne<{residentBinding:string}>("SELECT resident_binding AS residentBinding FROM bots WHERE id=? AND lifecycle='active' AND resident_binding LIKE 'bot-%'", input.origin.holderPrincipalId);
+      if (!bot) throw new Error('Helper identity unavailable');
+      return channelOperations({role:'on_demand_bot',residentSlug:bot.residentBinding,instanceId:input.origin.holderInstanceId,keyVersion:0},input);
+    };
     const notifyResident = createResidentNotifications({ database, messages,
       resolveResident: slug => completionTargets.get(slug),
       recordMessage: createCanonicalMessageRecorder(communications, deviceNotifications) });
@@ -1287,7 +1337,7 @@ export function createCoordinationProcess(
   const application = createCoordinationApplication({
     flags: config.flags,
     services: {
-      auth, bootstrap, bots: botDirectory, channels, messages, unread, search,
+      auth, bootstrap, bots: botDirectory, channels, projects, messages, unread, search,
       work, workControl: stoppedWorkControl, leases, events, communications,
       authorityEpochs,
       ...(attachments === undefined ? {} : { attachments }),
@@ -1322,6 +1372,11 @@ export function createCoordinationProcess(
         await completionIngress?.start();
         notificationRecovery = prepareConnectedAgentsNotificationRecovery();
         address = await server.start();
+        if (helperRuntime) {
+          const helpers=database.readAll<{targetBotId:string; targetPrincipalId:string; residentBinding:string; conversationId:string; channelId:string; targetBotDisplayName:string}>(
+            "SELECT b.id AS targetBotId,b.principal_id AS targetPrincipalId,b.resident_binding AS residentBinding,b.conversation_id AS conversationId,b.name AS targetBotDisplayName,h.channel_id AS channelId FROM bots b JOIN conversation_handles h ON h.id=b.conversation_id WHERE b.lifecycle='active' AND b.resident_binding LIKE 'bot-%'");
+          await helperRuntime.resume(helpers);
+        }
       } catch (error) {
         await server.drain().catch(() => undefined);
         throw error;

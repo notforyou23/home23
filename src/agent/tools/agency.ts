@@ -10,6 +10,7 @@ function fetcher(ctx: ToolContext): typeof fetch {
 }
 
 async function jsonRequest(ctx: ToolContext, path: string, init?: RequestInit): Promise<unknown> {
+  if (ctx.agencyRequest) return ctx.agencyRequest(path, init);
   const res = await fetcher(ctx)(`${baseUrl(ctx)}${path}`, {
     ...init,
     headers: { 'content-type': 'application/json', ...(init?.headers || {}) },

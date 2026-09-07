@@ -38,6 +38,25 @@ export function createForegroundDetachmentConsumer(options: {
     return resident;
   }
   function verify(credential: DetachmentCredential, origin: CoordinationTurnOrigin, readOnly = false) {
+    if (credential.role === 'on_demand_bot') {
+      const row = options.database.readOne<{ id: string; principalId: string; targetPrincipalId: string; channelId: string; originMessageId: string | null; roundId: string | null; kind: string; contextManifestId: string }>(
+        `SELECT w.id,w.principal_id AS principalId,w.target_principal_id AS targetPrincipalId,w.channel_id AS channelId,
+          w.origin_message_id AS originMessageId,w.round_id AS roundId,w.kind,w.context_manifest_id AS contextManifestId
+         FROM works w JOIN attempts a ON a.id=w.current_attempt_id JOIN leases l ON l.attempt_id=a.id JOIN bots b ON b.id=w.target_principal_id
+         WHERE w.id=? AND a.id=? AND l.id=? AND a.fencing_token=? AND l.fencing_token=?
+           AND a.holder_principal_id=b.id AND l.holder_principal_id=b.id AND a.holder_instance_id=? AND l.holder_instance_id=a.holder_instance_id
+           AND a.authority_reference=? AND b.resident_binding=? AND b.lifecycle='active' AND b.continuing_identity=1 AND b.durable_mailbox=1
+           AND b.active_instance_id IS NULL AND b.active_key_version IS NULL AND b.resident_binding LIKE 'bot-%'
+           AND ((w.state='running' AND a.state='running' AND l.state='active') OR (?=1 AND w.state='leased' AND a.state IN ('offered','accepted') AND l.state IN ('offered','active')))
+           AND l.expires_at>?`,
+        origin.workId,origin.attemptId,origin.leaseId,origin.fencingToken,origin.fencingToken,
+        credential.instanceId,origin.authorityReference,credential.residentSlug,readOnly?1:0,now().toISOString());
+      if (!row || row.targetPrincipalId!==origin.holderPrincipalId || origin.holderInstanceId!==credential.instanceId ||
+          credential.instanceId!==`home23-core-on-demand:${row.targetPrincipalId}` || origin.authorityReference!==`bot:${row.targetPrincipalId}` ||
+          row.channelId!==origin.channelId || row.originMessageId!==origin.originMessageId || row.roundId!==origin.roundId)
+        throw new WorkError('ineligible','Helper operation requires its current canonical Work fence');
+      return row;
+    }
     const resident = verifyCredential(credential);
     const row = options.database.readOne<{ id: string; principalId: string; targetPrincipalId: string; channelId: string; originMessageId: string | null; roundId: string | null; kind: string; contextManifestId: string }>(
       `SELECT w.id, w.principal_id AS principalId, w.target_principal_id AS targetPrincipalId,

@@ -21,7 +21,7 @@ import type { BotLifecycleReceipt, PersistentMailboxBinder } from "./types.js";
 function assertLifecycleActor(reader: Pick<CoordinationDatabase, 'readOne'>, input: { actorPrincipalId: string; executiveActor?: ResolvedMessagingActor }) {
   if (input.actorPrincipalId === 'user_owner') return;
   const actor = input.executiveActor;
-  if (!actor || actor.principalId !== input.actorPrincipalId || actor.residentCredential?.residentBinding !== 'jerry' || !isChannelManager(actor))
+  if (!actor || actor.principalId !== input.actorPrincipalId || !isChannelManager(actor))
     throw new BotLifecycleError('request_invalid');
   assertStoredActorBinding(reader, actor);
 }

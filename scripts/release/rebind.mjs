@@ -41,8 +41,13 @@ export function inspect(plan) {
   if (JSON.stringify(current.processes.map(p => ({ name: p.name, ...p.running[0] }))) !== JSON.stringify(plan.expectedRunning)) throw new Error('Running process observations changed; inspect and prepare a new plan');
   const blockers = [];
   try { assertIndependent(current.processes.map(p => p.running[0].pid)); } catch (e) { blockers.push(e.message); }
-  for (const slug of ['jerry', 'forrest', 'grokbot']) {
-    const jobs = path.join(plan.root, 'instances', slug, 'coding-jobs');
+  const roots = ['jerry', 'forrest', 'grokbot'].map(slug => path.join(plan.root, 'instances', slug));
+  const helpers = path.join(plan.root, 'instances/.house/bots');
+  if (fs.existsSync(helpers)) for (const entry of fs.readdirSync(helpers, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name.startsWith('bot_')) roots.push(path.join(helpers, entry.name));
+  }
+  for (const agentRoot of roots) {
+    const jobs = path.join(agentRoot, 'coding-jobs');
     if (!fs.existsSync(jobs)) continue;
     for (const name of fs.readdirSync(jobs)) {
       const file = path.join(jobs, name, 'job.json');

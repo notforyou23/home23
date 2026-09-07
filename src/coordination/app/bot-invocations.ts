@@ -156,6 +156,18 @@ export function createBotInvocationService(options: {
         const { botId, prompt } = input.args;
         if (typeof botId !== 'string' || botId === input.origin.holderPrincipalId || typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12_000)
           throw new Error('Bot invocation requires an exact other Bot and bounded prompt');
+        // Joining an ancestor would wait on a turn which is already waiting on us.
+        let ancestorWork = input.origin.workId;
+        const seen = new Set<string>();
+        while (!seen.has(ancestorWork)) {
+          seen.add(ancestorWork);
+          const row = db.readOne<{originMessageId:string}>("SELECT origin_message_id AS originMessageId FROM works WHERE id=?",ancestorWork);
+          const parent = row?.originMessageId ? journal(row.originMessageId) : undefined;
+          if (!parent) break;
+          const lineage = JSON.parse(parent.payload) as Invocation;
+          if (lineage.origin.holderPrincipalId === botId) throw new Error('This agent is already waiting in the assignment chain. Return the result to it instead of creating a circular assignment.');
+          ancestorWork = lineage.origin.workId;
+        }
         const channelId = typeof input.args.channelId === 'string' ? input.args.channelId : input.origin.channelId;
         const channel = await options.channels.getChannel({ context: options.context(input.origin), channelId });
         if (channel.kind !== 'group' || channel.lifecycle !== 'active' || !channel.members.some(member => member.principalId === botId))

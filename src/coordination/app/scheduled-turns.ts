@@ -18,7 +18,7 @@ const terminal = new Set(['succeeded','failed','cancelled']);
 export function createScheduledChannelTurns(options: {
   database: M11Database; channels: ReturnType<typeof createChannelService>;
   submit: CoordinationMessageSubmissionPort;
-  context(): MessagingActorContext; beginWork(): () => void;
+  context(botId?: string): MessagingActorContext; beginWork(): () => void;
   expireWork?(workId: string): void; now?(): number;
 }) {
   const db = options.database;
@@ -34,7 +34,7 @@ export function createScheduledChannelTurns(options: {
   }
   const children = (value: Admission) => db.readAll<{id:string;state:string;text:string|null;messageId:string|null}>(
     `SELECT w.id,w.state,m.body_text AS text,m.id AS messageId FROM works w LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
-     WHERE w.kind='channel.bot_turn' AND w.origin_message_id=? AND w.channel_id=? AND w.target_principal_id=?`, value.messageId,value.channelId,value.botId);
+     WHERE w.kind IN ('channel.bot_turn','bot_turn') AND w.origin_message_id=? AND w.channel_id=? AND w.target_principal_id=?`, value.messageId,value.channelId,value.botId);
   function enforceDeadline(value: Admission) {
     if (value.deadlineAtMs === undefined || (options.now?.() ?? Date.now()) < value.deadlineAtMs) return;
     const rows = children(value);
@@ -57,7 +57,7 @@ export function createScheduledChannelTurns(options: {
     enforceDeadline(value);
     if (pending.has(value.runId)||children(value).length||failure(value.runId)) return;
     const done = options.beginWork();
-    const promise = options.submit.submitMessage({context:options.context(),channelId:value.channelId,idempotencyKey:`scheduled:${value.runId}`,
+    const promise = options.submit.submitMessage({context:options.context(value.botId),channelId:value.channelId,idempotencyKey:`scheduled:${value.runId}`,
       body:{messageId:value.messageId,clientMessageId:value.messageId,text:value.prompt,attachmentIds:[],mentions:[value.botId],replyToMessageId:null,
         modelAlias:value.modelAlias??null,reasoningEffort:value.reasoningEffort?(parseReasoningEffort(value.reasoningEffort)??null):null}})
       .then(result=>{void result.response?.catch(()=>undefined);})
@@ -70,7 +70,7 @@ export function createScheduledChannelTurns(options: {
     pending.set(value.runId,promise);
   }
   return {
-    async run(raw: unknown) {
+    async run(raw: unknown, botId?: string) {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid scheduled channel run');
       const input = raw as ScheduledChannelTurn;
       if (typeof input.runId!=='string'||!/^sched-run-[a-f0-9-]{36}$/.test(input.runId)||typeof input.jobId!=='string'||!input.jobId||input.jobId.length>200||
@@ -82,10 +82,10 @@ export function createScheduledChannelTurns(options: {
         ...(input.modelAlias?{modelAlias:input.modelAlias}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{}),...(input.timeoutMs?{timeoutMs:input.timeoutMs}:{})};
       let prior = admitted(input.runId); let value: Admission;
       if (!prior) {
-        const context=options.context();
+        const context=options.context(botId);
         const channel=await options.channels.getChannel({context,channelId:input.channelId});
-        if(channel.kind!=='group'||channel.lifecycle!=='active'||!channel.members.some(member=>member.principalId===context.principalId))
-          throw new Error('Scheduled channel must be an active topic channel containing Jerry');
+        if((channel.kind!=='group' && context.identity.kind!=='on_demand_bot')||channel.lifecycle!=='active'||!channel.members.some(member=>member.principalId===context.principalId))
+          throw new Error('Scheduled channel must be active and contain the scheduling agent');
         value={...normalized,messageId:generateCoordinationId('message'),botId:context.principalId,...(input.timeoutMs?{deadlineAtMs:(options.now?.()??Date.now())+input.timeoutMs}:{})};
         // getChannel yields; another retry may have completed admission meanwhile.
         prior=admitted(input.runId);
@@ -93,6 +93,7 @@ export function createScheduledChannelTurns(options: {
       }
       if(prior) {
         value=JSON.parse(prior.payload);
+        if(value.botId!==options.context(botId).principalId) throw new Error('Scheduled run belongs to another agent');
         const {messageId:_,botId:__,deadlineAtMs:___,...original}=value;
         if(canonicalJson(original)!==canonicalJson(normalized)) throw new Error('Scheduled run replay changed');
       }
@@ -101,11 +102,11 @@ export function createScheduledChannelTurns(options: {
     reconcile() {
       for (const row of db.readAll<{payload:string}>(`SELECT e.payload_json AS payload FROM events e
         WHERE e.aggregate_kind='scheduled_channel_run' AND e.aggregate_version=1
-          AND EXISTS(SELECT 1 FROM works w WHERE w.kind='channel.bot_turn' AND w.origin_message_id=json_extract(e.payload_json,'$.messageId') AND w.state NOT IN ('succeeded','failed','cancelled'))`))
+          AND EXISTS(SELECT 1 FROM works w WHERE w.kind IN ('channel.bot_turn','bot_turn') AND w.origin_message_id=json_extract(e.payload_json,'$.messageId') AND w.state NOT IN ('succeeded','failed','cancelled'))`))
         enforceDeadline(JSON.parse(row.payload));
       for(const row of db.readAll<{payload:string}>(`SELECT e.payload_json AS payload FROM events e
         WHERE e.aggregate_kind='scheduled_channel_run' AND e.aggregate_version=1
-          AND NOT EXISTS(SELECT 1 FROM works w WHERE w.kind='channel.bot_turn' AND w.origin_message_id=json_extract(e.payload_json,'$.messageId'))
+          AND NOT EXISTS(SELECT 1 FROM works w WHERE w.kind IN ('channel.bot_turn','bot_turn') AND w.origin_message_id=json_extract(e.payload_json,'$.messageId'))
           AND NOT EXISTS(SELECT 1 FROM events f WHERE f.aggregate_kind=e.aggregate_kind AND f.aggregate_id=e.aggregate_id AND f.aggregate_version=2)`))
         dispatch(JSON.parse(row.payload));
     },
