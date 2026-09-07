@@ -12,7 +12,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { execSync } = require('child_process');
-const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 // ═══════════════════════════════════════════════════════════════════════
 // SAFETY

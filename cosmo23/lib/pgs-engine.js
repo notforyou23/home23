@@ -31,8 +31,8 @@ const {
   requireCompleteProviderResult,
 } = require('./provider-completion');
 const { PGS_OPERATION_LIMITS } = require('./brain-operation-limits');
-const { projectMemoryAuthority } = require('../../shared/memory-authority.cjs');
-const { summarizeRetrievalAuthority } = require('../../shared/memory-source/contracts.cjs');
+const { projectMemoryAuthority } = require('../shared/memory-authority.cjs');
+const { summarizeRetrievalAuthority } = require('../shared/memory-source/contracts.cjs');
 const { redactPrivatePaths } = require('./provider-record-sanitizer');
 
 function readIntEnv(name, fallback) {

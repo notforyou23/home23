@@ -6,7 +6,7 @@ const path = require('path');
 const {
   DurableIngestionQueue,
   isIngestionQueueInternalFile,
-} = require('../../../../shared/ingestion-durable-queue.cjs');
+} = require('../../../shared/ingestion-durable-queue.cjs');
 
 class IngestionManifest {
   /**

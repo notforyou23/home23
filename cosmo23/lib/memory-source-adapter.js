@@ -14,7 +14,7 @@ const {
   resolveMemorySourceReadLimits,
   resolveMemorySourceSelection,
   throwIfAborted,
-} = require('../../shared/memory-source');
+} = require('../shared/memory-source/index.cjs');
 
 function sortedMutationBoundaries(canonicalRoot) {
   return enumerateMemoryMutationBoundaries(canonicalRoot)

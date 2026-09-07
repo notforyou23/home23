@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const {
   canonicalJson,
-} = require('../../../shared/brain-operations/canonical-json.cjs');
+} = require('../../shared/brain-operations/canonical-json.cjs');
 
 const CANONICAL_RUN_METADATA_BASENAME = 'home23-research-run.json';
 const MAX_RUN_METADATA_BYTES = 256 * 1024;

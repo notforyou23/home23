@@ -19,7 +19,7 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
-const { withMemorySourceLock } = require('../../../../shared/memory-source');
+const { withMemorySourceLock } = require('../../../shared/memory-source/index.cjs');
 
 const BACKUPS_DIR = 'backups';
 const DEFAULT_RETENTION = 2;

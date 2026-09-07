@@ -6,10 +6,10 @@ const { QueryEngine: DashboardQueryEngine } = require('../engine/src/dashboard/q
 const {
   MAX_VERIFIED_CONTEXT_UTF16,
   vectors: verifiedContextVectors,
-} = require('../../tests/helpers/query-verified-follow-up-context-vectors.cjs');
+} = require('../tests/helpers/query-verified-follow-up-context-vectors.cjs');
 const {
   renderVerifiedConversation,
-} = require('../../shared/query/verified-follow-up-context.cjs');
+} = require('../shared/query/verified-follow-up-context.cjs');
 
 test('QueryEngine cache key includes artifact fingerprint and prior context', () => {
   const base = {

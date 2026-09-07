@@ -93,13 +93,13 @@ const {
 } = require('./lib/legacy-query-operation-adapter');
 const {
   buildResearchRunTarget,
-} = require('../../shared/brain-operations/research-run-target.cjs');
+} = require('../shared/brain-operations/research-run-target.cjs');
 const {
   registerRuntimeMetricsRoute,
-} = require('../../shared/runtime-metrics-route.cjs');
+} = require('../shared/runtime-metrics-route.cjs');
 const {
   readDurableIngestionQueueStats,
-} = require('../../shared/ingestion-durable-queue.cjs');
+} = require('../shared/ingestion-durable-queue.cjs');
 const {
   createProviderProbeHandler,
   probeExactProviderPair,
@@ -148,7 +148,9 @@ const {
 } = require('./lib/managed-query-defaults');
 
 const ROOT = path.resolve(__dirname, '..');
-const HOME23_ROOT = path.resolve(__dirname, '..', '..');
+// Home23 is an optional, explicit integration; never infer a sibling installation.
+dotenv.config({ path: path.join(ROOT, '.env') });
+const HOME23_ROOT = process.env.HOME23_ROOT ? path.resolve(process.env.HOME23_ROOT) : ROOT;
 const INSTANCES_ROOT = path.join(HOME23_ROOT, 'instances');
 const AGENTS_MANIFEST_PATH = path.join(HOME23_ROOT, 'config', 'agents.json');
 const ENGINE_DIR = path.join(ROOT, 'engine');
@@ -161,7 +163,6 @@ function applyAnthropicOAuthMode() {
   process.env.FORCE_ANTHROPIC_OAUTH = 'true';
 }
 
-dotenv.config({ path: path.join(ROOT, '.env') });
 process.env.COSMO23_HOME = getConfigDir();
 process.env.COSMO23_CONFIG_PATH = getConfigPath();
 const initialConfig = loadConfigurationSync({ projectRoot: ROOT, applyToEnv: true, silent: true });
@@ -1109,7 +1110,9 @@ async function startProcessesForRun(runPath, requesterAgent, manager = processMa
     HOME23_AGENT: requesterAgent,
     COSMO_RUNTIME_PATH: runPath,
     COSMO_RUNTIME_DIR: runPath,
-    COSMO_WORKSPACE_PATH: path.join(HOME23_ROOT, 'instances', requesterAgent, 'workspace'),
+    COSMO_WORKSPACE_PATH: process.env.HOME23_ROOT
+      ? path.join(HOME23_ROOT, 'instances', requesterAgent, 'workspace')
+      : path.join(ROOT, 'workspaces', requesterAgent),
     COSMO_CONFIG_PATH: path.join(runPath, 'config.yaml'),
     COSMO_RUNS_PATH: LOCAL_RUNS_PATH,
     COSMO23_WS_PORT: String(WS_PORT),

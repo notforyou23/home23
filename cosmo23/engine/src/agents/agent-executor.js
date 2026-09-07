@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   createInstalledLocalSourceContext,
-} = require('../../../../shared/memory-source/operation-context.cjs');
+} = require('../../../shared/memory-source/operation-context.cjs');
 
 function sourceContextError(message) {
   return Object.assign(new Error(message), { code: 'mcp_source_context_required' });

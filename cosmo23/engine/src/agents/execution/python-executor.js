@@ -2,7 +2,7 @@ const { execFile, spawn } = require('child_process');
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
-const { unprivilegedChildEnv } = require('../../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
 /**
  * PythonExecutor - Safe Python code execution with file tracking

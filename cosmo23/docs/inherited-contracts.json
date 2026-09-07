@@ -1,0 +1,202 @@
+[
+  {
+    "source": "shared/memory-source/delta-chain.cjs",
+    "destination": "cosmo23/shared/memory-source/delta-chain.cjs",
+    "sourceSha256": "7ddc16500212061f642922776c761c57426d29e229423931a5d727e96c763a7e"
+  },
+  {
+    "source": "shared/memory-source/private-capabilities.cjs",
+    "destination": "cosmo23/shared/memory-source/private-capabilities.cjs",
+    "sourceSha256": "fb17ff4ea00e7c2c454092fb20944a7f77e05cf8e8600994188d95d9e1843fcc"
+  },
+  {
+    "source": "shared/memory-source/legacy-projection.cjs",
+    "destination": "cosmo23/shared/memory-source/legacy-projection.cjs",
+    "sourceSha256": "874b842d91ccf13257f95761195303e1588a26f08d941724d8599e19be5fd901"
+  },
+  {
+    "source": "shared/brain-operations/authority.cjs",
+    "destination": "cosmo23/shared/brain-operations/authority.cjs",
+    "sourceSha256": "d65a277868667c629ad80bb1ee777b644a2c23dd0868bfc77335e8e2cf26ced0"
+  },
+  {
+    "source": "shared/runtime-metrics-route.cjs",
+    "destination": "cosmo23/shared/runtime-metrics-route.cjs",
+    "sourceSha256": "7e961d78ffabd16104dd9925dba7a7110e5fe84fe66dadfdb92d0f84e0afbc14"
+  },
+  {
+    "source": "shared/bounded-jsonl-tail.cjs",
+    "destination": "cosmo23/shared/bounded-jsonl-tail.cjs",
+    "sourceSha256": "c469abad8bdc41a0acf7c3cb90d5438fdf0cfc9c7a10881a6c2b0f546a97e70a"
+  },
+  {
+    "source": "shared/memory-source/durable-lock-authority.cjs",
+    "destination": "cosmo23/shared/memory-source/durable-lock-authority.cjs",
+    "sourceSha256": "dc40fa5a943bee8fdf8626d459ee8568212555769636096ac901ff551d9359fd"
+  },
+  {
+    "source": "shared/memory-source/contracts.cjs",
+    "destination": "cosmo23/shared/memory-source/contracts.cjs",
+    "sourceSha256": "e59e1ab2581e377cba671498e0ed67fd86971503819ebc1ef4c1239fa366ed52"
+  },
+  {
+    "source": "shared/memory-source/scratch-quota.cjs",
+    "destination": "cosmo23/shared/memory-source/scratch-quota.cjs",
+    "sourceSha256": "a5156ad6696892dbc5b4e4d81347c220181ca6b4a9146cd887577c676f1e4a8a"
+  },
+  {
+    "source": "shared/memory-source/pins.cjs",
+    "destination": "cosmo23/shared/memory-source/pins.cjs",
+    "sourceSha256": "cbe46cdcef03187e0239b7b9ef5c9886c26ca8b80b0d82083e9645f859d35389"
+  },
+  {
+    "source": "shared/memory-source/jsonl.cjs",
+    "destination": "cosmo23/shared/memory-source/jsonl.cjs",
+    "sourceSha256": "311c73993547eff49c9db3a1969c4779ce239e25612c6dd6ae421175633820cc"
+  },
+  {
+    "source": "shared/memory-source/pgs-partitions.cjs",
+    "destination": "cosmo23/shared/memory-source/pgs-partitions.cjs",
+    "sourceSha256": "24023e4a1e088fa6c6906b2975fd66f8bf3609dc8c33b458c46cca184a360b12"
+  },
+  {
+    "source": "shared/memory-authority-attestation.cjs",
+    "destination": "cosmo23/shared/memory-authority-attestation.cjs",
+    "sourceSha256": "f7ca0a95d0dbc4173bf36544b5ddf4bcdb449005b2bc979e03181df69124d433"
+  },
+  {
+    "source": "shared/memory-source/descriptor.cjs",
+    "destination": "cosmo23/shared/memory-source/descriptor.cjs",
+    "sourceSha256": "76dc9f29d6aa9a58fc734ed248c94601c4d53e2dc96f73904fb5c210828d1ace"
+  },
+  {
+    "source": "engine/src/dashboard/brain-operations/pgs-session-authority.js",
+    "destination": "cosmo23/engine/src/dashboard/brain-operations/pgs-session-authority.js",
+    "sourceSha256": "1b4a764b00ecb959c130823b4472ee074005923ccfaa334f0a584765eb5969bd"
+  },
+  {
+    "source": "shared/memory-source/manifest.cjs",
+    "destination": "cosmo23/shared/memory-source/manifest.cjs",
+    "sourceSha256": "3591116987ec403558a55bafa0668359625f1067e1aa050fa0c2e9e909d8f730"
+  },
+  {
+    "source": "shared/child-process-env.cjs",
+    "destination": "cosmo23/shared/child-process-env.cjs",
+    "sourceSha256": "12e57dce7d4772350d901abe0eda191b5c200f32be7f15f59b2db426582a62b2"
+  },
+  {
+    "source": "tests/helpers/query-verified-follow-up-context-vectors.cjs",
+    "destination": "cosmo23/tests/helpers/query-verified-follow-up-context-vectors.cjs",
+    "sourceSha256": "0c6cbf702d286c0c945c88605fce5cfb93e07c2901d91dbd71ca8aa83e8de4e7"
+  },
+  {
+    "source": "shared/memory-source/mcp-bridge-adapter.cjs",
+    "destination": "cosmo23/shared/memory-source/mcp-bridge-adapter.cjs",
+    "sourceSha256": "71e38a1557b9b89aa861fbb6326156f087801cd900364395e68ff87ca36f0b31"
+  },
+  {
+    "source": "shared/memory-source/overlay-store.cjs",
+    "destination": "cosmo23/shared/memory-source/overlay-store.cjs",
+    "sourceSha256": "beaafe72d7559cc2d0b871845428ed114e2516f00ad5adcc067b18766a06998f"
+  },
+  {
+    "source": "shared/memory-source/confined-file.cjs",
+    "destination": "cosmo23/shared/memory-source/confined-file.cjs",
+    "sourceSha256": "c7ef60f1bbc74083731b37ca9c16a101a2991c5c4bb3579c52e7d374dad9a219"
+  },
+  {
+    "source": "shared/memory-source/index.cjs",
+    "destination": "cosmo23/shared/memory-source/index.cjs",
+    "sourceSha256": "150ce0e5881b7acfc5acd7dd2b62409c9b94712c6bdde4cf5d98bade75b52ff2"
+  },
+  {
+    "source": "shared/agent-instance-paths.cjs",
+    "destination": "cosmo23/shared/agent-instance-paths.cjs",
+    "sourceSha256": "9fb85bb76f05699c2468a84980820c5ccd6db1ab4fc784fbe44ea1e140075d79"
+  },
+  {
+    "source": "shared/brain-operations/capability.cjs",
+    "destination": "cosmo23/shared/brain-operations/capability.cjs",
+    "sourceSha256": "1d678e7a1e7152ee10bef71d084a1e94452966669d5b6968f15738724037b7fc"
+  },
+  {
+    "source": "shared/memory-source/reader.cjs",
+    "destination": "cosmo23/shared/memory-source/reader.cjs",
+    "sourceSha256": "06a8ff5d65fad588358f62bc1aad9ef9e85ae196d9971c3fee0429467ebb0710"
+  },
+  {
+    "source": "shared/mcp-request-identity.cjs",
+    "destination": "cosmo23/shared/mcp-request-identity.cjs",
+    "sourceSha256": "7cb7e497b8df6f25714c7c9fce5d7fb9eb9dd500f5024c5cc4eb9bab963ad984"
+  },
+  {
+    "source": "shared/memory-source/limits.cjs",
+    "destination": "cosmo23/shared/memory-source/limits.cjs",
+    "sourceSha256": "8ec092ca58b0f416ad719ad8fe4b81806f45f17e02c12211dd69c18591eb4bc9"
+  },
+  {
+    "source": "shared/query/verified-follow-up-support.cjs",
+    "destination": "cosmo23/shared/query/verified-follow-up-support.cjs",
+    "sourceSha256": "2af42ec098b133337c63f2bea978efc14f3f27ec33ab4435ec9b7f2254412023"
+  },
+  {
+    "source": "shared/brain-operations/canonical-json.cjs",
+    "destination": "cosmo23/shared/brain-operations/canonical-json.cjs",
+    "sourceSha256": "91693af1e01a3b6a7c2b4c18e21e20ffc1f2718f0ad1c6d0ea492eebdd05f067"
+  },
+  {
+    "source": "shared/memory-source/operation-context.cjs",
+    "destination": "cosmo23/shared/memory-source/operation-context.cjs",
+    "sourceSha256": "e2c161637604987443b07ccb22e5fda894c689dc48848af4320413db9d983e4d"
+  },
+  {
+    "source": "shared/memory-authority.cjs",
+    "destination": "cosmo23/shared/memory-authority.cjs",
+    "sourceSha256": "8f98e7c79a4def6da45cfe7b88de9d03d0da7149b0e72a6a6b204546e6a4f0df"
+  },
+  {
+    "source": "shared/brain-operations/research-run-target.cjs",
+    "destination": "cosmo23/shared/brain-operations/research-run-target.cjs",
+    "sourceSha256": "4caa28f875a23153a3e329c2d3dc978ecc4184487d1db53994edd330f70d49e5"
+  },
+  {
+    "source": "shared/memory-source/graph.cjs",
+    "destination": "cosmo23/shared/memory-source/graph.cjs",
+    "sourceSha256": "d6eefe80dd85b7645536a6e27b0b5c2b83fb1cc95e47984902ecefe782eab103"
+  },
+  {
+    "source": "shared/memory-source/legacy-migration.cjs",
+    "destination": "cosmo23/shared/memory-source/legacy-migration.cjs",
+    "sourceSha256": "dc80fb9cdec5eb1e3dcd321579d1494ddf81fceb05696a8691f80550e13c5b4f"
+  },
+  {
+    "source": "shared/memory-source/legacy-snapshot.cjs",
+    "destination": "cosmo23/shared/memory-source/legacy-snapshot.cjs",
+    "sourceSha256": "815fa2958aba8896bf1e90cd25961e0ccdc9fefe4085f5a72497b1a092834c61"
+  },
+  {
+    "source": "shared/ingestion-durable-queue.cjs",
+    "destination": "cosmo23/shared/ingestion-durable-queue.cjs",
+    "sourceSha256": "acf4829a148c2e001d32e77189973a690c6855d35dd0fde52ce395a7d9cdb2bd"
+  },
+  {
+    "source": "shared/memory-source/mcp-http-runtime.cjs",
+    "destination": "cosmo23/shared/memory-source/mcp-http-runtime.cjs",
+    "sourceSha256": "e0a7fe968ba4e2099de4c9b5acc1024d8f562854ea27942ae483c2647e147db4"
+  },
+  {
+    "source": "shared/memory-source/mcp-tools.cjs",
+    "destination": "cosmo23/shared/memory-source/mcp-tools.cjs",
+    "sourceSha256": "52c49488633788bb331eea1d51669e809d0f9d0e9790c8a8b4f53c2a4768528d"
+  },
+  {
+    "source": "shared/memory-source/writer.cjs",
+    "destination": "cosmo23/shared/memory-source/writer.cjs",
+    "sourceSha256": "b5cc238136291c30893eccb834a50e77b31c6b7c64d048da3c0df3b17397ed55"
+  },
+  {
+    "source": "shared/query/verified-follow-up-context.cjs",
+    "destination": "cosmo23/shared/query/verified-follow-up-context.cjs",
+    "sourceSha256": "c7448f0a07be879bf1d6367dd08fa958ef4848eaea9c73d312c86d15d83bfb6b"
+  }
+]

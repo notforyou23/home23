@@ -15,7 +15,7 @@ const { execSync: rawExecSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 function execSync(command, options = {}) {
   return rawExecSync(command, {

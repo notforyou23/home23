@@ -6,10 +6,10 @@ const {
   createQueryOperationExecutor,
 } = require('./query-operation-worker');
 const { QueryEngine } = require('../../lib/query-engine');
-const { createMemorySourcePinProvider } = require('../../../shared/memory-source');
+const { createMemorySourcePinProvider } = require('../../shared/memory-source/index.cjs');
 const {
   VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
-} = require('../../../shared/query/verified-follow-up-support.cjs');
+} = require('../../shared/query/verified-follow-up-support.cjs');
 
 const EXPECTED_QUERY_WORKER_SUPPORT = Object.freeze({
   version: 1,

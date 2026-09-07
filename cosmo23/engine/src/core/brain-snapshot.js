@@ -83,7 +83,7 @@ function snapshotNodeCount(snapshot) {
 
 async function safeReadManifest(brainDir) {
   try {
-    const { readManifest } = require('../../../../shared/memory-source');
+    const { readManifest } = require('../../../shared/memory-source/index.cjs');
     return await readManifest(brainDir);
   } catch {
     return null;

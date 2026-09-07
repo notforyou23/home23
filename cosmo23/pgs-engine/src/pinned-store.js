@@ -6,7 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { PGS_OPERATION_LIMITS } = require('../../lib/brain-operation-limits');
-const { partitionIdForNode, planPartitionCoarsening } = require('../../../shared/memory-source/pgs-partitions.cjs');
+const { partitionIdForNode, planPartitionCoarsening } = require('../../shared/memory-source/pgs-partitions.cjs');
 const {
   redactPrivatePaths,
   serializeProviderRecord,
@@ -21,16 +21,16 @@ const {
   canonicalJson,
   createRetrievalAuthorityAccumulator,
   sourceDescriptorDigest,
-} = require('../../../shared/memory-source/contracts.cjs');
+} = require('../../shared/memory-source/contracts.cjs');
 const {
   projectMemoryAuthority,
-} = require('../../../shared/memory-authority.cjs');
+} = require('../../shared/memory-authority.cjs');
 const {
   ATTESTATION_ENV,
-} = require('../../../shared/memory-authority-attestation.cjs');
+} = require('../../shared/memory-authority-attestation.cjs');
 const {
   getOperationScratchQuotaCleanup,
-} = require('../../../shared/memory-source/scratch-quota.cjs');
+} = require('../../shared/memory-source/scratch-quota.cjs');
 
 // Version 3 binds reusable sweeps to the exact query and scope policy, and
 // gives every work unit a stable partition-stratified coverage ordinal.

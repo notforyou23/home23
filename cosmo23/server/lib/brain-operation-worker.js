@@ -8,24 +8,24 @@ const path = require('node:path');
 const {
   OPERATION_AUTHORITY,
   authorizeBrainOperation,
-} = require('../../../shared/brain-operations/authority.cjs');
+} = require('../../shared/brain-operations/authority.cjs');
 const {
   canonicalJson,
   canonicalSha256,
-} = require('../../../shared/brain-operations/canonical-json.cjs');
+} = require('../../shared/brain-operations/canonical-json.cjs');
 const {
   verifyCapability,
-} = require('../../../shared/brain-operations/capability.cjs');
+} = require('../../shared/brain-operations/capability.cjs');
 const {
   classifyMatchOutcome,
   createEvidence,
   createOperationScratchQuota,
   durableBrainOperationRoot,
   sourceDescriptorDigest,
-} = require('../../../shared/memory-source');
+} = require('../../shared/memory-source/index.cjs');
 const {
   createDurableOperationLockCapability,
-} = require('../../../shared/memory-source/durable-lock-authority.cjs');
+} = require('../../shared/memory-source/durable-lock-authority.cjs');
 const { CapabilityNonceStore } = require('./capability-nonce-store');
 const { boundedJsonStringify } = require('../../lib/bounded-json');
 const {
@@ -35,11 +35,11 @@ const {
 const {
   createPgsSessionAuthority,
   SESSION_ID_PATTERN: PGS_SESSION_ID_PATTERN,
-} = require('../../../engine/src/dashboard/brain-operations/pgs-session-authority.js');
+} = require('../../engine/src/dashboard/brain-operations/pgs-session-authority.js');
 const {
   createVerifiedFollowUpSupportResponse,
   isExactVerifiedFollowUpRuntimeSupport,
-} = require('../../../shared/query/verified-follow-up-support.cjs');
+} = require('../../shared/query/verified-follow-up-support.cjs');
 
 const WORKER_EVENT_MAX_COUNT = 4096;
 const WORKER_EVENT_MAX_BYTES = 8 * 1024 * 1024;

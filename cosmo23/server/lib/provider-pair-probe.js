@@ -5,7 +5,7 @@ const {
   requireCompleteProviderResult,
 } = require('../../lib/provider-completion');
 const { getModelCapabilities } = require('../config/model-catalog');
-const { isLoopback } = require('../../../shared/runtime-metrics-route.cjs');
+const { isLoopback } = require('../../shared/runtime-metrics-route.cjs');
 
 const PURPOSES = new Set(['direct-query', 'pgs-sweep', 'pgs-synthesis']);
 const DEFAULT_PROBE_TIMEOUT_MS = 120_000;

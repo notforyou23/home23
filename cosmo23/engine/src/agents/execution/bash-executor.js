@@ -1,6 +1,6 @@
 const { spawn, execFile } = require('child_process');
 const path = require('path');
-const { unprivilegedChildEnv } = require('../../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
 /**
  * BashExecutor - Local bash command execution with security hardening

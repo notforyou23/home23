@@ -6,7 +6,7 @@ const {
   sampleMemoryGraph,
   throwIfAborted,
   withEphemeralMemorySource
-} = require('../../../shared/memory-source');
+} = require('../../shared/memory-source/index.cjs');
 
 function requestAbortController(req, res) {
   const controller = new AbortController();

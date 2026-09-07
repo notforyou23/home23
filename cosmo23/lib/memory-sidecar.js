@@ -21,7 +21,7 @@ const {
   readManifest,
   rewriteMemoryBase,
   sourceDescriptorDigest,
-} = require('../../shared/memory-source');
+} = require('../shared/memory-source/index.cjs');
 
 const NODES_FILE = 'memory-nodes.jsonl.gz';
 const EDGES_FILE = 'memory-edges.jsonl.gz';

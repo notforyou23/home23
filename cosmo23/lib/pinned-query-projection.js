@@ -15,15 +15,15 @@ const {
 const {
   projectMemoryAuthority,
   scoreMemoryAuthority,
-} = require('../../shared/memory-authority.cjs');
+} = require('../shared/memory-authority.cjs');
 const {
   memoryAuthorityAttestationPayload,
   verifyMemoryAuthorityAttestation,
-} = require('../../shared/memory-authority-attestation.cjs');
+} = require('../shared/memory-authority-attestation.cjs');
 const {
   summarizeRetrievalAuthority,
   attestRetrievalAuthoritySummary,
-} = require('../../shared/memory-source/contracts.cjs');
+} = require('../shared/memory-source/contracts.cjs');
 
 const COOPERATIVE_YIELD_EVERY = 1_000;
 const CANDIDATE_OVERSAMPLE = 4;

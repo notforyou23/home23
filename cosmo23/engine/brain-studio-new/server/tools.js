@@ -11,7 +11,7 @@ const docx = require('docx');
 const { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel, Table, TableRow, TableCell, WidthType } = docx;
 const XLSX = require('xlsx');
 const MsgReader = require('msgreader').default || require('msgreader');
-const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 function execSync(command, options = {}) {
   return rawExecSync(command, {

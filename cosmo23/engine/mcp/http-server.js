@@ -17,12 +17,12 @@ const {
   createDefaultMcpMemoryTools,
   createMcpReadinessController,
   createSnapshotScalarStateReader,
-} = require('../../../shared/memory-source/mcp-http-runtime.cjs');
+} = require('../../shared/memory-source/mcp-http-runtime.cjs');
 const {
   mcpRequestBodyDigest,
   verifyMcpRequestIdentity,
-} = require('../../../shared/mcp-request-identity.cjs');
-const { readRecentJsonlTail } = require('../../../shared/bounded-jsonl-tail.cjs');
+} = require('../../shared/mcp-request-identity.cjs');
+const { readRecentJsonlTail } = require('../../shared/bounded-jsonl-tail.cjs');
 
 // Initialize free web search
 const webSearch = new FreeWebSearch(console);

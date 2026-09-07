@@ -33,7 +33,7 @@ const {
 const path = require('path');
 const fs = require('fs').promises;
 const { execFileSync } = require('child_process');
-const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 // Inputs cross this boundary only through argv and JSON files. Record keys are
 // quoted as SQLite identifiers at runtime; they must never become Python source.

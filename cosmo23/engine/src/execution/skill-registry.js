@@ -22,7 +22,7 @@
 'use strict';
 
 const { execSync, spawn } = require('child_process');
-const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');

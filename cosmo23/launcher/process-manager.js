@@ -1,4 +1,5 @@
 const { EventEmitter } = require('events');
+const net = require('node:net');
 const { spawn, exec } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
@@ -142,17 +143,22 @@ class ProcessManager extends EventEmitter {
    * Check if a port is in use
    */
   async isPortInUse(port) {
-    try {
-      const { stdout } = await execAsync(`lsof -ti TCP:${port}`);
-      return stdout.trim().length > 0;
-    } catch (error) {
-      return false;
-    }
+    return new Promise((resolve) => {
+      const socket = net.createConnection({ host: '127.0.0.1', port });
+      const finish = (ready) => { socket.destroy(); resolve(ready); };
+      socket.once('connect', () => finish(true));
+      socket.once('error', () => finish(false));
+      socket.setTimeout(500, () => finish(false));
+    });
   }
 
   async waitForRequiredProcess(name, proc, options = {}) {
     const label = options.label || name;
-    const timeoutMs = options.timeoutMs ?? 1500;
+    const timeoutMs = options.timeoutMs
+      ?? Number(process.env.COSMO_PROCESS_STARTUP_TIMEOUT_MS || 60_000);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new Error('COSMO_PROCESS_STARTUP_TIMEOUT_MS must be a positive number');
+    }
     const pollIntervalMs = options.pollIntervalMs ?? 50;
     const stabilityMs = options.stabilityMs ?? 0;
     const startedAt = Date.now();

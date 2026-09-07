@@ -1,3 +1,28 @@
+# Cosmo 2.3
+
+Cosmo is an independently installed research application. Its server, launcher,
+cognitive engine and research history belong to this repository. Home23 can
+connect as a client; it does not install, start, watchdog or update Cosmo.
+
+Install dependencies with `npm install`, then run `npm start`. Configuration lives
+in `COSMO23_CONFIG_DIR` (or the existing user configuration location). App and
+engine ports remain configurable with `COSMO23_PORT`, `COSMO23_WS_PORT`,
+`COSMO23_DASHBOARD_PORT` and `COSMO23_MCP_HTTP_PORT`.
+
+For an existing Home23 integration, explicitly set `HOME23_ROOT` to the installation
+and preserve the existing capability and memory attestation keys. This enables
+requester-specific research outputs and protected operations over the existing API.
+Without that integration, local workspaces belong under `workspaces/` here.
+Provider credentials and model selection belong to Cosmo's configuration.
+
+`shared/` contains the local contracts inherited at separation. It is source in
+this repository, not a dependency on a neighboring Home23 checkout. Keep protocol
+changes compatible with existing Home23 clients and verify both sides when a
+contract changes. Run artifacts, configuration, credentials and dependencies are
+local state and must not be committed.
+
+## Earlier project documentation
+
 # COSMO 2.3
 
 COSMO 2.3 is the standalone carve-out of COSMO Unified.

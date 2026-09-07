@@ -4,11 +4,11 @@ const { types: { isProxy } } = require('node:util');
 
 const {
   canonicalJson,
-} = require('../../../shared/brain-operations/canonical-json.cjs');
+} = require('../../shared/brain-operations/canonical-json.cjs');
 const {
   memorySourceError,
   throwIfAborted,
-} = require('../../../shared/memory-source/contracts.cjs');
+} = require('../../shared/memory-source/contracts.cjs');
 
 const DEFAULT_MAX_NODES = 2_000;
 const DEFAULT_MAX_EDGES = 8_000;

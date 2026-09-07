@@ -1,7 +1,7 @@
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const execPromise = promisify(exec);
-const { unprivilegedChildEnv } = require('../../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
 /**
  * MacOSNative - AppleScript/JXA automation for macOS

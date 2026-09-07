@@ -7,13 +7,15 @@
     "start": "node server/index.js",
     "dev": "nodemon server/index.js",
     "db:generate": "prisma generate",
-    "db:push": "DATABASE_URL=${DATABASE_URL:-file:./prisma/cosmo2.3.db} prisma db push"
+    "db:push": "DATABASE_URL=${DATABASE_URL:-file:./prisma/cosmo2.3.db} prisma db push",
+    "test": "node --test --test-concurrency=1 tests/cosmo23/*.test.cjs tests/security/*.test.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
     "@modelcontextprotocol/sdk": "^1.19.1",
     "@nut-tree-fork/nut-js": "^4.2.6",
     "@prisma/client": "5.22.0",
+    "better-sqlite3": "^11.10.0",
     "blessed": "^0.1.81",
     "blessed-contrib": "^4.11.0",
     "boxen": "^5.1.2",
@@ -48,6 +50,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "ajv": "^8.18.0",
     "nodemon": "^3.1.9"
   },
   "engines": {

@@ -4,7 +4,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
-const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 /**
  * CodeCreationAgent - Actual code generation specialist

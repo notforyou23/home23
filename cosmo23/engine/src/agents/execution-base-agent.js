@@ -22,7 +22,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execSync, exec } = require('child_process');
 const os = require('os');
-const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 // Fetch receipts are authoritative only while held in this module-private
 // state. The JSONL file is an audit copy; contract evaluation never trusts

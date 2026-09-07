@@ -1,7 +1,7 @@
 const { spawn } = require('child_process');
 const readline = require('readline');
 const path = require('path');
-const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 function loadFetch() {
   if (typeof globalThis.fetch === 'function') return globalThis.fetch.bind(globalThis);

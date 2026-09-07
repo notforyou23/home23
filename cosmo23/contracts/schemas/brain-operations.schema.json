@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://home23.local/contracts/brain-operations.schema.json",
+  "title": "Home23 Brain Operations Contracts",
+  "$defs": {
+    "mutationBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["brain", "run", "pgs", "session", "cache", "export", "agency"]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        }
+      }
+    },
+    "brainCatalogEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "displayName",
+        "ownerAgent",
+        "kind",
+        "lifecycle",
+        "canonicalRoot",
+        "sourceType",
+        "nodeCount",
+        "modifiedAt",
+        "route",
+        "mutationBoundaries"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^brain-[a-f0-9]{16}$" },
+        "displayName": { "type": "string", "minLength": 1 },
+        "ownerAgent": { "type": ["string", "null"] },
+        "kind": { "type": "string", "enum": ["resident", "research"] },
+        "lifecycle": { "type": "string", "enum": ["resident", "active", "completed", "unavailable"] },
+        "canonicalRoot": { "type": "string", "pattern": "^/" },
+        "sourceType": { "type": "string", "minLength": 1 },
+        "nodeCount": { "type": ["integer", "null"], "minimum": 0 },
+        "modifiedAt": { "type": "string", "format": "date-time" },
+        "route": { "type": "string", "pattern": "^/api/brain/brain-[a-f0-9]{16}$" },
+        "routeKey": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "pattern": "^/" },
+        "sourceLabel": { "type": "string" },
+        "isReference": { "type": "boolean" },
+        "modified": { "type": "number" },
+        "cycleCount": { "type": ["integer", "null"] },
+        "cycles": { "type": ["integer", "null"] },
+        "nodes": { "type": ["integer", "null"], "minimum": 0 },
+        "edges": { "type": ["integer", "null"], "minimum": 0 },
+        "hasState": { "type": "boolean" },
+        "hasStateSummary": { "type": "boolean" },
+        "hasMetadata": { "type": "boolean" },
+        "isActive": { "type": "boolean" },
+        "mode": { "type": "string" },
+        "topic": { "type": "string" },
+        "domain": { "type": "string" },
+        "context": { "type": "string" },
+        "metadata": { "type": "object", "additionalProperties": true },
+        "mutationBoundaries": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/mutationBoundary" },
+          "allOf": [
+            { "contains": { "properties": { "kind": { "const": "brain" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "properties": { "kind": { "const": "run" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "properties": { "kind": { "const": "pgs" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "properties": { "kind": { "const": "session" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "properties": { "kind": { "const": "cache" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "properties": { "kind": { "const": "export" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "properties": { "kind": { "const": "agency" } }, "required": ["kind"] }, "minContains": 1, "maxContains": 1 }
+          ]
+        }
+      }
+    },
+    "brainCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["catalogRevision", "brains"],
+      "properties": {
+        "catalogRevision": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "count": { "type": "integer", "minimum": 0 },
+        "activeContext": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "brains": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/brainCatalogEntry" }
+        }
+      }
+    }
+  },
+  "$ref": "#/$defs/brainCatalog"
+}

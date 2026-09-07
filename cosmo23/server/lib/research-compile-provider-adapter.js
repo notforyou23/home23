@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 
 const {
   canonicalJson,
-} = require('../../../shared/brain-operations/canonical-json.cjs');
+} = require('../../shared/brain-operations/canonical-json.cjs');
 const {
   assertProviderResultIdentity,
 } = require('../../lib/provider-completion');

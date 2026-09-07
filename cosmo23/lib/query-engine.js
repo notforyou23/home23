@@ -46,11 +46,11 @@ const { createProviderPromptBudget } = require('./provider-prompt-budget');
 const {
   summarizeRetrievalAuthority,
   attestRetrievalAuthoritySummary,
-} = require('../../shared/memory-source/contracts.cjs');
+} = require('../shared/memory-source/contracts.cjs');
 const {
   renderVerifiedConversation,
   validateVerifiedConversationContext,
-} = require('../../shared/query/verified-follow-up-context.cjs');
+} = require('../shared/query/verified-follow-up-context.cjs');
 
 // HOME23 PATCH 70 — render protected verified exchanges identically in every
 // Query prompt path and bind their normalized structure into cache identity.

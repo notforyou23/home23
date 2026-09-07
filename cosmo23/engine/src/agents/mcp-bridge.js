@@ -5,10 +5,10 @@ const {
   createMcpBridgeMemoryAdapter,
   projectScalarSystemState,
   readBoundedGzipJson,
-} = require('../../../../shared/memory-source/mcp-bridge-adapter.cjs');
+} = require('../../../shared/memory-source/mcp-bridge-adapter.cjs');
 const {
   readRecentJsonlTail,
-} = require('../../../../shared/bounded-jsonl-tail.cjs');
+} = require('../../../shared/bounded-jsonl-tail.cjs');
 
 function loadLockfile() {
   try {

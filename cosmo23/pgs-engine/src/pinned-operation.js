@@ -31,7 +31,7 @@ const { getModelCapabilities } = require('../../server/config/model-catalog');
 const {
   summarizeRetrievalAuthority,
   attestRetrievalAuthoritySummary,
-} = require('../../../shared/memory-source/contracts.cjs');
+} = require('../../shared/memory-source/contracts.cjs');
 
 // Keep this internal so callers cannot override the resource boundary. Four
 // concurrent bounded work units preserve the read-only/memory limits while

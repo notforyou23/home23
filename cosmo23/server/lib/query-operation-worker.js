@@ -5,10 +5,10 @@ const {
   projectRetrievalEvidenceEnvelope,
   normalizeAuthoritySummary,
   getAttestedRetrievalAuthoritySummary,
-} = require('../../../shared/memory-source/contracts.cjs');
+} = require('../../shared/memory-source/contracts.cjs');
 const {
   validateVerifiedConversationContext,
-} = require('../../../shared/query/verified-follow-up-context.cjs');
+} = require('../../shared/query/verified-follow-up-context.cjs');
 
 const QUERY_PARAMETER_KEYS = Object.freeze([
   'query', 'mode', 'modelSelection', 'topK', 'priorContext', 'verifiedConversationContext',

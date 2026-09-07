@@ -11,7 +11,7 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
 const { getDomainAnchor } = require('../utils/domain-anchor');
-const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 class AcceptanceValidator {
   constructor(agentExecutor, logger) {
