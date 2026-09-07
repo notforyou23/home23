@@ -1,3 +1,4 @@
+import { boundHistoricalContext } from '../../agent/historical-context.js';
 import { createResidentNotifications } from './resident-notifications.js';
 import { createResidentContactProjection } from './resident-contact.js';
 import { projectResidentWork } from './resident-work-projection.js';
@@ -967,9 +968,11 @@ export function createCoordinationProcess(
           return { originMessageId: prepared.originMessageId, prepared: {
             ...target, channelId: prepared.channelId, conversationId: prepared.conversationId,
             instruction: prepared.instruction, attachments: prepared.attachments, manifest: prepared.manifest,
-            historyBackfill: prepared.transcript.map(message => ({ messageId: message.messageId,
+            historyBackfill: boundHistoricalContext(prepared.transcript
+              .filter(message => message.messageId !== prepared.originMessageId)
+              .map(message => ({ messageId: message.messageId,
               sequence: message.sequence, role: message.authorPrincipalId === child.targetPrincipalId ? "assistant" as const : "user" as const,
-              text: message.text, createdAt: message.createdAt })),
+              text: message.text, createdAt: message.createdAt }))),
           } };
         },
         work,

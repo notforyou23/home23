@@ -391,9 +391,8 @@ export function createDirectMessageSubmissionService(options: {
         } : {}),
         chatId: `coordination:${input.prepared.channelId}:${input.work.id}`,
         instruction: input.prepared.instruction, origin,
-        historyBackfill: options.outcomes?.forReview(input.work.id)
-          ? input.prepared.historyBackfill.filter(entry => entry.messageId !== input.originMessageId)
-          : input.prepared.historyBackfill,
+        historyBackfill: boundHistoricalContext(input.prepared.historyBackfill
+          .filter(entry => entry.messageId !== input.originMessageId)),
         attachments: input.prepared.attachments,
         requestId: input.requestId, correlationId: input.correlationId,
         turnSelection: options.work.getTurnSelection(input.work.id),
@@ -608,7 +607,9 @@ export function createDirectMessageSubmissionService(options: {
       const identity = options.recoveryIdentity();
       void dispatch({ work, prepared: recovered.prepared, originMessageId: recovered.originMessageId,
         requestId: identity.requestId, correlationId: identity.correlationId,
-        endWork: once(options.beginWork()), recovery: true, target }).catch(() => undefined);
+        endWork: once(options.beginWork()), recovery: true, target }).catch(error => {
+          console.error("[home23-coordination] Working Thread execution failed", workId, error);
+        });
     },
     async awaitSettlement(workId: string): Promise<void> {
       await inFlight.get(workId)?.catch(() => undefined);
