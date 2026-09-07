@@ -49,7 +49,8 @@ test('execution termination remains an obligation until the resident records its
   assert.throws(() => f.assignments.report(f.context, f.origin, { work_id: id, state: 'complete', summary: 'Done', evidence: ['receipt:one'] }, 'active-completion'), /active execution/);
   f.cancel(id);
   assert.throws(() => f.assignments.assertOpen(id), /cancelled/);
-  assert.equal(f.assignments.list(BOT_ID)[0].assignmentState, 'needs_review');
+  assert.equal(f.assignments.list(BOT_ID).length, 0);
+  assert.equal(f.assignments.list(BOT_ID, true)[0].assignmentState, 'cancelled');
   const args = { work_id: id, state: 'blocked', summary: 'Code saved; activation remains unverified', evidence: ['file:repair'] };
   f.assignments.report(f.context, f.origin, args, 'blocked-report');
   const outcomes = createResidentOutcomeStore(f.database);

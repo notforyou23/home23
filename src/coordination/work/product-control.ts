@@ -195,7 +195,7 @@ function projection(database: M11Database, work: WorkRecord): ProductWorkProject
     summary: summary || title,
     state,
     ...(workingThread ? {
-      assignmentState: assessment?.state ?? (['succeeded','failed','cancelled'].includes(work.state) ? 'needs_review' : 'active'),
+      assignmentState: createResidentAssignments(database).presentationState(work.id, work.state, assessment),
       assignmentSummary: assessment?.summary ?? null,
     } : {}),
     cancelAvailable: work.state === "queued" || work.state === "running" || (workingThread && work.state === "leased"),

@@ -37,6 +37,17 @@ export function createResidentAssignments(database: M11Database) {
       WHERE aggregate_kind='resident_assignment' AND aggregate_id=? ORDER BY aggregate_version DESC LIMIT 1`, root(workId));
     return record ? { ...JSON.parse(record.payload), eventSequence: record.sequence } : null;
   }
+  function presentationState(workId: string, executionState: string, conclusion = latest(workId)): string {
+    if (conclusion) return conclusion.state;
+    if (executionState === 'cancelled' || executionState === 'failed') return executionState;
+    if (executionState !== 'succeeded') return 'active';
+    const pending = hasOutcomeStore && database.readOne(`SELECT 1 FROM resident_outcomes o
+      WHERE o.source_work_id=? AND o.settled_at IS NULL
+        AND (o.review_work_id IS NULL OR EXISTS (SELECT 1 FROM works review
+          WHERE review.id=o.review_work_id AND review.state IN ('queued','leased','running','cancelling')))
+      LIMIT 1`, workId);
+    return pending ? 'needs_review' : 'complete';
+  }
   function assertOpen(workId: string) {
     const conclusion = latest(workId);
     if (conclusion && conclusion.state !== 'active') throw new Error(`Assignment is ${conclusion.state}; assess the current direction with work_report_outcome before another launch`);
@@ -139,7 +150,9 @@ export function createResidentAssignments(database: M11Database) {
         coalesce(p.summary,m.body_text) AS summary,m.body_text AS originalRequest,w.created_at AS createdAt,
         w.terminal_reason AS terminalReason FROM works w LEFT JOIN work_thread_presentations p ON p.work_id=w.id
         LEFT JOIN messages m ON m.id=w.origin_message_id WHERE w.id=?`, id)!;
-      result.push({ ...work, assignmentState: conclusion?.state ?? (['succeeded','failed','cancelled'].includes(String(work.state)) ? 'needs_review' : 'active'), conclusion });
+      const assignmentState = presentationState(id, String(work.state), conclusion);
+      if (!includeClosed && ['complete', 'cancelled', 'failed'].includes(assignmentState)) continue;
+      result.push({ ...work, assignmentState, conclusion });
       if (result.length >= limit) break;
     }
     return result;
@@ -157,5 +170,5 @@ export function createResidentAssignments(database: M11Database) {
       return due || dependenciesReady ? [value] : [];
     });
   }
-  return { root, latest, report, list, revisits, assertOpen, direction };
+  return { root, latest, presentationState, report, list, revisits, assertOpen, direction };
 }
