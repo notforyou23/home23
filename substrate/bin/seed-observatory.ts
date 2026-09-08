@@ -977,6 +977,11 @@ ${renderBoard()}
 
 const server = createServer((req, res) => {
   try {
+    // Process liveness only: no Seed composition, filesystem reads or probes.
+    if (req.url === '/healthz') {
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }).end('ok\n');
+      return;
+    }
     if (req.url === '/api/terrarium') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }).end(apiPayload());
       return;
@@ -995,4 +1000,7 @@ const server = createServer((req, res) => {
     res.writeHead(500, { 'content-type': 'text/plain' }).end(`observatory error: ${(error as Error).message}`);
   }
 });
-server.listen(port, () => console.log(`[observatory] the terrarium — watching ${specs.length} individuals on :${port}`));
+server.listen(port, () => {
+  const address = server.address();
+  console.log(`[observatory] the terrarium — watching ${specs.length} individuals on :${typeof address === 'object' && address !== null ? address.port : port}`);
+});
