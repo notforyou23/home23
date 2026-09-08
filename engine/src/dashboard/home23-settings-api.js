@@ -2881,6 +2881,94 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     });
   });
 
+  // ─── Dash links ───────────────────────────────────────────────────────────
+  // The owner's saved dashboards and websites, shared by every Home23 client
+  // (iPhone, Mac). Stored under dashboard.dash.links in config/home.yaml so
+  // the house is the single source of truth and no device keeps its own copy.
+
+  const DASH_LINKS_MAX = 200;
+  const DASH_TITLE_MAX = 120;
+  const DASH_URL_MAX = 2048;
+
+  function newDashLinkId() {
+    return require('crypto').randomBytes(9).toString('base64url');
+  }
+
+  function normalizeDashLink(input, index) {
+    if (!input || typeof input !== 'object') throw new Error(`links[${index}] must be an object`);
+    const title = String(input.title ?? '').trim();
+    if (!title) throw new Error(`links[${index}].title is required`);
+    if (title.length > DASH_TITLE_MAX) throw new Error(`links[${index}].title is too long`);
+    const rawUrl = String(input.url ?? '').trim();
+    if (!rawUrl) throw new Error(`links[${index}].url is required`);
+    if (rawUrl.length > DASH_URL_MAX) throw new Error(`links[${index}].url is too long`);
+    let url;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      throw new Error(`links[${index}].url is not a valid URL`);
+    }
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      throw new Error(`links[${index}].url must be http or https`);
+    }
+    if (!url.hostname) throw new Error(`links[${index}].url needs a host`);
+    if (url.username || url.password) throw new Error(`links[${index}].url must not embed credentials`);
+    const id = typeof input.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(input.id) ? input.id : newDashLinkId();
+    return { id, title, url: url.toString() };
+  }
+
+  function readDashLinks(homeConfig) {
+    const links = homeConfig?.dashboard?.dash?.links;
+    if (!Array.isArray(links)) return [];
+    const out = [];
+    links.forEach((entry, index) => {
+      try {
+        out.push(normalizeDashLink(entry, index));
+      } catch {
+        // Skip anything hand-edited into an invalid shape rather than fail the read.
+      }
+    });
+    return out;
+  }
+
+  router.get('/dash', (_req, res) => {
+    const homeConfig = loadYaml(path.join(home23Root, 'config', 'home.yaml'));
+    res.json({
+      version: 1,
+      links: readDashLinks(homeConfig),
+      updatedAt: homeConfig?.dashboard?.dash?.updatedAt || null,
+    });
+  });
+
+  router.put('/dash', (req, res) => {
+    const { links: input } = req.body || {};
+    if (!Array.isArray(input)) {
+      return res.status(400).json({ ok: false, error: 'links array required' });
+    }
+    if (input.length > DASH_LINKS_MAX) {
+      return res.status(400).json({ ok: false, error: `at most ${DASH_LINKS_MAX} links` });
+    }
+    let links;
+    try {
+      const seen = new Set();
+      links = input.map((entry, index) => {
+        const link = normalizeDashLink(entry, index);
+        if (seen.has(link.id)) link.id = newDashLinkId();
+        seen.add(link.id);
+        return link;
+      });
+    } catch (err) {
+      return res.status(400).json({ ok: false, error: err.message });
+    }
+    const configPath = path.join(home23Root, 'config', 'home.yaml');
+    const homeConfig = loadYaml(configPath);
+    if (!homeConfig.dashboard) homeConfig.dashboard = {};
+    const updatedAt = new Date().toISOString();
+    homeConfig.dashboard.dash = { ...(homeConfig.dashboard.dash || {}), links, updatedAt };
+    saveYaml(configPath, homeConfig);
+    res.json({ ok: true, links, updatedAt, applied: ['dashboard.dash.links'], requiresRestart: [] });
+  });
+
   // ─── Tiles (STEP 22) ──────────────────────────────────────────────────────
 
   router.get('/tiles', (_req, res) => {
