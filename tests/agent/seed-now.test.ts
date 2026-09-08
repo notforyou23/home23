@@ -77,3 +77,29 @@ test('bootstrap leads with the lived now when the seed has one; budget respected
   const tiny = composeSeedNow(dir, 220);
   assert.equal(tiny, composeSeedNow(dir), 'advisory target preserves continuity and commitments');
 });
+
+test('Seed continuity survives missing, stale, or malformed optional NOW telemetry', (t) => {
+  const seed = makeSeedDir(t);
+  writeFixture(seed);
+  const ws = makeSeedDir(t);
+  const config = { bootstrap: { reads: ['NOW.md'] }, substrate: { stateDir: seed } };
+
+  const missing = buildBootstrapBlock(ws, config);
+  assert.ok(missing?.includes('NOW@seed (lived, from your chain)'), 'missing cache preserves Seed');
+  assert.ok(!missing?.includes('— NOW.md —'), 'missing cache is skipped');
+
+  writeFileSync(join(ws, 'NOW.md'), [
+    '# NOW — optional operational cache',
+    '- Cache expires: `2026-09-01T00:00:00Z`',
+    '- After expiry these are retained observations, never current truth.',
+  ].join('\n'), 'utf-8');
+  const stale = buildBootstrapBlock(ws, config);
+  assert.ok(stale?.includes('NOW@seed (lived, from your chain)'), 'stale cache preserves Seed');
+  assert.ok(stale?.includes('After expiry these are retained observations'), 'self-described expiry remains visible');
+  assert.ok(stale!.indexOf('NOW@seed') < stale!.indexOf('— NOW.md —'), 'Seed still leads optional telemetry');
+
+  writeFileSync(join(ws, 'NOW.md'), 'not a structured NOW cache', 'utf-8');
+  const malformed = buildBootstrapBlock(ws, config);
+  assert.ok(malformed?.includes('NOW@seed (lived, from your chain)'), 'malformed cache preserves Seed');
+  assert.ok(malformed?.includes('not a structured NOW cache'), 'workspace text cannot block bootstrap');
+});
