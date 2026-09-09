@@ -51,8 +51,10 @@ Connecting the client reuses its existing pairing flow.
 ## Monitoring belongs to the installed home
 
 Host's organ sentinel derives its residents, Seed state, engines and feed paths
-from the installed process definitions. It does not borrow another home's
-resident roster or contact a developer's remote machine. A missing declared
+from the submitted `runtime/ecosystem.config.json` process plan. Optional
+services present only in the general generator output are not expected to run.
+A home without a submitted plan reports inventory unavailable. It does not
+borrow another home's resident roster or contact a developer's remote machine. A missing declared
 process or unreadable chain remains a reported failure.
 
 The initial Live Problems invariants monitor the Host's harness, dashboard and

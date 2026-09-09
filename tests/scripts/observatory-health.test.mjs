@@ -82,19 +82,21 @@ test('deadman rejects an error, wrong success body, redirect, and closed listene
 
 test('Host observatory runs its actual sentinel without probing another home or SSH', { timeout: 12_000 }, async () => {
   const directory = mkdtempSync(join(tmpdir(), 'observatory-host-'));
+  const root = join(directory, 'app');
   const commands = join(directory, 'commands.log');
-  const stateDir = join(directory, 'instances', 'milo', 'substrate', 'seed-01');
+  const stateDir = join(root, 'instances', 'milo', 'substrate', 'seed-01');
   mkdirSync(stateDir, { recursive: true });
+  mkdirSync(join(directory, 'runtime'));
   writeFileSync(join(directory, 'pm2'), '#!/bin/sh\nprintf "%s\\n" pm2 >> "$PROBE_COMMAND_LOG"\nprintf "%s\\n" "[]"\n', { mode: 0o700 });
   writeFileSync(join(directory, 'ssh'), '#!/bin/sh\nprintf "%s\\n" ssh >> "$PROBE_COMMAND_LOG"\nexit 1\n', { mode: 0o700 });
-  writeFileSync(join(directory, 'ecosystem.config.cjs'), `module.exports = ${JSON.stringify({ apps: [
+  writeFileSync(join(directory, 'runtime', 'ecosystem.config.json'), JSON.stringify({ apps: [
     { name: 'home23-milo', env: { HOME23_AGENT: 'milo' } },
     { name: 'home23-milo-seed', env: { HOME23_AGENT: 'milo', SEED_STATE_DIR: stateDir } },
     { name: 'home23-milo-shipper', env: { SHIPPER_STREAM_PATH: join(stateDir, '..', 'conversation-stream.jsonl') } },
-  ] })};\n`);
+  ] }));
   const child = spawn(process.execPath, ['--import', 'tsx', 'substrate/bin/seed-observatory.ts'], {
     cwd: new URL('../../', import.meta.url),
-    env: { PATH: `${directory}:/usr/bin:/bin`, HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: directory,
+    env: { PATH: `${directory}:/usr/bin:/bin`, HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: root,
       PROBE_COMMAND_LOG: commands, OBSERVATORY_PORT: '0',
       OBSERVATORY_INDIVIDUALS: JSON.stringify([{ name: 'milo-seed', stateDir }]) },
     stdio: ['ignore', 'pipe', 'pipe'],

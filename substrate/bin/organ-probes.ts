@@ -507,7 +507,6 @@ function houseStreamLog(root: string = ROOT): string | null {
 
 interface DeclaredOrgan {
   name: string;
-  autostart?: boolean;
   env?: Record<string, string>;
 }
 
@@ -518,14 +517,17 @@ export interface LocalProbeRoster {
   feeds: Array<{ label: string; path: string; agent?: string }>;
 }
 
-/** The installed process definitions, not the developer's home, own this
- * roster. No remote addresses or fallback residents are invented. */
+/** The exact plan submitted by Host owns this roster. The general generated
+ * ecosystem also describes optional services that Host does not start. */
 export function localProbeRoster(root: string = ROOT): LocalProbeRoster {
-  const require = createRequire(import.meta.url);
-  const path = join(root, 'ecosystem.config.cjs');
-  delete require.cache[require.resolve(path)];
-  const apps = ((require(path) as { apps?: DeclaredOrgan[] }).apps ?? [])
-    .filter(app => app.autostart !== false && app.name?.startsWith('home23-'));
+  const path = resolve(root, '..', 'runtime', 'ecosystem.config.json');
+  const declared = (JSON.parse(readFileSync(path, 'utf8')) as { apps?: DeclaredOrgan[] }).apps;
+  if (!Array.isArray(declared) || declared.length === 0
+    || declared.some(app => typeof app?.name !== 'string' || !app.name.startsWith('home23-'))
+    || new Set(declared.map(app => app.name)).size !== declared.length) {
+    throw new Error('Host has no valid submitted process plan');
+  }
+  const apps = declared;
   const seeds: LocalProbeRoster['seeds'] = [];
   const feeds: LocalProbeRoster['feeds'] = [];
   for (const app of apps) {
