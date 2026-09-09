@@ -69,6 +69,7 @@ const DEFAULT_RESULT_TIMEOUT_MS = (8 * 60 * 60 * 1_000) + 60_000;
 const EVENT_CHUNK_BYTES = 96 * 1024;
 const EVENT_BATCH_LIMIT = 32;
 const EVENT_REPLAY_DELAY_MS = 20;
+const MAX_EXPIRED_READ_RENEWALS = 1;
 const MAX_RESIDENT_ATTACHMENTS = 10;
 const MAX_RESIDENT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const RESIDENT_ATTACHMENT_CONTENT_TYPES = new Set([
@@ -680,9 +681,13 @@ function snapshotTerminalPayload(snapshot: ReturnType<TurnStore['replaySnapshot'
   };
 }
 
-function retryableTransportWait(error: unknown, renewExpiredRead = false): boolean {
+function expiredCapability(error: unknown): boolean {
+  return error instanceof ResidentProtocolError && error.code === "capability_expired";
+}
+
+function retryableTransportWait(error: unknown, renewExpiredRead = false, expiredReadRenewals = 0): boolean {
   if (!(error instanceof ResidentProtocolError)) return false;
-  return (renewExpiredRead && error.code === "capability_expired") ||
+  return (renewExpiredRead && error.code === "capability_expired" && expiredReadRenewals < MAX_EXPIRED_READ_RENEWALS) ||
     error.code === "deadline_exceeded" ||
     (error.retryable && (
       error.code === "connection_lost" ||
@@ -1187,6 +1192,7 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
     const chunks:Buffer[]=[];
     for(;;){
       let response;
+      let expiredReadRenewals=0;
       for(;;){
         try{
           response=await this.options.client.request({
@@ -1202,7 +1208,8 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
           });
           break;
         }catch(caught){
-          if(!retryableTransportWait(caught,true))throw caught;
+          if(!retryableTransportWait(caught,true,expiredReadRenewals))throw caught;
+          if(expiredCapability(caught))expiredReadRenewals+=1;
           await new Promise(resolve=>setTimeout(resolve,this.#retryDelayMs));
         }
       }
@@ -1322,13 +1329,15 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
     await options.onDurableStart({turnId:startedTurnId,chatId:startedChatId,persistedAt:string(s.persistedAt,"persistedAt"),selection});this.#active.set(turnId,{chatId,origin:options.coordinationOrigin,correlationId:request.correlationId});
     const result=(async()=>{
       const resultDeadlineAt=now()+this.#resultTimeoutMs;
+      let expiredReadRenewals=0;
       for(;;){
         const remaining=resultDeadlineAt-now();
         if(remaining<1)throw new ResidentProtocolError("deadline_exceeded","resident result did not become terminal before its overall deadline");
         try{
           const result=await this.options.client.request({method:"GET",path:`/internal/v1/turns/${encodeURIComponent(turnId)}/result`,payload:{chatId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,...(completedRecovery?{completedRecovery:true}:{})},deadlineAtMs:now()+Math.min(this.#requestDeadlineMs,remaining),fence,correlationId:request.correlationId});const value=object(result.payload);const media=parseResidentReturnedArtifacts(value.media);return{text:string(value.text,"text"),model:string(value.model,"model"),toolCallCount:nonnegativeSafeInteger(value.toolCallCount,"toolCallCount"),durationMs:nonnegativeSafeInteger(value.durationMs,"durationMs"),...(media.length>0?{media}:{})};
         }catch(caught){
-          if(!retryableTransportWait(caught,true))throw caught;
+          if(!retryableTransportWait(caught,true,expiredReadRenewals))throw caught;
+          if(expiredCapability(caught))expiredReadRenewals+=1;
           const retryRemaining=resultDeadlineAt-now();
           if(retryRemaining<1)throw new ResidentProtocolError("deadline_exceeded","resident result did not become terminal before its overall deadline");
           await new Promise(resolve=>setTimeout(resolve,Math.min(this.#retryDelayMs,retryRemaining)));
