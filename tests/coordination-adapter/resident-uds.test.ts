@@ -93,13 +93,20 @@ test("resident completion sender retries transient coordinator loss before ackno
 
 test("resident start renews transient connection attempts while the harness comes online", async () => {
   let startAttempts = 0;
+  let remainingStartExpiries = 0;
   let eventAttempts = 0;
   let resultAttempts = 0;
+  let remainingEventExpiries = 1;
+  let remainingResultExpiries = 1;
   let returnUnknownMime = false;
   const client = {
     async request(input: { path: string }) {
       if (input.path === "/internal/v1/turns/start") {
         startAttempts += 1;
+        if (remainingStartExpiries > 0) {
+          remainingStartExpiries -= 1;
+          throw new ResidentProtocolError("capability_expired", "signed mutation expired");
+        }
         if (startAttempts < 3) {
           throw new ResidentProtocolError("connection_lost", "resident socket is not listening yet", { retryable: true });
         }
@@ -111,7 +118,8 @@ test("resident start renews transient connection attempts while the harness come
       }
       if (input.path.endsWith("/events")) {
         eventAttempts += 1;
-        if (eventAttempts === 1) {
+        if (remainingEventExpiries > 0) {
+          remainingEventExpiries -= 1;
           throw new ResidentProtocolError("capability_expired", "signed replay read expired");
         }
         return { payload: {
@@ -130,7 +138,8 @@ test("resident start renews transient connection attempts while the harness come
         } };
       }
       resultAttempts += 1;
-      if (resultAttempts === 1) {
+      if (remainingResultExpiries > 0) {
+        remainingResultExpiries -= 1;
         throw new ResidentProtocolError("capability_expired", "signed result read expired");
       }
       return { payload: {
@@ -192,6 +201,26 @@ test("resident start renews transient connection attempts while the harness come
     invalid.response,
     (error: unknown) => error instanceof ResidentProtocolError && error.code === "request_invalid",
   );
+
+  returnUnknownMime = false;
+  remainingEventExpiries = 2;
+  const eventAttemptsBeforePersistentExpiry = eventAttempts;
+  const persistentExpiry = await port.runWithTurn("coordination:test:startup", "bound expired replay renewal", options);
+  await assert.rejects(
+    persistentExpiry.response,
+    (error: unknown) => error instanceof ResidentProtocolError && error.code === "capability_expired",
+  );
+  assert.equal(eventAttempts - eventAttemptsBeforePersistentExpiry, 2,
+    "an expired replay read gets one fresh capability, then fails closed");
+
+  remainingStartExpiries = 1;
+  const startAttemptsBeforeExpiredMutation = startAttempts;
+  await assert.rejects(
+    port.runWithTurn("coordination:test:startup", "do not replay an expired mutation", options),
+    (error: unknown) => error instanceof ResidentProtocolError && error.code === "capability_expired",
+  );
+  assert.equal(startAttempts - startAttemptsBeforeExpiredMutation, 1,
+    "an expired start mutation is never replayed");
 });
 
 test("resident port rejects a Work bound to a different resident before transport", async () => {
