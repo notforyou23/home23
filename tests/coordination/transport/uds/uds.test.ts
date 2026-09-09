@@ -24,6 +24,7 @@ import {
   ResidentUdsServer,
   probeUnixSocketPath,
 } from "../../../../src/coordination/transport/uds/index.js";
+import { WorkError } from "../../../../src/coordination/work/errors.js";
 
 const REQUEST_ID_1 = "req_0198d95f-6c00-7000-8000-0000000000b1";
 const REQUEST_ID_2 = "req_0198d95f-6c00-7000-8000-0000000000b2";
@@ -76,6 +77,35 @@ test("startup creates an exact 0700 directory and 0600 socket after a path probe
   assert.equal(statSync(fixture.directory).mode & 0o777, 0o700);
   assert.equal(statSync(fixture.socketPath).mode & 0o777, 0o600);
   assert.equal(statSync(fixture.socketPath).isSocket(), true);
+});
+
+test("request validation errors preserve actionable messages across the resident transport", async (t) => {
+  const fixture = socketFixture(t);
+  const selectedCredential = fixtureCredential();
+  const server = new ResidentUdsServer({
+    socketPath: fixture.socketPath,
+    serverInstanceId: "coordination-kernel-1",
+    credentials: [selectedCredential],
+    handleRequest: () => { throw new WorkError("invalid_request", "revisit_at must be an ISO timestamp when provided"); },
+  });
+  await server.start();
+  t.after(() => server.close());
+  const client = new ResidentUdsClient({
+    socketPath: fixture.socketPath,
+    serverInstanceId: "coordination-kernel-1",
+    credential: selectedCredential,
+  });
+  t.after(() => client.close());
+
+  await assert.rejects(client.request({
+    method: "POST",
+    path: "/internal/v1/work/report-outcome",
+    payload: {},
+    requestId: REQUEST_ID_1,
+    correlationId: CORRELATION_ID,
+    deadlineAtMs: Date.now() + 2_000,
+  }), (error: unknown) => error instanceof ResidentProtocolError &&
+    error.code === "request_invalid" && error.message === "revisit_at must be an ISO timestamp when provided");
 });
 
 test("startup rejects an overlong path and refuses to replace a non-socket", async (t) => {
