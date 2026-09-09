@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { absoluteHome, choosePortPlan, privateDirectory, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { inspectProductMemory } from './product-memory.js';
 
@@ -56,7 +56,12 @@ export function productDefinitions(apps, homeRoot, name) {
     if (!script.startsWith(appRoot + '/') || !(cwd === appRoot || cwd.startsWith(appRoot + '/'))) throw new Error('Home23 process escapes its installed application.');
     const nodeArgs = Array.isArray(definition.node_args) ? definition.node_args : String(definition.node_args || '').split(/\s+/).filter(Boolean);
     const args = Array.isArray(definition.args) ? definition.args : definition.args ? [definition.args] : [];
-    return { ...definition, script: nodePath, interpreter: 'none', node_args: [], args: [...nodeArgs, script, ...args], cwd,
+    // PM2 treats a space anywhere in `script` as a shell command and discards
+    // `args`. A relative path avoids that rewrite; prepareAppConf resolves it
+    // against this explicit cwd to the exact installation-owned Node binary.
+    const executable = relative(cwd, nodePath);
+    if (!executable || /\s/.test(executable) || resolve(cwd, executable) !== nodePath) throw new Error('Cannot safely resolve the bundled Home23 executable.');
+    return { ...definition, script: executable, interpreter: 'none', node_args: [], args: [...nodeArgs, script, ...args], cwd,
       autostart: true, autorestart: true, min_uptime: 10000, max_restarts: 5, restart_delay: 2000,
       env: { ...definition.env, ...productEnvironment(homeRoot) },
       // No profiling flags or dumps are required to run a user's home.

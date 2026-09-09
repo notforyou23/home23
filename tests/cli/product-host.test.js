@@ -61,11 +61,12 @@ test('model endpoint excludes credentials and unsupported transports', () => {
   assert.throws(() => providerEndpoint('file:///tmp/model'), /HTTP/);
 });
 
-test('definitions pin absolute bundled Node, keep only owned services, and retain bounded recovery', t => {
+test('definitions resolve the exact bundled Node without PM2 shell rewriting and retain bounded recovery', t => {
   const homeRoot = home(t);
   const result = productDefinitions([...definitions(homeRoot), { name: 'home23-screenlogic' }], homeRoot, 'milo');
   assert.equal(result.length, 8);
-  assert.ok(result.every(app => app.interpreter === 'none' && app.script === path.join(homeRoot, 'bin/node') && app.autorestart && app.max_restarts === 5));
+  assert.ok(result.every(app => app.interpreter === 'none' && path.resolve(app.cwd, app.script) === path.join(homeRoot, 'bin/node')
+    && !/\s/.test(app.script) && app.autorestart && app.max_restarts === 5));
   assert.ok(result.every(app => app.args.includes(path.join(homeRoot, 'app/dist/home.js'))));
   const rows = safeProcesses([row(homeRoot, 'home23-milo'), row('/some/other/home', 'home23-milo-dash')], homeRoot, ownedProcessNames('milo'));
   assert.equal(rows[0].owned, true); assert.equal(rows[1].owned, false);
@@ -304,4 +305,77 @@ test('Stop withdraws a pending first-pairing authorization before later status p
   const result = await runHostAction('status', { homeRoot: f.homeRoot }, dependencies);
   assert.equal(result.readiness.recoveryRequired, true);
   assert.equal(f.repository.devices.size, 0);
+});
+
+test('real bundled PM2 launches, restarts and stops Node with executable, application and argument spaces', { skip: !process.env.HOME23_TEST_PRODUCT_PAYLOAD }, async t => {
+  const payload = fs.realpathSync(process.env.HOME23_TEST_PRODUCT_PAYLOAD);
+  const artifactRoot = fs.realpathSync(process.env.HOME23_TEST_ARTIFACT_ROOT || os.tmpdir());
+  const base = fs.mkdtempSync(path.join(artifactRoot, 'PM2 spaces '));
+  const homeRoot = path.join(base, 'Application Support Home23');
+  fs.mkdirSync(path.join(homeRoot, 'bin'), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(homeRoot, 'app/engine'), { recursive: true, mode: 0o700 });
+  const nodePath = path.join(homeRoot, 'bin/node');
+  fs.copyFileSync(path.join(payload, 'bin/node'), nodePath, fs.constants.COPYFILE_FICLONE);
+  fs.chmodSync(nodePath, 0o755);
+  const script = path.join(homeRoot, 'app/engine/worker fixture.mjs');
+  const receipt = path.join(homeRoot, 'runtime/worker receipt.json');
+  fs.writeFileSync(script, `import fs from 'node:fs';\nfs.writeFileSync(process.argv[3], JSON.stringify({pid:process.pid,executable:process.execPath,args:process.argv.slice(2),nodeArgs:process.execArgv,provider:process.env.OPENAI_API_KEY??null}));\nsetInterval(()=>{},1000);\n`);
+  const env = productEnvironment(homeRoot, { prepare: true });
+  const pm2 = (...args) => execFileSync(nodePath, [path.join(payload, 'tools/node_modules/pm2/bin/pm2'), ...args], {
+    cwd: path.join(homeRoot, 'app'), env, encoding: 'utf8', timeout: 20000, maxBuffer: 4 * 1024 * 1024,
+  });
+  let daemonPid;
+  t.after(async () => {
+    try {
+      if (fs.existsSync(path.join(env.PM2_HOME, 'pm2.pid'))) {
+        daemonPid ||= Number(fs.readFileSync(path.join(env.PM2_HOME, 'pm2.pid'), 'utf8').trim());
+        // Only the one named fixture belongs to this private supervisor.
+        const records = JSON.parse(pm2('jlist', '--silent'));
+        assert.ok(records.every(record => record.name === 'home23-milo'));
+        if (records.length) pm2('delete', 'home23-milo', '--silent');
+        assert.equal(JSON.parse(pm2('jlist', '--silent')).length, 0);
+        const command = execFileSync('/bin/ps', ['-p', String(daemonPid), '-o', 'command='], { encoding: 'utf8' });
+        assert.ok(command.includes('God Daemon') && command.includes(env.PM2_HOME));
+        process.kill(daemonPid, 'SIGTERM');
+        for (let attempt = 0; attempt < 50; attempt++) {
+          try { process.kill(daemonPid, 0); } catch (error) { if (error.code === 'ESRCH') break; throw error; }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        assert.throws(() => process.kill(daemonPid, 0), { code: 'ESRCH' });
+      }
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(socketRootFor(homeRoot), { recursive: true, force: true });
+    }
+  });
+  const apps = productDefinitions(ownedProcessNames('milo').map(name => ({ name, cwd: path.join(homeRoot, 'app/engine'), script,
+    node_args: ['--expose-gc'], args: ['argument with spaces', receipt], env: {}, kill_timeout: 1000 })), homeRoot, 'milo');
+  const config = path.join(homeRoot, 'runtime/ecosystem.config.json');
+  privateJSON(config, { apps });
+  pm2('start', config, '--only', 'home23-milo', '--silent');
+  daemonPid = Number(fs.readFileSync(path.join(env.PM2_HOME, 'pm2.pid'), 'utf8').trim());
+  const until = Date.now() + 10000;
+  while (!fs.existsSync(receipt) && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.ok(fs.existsSync(receipt), 'PM2 must execute the original application with its arguments');
+  const ran = JSON.parse(fs.readFileSync(receipt));
+  assert.equal(ran.executable, nodePath); assert.deepEqual(ran.args, ['argument with spaces', receipt]);
+  assert.deepEqual(ran.nodeArgs, ['--expose-gc']); assert.equal(ran.provider, null);
+  const records = JSON.parse(pm2('jlist', '--silent'));
+  assert.equal(records.length, 1);
+  assert.equal(records[0].pm2_env.pm_exec_path, nodePath);
+  assert.equal(records[0].pm2_env.exec_interpreter, 'none');
+  assert.deepEqual(records[0].pm2_env.args, ['--expose-gc', script, 'argument with spaces', receipt]);
+  assert.equal(safeProcesses(records, homeRoot, ownedProcessNames('milo'))[0].owned, true);
+  fs.unlinkSync(receipt);
+  pm2('restart', 'home23-milo', '--update-env', '--silent');
+  const restartUntil = Date.now() + 10000;
+  while (!fs.existsSync(receipt) && Date.now() < restartUntil) await new Promise(resolve => setTimeout(resolve, 100));
+  const restarted = JSON.parse(fs.readFileSync(receipt));
+  assert.notEqual(restarted.pid, ran.pid);
+  assert.equal(restarted.executable, nodePath);
+  assert.deepEqual(restarted.args, ran.args);
+  assert.equal(safeProcesses(JSON.parse(pm2('jlist', '--silent')), homeRoot, ownedProcessNames('milo'))[0].owned, true);
+  pm2('stop', 'home23-milo', '--silent');
+  assert.equal(JSON.parse(pm2('jlist', '--silent'))[0].pm2_env.status, 'stopped');
+  assert.throws(() => process.kill(restarted.pid, 0), { code: 'ESRCH' });
 });
