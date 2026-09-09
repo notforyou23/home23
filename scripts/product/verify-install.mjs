@@ -40,6 +40,7 @@ export async function verifyInstalledHome({ payloadPath, outputPath, resumeInsta
   };
   let installed = false;
   let started = false;
+  let failure;
   let calls = 0;
   let embeddingCalls = 0;
   const answer = 'This independent home is running from its installed package.';
@@ -173,13 +174,23 @@ export async function verifyInstalledHome({ payloadPath, outputPath, resumeInsta
     assert.equal(JSON.parse(readFileSync(birthPath, 'utf8')).seedId, birth.seedId);
     assert.ok((await request(`/api/v1/channels/${channelId}/messages`, null, paired.accessToken)).messages.some(message => message.text === answer));
     record('persistent-home', { homeId: after.home.id, seedId: birth.seedId, conversationPreserved: true, pairingPreserved: true });
+  } catch (error) {
+    failure = error;
+    record('failed', { error: error.message, recoveryHome: homeRoot });
+    throw error;
   } finally {
-    if (started) {
-      try { record('final-stop', await command('stop')); }
-      catch (error) { record('stop-failed', { error: error.message, recoveryHome: homeRoot }); throw error; }
+    try {
+      if (started) {
+        try { record('final-stop', await command('stop')); }
+        catch (error) {
+          record('stop-failed', { error: error.message, recoveryHome: homeRoot });
+          if (!failure) throw error;
+        }
+      }
+    } finally {
+      model.closeAllConnections();
+      await new Promise(accept => model.close(accept));
     }
-    model.closeAllConnections();
-    await new Promise(accept => model.close(accept));
   }
   record('complete', { status: 'passed', installedHomeRetained: true, running: false });
   return { ok: true, outputPath, homeRoot, model: 'local fixture', running: false };
