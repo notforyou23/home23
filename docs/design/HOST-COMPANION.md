@@ -48,6 +48,22 @@ not assert that a provider has answered or an owner has accepted the interface.
 The Host retains recovery information if installation or startup is interrupted.
 Connecting the client reuses its existing pairing flow.
 
+## Monitoring belongs to the installed home
+
+Host's organ sentinel derives its residents, Seed state, engines and feed paths
+from the installed process definitions. It does not borrow another home's
+resident roster or contact a developer's remote machine. A missing declared
+process or unreadable chain remains a reported failure.
+
+The initial Live Problems invariants monitor the Host's harness, dashboard and
+engine endpoints. A new home does not implicitly own HealthKit, sauna/weather
+hardware, a Codex login, a browser daemon, or a mature brain containing hundreds
+of memories. The owner can add checks through Live Problems. For built-in
+checks, `monitoring.liveProblems.seedIds` in the home's `config/home.yaml`
+explicitly selects the desired IDs (an empty array selects none). This setting
+changes default monitoring, not the resident's tools or authority. Existing
+non-Host installations keep their current default invariants and remote probes.
+
 ## Evidence and remaining delivery work
 
 `scripts/product/verify-install.mjs PAYLOAD NEW_OUTPUT_DIRECTORY` exercises the

@@ -13,8 +13,9 @@
  * and a dream rises as an event.
  *
  * Honesty rules unchanged: every visual channel is a real number; the
- * observatory never sshes, never writes, never touches a seed. Reading this
- * page changes nothing.
+ * page never writes or touches a seed. The optional legacy organ
+ * sentinel includes remote probes; a Host installation watches only its
+ * declared local processes and streams.
  */
 
 import { createServer } from 'node:http';
@@ -23,7 +24,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { nextCrossingAt } from '../src/concern.js';
 import type { Commitment } from '../src/concern.js';
-import { probeAll } from './organ-probes.js';
+import { probeAll, localProbeRoster } from './organ-probes.js';
 import type { ProbeResult } from './organ-probes.js';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
 import { composeSeedNow } from '../../src/substrate/seed-now.js';
@@ -402,12 +403,16 @@ function vitalsHTML(): string {
   // Feed freshness: the streams the seeds actually eat. Age is honest — a
   // quiet feed and a dead feed look alike here; the PM2 row above tells them
   // apart.
-  const feeds: Array<[string, string]> = [
+  let feeds: Array<[string, string]> = [
     ['jerry convo', 'instances/jerry/substrate/conversation-stream.jsonl'],
     ['forrest convo', 'instances/forrest/substrate/conversation-stream.jsonl'],
     ['house', 'instances/jerry/substrate/house-stream.jsonl'],
     ['bobby mirror', 'instances/bobby/seed-01-mirror/seed-ledger.jsonl'],
   ];
+  if (process.env['HOME23_PRODUCT_HOST'] === 'true') {
+    try { feeds = localProbeRoster().feeds.map(feed => [feed.label, feed.path]); }
+    catch { feeds = []; parts.push('<span class="organ organ-dead">✖ installed feed inventory unreadable</span>'); }
+  }
   for (const [label, path] of feeds) {
     try {
       const ageMin = Math.round((now - statSync(path).mtimeMs) / 60_000);
@@ -502,7 +507,7 @@ setTimeout(sentinelTick, 5_000);
 // ─── The cutover board (server-rendered; builder detail, collapsed) ─────────
 
 function boardRows(): Array<[string, boolean, string]> {
-  const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));
+  const j = process.env['HOME23_PRODUCT_HOST'] === 'true' ? specs[0] : specs.find((s) => s.name.toLowerCase().includes('jerry'));
   const probe = <T,>(fn: () => T | null): T | null => { try { return fn(); } catch { return null; } };
   const lived = j !== undefined ? probe(() => composeLivedRecent(j.stateDir)) : null;
   const now = j !== undefined ? probe(() => composeSeedNow(j.stateDir)) : null;

@@ -19,9 +19,11 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { canonicalContactTurn, isLegacyConversationSession, shippableTurn } from '../src/conversation-turn.js';
 import { onPi, unreachableWhy } from '../src/pi-host.js';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
-const ROOT = '/Users/jtr/_JTR23_/release/home23';
+const ROOT = process.env['HOME23_PRODUCT_HOST'] === 'true'
+  ? resolve(process.env['HOME23_ROOT'] ?? process.cwd())
+  : '/Users/jtr/_JTR23_/release/home23';
 // The Pi's addresses now live in one place (src/pi-host.ts) and are TRIED,
 // not assumed — see that file for why this constant no longer exists here.
 
@@ -97,10 +99,14 @@ export function judgePm2(apps: Pm2App[] | null, expected: string[]): ProbeResult
   return out;
 }
 
-function probePm2(): ProbeResult[] {
+export function readPm2Apps(): Pm2App[] | null {
   let apps: Pm2App[] | null = null;
   try { apps = JSON.parse(execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString()) as Pm2App[]; } catch { apps = null; }
-  return judgePm2(apps, expectedOrgans());
+  return apps;
+}
+
+function probePm2(): ProbeResult[] {
+  return judgePm2(readPm2Apps(), expectedOrgans());
 }
 
 // ── shipper flow: output follows input. If a real conversation file is newer
@@ -328,9 +334,9 @@ function tailBytes(path: string, bytes: number): string {
 /** `root` is injectable ONLY so this can be proven against synthetic chains.
  * The first version of this probe shipped untested because it was untestable,
  * and it then read green through a 43% thought-failure rate. */
-export function probeSeedThought(agent: string, root: string = ROOT): ProbeResult {
+export function probeSeedThought(agent: string, root: string = ROOT, stateDir = join(root, 'instances', agent, 'substrate', 'seed-01')): ProbeResult {
   const organ = `${agent}-seed-thought`;
-  const chain = join(root, 'instances', agent, 'substrate', 'seed-01', 'seed-ledger.jsonl');
+  const chain = join(stateDir, 'seed-ledger.jsonl');
   let raw: string;
   try {
     raw = tailBytes(chain, 512 * 1024);
@@ -499,7 +505,72 @@ function houseStreamLog(root: string = ROOT): string | null {
   } catch { return null; }
 }
 
+interface DeclaredOrgan {
+  name: string;
+  autostart?: boolean;
+  env?: Record<string, string>;
+}
+
+export interface LocalProbeRoster {
+  expected: string[];
+  engines: string[];
+  seeds: Array<{ name: string; stateDir: string; agent?: string; hasLobe: boolean }>;
+  feeds: Array<{ label: string; path: string; agent?: string }>;
+}
+
+/** The installed process definitions, not the developer's home, own this
+ * roster. No remote addresses or fallback residents are invented. */
+export function localProbeRoster(root: string = ROOT): LocalProbeRoster {
+  const require = createRequire(import.meta.url);
+  const path = join(root, 'ecosystem.config.cjs');
+  delete require.cache[require.resolve(path)];
+  const apps = ((require(path) as { apps?: DeclaredOrgan[] }).apps ?? [])
+    .filter(app => app.autostart !== false && app.name?.startsWith('home23-'));
+  const seeds: LocalProbeRoster['seeds'] = [];
+  const feeds: LocalProbeRoster['feeds'] = [];
+  for (const app of apps) {
+    const env = app.env ?? {};
+    const stateDir = env['SEED_STATE_DIR'];
+    const agent = env['HOME23_AGENT'];
+    if (stateDir) seeds.push({
+      name: app.name.replace(/^home23-/, ''), stateDir: resolve(root, stateDir),
+      ...(agent ? { agent } : {}), hasLobe: Boolean(env['SEED_LOBE']),
+    });
+    const stream = env['SHIPPER_STREAM_PATH'];
+    if (stream) {
+      // Conversation shippers deliberately hold no HOME23_AGENT authority;
+      // identify their resident by the declared conversations directory.
+      const conversationDir = env['SHIPPER_CONVERSATIONS_DIR'];
+      const owner = conversationDir ? apps.find(candidate =>
+        candidate.env?.['HOME23_CONVERSATIONS_DIR'] === conversationDir
+        && candidate.env?.['HOME23_AGENT'])?.env?.['HOME23_AGENT'] : undefined;
+      feeds.push({ label: app.name.replace(/^home23-/, ''), path: resolve(root, stream), ...(owner ? { agent: owner } : {}) });
+    }
+  }
+  return {
+    expected: apps.map(app => app.name),
+    engines: apps.filter(app => app.env?.['HOME23_AGENT'] && app.name === `home23-${app.env['HOME23_AGENT']}`).map(app => app.name),
+    seeds, feeds,
+  };
+}
+
+export function probeLocalHome(root: string = ROOT, readApps: () => Pm2App[] | null = readPm2Apps): ProbeResult[] {
+  let roster: LocalProbeRoster;
+  try { roster = localProbeRoster(root); }
+  catch (error) { return [{ organ: 'inventory', ok: false, why: `installed process inventory unreadable: ${(error as Error).message.slice(0, 80)}` }]; }
+  const apps = readApps();
+  return [
+    ...judgePm2(apps, roster.expected),
+    ...judgeEngines(apps, roster.engines),
+    ...roster.seeds.map(seed => probeSeedChain(seed.name, seed.stateDir, root)),
+    ...roster.seeds.filter(seed => seed.hasLobe).map(seed => probeSeedThought(seed.agent ?? seed.name, root, seed.stateDir)),
+    ...[...new Set(roster.feeds.map(feed => feed.agent).filter((agent): agent is string => Boolean(agent)))]
+      .map(agent => probeShipperFlow(agent, root)),
+  ];
+}
+
 export function probeAll(): ProbeResult[] {
+  if (process.env['HOME23_PRODUCT_HOST'] === 'true') return probeLocalHome();
   const houseLog = houseStreamLog();
   return [
     ...probePm2(),

@@ -17,14 +17,14 @@ function defaultDataMount() {
   return require('fs').existsSync('/System/Volumes/Data') ? '/System/Volumes/Data' : '/';
 }
 
-function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
+function defaultSeeds({ agentName, dashboardPort, bridgePort, productHost = process.env.HOME23_PRODUCT_HOST === 'true', homeRoot: configuredRoot, monitoring } = {}) {
   const agent = agentName || process.env.HOME23_AGENT || 'agent';
   const dashPort = dashboardPort || process.env.DASHBOARD_PORT || process.env.COSMO_DASHBOARD_PORT || '5002';
   const realtimePort = process.env.REALTIME_PORT || '5001';
   const harnessPort = bridgePort || process.env.BRIDGE_PORT || '5004';
   const harnessProc = `home23-${agent}-harness`;
   const dashProc = `home23-${agent}-dash`;
-  const homeRoot = process.cwd().replace(/\/engine$/, '');
+  const homeRoot = configuredRoot || (productHost ? process.env.HOME23_ROOT : null) || process.cwd().replace(/\/engine$/, '');
   const instanceRoot = `${homeRoot}/instances/${agent}`;
   const brainStatePath = `${instanceRoot}/brain/brain-state.json`;
   const thoughtsPath = `${instanceRoot}/brain/thoughts.jsonl`;
@@ -32,7 +32,7 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
   const engineErrPath = `${instanceRoot}/logs/engine-err.log`;
   const cronJobsPath = `${instanceRoot}/conversations/cron-jobs.json`;
 
-  return [
+  const seeds = [
     {
       id: 'health_log_fresh',
       claim: 'Health bridge has fresh semantic HealthKit data, not just fresh wrapper writes',
@@ -671,10 +671,34 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
       seedOrigin: 'system',
     },
   ];
+  if (!productHost) return seeds;
+
+  // A new home has its own hardware, accounts and amount of lived memory.
+  // The original house's sauna, HealthKit, Codex login, browser daemon and
+  // mature brain are not requirements for a newborn resident. Start with
+  // the services this Host actually creates. Owners can select additional
+  // built-in invariants explicitly, or add their own through Live Problems.
+  if (monitoring === undefined) {
+    try {
+      const fs = require('fs');
+      monitoring = require('js-yaml').load(fs.readFileSync(require('path').join(homeRoot, 'config', 'home.yaml'), 'utf8'))?.monitoring;
+    } catch { monitoring = {}; }
+  }
+  const requested = monitoring?.liveProblems?.seedIds;
+  if (requested !== undefined && (!Array.isArray(requested) || requested.some(id => typeof id !== 'string' || !seeds.some(seed => seed.id === id)))) {
+    throw new Error('monitoring.liveProblems.seedIds must contain known live-problem IDs');
+  }
+  const selected = new Set(requested ?? [
+    `${agent}_harness_online`, `${agent}_dashboard_ping`,
+    `${agent}_dashboard_port_owner`, `${agent}_engine_admin_ping`,
+  ]);
+  return seeds.filter(seed => selected.has(seed.id));
 }
 
 function seedAll(store, opts) {
   const seeds = defaultSeeds(opts || {});
+  const productHost = opts?.productHost ?? process.env.HOME23_PRODUCT_HOST === 'true';
+  const knownSystemIds = productHost ? new Set(defaultSeeds({ ...opts, productHost: false }).map(seed => seed.id)) : null;
   const agent = opts?.agentName || process.env.HOME23_AGENT || 'agent';
   const seedIds = new Set(seeds.map(s => s.id));
   const scopedSuffixes = new Set(
@@ -708,6 +732,12 @@ function seedAll(store, opts) {
   };
 
   for (const p of store.all()) {
+    // Reconcile an earlier Host installation that inherited the original
+    // house's defaults. Preserve owner-created problems and their history.
+    if (p?.seedOrigin === 'system' && knownSystemIds?.has(p.id) && !seedIds.has(p.id)) {
+      store.remove(p.id);
+      continue;
+    }
     const isPromotedActionLedgerHeartbeat =
       p?.seedOrigin === 'promoter'
       && verifierHasActionLedgerHeartbeat(p.verifier);
