@@ -28,6 +28,7 @@ export async function verifyInstalledHome({ payloadPath, outputPath }) {
   let installed = false;
   let started = false;
   let calls = 0;
+  let embeddingCalls = 0;
   const answer = 'This independent home is running from its installed package.';
   const model = createServer(async (request, response) => {
     let raw = '';
@@ -38,6 +39,7 @@ export async function verifyInstalledHome({ payloadPath, outputPath }) {
     const body = raw ? JSON.parse(raw) : {};
     response.setHeader('content-type', 'application/json');
     if (request.url?.includes('embed')) {
+      embeddingCalls++;
       const vector = Array.from({ length: 768 }, (_, index) => index === 0 ? 1 : 0);
       response.end(JSON.stringify({ embedding: vector, embeddings: [vector], data: [{ embedding: vector, index: 0 }], model: body.model }));
     } else if (request.url?.endsWith('/tags')) {
@@ -92,6 +94,7 @@ export async function verifyInstalledHome({ payloadPath, outputPath }) {
     const config = yaml.load(readFileSync(configPath, 'utf8'));
     config.providers['ollama-local'].baseUrl = modelURL;
     config.embeddings = { providers: [{ provider: 'ollama-local', model: 'nomic-embed-text', dimensions: 768, endpoint: `${modelURL}/api/embeddings` }] };
+    config.substrate = { ...config.substrate, embedding: { endpoint: `${modelURL}/api/embeddings`, model: 'nomic-embed-text' } };
     writeFileSync(configPath, yaml.dump(config), { mode: 0o600 });
     const birthPath = join(homeRoot, 'app/instances/milo/substrate/seed-01/birth-receipt.json');
     const birth = JSON.parse(readFileSync(birthPath, 'utf8'));
@@ -132,7 +135,7 @@ export async function verifyInstalledHome({ payloadPath, outputPath }) {
     } while (Date.now() < until);
     assert.ok(messages.some(message => message.kind === 'result' && message.text === answer), 'Installed resident must persist its model answer');
     assert.ok(calls > 0);
-    record('pair-and-answer', { home: bootstrap.home, answer, modelCalls: calls });
+    record('pair-and-answer', { home: bootstrap.home, answer, modelCalls: calls, embeddingCalls });
     record('stop', await command('stop')); started = false;
     record('stopped-status', await command('status'));
     started = true;

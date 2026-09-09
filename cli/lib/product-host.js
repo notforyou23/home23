@@ -6,6 +6,7 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, resolve } from 'node:path';
 import { absoluteHome, choosePortPlan, privateDirectory, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
+import { inspectProductMemory } from './product-memory.js';
 
 const executeFile = promisify(execFile);
 const PROVIDERS = new Set(['anthropic', 'openai', 'minimax', 'xai', 'ollama-cloud', 'ollama-local']);
@@ -222,7 +223,8 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
       if (label === 'Resident dashboard' && value.pid !== processes.find(row => row.name === `home23-${state.profile.name}-dash`)?.pid) throw new Error('Dashboard process identity differs.');
     } catch { issues.push(`${label} is not responding from this installation yet.`); }
   }));
-  return { ready: issues.length === 0, issues, ...(recoveryRequired ? { recoveryRequired: true } : {}) };
+  const memory = await inspectProductMemory(homeRoot);
+  return { ready: issues.length === 0, issues, memory, warnings: memory.warnings, ...(recoveryRequired ? { recoveryRequired: true } : {}) };
 }
 async function status(homeRoot, dependencies = {}, createSession = false) {
   if (!existsSync(receiptPath(homeRoot))) return { ok: true, status: 'absent', homeRoot, desiredRunning: false, processes: [] };

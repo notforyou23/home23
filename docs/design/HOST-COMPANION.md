@@ -62,3 +62,13 @@ secure remote phone connection, hosted homes, and account connectors remain
 delivery work. No package or test receipt should be described as proving those
 steps. The initial Host form supports API-key and local-provider setup; existing
 browser OAuth setup is not automatically an app-native OAuth flow.
+
+API-key setup can run in Memory Lite mode: conversation history and text memory
+are retained while semantic search needs a separate embedding service. Host
+reports whether the configured local model is detected and displays missing
+dependency warnings beside runtime readiness. Model detection is distinct from
+a successful embedding call. Host does not yet install Ollama or its model.
+Seed contact encoding remains credential-free and 768-dimensional; its explicit
+endpoint is shared by the harness and conversation feed. No paid-provider key
+is added to that encoding interface. Completing semantic setup without an
+additional installation remains part of the distribution work.

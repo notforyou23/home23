@@ -10,6 +10,7 @@ import { join, resolve } from 'node:path';
 import yaml from 'js-yaml';
 import authorityAttestation from '../../shared/memory-authority-attestation.cjs';
 import instancePaths from '../../shared/agent-instance-paths.cjs';
+import seedEmbedding from '../../shared/seed-embedding-config.cjs';
 
 const { deriveMemoryAuthorityAttestationKey } = authorityAttestation;
 const { discoverAgentInstancePaths } = instancePaths;
@@ -133,6 +134,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  return { providerName, baseURL, apiKey, model, dimensions: String(dimensions) };`);
   lines.push(`}`);
   lines.push(`const embeddingConfig = resolveEmbeddingConfig();`);
+  lines.push(`const seedEmbeddingEnv = ${JSON.stringify(seedEmbedding.resolveSeedEmbeddingEnv(homeConfig))};`);
   lines.push(`const screenlogicConfig = homeConfig.screenlogic || {};`);
   lines.push(`const screenlogicVenvPython = path.join(HOME23, 'runtime', 'screenlogic-venv', 'bin', 'python');`);
   lines.push(`const screenlogicPython = screenlogicConfig.python || (fs.existsSync(screenlogicVenvPython) ? screenlogicVenvPython : 'python3');`);
@@ -176,6 +178,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`}`);
   lines.push(``);
   lines.push(`const commonEnv = {`);
+  lines.push(`  ...seedEmbeddingEnv,`);
   lines.push(`  HOME23_ROOT: HOME23,`);
   lines.push(`  NODE_ENV: 'production',`);
   lines.push(`  COSMO_CONFIG_PATH: path.join(HOME23, 'configs', 'base-engine.yaml'),`);
@@ -471,6 +474,7 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'conversation-shipper-err.log'))},`);
     lines.push(`      env: {`);
     lines.push(`        SHIPPER_CONVERSATIONS_DIR: ${JSON.stringify(agent.paths.conversationsDir)},`);
+    lines.push(`        ...seedEmbeddingEnv,`);
     lines.push(`        SHIPPER_COORDINATION_SOURCE: path.join(HOME23, 'instances', '.house', 'coordination', 'resident-contact', ${JSON.stringify(agent.name + '.jsonl')}),`);
     lines.push(`        SHIPPER_STREAM_PATH: ${streamPath},`);
     lines.push(`        SHIPPER_BACKFILL_BYTES: '${backfillBytes}',`);
@@ -494,6 +498,7 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'house-sense-err.log'))},`);
       lines.push(`      env: {`);
       lines.push(`        SHIPPER_STREAM_PATH: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'house-stream.jsonl'))},`);
+      lines.push(`        ...seedEmbeddingEnv,`);
       lines.push(`      },`);
       lines.push(`    },`);
     }
