@@ -232,8 +232,15 @@ function sanitizeContextForScripts(context = {}) {
   };
 }
 
+function skillStateDir() {
+  // Packaged skills remain immutable; generated discovery and usage belong to this home.
+  return process.env.HOME23_PRODUCT_HOST === "true"
+    ? path.resolve(SKILLS_DIR, "..", "..", "runtime", "skills")
+    : SKILLS_DIR;
+}
+
 function telemetryDir() {
-  return path.join(SKILLS_DIR, ".telemetry");
+  return path.join(skillStateDir(), ".telemetry");
 }
 
 function readTelemetryEvents(telemetryDays = 30) {
@@ -706,9 +713,11 @@ function renderRegistry() {
   return lines.join("\n") + "\n";
 }
 
-function syncRegistry(outPath = path.join(SKILLS_DIR, "REGISTRY.md")) {
+function syncRegistry(outPath = path.join(skillStateDir(), "REGISTRY.md")) {
   const content = renderRegistry();
-  fs.writeFileSync(outPath, content, "utf8");
+  const productHost = process.env.HOME23_PRODUCT_HOST === "true";
+  fs.mkdirSync(path.dirname(outPath), { recursive: true, ...(productHost ? { mode: 0o700 } : {}) });
+  fs.writeFileSync(outPath, content, { encoding: "utf8", ...(productHost ? { mode: 0o600 } : {}) });
   return {
     success: true,
     path: outPath,

@@ -45,7 +45,7 @@ function buildExecutionContext(projectRoot: string, ctx: ToolContext): Record<st
 }
 
 function telemetryDir(projectRoot: string): string {
-  return join(projectRoot, 'workspace', 'skills', '.telemetry');
+  return join(projectRoot, process.env.HOME23_PRODUCT_HOST === 'true' ? 'runtime' : 'workspace', 'skills', '.telemetry');
 }
 
 function deriveAgentName(workspacePath: string): string {
@@ -61,7 +61,8 @@ function recordTelemetry(
 ): void {
   try {
     const dir = telemetryDir(projectRoot);
-    mkdirSync(dir, { recursive: true });
+    const productHost = process.env.HOME23_PRODUCT_HOST === 'true';
+    mkdirSync(dir, { recursive: true, ...(productHost ? { mode: 0o700 } : {}) });
     const filePath = join(dir, `${new Date().toISOString().slice(0, 10)}.jsonl`);
     const record = {
       ts: new Date().toISOString(),
@@ -70,7 +71,7 @@ function recordTelemetry(
       chatId: ctx?.chatId || '',
       ...payload,
     };
-    appendFileSync(filePath, `${JSON.stringify(record)}\n`, 'utf8');
+    appendFileSync(filePath, `${JSON.stringify(record)}\n`, { encoding: 'utf8', ...(productHost ? { mode: 0o600 } : {}) });
   } catch {
     // Telemetry must never break the agent loop.
   }
