@@ -3030,14 +3030,15 @@ app.get('/api/health', (req, res) => {
 
 // Start HTTP server
 const localIP = getLocalIP();
+const listenHost = process.env.HOME23_PRODUCT_HOST === 'true' ? '127.0.0.1' : '0.0.0.0';
 
 const httpServer = http.createServer(app);
-httpServer.listen(PORT, '0.0.0.0', () => {
+httpServer.listen(PORT, listenHost, () => {
   console.log('\n' + '='.repeat(60));
   console.log('🧪 Evobrew - Model-Agnostic AI Workspace');
   console.log('='.repeat(60));
   console.log(`\n✓ HTTP:  http://localhost:${PORT}`);
-  if (localIP) {
+  if (localIP && listenHost === '0.0.0.0') {
     console.log(`✓ HTTP:  http://${localIP}:${PORT} (network)`);
   }
 });
@@ -3200,9 +3201,9 @@ if (fsSync.existsSync(certPath) && fsSync.existsSync(keyPath)) {
   };
   
   const httpsServer = https.createServer(httpsOptions, app);
-  httpsServer.listen(HTTPS_PORT, '0.0.0.0', () => {
+  httpsServer.listen(HTTPS_PORT, listenHost, () => {
     console.log(`✓ HTTPS: https://localhost:${HTTPS_PORT}`);
-    if (localIP) {
+    if (localIP && listenHost === '0.0.0.0') {
       console.log(`✓ HTTPS: https://${localIP}:${HTTPS_PORT} 🔒 (network)`);
     }
     console.log('\n🤖 AI Models:');

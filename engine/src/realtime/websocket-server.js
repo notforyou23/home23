@@ -204,7 +204,7 @@ class RealtimeServer {
         cosmoEvents.on('*', this.eventListener);
 
         // Start listening
-        this.httpServer.listen(this.port, () => {
+        this.httpServer.listen({ port: this.port, host: process.env.HOME23_PRODUCT_HOST === 'true' ? '127.0.0.1' : undefined }, () => {
           this.stats.startTime = Date.now();
           this.logger.info?.('🌐 COSMO Realtime WebSocket server started', {
             port: this.port,

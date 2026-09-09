@@ -125,7 +125,7 @@ export class WebhookServer implements ChannelAdapter {
     // Start listening
     const port = this.config.port ?? 3100;
     return new Promise((resolve) => {
-      this.server = this.app!.listen(port, () => {
+      this.server = this.app!.listen({ port, host: process.env.HOME23_PRODUCT_HOST === 'true' ? '127.0.0.1' : undefined }, () => {
         console.log(`[webhook] Listening on port ${port}, base path ${this.config.path}`);
         resolve();
       });

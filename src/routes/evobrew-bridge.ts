@@ -26,7 +26,9 @@ export async function listenBridgeApp(app: Express, port: number): Promise<Serve
     throw Object.assign(new Error('bridge_port_invalid'), { code: 'bridge_port_invalid' });
   }
   return await new Promise<Server>((resolve, reject) => {
-    const server = app.listen(port);
+    const server = process.env.HOME23_PRODUCT_HOST === 'true'
+      ? app.listen(port, '127.0.0.1')
+      : app.listen(port);
     const onListening = () => {
       server.off('error', onError);
       resolve(server);

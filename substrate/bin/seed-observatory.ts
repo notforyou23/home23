@@ -1000,7 +1000,7 @@ const server = createServer((req, res) => {
     res.writeHead(500, { 'content-type': 'text/plain' }).end(`observatory error: ${(error as Error).message}`);
   }
 });
-server.listen(port, () => {
+server.listen({ port, host: process.env.HOME23_PRODUCT_HOST === 'true' ? '127.0.0.1' : undefined }, () => {
   const address = server.address();
   console.log(`[observatory] the terrarium — watching ${specs.length} individuals on :${typeof address === 'object' && address !== null ? address.port : port}`);
 });

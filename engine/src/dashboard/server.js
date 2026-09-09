@@ -12014,7 +12014,7 @@ You are empowered to explore and understand. The user trusts you to discover the
       console.warn('[DashboardServer] sensors boot failed (non-fatal):', e.message);
     }
 
-    this.server = this.app.listen(this.port, () => {
+    this.server = this.app.listen({ port: this.port, host: process.env.HOME23_PRODUCT_HOST === 'true' ? '127.0.0.1' : undefined }, () => {
       console.log(`\n╔══════════════════════════════════════════════════╗`);
       console.log(`║   Phase 2B Dashboard Server Running             ║`);
       console.log(`╚══════════════════════════════════════════════════╝`);

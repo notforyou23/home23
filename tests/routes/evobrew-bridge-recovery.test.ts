@@ -47,6 +47,23 @@ test('startBridgeWithRecovery binds immediately when the port is free', async ()
   }
 });
 
+test('Host-managed bridge binds only loopback', async () => {
+  const previous = process.env.HOME23_PRODUCT_HOST;
+  process.env.HOME23_PRODUCT_HOST = 'true';
+  const { port, release } = await holdPort();
+  await release();
+  const handle = await startBridgeWithRecovery(express(), port, { log: () => {} });
+  try {
+    const address = handle.getServer()?.address();
+    assert.ok(address && typeof address === 'object');
+    assert.equal(address.address, '127.0.0.1');
+  } finally {
+    await handle.stop();
+    if (previous === undefined) delete process.env.HOME23_PRODUCT_HOST;
+    else process.env.HOME23_PRODUCT_HOST = previous;
+  }
+});
+
 test('startBridgeWithRecovery retries EADDRINUSE and recovers within the quick phase', async () => {
   const { port, release } = await holdPort();
   const logs: string[] = [];
