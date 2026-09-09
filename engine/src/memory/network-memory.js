@@ -439,6 +439,25 @@ class NetworkMemory {
     this.deletedEdgeKeys = new Set();
     this._closureIndexCache = null;
     this._closureIndexVersion = 0;
+    const keywordConfig = this.config?.retrieval?.keywordIndex || {};
+    const boundedInteger = (value, fallback, minimum, maximum) => {
+      const parsed = Number(value);
+      return Number.isSafeInteger(parsed)
+        ? Math.max(minimum, Math.min(maximum, parsed))
+        : fallback;
+    };
+    this.keywordIndexLimits = Object.freeze({
+      // The two global caps are intentional. A graph with millions of unique
+      // chunk terms must not turn the accelerator into another unbounded copy
+      // of the memory graph.
+      maxTerms: boundedInteger(keywordConfig.maxTerms, 100000, 1000, 500000),
+      maxEntries: boundedInteger(keywordConfig.maxEntries, 1000000, 10000, 5000000),
+      maxPostingsPerTerm: boundedInteger(keywordConfig.maxPostingsPerTerm, 256, 8, 4096),
+      maxTokensPerNode: boundedInteger(keywordConfig.maxTokensPerNode, 48, 8, 256),
+      maxAuthorityCandidates: boundedInteger(keywordConfig.maxAuthorityCandidates, 5000, 100, 10000),
+      smallGraphBootstrap: boundedInteger(keywordConfig.smallGraphBootstrap, 10000, 0, 50000),
+    });
+    this.keywordIndexState = this._createKeywordIndexState();
     
     // Initialize tokenizer for token-aware truncation
     try {
@@ -869,6 +888,7 @@ class NetworkMemory {
       }
 
       this.nodes.set(node.id, node);
+      this._indexKeywordNode(node);
       this._closureIndexVersion += 1;
       storedNode = this.nodes.get(node.id);
       this._markNodeDirtyUnsafe(node.id);
@@ -1071,9 +1091,11 @@ class NetworkMemory {
       const nodes = [];
       for (const entry of preparedEntries) {
         if (this.nodes.get(entry.nodeId) !== entry.stored) continue;
+        this._removeKeywordNode(entry.stored);
         for (const [key, value] of entry.updates) {
           entry.stored[key] = value;
         }
+        this._indexKeywordNode(entry.stored);
         this._markNodeDirtyUnsafe(entry.nodeId);
         this._closureIndexVersion += 1;
         nodes.push(this.nodes.get(entry.nodeId));
@@ -1273,7 +1295,9 @@ class NetworkMemory {
           previousMembers?.delete(prepared.nodeId);
           if (previousMembers?.size === 0) this.clusters.delete(previousCluster);
         }
+        if (current) this._removeKeywordNode(current);
         this.nodes.set(prepared.nodeId, prepared.node);
+        this._indexKeywordNode(prepared.node);
         this._closureIndexVersion += 1;
         this._markNodeDirtyUnsafe(prepared.nodeId);
         if (prepared.node.cluster !== null && prepared.node.cluster !== undefined) {
@@ -1501,6 +1525,7 @@ class NetworkMemory {
     if (!this.nodes.has(nodeId)) return false;
     return this.withPersistenceBarrier(() => {
       if (!this.nodes.has(nodeId)) return false;
+      this._indexKeywordNode(this.nodes.get(nodeId));
       this._markNodeDirtyUnsafe(nodeId);
       return true;
     });
@@ -1560,6 +1585,7 @@ class NetworkMemory {
   _removeNodeUnsafe(nodeId) {
     this._requirePersistenceBarrierUnsafe();
     if (!this.nodes.has(nodeId)) return null;
+    this._removeKeywordNode(this.nodes.get(nodeId));
     this.nodes.delete(nodeId);
     this._closureIndexVersion += 1;
     this.dirtyNodeIds.delete(nodeId);
@@ -2084,6 +2110,132 @@ class NetworkMemory {
       .filter(word => word.length >= 3);
   }
 
+  _createKeywordIndexState() {
+    return {
+      postings: new Map(),
+      entryCount: 0,
+      authorityNodeIds: new Set(),
+    };
+  }
+
+  _sampleKeywordTokens(words, limit) {
+    if (limit <= 0 || words.length === 0) return [];
+    if (words.length <= limit) return words;
+    const sampled = [];
+    for (let index = 0; index < limit; index += 1) {
+      sampled.push(words[Math.floor(index * (words.length - 1) / Math.max(1, limit - 1))]);
+    }
+    return sampled;
+  }
+
+  _keywordIndexTokens(node) {
+    if (!node) return [];
+    const limit = this.keywordIndexLimits.maxTokensPerNode;
+    const expand = (text) => {
+      const tokens = this.extractQueryWords(text);
+      for (const token of [...tokens]) {
+        for (const part of token.split(/[_:-]+/)) {
+          if (part.length >= 3) tokens.push(part);
+        }
+      }
+      return Array.from(new Set(tokens));
+    };
+    const auxiliaryText = [
+      node.tag,
+      ...(Array.isArray(node.tags) ? node.tags : []),
+      ...(node.metadata && typeof node.metadata === 'object'
+        ? Object.values(node.metadata).filter(value => typeof value === 'string')
+        : []),
+    ].filter(Boolean).join(' ');
+    const auxiliary = expand(auxiliaryText);
+    const concept = expand(node.concept);
+    const auxiliaryBudget = Math.min(auxiliary.length, Math.max(4, Math.floor(limit / 4)));
+    const selected = new Set(this._sampleKeywordTokens(auxiliary, auxiliaryBudget));
+    for (const token of this._sampleKeywordTokens(concept, limit - selected.size)) selected.add(token);
+    // If the concept was short, use the remaining room for auxiliary fields.
+    for (const token of auxiliary) {
+      if (selected.size >= limit) break;
+      selected.add(token);
+    }
+    return Array.from(selected);
+  }
+
+  _evictOldestKeywordTerm(state) {
+    const oldest = state.postings.entries().next().value;
+    if (!oldest) return false;
+    state.postings.delete(oldest[0]);
+    state.entryCount -= oldest[1].size;
+    return true;
+  }
+
+  _isPotentialAuthorityEvent(node) {
+    const metadataProfile = node?.metadata?.provenance;
+    const provenance = node?.provenance;
+    const profile = metadataProfile?.schema === 'home23.node-provenance.v1'
+      ? metadataProfile
+      : (provenance?.node_profile?.schema === 'home23.node-provenance.v1'
+        ? provenance.node_profile
+        : provenance);
+    const authorityClass = String(profile?.authorityClass || profile?.authority_class || '').toLowerCase();
+    return authorityClass === 'worker_receipt' || authorityClass === 'jtr_correction';
+  }
+
+  _indexKeywordNode(node, state = this.keywordIndexState) {
+    if (!node || node.id === null || node.id === undefined) return;
+    const limits = this.keywordIndexLimits;
+    for (const token of this._keywordIndexTokens(node)) {
+      let posting = state.postings.get(token);
+      if (!posting) {
+        while ((state.postings.size >= limits.maxTerms || state.entryCount >= limits.maxEntries)
+            && this._evictOldestKeywordTerm(state)) {
+          // Evict whole old terms so unique chunk vocabulary stays bounded.
+        }
+        posting = new Set();
+        state.postings.set(token, posting);
+      }
+      if (posting.has(node.id)) {
+        posting.delete(node.id);
+        state.entryCount -= 1;
+      }
+      while (posting.size >= limits.maxPostingsPerTerm || state.entryCount >= limits.maxEntries) {
+        const oldestId = posting.values().next().value;
+        if (oldestId === undefined) break;
+        posting.delete(oldestId);
+        state.entryCount -= 1;
+      }
+      if (state.entryCount < limits.maxEntries) {
+        posting.add(node.id);
+        state.entryCount += 1;
+      }
+    }
+    if (this._isPotentialAuthorityEvent(node)) {
+      state.authorityNodeIds.delete(node.id);
+      state.authorityNodeIds.add(node.id);
+      while (state.authorityNodeIds.size > limits.maxAuthorityCandidates) {
+        state.authorityNodeIds.delete(state.authorityNodeIds.values().next().value);
+      }
+    }
+  }
+
+  _removeKeywordNode(node, state = this.keywordIndexState) {
+    if (!node || node.id === null || node.id === undefined) return;
+    for (const token of this._keywordIndexTokens(node)) {
+      const posting = state.postings.get(token);
+      if (!posting?.delete(node.id)) continue;
+      state.entryCount -= 1;
+      if (posting.size === 0) state.postings.delete(token);
+    }
+    state.authorityNodeIds.delete(node.id);
+  }
+
+  _bootstrapSmallKeywordIndex() {
+    if (this.keywordIndexState.postings.size > 0
+        || this.nodes.size > this.keywordIndexLimits.smallGraphBootstrap) return;
+    const state = this._createKeywordIndexState();
+    for (const node of this.nodes.values()) this._indexKeywordNode(node, state);
+    this.keywordIndexState = state;
+  }
+
   keywordScoreNode(node, queryText, queryWords = null) {
     if (!node) return 0;
     const words = queryWords || this.extractQueryWords(queryText);
@@ -2114,11 +2266,28 @@ class NetworkMemory {
   queryByKeyword(queryText, topK = 5, options = {}) {
     const queryWords = this.extractQueryWords(queryText);
     if (queryWords.length === 0) return [];
-
-    const results = Array.from(this.nodes.values())
-      .map((node) => {
+    this._bootstrapSmallKeywordIndex();
+    const candidateIds = new Set();
+    for (const word of queryWords) {
+      for (const nodeId of this.keywordIndexState.postings.get(word) || []) candidateIds.add(nodeId);
+    }
+    const intent = normalizeRetrievalIntent(options.intent || queryText);
+    const results = Array.from(candidateIds)
+      .map((nodeId) => {
+        const node = this.nodes.get(nodeId);
         const keywordScore = this.keywordScoreNode(node, queryText, queryWords);
-        if (keywordScore <= 0) return null;
+        if (keywordScore <= 0) {
+          // Generic callers may mutate a node and then call markNodeDirty.
+          // New terms are indexed there; stale old postings are removed when
+          // encountered, keeping that compatibility path bounded as well.
+          for (const word of queryWords) {
+            const posting = this.keywordIndexState.postings.get(word);
+            if (!posting?.delete(nodeId)) continue;
+            this.keywordIndexState.entryCount -= 1;
+            if (posting.size === 0) this.keywordIndexState.postings.delete(word);
+          }
+          return null;
+        }
         return {
           ...node,
           similarity: keywordScore,
@@ -2126,13 +2295,13 @@ class NetworkMemory {
           retrievalMode: 'logical-source-scan',
           retrievalScore: this.scoreTemporalRetrieval(node, keywordScore, {
             baseSimilarity: keywordScore,
-            intent: normalizeRetrievalIntent(options.intent || queryText),
+            intent,
             query: queryText,
             nowMs: options.nowMs,
           }),
           retrievalAuthority: projectMemoryAuthority(node, {
             baseScore: keywordScore,
-            intent: normalizeRetrievalIntent(options.intent || queryText),
+            intent,
             query: queryText,
             nowMs: options.nowMs,
           }),
@@ -2140,7 +2309,7 @@ class NetworkMemory {
       })
       .filter(Boolean);
 
-    const closureAware = this.applyClosureEvidence(results, normalizeRetrievalIntent(options.intent || queryText))
+    const closureAware = this.applyClosureEvidence(results, intent)
       .sort((a, b) => {
         const scoreDelta = (b.retrievalScore || 0) - (a.retrievalScore || 0);
         if (Math.abs(scoreDelta) > 0.001) return scoreDelta;
@@ -2285,9 +2454,25 @@ class NetworkMemory {
   }
 
   applyClosureEvidence(candidates, intent = 'general') {
+    const authorityCandidates = [];
+    const seen = new Set();
+    for (const nodeId of this.keywordIndexState.authorityNodeIds) {
+      const node = this.nodes.get(nodeId);
+      if (!node) continue;
+      authorityCandidates.push(node);
+      seen.add(nodeId);
+    }
+    // Include the bounded retrieval candidates themselves. This preserves
+    // closure/correction behavior for small direct-Map fixtures and for a
+    // newly mutated node whose authority profile changed in place.
+    for (const node of candidates || []) {
+      if (!node || seen.has(node.id)) continue;
+      authorityCandidates.push(node);
+      seen.add(node.id);
+    }
     return createMemoryAuthorityResolver({
       intent,
-      authorityCandidates: this.nodes.values(),
+      authorityCandidates,
     }).apply(candidates);
   }
 
@@ -2934,6 +3119,7 @@ class NetworkMemory {
       throw new TypeError('network_load_invalid_state');
     }
     const nodes = new Map();
+    const keywordIndexState = this._createKeywordIndexState();
     for (const tuple of data.nodes) {
       if (!Array.isArray(tuple) || tuple.length !== 2) throw new TypeError('network_load_invalid_node');
       const [nodeId, rawNode] = tuple;
@@ -2963,6 +3149,7 @@ class NetworkMemory {
         node[field] = timestamp;
       }
       Map.prototype.set.call(nodes, nodeId, node);
+      this._indexKeywordNode(node, keywordIndexState);
     }
 
     const edges = new Map();
@@ -3013,7 +3200,10 @@ class NetworkMemory {
       && data.nextClusterId >= derivedNextClusterId
       ? data.nextClusterId
       : derivedNextClusterId;
-    return { nodes, edges, clusters, nextNodeId, nextClusterId, nodeIdFormat, nodeIdPrefix };
+    return {
+      nodes, edges, clusters, nextNodeId, nextClusterId, nodeIdFormat, nodeIdPrefix,
+      keywordIndexState,
+    };
   }
 
   _legacyLoadedStateMatchesUnsafe(prepared) {
@@ -3073,6 +3263,7 @@ class NetworkMemory {
         for (const [id, members] of prepared.clusters) {
           Map.prototype.set.call(this.clusters, id, new Set(members));
         }
+        this.keywordIndexState = prepared.keywordIndexState;
         this._closureIndexVersion += 1;
         this.activations.clear();
         this.nextNodeId = prepared.nextNodeId;
