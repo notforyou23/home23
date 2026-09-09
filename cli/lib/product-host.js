@@ -117,16 +117,37 @@ async function requestJSON(url, options = {}) {
   }
   return response.json();
 }
-async function hostSession(homeRoot, localURL, options = {}) {
+async function withHostSessionLock(homeRoot, operation) {
   const { default: lockfile } = await import('proper-lockfile');
   const runtime = join(homeRoot, 'runtime');
   const release = await lockfile.lock(runtime, { realpath: false, lockfilePath: join(runtime, '.host-session.lock'), stale: 30000,
     retries: { retries: 50, minTimeout: 100, maxTimeout: 100 } });
-  try { return await loadHostSession(homeRoot, localURL, options); } finally { await release(); }
+  try { return await operation(); } finally { await release(); }
 }
-async function loadHostSession(homeRoot, localURL, { create = false, request = requestJSON, rejectedAccess } = {}) {
+async function hostSession(homeRoot, localURL, options = {}) {
+  return withHostSessionLock(homeRoot, () => loadHostSession(homeRoot, localURL, options));
+}
+async function authorizeInitialHostPairing(homeRoot, authorized) {
+  return withHostSessionLock(homeRoot, () => {
+    const path = join(homeRoot, 'runtime', 'host-session.json');
+    const session = readPrivateJSON(path);
+    if (!authorized) {
+      if (session?.initialPairingAuthorized) privateJSON(path, { ...session, initialPairingAuthorized: false });
+      return;
+    }
+    // Start can admit the first session before Core is ready. This receipt is
+    // consumed with the first tokens; it never authorizes recovery of an
+    // existing or revoked session during a later read-only status check.
+    if (session?.accessToken || session?.refreshToken || session?.recoveryRequired || (session?.pending && session.pending.kind !== 'pairing')) return;
+    privateJSON(path, { ...session, initialPairingAuthorized: true,
+      pending: session?.pending || { kind: 'pairing', issueKey: randomUUID(), redeemKey: randomUUID() } });
+  });
+}
+async function loadHostSession(homeRoot, localURL, { create = false, resumeInitialPairing = false, request = requestJSON, rejectedAccess } = {}) {
   const path = join(homeRoot, 'runtime', 'host-session.json');
   let session = readPrivateJSON(path) || {};
+  create ||= resumeInitialPairing && session.initialPairingAuthorized === true && session.pending?.kind === 'pairing'
+    && !session.accessToken && !session.refreshToken && !session.recoveryRequired;
   const persist = value => { privateJSON(path, value); session = value; };
   const post = (route, body, key) => request(localURL + route, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': key }, body: JSON.stringify(body) });
   const saveCredentials = credentials => {
@@ -198,13 +219,13 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
   try {
     const capabilities = await request(localURL + '/api/v1/capabilities');
     if (!capabilities.pairingAvailable || !capabilities.capabilities?.bootstrap || !capabilities.capabilities?.messageSubmission) throw new Error('Home23 chat and pairing are not available yet.');
-    let session = await hostSession(homeRoot, localURL, { create: createSession, request });
+    let session = await hostSession(homeRoot, localURL, { create: createSession, resumeInitialPairing: state.desiredRunning === true, request });
     let bootstrap;
     for (let attempt = 0; attempt < 3; attempt++) {
       try { bootstrap = await request(localURL + '/api/v1/bootstrap', { headers: { authorization: `Bearer ${session.accessToken}` } }); break; }
       catch (error) {
         if (error.status !== 401 || !ACCESS_FAILURES.has(error.code) || attempt === 2) throw error;
-        session = await hostSession(homeRoot, localURL, { create: createSession, request, rejectedAccess: { token: session.accessToken, error } });
+        session = await hostSession(homeRoot, localURL, { create: createSession, resumeInitialPairing: state.desiredRunning === true, request, rejectedAccess: { token: session.accessToken, error } });
       }
     }
     const bot = bootstrap.snapshot?.bots?.find(bot => bot.id === state.birth?.coordination?.botId);
@@ -331,6 +352,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     if (action === 'stop') {
       state = { ...state, desiredRunning: false, phase: 'stopped' };
       privateJSON(statePath(homeRoot), state);
+      await authorizeInitialHostPairing(homeRoot, false);
       for (const row of [...processes].reverse()) if (row.status !== 'stopped') await processDriver.pm2(['stop', row.name, '--silent']);
       return await status(homeRoot, dependencies);
     }
@@ -338,6 +360,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     if (!processes.some(row => row.status === 'online')) await withReservedPorts(state.ports, async () => {});
     state = { ...state, desiredRunning: true, phase: 'starting', startedAt: new Date().toISOString() };
     privateJSON(statePath(homeRoot), state);
+    await authorizeInitialHostPairing(homeRoot, true);
     if (!allRunning) {
       const definitions = dependencies.definitions ? await dependencies.definitions(state.profile.name) : await processDriver.definitions(state.profile.name);
       const config = join(homeRoot, 'runtime', 'ecosystem.config.json');

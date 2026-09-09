@@ -176,7 +176,7 @@ async function authFixture(t) {
   const readSession = () => JSON.parse(fs.readFileSync(sessionPath));
   const probe = createSession => probeReadiness(homeRoot, state, processes, { createSession, request });
   const expireLocalAccess = () => privateJSON(sessionPath, { ...readSession(), accessExpiresAt: new Date(0).toISOString() });
-  return { homeRoot, state, repository, service, calls, loseNext, probe, readSession, expireLocalAccess, mutation,
+  return { homeRoot, state, repository, service, calls, loseNext, probe, request, readSession, expireLocalAccess, mutation,
     advance: ms => { at = new Date(at.getTime() + ms); } };
 }
 
@@ -249,4 +249,59 @@ test('custom local Host model passes real canonical home creation and retains it
   const resident = yaml.load(fs.readFileSync(path.join(homeRoot, 'app/instances/milo/config.yaml'), 'utf8'));
   assert.equal(resident.chat.defaultModel, 'family-local-model:custom');
   assert.ok(fs.existsSync(path.join(homeRoot, 'app/instances/milo/substrate/seed-01/birth-receipt.json')));
+});
+
+test('status finishes only the first pairing admitted by Start after the startup wait has ended', async t => {
+  const f = await authFixture(t), rows = [], starts = [];
+  const execute = async (_node, args) => {
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'start') {
+      const name = args[args.indexOf('--only') + 1]; starts.push(name);
+      rows.push(row(f.homeRoot, name, name === 'home23-evobrew' ? 'launching' : 'online'));
+    }
+    return { stdout: '' };
+  };
+  const dependencies = { execute, definitions: () => productDefinitions(definitions(f.homeRoot), f.homeRoot, 'milo'), readinessWaitMs: 0,
+    probeReadiness: (homeRoot, state, processes, options) => probeReadiness(homeRoot, state, processes, { ...options, request: f.request }) };
+  const admitted = await runHostAction('start', { homeRoot: f.homeRoot }, dependencies);
+  assert.equal(admitted.status, 'starting');
+  assert.equal(f.repository.devices.size, 0);
+  const pending = f.readSession();
+  assert.equal(pending.initialPairingAuthorized, true);
+  assert.equal(pending.pending.kind, 'pairing');
+  const hostStatePath = path.join(f.homeRoot, '.home23-host.json');
+  privateJSON(hostStatePath, { ...JSON.parse(fs.readFileSync(hostStatePath)), startedAt: new Date(Date.now() - 60000).toISOString() });
+  rows.find(item => item.name === 'home23-evobrew').pm2_env.status = 'online';
+  const ready = await runHostAction('status', { homeRoot: f.homeRoot }, dependencies);
+  assert.equal(ready.status, 'ready');
+  assert.equal(starts.length, 8);
+  assert.equal(f.repository.devices.size, 1);
+  assert.equal(f.readSession().initialPairingAuthorized, undefined);
+  assert.equal(f.calls.find(call => call.route === '/api/v1/pairing/sessions').key, pending.pending.issueKey);
+  await f.service.revokeCurrentSession({ accessToken: f.readSession().accessToken, network: 'loopback', mutation: f.mutation('revoke-after-first-ready') });
+  const revoked = await runHostAction('status', { homeRoot: f.homeRoot }, dependencies);
+  assert.equal(revoked.status, 'degraded'); assert.equal(revoked.readiness.recoveryRequired, true);
+  assert.equal(f.repository.devices.size, 1);
+  assert.equal((await runHostAction('status', { homeRoot: f.homeRoot }, dependencies)).readiness.recoveryRequired, true);
+  assert.equal(f.repository.devices.size, 1);
+});
+
+test('Stop withdraws a pending first-pairing authorization before later status probes', async t => {
+  const f = await authFixture(t), rows = [];
+  const execute = async (_node, args) => {
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'start') rows.push(row(f.homeRoot, args[args.indexOf('--only') + 1], 'launching'));
+    if (args[1] === 'stop') rows.find(item => item.name === args[2]).pm2_env.status = 'stopped';
+    return { stdout: '' };
+  };
+  const dependencies = { execute, definitions: () => productDefinitions(definitions(f.homeRoot), f.homeRoot, 'milo'), readinessWaitMs: 0,
+    probeReadiness: (homeRoot, state, processes, options) => probeReadiness(homeRoot, state, processes, { ...options, request: f.request }) };
+  assert.equal((await runHostAction('start', { homeRoot: f.homeRoot }, dependencies)).status, 'starting');
+  assert.equal(f.readSession().initialPairingAuthorized, true);
+  assert.equal((await runHostAction('stop', { homeRoot: f.homeRoot }, dependencies)).status, 'stopped');
+  assert.equal(f.readSession().initialPairingAuthorized, false);
+  for (const item of rows) item.pm2_env.status = 'online'; // stale process visibility cannot re-admit stopped setup
+  const result = await runHostAction('status', { homeRoot: f.homeRoot }, dependencies);
+  assert.equal(result.readiness.recoveryRequired, true);
+  assert.equal(f.repository.devices.size, 0);
 });
