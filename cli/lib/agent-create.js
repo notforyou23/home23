@@ -256,7 +256,9 @@ export async function runAgentCreate(home23Root, name, options = {}) {
 
   const ports = options.resumePrepared && existsSync(join(instanceDir, 'config.yaml'))
     ? yaml.load(readFileSync(join(instanceDir, 'config.yaml'), 'utf8')).ports
-    : findNextPorts(home23Root);
+    : options.ports ?? findNextPorts(home23Root);
+  if (options.ports && (!['engine', 'dashboard', 'mcp', 'bridge'].every(key => Number.isInteger(ports[key]) && ports[key] >= 1024 && ports[key] <= 65535)
+    || new Set(Object.values(ports)).size !== 4)) throw new Error('Invalid reserved resident port plan');
   const writeInstanceFile = (file, content, encoding) => {
     if (options.resumePrepared && existsSync(file)) return;
     const staged = `${file}.${randomUUID()}.tmp`;

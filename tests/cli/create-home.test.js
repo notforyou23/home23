@@ -114,3 +114,23 @@ test('browser setup resumes an interrupted home and exposes its actual engine de
   assert.equal(feeder.inheritedFrom, join(root, 'instances/milo/engine.yaml'));
   assert.equal(feeder.feeder.compiler.model, profile.model);
 });
+
+test('packaged home carries reserved ports and short signed sockets through real preparation', async t => {
+  const root = fixture(t);
+  const home = yaml.load(readFileSync(join(root, 'config/home.yaml'), 'utf8'));
+  home.coordination.socketDirectory = '/tmp/h23-fixture';
+  writeFileSync(join(root, 'config/home.yaml'), yaml.dump(home));
+  const ports = { engine: 29001, dashboard: 29002, mcp: 29003, bridge: 29004 };
+  const result = await createHome(root, profile, { ports, coordinationPort: 29000 });
+  assert.equal(result.connection.localURL, 'http://127.0.0.1:29000');
+  assert.deepEqual(result.agent.ports, ports);
+  const generated = require(join(root, 'ecosystem.config.cjs'));
+  const core = generated.apps.find(app => app.name === 'home23-coordination');
+  const harness = generated.apps.find(app => app.name === 'home23-milo-harness');
+  assert.equal(core.env.HOME23_COORDINATION_PORT, '29000');
+  assert.equal(core.env.HOME23_COORDINATION_SOCKET_PATH, '/tmp/h23-fixture/coord.sock');
+  assert.equal(harness.env.HOME23_COORDINATION_SOCKET_PATH, core.env.HOME23_COORDINATION_SOCKET_PATH);
+  assert.equal(harness.env.HOME23_COORDINATION_RESIDENT_SOCKET_PATH, core.env.HOME23_COORDINATION_RESIDENT_MILO_SOCKET_PATH);
+  assert.ok(harness.env.HOME23_COORDINATION_RESIDENT_SOCKET_PATH.length < 100);
+  assert.equal(harness.env.REALTIME_PORT, '29001');
+});

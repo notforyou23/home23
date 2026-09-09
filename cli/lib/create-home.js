@@ -32,7 +32,7 @@ function realDirectory(file) {
     throw new Error(`Home creation requires a real directory: ${file}`);
   }
 }
-function profileFrom(input) {
+export function profileFrom(input) {
   const text = (key, fallback = '', limit = 4096) => {
     const value = input[key] ?? fallback;
     if (typeof value !== 'string' || value.length > limit || value.includes('\0')) throw new Error(`Invalid ${key}`);
@@ -68,6 +68,7 @@ export function homeCreationJournalPath(root) { return join(root, 'instances', '
  */
 export async function createHome(root, input = {}, options = {}) {
   root = resolve(root);
+  if (options.coordinationPort !== undefined && (!Number.isInteger(options.coordinationPort) || options.coordinationPort < 1024 || options.coordinationPort > 65535)) throw new Error('Invalid reserved coordination port');
   const profile = profileFrom(input);
   buildHome23ModelAuthority({ homeConfig: readYaml(join(root, 'config', 'home.yaml')),
     agentConfig: { chat: { defaultProvider: profile.provider, defaultModel: profile.model } } });
@@ -114,7 +115,7 @@ export async function createHome(root, input = {}, options = {}) {
       await options.afterStep?.(step); // bounded failure injection in integration tests
     };
     const agent = await runAgentCreate(root, profile.name, {
-      profile: { ...profile, botToken: input.botToken || '' }, prepareOnly: true, resumePrepared: true,
+      profile: { ...profile, botToken: input.botToken || '' }, prepareOnly: true, resumePrepared: true, ports: options.ports,
     });
     const agentConfigPath = join(instanceDir, 'config.yaml');
     const agentConfig = readYaml(agentConfigPath);
@@ -146,7 +147,7 @@ export async function createHome(root, input = {}, options = {}) {
       pgsSynthProvider: profile.provider, pgsSynthModel: profile.model };
     home.coordination = { ...home.coordination, homeId: journal.home.id, homeName: journal.home.name,
       primaryResident: profile.name, residentSlugs: [profile.name], process: { enabled: true },
-      publicApi: { enabled: true, port: 7346 }, activity: { enabled: true }, attachments: { enabled: true },
+      publicApi: { enabled: true, port: options.coordinationPort ?? 7346 }, activity: { enabled: true }, attachments: { enabled: true },
       flags: { ...home.coordination?.flags, [`coordination.resident.${profile.name}.enabled`]: true,
         'coordination.channels.enabled': true, 'coordination.search.canonical': true,
         'coordination.apple.mac_cutover': true, 'coordination.apple.iphone_cutover': true,
@@ -158,7 +159,7 @@ export async function createHome(root, input = {}, options = {}) {
     const receipt = { schema: SCHEMA, status: 'prepared', home: journal.home,
       agent: { name: profile.name, displayName: profile.displayName, purpose: profile.purpose, ports: agent.ports, personalFacts: agentConfig.agent.owner.facts || [], ingestPaths: agent.ingestPaths, isPrimary: true },
       seed: seed.receipt, coordination,
-      connection: { localURL: 'http://127.0.0.1:7346', access: 'loopback; remote devices require a trusted HTTPS or VPN transport', pairing: 'owner pairing code' },
+      connection: { localURL: `http://127.0.0.1:${options.coordinationPort ?? 7346}`, access: 'loopback; remote devices require a trusted HTTPS or VPN transport', pairing: 'owner pairing code' },
       next: { command: `node cli/home23.js start ${profile.name}` }, replayed: false };
     journal.status = 'prepared'; journal.receipt = receipt; journal.completedAt = new Date().toISOString();
     atomicWrite(journalPath, JSON.stringify(journal, null, 2) + '\n');

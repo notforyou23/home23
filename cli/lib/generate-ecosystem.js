@@ -165,9 +165,9 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`    && homeConfig.coordination?.flags?.['coordination.resident.' + agentName + '.enabled'] === true;`);
   lines.push(`  return {`);
   lines.push(`    HOME23_COORDINATION_RESIDENT_ENABLED: String(enabled),`);
-  lines.push(`    HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationRuntimeDir, 'coord.sock'),`);
+  lines.push(`    HOME23_COORDINATION_SOCKET_PATH: coordinationSocketPath,`);
   lines.push(`    HOME23_COORDINATION_SERVER_INSTANCE_ID: 'home23-coordination',`);
-  lines.push(`    HOME23_COORDINATION_RESIDENT_SOCKET_PATH: path.join(coordinationSocketDir, 'resident-' + agentName + '.sock'),`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_SOCKET_PATH: residentSocketPath(agentName),`);
   lines.push(`    HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
   lines.push(`    HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
   lines.push(`    HOME23_COORDINATION_RESIDENT_KEY_VERSION: String(secrets.coordination?.residents?.[agentName]?.keyVersion || 1),`);
@@ -223,7 +223,9 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  && /^[A-Za-z0-9][A-Za-z0-9.-]{2,254}$/.test(String(coordinationApns.bundle_id || ''))`);
   lines.push(`  && ['sandbox', 'production'].includes(String(coordinationApns.default_env || 'production'));`);
   lines.push(`const coordinationRuntimeDir = path.join(HOME23, 'instances', '.house', 'coordination');`);
-  lines.push(`const coordinationSocketDir = path.join(os.tmpdir(), 'home23-coord-' + crypto.createHash('sha256').update(HOME23).digest('hex').slice(0, 12));`);
+  lines.push(`const coordinationSocketDir = homeConfig.coordination?.socketDirectory || path.join(os.tmpdir(), 'home23-coord-' + crypto.createHash('sha256').update(HOME23).digest('hex').slice(0, 12));`);
+  lines.push(`const coordinationSocketPath = path.join(homeConfig.coordination?.socketDirectory ? coordinationSocketDir : coordinationRuntimeDir, 'coord.sock');`);
+  lines.push(`function residentSocketPath(name) { return path.join(coordinationSocketDir, 'resident-' + (homeConfig.coordination?.socketDirectory ? crypto.createHash('sha256').update(name).digest('hex').slice(0, 12) : name) + '.sock'); }`);
   lines.push(``);
   lines.push(`module.exports = {`);
   lines.push(`  apps: [`);
@@ -270,7 +272,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`        HOME23_COORDINATION_HOST: '127.0.0.1',`);
   lines.push(`        HOME23_COORDINATION_PORT: String(coordinationConfig.publicApi?.port || 7346),`);
   lines.push(`        HOME23_COORDINATION_DB_PATH: path.join(coordinationRuntimeDir, 'home23-coordination.sqlite3'),`);
-  lines.push(`        HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationRuntimeDir, 'coord.sock'),`);
+  lines.push(`        HOME23_COORDINATION_SOCKET_PATH: coordinationSocketPath,`);
   lines.push(`        HOME23_COORDINATION_ATTACHMENTS_ROOT: path.join(coordinationRuntimeDir, 'attachments'),`);
   lines.push(`        HOME23_COORDINATION_SOCKET_ROOT: coordinationSocketDir,`);
   lines.push(`        HOME23_COORDINATION_CAPABILITY_TOKEN: String(secrets.coordination?.capabilityToken || ''),`);
@@ -278,7 +280,7 @@ export function generateEcosystem(home23Root, options = {}) {
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug)) throw new Error('Invalid coordination resident slug');
     const resident = slug.toUpperCase().replaceAll('-', '_');
     lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_ENABLED: String(coordinationFlags['coordination.resident.${slug}.enabled'] === true),`);
-    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_SOCKET_PATH: path.join(coordinationSocketDir, 'resident-${slug}.sock'),`);
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_SOCKET_PATH: residentSocketPath('${slug}'),`);
     lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_SERVER_INSTANCE_ID: 'home23-${slug}-harness',`);
     lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_CLIENT_INSTANCE_ID: 'home23-${slug}-harness',`);
     lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_KEY_VERSION: String(secrets.coordination?.residents?.[${JSON.stringify(slug)}]?.keyVersion || 1),`);
