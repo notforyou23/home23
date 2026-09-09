@@ -57,6 +57,12 @@ to the public internet is not part of home creation.
 
 ## Product work after this foundation
 
+The [product delivery agreement](PRODUCT-DELIVERY.md) defines how people reach
+this operation through the public website, Host, apps and private dashboard.
+The website's documentation/download surface is separate from each person's
+home; browser access on Windows still needs a reachable host. Account ingestion
+supplies context and does not itself host the home.
+
 The Host companion joins app-led provisioning and packaged runtime installation
 to this operation. Distribution signing, automatic updates and secure remote
 connection, hosted provisioning and recovery, and packaged account connectors

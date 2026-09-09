@@ -8,11 +8,24 @@ Chat is the front door. The house keeps living when you leave.
 
 ## Current
 
-v2 Seeds are real and opt-in. Recent memory, session grounding, facts, and biography compose from the chain at read time. Files are fallbacks. A fact has to earn its place. Birth is a deliberate act — `agent create` does not mint a Seed.
+v2 Seeds are real. Recent memory, session grounding, facts, and biography compose from the chain at read time. Files are fallbacks. A fact has to earn its place. First-home setup and Home23 Host deliberately create an independent Seed through the [shared home birth operation](docs/design/HOME-BIRTH.md); the lower-level `agent create` command does not mint one.
 
 Cosmo is not the house. If a Cosmo URL is configured and up, the house can open it. Home23 does not start, seed, or watchdog Cosmo. Cosmo source and product tests live in its own repository. See [Cosmo separation](docs/reference/COSMO-SEPARATION.md).
 
-## Install
+## Getting Home23
+
+The product's intended front door is a public website with downloads,
+documentation, how-tos, examples and support. Home23 Host runs each person's
+own home on a Mac; the Mac/iPhone apps and private web dashboard connect to it.
+Windows users will use the dashboard through secure browser access to a home,
+with a Mac host initially required. Hosted homes are a later phase.
+
+The independent-home developer milestone is verified. Signed public Mac downloads,
+iPhone TestFlight/App Store delivery, easy cross-device browser/phone access and
+automatic updates remain work. No public download or hosted service is implied.
+See the [product delivery plan and backlog](docs/design/PRODUCT-DELIVERY.md).
+
+## Install from source (developers and operators)
 
 Need Node 20+, PM2, Python 3, and one LLM provider. Local Ollama `nomic-embed-text` is the usual embedding setup. Without embeddings the house runs Memory Lite (text memory, keyword retrieval).
 
@@ -24,17 +37,15 @@ node cli/home23.js setup
 
 That opens a local setup page. Name the first agent, sign in a provider, launch. Dashboard: [http://localhost:5002/home23](http://localhost:5002/home23).
 
-Manual path:
+Terminal-guided first-home path:
 
 ```bash
-node cli/home23.js init
-node cli/home23.js agent create <name>
-node cli/home23.js start <name>
+node cli/home23.js setup --cli
 ```
 
 Full walkthrough: [docs/ONBOARDING.md](docs/ONBOARDING.md).
 
-## Day to day
+## Day to day from source
 
 ```bash
 node cli/home23.js status
@@ -45,7 +56,7 @@ node cli/home23.js update
 
 Dashboard is the operating surface. Standalone chat is `/home23/chat`. Telegram, Discord, and iMessage are per-agent in Settings.
 
-For ordinary installations, `update` pulls the latest Home23 release and restarts Home23 processes. Managed packaged installations use the [managed release workflow](docs/reference/MANAGED-RELEASES.md); the ordinary updater refuses those installations. Neither path starts or updates Cosmo.
+For ordinary source installations, `update` pulls the latest Home23 release and restarts Home23 processes. Managed packaged installations use the [managed release workflow](docs/reference/MANAGED-RELEASES.md); the ordinary updater refuses those installations. Product Host installations also refuse the source updater and need the separate state-preserving update path tracked in the [delivery plan](docs/design/PRODUCT-DELIVERY.md). None of these paths should start or update Cosmo.
 
 First agent listens on 5001–5004 (engine, dash, MCP, harness bridge). The next agent gets 5011–5014.
 
@@ -57,6 +68,8 @@ Never run two seed runners on one individual. A forked chain is archived, not re
 
 ## Docs
 
+- [Product website, apps, browser access and delivery work](docs/design/PRODUCT-DELIVERY.md)
+- [Home23 Host companion](docs/design/HOST-COMPANION.md)
 - [Onboarding](docs/ONBOARDING.md)
 - [v2 substrate](docs/design/HOME23-V2-SUBSTRATE-DESIGN.md)
 - [AGENTS.md](AGENTS.md) — public repo law

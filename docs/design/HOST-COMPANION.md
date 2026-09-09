@@ -3,7 +3,21 @@
 Home23 Host is a separate native Mac companion. It installs and supervises a
 home; the existing Home23 app connects to that home for conversation, Work,
 Library, and channels. The client keeps its current sandbox and app identity.
-The Host is a directly distributed application with its own identity.
+The Host is intended for direct distribution with its own identity. Its current
+developer artifact is not a signed/notarized public release.
+
+The [product delivery agreement](PRODUCT-DELIVERY.md) owns the public website,
+downloads, user journeys and delivery backlog. The website will present Host
+and the Mac client together, link to iPhone TestFlight during beta and the App
+Store after release, and provide documentation, examples and support. End users
+should not need GitHub or Terminal.
+
+The private web dashboard stays part of each home and can be used without the
+Mac conversation app. It is the intended Windows client surface once secure
+cross-device access and browser compatibility are delivered. Host currently
+binds services to loopback; it does not yet provide a Windows host or a public
+remote dashboard service. Open Dashboard and the home-specific browser handoff
+are tracked alongside the existing Open Home23 native-client action.
 
 ## One home, the same substrate
 
@@ -75,11 +89,17 @@ and restarts the home to verify identity, Seed, session, and history continuity.
 Its model and embedding endpoints are local fixtures. It retains a JSON receipt
 and the stopped installation; this is not a clean-machine or real-provider test.
 
+The September 9 developer milestone passed this installed conversation/restart
+proof with a local model fixture. It did not exercise embedding inference or
+establish clean-Mac, real-provider, Windows-browser or remote-device acceptance.
+
 Distribution signing/notarization, a clean-Mac owner trial, automatic upgrades,
 secure remote phone connection, hosted homes, and account connectors remain
 delivery work. No package or test receipt should be described as proving those
 steps. The initial Host form supports API-key and local-provider setup; existing
 browser OAuth setup is not automatically an app-native OAuth flow.
+Track those items and public website/download work in
+[the delivery backlog](PRODUCT-DELIVERY.md#delivery-work-to-address).
 
 API-key setup can run in Memory Lite mode: conversation history and text memory
 are retained while semantic search needs a separate embedding service. Host

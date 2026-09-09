@@ -1,11 +1,20 @@
-# Home23 1.0 Onboarding
+# Home23 source/operator onboarding
 
-Use this when installing Home23 on a fresh machine or handing the repo to the next operator.
+Use this when installing Home23 from source on a fresh machine or handing the repo to the next operator. These developer/operator commands are not the intended consumer download experience.
 
 The instructions below cover installation from source. The separate native Mac
 [Home23 Host companion](design/HOST-COMPANION.md) uses a bundled runtime and the
 same home creation operation, without requiring terminal setup. Its developer
 artifact and verification are distinct from a signed public distribution.
+
+For the agreed public website, Host/Mac downloads, iPhone TestFlight-to-App-Store
+path, private web dashboard and Windows browser access, see
+[Product delivery](design/PRODUCT-DELIVERY.md). That document tracks what still
+needs implementation and release acceptance. Ordinary users should arrive
+through the website and apps; the instructions below remain the source fallback.
+The private dashboard is served by their home, separately from the public site.
+Host-managed homes allocate their own ports, so fixed source-install addresses
+below must not be used as consumer connection instructions.
 
 ## 1. Prerequisites
 

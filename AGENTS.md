@@ -57,7 +57,13 @@ When separating local files from Git, use cached removal such as `git rm --cache
 
 ## Fresh Install Contract
 
-A new user should be able to run:
+For consumer product/distribution work, read
+[Product delivery](docs/design/PRODUCT-DELIVERY.md). The agreed entry point is
+the public website and apps, with a private browser dashboard for each home.
+Keep planned downloads, Windows browser access and hosted homes distinct from
+verified release availability. The source/operator fallback below remains supported.
+
+A source installer should be able to run:
 
 ```bash
 node cli/home23.js setup
