@@ -122,7 +122,7 @@ function recoveryNeeded(reason) {
   return Object.assign(new Error('The Host connection needs recovery. Choose Start to reconnect this Host device.'),
     { code: 'host_session_recovery_required', reason });
 }
-async function requestJSON(url, options = {}) {
+async function requestJSON(url, { responseType = 'json', ...options } = {}) {
   const response = await fetch(url, { ...options, signal: AbortSignal.timeout(2500) });
   if (!response.ok) {
     let body;
@@ -132,7 +132,7 @@ async function requestJSON(url, options = {}) {
     if (typeof body?.error?.code === 'string' && /^[a-z_]{1,80}$/.test(body.error.code)) error.code = body.error.code;
     throw error;
   }
-  return response.json();
+  return responseType === 'text' ? response.text() : response.json();
 }
 async function withHostSessionLock(homeRoot, operation) {
   const { default: lockfile } = await import('proper-lockfile');
@@ -252,12 +252,13 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
   const checks = [
     ['Resident engine', `http://127.0.0.1:${state.ports.engine}/health`],
     ['Resident dashboard', `http://127.0.0.1:${state.ports.dashboard}/home23/process.json`],
-    ['Seed observatory', `http://127.0.0.1:${state.ports.observatory}/healthz`],
+    ['Seed observatory', `http://127.0.0.1:${state.ports.observatory}/healthz`, 'text'],
     ['Evobrew', `http://127.0.0.1:${state.ports.evobrew}/api/health`],
   ];
-  await Promise.all(checks.map(async ([label, url]) => {
+  await Promise.all(checks.map(async ([label, url, responseType = 'json']) => {
     try {
-      const value = await request(url);
+      const value = await request(url, { responseType });
+      if (label === 'Seed observatory' && (typeof value !== 'string' || value.trim() !== 'ok')) throw new Error('Observatory liveness response differs.');
       if (label === 'Resident dashboard' && value.pid !== processes.find(row => row.name === `home23-${state.profile.name}-dash`)?.pid) throw new Error('Dashboard process identity differs.');
     } catch { issues.push(`${label} is not responding from this installation yet.`); }
   }));

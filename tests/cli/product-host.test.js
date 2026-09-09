@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
+import { createServer } from 'node:http';
 import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
 import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses } from '../../cli/lib/product-host.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
@@ -83,7 +84,7 @@ test('an online supervisor without signed resident availability cannot report re
   let availability = 'offline';
   const request = async url => url.endsWith('/capabilities') ? { pairingAvailable: true, capabilities: { bootstrap: true, messageSubmission: true } }
     : url.endsWith('/bootstrap') ? { home: { id: 'home-fixture' }, snapshot: { bots: [{ id: 'bot-fixture', availability, conversationId: 'conversation-fixture' }] } }
-    : url.endsWith('/process.json') ? { pid: 123 } : { ok: true };
+    : url.endsWith('/process.json') ? { pid: 123 } : url.endsWith('/healthz') ? 'ok\n' : { ok: true };
   assert.equal((await probeReadiness(homeRoot, state, processes, { request })).ready, false);
   availability = 'available';
   assert.equal((await probeReadiness(homeRoot, state, processes, { request })).ready, true);
@@ -165,7 +166,7 @@ async function authFixture(t) {
       else if (route.endsWith('/bootstrap')) {
         await service.validateAccessToken({ accessToken: options.headers.authorization.slice(7), network: 'loopback', requiredScopes: ['product:read'] });
         result = { home: { id: state.birth.home.id }, snapshot: { bots: [{ id: state.birth.coordination.botId, availability: 'available', conversationId: 'conversation-fixture' }] } };
-      } else result = route.endsWith('/process.json') ? { pid: 123 } : { ok: true };
+      } else result = route.endsWith('/process.json') ? { pid: 123 } : route.endsWith('/healthz') ? 'ok\n' : { ok: true };
       const stage = route.endsWith('/redeem') ? 'redeem' : route.endsWith('/refresh') ? 'refresh' : route === '/api/v1/pairing/sessions' ? 'issue' : '';
       if (loseNext.delete(stage)) throw new Error('simulated response lost after server commit');
       return result;
@@ -415,4 +416,34 @@ test('original generated harness profiling options become a valid real Node invo
   execFileSync(node, [...transformed.args.slice(0, scriptIndex), '--check', runtimeScript], {
     cwd: appRoot, env: productEnvironment(homeRoot), encoding: 'utf8', timeout: 15000,
   });
+});
+
+test('real HTTP readiness accepts exact observatory plaintext while Core remains strict JSON', async t => {
+  const { homeRoot, state } = await prepared(t);
+  productEnvironment(homeRoot, { prepare: true });
+  privateJSON(path.join(homeRoot, 'runtime/host-session.json'), { accessToken: 'http-fixture-token', refreshToken: 'http-fixture-refresh', accessExpiresAt: new Date(Date.now() + 3600000).toISOString() });
+  let observatoryBody = 'ok\n';
+  let plainCore = false;
+  const server = createServer((request, response) => {
+    if (request.url === '/healthz') { response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end(observatoryBody); return; }
+    if (plainCore && request.url === '/api/v1/capabilities') { response.writeHead(200, { 'content-type': 'text/plain' }).end('ok\n'); return; }
+    const value = request.url === '/api/v1/capabilities' ? { pairingAvailable: true, capabilities: { bootstrap: true, messageSubmission: true } }
+      : request.url === '/api/v1/bootstrap' ? { home: { id: state.birth.home.id }, snapshot: { bots: [{ id: state.birth.coordination.botId, availability: 'available', conversationId: 'fixture-conversation' }] } }
+      : request.url === '/home23/process.json' ? { pid: 123 } : { ok: true };
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(value));
+  });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const port = server.address().port;
+  const probeState = { ...state, ports: Object.fromEntries(Object.keys(state.ports).map(key => [key, port])) };
+  const processes = safeProcesses(ownedProcessNames('milo').map(name => row(homeRoot, name)), homeRoot, ownedProcessNames('milo'));
+  assert.equal((await probeReadiness(homeRoot, probeState, processes)).ready, true);
+  observatoryBody = 'ok but still starting\n';
+  const wrongLiveness = await probeReadiness(homeRoot, probeState, processes);
+  assert.equal(wrongLiveness.ready, false);
+  assert.ok(wrongLiveness.issues.some(issue => issue.includes('Seed observatory')));
+  observatoryBody = 'ok\n'; plainCore = true;
+  const wrongCore = await probeReadiness(homeRoot, probeState, processes);
+  assert.equal(wrongCore.ready, false);
+  assert.ok(!wrongCore.issues.some(issue => issue.includes('Seed observatory')));
 });
