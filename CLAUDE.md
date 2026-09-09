@@ -1,3 +1,7 @@
+# Current working instructions
+
+Read `AGENTS.md` and `docs/reference/DEVELOPMENT-WORKFLOW.md` before work. They establish source ownership, concurrent-work handling and release boundaries. The developer reference below does not supersede them.
+
 # Home23 Developer Guide
 
 Home23 is an installable AI operating system for persistent local agents. Keep the public repository portable and keep user-specific runtime state outside Git.

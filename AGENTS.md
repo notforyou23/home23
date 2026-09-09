@@ -1,5 +1,9 @@
 # Home23 Agent Instructions
 
+## Shared development workflow
+
+Read [the shared development working agreement](docs/reference/DEVELOPMENT-WORKFLOW.md) before cross-tool or release work. Repository-specific instructions below still apply. Preserve concurrent work and check the actual branch; current product development may be ahead of GitHub main.
+
 ## What This Is
 
 Home23 is an installable AI operating system. The public repo must stay portable: source, examples, docs, tests, and templates belong in Git; local runtime state does not.
