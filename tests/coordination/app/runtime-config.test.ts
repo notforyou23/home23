@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -153,4 +153,27 @@ test("an arbitrary primary resident uses explicit authenticated runtime configur
   assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_PRIMARY_RESIDENT: "another" }), /not configured/);
   assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_RESIDENT_SLUGS: '["bot-helper"]' }), /slugs are invalid/);
   assert.equal(loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_ENABLED: "false" }).residents["milo-river"]?.enabled, false);
+});
+
+test("Core uses its private short socket root while retaining durable home state", t => {
+  const input = fixture(true);
+  const shortRoot = mkdtempSync(join(tmpdir(), "h23-sockets-"));
+  t.after(() => { rmSync(input.root, { recursive: true, force: true }); rmSync(shortRoot, { recursive: true, force: true }); });
+  const environment = { ...input.environment,
+    HOME23_COORDINATION_SOCKET_ROOT: shortRoot,
+    HOME23_COORDINATION_SOCKET_PATH: join(shortRoot, "coord.sock"),
+  };
+  const config = loadCoordinationRuntimeConfig(environment);
+  assert.equal(config.socketPath, join(shortRoot, "coord.sock"));
+  assert.equal(config.databasePath, input.environment.HOME23_COORDINATION_DB_PATH);
+  // A configured resident socket root does not relocate legacy Core sockets.
+  assert.equal(loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_SOCKET_PATH: input.environment.HOME23_COORDINATION_SOCKET_PATH }).socketPath, input.environment.HOME23_COORDINATION_SOCKET_PATH);
+  assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_SOCKET_PATH: join(input.root, "escape.sock") }), /must remain inside/);
+  assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_DB_PATH: join(shortRoot, "database.sqlite3") }), /must remain inside/);
+  assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_SOCKET_ROOT: "relative-sockets" }), /absolute dedicated directory/);
+  chmodSync(shortRoot, 0o755);
+  assert.throws(() => loadCoordinationRuntimeConfig(environment), /owned private directory/);
+  chmodSync(shortRoot, 0o700);
+  const link = join(input.root, "linked-sockets"); symlinkSync(shortRoot, link);
+  assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_SOCKET_ROOT: link, HOME23_COORDINATION_SOCKET_PATH: join(link, "coord.sock") }), /owned private directory/);
 });

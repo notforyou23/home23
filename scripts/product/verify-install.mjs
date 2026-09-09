@@ -60,11 +60,21 @@ export async function verifyInstalledHome({ payloadPath, outputPath, resumeInsta
       response.end(JSON.stringify({ models: [{ name: 'qwen2.5:7b' }, { name: 'nomic-embed-text' }] }));
     } else {
       calls++;
+      if (body.stream && request.url?.includes('/chat/completions')) {
+        response.setHeader('content-type', 'text/event-stream');
+        const chunk = { id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model: body.model,
+          choices: [{ index: 0, delta: { role: 'assistant', content: answer }, finish_reason: null }] };
+        const done = { ...chunk, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } };
+        response.end(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(done)}\n\ndata: [DONE]\n\n`);
+        return;
+      }
+      if (body.stream) response.setHeader('content-type', 'application/x-ndjson');
       response.end(JSON.stringify({ model: body.model, done: true,
         message: { role: 'assistant', content: answer }, response: answer,
         choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: answer } }],
         usage: { prompt_tokens: 10, completion_tokens: 10 }, prompt_eval_count: 10, eval_count: 10,
-      }));
+      }) + '\n');
     }
   });
   await new Promise((accept, reject) => { model.once('error', reject); model.listen(0, '127.0.0.1', accept); });

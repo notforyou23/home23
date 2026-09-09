@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
 import { DEFAULT_MAXIMUM_ARTIFACT_BYTES } from "../artifacts/index.js";
@@ -109,8 +109,10 @@ export function loadCoordinationRuntimeConfig(
   }
   const runtimeRoot = resolve(home23Root, "instances", ".house", "coordination");
   const botRootDirectory = resolve(home23Root, "instances", ".house", "bots");
-  const socketRoot = resolve(environment.HOME23_COORDINATION_SOCKET_ROOT ?? runtimeRoot);
-  if (!isAbsolute(socketRoot) || socketRoot === "/" || socketRoot.includes("\0")) throw new Error("HOME23_COORDINATION_SOCKET_ROOT must be an absolute dedicated directory");
+  const socketRootValue = environment.HOME23_COORDINATION_SOCKET_ROOT ?? runtimeRoot;
+  if (!isAbsolute(socketRootValue) || socketRootValue.includes("\0")) throw new Error("HOME23_COORDINATION_SOCKET_ROOT must be an absolute dedicated directory");
+  const socketRoot = resolve(socketRootValue);
+  if (socketRoot === "/") throw new Error("HOME23_COORDINATION_SOCKET_ROOT must be an absolute dedicated directory");
   const host = environment.HOME23_COORDINATION_HOST ?? "127.0.0.1";
   if (host !== "127.0.0.1" && host !== "::1") {
     throw new Error("HOME23_COORDINATION_HOST must be an explicit loopback literal");
@@ -130,10 +132,22 @@ export function loadCoordinationRuntimeConfig(
     runtimeRoot,
     requireParent: enabled,
   });
+  // macOS Unix sockets need a short pathname. The Host supplies a dedicated
+  // private socket root while durable state remains in the installed home.
+  // Legacy Core sockets inside the durable runtime root remain valid too.
+  const requestedSocket = resolve(environment.HOME23_COORDINATION_SOCKET_PATH ?? runtimeRoot);
+  const coreSocketRoot = requestedSocket.startsWith(`${runtimeRoot}/`) ? runtimeRoot : socketRoot;
+  if (enabled && coreSocketRoot !== runtimeRoot) {
+    const directory = existsSync(coreSocketRoot) && lstatSync(coreSocketRoot);
+    if (!directory || !directory.isDirectory() || directory.isSymbolicLink()
+      || directory.uid !== process.getuid?.() || (directory.mode & 0o077)) {
+      throw new Error("HOME23_COORDINATION_SOCKET_ROOT must be an owned private directory");
+    }
+  }
   const socketPath = confinedRuntimePath({
     value: environment.HOME23_COORDINATION_SOCKET_PATH,
     name: "HOME23_COORDINATION_SOCKET_PATH",
-    runtimeRoot,
+    runtimeRoot: coreSocketRoot,
     requireParent: enabled,
   });
   const capabilityToken = environment.HOME23_COORDINATION_CAPABILITY_TOKEN ?? "";
