@@ -25,7 +25,7 @@ import type { ResidentRun } from '../../../src/coordination-adapter/index.js';
 
 
 import { RESIDENT_OUTCOMES_MIGRATION_SQL } from '../../../src/coordination/migrations/0014-resident-outcomes.js';
-import { createResidentOutcomeStore } from '../../../src/coordination/app/resident-outcomes.js';
+import { createResidentOutcomeStore, workTerminalEvidence, residentOutcomeInstruction } from '../../../src/coordination/app/resident-outcomes.js';
 
 for (const scenario of ['succeeded','failed','cancelled','delivery_recovery','review_failure'] as const) {
  const outcome=scenario==='delivery_recovery'||scenario==='review_failure'?'failed':scenario;
@@ -100,9 +100,36 @@ test('scheduled terminal Work enters the durable Jerry inbox once after restart'
   leases.terminalize({workId:origin.workId,attemptId:origin.attemptId,leaseId:origin.leaseId,holderPrincipalId:origin.holderPrincipalId,holderInstanceId:origin.holderInstanceId,
     fencingToken:origin.fencingToken,requestId:fixtureId('request',992),correlationId:fixtureId('correlation',992),
     receipt:{status:'failed',sourceReference:'resident:jerry',resultDigest:'a'.repeat(64),artifactIds:[],timestamp:AT}});
+  const record = (n: number, attemptId: string, sourceEventType: string, payload: unknown) => {
+    f.database.mutateWithEvent(() => ({ value: undefined, event: {
+      type: 'communication.recorded', aggregateKind: 'communication', aggregateId: `terminal-evidence-${n}`, aggregateVersion: 1,
+      channelId: CHANNEL_ID, actorPrincipalId: BOT_ID, requestId: fixtureId('request', 1000+n), correlationId: fixtureId('correlation', 1000+n),
+      payload: { communication: { workId: origin.workId, attemptId, source: { sourceEventType }, terminal: true, payload } }, createdAt: AT,
+    } }));
+  };
+  record(1, origin.attemptId, 'turn.terminal', {
+    status: 'failed', residentTerminal: { status: 'error', errorCode: 'provider_error', errorMessage: 'terminated' },
+  });
+  // A later tool result or another attempt must not replace the actual cause.
+  record(2, origin.attemptId, 'agent.tool_result', { errorMessage: 'unrelated tool error' });
+  record(3, 'another-attempt', 'turn.terminal', { errorMessage: 'stale attempt error' });
+  const expected = workTerminalEvidence(f.database, origin.workId);
+  assert.equal(expected.length, 1);
+  assert.match(JSON.stringify(expected), /provider_error/);
+  assert.doesNotMatch(JSON.stringify(expected), /unrelated tool error|stale attempt error/);
+  assert.deepEqual(workTerminalEvidence(f.database, 'unknown-work'), []);
   let store=createResidentOutcomeStore(f.database);store.discover();assert.equal(store.pending().length,1);
+  const evidence = JSON.parse(store.pending()[0]!.evidence);
+  assert.equal(evidence.reason, 'receipt_failed');
+  assert.equal(evidence.result, null);
+  assert.deepEqual(evidence.terminalEvidence, expected);
+  const instruction = residentOutcomeInstruction('Prepare the saved draft', store.pending()[0]!.evidence, origin.workId);
+  assert.match(instruction, /provider_error/);
+  assert.match(instruction, /does not mean receipt persistence or work_report_outcome failed/);
+  assert.match(instruction, /does not update project files/);
   assert.match(store.pending()[0]!.key,/^scheduled:/);assert.match(store.pending()[0]!.evidence,/editorial/);
   f.database.reopen();store=createResidentOutcomeStore(f.database);store.discover();assert.equal(store.pending().length,1);
+  assert.deepEqual(JSON.parse(store.pending()[0]!.evidence).terminalEvidence, expected);
 });
 
 

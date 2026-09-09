@@ -10,7 +10,7 @@ import { createScheduledChannelTurns } from './scheduled-turns.js';
 import { createBotInvocationService } from './bot-invocations.js';
 import { resolveMessagingActor } from '../channels/access.js';
 import { createChannelOperationConsumer } from './channel-operations.js';
-import { createResidentOutcomeStore } from './resident-outcomes.js';
+import { createResidentOutcomeStore, workTerminalEvidence } from './resident-outcomes.js';
 import { createWorkingThreadStop } from "./working-thread-stop.js";
 import { createForegroundDetachmentConsumer } from "./foreground-detachments.js";
 import { residentFence } from "../../coordination-adapter/resident-uds.js";
@@ -1215,7 +1215,7 @@ export function createCoordinationProcess(
           AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.review_work_id=w.id)
           AND NOT EXISTS(SELECT 1 FROM events e WHERE e.aggregate_kind='scheduled_channel_run'
             AND e.aggregate_version=1 AND json_extract(e.payload_json,'$.messageId')=m.id)`, origin.workId);
-        return { registry: 'canonical', work: !id && args.assignments_only === true ? assignments : rows,
+        return { registry: 'canonical', work: !id && args.assignments_only === true ? assignments : id ? rows.map(row => ({ ...row, terminalEvidence: workTerminalEvidence(database, id) })) : rows,
           assignments, unseenOwnerMessages, ...residentAssignments.direction(origin.workId), ownerContact: ownerContact ?? null };
       },
       botOperation: async (context, args, key) => {
