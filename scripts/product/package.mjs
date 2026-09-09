@@ -68,10 +68,18 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
   const tools = path.join(outputPath, 'tools'); fs.mkdirSync(tools, { mode: 0o755 });
   for (const name of ['package.json', 'package-lock.json']) fs.copyFileSync(path.join(app, 'scripts', 'product', 'runtime-tools', name), path.join(tools, name));
   fs.mkdirSync(cachePath, { recursive: true });
+  // node-gyp's generated make include flags do not safely quote a Node header
+  // root containing spaces (external macOS volumes commonly have them). Only
+  // this tiny temporary alias lives on the system disk; headers, dependencies,
+  // npm cache and the complete payload remain at their selected locations.
+  const headerAliasRoot = fs.mkdtempSync('/private/tmp/home23-node-headers-');
+  const headerAlias = path.join(headerAliasRoot, 'node');
+  fs.symlinkSync(nodeDistribution, headerAlias, 'dir');
   const env = { PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: process.env.HOME, USER: process.env.USER,
     TMPDIR: path.join(cachePath, 'tmp'), npm_config_cache: cachePath, npm_config_devdir: path.join(cachePath, 'node-gyp'),
-    npm_config_nodedir: nodeDistribution, npm_config_userconfig: '/dev/null', npm_config_audit: 'false', npm_config_fund: 'false' };
+    npm_config_nodedir: headerAlias, npm_config_userconfig: '/dev/null', npm_config_audit: 'false', npm_config_fund: 'false' };
   fs.mkdirSync(env.TMPDIR, { recursive: true });
+  try {
   for (const directory of [app, path.join(app, 'engine'), path.join(app, 'evobrew'), tools]) {
     process.stderr.write(`Installing locked dependencies: ${path.relative(outputPath, directory)}\n`);
     run(path.join(bin, 'node'), [npmPath, 'ci', '--no-audit', '--no-fund'], { cwd: directory, env, stdio: 'inherit', timeout: 20 * 60 * 1000 });
@@ -92,6 +100,7 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
   const manifest = writeProductManifest(outputPath, { ...metadata, sourceCommit });
   verifyProductPayload(outputPath);
   return { status: 'packaged', packageId: manifest.packageId, sourceCommit, outputPath, ...metadata, fileCount: manifest.files.length };
+  } finally { fs.rmSync(headerAliasRoot, { recursive: true, force: true }); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
