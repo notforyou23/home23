@@ -6,16 +6,29 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export async function verifyInstalledHome({ payloadPath, outputPath }) {
+export async function verifyInstalledHome({ payloadPath, outputPath, resumeInstall = false }) {
   payloadPath = resolve(payloadPath); outputPath = resolve(outputPath);
-  mkdirSync(outputPath, { recursive: false, mode: 0o700 }); // never reuse somebody else's home
   const homeRoot = join(outputPath, 'Home');
+  if (resumeInstall) {
+    // This switch only recovers an interrupted copy, before a resident is born.
+    // The installer still validates the exact package and owns its copy lock.
+    const stat = lstatSync(outputPath);
+    assert.ok(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid() && !(stat.mode & 0o077), 'Recovery output must be an owned private directory');
+    const claim = JSON.parse(readFileSync(join(outputPath, '.Home.home23-install.json'), 'utf8'));
+    const manifest = JSON.parse(readFileSync(join(payloadPath, 'manifest.json'), 'utf8'));
+    assert.equal(claim.schema, 'home23.product-install.v1');
+    assert.equal(claim.homeRoot, homeRoot);
+    assert.equal(claim.packageId, manifest.packageId);
+    assert.ok(!existsSync(homeRoot), 'Recovery is only allowed before installation activation; retain an existing home for inspection');
+  } else {
+    mkdirSync(outputPath, { recursive: false, mode: 0o700 }); // never reuse somebody else's home
+  }
   const receipts = [];
   const record = (step, result) => {
     receipts.push({ step, at: new Date().toISOString(), ...result });
@@ -64,13 +77,18 @@ export async function verifyInstalledHome({ payloadPath, outputPath }) {
     const result = await new Promise((accept, reject) => {
       const child = spawn(join(runtime, 'bin/node'), args, { env, stdio: ['pipe', 'pipe', 'pipe'], cwd: runtime });
       let stdout = '', stderr = '';
-      const deadline = setTimeout(() => child.kill('SIGTERM'), 300_000);
+      // Copying and hashing the complete runtime can exceed five minutes on
+      // external disks. Keep this bounded, and report a timeout as a timeout.
+      const timeoutMs = action === 'install' ? 900_000 : 300_000;
+      let timedOut = false;
+      const deadline = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, timeoutMs);
       child.stdout.on('data', chunk => { stdout += chunk; if (stdout.length > 2_000_000) child.kill('SIGTERM'); });
       child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-100_000); });
       child.once('error', error => { clearTimeout(deadline); reject(error); });
       child.once('close', code => {
         clearTimeout(deadline);
         writeFileSync(join(outputPath, `${receipts.length}-${action}.log`), stderr, { mode: 0o600 });
+        if (timedOut) { reject(new Error(`${action} timed out after ${timeoutMs / 1000}s; retained recovery state at ${homeRoot}`)); return; }
         let value;
         try { value = JSON.parse(stdout.trim()); } catch { reject(new Error(`${action} returned invalid JSON (exit ${code}); see its log`)); return; }
         if (code !== 0 || value.ok === false) reject(new Error(`${action}: ${value.error?.message || value.error || value.message || `exit ${code}`}`));
@@ -80,7 +98,19 @@ export async function verifyInstalledHome({ payloadPath, outputPath }) {
     });
     return result;
   };
+  const startAndWait = async step => {
+    let live = await command('start');
+    const deadline = Date.now() + 180_000;
+    while (live.status === 'starting' && Date.now() < deadline) {
+      await new Promise(accept => setTimeout(accept, 2_000));
+      live = await command('status');
+    }
+    record(step, live);
+    assert.equal(live.status, 'ready', `Installed home did not become ready; inspect ${step} receipt`);
+    return live;
+  };
   try {
+    record('begin', { payloadPath, resumedInstall: resumeInstall });
     record('install', await command('install')); installed = true;
     const profile = { name: 'milo', displayName: 'Milo', ownerName: 'Product fixture',
       homeName: 'Independent product fixture', purpose: 'Exercise a newly installed home.',
@@ -99,9 +129,7 @@ export async function verifyInstalledHome({ payloadPath, outputPath }) {
     const birthPath = join(homeRoot, 'app/instances/milo/substrate/seed-01/birth-receipt.json');
     const birth = JSON.parse(readFileSync(birthPath, 'utf8'));
     started = true; // also stop a partially admitted start
-    const live = await command('start');
-    assert.equal(live.status, 'ready');
-    record('start', live);
+    const live = await startAndWait('start');
     const origin = live.connection.localURL;
     const request = async (path, body, token) => {
       const response = await fetch(`${origin}${path}`, { method: body ? 'POST' : 'GET',
@@ -139,7 +167,7 @@ export async function verifyInstalledHome({ payloadPath, outputPath }) {
     record('stop', await command('stop')); started = false;
     record('stopped-status', await command('status'));
     started = true;
-    record('restart', await command('start'));
+    await startAndWait('restart');
     const after = await request('/api/v1/bootstrap', null, paired.accessToken);
     assert.deepEqual(after.home, bootstrap.home);
     assert.equal(JSON.parse(readFileSync(birthPath, 'utf8')).seedId, birth.seedId);
@@ -158,8 +186,8 @@ export async function verifyInstalledHome({ payloadPath, outputPath }) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [payloadPath, outputPath] = process.argv.slice(2);
-  if (!payloadPath || !outputPath) throw new Error('Usage: verify-install.mjs PAYLOAD NEW_OUTPUT_DIRECTORY');
-  try { console.log(JSON.stringify(await verifyInstalledHome({ payloadPath, outputPath }), null, 2)); }
+  const [payloadPath, outputPath, option] = process.argv.slice(2);
+  if (!payloadPath || !outputPath || (option && option !== '--resume-install')) throw new Error('Usage: verify-install.mjs PAYLOAD NEW_OUTPUT_DIRECTORY [--resume-install]');
+  try { console.log(JSON.stringify(await verifyInstalledHome({ payloadPath, outputPath, resumeInstall: option === '--resume-install' }), null, 2)); }
   catch (error) { console.error(error.stack); process.exitCode = 1; }
 }
