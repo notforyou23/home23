@@ -11,7 +11,8 @@ genesis, checkpoints, and subsequent contact.
 first-run setup, terminal first-run setup, and `home create <profile.json>`.
 It prepares local state without installing dependencies, calling a model, or
 starting a service. Run `init` first to install dependencies and build the
-runtime and its contract assets.
+runtime and its contract assets. [Home23 Host](HOST-COMPANION.md) supplies these
+in a verified distribution payload and calls the same operation.
 
 The saved profile includes resident name, display name, owner name, purpose,
 personal facts, timezone, provider/model, and starter ingestion folders. Provider
@@ -48,16 +49,16 @@ rewriting the resident's subsequently lived configuration or memory.
 
 ## App connection and transport
 
-Core's local API is `http://127.0.0.1:7346`. The Apple apps accept a home-specific
+Core's source-install default API is `http://127.0.0.1:7346`. Host-managed homes
+allocate their own ports and return the actual local URL. The Apple apps accept a home-specific
 server address and pair with owner-issued credentials. Remote devices still
 need the existing trusted transport boundary; exposing the local operator API
 to the public internet is not part of home creation.
 
 ## Product work after this foundation
 
-This change joins the current runtime's new-home state and existing guided
-setup. A signed Mac distribution with managed installation/updates, automatic
-secure remote connection, app-led provisioning without a terminal, hosted home
-provisioning and recovery, and packaged account connectors remain separate
-product delivery work. They should reuse this operation and its durable receipt,
-not introduce a second way to create an identity or Seed.
+The Host companion joins app-led provisioning and packaged runtime installation
+to this operation. Distribution signing, automatic updates and secure remote
+connection, hosted provisioning and recovery, and packaged account connectors
+remain product delivery work. They should reuse this operation and its durable
+receipt, not introduce a second way to create an identity or Seed.

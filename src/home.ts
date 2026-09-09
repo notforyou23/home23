@@ -441,7 +441,7 @@ async function main(): Promise<void> {
     || (startupProvider === 'openai-codex'
       ? ((config.providers as Record<string, { apiKey?: string }> | undefined)?.['openai-codex']?.apiKey ?? '')
       : '');
-  console.log(`[home] Provider: ${startupProvider}, auth: ${bannerAuth ? bannerAuth.slice(0, 15) + '...' : 'MISSING'}`);
+  console.log(`[home] Provider: ${startupProvider}, auth: ${bannerAuth ? 'configured' : startupProvider === 'ollama-local' ? 'keyless local provider' : 'MISSING'}`);
 
   // ── Agent Loop ──
   // Anthropic client shared by compaction + the promoter worker. Read-at-use

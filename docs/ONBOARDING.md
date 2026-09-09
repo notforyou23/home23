@@ -2,6 +2,11 @@
 
 Use this when installing Home23 on a fresh machine or handing the repo to the next operator.
 
+The instructions below cover installation from source. The separate native Mac
+[Home23 Host companion](design/HOST-COMPANION.md) uses a bundled runtime and the
+same home creation operation, without requiring terminal setup. Its developer
+artifact and verification are distinct from a signed public distribution.
+
 ## 1. Prerequisites
 
 - macOS or Linux host with Node.js 20+
@@ -70,7 +75,10 @@ For terminal-guided first-run setup, use:
 node cli/home23.js setup --cli
 ```
 
-`init` installs root, engine, Evobrew, COSMO23, and COSMO23 engine dependencies; generates Home23/COSMO config plumbing; creates the COSMO OAuth database; builds TypeScript; and prepares the MarkItDown Python environment.
+`init` installs root, engine and Evobrew dependencies, seeds local configuration,
+builds TypeScript and contract assets, and prepares the optional MarkItDown Python
+environment. COSMO23 is an independently installed service; Home23 does not
+install, start, or update its source or database.
 
 Provider credentials are configured in the dashboard, not during `init`.
 
