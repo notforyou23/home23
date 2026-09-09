@@ -126,7 +126,11 @@ function isLocalState(relative) {
 export function verifyProductPayload(payloadPath, { allowRuntimeState = false } = {}) {
   const root = path.resolve(payloadPath), manifest = readProductManifest(root);
   if (manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error(`This package requires ${manifest.platform}/${manifest.arch}; this machine is ${process.platform}/${process.arch}`);
-  for (const expected of manifest.files) {
+  // Establish every parent directory before reading file bytes. A reordered
+  // manifest must not let an unexpected parent symlink redirect hashing or
+  // copying outside the payload before its directory entry is checked.
+  const directories = manifest.files.filter(entry => entry.type === 'directory').sort((left, right) => left.path.split('/').length - right.path.split('/').length);
+  for (const expected of [...directories, ...manifest.files.filter(entry => entry.type !== 'directory')]) {
     const actual = entryAt(root, expected.path);
     if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Product file changed: ${expected.path}`);
   }
