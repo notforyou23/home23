@@ -8,13 +8,18 @@ import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, sock
 import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses } from '../../cli/lib/product-host.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 
-function home(t) {
+function home(t, { birth = false } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'host-unit-')));
   const payload = path.join(base, 'payload'), homeRoot = path.join(base, 'home');
   t.after(() => { fs.rmSync(base, { force: true, recursive: true }); fs.rmSync(socketRootFor(homeRoot), { force: true, recursive: true }); });
   for (const [file, content] of Object.entries({ 'bin/node': 'node', 'app/cli/home23.js': '', 'app/cli/lib/product-payload.js': '', 'app/scripts/product/host.mjs': '', 'tools/node_modules/pm2/bin/pm2': '' })) {
     fs.mkdirSync(path.dirname(path.join(payload, file)), { recursive: true, mode: 0o755 });
     fs.writeFileSync(path.join(payload, file), content, { mode: file === 'bin/node' ? 0o755 : 0o644 });
+  }
+  if (birth) {
+    fs.mkdirSync(path.join(payload, 'app/config'), { recursive: true, mode: 0o755 });
+    for (const file of ['home.yaml', 'targets.yaml', 'cron-jobs.json']) fs.copyFileSync(new URL(`../../config/${file}.example`, import.meta.url), path.join(payload, 'app/config', `${file}.example`));
+    fs.cpSync(new URL('../../cli/templates', import.meta.url), path.join(payload, 'app/cli/templates'), { recursive: true });
   }
   writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2' });
   installProductPayload({ payloadPath: payload, homeRoot });
@@ -129,4 +134,119 @@ test('native protocol catalog returns actual provider models and never loads par
   assert.ok(result.providers.some(provider => provider.id === 'ollama-local' && provider.models.length));
   assert.ok(!result.providers.some(provider => provider.models.some(model => model.id === 'text-embedding-3-small')));
   assert.ok(!JSON.stringify(result).includes('parent-secret')); assert.equal(fs.existsSync(homeRoot), false);
+});
+
+async function authFixture(t) {
+  const { homeRoot, state } = await prepared(t);
+  productEnvironment(homeRoot, { prepare: true });
+  const { tsImport } = await import('tsx/esm/api');
+  const { TestAuthRepository } = await tsImport('../coordination/auth/test-repository.ts', import.meta.url);
+  const { createAuthService } = await import('../../dist/coordination/auth/index.js');
+  const { generateCoordinationId } = await import('../../dist/coordination/ids/index.js');
+  const repository = new TestAuthRepository();
+  let at = new Date();
+  const mutation = key => ({ idempotencyKey: key.length < 16 ? `host-fixture-${key}` : key, requestId: generateCoordinationId('request'), correlationId: generateCoordinationId('correlation') });
+  const service = createAuthService({ repository, keyMaterial: Buffer.alloc(32, 0x72), now: () => at,
+    admissionVerifier: { verifyLocalOperator: () => ({ allowed: true, network: 'loopback', rateLimitKey: 'host-test-operator' }), verifyClient: () => ({ allowed: true, network: 'loopback', rateLimitKey: 'host-test-client' }) } });
+  const calls = [];
+  const loseNext = new Set();
+  const request = async (url, options = {}) => {
+    const route = new URL(url).pathname, body = options.body ? JSON.parse(options.body) : {}, key = options.headers?.['idempotency-key'];
+    calls.push({ route, key, body });
+    try {
+      let result;
+      if (route.endsWith('/capabilities')) result = { pairingAvailable: true, capabilities: { bootstrap: true, messageSubmission: true } };
+      else if (route === '/api/v1/pairing/sessions') result = await service.issuePairing({ ...body, operator: {}, mutation: mutation(key) });
+      else if (route.endsWith('/redeem')) result = await service.redeemPairing({ ...body, pairingSessionId: route.split('/').at(-2), network: 'loopback', mutation: mutation(key) });
+      else if (route.endsWith('/refresh')) result = await service.refreshSession({ ...body, network: 'loopback', mutation: mutation(key) });
+      else if (route.endsWith('/bootstrap')) {
+        await service.validateAccessToken({ accessToken: options.headers.authorization.slice(7), network: 'loopback', requiredScopes: ['product:read'] });
+        result = { home: { id: state.birth.home.id }, snapshot: { bots: [{ id: state.birth.coordination.botId, availability: 'available', conversationId: 'conversation-fixture' }] } };
+      } else result = route.endsWith('/process.json') ? { pid: 123 } : { ok: true };
+      const stage = route.endsWith('/redeem') ? 'redeem' : route.endsWith('/refresh') ? 'refresh' : route === '/api/v1/pairing/sessions' ? 'issue' : '';
+      if (loseNext.delete(stage)) throw new Error('simulated response lost after server commit');
+      return result;
+    } catch (error) {
+      if (error.reasonCode) { error.code = error.reasonCode; error.status = error.httpStatus; }
+      throw error;
+    }
+  };
+  const processes = safeProcesses(ownedProcessNames('milo').map(name => row(homeRoot, name)), homeRoot, ownedProcessNames('milo'));
+  const sessionPath = path.join(homeRoot, 'runtime/host-session.json');
+  const readSession = () => JSON.parse(fs.readFileSync(sessionPath));
+  const probe = createSession => probeReadiness(homeRoot, state, processes, { createSession, request });
+  const expireLocalAccess = () => privateJSON(sessionPath, { ...readSession(), accessExpiresAt: new Date(0).toISOString() });
+  return { homeRoot, state, repository, service, calls, loseNext, probe, readSession, expireLocalAccess, mutation,
+    advance: ms => { at = new Date(at.getTime() + ms); } };
+}
+
+test('refresh retries reuse the durable key and token after an actual server commit loses its response', async t => {
+  const f = await authFixture(t);
+  assert.equal((await f.probe(true)).ready, true);
+  f.expireLocalAccess(); f.loseNext.add('refresh');
+  assert.equal((await f.probe(false)).ready, false);
+  const pending = f.readSession().pending;
+  assert.equal(pending.kind, 'refresh');
+  assert.equal((await f.probe(true)).ready, true);
+  const refreshes = f.calls.filter(call => call.route.endsWith('/refresh'));
+  assert.equal(refreshes.length, 2);
+  assert.equal(refreshes[0].key, pending.idempotencyKey); assert.equal(refreshes[1].key, pending.idempotencyKey);
+  assert.equal(refreshes[0].body.refreshToken, refreshes[1].body.refreshToken);
+  assert.equal(f.readSession().pending, undefined);
+  assert.equal(f.repository.devices.size, 1);
+  assert.ok([...f.repository.refreshTokens.values()].every(token => token.state !== 'revoked'));
+});
+
+test('initial issue and redemption replay their saved keys after lost responses without duplicate devices', async t => {
+  const f = await authFixture(t);
+  f.loseNext.add('issue');
+  assert.equal((await f.probe(true)).ready, false);
+  const firstPending = f.readSession().pending;
+  assert.equal((await f.probe(false)).recoveryRequired, true);
+  assert.equal(f.repository.pairings.size, 1);
+  f.loseNext.add('redeem');
+  assert.equal((await f.probe(true)).ready, false);
+  assert.equal(f.repository.devices.size, 1);
+  assert.equal((await f.probe(true)).ready, true);
+  const issues = f.calls.filter(call => call.route === '/api/v1/pairing/sessions');
+  const redeems = f.calls.filter(call => call.route.endsWith('/redeem'));
+  assert.equal(issues.length, 2); assert.ok(issues.every(call => call.key === firstPending.issueKey));
+  assert.equal(redeems.length, 2); assert.ok(redeems.every(call => call.key === firstPending.redeemKey));
+  assert.equal(f.repository.devices.size, 1);
+});
+
+test('expired or revoked Host sessions require explicit Start recovery and leave other devices intact', async t => {
+  for (const failure of ['expired', 'revoked']) {
+    await t.test(failure, async t => {
+      const f = await authFixture(t);
+      assert.equal((await f.probe(true)).ready, true);
+      const otherPair = await f.service.issuePairing({ deviceName: 'Owner phone', operator: {}, mutation: f.mutation('other-issue') });
+      const other = await f.service.redeemPairing({ pairingSessionId: otherPair.pairingSession.id, pairingCode: otherPair.pairingCode,
+        device: { platform: 'ios', name: 'Owner phone', appBuild: '1' }, network: 'loopback', mutation: f.mutation('other-redeem') });
+      if (failure === 'revoked') await f.service.revokeCurrentSession({ accessToken: f.readSession().accessToken, network: 'loopback', mutation: f.mutation('revoke-host') });
+      else { f.advance(31 * 86400000); f.expireLocalAccess(); }
+      const result = await f.probe(false);
+      assert.equal(result.ready, false); assert.equal(result.recoveryRequired, true);
+      assert.equal(f.repository.devices.size, 2);
+      assert.equal((await f.probe(true)).ready, true);
+      assert.equal(f.repository.devices.size, 3);
+      assert.equal(f.repository.devices.get(other.device.id).status, 'active');
+      assert.equal(f.readSession().recoveryRequired, undefined);
+    });
+  }
+});
+
+test('custom local Host model passes real canonical home creation and retains its model alias', async t => {
+  const homeRoot = home(t, { birth: true });
+  const result = await runHostAction('create', { homeRoot, input: { profile: { name: 'milo', ownerName: 'Alex', provider: 'ollama-local', model: 'family-local-model:custom', timezone: 'UTC' }, credential: { provider: 'ollama-local', baseUrl: 'http://127.0.0.1:45000/v1/' } } });
+  assert.equal(result.status, 'prepared');
+  const { default: yaml } = await import('js-yaml');
+  const config = yaml.load(fs.readFileSync(path.join(homeRoot, 'app/config/home.yaml'), 'utf8'));
+  assert.equal(config.providers['ollama-local'].baseUrl, 'http://127.0.0.1:45000');
+  assert.deepEqual(config.models.aliases['host-resident'], { provider: 'ollama-local', model: 'family-local-model:custom' });
+  assert.deepEqual(config.embeddings.providers, [{ provider: 'ollama-local', model: 'nomic-embed-text', dimensions: 768, endpoint: 'http://127.0.0.1:45000/api/embeddings' }]);
+  assert.deepEqual(config.substrate.embedding, { endpoint: 'http://127.0.0.1:45000/api/embeddings', model: 'nomic-embed-text' });
+  const resident = yaml.load(fs.readFileSync(path.join(homeRoot, 'app/instances/milo/config.yaml'), 'utf8'));
+  assert.equal(resident.chat.defaultModel, 'family-local-model:custom');
+  assert.ok(fs.existsSync(path.join(homeRoot, 'app/instances/milo/substrate/seed-01/birth-receipt.json')));
 });

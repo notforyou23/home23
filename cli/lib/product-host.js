@@ -94,9 +94,26 @@ function driver(homeRoot, dependencies) {
     },
   };
 }
+const TERMINAL_SESSION_FAILURES = new Map([
+  ['refresh_invalid', 401], ['refresh_expired', 401], ['session_inactive', 401],
+  ['session_revoked', 401], ['device_revoked', 401], ['refresh_replay_family_revoked', 409],
+]);
+const ACCESS_FAILURES = new Set(['access_expired', 'access_invalid', 'session_inactive', 'session_revoked', 'device_revoked']);
+function terminalSessionFailure(error) { return TERMINAL_SESSION_FAILURES.has(error?.code) && TERMINAL_SESSION_FAILURES.get(error.code) === error.status; }
+function recoveryNeeded(reason) {
+  return Object.assign(new Error('The Host connection needs recovery. Choose Start to reconnect this Host device.'),
+    { code: 'host_session_recovery_required', reason });
+}
 async function requestJSON(url, options = {}) {
   const response = await fetch(url, { ...options, signal: AbortSignal.timeout(2500) });
-  if (!response.ok) { const error = new Error(`Home23 local API returned HTTP ${response.status}.`); error.status = response.status; throw error; }
+  if (!response.ok) {
+    let body;
+    try { body = await response.json(); } catch { /* An unreadable response is not proof that a session is invalid. */ }
+    const error = new Error(`Home23 local API returned HTTP ${response.status}.`);
+    error.status = response.status;
+    if (typeof body?.error?.code === 'string' && /^[a-z_]{1,80}$/.test(body.error.code)) error.code = body.error.code;
+    throw error;
+  }
   return response.json();
 }
 async function hostSession(homeRoot, localURL, options = {}) {
@@ -106,39 +123,93 @@ async function hostSession(homeRoot, localURL, options = {}) {
     retries: { retries: 50, minTimeout: 100, maxTimeout: 100 } });
   try { return await loadHostSession(homeRoot, localURL, options); } finally { await release(); }
 }
-async function loadHostSession(homeRoot, localURL, { create = false, request = requestJSON } = {}) {
+async function loadHostSession(homeRoot, localURL, { create = false, request = requestJSON, rejectedAccess } = {}) {
   const path = join(homeRoot, 'runtime', 'host-session.json');
-  let session = readPrivateJSON(path);
-  if (session && Date.parse(session.accessExpiresAt) > Date.now() + 30000) return session;
-  const post = (route, body) => request(localURL + route, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID() }, body: JSON.stringify(body) });
-  if (session) {
-    session = await post('/api/v1/sessions/refresh', { refreshToken: session.refreshToken });
-  } else {
-    if (!create) throw new Error('The Host connection has not paired yet. Start the home to connect it.');
-    const pairing = await post('/api/v1/pairing/sessions', { deviceName: 'Home23 Host' });
-    session = await post(`/api/v1/pairing/sessions/${encodeURIComponent(pairing.pairingSession.id)}/redeem`, {
-      pairingCode: pairing.pairingCode, credentialProfile: 'product', device: { platform: 'macos', name: 'Home23 Host', appBuild: '1' },
-    });
+  let session = readPrivateJSON(path) || {};
+  const persist = value => { privateJSON(path, value); session = value; };
+  const post = (route, body, key) => request(localURL + route, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': key }, body: JSON.stringify(body) });
+  const saveCredentials = credentials => {
+    const stored = Object.fromEntries(['accessToken', 'refreshToken', 'accessExpiresAt', 'refreshExpiresAt'].map(key => [key, credentials[key]]));
+    if (!stored.accessToken || !stored.refreshToken) throw new Error('Home23 Host pairing did not issue credentials.');
+    // The tokens and removal of the pending mutation are one atomic publication.
+    // A crash before it leaves the original token AND original mutation key.
+    persist(stored);
+    return stored;
+  };
+  const markRecovery = reason => persist({ ...session, pending: undefined, recoveryRequired: reason });
+  // Another probe may have received an old access rejection while a durable
+  // refresh/pairing was in flight. Resolve that mutation before interpreting
+  // the rejection; dropping its key could strand a committed successor.
+  if (rejectedAccess && rejectedAccess.token === session.accessToken && !session.pending && terminalSessionFailure(rejectedAccess.error)) markRecovery(rejectedAccess.error.code);
+  if (session.recoveryRequired && !create) throw recoveryNeeded(session.recoveryRequired);
+  const rejectedCurrent = rejectedAccess && rejectedAccess.token === session.accessToken;
+  if (!session.pending && !session.recoveryRequired && !rejectedCurrent && Date.parse(session.accessExpiresAt) > Date.now() + 30000) return session;
+
+  if (!session.recoveryRequired && session.refreshToken && session.pending?.kind !== 'pairing') {
+    if (!session.pending) persist({ ...session, pending: { kind: 'refresh', idempotencyKey: randomUUID(), refreshToken: session.refreshToken } });
+    const pending = session.pending;
+    if (pending.kind !== 'refresh' || !pending.idempotencyKey || !pending.refreshToken) throw new Error('The saved Host refresh operation is incomplete.');
+    let refreshed;
+    try { refreshed = await post('/api/v1/sessions/refresh', { refreshToken: pending.refreshToken }, pending.idempotencyKey); }
+    catch (error) {
+      if (!terminalSessionFailure(error)) throw error; // Timeout/5xx/unknown: retain exact pending request.
+      markRecovery(error.code);
+      if (!create) throw recoveryNeeded(error.code);
+    }
+    if (refreshed) return saveCredentials(refreshed);
   }
-  const safeStored = Object.fromEntries(['accessToken', 'refreshToken', 'accessExpiresAt', 'refreshExpiresAt'].map(key => [key, session[key]]));
-  if (!safeStored.accessToken || !safeStored.refreshToken) throw new Error('Home23 Host pairing did not issue credentials.');
-  privateJSON(path, safeStored);
-  return safeStored;
+  if (!create) throw recoveryNeeded(session.recoveryRequired || 'pairing_required');
+  // Starting a new pairing is explicit Host recovery. A pending pairing always
+  // resumes its issue and redemption keys, even if the response was lost.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (session.pending?.kind !== 'pairing') persist({ ...session, pending: { kind: 'pairing', issueKey: randomUUID(), redeemKey: randomUUID() } });
+    let pending = session.pending;
+    if (!pending.issueKey || !pending.redeemKey) throw new Error('The saved Host pairing operation is incomplete.');
+    if (!pending.pairingSessionId) {
+      const pairing = await post('/api/v1/pairing/sessions', { deviceName: 'Home23 Host' }, pending.issueKey);
+      if (!pairing.pairingSession?.id || !pairing.pairingCode) throw new Error('Home23 did not return a usable Host pairing.');
+      pending = { ...pending, pairingSessionId: pairing.pairingSession.id, pairingCode: pairing.pairingCode };
+      persist({ ...session, pending });
+    }
+    let paired;
+    try {
+      paired = await post(`/api/v1/pairing/sessions/${encodeURIComponent(pending.pairingSessionId)}/redeem`, {
+        pairingCode: pending.pairingCode, credentialProfile: 'product', device: { platform: 'macos', name: 'Home23 Host', appBuild: '1' },
+      }, pending.redeemKey);
+    } catch (error) {
+      // A confirmed unused terminal pairing can be replaced. An ambiguous or
+      // already-redeemed result retains its key rather than creating a device.
+      if (!((error.code === 'pairing_expired' && error.status === 410) || (error.code === 'pairing_locked' && error.status === 409)
+        || (error.code === 'pairing_not_found' && error.status === 404))) throw error;
+      markRecovery(error.code);
+      if (attempt === 1) throw recoveryNeeded(error.code);
+      continue;
+    }
+    return saveCredentials(paired);
+  }
 }
 export async function probeReadiness(homeRoot, state, processes, { createSession = false, request = requestJSON } = {}) {
   const missing = ownedProcessNames(state.profile.name).filter(name => !processes.some(row => row.name === name && row.status === 'online' && row.owned));
   if (missing.length) return { ready: false, issues: missing.map(name => `${name} is not running from this installation.`) };
   const localURL = `http://127.0.0.1:${state.ports.coordination}`;
   const issues = [];
+  let recoveryRequired = false;
   try {
     const capabilities = await request(localURL + '/api/v1/capabilities');
     if (!capabilities.pairingAvailable || !capabilities.capabilities?.bootstrap || !capabilities.capabilities?.messageSubmission) throw new Error('Home23 chat and pairing are not available yet.');
-    const session = await hostSession(homeRoot, localURL, { create: createSession, request });
-    const bootstrap = await request(localURL + '/api/v1/bootstrap', { headers: { authorization: `Bearer ${session.accessToken}` } });
+    let session = await hostSession(homeRoot, localURL, { create: createSession, request });
+    let bootstrap;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { bootstrap = await request(localURL + '/api/v1/bootstrap', { headers: { authorization: `Bearer ${session.accessToken}` } }); break; }
+      catch (error) {
+        if (error.status !== 401 || !ACCESS_FAILURES.has(error.code) || attempt === 2) throw error;
+        session = await hostSession(homeRoot, localURL, { create: createSession, request, rejectedAccess: { token: session.accessToken, error } });
+      }
+    }
     const bot = bootstrap.snapshot?.bots?.find(bot => bot.id === state.birth?.coordination?.botId);
     if (bootstrap.home?.id !== state.birth?.home?.id) throw new Error('The local API belongs to a different home.');
     if (!bot || !['available', 'busy'].includes(bot.availability) || !bot.conversationId) throw new Error('The resident has not completed signed registration and become available.');
-  } catch (error) { issues.push(error.message); }
+  } catch (error) { recoveryRequired = error.code === 'host_session_recovery_required'; issues.push(error.message); }
   const checks = [
     ['Resident engine', `http://127.0.0.1:${state.ports.engine}/health`],
     ['Resident dashboard', `http://127.0.0.1:${state.ports.dashboard}/home23/process.json`],
@@ -151,7 +222,7 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
       if (label === 'Resident dashboard' && value.pid !== processes.find(row => row.name === `home23-${state.profile.name}-dash`)?.pid) throw new Error('Dashboard process identity differs.');
     } catch { issues.push(`${label} is not responding from this installation yet.`); }
   }));
-  return { ready: issues.length === 0, issues };
+  return { ready: issues.length === 0, issues, ...(recoveryRequired ? { recoveryRequired: true } : {}) };
 }
 async function status(homeRoot, dependencies = {}, createSession = false) {
   if (!existsSync(receiptPath(homeRoot))) return { ok: true, status: 'absent', homeRoot, desiredRunning: false, processes: [] };
@@ -165,7 +236,7 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
   const readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
-  const starting = state.desiredRunning && !processes.some(row => row.status === 'errored' || !row.owned)
+  const starting = state.desiredRunning && !readiness.recoveryRequired && !processes.some(row => row.status === 'errored' || !row.owned)
     && Date.now() - Date.parse(state.startedAt || '') < 120000;
   return { ...output, status: readiness.ready ? 'ready' : starting ? 'starting' : 'degraded', processes, readiness };
 }
@@ -180,7 +251,7 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
   if (credential.provider && credential.provider !== profile.provider) throw new Error('The credential provider must match the selected provider.');
   const apiKey = typeof credential.apiKey === 'string' ? credential.apiKey.trim() : '';
   if (apiKey.length > 16000 || apiKey.includes('\0')) throw new Error('Invalid provider credential.');
-  const baseUrl = credential.baseUrl ? providerEndpoint(credential.baseUrl) : undefined;
+  const baseUrl = credential.baseUrl ? providerEndpoint(credential.baseUrl).replace(/\/v1$/, '') : undefined;
   if (baseUrl && profile.provider !== 'ollama-local') throw new Error('Custom model endpoints currently require local Ollama.');
   if (state && state.fingerprint !== fingerprint(profile)) throw new Error('This home already has a saved profile. Resume it with the same profile.');
   if (state?.phase !== 'creating' && state) return status(homeRoot, dependencies);
@@ -202,6 +273,12 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
   if (baseUrl) home.providers[profile.provider] = { ...home.providers[profile.provider], baseUrl };
   if (profile.provider === 'ollama-local') {
     home.providers[profile.provider] = { ...home.providers[profile.provider], defaultModels: [...new Set([...(home.providers[profile.provider]?.defaultModels || []), profile.model])] };
+    home.models = { ...home.models, aliases: { ...home.models?.aliases, 'host-resident': { provider: profile.provider, model: profile.model } } };
+    if (baseUrl) {
+      const endpoint = `${baseUrl.replace(/\/v1$/, '')}/api/embeddings`;
+      home.embeddings = { ...home.embeddings, providers: [{ provider: 'ollama-local', model: 'nomic-embed-text', dimensions: 768, endpoint }] };
+      home.substrate = { ...home.substrate, embedding: { endpoint, model: 'nomic-embed-text' } };
+    }
   }
   writeFileSync(homePath, yaml.dump(home), { mode: 0o600 });
   await secretsStore.updateHome23Secrets(appRoot, secrets => {
