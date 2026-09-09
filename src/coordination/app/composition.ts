@@ -339,6 +339,7 @@ export function createCoordinationProcess(
   if (!config.enabled) {
     throw new Error("the disabled coordination process cannot be composed");
   }
+  const primaryResident = config.home?.primaryResident ?? "jerry";
   const database = openCoordinationDatabase({
     path: config.databasePath,
     applicationVersion: "home23-coordination-m12-shadow",
@@ -672,12 +673,12 @@ export function createCoordinationProcess(
     isCanonicalAttachmentsAuthority(currentAuthority("attachments"));
   const bootstrap = {
     getBootstrap: async (input: Parameters<ReturnType<typeof createBootstrapService>["getBootstrap"]>[0]) => {
-      const primary = await botRepository.getBotByResidentBinding("jerry");
-      if (!primary) throw new Error("primary Jerry Bot binding is unavailable");
+      const primary = await botRepository.getBotByResidentBinding(primaryResident);
+      if (!primary) throw new Error("primary resident Bot binding is unavailable");
       return createBootstrapService({ repository: new SqliteBootstrapRepository(database), participantDirectory,
-        minimumClientBuild: 1, home: { id: "home_00000000-0000-7000-8000-000000000000", name: "Home23", primaryBotId: primary.id },
+        minimumClientBuild: 1, home: { id: config.home?.id ?? "home_00000000-0000-7000-8000-000000000000", name: config.home?.name ?? "Home23", primaryBotId: primary.id },
         connection: { mode: "loopback", displayName: "This Home23", reachable: true },
-        capabilities: { channels: false, attachments: attachmentCapabilityAvailable(), search: false, push: notificationCapabilityAvailable(), eventReplay: true, botLifecycle: botLifecycleCapabilityAvailable() },
+        capabilities: { channels: config.flags["coordination.channels.enabled"] === true && isCanonicalMessagesAuthority(currentAuthority("messages")), attachments: attachmentCapabilityAvailable(), search: config.flags["coordination.search.canonical"] === true, push: notificationCapabilityAvailable(), eventReplay: true, botLifecycle: botLifecycleCapabilityAvailable() },
         limits: {
           attachmentBytes: attachmentCapabilityAvailable()
             ? attachmentConfiguration?.maximumBytes ?? 0
@@ -781,12 +782,16 @@ export function createCoordinationProcess(
   let groupMessageContext: SqliteGroupChannelMessageContext | undefined;
   if (isCanonicalMessagesAuthority(currentAuthority("messages"))) {
     const residentTargets = new Map<string, DirectMessageResidentTarget>();
-    for (const residentSlug of ["jerry", "forrest"] as const) {
-      if (config.flags[`coordination.resident.${residentSlug}.enabled`] !== true) continue;
-      const residentConfig = config.residents[residentSlug];
-      if (!residentConfig?.enabled) {
-        throw new Error(`${residentSlug} resident configuration is required when its feature is enabled`);
+    for (const legacySlug of ["jerry", "forrest"] as const) {
+      if (config.flags[`coordination.resident.${legacySlug}.enabled`] === true && !config.residents[legacySlug]?.enabled) {
+        throw new Error(`${legacySlug} resident configuration is required when its feature is enabled`);
       }
+    }
+    for (const [residentSlug, residentConfig] of Object.entries(config.residents)) {
+      if (!residentConfig.enabled) continue;
+      // Legacy feature flags remain independent kill switches for existing homes.
+      if ((residentSlug === "jerry" || residentSlug === "forrest") &&
+          config.flags[`coordination.resident.${residentSlug}.enabled`] !== true) continue;
       const residentRootKey = Buffer.from(residentConfig.key, "hex");
       const credential = createResidentCredential({
         residentSlug,
@@ -1166,9 +1171,9 @@ export function createCoordinationProcess(
           if (!resident) throw new Error('Scheduling resident unavailable');
           return resident.context({principalId:botId,requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')});
         }
-        const resident = completionTargets.get('jerry');
+        const resident = completionTargets.get(primaryResident);
         if (!resident) throw new Error('Executive resident unavailable');
-        return resident.context({principalId:database.readOne<{id:string}>("SELECT id FROM bots WHERE resident_binding = 'jerry' AND lifecycle = 'active'")!.id,requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')});
+        return resident.context({principalId:database.readOne<{id:string}>("SELECT id FROM bots WHERE resident_binding = ? AND lifecycle = 'active'",primaryResident)!.id,requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')});
       }});
     helperScheduledTurn=(bot,input)=>scheduledTurns.run(input,bot.id);
     reconcileScheduledTurns = scheduledTurns.reconcile;
@@ -1279,8 +1284,8 @@ export function createCoordinationProcess(
           return notifyResident(context.credential, request.payload).finally(done);
         }
         if (request.method === "POST" && request.path === "/internal/v1/scheduled-turns") {
-          const resident = completionTargets.get('jerry');
-          if (config.flags['coordination.channels.enabled'] !== true || !resident || context.credential.residentSlug !== 'jerry' ||
+          const resident = completionTargets.get(primaryResident);
+          if (config.flags['coordination.channels.enabled'] !== true || !resident || context.credential.residentSlug !== primaryResident ||
             context.credential.instanceId !== resident.clientInstanceId || context.credential.keyVersion !== resident.keyVersion)
             throw new MessagingError('authority_unavailable');
           return scheduledTurns.run(request.payload).then(value => JSON.parse(JSON.stringify(value)));

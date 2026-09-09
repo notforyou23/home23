@@ -44,16 +44,27 @@ Before large file ingestion, verify the embedding lane if the user wants semanti
 
 Starter folders are added to the agent's Document Feeder watch paths so supported files flow into the agent's brain as they change.
 
+First-home setup prepares the current app's canonical home and direct conversation, private resident credentials, and a separate Seed genesis/checkpoint. It records a resumable receipt at `instances/.house/creation.json`. If interrupted, return to setup and select **Resume setup**, or rerun `setup --cli`. Starting is blocked until preparation completes. See [the home birth contract](design/HOME-BIRTH.md).
+
+Scripted preparation after `init` uses the same operation:
+
+```bash
+node cli/home23.js home create /path/to/profile.json
+```
+
+The JSON profile requires `name`, `ownerName`, `provider`, and `model`; optional fields include `displayName`, `purpose`, `personalFacts`, `timezone`, and `ingestPaths`. Keep this profile private. The command prepares state and prints a receipt; its `next.command` starts the home. App pairing uses Core on port 7346 locally. Remote devices require trusted transport setup.
+
+
 Conversation memory is part of the default setup. Each agent writes session transcripts into `instances/<name>/workspace/sessions/`, the feeder watches that folder, the chat loop searches brain memory by default, and the seeded `conversation-backfill-daily` scheduler job converts any accumulated JSONL chat history into feeder-ready markdown once a day. Compaction and memory extraction use the agent's configured default provider/model rather than a separate hard-coded model.
 
 Manual operator flow:
 
 ```bash
 node cli/home23.js init
-node cli/home23.js agent create <name>
+node cli/home23.js setup --cli
 ```
 
-For the older terminal-guided first-run path, use:
+For terminal-guided first-run setup, use:
 
 ```bash
 node cli/home23.js setup --cli
@@ -63,7 +74,7 @@ node cli/home23.js setup --cli
 
 Provider credentials are configured in the dashboard, not during `init`.
 
-`agent create` writes the first local `instances/<name>/` runtime directory, records its purpose, configures starter ingestion folders, and regenerates the PM2 ecosystem. `instances/` is intentionally local state and is not committed.
+`agent create` is the lower-level path for adding an agent to an existing installation. It writes a local `instances/<name>/` runtime directory, records its purpose, configures starter ingestion folders, and regenerates the PM2 ecosystem. `instances/` is intentionally local state and is not committed.
 
 ## 3. Web Setup and Start
 
@@ -107,7 +118,7 @@ Expected:
 
 ### Concurrent starts and shared services
 
-`home23 start` serializes startup of the shared Evobrew, COSMO, and ScreenLogic services. Multiple concurrent start commands re-check PM2 state inside one cross-process lock, so each missing shared service is started once. Explicit shared-service restarts use the same lock. Local evidence is appended to `logs/shared-service-startup.jsonl`.
+`home23 start` serializes startup of the shared Evobrew and ScreenLogic services, plus Core when enabled. Multiple concurrent start commands re-check PM2 state inside one cross-process lock, so each missing shared service is started once. Explicit shared-service restarts use the same lock. Local evidence is appended to `logs/shared-service-startup.jsonl`.
 
 If PM2 reports duplicate records or a service port is owned by an untracked process, stop and inspect the exact service. Use only exact-name PM2 commands; never use global stop/delete commands.
 

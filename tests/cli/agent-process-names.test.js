@@ -28,7 +28,7 @@ test('default agent config yields engine, dash, mcp, harness — no seed', () =>
   ]);
 });
 
-test('substrate.enabled: true adds the seed runner process', () => {
+test('substrate.enabled: true starts the seed runner together with its life feed', () => {
   const names = agentProcessNames({
     agentName: 'jerry',
     config: { substrate: { enabled: true } },
@@ -39,6 +39,7 @@ test('substrate.enabled: true adds the seed runner process', () => {
     'home23-jerry-mcp',
     'home23-jerry-harness',
     'home23-jerry-seed',
+    'home23-jerry-shipper',
   ]);
 });
 
@@ -52,6 +53,7 @@ test('mcp.enabled: false removes the mcp process, mirroring the generator', () =
     'home23-forrest-dash',
     'home23-forrest-harness',
     'home23-forrest-seed',
+    'home23-forrest-shipper',
   ]);
 });
 
@@ -61,6 +63,7 @@ test('substrate must be exactly enabled: true — truthy strings do not count', 
     config: { substrate: { enabled: 'yes' } },
   });
   assert.ok(!names.includes('home23-jerry-seed'));
+  assert.ok(!names.includes('home23-jerry-shipper'));
 });
 
 test('reads the instance config.yaml when config is not passed', () => {
@@ -73,6 +76,7 @@ test('reads the instance config.yaml when config is not passed', () => {
       'home23-mabel-dash',
       'home23-mabel-harness',
       'home23-mabel-seed',
+      'home23-mabel-shipper',
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -101,6 +105,8 @@ test('candidates cover every possible suffix for teardown paths', () => {
     'home23-jerry-mcp',
     'home23-jerry-harness',
     'home23-jerry-seed',
+    'home23-jerry-shipper',
+    'home23-jerry-house-sense',
   ]);
 });
 
@@ -116,6 +122,8 @@ test('candidates exclude names owned by a sibling agent with a suffix-shaped nam
       'home23-alice-dash',
       'home23-alice-mcp',
       'home23-alice-harness',
+      'home23-alice-shipper',
+      'home23-alice-house-sense',
     ]);
     // And alice's config-derived set drops the colliding seed name too.
     assert.deepEqual(agentProcessNames({ home23Root: root, agentName: 'alice' }), [
@@ -123,6 +131,7 @@ test('candidates exclude names owned by a sibling agent with a suffix-shaped nam
       'home23-alice-dash',
       'home23-alice-mcp',
       'home23-alice-harness',
+      'home23-alice-shipper',
     ]);
     // The sibling's own lifecycle is unaffected.
     assert.deepEqual(agentProcessNameCandidates('alice-seed', root), [
@@ -131,10 +140,34 @@ test('candidates exclude names owned by a sibling agent with a suffix-shaped nam
       'home23-alice-seed-mcp',
       'home23-alice-seed-harness',
       'home23-alice-seed-seed',
+      'home23-alice-seed-shipper',
+      'home23-alice-seed-house-sense',
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('house-sense requires both substrate and explicit house sensing', () => {
+  for (const substrate of [{ houseSense: true }, { enabled: false, houseSense: true }, { enabled: true, houseSense: 'true' }]) {
+    assert.ok(!agentProcessNames({ agentName: 'river', config: { substrate } }).includes('home23-river-house-sense'));
+  }
+  assert.deepEqual(agentProcessNames({ agentName: 'river', config: { substrate: { enabled: true, houseSense: true } } }).slice(-3),
+    ['home23-river-seed', 'home23-river-shipper', 'home23-river-house-sense']);
+});
+
+test('life-feed lifecycle never reaches suffix-named sibling agents', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-procnames-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  makeInstance(root, 'river', 'substrate:\n  enabled: true\n  houseSense: true\n');
+  makeInstance(root, 'river-shipper', 'agent:\n  displayName: Shipper\n');
+  makeInstance(root, 'river-house-sense', 'agent:\n  displayName: House Sense\n');
+  for (const names of [agentProcessNames({ home23Root: root, agentName: 'river' }), agentProcessNameCandidates('river', root)]) {
+    assert.ok(!names.includes('home23-river-shipper'));
+    assert.ok(!names.includes('home23-river-house-sense'));
+    assert.ok(names.includes('home23-river-seed'));
+  }
+  assert.ok(agentProcessNames({ home23Root: root, agentName: 'river-shipper' }).includes('home23-river-shipper'));
 });
 
 test('filterNamesByEcosystem keeps only names declared in the generated file', () => {

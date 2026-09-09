@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
   SHARED_SERVICES,
+  configuredSharedServices,
   coordinateSharedServiceStartup,
   startEcosystemProcesses,
 } from '../../cli/lib/shared-service-start.js';
@@ -341,6 +342,72 @@ test('shared startup covers Evobrew and ScreenLogic without owning Cosmo', () =>
   ]);
 });
 
+test('enabled canonical Core starts once through shared coordination before other shared services', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'home23-core-start-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'config'));
+  await writeFile(join(root, 'config', 'home.yaml'), 'coordination:\n  process:\n    enabled: true\n');
+  assert.deepEqual(configuredSharedServices(root).map(({ name }) => name),
+    ['home23-coordination', 'home23-evobrew', 'home23-screenlogic']);
+  const online = new Map();
+  const starts = [];
+  const options = {
+    home23Root: root,
+    lockPath: join(root, 'start.lock'),
+    pollMs: 1,
+    dependencies: {
+      listProcesses: async () => Array.from(online, ([name, pid]) => onlineRow(name, pid)),
+      startService: async ({ name }) => {
+        starts.push(name);
+        online.set(name, 7000 + starts.length);
+      },
+      appendReceipt: async () => {},
+    },
+  };
+  const result = await coordinateSharedServiceStartup(options);
+  assert.equal(result.ok, true);
+  assert.deepEqual(starts, ['home23-coordination', 'home23-evobrew', 'home23-screenlogic']);
+  const repeated = await coordinateSharedServiceStartup(options);
+  assert.ok(repeated.services.every(({ action }) => action === 'already-online'));
+  assert.equal(starts.length, 3, 'another resident start reuses the same Core');
+});
+
+test('disabled or missing Core config never starts the shadow definition', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'home23-core-disabled-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  assert.deepEqual(configuredSharedServices(root), SHARED_SERVICES);
+  await mkdir(join(root, 'config'));
+  for (const value of ['false', '"true"']) {
+    await writeFile(join(root, 'config', 'home.yaml'), `coordination:\n  process:\n    enabled: ${value}\n`);
+    assert.deepEqual(configuredSharedServices(root), SHARED_SERVICES);
+  }
+  await writeFile(join(root, 'config', 'home.yaml'), 'coordination: [broken');
+  assert.throws(() => configuredSharedServices(root), /end of the stream|flow collection/);
+});
+
+test('fresh homes skip explicitly disabled ScreenLogic without requiring optional Python', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'home23-optional-services-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'config'));
+  await writeFile(join(root, 'config', 'home.yaml'), 'coordination:\n  process:\n    enabled: true\nscreenlogic:\n  enabled: false\n');
+  assert.deepEqual(configuredSharedServices(root).map(({ name }) => name), ['home23-coordination', 'home23-evobrew']);
+  const online = new Map();
+  const result = await coordinateSharedServiceStartup({
+    home23Root: root,
+    lockPath: join(root, 'start.lock'),
+    dependencies: {
+      listProcesses: async () => Array.from(online, ([name, pid]) => onlineRow(name, pid)),
+      startService: async ({ name }) => {
+        assert.notEqual(name, 'home23-screenlogic', 'no optional Python process is launched');
+        online.set(name, 8000 + online.size);
+      },
+      appendReceipt: async () => {},
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.services.map(({ name }) => name), ['home23-coordination', 'home23-evobrew']);
+});
+
 test('named ecosystem starts use exact PM2 targets with a sanitized environment', () => {
   let invocation;
   const env = {
@@ -377,6 +444,10 @@ test('home23 start delegates one coordinated shared-service startup pass', async
   const source = await readFile(new URL('../../cli/lib/pm2-commands.js', import.meta.url), 'utf8');
 
   assert.match(source, /coordinateSharedServiceStartup\(\{ home23Root \}\)/);
+  assert.ok(source.indexOf('await coordinateSharedServiceStartup') < source.indexOf("startEcosystemProcesses({ home23Root, names, stdio: 'inherit' })"),
+    'the named resident and its shipper start after shared Core startup');
+  assert.match(source, /new Set\(ALL_SHARED_SERVICES\.map/,
+    'shared Core cannot also start through the bulk nonshared path');
   assert.doesNotMatch(source, /Start evobrew|Start cosmo23|Start ScreenLogic bridge/);
   assert.doesNotMatch(source, /execSync\(`pm2 start \$\{ecosystemPath\}`/);
 });

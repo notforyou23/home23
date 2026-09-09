@@ -4,15 +4,13 @@
  * This is the ONE place the Seed's model recruitment meets Home23's provider
  * contracts. It lives in src/ (harness territory) deliberately: the substrate
  * package holds no credentials and knows no endpoints — its ModelLobe takes
- * this transport as an injected function. Keys arrive the same way every other
- * Home23 process gets them (PM2 env injection from secrets.yaml).
- *
- * The receipt's tokensIn/tokensOut are 0 because generateText() does not
- * surface usage — 0 here means "not measured", never "free". Wire real usage
- * accounting when generateText grows a usage return.
+ * this transport as an injected function. Endpoints and credentials resolve
+ * from the owning installation at invocation time, like other Home23 calls.
+ * Receipt usage is measured when returned by the provider; 0 means unmeasured.
  */
 
 import { generateText, inferTextGenerationProvider } from '../agent/text-generation.js';
+import { loadHomeConfig } from '../config.js';
 
 export interface SeedModelReceipt {
   modelId: string;
@@ -38,6 +36,11 @@ export function createSeedLobeTransport(opts: SeedLobeTransportOptions): SeedLob
   return async (prompt: string) => {
     const startedMs = Date.now();
     const invokedAt = new Date().toISOString();
+    const providers = loadHomeConfig().providers as Record<string, { baseUrl?: string; apiKey?: string }> | undefined;
+    const configured = providers?.[provider];
+    // MiniMax speaks the Anthropic protocol at its own endpoint. Letting an
+    // absent base URL fall through would send its key/model to Anthropic.
+    const baseURL = configured?.baseUrl || (provider === 'minimax' ? 'https://api.minimax.io/anthropic' : undefined);
     // Real usage when the provider reports it (P2-17) — 0 still means "not
     // measured", never "free" and never an estimate.
     const usageSink = { tokensIn: 0, tokensOut: 0 };
@@ -47,6 +50,8 @@ export function createSeedLobeTransport(opts: SeedLobeTransportOptions): SeedLob
     const text = await generateText({
       model: opts.model,
       provider,
+      baseURL,
+      apiKey: configured?.apiKey,
       prompt,
       maxTokens: opts.maxTokens ?? 8192,
       temperature: 0.2,

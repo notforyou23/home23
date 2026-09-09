@@ -33,7 +33,7 @@ export interface TextGenerationOptions {
   reasoningEffort?: ReasoningEffort;
   codexCredentialsProvider?: (signal?: AbortSignal, force?: boolean) => Promise<CodexCredentials | null>;
   /** P2-17: real token usage, written by branches whose provider reports it
-   * (anthropic/minimax, ollama-cloud, openai/xai). Values left at 0 mean
+   * (anthropic/minimax, ollama-cloud/local, openai/xai). Values left at 0 mean
    * "not measured" — never an estimate. Lobe receipts consume this. */
   usageSink?: { tokensIn: number; tokensOut: number };
 }
@@ -151,16 +151,24 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
     return extractAnthropicText(response);
   }
 
-  if (provider === 'ollama-cloud') {
+  if (provider === 'ollama-cloud' || provider === 'ollama-local') {
+    const local = provider === 'ollama-local';
     const apiKey = resolveProviderKey(provider, opts.apiKey, forceFreshCredential);
-    if (!apiKey) throw new Error('OLLAMA_CLOUD_API_KEY not set');
+    if (!apiKey && !local) throw new Error('OLLAMA_CLOUD_API_KEY not set');
+    // Home configuration uses either an Ollama origin or its /v1 compatible
+    // base. Text generation uses the native endpoint, as the cloud path has
+    // always done, preserving any configured reverse-proxy prefix.
+    const baseURL = opts.baseURL || (local
+      ? process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434'
+      : 'https://ollama.com');
+    const ollamaRoot = baseURL.replace(/\/+$/, '').replace(/\/(?:v1|api\/chat)$/, '');
     const messages = [
       ...(opts.system ? [{ role: 'system', content: opts.system }] : []),
       { role: 'user', content: opts.prompt },
     ];
-    const res = await fetch('https://ollama.com/api/chat', {
+    const res = await fetch(`${ollamaRoot}/api/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
       body: JSON.stringify({
         model,
         messages,
@@ -171,7 +179,7 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
     });
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
-      throw new Error(`ollama-cloud HTTP ${res.status}: ${errText.slice(0, 300)}`);
+      throw new Error(`${provider} HTTP ${res.status}: ${errText.slice(0, 300)}`);
     }
     const data = await res.json() as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
     if (opts.usageSink) {

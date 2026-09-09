@@ -5,9 +5,9 @@
  * Provider setup happens in the web dashboard, not here.
  */
 
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 // Modules that depend on root npm packages (js-yaml, proper-lockfile, ...)
 // must be imported lazily, after `npm install` has run. On a fresh clone
@@ -31,7 +31,7 @@ function seedLocalConfig(home23Root) {
   }
 }
 
-function checkPrerequisites() {
+function checkPrerequisites(execute) {
   const issues = [];
   const warnings = [];
 
@@ -43,24 +43,24 @@ function checkPrerequisites() {
 
   // PM2
   try {
-    execSync('pm2 --version', { stdio: 'pipe' });
+    execute('pm2', ['--version'], { stdio: 'pipe' });
   } catch {
     issues.push('PM2 not found — install with: npm install -g pm2');
   }
 
   // Python 3
   try {
-    execSync('python3 --version', { stdio: 'pipe' });
+    execute('python3', ['--version'], { stdio: 'pipe' });
   } catch {
     warnings.push('Python 3 not found — document ingestion (PDF/DOCX/images) will be unavailable');
   }
 
   // Ollama (for embeddings)
   try {
-    execSync('ollama --version', { stdio: 'pipe' });
+    execute('ollama', ['--version'], { stdio: 'pipe' });
     // Check if nomic-embed-text is pulled
     try {
-      const models = execSync('ollama list', { stdio: 'pipe', encoding: 'utf-8' });
+      const models = execute('ollama', ['list'], { stdio: 'pipe', encoding: 'utf-8' });
       if (!models.includes('nomic-embed-text')) {
         warnings.push('Ollama installed but nomic-embed-text not pulled — run: ollama pull nomic-embed-text');
       }
@@ -72,20 +72,39 @@ function checkPrerequisites() {
   return { issues, warnings };
 }
 
-export async function runInit(home23Root, options = {}) {
+function requiredStepError(step, directory, recovery, cause) {
+  const output = [cause?.stderr, cause?.stdout]
+    .map((value) => value?.toString().trim())
+    .filter(Boolean)
+    .join('\n')
+    .slice(-4000);
+  const error = new Error(
+    `${step} failed in ${directory}. Setup stopped. ${recovery} Then rerun node cli/home23.js setup.`
+      + (output ? `\n${output}` : ''),
+    { cause },
+  );
+  error.code = 'HOME23_INIT_REQUIRED_STEP_FAILED';
+  return error;
+}
+
+// Injection keeps install failure paths testable without installing packages,
+// starting services, or loading modules before a fresh clone has dependencies.
+export async function runInit(home23Root, options = {}, dependencies = {}) {
+  const execute = dependencies.execute ?? execFileSync;
+  const loadModule = dependencies.loadModule ?? ((specifier) => import(specifier));
   console.log('');
   console.log('Home23 — Setup');
   console.log('──────────────');
   console.log('');
 
   // Prerequisite check
-  const prereqs = checkPrerequisites();
+  const prereqs = checkPrerequisites(execute);
   if (prereqs.issues.length > 0) {
     console.log('❌ Prerequisites missing:');
     for (const issue of prereqs.issues) console.log(`   • ${issue}`);
     console.log('');
     console.log('Fix these before continuing.');
-    process.exit(1);
+    throw new Error(`Home23 prerequisites missing: ${prereqs.issues.join('; ')}`);
   }
   if (prereqs.warnings.length > 0) {
     console.log('⚠️  Warnings:');
@@ -106,22 +125,47 @@ export async function runInit(home23Root, options = {}) {
     { name: 'evobrew', path: join(home23Root, 'evobrew') },
   ];
 
+  // A partial checkout is not an installed home. Validate all required sources
+  // before starting any dependency installation.
   for (const dir of dirs) {
-    if (existsSync(join(dir.path, 'package.json'))) {
-      process.stdout.write(`  ${dir.name}: npm install...`);
-      try {
-        execSync('npm install', { cwd: dir.path, stdio: 'pipe', timeout: 120000 });
-        console.log(' done');
-      } catch (err) {
-        console.log(' FAILED');
-        console.error(`    ${err.message?.split('\n')[0]}`);
-      }
+    if (!existsSync(join(dir.path, 'package.json'))) {
+      throw requiredStepError(
+        `${dir.name} dependency installation`, dir.path,
+        'The required package.json is missing; restore the complete Home23 source checkout.',
+      );
+    }
+  }
+
+  for (const dir of dirs) {
+    process.stdout.write(`  ${dir.name}: npm install...`);
+    try {
+      execute('npm', ['install'], { cwd: dir.path, stdio: 'pipe', timeout: 120000 });
+      console.log(' done');
+    } catch (err) {
+      console.log(' FAILED');
+      throw requiredStepError(
+        `${dir.name} dependency installation`, dir.path,
+        'Run npm install in that directory and resolve the reported error.', err,
+      );
     }
   }
   console.log('');
 
+  // Do not configure or advertise a runtime whose required build has failed.
+  process.stdout.write('Building TypeScript...');
+  try {
+    execute('npm', ['run', 'build'], { cwd: home23Root, stdio: 'pipe', timeout: 60000 });
+    console.log(' done');
+  } catch (err) {
+    console.log(' FAILED');
+    throw requiredStepError(
+      'TypeScript build', home23Root,
+      'Run npm run build in that directory and fix the build errors.', err,
+    );
+  }
+
   const { ensureBrainOperationsCapabilityKey } =
-    await import('./brain-operations-capability.js');
+    await loadModule('./brain-operations-capability.js');
 
   const brainOperationsCapability = await ensureBrainOperationsCapabilityKey(home23Root);
   console.log(`  Brain operations capability: configured${brainOperationsCapability.permissionsRepaired ? ' (permissions repaired)' : ''}`);
@@ -130,22 +174,11 @@ export async function runInit(home23Root, options = {}) {
   console.log('');
   console.log('Generating ecosystem config...');
   try {
-    const { generateEcosystem } = await import('./generate-ecosystem.js');
+    const { generateEcosystem } = await loadModule('./generate-ecosystem.js');
     generateEcosystem(home23Root);
   } catch (err) {
     console.log('  FAILED (non-fatal, will regenerate on first agent create)');
     console.error(`  ${err.message?.split('\n')[0] || 'unknown error'}`);
-  }
-
-  // Build TypeScript
-  console.log('');
-  process.stdout.write('Building TypeScript...');
-  try {
-    execSync('npx tsc', { cwd: home23Root, stdio: 'pipe', timeout: 60000 });
-    console.log(' done');
-  } catch (err) {
-    console.log(' FAILED');
-    console.error('  Check build errors with: npx tsc --noEmit');
   }
 
   // Bundled Python venv for document ingestion (MarkItDown + PDF extras).
@@ -155,19 +188,21 @@ export async function runInit(home23Root, options = {}) {
   // the `pip install --break-system-packages` footgun.
   console.log('');
   process.stdout.write('Setting up document ingestion venv (MarkItDown + PDF)...');
+  let documentConversion = 'ready';
   try {
     const venvDir = join(home23Root, 'engine', '.venv-markitdown');
     const venvPython = join(venvDir, 'bin', 'python3');
     if (!existsSync(venvPython)) {
-      execSync(`python3 -m venv "${venvDir}"`, { stdio: 'pipe', timeout: 60000 });
+      execute('python3', ['-m', 'venv', venvDir], { stdio: 'pipe', timeout: 60000 });
     }
-    execSync(`"${venvPython}" -m pip install --quiet --upgrade pip "markitdown[pdf]" openai`, {
+    execute(venvPython, ['-m', 'pip', 'install', '--quiet', '--upgrade', 'pip', 'markitdown[pdf]', 'openai'], {
       stdio: 'pipe',
       timeout: 300000,
     });
     console.log(' done');
   } catch (err) {
-    console.log(' FAILED');
+    documentConversion = 'unavailable';
+    console.log(' UNAVAILABLE (optional capability)');
     console.error(`  ${err.message?.split('\n')[0] || 'unknown error'}`);
     console.error('  Binary document ingestion (PDF/DOCX/etc.) will be unavailable until this is fixed.');
     console.error('  You can re-run this step manually:');
@@ -178,7 +213,9 @@ export async function runInit(home23Root, options = {}) {
   if (options.finalMessage !== false) {
     console.log('');
     console.log('═══════════════════════════════════════════════════');
-    console.log('  Home23 is ready!');
+    console.log(documentConversion === 'ready'
+      ? '  Home23 runtime prepared.'
+      : '  Home23 runtime prepared; document conversion unavailable.');
     console.log('═══════════════════════════════════════════════════');
     console.log('');
     console.log('  Next step — create your personal agent:');
@@ -193,4 +230,6 @@ export async function runInit(home23Root, options = {}) {
     console.log('  Easier all-in-one first run: node cli/home23.js setup');
     console.log('');
   }
+
+  return { status: 'prepared', documentConversion };
 }

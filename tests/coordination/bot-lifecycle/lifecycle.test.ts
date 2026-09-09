@@ -179,16 +179,17 @@ test("archive and restore retain the exact Bot and mailbox identity without proc
   assert.deepEqual(f.forbiddenEffects, []);
 });
 
-test("Jerry and Forrest are centrally protected from archive and restore", async () => {
+test("Named house residents are centrally protected from archive and restore", async () => {
   for (const [residentBinding, lifecycle, operation] of [
     ["jerry", "active", "archive"],
     ["forrest", "archived", "restore"],
+    ["milo", "active", "archive"],
   ] as const) {
     const f = fixture();
     f.bots.set("bot_fixture", {
       id: "bot_fixture",
       principalId: "bot_fixture",
-      name: residentBinding === "jerry" ? "Jerry" : "Forrest",
+      name: residentBinding,
       purpose: "Permanent house resident",
       lifecycle,
       availability: "offline",

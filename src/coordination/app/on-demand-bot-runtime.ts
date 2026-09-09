@@ -74,7 +74,6 @@ import type {
   DirectMessageTargetDescriptor,
 } from "./direct-message.js";
 
-const PERMANENT_RESIDENTS = new Set(["jerry", "forrest"]);
 const ON_DEMAND_BOT_MESSAGE_CAPABILITIES = Object.freeze(["messages"] as const);
 const ON_DEMAND_BOT_ATTACHMENT_CAPABILITIES = Object.freeze(["attachments", "messages"] as const);
 const TURN_PREFIX = "coord-";
@@ -798,7 +797,7 @@ function identityDocument(bot: BotDirectoryRecord): string {
     "# Identity",
     "",
     `You are ${bot.name}, a deliberately created Home23 Bot.`,
-    "You are not Jerry or Forrest and must never claim either house resident's identity or memory.",
+    "You must never claim another house resident's identity or memory.",
     "Your durable conversation, workspace, history, and memory belong only to your own Bot ID.",
     "",
     "## Purpose",
@@ -816,7 +815,6 @@ function assertOnDemandBot(
     !bot || bot.id !== descriptor.targetBotId ||
     bot.principalId !== descriptor.targetPrincipalId ||
     bot.residentBinding !== descriptor.residentBinding ||
-    PERMANENT_RESIDENTS.has(bot.residentBinding) ||
     !bot.residentBinding.startsWith("bot-") ||
     bot.lifecycle !== "active" || !bot.continuingIdentity || !bot.durableMailbox ||
     bot.conversationId !== descriptor.conversationId ||
@@ -853,7 +851,7 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
       return await targets.get(botId)?.target.execution.stopRevoked?.(binding) ?? false;
     },
     async resolve(descriptor: DirectMessageTargetDescriptor): Promise<DirectMessageExecutionTarget | undefined> {
-      if (PERMANENT_RESIDENTS.has(descriptor.residentBinding)) return undefined;
+      if (!descriptor.residentBinding.startsWith("bot-")) return undefined;
       const bot = await options.bots.getBotById(descriptor.targetBotId);
       assertOnDemandBot(bot, descriptor);
       const cached = targets.get(bot.id);

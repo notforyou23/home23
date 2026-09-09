@@ -43,20 +43,19 @@ type AttachmentMaterializer = (
   attachments: readonly AttachmentSummary[],
 ) => Promise<readonly ResidentInputAttachment[]>;
 
-// Jerry and Forrest are permanent UDS residents. Every other lifecycle-created
+// Configured, registered residents use UDS. Every lifecycle-created
 // Bot is deliberately processless and is eligible for Core-owned on-demand
 // execution only while its canonical mailbox identity remains active.
 const ROUTABLE_DIRECT_TARGET_SQL = `
   AND (
     (
-      b.resident_binding IN ('jerry', 'forrest')
+      b.resident_binding NOT LIKE 'bot-%'
       AND b.resident_protocol_version = 1
       AND EXISTS (
         SELECT 1 FROM json_each(b.resident_capabilities_json) WHERE value = 'messages'
       )
     ) OR (
-      b.resident_binding NOT IN ('jerry', 'forrest')
-      AND b.resident_binding LIKE 'bot-%'
+      b.resident_binding LIKE 'bot-%'
       AND EXISTS (
         SELECT 1 FROM json_each(b.required_capabilities_json) WHERE value = 'messages'
       )
@@ -243,7 +242,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       work.channelId,
       work.targetPrincipalId,
     );
-    const expectedKind = binding?.residentBinding === "jerry" || binding?.residentBinding === "forrest"
+    const expectedKind = binding && !binding.residentBinding.startsWith("bot-")
       ? "resident_turn"
       : "bot_turn";
     if (

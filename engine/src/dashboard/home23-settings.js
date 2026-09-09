@@ -984,9 +984,39 @@ async function loadAgents() {
     selectedSettingsAgent = nextSelected;
     refreshAgentScopeUI();
     renderAgents(data.agents);
+    await renderHomeCreation();
   } catch (err) {
     console.error('Failed to load agents:', err);
   }
+}
+
+async function renderHomeCreation() {
+  const response = await fetch(`${API}/home/creation`);
+  const creation = await response.json();
+  let card = document.getElementById('home-creation-resume');
+  if (creation.status === 'absent' || creation.status === 'prepared') { card?.remove(); return; }
+  if (!card) {
+    card = document.createElement('div');
+    card.id = 'home-creation-resume';
+    card.className = 'h23s-agent-card';
+    document.getElementById('agent-list')?.before(card);
+  }
+  card.replaceChildren();
+  const message = document.createElement('p');
+  message.textContent = creation.error || 'Your home setup was interrupted. Continue from where it stopped.';
+  const button = document.createElement('button');
+  button.type = 'button'; button.className = 'h23s-btn-primary'; button.textContent = 'Resume setup';
+  button.disabled = creation.status === 'unreadable';
+  button.addEventListener('click', async () => {
+    button.disabled = true; message.textContent = 'Preparing your home…';
+    try {
+      const response = await fetch(`${API}/home/creation/resume`, { method: 'POST' });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || 'Setup could not resume.');
+      await loadAgents();
+    } catch (error) { message.textContent = error.message; button.disabled = false; }
+  });
+  card.append(message, button);
 }
 
 function renderAgents(agents) {
@@ -1136,8 +1166,10 @@ function setAgentButtonPending(name, label) {
 async function startAgent(name) {
   setAgentButtonPending(name, 'Starting…');
   try {
-    await fetch(`${API}/agents/${name}/start`, { method: 'POST' });
-    loadAgents();
+    const response = await fetch(`${API}/agents/${name}/start`, { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || 'Home23 could not start.');
+    await loadAgents();
   } catch (err) {
     alert('Failed to start: ' + err.message);
     loadAgents();
@@ -3740,32 +3772,13 @@ let onboardingStep = 1;
 let onboardingProviderPollTimer = null;
 let onboardingCreatedAgent = null;
 
-/**
- * Check if this is a first-run scenario:
- *  - No providers configured
- *  - No agents exist
- */
+/** A configured provider is only one step; first run ends when a home exists. */
 async function checkOnboarding() {
   try {
-    const [provRes, agentRes, oauthRes] = await Promise.all([
-      fetch(`${API}/providers`),
-      fetch(`${API}/agents`),
-      fetch(`${API}/oauth/status`).catch(() => null),
-    ]);
-    const provData = await provRes.json();
-    const agentData = await agentRes.json();
-
-    const hasApiKey = Object.values(provData.providers || {}).some(p => p.hasKey || p.configured);
-    let hasOAuth = false;
-    if (oauthRes && oauthRes.ok) {
-      const oauthData = await oauthRes.json();
-      hasOAuth = (oauthData.anthropic?.configured && oauthData.anthropic?.valid)
-              || (oauthData.openaiCodex?.configured && oauthData.openaiCodex?.valid);
-    }
-    const hasProvider = hasApiKey || hasOAuth;
-    const hasAgent = (agentData.agents || []).length > 0;
-
-    return !hasProvider && !hasAgent;
+    const response = await fetch(`${API}/agents`);
+    if (!response.ok) return false;
+    const data = await response.json();
+    return (data.agents || []).length === 0;
   } catch (err) {
     console.warn('Onboarding check failed:', err);
     return false;

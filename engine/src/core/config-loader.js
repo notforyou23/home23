@@ -134,7 +134,7 @@ class ConfigLoader {
       // Fall back to home.yaml providers (model catalog) — but only
       // return a name that's actually enabled in base-engine.
       try {
-        const homePath = path.join(path.dirname(path.dirname(this.configPath)), 'config', 'home.yaml');
+        const homePath = path.join(process.env.HOME23_ROOT || path.dirname(path.dirname(this.configPath)), 'config', 'home.yaml');
         if (fs.existsSync(homePath)) {
           const home = yaml.load(fs.readFileSync(homePath, 'utf8')) || {};
           for (const [name, prov] of Object.entries(home.providers || {})) {

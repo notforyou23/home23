@@ -3,8 +3,8 @@
  * agent, shared by the CLI (start/stop/logs) and the dashboard settings API
  * (agent lifecycle routes).
  *
- * The ecosystem generator (cli/lib/generate-ecosystem.js) emits up to five
- * processes per agent; two of them are conditional on the agent's instance
+ * The ecosystem generator (cli/lib/generate-ecosystem.js) emits up to seven
+ * processes per agent; several are conditional on the agent's instance
  * config. Lifecycle code that hardcodes the engine/dash/harness triplet
  * silently strands the conditional processes — a substrate-enabled agent's
  * seed runner kept running after "stop", and was orphaned into a crash loop
@@ -18,7 +18,7 @@ const path = require('path');
 const yaml = require('js-yaml');
 
 /** Every suffix the ecosystem generator can emit for an agent, in emit order. */
-const AGENT_PROCESS_SUFFIXES = Object.freeze(['', '-dash', '-mcp', '-harness', '-seed']);
+const AGENT_PROCESS_SUFFIXES = Object.freeze(['', '-dash', '-mcp', '-harness', '-seed', '-shipper', '-house-sense']);
 
 function loadAgentInstanceConfig(home23Root, agentName) {
   try {
@@ -69,6 +69,10 @@ function agentProcessNames({ home23Root, agentName, config } = {}) {
   if (cfg.mcp?.enabled !== false && !collisions.includes('-mcp')) names.push(`${base}-mcp`);
   if (!collisions.includes('-harness')) names.push(`${base}-harness`);
   if (cfg.substrate?.enabled === true && !collisions.includes('-seed')) names.push(`${base}-seed`);
+  if (cfg.substrate?.enabled === true && !collisions.includes('-shipper')) names.push(`${base}-shipper`);
+  if (cfg.substrate?.enabled === true && cfg.substrate?.houseSense === true && !collisions.includes('-house-sense')) {
+    names.push(`${base}-house-sense`);
+  }
   return names;
 }
 

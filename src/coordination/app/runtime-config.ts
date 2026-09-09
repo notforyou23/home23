@@ -48,7 +48,9 @@ export interface CoordinationRuntimeConfig {
     registryPath: string;
     apns: ApnsConfig;
   }>;
-  residents: Readonly<Record<"jerry" | "forrest", {
+  /** Absent on legacy programmatic configurations; defaults remain Jerry/Home23. */
+  home?: Readonly<{ id: string; name: string; primaryResident: string }>;
+  residents: Readonly<Record<string, {
     enabled: boolean;
     socketPath: string;
     serverInstanceId: string;
@@ -203,9 +205,24 @@ export function loadCoordinationRuntimeConfig(
   )) {
     throw new Error("complete Connected Agents APNs configuration is required when push is enabled");
   }
-  const residents = Object.fromEntries((["jerry", "forrest"] as const).map((slug) => {
-    const upper = slug.toUpperCase();
-    const residentEnabled = flags[`coordination.resident.${slug}.enabled`] === true;
+  const configuredSlugs: unknown = environment.HOME23_COORDINATION_RESIDENT_SLUGS
+    ? JSON.parse(environment.HOME23_COORDINATION_RESIDENT_SLUGS) : ["jerry", "forrest"];
+  if (!Array.isArray(configuredSlugs) || configuredSlugs.length < 1 || configuredSlugs.length > 32 ||
+      configuredSlugs.some(slug => typeof slug !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug) || slug.startsWith("bot-")) ||
+      new Set(configuredSlugs).size !== configuredSlugs.length) throw new Error("coordination resident slugs are invalid");
+  const primaryResident = environment.HOME23_COORDINATION_PRIMARY_RESIDENT ?? "jerry";
+  if (!configuredSlugs.includes(primaryResident)) throw new Error("coordination primary resident is not configured");
+  const home = Object.freeze({
+    id: environment.HOME23_COORDINATION_HOME_ID ?? "home_00000000-0000-7000-8000-000000000000",
+    name: environment.HOME23_COORDINATION_HOME_NAME ?? "Home23",
+    primaryResident,
+  });
+  if (!/^home_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(home.id) ||
+      !home.name.trim() || home.name.length > 256 || home.name.includes("\0")) throw new Error("coordination home identity is invalid");
+  const residents = Object.fromEntries((configuredSlugs as string[]).map((slug) => {
+    const upper = slug.toUpperCase().replaceAll("-", "_");
+    const requestedResidentEnabled = exactBoolean(environment[`HOME23_COORDINATION_RESIDENT_${upper}_ENABLED`], `HOME23_COORDINATION_RESIDENT_${upper}_ENABLED`);
+    const residentEnabled = enabled && requestedResidentEnabled;
     const socketPath = resolve(environment[`HOME23_COORDINATION_RESIDENT_${upper}_SOCKET_PATH`] ?? resolve(socketRoot, `resident-${slug}.sock`));
     if (socketPath === socketRoot || !socketPath.startsWith(`${socketRoot}/`) || socketPath.includes("\0")) throw new Error(`HOME23_COORDINATION_RESIDENT_${upper}_SOCKET_PATH must remain inside the dedicated socket root`);
     const serverInstanceId = environment[`HOME23_COORDINATION_RESIDENT_${upper}_SERVER_INSTANCE_ID`] ?? `home23-${slug}-harness`;
@@ -236,6 +253,7 @@ export function loadCoordinationRuntimeConfig(
     ...(pushEnabled
       ? { push: Object.freeze({ enabled: true, registryPath: pushRegistryPath, apns }) }
       : {}),
+    home,
     residents: Object.freeze(residents),
     flags: Object.freeze(flags),
   });

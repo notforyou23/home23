@@ -12,11 +12,35 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import yaml from 'js-yaml';
 
 export const SHARED_SERVICES = Object.freeze([
   Object.freeze({ name: 'home23-evobrew', label: 'Evobrew' }),
   Object.freeze({ name: 'home23-screenlogic', label: 'ScreenLogic bridge' }),
 ]);
+
+export const COORDINATION_SERVICE = Object.freeze({ name: 'home23-coordination', label: 'Home23 Core' });
+export const ALL_SHARED_SERVICES = Object.freeze([COORDINATION_SERVICE, ...SHARED_SERVICES]);
+
+/** Canonical Core is a shared dependency only for homes that enabled it.
+ * Merely having a disabled shadow definition in the ecosystem is not intent
+ * to start it. Existing explicit `services` overrides retain their scope. */
+export function configuredSharedServices(home23Root) {
+  let homeConfig = {};
+  try {
+    homeConfig = yaml.load(readFileSync(join(home23Root, 'config', 'home.yaml'), 'utf8')) || {};
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  // ScreenLogic is an optional house integration. Fresh installs explicitly
+  // disable it and may not have its Python dependencies; that must not block
+  // the resident. An absent setting preserves legacy startup behavior.
+  const services = SHARED_SERVICES.filter((service) =>
+    service.name !== 'home23-screenlogic' || homeConfig.screenlogic?.enabled !== false);
+  return homeConfig.coordination?.process?.enabled === true
+    ? [COORDINATION_SERVICE, ...services]
+    : services;
+}
 
 const LOCK_SCHEMA = 'home23.shared-service-start.lock.v1';
 const RECEIPT_SCHEMA = 'home23.shared-service-start.receipt.v1';
@@ -195,7 +219,7 @@ export async function coordinateSharedServiceStartup(options) {
       staleLocksRecovered: lock.staleLocksRecovered,
     };
 
-    for (const service of options.services || SHARED_SERVICES) {
+    for (const service of options.services || configuredSharedServices(home23Root)) {
       const before = exactRecords(await dependencies.listProcesses(), service.name);
       if (before.length > 1) {
         const message = `Duplicate PM2 records for ${service.name}`;

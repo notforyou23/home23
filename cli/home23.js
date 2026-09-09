@@ -29,7 +29,8 @@ Home23 — Installable AI operating system
 Commands:
   init                    First-time setup (deps, build, plumbing)
   setup                   Web guided first run
-  setup --cli             Terminal guided first run (init + personal agent)
+  setup --cli             Terminal guided first run (init + personal home)
+  home create <file.json>  Prepare or resume a new home from a saved profile
   start [name]            Start agent(s) via PM2
   stop [name]             Stop agent(s) via PM2
   worker create <name>    Create a reusable worker without a full engine
@@ -56,6 +57,12 @@ Commands:
   } else if (command === 'setup') {
     const { runSetup } = await import('./lib/setup.js');
     await runSetup(HOME23_ROOT, { mode: args.includes('--cli') ? 'cli' : 'web' });
+  } else if (command === 'home' && subcommand === 'create') {
+    if (!args[2]) throw new Error('Usage: home23 home create <file.json>');
+    const { readFileSync } = await import('node:fs');
+    const { createHome } = await import('./lib/create-home.js');
+    const receipt = await createHome(HOME23_ROOT, JSON.parse(readFileSync(resolve(args[2]), 'utf8')));
+    console.log(JSON.stringify(receipt, null, 2));
   } else if (command === 'agent' && subcommand === 'create') {
     const name = args[2];
     if (!name) {

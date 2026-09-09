@@ -4,12 +4,11 @@
  * Runs install plumbing, then opens the browser-based first-run surface.
  */
 
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { runInit } from './init.js';
-import { runAgentCreate } from './agent-create.js';
 import { askWithDefault, closeRL } from './prompts.js';
 
 function discoverAgents(home23Root) {
@@ -130,6 +129,17 @@ export async function runSetup(home23Root, options = {}) {
     return;
   }
 
+  const journalPath = join(home23Root, 'instances', '.house', 'creation.json');
+  if (existsSync(journalPath)) {
+    const journal = JSON.parse(readFileSync(journalPath, 'utf8'));
+    if (journal.status !== 'prepared') {
+      const { createHome } = await import('./create-home.js');
+      const receipt = await createHome(home23Root, journal.profile);
+      console.log(`Home prepared. Start: ${receipt.next.command}`);
+      return;
+    }
+  }
+
   if (agents.length > 0) {
     console.log('');
     console.log('An agent already exists. Start Home23 with:');
@@ -146,10 +156,12 @@ export async function runSetup(home23Root, options = {}) {
     console.log(`  Using safe agent name: ${name}`);
   }
 
-  await runAgentCreate(home23Root, name);
+  const { runAgentCreate } = await import('./agent-create.js');
+  const receipt = await runAgentCreate(home23Root, name, { freshHome: true });
+  console.log(`Home prepared: ${receipt.home.name}. App API: ${receipt.connection.localURL}`);
   closeRL();
 
-  console.log('Guided setup complete.');
+  console.log('Home prepared. Start it to connect and chat.');
   console.log('');
   console.log(`  Start: node cli/home23.js start ${name}`);
   console.log('  Open:  http://localhost:5002/home23');

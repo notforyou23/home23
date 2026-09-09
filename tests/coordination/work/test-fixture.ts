@@ -1,3 +1,4 @@
+import { EVENT_RETENTION_COUNT_MIGRATION_SQL } from "../../../src/coordination/migrations/0015-event-retention-count.js";
 import { PLANNED_INVOCATIONS_MIGRATION_SQL } from "../../../src/coordination/migrations/0013-planned-invocations.js";
 import { mkdtempSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -68,6 +69,7 @@ export class M11TestDatabase {
       this.raw.exec(WORK_TURN_SELECTION_MIGRATION_SQL);
       this.raw.exec(WORK_THREAD_PRESENTATION_MIGRATION_SQL);
       this.raw.exec(PLANNED_INVOCATIONS_MIGRATION_SQL);
+      this.raw.exec(EVENT_RETENTION_COUNT_MIGRATION_SQL);
       if (applyArtifactAudioMigration) {
         this.raw.transaction(() => this.raw.exec(ARTIFACT_AUDIO_MPEG_MIGRATION_SQL))();
       }

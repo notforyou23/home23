@@ -9,6 +9,7 @@
  *                         via Home23's provider transport; 'file' = broker
  *                         exchange (credential-free hosts); unset = none
  *   SEED_LOBE_MODEL     — model for SEED_LOBE=model (default claude-haiku-4-5)
+ *   SEED_LOBE_PROVIDER  — explicit provider for that model; inferred if absent
  *   SEED_LOBE_EXCHANGE  — exchange dir for SEED_LOBE=file (required for it)
  *   SEED_LOBE_MIN_INTERVAL_MS — resident spend guard (default 600000 = 10 min)
  *   SEED_LOBE_TIMEOUT_MS — runner-side recruitment cap (default 60000 for
@@ -79,12 +80,13 @@ async function buildLobe(): Promise<LobeAdapter | undefined> {
     // itself never links against it — this seam is the membrane's edge.
     const transportModulePath = new URL('../../src/substrate/lobe-transport.ts', import.meta.url).href;
     const mod = (await import(transportModulePath)) as {
-      createSeedLobeTransport: (opts: { model: string; timeoutMs?: number }) => (prompt: string) => Promise<{
+      createSeedLobeTransport: (opts: { model: string; provider?: string; timeoutMs?: number }) => (prompt: string) => Promise<{
         text: string;
         modelReceipt: { modelId: string; provider: string; invokedAt: string; durationMs: number; tokensIn: number; tokensOut: number };
       }>;
     };
-    const transport = mod.createSeedLobeTransport({ model, timeoutMs: Math.max(lobeTimeoutMs - 5_000, 5_000) });
+    const provider = process.env['SEED_LOBE_PROVIDER'] || undefined;
+    const transport = mod.createSeedLobeTransport({ model, provider, timeoutMs: Math.max(lobeTimeoutMs - 5_000, 5_000) });
     return new ModelLobe(`lobe.model.${model}`, model, 'home23.providers', (prompt) => transport(prompt));
   }
   return undefined;

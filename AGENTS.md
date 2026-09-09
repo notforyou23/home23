@@ -63,7 +63,7 @@ A new user should be able to run:
 node cli/home23.js setup
 ```
 
-`setup` seeds local config from `config/*.example`, starts the web-guided first-run page, and walks the user through provider setup, first-agent creation, owner/user facts, purpose, starter project/import folders, model choice, and launch. The resulting agent is marked as `home.primaryAgent`, and `ecosystem.config.cjs` is regenerated.
+`setup` seeds local config from `config/*.example`, starts the web-guided first-run page, and walks the user through provider setup, first-agent creation, owner/user facts, purpose, starter project/import folders, model choice, and launch. The shared first-home operation prepares an independent Seed, canonical home/conversation, and resident credentials; the resident is marked as `home.primaryAgent`, and `ecosystem.config.cjs` is regenerated. Preparation is resumable and is distinct from startup. See [HOME-BIRTH.md](docs/design/HOME-BIRTH.md).
 
 The terminal-guided fallback is:
 
@@ -75,7 +75,7 @@ For scripted/manual setup, the equivalent lower-level flow is:
 
 ```bash
 node cli/home23.js init
-node cli/home23.js agent create <name>
+node cli/home23.js home create /path/to/profile.json
 node cli/home23.js start <name>
 ```
 

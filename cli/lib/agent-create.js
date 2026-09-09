@@ -5,9 +5,10 @@
  * and regenerates ecosystem.config.cjs.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, linkSync, unlinkSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
 import { askWithDefault, askSecret, closeRL } from './prompts.js';
@@ -159,8 +160,7 @@ function projectSurface(today, ingestPaths = []) {
 }
 
 function parsePersonalFacts(input) {
-  return String(input || '')
-    .split(/\n/)
+  return (Array.isArray(input) ? input : String(input || '').split(/\n/))
     .map(line => line.replace(/^-+\s*/, '').trim())
     .filter(Boolean);
 }
@@ -191,13 +191,16 @@ export async function runAgentCreate(home23Root, name, options = {}) {
   const instanceDir = join(home23Root, 'instances', name);
   const home23Version = getHome23Version(home23Root);
   const prompt = options.prompt || {};
-  const promptWithDefault = prompt.askWithDefault || askWithDefault;
-  const promptSecret = prompt.askSecret || askSecret;
-  const closePrompts = prompt.close || closeRL;
+  const supplied = options.profile;
+  const answerKeys = ['displayName', 'ownerName', 'personalFacts', 'purpose', 'ingestPaths', 'ownerTelegramId', 'timezone', 'model', 'provider'];
+  const promptWithDefault = supplied
+    ? async (_question, fallback) => supplied[answerKeys.shift()] ?? fallback
+    : prompt.askWithDefault || askWithDefault;
+  const promptSecret = supplied ? async () => supplied.botToken || '' : prompt.askSecret || askSecret;
+  const closePrompts = supplied ? () => {} : prompt.close || closeRL;
 
   if (existsSync(instanceDir)) {
-    console.error(`Error: Instance "${name}" already exists at ${instanceDir}`);
-    process.exit(1);
+    if (!options.resumePrepared) throw new Error(`Instance "${name}" already exists at ${instanceDir}`);
   }
 
   // Find defaults from existing agents
@@ -244,7 +247,22 @@ export async function runAgentCreate(home23Root, name, options = {}) {
 
   closePrompts();
 
-  const ports = findNextPorts(home23Root);
+  if (options.freshHome) {
+    const { createHome } = await import('./create-home.js');
+    return createHome(home23Root, { name, displayName, ownerName, personalFacts, purpose,
+      ingestPaths: options.ingestPaths ?? ingestInput, ownerTelegramId, timezone, botToken,
+      model: defaultModel, provider: defaultProvider });
+  }
+
+  const ports = options.resumePrepared && existsSync(join(instanceDir, 'config.yaml'))
+    ? yaml.load(readFileSync(join(instanceDir, 'config.yaml'), 'utf8')).ports
+    : findNextPorts(home23Root);
+  const writeInstanceFile = (file, content, encoding) => {
+    if (options.resumePrepared && existsSync(file)) return;
+    const staged = `${file}.${randomUUID()}.tmp`;
+    writeFileSync(staged, content, { encoding: encoding || 'utf8', flag: 'wx', mode: 0o600 });
+    try { linkSync(staged, file); } finally { unlinkSync(staged); }
+  };
   const ingestPaths = parseIngestPaths(options.ingestPaths ?? ingestInput);
 
   console.log('');
@@ -279,13 +297,13 @@ export async function runAgentCreate(home23Root, name, options = {}) {
     },
   });
 
-  writeFileSync(join(instanceDir, 'config.yaml'), yaml.dump(agentConfig, { lineWidth: 120 }), 'utf8');
+  writeInstanceFile(join(instanceDir, 'config.yaml'), yaml.dump(agentConfig, { lineWidth: 120 }), 'utf8');
   console.log(`  config.yaml    \u2713 (ports: ${ports.engine}/${ports.dashboard}/${ports.mcp}/${ports.bridge})`);
 
   // Write feeder.yaml
   const feederConfig = buildFeederConfig(name);
 
-  writeFileSync(join(instanceDir, 'feeder.yaml'), yaml.dump(feederConfig, { lineWidth: 120 }), 'utf8');
+  writeInstanceFile(join(instanceDir, 'feeder.yaml'), yaml.dump(feederConfig, { lineWidth: 120 }), 'utf8');
   console.log(`  feeder.yaml    \u2713`);
 
   // Write identity files from templates
@@ -293,7 +311,7 @@ export async function runAgentCreate(home23Root, name, options = {}) {
   for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md', 'NOW.md', 'PLAYBOOK.md']) {
     const template = loadTemplate(home23Root, file);
     const content = renderTemplate(template, templateVars);
-    writeFileSync(join(instanceDir, 'workspace', file), content, 'utf8');
+    writeInstanceFile(join(instanceDir, 'workspace', file), content, 'utf8');
     console.log(`  ${file.padEnd(16)} \u2713`);
   }
 
@@ -308,15 +326,15 @@ export async function runAgentCreate(home23Root, name, options = {}) {
   };
 
   for (const [file, content] of Object.entries(surfaces)) {
-    writeFileSync(join(instanceDir, 'workspace', file), content, 'utf8');
+    writeInstanceFile(join(instanceDir, 'workspace', file), content, 'utf8');
     console.log(`  ${file.padEnd(16)} \u2713 (surface)`);
   }
 
   // Write empty brain data files for Step 20
   mkdirSync(join(instanceDir, 'brain'), { recursive: true });
-  writeFileSync(join(instanceDir, 'brain', 'memory-objects.json'), JSON.stringify({ objects: [] }, null, 2));
-  writeFileSync(join(instanceDir, 'brain', 'problem-threads.json'), JSON.stringify({ threads: [] }, null, 2));
-  writeFileSync(join(instanceDir, 'brain', 'trigger-index.json'), JSON.stringify({ triggers: [] }, null, 2));
+  writeInstanceFile(join(instanceDir, 'brain', 'memory-objects.json'), JSON.stringify({ objects: [] }, null, 2));
+  writeInstanceFile(join(instanceDir, 'brain', 'problem-threads.json'), JSON.stringify({ threads: [] }, null, 2));
+  writeInstanceFile(join(instanceDir, 'brain', 'trigger-index.json'), JSON.stringify({ triggers: [] }, null, 2));
   console.log(`  brain data     \u2713 (memory objects, threads, triggers)`);
 
   // Add bot token to secrets.yaml (if provided)
@@ -324,6 +342,8 @@ export async function runAgentCreate(home23Root, name, options = {}) {
     await addBotTokenToSecrets(home23Root, name, botToken);
     console.log(`  secrets.yaml   \u2713 (bot token added)`);
   }
+
+  if (options.prepareOnly) return { name, ports, instanceDir, ingestPaths };
 
   const primaryAgent = ensurePrimaryAgent(home23Root, name, existingAgentNames);
   if (primaryAgent) {

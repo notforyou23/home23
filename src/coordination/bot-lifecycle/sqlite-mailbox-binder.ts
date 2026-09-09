@@ -28,7 +28,6 @@ function assertLifecycleActor(reader: Pick<CoordinationDatabase, 'readOne'>, inp
 
 const RESIDENT = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const PROCESSLESS_CAPABILITIES = Object.freeze(["messages"] as const);
-const PERMANENT_RESIDENT_BINDINGS = new Set(["jerry", "forrest"]);
 
 interface BotRow {
   id: string;
@@ -172,8 +171,7 @@ export class SqlitePersistentMailboxBinder implements PersistentMailboxBinder {
     assertCoordinationId("correlation", input.correlationId);
     if (
       !RESIDENT.test(input.residentBinding) ||
-      !input.residentBinding.startsWith("bot-") ||
-      PERMANENT_RESIDENT_BINDINGS.has(input.residentBinding)
+      !input.residentBinding.startsWith("bot-")
     ) throw new BotLifecycleError("request_invalid");
     const displayName = canonicalText(input.displayName, 128);
     const purpose = canonicalText(input.purpose, 512);
@@ -489,7 +487,7 @@ export class SqlitePersistentMailboxBinder implements PersistentMailboxBinder {
     }
     const before = this.database.readOne<BotRow>(`${SELECT_BOT} WHERE id = ?`, input.botId);
     if (!before) throw new BotLifecycleError("bot_not_found");
-    if (PERMANENT_RESIDENT_BINDINGS.has(before.residentBinding)) {
+    if (!before.residentBinding.startsWith("bot-")) {
       throw new BotLifecycleError("permanent_resident_protected");
     }
     this.assertDurableDirectBinding(before);

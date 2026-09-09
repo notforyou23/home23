@@ -135,3 +135,22 @@ test("attachment admission is an independent confined runtime switch", (t) => {
   assert.equal(config.attachments?.maximumCountPerMessage, 10);
   assert.match(config.attachments?.rootDirectory ?? "", /coordination\/attachments$/);
 });
+
+test("an arbitrary primary resident uses explicit authenticated runtime configuration", t => {
+  const input = fixture(true);
+  t.after(() => rmSync(input.root, { recursive: true, force: true }));
+  const environment = { ...input.environment,
+    HOME23_COORDINATION_RESIDENT_SLUGS: '["milo-river"]', HOME23_COORDINATION_PRIMARY_RESIDENT: "milo-river",
+    HOME23_COORDINATION_HOME_ID: "home_0198d95f-6c00-7000-8000-000000000001", HOME23_COORDINATION_HOME_NAME: "River Home",
+    HOME23_COORDINATION_RESIDENT_MILO_RIVER_ENABLED: "true", HOME23_COORDINATION_RESIDENT_MILO_RIVER_KEY: "a".repeat(64),
+  };
+  const configured = loadCoordinationRuntimeConfig(environment);
+  assert.deepEqual(Object.keys(configured.residents), ["milo-river"]);
+  assert.equal(configured.residents["milo-river"]?.enabled, true);
+  assert.equal(configured.home?.primaryResident, "milo-river");
+  assert.equal(configured.home?.name, "River Home");
+  assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_RESIDENT_MILO_RIVER_KEY: "" }), /32 bytes of hex/);
+  assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_PRIMARY_RESIDENT: "another" }), /not configured/);
+  assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_RESIDENT_SLUGS: '["bot-helper"]' }), /slugs are invalid/);
+  assert.equal(loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_ENABLED: "false" }).residents["milo-river"]?.enabled, false);
+});

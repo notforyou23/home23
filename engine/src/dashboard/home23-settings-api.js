@@ -24,6 +24,7 @@ const {
   resolveAgentInstancePaths,
 } = require('../../../shared/agent-instance-paths.cjs');
 const { buildHome23ModelAuthority } = require('./home23-model-catalog.js');
+const { assertHomeCreationReady } = require('../../../shared/home-creation-state.cjs');
 
 // Interactive OAuth proxies block on a human at a browser. This must stay
 // greater than cosmo23's CALLBACK_TIMEOUT_MS (cosmo23/lib/oauth-codex.cjs) so
@@ -255,6 +256,14 @@ function createSettingsRouter(home23Root, options = {}) {
     } catch {
       return null;
     }
+  }
+
+  function effectiveEngineConfigPath(agentName) {
+    const paths = resolveAgentPaths(agentName, { requireConfig: true });
+    const config = paths ? loadYaml(paths.configPath) : {};
+    return config.system?.engineConfig
+      ? path.resolve(paths.instanceRoot, config.system.engineConfig)
+      : path.join(home23Root, 'configs', 'base-engine.yaml');
   }
 
   function chooseFallbackPrimaryAgent(agentNames = discoverAgents()) {
@@ -1082,8 +1091,34 @@ function createSettingsRouter(home23Root, options = {}) {
     }
   }
 
+  function readHomeCreation() {
+    const file = path.join(home23Root, 'instances', '.house', 'creation.json');
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+  }
+
+  router.get('/home/creation', (req, res) => {
+    try {
+      const journal = readHomeCreation();
+      res.json(journal ? { status: journal.status, home: journal.home, agentName: journal.profile.name, step: journal.step }
+        : { status: 'absent' });
+    } catch (error) { res.status(409).json({ status: 'unreadable', error: error.message }); }
+  });
+
+  router.post('/home/creation/resume', async (req, res) => {
+    try {
+      const journal = readHomeCreation();
+      if (!journal) return res.status(404).json({ error: 'No home setup to resume.' });
+      const ready = assertSelectedChatProviderReady(journal.profile.provider, journal.profile.model);
+      if (!ready.ok) return res.status(400).json({ error: ready.error });
+      const { createHome } = await import('../../../cli/lib/create-home.js');
+      const receipt = await createHome(home23Root, journal.profile);
+      res.json({ ok: true, preparation: receipt, agent: receipt.agent });
+    } catch (error) { res.status(409).json({ error: error.message }); }
+  });
+
   router.get('/agents', (req, res) => {
-    const primary = getPrimaryAgent({ autoHeal: true });
+    const creation = readHomeCreation();
+    const primary = getPrimaryAgent({ autoHeal: !creation || creation.status === 'prepared' });
     const currentAgent = getCurrentDashboardAgent();
     const secretsForDisplay = loadYaml(path.join(home23Root, 'config', 'secrets.yaml'));
     const agents = discoverAgents().map(name => {
@@ -1259,6 +1294,21 @@ function createSettingsRouter(home23Root, options = {}) {
     }
 
     const instanceDir = path.join(home23Root, 'instances', name);
+    let creation;
+    try { creation = readHomeCreation(); }
+    catch (error) { return res.status(409).json({ ok: false, error: 'Home creation receipt is unreadable. Restore it before continuing setup.' }); }
+    const isNewHome = discoverAgents().length === 0 || creation?.profile?.name === name;
+    if (isNewHome) {
+      const ready = assertSelectedChatProviderReady(provider, model);
+      if (!ready.ok) return res.status(400).json({ error: ready.error });
+      try {
+        const { createHome } = await import('../../../cli/lib/create-home.js');
+        const receipt = await createHome(home23Root, req.body);
+        return res.json({ ok: true, agent: receipt.agent, home: receipt.home, preparation: receipt });
+      } catch (err) {
+        return res.status(409).json({ ok: false, error: err.message });
+      }
+    }
     if (fs.existsSync(instanceDir)) {
       return res.status(409).json({ error: `Agent "${name}" already exists` });
     }
@@ -1549,9 +1599,10 @@ function createSettingsRouter(home23Root, options = {}) {
     res.json({ ok: true });
   });
 
-  router.post('/agents/:name/start', (req, res) => {
+  router.post('/agents/:name/start', async (req, res) => {
     const agentName = req.params.name;
     try {
+      assertHomeCreationReady(home23Root);
       assertAgentInstanceStorageReady(
         resolveAgentInstancePaths(home23Root, agentName, { requireConfig: true }),
       );
@@ -1561,16 +1612,17 @@ function createSettingsRouter(home23Root, options = {}) {
     }
 
     try {
-      const { execSync } = require('child_process');
       const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
+      const { coordinateSharedServiceStartup } = await import('../../../cli/lib/shared-service-start.js');
+      await coordinateSharedServiceStartup({ home23Root });
       // Config-conditional processes (-mcp, -seed) included; filtered to what
       // the generated ecosystem declares so --only never names a missing app.
       const names = filterNamesByEcosystem(
         agentProcessNames({ home23Root, agentName }),
         ecosystemPath,
       );
-      execSync(`pm2 start ${ecosystemPath} --only ${names.join(',')} --update-env --silent`, { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 30000 });
-      res.json({ ok: true, status: 'running' });
+      require('node:child_process').execFileSync('pm2', ['start', ecosystemPath, '--only', names.join(','), '--update-env', '--silent'], { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 30000 });
+      res.json({ ok: true, status: 'starting' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -1759,7 +1811,7 @@ function createSettingsRouter(home23Root, options = {}) {
           // lives in base-engine.yaml providers, and config-loader skips any
           // override that doesn't resolve there (2026-08-11 audit — jerry's
           // gpt-5.6-luna roles were accepted here and ignored for months).
-          const bePath = path.join(home23Root, 'configs', 'base-engine.yaml');
+          const bePath = effectiveEngineConfigPath(targetAgent);
           let beProviders = {};
           try { beProviders = (loadYaml(bePath) || {}).providers || {}; } catch { beProviders = {}; }
           // Providers UnifiedClient routes at CALL time need no base-engine
@@ -1785,7 +1837,7 @@ function createSettingsRouter(home23Root, options = {}) {
               const enabledNames = Object.keys(beProviders).filter(beEnabled).join(', ') || '(none)';
               return res.status(400).json({
                 ok: false,
-                error: `Engine role "${role}" model "${roleModel}" does not resolve to a provider enabled in base-engine.yaml — the engine would silently ignore it. Engine-enabled providers: ${enabledNames}.`,
+                error: `Engine role "${role}" model "${roleModel}" does not resolve to a provider enabled in this agent's engine configuration — the engine would silently ignore it. Engine-enabled providers: ${enabledNames}.`,
               });
             }
           }
@@ -1976,7 +2028,7 @@ function createSettingsRouter(home23Root, options = {}) {
 
   router.get('/model-assignments', (req, res) => {
     const homeConfig = loadYaml(path.join(home23Root, 'config', 'home.yaml'));
-    const baseEnginePath = path.join(home23Root, 'configs', 'base-engine.yaml');
+    const baseEnginePath = effectiveEngineConfigPath(resolveRequestedAgent(req.query.agent));
     const baseEngine = loadYaml(baseEnginePath);
     const baseAssignments = baseEngine.modelAssignments || {};
 
@@ -2042,7 +2094,7 @@ function createSettingsRouter(home23Root, options = {}) {
     const agentConfig = loadYaml(configPath);
 
     // Only persist keys that actually differ from base — keeps config clean
-    const baseEngine = loadYaml(path.join(home23Root, 'configs', 'base-engine.yaml'));
+    const baseEngine = loadYaml(effectiveEngineConfigPath(targetAgent));
     const base = baseEngine.modelAssignments || {};
 
     const overrides = {};
@@ -2101,7 +2153,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     // (merged with base-engine default). Read systemPrompt from the selected
     // agent config.
     const homeConfig = loadHomeConfig();
-    const baseEngine = loadYaml(path.join(home23Root, 'configs', 'base-engine.yaml'));
+    const baseEngine = loadYaml(effectiveEngineConfigPath(resolveRequestedAgent(req.query.agent)));
     const basePulse = baseEngine?.modelAssignments?.pulseVoice || {};
 
     const targetAgent = resolveRequestedAgent(req.query.agent);
@@ -2656,8 +2708,6 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   // Some fields hot-apply via the engine's /admin/feeder/* routes; others
   // require that specific agent's engine to restart.
 
-  const BASE_ENGINE_PATH = path.join(home23Root, 'configs', 'base-engine.yaml');
-
   const FEEDER_DEFAULTS = {
     enabled: true,
     additionalWatchPaths: [],
@@ -2704,7 +2754,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     if (!targetAgent) {
       return res.status(400).json({ ok: false, error: 'No target agent selected' });
     }
-    const baseEngine = loadYaml(BASE_ENGINE_PATH);
+    const baseEngine = loadYaml(effectiveEngineConfigPath(targetAgent));
     const agentPaths = resolveAgentPaths(targetAgent, { requireConfig: true });
     if (!agentPaths) {
       return res.status(404).json({ ok: false, error: 'Agent not found' });
@@ -2737,7 +2787,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       feeder,
       autoWatchPaths,
       configPath: agentConfigPath,
-      inheritedFrom: BASE_ENGINE_PATH,
+      inheritedFrom: effectiveEngineConfigPath(targetAgent),
     });
   });
 
@@ -2752,7 +2802,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       return res.status(400).json({ ok: false, error: 'No target agent selected' });
     }
 
-    const baseEngine = loadYaml(BASE_ENGINE_PATH);
+    const baseEngine = loadYaml(effectiveEngineConfigPath(targetAgent));
     const agentConfigPath = resolveAgentPaths(targetAgent, { requireConfig: true })?.configPath;
     if (!agentConfigPath) {
       return res.status(404).json({ ok: false, error: 'Agent not found' });

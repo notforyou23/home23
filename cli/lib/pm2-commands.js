@@ -10,12 +10,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { ensureSystemHealth } from './system-health.js';
 import {
-  SHARED_SERVICES,
+  ALL_SHARED_SERVICES,
   coordinateSharedServiceStartup,
   startEcosystemProcesses,
 } from './shared-service-start.js';
 
 const require = createRequire(import.meta.url);
+const { assertHomeCreationReady } = require('../../shared/home-creation-state.cjs');
 const {
   agentProcessNames,
   agentProcessNameCandidates,
@@ -28,9 +29,9 @@ const {
 } = require('../../shared/agent-instance-paths.cjs');
 
 const SHARED_SERVICE_LABELS = new Map(
-  SHARED_SERVICES.map((service) => [service.name, service.label]),
+  ALL_SHARED_SERVICES.map((service) => [service.name, service.label]),
 );
-const SHARED_SERVICE_NAMES = new Set(SHARED_SERVICES.map((service) => service.name));
+const SHARED_SERVICE_NAMES = new Set(ALL_SHARED_SERVICES.map((service) => service.name));
 const AUTOSTART_SUPPORT_PROCESS_NAMES = Object.freeze(['home23-chrome-cdp']);
 
 function exec(cmd, opts = {}) {
@@ -122,6 +123,8 @@ export async function runStart(home23Root, agentName) {
     process.exit(1);
   }
 
+  assertHomeCreationReady(home23Root);
+
   // Build TypeScript first
   console.log('Building TypeScript...');
   try {
@@ -141,6 +144,7 @@ export async function runStart(home23Root, agentName) {
     process.exit(1);
   }
 
+  let names;
   if (agentName) {
     let instancePaths;
     try {
@@ -158,20 +162,12 @@ export async function runStart(home23Root, agentName) {
       process.exit(1);
     }
 
-    // Start specific agent's processes — config-conditional processes
-    // (-mcp, -seed) included, filtered to what the generated ecosystem
-    // actually declares so `pm2 start --only` never names a missing app.
-    const names = filterNamesByEcosystem(
+    // Select this agent's processes, including its Seed and life feeds,
+    // filtered to the ecosystem so `pm2 start --only` never names a missing app.
+    names = filterNamesByEcosystem(
       agentProcessNames({ home23Root, agentName }),
       ecosystemPath,
     );
-    console.log(`Starting ${agentName}...`);
-    try {
-      startEcosystemProcesses({ home23Root, names, stdio: 'inherit' });
-    } catch (err) {
-      console.error(`Failed to start ${agentName}: ${err.message}`);
-      process.exit(1);
-    }
   } else {
     const { blocked } = preflightAllAgentStorage(home23Root);
     const blockedNames = new Set(blocked.map((entry) => entry.agentName));
@@ -179,35 +175,30 @@ export async function runStart(home23Root, agentName) {
       console.warn(`Skipping ${entry.agentName}: ${entry.error.message}`);
     }
 
-    // Start all
-    console.log('Starting all agents...');
-    try {
-      const names = allNonSharedAutostartProcessNames(home23Root).filter((name) => {
-        for (const blockedAgent of blockedNames) {
-          const blockedProcessNames = new Set([
-            ...agentProcessNameCandidates(blockedAgent, home23Root),
-            `home23-${blockedAgent}-shipper`,
-            `home23-${blockedAgent}-house-sense`,
-          ]);
-          if (blockedProcessNames.has(name)) return false;
-        }
-        return true;
-      });
-      startEcosystemProcesses({
-        home23Root,
-        names: filterNamesByEcosystem(names, ecosystemPath),
-        stdio: 'inherit',
-      });
-    } catch (err) {
-      console.error(`Failed to start Home23: ${err.message}`);
-      process.exit(1);
-    }
+    names = allNonSharedAutostartProcessNames(home23Root).filter((name) => {
+      for (const blockedAgent of blockedNames) {
+        const blockedProcessNames = new Set(agentProcessNameCandidates(blockedAgent, home23Root));
+        if (blockedProcessNames.has(name)) return false;
+      }
+      return true;
+    });
+    names = filterNamesByEcosystem(names, ecosystemPath);
   }
 
   const sharedStartup = await coordinateSharedServiceStartup({ home23Root });
   for (const service of sharedStartup.services) {
     const label = SHARED_SERVICE_LABELS.get(service.name) || service.name;
     console.log(`  ${label}: ${service.action}`);
+  }
+
+  // Core must complete its shared startup before a canonical resident tries
+  // to bind to it. Starting one named agent needs this dependency as well.
+  console.log(agentName ? `Starting ${agentName}...` : 'Starting all agents...');
+  try {
+    startEcosystemProcesses({ home23Root, names, stdio: 'inherit' });
+  } catch (err) {
+    console.error(`Failed to start ${agentName || 'Home23'}: ${err.message}`);
+    process.exit(1);
   }
 
   // Find dashboard port for the URL

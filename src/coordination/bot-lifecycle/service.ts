@@ -14,7 +14,6 @@ import type {
 } from "./types.js";
 
 const SAFE_BINDING_CHARACTER = /[a-z0-9]/;
-const PERMANENT_RESIDENT_BINDINGS = new Set(["jerry", "forrest"]);
 
 function canonicalCreateFields(request: PersistentBotCreateRequest): {
   displayName: string;
@@ -274,7 +273,7 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
     } catch {
       throw new BotLifecycleError("invalid_durable_binding");
     }
-    if (PERMANENT_RESIDENT_BINDINGS.has(bot.residentBinding)) {
+    if (!bot.residentBinding.startsWith("bot-")) {
       throw new BotLifecycleError(
         "permanent_resident_protected",
         "Permanent house residents cannot be archived or restored",
