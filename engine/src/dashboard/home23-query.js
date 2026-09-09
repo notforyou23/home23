@@ -1122,7 +1122,7 @@ async function executeQueryStreaming(request, submitBtn, loadingDiv, resultDiv) 
       if (!row) return;
       const statusEl = row.querySelector('.pgs-sweep-status');
       if (statusEl) {
-        if (status === 'active') { statusEl.textContent = '◉'; statusEl.style.color = '#a78bfa'; }
+        if (status === 'active') { statusEl.textContent = '◉'; statusEl.style.color = 'var(--h23-signal, #6fb7ff)'; }
         else if (status === 'done') { statusEl.textContent = '✓'; statusEl.style.color = '#4ade80'; }
         else if (status === 'failed') { statusEl.textContent = '✗'; statusEl.style.color = '#f87171'; }
       }
@@ -2155,7 +2155,7 @@ function getQueryTabStyles() {
     font-size: 13px; color: var(--text-primary);
     cursor: pointer; min-height: 44px;
   }
-  .qt-pgs-label { color: #a78bfa; font-weight: 600; }
+  .qt-pgs-label { color: var(--h23-signal, #6fb7ff); font-weight: 600; }
   .qt-pgs-controls {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -2216,9 +2216,9 @@ function getQueryTabStyles() {
     gap: 5px;
     margin-top: 12px;
     padding: 10px 12px;
-    border: 1px solid rgba(167, 139, 250, 0.35);
+    border: 1px solid rgba(var(--h23-signal-rgb, 111, 183, 255), 0.35);
     border-radius: 8px;
-    background: rgba(167, 139, 250, 0.08);
+    background: rgba(var(--h23-signal-rgb, 111, 183, 255), 0.08);
     font-size: 12px;
   }
   .qt-operation-identity { margin-top: 8px; color: var(--text-secondary); font-size: 12px; }
@@ -2327,8 +2327,8 @@ function getQueryTabStyles() {
     font-size: 12px; color: var(--text-secondary);
   }
   .qt-pgs-meta {
-    background: rgba(167, 139, 250, 0.08);
-    border: 1px solid rgba(167, 139, 250, 0.2);
+    background: rgba(var(--h23-signal-rgb, 111, 183, 255), 0.08);
+    border: 1px solid rgba(var(--h23-signal-rgb, 111, 183, 255), 0.2);
     border-radius: 6px;
     padding: 10px 14px;
     margin-top: 12px;
@@ -2378,14 +2378,14 @@ function getQueryTabStyles() {
   .pgs-progress-panel {
     margin-bottom: 16px;
     padding: 16px;
-    background: rgba(167, 139, 250, 0.05);
-    border: 1px solid rgba(167, 139, 250, 0.15);
+    background: rgba(var(--h23-signal-rgb, 111, 183, 255), 0.05);
+    border: 1px solid rgba(var(--h23-signal-rgb, 111, 183, 255), 0.15);
     border-radius: 8px;
   }
   .pgs-status-row {
     display: flex; justify-content: space-between; align-items: center;
   }
-  .pgs-title { font-weight: 600; color: #a78bfa; }
+  .pgs-title { font-weight: 600; color: var(--h23-signal, #6fb7ff); }
   .pgs-timer { font-variant-numeric: tabular-nums; opacity: 0.6; font-size: 12px; }
   .pgs-status {
     font-size: 13px; color: var(--text-muted, var(--text-secondary));
@@ -2407,9 +2407,9 @@ function getQueryTabStyles() {
     transition: background 0.3s;
   }
   .pgs-phase-step.pgs-active {
-    background: rgba(167, 139, 250, 0.2); color: #a78bfa;
+    background: rgba(var(--h23-signal-rgb, 111, 183, 255), 0.2); color: var(--h23-signal, #6fb7ff);
   }
-  .pgs-phase-step.pgs-active .pgs-step-dot { background: #a78bfa; }
+  .pgs-phase-step.pgs-active .pgs-step-dot { background: var(--h23-signal, #6fb7ff); }
   .pgs-phase-step.pgs-done {
     background: rgba(74, 222, 128, 0.15); color: #4ade80;
   }

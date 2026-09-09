@@ -22,7 +22,7 @@ Worktree creation does not authorize spawning agents or starting extra tasks. Re
 
 Review the actual diff and run checks relevant to the change. Commit only task-owned changes. Integrate reviewed work into the maintained product line; retain original work and receipts until integration is established. Patch equivalence is useful evidence, but does not prove that ignored files, runtime state or uncommitted changes can be deleted.
 
-The intended destination is a reviewed main branch in each repository. Until the current branches are reconciled with GitHub main, use the live workspace status to identify the maintained branch; do not assume a branch named main is the current product. Record which commit has been pushed and which has only been committed locally. Pushing, publishing, production activation and installation require authorization covering those actions; reuse authorization already supplied for the task.
+Use local main as the reviewed integration baseline once it has been reconciled with the maintained product history. A shared checkout may remain on its existing task branch while another session is editing; compare it with local main before starting new work. Local main and GitHub origin/main can differ until an authorized push. Use the live workspace status and current Git ancestry rather than inferring source authority from a branch name. Record which commit has been pushed and which has only been committed locally. Pushing, publishing, production activation and installation require authorization covering those actions; reuse authorization already supplied for the task.
 
 ## Release and completion
 

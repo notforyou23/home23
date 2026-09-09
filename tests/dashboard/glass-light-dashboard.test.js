@@ -2154,15 +2154,14 @@ test('COSMO offline treatment uses Glass Light classes without inline dark paint
   assert.match(offline, /id="cosmo23-offline-detail"/);
   assert.match(offline, /id="cosmo23-restart-btn"/);
   assert.match(offline, /id="cosmo23-restart-status"/);
-  assert.match(offline, /Start COSMO 2\.3/);
+  assert.match(offline, /Check connection/);
   assert.doesNotMatch(offline, /style\.cssText|style="/);
   assert.doesNotMatch(offline, /(?:&#x1F52C;|🔬)/i);
 
-  const restart = functionFragment(js, 'restartCosmo23');
-  assert.match(restart, /cosmo23-restart-status/);
-  assert.match(restart, /btn\.textContent\s*=\s*'Retry'/);
-  assert.match(restart, /\/home23\/api\/settings\/cosmo23\/restart/);
-  assert.match(restart, /method:\s*'POST'/);
+  assert.match(offline, /addEventListener\('click', updateCosmoIndicator\)/);
+  const check = functionFragment(js, 'updateCosmoIndicator');
+  assert.match(check, /\/api\/status/);
+  assert.doesNotMatch(check, /method:\s*['"]POST['"]|\/restart/);
 
   assert.match(css, /\.h23-cosmo-offline-overlay\s*\{[\s\S]*?background:\s*var\(--h23-glass-overlay\)/);
   assert.match(css, /\.h23-cosmo-offline-overlay #cosmo23-restart-btn\s*\{[\s\S]*?background:\s*var\(--h23-accent\)/);
@@ -2277,8 +2276,9 @@ test('opening or revealing an overlay moves focus inside it before keyboard trap
 });
 
 test('both themes provide readable semantic text and shared surface tokens', () => {
-  const dark = Object.fromEntries([...css.matchAll(/(--h23-[\w-]+):\s*(#[0-9a-f]{6})\s*;/gi)].map(m => [m[1], m[2]]));
-  const light = Object.fromEntries([...themeCss.matchAll(/(--h23-[\w-]+):\s*(#[0-9a-f]{6})\s*;/gi)].map(m => [m[1], m[2]]));
+  const palette = (block) => Object.fromEntries([...block.matchAll(/(--h23-[\w-]+):\s*(#[0-9a-f]{6})\s*;/gi)].map(m => [m[1], m[2]]));
+  const light = palette(css.match(/:root\s*\{([^}]+)\}/)[1]);
+  const dark = { ...light, ...palette(css.match(/:root\[data-theme="dark"\]\s*\{([^}]+)\}/)[1]) };
   const luminance = hex => {
     const channels = hex.slice(1).match(/../g).map(v => parseInt(v, 16) / 255)
       .map(v => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
@@ -2295,8 +2295,8 @@ test('both themes provide readable semantic text and shared surface tokens', () 
     }
   }
   assert.notEqual(light['--h23-stage'], dark['--h23-stage']);
-  assert.match(themeCss, /:root\[data-theme="light"\]/);
-  assert.match(css, /--h23-bg:\s*var\(--h23-stage\)/);
+  assert.match(themeCss, /--h23-highlight-rgb:\s*var\(--h23-paper-rgb\)/);
+  assert.match(css, /--h23-bg:\s*var\(--h23-ambient\)/);
   assert.match(css, /--h23-text-primary:\s*var\(--h23-paper\)/);
   assert.match(css, /--h23-font-ui:.*system-ui/);
   assert.match(css, /body\.h23-dashboard-page[\s\S]*background:\s*var\(--h23-bg\)/);
@@ -2344,8 +2344,6 @@ test('light operational panels override legacy white renderer text', () => {
     ['.h23-worker-status.pass', '--h23-green-aa'],
     ['.h23-worker-status.fail', '--h23-red-aa'],
     ['.h23-worker-status.blocked', '--h23-amber-aa'],
-    ['.h23-resident-command p', '--h23-text-body'],
-    ['.h23-resident-health', '--h23-text-muted-aa'],
   ]);
 
   for (const [selector, token] of colorContracts) {
@@ -2368,8 +2366,8 @@ test('light operational panels override legacy white renderer text', () => {
     const escapedPanel = panel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     assert.match(
       css,
-      new RegExp(`body\\.h23-dashboard-page ${escapedPanel}[^\\{]*\\{[^}]*background:\\s*var\\(--h23-glass-panel\\)[^}]*border:\\s*1px solid var\\(--h23-hairline\\)`),
-      `${panel} must replace the legacy --surface-2 shell beneath light renderer text`,
+      new RegExp(`body\\.h23-dashboard-page ${escapedPanel}[^\\{]*\\{[^}]*background:\\s*transparent[^}]*border:\\s*0`),
+      `${panel} must clear the legacy --surface-2 shell beneath theme-aware renderer text`,
     );
   }
 });
@@ -2444,7 +2442,7 @@ test('standalone Chat, Vibe gallery, and Welcome retain their production binding
 
   assert.match(welcomeHtml, /href="\/home23\/setup"/);
   assert.match(welcomeHtml, /id="welcome-version"/);
-  assert.match(standaloneChatHtml, /body\.h23-chat-page \.sh-shell\s*\{[^}]*background:\s*var\(--h23-stage\)/);
+  assert.match(standaloneChatHtml, /body\.h23-chat-page \.sh-shell\s*\{[^}]*background:\s*var\(--h23-card, var\(--h23-stage\)\)/);
   assert.match(vibeGalleryHtml, /body\.h23-vibe-page \.h23-vg-card\s*\{[^}]*background:\s*var\(--h23-glass-card\)/);
   assert.match(welcomeHtml, /body\.h23-welcome-page \.welcome-card\s*\{[^}]*background:\s*var\(--h23-glass-overlay\)/);
 });

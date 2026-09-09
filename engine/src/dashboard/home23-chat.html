@@ -11,9 +11,11 @@
   <meta name="format-detection" content="telephone=no">
   <script src="/home23-theme.js"></script>
   <title>Home23 — Chat</title>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/home23-dashboard.css?v=20260820-chat-glass">
-  <link rel="stylesheet" href="/home23-chat.css?v=20260820-thought-turn-2">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/home23-dashboard.css">
+  <link rel="stylesheet" href="/home23-chat.css">
   <style>
     /* ── Standalone /chat page — mobile-first, scales up ── */
 
@@ -33,7 +35,7 @@
     }
 
     body {
-      background: var(--h23-stage, #0a0908);
+      background: var(--h23-bg, var(--h23-stage, #0a0908));
     }
 
     #particles-js {
@@ -479,7 +481,7 @@
     }
 
     body.h23-chat-page .sh-shell {
-      background: var(--h23-stage);
+      background: var(--h23-card, var(--h23-stage));
       box-shadow: none;
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
@@ -488,7 +490,7 @@
     body.h23-chat-page .sh-header,
     body.h23-chat-page .sh-input-bar {
       border-color: var(--h23-hairline-7);
-      background: var(--h23-stage);
+      background: var(--h23-card, var(--h23-stage));
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
     }
@@ -530,7 +532,7 @@
 
     body.h23-chat-page .sh-send-btn {
       background: var(--h23-signal);
-      color: var(--h23-ink);
+      color: transparent;
       box-shadow: none;
     }
 

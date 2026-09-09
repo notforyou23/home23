@@ -12,7 +12,7 @@
       button.setAttribute('aria-label', `Switch to ${next} theme`);
     });
     document.querySelector('meta[name="theme-color"]')?.setAttribute(
-      'content', theme === 'light' ? '#f3f5f8' : '#0a0908',
+      'content', theme === 'light' ? '#f4f0e8' : '#0e1222',
     );
   }
   let initial = 'light';

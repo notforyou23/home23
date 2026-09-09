@@ -1,41 +1,12 @@
-/* Shared appearance. House tokens remain the source for existing components. */
+/* Appearance controls share the dashboard Paper/Midnight palette.
+   Keep compatibility channels derived from that palette, never a second set
+   of colors that can mix light surfaces with dark text (or the reverse). */
 :root {
-  color-scheme: dark;
-  --h23-surface-rgb: 30, 26, 24;
-  --h23-paper-rgb: 242, 236, 226;
-  --h23-signal-rgb: 142, 207, 232;
-  --h23-highlight-rgb: 255, 255, 255;
+  --h23-surface-rgb: 247, 244, 238;
+  --h23-highlight-rgb: var(--h23-paper-rgb);
 }
-
-:root[data-theme="light"] {
-  color-scheme: light;
-  --h23-stage: #f3f5f8;
-  --h23-stage-deep: #e8edf3;
-  --h23-raised: #ffffff;
-  --h23-surface: #ffffff;
-  --h23-surface-rgb: 255, 255, 255;
-  --h23-paper: #202b3c;
-  --h23-paper-soft: #4e5c70;
-  --h23-paper-faint: #5d6a7c;
-  --h23-paper-rgb: 32, 43, 60;
-  --h23-highlight-rgb: 32, 43, 60;
-  --h23-signal: #245db5;
-  --h23-signal-rgb: 36, 93, 181;
-  --h23-leonardo-ice: #1c4e9b;
-  --h23-florence-amber: #855414;
-  --h23-warm: #855414;
-  --h23-grow: #247348;
-  --h23-ember: #b13b32;
-  --h23-ink: #ffffff;
-  --h23-lamplight: none;
-  --h23-glass-card: #ffffff;
-  --h23-glass-panel: #ffffff;
-  --h23-glass-input: #ffffff;
-  --h23-hover-card: #f7f9fc;
-  --h23-shadow-card: 0 2px 8px rgba(32, 43, 60, 0.04);
-  --h23-shadow-panel: 0 3px 12px rgba(32, 43, 60, 0.05);
-  --h23-shadow-overlay: 0 24px 80px rgba(32, 43, 60, 0.2);
-  --h23-overlay-backdrop: rgba(32, 43, 60, 0.3);
+:root[data-theme="dark"] {
+  --h23-surface-rgb: 28, 34, 57;
 }
 
 .h23-theme-toggle {
