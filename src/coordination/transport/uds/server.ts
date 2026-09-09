@@ -19,6 +19,7 @@ import {
 } from "../../resident-protocol/index.js";
 import { prepareUnixSocketPath, type PreparedUnixSocketPath } from "./path.js";
 import { NonceReplayCache } from "./replay-cache.js";
+import { WorkError } from "../../work/errors.js";
 
 const HANDSHAKE_METHOD = "HELLO";
 const HANDSHAKE_PATH = "/internal/v1/session";
@@ -88,6 +89,9 @@ function randomNonce(): string {
 
 function safeError(error: unknown): ResidentProtocolError {
   if (error instanceof ResidentProtocolError) return error;
+  if (error instanceof WorkError && error.code === "invalid_request") {
+    return new ResidentProtocolError("request_invalid", error.message);
+  }
   return new ResidentProtocolError("internal_error", "resident request failed", { retryable: true });
 }
 

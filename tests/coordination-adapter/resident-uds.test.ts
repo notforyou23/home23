@@ -94,6 +94,7 @@ test("resident completion sender retries transient coordinator loss before ackno
 test("resident start renews transient connection attempts while the harness comes online", async () => {
   let startAttempts = 0;
   let eventAttempts = 0;
+  let resultAttempts = 0;
   let returnUnknownMime = false;
   const client = {
     async request(input: { path: string }) {
@@ -111,7 +112,7 @@ test("resident start renews transient connection attempts while the harness come
       if (input.path.endsWith("/events")) {
         eventAttempts += 1;
         if (eventAttempts === 1) {
-          throw new ResidentProtocolError("request_rate_limited", "replay pacing window", { retryable: true });
+          throw new ResidentProtocolError("capability_expired", "signed replay read expired");
         }
         return { payload: {
           turnId: "coord-wrk_0198d95f-6c00-7000-8000-0000000000e1",
@@ -127,6 +128,10 @@ test("resident start renews transient connection attempts while the harness come
             errorMessage: null,
           },
         } };
+      }
+      resultAttempts += 1;
+      if (resultAttempts === 1) {
+        throw new ResidentProtocolError("capability_expired", "signed result read expired");
       }
       return { payload: {
         text: "started after retry",
@@ -179,7 +184,8 @@ test("resident start renews transient connection attempts while the harness come
 
   assert.equal((await started.response).text, "started after retry");
   assert.equal(startAttempts, 3);
-  assert.equal(eventAttempts, 2, "durable event replay must renew transient signed reads");
+  assert.equal(eventAttempts, 2, "durable event replay must renew an expired signed read");
+  assert.equal(resultAttempts, 2, "durable result retrieval must renew an expired signed read");
   returnUnknownMime = true;
   const invalid = await port.runWithTurn("coordination:test:startup", "wait for the harness", options);
   await assert.rejects(

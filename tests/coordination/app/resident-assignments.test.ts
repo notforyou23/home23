@@ -9,6 +9,7 @@ import { projectResidentWork } from '../../../src/coordination/app/resident-work
 import { createForegroundDetachmentConsumer } from '../../../src/coordination/app/foreground-detachments.js';
 import { createWorkService } from '../../../src/coordination/work/service.js';
 import { createLeaseService } from '../../../src/coordination/leases/index.js';
+import { WorkError } from '../../../src/coordination/work/errors.js';
 import { RESIDENT_OUTCOMES_MIGRATION_SQL } from '../../../src/coordination/migrations/0014-resident-outcomes.js';
 import { AT, BOT_ID, CHANNEL_ID, MESSAGE_ID, OWNER_ID, M11TestDatabase, createFixtureIdGenerator, fixtureId, manifestInput } from '../work/test-fixture.js';
 import type { CoordinationTurnOrigin } from '../../../src/agent/types.js';
@@ -67,6 +68,38 @@ test('execution termination remains an obligation until the resident records its
   assert.equal(f.assignments.list(BOT_ID, true)[0].assignmentState, 'complete');
   assert.throws(() => f.assignments.assertOpen(id), /complete/);
   assert.throws(() => f.assignments.report(f.context, f.origin, { work_id: id, state: 'active', summary: 'Another attempt' }, 'late-reopen'), /newer canonical owner request/);
+});
+
+test('blank optional revisit timestamps are omitted while invalid timestamps remain actionable', t => {
+  const f = fixture(t), id = f.admit('optional-revisit');
+  assert.equal(f.assignments.report(f.context, f.origin, {
+    work_id: id, state: 'active', summary: 'Still working', revisit_at: '',
+  }, 'active-blank').revisitAt, null);
+  assert.throws(() => f.assignments.report(f.context, f.origin, {
+    work_id: id, state: 'active', summary: 'Still working', revisit_at: 'tomorrow',
+  }, 'invalid-revisit'), (error: unknown) => error instanceof WorkError &&
+    error.code === 'invalid_request' && /ISO timestamp/.test(error.message));
+  assert.throws(() => f.assignments.report(f.context, f.origin, {
+    work_id: id, state: 'blocked', summary: 'Waited too long', revisit_at: '2020-01-01T00:00:00.000Z',
+  }, 'past-revisit'), (error: unknown) => error instanceof WorkError &&
+    error.code === 'invalid_request' && /future/.test(error.message));
+  f.cancel(id);
+  assert.equal(f.assignments.report(f.context, f.origin, {
+    work_id: id, state: 'blocked', summary: 'Waiting without a scheduled revisit', revisit_at: '   ',
+  }, 'blocked-blank').revisitAt, null);
+  assert.equal(f.assignments.report(f.context, f.origin, {
+    work_id: id, state: 'complete', summary: 'Inspected completion', evidence: ['receipt:verified'], revisit_at: '',
+  }, 'complete-blank').revisitAt, null);
+});
+
+test('malformed evidence is rejected as an actionable request error rather than fabricated completion', t => {
+  const f = fixture(t), id = f.admit('malformed-evidence');
+  f.cancel(id);
+  assert.throws(() => f.assignments.report(f.context, f.origin, {
+    work_id: id, state: 'complete', summary: 'Claimed completion', evidence: 'receipt:not-an-array',
+  }, 'string-evidence'), (error: unknown) => error instanceof WorkError &&
+    error.code === 'invalid_request' && /evidence must be an array/.test(error.message));
+  assert.equal(f.assignments.list(BOT_ID, true)[0].assignmentState, 'cancelled');
 });
 
 test('a canonical stop supersedes an earlier active assessment without relying on a new chat message', t => {

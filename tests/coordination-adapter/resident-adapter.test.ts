@@ -58,6 +58,7 @@ function harness(options: {
   staleAfter?: number;
   deferred?: boolean;
   response?: any;
+  responseError?: Error;
   promotedArtifactIds?: readonly string[];
 } = {}) {
   const calls: string[] = [];
@@ -90,9 +91,12 @@ function harness(options: {
         reasoningEffort: 'high',
         event: { type: 'status', status: 'working', sourceEventType: 'runtime.status' },
       });
-      if (!options.deferred) resolveResponse(options.response ?? {
-        text: 'exact result', model: 'test', toolCallCount: 0, durationMs: 1,
-      });
+      if (!options.deferred) {
+        if (options.responseError) rejectResponse(options.responseError);
+        else resolveResponse(options.response ?? {
+          text: 'exact result', model: 'test', toolCallCount: 0, durationMs: 1,
+        });
+      }
       return { turnId: 'turn-resident-1', response };
     },
     stop(_chatId, turnId) {
@@ -286,6 +290,16 @@ test('successful resident completion emits exact positive terminal truth and bou
   });
   assert.equal(h.observations.length, 1);
   assert.deepEqual(Object.keys(h.observations[0] as object).sort(), ['at', 'evidenceDigest', 'kind', 'outcomeCode']);
+});
+
+test('a genuine resident execution error remains a failed receipt with its exact error digest', async () => {
+  const h = harness({ responseError: new Error('publisher rejected exact input') });
+  const run = await h.adapter.execute(request());
+  await assert.rejects(run.response, /publisher rejected exact input/);
+  const receipt = await run.receipt;
+  assert.equal(receipt.status, 'failed');
+  assert.equal(receipt.resultDigest, sha256('publisher rejected exact input'));
+  assert.equal(h.calls.includes('terminal:succeeded'), false);
 });
 
 test('successful resident generated media is promoted before its immutable terminal receipt', async () => {

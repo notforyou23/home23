@@ -2,6 +2,7 @@ import type { CoordinationTurnOrigin } from '../../agent/types.js';
 import type { MessagingActorContext } from '../channels/types.js';
 import type { M11Database } from '../work/types.js';
 import { canonicalJson } from '../work/canonical.js';
+import { WorkError } from '../work/errors.js';
 
 export type AssignmentState = 'active' | 'blocked' | 'complete' | 'cancelled';
 export interface AssignmentConclusion {
@@ -71,29 +72,37 @@ export function createResidentAssignments(database: M11Database) {
     return { ownerMessageSequence: row.current, acknowledgedSequence: Math.max(row.prepared, acknowledged) };
   }
   function report(context: MessagingActorContext, origin: CoordinationTurnOrigin, args: Record<string, unknown>, invocationKey: string) {
-    if (typeof args.work_id !== 'string') throw new Error('work_id is required');
-    const workId = root(args.work_id);
+    const invalid = (message: string): never => { throw new WorkError('invalid_request', message); };
+    const requestedWorkId = args.work_id;
+    if (typeof requestedWorkId !== 'string') throw new WorkError('invalid_request', 'work_id is required');
+    const workId = root(requestedWorkId);
     const work = database.readOne<{ principal: string; channel: string }>('SELECT target_principal_id AS principal,channel_id AS channel FROM works WHERE id=?', workId);
     if (!work || work.principal !== context.principalId) throw new Error('Assignment is outside this resident scope');
     const state = args.state as AssignmentState;
-    if (!['active','blocked','complete','cancelled'].includes(state)) throw new Error('Invalid assignment state');
-    if (typeof args.summary !== 'string' || !args.summary.trim() || args.summary.length > 4000) throw new Error('Provide a bounded outcome summary');
-    const strings = (value: unknown, maximum: number): string[] => {
+    if (!['active','blocked','complete','cancelled'].includes(state)) invalid('state must be active, blocked, complete, or cancelled');
+    const summary = args.summary;
+    if (typeof summary !== 'string' || !summary.trim() || summary.length > 4000) throw new WorkError('invalid_request', 'summary must be a non-empty string of at most 4000 characters');
+    const strings = (field: string, value: unknown, maximum: number): string[] => {
       if (value === undefined) return [];
-      if (!Array.isArray(value) || value.length > maximum || value.some(item => typeof item !== 'string' || !item.trim() || item.length > 4096)) throw new Error('Invalid outcome references');
+      if (!Array.isArray(value) || value.length > maximum || value.some(item => typeof item !== 'string' || !item.trim() || item.length > 4096)) {
+        invalid(`${field} must be an array of at most ${maximum} non-empty strings`);
+      }
       return [...new Set(value as string[])];
     };
-    const evidence = strings(args.evidence, 16), waitFor = strings(args.wait_for, 16);
-    if (state === 'complete' && !evidence.length) throw new Error('Completion requires inspected evidence references');
+    const evidence = strings('evidence', args.evidence, 16), waitFor = strings('wait_for', args.wait_for, 16);
+    if (state === 'complete' && !evidence.length) invalid('Completion requires inspected evidence references');
     for (const id of waitFor) {
       const dependency = database.readOne<{ principal: string }>('SELECT target_principal_id AS principal FROM works WHERE id=?', id);
       if (!dependency || dependency.principal !== context.principalId || root(id) === workId) throw new Error('Dependency must be another existing assignment of this resident');
     }
-    const revisitAt = args.revisit_at === undefined || args.revisit_at === null ? null : String(args.revisit_at);
-    if (revisitAt !== null && (!Number.isFinite(Date.parse(revisitAt)) || new Date(revisitAt).toISOString() !== revisitAt)) throw new Error('revisit_at must be an ISO timestamp');
-    if (args.owner_message_sequence !== undefined && (typeof args.owner_message_sequence !== 'number' || !Number.isSafeInteger(args.owner_message_sequence) || args.owner_message_sequence < 0)) throw new Error('Invalid owner message sequence');
+    const revisitAt = args.revisit_at === undefined || args.revisit_at === null ||
+      (typeof args.revisit_at === 'string' && !args.revisit_at.trim())
+      ? null
+      : typeof args.revisit_at === 'string' ? args.revisit_at : invalid('revisit_at must be an ISO timestamp when provided');
+    if (revisitAt !== null && (!Number.isFinite(Date.parse(revisitAt)) || new Date(revisitAt).toISOString() !== revisitAt)) invalid('revisit_at must be an ISO timestamp when provided');
+    if (args.owner_message_sequence !== undefined && (typeof args.owner_message_sequence !== 'number' || !Number.isSafeInteger(args.owner_message_sequence) || args.owner_message_sequence < 0)) invalid('owner_message_sequence must be a non-negative safe integer');
     const ownerMessageSequence = typeof args.owner_message_sequence === 'number' ? args.owner_message_sequence : null;
-    const value = { workId, state, summary: args.summary, evidence, waitFor, revisitAt, invocationKey, originWorkId: origin.workId, ownerMessageSequence };
+    const value = { workId, state, summary, evidence, waitFor, revisitAt, invocationKey, originWorkId: origin.workId, ownerMessageSequence };
     const prior = database.readOne<{ payload: string }>(`SELECT payload_json AS payload FROM events WHERE aggregate_kind='resident_assignment'
       AND json_extract(payload_json,'$.invocationKey')=?`, invocationKey);
     if (prior) {
@@ -104,8 +113,8 @@ export function createResidentAssignments(database: M11Database) {
     const current = direction(origin.workId);
     if ((current.ownerMessageSequence > current.acknowledgedSequence || ownerMessageSequence !== null)
         && ownerMessageSequence !== current.ownerMessageSequence) throw new Error('Read work_list and reconcile the latest owner messages; include its ownerMessageSequence in this assessment');
-    if (revisitAt !== null && Date.parse(revisitAt) <= Date.now()) throw new Error('revisit_at must be in the future');
-    if (state !== 'blocked' && (waitFor.length || revisitAt !== null)) throw new Error('Revisit conditions belong to a blocked assignment');
+    if (revisitAt !== null && Date.parse(revisitAt) <= Date.now()) invalid('revisit_at must be in the future');
+    if (state !== 'blocked' && (waitFor.length || revisitAt !== null)) invalid('Revisit conditions belong to a blocked assignment');
     if (state === 'active') {
       const previous = latest(workId);
       const cancelled = database.readOne<{ sequence: number }>(`SELECT max(e.sequence) AS sequence FROM works w JOIN events e

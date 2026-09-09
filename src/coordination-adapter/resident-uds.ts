@@ -680,9 +680,10 @@ function snapshotTerminalPayload(snapshot: ReturnType<TurnStore['replaySnapshot'
   };
 }
 
-function retryableTransportWait(error: unknown): boolean {
+function retryableTransportWait(error: unknown, renewExpiredRead = false): boolean {
   if (!(error instanceof ResidentProtocolError)) return false;
-  return error.code === "deadline_exceeded" ||
+  return (renewExpiredRead && error.code === "capability_expired") ||
+    error.code === "deadline_exceeded" ||
     (error.retryable && (
       error.code === "connection_lost" ||
       error.code === "server_busy" ||
@@ -1201,7 +1202,7 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
           });
           break;
         }catch(caught){
-          if(!retryableTransportWait(caught))throw caught;
+          if(!retryableTransportWait(caught,true))throw caught;
           await new Promise(resolve=>setTimeout(resolve,this.#retryDelayMs));
         }
       }
@@ -1327,7 +1328,7 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
         try{
           const result=await this.options.client.request({method:"GET",path:`/internal/v1/turns/${encodeURIComponent(turnId)}/result`,payload:{chatId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,...(completedRecovery?{completedRecovery:true}:{})},deadlineAtMs:now()+Math.min(this.#requestDeadlineMs,remaining),fence,correlationId:request.correlationId});const value=object(result.payload);const media=parseResidentReturnedArtifacts(value.media);return{text:string(value.text,"text"),model:string(value.model,"model"),toolCallCount:nonnegativeSafeInteger(value.toolCallCount,"toolCallCount"),durationMs:nonnegativeSafeInteger(value.durationMs,"durationMs"),...(media.length>0?{media}:{})};
         }catch(caught){
-          if(!retryableTransportWait(caught))throw caught;
+          if(!retryableTransportWait(caught,true))throw caught;
           const retryRemaining=resultDeadlineAt-now();
           if(retryRemaining<1)throw new ResidentProtocolError("deadline_exceeded","resident result did not become terminal before its overall deadline");
           await new Promise(resolve=>setTimeout(resolve,Math.min(this.#retryDelayMs,retryRemaining)));
