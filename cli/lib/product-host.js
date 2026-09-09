@@ -44,6 +44,18 @@ export function safeProcesses(rows, homeRoot, names) {
       owned: ownScript && typeof env.pm_cwd === 'string' && (env.pm_cwd === appRoot || env.pm_cwd.startsWith(appRoot + '/')) };
   });
 }
+function withoutStartupProfiling(args) {
+  const result = [];
+  for (let index = 0; index < args.length; index++) {
+    const flag = String(args[index]).replaceAll('_', '-');
+    const profile = /^--(?:cpu|heap)-prof(-[a-z-]+)?(?:=.*)?$/.exec(flag);
+    if (!profile) { result.push(args[index]); continue; }
+    // Directory, name and interval options can carry a separate value. Drop
+    // that value too, while leaving the next independent Node flag intact.
+    if (profile[1] && !flag.includes('=') && index + 1 < args.length && !String(args[index + 1]).startsWith('--')) index++;
+  }
+  return result;
+}
 export function productDefinitions(apps, homeRoot, name) {
   const allowed = ownedProcessNames(name);
   const appRoot = join(homeRoot, 'app');
@@ -61,13 +73,13 @@ export function productDefinitions(apps, homeRoot, name) {
     // against this explicit cwd to the exact installation-owned Node binary.
     const executable = relative(cwd, nodePath);
     if (!executable || /\s/.test(executable) || resolve(cwd, executable) !== nodePath) throw new Error('Cannot safely resolve the bundled Home23 executable.');
-    return { ...definition, script: executable, interpreter: 'none', node_args: [], args: [...nodeArgs, script, ...args], cwd,
+    return { ...definition, script: executable, interpreter: 'none', node_args: [], args: [...withoutStartupProfiling(nodeArgs), script, ...args], cwd,
       autostart: true, autorestart: true, min_uptime: 10000, max_restarts: 5, restart_delay: 2000,
       env: { ...definition.env, ...productEnvironment(homeRoot) },
       // No profiling flags or dumps are required to run a user's home.
       filter_env: definition.filter_env || [],
     };
-  }).map(definition => ({ ...definition, args: definition.args.filter(arg => !/^--(?:cpu|heap)-prof(?:$|=)/.test(arg)) }));
+  });
 }
 function driver(homeRoot, dependencies) {
   const env = productEnvironment(homeRoot, { prepare: true });

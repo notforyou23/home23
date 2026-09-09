@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
 import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses } from '../../cli/lib/product-host.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
@@ -378,4 +380,39 @@ test('real bundled PM2 launches, restarts and stops Node with executable, applic
   pm2('stop', 'home23-milo', '--silent');
   assert.equal(JSON.parse(pm2('jlist', '--silent'))[0].pm2_env.status, 'stopped');
   assert.throws(() => process.kill(restarted.pid, 0), { code: 'ESRCH' });
+});
+
+test('profiling flags and separate values are stripped only from Node options', t => {
+  const homeRoot = home(t);
+  const appArguments = ['--cpu-prof-name=application-option', 'keep this value'];
+  const nodeArgs = ['--expose-gc', '--cpu-prof', '--cpu-prof-dir=/path with spaces', '--cpu-prof-name', 'cpu file.cpuprofile',
+    '--cpu-prof-interval', '1000', '--heap-prof', '--heap-prof-dir', '/heap path', '--heap-prof-name=heap file.heapprofile',
+    '--heap-prof-interval=512', '--heap_prof_dir', '/underscore path', '--max-old-space-size=8192'];
+  const apps = productDefinitions(definitions(homeRoot).map(app => ({ ...app, node_args: nodeArgs, args: appArguments })), homeRoot, 'milo');
+  for (const app of apps) assert.deepEqual(app.args, ['--expose-gc', '--max-old-space-size=8192', path.join(homeRoot, 'app/dist/home.js'), ...appArguments]);
+});
+
+test('original generated harness profiling options become a valid real Node invocation', async t => {
+  const homeRoot = home(t, { birth: true });
+  await runHostAction('create', { homeRoot, input: { profile: { name: 'milo', ownerName: 'Fixture owner', provider: 'ollama-local', model: 'qwen2.5:7b', timezone: 'UTC' } } });
+  const appRoot = path.join(homeRoot, 'app');
+  const module = { exports: {} };
+  runInNewContext(fs.readFileSync(path.join(appRoot, 'ecosystem.config.cjs'), 'utf8'), {
+    require: createRequire(import.meta.url), module, process: { env: productEnvironment(homeRoot) },
+  });
+  const original = module.exports.apps.find(app => app.name === 'home23-milo-harness');
+  assert.ok(original.node_args.some(arg => arg.startsWith('--cpu-prof-dir=')));
+  assert.ok(original.node_args.some(arg => arg.startsWith('--heap-prof-dir=')));
+  const transformed = productDefinitions(module.exports.apps, homeRoot, 'milo').find(app => app.name === original.name);
+  const runtimeScript = path.join(appRoot, 'dist/home.js');
+  const scriptIndex = transformed.args.indexOf(runtimeScript);
+  assert.ok(scriptIndex > 0);
+  assert.deepEqual(transformed.args.slice(0, scriptIndex), ['--expose-gc', '--max-old-space-size=8192']);
+  fs.mkdirSync(path.dirname(runtimeScript), { recursive: true });
+  fs.copyFileSync(new URL('../../dist/home.js', import.meta.url), runtimeScript);
+  const node = process.env.HOME23_TEST_PRODUCT_PAYLOAD ? path.join(process.env.HOME23_TEST_PRODUCT_PAYLOAD, 'bin/node') : process.execPath;
+  // --check parses the real harness without starting services or model calls.
+  execFileSync(node, [...transformed.args.slice(0, scriptIndex), '--check', runtimeScript], {
+    cwd: appRoot, env: productEnvironment(homeRoot), encoding: 'utf8', timeout: 15000,
+  });
 });
