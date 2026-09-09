@@ -12,7 +12,7 @@
 
 import { execSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync, lstatSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { ensureSystemHealth } from './system-health.js';
 import { ensureBrainOperationsCapabilityKey } from './brain-operations-capability.js';
@@ -349,6 +349,13 @@ function checkUncommittedChanges(home23Root) {
 // ── Main ─────────────────────────────────────────────────────────────
 
 export async function runUpdate(home23Root, checkOnly = false) {
+  // Product installations carry their dependencies and runtime as one package.
+  // Do not run a source updater against either a valid or damaged ownership
+  // receipt: it could replace code while preserving the old package identity.
+  try {
+    lstatSync(join(dirname(home23Root), '.home23-install.json'));
+    throw new Error('Home23 Host product installation detected. Update through Home23 Host; the source updater cannot change this package.');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   // A packaged resident release can be newer than this checkout. Refuse before
   // fetching, migrating, building or stopping anything; even a malformed
   // pointer needs operator inspection, not fallback to the checkout.
