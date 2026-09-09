@@ -96,3 +96,57 @@ receipt for forward recovery, with no automatic database rollback. The final
 check calls the exported `status()` function and requires actual registered
 executable, cwd and resident runtime to match, with online PIDs. Separately
 verify OS process paths and resident behavioral readiness before acceptance.
+
+### Resident-requested managed restarts
+
+`scripts/release/supervisor.mjs` provides a fixed-scope restart queue serviced
+by an independently launched process. Install its reviewed script together
+with `status.mjs` and `rebind.mjs` outside the managed package, under an
+operator-owned service definition. With PM2 use the Node binary as `script`,
+`interpreter: "none"`, and an argument array containing the supervisor entry
+point, `serve`, and the installation root. This executes the CLI directly
+instead of relying on PM2's module wrapper. Nested PM2 commands must receive
+only the explicit operator environment allowlist; inherited PM2 metadata can
+replace resident names and arguments with those of the supervisor.
+
+Start the supervisor from an independent
+operator session, never by detaching a child of the resident being restarted.
+
+An operator enables `instances/.house/maintenance/policy.json` with
+`{"enabled":true,"allowManagedRestart":true}`. This is standing authorization
+for restarting the selected package, not for selecting or publishing new code.
+Keep this policy and all queue/backup state local. The queue is for trusted
+local installation agents; it is not an isolation boundary against another
+process with the same OS account's filesystem and PM2 authority.
+
+Residents use the installed supervisor entry point:
+
+```bash
+node /path/to/installed/supervisor.mjs request /absolute/installation "Reason"
+node /path/to/installed/supervisor.mjs status /absolute/installation
+```
+
+`request` durably queues work and returns immediately. The resident should
+report the request ID, finish its current turn, and consult `status` for the
+terminal receipt. A queued request is not a completed restart. Requests have a
+30-second grace period, expire after one day, and pin the current release.
+Duplicates join pending work; starts are limited to one per hour. Nonterminal
+coding jobs cause waiting, not termination.
+
+The supervisor preserves the process-ancestry guard, gracefully drains Core,
+checks canonical Work, makes an integrity-checked SQLite backup, verifies
+unchanged launchers and pointer, and rebinds only Core/Jerry/Forrest. It checks
+actual managed paths and signed resident readiness before recording success.
+It never force-kills drain, mutates the release pointer, restores a database,
+retries ambiguous restart commands, or operates on arbitrary process names.
+Pre-rebind failures resume the original Core when safe. Partial failures and
+interrupted requests retain receipts for forward recovery. An independent small SQLite file holds an OS-released exclusive supervisor
+lock, so crashes and reboots cannot leave a stale PID lock blocking startup.
+Interrupted requests are marked for inspection instead of replaying cutover
+commands; the coordinator database is never used as the supervisor lock. Do not claim automatic recovery
+from a supervisor crash halfway through a cutover.
+
+New-source activation still requires preparing and verifying a package and
+selecting it in an authorized cutover; this queue does not turn a restart into
+a source deployment. The supervisor itself must be updated independently of
+the managed residents.
