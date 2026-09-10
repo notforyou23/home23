@@ -2,180 +2,115 @@
 
 Date: 2026-09-10  
 Plan: `docs/superpowers/plans/2026-09-10-owned-embedder-host-integration.md`  
-Plan commit verified: `3c7495d6dd5b424a7e17307364b1b5a26586e49a` (`git show` in this repo; not assumed on GitHub)
+Plan commit verified: `3c7495d6dd5b424a7e17307364b1b5a26586e49a`
+
+Lead published contracts: `docs/superpowers/plans/2026-09-10-owned-embedder-contracts.md`  
+Stage 2 authorization: `docs/superpowers/plans/2026-09-10-owned-embedder-stage2-authorization.md`
 
 ## Isolation
 
 | Item | Value |
 |---|---|
-| Worktree | `/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-encoder-stage1` |
-| Branch | `home23-agent/owned-embedder-encoder-stage1` |
-| Base | `44288211b1d11512bca2d590fccd7eb77024e7a4` (contains plan `3c7495d6`) |
-| Shared checkout left untouched | `/Users/jtr/_JTR23_/development/home23` on `codex/jerry-continuity-20260907` |
-| Apple | not edited |
-| Live homes / release installation | not altered; not used as development source |
+| Lead worktree | `/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-lead-contracts` |
+| Lead branch | `home23-agent/owned-embedder-lead-contracts` |
+| Created from | Encoder tip `c273245ae1b2e8ffe554e19746c693caa58b58c8` |
+| Shared checkout left untouched | `/Users/jtr/_JTR23_/development/home23` on `codex/jerry-continuity-20260907` @ `44288211b1d11512bca2d590fccd7eb77024e7a4` |
+| Apple | not edited (`codex/mac-dashboard2-20260908` @ `215241f`) |
+| Live homes / `../release/home23` | not used as a development source; not altered |
+
+Preserved concurrent work (not switched, not cleaned): Encoder Stage 1, Memory investigation, Host investigation, `home23-agent/fix-memory-keyword-cpu-runaway`, dirty `home23-queued-work`, `home23-scheduled-outcome-evidence`, `.home23-worktrees/connected-agents-notification-context`, Host product lineages, Apple `codex/mac-dashboard2-20260908`.
 
 ## Lane status
 
 | Lane | Owner | Status | Dependencies | Commits | Evidence | Next action |
 |---|---|---|---|---|---|---|
-| Encoder | Encoder worker | Stage 1 complete (local). Stages 2+ not started. | Plan `3c7495d6` | see §Commits | `scripts/embedder-experiment/results/` | Lead evaluates; authorize Stage 2+ |
-| Memory | unknown (placeholder) | not started here | Encoder contracts; plan Stage 2 | — | — | Implement provenance/guards after lead GO |
-| Host | unknown (placeholder) | not started here | Encoder Stages 1–3; plan Stage 4 | — | — | Wait |
-| Lead | lead agent | evaluating Stage 1 | this record + contracts | — | — | Authorize or block Stage 2+ |
+| Encoder | Encoder worker | Stage 1 complete (local). Stage 3 service **not** started. | Plan `3c7495d6`; Lead contracts | `642b57f6`, `c273245a` | `scripts/embedder-experiment/results/` (real Ollama + real ONNX) | Contract-test seams only until Memory Stage 2 first slice lands in source. Then Stage 3 as **new recipe** `owned-nomic-v1.5-onnx-fp32-mean-noprefix`. Do not write `scripts/embedder/serve.mjs` before that. Do not flip defaults. |
+| Memory | Memory worker | Investigation complete. Stage 2 **authorized** (first slice). | Lead contracts; Encoder evidence | `6bbaa03b` (investigation; cherry-picked here as `19a4271d`) | Investigation doc + Lead verification of `min(length)` and birth `modelInvocations: 0` | Isolated Memory worktree; implement first slice in the authorization brief. Do not replace `home23-agent/fix-memory-keyword-cpu-runaway`. |
+| Host | Host worker | Investigation complete. Implementation **blocked** (Stage 4). | Frozen process/health/port/recipe fields in Lead contracts; Stages 2–3 | `b3f88e80` (investigation; cherry-picked here as `8c9f9fe6`) | Host investigation (ports, `ownedProcessNames`, lock, verify-install fixture) | Remain investigation-only for product files. May read frozen contracts. Stage 4 only after Stage 3 service exists. Isolated TEST home only; never existing homes. |
+| Lead | Lead worker | Stage 1 evaluated. Contracts published. Stage 2 authorized. | Encoder artifacts + Memory/Host investigations + plan | this record + contracts + authorization (this worktree) | Independent read of committed JSON; artifact sha256 rehash | Return authorization brief. Do not claim the product milestone complete. |
 
-## Proposed Stage 1 file list (owned)
+## Files owned in this Lead worktree
 
 | Path | Role |
 |---|---|
 | `docs/superpowers/plans/2026-09-10-owned-embedder-work-record.md` | this record |
-| `docs/superpowers/plans/2026-09-10-owned-embedder-contracts.md` | shared contracts |
-| `scripts/embedder-experiment/*` | harness, corpus, inventory, results |
-| Not owned | `scripts/embedder/serve.mjs`, Memory/Host product files, `home23-apple` |
+| `docs/superpowers/plans/2026-09-10-owned-embedder-contracts.md` | published shared contracts |
+| `docs/superpowers/plans/2026-09-10-owned-embedder-stage2-authorization.md` | Stage 2 file list and sequencing |
+| Cherry-picked, not rewritten | Memory + Host investigation docs |
+| Inherited from Encoder, not edited | `scripts/embedder-experiment/*` |
+| Not owned | `scripts/embedder/serve.mjs`, Memory/Host/Encoder product files, `home23-apple` |
 
-## Experiment hypothesis
+## Experiment hypothesis (Encoder) and Lead verification
 
-Current Home23 Seed/Memory embeddings are Ollama `nomic-embed-text` with **no task prefix** and **no provider L2-norm**. A Node 22 Transformers.js ONNX build of `nomic-ai/nomic-embed-text-v1.5` matches that space (per-vector cosine > 0.99, gate agreement, 16-d projection equal to 4 d.p.) only if preprocessing matches. Passing a finite public corpus would support compatibility; it would not prove all future inputs.
+Current Home23 Seed/Memory embeddings are Ollama `nomic-embed-text` with **no task prefix** and **no provider L2-norm**. A Node 22 Transformers.js ONNX build of `nomic-ai/nomic-embed-text-v1.5` matches that space (per-vector cosine > 0.99, gate agreement, 16-d projection equal to 4 d.p.) only if preprocessing matches.
 
-**Result:** hypothesis **rejected** for drop-in compatibility. Best ONNX recipe mean cosine 0.9009, min 0.517, **0/25** projections equal to 4 d.p.
+**Result (Lead-verified from committed JSON):** hypothesis **rejected** for drop-in compatibility. Best ONNX recipe mean cosine **0.900851**, min **0.517358**, **0/25** projections equal to 4 d.p.
+
+See contracts §11 for claim-by-claim confirm / correct / unverified.
 
 ## Existing attempts and reconciliation
 
-- Design spec `7b1d22d94` and plan `3c7495d6` only. Identical plan also on `codex/scout-linux-reconciliation-20260910`.
-- No `scripts/embedder/` service, no prior experiment results.
-- Dirty worktrees left untouched: `home23-queued-work` (`node_modules`), `home23-scheduled-outcome-evidence` (`node_modules`), `.home23-worktrees/connected-agents-notification-context` (coordination/push edits).
+- Design spec `7b1d22d94` superseded by plan `3c7495d6` where they conflict.
+- Encoder Stage 1 worktree left on `home23-agent/owned-embedder-encoder-stage1` @ `c273245a`. Not replaced.
+- Memory investigation left on `home23-agent/owned-embedder-memory-investigation-20260910` @ `6bbaa03b`. Cherry-picked docs-only.
+- Host investigation left on `home23-agent/owned-embedder-host-investigation` @ `b3f88e80`. Cherry-picked docs-only.
+- No `scripts/embedder/` service.
 - Shared jerry-continuity checkout not switched.
 
-## Experiment design vs plan
-
-| Plan Stage 1 ask | What ran |
-|---|---|
-| Caller inventory | `scripts/embedder-experiment/inventory.json` from source (writers, gates, Memory, ANN, Host config, birth boundary) |
-| Pinned candidate recipe | `results/recipe-pin.json` — official `nomic-ai` ONNX fp32 + tokenizer digests |
-| Compare baseline vs candidate | Ollama `/api/embeddings` (Seed shape) vs ONNX mean/cls × prefix ablations |
-| Native + projected vectors | cosine + published 768→16 projection |
-| All attention gates | shared floor 0.60 / min-alnum 20; seed-context floor+margin 0.12 |
-| Retrieval behavior | 4 public query/doc sets, rank compare |
-| Small nonpersonal corpus | `corpus.json` (27 texts, 20 pairs, 4 retrieval sets, 3 seed-context pools) |
-| Private turn/anchor pairs | not run (no private corpus file; personal text kept out of Git) |
-| Packaged-runtime constraints | official-style Node **v22.19.0** darwin **arm64** (system dylibs only; Host packager would accept this class of binary). Not Homebrew Node 25. |
-| Latency / footprint | cold/warm load, RSS, disk, 1500 ms Seed deadline probe |
-| No default or live-state changes | honored |
-
-Original spec’s ~200 live ledger pairs were **not** used (plan: keep personal text out of public fixtures).
-
-## Commands run
+## Lead commands run (read-only + docs worktree)
 
 ```text
 node home23/scripts/development/status.mjs --installation ../release/home23
-# read-only; backend 44288211 on jerry-continuity; 15 worktrees
+# backend 44288211 on jerry-continuity; apple 215241f; 18 backend worktrees
 
-git show 3c7495d6 --stat
-git worktree add .home23-worktrees/owned-embedder-encoder-stage1 \
-  -b home23-agent/owned-embedder-encoder-stage1 44288211b1
+git worktree list
+git worktree add .home23-worktrees/owned-embedder-lead-contracts \
+  -b home23-agent/owned-embedder-lead-contracts c273245ae1
 
-# worktree:
-/Users/jtr/.nvm/versions/node/v22.19.0/bin/node -v   # v22.19.0
-otool -L …/v22.19.0/bin/node                         # system dylibs only
-ollama show nomic-embed-text --modelfile             # TEMPLATE {{ .Prompt }}
-cd scripts/embedder-experiment
-/Users/jtr/.nvm/versions/node/v22.19.0/bin/npm install --omit=dev
-/Users/jtr/.nvm/versions/node/v22.19.0/bin/node run.mjs
-# first ONNX attempt: Xenova/nomic-embed-text-v1.5 → HTTP 401
-# rerun after fallback to nomic-ai/nomic-embed-text-v1.5 (public ONNX)
-# rerun with CLS pooling ablation
-shasum -a 256 .cache/nomic-ai/nomic-embed-text-v1.5/onnx/model.onnx
+# in lead worktree:
+git cherry-pick 6bbaa03b1e9e827341ce795b5159cabe4aa0f853
+git cherry-pick b3f88e80a912eebaba25b19fb16c7945e92e615a
+
+# independent verification (Encoder worktree artifacts):
+# parsed stage1-evidence.json / stage1-summary.json / recipe-pin.json
+# sha256 of cached nomic-ai onnx + tokenizer + configs (matched pin)
+# read semantic-match.ts min(length); seed-context floors; seed-birth modelInvocations: 0
+# read PORT_KEYS and ownedProcessNames()
 ```
 
-## Numeric results (real inference)
+No fetch, push, merge, build, restart, install, or live-home change.
 
-Fixture/synthetic vectors: **none**. Both backends produced real embeddings.
+## Go / no-go (Lead)
 
-### Baseline (Ollama)
-
-| Item | Value |
-|---|---|
-| Model | `nomic-embed-text:latest` |
-| Digest | `0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f` |
-| Size | 274,302,450 bytes; GGUF F16; nomic-bert 137M |
-| Dim | 768 |
-| Warmup L2 | 21.81 (not unit) |
-| First-process warmup | 13.5 s (earlier probe) / 393 ms once already loaded |
-| Seed deadline 1500 ms (idle, n=8) | **8/8 pass**, 13–28 ms |
-| Seed vs Memory protocol (short texts) | cosine **1.0** (25/25), projection 25/25 equal |
-| Seed 1000 vs Memory 2000 chars | cosine **0.981** |
-| Prefix `search_document:` vs none | mean cosine 0.900; 2 shared-gate flips |
-
-### Candidate (ONNX, Node 22)
-
-| Item | Value |
-|---|---|
-| Model | `nomic-ai/nomic-embed-text-v1.5` |
-| Runtime | `@huggingface/transformers@3.7.6` |
-| `onnx/model.onnx` | 547,310,275 bytes; sha256 `147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965` |
-| Cache total | 548,025,400 bytes |
-| Cold load (first) | 32,359 ms; RSS 97.9 → 985.4 MB |
-| Later load | 1,134 ms; RSS ~877 MB |
-| Warm embed p50 (after first) | ~25 ms |
-
-### Compatibility vs Ollama Seed
-
-| Recipe | mean cos | min | <0.99 | <0.95 | proj 4 d.p. | shared-gate disagree |
-|---|---|---|---|---|---|---|
-| onnx mean, no prefix | 0.9009 | 0.517 | 25/25 | 15/25 | 0/25 | 1 (near-floor retrieval) |
-| onnx mean, L2 | 0.9009 | 0.517 | 25/25 | 15/25 | 0/25 | 1 |
-| onnx mean + `search_document` | 0.848 | 0.531 | 25/25 | 25/25 | 0/25 | 1 |
-| onnx mean + `search_query` | 0.873 | 0.575 | 25/25 | 24/25 | 0/25 | 2 (incl. unrelated over floor) |
-| onnx CLS, no prefix | 0.773 | 0.432 | 25/25 | 25/25 | 0/25 | 1 |
-
-Retrieval top-1 agreed 4/4 for mean-pool. Seed-context admit agreed 3/3 pools. CLS swapped one retrieval top.
-
-Ollama paraphrase scores on this corpus: 0.67–0.90. Unrelated: 0.40–0.53. The 0.60 floor sits in a live band; near-threshold pairs flip when the recipe moves.
-
-Contended Ollama timings while ONNX occupied ~1 GB RSS reached p85 ~3 s and max ~6.9 s — above the Seed 1.5 s deadline. Isolated warm Ollama stayed far under.
-
-## Fixture vs real-provider
-
-| Path | Real? |
-|---|---|
-| Ollama baseline | **real** local `nomic-embed-text` |
-| ONNX candidate | **real** Transformers.js inference |
-| Public corpus | synthetic nonpersonal text (not a live ledger) |
-| Private calibration | **not run** |
-| Product defaults / homes | unchanged |
-
-## Limitations
-
-- Public corpus is small (not 200 live pairs).
-- One Mac arm64; no other release targets.
-- Only fp32 ONNX measured (not fp16/int8/q4).
-- Xenova mirrors 401 here; official `nomic-ai` used.
-- Ollama vs ONNX mismatch root cause (tokenizer, GGUF graph, undocumented Ollama pooling) is **unknown**.
-- Node used is nvm v22.19.0, not a copied Host payload binary. It meets the Host packager’s Node 22 + system-dylib rule.
-
-## Go / no-go for Stage 2+
-
-| Stage | Recommendation | Why |
+| Stage | Lead ruling | Why |
 |---|---|---|
-| 2 Encoder-aware contracts | **GO** | Spaces are not interchangeable; provenance and mismatch rejection are required even if defaults stay |
-| 3 Owned inference service | **GO as a new recipe** | Real Node 22 ONNX works; do not advertise Ollama parity |
-| Default flip / new-home owned default | **NO-GO** | Failed 0.99 / 4 d.p. bar; `matchFloor` must stay null until calibration |
-| Existing-home switch | **NO-GO** | Plan Stage 6; Seed history must not be rewritten |
-| Encoder Stages 3 implementation in this session | **not done** | Lead must authorize |
+| 2 Encoder-aware contracts | **GO** | Incompatible spaces; provenance and mismatch rejection required; plan allows this without a new default |
+| 3 Owned inference service | **GO as a new recipe**, after Stage 2 first slice is in source | Real ONNX works; not Ollama parity |
+| Product default flip | **NO-GO** | Failed 0.99 / 4 d.p.; owned `matchFloor` null |
+| Stage 5 isolated TEST home path | **defined, not authorized to execute now** | Explicit owned recipe on a new Host home; real inference + real chat; attention-gate claim waits for owned calibration |
+| Existing-home switch | **NO-GO** | Plan Stage 6 |
+| Product milestone (Stages 1–5) | **not complete** | Only Stage 1 evidence + contracts exist |
 
-## Commits
+## Commits on this branch
 
 | SHA | Message |
 |---|---|
-| `642b57f640899586edaf479f940d01b875beb337` | Record Stage 1 owned-embedder compatibility evidence. |
+| `642b57f640899586edaf479f940d01b875beb337` | Record Stage 1 owned-embedder compatibility evidence. (Encoder) |
+| `c273245ae1b2e8ffe554e19746c693caa58b58c8` | Note the local Stage 1 evidence commit in the work record. (Encoder) |
+| `19a4271d` (cherry-pick of `6bbaa03b`) | docs: record Memory investigation for the owned embedder |
+| `8c9f9fe6` (cherry-pick of `b3f88e80`) | docs: record Host investigation for the owned embedder |
+| *(this publication)* | docs: publish owned-embedder Stage 2 contracts and authorization |
 
-Not pushed (task forbids publish).
+Not pushed.
 
 ## Handoff
 
 ```text
-Worktree: /Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-encoder-stage1
-Branch:   home23-agent/owned-embedder-encoder-stage1
-Next:     lead review of contracts + evidence. Do not implement scripts/embedder/serve.mjs until authorized.
-Re-run:   /Users/jtr/.nvm/versions/node/v22.19.0/bin/node scripts/embedder-experiment/run.mjs
+Worktree: /Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-lead-contracts
+Branch:   home23-agent/owned-embedder-lead-contracts
+Shared:   /Users/jtr/_JTR23_/development/home23 remains codex/jerry-continuity-20260907 @ 44288211
+Next:     Memory Stage 2 first slice on its own isolated worktree.
+          Encoder: seams only, then Stage 3 after that slice lands.
+          Host: wait for frozen fields (now published) + Stage 3 service.
+          Do not implement scripts/embedder/serve.mjs until Stage 2 first slice is in source.
 ```
