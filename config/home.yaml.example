@@ -167,6 +167,22 @@ embeddings:
       model: nomic-embed-text
       dimensions: 768
 
+# Shell / filesystem authority for resident tools (shell, read_file, list, search).
+# Default when omitted: Home23 install root + this resident's instances/<agent> dir.
+# Keep (/home/box/keep, /home/box/grokbot) is NOT included unless explicitly granted.
+# To grant full machine access (owner only):
+#   shell:
+#     machineAccess: true
+# To grant selected extra folders:
+#   shell:
+#     roots:
+#       - /absolute/path/to/home23
+#       - /absolute/path/to/instances/agent
+#       - /absolute/path/extra
+shell:
+  # machineAccess: false
+  # roots: []
+
 chat:
   defaultProvider: ollama-cloud
   defaultModel: kimi-k3:cloud

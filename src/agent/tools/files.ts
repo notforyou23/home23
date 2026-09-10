@@ -9,6 +9,18 @@ import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
 import { refuseResidentWrite } from './tracked-source-guard.js';
 import { clipToolOutput } from './clip-output.js';
+import {
+  refuseReadOutsideRoots,
+  resolveShellFsAuthority,
+} from './shell-fs-authority.js';
+
+function authorityFor(ctx: ToolContext) {
+  return ctx.shellFsAuthority ?? resolveShellFsAuthority(null, {
+    projectRoot: ctx.projectRoot,
+    instanceDir: ctx.instanceDir,
+  });
+}
+
 
 export const WORKSPACE_ESCAPE_REFUSED = 'workspace_escape_refused';
 
@@ -136,6 +148,8 @@ export const readFileTool: ToolDefinition = {
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const path = resolvePath(input.path as string, ctx.workspacePath);
+    const outside = refuseReadOutsideRoots(path, authorityFor(ctx));
+    if (outside) return outside;
     const offset = (input.offset as number) || 0;
     const limit = input.limit as number | undefined;
     if (!existsSync(path)) return { content: `File not found: ${path}`, is_error: true };
@@ -232,7 +246,7 @@ export const editFileTool: ToolDefinition = {
 
 export const listFilesTool: ToolDefinition = {
   name: 'list_files',
-  description: 'List files matching a glob pattern. Returns file paths. Defaults to your workspace; pass cwd to search elsewhere.',
+  description: 'List files matching a glob pattern inside granted filesystem roots (default: Home23 install + instance). Returns file paths. Defaults to your workspace.',
   input_schema: {
     type: 'object',
     properties: {
@@ -244,6 +258,8 @@ export const listFilesTool: ToolDefinition = {
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const pattern = input.pattern as string;
     const cwd = (input.cwd as string) || ctx.workspacePath;
+    const outside = refuseReadOutsideRoots(cwd, authorityFor(ctx));
+    if (outside) return outside;
     // Use rg --files which properly supports ** recursive globs (find -path does not)
     const cmd = `rg --files --glob ${JSON.stringify(pattern)} ${JSON.stringify(cwd)} 2>/dev/null | head -200`;
     return new Promise((resolvePromise) => {
@@ -270,7 +286,7 @@ export const listFilesTool: ToolDefinition = {
 
 export const searchFilesTool: ToolDefinition = {
   name: 'search_files',
-  description: 'Search file contents using ripgrep or grep. Returns matching lines with paths and line numbers. Defaults to your workspace; pass path to search elsewhere.',
+  description: 'Search file contents using ripgrep or grep inside granted filesystem roots (default: Home23 install + instance). Returns matching lines with paths and line numbers. Defaults to your workspace.',
   input_schema: {
     type: 'object',
     properties: {
@@ -284,6 +300,8 @@ export const searchFilesTool: ToolDefinition = {
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const pattern = input.pattern as string;
     const searchPath = (input.path as string) || ctx.workspacePath;
+    const outside = refuseReadOutsideRoots(searchPath, authorityFor(ctx));
+    if (outside) return outside;
     const fileGlob = input.glob as string | undefined;
     const maxResults = Math.max(1, Math.min(500, Number(input.max_results) || 50));
 

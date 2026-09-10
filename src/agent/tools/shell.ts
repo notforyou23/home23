@@ -6,6 +6,10 @@ import { exec } from 'node:child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
 import { refuseShellWrite } from './shell-write-guard.js';
+import {
+  refuseShellFsAuthority,
+  resolveShellFsAuthority,
+} from './shell-fs-authority.js';
 
 const DEFAULT_STDOUT_LIMIT = 8000;
 const DEFAULT_STDERR_LIMIT = 4000;
@@ -33,12 +37,12 @@ function formatStream(label: 'STDOUT' | 'STDERR', text: string, limit: number): 
 
 export const shellTool: ToolDefinition = {
   name: 'shell',
-  description: 'Run a bash command on the machine. Returns bounded stdout/stderr plus exit code. Prefer narrow commands (rg, head, tail, git diff --stat) before large dumps. Writes to tracked repo source are refused; local house state (instances/, gitignored config) is allowed.',
+  description: 'Run a bash command within granted filesystem roots (default: Home23 install + this resident instance). Returns bounded stdout/stderr plus exit code. Prefer narrow commands (rg, head, tail, git diff --stat) before large dumps. Writes to tracked repo source are refused; local house state under roots is allowed. Owner may expand shell.roots or set shell.machineAccess: true.',
   input_schema: {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The bash command to execute' },
-      cwd: { type: 'string', description: 'Working directory (default: project root; pass an absolute path to run elsewhere)' },
+      cwd: { type: 'string', description: 'Working directory (default: project root; must stay inside granted shell.roots unless machineAccess)' },
       timeout_ms: { type: 'number', description: 'Timeout in milliseconds (default: 120000)' },
       max_output_chars: {
         type: 'number',
@@ -58,6 +62,13 @@ export const shellTool: ToolDefinition = {
     const timeoutMs = (input.timeout_ms as number) || 300_000;
     const stdoutLimit = boundedLimit(input.max_output_chars, DEFAULT_STDOUT_LIMIT);
     const stderrLimit = boundedLimit(input.max_stderr_chars, DEFAULT_STDERR_LIMIT);
+
+    const authority = ctx.shellFsAuthority ?? resolveShellFsAuthority(null, {
+      projectRoot: ctx.projectRoot,
+      instanceDir: ctx.instanceDir,
+    });
+    const fsRefused = refuseShellFsAuthority({ cwd, command, authority });
+    if (fsRefused) return fsRefused;
 
     const refused = refuseShellWrite(command, cwd, ctx.projectRoot);
     if (refused) return refused;
