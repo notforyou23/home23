@@ -22,6 +22,9 @@
 const fs = require('fs').promises;
 const path = require('path');
 
+const MAX_LOCAL_DEDUP_NODES = 1000;
+const MAX_LOCAL_EMBEDDING_DIMENSIONS = 8192;
+
 class IntrospectionModule {
   constructor(config, logger, memory, pathResolver) {
     this.config = config;
@@ -38,6 +41,7 @@ class IntrospectionModule {
     this.lastScanTimestamp = 0;
     this.runRoot = null;
     this.outputsRoot = null;
+    this.integratedSourcePaths = new Set();
   }
 
   async initialize(runRoot) {
@@ -186,32 +190,35 @@ class IntrospectionModule {
 
     for (const item of items) {
       try {
-        // Check for existing node with same file path (deduplication)
-        // Use simple concept match - memory.query returns array of nodes with concept + similarity
-        const existingNodes = await this.memory.query(
-          path.basename(item.filePath),
-          3
-        );
-
-        // Simple dedup: if concept already mentions this file, skip
-        const alreadyExists = existingNodes.some(node => 
-          node.concept && node.concept.includes(path.basename(item.filePath))
-        );
+        const sourcePath = this.normalizeSourcePath(item.filePath);
+        const alreadyExists = this.integratedSourcePaths.has(sourcePath)
+          || this.hasExistingSourcePath(sourcePath);
 
         if (alreadyExists) {
           this.logger.debug('Skipping duplicate file', { file: path.basename(item.filePath) });
+          this.integratedSourcePaths.add(sourcePath);
           continue;
         }
 
         // Add new memory node
-        // NOTE: memory.addNode signature is (concept, tag, embedding)
         const concept = `[INTROSPECTION] ${path.basename(item.filePath)} from ${item.agentType} agent ${item.agentId}: ${item.preview}`;
         const tag = 'introspection';
-        
-        const node = await this.memory.addNode(concept, tag, null);
+
+        // Supplying an explicit local placeholder prevents NetworkMemory.addNode
+        // from requesting an embedding. Introspection nodes remain available to
+        // the local keyword index without putting provider I/O in the cycle path.
+        const node = await this.memory.addNode({
+          concept,
+          tag,
+          embedding: this.createLocalPlaceholderEmbedding(),
+          metadata: {
+            introspectionSourcePath: sourcePath
+          }
+        });
         
         if (node && node.id) {
           nodes.push(node.id);
+          this.integratedSourcePaths.add(sourcePath);
         }
       } catch (err) {
         this.logger.warn('Failed to integrate item into memory', {
@@ -222,6 +229,88 @@ class IntrospectionModule {
     }
 
     return nodes;
+  }
+
+  /**
+   * Normalize the durable identity used for exact source-file deduplication.
+   */
+  normalizeSourcePath(filePath) {
+    return path.normalize(path.resolve(String(filePath || '')));
+  }
+
+  /**
+   * Check existing memory without calling the async semantic query path.
+   * NetworkMemory.queryByKeyword is synchronous, bounded by its keyword-index
+   * limits, and supports read-only access. The capped node scan preserves
+   * compatibility with simpler memory implementations used by older installs.
+   */
+  hasExistingSourcePath(sourcePath) {
+    const basename = path.basename(sourcePath);
+    let candidates = [];
+
+    if (typeof this.memory.queryByKeyword === 'function') {
+      try {
+        const result = this.memory.queryByKeyword(sourcePath, 25, {
+          accessMode: 'read-only',
+          markAccess: false
+        });
+        // Do not await or otherwise adopt a thenable from an unknown memory
+        // implementation: introspection's dedup path must remain synchronous.
+        if (Array.isArray(result)) candidates = result;
+      } catch (err) {
+        this.logger.debug('Local introspection dedup query failed; using bounded node scan', {
+          error: err.message
+        });
+      }
+    }
+
+    if (candidates.length === 0 && this.memory.nodes instanceof Map) {
+      candidates = [];
+      let inspected = 0;
+      for (const node of this.memory.nodes.values()) {
+        candidates.push(node);
+        inspected += 1;
+        if (inspected >= MAX_LOCAL_DEDUP_NODES) break;
+      }
+    }
+
+    return candidates.some((node) => this.isNodeForSourcePath(node, sourcePath, basename));
+  }
+
+  isNodeForSourcePath(node, sourcePath, basename) {
+    if (!node || (node.tag !== 'introspection'
+      && !String(node.concept || '').startsWith('[INTROSPECTION] '))) return false;
+
+    const recordedPath = node.metadata?.introspectionSourcePath
+      || node.metadata?.sourcePath
+      || node.metadata?.filePath
+      || node.sourcePath
+      || node.filePath;
+    if (recordedPath) {
+      return this.normalizeSourcePath(recordedPath) === sourcePath;
+    }
+
+    // Legacy introspection nodes recorded only the basename in their concept.
+    return String(node.concept || '').startsWith(`[INTROSPECTION] ${basename} from `);
+  }
+
+  /**
+   * A zero vector is deliberately non-semantic: cosine similarity is zero, so
+   * it cannot create arbitrary graph edges, while its presence tells addNode
+   * not to contact an embedding provider. Keyword retrieval remains available.
+   */
+  createLocalPlaceholderEmbedding() {
+    const configured = typeof this.config.embedding?.dimensions === 'object'
+      ? this.config.embedding.dimensions.default
+      : this.config.embedding?.dimensions;
+    const environment = Number.parseInt(process.env.EMBEDDING_DIMENSIONS || '', 10);
+    const requested = Number.isSafeInteger(environment) && environment > 0
+      ? environment
+      : Number(configured);
+    const dimensions = Number.isSafeInteger(requested) && requested > 0
+      ? Math.min(requested, MAX_LOCAL_EMBEDDING_DIMENSIONS)
+      : 768;
+    return new Float32Array(dimensions);
   }
 
   /**
@@ -261,4 +350,3 @@ class IntrospectionModule {
 }
 
 module.exports = { IntrospectionModule };
-
