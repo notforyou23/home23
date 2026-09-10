@@ -546,3 +546,29 @@ test('conversation mapper: new optional provenance parses through without invent
   assert.equal(events[1]?.semanticVector, undefined);
   assert.equal(events[1]?.semanticAbsence, 'unavailable');
 });
+
+test('conversation mapper: writer hash stamps parse through; unstamped sibling stays unknown', (t) => {
+  const srcDir = makeDir(t, 'conv-prov-hash');
+  const stateDir = makeDir(t, 'conv-prov-hash-state');
+  const sourcePath = join(srcDir, 'conversation-stream.jsonl');
+  const vec = Array.from({ length: 16 }, () => 0.3);
+  const oldLine = JSON.stringify({
+    ts: '2026-08-09T14:00:00.000Z', role: 'user', text: 'should I do the sauna tonight?',
+    session: 's1', semantic_vector: vec,
+  });
+  const newLine = JSON.stringify({
+    ts: '2026-09-10T18:00:00.000Z', role: 'user', text: 'recycle paper tomorrow morning',
+    session: 's2', semantic_vector: vec,
+    semantic_recipe_id: '5128b29c886857aeb89b148d2d9f2edf2c20f63de15a764342c2a18da640f71a',
+    semantic_encoder: 'legacy-ollama-nomic-unprefixed',
+  });
+  writeFileSync(sourcePath, `${oldLine}\n${newLine}\n`, 'utf-8');
+  const adapter = new EventLedgerTailAdapter({
+    sourcePath, cursorDir: stateDir, sourceType: 'conversation-stream', fromEnd: false,
+  });
+  const events = adapter.pullSync();
+  assert.equal(events[0]?.semanticRecipeId, undefined);
+  assert.equal(events[1]?.semanticRecipeId, '5128b29c886857aeb89b148d2d9f2edf2c20f63de15a764342c2a18da640f71a');
+  assert.equal(events[1]?.semanticEncoder, 'legacy-ollama-nomic-unprefixed');
+  assert.equal(readFileSync(sourcePath, 'utf8'), `${oldLine}\n${newLine}\n`);
+});

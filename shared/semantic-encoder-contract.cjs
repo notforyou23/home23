@@ -130,6 +130,61 @@ function sanitizeRecipeId(raw) {
   return id;
 }
 
+/** Harness writers skip embed below this; absence is `too_short`. */
+const WRITER_MIN_TEXT_LENGTH = 8;
+
+/**
+ * Active Seed/contact recipe for NEW writer lines.
+ * Default product remains lived legacy (nomic-embed-text / Ollama).
+ * No default flip: unknown identities stamp as legacy, not owned.
+ */
+function resolveWriterRecipe(requested) {
+  const raw = (typeof requested === 'string' && requested.trim())
+    || (typeof process.env.SEED_EMBED_RECIPE_ID === 'string' && process.env.SEED_EMBED_RECIPE_ID.trim())
+    || (typeof process.env.SEED_EMBED_MODEL === 'string' && process.env.SEED_EMBED_MODEL.trim())
+    || 'nomic-embed-text';
+  if (canonicalizeRecipeId(raw) === OWNED_EMBEDDING_PROFILE) {
+    return Object.freeze({
+      profile: OWNED_EMBEDDING_PROFILE,
+      hash: OWNED_EMBEDDING_RECIPE_ID,
+    });
+  }
+  return Object.freeze({
+    profile: LEGACY_EMBEDDING_PROFILE,
+    hash: LEGACY_EMBEDDING_RECIPE_ID,
+  });
+}
+
+function inferWriterAbsence(text) {
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  return trimmed.length < WRITER_MIN_TEXT_LENGTH ? 'too_short' : 'unavailable';
+}
+
+/**
+ * Additive provenance for a newly appended line.
+ * Prefer hash on write; readers already accept name or hash.
+ * Never invents a vector. Absence is stamped only when no vector is present.
+ */
+function buildWriterSemanticStamp({
+  vector = null,
+  text = '',
+  absence = null,
+  requestedRecipe = null,
+} = {}) {
+  const recipe = resolveWriterRecipe(requestedRecipe);
+  const fields = {
+    semantic_recipe_id: recipe.hash,
+    semantic_encoder: recipe.profile,
+  };
+  if (Array.isArray(vector) && vector.length > 0) {
+    return { semantic_vector: vector, ...fields };
+  }
+  return {
+    ...fields,
+    semantic_absence: sanitizeAbsenceReason(absence) || inferWriterAbsence(text),
+  };
+}
+
 module.exports = {
   LEGACY_EMBEDDING_PROFILE,
   OWNED_EMBEDDING_PROFILE,
@@ -137,6 +192,7 @@ module.exports = {
   OWNED_EMBEDDING_RECIPE_ID,
   SEED_TRUNCATION_CHARS,
   MEMORY_TRUNCATION_CHARS,
+  WRITER_MIN_TEXT_LENGTH,
   TYPED_ABSENCE,
   fingerprintRecipe,
   canonicalizeRecipeId,
@@ -146,4 +202,7 @@ module.exports = {
   recipesAllowAnnReuse,
   sanitizeAbsenceReason,
   sanitizeRecipeId,
+  resolveWriterRecipe,
+  inferWriterAbsence,
+  buildWriterSemanticStamp,
 };

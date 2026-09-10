@@ -3,7 +3,7 @@
  *
  * Tails an agent's REAL conversation files (iOS / dashboard / telegram
  * sessions) and appends normalized turns to one stream the Seed eats:
- *   { ts, role, text, session, semantic_vector }
+ *   { ts, role, text, session, semantic_vector, semantic_recipe_id, … }
  *
  * Perception happens HERE, at the writer, once: each turn is embedded on the
  * local embedder and projected through the published species retina; the
