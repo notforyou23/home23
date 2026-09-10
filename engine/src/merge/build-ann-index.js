@@ -28,6 +28,9 @@ const {
 const {
   resolveAgentInstancePaths,
 } = require('../../../shared/agent-instance-paths.cjs');
+const {
+  recipesAllowAnnReuse,
+} = require('../../../shared/semantic-encoder-contract.cjs');
 
 const DIM = 768;
 const HNSW_M = 16;
@@ -376,6 +379,7 @@ async function validateReusableAnn({
   sourceNodeCount,
   provider,
   model,
+  recipeId,
   authorityAttestationKeyId,
   minimumCoverageBps,
 }) {
@@ -423,6 +427,14 @@ async function validateReusableAnn({
     });
   }
   if (meta.provider !== provider || meta.model !== model) {
+    throw memorySourceError('source_unavailable', 'fresh ANN embedding identity does not match request', {
+      retryable: false,
+    });
+  }
+  if (!recipesAllowAnnReuse({
+    queryRecipeId: recipeId || null,
+    indexRecipeId: meta.recipeId || null,
+  })) {
     throw memorySourceError('source_unavailable', 'fresh ANN embedding identity does not match request', {
       retryable: false,
     });
@@ -495,6 +507,7 @@ async function build(brainDir, deps = {}) {
   const advanceAnn = deps.advanceAnnBuiltFromRevision || advanceAnnBuiltFromRevision;
   const provider = deps.provider || process.env.EMBEDDING_PROVIDER || 'local';
   const model = deps.model || process.env.EMBEDDING_MODEL || 'nomic-embed-text';
+  const recipeId = deps.recipeId || process.env.EMBEDDING_RECIPE_ID || null;
   let authorityAttestationKeyId;
   try {
     authorityAttestationKeyId = deps.authorityKey === undefined
@@ -561,6 +574,7 @@ async function build(brainDir, deps = {}) {
         sourceNodeCount: capacity,
         provider,
         model,
+        recipeId,
         authorityAttestationKeyId,
         minimumCoverageBps,
       });
@@ -675,6 +689,7 @@ async function build(brainDir, deps = {}) {
         efConstruction: HNSW_EF_CONSTRUCTION,
         provider,
         model,
+        ...(recipeId ? { recipeId } : {}),
         generation,
         builtFromRevision: revision,
         builtAt: now().toISOString(),

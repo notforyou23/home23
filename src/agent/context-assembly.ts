@@ -20,7 +20,8 @@ import { budgetIdentityContent } from './identity-budget.js';
 import { composeSeedSituation } from '../substrate/seed-context.js';
 import { composeLivedRecent } from '../substrate/lived-recent.js';
 import { composeLivedFacts } from '../substrate/lived-facts.js';
-import { semanticMatchScore, SEMANTIC_MATCH_FLOOR } from '../substrate/semantic-match.js';
+import { semanticMatchScore } from '../substrate/semantic-match.js';
+import { admitsPairScore, resolveAttentionPolicy } from '../substrate/encoder-attention-policy.js';
 
 const require = createRequire(import.meta.url);
 const { resolveAgentInstancePaths } = require('../../shared/agent-instance-paths.cjs');
@@ -142,6 +143,7 @@ export interface OperationalSurfaceGateInput {
   label: string;
   anchors: readonly string[];
   semanticEmbed?: (t: string) => number[] | null;
+  recipeId?: string | null;
 }
 
 /**
@@ -157,8 +159,11 @@ export function shouldLoadOperationalSurface(input: OperationalSurfaceGateInput)
   }
 
   const anchorText = `${input.label}: ${input.anchors.join(', ')}`;
-  const score = semanticMatchScore(input.turnText, anchorText, input.semanticEmbed);
-  if (score !== null) return score >= SEMANTIC_MATCH_FLOOR;
+  const policy = resolveAttentionPolicy(input.recipeId);
+  const score = semanticMatchScore(input.turnText, anchorText, input.semanticEmbed, {
+    recipeId: input.recipeId,
+  });
+  if (score !== null) return admitsPairScore(score, policy);
 
   const hay = input.matchText.toLowerCase();
   return input.anchors.some(anchor => hay.includes(anchor.toLowerCase()));
@@ -206,11 +211,12 @@ function loadTriggeredSurfaces(
       ?? basename(surface.file).replace(/\.md$/i, '').replace(/[^A-Za-z0-9]+/g, '_').toUpperCase();
 
     let fired: boolean;
+    const policy = resolveAttentionPolicy();
     const score = turnText !== undefined
       ? semanticMatchScore(turnText, `${label}: ${cues.join(', ')}`, embed)
       : null;
     if (score !== null) {
-      fired = score >= SEMANTIC_MATCH_FLOOR;
+      fired = admitsPairScore(score, policy);
     } else {
       fired = cues.some(cue => hay.includes(cue));
     }

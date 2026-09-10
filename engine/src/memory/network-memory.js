@@ -17,6 +17,9 @@ const {
   attestMemoryAuthorityIfAvailable,
   verifyMemoryAuthorityAttestation,
 } = require('../../../shared/memory-authority-attestation.cjs');
+const {
+  recipesCompatibleForCompare,
+} = require('../../../shared/semantic-encoder-contract.cjs');
 
 function yieldToEventLoop() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -501,6 +504,21 @@ class NetworkMemory {
 
   getEmbeddingModel() {
     return process.env.EMBEDDING_MODEL || this.config.embedding?.model || 'nomic-embed-text';
+  }
+
+  getEmbeddingRecipeId() {
+    const recipe = process.env.EMBEDDING_RECIPE_ID || this.config.embedding?.recipeId || null;
+    return typeof recipe === 'string' && recipe.trim() ? recipe.trim() : null;
+  }
+
+  nodeEmbeddingRecipeId(node) {
+    const recipe = node?.embedding_recipe_id || node?.embeddingRecipeId || null;
+    return typeof recipe === 'string' && recipe.trim() ? recipe.trim() : null;
+  }
+
+  embeddingsComparable(a, b, recipeA, recipeB) {
+    if (!a || !b || !isVectorLike(a) || !isVectorLike(b) || a.length !== b.length) return false;
+    return recipesCompatibleForCompare(recipeA, recipeB);
   }
 
   getEmbeddingDimensions() {
@@ -2008,6 +2026,7 @@ class NetworkMemory {
     const retrievalIntent = normalizeRetrievalIntent(options.intent || queryText);
     const retrievalOptions = { ...options, intent: retrievalIntent, query: queryText };
     const queryEmbedding = await this.embed(queryText);
+    const queryRecipeId = this.getEmbeddingRecipeId();
     
     if (!queryEmbedding) {
       this.logger?.warn?.('Query embedding failed, using Memory Lite keyword retrieval', {
@@ -2024,6 +2043,10 @@ class NetworkMemory {
       // Skip nodes with null embeddings
       if (!node.embedding) {
         this.logger?.debug?.('Skipping node with null embedding during query', { nodeId: id });
+        continue;
+      }
+      if (!this.embeddingsComparable(queryEmbedding, node.embedding, queryRecipeId, this.nodeEmbeddingRecipeId(node))) {
+        this.logger?.debug?.('Skipping node with incompatible embedding recipe or dimension', { nodeId: id });
         continue;
       }
 
@@ -2360,8 +2383,10 @@ class NetworkMemory {
 
   findRelevantStateSnapshots(queryEmbedding, queryWords, bestSimilarity, options = {}) {
     const candidates = [];
+    const queryRecipeId = this.getEmbeddingRecipeId();
     for (const node of this.nodes.values()) {
       if (!this.isStateSnapshotNode(node) || !node.embedding) continue;
+      if (!this.embeddingsComparable(queryEmbedding, node.embedding, queryRecipeId, this.nodeEmbeddingRecipeId(node))) continue;
       const conceptLower = String(node.concept || '').toLowerCase();
       const overlap = queryWords.reduce((sum, word) => sum + (conceptLower.includes(word) ? 1 : 0), 0);
       const similarity = this.cosineSimilarity(queryEmbedding, node.embedding);
@@ -2483,6 +2508,7 @@ class NetworkMemory {
     if (this.nodes.size === 0) return [];
     
     const queryEmbedding = await this.embed(queryText);
+    const queryRecipeId = this.getEmbeddingRecipeId();
     if (!queryEmbedding) return this.queryByKeyword(queryText, topK, {
       retrievalMode: 'logical-source-scan',
     });
@@ -2491,6 +2517,7 @@ class NetworkMemory {
     const allScored = [];
     for (const [id, node] of this.nodes) {
       if (!node.embedding) continue;
+      if (!this.embeddingsComparable(queryEmbedding, node.embedding, queryRecipeId, this.nodeEmbeddingRecipeId(node))) continue;
       
       const similarity = this.cosineSimilarity(queryEmbedding, node.embedding);
       const retrievalScore = this.scoreTemporalRetrieval(node, similarity, {
@@ -2929,7 +2956,7 @@ class NetworkMemory {
   /**
    * Cosine similarity helper
    */
-  cosineSimilarity(a, b) {
+  cosineSimilarity(a, b, options = {}) {
     // Handle undefined inputs gracefully
     if (!a || !b || !isVectorLike(a) || !isVectorLike(b)) {
       this.logger?.warn?.('Cosine similarity called with invalid inputs', {
@@ -2946,6 +2973,10 @@ class NetworkMemory {
         aLength: a.length,
         bLength: b.length
       });
+      return 0;
+    }
+    if (!recipesCompatibleForCompare(options.recipeA, options.recipeB)) {
+      this.logger?.warn?.('Cosine similarity: incompatible embedding recipes');
       return 0;
     }
     

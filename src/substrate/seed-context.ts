@@ -40,6 +40,7 @@ import { readFileSync, readdirSync, existsSync, openSync, closeSync, fstatSync, 
 import { join } from 'node:path';
 import { embedTextRawSync } from './embed-at-contact.js';
 import { cachedEmbedRaw, cosine } from './semantic-match.js';
+import { admitsPoolScore, resolveAttentionPolicy } from './encoder-attention-policy.js';
 
 export interface SeedCell {
   id: string;
@@ -70,6 +71,8 @@ export interface ComposeSeedOptions {
   turnText?: string;
   /** Injectable embedder (tests); defaults to the raw native-space embedder. */
   embed?: (text: string) => number[] | null;
+  /** Active encoder recipe. Missing ⇒ lived legacy policy (do not mute existing homes). */
+  recipeId?: string | null;
   /** Max items surfaced on a matched turn. */
   maxItems?: number;
   /** How far back (in chain seqs from head) an identity event counts as
@@ -90,10 +93,8 @@ const DEFAULT_FRESH_WINDOW_SEQS = 200;
  *   length — short phatic turns ("Ok might be done") carry no matchable
  *            topical content and their embeddings sit near everything;
  *            they skip semantic matching entirely (and surface nothing).
- * Recalibrate all three if the embedder model changes. */
-const MATCH_FLOOR = 0.6;
-const MATCH_MARGIN = 0.12;
-const MIN_MATCHABLE_TURN_ALNUM = 20;
+ * Recalibrate all three if the embedder model changes.
+ * Lived values now live on resolveAttentionPolicy(legacy): 0.60 / 0.12 / 20. */
 /** Fresh identity events surface only on the bootstrap path (no turn). */
 const FRESH_CAP_BOOTSTRAP = 3;
 const LEDGER_TAIL_BYTES = 256 * 1024;
@@ -352,6 +353,7 @@ export function composeSeedSituation(stateDir: string, budgetOrOpts?: number | C
   const maxItems = opts.maxItems ?? DEFAULT_MAX_ITEMS;
   const freshWindow = opts.freshWindowSeqs ?? DEFAULT_FRESH_WINDOW_SEQS;
   const embed = opts.embed ?? embedTextRawSync;
+  const policy = resolveAttentionPolicy(opts.recipeId);
 
   const checkpoint = readSeedCheckpoint(stateDir);
   if (checkpoint === null) return null;
@@ -378,8 +380,11 @@ export function composeSeedSituation(stateDir: string, budgetOrOpts?: number | C
   };
 
   const turnAlnum = (opts.turnText ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').length;
-  const turnVec = opts.turnText !== undefined && turnAlnum >= MIN_MATCHABLE_TURN_ALNUM
-    ? cachedEmbed(opts.turnText, embed)
+  const canEmbedTurn = opts.turnText !== undefined
+    && policy.canSemanticGate
+    && turnAlnum >= policy.minMatchableAlnum;
+  const turnVec = canEmbedTurn
+    ? cachedEmbed(opts.turnText as string, embed, opts.recipeId)
     : null;
 
   if (turnVec !== null) {
@@ -389,13 +394,14 @@ export function composeSeedSituation(stateDir: string, budgetOrOpts?: number | C
     // lifts one thing. Estimates are capped — carried beliefs cluster
     // (three phrasings of one cadence fact), and two is plenty per turn.
     const all = pool.map((item) => {
-      const vec = cachedEmbed(item.matchText, embed);
-      return { item, score: vec === null ? 0 : cosine(turnVec, vec), hasVec: vec !== null };
+      const vec = cachedEmbed(item.matchText, embed, opts.recipeId);
+      const score = vec === null ? null : cosine(turnVec, vec);
+      return { item, score: score ?? 0, hasVec: score !== null };
     });
     const withVec = all.filter((s) => s.hasVec).map((s) => s.score).sort((a, b) => a - b);
     const median = withVec[Math.floor(withVec.length / 2)] ?? 0;
     const scored = all
-      .filter((s) => s.score >= MATCH_FLOOR && s.score - median >= MATCH_MARGIN)
+      .filter((s) => s.hasVec && admitsPoolScore(s.score, median, policy))
       .sort((a, b) => (b.item.reach - a.item.reach) || (b.score - a.score));
     let estimateBudget = 2;
     for (const s of scored) {

@@ -519,6 +519,29 @@ test('builder refuses fresh ANN reuse after the authority verifier key rotates',
     && /authority verifier context/i.test(error.message));
 });
 
+test('builder refuses fresh ANN reuse when the query recipe is owned and the index has no recipe id', async () => {
+  const dir = await createBrain();
+  const home23Root = await tempDir('home23-ann-builder-owned-recipe-reuse-home-');
+  await build(dir, {
+    home23Root,
+    requesterAgent: 'jerry',
+    resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+    provider: 'provider-a',
+    model: 'model-a',
+  });
+  await assert.rejects(() => build(dir, {
+    home23Root,
+    requesterAgent: 'jerry',
+    resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+    provider: 'provider-a',
+    model: 'model-a',
+    recipeId: 'owned-nomic-v1.5-onnx-fp32-mean-noprefix',
+  }), (error) => error?.code === 'source_unavailable'
+    && /embedding identity/i.test(error.message));
+});
+
 test('builder refuses fresh ANN reuse across embedding provider or model identity', async () => {
   const dir = await createBrain();
   const home23Root = await tempDir('home23-ann-builder-provider-reuse-home-');

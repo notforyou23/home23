@@ -9,7 +9,8 @@
 import type { MemoryObject, TriggerCondition, EventEnvelope } from '../types.js';
 import type { MemoryObjectStore } from './memory-objects.js';
 import type { EventLedger } from './event-ledger.js';
-import { semanticMatchScore, SEMANTIC_MATCH_FLOOR } from '../substrate/semantic-match.js';
+import { semanticMatchScore } from '../substrate/semantic-match.js';
+import { admitsPairScore, resolveAttentionPolicy } from '../substrate/encoder-attention-policy.js';
 
 interface TriggerMatch {
   memoryId: string;
@@ -61,7 +62,7 @@ export class TriggerIndex {
           const keywords = entry.trigger.condition.split(/\s+OR\s+/i).map(k => k.trim().toLowerCase());
           const score = semanticMatchScore(userText, `${entry.memory.title}: ${keywords.join(', ')}`, embed);
           fired = score !== null
-            ? score >= SEMANTIC_MATCH_FLOOR
+            ? admitsPairScore(score, resolveAttentionPolicy())
             : keywords.some(kw => textLower.includes(kw));
           break;
         }
@@ -82,7 +83,7 @@ export class TriggerIndex {
           const stage = entry.trigger.condition.toLowerCase();
           const score = semanticMatchScore(userText, `${entry.memory.title}: ${stage}`, embed);
           fired = score !== null
-            ? score >= SEMANTIC_MATCH_FLOOR
+            ? admitsPairScore(score, resolveAttentionPolicy())
             : textLower.includes(stage);
           break;
         }

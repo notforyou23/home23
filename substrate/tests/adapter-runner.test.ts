@@ -492,3 +492,57 @@ test('complete owner meaning survives stream, cell, checkpoint and session conte
   assert.ok(context?.includes(statement), 'the complete original must survive even a tiny legacy character target');
   assert.equal(readFileSync(conversationPath, 'utf8'), JSON.stringify({ ts: '2026-08-07T10:00:00.000Z', role: 'user', session: 'complete', text: statement }) + '\n');
 });
+
+test('conversation mapper: unstamped history stays unknown and event ids stay line-stable', (t) => {
+  const srcDir = makeDir(t, 'conv-prov-old');
+  const stateDir = makeDir(t, 'conv-prov-old-state');
+  const sourcePath = join(srcDir, 'conversation-stream.jsonl');
+  const vec = Array.from({ length: 16 }, () => 0.1);
+  const oldLine = JSON.stringify({
+    ts: '2026-08-09T14:00:00.000Z', role: 'user', text: 'should I do the sauna tonight?',
+    session: 's1', semantic_vector: vec,
+  });
+  writeFileSync(sourcePath, `${oldLine}\n`, 'utf-8');
+  const adapter = new EventLedgerTailAdapter({
+    sourcePath, cursorDir: stateDir, sourceType: 'conversation-stream', fromEnd: false,
+  });
+  const first = adapter.pullSync();
+  assert.equal(first.length, 1);
+  assert.equal(first[0]?.semanticVector?.length, 16);
+  assert.equal(first[0]?.semanticRecipeId, undefined);
+  assert.equal(first[0]?.semanticEncoder, undefined);
+  const firstId = first[0]?.eventId;
+  adapter.commit(first[0]!.endOffset);
+
+  const stamped = new EventLedgerTailAdapter({
+    sourcePath, cursorDir: join(stateDir, 'replay'), sourceType: 'conversation-stream', fromEnd: false,
+  });
+  const again = stamped.pullSync();
+  assert.equal(again[0]?.eventId, firstId, 'parse-through must not change line-hashed ids');
+  assert.equal(again[0]?.semanticRecipeId, undefined);
+});
+
+test('conversation mapper: new optional provenance parses through without inventing a vector', (t) => {
+  const srcDir = makeDir(t, 'conv-prov-new');
+  const stateDir = makeDir(t, 'conv-prov-new-state');
+  const sourcePath = join(srcDir, 'conversation-stream.jsonl');
+  const vec = Array.from({ length: 16 }, () => 0.2);
+  writeFileSync(sourcePath, `${JSON.stringify({
+    ts: '2026-09-10T14:00:00.000Z', role: 'user', text: 'recycle paper tomorrow morning',
+    session: 's2', semantic_vector: vec,
+    semantic_recipe_id: 'legacy-ollama-nomic-unprefixed',
+    semantic_encoder: 'legacy-ollama-nomic-unprefixed',
+  })}\n${JSON.stringify({
+    ts: '2026-09-10T14:00:30.000Z', role: 'assistant', text: 'ok',
+    session: 's2', semantic_absence: 'unavailable',
+  })}\n`, 'utf-8');
+  const adapter = new EventLedgerTailAdapter({
+    sourcePath, cursorDir: stateDir, sourceType: 'conversation-stream', fromEnd: false,
+  });
+  const events = adapter.pullSync();
+  assert.equal(events[0]?.semanticRecipeId, 'legacy-ollama-nomic-unprefixed');
+  assert.equal(events[0]?.semanticEncoder, 'legacy-ollama-nomic-unprefixed');
+  assert.equal(events[0]?.semanticVector?.length, 16);
+  assert.equal(events[1]?.semanticVector, undefined);
+  assert.equal(events[1]?.semanticAbsence, 'unavailable');
+});

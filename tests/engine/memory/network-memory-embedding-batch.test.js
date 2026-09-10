@@ -54,6 +54,20 @@ test('batch fallback requests only missing response indexes', async () => {
   assert.deepEqual(calls, [['a', 'b'], 'b']);
 });
 
+test('query refuses length and recipe mismatches rather than mixing spaces', () => {
+  const memory = createMemory(() => ({
+    embeddings: { create: async () => ({ data: [{ index: 0, embedding: [1, 0] }] }) },
+  }));
+  const owned = 'owned-nomic-v1.5-onnx-fp32-mean-noprefix';
+  assert.equal(memory.embeddingsComparable([1, 0], [1, 0, 0], null, null), false);
+  assert.equal(memory.cosineSimilarity([1, 0], [1, 0, 0]), 0);
+  assert.equal(memory.embeddingsComparable([1, 0], [1, 0], owned, null), false);
+  assert.equal(memory.embeddingsComparable([1, 0], [1, 0], owned, owned), true);
+  assert.equal(memory.embeddingsComparable([1, 0], [1, 0], null, null), true);
+  memory.config.embedding.recipeId = owned;
+  assert.equal(memory.getEmbeddingRecipeId(), owned);
+});
+
 test('batch validation keeps one output slot per input when provider rows are malformed', async () => {
   const calls = [];
   const memory = createMemory(() => ({
