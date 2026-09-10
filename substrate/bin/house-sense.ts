@@ -27,6 +27,7 @@ import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { fetchRawEmbedding } from '../src/embed-fetch.js';
 import { load as yamlLoad } from 'js-yaml';
 import { projectEmbedding, EMBED_DIM } from '../src/semantic-projection.js';
+import { buildWriterSemanticStamp } from '../src/semantic-provenance.js';
 
 const streamPath = process.env['SHIPPER_STREAM_PATH'];
 if (!streamPath) {
@@ -145,7 +146,7 @@ async function tick(): Promise<void> {
       from,
       to: st.state,
       text,
-      ...(vector !== null ? { semantic_vector: vector } : {}),
+      ...buildWriterSemanticStamp({ vector, text }),
     }) + '\n');
     lastShipped.set(st.entity_id, now);
     hourWindow.push(now);

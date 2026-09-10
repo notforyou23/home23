@@ -1,10 +1,47 @@
 /**
- * EncodeEvent boundary: additive provenance parse-through.
+ * EncodeEvent boundary: additive provenance parse-through + new-line stamps.
  * Never fabricates a vector. Unstamped history stays unknown.
  * metabolism.ts stays unchanged — callers admit recorded vectors as-is.
  */
 
+import { createRequire } from 'node:module';
 import type { SourceEvent } from './types.js';
+
+const require = createRequire(import.meta.url);
+const contract = require('../../shared/semantic-encoder-contract.cjs') as {
+  LEGACY_EMBEDDING_PROFILE: string;
+  OWNED_EMBEDDING_PROFILE: string;
+  LEGACY_EMBEDDING_RECIPE_ID: string;
+  OWNED_EMBEDDING_RECIPE_ID: string;
+  buildWriterSemanticStamp: (input?: {
+    vector?: number[] | null;
+    text?: string;
+    absence?: string | null;
+    requestedRecipe?: string | null;
+  }) => WriterSemanticStamp;
+};
+
+export const LEGACY_EMBEDDING_PROFILE = contract.LEGACY_EMBEDDING_PROFILE;
+export const OWNED_EMBEDDING_PROFILE = contract.OWNED_EMBEDDING_PROFILE;
+export const LEGACY_EMBEDDING_RECIPE_ID = contract.LEGACY_EMBEDDING_RECIPE_ID;
+export const OWNED_EMBEDDING_RECIPE_ID = contract.OWNED_EMBEDDING_RECIPE_ID;
+
+export interface WriterSemanticStamp {
+  semantic_recipe_id: string;
+  semantic_encoder: string;
+  semantic_vector?: number[];
+  semantic_absence?: string;
+}
+
+/** Stamp a newly appended writer line. Does not rewrite history. */
+export function buildWriterSemanticStamp(input?: {
+  vector?: number[] | null;
+  text?: string;
+  absence?: string | null;
+  requestedRecipe?: string | null;
+}): WriterSemanticStamp {
+  return contract.buildWriterSemanticStamp(input);
+}
 
 export const TYPED_ABSENCE = Object.freeze([
   'too_short',

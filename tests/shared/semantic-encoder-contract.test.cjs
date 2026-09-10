@@ -15,6 +15,8 @@ const {
   recipesCompatibleForCompare,
   recipesAllowAnnReuse,
   resolveAttentionPolicy,
+  resolveWriterRecipe,
+  buildWriterSemanticStamp,
 } = require('../../shared/semantic-encoder-contract.cjs');
 
 test('recipe fingerprint includes truncation; Seed 1000 and Memory 2000 stay distinct', () => {
@@ -89,11 +91,89 @@ test('profile name and frozen hash are aliases; service recipeId is the hash', (
   assert.equal(canonicalizeRecipeId(OWNED_EMBEDDING_RECIPE_ID), OWNED_EMBEDDING_PROFILE);
   assert.equal(canonicalizeRecipeId(LEGACY_EMBEDDING_RECIPE_ID), LEGACY_EMBEDDING_PROFILE);
   assert.equal(recipesCompatibleForCompare(OWNED_EMBEDDING_PROFILE, OWNED_EMBEDDING_RECIPE_ID), true);
+  assert.equal(recipesCompatibleForCompare(LEGACY_EMBEDDING_PROFILE, LEGACY_EMBEDDING_RECIPE_ID), true);
   assert.equal(recipesCompatibleForCompare(LEGACY_EMBEDDING_RECIPE_ID, OWNED_EMBEDDING_RECIPE_ID), false);
+  assert.equal(recipesCompatibleForCompare(LEGACY_EMBEDDING_RECIPE_ID, OWNED_EMBEDDING_PROFILE), false);
+  const legacyHashPolicy = resolveAttentionPolicy(LEGACY_EMBEDDING_RECIPE_ID);
+  assert.equal(legacyHashPolicy.profileId, LEGACY_EMBEDDING_PROFILE);
+  assert.equal(legacyHashPolicy.matchFloor, 0.6);
+  assert.equal(legacyHashPolicy.matchMargin, 0.12);
+  assert.equal(legacyHashPolicy.canSemanticGate, true);
   assert.equal(resolveAttentionPolicy(OWNED_EMBEDDING_RECIPE_ID).canSemanticGate, false);
   assert.equal(resolveAttentionPolicy(OWNED_EMBEDDING_RECIPE_ID).matchFloor, null);
   assert.equal(recipesAllowAnnReuse({
     queryRecipeId: OWNED_EMBEDDING_RECIPE_ID,
     indexRecipeId: OWNED_EMBEDDING_PROFILE,
   }), true);
+  assert.equal(recipesAllowAnnReuse({
+    queryRecipeId: LEGACY_EMBEDDING_RECIPE_ID,
+    indexRecipeId: null,
+  }), true);
+  assert.equal(recipesAllowAnnReuse({
+    queryRecipeId: OWNED_EMBEDDING_RECIPE_ID,
+    indexRecipeId: null,
+  }), false);
+  assert.equal(recipesAllowAnnReuse({
+    queryRecipeId: LEGACY_EMBEDDING_PROFILE,
+    indexRecipeId: OWNED_EMBEDDING_RECIPE_ID,
+  }), false);
+});
+
+test('new writer stamps prefer recipe hash; absence does not invent a vector', () => {
+  const vector = [0.1, 0.2];
+  const stamped = buildWriterSemanticStamp({
+    vector,
+    text: 'recycle paper tomorrow morning',
+    requestedRecipe: 'nomic-embed-text',
+  });
+  assert.equal(stamped.semantic_recipe_id, LEGACY_EMBEDDING_RECIPE_ID);
+  assert.equal(stamped.semantic_encoder, LEGACY_EMBEDDING_PROFILE);
+  assert.deepEqual(stamped.semantic_vector, vector);
+  assert.equal(stamped.semantic_absence, undefined);
+
+  const owned = buildWriterSemanticStamp({
+    vector,
+    text: 'recycle paper tomorrow morning',
+    requestedRecipe: OWNED_EMBEDDING_PROFILE,
+  });
+  assert.equal(owned.semantic_recipe_id, OWNED_EMBEDDING_RECIPE_ID);
+  assert.equal(owned.semantic_encoder, OWNED_EMBEDDING_PROFILE);
+
+  const ownedHash = buildWriterSemanticStamp({
+    vector,
+    requestedRecipe: OWNED_EMBEDDING_RECIPE_ID,
+  });
+  assert.equal(ownedHash.semantic_recipe_id, OWNED_EMBEDDING_RECIPE_ID);
+
+  const absent = buildWriterSemanticStamp({
+    vector: null,
+    text: 'recycle paper tomorrow morning',
+    requestedRecipe: LEGACY_EMBEDDING_PROFILE,
+  });
+  assert.equal(absent.semantic_vector, undefined);
+  assert.equal(absent.semantic_absence, 'unavailable');
+  assert.equal(absent.semantic_recipe_id, LEGACY_EMBEDDING_RECIPE_ID);
+
+  const short = buildWriterSemanticStamp({ vector: null, text: 'ok', requestedRecipe: LEGACY_EMBEDDING_PROFILE });
+  assert.equal(short.semantic_absence, 'too_short');
+  assert.equal(short.semantic_vector, undefined);
+});
+
+test('default writer recipe stays lived legacy; owned only when requested', () => {
+  const priorRecipe = process.env.SEED_EMBED_RECIPE_ID;
+  const priorModel = process.env.SEED_EMBED_MODEL;
+  delete process.env.SEED_EMBED_RECIPE_ID;
+  delete process.env.SEED_EMBED_MODEL;
+  try {
+    const recipe = resolveWriterRecipe();
+    assert.equal(recipe.profile, LEGACY_EMBEDDING_PROFILE);
+    assert.equal(recipe.hash, LEGACY_EMBEDDING_RECIPE_ID);
+    assert.equal(resolveWriterRecipe('nomic-embed-text').profile, LEGACY_EMBEDDING_PROFILE);
+    assert.equal(resolveWriterRecipe(OWNED_EMBEDDING_PROFILE).hash, OWNED_EMBEDDING_RECIPE_ID);
+  } finally {
+    if (priorRecipe === undefined) delete process.env.SEED_EMBED_RECIPE_ID;
+    else process.env.SEED_EMBED_RECIPE_ID = priorRecipe;
+    if (priorModel === undefined) delete process.env.SEED_EMBED_MODEL;
+    else process.env.SEED_EMBED_MODEL = priorModel;
+  }
 });
