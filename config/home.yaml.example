@@ -350,6 +350,9 @@ models:
       provider: openai-codex
       model: gpt-5.6-sol
       reasoningEffort: xhigh
+    luna:
+      provider: openai-codex
+      model: gpt-5.6-luna
     gpt-pro:
       provider: openai
       model: gpt-5.5-pro

@@ -360,6 +360,30 @@ test('filesystem loader supports fresh-install seeding before an agent exists', 
   });
 });
 
+test('filesystem loader uses home-only authority when selected agent config is missing', (t) => {
+  const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-model-authority-missing-agent-'));
+  t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home23Root, 'config'), { recursive: true });
+  fs.writeFileSync(
+    path.join(home23Root, 'config', 'home.yaml'),
+    yaml.dump(baseHome()),
+  );
+
+  const authority = loadHome23ModelAuthority({ home23Root, agent: 'agent' });
+  assert.equal(authority.queryDefaults.defaultProvider, 'xai');
+  assert.equal(authority.queryDefaults.defaultModel, 'shared-name');
+  assert.deepEqual(authority.executionCatalog.defaults.launch, {
+    primary: 'shared-name',
+    fast: 'shared-name',
+    strategic: 'shared-name',
+  });
+  assert.equal(
+    fs.existsSync(path.join(home23Root, 'instances', 'agent', 'config.yaml')),
+    false,
+    'must not invent an instances/agent directory as a workaround',
+  );
+});
+
 test('public model aliases resolve only to exact selectable Home23 pairs', () => {
   const homeConfig = yaml.load(fs.readFileSync(
     path.join(__dirname, '../../../config/home.yaml.example'),
