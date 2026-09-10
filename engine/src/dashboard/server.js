@@ -3396,6 +3396,16 @@ class DashboardServer {
       });
     });
 
+    // Connected Agents surface (honest product page; was a dead /home23/connected-agents link)
+    this.app.get('/home23/connected-agents', (req, res) => {
+      res.sendFile(path.join(__dirname, 'connected-agents.html'));
+    });
+
+    // Legacy diagnostics under the /home23 prefix (same page as /legacy)
+    this.app.get('/home23/legacy', (req, res) => {
+      res.sendFile(path.join(__dirname, 'legacy-dashboard.html'));
+    });
+
     // Chat standalone page
     this.app.get('/home23/chat', (req, res) => {
       res.sendFile(path.join(__dirname, 'home23-chat.html'));
