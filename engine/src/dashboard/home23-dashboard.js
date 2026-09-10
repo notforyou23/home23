@@ -505,6 +505,25 @@ function setupDashboardOverlayAccessibility() {
 
   syncDashboardOverlayVisualStack(overlays);
   syncDashboardOverlayScrollLock();
+
+  const problemsOverlay = document.getElementById('problems-overlay');
+  if (problemsOverlay && !problemsOverlay.dataset.closeBound) {
+    problemsOverlay.dataset.closeBound = '1';
+    problemsOverlay.querySelectorAll('.h23-log-overlay-close, [data-close-problems]').forEach((btn) => {
+      btn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeProblemsPanel(event);
+      });
+    });
+    problemsOverlay.addEventListener('click', (event) => {
+      if (event.target === problemsOverlay) closeProblemsPanel(event);
+    });
+  }
+  if (typeof window !== 'undefined') {
+    window.closeProblemsPanel = closeProblemsPanel;
+    window.openProblemsPanel = openProblemsPanel;
+  }
 }
 
 // ── Live Problems (verifier-backed ground truth) ──
@@ -549,12 +568,21 @@ async function openProblemsPanel() {
   const overlay = document.getElementById('problems-overlay');
   if (!overlay) return;
   overlay.style.display = 'flex';
+  overlay.classList.add('active');
+  overlay.setAttribute('aria-hidden', 'false');
   await renderProblemsList();
 }
 
-function closeProblemsPanel() {
+function closeProblemsPanel(event) {
+  if (event) {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+  }
   const overlay = document.getElementById('problems-overlay');
-  if (overlay) overlay.style.display = 'none';
+  if (!overlay) return;
+  overlay.style.display = 'none';
+  overlay.classList.remove('active');
+  overlay.setAttribute('aria-hidden', 'true');
 }
 
 async function renderProblemsList() {
@@ -2762,9 +2790,15 @@ function renderJerryVoiceTile(pulsePayload, homeSummary, statePayload, agencyPay
     || ((goodLifePayload?.evaluatedAt || goodLifePayload?.state?.evaluatedAt)
       ? new Date(goodLifePayload.evaluatedAt || goodLifePayload.state.evaluatedAt)
       : null);
+  const pulseOnline = enginePulse
+    && enginePulse.state
+    && enginePulse.state !== 'offline'
+    && enginePulse.state !== 'unknown';
   const kickerAge = thoughtDate && !Number.isNaN(thoughtDate.getTime())
     ? timeSince(thoughtDate).toUpperCase()
-    : 'LIVE';
+    : (pulseOnline
+      ? String(enginePulse.state || 'online').toUpperCase()
+      : 'OFFLINE');
   const footerParts = [
     nodeCount != null ? `${formatCompactNumber(nodeCount)} brain nodes` : 'brain nodes unavailable',
     openProblems != null ? `${openProblems} open problem${openProblems === 1 ? '' : 's'}` : 'open problems unavailable',
