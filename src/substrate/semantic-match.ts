@@ -20,6 +20,7 @@
 import { embedTextRawSync } from './embed-at-contact.js';
 import {
   LEGACY_EMBEDDING_PROFILE,
+  canonicalizeRecipeId,
   resolveAttentionPolicy,
   type AttentionPolicy,
 } from './encoder-attention-policy.js';
@@ -41,7 +42,8 @@ function cacheKey(recipeId: string, text: string): string {
 }
 
 function activeRecipeId(recipeId?: string | null): string {
-  return recipeId || process.env['SEED_EMBED_RECIPE_ID'] || LEGACY_EMBEDDING_PROFILE;
+  return canonicalizeRecipeId(recipeId || process.env['SEED_EMBED_RECIPE_ID'])
+    || LEGACY_EMBEDDING_PROFILE;
 }
 
 export function resetSemanticMatchCache(): void {

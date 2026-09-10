@@ -14,6 +14,8 @@ import {
 import {
   LEGACY_EMBEDDING_PROFILE,
   OWNED_EMBEDDING_PROFILE,
+  LEGACY_EMBEDDING_RECIPE_ID,
+  OWNED_EMBEDDING_RECIPE_ID,
   resolveAttentionPolicy,
   admitsPairScore,
 } from '../../src/substrate/encoder-attention-policy.js';
@@ -75,4 +77,20 @@ test('embed cache is keyed by recipe id, not text alone', () => {
 test('dimension mismatch is a typed absence, never a fabricated score', () => {
   const embed = (text: string) => (text === LONG ? [1, 0, 0] : [1, 0]);
   assert.equal(semanticMatchScore(LONG, `${LONG} other`, embed), null);
+});
+
+test('owned fingerprint hash is null-cal; legacy hash keeps lived gate and cache', () => {
+  assert.equal(semanticMatchScore(LONG, LONG, () => [1, 0], { recipeId: OWNED_EMBEDDING_RECIPE_ID }), null);
+  const embed = () => [1, 0];
+  const score = semanticMatchScore(LONG, LONG, embed, { recipeId: LEGACY_EMBEDDING_RECIPE_ID });
+  assert.ok(score === 1);
+  resetSemanticMatchCache();
+  const calls: string[] = [];
+  const counting = (text: string) => {
+    calls.push(text);
+    return [1, 0];
+  };
+  cachedEmbedRaw(LONG, counting, LEGACY_EMBEDDING_PROFILE);
+  cachedEmbedRaw(LONG, counting, LEGACY_EMBEDDING_RECIPE_ID);
+  assert.equal(calls.length, 1, 'legacy name and hash share one cache key');
 });

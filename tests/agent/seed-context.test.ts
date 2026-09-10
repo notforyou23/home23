@@ -180,6 +180,12 @@ test('owned null-cal recipe does not semantic-gate a matchable turn', (t) => {
     recipeId: 'owned-nomic-v1.5-onnx-fp32-mean-noprefix',
   });
   assert.equal(block, null, 'uncalibrated owned recipe must stay silent, not borrow 0.60');
+  const byHash = composeSeedSituation(dir, {
+    turnText: 'how are the workers doing?',
+    embed: fakeEmbed,
+    recipeId: '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9',
+  });
+  assert.equal(byHash, null, 'owned fingerprint hash is the same null-cal recipe');
 });
 
 test('ledger tail retains a complete oversized Unicode record and skips a torn final write', async (t) => {

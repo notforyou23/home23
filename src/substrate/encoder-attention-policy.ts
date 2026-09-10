@@ -9,11 +9,17 @@ const require = createRequire(import.meta.url);
 const contract = require('../../shared/semantic-encoder-contract.cjs') as {
   LEGACY_EMBEDDING_PROFILE: string;
   OWNED_EMBEDDING_PROFILE: string;
+  LEGACY_EMBEDDING_RECIPE_ID: string;
+  OWNED_EMBEDDING_RECIPE_ID: string;
+  canonicalizeRecipeId: (recipeId?: string | null) => string | null;
   resolveAttentionPolicy: (recipeId?: string | null) => AttentionPolicy;
 };
 
 export const LEGACY_EMBEDDING_PROFILE = contract.LEGACY_EMBEDDING_PROFILE;
 export const OWNED_EMBEDDING_PROFILE = contract.OWNED_EMBEDDING_PROFILE;
+export const LEGACY_EMBEDDING_RECIPE_ID = contract.LEGACY_EMBEDDING_RECIPE_ID;
+export const OWNED_EMBEDDING_RECIPE_ID = contract.OWNED_EMBEDDING_RECIPE_ID;
+export const canonicalizeRecipeId = contract.canonicalizeRecipeId;
 
 export interface AttentionPolicy {
   profileId: string;

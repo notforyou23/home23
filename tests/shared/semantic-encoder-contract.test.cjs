@@ -5,10 +5,13 @@ const assert = require('node:assert/strict');
 const {
   LEGACY_EMBEDDING_PROFILE,
   OWNED_EMBEDDING_PROFILE,
+  LEGACY_EMBEDDING_RECIPE_ID,
+  OWNED_EMBEDDING_RECIPE_ID,
   SEED_TRUNCATION_CHARS,
   MEMORY_TRUNCATION_CHARS,
   TYPED_ABSENCE,
   fingerprintRecipe,
+  canonicalizeRecipeId,
   recipesCompatibleForCompare,
   recipesAllowAnnReuse,
   resolveAttentionPolicy,
@@ -80,4 +83,48 @@ test('missing recipe resolves to lived legacy attention, not owned mute', () => 
   const policy = resolveAttentionPolicy(undefined);
   assert.equal(policy.canSemanticGate, true);
   assert.equal(policy.matchFloor, 0.6);
+});
+
+test('profile name and frozen fingerprint hash are the same recipe', () => {
+  assert.equal(canonicalizeRecipeId(LEGACY_EMBEDDING_RECIPE_ID), LEGACY_EMBEDDING_PROFILE);
+  assert.equal(canonicalizeRecipeId(OWNED_EMBEDDING_RECIPE_ID), OWNED_EMBEDDING_PROFILE);
+  assert.equal(recipesCompatibleForCompare(LEGACY_EMBEDDING_PROFILE, LEGACY_EMBEDDING_RECIPE_ID), true);
+  assert.equal(recipesCompatibleForCompare(OWNED_EMBEDDING_PROFILE, OWNED_EMBEDDING_RECIPE_ID), true);
+  assert.equal(recipesCompatibleForCompare(LEGACY_EMBEDDING_RECIPE_ID, OWNED_EMBEDDING_RECIPE_ID), false);
+  assert.equal(recipesCompatibleForCompare(LEGACY_EMBEDDING_RECIPE_ID, OWNED_EMBEDDING_PROFILE), false);
+  assert.equal(recipesCompatibleForCompare('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', LEGACY_EMBEDDING_PROFILE), false);
+  assert.equal(recipesCompatibleForCompare(undefined, LEGACY_EMBEDDING_RECIPE_ID), true);
+
+  const legacyHashPolicy = resolveAttentionPolicy(LEGACY_EMBEDDING_RECIPE_ID);
+  assert.equal(legacyHashPolicy.profileId, LEGACY_EMBEDDING_PROFILE);
+  assert.equal(legacyHashPolicy.matchFloor, 0.6);
+  assert.equal(legacyHashPolicy.matchMargin, 0.12);
+  assert.equal(legacyHashPolicy.canSemanticGate, true);
+
+  const ownedHashPolicy = resolveAttentionPolicy(OWNED_EMBEDDING_RECIPE_ID);
+  assert.equal(ownedHashPolicy.profileId, OWNED_EMBEDDING_PROFILE);
+  assert.equal(ownedHashPolicy.matchFloor, null);
+  assert.equal(ownedHashPolicy.matchMargin, null);
+  assert.equal(ownedHashPolicy.canSemanticGate, false);
+
+  const unknownHashPolicy = resolveAttentionPolicy('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  assert.equal(unknownHashPolicy.canSemanticGate, true);
+  assert.equal(unknownHashPolicy.matchFloor, 0.6);
+
+  assert.equal(recipesAllowAnnReuse({
+    queryRecipeId: OWNED_EMBEDDING_RECIPE_ID,
+    indexRecipeId: OWNED_EMBEDDING_PROFILE,
+  }), true);
+  assert.equal(recipesAllowAnnReuse({
+    queryRecipeId: LEGACY_EMBEDDING_RECIPE_ID,
+    indexRecipeId: null,
+  }), true);
+  assert.equal(recipesAllowAnnReuse({
+    queryRecipeId: OWNED_EMBEDDING_RECIPE_ID,
+    indexRecipeId: null,
+  }), false);
+  assert.equal(recipesAllowAnnReuse({
+    queryRecipeId: LEGACY_EMBEDDING_PROFILE,
+    indexRecipeId: OWNED_EMBEDDING_RECIPE_ID,
+  }), false);
 });
