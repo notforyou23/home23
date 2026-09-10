@@ -2,6 +2,8 @@
 
 Read `AGENTS.md` and `docs/reference/DEVELOPMENT-WORKFLOW.md` before work. They establish source ownership, concurrent-work handling and release boundaries. The developer reference below does not supersede them.
 
+The lead owns review, relevant verification, local commits and integration. Worker restrictions do not remove those responsibilities or create new owner approval requirements. Follow the shared agreement's task record and completion rules, preserving the owner's explicit scope and authorization.
+
 # Home23 Developer Guide
 
 Home23 is an installable AI operating system for persistent local agents. Keep the public repository portable and keep user-specific runtime state outside Git.
@@ -38,7 +40,7 @@ node cli/home23.js start <name>
 - `engine/src/` - engine, dashboard, cognition, memory, live-problem, and sensor modules.
 - `engine/src/substrate/` - engine-side Seed readers (cognition grounding, dream day-residue).
 - `cli/` - installer, PM2 management, agent creation, updates, and templates.
-- `cosmo23/` - bundled COSMO 2.3 engine, first-class editable. Read `docs/design/COSMO23-VENDORED-PATCHES.md` before touching integration boundaries (config, OAuth, env vars, server API).
+- Cosmo is a standalone research application reached through its configured API; it is no longer a vendored `cosmo23/` source tree. Read `docs/reference/COSMO-SEPARATION.md` for ownership and cross-product test prerequisites.
 - `evobrew/` - bundled Evobrew integration.
 - `config/*.example` - public config seeds.
 - `instances/` - generated per-agent runtime state. Ignored by Git.
@@ -104,6 +106,8 @@ node cli/home23.js update --check
 PM2 process names are generated from agent names as `home23-<name>`, `home23-<name>-dash`, `home23-<name>-mcp` (unless `mcp.enabled: false`), `home23-<name>-harness`, and `home23-<name>-seed` (when `substrate.enabled: true`). Lifecycle code must derive an agent's process set from `shared/agent-process-names.cjs`, never a hardcoded triplet.
 
 ## Development Checks
+
+Select checks for the changed behavior under the shared agreement. The full suite below requires `COSMO23_SOURCE_ROOT` to identify the standalone Cosmo checkout; report pretest failures separately from tests that never ran.
 
 ```bash
 npm run build

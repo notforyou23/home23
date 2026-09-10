@@ -16,6 +16,8 @@ Carry implementation requests through the source changes, necessary cleanup and 
 
 Use judgment for routine choices. Ask only for a consequential decision outside the task's authorization; authorization already given remains valid. Production activation, service restarts, destructive data changes, pushes and publishing require authorization covering that action. Implementation alone does not authorize them.
 
+The lead owns the return to maintained source. A "do not commit" limit assigned to workers leaves committing and integration with the lead; it does not create an owner approval requirement. Follow the shared agreement's task record, dependency reconciliation and verification rules before declaring completion.
+
 ## Before You Edit
 
 If `instances/.house/source-authority.json` exists, run `npm run source:status` and use its maintained development source. An installation checkout or an old task worktree is not automatically the source for new changes. Read `docs/reference/SOURCE-AUTHORITY.md`.
@@ -26,7 +28,7 @@ If `instances/.house/source-authority.json` exists, run `npm run source:status` 
    ```
 2. Read the documentation relevant to the area and operation. Reuse material already read during the task; refresh it when the source, scope, or relevant facts change. Do not read every design document as a ritual:
    - `README.md` and `docs/ONBOARDING.md` for install/start behavior.
-   - `docs/design/COSMO23-VENDORED-PATCHES.md` before changing anything under `cosmo23/`.
+   - `docs/reference/COSMO-SEPARATION.md` for the standalone Cosmo boundary; former vendoring notes are historical.
    - The matching `docs/design/*` file for feature areas with design docs.
 3. Protect local state. Do not delete or overwrite runtime data unless the operator explicitly asks.
 4. If `instances/.house/coordination/active-release.json` exists, read `docs/reference/MANAGED-RELEASES.md` before build, update, launcher or deployment work. Verify the selected package and actual process paths; prepare and build changes in isolation. A working checkout is not necessarily the deployed source baseline.
@@ -97,13 +99,15 @@ The generated `instances/`, local `config/*.yaml`/`*.json`, and `ecosystem.confi
 
 ## Verification
 
-For release/onboarding work, prefer:
+Follow the shared agreement's verification scope. For release/onboarding work, prefer:
 
 ```bash
 npm run build
 npm test
 npm run test:contracts
 ```
+
+The full backend suite's cross-product pretest requires `COSMO23_SOURCE_ROOT` to point to the standalone Cosmo checkout, as documented in `docs/reference/COSMO-SEPARATION.md`. Check that prerequisite before running it. A failed pretest prevents the main test command from running; report the stages separately.
 
 For fresh-install separation, also verify tracked files:
 

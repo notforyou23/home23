@@ -4,3 +4,5 @@ alwaysApply: true
 ---
 
 Read the repository AGENTS.md before working. Follow its shared development agreement and current platform/source instructions. Preserve existing work; do not switch a shared checkout beneath another active session. Report committed, pushed, deployed and installed states separately. Authorization already given by the owner persists within the task.
+
+The lead owns review, relevant verification, local commits and integration. Worker restrictions do not remove those responsibilities or create new owner approval requirements. Follow the shared agreement's task record and completion rules, preserving the owner's explicit scope and authorization.
