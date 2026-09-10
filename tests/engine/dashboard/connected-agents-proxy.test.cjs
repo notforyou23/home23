@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
+const { readFileSync } = require('node:fs');
 const http = require('node:http');
+const path = require('node:path');
 const test = require('node:test');
 const express = require('express');
 const { allowed, coordinationOrigin, createConnectedAgentsProxy } = require('../../../engine/src/dashboard/connected-agents-proxy.js');
@@ -32,6 +34,14 @@ test('product proxy allowlist contains product nouns and exact methods only', ()
   assert.equal(allowed('DELETE', '/bots/bot_123'), false);
   assert.throws(() => coordinationOrigin('http://0.0.0.0:7346'), /origin_invalid/);
   assert.throws(() => coordinationOrigin('https://127.0.0.1:7346'), /origin_invalid/);
+});
+
+test('dashboard mounts the product proxy before its legacy broad parser', () => {
+  const source = readFileSync(path.join(process.cwd(), 'engine/src/dashboard/server.js'), 'utf8');
+  const mount = source.indexOf("this.app.use('/home23/api/product', createConnectedAgentsProxy({");
+  const broadParser = source.indexOf("express.json({ limit: '10gb' })");
+  assert.ok(mount > 0);
+  assert.ok(mount < broadParser);
 });
 
 test('proxy forwards auth, idempotency, query, and JSON only to canonical v1 path', async (t) => {

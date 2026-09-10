@@ -86,6 +86,7 @@ const {
   registerSynthesisCompatibilityRoutes,
 } = require('./brain-operations/synthesis-compatibility-routes.js');
 const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
+const { createConnectedAgentsProxy } = require('./connected-agents-proxy.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -688,6 +689,12 @@ class DashboardServer {
       probeAvailability: probeMcpAvailability,
       buildUnavailableEnvelope: buildMcpUnavailableEnvelope,
       logger: this.logger || console,
+    }));
+
+    this.app.use('/home23/api/product', createConnectedAgentsProxy({
+      origin: options.connectedAgentsOrigin || this.getHome23CoordinationOrigin(),
+      fetchImpl: options.connectedAgentsFetch,
+      timeoutMs: options.connectedAgentsTimeoutMs,
     }));
 
     // COSMO is a local research system - no artificial limits on data ingestion
@@ -1899,6 +1906,27 @@ class DashboardServer {
       || (process.env.COSMO_RUNTIME_DIR
         ? path.resolve(process.env.COSMO_RUNTIME_DIR, '..', '..', '..')
         : path.resolve(__dirname, '..', '..', '..'));
+  }
+
+  getHome23CoordinationOrigin() {
+    if (process.env.HOME23_COORDINATION_ORIGIN) {
+      return process.env.HOME23_COORDINATION_ORIGIN;
+    }
+    const fsSync = require('fs');
+    const configPath = path.join(this.getHome23Root(), 'config', 'home.yaml');
+    let port = Number(process.env.HOME23_COORDINATION_PORT || '7346');
+    try {
+      if (fsSync.existsSync(configPath)) {
+        const config = yaml.load(fsSync.readFileSync(configPath, 'utf8')) || {};
+        port = Number(config.coordination?.publicApi?.port ?? port);
+      }
+    } catch (error) {
+      throw new Error(`Home23 coordination configuration is unreadable: ${error.message}`);
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('Home23 coordination port is invalid');
+    }
+    return `http://127.0.0.1:${port}`;
   }
 
   getHome23AgentName() {

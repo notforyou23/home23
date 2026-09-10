@@ -47,6 +47,10 @@ function createConnectedAgentsProxy(options = {}) {
   const maxResponseBytes = options.maxResponseBytes || MAX_RESPONSE_BYTES;
   const router = express.Router();
 
+  // Product mutations are small structured commands. Parse them here so this
+  // surface never falls through to the dashboard's legacy 10GB body parser.
+  router.use(express.json({ limit: options.maxRequestBytes || '32kb' }));
+
   router.use(async (req, res) => {
     const productPath = req.path;
     if (!allowed(req.method, productPath)) {
