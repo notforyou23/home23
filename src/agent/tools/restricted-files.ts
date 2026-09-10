@@ -3,11 +3,12 @@
  *
  * Built for the ShakedownJerry proposer (Task 7 of
  * docs/superpowers/plans/2026-07-25-shakedown-jerry-proposer.md): the standard
- * files.ts tools pass absolute paths through unconfined, so a proposer must get
- * these instead. Every path is symlink-resolved BEFORE the prefix check (the
- * 2026-07-25 write audit found a live symlink from a worktree into the repo),
- * deny rules are checked before allow rules, and write roots are separate from
- * read roots.
+ * files.ts tools now confine mutating writes to the resident workspace, but a
+ * proposer still needs these tools for multi-root read/write grants with
+ * explicit deny paths. Every path is symlink-resolved BEFORE the prefix check
+ * (the 2026-07-25 write audit found a live symlink from a worktree into the
+ * repo), deny rules are checked before allow rules, and write roots are
+ * separate from read roots.
  *
  * This module grants nothing by itself — confinement only holds if the agent
  * receives ONLY these tools. Registry wiring happens separately.

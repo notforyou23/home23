@@ -1,143 +1,121 @@
 /**
- * The polled-not-triggered gap (2026-08-13).
- *
- * `force` re-read secrets.yaml, but secrets.yaml is only written by the
- * dashboard's 30-minute OAuth poller, and — per that poller's own comment —
- * its raw-token fetch is what triggers cosmo23's lazy re-mint. So between a
- * token expiring and the next poll, nobody had ASKED for a new one, and the
- * "fresh credential" retry re-read the identical dead token. Measured cost on
- * jerry's chain: 401 at 2026-08-13T17:11:43Z, next success 17:42:10Z — 31
- * minutes, exactly one poller cycle, one thought lost.
- *
- * These tests run against a STUB broker, never the live cosmo23, and never
- * print a credential value.
- *
- * The load-bearing test is the last one. This module exists to cure
- * credentials-frozen-by-value; a broker answer that outlived the file it
- * shadows would BE that disease wearing the cure's clothes.
+ * Home23 must mint a replacement managed credential during the 401 path,
+ * persist it as the house authority, and leave static providers untouched.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer, type Server } from 'node:http';
-import { mkdtempSync, writeFileSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { dump as dumpYaml, load as loadYaml } from 'js-yaml';
 import {
-  refreshFromBroker, resolveProviderKey, _resetCredentialCache,
+  refreshManagedOAuth, resolveProviderKey, _resetCredentialCache,
 } from '../../src/agent/provider-credentials.js';
 
 const FILE_TOKEN = 'sk-ant-oat-FILE-value';
-const BROKER_TOKEN = 'sk-ant-oat-BROKER-value';
+const REFRESHED_TOKEN = 'sk-ant-oat-HOME23-value';
 
-function secretsWith(token: string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'cred-broker-'));
-  const p = join(dir, 'secrets.yaml');
-  writeFileSync(p, `providers:\n  anthropic:\n    apiKey: ${token}\n`);
-  return p;
+function managedSecrets(token = FILE_TOKEN): { root: string; path: string } {
+  const root = mkdtempSync(join(tmpdir(), 'home23-credentials-'));
+  mkdirSync(join(root, 'config'));
+  const secretsPath = join(root, 'config', 'secrets.yaml');
+  writeFileSync(secretsPath, dumpYaml({
+    providers: {
+      anthropic: {
+        apiKey: token,
+        oauthManaged: true,
+        oauth: {
+          refreshToken: 'refresh-old',
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        },
+      },
+    },
+  }), { mode: 0o600 });
+  return { root, path: secretsPath };
 }
 
-async function withStubBroker(
-  handler: (url: string) => { status: number; body: unknown },
-  fn: () => Promise<void>,
+async function withManagedSecrets(
+  fetchImpl: typeof fetch,
+  fn: (state: { root: string; path: string }) => Promise<void>,
 ): Promise<void> {
-  const server: Server = createServer((req, res) => {
-    const r = handler(req.url ?? '');
-    res.writeHead(r.status, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(r.body));
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  const port = (server.address() as { port: number }).port;
-  const priorPort = process.env['COSMO23_PORT'];
-  process.env['COSMO23_PORT'] = String(port);
-  try { await fn(); } finally {
-    if (priorPort === undefined) delete process.env['COSMO23_PORT']; else process.env['COSMO23_PORT'] = priorPort;
-    await new Promise<void>((r) => server.close(() => r()));
+  const state = managedSecrets();
+  const previousPath = process.env['HOME23_SECRETS_PATH'];
+  const previousFetch = globalThis.fetch;
+  process.env['HOME23_SECRETS_PATH'] = state.path;
+  globalThis.fetch = fetchImpl;
+  _resetCredentialCache();
+  try {
+    await fn(state);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousPath === undefined) delete process.env['HOME23_SECRETS_PATH'];
+    else process.env['HOME23_SECRETS_PATH'] = previousPath;
+    _resetCredentialCache();
+    rmSync(state.root, { recursive: true, force: true });
   }
 }
 
-test('a 401 asks the broker, and the broker answer is used instead of the stale file', async () => {
-  process.env['HOME23_SECRETS_PATH'] = secretsWith(FILE_TOKEN);
-  _resetCredentialCache();
-  assert.equal(resolveProviderKey('anthropic'), FILE_TOKEN, 'baseline: the file is authoritative');
+function successfulRefresh(): Response {
+  return new Response(JSON.stringify({
+    access_token: REFRESHED_TOKEN,
+    refresh_token: 'refresh-new',
+    expires_in: 3600,
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+}
 
-  await withStubBroker(() => ({ status: 200, body: { token: BROKER_TOKEN } }), async () => {
-    assert.equal(await refreshFromBroker('anthropic'), true);
+test('a 401 asks Home23 to refresh and the retry reads the persisted token', async () => {
+  let requests = 0;
+  await withManagedSecrets(async (url, init) => {
+    requests += 1;
+    assert.equal(String(url), 'https://console.anthropic.com/v1/oauth/token');
+    assert.deepEqual(JSON.parse(String(init?.body)), {
+      grant_type: 'refresh_token',
+      client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+      refresh_token: 'refresh-old',
+    });
+    return successfulRefresh();
+  }, async ({ path }) => {
+    assert.equal(resolveProviderKey('anthropic'), FILE_TOKEN);
+    assert.equal(await refreshManagedOAuth('anthropic'), true);
+    assert.equal(resolveProviderKey('anthropic', undefined, true), REFRESHED_TOKEN);
+    const stored = loadYaml(readFileSync(path, 'utf8')) as {
+      providers: { anthropic: { apiKey: string; oauth: { refreshToken: string } } };
+    };
+    assert.equal(stored.providers.anthropic.apiKey, REFRESHED_TOKEN);
+    assert.equal(stored.providers.anthropic.oauth.refreshToken, 'refresh-new');
+    assert.equal(requests, 1);
+  });
+});
+
+test('a failed Home23 refresh preserves the current file credential', async () => {
+  await withManagedSecrets(async () => new Response(
+    JSON.stringify({ error: 'invalid_grant' }),
+    { status: 400, headers: { 'content-type': 'application/json' } },
+  ), async () => {
+    assert.equal(await refreshManagedOAuth('anthropic'), false);
+    assert.equal(resolveProviderKey('anthropic', undefined, true), FILE_TOKEN);
+  });
+});
+
+test('only harness-managed Anthropic OAuth generates a refresh request here', async () => {
+  let requests = 0;
+  await withManagedSecrets(async () => { requests += 1; return successfulRefresh(); }, async () => {
+    assert.equal(await refreshManagedOAuth('xai'), false);
+    assert.equal(await refreshManagedOAuth('ollama-cloud'), false);
+    assert.equal(await refreshManagedOAuth('openai-codex'), false, 'codex refreshes in codex-auth.ts');
+    assert.equal(requests, 0);
+    assert.equal(await refreshManagedOAuth('anthropic'), true);
+    assert.equal(requests, 1);
+  });
+});
+
+test('a pinned static key still outranks managed OAuth', async () => {
+  await withManagedSecrets(async () => successfulRefresh(), async () => {
+    await refreshManagedOAuth('anthropic');
     assert.equal(
-      resolveProviderKey('anthropic', undefined, true), BROKER_TOKEN,
-      'the retry must use what the broker just minted, not the token that just 401ed',
-    );
-  });
-});
-
-test('THE ANTI-FREEZE PROPERTY: once the poller writes the file, the file wins again', async () => {
-  const path = secretsWith(FILE_TOKEN);
-  process.env['HOME23_SECRETS_PATH'] = path;
-  _resetCredentialCache();
-
-  await withStubBroker(() => ({ status: 200, body: { token: BROKER_TOKEN } }), async () => {
-    await refreshFromBroker('anthropic');
-    assert.equal(resolveProviderKey('anthropic', undefined, true), BROKER_TOKEN);
-
-    // The poller catches up: secrets.yaml is rewritten, so its mtime is now
-    // NEWER than the broker answer. The override must stop shadowing it — a
-    // broker token that outlives its file is the frozen-credential disease
-    // this whole module exists to cure.
-    writeFileSync(path, `providers:\n  anthropic:\n    apiKey: ${FILE_TOKEN}\n`);
-    const soon = (Date.now() + 5_000) / 1000;
-    utimesSync(path, soon, soon);
-    // Deliberately NO cache reset here: this proves the override yields to a
-    // newer file, not that a cache flush happens to hide it.
-    assert.equal(
-      resolveProviderKey('anthropic', undefined, true), FILE_TOKEN,
-      'the broker override must not outlive the file it shadows',
-    );
-  });
-});
-
-test('degraded-honest: an unreachable or unhelpful broker changes nothing', async () => {
-  process.env['HOME23_SECRETS_PATH'] = secretsWith(FILE_TOKEN);
-  _resetCredentialCache();
-
-  // Unreachable: nothing listening on this port.
-  const prior = process.env['COSMO23_PORT'];
-  process.env['COSMO23_PORT'] = '1';
-  assert.equal(await refreshFromBroker('anthropic', 500), false, 'must not throw, must not hang');
-  assert.equal(resolveProviderKey('anthropic', undefined, true), FILE_TOKEN, 'behaviour identical to before this existed');
-  if (prior === undefined) delete process.env['COSMO23_PORT']; else process.env['COSMO23_PORT'] = prior;
-
-  // Reachable but refusing, and reachable but empty.
-  await withStubBroker(() => ({ status: 503, body: {} }), async () => {
-    assert.equal(await refreshFromBroker('anthropic'), false);
-  });
-  await withStubBroker(() => ({ status: 200, body: { token: '' } }), async () => {
-    assert.equal(await refreshFromBroker('anthropic'), false);
-  });
-  assert.equal(resolveProviderKey('anthropic', undefined, true), FILE_TOKEN);
-});
-
-test('only cosmo23-brokered providers are asked — no stray fetch for static keys', async () => {
-  process.env['HOME23_SECRETS_PATH'] = secretsWith(FILE_TOKEN);
-  _resetCredentialCache();
-  let asked = 0;
-  await withStubBroker(() => { asked++; return { status: 200, body: { token: BROKER_TOKEN } }; }, async () => {
-    assert.equal(await refreshFromBroker('xai'), false);
-    assert.equal(await refreshFromBroker('ollama-cloud'), false);
-    assert.equal(await refreshFromBroker('openai-codex'), false, 'codex refreshes through codex-auth.ts, not the polled file');
-    assert.equal(asked, 0, 'a non-brokered provider must not generate a request at all');
-    assert.equal(await refreshFromBroker('anthropic'), true);
-    assert.equal(asked, 1);
-  });
-});
-
-test('a pinned static (non-OAuth) key still wins — the deliberate exception is intact', async () => {
-  process.env['HOME23_SECRETS_PATH'] = secretsWith(FILE_TOKEN);
-  _resetCredentialCache();
-  await withStubBroker(() => ({ status: 200, body: { token: BROKER_TOKEN } }), async () => {
-    await refreshFromBroker('anthropic');
-    assert.equal(
-      resolveProviderKey('anthropic', 'sk-static-pinned-key', true), 'sk-static-pinned-key',
-      'a deliberately pinned static key outranks both file and broker',
+      resolveProviderKey('anthropic', 'sk-static-pinned-key', true),
+      'sk-static-pinned-key',
     );
   });
 });

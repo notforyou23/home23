@@ -167,6 +167,23 @@ embeddings:
       model: nomic-embed-text
       dimensions: 768
 
+# Filesystem scope for resident tools (shell, read_file, list, search).
+# New homes begin with the Home23 install, resident instance, and folders selected
+# during setup. This tool-level guard reduces accidental access; it is not an OS sandbox.
+# Existing homes that omit this section retain their historical full-machine access.
+# To grant full machine access:
+#   shell:
+#     machineAccess: true
+# To grant selected extra folders:
+#   shell:
+#     roots:
+#       - /absolute/path/to/home23
+#       - /absolute/path/to/instances/agent
+#       - /absolute/path/extra
+shell:
+  machineAccess: false
+  roots: []
+
 chat:
   defaultProvider: ollama-cloud
   defaultModel: kimi-k3:cloud
@@ -350,6 +367,9 @@ models:
       provider: openai-codex
       model: gpt-5.6-sol
       reasoningEffort: xhigh
+    luna:
+      provider: openai-codex
+      model: gpt-5.6-luna
     gpt-pro:
       provider: openai
       model: gpt-5.5-pro

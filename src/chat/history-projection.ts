@@ -16,7 +16,10 @@ function asRecord(value: unknown): JsonRecord | null {
 function storedAssistantText(record: unknown): string | null {
   const value = asRecord(record);
   if (!value || value.type === 'turn' || value.type === 'event' || value.role !== 'assistant') return null;
-  if (typeof value.content === 'string') return value.content;
+  if (typeof value.content === 'string') {
+    const trimmed = value.content.trim();
+    return trimmed.length > 0 ? value.content : null;
+  }
   if (!Array.isArray(value.content)) return null;
   const text = value.content
     .map((block) => {
@@ -24,7 +27,7 @@ function storedAssistantText(record: unknown): string | null {
       return item?.type === 'text' && typeof item.text === 'string' ? item.text : '';
     })
     .join('');
-  return text || null;
+  return text.trim().length > 0 ? text : null;
 }
 
 /**
@@ -95,12 +98,19 @@ export function projectChatHistoryRecords(records: unknown[], limit: number): un
   const canonical = canonicalAssistantsForCompletedTurns(records);
   const canonicalIndex = new Map<number, { turnId: string; content: string }>();
   const supersededAssistantIndexes = new Set<number>();
+  const completedTurnIds = new Set<string>();
   for (const [turnId, value] of canonical) {
+    completedTurnIds.add(turnId);
     canonicalIndex.set(value.index, { turnId, content: value.content });
     for (let index = value.startIndex + 1; index < value.endIndex; index++) {
       if (index !== value.index && storedAssistantText(records[index]) !== null) {
         supersededAssistantIndexes.add(index);
       }
+    }
+  }
+  for (const record of records) {
+    if (isTurnEnvelope(record) && record.status !== 'pending') {
+      completedTurnIds.add(record.turn_id);
     }
   }
 
@@ -112,6 +122,20 @@ export function projectChatHistoryRecords(records: unknown[], limit: number): un
         && record.kind === 'response_chunk'
         && canonical.has(record.turn_id)) {
       continue;
+    }
+
+    // Drop pending turn envelopes once the turn has a terminal status — they
+    // otherwise project as blank assistant-shaped rows for naive clients.
+    if (isTurnEnvelope(record) && record.status === 'pending' && completedTurnIds.has(record.turn_id)) {
+      continue;
+    }
+
+    // Never project whitespace-only assistant messages.
+    if (storedAssistantText(record) === null) {
+      const asMsg = asRecord(record);
+      if (asMsg && asMsg.role === 'assistant' && asMsg.type !== 'turn' && asMsg.type !== 'event') {
+        continue;
+      }
     }
 
     const canonicalAtIndex = canonicalIndex.get(index);
@@ -126,9 +150,15 @@ export function projectChatHistoryRecords(records: unknown[], limit: number): un
 
     if (isTurnEnvelope(record) && record.status === 'complete') {
       const durable = canonical.get(record.turn_id);
-      projected.push(durable && !record.assistant_content
+      // Retain assistant_content for reconnect/status reconciliation, but mark
+      // the envelope non-display when a canonical assistant row is projected so
+      // clients do not render the same reply twice.
+      const enriched = durable && !record.assistant_content
         ? { ...record, assistant_content: durable.content }
-        : record);
+        : record;
+      projected.push(durable
+        ? { ...enriched, display_assistant: false }
+        : enriched);
       continue;
     }
 

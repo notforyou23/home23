@@ -2182,6 +2182,15 @@ body.h23-chat-page .h23-chat-sidebar {
   font-size: 13px;
 }
 
+/* Author display:flex beats UA [hidden]; match thought-dock pattern so terminal turns can hide Working/Stop. */
+.h23-chat-slot > .h23-chat-shared .h23-chat-turn-hud[hidden] {
+  display: none;
+}
+
+.h23-chat-stop-btn[hidden] {
+  display: none !important;
+}
+
 .h23-chat-slot > .h23-chat-shared .h23-chat-hud-status {
   display: inline-flex;
   align-items: center;

@@ -10,30 +10,18 @@ const serverSource = readFileSync(
   'utf8',
 );
 
-// The OAuth-refresh poller block: from the shared-secrets restart comment to
-// the Home23 update section that follows it.
+// The Home23 OAuth readiness sweep through the update section that follows it.
 function oauthRefreshRegion() {
-  const start = serverSource.indexOf('Shared provider secrets affect every running Home23');
+  const start = serverSource.indexOf('Home23 OAuth refresh');
   const end = serverSource.indexOf('Home23 update check');
   assert.ok(start > 0, 'OAuth refresh block marker must exist');
   assert.ok(end > start, 'Home23 update marker must follow the OAuth refresh block');
   return serverSource.slice(start, end);
 }
 
-test('OAuth refresh poller must not blind-fallback to pm2 start after a failed restart', () => {
+test('OAuth refresh performs no process lifecycle mutation', () => {
   const region = oauthRefreshRegion();
-  // 2026-08-07 forrest orphan incident: `pm2 restart` timed out client-side at
-  // 45s while God was still stopping a slow harness; the catch-all fallback
-  // then issued `pm2 start` for the same app, racing the in-flight restart and
-  // orphaning the earlier spawn on the bridge port. Targets are filtered to
-  // online (registered) apps four lines earlier, so a start fallback is never
-  // the right response to a restart failure here.
-  assert.ok(
-    !region.includes("['start',"),
-    'OAuth refresh block must not shell out to pm2 start as a restart fallback',
-  );
-  assert.ok(
-    region.includes('did not confirm'),
-    'restart failure must be reported as unconfirmed (God may still be completing it server-side)',
-  );
+  assert.doesNotMatch(region, /\bpm2\b|execFileSync|execSync/);
+  assert.match(region, /oauthBroker\.credentials\(provider\)/);
+  assert.match(region, /timer\.unref/);
 });

@@ -12,7 +12,7 @@
  * 30-minute rotation poller restarting it.
  *
  * The cure: consumers resolve the credential AT USE TIME from
- * config/secrets.yaml (the file the OAuth mirror keeps fresh), with an
+ * config/secrets.yaml (the file Home23's OAuth authority keeps fresh), with an
  * mtime-checked cache and a force-reread path for auth failures. Rotation
  * becomes a file write. No restart lists. No frozen env.
  *
@@ -28,6 +28,7 @@
 const { readFileSync, statSync } = require('node:fs');
 const path = require('node:path');
 const yaml = require('js-yaml');
+const { createHome23OAuthBroker } = require('../../../shared/home23-oauth.cjs');
 
 /** Env fallbacks per provider — the pre-existing engine behavior, kept as the
  * floor so credential-free hosts and tests keep working unchanged. Superset of
@@ -111,6 +112,35 @@ function resolveProviderKey(provider, configured, force = false) {
   return '';
 }
 
+async function managedOAuthCredentials(provider, options = {}) {
+  if (provider !== 'anthropic' && provider !== 'openai-codex') return false;
+  const staleAccessToken = options.staleAccessToken
+    || freshProviderKey(provider, options.force === true);
+  try {
+    return await createHome23OAuthBroker({ secretsPath: secretsPath() }).credentials(provider, {
+      force: options.force === true,
+      ...(staleAccessToken ? { staleAccessToken } : {}),
+      signal: AbortSignal.timeout(options.timeoutMs || 5_000),
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Rotate a Home23-managed OAuth credential after an auth failure. The shared
+ * secret transaction serializes refresh-token rotation across every resident
+ * and dashboard process. Static credentials remain untouched. */
+async function refreshManagedOAuth(provider, options = {}) {
+  const staleAccessToken = options.staleAccessToken || freshProviderKey(provider, true);
+  if (!staleAccessToken) return false;
+  const next = await managedOAuthCredentials(provider, {
+    ...options,
+    force: true,
+    staleAccessToken,
+  });
+  return !!next?.accessToken && next.accessToken !== staleAccessToken;
+}
+
 /** Is this error an authentication failure worth one fresh-credential retry?
  * Matches SDK errors (.status) and raw provider bodies. */
 function isAuthError(error) {
@@ -135,5 +165,7 @@ module.exports = {
   resolveProviderKey,
   isAuthError,
   isManagedOAuthToken,
+  managedOAuthCredentials,
+  refreshManagedOAuth,
   _resetCredentialCache,
 };

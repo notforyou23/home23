@@ -1,159 +1,80 @@
 /**
- * OpenAI Codex OAuth — Credential Management
+ * OpenAI Codex OAuth credentials owned by Home23.
  *
- * Reads ChatGPT OAuth credentials from ~/.evobrew/auth-profiles.json.
- * Auto-refreshes when < 5 min from expiry.
- * Mirrors the Anthropic OAuth pattern in loop.ts.
+ * The access and refresh credentials live in config/secrets.yaml beside the
+ * rest of the house's provider secrets. The shared broker refreshes under the
+ * same cross-process lock used by Settings, so every resident sees rotation
+ * without a restart and parallel auth failures cannot spend the same refresh
+ * credential twice.
  */
 
-import { readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir, tmpdir } from 'node:os';
-import { combineRequestSignals } from './abort-signals.js';
+import { createRequire } from 'node:module';
+import { getHome23Root } from '../config.js';
 
-const AUTH_PATH = join(homedir(), '.evobrew', 'auth-profiles.json');
-const TOKEN_URL = 'https://auth.openai.com/oauth/token';
-const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-const REFRESH_THRESHOLD_MS = 5 * 60 * 1000; // refresh if < 5 min remaining
+const require = createRequire(import.meta.url);
+const { createHome23OAuthBroker } = require('../../shared/home23-oauth.cjs') as {
+  createHome23OAuthBroker(options: { home23Root: string }): {
+    credentials(provider: string, options?: {
+      force?: boolean;
+      staleAccessToken?: string;
+      signal?: AbortSignal;
+    }): Promise<{
+      accessToken: string;
+      refreshToken: string | null;
+      expiresAt: number | null;
+      accountId: string | null;
+    } | null>;
+  };
+};
+
+const oauth = createHome23OAuthBroker({ home23Root: getHome23Root() });
 
 export interface CodexCredentials {
   accessToken: string;
   refreshToken: string;
-  expires: number;    // ms since epoch
-  accountId: string;  // value for chatgpt-account-id header
+  expires: number;
+  accountId: string;
 }
 
 /**
- * Load credentials from ~/.evobrew/auth-profiles.json.
- * Returns null if file or profile is missing.
- */
-function loadCredentials(): CodexCredentials | null {
-  try {
-    if (!existsSync(AUTH_PATH)) return null;
-    const raw = readFileSync(AUTH_PATH, 'utf-8');
-    const data = JSON.parse(raw) as { profiles?: Record<string, unknown> };
-    const profile = data?.profiles?.['openai-codex:default'] as CodexCredentials | undefined;
-    if (!profile?.accessToken || !profile?.refreshToken || !profile?.accountId || typeof profile?.expires !== 'number') return null;
-    return profile;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Save credentials back to ~/.evobrew/auth-profiles.json via atomic write.
- * Reads the full file first to preserve other profiles.
- */
-function saveCredentials(creds: CodexCredentials): void {
-  let profiles: Record<string, unknown> = {};
-  try {
-    if (existsSync(AUTH_PATH)) {
-      const raw = readFileSync(AUTH_PATH, 'utf-8');
-      const data = JSON.parse(raw) as { profiles?: Record<string, unknown> };
-      profiles = data?.profiles ?? {};
-    }
-  } catch { /* start fresh */ }
-
-  profiles['openai-codex:default'] = creds;
-  const output = JSON.stringify({ version: 1, profiles }, null, 2);
-
-  // Atomic write: write to temp, rename over target
-  const tmp = join(tmpdir(), `auth-profiles-${Date.now()}.json`);
-  writeFileSync(tmp, output, 'utf-8');
-  renameSync(tmp, AUTH_PATH);
-}
-
-/**
- * Refresh an expired/near-expiry access token.
- * Returns updated credentials or null on failure.
- */
-async function refreshCredentials(
-  creds: CodexCredentials,
-  signal?: AbortSignal,
-): Promise<CodexCredentials | null> {
-  try {
-    const res = await fetch(TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: creds.refreshToken,
-        client_id: CLIENT_ID,
-      }),
-      signal: combineRequestSignals(signal, 10_000),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      console.error(`[codex-auth] Token refresh failed (${res.status}): ${text.slice(0, 200)}`);
-      return null;
-    }
-
-    const data = await res.json() as {
-      access_token: string;
-      refresh_token?: string;
-      expires_in: number;
-    };
-
-    const refreshed: CodexCredentials = {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token ?? creds.refreshToken,
-      expires: Date.now() + data.expires_in * 1000,
-      accountId: creds.accountId,
-    };
-
-    saveCredentials(refreshed);
-    console.log('[codex-auth] Token refreshed successfully');
-    return refreshed;
-  } catch (err) {
-    if (signal?.aborted) signal.throwIfAborted();
-    console.error('[codex-auth] Refresh error:', err instanceof Error ? err.message : String(err));
-    return null;
-  }
-}
-
-/**
- * Get valid Codex credentials, refreshing if near-expiry.
- * Returns null if not configured or refresh fails.
- *
- * `force` refreshes regardless of the expiry threshold. That is the
- * REVOCATION path, and it cannot be folded into the threshold check: a
- * revoked token's `expires` is untouched, so it looks perfectly healthy right
- * up until the API rejects it. This fleet lost Codex twice that way — on
- * 2026-07-27, when the Codex CLI re-minted the shared account and silently
- * killed Home23's refresh token, and again on 2026-08-08/09. Only an actual
- * auth failure reveals it, so only the caller that saw the 401 can ask.
+ * Return a valid Codex credential, refreshing when it is near expiry. A
+ * forced call is the single retry after a 401. It carries the token used by
+ * the failed request so a rotation completed by another process wins without
+ * another refresh.
  */
 export async function getCodexCredentials(
   signal?: AbortSignal,
   force = false,
+  staleAccessToken?: string,
 ): Promise<CodexCredentials | null> {
   signal?.throwIfAborted();
-  const creds = loadCredentials();
-  if (!creds) return null;
-
-  if (force) {
-    console.log('[codex-auth] Auth failure reported — forcing refresh (a revoked token still reads as unexpired)');
-    return refreshCredentials(creds, signal);
+  try {
+    const credentials = await oauth.credentials('openai-codex', {
+      force,
+      staleAccessToken: force ? staleAccessToken : undefined,
+      signal,
+    });
+    if (!credentials?.accessToken || !credentials.accountId) return null;
+    return {
+      accessToken: credentials.accessToken,
+      refreshToken: credentials.refreshToken || '',
+      expires: credentials.expiresAt ?? Number.MAX_SAFE_INTEGER,
+      accountId: credentials.accountId,
+    };
+  } catch (error) {
+    if (signal?.aborted) signal.throwIfAborted();
+    console.error('[codex-auth] Home23 credential refresh failed:',
+      error instanceof Error ? error.message : String(error));
+    return null;
   }
-
-  if (creds.expires - Date.now() < REFRESH_THRESHOLD_MS) {
-    console.log('[codex-auth] Token near-expiry — refreshing');
-    return refreshCredentials(creds, signal);
-  }
-
-  return creds;
 }
 
-/**
- * Build request headers for the Codex API endpoint.
- */
 export function getCodexHeaders(creds: CodexCredentials): Record<string, string> {
   return {
     'Authorization': `Bearer ${creds.accessToken}`,
     'chatgpt-account-id': creds.accountId,
     'OpenAI-Beta': 'responses=experimental',
-    'originator': 'cosmo-home',
+    'originator': 'home23',
     'accept': 'text/event-stream',
     'content-type': 'application/json',
   };

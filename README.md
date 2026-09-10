@@ -36,6 +36,8 @@ node cli/home23.js setup
 ```
 
 That opens a local setup page. Name the first agent, sign in a provider, launch. Dashboard: [http://localhost:5002/home23](http://localhost:5002/home23).
+Home23 owns Anthropic and ChatGPT/Codex OAuth locally; signing in and refreshing
+credentials does not require Cosmo, Evobrew, or another broker.
 
 Terminal-guided first-home path:
 

@@ -132,6 +132,13 @@ and delivery items with observable completion criteria, not a list of tests alon
 | D10 | Later, connectors: app-native account authorization/import for Google and other selected services | Account scopes, data ingestion, refresh, revocation and deletion behavior are explicit and useful; connecting an account does not imply a hosting service exists |
 | D11 | Later, hosting: provision and operate homes for people without a Mac | Shared home birth/continuity is retained with account isolation, credential handling, storage, recovery, service lifecycle and an agreed operating/cost model |
 
+D05's embedding portion has a concrete
+[Host integration plan](../superpowers/plans/2026-09-10-owned-embedder-host-integration.md).
+It includes backend inference, model delivery, native setup/recovery, attention
+and retrieval integration, and a separate existing-home continuity stage.
+Completing that plan does not by itself complete D05's provider authorization
+work or the other delivery items.
+
 D01's structure/content can proceed alongside release engineering. Download
 publication depends on D02–D04. Advertising Windows/remote access depends on
 D06–D07. The private beta needs D01's initial download/docs path and D02–D09

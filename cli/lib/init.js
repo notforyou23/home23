@@ -218,16 +218,13 @@ export async function runInit(home23Root, options = {}, dependencies = {}) {
       : '  Home23 runtime prepared; document conversion unavailable.');
     console.log('═══════════════════════════════════════════════════');
     console.log('');
-    console.log('  Next step — create your personal agent:');
+    console.log('  Next step — create your first home:');
     console.log('');
-    console.log('    node cli/home23.js agent create <name>');
+    console.log('    node cli/home23.js setup');
     console.log('');
-    console.log('  Then start and open your browser:');
+    console.log('  Terminal-guided setup:');
     console.log('');
-    console.log('    node cli/home23.js start <name>');
-    console.log('    http://localhost:5002/home23');
-    console.log('');
-    console.log('  Easier all-in-one first run: node cli/home23.js setup');
+    console.log('    node cli/home23.js setup --cli');
     console.log('');
   }
 

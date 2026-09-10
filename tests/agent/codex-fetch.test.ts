@@ -117,3 +117,41 @@ test('actual Codex loop retries pre-response transport, preserves reasoning fall
     } finally { rmSync(root, { recursive: true, force: true }); }
   }
 });
+
+test('actual Codex loop refreshes the exact rejected credential once', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-auth-refresh-route-'));
+  const providerCalls: Array<{ force: boolean; stale?: string }> = [];
+  const authorizations: string[] = [];
+  try {
+    await withFetch((async (_url, init) => {
+      const authorization = new Headers(init?.headers).get('authorization') || '';
+      authorizations.push(authorization);
+      if (authorizations.length === 1) return new Response('revoked', { status: 401 });
+      return successful();
+    }) as typeof fetch, async () => {
+      const agent = makeAgent(root);
+      (agent as any).codexCredentialsProvider = async (
+        _signal?: AbortSignal,
+        force = false,
+        stale?: string,
+      ) => {
+        providerCalls.push({ force, ...(stale ? { stale } : {}) });
+        return {
+          accessToken: force ? 'rotated-token' : 'rejected-token',
+          refreshToken: 'refresh-token',
+          expires: Date.now() + 3_600_000,
+          accountId: 'test-account',
+        };
+      };
+      const run = await agent.runWithTurn('chat-auth-refresh', 'Give one answer.');
+      assert.equal((await run.response).text, 'Done.');
+    });
+    assert.deepEqual(providerCalls, [
+      { force: false },
+      { force: true, stale: 'rejected-token' },
+    ]);
+    assert.deepEqual(authorizations, ['Bearer rejected-token', 'Bearer rotated-token']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

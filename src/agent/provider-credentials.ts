@@ -11,7 +11,7 @@
  * missing from a restart list is a future outage.
  *
  * The cure: consumers resolve the credential AT USE TIME from
- * config/secrets.yaml (the file the OAuth mirror keeps fresh), with an
+ * config/secrets.yaml (the file Home23's OAuth authority keeps fresh), with an
  * mtime-checked cache and a force-reread path for auth failures. Rotation
  * becomes a file write. No restart lists. No frozen env.
  *
@@ -21,10 +21,22 @@
  * tokens; static keys don't rotate under anyone.
  */
 
+import { createRequire } from 'node:module';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { load as loadYaml } from 'js-yaml';
 import { getHome23Root } from '../config.js';
+
+const require = createRequire(import.meta.url);
+const { createHome23OAuthBroker } = require('../../shared/home23-oauth.cjs') as {
+  createHome23OAuthBroker(options: { home23Root?: string; secretsPath?: string }): {
+    credentials(provider: string, options?: {
+      force?: boolean;
+      staleAccessToken?: string;
+      signal?: AbortSignal;
+    }): Promise<{ accessToken: string } | null>;
+  };
+};
 
 /** Env fallbacks per provider — the pre-existing behavior, kept as the floor
  * so credential-free hosts and tests keep working unchanged. */
@@ -87,10 +99,6 @@ export function resolveProviderKey(provider: string, configured?: string, force 
   if (configured !== undefined && configured !== '' && !configured.startsWith('sk-ant-oat')) {
     return configured;
   }
-  // Broker answer first, but ONLY while it is newer than the file it would
-  // shadow (see brokeredIfNewer). Present only after a 401 asked for it.
-  const broker = brokeredIfNewer(provider);
-  if (broker !== '') return broker;
   const fresh = freshProviderKey(provider, force);
   if (fresh !== '') return fresh;
   if (configured !== undefined && configured !== '') return configured;
@@ -101,73 +109,27 @@ export function resolveProviderKey(provider: string, configured?: string, force 
   return '';
 }
 
-/**
- * ── The polled-not-triggered gap (closed 2026-08-13) ────────────────────────
- *
- * `force` above drops the cache and re-reads secrets.yaml. But secrets.yaml is
- * only updated by the dashboard's THIRTY-MINUTE OAuth poller
- * (engine/src/dashboard/server.js), and — per that poller's own comment — the
- * raw-token FETCH is what triggers cosmo23's lazy re-mint. So between a token
- * expiring and the next poll, nobody has even ASKED for a new one, and the
- * force-reread returns the identical dead token. The retry was mechanically
- * correct and semantically a no-op for up to half an hour.
- *
- * Proven cost, from jerry's chain: 401 at 17:11:43Z, next success 17:42:10Z —
- * 31 minutes, exactly one poller cycle, one thought lost. The Seed feels this
- * worse than anything else in the house because its recruitment cadence (30
- * min) is the same order as the poll interval, so one blind window costs it a
- * whole thought; the engine and harness make many calls and recover on the
- * next one.
- *
- * So on auth failure we ask the BROKER, which is the authority and the thing
- * that actually mints. We deliberately do NOT write secrets.yaml: a second
- * writer would race the poller on the file the whole fleet reads. The poller
- * remains the single writer and converges on its own schedule; until it does,
- * whichever of (broker answer, file) is NEWER wins below.
- */
-/**
- * ONLY anthropic. cosmo23 brokers the codex token too and the dashboard poller
- * syncs both into secrets.yaml — but generateText's codex branch never reads
- * secrets.yaml: it resolves through codex-auth.ts's own OAuth store, which has
- * its own forced-refresh path. Asking the broker for codex would be a pointless
- * network call inside a failure path, and `text-generation.test.ts` catches it
- * by counting fetches ("exactly one retry, never a loop"). The gap this closes
- * exists only where the credential is READ FROM the polled file.
- */
-const BROKERED = new Set(['anthropic']);
-let brokered: { provider: string; token: string; fetchedAt: number } | null = null;
-
-/** Ask cosmo23 for the current token, which is what makes it mint a fresh one.
- * Never throws, never logs the value; broker unreachable → false, and the
- * caller's retry proceeds exactly as it did before this existed. */
-export async function refreshFromBroker(provider: string, timeoutMs = 5_000): Promise<boolean> {
-  if (!BROKERED.has(provider)) return false;
+/** Ask Home23's own credential authority to rotate managed Anthropic OAuth.
+ * The broker writes secrets.yaml under its cross-process lock; the immediate
+ * retry then force-reads that file. Static keys and other providers never
+ * generate an OAuth request here. */
+export async function refreshManagedOAuth(provider: string, timeoutMs = 5_000): Promise<boolean> {
+  if (provider !== 'anthropic') return false;
+  const staleAccessToken = freshProviderKey(provider, true);
+  if (!staleAccessToken) return false;
   try {
-    const port = process.env['COSMO23_PORT'] ?? '43210';
-    const res = await fetch(`http://localhost:${port}/api/oauth/${provider}/raw-token`, {
+    const brokerOptions = process.env['HOME23_SECRETS_PATH']
+      ? { secretsPath: process.env['HOME23_SECRETS_PATH'] }
+      : { home23Root: getHome23Root() };
+    const next = await createHome23OAuthBroker(brokerOptions).credentials(provider, {
+      force: true,
+      staleAccessToken,
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) return false;
-    const token = (await res.json() as { token?: unknown })?.token;
-    if (typeof token !== 'string' || token === '') return false;
-    brokered = { provider, token, fetchedAt: Date.now() };
-    return true;
+    return !!next?.accessToken && next.accessToken !== staleAccessToken;
   } catch {
     return false;
   }
-}
-
-/** The broker's answer, but only while it is NEWER than secrets.yaml — once
- * the poller writes the file, the file is authoritative again and this stops
- * shadowing it. A stale override outliving its file is how a "fix" becomes the
- * next frozen credential. */
-function brokeredIfNewer(provider: string): string {
-  const b = brokered;
-  if (b === null || b.provider !== provider) return '';
-  try {
-    if (statSync(secretsPath()).mtimeMs >= b.fetchedAt) { brokered = null; return ''; }
-  } catch { /* no file — the broker answer is all we have */ }
-  return b.token;
 }
 
 /** Is this error an authentication failure worth one fresh-credential retry?
@@ -187,5 +149,4 @@ export function isAuthError(error: unknown): boolean {
 /** Test seam: drop the cache (also used by the force path implicitly). */
 export function _resetCredentialCache(): void {
   cache = null;
-  brokered = null;
 }

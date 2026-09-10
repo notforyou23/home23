@@ -120,6 +120,13 @@ test('successful init passes Python paths as arguments and reports prepared runt
   assert.deepEqual(f.calls.at(-1).args, ['-m', 'pip', 'install', '--quiet', '--upgrade', 'pip', 'markitdown[pdf]', 'openai']);
 });
 
+test('standalone init directs a new owner into canonical home setup', async (t) => {
+  const f = fixture(t);
+  await runInit(f.root, {}, f.dependencies);
+  assert.equal(f.output.some((line) => line.includes('node cli/home23.js setup')), true);
+  assert.equal(f.output.some((line) => line.includes('agent create <name>')), false);
+});
+
 test('init can be imported before npm packages or other CLI modules exist', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'home23-init-no-dependencies-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

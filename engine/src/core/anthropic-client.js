@@ -14,7 +14,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { getAnthropicApiKey, prepareSystemPrompt, isOAuthToken } = require('../services/anthropic-oauth-engine');
-const { resolveProviderKey, isAuthError } = require('./provider-credentials');
+const { resolveProviderKey, isAuthError, refreshManagedOAuth } = require('./provider-credentials');
 
 function isAnthropicSamplingDeprecatedModel(model) {
   return /^(?:[^/]+\/)?claude-opus-4-8(?:$|[-@])/.test(String(model || '').trim());
@@ -173,8 +173,9 @@ class AnthropicClient {
       // secrets.yaml after this client was built. Reread the file and try
       // once with the fresh credential; never loop.
       if (isAuthError(error)) {
-        this.logger?.warn?.('[AnthropicClient] Auth failure — rereading credentials for one retry:', error.message);
+        this.logger?.warn?.('[AnthropicClient] Auth failure — refreshing Home23 credentials for one retry:', error.message);
         try {
+          await refreshManagedOAuth('anthropic', { staleAccessToken: this._credentialInUse });
           await this._initClient(true);
           return await this._generateOnce(options);
         } catch (retryError) {

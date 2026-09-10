@@ -125,7 +125,16 @@
           body.innerHTML = '<div class="h23a-empty">Nothing in this view yet.</div>';
           return;
         }
-        body.innerHTML = groups.map(g => `
+        const seen = new Set();
+        const uniqueGroups = groups.map(g => {
+          const records = (g.records || []).filter(r => {
+            if (!r?.id || seen.has(r.id)) return false;
+            seen.add(r.id);
+            return true;
+          });
+          return { ...g, records, count: records.length };
+        }).filter(g => g.records.length > 0);
+        body.innerHTML = uniqueGroups.map(g => `
           <div class="h23a-group">
             <div class="h23a-group-header">${esc(g.topic)} <span style="color:#5a5a68;">&middot; ${g.count}</span></div>
             ${g.records.map(r => renderItem(r)).join('')}

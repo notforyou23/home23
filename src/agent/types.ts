@@ -126,6 +126,16 @@ export interface ToolContext {
   ttsService: TTSService | null;
   browser: BrowserController | null;
   projectRoot: string;
+  /**
+   * Explicit shell/filesystem authority (roots or full-machine).
+   * When absent, tools derive defaults from projectRoot + instanceDir.
+   */
+  shellFsAuthority?: {
+    machineAccess: boolean;
+    roots: string[];
+  };
+  /** Absolute instance directory (instances/<agent>), used for default shell roots. */
+  instanceDir?: string;
   enginePort: number;
   agentName: string;                  // HOME23_AGENT
   cosmo23BaseUrl: string;             // http://localhost:43210

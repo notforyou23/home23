@@ -110,3 +110,10 @@ Seed contact encoding remains credential-free and 768-dimensional; its explicit
 endpoint is shared by the harness and conversation feed. No paid-provider key
 is added to that encoding interface. Completing semantic setup without an
 additional installation remains part of the distribution work.
+
+The [owned embedder integration plan](../superpowers/plans/2026-09-10-owned-embedder-host-integration.md)
+defines that next step: a per-home service managed by the existing private
+supervisor, automatic model preparation with durable progress, actual inference
+readiness, and native recovery actions. It retains the shared birth operation
+and separates new-home delivery from existing residents' encoder transitions.
+This is planned work; the current readiness and installation limits above remain.

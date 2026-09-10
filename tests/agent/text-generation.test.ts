@@ -342,10 +342,11 @@ test('isAuthError matches OpenAI\'s literal invalid_api_key code, not just the s
 // cannot see a revocation: the token still looks valid right up until the API
 // rejects it.
 
-/** A codex credentials seam that records the force flag of every call. */
-function recordingCodexProvider(calls: boolean[]) {
-  return async (_signal?: AbortSignal, force?: boolean) => {
+/** A codex credentials seam that records every refresh decision. */
+function recordingCodexProvider(calls: boolean[], rejectedTokens?: Array<string | undefined>) {
+  return async (_signal?: AbortSignal, force?: boolean, staleAccessToken?: string) => {
     calls.push(force === true);
+    rejectedTokens?.push(staleAccessToken);
     return {
       accessToken: force === true ? 'access-REFRESHED' : 'access-STALE',
       refreshToken: 'refresh-test',
@@ -370,6 +371,7 @@ function codexSseResponse(text: string): Response {
 test('a revoked codex token forces a credential refresh and retries exactly once', async () => {
   const prevFetch = globalThis.fetch;
   const credentialCalls: boolean[] = [];
+  const rejectedTokens: Array<string | undefined> = [];
   const bearers: string[] = [];
 
   globalThis.fetch = (async (_url, init) => {
@@ -385,10 +387,12 @@ test('a revoked codex token forces a credential refresh and retries exactly once
       provider: 'openai-codex',
       model: 'gpt-5.5',
       prompt: 'extract',
-      codexCredentialsProvider: recordingCodexProvider(credentialCalls),
+      codexCredentialsProvider: recordingCodexProvider(credentialCalls, rejectedTokens),
     });
     assert.equal(text, 'recovered');
     assert.deepEqual(credentialCalls, [false, true], 'second resolution is forced');
+    assert.deepEqual(rejectedTokens, [undefined, 'access-STALE'],
+      'the refresh transaction receives the exact token rejected by this request');
     assert.deepEqual(bearers, ['Bearer access-STALE', 'Bearer access-REFRESHED'],
       'the retry actually used the refreshed token');
   } finally {
@@ -451,30 +455,35 @@ test('a non-auth codex failure does not spend the credential retry', async () =>
 });
 
 test('getCodexCredentials(force) refreshes a token that is nowhere near expiry', async (t) => {
-  // Point HOME at a temp dir BEFORE importing codex-auth: AUTH_PATH is a
-  // module-level constant, and this test must never touch the real
-  // ~/.evobrew/auth-profiles.json.
+  // Point HOME23_ROOT at a temp house before importing codex-auth. The shared
+  // broker is created at module load and must never touch this checkout's
+  // config/secrets.yaml.
   const { mkdtempSync, writeFileSync: writeAuth, mkdirSync, readFileSync: readAuth, rmSync: rmAuth } = await import('node:fs');
   const { tmpdir: authTmpdir } = await import('node:os');
   const { join: joinAuth } = await import('node:path');
+  const { dump: dumpAuth, load: loadAuth } = await import('js-yaml');
 
-  const home = mkdtempSync(joinAuth(authTmpdir(), 'codex-home-'));
-  mkdirSync(joinAuth(home, '.evobrew'));
-  const authPath = joinAuth(home, '.evobrew', 'auth-profiles.json');
+  const home23Root = mkdtempSync(joinAuth(authTmpdir(), 'codex-home23-'));
+  mkdirSync(joinAuth(home23Root, 'config'));
+  const authPath = joinAuth(home23Root, 'config', 'secrets.yaml');
   const farFuture = Date.now() + 3600_000; // an hour out — threshold would NOT refresh
-  writeAuth(authPath, JSON.stringify({
-    version: 1,
-    profiles: {
-      'openai-codex:default': {
-        accessToken: 'access-REVOKED', refreshToken: 'refresh-1',
-        expires: farFuture, accountId: 'acct-test',
+  writeAuth(authPath, dumpAuth({
+    providers: {
+      'openai-codex': {
+        apiKey: 'access-REVOKED',
+        oauthManaged: true,
+        oauth: {
+          refreshToken: 'refresh-1',
+          expiresAt: new Date(farFuture).toISOString(),
+          accountId: 'acct-test',
+        },
       },
     },
-  }));
+  }), { mode: 0o600 });
 
-  const prevHome = process.env.HOME;
+  const prevRoot = process.env.HOME23_ROOT;
   const prevFetch = globalThis.fetch;
-  process.env.HOME = home;
+  process.env.HOME23_ROOT = home23Root;
   let refreshCalls = 0;
   globalThis.fetch = (async (url) => {
     assert.equal(String(url), 'https://auth.openai.com/oauth/token');
@@ -486,8 +495,8 @@ test('getCodexCredentials(force) refreshes a token that is nowhere near expiry',
 
   t.after(() => {
     globalThis.fetch = prevFetch;
-    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
-    rmAuth(home, { recursive: true, force: true });
+    if (prevRoot === undefined) delete process.env.HOME23_ROOT; else process.env.HOME23_ROOT = prevRoot;
+    rmAuth(home23Root, { recursive: true, force: true });
   });
 
   const mod = await import(`../../src/agent/codex-auth.js?forcetest=${Date.now()}`) as
@@ -502,9 +511,10 @@ test('getCodexCredentials(force) refreshes a token that is nowhere near expiry',
   const forced = await mod.getCodexCredentials(undefined, true);
   assert.equal(refreshCalls, 1, 'force bypasses the expiry threshold');
   assert.equal(forced?.accessToken, 'access-NEW');
-  const persisted = JSON.parse(readAuth(authPath, 'utf-8')) as
-    { profiles: Record<string, { accessToken: string; refreshToken: string }> };
-  assert.equal(persisted.profiles['openai-codex:default'].accessToken, 'access-NEW',
+  const persisted = loadAuth(readAuth(authPath, 'utf-8')) as {
+    providers: Record<string, { apiKey: string; oauth: { refreshToken: string } }>;
+  };
+  assert.equal(persisted.providers['openai-codex']?.apiKey, 'access-NEW',
     'the refreshed token is persisted for the next process');
-  assert.equal(persisted.profiles['openai-codex:default'].refreshToken, 'refresh-2');
+  assert.equal(persisted.providers['openai-codex']?.oauth.refreshToken, 'refresh-2');
 });

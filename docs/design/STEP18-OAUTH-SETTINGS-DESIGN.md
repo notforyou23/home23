@@ -1,7 +1,11 @@
 # Step 18: OAuth Setup in Settings UI
 
+> Historical design. The broker architecture described below was retired on
+> 2026-09-10. Home23 now owns PKCE, refresh credentials, rotation, and
+> read-at-use delivery directly. See [Home23 OAuth authority](HOME23-OAUTH-AUTHORITY.md).
+
 **Date:** 2026-04-10
-**Status:** Approved → implementation pending
+**Status:** Superseded
 
 ## Summary
 

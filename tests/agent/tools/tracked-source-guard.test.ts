@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, after } from 'node:test';
@@ -72,10 +72,12 @@ test('write_file and edit_file refuse tracked source without touching it', async
   const tracked = path.join(root, 'src/agent/tools/web.ts');
   const before = readFileSync(tracked, 'utf-8');
 
+  // Tracked source lives outside the resident workspace, so workspace
+  // confinement refuses first. Tracked-source guard still covers in-workspace
+  // edge cases (see symlink test / inspectResidentWrite).
   const write = await writeFileTool.execute({ path: tracked, content: 'pwn\n' }, ctx);
   assert.equal(write.is_error, true);
-  assert.equal(write.metadata?.code, TRACKED_SOURCE_REFUSED);
-  assert.match(write.content, /tracked repo source/);
+  assert.match(write.content, /escapes workspace|tracked repo source/);
   assert.equal(readFileSync(tracked, 'utf-8'), before);
 
   const edit = await editFileTool.execute({
@@ -84,18 +86,27 @@ test('write_file and edit_file refuse tracked source without touching it', async
     new_string: 'http://192.168.4.63:8888',
   }, ctx);
   assert.equal(edit.is_error, true);
-  assert.equal(edit.metadata?.code, TRACKED_SOURCE_REFUSED);
+  assert.match(edit.content, /escapes workspace|tracked repo source/);
   assert.equal(readFileSync(tracked, 'utf-8'), before);
 });
 
-test('write_file still updates local house state', async () => {
+test('write_file updates workspace house state and refuses escapes', async () => {
   const { root, ctx } = houseFixture();
   const envPath = path.join(root, 'engine/.env');
   const notePath = path.join(root, 'instances/jerry/workspace/NOTE.md');
+  const beforeEnv = readFileSync(envPath, 'utf-8');
 
+  // Mutating file tools are workspace-confined; gitignored house files outside
+  // the workspace stay writable via shell (still guarded for tracked source).
   const env = await writeFileTool.execute({ path: envPath, content: 'SEARXNG_URL=http://192.168.4.63:8888\n' }, ctx);
-  assert.equal(env.is_error, undefined, env.content);
-  assert.match(readFileSync(envPath, 'utf-8'), /192\.168\.4\.63/);
+  assert.equal(env.is_error, true);
+  assert.match(env.content, /escapes workspace/);
+  assert.equal(readFileSync(envPath, 'utf-8'), beforeEnv);
+
+  const escape = await writeFileTool.execute({ path: '/tmp/scout-escape-test.txt', content: 'nope\n' }, ctx);
+  assert.equal(escape.is_error, true);
+  assert.match(escape.content, /escapes workspace/);
+  assert.equal(existsSync('/tmp/scout-escape-test.txt'), false);
 
   const note = await writeFileTool.execute({ path: notePath, content: 'updated\n' }, ctx);
   assert.equal(note.is_error, undefined, note.content);
@@ -109,7 +120,9 @@ test('symlink from an ignored path into tracked source is refused', async () => 
   const before = readFileSync(path.join(root, 'src/agent/tools/web.ts'), 'utf-8');
   const write = await writeFileTool.execute({ path: link, content: 'pwn\n' }, ctx);
   assert.equal(write.is_error, true);
-  assert.equal(write.metadata?.code, TRACKED_SOURCE_REFUSED);
+  // Symlink realpath leaves the workspace, so confinement refuses first; tracked
+  // source guard remains a second line of defense for non-escaping cases.
+  assert.match(write.content, /escapes workspace|tracked repo source/);
   assert.equal(readFileSync(path.join(root, 'src/agent/tools/web.ts'), 'utf-8'), before);
 });
 

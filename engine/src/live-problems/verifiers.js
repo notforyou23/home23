@@ -17,6 +17,7 @@ const crypto = require('crypto');
 const { execFileSync, execSync } = require('child_process');
 const http = require('http');
 const https = require('https');
+const yaml = require('js-yaml');
 
 function normalizePm2RestartCount(value) {
   if (value === null || value === undefined || value === '') return 0;
@@ -1367,16 +1368,21 @@ verifiers.fix_recipe_recorded = async function fixRecipeRecorded(args = {}, ctx 
  * spending the refresh token to find out.
  *
  * args: {
- *   profilePath,             // credential store Home23 depends on
- *   profileKey,              // profile within that store
+ *   profilePath,             // legacy JSON profile store
+ *   profileKey,              // legacy profile within that store
+ *   secretsPath,             // current Home23 config/secrets.yaml
+ *   provider,                // current provider key
  *   rivalPath?,              // another client's store for the same account
  *   warnDaysBeforeExpiry?    // default 3
  * }
  */
 verifiers.oauth_token_lineage_fresh = function oauthTokenLineageFresh(args = {}) {
-  const { profilePath, profileKey, rivalPath } = args;
+  const { profilePath, profileKey, secretsPath, provider, rivalPath } = args;
   const warnDays = Number.isFinite(args.warnDaysBeforeExpiry) ? args.warnDaysBeforeExpiry : 3;
-  if (!profilePath || !profileKey) return { ok: false, detail: 'profilePath and profileKey required' };
+  const currentStore = secretsPath && provider;
+  if (!currentStore && (!profilePath || !profileKey)) {
+    return { ok: false, detail: 'secretsPath and provider required' };
+  }
 
   const decodeIat = (jwt) => {
     try {
@@ -1389,13 +1395,28 @@ verifiers.oauth_token_lineage_fresh = function oauthTokenLineageFresh(args = {})
 
   let profile;
   try {
-    const full = expandPath(profilePath);
-    if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${profilePath}` };
-    profile = JSON.parse(fs.readFileSync(full, 'utf8'))?.profiles?.[profileKey];
+    const configuredPath = currentStore ? secretsPath : profilePath;
+    const full = expandPath(configuredPath);
+    if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${configuredPath}` };
+    if (currentStore) {
+      const entry = yaml.load(fs.readFileSync(full, 'utf8'))?.providers?.[provider];
+      profile = entry?.oauthManaged === true ? {
+        accessToken: entry.apiKey,
+        refreshToken: entry.oauth?.refreshToken,
+        expires: Date.parse(entry.oauth?.expiresAt),
+        accountId: entry.oauth?.accountId,
+      } : null;
+    } else {
+      profile = JSON.parse(fs.readFileSync(full, 'utf8'))?.profiles?.[profileKey];
+    }
   } catch (err) {
-    return { ok: false, detail: `unreadable profile store: ${err.message}` };
+    return { ok: false, detail: `unreadable credential store: ${err.message}` };
   }
-  if (!profile?.accessToken) return { ok: false, detail: `missing profile: ${profileKey}` };
+  const credentialLabel = currentStore ? provider : profileKey;
+  if (!profile?.accessToken) return { ok: false, detail: `missing profile: ${credentialLabel}` };
+  if (currentStore && !profile.refreshToken) {
+    return { ok: false, detail: `managed refresh credential missing: ${credentialLabel}` };
+  }
 
   const claims = decodeIat(profile.accessToken);
   const expiresMs = Number.isFinite(profile.expires)

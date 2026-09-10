@@ -227,12 +227,17 @@ class AgendaStore {
   groupedByTopic(filter = {}) {
     const items = this.list(filter);
     const groups = new Map();
+    const seenIds = new Set();
     for (const rec of items) {
-      const tags = rec.topicTags.length > 0 ? rec.topicTags : ['uncategorized'];
-      for (const tag of tags) {
-        if (!groups.has(tag)) groups.set(tag, []);
-        groups.get(tag).push(rec);
-      }
+      // One record → one group. Multi-tag items used to appear under every tag,
+      // which inflated header-visible counts vs unique acted-on rows.
+      if (seenIds.has(rec.id)) continue;
+      seenIds.add(rec.id);
+      const tag = (Array.isArray(rec.topicTags) && rec.topicTags.length > 0)
+        ? rec.topicTags[0]
+        : 'uncategorized';
+      if (!groups.has(tag)) groups.set(tag, []);
+      groups.get(tag).push(rec);
     }
     return Array.from(groups.entries()).map(([tag, records]) => ({
       topic: tag,

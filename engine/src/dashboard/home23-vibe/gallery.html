@@ -275,13 +275,27 @@
     }
 
     body.h23-vibe-page #particles-js {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      width: 100%;
+      height: 100%;
       opacity: 0.1;
       pointer-events: none;
     }
 
+    body.h23-vibe-page #particles-js canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
     body.h23-vibe-page .h23-vg-shell {
+      position: relative;
+      z-index: 1;
       max-width: 1360px;
       padding: 36px 28px 52px;
+      margin: 0 auto;
     }
 
     body.h23-vibe-page .h23-vg-header {

@@ -12,7 +12,7 @@ import { estimateContextChars } from './context-pressure.js';
 
 import Anthropic from '@anthropic-ai/sdk';
 import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
-import { resolveProviderKey, isAuthError } from './provider-credentials.js';
+import { resolveProviderKey, isAuthError, refreshManagedOAuth } from './provider-credentials.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -1759,12 +1759,14 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
         try {
           if (runtimeProvider === 'openai-codex') {
             // ── OpenAI Codex OAuth path ──
-            // Uses ChatGPT OAuth credentials from ~/.evobrew/auth-profiles.json.
+            // Uses ChatGPT OAuth credentials owned by Home23 in secrets.yaml.
             // Calls https://chatgpt.com/backend-api/codex/responses (Responses API, SSE).
             // Returns respMsg in OAI Chat Completions format so the tool loop below runs unchanged.
 
-            const creds = await this.codexCredentialsProvider(ac.signal);
-            if (!creds) throw new Error('openai-codex credentials not found — connect OpenAI Codex in Home23 Setup or Settings > Providers');
+            const initialCreds = await this.codexCredentialsProvider(ac.signal);
+            if (!initialCreds) throw new Error('openai-codex credentials not found — connect OpenAI Codex in Home23 Setup or Settings > Providers');
+            let creds = initialCreds;
+            let codexAuthRefreshSpent = false;
 
             const sysText = typeof systemPrompt === 'string'
               ? systemPrompt
@@ -1917,12 +1919,27 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               const fetchSignal = turnRuntime ? ac.signal
                 : combineRequestSignals(ac.signal, DEFAULT_TURN_HARD_DURATION_MS);
 
-              const postCodex = (body: Record<string, unknown>) => fetchCodexResponse('https://chatgpt.com/backend-api/codex/responses', {
-                method: 'POST',
-                headers: getCodexHeaders(creds),
-                body: JSON.stringify(body),
-                signal: fetchSignal,
-              });
+              const postCodex = async (body: Record<string, unknown>): Promise<Response> => {
+                const send = () => fetchCodexResponse('https://chatgpt.com/backend-api/codex/responses', {
+                  method: 'POST',
+                  headers: getCodexHeaders(creds),
+                  body: JSON.stringify(body),
+                  signal: fetchSignal,
+                });
+                let response = await send();
+                if (!codexAuthRefreshSpent && (response.status === 401 || response.status === 403)) {
+                  const rejectedToken = creds.accessToken;
+                  await response.body?.cancel().catch(() => {});
+                  codexAuthRefreshSpent = true;
+                  const refreshed = await this.codexCredentialsProvider(ac.signal, true, rejectedToken);
+                  if (!refreshed) {
+                    throw new Error(`codex HTTP ${response.status}: Home23 credential refresh failed`);
+                  }
+                  creds = refreshed;
+                  response = await send();
+                }
+                return response;
+              };
 
               let res = await postCodex(buildCodexBody());
               if (!res.ok) {
@@ -2892,14 +2909,13 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               response = await streamAttempt(runtimeClient);
             } else if (ac.signal.aborted || emittedAny || !isAuthError(streamErr)) {
               throw streamErr;
-            } else if (!this.ensureFreshAnthropicClient(true)) {
-              throw streamErr;
             } else {
-              // One force-fresh credential retry, mirroring text-generation.ts:
-              // the token may have rotated in secrets.yaml after this client was
-              // built, and inside the resolver's cache window only a forced
-              // re-read can see it. Never loops — a second failure propagates.
-              console.warn('[agent] auth failure — retrying once with the re-read credential');
+              await refreshManagedOAuth('anthropic');
+              if (!this.ensureFreshAnthropicClient(true)) throw streamErr;
+              // One Home23-managed refresh and retry. The shared secrets lock
+              // prevents another resident from spending the same rotating
+              // refresh credential concurrently. Never loops.
+              console.warn('[agent] auth failure — retrying once with refreshed Home23 credentials');
               response = await streamAttempt(this.client);
             }
           }

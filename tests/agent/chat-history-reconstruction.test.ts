@@ -139,3 +139,33 @@ test('history route limits semantic projection rather than raw JSONL transport r
   assert.equal(body.records.filter((record: any) => record.canonical === true).length, 1);
   assert.equal(body.records.find((record: any) => record.canonical === true).content, full);
 });
+
+test('pending turn envelopes are omitted once complete; blank assistants dropped', () => {
+  const turnId = 't_blank';
+  const full = 'Final answer text';
+  const records = [
+    turn(turnId, 'pending'),
+    { role: 'user', content: 'hi', ts: '2026-07-12T16:06:00.000Z' },
+    { role: 'assistant', content: '   ', ts: '2026-07-12T16:06:30.000Z' },
+    { role: 'assistant', content: full, ts: '2026-07-12T16:07:00.000Z' },
+    { ...turn(turnId, 'complete', 1), assistant_content: full },
+  ];
+  const projected = projectChatHistoryRecords(records, 100) as any[];
+  assert.equal(
+    projected.filter((r) => r?.type === 'turn' && r?.status === 'pending').length,
+    0,
+    'completed turns must not project their pending envelope',
+  );
+  assert.equal(
+    projected.filter((r) => r?.role === 'assistant' && r?.canonical === true).length,
+    1,
+  );
+  assert.equal(
+    projected.filter((r) => r?.role === 'assistant' && typeof r?.content === 'string' && !r?.canonical).length,
+    0,
+    'whitespace-only assistants must be dropped',
+  );
+  const terminal = projected.find((r) => r?.type === 'turn' && r?.status === 'complete');
+  assert.equal(terminal?.assistant_content, full);
+  assert.equal(terminal?.display_assistant, false);
+});

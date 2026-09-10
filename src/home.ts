@@ -60,6 +60,7 @@ import { finishCronAgentTurn, startCronAgentTurn } from './work/cron-work.js';
 import { createAsyncWorkRouter } from './routes/async-work.js';
 import { AttentionGate, type OutboundSignal } from './agent/attention/attention-gate.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
+import { resolveShellFsAuthority } from './agent/tools/shell-fs-authority.js';
 import { BrainOperationsClient } from './agent/brain-operations/client.js';
 import {
   preserveCronBrainQueryDeliveryFailure,
@@ -378,11 +379,24 @@ async function main(): Promise<void> {
   });
 
   // ── Tool Context (pre-wired, agent loop + scheduler added below) ──
+  const shellCfg = config.shell;
+  const shellFsAuthority = resolveShellFsAuthority(shellCfg, {
+    projectRoot: PROJECT_ROOT,
+    instanceDir: INSTANCE_DIR,
+  });
+  console.log(
+    `[home] Shell FS authority: ${shellFsAuthority.machineAccess
+      ? 'full-machine'
+      : `roots=[${shellFsAuthority.roots.join(', ')}]`}`,
+  );
+
   const toolContext: ToolContext = {
     scheduler: null,
     ttsService,
     browser,
     projectRoot: PROJECT_ROOT,
+    instanceDir: INSTANCE_DIR,
+    shellFsAuthority,
     enginePort: DASHBOARD_PORT,
     agentName,
     cosmo23BaseUrl,

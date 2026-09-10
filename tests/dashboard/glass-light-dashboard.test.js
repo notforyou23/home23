@@ -1474,6 +1474,7 @@ test('overlay focus, Tab, Escape, and scroll restoration follow actual paint ord
   // opening Problems then Brain proves visual z-order follows paint order.
   document.dispatch('click', { target: problemsInvoker });
   problems.style.display = 'flex';
+  problems.setAttribute('aria-hidden', 'false');
   runtime.flushMutationRecords([problems]);
   document.dispatch('click', { target: brainInvoker });
   brain.style.display = 'flex';

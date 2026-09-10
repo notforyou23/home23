@@ -61,6 +61,8 @@ test('explicit configuration is rendered but an unsafe bind remains startup-inva
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const app = require(join(root, 'ecosystem.config.cjs')).apps
     .find((candidate) => candidate.name === 'home23-coordination');
+  const dashboard = require(join(root, 'ecosystem.config.cjs')).apps
+    .find((candidate) => candidate.name === 'home23-jerry-dash');
   assert.equal(app.env.HOME23_COORDINATION_ENABLED, 'true');
   assert.equal(app.env.HOME23_COORDINATION_HOST, '127.0.0.1');
   assert.equal(app.env.HOME23_COORDINATION_ACTIVITY_ENABLED, 'true');
@@ -68,6 +70,7 @@ test('explicit configuration is rendered but an unsafe bind remains startup-inva
   assert.match(app.env.HOME23_COORDINATION_ATTACHMENTS_ROOT, /instances\/.house\/coordination\/attachments$/);
   assert.equal(app.autorestart, false);
   assert.equal(app.env.HOME23_COORDINATION_PORT, '7446');
+  assert.equal(dashboard.env.HOME23_COORDINATION_ORIGIN, 'http://127.0.0.1:7446');
 });
 
 test('Jerry and Forrest resident identities and credentials remain distinct and feature-off', (t) => {

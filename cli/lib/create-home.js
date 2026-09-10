@@ -142,6 +142,24 @@ export async function createHome(root, input = {}, options = {}) {
     const configPath = join(root, 'config', 'home.yaml');
     const home = readYaml(configPath);
     home.home = { ...home.home, id: journal.home.id, name: journal.home.name, primaryAgent: profile.name };
+    const configuredShell = home.shell && typeof home.shell === 'object' && !Array.isArray(home.shell)
+      ? home.shell
+      : {};
+    if (configuredShell.machineAccess !== true && configuredShell.fullMachine !== true) {
+      const selectedRoots = [
+        root,
+        instanceDir,
+        ...agent.ingestPaths.map(item => item.path),
+      ];
+      home.shell = {
+        ...configuredShell,
+        machineAccess: false,
+        roots: [...new Set([
+          ...(Array.isArray(configuredShell.roots) ? configuredShell.roots : []),
+          ...selectedRoots,
+        ])],
+      };
+    }
     home.query = { ...home.query, defaultProvider: profile.provider, defaultModel: profile.model,
       pgsSweepProvider: profile.provider, pgsSweepModel: profile.model,
       pgsSynthProvider: profile.provider, pgsSynthModel: profile.model };

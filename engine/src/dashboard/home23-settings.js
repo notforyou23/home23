@@ -2246,9 +2246,13 @@ function renderOAuthCard(kind, status) {
   const statusEl = document.getElementById(`${kind}-oauth-status`);
   const logoutBtn = document.getElementById(`btn-${kind}-oauth-logout`);
   if (!statusEl) return;
-  if (status.configured && status.valid) {
+  statusEl.style.color = '';
+  if (status.configured && status.valid && status.refreshable) {
     const expiry = status.expiresAt ? ` · expires ${new Date(status.expiresAt).toLocaleDateString()}` : '';
     statusEl.innerHTML = `<span class="h23s-oauth-connected">✓ Connected${expiry}</span>`;
+    if (logoutBtn) logoutBtn.hidden = false;
+  } else if (status.configured && status.valid) {
+    statusEl.innerHTML = '<span class="h23s-oauth-expired">⚠ Sign in again — Home23 has no refresh credential</span>';
     if (logoutBtn) logoutBtn.hidden = false;
   } else if (status.configured) {
     statusEl.innerHTML = `<span class="h23s-oauth-expired">⚠ Token expired — re-authorize</span>`;
@@ -2262,29 +2266,8 @@ function renderOAuthCard(kind, status) {
 function showOAuthMessage(kind, text, isError = false) {
   const el = document.getElementById(`${kind}-oauth-status`);
   if (!el) return;
-  const color = isError ? 'var(--accent-red)' : 'var(--accent-blue)';
-  el.innerHTML = `<span style="color:${color};">${text}</span>`;
-}
-
-// The OAuth call and the mirror into secrets.yaml succeed or fail independently.
-// A stored token the agents never received is a real half-failure, so say so
-// rather than showing a clean success the operator would trust.
-function showOAuthSyncOutcome(kind, data, successText) {
-  const sync = data?.sync;
-  if (sync && sync.ok === false) {
-    showOAuthMessage(
-      kind,
-      `${successText}, but propagating it to the agents failed: ${sync.error || 'unknown'}. `
-      + 'They keep using the previous token until this is resolved.',
-      true,
-    );
-    return;
-  }
-  if (sync && sync.warn) {
-    showOAuthMessage(kind, `${successText}, but ${sync.warn}`, true);
-    return;
-  }
-  showOAuthMessage(kind, successText);
+  el.style.color = isError ? 'var(--accent-red)' : 'var(--accent-blue)';
+  el.textContent = text;
 }
 
 async function anthropicOAuthImportCli() {
@@ -2294,7 +2277,7 @@ async function anthropicOAuthImportCli() {
     const data = await r.json();
     if (!data.ok) return showOAuthMessage('anthropic', `Import failed: ${data.error || 'unknown'}`, true);
     await loadOAuthStatus();
-    showOAuthSyncOutcome('anthropic', data, 'Imported from Claude CLI');
+    showOAuthMessage('anthropic', 'Imported from Claude CLI');
   } catch (err) {
     showOAuthMessage('anthropic', `Import error: ${err.message}`, true);
   }
@@ -2302,7 +2285,7 @@ async function anthropicOAuthImportCli() {
 
 async function anthropicOAuthStart() {
   try {
-    const r = await fetch(`${API}/oauth/anthropic/start`);
+    const r = await fetch(`${API}/oauth/anthropic/start`, { method: 'POST' });
     const data = await r.json();
     if (!data.ok) return showOAuthMessage('anthropic', `Start failed: ${data.error || 'unknown'}`, true);
     const link = document.getElementById('anthropic-oauth-link');
@@ -2331,7 +2314,7 @@ async function anthropicOAuthComplete() {
     document.getElementById('anthropic-oauth-flow').hidden = true;
     document.getElementById('anthropic-oauth-callback').value = '';
     await loadOAuthStatus();
-    showOAuthSyncOutcome('anthropic', data, 'Signed in to Anthropic');
+    showOAuthMessage('anthropic', 'Signed in to Anthropic');
   } catch (err) {
     showOAuthMessage('anthropic', `OAuth error: ${err.message}`, true);
   }
@@ -2349,30 +2332,50 @@ async function anthropicOAuthLogout() {
   }
 }
 
-async function codexOAuthImportEvobrew() {
-  showOAuthMessage('codex', 'Importing from Evobrew…');
+async function codexOAuthImportCli() {
+  showOAuthMessage('codex', 'Importing from Codex CLI…');
   try {
-    const r = await fetch(`${API}/oauth/openai-codex/import-evobrew`, { method: 'POST' });
+    const r = await fetch(`${API}/oauth/openai-codex/import-cli`, { method: 'POST' });
     const data = await r.json();
     if (!data.ok) return showOAuthMessage('codex', `Import failed: ${data.error || 'unknown'}`, true);
     await loadOAuthStatus();
-    showOAuthSyncOutcome('codex', data, 'Imported from Evobrew');
+    showOAuthMessage('codex', 'Imported from Codex CLI');
   } catch (err) {
     showOAuthMessage('codex', `Import error: ${err.message}`, true);
   }
 }
 
 async function codexOAuthStart() {
-  showOAuthMessage('codex', 'OAuth flow running (check your browser)…');
-  document.getElementById('codex-oauth-note').hidden = false;
   try {
-    // This call blocks until cosmo23's local callback server receives the code
     const r = await fetch(`${API}/oauth/openai-codex/start`, { method: 'POST' });
     const data = await r.json();
+    if (!data.ok) return showOAuthMessage('codex', `Start failed: ${data.error || 'unknown'}`, true);
+    const link = document.getElementById('codex-oauth-link');
+    link.href = data.authUrl;
+    link.textContent = 'Open ChatGPT sign-in page ↗';
+    document.getElementById('codex-oauth-flow').hidden = false;
+    window.open(data.authUrl, '_blank', 'noopener,noreferrer');
+  } catch (err) {
+    showOAuthMessage('codex', `Start error: ${err.message}`, true);
+  }
+}
+
+async function codexOAuthComplete() {
+  const callbackUrl = document.getElementById('codex-oauth-callback').value.trim();
+  if (!callbackUrl) return;
+  showOAuthMessage('codex', 'Completing sign-in…');
+  try {
+    const r = await fetch(`${API}/oauth/openai-codex/callback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callbackUrl }),
+    });
+    const data = await r.json();
     if (!data.ok) return showOAuthMessage('codex', `OAuth failed: ${data.error || 'unknown'}`, true);
-    document.getElementById('codex-oauth-note').hidden = true;
+    document.getElementById('codex-oauth-flow').hidden = true;
+    document.getElementById('codex-oauth-callback').value = '';
     await loadOAuthStatus();
-    showOAuthSyncOutcome('codex', data, 'Signed in to OpenAI Codex');
+    showOAuthMessage('codex', 'Signed in to OpenAI Codex');
   } catch (err) {
     showOAuthMessage('codex', `OAuth error: ${err.message}`, true);
   }
@@ -2395,8 +2398,9 @@ function setupOAuthHandlers() {
   document.getElementById('btn-anthropic-oauth-start')?.addEventListener('click', anthropicOAuthStart);
   document.getElementById('btn-anthropic-oauth-complete')?.addEventListener('click', anthropicOAuthComplete);
   document.getElementById('btn-anthropic-oauth-logout')?.addEventListener('click', anthropicOAuthLogout);
-  document.getElementById('btn-codex-oauth-import')?.addEventListener('click', codexOAuthImportEvobrew);
+  document.getElementById('btn-codex-oauth-import')?.addEventListener('click', codexOAuthImportCli);
   document.getElementById('btn-codex-oauth-start')?.addEventListener('click', codexOAuthStart);
+  document.getElementById('btn-codex-oauth-complete')?.addEventListener('click', codexOAuthComplete);
   document.getElementById('btn-codex-oauth-logout')?.addEventListener('click', codexOAuthLogout);
 }
 
@@ -3954,8 +3958,8 @@ async function checkOnboardingProviderGate() {
     const oauthData = await oauthRes.json();
 
     const hasApiKey = Object.values(provData.providers || {}).some(p => p.hasKey);
-    const hasOAuth = (oauthData.anthropic?.configured && oauthData.anthropic?.valid)
-                  || (oauthData.openaiCodex?.configured && oauthData.openaiCodex?.valid);
+    const hasOAuth = (oauthData.anthropic?.configured && oauthData.anthropic?.valid && oauthData.anthropic?.refreshable)
+                  || (oauthData.openaiCodex?.configured && oauthData.openaiCodex?.valid && oauthData.openaiCodex?.refreshable);
 
     const gate = document.getElementById('ob-provider-gate');
     const nextBtn = document.getElementById('ob-next-1');

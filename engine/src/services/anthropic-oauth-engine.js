@@ -2,16 +2,16 @@
  * Anthropic Auth Module — Simplified for COSMO Home 2.3
  *
  * Credentials resolve AT USE TIME from config/secrets.yaml (the file the
- * OAuth mirror keeps fresh), via the shared provider-credentials resolver.
+ * Home23's OAuth authority keeps fresh), via the shared credential resolver.
  * ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY remain the env floor for
  * credential-free hosts. Pass force=true after an auth failure to drop the
  * resolver cache and reread the file.
  *
- * The full PKCE OAuth flow from cosmo_2.3 is not needed here —
- * the token is mirrored into secrets.yaml by the dashboard's OAuth sync.
+ * PKCE and refresh rotation are handled by shared/home23-oauth.cjs; this
+ * adapter only chooses the correct Anthropic SDK credential shape.
  */
 
-const { resolveProviderKey } = require('../core/provider-credentials');
+const { resolveProviderKey, managedOAuthCredentials } = require('../core/provider-credentials');
 
 // Claude Code version for stealth mode headers
 const CLAUDE_CODE_VERSION = '2.1.32';
@@ -46,7 +46,12 @@ function getStealthHeaders() {
  * PKCE flow. `force` drops the resolver cache (the auth-failure path).
  */
 async function getAnthropicApiKey(force = false) {
-  const key = resolveProviderKey('anthropic', undefined, force);
+  // Regular calls proactively refresh a near-expiry Home23 OAuth token. The
+  // auth-failure path refreshes before invoking this function with force=true.
+  const managed = !force ? await managedOAuthCredentials('anthropic') : null;
+  // Use the broker result directly. A refresh writes secrets.yaml, but the
+  // cheap resolver can still hold the prior value inside its 15-second cache.
+  const key = managed?.accessToken || resolveProviderKey('anthropic', undefined, force);
 
   if (key && isOAuthToken(key)) {
     console.log('[OAuth-Engine] Using OAuth token (stealth mode)');

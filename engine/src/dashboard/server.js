@@ -24,7 +24,7 @@ const { MissionTracer } = require('../../scripts/TRACE_RESEARCH_MISSIONS');
 const { Home23VibeService } = require('./home23-vibe/service');
 const { Home23BriefsService } = require('./home23-briefs');
 const { Home23TileService } = require('./home23-tiles');
-const { updateDashboardOAuthTokenSecrets } = require('./home23-secrets');
+const { createHome23OAuthBroker } = require('../../../shared/home23-oauth.cjs');
 const { createMemorySearchService } = require('./memory-search');
 const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache');
 const {
@@ -86,6 +86,7 @@ const {
   registerSynthesisCompatibilityRoutes,
 } = require('./brain-operations/synthesis-compatibility-routes.js');
 const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
+const { createConnectedAgentsProxy } = require('./connected-agents-proxy.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -688,6 +689,12 @@ class DashboardServer {
       probeAvailability: probeMcpAvailability,
       buildUnavailableEnvelope: buildMcpUnavailableEnvelope,
       logger: this.logger || console,
+    }));
+
+    this.app.use('/home23/api/product', createConnectedAgentsProxy({
+      origin: options.connectedAgentsOrigin || this.getHome23CoordinationOrigin(),
+      fetchImpl: options.connectedAgentsFetch,
+      timeoutMs: options.connectedAgentsTimeoutMs,
     }));
 
     // COSMO is a local research system - no artificial limits on data ingestion
@@ -1901,6 +1908,27 @@ class DashboardServer {
         : path.resolve(__dirname, '..', '..', '..'));
   }
 
+  getHome23CoordinationOrigin() {
+    if (process.env.HOME23_COORDINATION_ORIGIN) {
+      return process.env.HOME23_COORDINATION_ORIGIN;
+    }
+    const fsSync = require('fs');
+    const configPath = path.join(this.getHome23Root(), 'config', 'home.yaml');
+    let port = Number(process.env.HOME23_COORDINATION_PORT || '7346');
+    try {
+      if (fsSync.existsSync(configPath)) {
+        const config = yaml.load(fsSync.readFileSync(configPath, 'utf8')) || {};
+        port = Number(config.coordination?.publicApi?.port ?? port);
+      }
+    } catch (error) {
+      throw new Error(`Home23 coordination configuration is unreadable: ${error.message}`);
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('Home23 coordination port is invalid');
+    }
+    return `http://127.0.0.1:${port}`;
+  }
+
   getHome23AgentName() {
     if (process.env.HOME23_AGENT) return process.env.HOME23_AGENT;
     if (process.env.COSMO_WORKSPACE_PATH) {
@@ -2357,9 +2385,12 @@ class DashboardServer {
 
     // Home23 config (ports for client-side URL construction)
     this.app.get('/home23/config.json', (req, res) => {
+      const agentName = this.getHome23AgentName();
       res.json({
         evobrewPort: parseInt(process.env.EVOBREW_PORT || '3415', 10),
-        cosmo23Port: parseInt(process.env.COSMO23_PORT || '43210', 10)
+        cosmo23Port: parseInt(process.env.COSMO23_PORT || '43210', 10),
+        agent: agentName,
+        agentName,
       });
     });
 
@@ -3007,139 +3038,25 @@ class DashboardServer {
       console.warn('[Settings API] Failed to mount:', err.message);
     }
 
-    // ── OAuth refresh poller (STEP 18) ──
-    // cosmo23 handles PKCE refresh internally. Every 30 min, check the current
-    // decrypted token. If it differs from what's in secrets.yaml, sync it in.
-    // Writing secrets.yaml IS the delivery: every consumer now resolves
-    // credentials at use, so as of 2026-08-11 a rotation restarts NOTHING —
-    // see rotationRestartTargets in ./oauth-token-expiry.js, which returns an
-    // empty list. The restart machinery below is kept (it is still correct,
-    // and still research-run aware) for whatever future consumer declares
-    // that it cannot read-at-use.
+    // ── Home23 OAuth refresh ──
+    // The house owns both providers' refresh credentials. Consumers refresh
+    // at use; this quiet sweep merely keeps idle homes ready before the next
+    // conversation. The shared secret lock prevents parallel agents from
+    // spending the same rotating refresh credential.
     try {
-      const home23RootForPoll = this.getHome23Root();
-      const fsSync = require('fs');
-      const cosmoPort = parseInt(process.env.COSMO23_PORT || '43210', 10);
-      const cosmoBase = `http://localhost:${cosmoPort}`;
-      const secretsPath = path.join(home23RootForPoll, 'config', 'secrets.yaml');
-      const { readCurrentSecretToken, mayDeferRestart, rotationRestartTargets } = require('./oauth-token-expiry.js');
-
-      const pollInterval = 30 * 60 * 1000; // 30 min
-      setInterval(async () => {
-        try {
-          // Skip if a research run is in flight
-          let researchActive = false;
+      const oauthBroker = createHome23OAuthBroker({ home23Root: this.getHome23Root() });
+      const refresh = async () => {
+        for (const provider of ['anthropic', 'openai-codex']) {
           try {
-            const sres = await fetch(`${cosmoBase}/api/status`, { signal: AbortSignal.timeout(3000) });
-            if (sres.ok) {
-              const data = await sres.json();
-              researchActive = !!data.running;
-            }
-          } catch { /* cosmo unreachable — skip silently */ }
-          // researchActive no longer skips the tick. The raw-token fetch below
-          // is what triggers cosmo23's lazy re-mint, and the secrets sync is
-          // harmless during a run — skipping BOTH is how the codex token
-          // expired at 2026-08-09T00:26Z and both engines ran auth-dead for
-          // 8+ hours. Only the process RESTART is deferrable now.
-
-          for (const provider of ['anthropic', 'openai-codex']) {
-            try {
-              const r = await fetch(`${cosmoBase}/api/oauth/${provider}/raw-token`, {
-                signal: AbortSignal.timeout(5000),
-              });
-              if (!r.ok) continue;
-              const data = await r.json();
-              const newToken = data?.token;
-              if (!newToken) continue;
-
-              if (!fsSync.existsSync(secretsPath)) continue;
-              const priorToken = readCurrentSecretToken(secretsPath, provider);
-              const tokenUpdate = await updateDashboardOAuthTokenSecrets(
-                home23RootForPoll,
-                provider,
-                newToken,
-              );
-              if (!tokenUpdate.changed) continue;
-
-              try {
-                const { execSync } = require('child_process');
-                execSync(`node --input-type=module -e "
-                  import { generateEcosystem } from './cli/lib/generate-ecosystem.js';
-                  generateEcosystem(process.cwd());
-                "`, { cwd: home23RootForPoll, stdio: 'pipe', timeout: 10_000 });
-              } catch { /* fallback: restart anyway, ecosystem regen is optional */ }
-
-              // Restart is the deferrable half: during an active research run
-              // we hold off ONLY while the token the fleet booted with is
-              // still comfortably valid. Expired/near-expiry prior token →
-              // restart now; a dead fleet is strictly worse than a bumped run.
-              if (researchActive && mayDeferRestart(priorToken, Date.now())) {
-                console.log(`[OAuth refresh] ${provider} token rotated + synced; restart deferred (research run active, prior token still valid)`);
-                continue;
-              }
-
-              // Shared provider secrets affect every running Home23 agent, not
-              // just the home primary. Restart only processes that are both
-              // currently online AND actually need a restart to see the new
-              // token — the engine no longer does (it resolves credentials at
-              // use), so it is no longer cycled here. See
-              // rotationRestartTargets for the full reasoning.
-              try {
-                const { execFileSync } = require('child_process');
-                const { parsePm2JlistOutput } = require(path.join(home23RootForPoll, 'scripts', 'home23-pm2-watchdog.cjs'));
-                const jlist = parsePm2JlistOutput(execFileSync('pm2', ['jlist'], {
-                  encoding: 'utf8',
-                  env: cleanPm2Env(),
-                  stdio: 'pipe',
-                  timeout: 10_000,
-                }));
-                const online = new Set(
-                  jlist
-                    .filter(proc => proc.pm2_env?.status === 'online' && Number(proc.pid))
-                    .map(proc => proc.name)
-                );
-                const instancesDir = path.join(home23RootForPoll, 'instances');
-                const agentNames = fsSync.existsSync(instancesDir)
-                  ? fsSync.readdirSync(instancesDir).filter(name => fsSync.existsSync(path.join(instancesDir, name, 'config.yaml')))
-                  : [];
-                const targets = rotationRestartTargets(agentNames, online);
-                if (targets.length > 0) {
-                  const ecosystemPath = path.join(home23RootForPoll, 'ecosystem.config.cjs');
-                  try {
-                    execFileSync('pm2', ['restart', ecosystemPath, '--only', targets.join(','), '--update-env', '--silent'], {
-                      cwd: home23RootForPoll,
-                      env: cleanPm2Env(),
-                      stdio: 'pipe',
-                      timeout: 45_000,
-                    });
-                  } catch (restartErr) {
-                    // Do NOT fall back to `pm2 start` here. Targets are
-                    // filtered to online (registered) apps above, so a failed
-                    // restart is a slow/timed-out one — the PM2 daemon keeps
-                    // executing it server-side after this client gives up. A
-                    // racing `pm2 start` against that in-flight restart is
-                    // what orphaned forrest-harness on its bridge port on
-                    // 2026-08-07 (untracked live copy + EADDRINUSE crash loop).
-                    console.warn(`[OAuth refresh] pm2 restart did not confirm within timeout for ${targets.join(', ')}: ${restartErr.message} — letting the PM2 daemon finish server-side`);
-                  }
-                  console.log(`[OAuth refresh] rotated ${provider} token, restarted ${targets.join(', ')}`);
-                } else {
-                  // A rotation with nothing to restart is a success, not a
-                  // no-op — every consumer already reads the file. Say so:
-                  // an unlogged rotation is indistinguishable from a poller
-                  // that silently stopped running, which is the failure mode
-                  // that hid the 2026-08-09 outage for 8 hours.
-                  console.log(`[OAuth refresh] rotated ${provider} token, synced to secrets.yaml; no restart needed`);
-                }
-              } catch (err) {
-                console.warn(`[OAuth refresh] ${provider} token written but restart failed:`, err.message);
-              }
-            } catch { /* per-provider error, continue with next */ }
+            await oauthBroker.credentials(provider);
+          } catch (error) {
+            console.warn(`[OAuth refresh] ${provider}: ${error.code || error.message}`);
           }
-        } catch (err) {
-          console.warn('[OAuth refresh] poller error:', err.message);
         }
-      }, pollInterval);
+      };
+      void refresh();
+      const timer = setInterval(refresh, 10 * 60 * 1000);
+      timer.unref?.();
     } catch (err) {
       console.warn('[OAuth refresh] setup failed:', err.message);
     }
@@ -3396,6 +3313,16 @@ class DashboardServer {
       });
     });
 
+    // Connected Agents surface (honest product page; was a dead /home23/connected-agents link)
+    this.app.get('/home23/connected-agents', (req, res) => {
+      res.sendFile(path.join(__dirname, 'connected-agents.html'));
+    });
+
+    // Legacy diagnostics under the /home23 prefix (same page as /legacy)
+    this.app.get('/home23/legacy', (req, res) => {
+      res.sendFile(path.join(__dirname, 'legacy-dashboard.html'));
+    });
+
     // Chat standalone page
     this.app.get('/home23/chat', (req, res) => {
       res.sendFile(path.join(__dirname, 'home23-chat.html'));
@@ -3518,7 +3445,7 @@ class DashboardServer {
         const { handleFunctionCalling } = require('../ide/ai-handler');
         const CodebaseIndexer = require('../ide/codebase-indexer');
 
-        // Anthropic: use the OAuth-aware AnthropicClient from cosmo_2.3
+        // Anthropic: use Home23's OAuth-aware AnthropicClient.
         const anthropicClient = new AnthropicClient({
           useExtendedThinking: false,
           defaultMaxTokens: 4096,
@@ -12550,5 +12477,4 @@ module.exports = {
   parseConversationLines,
   readJsonlTail,
   sendMemorySearchError,
-  updateDashboardOAuthTokenSecrets,
 };

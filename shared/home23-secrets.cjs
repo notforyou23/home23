@@ -18,8 +18,9 @@ function secretsError(code, cause) {
   return error;
 }
 
-function lockCoordinates(home23Root) {
-  const secretsPath = path.join(home23Root, 'config', 'secrets.yaml');
+function lockCoordinates(home23Root, options = {}) {
+  const secretsPath = options.secretsPath || path.join(home23Root, 'config', 'secrets.yaml');
+  if (!path.isAbsolute(secretsPath)) throw secretsError('home23_secrets_path_invalid');
   const configDir = path.dirname(secretsPath);
   return {
     secretsPath,
@@ -40,7 +41,7 @@ function lockOptions(lockPath, retries = 0) {
 
 async function withHome23SecretsLock(home23Root, callback, options = {}) {
   if (typeof callback !== 'function') throw secretsError('home23_secrets_callback_invalid');
-  const coordinates = lockCoordinates(home23Root);
+  const coordinates = lockCoordinates(home23Root, options);
   const timeoutMs = Number.isFinite(options.lockTimeoutMs)
     ? Math.max(0, options.lockTimeoutMs)
     : DEFAULT_LOCK_TIMEOUT_MS;
@@ -137,6 +138,11 @@ function parseSecretsSnapshot(snapshot) {
   return secrets;
 }
 
+async function readHome23Secrets(home23Root, options = {}) {
+  const { secretsPath } = lockCoordinates(home23Root, options);
+  return parseSecretsSnapshot(await readStableFileSnapshot(secretsPath));
+}
+
 function fingerprintBrainOperations(secrets) {
   try {
     return JSON.stringify(secrets.brainOperations);
@@ -196,6 +202,7 @@ async function updateHome23Secrets(home23Root, mutator, options = {}) {
 module.exports = {
   LOCK_NAME,
   SECRET_HEADER,
+  readHome23Secrets,
   readStableFileSnapshot,
   updateHome23Secrets,
   withHome23SecretsLock,

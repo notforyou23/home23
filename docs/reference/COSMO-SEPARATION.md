@@ -10,7 +10,9 @@ These modules were extracted from the vendored application while retaining their
 behavior. Cosmo carries its own local memory and operation protocol modules.
 The two applications communicate using the existing authenticated operation API.
 Existing request identities, metadata filenames and saved research are unchanged.
-The raw-token broker API remains compatible with existing Home23 OAuth clients.
+Home23 OAuth no longer uses Cosmo's raw-token broker. The house owns its PKCE
+state and refresh credentials in `config/secrets.yaml`; Cosmo credentials and
+availability have no effect on Home23 sign-in or rotation.
 
 The extraction preserves source lineage through Home23 Git history and a new
 Cosmo repository. Machine-specific paths, backups, credentials and run inventories

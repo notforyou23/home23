@@ -286,12 +286,25 @@ function loadHome23ModelAuthority({ home23Root, agent, yamlImpl = yaml } = {}) {
     path.join(canonicalRoot, 'config', 'home.yaml'),
     yamlImpl,
   );
-  const agentConfig = selectedAgent
-    ? readYamlRegularFile(
-      path.join(canonicalRoot, 'instances', selectedAgent, 'config.yaml'),
-      yamlImpl,
-    )
-    : {};
+  let agentConfig = {};
+  if (selectedAgent) {
+    const agentConfigPath = path.join(
+      canonicalRoot,
+      'instances',
+      selectedAgent,
+      'config.yaml',
+    );
+    try {
+      agentConfig = readYamlRegularFile(agentConfigPath, yamlImpl);
+    } catch (error) {
+      // Fresh first-run / setup has no instances/<agent> yet; home.yaml alone is enough.
+      if (error?.code === 'model_catalog_invalid' && error.cause?.code === 'ENOENT') {
+        agentConfig = {};
+      } else {
+        throw error;
+      }
+    }
+  }
   return buildHome23ModelAuthority({ homeConfig, agentConfig });
 }
 

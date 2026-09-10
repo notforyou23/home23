@@ -50,7 +50,7 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
     if (!chatId || typeof chatId !== 'string') {
       res.status(400).json({ error: 'chatId required' }); return;
     }
-    if (!message || typeof message !== 'string') {
+    if (typeof message !== 'string' || message.trim().length === 0) {
       res.status(400).json({ error: 'message required' }); return;
     }
 

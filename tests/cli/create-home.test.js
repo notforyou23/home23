@@ -21,12 +21,17 @@ function fixture(t) {
 }
 test('one operation prepares a distinct canonical home and Seed with matching launch configuration', async t => {
   const root = fixture(t);
-  const result = await createHome(root, profile);
+  const selectedFolder = join(root, '..', `h23-selected-${Date.now()}`);
+  mkdirSync(selectedFolder, { recursive: true });
+  t.after(() => rmSync(selectedFolder, { recursive: true, force: true }));
+  const result = await createHome(root, { ...profile, ingestPaths: [selectedFolder] });
   assert.equal(result.status, 'prepared');
   assert.equal(result.agent.name, 'milo');
   const home = yaml.load(readFileSync(join(root, 'config/home.yaml'), 'utf8'));
   assert.equal(home.home.primaryAgent, 'milo');
   assert.deepEqual(home.coordination.residentSlugs, ['milo']);
+  assert.equal(home.shell.machineAccess, false);
+  assert.deepEqual(home.shell.roots, [root, join(root, 'instances/milo'), selectedFolder]);
   assert.match(readFileSync(join(root, 'instances/milo/workspace/PERSONAL.md'), 'utf8'), /Prefers concise conversation/);
   const generated = require(join(root, 'ecosystem.config.cjs'));
   const core = generated.apps.find(app => app.name === 'home23-coordination');
