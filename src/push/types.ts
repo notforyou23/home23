@@ -103,10 +103,19 @@ export interface AsyncWorkPushPayload {
   agent: string;
 }
 
-/** Privacy-minimal wake hint for one already-durable canonical Message. */
+const PUSH_ALERT_PREVIEW_LIMIT = 100;
+
+/** Collapse whitespace and cap banner copy the same way legacy chat pushes do. */
+export function previewPushAlertBody(text: string): string {
+  const stripped = text.replace(/\s+/g, ' ').trim();
+  if (stripped.length <= PUSH_ALERT_PREVIEW_LIMIT) return stripped;
+  return `${stripped.slice(0, PUSH_ALERT_PREVIEW_LIMIT - 1)}…`;
+}
+
+/** Wake hint for one already-durable canonical Message. */
 export interface ConnectedAgentsMessagePushPayload {
   aps: {
-    alert: { title: string; body: 'Reply ready' };
+    alert: { title: string; subtitle?: string; body: string };
     'mutable-content': 1;
     sound: 'default';
     badge?: number;
@@ -127,13 +136,18 @@ export function buildConnectedAgentsMessagePayload(input: {
   workId?: string;
   agent?: string;
   displayName?: string;
+  conversationTitle?: string;
+  preview?: string | null;
+  hasAttachments?: boolean;
   badge?: number;
 }): ConnectedAgentsMessagePushPayload {
   if (input.badge !== undefined && (!Number.isSafeInteger(input.badge) || input.badge < 0 || input.badge > 99_999)) throw new TypeError('invalid notification badge');
   const title = input.displayName ?? 'Home23';
+  const subtitle = connectedAgentsAlertSubtitle(title, input.conversationTitle);
+  const body = connectedAgentsAlertBody(input.preview, input.hasAttachments === true);
   return {
     aps: {
-      alert: { title, body: 'Reply ready' },
+      alert: { title, ...(subtitle === undefined ? {} : { subtitle }), body },
       'mutable-content': 1,
       sound: 'default',
       ...(input.badge === undefined ? {} : { badge: input.badge }),
@@ -146,6 +160,20 @@ export function buildConnectedAgentsMessagePayload(input: {
     ...(input.agent === undefined ? {} : { agent: input.agent }),
     ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
   };
+}
+
+function connectedAgentsAlertSubtitle(title: string, conversationTitle?: string): string | undefined {
+  if (conversationTitle === undefined) return undefined;
+  const where = previewPushAlertBody(conversationTitle);
+  if (!where || where === title) return undefined;
+  return where;
+}
+
+function connectedAgentsAlertBody(preview: string | null | undefined, hasAttachments: boolean): string {
+  const body = preview == null ? '' : previewPushAlertBody(preview);
+  if (body) return body;
+  if (hasAttachments) return 'Sent an attachment';
+  return 'Reply ready';
 }
 
 export function buildAsyncWorkPayload(input: {

@@ -14,6 +14,7 @@ import type {
 import {
   buildAsyncWorkPayload,
   buildConnectedAgentsMessagePayload,
+  previewPushAlertBody,
 } from './types.js';
 
 export interface QueryTerminalNotificationInput {
@@ -41,6 +42,9 @@ export interface ConnectedAgentsMessageNotification {
   workId?: string;
   agent?: string;
   displayName?: string;
+  conversationTitle?: string;
+  preview?: string | null;
+  hasAttachments?: boolean;
 }
 
 interface ConnectedAgentsQueuedDelivery {
@@ -307,7 +311,7 @@ export class ApnsPusher {
 
   /**
    * Wake devices for a canonical assistant Message that is already durable.
-   * The notification is intentionally content-free; the Message API is truth.
+   * Alert copy is who / where / preview; routing keys stay IDs only.
    */
   notifyConnectedAgentsMessage(input: ConnectedAgentsMessageNotification): Promise<void> {
     return this.scheduleConnectedAgentsDelivery(input);
@@ -355,9 +359,7 @@ export class ApnsPusher {
   }
 
   private preview(text: string): string {
-    const stripped = text.replace(/\s+/g, ' ').trim();
-    if (stripped.length <= 100) return stripped;
-    return stripped.slice(0, 99) + '…';
+    return previewPushAlertBody(text);
   }
 
   /**

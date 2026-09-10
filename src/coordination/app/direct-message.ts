@@ -168,6 +168,8 @@ export function createCanonicalMessageRecorder(
           ? {}
           : { workId: message.provenance.workId }),
         displayName: message.author.displayName,
+        preview: message.text,
+        hasAttachments: message.attachments.length > 0,
       }).catch((error: unknown) => {
         console.warn(
           "[home23-coordination] Connected Agents notification failed:",

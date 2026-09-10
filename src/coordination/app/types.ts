@@ -74,7 +74,7 @@ export interface CoordinationBotLifecyclePort {
   control(input: { context: MessagingActorContext; idempotencyKey: string; botId: string; operation: "archive" | "restore" }): Promise<BotLifecycleReceipt>;
 }
 
-/** Authenticated current-device registration and content-free APNs wake hints. */
+/** Authenticated current-device registration and APNs wake hints. */
 export interface CoordinationDeviceNotificationPort {
   registerCurrent(input: {
     context: MessagingActorContext;
@@ -97,6 +97,9 @@ export interface CoordinationDeviceNotificationPort {
     workId?: string;
     agent?: string;
     displayName?: string;
+    conversationTitle?: string;
+    preview?: string | null;
+    hasAttachments?: boolean;
   }): Promise<void>;
 }
 

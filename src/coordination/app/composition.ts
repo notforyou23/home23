@@ -543,6 +543,13 @@ export function createCoordinationProcess(
         notificationRegistry,
         notificationPusher,
         notificationConfiguration!.apns.bundle_id,
+        {
+          conversationTitle: (channelId) =>
+            database.readOne<{ title: string }>(
+              "SELECT title FROM channels WHERE id = ?",
+              channelId,
+            )?.title ?? null,
+        },
       )
     : undefined;
   const prepareConnectedAgentsNotificationRecovery = ():
@@ -607,12 +614,20 @@ export function createCoordinationProcess(
       createdAt: string;
       workId: string | null;
       displayName: string;
+      conversationTitle: string | null;
+      preview: string | null;
+      hasAttachments: number;
     }>(
       `SELECT h.id AS conversationId, m.channel_id AS channelId,
               m.id AS messageId, m.created_at AS createdAt,
-              m.work_id AS workId, m.author_display_name AS displayName
+              m.work_id AS workId, m.author_display_name AS displayName,
+              c.title AS conversationTitle, m.body_text AS preview,
+              EXISTS (
+                SELECT 1 FROM message_artifacts link WHERE link.message_id = m.id
+              ) AS hasAttachments
        FROM messages m
        JOIN conversation_handles h ON h.channel_id = m.channel_id
+       JOIN channels c ON c.id = m.channel_id
        WHERE m.author_kind = 'bot' AND m.kind = 'result'
          AND m.stored_visibility = 'visible'
          AND NOT EXISTS (
@@ -629,6 +644,9 @@ export function createCoordinationProcess(
       createdAt: row.createdAt,
       ...(row.workId === null ? {} : { workId: row.workId }),
       displayName: row.displayName,
+      ...(row.conversationTitle ? { conversationTitle: row.conversationTitle } : {}),
+      preview: row.preview,
+      hasAttachments: Boolean(row.hasAttachments),
     })));
   };
   const notificationCapabilityAvailable = () => deviceNotifications !== undefined;

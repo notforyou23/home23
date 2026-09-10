@@ -49,6 +49,12 @@ test("canonical push registers the authenticated device and wakes on the durable
     registry,
     pusher,
     "com.regina6.home23.canary",
+    {
+      conversationTitle(channelId) {
+        assert.equal(channelId, `chn_${suffix}`);
+        return "Kitchen remodel";
+      },
+    },
   );
   const application = createCoordinationApplication({
     flags: {
@@ -126,7 +132,7 @@ test("canonical push registers the authenticated device and wakes on the durable
       displayName: "Forrest",
     },
     kind: "result",
-    text: "private answer content that must not enter APNs",
+    text: `${"The plumber can come Thursday morning.".padEnd(100, "x")} and this remainder must not enter APNs`,
     mentions: [],
     clientMessageId: null,
     replyToMessageId: `msg_0198d95f-6c00-7000-8000-000000000910`,
@@ -153,7 +159,11 @@ test("canonical push registers the authenticated device and wakes on the durable
   await delivery;
   assert.deepEqual(deliveredPayload, {
     aps: {
-      alert: { title: "Forrest", body: "Reply ready" },
+      alert: {
+        title: "Forrest",
+        subtitle: "Kitchen remodel",
+        body: `${"The plumber can come Thursday morning.".padEnd(99, "x")}…`,
+      },
       "mutable-content": 1,
       sound: "default",
       badge: 2,
@@ -165,7 +175,10 @@ test("canonical push registers the authenticated device and wakes on the durable
     workId: `wrk_${suffix}`,
     displayName: "Forrest",
   });
-  assert.equal(JSON.stringify(deliveredPayload).includes("private answer"), false);
+  assert.equal(
+    JSON.stringify(deliveredPayload).includes("remainder must not enter APNs"),
+    false,
+  );
   assert.equal(JSON.stringify(deliveredPayload).includes("receipt"), false);
 
   await recordMessage({

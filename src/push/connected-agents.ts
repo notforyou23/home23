@@ -12,6 +12,9 @@ implements CoordinationDeviceNotificationPort {
     private readonly registry: DeviceRegistry,
     private readonly pusher: Pick<ApnsPusher, 'notifyConnectedAgentsMessage'>,
     private readonly bundleId: string,
+    private readonly options: {
+      conversationTitle?: (channelId: string) => string | null;
+    } = {},
   ) {}
 
   registerCurrent(input: {
@@ -53,6 +56,12 @@ implements CoordinationDeviceNotificationPort {
   notifyMessageCommitted(
     input: Parameters<ApnsPusher['notifyConnectedAgentsMessage']>[0],
   ): Promise<void> {
-    return this.pusher.notifyConnectedAgentsMessage(input);
+    const conversationTitle = input.conversationTitle
+      ?? this.options.conversationTitle?.(input.channelId)
+      ?? undefined;
+    return this.pusher.notifyConnectedAgentsMessage({
+      ...input,
+      ...(conversationTitle ? { conversationTitle } : {}),
+    });
   }
 }
