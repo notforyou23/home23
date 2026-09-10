@@ -403,7 +403,11 @@ function setHud(visible, statusText) {
     if (!visible) status.textContent = '';
     else if (statusText) status.textContent = statusText;
   }
-  if (hud) hud.hidden = !visible;
+  if (hud) {
+    hud.hidden = !visible;
+    // Keep inline display in sync: author CSS display:flex otherwise overrides [hidden].
+    hud.style.display = visible ? '' : 'none';
+  }
 }
 
 async function refreshTurnStatus() {
