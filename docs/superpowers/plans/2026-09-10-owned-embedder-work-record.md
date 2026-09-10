@@ -99,7 +99,7 @@ No fetch, push, merge, build, restart, install, or live-home change.
 | `c273245ae1b2e8ffe554e19746c693caa58b58c8` | Note the local Stage 1 evidence commit in the work record. (Encoder) |
 | `19a4271d` (cherry-pick of `6bbaa03b`) | docs: record Memory investigation for the owned embedder |
 | `8c9f9fe6` (cherry-pick of `b3f88e80`) | docs: record Host investigation for the owned embedder |
-| *(this publication)* | docs: publish owned-embedder Stage 2 contracts and authorization |
+| `5a5385cdc319693f5cf417e1bc3cebadefbcb4c1` | docs: publish owned-embedder Stage 2 contracts and authorization |
 
 Not pushed.
 
