@@ -127,7 +127,7 @@
             architecture:<br>
             &nbsp;&nbsp;cognitionMode: thinking_machine
           </div>
-          Then restart <code style="color:#fbbf24;">home23-jerry</code>. Flip back by setting to <code>legacy_roles</code>.
+          Then restart <code style="color:#fbbf24;" id="tm-restart-process">home23-&lt;agent&gt;</code>. Flip back by setting to <code>legacy_roles</code>.
         </div>
       </div>
     </div>
@@ -168,6 +168,19 @@
   <script>
     function esc(s) { return String(s || '').replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch])); }
     function fmtMs(ms) { if (ms == null) return '—'; if (ms < 1000) return ms + 'ms'; if (ms < 60000) return (ms/1000).toFixed(1)+'s'; return (ms/60000).toFixed(1)+'m'; }
+
+
+    async function resolveAgentProcessName() {
+      const el = document.getElementById('tm-restart-process');
+      if (!el) return;
+      try {
+        const r = await fetch('/home23/config.json');
+        if (!r.ok) return;
+        const cfg = await r.json();
+        const name = String(cfg?.agent?.name || cfg?.agentName || '').trim();
+        if (name) el.textContent = 'home23-' + name;
+      } catch { /* keep placeholder */ }
+    }
 
     async function load() {
       const errEl = document.getElementById('thinking-error');
@@ -375,6 +388,7 @@
       });
     }
 
+    resolveAgentProcessName();
     load();
     loadRecent();
     setInterval(() => { load(); loadRecent(); }, 15000);
