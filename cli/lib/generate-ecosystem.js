@@ -130,7 +130,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  const model = selected.model || (providerName === 'openai' ? 'text-embedding-3-small' : 'nomic-embed-text');`);
   lines.push(`  const dimensions = selected.dimensions || (providerName === 'openai' ? 1536 : 768);`);
   lines.push(`  const envFallback = providerName === 'openai' ? process.env.OPENAI_API_KEY : providerName === 'ollama-cloud' ? process.env.OLLAMA_CLOUD_API_KEY : '';`);
-  lines.push(`  const apiKey = providerName === 'ollama-local' ? 'ollama' : (secrets.providers?.[providerName]?.apiKey || envFallback || '');`);
+  lines.push(`  const apiKey = providerName === 'ollama-local' ? 'ollama' : providerName === 'home23-owned' ? 'owned' : (secrets.providers?.[providerName]?.apiKey || envFallback || '');`);
   lines.push(`  return { providerName, baseURL, apiKey, model, dimensions: String(dimensions) };`);
   lines.push(`}`);
   lines.push(`const embeddingConfig = resolveEmbeddingConfig();`);
@@ -730,6 +730,26 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`        NODE_ENV: 'production',`);
   lines.push(`      },`);
   lines.push(`    },`);
+  if (homeConfig.embedder?.owned === true && Number(homeConfig.embedder?.port) >= 20000) {
+    lines.push(``);
+    lines.push(`    // ── owned embedder (Host-admitted homes only; not a source default) ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-embedder',`);
+    lines.push(`      script: path.join(HOME23, 'scripts', 'embedder', 'serve.mjs'),`);
+    lines.push(`      cwd: HOME23,`);
+    lines.push(`      filter_env: ['HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    lines.push(`      min_uptime: 10000, max_restarts: 5, restart_delay: 2000,`);
+    lines.push(`      out_file: path.join(HOME23, 'logs', 'embedder-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'logs', 'embedder-err.log'),`);
+    lines.push(`      env: {`);
+    lines.push(`        ...commonEnv,`);
+    lines.push(`        HOME23_EMBEDDER_BIND: '127.0.0.1',`);
+    lines.push(`        HOME23_EMBEDDER_PORT: String(${Number(homeConfig.embedder.port)}),`);
+    lines.push(`        HOME23_EMBEDDER_CACHE: path.join(HOME23, '..', 'runtime', 'embedder-cache'),`);
+    lines.push(`      },`);
+    lines.push(`    },`);
+  }
 
   // ScreenLogic — shared personal house integration
   lines.push(``);

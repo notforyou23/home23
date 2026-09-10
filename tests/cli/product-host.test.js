@@ -9,6 +9,7 @@ import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:http';
 import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
 import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses } from '../../cli/lib/product-host.js';
+import { writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 
 function home(t, { birth = false } = {}) {
@@ -248,8 +249,13 @@ test('custom local Host model passes real canonical home creation and retains it
   const config = yaml.load(fs.readFileSync(path.join(homeRoot, 'app/config/home.yaml'), 'utf8'));
   assert.equal(config.providers['ollama-local'].baseUrl, 'http://127.0.0.1:45000');
   assert.deepEqual(config.models.aliases['host-resident'], { provider: 'ollama-local', model: 'family-local-model:custom' });
-  assert.deepEqual(config.embeddings.providers, [{ provider: 'ollama-local', model: 'nomic-embed-text', dimensions: 768, endpoint: 'http://127.0.0.1:45000/api/embeddings' }]);
-  assert.deepEqual(config.substrate.embedding, { endpoint: 'http://127.0.0.1:45000/api/embeddings', model: 'nomic-embed-text' });
+  assert.equal(config.embedder.owned, true);
+  assert.equal(config.embeddings.providers[0].provider, 'home23-owned');
+  assert.equal(config.embeddings.providers[0].model, 'owned-nomic-v1.5-onnx-fp32-mean-noprefix');
+  assert.notEqual(config.embeddings.providers[0].endpoint, 'http://127.0.0.1:45000/api/embeddings');
+  assert.match(config.embeddings.providers[0].endpoint, /^http:\/\/127\.0\.0\.1:\d+\/api\/embeddings$/);
+  assert.equal(config.substrate.embedding.model, 'owned-nomic-v1.5-onnx-fp32-mean-noprefix');
+  assert.equal(result.encoderRequired, true);
   const resident = yaml.load(fs.readFileSync(path.join(homeRoot, 'app/instances/milo/config.yaml'), 'utf8'));
   assert.equal(resident.chat.defaultModel, 'family-local-model:custom');
   assert.ok(fs.existsSync(path.join(homeRoot, 'app/instances/milo/substrate/seed-01/birth-receipt.json')));
@@ -446,4 +452,96 @@ test('real HTTP readiness accepts exact observatory plaintext while Core remains
   const wrongCore = await probeReadiness(homeRoot, probeState, processes);
   assert.equal(wrongCore.ready, false);
   assert.ok(!wrongCore.issues.some(issue => issue.includes('Seed observatory')));
+});
+
+test('old Host homes do not admit the embedder process or require an embedder port', async () => {
+  assert.equal(ownedProcessNames('milo').includes('home23-embedder'), false);
+  assert.equal(ownedProcessNames('milo').length, 8);
+  assert.ok(ownedProcessNames('milo', { encoderRequired: true }).includes('home23-embedder'));
+  const v1 = await choosePortPlan();
+  assert.equal(Object.hasOwn(v1, 'embedder'), false);
+  assert.equal(Object.keys(v1).length, 7);
+  const v2 = await choosePortPlan({ encoderRequired: true });
+  assert.ok(v2.embedder >= 20000 && v2.embedder <= 60999 && v2.embedder !== 11435);
+  assert.equal(new Set(Object.values(v2)).size, 8);
+});
+
+test('Start pauses before live contact when owned semantic preparation is not ready', async t => {
+  const homeRoot = home(t);
+  const ports = await choosePortPlan({ encoderRequired: true });
+  privateJSON(path.join(homeRoot, '.home23-host.json'), {
+    schema: 'home23.host.v2', homeRoot, ports, encoderRequired: true,
+    profile: { name: 'milo', provider: 'openai', model: 'gpt-4.1' }, phase: 'prepared', desiredRunning: false,
+    birth: { home: { id: 'home-fixture' }, coordination: { botId: 'bot-fixture' } },
+  });
+  let started = false;
+  const result = await runHostAction('start', { homeRoot }, { execute: async (_node, args) => {
+    if (args?.[1] === 'start') started = true;
+    return { stdout: '[]' };
+  } });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'host_semantic_prepare_required');
+  assert.equal(started, false);
+  assert.equal(result.desiredRunning, false);
+});
+
+test('semantic-prepare returns a durable handle and does not download inside the Host lock', async t => {
+  const homeRoot = home(t);
+  const ports = await choosePortPlan({ encoderRequired: true });
+  privateJSON(path.join(homeRoot, '.home23-host.json'), {
+    schema: 'home23.host.v2', homeRoot, ports, encoderRequired: true,
+    profile: { name: 'milo', provider: 'openai', model: 'gpt-4.1' }, phase: 'prepared', desiredRunning: false,
+    birth: { home: { id: 'home-fixture' }, coordination: { botId: 'bot-fixture' } },
+  });
+  const spawned = [];
+  const result = await runHostAction('semantic-prepare', { homeRoot }, {
+    execute: async () => ({ stdout: '[]' }),
+    spawnWorker(command, args, options) {
+      spawned.push({ command, args, options });
+      return { pid: process.pid, unref() {} };
+    },
+  });
+  assert.ok(result.handle);
+  assert.equal(result.semantic.phase, 'downloading');
+  assert.equal(result.semantic.encoderRequired, true);
+  assert.equal(spawned.length, 1);
+  assert.equal(spawned[0].options.detached, true);
+  assert.ok(spawned[0].options.env.HOME23_EMBEDDER_CACHE.endsWith('runtime/embedder-cache'));
+  assert.notEqual(spawned[0].options.env.HOME23_EMBEDDER_CACHE, os.homedir());
+  assert.notEqual(spawned[0].options.env.HOME, os.homedir());
+  assert.equal(spawned[0].options.env.HOME23_EMBEDDER_BIND, '127.0.0.1');
+  assert.equal(spawned[0].options.env.HOME23_EMBEDDER_PORT, String(ports.embedder));
+});
+
+test('Start launches the owned embedder first after semantic preparation is ready', async t => {
+  const homeRoot = home(t);
+  const ports = await choosePortPlan({ encoderRequired: true });
+  privateJSON(path.join(homeRoot, '.home23-host.json'), {
+    schema: 'home23.host.v2', homeRoot, ports, encoderRequired: true,
+    profile: { name: 'milo', provider: 'openai', model: 'gpt-4.1' }, phase: 'prepared', desiredRunning: false,
+    birth: { home: { id: 'home-fixture' }, coordination: { botId: 'bot-fixture' } },
+  });
+  fs.mkdirSync(path.join(homeRoot, 'runtime'), { recursive: true, mode: 0o700 });
+  writeSemanticPrep(homeRoot, {
+    schema: 'home23.semantic-prep.v1', handle: 'prep-fixture', homeRoot, phase: 'ready',
+    recipeId: '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9', workerPid: 0,
+  });
+  const starts = [];
+  const apps = ownedProcessNames('milo', { encoderRequired: true }).map(name => ({
+    name, script: name === 'home23-embedder' ? 'scripts/product/host.mjs' : 'cli/home23.js',
+    cwd: path.join(homeRoot, 'app'), env: {}, args: [],
+  }));
+  const result = await runHostAction('start', { homeRoot }, {
+    execute: async (_node, args) => {
+      if (args?.[1] === 'start') starts.push(args[args.indexOf('--only') + 1]);
+      return { stdout: '[]' };
+    },
+    definitions: () => productDefinitions(apps, homeRoot, 'milo', { encoderRequired: true, embedderPort: ports.embedder }),
+    readinessWaitMs: 0,
+    sleep: async () => {},
+  });
+  assert.deepEqual(starts, ['home23-embedder']);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'host_encoder_not_ready');
+  assert.equal(result.desiredRunning, true);
 });

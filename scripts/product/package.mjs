@@ -49,7 +49,7 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
   const tracked = run('git', ['ls-tree', '-r', '--name-only', sourceCommit], { cwd: sourceRoot }).trim().split('\n');
   const forbidden = tracked.filter(file => /^(instances\/|config\/(home|targets|secrets)\.yaml$|config\/(agents|cron-jobs)\.json$|ecosystem\.config\.cjs$|\.env$|engine\/\.env$|evobrew\/\.env$)/.test(file));
   if (forbidden.length) throw new Error(`Source commit contains local installation state: ${forbidden.join(', ')}`);
-  for (const file of ['package-lock.json', 'engine/package-lock.json', 'evobrew/package-lock.json', 'scripts/product/runtime-tools/package-lock.json']) {
+  for (const file of ['package-lock.json', 'engine/package-lock.json', 'evobrew/package-lock.json', 'scripts/product/runtime-tools/package-lock.json', 'scripts/embedder/package-lock.json']) {
     if (!tracked.includes(file)) throw new Error(`Pinned product dependency lock is missing: ${file}`);
   }
   fs.mkdirSync(outputPath, { mode: 0o755 });
@@ -80,7 +80,7 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
     npm_config_nodedir: headerAlias, npm_config_userconfig: '/dev/null', npm_config_audit: 'false', npm_config_fund: 'false' };
   fs.mkdirSync(env.TMPDIR, { recursive: true });
   try {
-  for (const directory of [app, path.join(app, 'engine'), path.join(app, 'evobrew'), tools]) {
+  for (const directory of [app, path.join(app, 'engine'), path.join(app, 'evobrew'), path.join(app, 'scripts', 'embedder'), tools]) {
     process.stderr.write(`Installing locked dependencies: ${path.relative(outputPath, directory)}\n`);
     run(path.join(bin, 'node'), [npmPath, 'ci', '--no-audit', '--no-fund'], { cwd: directory, env, stdio: 'inherit', timeout: 20 * 60 * 1000 });
   }
@@ -95,6 +95,7 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
     createRequire(process.cwd()+'/engine/package.json')('hnswlib-node');
     createRequire(process.cwd()+'/evobrew/package.json')('node-pty');
     createRequire(process.cwd()+'/package.json')('tsx');
+    createRequire(process.cwd()+'/scripts/embedder/package.json')('onnxruntime-node');
   `], { cwd: app, env, stdio: 'inherit', timeout: 30000 });
   normalizeModes(outputPath);
   const manifest = writeProductManifest(outputPath, { ...metadata, sourceCommit });

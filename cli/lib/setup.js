@@ -119,6 +119,7 @@ export async function runSetup(home23Root, options = {}) {
   console.log('────────────────────────');
   console.log('');
   console.log('This will prepare Home23 and open a browser setup page for providers, your first agent, personal context, project ingestion, and launch.');
+  console.log('Home23 prepares semantic memory itself. You do not install embedding tools or operate process managers.');
   console.log('');
 
   await runInit(home23Root, { finalMessage: false });

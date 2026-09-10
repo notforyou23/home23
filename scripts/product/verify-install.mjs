@@ -127,16 +127,38 @@ export async function verifyInstalledHome({ payloadPath, outputPath, resumeInsta
       homeName: 'Independent product fixture', purpose: 'Exercise a newly installed home.',
       provider: 'ollama-local', model: 'qwen2.5:7b', timezone: 'UTC' };
     record('create', await command('create', { profile, credential: { provider: 'ollama-local', baseUrl: modelURL } }));
-    // Keep every optional embedding path inside this fixture as well. This is
-    // test configuration in our new installation, never the user's home.
+    // Chat stays on the local fixture. The owned encoder endpoint is independent
+    // of that chat URL. Do not retarget embeddings at the fixture.
     const require = createRequire(join(homeRoot, 'app/package.json'));
     const yaml = require('js-yaml');
     const configPath = join(homeRoot, 'app/config/home.yaml');
     const config = yaml.load(readFileSync(configPath, 'utf8'));
     config.providers['ollama-local'].baseUrl = modelURL;
-    config.embeddings = { providers: [{ provider: 'ollama-local', model: 'nomic-embed-text', dimensions: 768, endpoint: `${modelURL}/api/embeddings` }] };
-    config.substrate = { ...config.substrate, embedding: { endpoint: `${modelURL}/api/embeddings`, model: 'nomic-embed-text' } };
     writeFileSync(configPath, yaml.dump(config), { mode: 0o600 });
+    const created = JSON.parse(readFileSync(join(homeRoot, '.home23-host.json'), 'utf8'));
+    if (created.encoderRequired === true) {
+      const { embedderCacheDir } = await import('../../cli/lib/product-environment.js');
+      const cacheSource = process.env.HOME23_EMBEDDER_CACHE_SOURCE
+        || resolve(join(homeRoot, '..', '..', '..', '.home23-worktrees', 'owned-embedder-encoder-stage1', 'scripts', 'embedder-experiment', '.cache'));
+      const cache = embedderCacheDir(homeRoot);
+      if (existsSync(join(cacheSource, 'nomic-ai/nomic-embed-text-v1.5/onnx/model.onnx'))) {
+        mkdirSync(cache, { recursive: true, mode: 0o700 });
+        const { cpSync } = await import('node:fs');
+        cpSync(cacheSource, cache, { recursive: true });
+        record('semantic-prepare', await command('semantic-prepare'));
+        const prepUntil = Date.now() + 180_000;
+        let prep = await command('status');
+        while (Date.now() < prepUntil && !['ready', 'failed'].includes(prep.semantic?.phase)) {
+          await new Promise(accept => setTimeout(accept, 2000));
+          prep = await command('status');
+        }
+        record('semantic-prepare-status', prep);
+        assert.equal(prep.semantic?.phase, 'ready', 'Owned semantic preparation must finish before Start admits writers');
+      } else {
+        record('semantic-unverified', { reason: 'No Stage 1 cache; not starting writers against an unprepared owned encoder.' });
+        throw new Error('Owned encoder cache is missing; Stage 4 real /ready was not verified in this payload proof');
+      }
+    }
     const birthPath = join(homeRoot, 'app/instances/milo/substrate/seed-01/birth-receipt.json');
     const birth = JSON.parse(readFileSync(birthPath, 'utf8'));
     started = true; // also stop a partially admitted start

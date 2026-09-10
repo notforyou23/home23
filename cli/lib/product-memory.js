@@ -1,10 +1,11 @@
 /** Read-only detection of the optional local semantic-memory dependency.
- * This reports model presence, never pretends a listing is a successful embed.
+ * Owned encoder readiness is GET /ready (warm inference). /api/tags is never ready.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import seedEmbedding from '../../shared/seed-embedding-config.cjs';
+import { OWNED_PROFILE_ID, OWNED_RECIPE_HASH, probeOwnedReady } from './product-embedder.js';
 
 async function readModels(url) {
   const response = await fetch(url, { signal: AbortSignal.timeout(1200) });
@@ -37,7 +38,14 @@ export async function inspectProductMemory(homeRoot, { request = readModels } = 
     return detections.get(key);
   }
   let semanticStatus = 'not_detected';
-  if (selected?.provider === 'ollama-local') {
+  if (selected?.provider === 'home23-owned' || selected?.model === OWNED_PROFILE_ID) {
+    const endpoint = selected.endpoint || config.substrate?.embedding?.endpoint || '';
+    let port;
+    try { port = Number(new URL(endpoint).port); } catch { port = config.embedder?.port; }
+    const ready = await probeOwnedReady(port);
+    if (ready.warm && ready.recipeId === OWNED_RECIPE_HASH) semanticStatus = 'ready';
+    else warnings.push('Semantic memory is still preparing or unavailable. Conversations and text memory are retained. Resume preparation in Home23 Host — you do not install embedding tools yourself.');
+  } else if (selected?.provider === 'ollama-local') {
     const endpoint = selected.endpoint || selected.baseUrl || config.providers?.['ollama-local']?.baseUrl || 'http://127.0.0.1:11434';
     if (await detected(endpoint, selected.model)) semanticStatus = 'model_detected';
     else warnings.push(`Semantic search needs the local ${selected.model} embedding model. Conversations and text memory are retained while it is unavailable.`);
@@ -48,7 +56,12 @@ export async function inspectProductMemory(homeRoot, { request = readModels } = 
   const env = seedEmbedding.resolveSeedEmbeddingEnv(config);
   const seedEndpoint = env.SEED_EMBED_ENDPOINT || 'http://127.0.0.1:11434/api/embeddings';
   const seedModel = env.SEED_EMBED_MODEL || 'nomic-embed-text';
-  const seedDetected = await detected(seedEndpoint, seedModel);
-  if (!seedDetected && semanticStatus !== 'not_detected') warnings.push('The Seed contact encoder needs its credential-free local embedding model. Its event history is retained while that model is unavailable.');
-  return { semanticStatus, seedSemanticStatus: seedDetected ? 'model_detected' : 'not_detected', warnings };
+  let seedDetected = false;
+  if (seedModel === OWNED_PROFILE_ID || selected?.provider === 'home23-owned') {
+    seedDetected = semanticStatus === 'ready';
+  } else {
+    seedDetected = await detected(seedEndpoint, seedModel);
+    if (!seedDetected && semanticStatus !== 'not_detected') warnings.push('The Seed contact encoder needs its credential-free local embedding model. Its event history is retained while that model is unavailable.');
+  }
+  return { semanticStatus, seedSemanticStatus: seedDetected ? (semanticStatus === 'ready' ? 'ready' : 'model_detected') : 'not_detected', warnings };
 }
