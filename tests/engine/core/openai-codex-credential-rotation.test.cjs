@@ -2,7 +2,7 @@
 
 /**
  * The codex OAuth engine must resolve its token at use from secrets.yaml
- * (the mirror target), with the boot env as the floor, and spend exactly one
+ * (Home23's credential authority), with the boot env as the floor, and spend exactly one
  * force-fresh retry on an auth failure. This is the credential class that
  * killed the fleet on Aug 8–9: the token rotated but every consumer held the
  * frozen boot copy.
@@ -35,6 +35,20 @@ function freshModules() {
 
 function writeSecrets(filePath, codexToken) {
   fs.writeFileSync(filePath, `providers:\n  openai-codex:\n    apiKey: "${codexToken}"\n`);
+}
+
+function writeManagedSecrets(filePath, codexToken, refreshToken = 'refresh-old') {
+  fs.writeFileSync(filePath, [
+    'providers:',
+    '  openai-codex:',
+    `    apiKey: "${codexToken}"`,
+    '    oauthManaged: true',
+    '    oauth:',
+    `      refreshToken: "${refreshToken}"`,
+    `      expiresAt: "${new Date(Date.now() + 3_600_000).toISOString()}"`,
+    '      accountId: "acct-managed"',
+    '',
+  ].join('\n'));
 }
 
 async function withHarness(fn) {
@@ -118,6 +132,45 @@ test('a 401 spends exactly one force-fresh retry with the reread token', async (
 
     assert.equal(result.content, 'recovered');
     assert.deepEqual(authorizations, [`Bearer ${revoked}`, `Bearer ${rotated}`]);
+  });
+});
+
+test('a managed 401 refreshes through Home23 before the one request retry', async () => {
+  await withHarness(async ({ secretsPath }) => {
+    const revoked = futureJwt('revoked-managed');
+    const rotated = futureJwt('rotated-managed');
+    writeManagedSecrets(secretsPath, revoked);
+
+    const { OpenAICodexClient } = freshModules();
+    const calls = [];
+    global.fetch = async (url, options = {}) => {
+      calls.push(String(url));
+      if (String(url) === 'https://auth.openai.com/oauth/token') {
+        assert.equal(options.body.get('refresh_token'), 'refresh-old');
+        return new Response(JSON.stringify({
+          access_token: rotated,
+          refresh_token: 'refresh-new',
+          expires_in: 3600,
+        }), { status: 200 });
+      }
+      if (options.headers.Authorization === `Bearer ${revoked}`) {
+        return { ok: false, status: 401, text: async () => 'unauthorized' };
+      }
+      assert.equal(options.headers.Authorization, `Bearer ${rotated}`);
+      return okStreamResponse('refreshed by Home23');
+    };
+
+    const client = new OpenAICodexClient({}, null);
+    const result = await client.generate({ model: 'gpt-5.5', input: 'hello' });
+    assert.equal(result.content, 'refreshed by Home23');
+    assert.deepEqual(calls, [
+      'https://chatgpt.com/backend-api/codex/responses',
+      'https://auth.openai.com/oauth/token',
+      'https://chatgpt.com/backend-api/codex/responses',
+    ]);
+    const persisted = fs.readFileSync(secretsPath, 'utf8');
+    assert.match(persisted, /refresh-new/);
+    assert.doesNotMatch(persisted, /refresh-old/);
   });
 });
 

@@ -6,9 +6,9 @@ const { pathToFileURL } = require('url');
 const yaml = require('js-yaml');
 const { Home23TileService } = require('./home23-tiles');
 const {
-  updateDashboardOAuthTokenSecrets,
   updateSettingsSecrets,
 } = require('./home23-secrets');
+const { createHome23OAuthBroker } = require('../../../shared/home23-oauth.cjs');
 const { writeYamlSafely } = require('./yaml-write-safety');
 const { StateCompression } = require('../core/state-compression');
 const { readJsonlGz, sidecarsExist, nodesPath } = require('../core/memory-sidecar');
@@ -26,13 +26,6 @@ const {
 const { buildHome23ModelAuthority } = require('./home23-model-catalog.js');
 const { assertHomeCreationReady } = require('../../../shared/home-creation-state.cjs');
 
-// Interactive OAuth proxies block on a human at a browser. This must stay
-// greater than cosmo23's CALLBACK_TIMEOUT_MS (cosmo23/lib/oauth-codex.cjs) so
-// its specific error surfaces instead of our abort — see the
-// /oauth/openai-codex/start route. Deliberately duplicated rather than
-// required across the vendored boundary; the ordering is pinned by
-// tests/engine/dashboard/oauth-import-reporting.test.js.
-const OAUTH_INTERACTIVE_FLOW_TIMEOUT_MS = 5.5 * 60 * 1000;
 const REASONING_EFFORTS = Object.freeze(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
 const REASONING_EFFORT_SET = new Set(REASONING_EFFORTS);
 const DEFAULT_REASONING_EFFORT = 'medium';
@@ -123,6 +116,7 @@ async function applyModelAuthorityRuntimeRefresh({
 function createSettingsRouter(home23Root, options = {}) {
   const router = express.Router();
   const tileService = new Home23TileService({ home23Root });
+  const oauthBroker = options.oauthBroker || createHome23OAuthBroker({ home23Root });
   const getOrchestrator = typeof options.getOrchestrator === 'function'
     ? options.getOrchestrator
     : () => null;
@@ -468,11 +462,12 @@ function createSettingsRouter(home23Root, options = {}) {
         { method: 'POST', path: '/providers/:name/test' },
         { method: 'GET', path: '/oauth/status' },
         { method: 'POST', path: '/oauth/anthropic/import-cli' },
-        { method: 'GET', path: '/oauth/anthropic/start' },
+        { method: 'POST', path: '/oauth/anthropic/start' },
         { method: 'POST', path: '/oauth/anthropic/callback' },
         { method: 'POST', path: '/oauth/anthropic/logout' },
-        { method: 'POST', path: '/oauth/openai-codex/import-evobrew' },
+        { method: 'POST', path: '/oauth/openai-codex/import-cli' },
         { method: 'POST', path: '/oauth/openai-codex/start' },
+        { method: 'POST', path: '/oauth/openai-codex/callback' },
         { method: 'POST', path: '/oauth/openai-codex/logout' },
       ],
     },
@@ -2517,188 +2512,109 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     }
   });
 
-  // ── OAuth broker (STEP 18) ──
-  // Anthropic + OpenAI Codex OAuth flows are handled by the bundled cosmo23
-  // server (which has the full PKCE + Prisma + encryption stack). Home23
-  // proxies to cosmo23's /api/oauth/* routes and mirrors the resulting tokens
-  // into config/secrets.yaml so they flow to the harness + engine via
-  // ecosystem.config.cjs and PM2 env injection.
-
-  const COSMO23_BASE = `http://localhost:${process.env.COSMO23_PORT || '43210'}`;
-
-  async function cosmoFetch(path, init, { timeoutMs = 15_000 } = {}) {
-    const url = `${COSMO23_BASE}${path}`;
-    const res = await fetch(url, {
-      ...init,
-      signal: AbortSignal.timeout(timeoutMs),
+  // ── Home23 OAuth authority ──
+  // PKCE state, access tokens, refresh credentials, and rotation all live in
+  // config/secrets.yaml. Consumers read that file at use, so sign-in and token
+  // rotation do not depend on another service or require process restarts.
+  function sendOAuthError(res, error) {
+    const status = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
+    res.status(status).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'OAuth operation failed',
+      code: typeof error?.code === 'string' ? error.code : 'oauth_operation_failed',
     });
-    const contentType = res.headers.get('content-type') || '';
-    const body = contentType.includes('application/json') ? await res.json() : { success: false, error: await res.text() };
-    return { status: res.status, body };
   }
 
-  async function syncOAuthTokenToSecrets(provider) {
-    // provider: 'anthropic' | 'openai-codex'
-    const { body, status } = await cosmoFetch(`/api/oauth/${provider}/raw-token`);
-    if (status !== 200 || !body?.ok || !body?.token) {
-      return { ok: false, error: body?.error || `cosmo23 returned ${status}` };
-    }
-    const tokenUpdate = await updateDashboardOAuthTokenSecrets(home23Root, provider, body.token);
-
-    // Regenerate ecosystem so new env vars land in PM2
-    regenerateEcosystem();
-
-    const targets = discoverAgents().flatMap(name => [`home23-${name}`, `home23-${name}-harness`]);
-    try {
-      const restartedTargets = restartOnlineEcosystemProcesses(targets);
-      return {
-        ok: true,
-        restarted: restartedTargets.length > 0,
-        rotated: tokenUpdate.value.rotated,
-        targets: restartedTargets,
-      };
-    } catch (err) {
-      return { ok: true, restarted: false, rotated: tokenUpdate.value.rotated, warn: `token written, restart failed: ${err.message}` };
-    }
+  function oauthPayload(result) {
+    return {
+      configured: !!result?.configured,
+      valid: !!result?.valid,
+      refreshable: !!result?.refreshable,
+      source: result?.source || 'none',
+      expiresAt: result?.expiresAt || null,
+      accountId: result?.accountId || null,
+    };
   }
 
-  async function clearOAuthTokenFromSecrets(provider) {
-    const cleared = await updateSettingsSecrets(home23Root, (secrets) => {
-      if (!secrets.providers?.[provider]?.oauthManaged) return { changed: false };
-      delete secrets.providers[provider].apiKey;
-      delete secrets.providers[provider].oauthManaged;
-      return { changed: true };
-    });
-    if (cleared.changed) {
-      regenerateEcosystem();
-      try {
-        restartOnlineEcosystemProcesses(discoverAgents().flatMap(name => [`home23-${name}`, `home23-${name}-harness`]));
-      } catch { /* best-effort */ }
-    }
-  }
-
-  // Aggregated status for both providers in one call
   router.get('/oauth/status', async (_req, res) => {
-    const [anthropic, codex] = await Promise.all([
-      cosmoFetch('/api/oauth/anthropic/status').catch(() => ({ body: null })),
-      cosmoFetch('/api/oauth/openai-codex/status').catch(() => ({ body: null })),
-    ]);
-    const a = anthropic.body?.oauth || { configured: false };
-    const c = codex.body?.oauth || { configured: false };
-    res.json({
-      anthropic: {
-        configured: !!a.configured,
-        valid: !!a.valid,
-        source: a.source || 'none',
-        expiresAt: a.expiresAt || null,
-      },
-      openaiCodex: {
-        configured: !!c.configured,
-        valid: !!c.valid,
-        source: c.source || 'none',
-        expiresAt: c.expiresAt || null,
-      },
-    });
+    try {
+      const [anthropic, codex] = await Promise.all([
+        oauthBroker.status('anthropic'),
+        oauthBroker.status('openai-codex'),
+      ]);
+      res.json({ anthropic: oauthPayload(anthropic), openaiCodex: oauthPayload(codex) });
+    } catch (error) {
+      sendOAuthError(res, error);
+    }
   });
 
-  // Anthropic routes
   router.post('/oauth/anthropic/import-cli', async (_req, res) => {
     try {
-      const { status, body } = await cosmoFetch('/api/oauth/anthropic/import-cli', { method: 'POST' });
-      if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'import failed' });
-      const sync = await syncOAuthTokenToSecrets('anthropic');
-      // `sync` stays nested: spreading it let a failed secrets mirror overwrite
-      // `ok` and report a successful OAuth call as a failed one.
-      res.json({ ok: true, expiresAt: body.expiresAt, sync });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
+      res.json({ ok: true, ...oauthPayload(await oauthBroker.importCli('anthropic')) });
+    } catch (error) {
+      sendOAuthError(res, error);
     }
   });
 
-  router.get('/oauth/anthropic/start', async (_req, res) => {
+  router.post('/oauth/anthropic/start', async (_req, res) => {
     try {
-      const { status, body } = await cosmoFetch('/api/oauth/anthropic/start', { method: 'POST' });
-      if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'start failed' });
-      res.json({ ok: true, authUrl: body.authUrl, expiresInSeconds: body.expiresInSeconds });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
+      res.json({ ok: true, ...(await oauthBroker.begin('anthropic')) });
+    } catch (error) {
+      sendOAuthError(res, error);
     }
   });
 
   router.post('/oauth/anthropic/callback', async (req, res) => {
     try {
       const callbackUrl = req.body?.callbackUrl;
-      if (!callbackUrl) return res.status(400).json({ ok: false, error: 'callbackUrl required' });
-      // cosmo23 /api/oauth/anthropic/callback accepts either ?callbackUrl=... or ?code=&state=
-      const { status, body } = await cosmoFetch(
-        `/api/oauth/anthropic/callback?callbackUrl=${encodeURIComponent(callbackUrl)}`
-      );
-      if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'callback failed' });
-      const sync = await syncOAuthTokenToSecrets('anthropic');
-      // `sync` stays nested: spreading it let a failed secrets mirror overwrite
-      // `ok` and report a successful OAuth call as a failed one.
-      res.json({ ok: true, expiresAt: body.expiresAt, sync });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
+      res.json({ ok: true, ...oauthPayload(await oauthBroker.complete('anthropic', callbackUrl)) });
+    } catch (error) {
+      sendOAuthError(res, error);
     }
   });
 
   router.post('/oauth/anthropic/logout', async (_req, res) => {
     try {
-      const { status, body } = await cosmoFetch('/api/oauth/anthropic/logout', { method: 'POST' });
-      if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'logout failed' });
-      await clearOAuthTokenFromSecrets('anthropic');
+      await oauthBroker.clear('anthropic');
       res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
+    } catch (error) {
+      sendOAuthError(res, error);
     }
   });
 
-  // OpenAI Codex routes
-  router.post('/oauth/openai-codex/import-evobrew', async (_req, res) => {
+  router.post('/oauth/openai-codex/import-cli', async (_req, res) => {
     try {
-      const { status, body } = await cosmoFetch('/api/oauth/openai-codex/import', { method: 'POST' });
-      if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'import failed' });
-      const sync = await syncOAuthTokenToSecrets('openai-codex');
-      // `sync` stays nested: spreading it let a failed secrets mirror overwrite
-      // `ok` and report a successful OAuth call as a failed one.
-      res.json({ ok: true, accountId: body.accountId, expiresAt: body.expiresAt, sync });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
+      res.json({ ok: true, ...oauthPayload(await oauthBroker.importCli('openai-codex')) });
+    } catch (error) {
+      sendOAuthError(res, error);
     }
   });
 
-  // Codex OAuth /start on cosmo23 blocks until its local callback server
-  // receives the code (it runs its own loopback server on port 1455 and opens
-  // the browser server-side), so this request stays outstanding for as long as
-  // the sign-in takes. It must outlast cosmo23's own callback timeout —
-  // otherwise we abort first and the operator sees a bare "operation aborted"
-  // instead of cosmo23's explanation of what actually went wrong.
   router.post('/oauth/openai-codex/start', async (_req, res) => {
     try {
-      const { status, body } = await cosmoFetch(
-        '/api/oauth/openai-codex/start',
-        { method: 'POST' },
-        { timeoutMs: OAUTH_INTERACTIVE_FLOW_TIMEOUT_MS },
-      );
-      if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'start failed' });
-      const sync = await syncOAuthTokenToSecrets('openai-codex');
-      // `sync` stays nested: spreading it let a failed secrets mirror overwrite
-      // `ok` and report a successful OAuth call as a failed one.
-      res.json({ ok: true, accountId: body.accountId, expiresAt: body.expiresAt, sync });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
+      res.json({ ok: true, ...(await oauthBroker.begin('openai-codex')) });
+    } catch (error) {
+      sendOAuthError(res, error);
+    }
+  });
+
+  router.post('/oauth/openai-codex/callback', async (req, res) => {
+    try {
+      res.json({
+        ok: true,
+        ...oauthPayload(await oauthBroker.complete('openai-codex', req.body?.callbackUrl)),
+      });
+    } catch (error) {
+      sendOAuthError(res, error);
     }
   });
 
   router.post('/oauth/openai-codex/logout', async (_req, res) => {
     try {
-      const { status, body } = await cosmoFetch('/api/oauth/openai-codex/logout', { method: 'POST' });
-      if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'logout failed' });
-      await clearOAuthTokenFromSecrets('openai-codex');
+      await oauthBroker.clear('openai-codex');
       res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
+    } catch (error) {
+      sendOAuthError(res, error);
     }
   });
 
@@ -3083,7 +2999,6 @@ module.exports = {
   applyModelAuthorityRuntimeRefresh,
   assertNoSharedPm2Targets,
   createSettingsRouter,
-  OAUTH_INTERACTIVE_FLOW_TIMEOUT_MS,
   planModelAuthorityRuntimeTargets,
   updateSettingsSecrets,
 };

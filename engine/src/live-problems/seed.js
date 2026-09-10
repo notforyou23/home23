@@ -641,8 +641,8 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort, productHost = proc
       verifier: {
         type: 'oauth_token_lineage_fresh',
         args: {
-          profilePath: '~/.evobrew/auth-profiles.json',
-          profileKey: 'openai-codex:default',
+          secretsPath: `${homeRoot}/config/secrets.yaml`,
+          provider: 'openai-codex',
           // The Codex CLI shares this account and OAuth client. Whichever side
           // re-mints last silently invalidates the other's refresh token.
           rivalPath: '~/.codex/auth.json',

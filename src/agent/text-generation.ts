@@ -4,7 +4,7 @@ import { getCodexCredentials, getCodexHeaders, type CodexCredentials } from './c
 import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
 import { combineRequestSignals } from './abort-signals.js';
 import { inferProviderFromModel } from './model-resolution.js';
-import { resolveProviderKey, isAuthError, refreshFromBroker } from './provider-credentials.js';
+import { resolveProviderKey, isAuthError, refreshManagedOAuth } from './provider-credentials.js';
 import {
   DEFAULT_REASONING_EFFORT,
   supportsResponsesReasoning,
@@ -31,7 +31,11 @@ export interface TextGenerationOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   reasoningEffort?: ReasoningEffort;
-  codexCredentialsProvider?: (signal?: AbortSignal, force?: boolean) => Promise<CodexCredentials | null>;
+  codexCredentialsProvider?: (
+    signal?: AbortSignal,
+    force?: boolean,
+    staleAccessToken?: string,
+  ) => Promise<CodexCredentials | null>;
   /** P2-17: real token usage, written by branches whose provider reports it
    * (anthropic/minimax, ollama-cloud/local, openai/xai). Values left at 0 mean
    * "not measured" — never an estimate. Lobe receipts consume this. */
@@ -66,28 +70,26 @@ export function inferTextGenerationProvider(model?: string, provider?: string): 
 
 export async function generateText(opts: TextGenerationOptions): Promise<string> {
   const provider = inferTextGenerationProvider(opts.model, opts.provider);
+  // Codex owns its refresh/retry inside one request scope so the exact access
+  // token rejected by the provider is carried into the locked refresh
+  // transaction. That matters when several calls fail at once.
+  if (provider === 'openai-codex') {
+    return generateCodexText(opts);
+  }
   // Read-at-use credentials + one fresh retry on auth failure: rotation is a
   // file write, never a restart list (the token class's wholesale fix,
   // 2026-08-10). A caller-pinned client can't be rebuilt — no retry there.
   //
-  // EVERY provider goes through this, codex included. Codex used to return
-  // before this try/catch and so had no recovery from a revoked token at all
-  // — the one gap in the token-rotation fix, and the exact failure that took
-  // the fleet down on 2026-07-27 and 2026-08-08/09. Its "fresh credential"
-  // means a forced refresh through codex-auth.ts (its own OAuth store), not
-  // a secrets.yaml re-read, but the shape is deliberately identical.
+  // Managed Anthropic OAuth refreshes through Home23 before the retry. Static
+  // providers simply force-reread secrets.yaml.
   try {
     return await generateTextAttempt(opts, provider, false);
   } catch (error) {
     if (opts.client === undefined && isAuthError(error)) {
-      // A 401 is proof the token is dead. Re-reading secrets.yaml is not
-      // enough: only the dashboard's 30-min poller writes that file, and its
-      // raw-token fetch is what makes cosmo23 mint. So ASK THE BROKER first —
-      // otherwise the "fresh" retry re-reads the same dead token for up to
-      // half an hour (jerry, 2026-08-13: 401 at 17:11:43Z, recovery 17:42:10Z,
-      // exactly one poller cycle, one thought lost). Broker unreachable is not
-      // fatal — the retry then behaves exactly as it did before.
-      await refreshFromBroker(provider);
+      // A 401 is proof the token is dead. Home23 mints managed Anthropic OAuth
+      // here before the one retry. Static providers simply force-reread
+      // secrets.yaml.
+      await refreshManagedOAuth(provider);
       return generateTextAttempt(opts, provider, true);
     }
     throw error;
@@ -100,14 +102,10 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
   const temperature = opts.temperature ?? 0.1;
   const timeoutMs = opts.timeoutMs ?? 60_000;
 
-  if (provider === 'openai-codex') {
-    return generateCodexText({ ...opts, model, maxTokens, timeoutMs }, forceFreshCredential);
-  }
-
   const requestSignal = combineRequestSignals(opts.signal, timeoutMs);
 
   if (provider === 'anthropic' || provider === 'minimax') {
-    // Home23's brokered Anthropic credential is an OAuth token (sk-ant-oat*),
+    // Home23's managed Anthropic credential is an OAuth token (sk-ant-oat*),
     // which the SDK must send as a bearer `authToken` with Claude Code stealth
     // headers — NOT as `x-api-key` (that 401s). OAuth calls must also lead with
     // the Claude Code system block, or they are not recognized as subscription
@@ -246,11 +244,11 @@ function extractAnthropicText(response: unknown): string {
 
 async function generateCodexText(
   opts: Required<Pick<TextGenerationOptions, 'prompt'>> & TextGenerationOptions,
-  forceFreshCredential = false,
 ): Promise<string> {
   const credentialsProvider = opts.codexCredentialsProvider || getCodexCredentials;
-  const creds = await credentialsProvider(opts.signal, forceFreshCredential);
-  if (!creds) throw new Error('openai-codex credentials not found');
+  const initialCreds = await credentialsProvider(opts.signal, false);
+  if (!initialCreds) throw new Error('openai-codex credentials not found');
+  let creds = initialCreds;
 
   const body: Record<string, unknown> = {
     model: opts.model || fleetDefaults.DEFAULT_MODEL_BY_PROVIDER['openai-codex'],
@@ -268,12 +266,28 @@ async function generateCodexText(
       : {}),
   };
 
-  let res = await fetch('https://chatgpt.com/backend-api/codex/responses', {
-    method: 'POST',
-    headers: getCodexHeaders(creds),
-    body: JSON.stringify(body),
-    signal: combineRequestSignals(opts.signal, opts.timeoutMs ?? 90_000),
-  });
+  let authRefreshSpent = false;
+  const postCodex = async (): Promise<Response> => {
+    const send = () => fetch('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      headers: getCodexHeaders(creds),
+      body: JSON.stringify(body),
+      signal: combineRequestSignals(opts.signal, opts.timeoutMs ?? 90_000),
+    });
+    let response = await send();
+    if (!authRefreshSpent && (response.status === 401 || response.status === 403)) {
+      const rejectedToken = creds.accessToken;
+      await response.body?.cancel().catch(() => {});
+      authRefreshSpent = true;
+      const refreshed = await credentialsProvider(opts.signal, true, rejectedToken);
+      if (!refreshed) throw new Error(`codex HTTP ${response.status}: credential refresh failed`);
+      creds = refreshed;
+      response = await send();
+    }
+    return response;
+  };
+
+  let res = await postCodex();
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
     // Newer codex models (gpt-5.6-terra era) reject max_output_tokens
@@ -283,12 +297,7 @@ async function generateCodexText(
     const capRejected = errText.includes('max_output_tokens');
     if (capRejected) {
       delete body['max_output_tokens'];
-      res = await fetch('https://chatgpt.com/backend-api/codex/responses', {
-        method: 'POST',
-        headers: getCodexHeaders(creds),
-        body: JSON.stringify(body),
-        signal: combineRequestSignals(opts.signal, opts.timeoutMs ?? 90_000),
-      });
+      res = await postCodex();
     }
     if (!res.ok) {
       const retryText = capRejected ? await res.text().catch(() => '') : errText;

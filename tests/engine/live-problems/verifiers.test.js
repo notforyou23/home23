@@ -873,6 +873,52 @@ function writeLineageFixture(dir, { profileIat, profileExp, rivalIat, account = 
   return { profilePath, rivalPath };
 }
 
+test('oauth_token_lineage_fresh reads the Home23 managed credential store', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-lineage-secrets-'));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const secretsPath = path.join(dir, 'secrets.yaml');
+  fs.writeFileSync(secretsPath, [
+    'providers:',
+    '  openai-codex:',
+    `    apiKey: "${fakeJwt({ iat: nowSec - 60, exp: nowSec + 864000 })}"`,
+    '    oauthManaged: true',
+    '    oauth:',
+    '      refreshToken: "rt.home23"',
+    `      expiresAt: "${new Date((nowSec + 864000) * 1000).toISOString()}"`,
+    '      accountId: "acct-1"',
+    '',
+  ].join('\n'));
+
+  const result = await runVerifier({
+    type: 'oauth_token_lineage_fresh',
+    args: { secretsPath, provider: 'openai-codex' },
+  });
+  assert.equal(result.ok, true, result.detail);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('oauth_token_lineage_fresh rejects an access-only Home23 migration', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-lineage-access-only-'));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const secretsPath = path.join(dir, 'secrets.yaml');
+  fs.writeFileSync(secretsPath, [
+    'providers:',
+    '  openai-codex:',
+    `    apiKey: "${fakeJwt({ iat: nowSec - 60, exp: nowSec + 864000 })}"`,
+    '    oauthManaged: true',
+    '    oauth: {}',
+    '',
+  ].join('\n'));
+
+  const result = await runVerifier({
+    type: 'oauth_token_lineage_fresh',
+    args: { secretsPath, provider: 'openai-codex' },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /refresh credential missing/i);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('oauth_token_lineage_fresh passes when the profile holds the newest credential', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-lineage-ok-'));
   const nowSec = Math.floor(Date.now() / 1000);

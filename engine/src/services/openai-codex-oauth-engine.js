@@ -1,5 +1,9 @@
 const os = require('os');
-const { resolveProviderKey, isAuthError } = require('../core/provider-credentials');
+const {
+  resolveProviderKey,
+  isAuthError,
+  managedOAuthCredentials,
+} = require('../core/provider-credentials');
 
 function isOpenAIOAuthToken(token) {
   return (
@@ -21,7 +25,7 @@ function decodeJwtPayload(token) {
 
 function resolveCodexToken(config = {}, force = false) {
   config = config || {};
-  // Read-at-use from secrets.yaml (the mirror target); configured value and
+  // Read-at-use from Home23's secrets.yaml; configured value and
   // OPENAI_CODEX_AUTH_TOKEN / OPENAI_OAUTH_TOKEN env stay as the floor.
   // `force` drops the resolver cache — the auth-failure path.
   const configured = config.providers?.['openai-codex']?.authToken
@@ -29,10 +33,7 @@ function resolveCodexToken(config = {}, force = false) {
   return resolveProviderKey('openai-codex', configured, force) || null;
 }
 
-function getOpenAICodexCredentials(config = {}, force = false) {
-  config = config || {};
-  const token = resolveCodexToken(config, force);
-
+function credentialsFromToken(token, accountIdOverride = null) {
   if (!token) {
     throw new Error('No OpenAI Codex OAuth token configured. Refusing to use OPENAI_API_KEY for openai-codex.');
   }
@@ -53,8 +54,28 @@ function getOpenAICodexCredentials(config = {}, force = false) {
     authMode: 'oauth',
     isOAuth: true,
     expiresAt,
-    accountId: payload?.https?.['api.openai.com/auth']?.chatgpt_account_id || payload?.sub || null,
+    accountId: accountIdOverride
+      || payload?.['https://api.openai.com/auth']?.chatgpt_account_id
+      || payload?.https?.['api.openai.com/auth']?.chatgpt_account_id
+      || payload?.sub
+      || null,
   };
+}
+
+function getOpenAICodexCredentials(config = {}, force = false) {
+  config = config || {};
+  return credentialsFromToken(resolveCodexToken(config, force));
+}
+
+async function getOpenAICodexCredentialsAtUse(config = {}, options = {}) {
+  const managed = await managedOAuthCredentials('openai-codex', {
+    force: options.force === true,
+    staleAccessToken: options.staleAccessToken,
+  });
+  if (managed?.accessToken) {
+    return credentialsFromToken(managed.accessToken, managed.accountId);
+  }
+  return getOpenAICodexCredentials(config, options.force === true);
 }
 
 function toCodexMessage(role, content) {
@@ -207,7 +228,7 @@ function getCodexHeaders(credentials) {
     'Content-Type': 'application/json',
     'chatgpt-account-id': credentials.accountId || '',
     'OpenAI-Beta': 'responses=experimental',
-    originator: 'cosmo-home',
+    originator: 'home23',
     'oai-language': 'en-US',
     'User-Agent': `home23 (${os.platform()} ${os.release()}; ${os.arch()})`,
     accept: 'text/event-stream',
@@ -225,21 +246,25 @@ class OpenAICodexClient {
   }
 
   async generate(options = {}) {
+    const credentials = await getOpenAICodexCredentialsAtUse(this.config);
     try {
-      return await this._generateAttempt(options, false);
+      return await this._generateAttempt(options, credentials);
     } catch (error) {
       // One force-fresh retry on auth failure: the token may have rotated in
       // secrets.yaml after the last resolver read. Never loop.
       if (!isAuthError(error)) throw error;
-      this.logger?.warn?.('[OpenAI-Codex] Auth failure — rereading credentials for one retry', {
+      this.logger?.warn?.('[OpenAI-Codex] Auth failure — refreshing Home23 credentials for one retry', {
         error: error.message,
       });
-      return await this._generateAttempt(options, true);
+      const refreshed = await getOpenAICodexCredentialsAtUse(this.config, {
+        force: true,
+        staleAccessToken: credentials.accessToken,
+      });
+      return await this._generateAttempt(options, refreshed);
     }
   }
 
-  async _generateAttempt(options = {}, forceCredentials = false) {
-    const credentials = getOpenAICodexCredentials(this.config, forceCredentials);
+  async _generateAttempt(options = {}, credentials) {
     const model = options.model || this.config.providers?.['openai-codex']?.defaultModel || 'gpt-5.5';
     const tools = buildCodexTools(options.tools || []);
     const body = {
@@ -371,16 +396,26 @@ class OpenAICodexClient {
 
 function getOpenAICodexClient(config = {}, logger = null) {
   config = config || {};
-  const credentials = getOpenAICodexCredentials(config);
+  let credentials = null;
+  try {
+    credentials = getOpenAICodexCredentials(config);
+  } catch (error) {
+    // Client construction stays lazy so an expired managed access token can
+    // refresh inside the first request. Missing/invalid credentials still
+    // fail closed there before any Codex API call.
+    logger?.warn?.('[OpenAI-Codex] Credential requires refresh or setup', {
+      error: error.message,
+    });
+  }
 
   logger?.info?.('[OpenAI-Codex] Initializing client', {
-    authMode: credentials.authMode,
+    authMode: 'oauth',
     baseURL: process.env.OPENAI_CODEX_BASE_URL
       || config.providers?.['openai-codex']?.baseURL
       || config.providers?.['openai-codex']?.baseUrl
       || 'https://chatgpt.com/backend-api',
-    expiresAt: credentials.expiresAt ? new Date(credentials.expiresAt).toISOString() : null,
-    hasAccountId: Boolean(credentials.accountId),
+    expiresAt: credentials?.expiresAt ? new Date(credentials.expiresAt).toISOString() : null,
+    hasAccountId: Boolean(credentials?.accountId),
   });
 
   return new OpenAICodexClient(config, logger);
@@ -392,6 +427,7 @@ module.exports = {
   getCodexHeaders,
   getOpenAICodexClient,
   getOpenAICodexCredentials,
+  getOpenAICodexCredentialsAtUse,
   isOpenAIOAuthToken,
   OpenAICodexClient,
 };

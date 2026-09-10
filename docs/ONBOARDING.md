@@ -97,6 +97,11 @@ environment. COSMO23 is an independently installed service; Home23 does not
 install, start, or update its source or database.
 
 Provider credentials are configured in the dashboard, not during `init`.
+Home23 owns its Anthropic and OpenAI Codex OAuth state directly in
+`config/secrets.yaml`. The setup browser creates the PKCE flow, and the user
+pastes the final callback URL back into Setup. That works the same way on a Mac
+host and a headless Linux host. Settings can also make a one-time import from
+the official Claude or Codex CLI; those CLIs are not runtime dependencies.
 
 `agent create` is the lower-level path for adding an agent to an existing installation. It writes a local `instances/<name>/` runtime directory, records its purpose, configures starter ingestion folders, and regenerates the PM2 ecosystem. `instances/` is intentionally local state and is not committed.
 
@@ -157,7 +162,7 @@ HOME23_LIVE_CONTRACTS_ACTIONS=1 npm run test:contracts:live
 - Do not run `pm2 stop all`, `pm2 delete all`, `git reset --hard`, or broad checkout/reset commands.
 - Stop Home23 through `node cli/home23.js stop` or by specific process name.
 - The `instances/` tree is runtime data. Brains, conversations, uploads, and local schedules live there.
-- `config/secrets.yaml`, COSMO OAuth storage, and generated runtime config are local secrets/state and should not be committed.
+- `config/secrets.yaml`, including Home23 OAuth refresh credentials, and generated runtime config are local secrets/state and should not be committed.
 - `config/home.yaml`, `config/targets.yaml`, `config/cron-jobs.json`, `config/agents.json`, and `ecosystem.config.cjs` are local generated files. Public defaults live in `config/*.example`.
 - If you are working in jtr's live checkout, inspect local changes before editing and preserve uncommitted work.
 
@@ -166,7 +171,7 @@ HOME23_LIVE_CONTRACTS_ACTIONS=1 npm run test:contracts:live
 - PM2 missing: `npm install -g pm2`
 - Native dependency build failure on Debian/Ubuntu: `sudo apt install build-essential python3-venv`, then rerun setup
 - TypeScript build failure: run `npx tsc --noEmit` for exact errors
-- Cosmo OAuth unavailable: check the independently installed Cosmo service at `cosmo23.baseUrl`; its database and provider setup belong to that installation.
+- OAuth sign-in did not finish: start a new flow in Setup or Settings, authorize it in the browser, then paste the entire final callback URL into Home23. A ChatGPT callback at `localhost:1455` may show a browser connection error; its address-bar URL is still the value Home23 needs.
 - PDF/DOCX ingestion unavailable: recreate `engine/.venv-markitdown` and install `markitdown[pdf] openai`
 - Local embeddings unavailable: start Ollama and run `ollama pull nomic-embed-text`
 

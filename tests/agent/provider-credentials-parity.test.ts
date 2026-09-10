@@ -194,13 +194,9 @@ test('DELIBERATE: only the engine treats a codex OAuth JWT as a managed token', 
       'engine: codex JWT is managed, the file wins');
 
     // HARNESS: text-generation.ts routes openai-codex to codex-auth.ts, which
-    // owns its own OAuth store (~/.evobrew/auth-profiles.json) with refresh —
-    // so this resolver is never asked about codex and the managed rule would
-    // be dead code here; a configured value stays a pin, like every other
-    // static key. (Codex DOES get the same one-shot auth retry as every other
-    // provider as of 2026-08-11, but its "fresh credential" is a forced
-    // codex-auth refresh, not a secrets.yaml re-read. Same shape, different
-    // store — which is exactly why these two resolvers still differ here.)
+    // uses Home23's OAuth authority directly. This generic resolver is never
+    // asked about Codex, so a configured value remains a pin here. Codex still
+    // gets the same one-shot refresh path; the specialized reader owns it.
     assert.equal(harnessResolve('openai-codex', staleConfigured), staleConfigured,
       'harness: no codex rule, configured value is a pin');
   });

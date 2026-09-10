@@ -2,7 +2,7 @@ const { GPT5Client } = require('./gpt5-client');
 const { MCPClient } = require('./mcp-client');
 const { ChatCompletionsClient } = require('./chat-completions-client');
 const { getOpenAICodexClient } = require('../services/openai-codex-oauth-engine');
-const { resolveProviderKey, isAuthError } = require('./provider-credentials');
+const { resolveProviderKey, isAuthError, refreshManagedOAuth } = require('./provider-credentials');
 
 function loadOpenAI() {
   try {
@@ -95,7 +95,7 @@ class UnifiedClient extends GPT5Client {
     }
     
     // Anthropic credentials resolve AT USE from config/secrets.yaml (the
-    // file the OAuth mirror keeps fresh), with the boot env as the floor —
+    // file Home23's OAuth authority keeps fresh), with the boot env as the floor —
     // see provider-credentials.js. The SDK client is rebuilt whenever the
     // resolved credential rotates; generateAnthropic spends one force-fresh
     // retry on auth failures.
@@ -879,7 +879,8 @@ class UnifiedClient extends GPT5Client {
       // One force-fresh retry on auth failure: the token may have rotated in
       // secrets.yaml after this client was built. Never loop.
       if (!isAuthError(error)) throw error;
-      this.logger?.warn?.('Anthropic auth failure — rereading credentials for one retry', { error: error.message });
+      this.logger?.warn?.('Anthropic auth failure — refreshing Home23 credentials for one retry', { error: error.message });
+      await refreshManagedOAuth('anthropic', { staleAccessToken: this._anthropicCredential });
       this._ensureAnthropicClient(true);
       return await this.generateAnthropicCompatible(this.anthropic, 'Anthropic', assignment, options);
     }

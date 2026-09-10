@@ -109,6 +109,44 @@ test('force rereads the file inside the cache window (the auth-failure path)', a
   });
 });
 
+test('near-expiry managed OAuth refreshes through Home23 before use', async () => {
+  await withHarness(async ({ secretsPath }) => {
+    fs.writeFileSync(secretsPath, [
+      'providers:',
+      '  anthropic:',
+      '    apiKey: "sk-ant-oat01-near-expiry"',
+      '    oauthManaged: true',
+      '    oauth:',
+      '      refreshToken: "refresh-old"',
+      `      expiresAt: "${new Date(Date.now() + 60_000).toISOString()}"`,
+      '',
+    ].join('\n'));
+    const oldFetch = global.fetch;
+    let refreshCalls = 0;
+    global.fetch = async (url, options = {}) => {
+      assert.equal(String(url), 'https://console.anthropic.com/v1/oauth/token');
+      assert.equal(JSON.parse(options.body).refresh_token, 'refresh-old');
+      refreshCalls += 1;
+      return new Response(JSON.stringify({
+        access_token: 'sk-ant-oat01-home23-refreshed',
+        refresh_token: 'refresh-new',
+        expires_in: 3600,
+      }), { status: 200 });
+    };
+    try {
+      const { getAnthropicApiKey } = freshModules();
+      const credentials = await getAnthropicApiKey();
+      assert.equal(credentials.authToken, 'sk-ant-oat01-home23-refreshed');
+      assert.equal(refreshCalls, 1);
+      const persisted = fs.readFileSync(secretsPath, 'utf8');
+      assert.match(persisted, /refresh-new/);
+      assert.doesNotMatch(persisted, /refresh-old/);
+    } finally {
+      global.fetch = oldFetch;
+    }
+  });
+});
+
 test('no credentials anywhere still fails with the operator-facing message', async () => {
   await withHarness(async () => {
     const { getAnthropicApiKey } = freshModules();

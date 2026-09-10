@@ -27,7 +27,7 @@ function makeRoot() {
 
 function childFor(source, root) {
   const settingsPath = path.join(repoRoot, 'engine', 'src', 'dashboard', 'home23-settings-api.js');
-  const secretsHelperPath = path.join(repoRoot, 'engine', 'src', 'dashboard', 'home23-secrets.js');
+  const oauthPath = path.join(repoRoot, 'shared', 'home23-oauth.cjs');
   const agentPath = path.join(repoRoot, 'cli', 'lib', 'agent-create.js');
   const tilesPath = path.join(repoRoot, 'engine', 'src', 'dashboard', 'home23-tiles.js');
   const scripts = {
@@ -39,8 +39,8 @@ function childFor(source, root) {
       });
     `,
     oauth: `
-      const { updateDashboardOAuthTokenSecrets } = require(${JSON.stringify(secretsHelperPath)});
-      await updateDashboardOAuthTokenSecrets(${JSON.stringify(root)}, 'anthropic', 'oauth-race-token');
+      const { createHome23OAuthBroker } = require(${JSON.stringify(oauthPath)});
+      await createHome23OAuthBroker({ home23Root: ${JSON.stringify(root)} }).begin('anthropic');
     `,
     agent: `
       const { addBotTokenToSecrets } = await import(${JSON.stringify(agentPath)});
@@ -74,11 +74,11 @@ function exitResult(child) {
 
 test('all production Home23 secret writer families expose the shared coordinated path', async () => {
   const settings = require('../../engine/src/dashboard/home23-settings-api.js');
-  const secretsHelper = require('../../engine/src/dashboard/home23-secrets.js');
+  const oauth = require('../../shared/home23-oauth.cjs');
   const tiles = require('../../engine/src/dashboard/home23-tiles.js');
   const agent = await import('../../cli/lib/agent-create.js');
   assert.equal(typeof settings.updateSettingsSecrets, 'function');
-  assert.equal(typeof secretsHelper.updateDashboardOAuthTokenSecrets, 'function');
+  assert.equal(typeof oauth.createHome23OAuthBroker, 'function');
   assert.equal(typeof agent.addBotTokenToSecrets, 'function');
   assert.equal(typeof tiles.updateTileConnectionSecrets, 'function');
 });
@@ -103,8 +103,8 @@ test('Settings, OAuth poller, agent-create, and tile writers block on the capabi
   const secrets = yaml.load(fs.readFileSync(path.join(root, 'config', 'secrets.yaml'), 'utf8'));
   assert.equal(secrets.brainOperations.capabilityKey, capabilityKey);
   assert.equal(secrets.settingsRace, 'preserved');
-  assert.equal(secrets.providers.anthropic.apiKey, 'oauth-race-token');
-  assert.equal(secrets.providers.anthropic.oauthManaged, true);
+  assert.equal(typeof secrets.providers.anthropic.oauthPending.verifier, 'string');
+  assert.equal(typeof secrets.providers.anthropic.oauthPending.state, 'string');
   assert.equal(secrets.agents['race-agent'].telegram.botToken, 'telegram-race-token');
   assert.equal(secrets.dashboard.tileConnections.connections[0].secrets.bearerToken, 'tile-race-token');
   assert.equal(fs.statSync(path.join(root, 'config', 'secrets.yaml')).mode & 0o777, 0o600);
@@ -156,20 +156,18 @@ test('generic YAML safety refuses config/secrets.yaml without writing a plaintex
 test('known production writers no longer perform direct read-modify-write on secrets.yaml', () => {
   const sources = {
     settings: fs.readFileSync(path.join(repoRoot, 'engine/src/dashboard/home23-settings-api.js'), 'utf8'),
-    oauth: fs.readFileSync(path.join(repoRoot, 'engine/src/dashboard/server.js'), 'utf8'),
+    oauth: fs.readFileSync(path.join(repoRoot, 'shared/home23-oauth.cjs'), 'utf8'),
     agent: fs.readFileSync(path.join(repoRoot, 'cli/lib/agent-create.js'), 'utf8'),
     tiles: fs.readFileSync(path.join(repoRoot, 'engine/src/dashboard/home23-tiles.js'), 'utf8'),
-    cosmo: fs.readFileSync(require('../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('server/index.js'), 'utf8'),
   };
   assert.doesNotMatch(sources.settings, /saveYaml\(secretsPath,/);
   assert.doesNotMatch(sources.oauth, /writeFileSync\(secretsPath,/);
   assert.doesNotMatch(sources.agent, /writeFileSync\(secretsPath,/);
   assert.doesNotMatch(sources.tiles, /this\.writeSecrets\(secrets\)/);
-  assert.doesNotMatch(sources.cosmo, /writeFile(?:Sync)?\([^\n]*config\/secrets\.yaml/);
   assert.doesNotMatch(
     [sources.settings, sources.oauth, sources.agent, sources.tiles].join('\n'),
     /updateHome23SecretsSync|withHome23SecretsLockSync/,
   );
-  assert.equal((sources.settings.match(/await updateSettingsSecrets\(/g) || []).length, 6);
-  assert.equal((sources.settings.match(/await updateDashboardOAuthTokenSecrets\(/g) || []).length, 1);
+  assert.equal((sources.settings.match(/await updateSettingsSecrets\(/g) || []).length, 5);
+  assert.match(sources.oauth, /updateHome23Secrets\(/);
 });
