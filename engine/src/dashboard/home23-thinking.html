@@ -173,13 +173,32 @@
     async function resolveAgentProcessName() {
       const el = document.getElementById('tm-restart-process');
       if (!el) return;
-      try {
-        const r = await fetch('/home23/config.json');
-        if (!r.ok) return;
-        const cfg = await r.json();
-        const name = String(cfg?.agent?.name || cfg?.agentName || '').trim();
-        if (name) el.textContent = 'home23-' + name;
-      } catch { /* keep placeholder */ }
+      const pickName = (payload) => {
+        if (!payload || typeof payload !== 'object') return '';
+        const candidates = [
+          payload.agentName,
+          typeof payload.agent === 'string' ? payload.agent : payload.agent?.name,
+          payload.dashboardAgent,
+          payload.primaryAgent,
+        ];
+        for (const c of candidates) {
+          const name = String(c || '').trim().replace(/^home23-/i, '');
+          if (name) return name;
+        }
+        return '';
+      };
+      const endpoints = ['/home23/config.json', '/home23/process.json', '/home23/api/scope'];
+      for (const url of endpoints) {
+        try {
+          const r = await fetch(url);
+          if (!r.ok) continue;
+          const name = pickName(await r.json());
+          if (name) {
+            el.textContent = 'home23-' + name;
+            return;
+          }
+        } catch { /* try next */ }
+      }
     }
 
     async function load() {

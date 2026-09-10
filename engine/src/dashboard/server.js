@@ -2357,9 +2357,12 @@ class DashboardServer {
 
     // Home23 config (ports for client-side URL construction)
     this.app.get('/home23/config.json', (req, res) => {
+      const agentName = this.getHome23AgentName();
       res.json({
         evobrewPort: parseInt(process.env.EVOBREW_PORT || '3415', 10),
-        cosmo23Port: parseInt(process.env.COSMO23_PORT || '43210', 10)
+        cosmo23Port: parseInt(process.env.COSMO23_PORT || '43210', 10),
+        agent: agentName,
+        agentName,
       });
     });
 
