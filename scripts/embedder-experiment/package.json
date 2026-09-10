@@ -1,0 +1,15 @@
+{
+  "name": "home23-embedder-experiment",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "description": "Stage 1 compatibility experiment only. Not the owned inference service.",
+  "scripts": {
+    "experiment": "node run.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.7.6"
+  }
+}
