@@ -1,9 +1,10 @@
 /**
  * Explicit shell/filesystem authority for resident tools.
  *
- * Default for a fresh home: Home23 install root + that resident's instance dir.
- * Owner may grant additional absolute folders, or full-machine access.
- * Keep (/home/box/keep, /home/box/grokbot) is NOT readable unless granted.
+ * New homes explicitly start with the Home23 install, resident instance, and
+ * owner-selected folders. Existing homes without a shell section retain their
+ * historical full-machine access. Owners may grant additional absolute folders
+ * or full-machine access.
  *
  * Residual gaps (documented): arbitrary shell scripts can still read outside
  * roots via process substitution, sourced scripts, or interpreters that open
@@ -51,20 +52,30 @@ export function isPathWithinRoots(candidate: string, roots: readonly string[]): 
 
 /**
  * Resolve authority from agent/home config with product defaults.
- * Defaults: projectRoot + instanceDir (NOT whole machine, NOT Keep).
+ * An omitted section means legacy full-machine behavior. A present scoped
+ * section with no roots uses projectRoot + instanceDir.
  */
 export function resolveShellFsAuthority(
   config: ShellFsAuthorityConfig | null | undefined,
   defaults: { projectRoot: string; instanceDir?: string | null },
 ): ResolvedShellFsAuthority {
+  if (config === undefined || config === null) {
+    return { machineAccess: true, roots: [] };
+  }
   const machineAccess = Boolean(config?.machineAccess || config?.fullMachine);
   if (machineAccess) {
     return { machineAccess: true, roots: [] };
   }
 
-  const configured = Array.isArray(config?.roots)
-    ? config!.roots!.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+  const configured = Array.isArray(config.roots)
+    ? config.roots.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
     : [];
+
+  for (const root of configured) {
+    if (!isAbsolute(root) || root.includes('\0')) {
+      throw new Error(`shell.roots entries must be absolute paths: ${root}`);
+    }
+  }
 
   const roots = (configured.length > 0
     ? configured
@@ -185,7 +196,7 @@ export function refuseShellFsAuthority(input: {
       return {
         content:
           `shell refused: path operand outside granted roots (${authority.roots.join(', ')}): ${operand}. ` +
-          'Keep and other ungranted trees are not readable under default authority.',
+          'That path is outside the folders granted by the owner.',
         is_error: true,
         metadata: { code: SHELL_FS_REFUSED },
       };

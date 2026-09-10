@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
@@ -25,35 +25,42 @@ function makeTree() {
   const projectRoot = path.join(root, 'home23');
   const instanceDir = path.join(projectRoot, 'instances', 'scout');
   const workspace = path.join(instanceDir, 'workspace');
-  const keep = path.join(root, 'keep');
+  const sibling = path.join(root, 'sibling-home');
   mkdirSync(workspace, { recursive: true });
-  mkdirSync(keep, { recursive: true });
+  mkdirSync(sibling, { recursive: true });
   writeFileSync(path.join(workspace, 'ok.txt'), 'inside\n');
-  writeFileSync(path.join(keep, 'secret.txt'), 'keep-secret\n');
-  return { root, projectRoot, instanceDir, workspace, keep };
+  writeFileSync(path.join(sibling, 'private.txt'), 'private\n');
+  return { root, projectRoot, instanceDir, workspace, sibling };
 }
 
-test('default roots are projectRoot + instanceDir (not whole machine)', () => {
+test('legacy config omission preserves full-machine access', () => {
   const { projectRoot, instanceDir } = makeTree();
-  const auth = resolveShellFsAuthority(null, { projectRoot, instanceDir });
+  const auth = resolveShellFsAuthority(undefined, { projectRoot, instanceDir });
+  assert.equal(auth.machineAccess, true);
+  assert.deepEqual(auth.roots, []);
+});
+
+test('explicitly scoped homes default to projectRoot + instanceDir', () => {
+  const { projectRoot, instanceDir } = makeTree();
+  const auth = resolveShellFsAuthority({ machineAccess: false }, { projectRoot, instanceDir });
   assert.equal(auth.machineAccess, false);
-  assert.deepEqual(auth.roots, [projectRoot, instanceDir].map((p) => path.resolve(p)));
+  assert.deepEqual(auth.roots, [projectRoot, instanceDir].map((p) => realpathSync(p)));
 });
 
 test('extractSimpleReadPathOperands catches ls/cat path args', () => {
-  const cwd = '/home/box/home23-test';
+  const cwd = '/srv/home23';
   assert.deepEqual(
-    extractSimpleReadPathOperands('ls /home/box/keep', cwd),
-    ['/home/box/keep'],
+    extractSimpleReadPathOperands('ls /srv/sibling-home', cwd),
+    ['/srv/sibling-home'],
   );
   assert.ok(
-    extractSimpleReadPathOperands('cat ../../keep/secret.txt', cwd).some((p) => p.includes('keep')),
+    extractSimpleReadPathOperands('cat ../sibling-home/private.txt', cwd).some((p) => p.includes('sibling-home')),
   );
 });
 
-test('shell refuses ls Keep under default roots', async () => {
-  const { projectRoot, instanceDir, keep } = makeTree();
-  const authority = resolveShellFsAuthority(null, { projectRoot, instanceDir });
+test('shell refuses an ungranted sibling tree under scoped roots', async () => {
+  const { projectRoot, instanceDir, sibling } = makeTree();
+  const authority = resolveShellFsAuthority({ machineAccess: false }, { projectRoot, instanceDir });
   const ctx = {
     projectRoot,
     instanceDir,
@@ -61,7 +68,7 @@ test('shell refuses ls Keep under default roots', async () => {
     workspacePath: path.join(instanceDir, 'workspace'),
   } as unknown as ToolContext;
 
-  const refused = await shellTool.execute({ command: `ls ${keep}` }, ctx);
+  const refused = await shellTool.execute({ command: `ls ${sibling}` }, ctx);
   assert.equal(refused.is_error, true);
   assert.equal(refused.metadata?.code, SHELL_FS_REFUSED);
   assert.match(refused.content, /outside granted roots|shell refused/i);
@@ -70,31 +77,31 @@ test('shell refuses ls Keep under default roots', async () => {
   assert.equal(Boolean(ok.is_error), false, ok.content);
 });
 
-test('shell refuses cwd outside roots; machineAccess allows Keep', async () => {
-  const { projectRoot, instanceDir, keep } = makeTree();
-  const limited = resolveShellFsAuthority(null, { projectRoot, instanceDir });
+test('shell refuses cwd outside roots; machineAccess allows a sibling tree', async () => {
+  const { projectRoot, instanceDir, sibling } = makeTree();
+  const limited = resolveShellFsAuthority({ machineAccess: false }, { projectRoot, instanceDir });
   const ctxLimited = {
     projectRoot,
     instanceDir,
     shellFsAuthority: limited,
     workspacePath: path.join(instanceDir, 'workspace'),
   } as unknown as ToolContext;
-  const badCwd = await shellTool.execute({ command: 'pwd', cwd: keep }, ctxLimited);
+  const badCwd = await shellTool.execute({ command: 'pwd', cwd: sibling }, ctxLimited);
   assert.equal(badCwd.is_error, true);
   assert.equal(badCwd.metadata?.code, SHELL_FS_REFUSED);
 
   const open = resolveShellFsAuthority({ machineAccess: true }, { projectRoot, instanceDir });
   const ctxOpen = { ...ctxLimited, shellFsAuthority: open } as unknown as ToolContext;
-  const allowed = refuseShellFsAuthority({ cwd: keep, command: `ls ${keep}`, authority: open });
+  const allowed = refuseShellFsAuthority({ cwd: sibling, command: `ls ${sibling}`, authority: open });
   assert.equal(allowed, null);
   assert.equal(open.machineAccess, true);
 });
 
-test('read_file refuses Keep and symlink escape; write still workspace-bound', async () => {
-  const { projectRoot, instanceDir, workspace, keep } = makeTree();
-  const escapeLink = path.join(workspace, 'escape-keep');
-  symlinkSync(keep, escapeLink);
-  const authority = resolveShellFsAuthority(null, { projectRoot, instanceDir });
+test('read_file refuses sibling trees and symlink escape; write stays workspace-bound', async () => {
+  const { projectRoot, instanceDir, workspace, sibling } = makeTree();
+  const escapeLink = path.join(workspace, 'escape-sibling');
+  symlinkSync(sibling, escapeLink);
+  const authority = resolveShellFsAuthority({ machineAccess: false }, { projectRoot, instanceDir });
   const ctx = {
     projectRoot,
     instanceDir,
@@ -102,8 +109,8 @@ test('read_file refuses Keep and symlink escape; write still workspace-bound', a
     workspacePath: workspace,
   } as unknown as ToolContext;
 
-  const keepRead = await readFileTool.execute({ path: path.join(keep, 'secret.txt') }, ctx);
-  assert.equal(keepRead.is_error, true);
+  const siblingRead = await readFileTool.execute({ path: path.join(sibling, 'private.txt') }, ctx);
+  assert.equal(siblingRead.is_error, true);
 
   // Symlink that points outside workspace must fail write confinement
   const writeEscape = refuseWorkspaceEscape(path.join(escapeLink, 'planted.txt'), workspace, {
@@ -113,7 +120,7 @@ test('read_file refuses Keep and symlink escape; write still workspace-bound', a
   assert.equal(writeEscape?.metadata?.code, WORKSPACE_ESCAPE_REFUSED);
 
   // .. traversal outside workspace
-  const traversal = refuseWorkspaceEscape(path.join(workspace, '..', '..', '..', 'keep', 'x'), workspace, {
+  const traversal = refuseWorkspaceEscape(path.join(workspace, '..', '..', '..', 'sibling-home', 'x'), workspace, {
     allowMissingLeaf: true,
   });
   assert.ok(traversal);

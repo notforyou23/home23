@@ -23,6 +23,13 @@ below must not be used as consumer connection instructions.
 - Python 3 for document ingestion conversion
 - Optional but recommended: Ollama with local embeddings
 
+Source installation compiles native Node modules. Install the platform toolchain
+before running setup:
+
+- macOS: Xcode Command Line Tools (`xcode-select --install`)
+- Debian/Ubuntu Linux: `sudo apt install build-essential python3-venv`
+- Other Linux distributions: a C/C++ compiler, `make`, and Python's `venv` module
+
 ```bash
 node --version
 pm2 --version
@@ -157,6 +164,7 @@ HOME23_LIVE_CONTRACTS_ACTIONS=1 npm run test:contracts:live
 ## 6. Common First-Run Fixes
 
 - PM2 missing: `npm install -g pm2`
+- Native dependency build failure on Debian/Ubuntu: `sudo apt install build-essential python3-venv`, then rerun setup
 - TypeScript build failure: run `npx tsc --noEmit` for exact errors
 - Cosmo OAuth unavailable: check the independently installed Cosmo service at `cosmo23.baseUrl`; its database and provider setup belong to that installation.
 - PDF/DOCX ingestion unavailable: recreate `engine/.venv-markitdown` and install `markitdown[pdf] openai`

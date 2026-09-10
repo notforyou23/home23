@@ -379,7 +379,7 @@ async function main(): Promise<void> {
   });
 
   // ── Tool Context (pre-wired, agent loop + scheduler added below) ──
-  const shellCfg = (config as { shell?: { roots?: string[]; machineAccess?: boolean; fullMachine?: boolean } }).shell;
+  const shellCfg = config.shell;
   const shellFsAuthority = resolveShellFsAuthority(shellCfg, {
     projectRoot: PROJECT_ROOT,
     instanceDir: INSTANCE_DIR,

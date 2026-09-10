@@ -410,19 +410,23 @@ function setHud(visible, statusText) {
   }
 }
 
-async function refreshTurnStatus() {
-  if (!chatAgent?.bridgePort || !chatConversationId || !activeTurnId) return;
+async function refreshTurnStatus(expectedTurnId = activeTurnId, expectedChatId = chatConversationId) {
+  if (!chatAgent?.bridgePort || !expectedChatId || !expectedTurnId) return;
   try {
     const res = await fetch(
-      `${bridgeBase()}/api/chat/turn-status?chatId=${encodeURIComponent(chatConversationId)}&turn_id=${encodeURIComponent(activeTurnId)}`,
+      `${bridgeBase()}/api/chat/turn-status?chatId=${encodeURIComponent(expectedChatId)}&turn_id=${encodeURIComponent(expectedTurnId)}`,
       { headers: bridgeAuthHeaders() },
     );
     if (!res.ok) return;
     const data = await res.json();
+    // A status request can settle after the owner changes conversations or a
+    // newer turn starts. Never let that older response finalize the new turn.
+    if (activeTurnId !== expectedTurnId || activeChatId !== expectedChatId) return;
+    if (data.turn_id && data.turn_id !== expectedTurnId) return;
     if (isTerminalTurnStatus(data.status) || data.active === false) {
       finalizeTurn({
         type: 'turn',
-        turn_id: data.turn_id || activeTurnId,
+        turn_id: data.turn_id || expectedTurnId,
         status: data.status || 'complete',
         assistant_content: data.assistant_content,
         error: data.error_message || data.error,
@@ -1407,16 +1411,18 @@ function openTurnStream({ bridgeBase: base, chatId, turnId, cursor }) {
   chatDisconnected = false;
 
   // Safety net: if the SSE stalls after the server already terminalized, clear Working/Streaming.
-  turnStatusPollTimer = setInterval(() => {
+  const pollTimer = setInterval(() => {
     if (!chatStreaming || !activeTurnId || activeEventSource !== es) {
-      clearInterval(turnStatusPollTimer);
-      turnStatusPollTimer = null;
+      clearInterval(pollTimer);
+      if (turnStatusPollTimer === pollTimer) turnStatusPollTimer = null;
       return;
     }
-    refreshTurnStatus();
+    refreshTurnStatus(turnId, chatId);
   }, 4000);
+  turnStatusPollTimer = pollTimer;
 
   es.onmessage = (msg) => {
+    if (activeEventSource !== es || activeTurnId !== turnId || activeChatId !== chatId) return;
     if (msg.data === '[DONE]') {
       es.close();
       if (activeEventSource === es) activeEventSource = null;
@@ -1440,10 +1446,11 @@ function openTurnStream({ bridgeBase: base, chatId, turnId, cursor }) {
   es.onerror = () => {
     try { es.close(); } catch { /* ignore */ }
     if (activeEventSource === es) activeEventSource = null;
-    if (activeTurnId) {
+    if (activeTurnId === turnId && activeChatId === chatId) {
       // Prefer a terminal read over a sticky Disconnected HUD when the turn already finished.
-      refreshTurnStatus().then(() => {
-        if (!activeTurnId) return;
+      refreshTurnStatus(turnId, chatId).then(() => {
+        if (activeTurnId !== turnId || activeChatId !== chatId) return;
+        if (activeEventSource && activeEventSource !== es) return;
         chatDisconnected = true;
         chatStreaming = false;
         resetSendButtons();

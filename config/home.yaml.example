@@ -167,10 +167,11 @@ embeddings:
       model: nomic-embed-text
       dimensions: 768
 
-# Shell / filesystem authority for resident tools (shell, read_file, list, search).
-# Default when omitted: Home23 install root + this resident's instances/<agent> dir.
-# Keep (/home/box/keep, /home/box/grokbot) is NOT included unless explicitly granted.
-# To grant full machine access (owner only):
+# Filesystem scope for resident tools (shell, read_file, list, search).
+# New homes begin with the Home23 install, resident instance, and folders selected
+# during setup. This tool-level guard reduces accidental access; it is not an OS sandbox.
+# Existing homes that omit this section retain their historical full-machine access.
+# To grant full machine access:
 #   shell:
 #     machineAccess: true
 # To grant selected extra folders:
@@ -180,8 +181,8 @@ embeddings:
 #       - /absolute/path/to/instances/agent
 #       - /absolute/path/extra
 shell:
-  # machineAccess: false
-  # roots: []
+  machineAccess: false
+  roots: []
 
 chat:
   defaultProvider: ollama-cloud

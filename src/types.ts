@@ -161,6 +161,15 @@ export interface HomeConfig {
 
   providers?: Record<string, unknown>;
 
+  shell?: {
+    /** Full host filesystem access, explicitly selected by the owner. */
+    machineAccess?: boolean;
+    /** Compatibility alias for older local configuration. */
+    fullMachine?: boolean;
+    /** Absolute folders available to shell and file-reading tools. */
+    roots?: string[];
+  };
+
   homeAssistant?: {
     url?: string;
     token?: string;

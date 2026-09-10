@@ -53,7 +53,6 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
     if (typeof message !== 'string' || message.trim().length === 0) {
       res.status(400).json({ error: 'message required' }); return;
     }
-    const trimmedMessage = message.trim();
 
     let effort: ReasoningEffort | undefined;
     try {
@@ -169,7 +168,7 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
     }
 
     try {
-      const { turnId: actualTurnId, response } = await config.agent.runWithTurn(chatId, trimmedMessage, {
+      const { turnId: actualTurnId, response } = await config.agent.runWithTurn(chatId, message, {
         turnId,
         modelOverride,
         effort,

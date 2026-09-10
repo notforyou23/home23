@@ -130,3 +130,21 @@ test('agenda surface dedupes related RECENT.md work', () => {
     assert.equal(store.counts().stale, 1);
   });
 });
+
+test('agenda groups each multi-topic record once so group counts match visible rows', () => {
+  withStore((store) => {
+    const record = store.add({
+      sourceSignal: 'novelty',
+      kind: 'question',
+      content: 'Investigate why the live dashboard reports a stale resident while its engine pulse remains healthy.',
+      topicTags: ['dashboard', 'runtime', 'presence'],
+    });
+    assert.ok(record);
+
+    const groups = store.groupedByTopic({ status: ['candidate', 'surfaced'] });
+    const visible = groups.flatMap((group) => group.records);
+    assert.equal(visible.filter((item) => item.id === record.id).length, 1);
+    assert.equal(groups.reduce((sum, group) => sum + group.count, 0), visible.length);
+    assert.equal(groups.find((group) => group.records.some((item) => item.id === record.id))?.topic, 'dashboard');
+  });
+});
