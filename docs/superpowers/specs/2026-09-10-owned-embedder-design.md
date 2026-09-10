@@ -2,6 +2,14 @@
 
 Date: 2026-09-10  
 Status: approved for planning — no implementation started  
+
+> **September 10 review:** this file preserves the initial proposal. Use the
+> [reviewed Host integration plan](../plans/2026-09-10-owned-embedder-host-integration.md)
+> as the implementation baseline. It supersedes this version's CLI-first setup,
+> unchanged-consumer list, automatic legacy identity, generic history migration,
+> startup ordering and default-flip sequence. It also corrects the assumption
+> that selecting Transformers.js supplies the full Nomic preprocessing recipe.
+
 Edits: `substrate/src/embed-fetch.ts`, `src/substrate/embed-at-contact.ts`, `src/substrate/semantic-match.ts`, `substrate/src/adapters/event-ledger-tail.ts`, `engine/src/core/openai-client.js`, `shared/seed-embedding-config.cjs`, `cli/lib/generate-ecosystem.js`, `cli/lib/init.js`  
 Unchanged consumers: `engine/src/memory/network-memory.js`, `substrate/src/metabolism.ts`, `src/substrate/seed-context.ts`  
 Does not replace: the published semantic projection (`SEMANTIC_PROJECTION_SEED = 20260808` stands unchanged)
