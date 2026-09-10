@@ -239,7 +239,9 @@ export function projectHistoryToRows(records) {
     }
     if (rec.role === 'user' && rec.content) {
       rows.push({ kind: 'user', text: String(rec.content) });
-    } else if (rec.role === 'assistant' && rec.content) {
+    } else if (rec.role === 'assistant' && typeof rec.content === 'string' && rec.content.trim()) {
+      // Skip whitespace-only / non-display assistant rows (API may still carry metadata turns).
+      if (rec.display_assistant === false) continue;
       rows.push({
         kind: 'assistant',
         text: String(rec.content),
