@@ -241,7 +241,10 @@ export function createDirectMessageSubmissionService(options: {
     Promise<DirectMessageExecutionTarget | undefined>;
   authority: { current(): AuthorityEpoch | null };
   communications?: ResidentCommunicationPort;
-  notifications?: Pick<CoordinationDeviceNotificationPort, "notifyMessageCommitted">;
+  notifications?: Pick<
+    CoordinationDeviceNotificationPort,
+    "notifyMessageCommitted" | "notifyWorkStarted"
+  >;
   beginWork(): () => void;
   recoveryIdentity(): { requestId: string; correlationId: string };
 }) {
@@ -297,6 +300,15 @@ export function createDirectMessageSubmissionService(options: {
       const planned = options.work.getPlannedInvocation?.(input.work.id);
       const workingThread = input.work.kind === "resident_work_thread";
       if (workingThread && !planned) throw new Error("Working Thread has no durable planned invocation");
+      if (workingThread) {
+        void options.notifications?.notifyWorkStarted({
+          workId: input.work.id,
+          conversationId: input.prepared.conversationId,
+          channelId: input.prepared.channelId,
+          status: "running",
+          displayName: input.prepared.targetBotDisplayName,
+        }).catch(() => undefined);
+      }
       let origin: CoordinationTurnOrigin;
       let recoveryPhase: "offered" | "accepted" | "running" | "completed" | null = null;
       if (input.recovery) {

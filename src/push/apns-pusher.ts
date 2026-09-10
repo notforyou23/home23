@@ -14,7 +14,10 @@ import type {
 import {
   buildAsyncWorkPayload,
   buildConnectedAgentsMessagePayload,
+  buildConnectedAgentsWorkPayload,
+  isConnectedAgentsExecutingWorkState,
   previewPushAlertBody,
+  selectConnectedAgentsAlertDevices,
 } from './types.js';
 
 export interface QueryTerminalNotificationInput {
@@ -45,6 +48,16 @@ export interface ConnectedAgentsMessageNotification {
   conversationTitle?: string;
   preview?: string | null;
   hasAttachments?: boolean;
+}
+
+export interface ConnectedAgentsWorkNotification {
+  workId: string;
+  conversationId: string;
+  channelId: string;
+  status: string;
+  agent?: string;
+  displayName?: string;
+  conversationTitle?: string;
 }
 
 interface ConnectedAgentsQueuedDelivery {
@@ -187,8 +200,10 @@ export class ApnsPusher {
     const position = this.connectedAgentsPosition(input);
     store.initializeCheckpoint(null);
     if (!store.isAfterCheckpoint(position)) return;
-    const devices = this.registry.lookupConnectedAgentsDevices()
-      .filter((device) => this.connectedAgentsRegistrationIsCurrent(device));
+    const devices = selectConnectedAgentsAlertDevices(
+      this.registry.lookupConnectedAgentsDevices()
+        .filter((device) => this.connectedAgentsRegistrationIsCurrent(device)),
+    );
     const outcomes = await Promise.allSettled(
       devices.map(device => this.connectedAgentsDelivery(input, device)),
     );
@@ -233,7 +248,7 @@ export class ApnsPusher {
             device.device_token,
             payload,
             device.env,
-            { signal: controller.signal },
+            { signal: controller.signal, topic: device.bundle_id },
           );
         } finally {
           clearTimeout(timeout);
@@ -317,6 +332,35 @@ export class ApnsPusher {
     return this.scheduleConnectedAgentsDelivery(input);
   }
 
+  /**
+   * Wake devices when a Working Thread is already executing. Not a Message
+   * checkpoint: long Work has no durable result yet.
+   */
+  async notifyConnectedAgentsWork(input: ConnectedAgentsWorkNotification): Promise<void> {
+    if (!isConnectedAgentsExecutingWorkState(input.status)) return;
+    const devices = selectConnectedAgentsAlertDevices(
+      this.registry.lookupConnectedAgentsDevices()
+        .filter((device) => this.connectedAgentsRegistrationIsCurrent(device)),
+    );
+    if (devices.length === 0) return;
+    const payload = buildConnectedAgentsWorkPayload(input);
+    await Promise.allSettled(devices.map(async (device) => {
+      try {
+        const result = await this.client.send(
+          device.device_token,
+          payload,
+          device.env,
+          { topic: device.bundle_id },
+        );
+        if (result.status === 410) {
+          this.registry.invalidate(device.device_token, device.bundle_id);
+        }
+      } catch {
+        // Fire-and-forget: a later Message or Work wake retries honestly.
+      }
+    }));
+  }
+
   /** Queue a canonical startup snapshot before accepting later live deliveries. */
   reconcileConnectedAgentsMessages(
     messages: readonly ConnectedAgentsMessageNotification[],
@@ -386,7 +430,12 @@ export class ApnsPusher {
 
     await Promise.allSettled(devices.map(async (dev) => {
       try {
-        const result = await this.client.send(dev.device_token, payload, dev.env);
+        const result = await this.client.send(
+          dev.device_token,
+          payload,
+          dev.env,
+          { topic: dev.bundle_id },
+        );
         if (result.status === 410) {
           console.log(`[push] ${this.agentName}: device ${dev.device_token.slice(0, 8)}… gone (410), invalidating`);
           this.registry.invalidate(dev.device_token, dev.bundle_id);
@@ -419,7 +468,12 @@ export class ApnsPusher {
 
     await Promise.allSettled(devices.map(async (dev) => {
       try {
-        const result = await this.client.send(dev.device_token, payload, dev.env);
+        const result = await this.client.send(
+          dev.device_token,
+          payload,
+          dev.env,
+          { topic: dev.bundle_id },
+        );
         if (result.status === 410) {
           console.log(`[push] ${this.agentName}: device ${dev.device_token.slice(0, 8)}… gone (410), invalidating`);
           this.registry.invalidate(dev.device_token, dev.bundle_id);
@@ -518,6 +572,7 @@ export class ApnsPusher {
             return await Promise.race([
               this.client.send(device.device_token, payload, device.env, {
                 signal: controller.signal,
+                topic: device.bundle_id,
               }),
               timeout,
             ]);

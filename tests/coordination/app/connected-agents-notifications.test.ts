@@ -167,6 +167,9 @@ test("canonical push registers the authenticated device and wakes on the durable
       "mutable-content": 1,
       sound: "default",
       badge: 2,
+      "thread-id": `ca:cnv_${suffix}:chn_${suffix}`,
+      category: "CA_MESSAGE",
+      "interruption-level": "time-sensitive",
     },
     kind: "connected_agents_message",
     conversationId: `cnv_${suffix}`,
@@ -190,7 +193,6 @@ test("canonical push registers the authenticated device and wakes on the durable
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(deliveryCount, 1, "replayed message evidence must not duplicate notifications");
 });
-
 test("canonical push durably retries and duplicate recovery repairs a missing delivery", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-connected-agents-delivery-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -335,4 +337,88 @@ test("canonical push durably retries and duplicate recovery repairs a missing de
     receipt => receipt.message_id === invalidMessageId,
   )?.state, "invalid");
   assert.equal(registry.lookupConnectedAgentsDevices().length, 0);
+});
+
+test("canonical push does not double-fire iPhone and Mac for the same Message", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-connected-agents-platforms-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const registry = new DeviceRegistry(join(root, "devices.json"));
+  registry.register({
+    device_token: "c".repeat(64),
+    bundle_id: "com.regina6.home23.connectedagents.canary",
+    env: "sandbox",
+    chat_ids: [],
+    platform: "ios",
+    connected_agents_notifications: true,
+    coordination_device_id: `dev_${suffix}`,
+    coordination_session_id: `ses_${suffix}`,
+  });
+  registry.register({
+    device_token: "d".repeat(64),
+    bundle_id: "com.regina6.home23.mac",
+    env: "sandbox",
+    chat_ids: [],
+    platform: "macos",
+    connected_agents_notifications: true,
+    coordination_device_id: "dev_0198d95f-6c00-7000-8000-000000000912",
+    coordination_session_id: "ses_0198d95f-6c00-7000-8000-000000000912",
+  });
+  const deliveries: Array<{ token: string; topic?: string }> = [];
+  const pusher = new ApnsPusher({
+    send: async (token: string, _payload: unknown, _env: unknown, options?: { topic?: string }) => {
+      deliveries.push({ token, topic: options?.topic });
+      return { status: 200 };
+    },
+  } as any, registry, "Home23", {
+    connectedAgentsDeliveryStore: new ConnectedAgentsDeliveryStore(
+      join(root, "connected-agents-deliveries"),
+    ),
+  });
+  await pusher.notifyConnectedAgentsMessage({
+    conversationId: `cnv_${suffix}`,
+    channelId: `chn_${suffix}`,
+    messageId: `msg_${suffix}`,
+    createdAt: "2026-09-10T12:00:00.000Z",
+    displayName: "Forrest",
+  });
+  assert.deepEqual(deliveries, [{
+    token: "c".repeat(64),
+    topic: "com.regina6.home23.connectedagents.canary",
+  }]);
+
+  const macOnlyRoot = mkdtempSync(join(tmpdir(), "home23-connected-agents-mac-only-"));
+  t.after(() => rmSync(macOnlyRoot, { recursive: true, force: true }));
+  const macRegistry = new DeviceRegistry(join(macOnlyRoot, "devices.json"));
+  macRegistry.register({
+    device_token: "e".repeat(64),
+    bundle_id: "com.regina6.home23.mac",
+    env: "sandbox",
+    chat_ids: [],
+    platform: "macos",
+    connected_agents_notifications: true,
+    coordination_device_id: "dev_0198d95f-6c00-7000-8000-000000000912",
+    coordination_session_id: "ses_0198d95f-6c00-7000-8000-000000000912",
+  });
+  const macDeliveries: Array<{ token: string; topic?: string }> = [];
+  const macPusher = new ApnsPusher({
+    send: async (token: string, _payload: unknown, _env: unknown, options?: { topic?: string }) => {
+      macDeliveries.push({ token, topic: options?.topic });
+      return { status: 200 };
+    },
+  } as any, macRegistry, "Home23", {
+    connectedAgentsDeliveryStore: new ConnectedAgentsDeliveryStore(
+      join(macOnlyRoot, "connected-agents-deliveries"),
+    ),
+  });
+  await macPusher.notifyConnectedAgentsMessage({
+    conversationId: `cnv_${suffix}`,
+    channelId: `chn_${suffix}`,
+    messageId: "msg_0198d95f-6c00-7000-8000-000000000916",
+    createdAt: "2026-09-10T12:00:01.000Z",
+    displayName: "Forrest",
+  });
+  assert.deepEqual(macDeliveries, [{
+    token: "e".repeat(64),
+    topic: "com.regina6.home23.mac",
+  }]);
 });

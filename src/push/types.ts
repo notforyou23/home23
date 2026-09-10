@@ -18,6 +18,29 @@ export interface DeviceRegistration {
   coordination_session_id?: string;
 }
 
+/** Native Mac Connected Agents topic. Distinct from the iPhone canary/release topic. */
+export const CONNECTED_AGENTS_MAC_BUNDLE_ID = 'com.regina6.home23.mac';
+
+function connectedAgentsDeviceIsMac(device: DeviceRegistration): boolean {
+  return device.platform === 'macos' || device.platform === 'mac';
+}
+
+function connectedAgentsDeviceIsIOS(device: DeviceRegistration): boolean {
+  return device.platform === 'ios' || device.platform === undefined;
+}
+
+/**
+ * iPhone is the interrupt device when both are current. Mac still receives the
+ * time-sensitive alert when it is the only current Connected Agents platform.
+ */
+export function selectConnectedAgentsAlertDevices(
+  devices: readonly DeviceRegistration[],
+): DeviceRegistration[] {
+  const hasIOS = devices.some(connectedAgentsDeviceIsIOS);
+  if (!hasIOS) return [...devices];
+  return devices.filter((device) => !connectedAgentsDeviceIsMac(device));
+}
+
 /** Durable Query-notebook credential enrollment. Independent of APNs registration. */
 export interface QueryCredentialRegistration {
   installation_id: string;
@@ -58,7 +81,8 @@ export interface ApnsConfig {
   team_id: string;           // 10-char Apple Team ID
   key_id: string;            // 10-char .p8 key ID
   key_path: string;          // absolute path to AuthKey_XXXXXXXXXX.p8
-  bundle_id: string;         // e.g. com.regina6.home23
+  bundle_id: string;         // e.g. com.regina6.home23.connectedagents.canary
+  macos_bundle_id?: string;  // native Mac topic; defaults to CONNECTED_AGENTS_MAC_BUNDLE_ID
   default_env: 'sandbox' | 'production';
 }
 
@@ -95,6 +119,9 @@ export interface AsyncWorkPushPayload {
     alert: { title: string; body: string };
     'mutable-content': 1;
     sound: 'default';
+    'thread-id': string;
+    category: 'CA_WORK';
+    'interruption-level': 'time-sensitive';
   };
   kind: 'async_work';
   chatId: string;   // origin conversation to open on tap
@@ -119,6 +146,9 @@ export interface ConnectedAgentsMessagePushPayload {
     'mutable-content': 1;
     sound: 'default';
     badge?: number;
+    'thread-id': string;
+    category: 'CA_MESSAGE';
+    'interruption-level': 'time-sensitive';
   };
   kind: 'connected_agents_message';
   conversationId: string;
@@ -151,6 +181,9 @@ export function buildConnectedAgentsMessagePayload(input: {
       'mutable-content': 1,
       sound: 'default',
       ...(input.badge === undefined ? {} : { badge: input.badge }),
+      'thread-id': `ca:${input.conversationId}:${input.channelId}`,
+      category: 'CA_MESSAGE',
+      'interruption-level': 'time-sensitive',
     },
     kind: 'connected_agents_message',
     conversationId: input.conversationId,
@@ -188,6 +221,9 @@ export function buildAsyncWorkPayload(input: {
       alert: { title: input.agentName, body: input.body },
       'mutable-content': 1,
       sound: 'default',
+      'thread-id': `work:${input.workId}`,
+      category: 'CA_WORK',
+      'interruption-level': 'time-sensitive',
     },
     kind: 'async_work',
     chatId: input.chatId,
@@ -197,5 +233,83 @@ export function buildAsyncWorkPayload(input: {
   };
 }
 
+/** Wake when a durable Connected Agents Working Thread is already executing. */
+export interface ConnectedAgentsWorkPushPayload {
+  aps: {
+    alert: { title: string; subtitle?: string; body: string };
+    'mutable-content': 1;
+    sound: 'default';
+    'content-available': 1;
+    'thread-id': string;
+    category: 'CA_WORK';
+    'interruption-level': 'time-sensitive';
+  };
+  kind: 'connected_agents_work';
+  workId: string;
+  conversationId: string;
+  channelId: string;
+  status: string;
+  agent?: string;
+  displayName?: string;
+}
+
+const CONNECTED_AGENTS_EXECUTING_WORK_STATES = new Set([
+  'queued',
+  'leased',
+  'running',
+  'cancelling',
+]);
+
+export function isConnectedAgentsExecutingWorkState(status: string): boolean {
+  return CONNECTED_AGENTS_EXECUTING_WORK_STATES.has(status);
+}
+
+export function buildConnectedAgentsWorkPayload(input: {
+  workId: string;
+  conversationId: string;
+  channelId: string;
+  status: string;
+  agent?: string;
+  displayName?: string;
+  conversationTitle?: string;
+}): ConnectedAgentsWorkPushPayload {
+  const title = input.displayName ?? input.agent ?? 'Home23';
+  const subtitle = connectedAgentsAlertSubtitle(title, input.conversationTitle);
+  return {
+    aps: {
+      alert: {
+        title,
+        ...(subtitle === undefined ? {} : { subtitle }),
+        body: connectedAgentsWorkAlertBody(input.status),
+      },
+      'mutable-content': 1,
+      sound: 'default',
+      'content-available': 1,
+      'thread-id': `work:${input.workId}`,
+      category: 'CA_WORK',
+      'interruption-level': 'time-sensitive',
+    },
+    kind: 'connected_agents_work',
+    workId: input.workId,
+    conversationId: input.conversationId,
+    channelId: input.channelId,
+    status: input.status,
+    ...(input.agent === undefined ? {} : { agent: input.agent }),
+    ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+  };
+}
+
+function connectedAgentsWorkAlertBody(status: string): string {
+  switch (status) {
+    case 'queued':
+    case 'leased':
+      return 'Queued';
+    case 'cancelling':
+      return 'Stopping';
+    default:
+      return 'Working';
+  }
+}
+
 export type PushPayload = ChatPushPayload | QueryPushPayload | AsyncWorkPushPayload |
-  ConnectedAgentsMessagePushPayload;
+  ConnectedAgentsMessagePushPayload | ConnectedAgentsWorkPushPayload;

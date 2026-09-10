@@ -549,6 +549,7 @@ export function createCoordinationProcess(
               "SELECT title FROM channels WHERE id = ?",
               channelId,
             )?.title ?? null,
+          macosBundleId: notificationConfiguration!.apns.macos_bundle_id,
         },
       )
     : undefined;

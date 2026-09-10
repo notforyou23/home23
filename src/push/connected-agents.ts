@@ -2,6 +2,7 @@ import type { MessagingActorContext } from '../coordination/channels/index.js';
 import type { CoordinationDeviceNotificationPort } from '../coordination/app/types.js';
 import type { ApnsPusher } from './apns-pusher.js';
 import type { DeviceRegistry } from './device-registry.js';
+import { CONNECTED_AGENTS_MAC_BUNDLE_ID } from './types.js';
 
 const APNS_TOKEN_PATTERN = /^[0-9a-f]{32,256}$/i;
 
@@ -10,10 +11,11 @@ export class ConnectedAgentsNotificationService
 implements CoordinationDeviceNotificationPort {
   constructor(
     private readonly registry: DeviceRegistry,
-    private readonly pusher: Pick<ApnsPusher, 'notifyConnectedAgentsMessage'>,
+    private readonly pusher: Pick<ApnsPusher, 'notifyConnectedAgentsMessage' | 'notifyConnectedAgentsWork'>,
     private readonly bundleId: string,
     private readonly options: {
       conversationTitle?: (channelId: string) => string | null;
+      macosBundleId?: string;
     } = {},
   ) {}
 
@@ -35,7 +37,7 @@ implements CoordinationDeviceNotificationPort {
     const auth = input.context.identity.auth;
     const registration = this.registry.register({
       device_token: input.deviceToken.toLowerCase(),
-      bundle_id: this.bundleId,
+      bundle_id: this.bundleIdFor(input.platform),
       env: input.environment,
       chat_ids: [],
       platform: input.platform,
@@ -63,5 +65,23 @@ implements CoordinationDeviceNotificationPort {
       ...input,
       ...(conversationTitle ? { conversationTitle } : {}),
     });
+  }
+
+  notifyWorkStarted(
+    input: Parameters<ApnsPusher['notifyConnectedAgentsWork']>[0],
+  ): Promise<void> {
+    const conversationTitle = this.options.conversationTitle?.(input.channelId)
+      ?? undefined;
+    return this.pusher.notifyConnectedAgentsWork({
+      ...input,
+      ...(conversationTitle ? { conversationTitle } : {}),
+    });
+  }
+
+  private bundleIdFor(platform: 'ios' | 'macos'): string {
+    if (platform === 'macos') {
+      return this.options.macosBundleId ?? CONNECTED_AGENTS_MAC_BUNDLE_ID;
+    }
+    return this.bundleId;
   }
 }

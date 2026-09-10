@@ -5,6 +5,7 @@ import { DEFAULT_MAXIMUM_ARTIFACT_BYTES } from "../artifacts/index.js";
 import type { CoordinationFeatureFlags } from "./types.js";
 import { disabledCoordinationFeatureFlags } from "./application.js";
 import type { ApnsConfig } from "../../push/types.js";
+import { CONNECTED_AGENTS_MAC_BUNDLE_ID } from "../../push/types.js";
 
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/i;
 
@@ -208,6 +209,8 @@ export function loadCoordinationRuntimeConfig(
     key_id: environment.HOME23_COORDINATION_APNS_KEY_ID ?? "",
     key_path: environment.HOME23_COORDINATION_APNS_KEY_PATH ?? "",
     bundle_id: environment.HOME23_COORDINATION_APNS_BUNDLE_ID ?? "",
+    macos_bundle_id: environment.HOME23_COORDINATION_APNS_MAC_BUNDLE_ID
+      ?? CONNECTED_AGENTS_MAC_BUNDLE_ID,
     default_env: apnsEnvironment as "sandbox" | "production",
   });
   if (pushEnabled && (
@@ -215,6 +218,7 @@ export function loadCoordinationRuntimeConfig(
     !/^[A-Z0-9]{10}$/.test(apns.key_id) ||
     !isAbsolute(apns.key_path) ||
     !/^[A-Za-z0-9][A-Za-z0-9.-]{2,254}$/.test(apns.bundle_id) ||
+    !/^[A-Za-z0-9][A-Za-z0-9.-]{2,254}$/.test(apns.macos_bundle_id) ||
     (apnsEnvironment !== "sandbox" && apnsEnvironment !== "production")
   )) {
     throw new Error("complete Connected Agents APNs configuration is required when push is enabled");

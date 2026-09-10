@@ -55,7 +55,7 @@ export class ApnsClient {
     deviceToken: string,
     payload: PushPayload,
     env?: 'sandbox' | 'production',
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; topic?: string } = {},
   ): Promise<{ status: number; apnsId?: string; reason?: string }> {
     const targetEnv = env ?? this.config.default_env;
     const host = this.hostFor(targetEnv);
@@ -69,7 +69,7 @@ export class ApnsClient {
         ':path': `/3/device/${deviceToken}`,
         ':authority': new URL(host).host,
         'authorization': `bearer ${this.getProviderToken()}`,
-        'apns-topic': this.config.bundle_id,
+        'apns-topic': options.topic ?? this.config.bundle_id,
         'apns-push-type': 'alert',
         'apns-priority': '10',
         'content-type': 'application/json',

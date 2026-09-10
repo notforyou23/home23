@@ -101,6 +101,14 @@ export interface CoordinationDeviceNotificationPort {
     preview?: string | null;
     hasAttachments?: boolean;
   }): Promise<void>;
+  notifyWorkStarted(input: {
+    workId: string;
+    conversationId: string;
+    channelId: string;
+    status: string;
+    agent?: string;
+    displayName?: string;
+  }): Promise<void>;
 }
 
 /**
