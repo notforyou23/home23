@@ -1,0 +1,29 @@
+{
+  "schema": "home23.embedder.health.v1",
+  "note": "Frozen health *fields*. HTTP path is Stage 3 unknown. Process name home23-embedder is not wired. /api/tags is never ready.",
+  "processNameDocumentedOnly": "home23-embedder",
+  "httpPath": null,
+  "notReady": ["/api/tags", "pm2-online"],
+  "requiredFields": ["recipeId", "dimension", "artifactDigests", "warm"],
+  "optionalFields": ["profileId", "protocols", "pid", "lastError"],
+  "rules": {
+    "recipeId": "sha256 hex of canonical fingerprint JSON (64 lowercase hex chars)",
+    "dimension": 768,
+    "artifactDigests": "object of path → sha256 hex; must match the loaded recipe pin",
+    "warm": "true only after real inference produced a finite 768-d vector",
+    "lastError": "no document or conversation text"
+  },
+  "fixtureReadyExample": {
+    "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+    "profileId": "owned-nomic-v1.5-onnx-fp32-mean-noprefix",
+    "dimension": 768,
+    "artifactDigests": {
+      "onnx/model.onnx": "147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965"
+    },
+    "warm": true,
+    "protocols": ["ollama-native", "openai-compatible"]
+  },
+  "fixtureTagsIsNotReady": {
+    "models": [{ "name": "nomic-embed-text" }]
+  }
+}

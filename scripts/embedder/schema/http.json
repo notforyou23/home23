@@ -1,0 +1,37 @@
+{
+  "schema": "home23.embedder.http.v1",
+  "note": "Both shapes the owned service must speak. No default endpoint flip. serve.mjs is Stage 3.",
+  "absenceCodes": [
+    "too_short",
+    "timeout",
+    "unavailable",
+    "dimension_mismatch",
+    "bad_artifact",
+    "cancelled",
+    "recipe_mismatch"
+  ],
+  "protocols": {
+    "ollamaNative": {
+      "method": "POST",
+      "path": "/api/embeddings",
+      "request": { "model": "string", "prompt": "string" },
+      "response": { "embedding": "number[768]" },
+      "fixtures": {
+        "request": { "model": "nomic-embed-text", "prompt": "The library opens at nine." },
+        "response": { "embeddingLength": 768 }
+      }
+    },
+    "openaiCompatible": {
+      "method": "POST",
+      "path": "/v1/embeddings",
+      "request": { "model": "string", "input": "string | string[]" },
+      "response": { "data": [{ "embedding": "number[768]", "index": "integer" }] },
+      "batchMax": 2048,
+      "fixtures": {
+        "request": { "model": "nomic-embed-text", "input": ["The library opens at nine.", "Glass jars go in the blue bin."] },
+        "responseIndexes": [0, 1]
+      }
+    }
+  },
+  "modelAliasIsNotCompatibility": true
+}
