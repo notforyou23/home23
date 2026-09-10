@@ -5,10 +5,13 @@ const assert = require('node:assert/strict');
 const {
   LEGACY_EMBEDDING_PROFILE,
   OWNED_EMBEDDING_PROFILE,
+  LEGACY_EMBEDDING_RECIPE_ID,
+  OWNED_EMBEDDING_RECIPE_ID,
   SEED_TRUNCATION_CHARS,
   MEMORY_TRUNCATION_CHARS,
   TYPED_ABSENCE,
   fingerprintRecipe,
+  canonicalizeRecipeId,
   recipesCompatibleForCompare,
   recipesAllowAnnReuse,
   resolveAttentionPolicy,
@@ -80,4 +83,17 @@ test('missing recipe resolves to lived legacy attention, not owned mute', () => 
   const policy = resolveAttentionPolicy(undefined);
   assert.equal(policy.canSemanticGate, true);
   assert.equal(policy.matchFloor, 0.6);
+});
+
+test('profile name and frozen hash are aliases; service recipeId is the hash', () => {
+  assert.equal(canonicalizeRecipeId(OWNED_EMBEDDING_RECIPE_ID), OWNED_EMBEDDING_PROFILE);
+  assert.equal(canonicalizeRecipeId(LEGACY_EMBEDDING_RECIPE_ID), LEGACY_EMBEDDING_PROFILE);
+  assert.equal(recipesCompatibleForCompare(OWNED_EMBEDDING_PROFILE, OWNED_EMBEDDING_RECIPE_ID), true);
+  assert.equal(recipesCompatibleForCompare(LEGACY_EMBEDDING_RECIPE_ID, OWNED_EMBEDDING_RECIPE_ID), false);
+  assert.equal(resolveAttentionPolicy(OWNED_EMBEDDING_RECIPE_ID).canSemanticGate, false);
+  assert.equal(resolveAttentionPolicy(OWNED_EMBEDDING_RECIPE_ID).matchFloor, null);
+  assert.equal(recipesAllowAnnReuse({
+    queryRecipeId: OWNED_EMBEDDING_RECIPE_ID,
+    indexRecipeId: OWNED_EMBEDDING_PROFILE,
+  }), true);
 });

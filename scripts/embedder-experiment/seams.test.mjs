@@ -95,7 +95,7 @@ test('both HTTP shapes accept fixtures and reject bad vectors', () => {
 });
 
 test('health fields require warm inference; /api/tags is not ready', () => {
-  assert.equal(health.httpPath, null);
+  assert.equal(health.httpPath, '/ready');
   assert.equal(health.processNameDocumentedOnly, 'home23-embedder');
   const known = Object.values(recipes.profiles).map((p) => p.recipeId);
   assert.equal(validateHealthDocument(health.fixtureReadyExample, { knownRecipeIds: known }).ok, true);
@@ -111,5 +111,5 @@ test('schema tests are fixtures; Stage 1 evidence remains real inference', () =>
   assert.equal(stage1Summary.realInference.ollama, true);
   assert.equal(stage1Summary.realInference.onnx, true);
   assert.equal(stage1Summary.comparisons['onnx-fp32-noprefix'].projectionEqual4dp, '0/25');
-  assert.equal(existsSync(join(here, '../embedder/serve.mjs')), false);
+  assert.equal(existsSync(join(here, '../embedder/serve.mjs')), true);
 });

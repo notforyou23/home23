@@ -1,8 +1,8 @@
 {
   "schema": "home23.embedder.health.v1",
-  "note": "Frozen health *fields*. HTTP path is Stage 3 unknown. Process name home23-embedder is not wired. /api/tags is never ready.",
+  "note": "Frozen health fields and Stage 3 HTTP path GET /ready. Process name home23-embedder is documented only; Host is not wired. /api/tags is never ready.",
   "processNameDocumentedOnly": "home23-embedder",
-  "httpPath": null,
+  "httpPath": "/ready",
   "notReady": ["/api/tags", "pm2-online"],
   "requiredFields": ["recipeId", "dimension", "artifactDigests", "warm"],
   "optionalFields": ["profileId", "protocols", "pid", "lastError"],

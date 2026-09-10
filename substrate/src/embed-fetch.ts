@@ -19,12 +19,26 @@ import { execFileSync } from 'node:child_process';
 
 export const SEED_EMBED_ENDPOINT = process.env['SEED_EMBED_ENDPOINT'] ?? 'http://127.0.0.1:11434/api/embeddings';
 export const SEED_EMBED_MODEL = process.env['SEED_EMBED_MODEL'] ?? 'nomic-embed-text';
+const KNOWN_SEED_EMBED_MODELS = new Set([
+  'nomic-embed-text',
+  'nomic-embed-text:latest',
+  'legacy-ollama-nomic-unprefixed',
+  'owned-nomic-v1.5-onnx-fp32-mean-noprefix',
+  '5128b29c886857aeb89b148d2d9f2edf2c20f63de15a764342c2a18da640f71a',
+  '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9',
+]);
+
+function seedEmbedModelAllowed(model: string): boolean {
+  if (!/^(nomic-embed|legacy-ollama|owned-nomic)/.test(model) && !/^[0-9a-f]{64}$/.test(model)) return true;
+  return KNOWN_SEED_EMBED_MODELS.has(model);
+}
 
 /** Raw embedding at the declared dimensionality, or null (degraded-honest —
  * absence over fabrication; callers project or skip). */
 export function fetchRawEmbedding(text: string, expectedDim: number, timeoutSeconds = 2): number[] | null {
   const trimmed = text.trim();
   if (trimmed.length === 0) return null;
+  if (!seedEmbedModelAllowed(SEED_EMBED_MODEL)) return null;
   try {
     const body = JSON.stringify({ model: SEED_EMBED_MODEL, prompt: trimmed.slice(0, 1000) });
     const raw = execFileSync('curl', ['-s', '-m', String(timeoutSeconds), SEED_EMBED_ENDPOINT, '-d', body], {

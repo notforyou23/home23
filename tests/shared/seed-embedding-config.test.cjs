@@ -15,3 +15,16 @@ test('explicit Seed contact endpoint is shared without provider credentials', ()
     { endpoint: 'http://127.0.0.1/api/embeddings', apiKey: 'secret' },
   ]) assert.throws(() => resolveSeedEmbeddingEnv({ substrate: { embedding } }));
 });
+
+test('Seed model may be legacy alias, owned profile name, or frozen hash; unknown nomic is rejected', () => {
+  const endpoint = 'http://127.0.0.1:28765/api/embeddings';
+  assert.equal(resolveSeedEmbeddingEnv({
+    substrate: { embedding: { endpoint, model: 'owned-nomic-v1.5-onnx-fp32-mean-noprefix' } },
+  }).SEED_EMBED_MODEL, 'owned-nomic-v1.5-onnx-fp32-mean-noprefix');
+  assert.equal(resolveSeedEmbeddingEnv({
+    substrate: { embedding: { endpoint, model: '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9' } },
+  }).SEED_EMBED_MODEL, '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9');
+  assert.throws(() => resolveSeedEmbeddingEnv({
+    substrate: { embedding: { endpoint, model: 'nomic-embed-text-v1.5' } },
+  }));
+});

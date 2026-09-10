@@ -6,6 +6,22 @@ const { createHash } = require('node:crypto');
 const LEGACY_EMBEDDING_PROFILE = 'legacy-ollama-nomic-unprefixed';
 /** Candidate owned recipe. Distinct space; matchFloor stays null. */
 const OWNED_EMBEDDING_PROFILE = 'owned-nomic-v1.5-onnx-fp32-mean-noprefix';
+/** Stage 3 health.recipeId values (Encoder seams hashes). */
+const LEGACY_EMBEDDING_RECIPE_ID = '5128b29c886857aeb89b148d2d9f2edf2c20f63de15a764342c2a18da640f71a';
+const OWNED_EMBEDDING_RECIPE_ID = '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9';
+
+const RECIPE_CANON = Object.freeze({
+  [LEGACY_EMBEDDING_PROFILE]: LEGACY_EMBEDDING_PROFILE,
+  [LEGACY_EMBEDDING_RECIPE_ID]: LEGACY_EMBEDDING_PROFILE,
+  [OWNED_EMBEDDING_PROFILE]: OWNED_EMBEDDING_PROFILE,
+  [OWNED_EMBEDDING_RECIPE_ID]: OWNED_EMBEDDING_PROFILE,
+});
+
+/** Map a profile name or frozen hash to the profile name. Unknown ids stay as-is. */
+function canonicalizeRecipeId(recipeId) {
+  if (typeof recipeId !== 'string' || !recipeId.trim()) return null;
+  return RECIPE_CANON[recipeId.trim()] || recipeId.trim();
+}
 
 const SEED_TRUNCATION_CHARS = 1000;
 const MEMORY_TRUNCATION_CHARS = 2000;
@@ -64,14 +80,15 @@ function fingerprintRecipe(spec) {
 }
 
 function isOwnedRecipe(recipeId) {
-  return recipeId === OWNED_EMBEDDING_PROFILE;
+  return canonicalizeRecipeId(recipeId) === OWNED_EMBEDDING_PROFILE;
 }
 
 function resolveAttentionPolicy(recipeId) {
-  if (recipeId === OWNED_EMBEDDING_PROFILE) return POLICIES[OWNED_EMBEDDING_PROFILE];
-  if (recipeId && recipeId !== LEGACY_EMBEDDING_PROFILE) {
+  const canon = canonicalizeRecipeId(recipeId);
+  if (canon === OWNED_EMBEDDING_PROFILE) return POLICIES[OWNED_EMBEDDING_PROFILE];
+  if (canon && canon !== LEGACY_EMBEDDING_PROFILE) {
     return Object.freeze({
-      profileId: recipeId,
+      profileId: canon,
       matchFloor: null,
       matchMargin: null,
       minMatchableAlnum: 20,
@@ -83,8 +100,8 @@ function resolveAttentionPolicy(recipeId) {
 }
 
 function recipesCompatibleForCompare(left, right) {
-  const a = left || null;
-  const b = right || null;
+  const a = canonicalizeRecipeId(left);
+  const b = canonicalizeRecipeId(right);
   if (a === b) return true;
   if (isOwnedRecipe(a) || isOwnedRecipe(b)) return false;
   if (a && b) return a === b;
@@ -93,8 +110,8 @@ function recipesCompatibleForCompare(left, right) {
 }
 
 function recipesAllowAnnReuse({ queryRecipeId = null, indexRecipeId = null } = {}) {
-  const query = queryRecipeId || null;
-  const index = indexRecipeId || null;
+  const query = canonicalizeRecipeId(queryRecipeId);
+  const index = canonicalizeRecipeId(indexRecipeId);
   if (isOwnedRecipe(query) || (query && query !== LEGACY_EMBEDDING_PROFILE)) {
     return index === query;
   }
@@ -116,10 +133,13 @@ function sanitizeRecipeId(raw) {
 module.exports = {
   LEGACY_EMBEDDING_PROFILE,
   OWNED_EMBEDDING_PROFILE,
+  LEGACY_EMBEDDING_RECIPE_ID,
+  OWNED_EMBEDDING_RECIPE_ID,
   SEED_TRUNCATION_CHARS,
   MEMORY_TRUNCATION_CHARS,
   TYPED_ABSENCE,
   fingerprintRecipe,
+  canonicalizeRecipeId,
   isOwnedRecipe,
   resolveAttentionPolicy,
   recipesCompatibleForCompare,

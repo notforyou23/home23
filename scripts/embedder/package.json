@@ -1,0 +1,16 @@
+{
+  "name": "home23-embedder",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "description": "Owned recipe inference service. Not a product default. Not an Ollama drop-in.",
+  "scripts": {
+    "start": "node serve.mjs",
+    "test": "node --test serve.test.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.7.6"
+  }
+}
