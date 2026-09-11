@@ -1,8 +1,10 @@
 # Owned embedder — consolidated candidate status
 
 Date: 2026-09-11  
-This board identifies revisions and evidence. It does not authorize push,
-install, deploy, Stage 6, or measured attention calibration.
+This board identifies revisions and evidence. The current lead is Codex, which
+has taken over local correction and consolidation at the owner’s request.
+Publication, installation and live transitions remain separate actions; this
+record does not grant or narrow the owner’s authorization.
 
 ## Revisions
 
@@ -12,7 +14,8 @@ install, deploy, Stage 6, or measured attention calibration.
 | Linux **installed** artifact | same | `be6254879fc8c22a6265e6010ac0284f70f4329b` | Grok Bot Host payload / home. Do not replace. |
 | Source follow-up (outage shape) | same | `1905b5798b6d1a49252f715d9a5cd55c6697b054` | Includes `309f565f`. Grok Bot Node 22 reported pass. Not installed. |
 | Source follow-up (scan budget) | same | `5e567a8f0bd0cceaf1e40f5edae81c69f844aef1` | Bounded context-outage scan. Grok Bot 65/2. Not installed. |
-| Source follow-up (cancel + wording) | same | `2ce5bda5b87f17d73bb9f1a5129fa143e363bc32` | Per-call abort closes a dup’d read fd. Not installed. |
+| Source follow-up (cancel + wording) | same | `2ce5bda5b87f17d73bb9f1a5129fa143e363bc32` | Historical unsafe forced-close implementation; corrected in the current candidate. Per-call signal forwarding retained. Not installed. |
+| Descriptor ownership correction | same | `baa7e393` | Retains per-call cancellation; removes forced/double closure. 158 local Node 22 tests pass; not installed. |
 | Implementation inside `be625487` | same | `112a06e050b0d5561c8bcd35fa00345befeb9f75` | Linux package path, structured Host errors, fixtures |
 | Download resume | same | `7066b9ad` | Keep `.part` on abort |
 | Stop names | same | `71ee0ff1` | Source only on Mac TEST packaged copies |
@@ -116,19 +119,55 @@ At `5e567a8f`, `iterateNodes({ signal })` ignored the per-call signal.
 waits for an in-flight positioned read, and the FileHandle fd was shared
 with borrowed pins.
 
-Follow-up `2ce5bda5` on this branch:
+Follow-up `2ce5bda5` forwarded the per-call signal but introduced forced
+numeric-fd closure alongside FileHandle closure. Independent review reproduced
+a descriptor reuse bug: the later FileHandle close could close an unrelated file.
+Its claim that closing an fd interrupts Linux kernel I/O was also incorrect.
 
-- Forwards the per-call signal (composed with any open-time signal).
-- Dups the FileHandle fd for the stream. Abort closes that dup, then
-  destroys the streams, then the same generator `finally` releases owned
-  handles. Borrowed pin handles stay with their owner.
-- Does **not** `Promise.race` a second waiter that would abandon the scan.
+The September 11 local correction keeps per-call signal composition and returns
+to the existing single-owner FileHandle pattern. Abort destroys the streams;
+cleanup waits for outstanding reads, then closes owned handles exactly once.
+Borrowed pins stay open for their caller. There is no `/dev/fd` reopening,
+forced `closeSync`, suppressed double-close, or abandoned scan.
 
-**Effective guarantee:** caller abort unblocks a pending positioned disk
-read and then releases stream/owned-handle resources. It does not preempt
-CPU already spent inflating the current gzip chunk. The 1500 ms outage
-deadline still does not abort the signal; it only stops after the next
-yield.
+**Effective guarantee:** cancellation stops consumption and propagates its
+reason; resource cleanup waits for I/O to quiesce. Neither a caller deadline
+nor the 1500 ms cooperative scan check is a hard kernel-I/O completion limit.
+An OS read or current inflate work may outlast it. That limitation is retained
+explicitly rather than traded for unsafe descriptor reuse.
+
+Regression tests deterministically cover an outstanding read during abort and
+an unrelated descriptor taking the old number. Both failed with `EBADF` against
+`c738ddc5` and pass after correction. Existing per-call cancellation and borrowed
+pin tests remain part of the verification.
+
+## Current local verification and ownership
+
+Codex completed the descriptor correction in `baa7e393` and owns consolidation.
+The correction returns to the existing non-closing stream adapter; FileHandles
+close only after stream cleanup. Current source has no forced `/dev/fd` reopen.
+
+On macOS with Node **22.19.0** and matching native dependencies:
+
+| Coverage | Result |
+|---|---|
+| Memory-source contracts, reader, JSONL and pin suites | **86 pass / 0 fail** |
+| Memory-search, embedding URL and owned ecosystem suites | **72 pass / 0 fail** |
+| Newly added pending-read and descriptor-reuse regressions | Failed on the prior implementation, pass after correction |
+| Documented shell blocks | Syntax checked; Linux rebuild instructions not executed on this Mac |
+
+The initial local reader run picked up a Node 25 SQLite binary from parent
+source dependencies. The original quota-publication assertion then failed before
+validating source contents. With matching Node 22 SQLite, the **unchanged** quota
+assertion and complete reader suite pass. No product or test weakening was kept.
+The local native ANN-worker cases also pass; this is not a Linux rebuild receipt.
+Private logs are retained in the development verification area under
+`owned-embedder-review-20260911`.
+
+The candidate follow-up consists only of the correction and these documentation
+updates; integration preserves the prior unrelated dirty work. The maintained
+product branch, installed Linux `be625487` and Mac test payload are not advanced by
+this source correction. Existing archives retain their original identities.
 
 ## Remaining gaps
 
@@ -155,9 +194,16 @@ blocker. See `2026-09-11-owned-embedder-owned-attention-calibration.md`.
 Ollama. Chat OAuth out of Linux scope. `4000` / cooperative `1500ms` are a
 responsiveness policy, not a measured large-home calibration.
 
-## Grok Bot next (source only)
+## Consolidation and next verification
 
-Rebuild `hnswlib-node` in `$H23_ROOT/source` with private Node 22 and the
-candidate lockfile, then repeat only the two isolated ANN-worker tests.
-Procedure: `2026-09-11-owned-embedder-source-node22-hnswlib.md`.
-Do not launch another installation or a broad performance campaign.
+The lead owns local correction, evidence reconciliation and return to the
+candidate branch. Do not ask the owner to relay each intermediate fix. Linux
+reports above remain reports at their exact revisions, not proof of the current
+source or a new installation. The source-only addon procedure now pins PATH as
+well as the executable and checks the installed version against the lockfile.
+See `2026-09-11-owned-embedder-source-node22-hnswlib.md`.
+
+After local checks and integration, retain one final candidate identity for the
+next independent review or exact-artifact trial. Do not rerun installation merely
+to obtain a newer receipt, and do not treat local Mac native tests as a Linux
+addon-rebuild receipt.

@@ -3,7 +3,8 @@
 Date: 2026-09-11  
 Branch: `home23-agent/owned-embedder-stage5-verify`  
 Follows: `309f565f` / `1905b579` (outage keyword fallback), then `5e567a8f`
-(visit/deadline budgets). Caller-abort fd follow-up: `2ce5bda5`.
+(visit/deadline budgets). Per-call signal forwarding from `2ce5bda5` is retained;
+its forced descriptor closure was removed by ownership correction `baa7e393`.
 Does **not** replace Linux install revision `be625487` or rewrite that transfer.
 
 Measured attention calibration and Stage 6 remain unfinished / NO-GO.
@@ -18,7 +19,7 @@ Measured attention calibration and Stage 6 remain unfinished / NO-GO.
 | `searchContext` HTTP | `statusReadMs ?? 10_000` | Aborts the request; server cancels. |
 | `/api/memory/search` | `requestAbortController` on client close | Cancel, not a degraded result. |
 | `throwIfAborted` per node | Cooperative after each yield | Kept. Budget exhaustion is separate. |
-| Caller abort during a pending read | `readJsonl` abort listener closes a dup'd stream fd, then `destroy()` | Unblocks an in-flight positioned read. Does not `Promise.race` an abandoned scan. Already-buffered gzip inflate can still finish the current chunk. |
+| Caller abort during a pending read | `readJsonl` destroys streams and awaits their closure before the owning FileHandle closes | Cooperative: an outstanding OS read may still finish. Borrowed pin handles remain open; no numeric-fd forced close or abandoned scan. |
 
 `309f565f` made context-outage use the same two-pass full iterate as default
 search. Visit count on a 301-node on-disk fixture was **602** (two full
@@ -54,10 +55,10 @@ Production context-outage uses the defaults above.
 The 1500 ms figure is **not** a hard mid-await ceiling. `consumeLogicalVisit`
 samples `performance.now()` only after `iterateNodes` yields a node. A slow
 gzip/jsonl chunk can overrun that mark before the next check. Caller abort is
-a different path: it is wired into `readJsonl`, which closes the stream’s
-dup’d fd and then destroys the streams so the same generator/finally releases
-handles. That unblocks a pending positioned read. It does not invent a
-`Promise.race` that leaves the scan running.
+a different path: it is wired into `readJsonl`, which destroys streams and
+awaits their closure before releasing owned handles in the generator finally.
+It prevents further consumption but does not guarantee interrupting pending
+kernel I/O. There is no `Promise.race` that abandons a running scan.
 
 ## Verification (not wall-clock benchmarks)
 
@@ -84,6 +85,8 @@ verification.
 `4000` visits and the cooperative 1500 ms check are a responsiveness policy,
 not a measured calibration against a live large home. A pathological record
 can still spend most of that window on one pending inflate/read before the
-next yield. Caller abort can interrupt a pending positioned read; it cannot
-preempt CPU already spent inflating the current chunk. Large-brain
-wall-clock remains unproven.
+next yield. Caller abort is also cooperative: pending kernel I/O and CPU
+already spent inflating the current chunk are not forcibly interrupted.
+Large-brain wall-clock remains unproven. A hard request/cleanup deadline would
+require a separately reviewed isolation mechanism, not closing an fd while
+its FileHandle and a read still own it.
