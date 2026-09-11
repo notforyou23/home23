@@ -84,4 +84,6 @@ Do **not** repeat package / create / interrupt / ingest / first retrieve. Those 
 
 ### Follow-up on this branch (outage shape + Ollama literal)
 
-Later commits on this branch may fix the outage response shape and owned-empty-URL fail-closed. They do **not** replace `be625487` as the successful Linux installation revision. Grok Bot should repeat only the scoped checks in the handoff follow-up, not the whole trial.
+Correction commit: **`309f565fe33492aa05706bee3db7c94df76f4ca7`**.  
+It does **not** replace `be625487` as the successful Linux installation revision.
+Grok Bot should repeat only the scoped checks in the handoff follow-up, not the whole trial.

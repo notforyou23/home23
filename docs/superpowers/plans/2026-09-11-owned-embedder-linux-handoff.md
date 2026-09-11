@@ -503,7 +503,8 @@ destroyed.
 
 Repeat only:
 
-1. **Source unit tests** on the follow-up SHA (not `be625487`):
+1. **Source unit tests** on follow-up `309f565fe33492aa05706bee3db7c94df76f4ca7`
+   (not the install revision `be625487`):
 
    ```bash
    node --test --test-concurrency=1 \
