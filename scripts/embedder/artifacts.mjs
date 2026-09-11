@@ -15,10 +15,10 @@ export function modelRoot(cacheDir) {
   return join(cacheDir, HF_ID);
 }
 
-export function verifyArtifacts(cacheDir) {
+export function verifyArtifacts(cacheDir, artifacts = OWNED_ARTIFACTS) {
   const root = modelRoot(cacheDir);
   const checked = {};
-  for (const [rel, expected] of Object.entries(OWNED_ARTIFACTS)) {
+  for (const [rel, expected] of Object.entries(artifacts)) {
     const path = join(root, rel);
     if (!existsSync(path)) return { ok: false, code: 'bad_artifact', missing: rel };
     const actual = sha256File(path);
@@ -73,7 +73,12 @@ export async function downloadFile(url, dest, {
   return dest;
 }
 
-export async function ensureArtifacts(cacheDir, { fetchIfMissing = true, signal } = {}) {
+export async function ensureArtifacts(cacheDir, {
+  fetchIfMissing = true,
+  signal,
+  fetchImpl,
+  artifacts = OWNED_ARTIFACTS,
+} = {}) {
   if (typeof cacheDir !== 'string' || !cacheDir.trim()) {
     throw new Error('HOME23_EMBEDDER_CACHE is required and must be an explicit directory');
   }
@@ -84,21 +89,29 @@ export async function ensureArtifacts(cacheDir, { fetchIfMissing = true, signal 
     throw new Error('HOME23_EMBEDDER_CACHE must not use release/home23');
   }
   mkdirSync(cacheDir, { recursive: true });
-  let verified = verifyArtifacts(cacheDir);
+  let verified = verifyArtifacts(cacheDir, artifacts);
   if (verified.ok) return verified;
   if (!fetchIfMissing) return verified;
   const root = modelRoot(cacheDir);
-  for (const rel of Object.keys(OWNED_ARTIFACTS)) {
+  for (const rel of Object.keys(artifacts)) {
     const dest = join(root, rel);
-    if (existsSync(dest) && sha256File(dest) === OWNED_ARTIFACTS[rel]) continue;
+    if (existsSync(dest) && sha256File(dest) === artifacts[rel]) continue;
     const url = `https://huggingface.co/${HF_ID}/resolve/main/${rel}`;
     try {
-      await downloadFile(url, dest, { expectedSha: OWNED_ARTIFACTS[rel], signal });
+      await downloadFile(url, dest, {
+        expectedSha: artifacts[rel],
+        signal,
+        ...(fetchImpl ? { fetchImpl } : {}),
+      });
     } catch (error) {
-      try { rmSync(`${dest}.part`, { force: true }); } catch { /* ignore */ }
-      return { ok: false, code: error.message === 'bad_artifact' ? 'bad_artifact' : 'unavailable', reason: String(error.message || error) };
+      const code = error.message === 'bad_artifact' ? 'bad_artifact' : 'unavailable';
+      // Corrupt complete bytes cannot be resumed. Abort / network leave .part for Range.
+      if (code === 'bad_artifact') {
+        try { rmSync(`${dest}.part`, { force: true }); } catch { /* ignore */ }
+      }
+      return { ok: false, code, reason: String(error.message || error) };
     }
   }
-  verified = verifyArtifacts(cacheDir);
+  verified = verifyArtifacts(cacheDir, artifacts);
   return verified.ok ? verified : { ok: false, code: 'bad_artifact' };
 }
