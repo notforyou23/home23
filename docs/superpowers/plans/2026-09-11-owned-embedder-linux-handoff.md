@@ -49,12 +49,20 @@ Do **not** change `/usr/bin/node` (currently 20.19). Do **not** `nvm use`,
 
 ### Isolated layout (empty until this lands)
 
+Use these names. Do **not** assign the product home to the shell's `HOME`.
+`host.mjs` already sets process `HOME` to `<HOME_ROOT>/runtime/user`.
+
+```bash
+H23_ROOT=/home/box/home23-owned-embedder-test
+HOME_ROOT="$H23_ROOT/home"    # Host install root — never export HOME=$HOME_ROOT
+```
+
 ```text
-/home/box/home23-owned-embedder-test/
+$H23_ROOT/
   source/          # git checkout of candidateSha only
   toolchain/       # official Node 22.19.0 linux-x64 only
   payload/         # output of package.mjs (do not pre-create)
-  home/            # Host install + one new home
+  home/            # HOME_ROOT
   import/          # two public corpus files
   receipts/        # redacted JSON + command transcripts
   package-cache/   # npm/node-gyp cache for the payload build
@@ -70,16 +78,17 @@ Add nothing that mutates Scout.
 ### Official Node 22 — candidate toolchain only
 
 ```bash
-ROOT=/home/box/home23-owned-embedder-test
-mkdir -p "$ROOT/toolchain" "$ROOT/import" "$ROOT/receipts" "$ROOT/package-cache"
-cd "$ROOT/toolchain"
+H23_ROOT=/home/box/home23-owned-embedder-test
+HOME_ROOT="$H23_ROOT/home"
+mkdir -p "$H23_ROOT/toolchain" "$H23_ROOT/import" "$H23_ROOT/receipts" "$H23_ROOT/package-cache"
+cd "$H23_ROOT/toolchain"
 curl -fsSLo node-v22.19.0-linux-x64.tar.xz \
   https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-x64.tar.xz
 echo 'c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2  node-v22.19.0-linux-x64.tar.xz' \
   | sha256sum -c -
 tar -xJf node-v22.19.0-linux-x64.tar.xz
-test -f "$ROOT/toolchain/node-v22.19.0-linux-x64/LICENSE"
-"$ROOT/toolchain/node-v22.19.0-linux-x64/bin/node" -p 'process.version + " " + process.platform + " " + process.arch'
+test -f "$H23_ROOT/toolchain/node-v22.19.0-linux-x64/LICENSE"
+"$H23_ROOT/toolchain/node-v22.19.0-linux-x64/bin/node" -p 'process.version + " " + process.platform + " " + process.arch'
 # expect: v22.19.0 linux x64
 /usr/bin/node -p process.version
 # still  v20.19.x  — fail the gate if this changed
@@ -88,13 +97,13 @@ test -f "$ROOT/toolchain/node-v22.19.0-linux-x64/LICENSE"
 ### Materialize the exact source
 
 ```bash
-# After the bundle is on the box (see Transfer):
-git clone /path/to/home23-owned-embedder-<candidateSha>.bundle \
-  /home/box/home23-owned-embedder-test/source
-cd /home/box/home23-owned-embedder-test/source
-git switch --detach <candidateSha>
-test "$(git rev-parse HEAD)" = "<candidateSha>"
-test -z "$(git status --porcelain --untracked-files=no)"
+H23_ROOT=/home/box/home23-owned-embedder-test
+# After the transfer archive is unpacked (bundle sits beside TRANSFER.md):
+git clone /path/to/unpacked/home23-owned-embedder-<candidateSha>.bundle \
+  "$H23_ROOT/source"
+git -C "$H23_ROOT/source" switch --detach <candidateSha>
+test "$(git -C "$H23_ROOT/source" rev-parse HEAD)" = "<candidateSha>"
+test -z "$(git -C "$H23_ROOT/source" status --porcelain --untracked-files=no)"
 ```
 
 ### Build the Linux Host payload
@@ -104,18 +113,19 @@ test -z "$(git status --porcelain --untracked-files=no)"
 the box Node 20 if you want; the **payload binary** must be the toolchain Node 22.
 
 ```bash
-ROOT=/home/box/home23-owned-embedder-test
-NODE22="$ROOT/toolchain/node-v22.19.0-linux-x64"
+H23_ROOT=/home/box/home23-owned-embedder-test
+HOME_ROOT="$H23_ROOT/home"
+NODE22="$H23_ROOT/toolchain/node-v22.19.0-linux-x64"
 # payload directory must not exist yet
 cd /tmp
 env -u PM2_HOME -u PM2_DAEMON_RPC_PORT -u PM2_DAEMON_PUB_PORT \
-  /usr/bin/node "$ROOT/source/scripts/product/package.mjs" \
-  --source "$ROOT/source" \
-  --commit "$(git -C "$ROOT/source" rev-parse HEAD)" \
-  --output "$ROOT/payload" \
+  /usr/bin/node "$H23_ROOT/source/scripts/product/package.mjs" \
+  --source "$H23_ROOT/source" \
+  --commit "$(git -C "$H23_ROOT/source" rev-parse HEAD)" \
+  --output "$H23_ROOT/payload" \
   --node "$NODE22/bin/node" \
   --npm "$NODE22/lib/node_modules/npm/bin/npm-cli.js" \
-  --cache "$ROOT/package-cache"
+  --cache "$H23_ROOT/package-cache"
 ```
 
 Expect JSON `status: "packaged"`, `platform: "linux"`, `arch: "x64"`,
@@ -130,17 +140,17 @@ All Host commands from `/tmp` with PM2 vars unset. Never `pm2 stop all`.
 Never use Scout's `~/.pm2`.
 
 ```bash
-ROOT=/home/box/home23-owned-embedder-test
-HOME_ROOT="$ROOT/home"
+H23_ROOT=/home/box/home23-owned-embedder-test
+HOME_ROOT="$H23_ROOT/home"
 HOST="$HOME_ROOT/bin/node $HOME_ROOT/app/scripts/product/host.mjs"
-# after install, host.mjs lives in the home; first install uses the payload copy:
-PAY_HOST="$ROOT/payload/bin/node $ROOT/payload/app/scripts/product/host.mjs"
+# after install, host.mjs lives in HOME_ROOT; first install uses the payload copy:
+PAY_HOST="$H23_ROOT/payload/bin/node $H23_ROOT/payload/app/scripts/product/host.mjs"
 
 cd /tmp
 env -u PM2_HOME -u PM2_DAEMON_RPC_PORT -u PM2_DAEMON_PUB_PORT \
-  $PAY_HOST install --home "$HOME_ROOT" --payload "$ROOT/payload"
+  $PAY_HOST install --home "$HOME_ROOT" --payload "$H23_ROOT/payload"
 
-cp "$ROOT/source/scripts/embedder/fixtures/public-corpus/"*.txt "$ROOT/import/"
+cp "$H23_ROOT/source/scripts/embedder/fixtures/public-corpus/"*.txt "$H23_ROOT/import/"
 
 # Chat OAuth is out of scope. ollama-local here is ONLY the Host create
 # placeholder so no API key is required. Point it at a dead port so leftover
@@ -156,7 +166,7 @@ printf '%s\n' '{
     "provider": "ollama-local",
     "model": "llama3.2",
     "ingestPaths": [
-      {"path": "/home/box/home23-owned-embedder-test/import", "label": "owned-import"}
+      {"path": "'"$H23_ROOT"'/import", "label": "owned-import"}
     ]
   },
   "credential": {
@@ -170,24 +180,25 @@ printf '%s\n' '{
 After create, confirm **before** start:
 
 ```bash
-python3 - <<'PY'
-import json, pathlib, yaml
-root = pathlib.Path("/home/box/home23-owned-embedder-test/home")
-state = json.loads((root/".home23-host.json").read_text())
-home = yaml.safe_load((root/"app/config/home.yaml").read_text())
-assert state["schema"] == "home23.host.v2"
-assert state["encoderRequired"] is True
-assert home["embedder"]["owned"] is True
-emb = home["embeddings"]["providers"]
-assert len(emb) == 1 and emb[0]["provider"] == "home23-owned"
-assert "11434" not in emb[0]["endpoint"]
-assert home["substrate"]["embedding"]["recipeId"].startswith("12e9f736")
-assert home["providers"]["ollama-local"]["baseUrl"].rstrip("/") == "http://127.0.0.1:1"
-print("create isolation ok", state["ports"])
+HOME_ROOT="$H23_ROOT/home" python3 - <<'PY'
+import json, os, pathlib, yaml
+root = pathlib.Path(os.environ['HOME_ROOT'])
+state = json.loads((root/'.home23-host.json').read_text())
+home = yaml.safe_load((root/'app/config/home.yaml').read_text())
+assert state['schema'] == 'home23.host.v2'
+assert state['encoderRequired'] is True
+assert home['embedder']['owned'] is True
+emb = home['embeddings']['providers']
+assert len(emb) == 1 and emb[0]['provider'] == 'home23-owned'
+assert '11434' not in emb[0]['endpoint']
+assert home['substrate']['embedding']['recipeId'].startswith('12e9f736')
+assert home['providers']['ollama-local']['baseUrl'].rstrip('/') == 'http://127.0.0.1:1'
+print('create isolation ok', state['ports'])
 PY
 ```
 
-Do **not** run `semantic-prepare` to completion on the first try. Use §5.
+Do **not** run `semantic-prepare` to completion on the first try. Use §5
+**before the cache is fully populated.**
 
 ## 3. Owned encoder contract
 
@@ -199,7 +210,7 @@ Do **not** run `semantic-prepare` to completion on the first try. Use §5.
 | Source | `https://huggingface.co/nomic-ai/nomic-embed-text-v1.5` |
 | Cache | `$HOME_ROOT/runtime/embedder-cache/nomic-ai/nomic-embed-text-v1.5/` |
 | ONNX bytes | 547310275 |
-| Attention | `matchFloor: null`, `canSemanticGate: false` — **do not use 0.60** |
+| Attention | **Null-cal policy only** (`matchFloor: null`, `canSemanticGate: false`). Measured calibration is unfinished and is **not** this Linux gate. Do not use 0.60. |
 
 Artifact sha256:
 
@@ -243,7 +254,7 @@ Controlled owned-service outage (negative control):
 
 ```bash
 # After ingest+retrieve have already passed once:
-EPORT=$(python3 -c 'import json; print(json.load(open("/home/box/home23-owned-embedder-test/home/.home23-host.json"))["ports"]["embedder"])')
+EPORT=$(HOME_ROOT="$HOME_ROOT" python3 -c 'import json,os; print(json.load(open(os.environ["HOME_ROOT"]+"/.home23-host.json"))["ports"]["embedder"])')
 PID=$(curl -fsS -H "Host: 127.0.0.1:${EPORT}" "http://127.0.0.1:${EPORT}/ready" | python3 -c 'import json,sys; print(json.load(sys.stdin)["pid"])')
 kill -TERM "$PID"
 # /ready must fail; then POST /api/memory/search mode=context
@@ -260,34 +271,87 @@ Do not pull llama/qwen.
 
 ## 5. Interrupt / resume and encoder identity
 
-Do this on the Host path (`semantic-prepare`), not a loose `ensureArtifacts`.
+Do this on the Host path (`semantic-prepare`), **after create and before start**,
+while the candidate cache is still empty. Do **not** seed `model.onnx.part`
+with zeros or copy a finished ONNX. That is not a download interruption.
+
+Resume vs discard:
+
+- **Resume** (this test): abort / SIGTERM / network leave a **genuine** `.part`
+  of bytes the worker actually fetched. A later `semantic-prepare` sends
+  `Range: bytes=<existing>-`. Pass if the part grows from that size (206) or
+  the server ignores Range and the worker replaces the part from byte 0
+  *after* you recorded a non-zero genuine partial. The final published
+  `model.onnx` must match sha `147d5aa8…`.
+- **Discard / restart** (not this test): a finished file or `.part` whose
+  digest is wrong is `bad_artifact`. Host **deletes** that `.part` and starts
+  over. Do not treat a deleted corrupt part as resume evidence.
 
 ```bash
-ROOT=/home/box/home23-owned-embedder-test
-HOME_ROOT="$ROOT/home"
+H23_ROOT=/home/box/home23-owned-embedder-test
+HOME_ROOT="$H23_ROOT/home"
 HOST="$HOME_ROOT/bin/node $HOME_ROOT/app/scripts/product/host.mjs"
 CACHE="$HOME_ROOT/runtime/embedder-cache/nomic-ai/nomic-embed-text-v1.5"
-mkdir -p "$CACHE/onnx"
-dd if=/dev/zero of="$CACHE/onnx/model.onnx.part" bs=1048576 count=32
-# start prepare (returns immediately; worker is detached)
+PART="$CACHE/onnx/model.onnx.part"
+ONNX="$CACHE/onnx/model.onnx"
+PREP="$HOME_ROOT/runtime/semantic-prep.json"
+export PART ONNX PREP
+
+# Empty cache — fail if a previous run already published the model.
+test ! -e "$ONNX"
+test ! -e "$PART"
+# tokenizer/config may appear as the worker starts; ONNX must still be absent.
+
 cd /tmp
 env -u PM2_HOME -u PM2_DAEMON_RPC_PORT -u PM2_DAEMON_PUB_PORT \
   $HOST semantic-prepare --home "$HOME_ROOT"
-# wait until .part is larger than 32MiB
-# then SIGTERM workerPid from $HOME_ROOT/runtime/semantic-prep.json
+
+# Observe real downloaded bytes (Host bytesReceived and/or $PART size).
+# Wait until $PART exists and is larger than 8MiB, then interrupt.
+# Do not wait until 547310275 or until phase=ready.
+while true; do
+  if [ -f "$PART" ]; then
+    SIZE=$(wc -c < "$PART")
+    if [ "$SIZE" -gt 8388608 ]; then break; fi
+  fi
+  sleep 1
+done
+SIZE_BEFORE=$(wc -c < "$PART")
+# Genuine partial: not an all-zero seed. Sample must contain a non-zero byte.
+python3 -c 'import os,sys; p=os.environ["PART"]; d=open(p,"rb").read(65536); sys.exit(0 if any(d) else 1)' 
+WORKER=$(python3 -c 'import json,os; print(json.load(open(os.environ["PREP"]))["workerPid"])')
+kill -TERM "$WORKER"
+
+env -u PM2_HOME -u PM2_DAEMON_RPC_PORT -u PM2_DAEMON_PUB_PORT \
+  $HOST status --home "$HOME_ROOT"
+# expect semantic.phase=interrupted, error.code=host_semantic_interrupted
+test -f "$PART"
+test ! -e "$ONNX"
+SIZE_AFTER=$(wc -c < "$PART")
+# .part kept (size >= size at interrupt). Record SIZE_BEFORE, SIZE_AFTER.
+
+# Resume the same genuine partial — do not rm $PART.
+env -u PM2_HOME -u PM2_DAEMON_RPC_PORT -u PM2_DAEMON_PUB_PORT \
+  $HOST semantic-prepare --home "$HOME_ROOT"
+# wait until phase=ready (status poll). Then:
+test -f "$ONNX"
+test ! -e "$PART"
+python3 -c 'import hashlib,os; p=os.environ["ONNX"]; h=hashlib.sha256(open(p,"rb").read()).hexdigest(); assert h=="147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965", h; print(h, os.path.getsize(p))'
 ```
+
+Export `PART`, `PREP`, and `ONNX` for those python snippets (`export PART PREP ONNX`).
 
 Pass observables:
 
-- `host.mjs status` → `semantic.phase` = `interrupted`
-- `semantic.error.code` = `host_semantic_interrupted`
-- `model.onnx` absent; `.part` kept (not deleted)
-- second `semantic-prepare` resumes (`Range` if the server sends 206)
-- phase `ready`; ONNX sha `147d5aa8…`; 547310275 bytes
-- `host.mjs start` → `status` ready; `/ready` warm; recipe id + dim 768
+- first prepare started from an empty ONNX cache
+- `.part` grew with downloaded bytes **before** interrupt
+- interrupt → `host_semantic_interrupted`; genuine `.part` kept; `model.onnx` absent
+- second prepare reaches `ready`; ONNX sha `147d5aa8…`; 547310275 bytes
+- `host.mjs start` → ready; `/ready` warm; recipe id + dim 768
 
-Fail: `.part` deleted on abort; resume starts at 0 with no Range; `/ready`
-reports `nomic-embed-text` or dim ≠ 768.
+Fail: zero-filled seed; interrupt after the cache is already complete;
+`.part` deleted on abort (unless you first proved `bad_artifact` separately);
+final digest mismatch; `/ready` reports `nomic-embed-text` or dim ≠ 768.
 
 ## 6. Minimal ingest + paraphrased retrieve (Linux entry points)
 
@@ -298,8 +362,8 @@ After `host.mjs start` and `/ready` warm, wait until
 `$HOME_ROOT/app/instances/ownedembed/brain/state.json.gz` exists.
 
 ```bash
-DASH=$(python3 -c 'import json; print(json.load(open("/home/box/home23-owned-embedder-test/home/.home23-host.json"))["ports"]["dashboard"])')
-EPORT=$(python3 -c 'import json; print(json.load(open("/home/box/home23-owned-embedder-test/home/.home23-host.json"))["ports"]["embedder"])')
+DASH=$(HOME_ROOT="$HOME_ROOT" python3 -c 'import json,os; print(json.load(open(os.environ["HOME_ROOT"]+"/.home23-host.json"))["ports"]["dashboard"])')
+EPORT=$(HOME_ROOT="$HOME_ROOT" python3 -c 'import json,os; print(json.load(open(os.environ["HOME_ROOT"]+"/.home23-host.json"))["ports"]["embedder"])')
 
 # feeder / ingest
 curl -fsS "http://127.0.0.1:${DASH}/home23/feeder-status"
@@ -331,8 +395,9 @@ limitation, not a hidden pass.
 
 ## 7. Pass / fail and evidence
 
-Write `$ROOT/receipts/linux-receipt.json`. No conversation text, no owner
-names from other homes, no API keys, no Scout paths.
+Write `$H23_ROOT/receipts/linux-receipt.json`. No conversation text, no owner
+names from other homes, no API keys, no Scout paths. Use `HOME_ROOT` in the
+receipt, not the shell `HOME`.
 
 ```json
 {
@@ -345,11 +410,21 @@ names from other homes, no API keys, no Scout paths.
   "boxNode": { "path": "/usr/bin/node", "version": "v20.19.x", "unchanged": true },
   "toolchainNode": { "version": "v22.19.0", "sha256": "c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2" },
   "package": { "ok": false, "packageId": "", "platform": "linux", "arch": "x64" },
-  "homeRoot": "/home/box/home23-owned-embedder-test/home",
+  "homeRoot": "$HOME_ROOT",
   "scoutUntouched": null,
   "ports": {},
   "createIsolation": { "encoderRequired": false, "embeddingsOwnedOnly": false, "ollamaChatDeadPort": false },
-  "interruptResume": { "attempted": false, "partKept": false, "errorCode": "", "readyAfterResume": false },
+  "interruptResume": {
+    "attempted": false,
+    "emptyCacheAtStart": false,
+    "observedPartBytes": 0,
+    "genuinePartial": false,
+    "partKept": false,
+    "errorCode": "",
+    "resumedNotBadArtifactDiscard": false,
+    "readyAfterResume": false
+  },
+  "attention": { "policy": "null-cal", "measuredCalibration": false, "notALinuxGate": true },
   "ready": { "warm": false, "recipeId": "", "dimension": 0, "onnxSha256": "" },
   "ingest": { "files": 0, "nodes": 0, "stampedOwned": 0 },
   "retrieve": { "mode": "", "hydroBeatsGranite": false, "hydroSimilarity": null, "graniteSimilarity": null, "liteOnly": null },
@@ -367,7 +442,7 @@ names from other homes, no API keys, no Scout paths.
 | Scout / Keep | still up, same Seed | any stop/edit of `/home/box/home23-test` |
 | Linux payload | `package.mjs` packaged linux/x64 | used Mac payload or source `init` |
 | Isolation | owned endpoint + dead `:1` chat URL | embeddings still 11434 |
-| Interrupt | `.part` kept + `host_semantic_interrupted` + resume ready | deleted `.part` / no Range |
+| Interrupt | empty cache → genuine `.part` grew → interrupt → kept → resume ready + digest | zero seed / already-complete cache / `bad_artifact` discard treated as resume |
 | `/ready` | warm, `12e9f736…`, 768 | Ollama tags / Memory Lite as ready |
 | Ingest | 2 files, owned stamps | unstamped / Lite-only store |
 | Retrieve | context-mode hydro > granite | keyword-only / Lite |
@@ -377,8 +452,8 @@ names from other homes, no API keys, no Scout paths.
 ## 8. Stop / restart — this candidate only
 
 ```bash
-ROOT=/home/box/home23-owned-embedder-test
-HOME_ROOT="$ROOT/home"
+H23_ROOT=/home/box/home23-owned-embedder-test
+HOME_ROOT="$H23_ROOT/home"
 HOST="$HOME_ROOT/bin/node $HOME_ROOT/app/scripts/product/host.mjs"
 cd /tmp
 env -u PM2_HOME -u PM2_DAEMON_RPC_PORT -u PM2_DAEMON_PUB_PORT \
@@ -399,14 +474,16 @@ When idle, leave **this** home stopped. Leave Scout as you found it.
 - Native Host UI / Retry-Resume buttons are Mac-only. Linux uses `host.mjs`
   JSON `error.code` (`host_semantic_interrupted` → run `semantic-prepare` again).
 - Chat OAuth / Cosmo Setup OAuth are out of scope.
-- Owned attention stays null-cal. Do not borrow Ollama 0.60.
+- Owned attention is a **null-cal policy**, not a measured calibration.
+  Measured owned match-floor work remains unfinished and does **not** block
+  this Linux embedding/retrieval gate. Do not borrow Ollama 0.60.
 - Source `node cli/home23.js init` still defaults to Ollama. It is **not**
   this candidate's lifecycle.
 - Existing-home Stage 6 / product default flip remain NO-GO.
 
 ## Transfer
 
-This branch is **not on GitHub**. The concrete transfer is a git bundle plus
-SHA-256 next to this file's sibling receipt (untracked
-`.stage5-handoff/` on the authoring machine). Clone the bundle; detach to
-`candidateSha`; do not `git pull`.
+This branch is **not on GitHub**. The concrete transfer is one archive whose
+payload includes the git bundle and a `.sha256` file that names **only the
+bundle basename** so `sha256sum -c` works after copy. Clone the bundle;
+detach to `candidateSha`; do not `git pull`.

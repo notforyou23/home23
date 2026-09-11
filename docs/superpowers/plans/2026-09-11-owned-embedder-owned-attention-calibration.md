@@ -1,8 +1,9 @@
-# Owned encoder attention calibration
+# Owned encoder attention policy (measured calibration unfinished)
 
 Date: 2026-09-11  
 Recipe: `owned-nomic-v1.5-onnx-fp32-mean-noprefix` / `12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9`  
-Policy version: `owned-null-cal-20260911`
+Policy version: `owned-null-cal-20260911`  
+Status: **null-cal policy recorded. Measured owned match-floor calibration is unfinished.** It does not block a scoped Linux embedding/retrieval test.
 
 ## Decision
 
