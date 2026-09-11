@@ -31,18 +31,18 @@ Live Home23 still embeds with Ollama `nomic-embed-text` on port 11434. Keep that
 
 ## Candidate commits
 
-Filled after the pin commit. Until then use `git log` on this branch.
+Checkout the transfer-receipt `candidateSha` (bundle HEAD). That commit includes implementation `112a06e050b0d5561c8bcd35fa00345befeb9f75`. Not GitHub tip, not `main`.
 
 | Area | SHA | Notes |
 |---|---|---|
 | Download resume (source) | `7066b9ad` | `ensureArtifacts` keeps `.part` on abort |
 | Fail-closed Stop names | `71ee0ff1` | Stop owned names even when jlist empty |
-| Structured Host semantic errors | *pin commit* | `error: {code,message}`; interrupt → `host_semantic_interrupted` |
-| Linux Host package builder | *pin commit* | `ldd` + LICENSE; header tmp portable |
-| Public ingest fixtures | *pin commit* | `scripts/embedder/fixtures/public-corpus/` |
+| Structured Host semantic errors | `112a06e0` | `error: {code,message}`; interrupt → `host_semantic_interrupted` |
+| Linux Host package builder | `112a06e0` | `ldd` + LICENSE; header tmp portable |
+| Public ingest fixtures | `112a06e0` | `scripts/embedder/fixtures/public-corpus/` |
 | Apple Retry/Resume + error.code | `9cc694df` on Apple branch | decode code; Retry vs Resume |
-| Attention calibration doc | *pin commit* | null-cal; do not borrow 0.60 |
-| Linux handoff | *pin commit* | Grok Bot procedure; no Linux results claimed |
+| Attention calibration doc | `112a06e0` | null-cal; do not borrow 0.60 |
+| Linux handoff | `112a06e0` | Grok Bot procedure; no Linux results claimed |
 
 ## Mac verification (existing TEST home)
 

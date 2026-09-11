@@ -18,7 +18,8 @@ semantic-prepare / start / stop** in an isolated root.
 |---|---|
 | Repository | home23 |
 | Branch name (local only) | `home23-agent/owned-embedder-stage5-verify` |
-| Candidate commit | **see the transfer receipt that accompanies the bundle** (`candidateSha`) |
+| Candidate commit | bundle HEAD — verify `git rev-parse HEAD` equals the transfer receipt `candidateSha` |
+| Implementation commit inside it | `112a06e050b0d5561c8bcd35fa00345befeb9f75` |
 | How to get it | versioned `git bundle` + SHA-256 (not GitHub, not `main`) |
 | Required after checkout | `git rev-parse HEAD` equals `candidateSha`; working tree clean |
 
