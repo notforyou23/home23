@@ -92,7 +92,7 @@ Owner: Memory worker. No Memory source commit. Probe script untracked: `scripts/
 | New JSONL writer stamps are additive | `a58e5c61` + live shipper line on this TEST home | Historical JSONL stays unknown |
 | Packaged Host create / prepare / start / restart / stop | untracked host-receipt on `.stage5-product-home` | One Mac arm64 TEST home |
 | Real ONNX `/ready` + paraphrase rank (0.711 vs 0.555) | Live packaged `bin/node` + owned `/v1/embeddings` after product watch ingest | Raw embeddings are Encoder proof, not product retrieve |
-| Product retrieve ranks hydro above granite | Live `POST /api/memory/search` `mode: "context"` 0.7111 vs 0.5555 | Bare POST without `mode` is keyword-tie |
+| Product retrieve ranks hydro above granite | Live `POST /api/memory/search` `mode: "context"` 0.7111 vs 0.5555; after conversation ingest, context mode must exclude conversation/consolidated echoes or those bury the import | Bare POST without `mode` is keyword-tie |
 | Chat retrieve-then-answer mention bar | Coordination turn 2 mentions hydrologic, not granite | `llama3.2:1b` invented the quote; turn 1 ignored the note |
 | Chat URL decoupled from encoder on Host create | `product-host` create unit test | — |
 
@@ -120,7 +120,7 @@ Findings from the 2026-09-11 independent review, checked against this branch aft
 | Lane | Status | Next |
 |---|---|---|
 | Encoder | Packaged Node/ORT `/ready` on a Host-created home | Optional interrupt/resume of a truncated `.part` |
-| Memory | Live stamps, query refuse, null-cal attention, birth 0; product `mode: "context"` search 0.7111 > 0.5555 | Isolated shipper new-line after Stop; bare POST without `mode` still keyword-tie |
+| Memory | Live stamps, query refuse, null-cal attention, birth 0; context search now keeps hydro first after conversation ingest | 3b still does not quote the imported note. Bare POST without `mode` still keyword-tie |
 | Host | Isolated TEST create/prepare/start/restart/stop evidenced | Empty-jlist Stop source-fixed. Do not wire source `setup.js`. Do not create a product/owner home |
 | Apple | `88123ded` polls semantic-prepare | Interrupt tests; structured `error.code` |
 | Lead | Encoder + Host + Memory + Stage 5 closer receipts exist | Keep off shared main. Do not flip defaults. Do not claim a faithful 1b quote |
@@ -135,9 +135,9 @@ Findings from the 2026-09-11 independent review, checked against this branch aft
 | Public distribution | **NO-GO** |
 | Create a product/owner home with this Host | **NO-GO** — isolated TEST only |
 | Isolated Host TEST create | **done** on `.stage5-product-home` |
-| Isolated product retrieve (context-mode search) | **done** — hydro 0.7111 > granite 0.5555 |
+| Isolated product retrieve (context-mode search) | **done on a 2-doc catalog; re-proved after conversation ingest** — context mode now excludes conversation/consolidated echoes so hydro 0.7111 leads granite 0.5555 |
 | Isolated chat mention bar | **done** — turn 2 mentions hydrologic, not granite; quote not faithful |
-| Stages 1–5 as a product-ready milestone | **not claimed** — 1b quote invented; empty-jlist Stop not live-reproved on the installed home; default flip still NO-GO |
+| Stages 1–5 as a product-ready milestone | **not claimed** — context ranking fixed; 3b still does not quote the imported USGS paragraph; default flip still NO-GO |
 
 ## Handoff
 
@@ -152,7 +152,8 @@ Apple:    Host Stage 4 is 88123ded on home23-apple-agent/owned-embedder-host-sta
 Do not:   push, flip defaults, migrate existing homes, delete TEST homes,
           create a product/owner home, commit scripts/embedder/node_modules
           or the TEST home / payload
-Next:     Optional live re-prove of empty-jlist Stop after copying new Host files
-          into the TEST home; optional download interrupt/resume;
-          Apple interrupt / error.code. Not Stage 6. Not a default flip.
+Next:     Faithful retrieve-then-answer still needs a model that uses the
+          imported note now that context search ranks it first. Optional
+          Host-path download interrupt/resume. Apple interrupt / error.code.
+          Not Stage 6. Not a default flip.
 ```

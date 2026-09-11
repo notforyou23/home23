@@ -739,6 +739,75 @@ test('context mode skips the full-brain scan when ANN is missing', async () => {
   }
 });
 
+test('context mode does not let conversation echoes bury an imported document', async () => {
+  const paraphrase = 'How does sunshine lift moisture that later falls as weather and replenishes hidden reservoirs?';
+  const hydro = {
+    id: 'hydro',
+    concept: 'The hydrologic cycle is the continuous movement of H2O. Solar energy drives vapor from seas into the sky.',
+    embedding: [1, 0],
+    tag: '.stage5-host-import',
+  };
+  const granite = {
+    id: 'granite',
+    concept: 'Granite crystallizes slowly from magma deep underground.',
+    embedding: [0.55, 0.84],
+    tag: '.stage5-host-import',
+  };
+  const echo = {
+    id: 'echo',
+    concept: `**Runtime input (see canonical conversation for authorship):** ${paraphrase}`,
+    embedding: [0.99, 0.14],
+    tag: 'conversation_sessions',
+  };
+  const plant = {
+    id: 'plant',
+    concept: 'Sunshine plays a crucial role in evapotranspiration, which is the process by which plants release water vapor.',
+    embedding: [0.84, 0.54],
+    tag: 'conversation_sessions',
+  };
+  const consolidated = {
+    id: 'consolidated',
+    concept: '[CONSOLIDATED] The interaction between sunshine and plants replenishes hidden reservoirs.',
+    embedding: [0.97, 0.24],
+    tag: 'consolidated',
+  };
+  const dir = await createBrain({ nodes: [hydro, granite, echo, plant, consolidated] });
+  await markAnn(dir);
+  const labels = [hydro, granite, echo, plant, consolidated];
+  const loadAnn = async () => ({
+    dimension: 2,
+    skipped: 0,
+    count: 5,
+    labels,
+    search: (_embedding, limit) => labels
+      .map((node) => ({
+        node,
+        similarity: node.embedding[0] / Math.hypot(node.embedding[0], node.embedding[1]),
+      }))
+      .sort((left, right) => right.similarity - left.similarity)
+      .slice(0, limit),
+  });
+  const embedQuery = async () => [1, 0];
+  const buried = await sourceSearch({
+    dir,
+    query: paraphrase,
+    embedQuery,
+    loadAnn,
+    request: { topK: 3, minSimilarity: 0.1, noiseFloor: 0.1 },
+  });
+  assert.equal(buried.results[0]?.id, 'echo');
+  const result = await sourceSearch({
+    dir,
+    query: paraphrase,
+    embedQuery,
+    loadAnn,
+    request: { topK: 3, minSimilarity: 0.1, noiseFloor: 0.1, mode: 'context' },
+  });
+  assert.deepEqual(result.results.map((row) => row.id), ['hydro', 'granite']);
+  assert.ok(Number(result.results[0].similarity) > Number(result.results[1].similarity));
+  assert.equal(result.results.some((row) => ['conversation_sessions', 'consolidated'].includes(row.tag)), false);
+});
+
 test('context mode still uses a stale ANN instead of scanning the corpus', async () => {
   const dir = await createBrain({
     nodes: [{ id: 'hit', concept: 'stale index canary', embedding: [1, 0] }],

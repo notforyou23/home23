@@ -1209,6 +1209,13 @@ function isIdentityQuery(query) {
   return /\b(i am|im|who am i|identity|third person|first person|pronoun|costume|seed|lobe|this room|there is no he|i am them|i am jerry)\b/.test(q);
 }
 
+/** Pre-turn context already has the live transcript. Conversation session
+ * nodes and later consolidations of those turns must not bury imported documents. */
+function isContextEnrichmentEcho(node) {
+  const tag = String(node?.tag || '').toLowerCase();
+  return tag === 'conversation_sessions' || tag === 'conversation' || tag === 'consolidated';
+}
+
 function sludgeMultiplier(node, identityQuery) {
   if (!identityQuery) return 1;
   const authority = String(
@@ -1362,6 +1369,7 @@ function createMemorySearchService({
       intent: request.intent || query,
     });
     const offerAuthorityResolved = (heap, candidate, trustedProjection = false) => {
+      if (request.mode === 'context' && isContextEnrichmentEcho(candidate)) return;
       const resolved = authorityResolver.apply([candidate], { trustedProjection })[0];
       if (!resolved) return;
       const { _trustedAuthorityProjection: _ignoredCallerTrust, ...plain } = resolved;
@@ -1492,6 +1500,7 @@ function createMemorySearchService({
           && node.embedding.length === queryEmbedding?.length
           && Number.isFinite(similarity = cosineSimilarity(queryEmbedding, node.embedding))
           && similarity >= similarityThreshold;
+        if (request.mode === 'context' && isContextEnrichmentEcho(node)) continue;
         if (!semanticMatches && !(keywordMatches && tagMatches)) continue;
         if (semanticMatches) {
           logicalSemanticCandidates.offer(projectLogicalCandidate(node, similarity, similarity));
