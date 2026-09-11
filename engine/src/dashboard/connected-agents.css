@@ -1235,3 +1235,11 @@ summary:focus-visible,
     min-height: 42px;
   }
 }
+
+/* Chat uses the same inline disclosure grammar for every conversation. */
+.ca-chat-event { border-left: 2px solid currentColor; padding-left: 12px; margin: 6px 0; }
+.ca-chat-event small { opacity: .75; }
+.ca-chat-event pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 28rem; overflow: auto; padding: 10px; font-size: .85em; }
+.ca-draft-file { display: flex; gap: 8px; align-items: center; padding: 8px 12px; font-size: .85em; }
+.ca-draft-file span { flex: 1; overflow-wrap: anywhere; }
+button.ca-attachment { text-align: left; cursor: pointer; color: inherit; font: inherit; }

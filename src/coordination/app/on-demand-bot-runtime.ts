@@ -1,3 +1,4 @@
+import { attachmentContentType, isAttachmentContentType } from "../../attachment-content.js";
 import { createHelperServices } from './helper-services.js';
 import type { HomeConfig } from '../../types.js';
 import {
@@ -115,7 +116,6 @@ export interface OnDemandBotRuntimeOptions {
 
 const MAX_RETURNED_ARTIFACTS = 10;
 const MAX_RETURNED_ARTIFACT_CAPTION_BYTES = 2_048;
-const INPUT_ATTACHMENT_CONTENT_TYPES = new Set<string>(RETURNED_ARTIFACT_CONTENT_TYPES);
 
 function canonicalInputAttachmentRoot(configuredRoot: string): string {
   if (!isAbsolute(configuredRoot) || configuredRoot === "/" || configuredRoot.includes("\0")) {
@@ -162,7 +162,7 @@ function exactOnDemandInputAttachments(
         attachment.name === "." || attachment.name === ".." ||
         /^[A-Za-z]:/u.test(attachment.name) || /[\0-\x1f\x7f/\\]/u.test(attachment.name) ||
         typeof attachment.contentType !== "string" ||
-        !INPUT_ATTACHMENT_CONTENT_TYPES.has(attachment.contentType) ||
+        !isAttachmentContentType(attachment.contentType) ||
         !Number.isSafeInteger(attachment.byteCount) || attachment.byteCount < 0 ||
         attachment.byteCount > MAX_RETURNED_ARTIFACT_BYTES ||
         typeof attachment.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(attachment.sha256) ||
@@ -199,9 +199,7 @@ function exactOnDemandInputAttachments(
           const bytes = readFileSync(fd);
           const after = fstatSync(fd);
           const pathAfter = lstatSync(attachment.path);
-          const detectedType = bytes.length === 0
-            ? "text/plain"
-            : detectReturnedArtifactContentType(bytes);
+          const detectedType = attachmentContentType(bytes);
           if (
             bytes.length !== before.size || after.dev !== before.dev || after.ino !== before.ino ||
             after.size !== before.size || pathAfter.isSymbolicLink() ||
@@ -611,7 +609,7 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
       : exactOnDemandInputAttachments(rawAttachments, this.inputAttachmentRoot, true);
     const instruction = instructionWithInputAttachments(userText, attachments);
     const vision = attachments
-      .filter((attachment) => attachment.contentType.startsWith("image/"))
+      .filter((attachment) => ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(attachment.contentType))
       .map((attachment) => Object.freeze({
         type: "image" as const,
         path: attachment.path,

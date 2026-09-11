@@ -45,6 +45,7 @@ let chatInitialized = false;
 let chatMode = 'tab';
 let transcript = null;
 let pendingAttachments = [];
+let attachmentError = "";
 let chatPersistTimer = null;
 let chatPersistenceBound = false;
 let chatCurrentAgentName = null;
@@ -66,8 +67,8 @@ let chatShowThinking = true;
 let conversationThinking = '';
 const SHOW_THINKING_KEY = 'home23:chat:show-thinking';
 
-const ATTACH_MAX_IMAGES = 6;
-const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACH_MAX_IMAGES = 10;
+const ATTACH_MAX_BYTES = 25 * 1024 * 1024;
 const ATTACH_ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
 function bridgeAuthHeaders() {
@@ -185,16 +186,19 @@ export function populateChatInput(prompt, input = document.getElementById('chat-
 }
 
 async function ingestAttachmentFiles(files) {
+  attachmentError = "";
   for (const file of files) {
-    if (pendingAttachments.length >= ATTACH_MAX_IMAGES) break;
-    if (!ATTACH_ALLOWED_MIME.has(file.type) || file.size > ATTACH_MAX_BYTES) continue;
+    if (pendingAttachments.length >= ATTACH_MAX_IMAGES) { attachmentError = "Up to 10 files can be attached."; break; }
+    if (file.size + pendingAttachments.reduce((n, a) => n + a.file.size, 0) > ATTACH_MAX_BYTES) {
+      attachmentError = `${file.name} exceeds the 25 MB combined attachment limit.`; continue;
+    }
     try {
       pendingAttachments.push({
         id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         file,
         dataUrl: await readFileAsDataURL(file),
       });
-    } catch { /* skip unreadable */ }
+    } catch { attachmentError = `Could not read ${file.name}. Try choosing the file again.`; }
   }
   renderAttachmentTray();
 }
@@ -202,15 +206,15 @@ async function ingestAttachmentFiles(files) {
 function renderAttachmentTray() {
   const tray = document.getElementById('chat-attach-tray');
   if (!tray) return;
-  if (pendingAttachments.length === 0) {
+  if (pendingAttachments.length === 0 && !attachmentError) {
     tray.hidden = true;
     tray.innerHTML = '';
     return;
   }
   tray.hidden = false;
-  tray.innerHTML = pendingAttachments.map((a) => `
+  tray.innerHTML = (attachmentError ? `<span role="status">${escapeHtml(attachmentError)}</span>` : '') + pendingAttachments.map((a) => `
     <div class="h23-chat-attach-thumb">
-      <img src="${a.dataUrl}" alt="${a.file.name || 'attachment'}" />
+      ${ATTACH_ALLOWED_MIME.has(a.file.type) ? `<img src="${a.dataUrl}" alt="${escapeHtml(a.file.name || 'attachment')}" />` : `<span class="h23-chat-file-name">${escapeHtml(a.file.name || 'Attachment')}</span>`}
       <button class="h23-chat-attach-thumb-remove" data-att-id="${a.id}" aria-label="Remove">&times;</button>
     </div>
   `).join('');
@@ -873,7 +877,7 @@ function bindInput() {
     });
     input.addEventListener('paste', (event) => {
       const files = Array.from(event.clipboardData?.items || [])
-        .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+        .filter((it) => it.kind === 'file')
         .map((it) => it.getAsFile())
         .filter(Boolean);
       if (files.length) {
@@ -919,7 +923,7 @@ function bindInput() {
       event.preventDefault();
       dragDepth = 0;
       dropOverlay.hidden = true;
-      ingestAttachmentFiles(Array.from(event.dataTransfer?.files || []).filter((f) => f.type.startsWith('image/')));
+      ingestAttachmentFiles(Array.from(event.dataTransfer?.files || []));
     });
     window.addEventListener('dragover', (event) => event.preventDefault());
     window.addEventListener('drop', (event) => {
@@ -1309,7 +1313,7 @@ async function sendMessage() {
     return;
   }
   lastPreviewSnippet = text.slice(0, 140);
-  transcript?.appendUser(text, turnAttachments.map((a) => a.dataUrl));
+  transcript?.appendUser(text, turnAttachments.filter(a => ATTACH_ALLOWED_MIME.has(a.file.type)).map((a) => a.dataUrl));
   chatStreaming = true;
   chatDisconnected = false;
   setSendAsStop();
@@ -1340,7 +1344,7 @@ async function sendMessage() {
         chatId: activeChatId,
         message: text,
         ...(chatReasoningEffort ? { effort: chatReasoningEffort } : {}),
-        ...(imagesPayload.length ? { images: imagesPayload } : {}),
+        ...(imagesPayload.length ? { attachments: imagesPayload } : {}),
       }),
     });
     if (res.status === 409) {
@@ -1354,6 +1358,9 @@ async function sendMessage() {
       turnId = (await res.json()).turn_id;
     }
   } catch (err) {
+    pendingAttachments = [...turnAttachments, ...pendingAttachments];
+    renderAttachmentTray();
+    if (!input.value) input.value = text;
     transcript?.appendError(`Connection failed: ${err.message}`);
     chatStreaming = false;
     resetSendButtons();

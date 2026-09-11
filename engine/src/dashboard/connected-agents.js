@@ -36,6 +36,11 @@
     executionOptions: new Map(),
     executionSelection: new Map(),
     executionErrors: new Map(),
+    drafts: new Map(),
+    draftAttachments: new Map(),
+    messageCache: new Map(),
+    renderedChannelId: null,
+    openGeneration: 0,
   };
   const $ = (id) => document.getElementById(id);
   const esc = (v) =>
@@ -81,7 +86,7 @@
   async function api(path, options = {}) {
     const headers = { accept: "application/json", ...(options.headers || {}) };
     if (state.token) headers.authorization = `Bearer ${state.token}`;
-    if (options.body) headers["content-type"] = "application/json";
+    if (options.body && !(options.body instanceof FormData)) headers["content-type"] = "application/json";
     const response = await fetch(`${API}${path}`, { ...options, headers });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -483,17 +488,38 @@
     renderChannelMembers();
   }
   async function openConversation(channelId, focusMessageId = null, options = {}) {
+    const generation = ++state.openGeneration;
+    saveCurrentDraft();
+    state.selected = channelId;
+    const cached = state.messageCache.get(channelId);
+    if (cached) {
+      state.currentChannel = cached.channel;
+      state.currentMessages = cached.messages;
+      if (state.evidenceConversationId !== cached.channel.conversationId) resetEvidence(cached.channel.conversationId);
+      renderConversation(cached.channel, cached.messages);
+      $("conversation").classList.add("open");
+    } else {
+      state.currentChannel = null;
+      state.currentMessages = [];
+      state.renderedChannelId = null;
+      $("conversation").innerHTML = '<div class="ca-welcome" role="status"><p>Loading conversation…</p></div>';
+      $("conversation").classList.add("open");
+    }
+    void loadExecutionOptions(channelId).then(() => {
+      if (generation === state.openGeneration && state.currentChannel?.id === channelId) refreshExecutionControls(channelId);
+    });
     try {
       const [channelResult, transcript] = await Promise.all([
         api(`/channels/${encodeURIComponent(channelId)}`),
         api(`/channels/${encodeURIComponent(channelId)}/messages?limit=100`),
-        loadExecutionOptions(channelId),
       ]);
+      if (generation !== state.openGeneration) return;
       const channel = channelResult.channel;
       const messages = transcript.messages || [];
       state.selected = channelId;
       state.currentChannel = channel;
       state.currentMessages = messages;
+      state.messageCache.set(channelId, { channel, messages });
       if (state.evidenceConversationId !== channel.conversationId) {
         resetEvidence(channel.conversationId);
       }
@@ -532,8 +558,9 @@
       if (latest && state.capabilities.capabilities?.readCursorMutation)
         markRead(channelId, latest);
     } catch (error) {
+      if (generation !== state.openGeneration) return;
       setConnection(error.status === 401 ? "revoked" : "degraded");
-      renderConversationFailure(error);
+      if (!cached) renderConversationFailure(error);
     }
   }
   async function refreshSelectedQuietly() {
@@ -542,7 +569,6 @@
     const [channelResult, transcript] = await Promise.all([
       api(`/channels/${encodeURIComponent(channelId)}`),
       api(`/channels/${encodeURIComponent(channelId)}/messages?limit=100`),
-      loadExecutionOptions(channelId),
     ]);
     if (state.selected !== channelId) return;
     const priorPane = $("messages");
@@ -550,9 +576,10 @@
       ? priorPane.scrollHeight - priorPane.scrollTop - priorPane.clientHeight < 100
       : true;
     const focused = document.activeElement?.id === "composer-text",
-      draft = focused ? $("composer-text")?.value : "";
+      draft = $("composer-text")?.value || "";
     state.currentChannel = channelResult.channel;
     state.currentMessages = transcript.messages || [];
+    state.messageCache.set(channelId, { channel: state.currentChannel, messages: state.currentMessages });
     renderConversation(state.currentChannel, state.currentMessages, {
       scrollToBottom: nearBottom,
     });
@@ -560,6 +587,124 @@
       $("composer-text").value = draft;
       $("composer-text").focus();
     }
+  }
+  function saveCurrentDraft() {
+    const input = $("composer-text");
+    if (input && state.renderedChannelId) state.drafts.set(state.renderedChannelId, input.value);
+  }
+  function refreshExecutionControls(channelId) {
+    if (state.renderedChannelId !== channelId) return;
+    const controls = document.querySelector(".ca-execution-controls");
+    if (!controls) return;
+    controls.outerHTML = executionControlsHtml(channelId);
+    $("composer-model")?.addEventListener("change", () => {
+      updateExecutionSelection(channelId);
+      refreshExecutionControls(channelId);
+    });
+    $("composer-effort")?.addEventListener("change", () => updateExecutionSelection(channelId));
+    $("execution-options-retry")?.addEventListener("click", async () => {
+      await loadExecutionOptions(channelId, true);
+      refreshExecutionControls(channelId);
+    });
+  }
+  function pendingMessageHtml(record) {
+    const status = record.error ? `Not sent · ${record.error}` : record.accepted ? "Accepted · refreshing" : "Sending…";
+    return `<article class="ca-message owner ${record.error ? "failed" : "pending"}" id="message-${esc(record.messageId)}"><div class="ca-message-meta"><span>${esc(status)}</span></div><div>${esc(record.text).replace(/\n/g, "<br>")}</div>${record.attachmentIds?.length ? `<small>${record.attachmentIds.length} attachment(s)</small>` : ""}${record.error ? `<button type="button" data-retry-message="${esc(record.messageId)}">Retry</button>` : ""}</article>`;
+  }
+  function bindTranscriptActions() {
+    document.querySelectorAll("[data-retry-message]").forEach(button => {
+      if (button.dataset.bound) return;
+      button.dataset.bound = "true";
+      button.addEventListener("click", () => {
+        const record = state.pending.get(button.dataset.retryMessage);
+        if (record?.error) void sendMessage(null, record);
+      });
+    });
+    document.querySelectorAll(".ca-turn-glance[data-turn-id]").forEach(button => {
+      if (button.dataset.bound) return;
+      button.dataset.bound = "true";
+      button.addEventListener("click", () => {
+        const turn = state.evidence.turn(button.dataset.turnId);
+        if (turn) openInspector(turn.turnId, !turn.terminal);
+      });
+    });
+    document.querySelectorAll("[data-download-attachment]").forEach(button => {
+      if (button.dataset.bound) return;
+      button.dataset.bound = "true";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          const response = await fetch(`${API}/attachments/${encodeURIComponent(button.dataset.downloadAttachment)}/content`, {
+            headers: { authorization: `Bearer ${state.token}` },
+          });
+          if (!response.ok) throw new Error(`Download failed (${response.status}).`);
+          const url = URL.createObjectURL(await response.blob());
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = button.dataset.filename;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 10_000);
+        } catch (error) { toast(error.message); }
+        finally { button.disabled = false; }
+      });
+    });
+  }
+  function renderAttachmentDraft(channelId) {
+    if (state.renderedChannelId !== channelId || !$("attachment-drafts")) return;
+    const attachments = state.draftAttachments.get(channelId) || [];
+    $("attachment-drafts").innerHTML = attachments.map(a =>
+      `<div class="ca-draft-file"><span>${esc(a.file.name)} · ${esc(a.error || a.status)}</span>${a.status === "failed" ? `<button type="button" data-retry-upload="${esc(a.artifactId)}">Retry</button>` : ""}<button type="button" data-remove-upload="${esc(a.artifactId)}" aria-label="Remove ${esc(a.file.name)}">×</button></div>`).join("");
+    document.querySelectorAll("[data-remove-upload]").forEach(button => button.addEventListener("click", () => {
+      const file = attachments.find(a => a.artifactId === button.dataset.removeUpload);
+      file?.controller?.abort();
+      state.draftAttachments.set(channelId, attachments.filter(a => a !== file));
+      renderAttachmentDraft(channelId);
+    }));
+    document.querySelectorAll("[data-retry-upload]").forEach(button => button.addEventListener("click", () => {
+      const file = attachments.find(a => a.artifactId === button.dataset.retryUpload);
+      if (file) void uploadAttachment(channelId, file);
+    }));
+  }
+  async function attachFiles(channelId, files) {
+    const limit = state.bootstrap?.limits?.attachmentBytes || 25 * 1024 * 1024;
+    const countLimit = state.bootstrap?.limits?.attachmentCountPerMessage || 10;
+    const accepted = [];
+    for (const file of files) {
+      const current = state.draftAttachments.get(channelId) || [];
+      if (current.length >= countLimit) { toast(`Up to ${countLimit} attachments per message.`); break; }
+      if (file.size > limit) { toast(`${file.name} exceeds the ${Math.floor(limit / 1024 / 1024)} MB limit.`); continue; }
+      const entry = { file, artifactId: opaqueId("art"), key: idem("web-attachment"), status: "queued" };
+      state.draftAttachments.set(channelId, [...current, entry]);
+      accepted.push(entry);
+    }
+    renderAttachmentDraft(channelId);
+    for (const entry of accepted) {
+      if ((state.draftAttachments.get(channelId) || []).includes(entry)) await uploadAttachment(channelId, entry);
+    }
+  }
+  async function uploadAttachment(channelId, entry) {
+    if (entry.status === "uploading") return;
+    entry.status = "uploading";
+    entry.error = null;
+    entry.controller = new AbortController();
+    renderAttachmentDraft(channelId);
+    try {
+      const bytes = await entry.file.arrayBuffer();
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      const form = new FormData();
+      form.append("metadata", JSON.stringify({ artifactId: entry.artifactId, name: entry.file.name,
+        declaredContentType: entry.file.type || "application/octet-stream",
+        expectedSha256: Array.from(digest, b => b.toString(16).padStart(2, "0")).join("") }));
+      form.append("content", entry.file, entry.file.name);
+      const result = await api("/attachments", { method: "POST", body: form,
+        signal: entry.controller.signal, headers: { "idempotency-key": entry.key } });
+      if (result.attachment?.id !== entry.artifactId || result.attachment?.state !== "ready") throw new Error("The upload has no ready receipt. Retry to recover it.");
+      entry.status = "ready";
+    } catch (error) {
+      entry.status = "failed";
+      entry.error = error.message;
+    }
+    renderAttachmentDraft(channelId);
   }
   function quickGlanceHtml(turn) {
     const glance = turn.quickGlance;
@@ -608,9 +753,7 @@
   }
   function renderConversation(channel, messages, options = {}) {
     const activity = inboxFor(channel.id)?.activity;
-    // The current dashboard body parser cannot safely stream the canonical
-    // multipart upload. Keep this unavailable instead of simulating support.
-    const canAttach = false;
+    const canAttach = state.capabilities?.capabilities?.attachments === true;
     const members = channel.members?.filter((m) => m.kind === "bot") || [];
     const turns = state.evidence.turns();
     const linkedTurnIDs = new Set();
@@ -625,12 +768,14 @@
     const responseActivity = unlinkedTurns
       .map(
         (turn) =>
-          `<section class="ca-response-placeholder"><p>${turn.terminal ? "Response evidence is retained, but no matching assistant message is in this page." : "Response active. The final answer will appear in the calm transcript when committed."}</p>${quickGlanceHtml(turn)}</section>`,
+          `<section class="ca-response-placeholder">${quickGlanceHtml(turn)}</section>`,
       )
       .join("");
+    for (const message of messages) state.pending.delete(message.id);
+    const pendingContent = [...state.pending.values()].filter(record => record.channelId === channel.id).map(pendingMessageHtml).join("");
     const body =
-      messageContent || responseActivity
-        ? `${messageContent}${responseActivity}`
+      messageContent || responseActivity || pendingContent
+        ? `${messageContent}${pendingContent}${responseActivity}`
         : '<div class="ca-welcome"><h2>Start the conversation.</h2><p>This durable thread will be here when you return.</p></div>';
     const inspectorDisabled = turns.length ? "" : "disabled";
     const evidenceTitle = hasEvidenceCapability()
@@ -641,8 +786,28 @@
     const evidenceNotice = `<div class="ca-degraded" id="evidence-notice" role="status" hidden></div>`;
     const executionControls = executionControlsHtml(channel.id);
     const canSend = state.capabilities?.capabilities?.messageSubmission === true;
+    if (state.renderedChannelId === channel.id && $("composer-text")) {
+      const pane = $("messages");
+      const top = pane.scrollTop;
+      const follows = pane.scrollHeight - top - pane.clientHeight < 100;
+      if (pane.dataset.renderedContent !== body) { pane.innerHTML = body; pane.dataset.renderedContent = body; }
+      pane.scrollTop = follows ? pane.scrollHeight : top;
+      bindTranscriptActions();
+      const inspectorButton = $("inspector-button");
+      if (inspectorButton) { inspectorButton.disabled = !turns.length; inspectorButton.title = evidenceTitle; inspectorButton.setAttribute("aria-label", evidenceTitle); }
+      const activeLabel = $("thread-activity");
+      if (activeLabel) activeLabel.textContent = activity?.state && activity.state !== "idle" ? activity.label || "Active now" : "";
+      const title = document.querySelector(".ca-thread-identity h2");
+      if (title) title.textContent = channel.title;
+      renderEvidenceNotice();
+      renderAttachmentDraft(channel.id);
+      if (state.inspectorVisible) renderInspector();
+      return;
+    }
+    saveCurrentDraft();
+    state.renderedChannelId = channel.id;
     $("conversation").innerHTML =
-      `<header class="ca-thread-head"><button class="ca-back" id="back-button" aria-label="Back to Inbox">‹</button><span class="ca-avatar ${channel.kind === "group" ? "channel" : ""}">${esc(channel.title.slice(0, 2).toUpperCase())}</span><div class="ca-thread-identity"><h2>${esc(channel.title)}</h2><p>${channel.kind === "group" ? `${members.length} Bot${members.length === 1 ? "" : "s"}` : "Direct conversation"}</p></div><div class="ca-thread-actions"><button class="ca-details-button" id="inspector-button" ${inspectorDisabled} title="${esc(evidenceTitle)}" aria-label="${esc(evidenceTitle)}">Inspector</button><button class="ca-details-button" id="details-button">Details</button></div></header>${evidenceNotice}<div class="ca-messages" id="messages" aria-live="polite">${body}</div><div class="ca-activity" id="thread-activity">${activity?.state && activity.state !== "idle" ? '<i class="ca-activity-dot"></i>' + esc(activity.label || "Active now") : ""}</div><div class="ca-composer-wrap">${executionControls}<form class="ca-composer" id="composer"><button class="ca-attach" type="button" id="attach-button" ${canAttach ? "" : "disabled"} aria-label="${canAttach ? "Add attachment" : "Attachments are not available"}" title="${canAttach ? "Add attachment" : "Attachments are not available"}">＋</button><textarea id="composer-text" rows="1" placeholder="${canSend ? `Message ${esc(channel.title)}` : "Sending is unavailable"}" aria-label="Message ${esc(channel.title)}" ${canSend ? "required" : "disabled"}></textarea><button class="ca-send" type="submit" aria-label="Send message" ${canSend ? "" : "disabled"}>↑</button></form><input id="attachment-input" type="file" multiple hidden></div>`;
+      `<header class="ca-thread-head"><button class="ca-back" id="back-button" aria-label="Back to Inbox">‹</button><span class="ca-avatar ${channel.kind === "group" ? "channel" : ""}">${esc(channel.title.slice(0, 2).toUpperCase())}</span><div class="ca-thread-identity"><h2>${esc(channel.title)}</h2><p>${channel.kind === "group" ? `${members.length} Bot${members.length === 1 ? "" : "s"}` : "Direct conversation"}</p></div><div class="ca-thread-actions"><button class="ca-details-button" id="inspector-button" ${inspectorDisabled} title="${esc(evidenceTitle)}" aria-label="${esc(evidenceTitle)}">Inspector</button><button class="ca-details-button" id="details-button">Details</button></div></header>${evidenceNotice}<div class="ca-messages" id="messages" aria-live="polite">${body}</div><div class="ca-activity" id="thread-activity">${activity?.state && activity.state !== "idle" ? '<i class="ca-activity-dot"></i>' + esc(activity.label || "Active now") : ""}</div><div class="ca-composer-wrap">${executionControls}<div id="attachment-drafts" aria-live="polite"></div><form class="ca-composer" id="composer"><button class="ca-attach" type="button" id="attach-button" ${canAttach ? "" : "disabled"} aria-label="${canAttach ? "Add attachment" : "Attachments are not available"}" title="${canAttach ? "Add attachment" : "Attachments are not available"}">＋</button><textarea id="composer-text" rows="1" placeholder="${canSend ? `Message ${esc(channel.title)}` : "Sending is unavailable"}" aria-label="Message ${esc(channel.title)}" ${canSend ? "" : "disabled"}></textarea><button class="ca-send" type="submit" aria-label="Send message" ${canSend ? "" : "disabled"}>↑</button></form><input id="attachment-input" type="file" multiple hidden></div>`;
     renderEvidenceNotice();
     $("back-button").addEventListener("click", () => {
       $("conversation").classList.remove("open");
@@ -654,10 +819,10 @@
       closeInspectorPane(false);
     });
     $("inspector-button").addEventListener("click", () => {
-      const turn = state.evidence.liveTurn() || turns.at(-1);
+      const turn = state.evidence.liveTurn() || state.evidence.turns().at(-1);
       if (turn) openInspector(turn.turnId, !turn.terminal);
     });
-    $("details-button").addEventListener("click", () => showDetails(channel));
+    $("details-button").addEventListener("click", () => showDetails(state.currentChannel || channel));
     $("composer").addEventListener("submit", sendMessage);
     $("composer-model")?.addEventListener("change", () => {
       updateExecutionSelection(channel.id);
@@ -673,7 +838,7 @@
     $("composer-effort")?.addEventListener("change", () => updateExecutionSelection(channel.id));
     $("execution-options-retry")?.addEventListener("click", async () => {
       await loadExecutionOptions(channel.id, true);
-      if (state.selected === channel.id) renderConversation(channel, state.currentMessages, { scrollToBottom: false });
+      if (state.selected === channel.id) refreshExecutionControls(channel.id);
     });
     $("composer-text").addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -684,15 +849,24 @@
     $("attach-button").addEventListener("click", () => {
       if (canAttach) $("attachment-input").click();
     });
-    $("attachment-input").addEventListener("change", () =>
-      toast("Attachment upload requires the active attachment capability."),
-    );
-    document.querySelectorAll(".ca-turn-glance[data-turn-id]").forEach((button) =>
-      button.addEventListener("click", () => {
-        const turn = state.evidence.turn(button.dataset.turnId);
-        if (turn) openInspector(turn.turnId, !turn.terminal);
-      }),
-    );
+    $("attachment-input").addEventListener("change", () => {
+      void attachFiles(channel.id, Array.from($("attachment-input").files || []));
+      $("attachment-input").value = "";
+    });
+    $("composer-text").value = state.drafts.get(channel.id) || "";
+    $("composer-text").addEventListener("input", saveCurrentDraft);
+    $("composer-text").addEventListener("paste", event => {
+      const files = Array.from(event.clipboardData?.files || []);
+      if (canAttach && files.length) { event.preventDefault(); void attachFiles(channel.id, files); }
+    });
+    $("composer").addEventListener("dragover", event => { if (canAttach) event.preventDefault(); });
+    $("composer").addEventListener("drop", event => {
+      if (!canAttach) return;
+      event.preventDefault();
+      void attachFiles(channel.id, Array.from(event.dataTransfer?.files || []));
+    });
+    bindTranscriptActions();
+    renderAttachmentDraft(channel.id);
     const pane = $("messages");
     if (options.scrollToBottom !== false) pane.scrollTop = pane.scrollHeight;
     if (state.inspectorVisible) renderInspector();
@@ -702,7 +876,7 @@
     const attachments = (m.attachments || [])
       .map(
         (a) =>
-          `<div class="ca-attachment"><span class="ca-avatar channel">↗</span><span><b>${esc(a.name || "Attachment")}</b><span>${esc(a.contentType || "File")}${a.byteCount ? ` · ${Math.ceil(a.byteCount / 1024)} KB` : ""}</span></span></div>`,
+          `<button type="button" class="ca-attachment" data-download-attachment="${esc(a.id)}" data-filename="${esc(a.name || "Attachment")}"><span aria-hidden="true">↓</span><span><b>${esc(a.name || "Attachment")}</b><span>${esc(a.contentType || "File")}${a.byteCount ? ` · ${Math.ceil(a.byteCount / 1024)} KB` : ""}</span></span></button>`,
       )
       .join("");
     const glances = owner ? "" : turns.map(quickGlanceHtml).join("");
@@ -1110,11 +1284,16 @@
     if (state.capabilities?.capabilities?.messageSubmission !== true)
       return toast("Sending is not available from this Home23.");
     const input = $("composer-text"),
-      text = retryRecord?.text || input.value.trim();
-    if (!text) return;
+      text = retryRecord ? retryRecord.text : input.value.trim();
+    const channelId = retryRecord?.channelId || state.selected;
+    const attachments = state.draftAttachments.get(channelId) || [];
+    if (!retryRecord && attachments.some(a => a.status !== "ready")) return toast("Wait for uploads or remove the failed attachment.");
+    if (!text && !attachments.length && !retryRecord?.attachmentIds?.length) return;
     const capturedSelection = retryRecord || Selection.capture(executionSelection(state.selected));
     const record = retryRecord || {
       text,
+      channelId,
+      attachmentIds: attachments.map(a => a.artifactId),
       messageId: opaqueId("msg"),
       clientMessageId: opaqueId("client"),
       idempotencyKey: idem("web-message"),
@@ -1122,55 +1301,38 @@
       reasoningEffort: capturedSelection.reasoningEffort,
     };
     const { messageId, clientMessageId } = record;
-    const pending = document.createElement("article");
-    pending.className = "ca-message owner pending";
-    pending.id = `message-${messageId}`;
-    const selectionFacts = [
-      record.modelAlias ? `model ${record.modelAlias}` : null,
-      record.reasoningEffort ? `effort ${record.reasoningEffort}` : null,
-    ].filter(Boolean).join(" · ");
-    pending.innerHTML = `<div class="ca-message-meta"><span>Sending…${selectionFacts ? ` · ${esc(selectionFacts)}` : ""}</span></div><div>${esc(text).replace(/\n/g, "<br>")}</div>`;
-    $("messages").append(pending);
-    $("messages").scrollTop = $("messages").scrollHeight;
-    if (!retryRecord) input.value = "";
+    record.error = null;
+    state.pending.set(messageId, record);
+    if (!retryRecord) { input.value = ""; state.drafts.set(channelId, ""); }
+    if (state.selected === channelId) renderConversation(state.currentChannel, state.currentMessages);
     document.querySelectorAll("#composer-text, .ca-send, .ca-execution-select")
       .forEach((control) => { control.disabled = true; });
-    state.pending.set(messageId, record);
     try {
-      await api(`/channels/${encodeURIComponent(state.selected)}/messages`, {
+      await api(`/channels/${encodeURIComponent(record.channelId)}/messages`, {
         method: "POST",
         headers: { "idempotency-key": record.idempotencyKey },
         body: JSON.stringify({
           messageId,
           clientMessageId,
-          text,
-          attachmentIds: [],
+          text: text || null,
+          attachmentIds: record.attachmentIds || [],
           mentions: mentionsFor(text),
           replyToMessageId: null,
           ...Selection.requestFields(record),
         }),
       });
-      state.pending.delete(messageId);
+      record.accepted = true;
+      const sent = new Set(record.attachmentIds || []);
+      state.draftAttachments.set(channelId, (state.draftAttachments.get(channelId) || []).filter(a => !sent.has(a.artifactId)));
+      if (state.selected === channelId) renderAttachmentDraft(channelId);
       await refreshInbox();
       await refreshSelectedQuietly();
       await syncEvidence(state.evidenceConversationId).catch(() => {});
       scheduleEvidenceRefresh();
     } catch (error) {
-      pending.className = "ca-message owner failed";
-      pending.querySelector(".ca-message-meta").innerHTML =
-        `<span>Not sent · ${esc(error.message)}${error.requestId ? ` · request ${esc(error.requestId)}` : ""}</span>`;
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.textContent = "Retry";
-      retry.addEventListener("click", () => {
-        if (state.connection !== "online") {
-          toast("Reconnect before retrying.");
-          return;
-        }
-        pending.remove();
-        sendMessage(null, record);
-      });
-      pending.append(retry);
+      if (record.accepted) toast("Message accepted. Reconnecting for updates.");
+      else record.error = error.message + (error.requestId ? ` · request ${error.requestId}` : "");
+      if (state.selected === channelId) renderConversation(state.currentChannel, state.currentMessages);
     } finally {
       const currentInput = $("composer-text");
       if (currentInput) {
@@ -1183,7 +1345,7 @@
           .forEach((control) => {
             control.disabled = !canSend || !state.executionOptions.has(state.selected);
           });
-        currentInput.focus();
+        if (state.selected === channelId) currentInput.focus();
       }
     }
   }

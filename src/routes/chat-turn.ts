@@ -1,3 +1,4 @@
+import { attachmentContentType } from "../attachment-content.js";
 import type { Request, Response } from 'express';
 import type { AgentLoop } from '../agent/loop.js';
 import type { ConversationHistory } from '../agent/history.js';
@@ -46,11 +47,11 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
   return async (req: Request, res: Response): Promise<void> => {
     if (!checkAuth(req, res, config.token)) return;
 
-    const { chatId, message, model, effort: requestedEffort, images } = req.body ?? {};
+    const { chatId, message, model, effort: requestedEffort, images, attachments } = req.body ?? {};
     if (!chatId || typeof chatId !== 'string') {
       res.status(400).json({ error: 'chatId required' }); return;
     }
-    if (typeof message !== 'string' || message.trim().length === 0) {
+    if (typeof message !== 'string' || (!message.trim() && !images?.length && !attachments?.length)) {
       res.status(400).json({ error: 'message required' }); return;
     }
 
@@ -93,6 +94,29 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
           res.status(413).json({ error: `image exceeds ${MAX_BYTES} bytes` }); return;
         }
         validatedImages.push({ buf, mimeType: img.mimeType, fileName: typeof img.fileName === 'string' ? img.fileName : undefined });
+      }
+    }
+
+    if (attachments !== undefined) {
+      if (!Array.isArray(attachments) || attachments.length + validatedImages.length > 10) {
+        res.status(413).json({ error: 'Up to 10 attachments are allowed per message.' }); return;
+      }
+      let totalBytes = validatedImages.reduce((n, file) => n + file.buf.length, 0);
+      for (const file of attachments) {
+        if (!file || typeof file.data !== 'string' || file.data.length > Math.ceil(25 * 1024 * 1024 / 3) * 4 ||
+            !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.data)) {
+          res.status(400).json({ error: 'Attachment data must be valid base64.' }); return;
+        }
+        const buf = Buffer.from(file.data, 'base64');
+        totalBytes += buf.length;
+        if (totalBytes > 25 * 1024 * 1024) {
+          res.status(413).json({ error: 'The combined attachments exceed 25 MB.' }); return;
+        }
+        const fileName = typeof file.fileName === 'string' ? file.fileName.normalize('NFC') : 'Attachment';
+        if (!fileName || fileName.length > 255 || /[\x00-\x1f\x7f/\\]/u.test(fileName) || fileName === '.' || fileName === '..') {
+          res.status(400).json({ error: 'The attachment filename is invalid.' }); return;
+        }
+        validatedImages.push({ buf, mimeType: attachmentContentType(buf), fileName });
       }
     }
 
@@ -160,10 +184,11 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
       };
       for (let i = 0; i < validatedImages.length; i++) {
         const v = validatedImages[i]!;
-        const ext = extByMime[v.mimeType] ?? extname(v.fileName ?? '') ?? '.bin';
+        const suppliedExtension = extname(v.fileName ?? '');
+        const ext = extByMime[v.mimeType] ?? (/^\.[a-z0-9]{1,16}$/i.test(suppliedExtension) ? suppliedExtension : '.bin');
         const p = join(uploadDir, `${turnId}-${i}${ext}`);
-        writeFileSync(p, v.buf);
-        media.push({ type: 'image', path: p, mimeType: v.mimeType, fileName: v.fileName });
+        writeFileSync(p, v.buf, { flag: 'wx', mode: 0o600 });
+        media.push({ type: ALLOWED_MIME.has(v.mimeType) ? 'image' : 'document', path: p, mimeType: v.mimeType, fileName: v.fileName, byteCount: v.buf.length });
       }
     }
 

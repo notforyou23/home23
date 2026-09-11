@@ -1,3 +1,4 @@
+import { attachmentContentType } from "../../attachment-content.js";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
@@ -293,6 +294,16 @@ export function createResidentArtifactPromotionPort(input: {
           const stat = await handle.stat();
           if (!stat.isFile() || stat.size !== artifact.byteCount) {
             throw new ArtifactError("storage_integrity");
+          }
+          const contentBytes = Buffer.alloc(artifact.byteCount);
+          let readOffset = 0;
+          while (readOffset < contentBytes.length) {
+            const read = await handle.read(contentBytes, readOffset, contentBytes.length - readOffset, readOffset);
+            if (!read.bytesRead) throw new ArtifactError("storage_integrity");
+            readOffset += read.bytesRead;
+          }
+          if (attachmentContentType(contentBytes) !== artifact.contentType) {
+            throw new ArtifactError("invalid_content_type");
           }
           const prior = replay(actor.principalId, keyDigest, requestDigest);
           if (prior) {

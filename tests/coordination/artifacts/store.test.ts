@@ -639,7 +639,7 @@ test("upload admission bounds concurrent streams and queued wait time", async (t
   await first;
 });
 
-test("active text is rejected before canonical publication", async (t) => {
+test("active markup is preserved as an opaque downloadable file", async (t) => {
   const rootDirectory = await mkdtemp(join(tmpdir(), "home23-m10-active-"));
   t.after(() => rm(rootDirectory, { recursive: true, force: true }));
   const { ArtifactError, LocalArtifactStore } = await import(
@@ -652,22 +652,19 @@ test("active text is rejected before canonical publication", async (t) => {
     quarantineId: () => "quarantine-active",
   });
 
-  await assert.rejects(
-    store.ingest({
+  const uploaded = await store.ingest({
       artifactId: "art_0198d95f-6c00-7000-8000-000000000831",
       actor: OWNER,
       originalName: "active.txt",
       declaredContentType: null,
       expectedSha256: "5c140d35dcb46a622e2cedf5ef5cc3638cdffd1c118c9331f8c84669f0b74783",
       content: Readable.from([Buffer.from("<script>alert(1)</script>")]),
-    }),
-    (error: unknown) => error instanceof ArtifactError && error.code === "invalid_content_type",
-  );
+    });
+  assert.equal(uploaded.detectedContentType, "application/octet-stream");
 
   assert.equal(repository.size, 1);
-  assert.equal(repository.record("art_0198d95f-6c00-7000-8000-000000000831")?.state, "failed");
+  assert.equal(repository.record("art_0198d95f-6c00-7000-8000-000000000831")?.state, "ready");
   assert.deepEqual(await readdir(join(rootDirectory, "quarantine")), []);
-  assert.deepEqual(await readdir(join(rootDirectory, "objects"), { recursive: true }), ["sha256"]);
 });
 
 test("a binary NUL after the sniff prefix cannot be misclassified as plain text", async (t) => {
@@ -683,26 +680,24 @@ test("a binary NUL after the sniff prefix cannot be misclassified as plain text"
     quarantineId: () => "quarantine-binary-text",
   });
 
-  await assert.rejects(
-    store.ingest({
+  const uploaded = await store.ingest({
       artifactId: "art_0198d95f-6c00-7000-8000-000000000849",
       actor: OWNER,
       originalName: "binary.txt",
       declaredContentType: "text/plain",
       expectedSha256: "3d062dc1607efa84a62622cd3a73253674158f734112d1bded7edbb742484798",
       content: Readable.from([Buffer.alloc(4096, 0x61), Buffer.from([0])]),
-    }),
-    (error: unknown) => error instanceof ArtifactError && error.code === "invalid_content_type",
-  );
+    });
+  assert.equal(uploaded.detectedContentType, "application/octet-stream");
 });
 
-test("the bounded allowlist accepts each documented structural profile with its exact declared type", async (t) => {
+test("recognized file signatures retain their preview content type", async (t) => {
   const rootDirectory = await mkdtemp(join(tmpdir(), "home23-m10-types-"));
   t.after(() => rm(rootDirectory, { recursive: true, force: true }));
   const { LocalArtifactStore, SUPPORTED_ARTIFACT_CONTENT_TYPES } = await import(
     "../../../src/coordination/artifacts/index.js"
   );
-  assert.equal(new Set<string>(SUPPORTED_ARTIFACT_CONTENT_TYPES).has("image/webp"), false);
+  assert.equal(new Set<string>(SUPPORTED_ARTIFACT_CONTENT_TYPES).has("image/webp"), true);
   const repository = new MemoryArtifactRepository();
   let quarantine = 0;
   const store = await LocalArtifactStore.open({
@@ -748,7 +743,7 @@ test("the bounded allowlist accepts each documented structural profile with its 
   }
 });
 
-test("magic prefixes without a complete supported file structure are rejected", async (t) => {
+test("file storage does not require a preview decoder to accept bytes", async (t) => {
   const rootDirectory = await mkdtemp(join(tmpdir(), "home23-m10-truncated-types-"));
   t.after(() => rm(rootDirectory, { recursive: true, force: true }));
   const artifacts = await import("../../../src/coordination/artifacts/index.js");
@@ -768,22 +763,19 @@ test("magic prefixes without a complete supported file structure are rejected", 
   ] as const;
   for (const [index, [contentType, hex]] of cases.entries()) {
     const bytes = Buffer.from(hex, "hex");
-    await assert.rejects(
-      store.ingest({
+    const uploaded = await store.ingest({
         artifactId: `art_0198d95f-6c00-7000-8000-${String(855 + index).padStart(12, "0")}`,
         actor: OWNER,
         originalName: `truncated-${index}`,
         declaredContentType: contentType,
         expectedSha256: createHash("sha256").update(bytes).digest("hex"),
         content: Readable.from([bytes]),
-      }),
-      (error: unknown) =>
-        error instanceof artifacts.ArtifactError && error.code === "invalid_content_type",
-    );
+      });
+    assert.equal(uploaded.byteCount, bytes.length);
   }
 });
 
-test("token-shaped media shells and oversized raster declarations are rejected", async (t) => {
+test("large raster declarations are stored without decompressing them", async (t) => {
   const rootDirectory = await mkdtemp(join(tmpdir(), "home23-m10-malformed-media-"));
   t.after(() => rm(rootDirectory, { recursive: true, force: true }));
   const artifacts = await import("../../../src/coordination/artifacts/index.js");
@@ -807,23 +799,23 @@ test("token-shaped media shells and oversized raster declarations are rejected",
   ] as const;
 
   for (const [index, [contentType, bytes]] of cases.entries()) {
-    await assert.rejects(
-      store.ingest({
+    const uploaded = await store.ingest({
         artifactId: `art_0198d95f-6c00-7000-8000-${String(865 + index).padStart(12, "0")}`,
         actor: OWNER,
         originalName: `malformed-${index}`,
         declaredContentType: contentType,
         expectedSha256: createHash("sha256").update(bytes).digest("hex"),
         content: Readable.from([bytes]),
-      }),
-      (error: unknown) =>
-        error instanceof artifacts.ArtifactError && error.code === "invalid_content_type",
-      contentType,
-    );
+      });
+    assert.equal(uploaded.byteCount, bytes.length);
+    const downloaded = await store.openDownload({artifactId: uploaded.id, actor: OWNER});
+    const parts: Buffer[] = [];
+    for await (const part of downloaded.content) parts.push(Buffer.from(part));
+    assert.deepEqual(Buffer.concat(parts), bytes);
   }
 });
 
-test("declared and detected content types must match", async (t) => {
+test("sniffed bytes take precedence over an inaccurate client MIME type", async (t) => {
   const rootDirectory = await mkdtemp(join(tmpdir(), "home23-m10-type-mismatch-"));
   t.after(() => rm(rootDirectory, { recursive: true, force: true }));
   const { ArtifactError, LocalArtifactStore } = await import(
@@ -837,20 +829,17 @@ test("declared and detected content types must match", async (t) => {
     quarantineId: () => "quarantine-type-mismatch",
   });
 
-  await assert.rejects(
-    store.ingest({
+  const uploaded = await store.ingest({
       artifactId,
       actor: OWNER,
       originalName: "not-a-jpeg.jpg",
       declaredContentType: "image/jpeg",
       expectedSha256: "02a3e298f1533f62558c58e4c70edcab9af5a50d62d925fd5390942020fb0fb8",
       content: Readable.from([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex")]),
-    }),
-    (error: unknown) => error instanceof ArtifactError && error.code === "invalid_content_type",
-  );
-  assert.equal(repository.record(artifactId)?.state, "failed");
+    });
+  assert.equal(uploaded.detectedContentType, "image/png");
+  assert.equal(repository.record(artifactId)?.state, "ready");
   assert.deepEqual(await readdir(join(rootDirectory, "quarantine")), []);
-  assert.deepEqual(await readdir(join(rootDirectory, "objects"), { recursive: true }), ["sha256"]);
 });
 
 test("path-shaped filenames are rejected before staging", async (t) => {
@@ -1203,4 +1192,26 @@ test("orphan collection quarantines an unreferenced object before any later dele
     await readFile(join(rootDirectory, "quarantine", "orphans", quarantined[0]!)),
     bytes,
   );
+});
+
+test('a real 12 MP progressive phone JPEG and arbitrary files reach canonical storage unchanged', async (t) => {
+  const rootDirectory = await mkdtemp(join(tmpdir(), 'home23-general-files-'));
+  t.after(() => rm(rootDirectory, {recursive: true, force: true}));
+  const {LocalArtifactStore} = await import('../../../src/coordination/artifacts/index.js');
+  const store = await LocalArtifactStore.open({rootDirectory, repository: new MemoryArtifactRepository()});
+  const photo = await readFile(new URL('../../fixtures/attachments/phone-12mp-progressive.jpg', import.meta.url));
+  const cases = [
+    {name: 'IMG_1234.jpg', type: 'image/jpeg', detected: 'image/jpeg', bytes: photo},
+    {name: 'project.zip', type: 'application/zip', detected: 'application/octet-stream', bytes: Buffer.from([80,75,3,4,0,1,2,255])},
+    {name: 'model.bin', type: 'application/octet-stream', detected: 'application/octet-stream', bytes: Buffer.from([0,255,1,2])},
+    {name: 'component.svg', type: 'image/svg+xml', detected: 'application/octet-stream', bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>')},
+    {name: 'settings.json', type: 'application/json', detected: 'text/plain', bytes: Buffer.from('{"name":"test"}')},
+  ];
+  for (const [index, item] of cases.entries()) {
+    const attachment = await store.ingest({artifactId: `art_0198d95f-6c00-7000-8000-${String(950 + index).padStart(12, '0')}`, actor: OWNER,
+      originalName: item.name, declaredContentType: item.type, expectedSha256: createHash('sha256').update(item.bytes).digest('hex'), content: Readable.from([item.bytes])});
+    assert.equal(attachment.detectedContentType, item.detected);
+    const local = await store.verifiedLocalReference({id: attachment.id, name: item.name, contentType: attachment.detectedContentType, byteCount: item.bytes.length, sha256: attachment.sha256});
+    assert.deepEqual(await readFile(local.path), item.bytes);
+  }
 });

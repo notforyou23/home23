@@ -113,3 +113,25 @@ test('proxy preserves the communication cursor query and fails visibly at its by
   assert.equal(body.error.code, 'coordination_response_too_large');
   assert.equal(body.error.retryable, false);
 });
+
+test('multipart file uploads pass through intact without JSON parsing and downloads retain safe headers', async (t) => {
+  let observed;
+  const fixture = await serverFor(async (url, init) => {
+    const parts = [];
+    for await (const part of init.body || []) parts.push(Buffer.from(part));
+    observed = {url, init, bytes: Buffer.concat(parts)};
+    return new Response('{"attachment":{"state":"ready"}}', {status: 201, headers: {'content-type': 'application/json'}});
+  });
+  t.after(() => fixture.server.close());
+  const bytes = Buffer.from([0,1,2,255,80,75]);
+  const form = new FormData();
+  form.append('metadata', JSON.stringify({name: 'source.zip'}));
+  form.append('content', new Blob([bytes]), 'source.zip');
+  const result = await fetch(`${fixture.origin}/home23/api/product/attachments`, {method: 'POST', headers: {authorization: 'Bearer token', 'idempotency-key': 'file-test-00001'}, body: form});
+  assert.equal(result.status, 201);
+  assert.match(observed.init.headers['content-type'], /^multipart\/form-data; boundary=/);
+  assert.equal(observed.init.duplex, 'half');
+  assert.ok(observed.bytes.includes(bytes));
+  assert.ok(observed.bytes.includes(Buffer.from('name="metadata"')));
+  assert.equal(observed.init.headers['idempotency-key'], 'file-test-00001');
+});

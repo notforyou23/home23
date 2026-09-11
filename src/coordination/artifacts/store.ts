@@ -14,9 +14,8 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Readable } from "node:stream";
-import { inflate } from "node:zlib";
 
-import { isStructurallyValidMp3 } from "../../returned-artifacts.js";
+import { detectAttachmentContentType, isAttachmentContentType, ATTACHMENT_PREVIEW_CONTENT_TYPES } from "../../attachment-content.js";
 import { assertCoordinationId } from "../ids/index.js";
 import { assertArtifactReadActor, assertArtifactWriteActor } from "./access.js";
 import { ArtifactError } from "./errors.js";
@@ -43,34 +42,17 @@ export const ARTIFACT_STREAM_IDLE_TIMEOUT_MS = 15_000;
 export const ARTIFACT_STREAM_TOTAL_TIMEOUT_MS = 120_000;
 export const DEFAULT_MAXIMUM_CONCURRENT_ARTIFACT_UPLOADS = 4;
 export const DEFAULT_ARTIFACT_UPLOAD_ADMISSION_TIMEOUT_MS = 15_000;
-export const SUPPORTED_ARTIFACT_CONTENT_TYPES = Object.freeze([
-  "application/pdf",
-  "audio/mpeg",
-  "image/gif",
-  "image/jpeg",
-  "image/png",
-  "text/plain",
-] as const);
+// Storage accepts files independently of preview support. Unknown formats remain
+// opaque, downloadable bytes; they are never executed or decoded during upload.
+export const SUPPORTED_ARTIFACT_CONTENT_TYPES = ATTACHMENT_PREVIEW_CONTENT_TYPES;
 export const ARTIFACT_CONTENT_POLICY = Object.freeze({
-  version: 1,
+  version: 2,
   maximumBytes: DEFAULT_MAXIMUM_ARTIFACT_BYTES,
-  maximumStructuralRecords: 65_536,
-  maximumRasterDimension: 8_192,
-  maximumRasterPixels: 4_000_000,
-  maximumEncodedRasterBytes: 8 * 1024 * 1024,
-  maximumDecodedRasterBytes: 16 * 1024 * 1024,
-  maximumStructuredDocumentBytes: 8 * 1024 * 1024,
-  profiles: Object.freeze({
-    "application/pdf": "header_xref_trailer_startxref_eof",
-    "audio/mpeg": "id3_or_two_complete_mpeg_frames",
-    "image/gif": "logical_screen_blocks_image_trailer",
-    "image/jpeg": "soi_frame_scan_eoi",
-    "image/png": "signature_ihdr_idat_iend",
-    "text/plain": "complete_valid_utf8_without_nul_or_active_markup_prefix",
-  }),
-} as const);
+  acceptsGeneralFiles: true,
+  detection: "signature_or_utf8_with_opaque_fallback",
+  previewValidation: "performed_by_the_viewer",
+});
 
-const supportedContentTypes = new Set<string>(SUPPORTED_ARTIFACT_CONTENT_TYPES);
 type OpenFileHandle = Awaited<ReturnType<typeof open>>;
 const rootMutationTails = new Map<string, Promise<void>>();
 interface UploadAdmissionWaiter {
@@ -117,48 +99,6 @@ function safeQuarantineId(value: string): string {
     throw new ArtifactError("storage_integrity");
   }
   return value;
-}
-
-function validMp3FrameHeader(bytes: Buffer, offset = 0): boolean {
-  if (bytes.length < offset + 4 || bytes[offset] !== 0xff || (bytes[offset + 1]! & 0xe0) !== 0xe0) {
-    return false;
-  }
-  const version = (bytes[offset + 1]! >> 3) & 0x03;
-  const layer = (bytes[offset + 1]! >> 1) & 0x03;
-  const bitrate = (bytes[offset + 2]! >> 4) & 0x0f;
-  const sampleRate = (bytes[offset + 2]! >> 2) & 0x03;
-  return version !== 1 && layer !== 0 && bitrate !== 0 && bitrate !== 15 && sampleRate !== 3;
-}
-
-function detectContentType(
-  prefix: Buffer,
-  validUtf8Text: boolean,
-  containsNul: boolean,
-): string {
-  if (prefix.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) {
-    return "image/png";
-  }
-  if (prefix.length >= 3 && prefix[0] === 0xff && prefix[1] === 0xd8 && prefix[2] === 0xff) {
-    return "image/jpeg";
-  }
-  if (prefix.subarray(0, 4).toString("ascii") === "RIFF" &&
-      prefix.subarray(8, 12).toString("ascii") === "WEBP") {
-    throw new ArtifactError("invalid_content_type");
-  }
-  const gif = prefix.subarray(0, 6).toString("ascii");
-  if (gif === "GIF87a" || gif === "GIF89a") return "image/gif";
-  if (prefix.subarray(0, 5).toString("ascii") === "%PDF-") return "application/pdf";
-  if (validMp3FrameHeader(prefix) || prefix.subarray(0, 3).toString("ascii") === "ID3") {
-    return "audio/mpeg";
-  }
-  if (validUtf8Text && !containsNul) {
-    const leadingText = prefix.toString("utf8").replace(/^\uFEFF/u, "").trimStart().toLowerCase();
-    if (/^(?:<!doctype\s+html|<html\b|<script\b|<svg\b|<\?xml\b)/u.test(leadingText)) {
-      throw new ArtifactError("invalid_content_type");
-    }
-    return "text/plain";
-  }
-  throw new ArtifactError("invalid_content_type");
 }
 
 async function hashPath(path: string): Promise<{ sha256: string; byteCount: number }> {
@@ -341,501 +281,15 @@ export async function writeArtifactBytesFully(
   }
 }
 
-async function readExact(
-  handle: OpenFileHandle,
-  position: number,
-  length: number,
-): Promise<Buffer | null> {
-  if (position < 0 || length < 0) return null;
+async function readExact(handle: OpenFileHandle, position: number, length: number): Promise<Buffer | null> {
   const bytes = Buffer.alloc(length);
   let offset = 0;
   while (offset < length) {
-    const result = await handle.read(bytes, offset, length - offset, position + offset);
-    if (result.bytesRead === 0) return null;
-    offset += result.bytesRead;
+    const read = await handle.read(bytes, offset, length - offset, position + offset);
+    if (read.bytesRead === 0) return null;
+    offset += read.bytesRead;
   }
   return bytes;
-}
-
-const CRC32_TABLE = Object.freeze(Array.from({ length: 256 }, (_unused, value) => {
-  let crc = value;
-  for (let bit = 0; bit < 8; bit += 1) {
-    crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
-  }
-  return crc >>> 0;
-}));
-
-function updateCrc32(crc: number, bytes: Buffer): number {
-  let value = crc;
-  for (const byte of bytes) value = CRC32_TABLE[(value ^ byte) & 0xff]! ^ (value >>> 8);
-  return value >>> 0;
-}
-
-function permittedRaster(width: number, height: number): boolean {
-  return Number.isSafeInteger(width) &&
-    Number.isSafeInteger(height) &&
-    width > 0 &&
-    height > 0 &&
-    width <= ARTIFACT_CONTENT_POLICY.maximumRasterDimension &&
-    height <= ARTIFACT_CONTENT_POLICY.maximumRasterDimension &&
-    width * height <= ARTIFACT_CONTENT_POLICY.maximumRasterPixels;
-}
-
-function inflateBounded(input: Buffer, maximumOutputBytes: number): Promise<Buffer> {
-  return new Promise((resolveOutput, rejectOutput) => {
-    inflate(input, { maxOutputLength: maximumOutputBytes }, (error, output) => {
-      if (error) rejectOutput(error);
-      else resolveOutput(output);
-    });
-  });
-}
-
-async function validatePng(handle: OpenFileHandle, byteCount: number): Promise<boolean> {
-  if (byteCount < 45) return false;
-  let position = 8;
-  let chunkIndex = 0;
-  let sawImageData = false;
-  let endedImageData = false;
-  let sawPalette = false;
-  let width = 0;
-  let height = 0;
-  let bitsPerPixel = 0;
-  let pngColorType = -1;
-  let compressedByteCount = 0;
-  const compressedImageData: Buffer[] = [];
-  while (position + 12 <= byteCount) {
-    if (chunkIndex >= ARTIFACT_CONTENT_POLICY.maximumStructuralRecords) return false;
-    const header = await readExact(handle, position, 8);
-    if (!header) return false;
-    const length = header.readUInt32BE(0);
-    const type = header.subarray(4, 8).toString("ascii");
-    const next = position + 12 + length;
-    if (!Number.isSafeInteger(next) || next > byteCount) return false;
-    if (chunkIndex === 0) {
-      if (type !== "IHDR" || length !== 13) return false;
-      const headerData = await readExact(handle, position + 8, 13);
-      if (!headerData) return false;
-      width = headerData.readUInt32BE(0);
-      height = headerData.readUInt32BE(4);
-      if (!permittedRaster(width, height)) return false;
-      const bitDepth = headerData[8]!;
-      const colorType = headerData[9]!;
-      pngColorType = colorType;
-      const permittedDepths: Readonly<Record<number, readonly number[]>> = {
-        0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16],
-      };
-      if (
-        !permittedDepths[colorType]?.includes(bitDepth) ||
-        headerData[10] !== 0 ||
-        headerData[11] !== 0 ||
-        headerData[12] !== 0
-      ) return false;
-      const components: Readonly<Record<number, number>> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
-      bitsPerPixel = components[colorType]! * bitDepth;
-    }
-    let crc = updateCrc32(0xffffffff, header.subarray(4, 8));
-    let dataPosition = position + 8;
-    let remaining = length;
-    while (remaining > 0) {
-      const size = Math.min(64 * 1024, remaining);
-      const data = await readExact(handle, dataPosition, size);
-      if (!data) return false;
-      crc = updateCrc32(crc, data);
-      dataPosition += size;
-      remaining -= size;
-    }
-    const storedCrc = await readExact(handle, position + 8 + length, 4);
-    if (!storedCrc || ((crc ^ 0xffffffff) >>> 0) !== storedCrc.readUInt32BE(0)) return false;
-    if (type === "PLTE") {
-      if (sawImageData || length < 3 || length > 768 || length % 3 !== 0) return false;
-      sawPalette = true;
-    } else if (type === "IDAT") {
-      if (endedImageData || length === 0) return false;
-      const data = await readExact(handle, position + 8, length);
-      if (!data) return false;
-      compressedByteCount += data.length;
-      if (compressedByteCount > ARTIFACT_CONTENT_POLICY.maximumEncodedRasterBytes) return false;
-      compressedImageData.push(data);
-      sawImageData = true;
-    } else if (sawImageData && type !== "IEND") {
-      endedImageData = true;
-    }
-    if (["acTL", "fcTL", "fdAT", "iCCP", "iTXt", "zTXt"].includes(type)) return false;
-    if (type === "IEND") {
-      if (length !== 0 || !sawImageData || next !== byteCount) return false;
-      const rowBytes = Math.ceil(width * bitsPerPixel / 8);
-      const decodedByteCount = height * (rowBytes + 1);
-      if (
-        !Number.isSafeInteger(decodedByteCount) ||
-        decodedByteCount > ARTIFACT_CONTENT_POLICY.maximumDecodedRasterBytes
-      ) return false;
-      let decoded: Buffer;
-      try {
-        decoded = await inflateBounded(Buffer.concat(compressedImageData), decodedByteCount);
-      } catch {
-        return false;
-      }
-      if (decoded.length !== decodedByteCount) return false;
-      for (let row = 0; row < height; row += 1) {
-        if (decoded[row * (rowBytes + 1)]! > 4) return false;
-      }
-      return pngColorType !== 3 || sawPalette;
-    }
-    if (/^[A-Z]/u.test(type) && !["IHDR", "PLTE", "IDAT", "IEND"].includes(type)) return false;
-    position = next;
-    chunkIndex += 1;
-  }
-  return false;
-}
-
-async function validateJpeg(handle: OpenFileHandle, byteCount: number): Promise<boolean> {
-  if (byteCount < 24) return false;
-  const start = await readExact(handle, 0, 2);
-  const end = await readExact(handle, byteCount - 2, 2);
-  if (!start?.equals(Buffer.from([0xff, 0xd8])) || !end?.equals(Buffer.from([0xff, 0xd9]))) {
-    return false;
-  }
-  let position = 2;
-  let sawFrame = false;
-  let markerCount = 0;
-  const quantizationTables = new Set<number>();
-  const huffmanTables = new Set<string>();
-  const frameComponents = new Set<number>();
-  while (position + 4 <= byteCount - 2) {
-    if (markerCount++ >= ARTIFACT_CONTENT_POLICY.maximumStructuralRecords) return false;
-    const marker = await readExact(handle, position, 2);
-    if (!marker || marker[0] !== 0xff || marker[1] === 0x00 || marker[1] === 0xff) return false;
-    const lengthBytes = await readExact(handle, position + 2, 2);
-    if (!lengthBytes) return false;
-    const length = lengthBytes.readUInt16BE(0);
-    if (length < 2 || position + 2 + length > byteCount - 2) return false;
-    const code = marker[1]!;
-    if (code === 0xdb) {
-      const tables = await readExact(handle, position + 4, length - 2);
-      if (!tables) return false;
-      let offset = 0;
-      while (offset < tables.length) {
-        const precision = tables[offset]! >>> 4;
-        const tableId = tables[offset]! & 0x0f;
-        const tableBytes = precision === 0 ? 64 : precision === 1 ? 128 : 0;
-        if (tableId > 3 || tableBytes === 0 || offset + 1 + tableBytes > tables.length) return false;
-        quantizationTables.add(tableId);
-        offset += 1 + tableBytes;
-      }
-    } else if (code === 0xc4) {
-      const tables = await readExact(handle, position + 4, length - 2);
-      if (!tables) return false;
-      let offset = 0;
-      while (offset < tables.length) {
-        if (offset + 17 > tables.length) return false;
-        const tableClass = tables[offset]! >>> 4;
-        const tableId = tables[offset]! & 0x0f;
-        if (tableClass > 1 || tableId > 3) return false;
-        let symbolCount = 0;
-        for (let index = 1; index <= 16; index += 1) symbolCount += tables[offset + index]!;
-        if (symbolCount < 1 || symbolCount > 256 || offset + 17 + symbolCount > tables.length) {
-          return false;
-        }
-        huffmanTables.add(`${tableClass}:${tableId}`);
-        offset += 17 + symbolCount;
-      }
-    } else if (code === 0xc0) {
-      const frame = await readExact(handle, position + 4, length - 2);
-      const components = frame?.[5] ?? 0;
-      if (
-        !frame ||
-        frame.length < 9 ||
-        frame[0] !== 8 ||
-        !permittedRaster(frame.readUInt16BE(3), frame.readUInt16BE(1)) ||
-        components < 1 ||
-        components > 3 ||
-        length !== 8 + 3 * components
-      ) {
-        return false;
-      }
-      if (sawFrame || quantizationTables.size === 0) return false;
-      for (let index = 0; index < components; index += 1) {
-        const componentId = frame[6 + 3 * index]!;
-        const sampling = frame[7 + 3 * index]!;
-        const quantizationTable = frame[8 + 3 * index]!;
-        if (
-          frameComponents.has(componentId) ||
-          (sampling >>> 4) < 1 ||
-          (sampling >>> 4) > 4 ||
-          (sampling & 0x0f) < 1 ||
-          (sampling & 0x0f) > 4 ||
-          !quantizationTables.has(quantizationTable)
-        ) return false;
-        frameComponents.add(componentId);
-      }
-      sawFrame = true;
-    } else if ([0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]
-      .includes(code)) {
-      return false;
-    } else if (code === 0xda) {
-      const scan = await readExact(handle, position + 4, length - 2);
-      const components = scan?.[0] ?? 0;
-      if (
-        !sawFrame ||
-        !scan ||
-        components < 1 ||
-        components > frameComponents.size ||
-        length !== 6 + 2 * components ||
-        scan[1 + 2 * components] !== 0 ||
-        scan[2 + 2 * components] !== 63 ||
-        scan[3 + 2 * components] !== 0
-      ) return false;
-      const scanComponents = new Set<number>();
-      for (let index = 0; index < components; index += 1) {
-        const componentId = scan[1 + 2 * index]!;
-        const tables = scan[2 + 2 * index]!;
-        if (
-          !frameComponents.has(componentId) ||
-          scanComponents.has(componentId) ||
-          !huffmanTables.has(`0:${tables >>> 4}`) ||
-          !huffmanTables.has(`1:${tables & 0x0f}`)
-        ) return false;
-        scanComponents.add(componentId);
-      }
-      let entropyPosition = position + 2 + length;
-      let entropyBytes = 0;
-      let pendingMarkerPrefix = false;
-      const entropyEnd = byteCount - 2;
-      while (entropyPosition < entropyEnd) {
-        const size = Math.min(64 * 1024, entropyEnd - entropyPosition);
-        const bytes = await readExact(handle, entropyPosition, size);
-        if (!bytes) return false;
-        for (const byte of bytes) {
-          if (!pendingMarkerPrefix) {
-            if (byte === 0xff) pendingMarkerPrefix = true;
-            else entropyBytes += 1;
-            continue;
-          }
-          if (byte === 0xff) continue;
-          if (byte === 0x00) entropyBytes += 1;
-          else if (byte < 0xd0 || byte > 0xd7) return false;
-          pendingMarkerPrefix = false;
-        }
-        entropyPosition += bytes.length;
-      }
-      return !pendingMarkerPrefix && entropyBytes >= 2;
-    }
-    position += 2 + length;
-  }
-  return false;
-}
-
-async function skipGifSubBlocks(
-  handle: OpenFileHandle,
-  start: number,
-  byteCount: number,
-  budget: { remaining: number },
-): Promise<{ position: number; data: Buffer } | null> {
-  let position = start;
-  const chunks: Buffer[] = [];
-  let dataBytes = 0;
-  while (position < byteCount) {
-    if (budget.remaining-- < 1) return null;
-    const size = await readExact(handle, position, 1);
-    if (!size) return null;
-    position += 1;
-    if (size[0] === 0) return { position, data: Buffer.concat(chunks) };
-    const data = await readExact(handle, position, size[0]!);
-    if (!data) return null;
-    chunks.push(data);
-    dataBytes += data.length;
-    if (dataBytes > ARTIFACT_CONTENT_POLICY.maximumEncodedRasterBytes) return null;
-    position += size[0]!;
-  }
-  return null;
-}
-
-function validateGifLzw(data: Buffer, minimumCodeSize: number, expectedPixels: number): boolean {
-  const clearCode = 1 << minimumCodeSize;
-  const endCode = clearCode + 1;
-  const dictionaryLengths = new Uint32Array(4096);
-  for (let code = 0; code < clearCode; code += 1) dictionaryLengths[code] = 1;
-  let codeSize = minimumCodeSize + 1;
-  let nextCode = endCode + 1;
-  let previousCode = -1;
-  let bitPosition = 0;
-  let outputPixels = 0;
-  while (bitPosition + codeSize <= data.length * 8) {
-    let code = 0;
-    for (let bit = 0; bit < codeSize; bit += 1) {
-      const absoluteBit = bitPosition + bit;
-      code |= ((data[absoluteBit >>> 3]! >>> (absoluteBit & 7)) & 1) << bit;
-    }
-    bitPosition += codeSize;
-    if (code === clearCode) {
-      codeSize = minimumCodeSize + 1;
-      nextCode = endCode + 1;
-      previousCode = -1;
-      continue;
-    }
-    if (code === endCode) return outputPixels === expectedPixels;
-    let outputLength: number;
-    if (code < clearCode) outputLength = 1;
-    else if (code < nextCode && dictionaryLengths[code]! > 0) outputLength = dictionaryLengths[code]!;
-    else if (code === nextCode && previousCode >= 0) outputLength = dictionaryLengths[previousCode]! + 1;
-    else return false;
-    outputPixels += outputLength;
-    if (outputPixels > expectedPixels) return false;
-    if (previousCode >= 0 && nextCode < 4096) {
-      dictionaryLengths[nextCode] = dictionaryLengths[previousCode]! + 1;
-      nextCode += 1;
-      if (nextCode === (1 << codeSize) && codeSize < 12) codeSize += 1;
-    }
-    previousCode = code;
-  }
-  return false;
-}
-
-async function validateGif(handle: OpenFileHandle, byteCount: number): Promise<boolean> {
-  if (byteCount < 15) return false;
-  const header = await readExact(handle, 0, 13);
-  if (!header) return false;
-  const signature = header.subarray(0, 6).toString("ascii");
-  if (
-    (signature !== "GIF87a" && signature !== "GIF89a") ||
-    !permittedRaster(header.readUInt16LE(6), header.readUInt16LE(8))
-  ) return false;
-  const globalTableBytes = header[10]! & 0x80 ? 3 * (2 ** ((header[10]! & 0x07) + 1)) : 0;
-  let position = 13 + globalTableBytes;
-  let sawImage = false;
-  const budget = { remaining: ARTIFACT_CONTENT_POLICY.maximumStructuralRecords };
-  while (position < byteCount) {
-    if (budget.remaining-- < 1) return false;
-    const introducer = await readExact(handle, position, 1);
-    if (!introducer) return false;
-    if (introducer[0] === 0x3b) return sawImage && position + 1 === byteCount;
-    if (introducer[0] === 0x21) {
-      if (position + 2 > byteCount) return false;
-      const skipped = await skipGifSubBlocks(handle, position + 2, byteCount, budget);
-      if (skipped === null) return false;
-      position = skipped.position;
-      continue;
-    }
-    if (introducer[0] !== 0x2c || sawImage) return false;
-    const descriptor = await readExact(handle, position + 1, 9);
-    const imageWidth = descriptor?.readUInt16LE(4) ?? 0;
-    const imageHeight = descriptor?.readUInt16LE(6) ?? 0;
-    if (!descriptor || !permittedRaster(imageWidth, imageHeight)) {
-      return false;
-    }
-    const localTableBytes = descriptor[8]! & 0x80
-      ? 3 * (2 ** ((descriptor[8]! & 0x07) + 1))
-      : 0;
-    if (globalTableBytes === 0 && localTableBytes === 0) return false;
-    const lzwPosition = position + 10 + localTableBytes;
-    const lzwMinimum = await readExact(handle, lzwPosition, 1);
-    if (!lzwMinimum || lzwMinimum[0]! < 2 || lzwMinimum[0]! > 8) return false;
-    const skipped = await skipGifSubBlocks(handle, lzwPosition + 1, byteCount, budget);
-    if (
-      skipped === null ||
-      skipped.data.length === 0 ||
-      !validateGifLzw(skipped.data, lzwMinimum[0]!, imageWidth * imageHeight)
-    ) return false;
-    sawImage = true;
-    position = skipped.position;
-  }
-  return false;
-}
-
-async function validatePdf(handle: OpenFileHandle, byteCount: number): Promise<boolean> {
-  if (byteCount < 32 || byteCount > ARTIFACT_CONTENT_POLICY.maximumStructuredDocumentBytes) {
-    return false;
-  }
-  const bytes = await readExact(handle, 0, byteCount);
-  if (!bytes) return false;
-  const document = bytes.toString("latin1");
-  if (!/^%PDF-\d\.\d(?:\r?\n|\r)/u.test(document)) return false;
-  const ending = /trailer\s*<<(.*?)>>\s*startxref\s+(\d+)\s*%%EOF(?:\r?\n|\r)?$/su.exec(document);
-  if (!ending) return false;
-  const trailer = ending[1]!;
-  const xrefPosition = Number(ending[2]);
-  if (!Number.isSafeInteger(xrefPosition) || xrefPosition < 9 || xrefPosition >= byteCount) {
-    return false;
-  }
-  const root = /\/Root\s+(\d+)\s+(\d+)\s+R\b/u.exec(trailer);
-  const size = /\/Size\s+(\d+)\b/u.exec(trailer);
-  if (!root || !size) return false;
-  const xrefText = document.slice(xrefPosition, ending.index);
-  const heading = /^xref\s+(\d+)\s+(\d+)\s*(?:\r?\n|\r)/u.exec(xrefText);
-  if (!heading) return false;
-  const firstObject = Number(heading[1]);
-  const objectCount = Number(heading[2]);
-  if (
-    !Number.isSafeInteger(firstObject) ||
-    !Number.isSafeInteger(objectCount) ||
-    firstObject !== 0 ||
-    objectCount < 2 ||
-    objectCount > ARTIFACT_CONTENT_POLICY.maximumStructuralRecords ||
-    Number(size[1]) !== objectCount
-  ) return false;
-  let linePosition = heading[0].length;
-  const objectOffsets = new Map<number, { offset: number; generation: number }>();
-  for (let index = 0; index < objectCount; index += 1) {
-    const entry = /^(\d{10}) (\d{5}) ([fn]) ?(?:\r?\n|\r)/u.exec(
-      xrefText.slice(linePosition, linePosition + 24),
-    );
-    if (!entry) return false;
-    linePosition += entry[0].length;
-    if (entry[3] === "n") {
-      const offset = Number(entry[1]);
-      const generation = Number(entry[2]);
-      if (!Number.isSafeInteger(offset) || offset < 9 || offset >= xrefPosition) return false;
-      const objectNumber = firstObject + index;
-      if (!document.startsWith(`${objectNumber} ${generation} obj`, offset)) return false;
-      objectOffsets.set(objectNumber, { offset, generation });
-    }
-  }
-  if (xrefText.slice(linePosition).trim() !== "") return false;
-  const rootNumber = Number(root[1]);
-  const rootGeneration = Number(root[2]);
-  const rootEntry = objectOffsets.get(rootNumber);
-  if (!rootEntry || rootEntry.generation !== rootGeneration) return false;
-  const rootEnd = document.indexOf("endobj", rootEntry.offset);
-  if (rootEnd < 0 || rootEnd >= xrefPosition) return false;
-  const rootObject = document.slice(rootEntry.offset, rootEnd);
-  return /<<[\s\S]*?\/Type\s*\/Catalog\b[\s\S]*?>>/u.test(rootObject);
-}
-
-async function validateMp3(handle: OpenFileHandle, byteCount: number): Promise<boolean> {
-  if (byteCount < 8) return false;
-  const bytes = await readExact(handle, 0, byteCount);
-  return bytes !== null && isStructurallyValidMp3(bytes);
-}
-
-async function validateStoredContent(
-  path: string,
-  contentType: string,
-  byteCount: number,
-): Promise<void> {
-  if (contentType === "text/plain") return;
-  let handle: OpenFileHandle | undefined;
-  try {
-    handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size !== byteCount) throw new ArtifactError("storage_integrity");
-    const valid = contentType === "image/png"
-      ? await validatePng(handle, byteCount)
-      : contentType === "image/jpeg"
-        ? await validateJpeg(handle, byteCount)
-        : contentType === "image/gif"
-            ? await validateGif(handle, byteCount)
-            : contentType === "application/pdf"
-              ? await validatePdf(handle, byteCount)
-              : contentType === "audio/mpeg"
-                ? await validateMp3(handle, byteCount)
-                : false;
-    if (!valid) throw new ArtifactError("invalid_content_type");
-  } catch (error) {
-    if (error instanceof ArtifactError) throw error;
-    throw new ArtifactError("storage_unavailable");
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
 }
 
 async function* boundedArtifactChunks(
@@ -1109,7 +563,7 @@ export class LocalArtifactStore {
     }
     assertSha256(input.expectedSha256);
     const name = safeFilename(input.originalName);
-    if (input.declaredContentType !== null && !supportedContentTypes.has(input.declaredContentType)) {
+    if (input.declaredContentType !== null && !isAttachmentContentType(input.declaredContentType)) {
       throw new ArtifactError("invalid_content_type");
     }
     const createdAt = this.now();
@@ -1196,15 +650,11 @@ export class LocalArtifactStore {
       if (persisted.sha256 !== sha256 || persisted.byteCount !== byteCount) {
         throw new ArtifactError("storage_integrity");
       }
-      const detectedContentType = detectContentType(
+      const detectedContentType = detectAttachmentContentType(
         Buffer.concat(prefixChunks),
         validUtf8Text,
         containsNul,
       );
-      if (input.declaredContentType !== null && input.declaredContentType !== detectedContentType) {
-        throw new ArtifactError("invalid_content_type");
-      }
-      await validateStoredContent(quarantinePath, detectedContentType, byteCount);
       return await this.runExclusive(async () => {
         canonicalPath = await this.canonicalPath(sha256);
         try {
@@ -1341,7 +791,7 @@ export class LocalArtifactStore {
       attachment.name.length < 1 ||
       attachment.name.length > 255 ||
       typeof attachment.contentType !== "string" ||
-      !supportedContentTypes.has(attachment.contentType) ||
+      !isAttachmentContentType(attachment.contentType) ||
       !Number.isSafeInteger(attachment.byteCount) ||
       attachment.byteCount < 0 ||
       attachment.byteCount > this.maximumBytes

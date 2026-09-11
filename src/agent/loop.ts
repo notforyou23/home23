@@ -1,3 +1,4 @@
+import { attachmentContext } from "./input-attachments.js";
 import { projectContinuityPrompt, type ProjectContinuity } from '../coordination/projects/continuity.js';
 import { parseHistoricalContext, historicalContextBlock, type HistoricalContextEntry } from './historical-context.js';
 import { cacheableSystemPrompt, cacheUsage, promptCacheKey } from './prompt-cache.js';
@@ -1440,6 +1441,7 @@ export class AgentLoop {
       // Add user message to history
       const userMsg: StoredMessage = {
         role: 'user',
+        ...(userMedia?.length ? { attachments: userMedia } : {}),
         content: userContent.length === 1 && userContent[0]!.type === 'text'
           ? (userContent[0] as { type: 'text'; text: string }).text
           : userContent,
@@ -1461,7 +1463,7 @@ export class AgentLoop {
       // Dynamic additions (situational awareness, COSMO state, recovery notes)
       // are kept separate so the static prefix hits cache on every call.
       const staticSystemPrompt = turnRuntime?.delegatedContext?.systemPrompt ?? this.contextManager.getSystemPrompt(runtimeProvider);
-      let rawSystemPrompt = staticSystemPrompt;
+      let rawSystemPrompt = staticSystemPrompt + attachmentContext([...storedHistory, userMsg]);
       if (turnRuntime?.coordinationOrigin && runContext.coordinationChannelOperation && !turnRuntime.delegatedContext) {
         const project = await runContext.coordinationChannelOperation({
           origin: turnRuntime.coordinationOrigin, invocationId: `project-context:${activeTurnId}`,

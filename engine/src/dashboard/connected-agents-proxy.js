@@ -5,6 +5,7 @@ const DEFAULT_ORIGIN = 'http://127.0.0.1:7346';
 // dashboard hop bounded, but large enough for a deliberately small evidence
 // page without truncating or rewriting any event.
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024 + 64 * 1024;
 
 const ROUTES = [
   { method: 'GET', path: /^\/capabilities$/ },
@@ -21,6 +22,9 @@ const ROUTES = [
   { method: 'POST', path: /^\/channels\/[^/]+\/(?:messages|read|coordinate)$/ },
   { method: 'GET', path: /^\/work\/[^/]+$/ },
   { method: 'POST', path: /^\/work\/[^/]+\/(?:cancel|retry)$/ },
+  { method: 'POST', path: /^\/attachments$/ },
+  { method: 'GET', path: /^\/attachments\/[^/]+(?:\/content)?$/ },
+  { method: 'DELETE', path: /^\/attachments\/[^/]+$/ },
 ];
 
 function coordinationOrigin(value = process.env.HOME23_COORDINATION_ORIGIN || DEFAULT_ORIGIN) {
@@ -62,34 +66,66 @@ function createConnectedAgentsProxy(options = {}) {
     }
     const headers = { accept: 'application/json' };
     if (authorization) headers.authorization = authorization;
-    for (const name of ['idempotency-key', 'x-correlation-id']) {
+    for (const name of ['idempotency-key', 'x-correlation-id', 'range']) {
       const value = req.get(name);
       if (value) headers[name] = value;
     }
     let body;
-    if (!['GET', 'HEAD'].includes(req.method)) {
+    let uploadTooLarge = false;
+    const upload = req.method === 'POST' && productPath === '/attachments';
+    if (upload) {
+      const type = req.get('content-type') || '';
+      if (!/^multipart\/form-data;\s*boundary=/i.test(type)) {
+        return res.status(415).json({ error: { code: 'invalid_content_type', message: 'Use multipart form data for attachments.' } });
+      }
+      if (Number(req.get('content-length') || 0) > MAX_UPLOAD_BYTES) {
+        return res.status(413).json({ error: { code: 'size_limit_exceeded', message: 'Attachments can be up to 25 MB.' } });
+      }
+      headers['content-type'] = type;
+      body = (async function* () {
+        let count = 0;
+        for await (const chunk of req) {
+          count += chunk.length;
+          if (count > MAX_UPLOAD_BYTES) { uploadTooLarge = true; throw new Error('coordination_proxy_upload_too_large'); }
+          yield chunk;
+        }
+      })();
+    } else if (!['GET', 'HEAD'].includes(req.method)) {
       headers['content-type'] = 'application/json';
       body = JSON.stringify(req.body ?? {});
     }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 15_000);
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs || (upload ? 120_000 : 15_000));
+    const abort = () => controller.abort();
+    req.once('aborted', abort);
     timeout.unref?.();
     try {
       const upstream = await fetchImpl(`${origin}/api/v1${productPath}${req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : ''}`, {
         method: req.method, headers, body, signal: controller.signal, redirect: 'manual',
+        ...(upload ? { duplex: 'half' } : {}),
       });
       const length = Number(upstream.headers.get('content-length') || 0);
-      if (length > maxResponseBytes) throw new Error('coordination_proxy_response_too_large');
-      const bytes = Buffer.from(await upstream.arrayBuffer());
-      if (bytes.length > maxResponseBytes) throw new Error('coordination_proxy_response_too_large');
+      if (length > maxResponseBytes) { controller.abort(); throw new Error('coordination_proxy_response_too_large'); }
+      const chunks = [];
+      let byteCount = 0;
+      for await (const chunk of upstream.body || []) {
+        byteCount += chunk.length;
+        if (byteCount > maxResponseBytes) {
+          controller.abort();
+          throw new Error('coordination_proxy_response_too_large');
+        }
+        chunks.push(Buffer.from(chunk));
+      }
+      const bytes = Buffer.concat(chunks, byteCount);
       res.status(upstream.status);
-      for (const name of ['content-type', 'x-request-id', 'x-correlation-id']) {
+      for (const name of ['content-type', 'x-request-id', 'x-correlation-id', 'content-disposition', 'content-range', 'accept-ranges', 'etag', 'x-content-type-options', 'content-security-policy']) {
         const value = upstream.headers.get(name);
         if (value) res.set(name, value);
       }
       res.set('Cache-Control', 'no-store');
       return res.send(bytes);
     } catch (error) {
+      if (uploadTooLarge) return res.status(413).json({ error: { code: 'size_limit_exceeded', message: 'Attachments can be up to 25 MB.', retryable: false } });
       const oversized = error?.message === 'coordination_proxy_response_too_large';
       const code = oversized
         ? 'coordination_response_too_large'
@@ -101,6 +137,7 @@ function createConnectedAgentsProxy(options = {}) {
         : 'Connected Agents is unavailable.';
       return res.status(503).json({ error: { code, message, retryable: !oversized } });
     } finally {
+      req.removeListener('aborted', abort);
       clearTimeout(timeout);
     }
   });

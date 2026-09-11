@@ -16,6 +16,7 @@ import { atomicContextWrite, digest, TaskContextStore } from './task-context.js'
 // Anthropic message types (simplified for storage)
 export interface StoredMessage {
   role: 'user' | 'assistant';
+  attachments?: import('../types.js').MediaAttachment[];
   content: string | ContentBlock[];
   ts?: string;  // ISO timestamp — absent on pre-2026-03-22 messages
 }

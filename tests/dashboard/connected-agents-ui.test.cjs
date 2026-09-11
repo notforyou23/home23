@@ -16,7 +16,7 @@ test('retained Connected Agents assets preserve their contract alongside the cur
   assert.match(server, /home23-dashboard\.html/);
   assert.match(server, /this\.app\.get\('\/home23'/);
   assert.match(js, /name\?\.toLowerCase\(\) === "jerry"/);
-  assert.match(js, /\/channels\/\$\{encodeURIComponent\(state\.selected\)\}\/messages/);
+  assert.match(js, /\/channels\/\$\{encodeURIComponent\(record\.channelId\)\}\/messages/);
   assert.match(js, /readCursorMutation/);
   assert.match(js, /botLifecycle/);
   assert.match(js, /data-control="\$\{lifecycleOperation\}"/);
@@ -29,7 +29,9 @@ test('retained Connected Agents assets preserve their contract alongside the cur
   assert.doesNotMatch(js, /state\.provisioning|residentBinding,\s*purpose|requiredCapabilities:\s*\["messages"\]|is provisioning|Getting ready/);
   assert.match(js, /scheduleRefresh/);
   assert.match(js, /15000/);
-  assert.match(js, /className = "ca-message owner pending"/);
+  assert.match(js, /function pendingMessageHtml\(record\)/);
+  assert.match(js, /state\.pending\.values\(\)[\s\S]*?pendingMessageHtml/);
+  assert.match(js, /data-retry-message/);
   assert.match(js, /Your draft has been kept/);
   assert.match(js, /Results may be incomplete/);
   assert.match(js, /Verified isolated execution is not available/);

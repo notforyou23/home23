@@ -123,3 +123,22 @@ test('chat-turn rejects unsupported mime with 415', async () => {
 
   rmSync(root, { recursive: true, force: true });
 });
+
+test('chat-turn accepts a document-only message and gives the agent exact bytes', async (t) => {
+  const root = join(tmpdir(), `chat-turn-files-${Date.now()}`);
+  mkdirSync(root, {recursive: true});
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  const captured: {media?: any[]} = {};
+  const app = express();
+  app.use(express.json({limit: '50mb'}));
+  app.post('/api/chat/turn', createTurnStartHandler({agentName: 'test', agent: makeFakeAgent(captured) as any,
+    history: makeFakeHistory() as any, instanceDir: root}));
+  const bytes = Buffer.from([80, 75, 3, 4, 0, 255]);
+  const result = await postJson(app, {chatId: 'c1', message: '', attachments: [{data: bytes.toString('base64'), mimeType: 'application/zip', fileName: 'source.zip'}]});
+  assert.equal(result.status, 200);
+  assert.equal(captured.media?.[0].type, 'document');
+  assert.equal(captured.media?.[0].fileName, 'source.zip');
+  assert.deepEqual(readFileSync(captured.media![0].path), bytes);
+  const {attachmentContext} = await import('../../src/agent/input-attachments.js');
+  assert.match(attachmentContext([{role: 'user', content: 'inspect this', attachments: captured.media}]), /source.zip/);
+});

@@ -674,6 +674,8 @@ export function createCoordinationRouter(input: {
         response.setHeader("content-length", String(download.contentLength));
         response.setHeader("etag", `\"sha256:${download.sha256}\"`);
         response.setHeader("content-disposition", "attachment");
+        response.setHeader("x-content-type-options", "nosniff");
+        response.setHeader("content-security-policy", "sandbox; default-src 'none'");
         if (download.range) {
           response.setHeader(
             "content-range",
