@@ -2,7 +2,8 @@
 
 Date: 2026-09-11  
 Branch: `home23-agent/owned-embedder-stage5-verify`  
-Follows: `309f565f` / `1905b579` (outage keyword fallback).  
+Follows: `309f565f` / `1905b579` (outage keyword fallback), then `5e567a8f`
+(visit/deadline budgets). Caller-abort fd follow-up: `2ce5bda5`.
 Does **not** replace Linux install revision `be625487` or rewrite that transfer.
 
 Measured attention calibration and Stage 6 remain unfinished / NO-GO.
@@ -16,7 +17,8 @@ Measured attention calibration and Stage 6 remain unfinished / NO-GO.
 | `assembleContext` | `BRAIN_SEARCH_TIMEOUT_MS = 8_000` + turn signal | Abort → `TimeoutError`, no partial hits. |
 | `searchContext` HTTP | `statusReadMs ?? 10_000` | Aborts the request; server cancels. |
 | `/api/memory/search` | `requestAbortController` on client close | Cancel, not a degraded result. |
-| `throwIfAborted` per node | Cooperative only | Kept. Budget exhaustion is separate. |
+| `throwIfAborted` per node | Cooperative after each yield | Kept. Budget exhaustion is separate. |
+| Caller abort during a pending read | `readJsonl` abort listener closes a dup'd stream fd, then `destroy()` | Unblocks an in-flight positioned read. Does not `Promise.race` an abandoned scan. Already-buffered gzip inflate can still finish the current chunk. |
 
 `309f565f` made context-outage use the same two-pass full iterate as default
 search. Visit count on a 301-node on-disk fixture was **602** (two full
@@ -30,7 +32,7 @@ fallback reason is `embedding_unavailable` or `embedding_invalid`.
 | Budget | Default | Test override |
 |---|---|---|
 | Node visits across both passes | `4000` | `contextOutageScanVisitBudget` (1…4000) |
-| Wall time from budget arming | `1500` ms | `contextOutageScanDeadlineMs` (0…60000) |
+| Cooperative deadline after each yielded node | `1500` ms | `contextOutageScanDeadlineMs` (0…60000) |
 
 When either budget hits:
 
@@ -49,6 +51,14 @@ ANN-missing still does not scan.
 HTTP `pickSearchParameters` does not forward the test-only budget fields.
 Production context-outage uses the defaults above.
 
+The 1500 ms figure is **not** a hard mid-await ceiling. `consumeLogicalVisit`
+samples `performance.now()` only after `iterateNodes` yields a node. A slow
+gzip/jsonl chunk can overrun that mark before the next check. Caller abort is
+a different path: it is wired into `readJsonl`, which closes the stream’s
+dup’d fd and then destroys the streams so the same generator/finally releases
+handles. That unblocks a pending positioned read. It does not invent a
+`Promise.race` that leaves the scan running.
+
 ## Verification (not wall-clock benchmarks)
 
 On-disk `rewriteMemoryBase` fixtures, 301 nodes (300 filler + hydro).
@@ -64,11 +74,16 @@ Visit counts from a wrapper around `iterateNodes` (gzip jsonl reader).
 | Abort after 12 on-disk yields | `AbortError` / `cancelled`; not a success payload |
 | Two-node lexical outage | still complete coverage (corpus fits the budget) |
 
-Full `tests/engine/dashboard/memory-search.test.js`: 67 pass after the change.
+Author `memory-search.test.js` at `5e567a8f`: 67 local. Grok Bot at that
+revision: **65 pass / 2 fail** (isolated ANN worker; missing `hnswlib-node`
+addon after `--ignore-scripts`). Those two failures are not passing
+verification.
 
 ## Remaining limitation
 
-`4000` / `1500ms` are a responsiveness policy, not a measured calibration
-against a live large home. A pathological record size could still spend
-most of 1500 ms on fewer than 4000 visits. That is accepted for this
-scoped follow-up.
+`4000` visits and the cooperative 1500 ms check are a responsiveness policy,
+not a measured calibration against a live large home. A pathological record
+can still spend most of that window on one pending inflate/read before the
+next yield. Caller abort can interrupt a pending positioned read; it cannot
+preempt CPU already spent inflating the current chunk. Large-brain
+wall-clock remains unproven.
