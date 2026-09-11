@@ -114,6 +114,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  if (!url) {`);
   lines.push(`    if (providerName === 'openai') return 'https://api.openai.com/v1';`);
   lines.push(`    if (providerName === 'ollama-cloud') return homeConfig.providers?.['ollama-cloud']?.baseUrl || 'https://ollama.com/v1';`);
+  lines.push(`    if (providerName === 'home23-owned') return '';`);
   lines.push(`    return \`\${ollamaLocalUrl}/v1\`;`);
   lines.push(`  }`);
   lines.push(`  url = url.replace(/\\/+$/, '');`);

@@ -59,6 +59,29 @@ Mac TEST must remain **stopped** when idle.
 Handoff: `2026-09-11-owned-embedder-linux-handoff.md`.  
 Linux resume is a **real Host-path download interrupt** from an empty cache
 (not a zero-filled `.part`). Measured attention calibration stays unfinished
-and is not a Linux gate. Grok Bot independently tests Debian 13. Do not
-claim those results here. Transfer: one uploadable archive of `.stage5-handoff/`
-(bundle + basename `.sha256`). Branch is not on GitHub.
+and is not a Linux gate. Branch is not on GitHub.
+
+### Grok Bot independent trial (preserve — do not redo)
+
+Grok Bot completed the isolated Linux gate on **`be6254879fc8c22a6265e6010ac0284f70f4329b`** with **no product patches**.
+
+| Item | Value |
+|---|---|
+| Result | **PASS** (one outage-shape note, not patched on the box) |
+| Archive SHA | `236dae381a0f290a190ee7a8f6a7ae040870d315f974797aa473baba20ba7e46` |
+| Bundle SHA | `1ac7adf9972e99fe83b0ea251dd60909935fb6b41e281f62ffa0543c3f23923d` |
+| Isolated root | `/home/box/home23-owned-embedder-test` |
+| Seed | `seed_mtx5jbb6_f4ff5c72` (unchanged across stop/restart) |
+| Retrieve | context-mode hydro **0.7111** > granite **0.5555**, `semantic-ann` |
+| Receipts | `/home/box/home23-owned-embedder-test/receipts/linux-receipt.json`, `FINDINGS.md` |
+
+Findings Grok Bot did **not** patch:
+
+1. Owned encoder outage: `/ready` refused; `POST /api/memory/search` `mode=context` returned `results=[]` instead of Memory Lite keyword hits; recovered after `host start`.
+2. Generated `ecosystem.config.cjs` still contains the source literal `|| 'http://127.0.0.1:11434'` for `ollamaLocalUrl`. Live `SEED_EMBED_ENDPOINT` was the owned port (`:21495`). Candidate PIDs had **0** ss hits on `:11434`.
+
+Do **not** repeat package / create / interrupt / ingest / first retrieve. Those receipts stand at `be625487`.
+
+### Follow-up on this branch (outage shape + Ollama literal)
+
+Later commits on this branch may fix the outage response shape and owned-empty-URL fail-closed. They do **not** replace `be625487` as the successful Linux installation revision. Grok Bot should repeat only the scoped checks in the handoff follow-up, not the whole trial.

@@ -1366,6 +1366,71 @@ test('dimension mismatch and embedding failure use keyword retrieval', async () 
   assert.equal(unavailable.evidence.fallback.reason, 'embedding_unavailable');
 });
 
+test('context mode uses keyword scan when the encoder is unavailable', async () => {
+  const dir = await createBrain({
+    nodes: [
+      {
+        id: 'hydro',
+        concept: 'The hydrologic cycle is the continuous movement of H2O.',
+        embedding: [1, 0],
+      },
+      {
+        id: 'granite',
+        concept: 'Granite crystallizes slowly from magma deep underground.',
+        embedding: [0, 1],
+      },
+    ],
+  });
+  const result = await sourceSearch({
+    dir,
+    query: 'hydrologic cycle',
+    embedQuery: async () => { throw new Error('owned encoder refused'); },
+    loadAnn: async () => null,
+    request: { mode: 'context' },
+  });
+  assert.equal(result.results[0]?.id, 'hydro');
+  assert.equal(result.results.some((row) => row.id === 'granite'), false);
+  assert.equal(result.evidence.fallback.reason, 'embedding_unavailable');
+  assert.equal(result.evidence.fallback.route, 'logical-keyword-scan');
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+});
+
+test('context mode keeps encoder outage distinct from a genuine empty miss', async () => {
+  const hydro = {
+    id: 'hydro',
+    concept: 'The hydrologic cycle is the continuous movement of H2O.',
+    embedding: [1, 0],
+  };
+  const outageDir = await createBrain({ nodes: [hydro] });
+  const outageMiss = await sourceSearch({
+    dir: outageDir,
+    query: 'obsidian xenolith',
+    embedQuery: async () => { throw new Error('owned encoder refused'); },
+    loadAnn: async () => null,
+    request: { mode: 'context' },
+  });
+  assert.equal(outageMiss.results.length, 0);
+  assert.equal(outageMiss.evidence.fallback.reason, 'embedding_unavailable');
+  assert.equal(outageMiss.evidence.sourceHealth, 'degraded');
+
+  const healthyDir = await createBrain({ nodes: [hydro] });
+  await markAnn(healthyDir);
+  const healthyMiss = await sourceSearch({
+    dir: healthyDir,
+    query: 'obsidian xenolith',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2,
+      skipped: 0,
+      labels: [hydro],
+      search: () => [],
+    }),
+    request: { mode: 'context' },
+  });
+  assert.equal(healthyMiss.results.length, 0);
+  assert.notEqual(healthyMiss.evidence.fallback?.reason, 'embedding_unavailable');
+});
+
 test('semantic vectors and final merged response are byte bounded', async () => {
   const dir = await createBrain({
     nodes: [{ id: 'x', concept: 'big canary', embedding: [1, 0] }],

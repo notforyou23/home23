@@ -258,12 +258,23 @@ EPORT=$(HOME_ROOT="$HOME_ROOT" python3 -c 'import json,os; print(json.load(open(
 PID=$(curl -fsS -H "Host: 127.0.0.1:${EPORT}" "http://127.0.0.1:${EPORT}/ready" | python3 -c 'import json,sys; print(json.load(sys.stdin)["pid"])')
 kill -TERM "$PID"
 # /ready must fail; then POST /api/memory/search mode=context
-# expect Memory Lite / keyword / missing embedding_recipe_id on NEW writes
 ```
 
-Memory Lite on that outage is the **documented degraded behavior**.
-It is **not** a pass for the gate. Restore with `host.mjs start` and
-re-prove owned retrieve.
+Use a query that **appears in the ingested USGS hydrologic file**
+(`hydrologic cycle`). The sunshine paraphrase is the **semantic** retrieve
+query; it is a weak lexical probe.
+
+On the `be625487` install (Grok Bot PASS, no product patches) this returned
+HTTP success with `results=[]`. That was a **missing context-mode keyword
+scan**, not intended Memory Lite. Clients that only read `results` cannot
+tell outage from a genuine miss; `evidence.fallback.reason` was already
+`embedding_unavailable` and `evidence.sourceHealth` was `degraded`.
+
+After the outage-shape follow-up commit, the same lexical query must return
+keyword hits **and** `evidence.fallback.reason === "embedding_unavailable"`.
+A non-matching query (`obsidian xenolith`) may still be `results=[]` but
+must keep that same fallback reason. Memory Lite here is still **degraded**,
+not a gate pass. Restore with `host.mjs start` and re-prove owned retrieve.
 
 Chat OAuth is out of scope. Optional chat only if **you** are given an
 explicit provider+key in a later note. Do not use Keep Ollama chat models.
@@ -446,7 +457,7 @@ receipt, not the shell `HOME`.
 | `/ready` | warm, `12e9f736…`, 768 | Ollama tags / Memory Lite as ready |
 | Ingest | 2 files, owned stamps | unstamped / Lite-only store |
 | Retrieve | context-mode hydro > granite | keyword-only / Lite |
-| Outage | Lite **observed**, then owned retrieve restored | Lite treated as success |
+| Outage | `/ready` down; lexical `hydrologic cycle` returns keyword hits + `evidence.fallback.reason=embedding_unavailable` + `sourceHealth=degraded`; then owned retrieve restored | `results=[]` on a lexical hit, or Lite treated as a success gate |
 | Stop | `host.mjs stop` this home only | `pm2 stop all` / Scout down |
 
 ## 8. Stop / restart — this candidate only
@@ -480,6 +491,53 @@ When idle, leave **this** home stopped. Leave Scout as you found it.
 - Source `node cli/home23.js init` still defaults to Ollama. It is **not**
   this candidate's lifecycle.
 - Existing-home Stage 6 / product default flip remain NO-GO.
+
+## Follow-up for Grok Bot (do not repeat the install)
+
+Grok Bot already **PASSED** the isolated Linux gate at
+`be6254879fc8c22a6265e6010ac0284f70f4329b`
+(archive `236dae38…`, bundle `1ac7adf9…`). Preserve those receipts.
+Do **not** re-run `package.mjs`, create, interrupt/resume, ingest, or the
+first semantic retrieve unless a later note says the existing home was
+destroyed.
+
+Repeat only:
+
+1. **Source unit tests** on the follow-up SHA (not `be625487`):
+
+   ```bash
+   node --test --test-concurrency=1 \
+     tests/engine/dashboard/memory-search.test.js \
+     tests/engine/core/openai-client-embedding-url.test.cjs \
+     tests/cli/owned-embedding-ecosystem.test.js
+   ```
+
+2. **Optional live outage retest** on the existing stopped home, only if
+   `host.mjs start` still accepts the packaged tree after copying
+   `engine/src/dashboard/memory-search.js` onto
+   `$HOME_ROOT/app/engine/src/dashboard/memory-search.js`.
+   Do not create another home. If Start refuses an overlay, stop and
+   report that; the unit tests remain the required check.
+
+   Lexical outage query: `hydrologic cycle`  
+   Non-match outage query: `obsidian xenolith`  
+   Semantic retrieve (encoder back up): the sunshine paraphrase.
+
+   Expect: outage + lexical hit → keyword rows +
+   `evidence.fallback.reason=embedding_unavailable` +
+   `evidence.sourceHealth=degraded`.  
+   Outage + non-match → `results=[]` + the same fallback reason.  
+   Encoder up + non-match → `results=[]` and fallback reason is **not**
+   `embedding_unavailable`. Then `host.mjs start` if needed and confirm
+   hydro still beats granite.
+
+3. **Ollama literal:** the generated file may still contain
+   `|| 'http://127.0.0.1:11434'` for `ollamaLocalUrl` (chat / classic
+   homes). Live owned `EMBEDDING_BASE_URL` / `SEED_EMBED_ENDPOINT` must
+   stay on the owned port. Do not expect the generator source string to
+   disappear. Do not stop Scout or host Ollama `:11434`.
+
+Keep measured attention calibration unfinished. Do not start Stage 6.
 
 ## Transfer
 

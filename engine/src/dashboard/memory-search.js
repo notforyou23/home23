@@ -1560,7 +1560,9 @@ function createMemorySearchService({
     let annLoadMs = 0;
     let overlayScoringMs = 0;
     const contextFast = request.mode === 'context' && request.exhaustive !== true;
-    const allowLogicalScan = !contextFast;
+    const embeddingOutage = fallback?.reason === 'embedding_unavailable'
+      || fallback?.reason === 'embedding_invalid';
+    const allowLogicalScan = !contextFast || embeddingOutage;
     const useAnn = queryEmbedding && annRevisionEligible && request.exhaustive !== true
       && (annCovered || contextFast);
     if (contextFast && !annCovered && !fallback) {
