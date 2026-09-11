@@ -42,6 +42,8 @@ const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache'
 const MAX_EMBEDDING_DIMENSIONS = 8192;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_HEAP_BYTES = 8 * 1024 * 1024;
+const CONTEXT_OUTAGE_SCAN_VISIT_BUDGET = 4000;
+const CONTEXT_OUTAGE_SCAN_DEADLINE_MS = 1500;
 const MAX_RECORD_BYTES = 256 * 1024;
 const MAX_ANN_METADATA_BYTES = 256 * 1024 * 1024;
 const MAX_ANN_METADATA_HEADER_BYTES = 1024 * 1024;
@@ -1448,6 +1450,27 @@ function createMemorySearchService({
     let logicalScanComplete = false;
     let logicalScanFiltered = 0;
     let logicalScanMs = 0;
+    let logicalScanVisits = 0;
+    let logicalScanExhausted = false;
+    let logicalScanExhaustedBy = null;
+    let logicalScanVisitBudget = Number.POSITIVE_INFINITY;
+    let logicalScanDeadlineAt = Number.POSITIVE_INFINITY;
+    const consumeLogicalVisit = () => {
+      throwIfAborted(signal);
+      if (logicalScanExhausted) return false;
+      if (logicalScanVisits >= logicalScanVisitBudget) {
+        logicalScanExhausted = true;
+        logicalScanExhaustedBy = 'visit_budget';
+        return false;
+      }
+      if (performance.now() >= logicalScanDeadlineAt) {
+        logicalScanExhausted = true;
+        logicalScanExhaustedBy = 'deadline';
+        return false;
+      }
+      logicalScanVisits += 1;
+      return true;
+    };
     const runLogicalSourceScan = async ({ includeSemantic = false } = {}) => {
       if (logicalScanComplete) return;
       const scanStartedAt = performance.now();
@@ -1486,7 +1509,7 @@ function createMemorySearchService({
       // cannot affect one of those candidates must not consume the resolver's
       // bounded relation budget merely because they occur earlier on disk.
       for await (const node of source.iterateNodes({ signal })) {
-        throwIfAborted(signal);
+        if (!consumeLogicalVisit()) break;
         const unfilteredKeywordRelevance = keywordRelevance(
           node, keywordTokens, query, null,
         );
@@ -1530,12 +1553,14 @@ function createMemorySearchService({
       // Pass two observes only closures/corrections capable of changing the
       // retained candidates. Resolution and final heap insertion are deferred
       // until the pass ends, so physical source order cannot change the result.
-      for await (const node of source.iterateNodes({ signal })) {
-        throwIfAborted(signal);
-        const relations = projectMemoryRelations(node, { trustedProjection: false });
-        if (relations.refs.some(ref => relevantRelationRefs.has(ref))
-            || relations.supersedes.some(ref => relevantRelationRefs.has(ref))) {
-          logicalAuthorityResolver.observe(node, { trustedProjection: false });
+      if (!logicalScanExhausted) {
+        for await (const node of source.iterateNodes({ signal })) {
+          if (!consumeLogicalVisit()) break;
+          const relations = projectMemoryRelations(node, { trustedProjection: false });
+          if (relations.refs.some(ref => relevantRelationRefs.has(ref))
+              || relations.supersedes.some(ref => relevantRelationRefs.has(ref))) {
+            logicalAuthorityResolver.observe(node, { trustedProjection: false });
+          }
         }
       }
       const publishResolved = (heap, rows) => {
@@ -1563,6 +1588,21 @@ function createMemorySearchService({
     const embeddingOutage = fallback?.reason === 'embedding_unavailable'
       || fallback?.reason === 'embedding_invalid';
     const allowLogicalScan = !contextFast || embeddingOutage;
+    if (contextFast && embeddingOutage) {
+      logicalScanVisitBudget = parseBoundedInteger(request.contextOutageScanVisitBudget, {
+        name: 'contextOutageScanVisitBudget',
+        defaultValue: CONTEXT_OUTAGE_SCAN_VISIT_BUDGET,
+        min: 1,
+        max: CONTEXT_OUTAGE_SCAN_VISIT_BUDGET,
+      });
+      const deadlineMs = parseBoundedInteger(request.contextOutageScanDeadlineMs, {
+        name: 'contextOutageScanDeadlineMs',
+        defaultValue: CONTEXT_OUTAGE_SCAN_DEADLINE_MS,
+        min: 0,
+        max: 60_000,
+      });
+      logicalScanDeadlineAt = performance.now() + deadlineMs;
+    }
     const useAnn = queryEmbedding && annRevisionEligible && request.exhaustive !== true
       && (annCovered || contextFast);
     if (contextFast && !annCovered && !fallback) {
@@ -1763,8 +1803,20 @@ function createMemorySearchService({
       keyword = {
         results: keywordRows,
         filtered: logicalScanFiltered,
-        evidence: { completeCoverage: true },
+        evidence: { completeCoverage: !logicalScanExhausted },
       };
+      if (embeddingOutage && fallback) {
+        fallback = {
+          ...fallback,
+          completeness: logicalScanExhausted ? 'incomplete' : fallback.completeness,
+          scan: {
+            visitBudget: logicalScanVisitBudget,
+            visits: logicalScanVisits,
+            exhausted: logicalScanExhausted,
+            ...(logicalScanExhausted ? { exhaustedBy: logicalScanExhaustedBy } : {}),
+          },
+        };
+      }
     } else {
       keywordRows = indexedKeywordRows.slice(0, limit);
     }
@@ -1964,6 +2016,8 @@ module.exports = {
   MAX_ANN_METADATA_BYTES,
   MAX_RECORD_BYTES,
   MAX_RESPONSE_BYTES,
+  CONTEXT_OUTAGE_SCAN_VISIT_BUDGET,
+  CONTEXT_OUTAGE_SCAN_DEADLINE_MS,
   createBoundedCandidateHeap,
   createAnnWorkerRuntime,
   createDefaultEmbedQuery,
