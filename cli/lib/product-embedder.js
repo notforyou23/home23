@@ -83,7 +83,8 @@ export async function ensureOwnedEncoderStopped(state, {
 } = {}) {
   if (!encoderRequiredFor(state)) return { warm: false, signaled: false };
   const port = state.ports?.embedder;
-  let ready = await probe(port, { timeoutMs: 800 });
+  const readyProbeMs = 2500;
+  let ready = await probe(port, { timeoutMs: readyProbeMs });
   if (!ready.warm) return { warm: false, signaled: false };
   const pid = Number.isInteger(ready.pid) && ready.pid > 0 ? ready.pid : 0;
   if (pid) {
@@ -92,7 +93,7 @@ export async function ensureOwnedEncoderStopped(state, {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     await wait(100);
-    ready = await probe(port, { timeoutMs: 400 });
+    ready = await probe(port, { timeoutMs: readyProbeMs });
     if (!ready.warm) return { warm: false, signaled: pid > 0 };
   }
   const error = new Error('The owned encoder is still answering /ready after Stop.');

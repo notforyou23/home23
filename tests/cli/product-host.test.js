@@ -696,3 +696,39 @@ test('v2 stop fails closed when /ready stays warm after SIGTERM', async t => {
   assert.equal(result.error.code, 'host_encoder_still_warm');
   assert.deepEqual(signals, [{ pid: 4242, signal: 'SIGTERM' }]);
 });
+
+test('v2 stop still stops owned names when jlist is empty and fails closed if /ready stays warm', async t => {
+  const homeRoot = home(t);
+  const ports = await choosePortPlan({ encoderRequired: true });
+  privateJSON(path.join(homeRoot, '.home23-host.json'), {
+    schema: 'home23.host.v2', homeRoot, ports, encoderRequired: true,
+    profile: { name: 'milo', provider: 'openai', model: 'gpt-4.1' }, phase: 'prepared', desiredRunning: true,
+    birth: { home: { id: 'home-fixture' }, coordination: { botId: 'bot-fixture' } },
+  });
+  const stopped = [];
+  const probeTimeouts = [];
+  const result = await runHostAction('stop', { homeRoot }, {
+    execute: async (_node, args) => {
+      if (args[1] === 'jlist') return { stdout: '[]' };
+      if (args[1] === 'stop') stopped.push(args[2]);
+      return { stdout: '' };
+    },
+    async probeOwnedReady(port, options = {}) {
+      assert.equal(port, ports.embedder);
+      probeTimeouts.push(options.timeoutMs);
+      return {
+        ok: true, warm: true,
+        recipeId: '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9',
+        dimension: 768, pid: 10158,
+      };
+    },
+    signalProcess() {},
+    sleep: async () => {},
+    stopTimeoutMs: 1,
+  });
+  assert.ok(stopped.includes('home23-embedder'));
+  assert.ok(ownedProcessNames('milo', { encoderRequired: true }).every(name => stopped.includes(name)));
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'host_encoder_still_warm');
+  assert.ok(probeTimeouts.every(ms => ms >= 2000));
+});

@@ -401,7 +401,15 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       state = { ...state, desiredRunning: false, phase: 'stopped' };
       privateJSON(statePath(homeRoot), state);
       await authorizeInitialHostPairing(homeRoot, false);
-      for (const row of [...processes].reverse()) if (row.status !== 'stopped') await processDriver.pm2(['stop', row.name, '--silent']);
+      for (const name of [...names].reverse()) {
+        const row = processes.find(item => item.name === name);
+        if (row?.status === 'stopped') continue;
+        try {
+          await processDriver.pm2(['stop', name, '--silent']);
+        } catch (error) {
+          if (row) throw error;
+        }
+      }
       if (encoderRequiredFor(state)) {
         try {
           await ensureOwnedEncoderStopped(state, {
