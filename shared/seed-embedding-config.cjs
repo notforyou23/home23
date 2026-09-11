@@ -49,10 +49,11 @@ function resolveSeedEmbeddingEnv(homeConfig = {}) {
     ? config.recipeId.trim()
     : model;
   if (recipeId !== model) assertSeedEmbedModel(recipeId);
+  const recipe = resolveWriterRecipe(recipeId);
   return {
     SEED_EMBED_ENDPOINT: endpoint.href,
     SEED_EMBED_MODEL: model,
-    SEED_EMBED_RECIPE_ID: resolveWriterRecipe(recipeId).hash,
+    ...(recipe.known ? { SEED_EMBED_RECIPE_ID: recipe.hash } : {}),
   };
 }
 

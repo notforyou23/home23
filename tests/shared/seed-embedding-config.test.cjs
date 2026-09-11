@@ -37,4 +37,9 @@ test('Seed model may be legacy alias, owned profile name, or frozen hash; unknow
   assert.throws(() => resolveSeedEmbeddingEnv({
     substrate: { embedding: { endpoint, model: 'nomic-embed-text-v1.5' } },
   }));
+  const unknownLocal = resolveSeedEmbeddingEnv({
+    substrate: { embedding: { endpoint, model: 'custom-local-embed' } },
+  });
+  assert.equal(unknownLocal.SEED_EMBED_MODEL, 'custom-local-embed');
+  assert.equal(unknownLocal.SEED_EMBED_RECIPE_ID, undefined);
 });

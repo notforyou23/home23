@@ -115,10 +115,22 @@ function withClearedMemoryRecipeEnv(run) {
 test('addNode stamps new embedded nodes with the default lived-legacy hash', async () => {
   await withClearedMemoryRecipeEnv(async () => {
     const memory = createMemory(() => ({ embeddings: { create: async () => { throw new Error('unused'); } } }));
+    memory.config.embedding.model = 'nomic-embed-text';
     const node = await memory.addNode({ concept: 'a hydrologic note', embedding: [1, 0] });
     assert.equal(node.embedding_recipe_id, LEGACY_EMBEDDING_RECIPE_ID);
     assert.equal(node.embedding_encoder, LEGACY_EMBEDDING_PROFILE);
     assert.equal(memory.activeMemoryRecipe().hash, LEGACY_EMBEDDING_RECIPE_ID);
+  });
+});
+
+test('addNode does not mint the frozen legacy hash for an unknown model alias', async () => {
+  await withClearedMemoryRecipeEnv(async () => {
+    const memory = createMemory(() => ({ embeddings: { create: async () => { throw new Error('unused'); } } }));
+    const node = await memory.addNode({ concept: 'a hydrologic note', embedding: [1, 0] });
+    assert.equal(node.embedding_recipe_id, undefined);
+    assert.equal(node.embedding_encoder, undefined);
+    assert.equal(memory.activeMemoryRecipe().known, false);
+    assert.equal(memory.activeMemoryRecipe().hash, null);
   });
 });
 
@@ -170,6 +182,10 @@ test('importGraphChanges leaves unstamped nodes unstamped and query does not bac
     assert.equal(memory.embeddingsComparable([1, 0], [1, 0], queryHash, memory.nodeEmbeddingRecipeId(imported)), false);
     assert.equal(
       memory.findInitialConnections(stamped, stamped.id).some(row => row.id === 99),
+      false,
+    );
+    assert.equal(
+      memory.findInitialConnections({ id: 100, embedding: [1, 0] }).some(row => row.id === stamped.id),
       false,
     );
   });

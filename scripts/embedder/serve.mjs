@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /**
- * home23-embedder — owned recipe only. Not an Ollama drop-in. No Host wiring.
- * Process name is documented as home23-embedder; Host does not register it yet.
+ * home23-embedder — owned recipe only. Not an Ollama drop-in.
+ * Host admits this process only on home23.host.v2 with encoderRequired.
+ * Do not unversioned-expand ownedProcessNames() or PORT_KEYS from process-contract.json.
  */
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureArtifacts } from './artifacts.mjs';
@@ -15,6 +17,9 @@ import {
   OWNED_RECIPE_ID,
   ownedProfile,
 } from './recipe.mjs';
+
+const { MEMORY_TRUNCATION_CHARS } = createRequire(import.meta.url)('../../shared/semantic-encoder-contract.cjs');
+const READY_PROBE_TEXT = 'The library opens at nine.';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const HEALTH_PATH = '/ready';
@@ -105,11 +110,20 @@ export function createEmbedderServer({ embed, artifactDigests, port, bind = '127
   let warm = false;
   let lastError = null;
 
+  function boundOwnedText(text) {
+    return text.length > MEMORY_TRUNCATION_CHARS ? text.slice(0, MEMORY_TRUNCATION_CHARS) : text;
+  }
+
   async function encodeOne(text, { timeoutMs, priority }) {
     if (typeof text !== 'string') return { ok: false, code: 'unavailable' };
+    const bounded = boundOwnedText(text);
     try {
-      const embedding = await queue.enqueue(() => embed(text), { timeoutMs, priority });
-      if (!finiteVector(embedding)) return { ok: false, code: 'dimension_mismatch' };
+      const embedding = await queue.enqueue(() => embed(bounded), { timeoutMs, priority });
+      if (!finiteVector(embedding)) {
+        warm = false;
+        lastError = 'dimension_mismatch';
+        return { ok: false, code: 'dimension_mismatch' };
+      }
       warm = true;
       lastError = null;
       return { ok: true, embedding };
@@ -118,6 +132,7 @@ export function createEmbedderServer({ embed, artifactDigests, port, bind = '127
         ? error.code
         : 'unavailable';
       lastError = code;
+      warm = false;
       return { ok: false, code };
     }
   }
@@ -140,7 +155,23 @@ export function createEmbedderServer({ embed, artifactDigests, port, bind = '127
       }
 
       if (req.method === 'GET' && url.pathname === HEALTH_PATH) {
-        const body = {
+        if (warm) {
+          const probe = await encodeOne(READY_PROBE_TEXT, { timeoutMs: 1500, priority: 2 });
+          if (!probe.ok) {
+            sendJson(res, 503, {
+              recipeId: OWNED_RECIPE_ID,
+              profileId: OWNED_PROFILE,
+              dimension: EXPECTED_DIM,
+              artifactDigests,
+              warm: false,
+              protocols: ['ollama-native', 'openai-compatible'],
+              pid: process.pid,
+              lastError,
+            });
+            return;
+          }
+        }
+        sendJson(res, warm ? 200 : 503, {
           recipeId: OWNED_RECIPE_ID,
           profileId: OWNED_PROFILE,
           dimension: EXPECTED_DIM,
@@ -149,8 +180,7 @@ export function createEmbedderServer({ embed, artifactDigests, port, bind = '127
           protocols: ['ollama-native', 'openai-compatible'],
           pid: process.pid,
           lastError,
-        };
-        sendJson(res, warm ? 200 : 503, body);
+        });
         return;
       }
 

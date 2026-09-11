@@ -133,39 +133,68 @@ function sanitizeRecipeId(raw) {
 /** Harness writers skip embed below this; absence is `too_short`. */
 const WRITER_MIN_TEXT_LENGTH = 8;
 
+const LIVED_LEGACY_ALIASES = new Set([
+  LEGACY_EMBEDDING_PROFILE,
+  LEGACY_EMBEDDING_RECIPE_ID,
+  'nomic-embed-text',
+  'nomic-embed-text:latest',
+]);
+
+const UNKNOWN_RECIPE = Object.freeze({
+  profile: null,
+  hash: null,
+  known: false,
+});
+
 /**
  * Active Seed/contact recipe for NEW writer lines.
  * Default product remains lived legacy (nomic-embed-text / Ollama).
- * No default flip: unknown identities stamp as legacy, not owned.
+ * Unknown aliases stay unknown — they must not acquire the frozen legacy hash.
  */
 function recipeFromRequested(raw) {
-  if (canonicalizeRecipeId(raw) === OWNED_EMBEDDING_PROFILE) {
+  if (typeof raw !== 'string' || !raw.trim()) return UNKNOWN_RECIPE;
+  const id = raw.trim();
+  if (canonicalizeRecipeId(id) === OWNED_EMBEDDING_PROFILE) {
     return Object.freeze({
       profile: OWNED_EMBEDDING_PROFILE,
       hash: OWNED_EMBEDDING_RECIPE_ID,
+      known: true,
     });
   }
-  return Object.freeze({
-    profile: LEGACY_EMBEDDING_PROFILE,
-    hash: LEGACY_EMBEDDING_RECIPE_ID,
-  });
+  if (LIVED_LEGACY_ALIASES.has(id) || canonicalizeRecipeId(id) === LEGACY_EMBEDDING_PROFILE) {
+    return Object.freeze({
+      profile: LEGACY_EMBEDDING_PROFILE,
+      hash: LEGACY_EMBEDDING_RECIPE_ID,
+      known: true,
+    });
+  }
+  return UNKNOWN_RECIPE;
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
 }
 
 function resolveWriterRecipe(requested) {
-  const raw = (typeof requested === 'string' && requested.trim())
-    || (typeof process.env.SEED_EMBED_RECIPE_ID === 'string' && process.env.SEED_EMBED_RECIPE_ID.trim())
-    || (typeof process.env.SEED_EMBED_MODEL === 'string' && process.env.SEED_EMBED_MODEL.trim())
-    || 'nomic-embed-text';
+  const raw = firstNonEmpty(
+    requested,
+    process.env.SEED_EMBED_RECIPE_ID,
+    process.env.SEED_EMBED_MODEL,
+  ) || 'nomic-embed-text';
   return recipeFromRequested(raw);
 }
 
 /** Active brain/retrieval recipe for NEW NetworkMemory nodes. Prefer hash on write.
  * Default remains lived legacy. Owned only when the home explicitly requests it. */
 function resolveMemoryRecipe(requested) {
-  const raw = (typeof requested === 'string' && requested.trim())
-    || (typeof process.env.EMBEDDING_RECIPE_ID === 'string' && process.env.EMBEDDING_RECIPE_ID.trim())
-    || (typeof process.env.EMBEDDING_MODEL === 'string' && process.env.EMBEDDING_MODEL.trim())
-    || 'nomic-embed-text';
+  const raw = firstNonEmpty(
+    requested,
+    process.env.EMBEDDING_RECIPE_ID,
+    process.env.EMBEDDING_MODEL,
+  ) || 'nomic-embed-text';
   return recipeFromRequested(raw);
 }
 
@@ -186,6 +215,10 @@ function buildWriterSemanticStamp({
   requestedRecipe = null,
 } = {}) {
   const recipe = resolveWriterRecipe(requestedRecipe);
+  if (!recipe.known) {
+    if (Array.isArray(vector) && vector.length > 0) return { semantic_vector: vector };
+    return { semantic_absence: sanitizeAbsenceReason(absence) || inferWriterAbsence(text) };
+  }
   const fields = {
     semantic_recipe_id: recipe.hash,
     semantic_encoder: recipe.profile,
@@ -218,6 +251,7 @@ module.exports = {
   sanitizeRecipeId,
   resolveWriterRecipe,
   resolveMemoryRecipe,
+  recipeFromRequested,
   inferWriterAbsence,
   buildWriterSemanticStamp,
 };

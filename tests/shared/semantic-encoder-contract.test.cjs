@@ -17,6 +17,7 @@ const {
   resolveAttentionPolicy,
   resolveWriterRecipe,
   resolveMemoryRecipe,
+  recipeFromRequested,
   buildWriterSemanticStamp,
 } = require('../../shared/semantic-encoder-contract.cjs');
 
@@ -176,6 +177,44 @@ test('default writer recipe stays lived legacy; owned only when requested', () =
     else process.env.SEED_EMBED_RECIPE_ID = priorRecipe;
     if (priorModel === undefined) delete process.env.SEED_EMBED_MODEL;
     else process.env.SEED_EMBED_MODEL = priorModel;
+  }
+});
+
+test('unknown aliases do not acquire the frozen lived-legacy hash', () => {
+  const prior = {
+    SEED_EMBED_RECIPE_ID: process.env.SEED_EMBED_RECIPE_ID,
+    SEED_EMBED_MODEL: process.env.SEED_EMBED_MODEL,
+    EMBEDDING_RECIPE_ID: process.env.EMBEDDING_RECIPE_ID,
+    EMBEDDING_MODEL: process.env.EMBEDDING_MODEL,
+  };
+  delete process.env.SEED_EMBED_RECIPE_ID;
+  delete process.env.SEED_EMBED_MODEL;
+  delete process.env.EMBEDDING_RECIPE_ID;
+  delete process.env.EMBEDDING_MODEL;
+  try {
+    const unknown = recipeFromRequested('test-embedding');
+    assert.equal(unknown.known, false);
+    assert.equal(unknown.hash, null);
+    assert.equal(unknown.profile, null);
+    assert.notEqual(recipeFromRequested('nomic-embed-text-v1.5').hash, LEGACY_EMBEDDING_RECIPE_ID);
+    assert.equal(recipeFromRequested('nomic-embed-text').known, true);
+    assert.equal(recipeFromRequested('nomic-embed-text').hash, LEGACY_EMBEDDING_RECIPE_ID);
+    assert.equal(recipeFromRequested('nomic-embed-text:latest').hash, LEGACY_EMBEDDING_RECIPE_ID);
+    assert.equal(resolveWriterRecipe('test-embedding').known, false);
+    assert.equal(resolveMemoryRecipe('test-embedding').known, false);
+    const stamped = buildWriterSemanticStamp({
+      vector: [0.1, 0.2],
+      text: 'recycle paper tomorrow morning',
+      requestedRecipe: 'test-embedding',
+    });
+    assert.deepEqual(stamped.semantic_vector, [0.1, 0.2]);
+    assert.equal(stamped.semantic_recipe_id, undefined);
+    assert.equal(stamped.semantic_encoder, undefined);
+  } finally {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

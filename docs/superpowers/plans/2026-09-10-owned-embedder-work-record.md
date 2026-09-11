@@ -29,38 +29,45 @@ Plan commit verified: `3c7495d6dd5b424a7e17307364b1b5a26586e49a`
 | Real ONNX `/ready` + paraphrase rank (0.711 vs 0.555) | Isolated TEST cache-copy harness | Not product import-folder; not packaged Node |
 | Chat URL decoupled from encoder on Host create | `product-host` create unit test | — |
 
-## What is not established
+## Independent review vs source
 
-| Claim previously overstated | Actual |
-|---|---|
-| Stage 5 restart / ingestion | `verify-embedder-stage5.mjs` is a stub home (`bin/node` = four bytes `node`, fake PM2). Only ambient `process.execPath` runs source `serve.mjs`. Restart did not start Seed/engine/coordination or re-query after a full Host restart. |
-| Chat e2e as Host conversation | `chat-e2e-probe.mjs` was retrieve-then-answer via ambient Ollama `llama3.2:1b` (later deleted). Not Host GUI. Not “no ambient Ollama” for chat. |
-| Host Stop remains stopped | Committed `3cfdea94` Stop did not probe `/ready`. Evidence-5 recorded a leftover warm pid. |
-| Live attention is null-cal on owned homes | Production callers did not receive a recipe id; `resolveAttentionPolicy(undefined)` is lived 0.60/0.12. |
-| Brain retrieval is recipe-guarded on HEAD `3cfdea94` | Evidence-5 nodes were `recipeId: null`. Dirty/now-landed `addNode` stamps were not in that commit. |
-| Interrupted download resume | `artifacts.mjs` has no Range/cancel/atomic-after-verify. Stage 4/5 receipts used `cache-copied`. |
+Findings from the 2026-09-11 independent review, checked against this branch after `c1b7cad5`.
 
-## This slice (after the review)
+| Finding | Verdict | Action |
+|---|---|---|
+| B1 Stop can leave `/ready` warm | **Confirmed on `3cfdea94`; fixed in `c1b7cad5`** | Fail-closed Stop remains. Still no packaged Stop receipt. |
+| B2 download restarts from scratch | **Confirmed** | Source now Range-resumes a `.part`, verifies digest, then renames. AbortSignal + 2 GiB cap. **Not** a real `host.mjs` create/download receipt. |
+| B3 live attention borrowed 0.60/0.12 | **Confirmed on `3cfdea94`; fixed in `c1b7cad5`** | Env + callers still fixture-only. |
+| B4 unstamped brain compare | **Confirmed on `3cfdea94`; fixed in `c1b7cad5`** | This slice also stops write-time cosine from treating an unstamped new node as the active recipe. |
+| B5 Stage 5 harness bypass | **Confirmed; still open** | No Host create, packaged Node/ORT, import-folder, or allowlisted PM2 restart. |
+| Unknown aliases mint the frozen legacy hash | **Confirmed** | `recipeFromRequested('test-embedding')` no longer returns `5128b29c…`. Unset / `nomic-embed-text` still lived-legacy. |
+| Prep worker is pid-liveness only | **Confirmed** | 8s pid-0 lease + persisted `workerArgv`. Expired lease → interrupted, then one replacement. |
+| `/ready` sticky; no truncation | **Confirmed** | Encode failure clears `warm`. GET `/ready` re-encodes a finite 768-d probe. Server truncates to Memory 2000. |
+| Pair consumers missing margin | **Disagree** | Seed-context margin is vs pool median. Pair callers have no pool. `admitsPairScore` stays floor-only. Contracts §7 amended to “margin is pool-only.” |
+| `setup.js` must start semantic prep | **Disagree for this slice** | `setup.js` calls `createHome` (shared birth), not Host v2. `beginSemanticPrepare` requires `home23.host.v2` + `encoderRequired`. Wiring it now would make source-setup a new-home owned default (product default flip **NO-GO**). |
+| Apple tests decode `phase:ready` only | **Confirmed; not this worktree** | Left on `88123ded`. |
+| Create-home tests fail here | **Confirmed; worktree gap** | No `dist/` in this worktree. Not a Stage 5 receipt. |
 
-Landed on this branch (local commit after this file):
+## This slice (review corrections after `c1b7cad5`)
 
-- Fail-closed Host Stop: SIGTERM leftover `/ready` pid; **throw** `host_encoder_still_warm` if still warm. No `acceptedAbort: true`.
-- Host create writes `recipeId` on `home.embeddings.providers[0]` and `home.substrate.embedding`.
-- `resolveSeedEmbeddingEnv` exports `SEED_EMBED_RECIPE_ID`. `generate-ecosystem` exports `EMBEDDING_RECIPE_ID` when the provider row has `recipeId`.
-- `context-assembly` / `trigger-index` pass `activeAttentionRecipeId()` (from `SEED_EMBED_RECIPE_ID`).
-- `NetworkMemory.addNode` stamps new vectors; query and `findInitialConnections` refuse unstamped/cross-recipe compares when the active recipe is owned.
+- Unknown recipe aliases stay unstamped / `known: false`. Lived aliases remain `nomic-embed-text`, `:latest`, the legacy profile name, and the frozen legacy hash.
+- `findInitialConnections` compares the node’s own recipe ids; it does not borrow the active hash onto an unstamped node.
+- Semantic-prep pid-0 window is a short lease, not “interrupted.”
+- `downloadFile` resumes `.part` with Range, verifies, then publishes. Bad digest does not replace dest.
+- `/ready` is a finite re-encode while warm; later encode failure clears warm.
+- Contracts §7 and process-contract/recipe notes no longer say Host is unwired or that pair consumers must invent a margin.
 
-**Still missing for a Stage 5 / Host-recovery verdict:** real `host.mjs` create + download interrupt/resume; packaged `Home/bin/node` ORT load; product import-folder + full allowlisted PM2 restart; live v1 receipt; `/ready` finite re-encode; fetch Range/cancel.
+**Still missing for a Stage 5 / Host-recovery verdict:** real `host.mjs` create + interrupt/resume of a download; packaged `Home/bin/node` ORT load; product import-folder + full allowlisted PM2 restart; live v1 receipt; Apple interrupt / `error.code` tests.
 
 ## Lane status
 
 | Lane | Status | Next |
 |---|---|---|
-| Encoder | Stage 1 measurements + Stage 3 serve exist | Interrupt/resume fetch; `/ready` re-encode; packaged Node/ORT |
-| Memory | Guards + JSONL stamps + (this slice) brain stamps | Unknown-alias must not map to frozen legacy hash |
-| Host | v2 admission + (this slice) fail-closed Stop + recipe env | Real create/download; source `setup.js` prep; do not create a real home with this Host yet |
-| Apple | `88123ded` polls semantic-prepare | Interrupt tests; structured error.code |
-| Lead | Overclaim corrected | Keep off shared main. Do not treat Stages 1–5 as complete. |
+| Encoder | Serve + fetch verify/resume exist in source | Real Host create of a download; packaged Node/ORT |
+| Memory | Guards, stamps, unknown-alias refuse | Live brain receipt after real ingest |
+| Host | v2 admission, fail-closed Stop, recipe env, worker lease | Real create/download. Do not create a real home with this Host yet. Do not wire source `setup.js` until Host create is the product new-home path. |
+| Apple | `88123ded` polls semantic-prepare | Interrupt tests; structured `error.code` |
+| Lead | Overclaim corrected; review source gaps landed | Keep off shared main. Stages 1–5 not complete. |
 
 ## Go / no-go
 
@@ -69,7 +76,9 @@ Landed on this branch (local commit after this file):
 | Product default flip | **NO-GO** |
 | Existing-home switch (Stage 6) | **NO-GO** |
 | Integrate to shared main | **NO-GO** |
-| Create a real home with this Host | **NO-GO** until fail-closed Stop + recipe-env are in a reviewed commit **and** Host create/download evidence exists |
+| Public distribution | **NO-GO** |
+| Create a real home with this Host | **NO-GO** until real Host create/download + packaged Node/ORT receipts exist |
+| New-home installation (Host) | Source is closer; **not ready**. Every Host create is still `encoderRequired: true` without proven download/ORT/restart. |
 | Stages 1–5 milestone | **not complete** |
 
 ## Handoff
@@ -80,7 +89,8 @@ Branch:   home23-agent/owned-embedder-stage5-verify
 Shared:   home23 remains codex/jerry-continuity-20260907
 Apple:    Host Stage 4 is 88123ded on home23-apple-agent/owned-embedder-host-stage4
           Shared Apple remains codex/mac-dashboard2-20260908
-Do not:   push, flip defaults, migrate existing homes, delete TEST homes
+Do not:   push, flip defaults, migrate existing homes, delete TEST homes,
+          create a real home with this Host, commit scripts/embedder/node_modules
 Next:     real host.mjs create + download interrupt/resume; packaged Node/ORT;
           product import-folder + full Host restart. Not another cache-copy harness.
 ```

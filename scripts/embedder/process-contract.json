@@ -1,7 +1,7 @@
 {
   "schema": "home23.embedder.process.v1",
   "processNameDocumentedOnly": "home23-embedder",
-  "note": "Host must not expand ownedProcessNames() or PORT_KEYS from this file yet. Port key embedder is for a versioned Host port plan.",
+  "note": "Host admits home23-embedder only via home23.host.v2 + encoderRequired. Do not unversioned-expand ownedProcessNames() or PORT_KEYS from this file. Port key embedder is for that versioned plan.",
   "argv": ["node", "scripts/embedder/serve.mjs"],
   "optionalArgv": ["--port", "--bind", "--cache"],
   "bind": "127.0.0.1",

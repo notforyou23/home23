@@ -238,7 +238,7 @@ Stage 2 **must** reject unequal lengths instead of `min(len)`. **specified by pl
 
 Caches must be keyed by recipe id (today: exact text only, max 800). **specified by plan.**
 
-Shared attention policy for **all four** consumers: floor AND margin AND min-alnum AND null-cal. **specified by plan** (Memory). Floor-only consumers are incomplete relative to seed-context; Stage 2 first slice switches them onto the shared helper. For the **legacy** active recipe, keep 0.60 / 0.12 / 20 so existing homes do not go mute or dump. For **owned** / uncalibrated: no semantic gate.
+Shared attention helper for **all four** consumers: floor, min-alnum, and null-cal. **Relative margin is pool-only** (`seed-context` vs the turn median). Pair consumers (`semantic-match` / context-assembly / trigger-index) stay floor-only because they have no pool; do not invent a pair margin. For the **legacy** active recipe, keep 0.60 / 0.12 / 20 so existing homes do not go mute or dump. For **owned** / uncalibrated: no semantic gate.
 
 On the public corpus, Ollama Seed vs ONNX mean-pool noprefix:
 

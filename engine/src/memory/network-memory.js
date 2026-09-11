@@ -823,6 +823,7 @@ class NetworkMemory {
     const memoryRecipe = embed
       ? resolveMemoryRecipe(this.nodeEmbeddingRecipeId(inputNode) || this.getEmbeddingRecipeId() || this.getEmbeddingModel())
       : null;
+    const knownRecipe = memoryRecipe?.known === true;
 
     const node = {
       id: null,
@@ -832,7 +833,7 @@ class NetworkMemory {
       tag: nodeTag,
       embedding: embed || null,
       embedding_status: embed ? 'embedded' : 'missing',
-      ...(memoryRecipe ? { embedding_recipe_id: memoryRecipe.hash, embedding_encoder: memoryRecipe.profile } : {}),
+      ...(knownRecipe ? { embedding_recipe_id: memoryRecipe.hash, embedding_encoder: memoryRecipe.profile } : {}),
       activation: incomingAuthorityAttested ? 0 : (inputNode?.activation ?? 0),
       cluster: incomingAuthorityAttested ? null : (inputNode?.cluster ?? null),
       weight: incomingAuthorityAttested ? 1.0 : (inputNode?.weight ?? 1.0),
@@ -988,7 +989,7 @@ class NetworkMemory {
       if (!this.embeddingsComparable(
         node.embedding,
         otherNode.embedding,
-        this.nodeEmbeddingRecipeId(node) || this.activeMemoryRecipe().hash,
+        this.nodeEmbeddingRecipeId(node),
         this.nodeEmbeddingRecipeId(otherNode),
       )) continue;
 

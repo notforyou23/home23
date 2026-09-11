@@ -1,6 +1,6 @@
 {
   "schema": "home23.embedder.recipes.v1",
-  "note": "Frozen Encoder seams. Process name home23-embedder is documented only; Host is not wired. Product defaults stay legacy. These recipeId values are sha256 of canonical fingerprint JSON from Stage 1 pins — no new model download.",
+  "note": "Frozen Encoder seams. Host admits home23-embedder only on home23.host.v2 + encoderRequired. Product defaults stay legacy. These recipeId values are sha256 of canonical fingerprint JSON from Stage 1 pins — no new model download.",
   "projection": {
     "expected_dim": 768,
     "projection_seed": 20260808,

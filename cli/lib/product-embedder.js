@@ -11,6 +11,7 @@ export const OWNED_EMBEDDER_PROCESS = 'home23-embedder';
 export const OWNED_RECIPE_HASH = OWNED_RECIPE_ID;
 export const OWNED_PROFILE_ID = 'owned-nomic-v1.5-onnx-fp32-mean-noprefix';
 export const SEMANTIC_PHASES = Object.freeze(['downloading', 'verifying', 'warming', 'ready', 'interrupted', 'failed']);
+export const WORKER_LEASE_MS = 8000;
 const PREP_SCHEMA = 'home23.semantic-prep.v1';
 const workerPath = fileURLToPath(new URL('../../scripts/product/semantic-prepare-worker.mjs', import.meta.url));
 
@@ -38,12 +39,19 @@ export function writeSemanticPrep(homeRoot, value) {
   privateJSON(semanticPrepPath(homeRoot), { ...value, schema: PREP_SCHEMA, homeRoot, updatedAt: new Date().toISOString() });
 }
 
-export function reconcileSemanticPrep(homeRoot) {
+function leaseHolds(prep, now = Date.now()) {
+  if (!prep || Number.isInteger(prep.workerPid) && prep.workerPid > 0) return false;
+  const until = Date.parse(prep.workerLeaseUntil || '');
+  return Number.isFinite(until) && until > now;
+}
+
+export function reconcileSemanticPrep(homeRoot, { now = Date.now() } = {}) {
   const prep = readSemanticPrep(homeRoot);
   if (!prep) return null;
   if (['ready', 'failed'].includes(prep.phase)) return prep;
-  if (['downloading', 'verifying', 'warming'].includes(prep.phase) && !alive(prep.workerPid)) {
-    const interrupted = { ...prep, phase: 'interrupted', workerPid: 0, error: prep.error || 'Semantic preparation was interrupted. Resume to continue with this home.' };
+  if (['downloading', 'verifying', 'warming'].includes(prep.phase)) {
+    if (alive(prep.workerPid) || leaseHolds(prep, now)) return prep;
+    const interrupted = { ...prep, phase: 'interrupted', workerPid: 0, workerLeaseUntil: undefined, error: prep.error || 'Semantic preparation was interrupted. Resume to continue with this home.' };
     writeSemanticPrep(homeRoot, interrupted);
     return interrupted;
   }
@@ -128,18 +136,24 @@ export function beginSemanticPrepare(homeRoot, state, { spawnWorker = spawn, nod
   if (!encoderRequiredFor(state)) throw new Error('This home does not use the owned encoder.');
   const existing = reconcileSemanticPrep(homeRoot);
   if (existing?.phase === 'ready') return existing;
-  if (existing && ['downloading', 'verifying', 'warming'].includes(existing.phase) && alive(existing.workerPid)) return existing;
+  if (existing && ['downloading', 'verifying', 'warming'].includes(existing.phase)
+    && (alive(existing.workerPid) || leaseHolds(existing))) {
+    return existing;
+  }
   const cache = embedderCacheDir(homeRoot);
   if (cache === process.env.HOME || cache.includes('/release/home23')) throw new Error('HOME23_EMBEDDER_CACHE must be this home\'s runtime cache.');
   const handle = existing?.handle || randomUUID();
   const env = productEnvironment(homeRoot, { prepare: true, encoderRequired: true, embedderPort: state.ports.embedder });
+  const interpreter = nodePath || join(homeRoot, 'bin', 'node');
+  const workerArgv = [interpreter, workerPath, '--home', homeRoot];
   const record = {
     schema: PREP_SCHEMA, handle, homeRoot, phase: 'downloading', cacheDir: cache,
     port: state.ports.embedder, recipeId: OWNED_RECIPE_HASH, workerPid: 0, error: undefined,
+    workerArgv, workerLeaseUntil: new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
     startedAt: existing?.startedAt || new Date().toISOString(),
   };
   writeSemanticPrep(homeRoot, record);
-  const worker = spawnWorker(nodePath || join(homeRoot, 'bin', 'node'), [workerPath, '--home', homeRoot], {
+  const worker = spawnWorker(interpreter, [workerPath, '--home', homeRoot], {
     cwd: join(homeRoot, 'app'), env, detached: true, stdio: 'ignore',
   });
   worker.unref?.();

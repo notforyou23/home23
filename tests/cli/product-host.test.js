@@ -9,7 +9,7 @@ import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:http';
 import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
 import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses } from '../../cli/lib/product-host.js';
-import { writeSemanticPrep } from '../../cli/lib/product-embedder.js';
+import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 
 function home(t, { birth = false } = {}) {
@@ -516,6 +516,65 @@ test('semantic-prepare returns a durable handle and does not download inside the
   assert.notEqual(spawned[0].options.env.HOME, os.homedir());
   assert.equal(spawned[0].options.env.HOME23_EMBEDDER_BIND, '127.0.0.1');
   assert.equal(spawned[0].options.env.HOME23_EMBEDDER_PORT, String(ports.embedder));
+  const prep = reconcileSemanticPrep(homeRoot);
+  assert.ok(Array.isArray(prep.workerArgv) && prep.workerArgv.includes('--home'));
+  assert.ok(prep.workerLeaseUntil && Date.parse(prep.workerLeaseUntil) > Date.now());
+});
+
+test('semantic-prepare does not start a second worker during the pid-0 lease', async t => {
+  const homeRoot = home(t);
+  const ports = await choosePortPlan({ encoderRequired: true });
+  const state = {
+    schema: 'home23.host.v2', homeRoot, ports, encoderRequired: true,
+    profile: { name: 'milo', provider: 'openai', model: 'gpt-4.1' }, phase: 'prepared', desiredRunning: false,
+  };
+  privateJSON(path.join(homeRoot, '.home23-host.json'), state);
+  fs.mkdirSync(path.join(homeRoot, 'runtime'), { recursive: true, mode: 0o700 });
+  writeSemanticPrep(homeRoot, {
+    schema: 'home23.semantic-prep.v1', handle: 'lease-fixture', homeRoot, phase: 'downloading',
+    cacheDir: path.join(homeRoot, 'runtime/embedder-cache'), port: ports.embedder,
+    workerPid: 0, workerLeaseUntil: new Date(Date.now() + 8000).toISOString(),
+    workerArgv: [path.join(homeRoot, 'bin/node'), 'worker', '--home', homeRoot],
+  });
+  const spawned = [];
+  const again = beginSemanticPrepare(homeRoot, state, {
+    spawnWorker() {
+      spawned.push(1);
+      return { pid: 99, unref() {} };
+    },
+  });
+  assert.equal(spawned.length, 0);
+  assert.equal(again.handle, 'lease-fixture');
+  assert.equal(again.phase, 'downloading');
+  assert.equal(again.workerPid, 0);
+});
+
+test('semantic-prepare marks an expired pid-0 lease interrupted and can start one replacement', async t => {
+  const homeRoot = home(t);
+  const ports = await choosePortPlan({ encoderRequired: true });
+  const state = {
+    schema: 'home23.host.v2', homeRoot, ports, encoderRequired: true,
+    profile: { name: 'milo', provider: 'openai', model: 'gpt-4.1' }, phase: 'prepared', desiredRunning: false,
+  };
+  privateJSON(path.join(homeRoot, '.home23-host.json'), state);
+  fs.mkdirSync(path.join(homeRoot, 'runtime'), { recursive: true, mode: 0o700 });
+  writeSemanticPrep(homeRoot, {
+    schema: 'home23.semantic-prep.v1', handle: 'expired-lease', homeRoot, phase: 'downloading',
+    cacheDir: path.join(homeRoot, 'runtime/embedder-cache'), port: ports.embedder,
+    workerPid: 0, workerLeaseUntil: new Date(Date.now() - 1000).toISOString(),
+  });
+  const interrupted = reconcileSemanticPrep(homeRoot);
+  assert.equal(interrupted.phase, 'interrupted');
+  const spawned = [];
+  const resumed = beginSemanticPrepare(homeRoot, state, {
+    spawnWorker() {
+      spawned.push(1);
+      return { pid: 77, unref() {} };
+    },
+  });
+  assert.equal(spawned.length, 1);
+  assert.equal(resumed.workerPid, 77);
+  assert.equal(resumed.handle, 'expired-lease');
 });
 
 test('Start launches the owned embedder first after semantic preparation is ready', async t => {
