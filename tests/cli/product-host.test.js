@@ -565,6 +565,11 @@ test('semantic-prepare marks an expired pid-0 lease interrupted and can start on
   });
   const interrupted = reconcileSemanticPrep(homeRoot);
   assert.equal(interrupted.phase, 'interrupted');
+  assert.equal(interrupted.error.code, 'host_semantic_interrupted');
+  assert.match(interrupted.error.message, /Resume to continue/);
+  const viewed = await runHostAction('status', { homeRoot }, { execute: async () => ({ stdout: '[]' }) });
+  assert.equal(viewed.semantic.phase, 'interrupted');
+  assert.equal(viewed.semantic.error.code, 'host_semantic_interrupted');
   const spawned = [];
   const resumed = beginSemanticPrepare(homeRoot, state, {
     spawnWorker() {

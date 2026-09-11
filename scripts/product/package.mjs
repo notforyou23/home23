@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** Build a machine-specific, dependency-complete Home23 Host payload from Git. */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -8,21 +9,60 @@ import { inventoryProductPayload, verifyProductPayload, writeProductManifest } f
 
 const run = (file, args, options = {}) => execFileSync(file, args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options });
 const inside = (parent, child) => child === parent || child.startsWith(parent + path.sep);
+
+export function parseLinkedLibraries(platform, output) {
+  const text = String(output || '');
+  if (platform === 'linux' && /not a dynamic executable/i.test(text)) return [];
+  if (platform === 'darwin') {
+    return text.split('\n').slice(1).map(line => line.trim().split(' (')[0]).filter(Boolean);
+  }
+  return text.split('\n').map(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return '';
+    if (trimmed.includes(' => ')) return trimmed.split(' => ')[1].split(' (')[0].trim();
+    return trimmed.split(' (')[0].trim();
+  }).filter(Boolean);
+}
+
+export function allowedProductNodeLibrary(platform, library) {
+  if (!library) return true;
+  if (/not found/i.test(library)) return false;
+  if (platform === 'darwin') return library.startsWith('/usr/lib/') || library.startsWith('/System/Library/');
+  if (platform === 'linux') {
+    if (library.startsWith('linux-vdso.so.')) return true;
+    return library.startsWith('/lib/') || library.startsWith('/lib64/') || library.startsWith('/usr/lib/') || library.startsWith('/usr/lib64/');
+  }
+  return false;
+}
+
+export function assertOfficialProductNodeLibraries(platform, libraries) {
+  if (!['darwin', 'linux'].includes(platform)) {
+    throw new Error('The Host package builder supports macOS and Linux; this platform is not supported');
+  }
+  if (libraries.some(library => !allowedProductNodeLibrary(platform, library))) {
+    throw new Error('Node depends on non-system libraries; use the self-contained official Node distribution');
+  }
+}
+
+export function headerAliasParent() {
+  if (process.platform === 'darwin' && fs.existsSync('/private/tmp')) return '/private/tmp';
+  return os.tmpdir();
+}
+
 export function inspectProductNode(nodePath) {
   nodePath = fs.realpathSync(nodePath);
   const metadata = JSON.parse(run(nodePath, ['-p', 'JSON.stringify({platform:process.platform,arch:process.arch,nodeVersion:process.version})']));
   if (!/^v22\./.test(metadata.nodeVersion) || metadata.platform !== process.platform || metadata.arch !== process.arch) {
     throw new Error('Use a Node 22 binary matching the build machine platform and architecture');
   }
-  // Homebrew Node links to the builder's private installation. Copying just
-  // that executable looks portable but fails on the recipient's machine.
+  // Homebrew / nvm-linked Node copies look portable but fail on the recipient.
+  // Darwin uses otool; Linux uses ldd. Both require official Node 22 plus its LICENSE.
   if (process.platform === 'darwin') {
-    const libraries = run('/usr/bin/otool', ['-L', nodePath]).split('\n').slice(1).map(line => line.trim().split(' (')[0]).filter(Boolean);
-    if (libraries.some(library => !library.startsWith('/usr/lib/') && !library.startsWith('/System/Library/'))) {
-      throw new Error('Node depends on non-system libraries; use the self-contained official Node distribution');
-    }
+    assertOfficialProductNodeLibraries('darwin', parseLinkedLibraries('darwin', run('/usr/bin/otool', ['-L', nodePath])));
+  } else if (process.platform === 'linux') {
+    assertOfficialProductNodeLibraries('linux', parseLinkedLibraries('linux', run('/usr/bin/ldd', [nodePath])));
   } else {
-    throw new Error('The initial Host package builder supports macOS; Linux packaging needs its own dependency portability verification');
+    throw new Error('The Host package builder supports macOS and Linux; this platform is not supported');
   }
   return metadata;
 }
@@ -72,7 +112,7 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
   // root containing spaces (external macOS volumes commonly have them). Only
   // this tiny temporary alias lives on the system disk; headers, dependencies,
   // npm cache and the complete payload remain at their selected locations.
-  const headerAliasRoot = fs.mkdtempSync('/private/tmp/home23-node-headers-');
+  const headerAliasRoot = fs.mkdtempSync(path.join(headerAliasParent(), 'home23-node-headers-'));
   const headerAlias = path.join(headerAliasRoot, 'node');
   fs.symlinkSync(nodeDistribution, headerAlias, 'dir');
   const env = { PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: process.env.HOME, USER: process.env.USER,

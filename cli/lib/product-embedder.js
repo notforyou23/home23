@@ -45,13 +45,37 @@ function leaseHolds(prep, now = Date.now()) {
   return Number.isFinite(until) && until > now;
 }
 
+function structuredPrepError(code, message) {
+  return {
+    code: typeof code === 'string' && /^[a-z_]{1,80}$/.test(code) ? code : 'host_semantic_failed',
+    message: String(message || code || 'Semantic memory could not be prepared. Retry from Home23 Host. Your saved home stays in place.'),
+  };
+}
+
+function normalizePrepError(prep) {
+  if (!prep?.error) return undefined;
+  if (typeof prep.error === 'object') {
+    return structuredPrepError(prep.error.code, prep.error.message || prep.error.code);
+  }
+  return structuredPrepError(
+    prep.phase === 'interrupted' ? 'host_semantic_interrupted' : 'host_semantic_failed',
+    prep.error,
+  );
+}
+
 export function reconcileSemanticPrep(homeRoot, { now = Date.now() } = {}) {
   const prep = readSemanticPrep(homeRoot);
   if (!prep) return null;
   if (['ready', 'failed'].includes(prep.phase)) return prep;
   if (['downloading', 'verifying', 'warming'].includes(prep.phase)) {
     if (alive(prep.workerPid) || leaseHolds(prep, now)) return prep;
-    const interrupted = { ...prep, phase: 'interrupted', workerPid: 0, workerLeaseUntil: undefined, error: prep.error || 'Semantic preparation was interrupted. Resume to continue with this home.' };
+    const interrupted = {
+      ...prep,
+      phase: 'interrupted',
+      workerPid: 0,
+      workerLeaseUntil: undefined,
+      error: structuredPrepError('host_semantic_interrupted', 'Semantic preparation was interrupted. Resume to continue with this home.'),
+    };
     writeSemanticPrep(homeRoot, interrupted);
     return interrupted;
   }
@@ -112,7 +136,7 @@ export function semanticStatusView(homeRoot, state) {
     bytesTotal: prep?.bytesTotal,
     semanticReady: prep?.phase === 'ready',
     recipeId: prep?.recipeId || OWNED_RECIPE_HASH,
-    error: prep?.error,
+    error: normalizePrepError(prep),
   };
 }
 
@@ -124,7 +148,12 @@ export function beginPhase(homeRoot, phase, extra = {}) {
 
 export function failPrep(homeRoot, code, message) {
   const prep = readSemanticPrep(homeRoot) || { handle: 'unknown' };
-  writeSemanticPrep(homeRoot, { ...prep, phase: 'failed', workerPid: 0, error: message || code });
+  writeSemanticPrep(homeRoot, {
+    ...prep,
+    phase: 'failed',
+    workerPid: 0,
+    error: structuredPrepError(code, message),
+  });
 }
 
 export function finishReady(homeRoot) {
