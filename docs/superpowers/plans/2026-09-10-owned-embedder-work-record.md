@@ -11,7 +11,7 @@ Plan commit verified: `3c7495d6dd5b424a7e17307364b1b5a26586e49a`
 | Item | Value |
 |---|---|
 | Worktree | `home23/.home23-worktrees/owned-embedder-stage5-verify` |
-| Branch | `home23-agent/owned-embedder-stage5-verify` @ `54b0b993` (TEST payload packaged at `d8f45ba3`) |
+| Branch | `home23-agent/owned-embedder-stage5-verify` @ `303ff008` (payload packaged at `d8f45ba3`; Encoder `54b0b993`) |
 | Shared `home23` | `codex/jerry-continuity-20260907` — not switched, not this work |
 | Shared `home23-apple` | `codex/mac-dashboard2-20260908` — not the Host Stage 4 commit |
 | Apple Host edits | `home23-apple-agent/owned-embedder-host-stage4` @ `88123ded` (separate worktree) |
@@ -56,6 +56,18 @@ Resident process names: `home23-coordination`, `home23-stage5host`, `home23-stag
 
 Stamped Seed contact: coordination `POST /api/v1/channels/:id/messages` then conversation-shipper line with `semantic_recipe_id` = owned hash, `semantic_encoder` = `owned-nomic-v1.5-onnx-fp32-mean-noprefix`, 16-d projection. Same line present after restart. Seed id `seed_mtwbundv_e0c0a4b8`, genesis `e533195b…` unchanged.
 
+## Memory worker (live probe)
+
+Owner: Memory worker. No Memory source commit. Probe script untracked: `scripts/product/probe-embedder-stage5-memory.mjs`. Receipt: untracked `.stage5-host-home/memory-receipt.json`. Official `.stage5-host-home/host-receipt.json` was late; the probe used `.stage5-product-home` while `/ready` was warm, then Host Stopped the home.
+
+| Check | Result |
+|---|---|
+| Stamp | **pass** — in-process addNode + Host brain sidecars **6/6** owned hash `12e9f736…`, including both import-folder docs |
+| Query | **pass** — refused unstamped and cross-recipe; owned↔owned compared; paraphrase top hydrologic |
+| Contact | **pass on live Host stream** — newest line owned hash + 16-d. Isolated shipper new-line `shipped: 0` (leftover cursor; not re-run after Stop). Old line stayed unknown / byte-identical |
+| Attention | **pass** — live harness/seed/shipper `SEED_EMBED_RECIPE_ID` owned hash; `matchFloor`/`matchMargin` null; `canSemanticGate` false; no borrowed 0.60/0.12 |
+| Birth | **pass** — `modelInvocations: 0` through semantic-prepare `ready` |
+
 ## What is established
 
 | Fact | Evidence | Limit |
@@ -77,8 +89,8 @@ Findings from the 2026-09-11 independent review, checked against this branch aft
 |---|---|---|
 | B1 Stop can leave `/ready` warm | **Confirmed on `3cfdea94`; fixed in `c1b7cad5`; packaged Stop receipt now exists** | This TEST Host Stop left `/ready` connection-refused without a verifier kill |
 | B2 download restarts from scratch | **Source Range-resumes; live fetch completed** | `.part` was observed growing on `host.mjs` semantic-prepare. Interrupt/resume of a truncated `.part` still unverified. `ensureArtifacts` still deletes `.part` on fetch throw |
-| B3 live attention borrowed 0.60/0.12 | **Confirmed on `3cfdea94`; fixed in `c1b7cad5`** | Env + callers still fixture-only outside this Host TEST |
-| B4 unstamped brain compare | **Confirmed on `3cfdea94`; fixed in `c1b7cad5`** | — |
+| B3 live attention borrowed 0.60/0.12 | **Confirmed on `3cfdea94`; fixed in `c1b7cad5`; live Host env null-cal** | Memory probe: live processes carried owned `SEED_EMBED_RECIPE_ID`; pair/pool admit false |
+| B4 unstamped brain compare | **Confirmed on `3cfdea94`; fixed in `c1b7cad5`; live sidecars stamped** | 6/6 Host brain nodes owned; query refused unstamped. Dashboard `/api/memory/search` still unavailable |
 | B5 Stage 5 harness bypass | **Closed for Host create/prepare/start/import/restart/stop on this TEST home** | Dashboard memory-search and chat e2e remain open |
 | Unknown aliases mint the frozen legacy hash | **Confirmed** | Unset / `nomic-embed-text` still lived-legacy |
 | Prep worker is pid-liveness only | **Confirmed** | One worker on this prepare |
@@ -93,10 +105,10 @@ Findings from the 2026-09-11 independent review, checked against this branch aft
 | Lane | Status | Next |
 |---|---|---|
 | Encoder | Packaged Node/ORT `/ready` on a Host-created home | Optional interrupt/resume of a truncated `.part` |
-| Memory | Live shipper stamp + watch-path ingest | Dashboard `/api/memory/search` / persisted `brain-state.json` |
+| Memory | Live stamps, query refuse, null-cal attention, birth 0 on the Host TEST home | Dashboard `/api/memory/search` / `brain-state.json`; isolated shipper new-line after Stop |
 | Host | Isolated TEST create/prepare/start/restart/stop evidenced | Do not wire source `setup.js`. Do not create a product/owner home |
 | Apple | `88123ded` polls semantic-prepare | Interrupt tests; structured `error.code` |
-| Lead | Host TEST receipts exist; chat blocked | Keep off shared main. Do not flip defaults |
+| Lead | Encoder + Host + Memory receipts exist; chat blocked | Keep off shared main. Do not flip defaults |
 
 ## Go / no-go
 
@@ -114,7 +126,7 @@ Findings from the 2026-09-11 independent review, checked against this branch aft
 
 ```text
 Worktree: home23/.home23-worktrees/owned-embedder-stage5-verify
-Branch:   home23-agent/owned-embedder-stage5-verify @ 54b0b993
+Branch:   home23-agent/owned-embedder-stage5-verify @ 303ff008
 Payload:  packaged from d8f45ba3 (tip later added package.mjs transformers load-check)
 TEST:     .stage5-product-home (Host). .stage5-host-home holds Memory + a copy of host-receipt.json
 Shared:   home23 remains codex/jerry-continuity-20260907
