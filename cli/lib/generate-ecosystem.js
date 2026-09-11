@@ -131,7 +131,8 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  const dimensions = selected.dimensions || (providerName === 'openai' ? 1536 : 768);`);
   lines.push(`  const envFallback = providerName === 'openai' ? process.env.OPENAI_API_KEY : providerName === 'ollama-cloud' ? process.env.OLLAMA_CLOUD_API_KEY : '';`);
   lines.push(`  const apiKey = providerName === 'ollama-local' ? 'ollama' : providerName === 'home23-owned' ? 'owned' : (secrets.providers?.[providerName]?.apiKey || envFallback || '');`);
-  lines.push(`  return { providerName, baseURL, apiKey, model, dimensions: String(dimensions) };`);
+  lines.push(`  const recipeId = typeof selected.recipeId === 'string' && selected.recipeId.trim() ? selected.recipeId.trim() : '';`);
+  lines.push(`  return { providerName, baseURL, apiKey, model, dimensions: String(dimensions), recipeId };`);
   lines.push(`}`);
   lines.push(`const embeddingConfig = resolveEmbeddingConfig();`);
   lines.push(`const seedEmbeddingEnv = ${JSON.stringify(seedEmbedding.resolveSeedEmbeddingEnv(homeConfig))};`);
@@ -187,6 +188,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  EMBEDDING_API_KEY: embeddingConfig.apiKey,`);
   lines.push(`  EMBEDDING_MODEL: embeddingConfig.model,`);
   lines.push(`  EMBEDDING_DIMENSIONS: embeddingConfig.dimensions,`);
+  lines.push(`  EMBEDDING_RECIPE_ID: embeddingConfig.recipeId,`);
   lines.push(`  LOCAL_LLM_BASE_URL: \`\${ollamaLocalUrl}/v1\`,`);
   lines.push(`  OLLAMA_CLOUD_API_KEY: secrets.providers?.['ollama-cloud']?.apiKey || '',`);
   lines.push(`  MINIMAX_API_KEY: secrets.providers?.minimax?.apiKey || '',`);

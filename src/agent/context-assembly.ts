@@ -21,7 +21,7 @@ import { composeSeedSituation } from '../substrate/seed-context.js';
 import { composeLivedRecent } from '../substrate/lived-recent.js';
 import { composeLivedFacts } from '../substrate/lived-facts.js';
 import { semanticMatchScore } from '../substrate/semantic-match.js';
-import { admitsPairScore, resolveAttentionPolicy } from '../substrate/encoder-attention-policy.js';
+import { activeAttentionRecipeId, admitsPairScore, resolveAttentionPolicy } from '../substrate/encoder-attention-policy.js';
 
 const require = createRequire(import.meta.url);
 const { resolveAgentInstancePaths } = require('../../shared/agent-instance-paths.cjs');
@@ -211,9 +211,10 @@ function loadTriggeredSurfaces(
       ?? basename(surface.file).replace(/\.md$/i, '').replace(/[^A-Za-z0-9]+/g, '_').toUpperCase();
 
     let fired: boolean;
-    const policy = resolveAttentionPolicy();
+    const recipeId = activeAttentionRecipeId();
+    const policy = resolveAttentionPolicy(recipeId);
     const score = turnText !== undefined
-      ? semanticMatchScore(turnText, `${label}: ${cues.join(', ')}`, embed)
+      ? semanticMatchScore(turnText, `${label}: ${cues.join(', ')}`, embed, { recipeId })
       : null;
     if (score !== null) {
       fired = admitsPairScore(score, policy);
@@ -837,6 +838,7 @@ export async function assembleContext(
     const seedSection = composeSeedSituation(config.substrateStateDir, {
       budget: config.substrateBudget,
       turnText: userText,
+      recipeId: activeAttentionRecipeId(),
     });
     if (seedSection) {
       surfacesLoaded.push('SUBSTRATE');

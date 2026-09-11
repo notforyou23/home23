@@ -5,6 +5,7 @@ const {
   OWNED_EMBEDDING_PROFILE,
   LEGACY_EMBEDDING_RECIPE_ID,
   OWNED_EMBEDDING_RECIPE_ID,
+  resolveWriterRecipe,
 } = require('./semantic-encoder-contract.cjs');
 
 const KNOWN_SEED_EMBED_MODELS = new Set([
@@ -44,7 +45,15 @@ function resolveSeedEmbeddingEnv(homeConfig = {}) {
   if (config.apiKey || config.token || config.headers) throw new Error('Seed embedding configuration cannot carry credentials');
   const model = config.model || 'nomic-embed-text';
   assertSeedEmbedModel(model);
-  return { SEED_EMBED_ENDPOINT: endpoint.href, SEED_EMBED_MODEL: model };
+  const recipeId = typeof config.recipeId === 'string' && config.recipeId.trim()
+    ? config.recipeId.trim()
+    : model;
+  if (recipeId !== model) assertSeedEmbedModel(recipeId);
+  return {
+    SEED_EMBED_ENDPOINT: endpoint.href,
+    SEED_EMBED_MODEL: model,
+    SEED_EMBED_RECIPE_ID: resolveWriterRecipe(recipeId).hash,
+  };
 }
 
 module.exports = { resolveSeedEmbeddingEnv, assertSeedEmbedModel, KNOWN_SEED_EMBED_MODELS };

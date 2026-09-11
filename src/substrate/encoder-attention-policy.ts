@@ -27,6 +27,12 @@ export function resolveAttentionPolicy(recipeId?: string | null): AttentionPolic
   return contract.resolveAttentionPolicy(recipeId);
 }
 
+/** Host-exported recipe for live Seed/attention callers. Missing ⇒ lived legacy. */
+export function activeAttentionRecipeId(): string | null {
+  const recipe = process.env.SEED_EMBED_RECIPE_ID;
+  return typeof recipe === 'string' && recipe.trim() ? recipe.trim() : null;
+}
+
 /** Single-pair admit (context-assembly / trigger-index). Margin applies to pools. */
 export function admitsPairScore(score: number, policy: AttentionPolicy): boolean {
   if (!policy.canSemanticGate || policy.matchFloor === null) return false;

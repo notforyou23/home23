@@ -9,7 +9,7 @@ import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, provider
 import { inspectProductMemory } from './product-memory.js';
 import {
   OWNED_EMBEDDER_PROCESS, OWNED_PROFILE_ID, OWNED_RECIPE_HASH,
-  beginSemanticPrepare, encoderRequiredFor, probeOwnedReady, semanticStatusView,
+  beginSemanticPrepare, encoderRequiredFor, ensureOwnedEncoderStopped, probeOwnedReady, semanticStatusView,
 } from './product-embedder.js';
 
 const executeFile = promisify(execFile);
@@ -344,7 +344,7 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
     const endpoint = `http://127.0.0.1:${state.ports.embedder}/api/embeddings`;
     home.embedder = { owned: true, port: state.ports.embedder, bind: '127.0.0.1' };
     home.embeddings = { providers: [{ provider: 'home23-owned', model: OWNED_PROFILE_ID, dimensions: 768, endpoint, recipeId: OWNED_RECIPE_HASH }] };
-    home.substrate = { ...home.substrate, embedding: { endpoint, model: OWNED_PROFILE_ID } };
+    home.substrate = { ...home.substrate, embedding: { endpoint, model: OWNED_PROFILE_ID, recipeId: OWNED_RECIPE_HASH } };
   }
   writeFileSync(homePath, yaml.dump(home), { mode: 0o600 });
   await secretsStore.updateHome23Secrets(appRoot, secrets => {
@@ -402,6 +402,26 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       privateJSON(statePath(homeRoot), state);
       await authorizeInitialHostPairing(homeRoot, false);
       for (const row of [...processes].reverse()) if (row.status !== 'stopped') await processDriver.pm2(['stop', row.name, '--silent']);
+      if (encoderRequiredFor(state)) {
+        try {
+          await ensureOwnedEncoderStopped(state, {
+            probe: dependencies.probeOwnedReady || probeOwnedReady,
+            ...(dependencies.signalProcess ? { signalProcess: dependencies.signalProcess } : {}),
+            ...(dependencies.sleep ? { sleep: dependencies.sleep } : {}),
+            ...(Number.isInteger(dependencies.stopTimeoutMs) ? { timeoutMs: dependencies.stopTimeoutMs } : {}),
+          });
+        } catch (error) {
+          return {
+            ...await status(homeRoot, dependencies),
+            ok: false,
+            desiredRunning: false,
+            error: {
+              code: error.code || 'host_encoder_still_warm',
+              message: error.message || 'The owned encoder is still answering /ready after Stop.',
+            },
+          };
+        }
+      }
       return await status(homeRoot, dependencies);
     }
     if (encoderRequiredFor(state) && semanticStatusView(homeRoot, state).semanticReady !== true) {

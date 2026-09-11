@@ -10,7 +10,7 @@ import type { MemoryObject, TriggerCondition, EventEnvelope } from '../types.js'
 import type { MemoryObjectStore } from './memory-objects.js';
 import type { EventLedger } from './event-ledger.js';
 import { semanticMatchScore } from '../substrate/semantic-match.js';
-import { admitsPairScore, resolveAttentionPolicy } from '../substrate/encoder-attention-policy.js';
+import { activeAttentionRecipeId, admitsPairScore, resolveAttentionPolicy } from '../substrate/encoder-attention-policy.js';
 
 interface TriggerMatch {
   memoryId: string;
@@ -60,9 +60,10 @@ export class TriggerIndex {
           // floor). Substring remains the degraded fallback so a down
           // embedder never silences reactivation entirely.
           const keywords = entry.trigger.condition.split(/\s+OR\s+/i).map(k => k.trim().toLowerCase());
-          const score = semanticMatchScore(userText, `${entry.memory.title}: ${keywords.join(', ')}`, embed);
+          const recipeId = activeAttentionRecipeId();
+          const score = semanticMatchScore(userText, `${entry.memory.title}: ${keywords.join(', ')}`, embed, { recipeId });
           fired = score !== null
-            ? admitsPairScore(score, resolveAttentionPolicy())
+            ? admitsPairScore(score, resolveAttentionPolicy(recipeId))
             : keywords.some(kw => textLower.includes(kw));
           break;
         }
@@ -81,9 +82,10 @@ export class TriggerIndex {
         case 'workflow_stage': {
           // Meaning-gated like keyword triggers; substring fallback.
           const stage = entry.trigger.condition.toLowerCase();
-          const score = semanticMatchScore(userText, `${entry.memory.title}: ${stage}`, embed);
+          const recipeId = activeAttentionRecipeId();
+          const score = semanticMatchScore(userText, `${entry.memory.title}: ${stage}`, embed, { recipeId });
           fired = score !== null
-            ? admitsPairScore(score, resolveAttentionPolicy())
+            ? admitsPairScore(score, resolveAttentionPolicy(recipeId))
             : textLower.includes(stage);
           break;
         }

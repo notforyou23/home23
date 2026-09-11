@@ -3,7 +3,7 @@
 Date: 2026-09-10  
 Plan: `docs/superpowers/plans/2026-09-10-owned-embedder-host-integration.md` @ `3c7495d6`  
 Branch: `home23-agent/owned-embedder-stage5-verify`  
-Kind: isolated TEST home with explicit owned recipe. Not a shared-default flip.
+Kind: cache-copy / in-process harness. **Not** a packaged Host create, product import-folder, or full-home restart. Stages 1–5 are not complete.
 
 Full machine receipt stays untracked next to the TEST home. This note is the public summary.
 
@@ -15,7 +15,7 @@ Full machine receipt stays untracked next to the TEST home. This note is the pub
 | Memory writer stamps (source) | `0acc647f3d173a71678d4bdd5be1fa20c6911162` |
 | Memory cherry-pick on this branch | `a58e5c61` |
 
-Shared `home23` stayed `codex/jerry-continuity-20260907`. Apple was not edited.
+Shared `home23` stayed `codex/jerry-continuity-20260907`. Apple Host Stage 4 is `88123ded` on `home23-apple-agent/owned-embedder-host-stage4`; shared Apple stayed `codex/mac-dashboard2-20260908`.
 
 ## TEST home
 
@@ -30,8 +30,8 @@ Schema `home23.host.v2`, `encoderRequired: true`. Cache is that home's `runtime/
 | 1. Owned encoder `/ready` | **pass** | **real** ONNX | `warm: true`, recipe `12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9`, dim 768 |
 | 2. Document retrieval by meaning | **pass** | **real** import + owned `/v1/embeddings` | `DocumentFeeder.ingestFile` of original USGS-style public prose; paraphrase cosine 0.711 hydrologic vs 0.555 granite distractor; `NetworkMemory.query` ranked hydrologic first; keyword-only ranked both 0.526 (granite first) |
 | 3. Semantic contact stamp | **pass** | **real** `embedTextSync` + Memory `0acc647f` stamp | New shipper line recipe hash + owned profile + 16-d projection; pre-existing unstamped line byte-identical; birth `modelInvocations: 0` and retry byte-identical |
-| 4. Restart continuity | **pass** | **real** stop/start of this home's encoder | After stop, `/ready` failed; after start, same recipe/dim/warm; seed id `seed_mtw5hi0c_282d4c00` and contact sha unchanged |
-| 5. Chat e2e answer | **pass** | **real** | Owned retrieve ranked hydrologic 0.711 vs granite 0.555; `ollama-local` `llama3.2:1b` answered from that note (hydrologic yes, granite no). Receipt: `owned-embedder-stage5-evidence-5/chat-e2e.json` |
+| 4. Encoder process restart | **harness only** | source `serve.mjs` via ambient Node | Did not start Seed/engine/coordination. Committed Stop on `3cfdea94` could leave `/ready` warm. |
+| 5. Chat e2e answer | **probe only** | retrieve-then-answer | Ambient Ollama `llama3.2:1b` (since deleted). Not Host GUI. Not “no ambient Ollama.” |
 
 Owned `matchFloor` stayed `null`. No calibration receipt was found or invented.
 

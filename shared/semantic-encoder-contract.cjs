@@ -138,11 +138,7 @@ const WRITER_MIN_TEXT_LENGTH = 8;
  * Default product remains lived legacy (nomic-embed-text / Ollama).
  * No default flip: unknown identities stamp as legacy, not owned.
  */
-function resolveWriterRecipe(requested) {
-  const raw = (typeof requested === 'string' && requested.trim())
-    || (typeof process.env.SEED_EMBED_RECIPE_ID === 'string' && process.env.SEED_EMBED_RECIPE_ID.trim())
-    || (typeof process.env.SEED_EMBED_MODEL === 'string' && process.env.SEED_EMBED_MODEL.trim())
-    || 'nomic-embed-text';
+function recipeFromRequested(raw) {
   if (canonicalizeRecipeId(raw) === OWNED_EMBEDDING_PROFILE) {
     return Object.freeze({
       profile: OWNED_EMBEDDING_PROFILE,
@@ -153,6 +149,24 @@ function resolveWriterRecipe(requested) {
     profile: LEGACY_EMBEDDING_PROFILE,
     hash: LEGACY_EMBEDDING_RECIPE_ID,
   });
+}
+
+function resolveWriterRecipe(requested) {
+  const raw = (typeof requested === 'string' && requested.trim())
+    || (typeof process.env.SEED_EMBED_RECIPE_ID === 'string' && process.env.SEED_EMBED_RECIPE_ID.trim())
+    || (typeof process.env.SEED_EMBED_MODEL === 'string' && process.env.SEED_EMBED_MODEL.trim())
+    || 'nomic-embed-text';
+  return recipeFromRequested(raw);
+}
+
+/** Active brain/retrieval recipe for NEW NetworkMemory nodes. Prefer hash on write.
+ * Default remains lived legacy. Owned only when the home explicitly requests it. */
+function resolveMemoryRecipe(requested) {
+  const raw = (typeof requested === 'string' && requested.trim())
+    || (typeof process.env.EMBEDDING_RECIPE_ID === 'string' && process.env.EMBEDDING_RECIPE_ID.trim())
+    || (typeof process.env.EMBEDDING_MODEL === 'string' && process.env.EMBEDDING_MODEL.trim())
+    || 'nomic-embed-text';
+  return recipeFromRequested(raw);
 }
 
 function inferWriterAbsence(text) {
@@ -203,6 +217,7 @@ module.exports = {
   sanitizeAbsenceReason,
   sanitizeRecipeId,
   resolveWriterRecipe,
+  resolveMemoryRecipe,
   inferWriterAbsence,
   buildWriterSemanticStamp,
 };

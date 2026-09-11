@@ -14,6 +14,7 @@ import {
 import {
   LEGACY_EMBEDDING_PROFILE,
   OWNED_EMBEDDING_PROFILE,
+  activeAttentionRecipeId,
   resolveAttentionPolicy,
   admitsPairScore,
 } from '../../src/substrate/encoder-attention-policy.js';
@@ -75,4 +76,22 @@ test('embed cache is keyed by recipe id, not text alone', () => {
 test('dimension mismatch is a typed absence, never a fabricated score', () => {
   const embed = (text: string) => (text === LONG ? [1, 0, 0] : [1, 0]);
   assert.equal(semanticMatchScore(LONG, `${LONG} other`, embed), null);
+});
+
+test('Host-shaped env (owned model + recipe hash) stays null-cal without an explicit recipe arg', () => {
+  const priorRecipe = process.env.SEED_EMBED_RECIPE_ID;
+  const priorModel = process.env.SEED_EMBED_MODEL;
+  process.env.SEED_EMBED_MODEL = OWNED_EMBEDDING_PROFILE;
+  process.env.SEED_EMBED_RECIPE_ID = '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9';
+  try {
+    assert.equal(activeAttentionRecipeId(), '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9');
+    assert.equal(resolveAttentionPolicy(activeAttentionRecipeId()).canSemanticGate, false);
+    assert.equal(semanticMatchScore(LONG, LONG, () => [1, 0, 0, 0]), null);
+    assert.equal(admitsPairScore(0.99, resolveAttentionPolicy(activeAttentionRecipeId())), false);
+  } finally {
+    if (priorRecipe === undefined) delete process.env.SEED_EMBED_RECIPE_ID;
+    else process.env.SEED_EMBED_RECIPE_ID = priorRecipe;
+    if (priorModel === undefined) delete process.env.SEED_EMBED_MODEL;
+    else process.env.SEED_EMBED_MODEL = priorModel;
+  }
 });

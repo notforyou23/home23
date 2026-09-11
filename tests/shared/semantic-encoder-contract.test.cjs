@@ -16,6 +16,7 @@ const {
   recipesAllowAnnReuse,
   resolveAttentionPolicy,
   resolveWriterRecipe,
+  resolveMemoryRecipe,
   buildWriterSemanticStamp,
 } = require('../../shared/semantic-encoder-contract.cjs');
 
@@ -175,5 +176,29 @@ test('default writer recipe stays lived legacy; owned only when requested', () =
     else process.env.SEED_EMBED_RECIPE_ID = priorRecipe;
     if (priorModel === undefined) delete process.env.SEED_EMBED_MODEL;
     else process.env.SEED_EMBED_MODEL = priorModel;
+  }
+});
+
+test('default memory recipe stays lived legacy; owned only when requested', () => {
+  const priorRecipe = process.env.EMBEDDING_RECIPE_ID;
+  const priorModel = process.env.EMBEDDING_MODEL;
+  const priorSeedRecipe = process.env.SEED_EMBED_RECIPE_ID;
+  delete process.env.EMBEDDING_RECIPE_ID;
+  delete process.env.EMBEDDING_MODEL;
+  process.env.SEED_EMBED_RECIPE_ID = OWNED_EMBEDDING_RECIPE_ID;
+  try {
+    const recipe = resolveMemoryRecipe();
+    assert.equal(recipe.profile, LEGACY_EMBEDDING_PROFILE);
+    assert.equal(recipe.hash, LEGACY_EMBEDDING_RECIPE_ID);
+    assert.equal(resolveMemoryRecipe('nomic-embed-text').profile, LEGACY_EMBEDDING_PROFILE);
+    assert.equal(resolveMemoryRecipe(OWNED_EMBEDDING_PROFILE).hash, OWNED_EMBEDDING_RECIPE_ID);
+    assert.equal(resolveMemoryRecipe(OWNED_EMBEDDING_RECIPE_ID).hash, OWNED_EMBEDDING_RECIPE_ID);
+  } finally {
+    if (priorRecipe === undefined) delete process.env.EMBEDDING_RECIPE_ID;
+    else process.env.EMBEDDING_RECIPE_ID = priorRecipe;
+    if (priorModel === undefined) delete process.env.EMBEDDING_MODEL;
+    else process.env.EMBEDDING_MODEL = priorModel;
+    if (priorSeedRecipe === undefined) delete process.env.SEED_EMBED_RECIPE_ID;
+    else process.env.SEED_EMBED_RECIPE_ID = priorSeedRecipe;
   }
 });

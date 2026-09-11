@@ -103,7 +103,10 @@ test('explicit stop is exact, durable, preserves data, and unexpected processes 
     if (args[1] === 'stop') rows.find(row => row.name === args[2]).pm2_env.status = 'stopped';
     return { stdout: '' };
   };
-  const result = await runHostAction('stop', { homeRoot }, { execute });
+  const result = await runHostAction('stop', { homeRoot }, {
+    execute,
+    signalProcess() { throw new Error('unexpected'); },
+  });
   assert.equal(result.status, 'stopped'); assert.equal(result.desiredRunning, false);
   assert.equal(calls.filter(args => args[0] === 'stop').length, 8);
   assert.ok(calls.every(args => !args.includes('all')));
@@ -254,7 +257,9 @@ test('custom local Host model passes real canonical home creation and retains it
   assert.equal(config.embeddings.providers[0].model, 'owned-nomic-v1.5-onnx-fp32-mean-noprefix');
   assert.notEqual(config.embeddings.providers[0].endpoint, 'http://127.0.0.1:45000/api/embeddings');
   assert.match(config.embeddings.providers[0].endpoint, /^http:\/\/127\.0\.0\.1:\d+\/api\/embeddings$/);
+  assert.equal(config.embeddings.providers[0].recipeId, '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9');
   assert.equal(config.substrate.embedding.model, 'owned-nomic-v1.5-onnx-fp32-mean-noprefix');
+  assert.equal(config.substrate.embedding.recipeId, '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9');
   assert.equal(result.encoderRequired, true);
   const resident = yaml.load(fs.readFileSync(path.join(homeRoot, 'app/instances/milo/config.yaml'), 'utf8'));
   assert.equal(resident.chat.defaultModel, 'family-local-model:custom');
@@ -544,4 +549,91 @@ test('Start launches the owned embedder first after semantic preparation is read
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'host_encoder_not_ready');
   assert.equal(result.desiredRunning, true);
+});
+
+test('v2 stop SIGTERMs a leftover warm encoder and does not treat abort as a failed encode', async t => {
+  const homeRoot = home(t);
+  const ports = await choosePortPlan({ encoderRequired: true });
+  privateJSON(path.join(homeRoot, '.home23-host.json'), {
+    schema: 'home23.host.v2', homeRoot, ports, encoderRequired: true,
+    profile: { name: 'milo', provider: 'openai', model: 'gpt-4.1' }, phase: 'prepared', desiredRunning: true,
+    birth: { home: { id: 'home-fixture' }, coordination: { botId: 'bot-fixture' } },
+  });
+  const rows = ownedProcessNames('milo', { encoderRequired: true }).map(name => row(homeRoot, name));
+  let warm = true;
+  const signals = [];
+  const probes = [];
+  const result = await runHostAction('stop', { homeRoot }, {
+    execute: async (_node, args) => {
+      if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+      if (args[1] === 'stop') {
+        const found = rows.find(item => item.name === args[2]);
+        if (found) found.pm2_env.status = 'stopped';
+      }
+      return { stdout: '' };
+    },
+    async probeOwnedReady(port) {
+      probes.push(port);
+      assert.equal(port, ports.embedder);
+      if (warm) {
+        return {
+          ok: true, warm: true,
+          recipeId: '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9',
+          dimension: 768, pid: 4242,
+        };
+      }
+      return { ok: false, warm: false };
+    },
+    signalProcess(pid, signal) {
+      signals.push({ pid, signal });
+      assert.equal(signal, 'SIGTERM');
+      warm = false;
+    },
+    sleep: async () => {},
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'stopped');
+  assert.equal(result.desiredRunning, false);
+  assert.deepEqual(signals, [{ pid: 4242, signal: 'SIGTERM' }]);
+  assert.ok(probes.length >= 2);
+  assert.equal(warm, false);
+});
+
+test('v2 stop fails closed when /ready stays warm after SIGTERM', async t => {
+  const homeRoot = home(t);
+  const ports = await choosePortPlan({ encoderRequired: true });
+  privateJSON(path.join(homeRoot, '.home23-host.json'), {
+    schema: 'home23.host.v2', homeRoot, ports, encoderRequired: true,
+    profile: { name: 'milo', provider: 'openai', model: 'gpt-4.1' }, phase: 'prepared', desiredRunning: true,
+    birth: { home: { id: 'home-fixture' }, coordination: { botId: 'bot-fixture' } },
+  });
+  const rows = ownedProcessNames('milo', { encoderRequired: true }).map(name => row(homeRoot, name));
+  const signals = [];
+  const result = await runHostAction('stop', { homeRoot }, {
+    execute: async (_node, args) => {
+      if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+      if (args[1] === 'stop') {
+        const found = rows.find(item => item.name === args[2]);
+        if (found) found.pm2_env.status = 'stopped';
+      }
+      return { stdout: '' };
+    },
+    async probeOwnedReady(port) {
+      assert.equal(port, ports.embedder);
+      return {
+        ok: true, warm: true,
+        recipeId: '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9',
+        dimension: 768, pid: 4242,
+      };
+    },
+    signalProcess(pid, signal) {
+      signals.push({ pid, signal });
+    },
+    sleep: async () => {},
+    stopTimeoutMs: 1,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.desiredRunning, false);
+  assert.equal(result.error.code, 'host_encoder_still_warm');
+  assert.deepEqual(signals, [{ pid: 4242, signal: 'SIGTERM' }]);
 });

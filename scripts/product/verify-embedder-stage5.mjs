@@ -207,11 +207,14 @@ export async function verifyEmbedderStage5({
 
   const servePath = join(sourceRoot, 'scripts/embedder/serve.mjs');
   let embedder;
+  const pm2Stopped = new Set();
   const embedderRow = () => ({
     name: 'home23-embedder',
     pid: embedder?.pid || 0,
     pm2_env: {
-      status: embedder && !embedder.killed ? 'online' : 'stopped',
+      status: pm2Stopped.has('home23-embedder') || !embedder || embedder.killed || embedder.exitCode !== null
+        ? 'stopped'
+        : 'online',
       pm_cwd: join(homeRoot, 'app'),
       pm_exec_path: join(homeRoot, 'bin/node'),
       args: [join(homeRoot, 'app/scripts/embedder/serve.mjs')],
@@ -251,11 +254,13 @@ export async function verifyEmbedderStage5({
     }
     if ((args?.[1] === 'start' || args?.[1] === 'restart') && String(args.includes('home23-embedder') ? 'home23-embedder' : args[2] || '').includes('embedder')) {
       if (args?.[1] === 'restart') await stopEmbedder();
+      pm2Stopped.delete('home23-embedder');
       spawnEmbedder();
       return { stdout: '' };
     }
     if (args?.[1] === 'stop' && String(args[2] || '').includes('embedder')) {
-      await stopEmbedder();
+      // PM2 stop is a no-op leak. Host must SIGTERM the /ready pid so /ready is not left warm.
+      pm2Stopped.add('home23-embedder');
       return { stdout: '' };
     }
     return { stdout: '' };
@@ -353,7 +358,8 @@ export async function verifyEmbedderStage5({
     const productQuery = await memory.query(PARAPHRASE, 5, { markAccess: false });
     const keywordOnly = memory.queryByKeyword(PARAPHRASE, 5, { markAccess: false });
     const top = ranked[0];
-    const retrievalPass = Boolean(top?.looksHydrologic) && typeof top?.cosine === 'number' && top.cosine > (ranked.find(row => !row.looksHydrologic)?.cosine ?? 0);
+    const stampedOwnedNodes = nodes.filter(node => node.dim === 768).every(node => node.recipeId === OWNED_RECIPE_HASH);
+    const retrievalPass = Boolean(top?.looksHydrologic) && typeof top?.cosine === 'number' && top.cosine > (ranked.find(row => !row.looksHydrologic)?.cosine ?? 0) && stampedOwnedNodes;
     record('document-retrieval', {
       fixture: false,
       real: true,
@@ -377,7 +383,7 @@ export async function verifyEmbedderStage5({
       })),
       sharedTokensWithTarget: sharedTokens(HYDROLOGIC, PARAPHRASE),
       pass: retrievalPass,
-      note: 'NetworkMemory nodes are not recipe-stamped by addNode; query compared unstamped 768-d owned vectors. Writer stamps are a separate contact path.',
+      note: 'New NetworkMemory nodes persist embedding_recipe_id as the owned hash. Imported history is not backfilled. Query uses the same name↔hash resolver.',
     });
     assert.equal(retrievalPass, true, 'paraphrase did not retrieve the imported hydrologic document by cosine');
 
@@ -447,15 +453,18 @@ export async function verifyEmbedderStage5({
     };
 
     const stopped = await runHostAction('stop', { homeRoot }, hostDeps);
+    const afterStop = await probeOwnedReady(ports.embedder, { timeoutMs: 800 });
     record('host-stop', {
       ok: stopped.ok,
       status: stopped.status,
       desiredRunning: stopped.desiredRunning,
+      afterStopWarm: afterStop.warm,
+      leftoverListen: afterStop.warm === true,
       exitCode: embedder?.exitCode ?? null,
       signal: embedder?.signalCode ?? null,
     });
-    const afterStop = await probeOwnedReady(ports.embedder, { timeoutMs: 800 });
     assert.equal(afterStop.warm, false);
+    assert.equal(afterStop.ok, false);
     assert.equal(stopped.desiredRunning, false);
 
     const secondReady = await startEncoder('host-restart-ready');

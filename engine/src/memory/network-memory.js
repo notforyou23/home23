@@ -19,6 +19,7 @@ const {
 } = require('../../../shared/memory-authority-attestation.cjs');
 const {
   recipesCompatibleForCompare,
+  resolveMemoryRecipe,
 } = require('../../../shared/semantic-encoder-contract.cjs');
 
 function yieldToEventLoop() {
@@ -511,6 +512,11 @@ class NetworkMemory {
     return typeof recipe === 'string' && recipe.trim() ? recipe.trim() : null;
   }
 
+  /** Hash written on new nodes and used for query compare. Name↔hash via the contract. */
+  activeMemoryRecipe() {
+    return resolveMemoryRecipe(this.getEmbeddingRecipeId() || this.getEmbeddingModel());
+  }
+
   nodeEmbeddingRecipeId(node) {
     const recipe = node?.embedding_recipe_id || node?.embeddingRecipeId || null;
     return typeof recipe === 'string' && recipe.trim() ? recipe.trim() : null;
@@ -814,6 +820,10 @@ class NetworkMemory {
           retention: provenance.retention,
         };
 
+    const memoryRecipe = embed
+      ? resolveMemoryRecipe(this.nodeEmbeddingRecipeId(inputNode) || this.getEmbeddingRecipeId() || this.getEmbeddingModel())
+      : null;
+
     const node = {
       id: null,
       concept: conceptText,
@@ -822,6 +832,7 @@ class NetworkMemory {
       tag: nodeTag,
       embedding: embed || null,
       embedding_status: embed ? 'embedded' : 'missing',
+      ...(memoryRecipe ? { embedding_recipe_id: memoryRecipe.hash, embedding_encoder: memoryRecipe.profile } : {}),
       activation: incomingAuthorityAttested ? 0 : (inputNode?.activation ?? 0),
       cluster: incomingAuthorityAttested ? null : (inputNode?.cluster ?? null),
       weight: incomingAuthorityAttested ? 1.0 : (inputNode?.weight ?? 1.0),
@@ -974,6 +985,12 @@ class NetworkMemory {
         });
         continue;
       }
+      if (!this.embeddingsComparable(
+        node.embedding,
+        otherNode.embedding,
+        this.nodeEmbeddingRecipeId(node) || this.activeMemoryRecipe().hash,
+        this.nodeEmbeddingRecipeId(otherNode),
+      )) continue;
 
       const similarity = this.cosineSimilarity(node.embedding, otherNode.embedding);
       if (similarity > 0.5) {
@@ -2026,7 +2043,7 @@ class NetworkMemory {
     const retrievalIntent = normalizeRetrievalIntent(options.intent || queryText);
     const retrievalOptions = { ...options, intent: retrievalIntent, query: queryText };
     const queryEmbedding = await this.embed(queryText);
-    const queryRecipeId = this.getEmbeddingRecipeId();
+    const queryRecipeId = this.activeMemoryRecipe().hash;
     
     if (!queryEmbedding) {
       this.logger?.warn?.('Query embedding failed, using Memory Lite keyword retrieval', {
@@ -2383,7 +2400,7 @@ class NetworkMemory {
 
   findRelevantStateSnapshots(queryEmbedding, queryWords, bestSimilarity, options = {}) {
     const candidates = [];
-    const queryRecipeId = this.getEmbeddingRecipeId();
+    const queryRecipeId = this.activeMemoryRecipe().hash;
     for (const node of this.nodes.values()) {
       if (!this.isStateSnapshotNode(node) || !node.embedding) continue;
       if (!this.embeddingsComparable(queryEmbedding, node.embedding, queryRecipeId, this.nodeEmbeddingRecipeId(node))) continue;
@@ -2508,7 +2525,7 @@ class NetworkMemory {
     if (this.nodes.size === 0) return [];
     
     const queryEmbedding = await this.embed(queryText);
-    const queryRecipeId = this.getEmbeddingRecipeId();
+    const queryRecipeId = this.activeMemoryRecipe().hash;
     if (!queryEmbedding) return this.queryByKeyword(queryText, topK, {
       retrievalMode: 'logical-source-scan',
     });

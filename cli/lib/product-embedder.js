@@ -65,6 +65,33 @@ export async function probeOwnedReady(port, { request, timeoutMs = 2500 } = {}) 
   } catch { return { ok: false, warm: false }; }
 }
 
+/** After desiredRunning=false, GET /ready must not stay warm. SIGTERM the /ready pid
+ * if PM2 stop left the listener. Still-warm after the wait is a failed Stop. */
+export async function ensureOwnedEncoderStopped(state, {
+  probe = probeOwnedReady,
+  signalProcess = (pid, signal) => process.kill(pid, signal),
+  sleep: wait = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
+  timeoutMs = 4000,
+} = {}) {
+  if (!encoderRequiredFor(state)) return { warm: false, signaled: false };
+  const port = state.ports?.embedder;
+  let ready = await probe(port, { timeoutMs: 800 });
+  if (!ready.warm) return { warm: false, signaled: false };
+  const pid = Number.isInteger(ready.pid) && ready.pid > 0 ? ready.pid : 0;
+  if (pid) {
+    try { signalProcess(pid, 'SIGTERM'); } catch { /* already gone or ORT aborting */ }
+  }
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    await wait(100);
+    ready = await probe(port, { timeoutMs: 400 });
+    if (!ready.warm) return { warm: false, signaled: pid > 0 };
+  }
+  const error = new Error('The owned encoder is still answering /ready after Stop.');
+  error.code = 'host_encoder_still_warm';
+  throw error;
+}
+
 export function semanticStatusView(homeRoot, state) {
   if (!encoderRequiredFor(state)) return { encoderRequired: false, semanticReady: false };
   const prep = reconcileSemanticPrep(homeRoot);
