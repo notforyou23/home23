@@ -95,7 +95,9 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
     createRequire(process.cwd()+'/engine/package.json')('hnswlib-node');
     createRequire(process.cwd()+'/evobrew/package.json')('node-pty');
     createRequire(process.cwd()+'/package.json')('tsx');
-    createRequire(process.cwd()+'/scripts/embedder/package.json')('onnxruntime-node');
+    const embedder=createRequire(process.cwd()+'/scripts/embedder/package.json');
+    embedder('onnxruntime-node');
+    if (typeof embedder('@huggingface/transformers').pipeline !== 'function') throw new Error('Packaged transformers failed to load');
   `], { cwd: app, env, stdio: 'inherit', timeout: 30000 });
   normalizeModes(outputPath);
   const manifest = writeProductManifest(outputPath, { ...metadata, sourceCommit });
