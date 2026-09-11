@@ -566,6 +566,56 @@ test('early iterator return quiesces large JSONL streams before closing their ha
   }
 });
 
+test('iterateNodes honors a per-call abort before the first yield', async () => {
+  const { dir } = await createManifestFixture({
+    nodes: [{ id: 1, concept: 'first' }, { id: 2, concept: 'second' }],
+    baseRevision: 2,
+    currentRevision: 2,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  const source = await openMemorySource(dir);
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('stop nodes'), {
+    name: 'AbortError',
+    code: 'cancelled',
+  });
+  controller.abort(reason);
+  try {
+    await assert.rejects(
+      source.iterateNodes({ signal: controller.signal }).next(),
+      (error) => error === reason,
+    );
+  } finally {
+    await source.close();
+  }
+});
+
+test('iterateNodes abort after the first yield closes owned JSONL handles', async () => {
+  const { dir } = await createManifestFixture({
+    nodes: [{ id: 1, concept: 'first' }, { id: 2, concept: 'second' }],
+    baseRevision: 2,
+    currentRevision: 2,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  const nodesPath = path.join(dir, 'memory-nodes.base-2.jsonl.gz');
+  const source = await openMemorySource(dir);
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('stop after first'), {
+    name: 'AbortError',
+    code: 'cancelled',
+  });
+  try {
+    const iterator = source.iterateNodes({ signal: controller.signal });
+    assert.equal((await iterator.next()).done, false);
+    controller.abort(reason);
+    await assert.rejects(iterator.next(), (error) => error === reason);
+    const afterAbort = await countOpenDescriptorsFor(nodesPath);
+    if (afterAbort !== null) assert.equal(afterAbort, 0);
+  } finally {
+    await source.close();
+  }
+});
+
 test('early iterator return leaves a borrowed source handle open for its owner', async () => {
   const dir = await tempDir();
   const filePath = path.join(dir, 'borrowed.jsonl');

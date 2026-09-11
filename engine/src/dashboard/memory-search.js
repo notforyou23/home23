@@ -43,6 +43,7 @@ const MAX_EMBEDDING_DIMENSIONS = 8192;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_HEAP_BYTES = 8 * 1024 * 1024;
 const CONTEXT_OUTAGE_SCAN_VISIT_BUDGET = 4000;
+// Cooperative: checked after each yielded node, not mid-read / mid-inflate.
 const CONTEXT_OUTAGE_SCAN_DEADLINE_MS = 1500;
 const MAX_RECORD_BYTES = 256 * 1024;
 const MAX_ANN_METADATA_BYTES = 256 * 1024 * 1024;
@@ -1456,6 +1457,8 @@ function createMemorySearchService({
     let logicalScanVisitBudget = Number.POSITIVE_INFINITY;
     let logicalScanDeadlineAt = Number.POSITIVE_INFINITY;
     const consumeLogicalVisit = () => {
+      // Runs only after iterateNodes yields. Pending disk/inflate waits are
+      // cancelled by the JSONL abort listener, not by this deadline check.
       throwIfAborted(signal);
       if (logicalScanExhausted) return false;
       if (logicalScanVisits >= logicalScanVisitBudget) {

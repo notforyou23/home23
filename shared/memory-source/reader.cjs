@@ -28,6 +28,7 @@ const {
   sourceDescriptorDigest,
   memorySourceError,
   throwIfAborted,
+  composeAbortSignals,
   rethrowAbort,
   isTypedMemorySourceError,
 } = require('./contracts.cjs');
@@ -383,7 +384,8 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
   };
   let sourceHealth = legacyProjection ? SOURCE_HEALTH.DEGRADED : SOURCE_HEALTH.HEALTHY;
   const markUnavailable = () => { sourceHealth = SOURCE_HEALTH.UNAVAILABLE; };
-  const iterateBaseNodes = async function* iterateBaseNodes() {
+  const iterateBaseNodes = async function* iterateBaseNodes({ signal } = {}) {
+    const scanSignal = composeAbortSignals(options.signal, signal);
     try {
       for await (const record of readJsonl(path.join(canonicalRoot, manifest.activeBase.nodes.file), {
         gzip: true,
@@ -393,20 +395,20 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         maxInputBytes: options.maxInputBytes,
         maxDecompressedBytes: options.maxDecompressedBytes,
         [OPENED_JSONL_FILE]: openedFiles?.get('nodes'),
-        signal: options.signal,
+        signal: scanSignal,
       })) {
-        throwIfAborted(options.signal);
+        throwIfAborted(scanSignal);
         const id = normalizeId(record.id);
         if (!id || overlay.hasRemovedNode(id)) continue;
         if (overlay.hasNodeUpsert(id)) continue;
         yield Object.freeze({ ...record, id });
       }
-      for await (const record of overlay.iterateNodeUpserts({ signal: options.signal })) {
+      for await (const record of overlay.iterateNodeUpserts({ signal: scanSignal })) {
         yield record;
       }
     } catch (error) {
       markUnavailable();
-      rethrowAbort(error, options.signal);
+      rethrowAbort(error, scanSignal);
       if (isTypedMemorySourceError(error)) throw error;
       throw memorySourceError('source_unavailable', 'base nodes unavailable', {
         cause: error,
@@ -414,7 +416,8 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
       });
     }
   };
-  const iterateBaseEdges = async function* iterateBaseEdges() {
+  const iterateBaseEdges = async function* iterateBaseEdges({ signal } = {}) {
+    const scanSignal = composeAbortSignals(options.signal, signal);
     try {
       if (overlay.nodeOnly) {
         throw memorySourceError(
@@ -431,9 +434,9 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         maxInputBytes: options.maxInputBytes,
         maxDecompressedBytes: options.maxDecompressedBytes,
         [OPENED_JSONL_FILE]: openedFiles?.get('edges'),
-        signal: options.signal,
+        signal: scanSignal,
       })) {
-        throwIfAborted(options.signal);
+        throwIfAborted(scanSignal);
         const normalizedRecord = Object.freeze({
           ...record,
           source: normalizeId(record.source ?? record.from),
@@ -445,12 +448,12 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         if (overlay.hasEdgeUpsert(normalizedRecord)) continue;
         yield normalizedRecord;
       }
-      for await (const record of overlay.iterateEdgeUpserts({ signal: options.signal })) {
+      for await (const record of overlay.iterateEdgeUpserts({ signal: scanSignal })) {
         if (!overlay.hasRemovedNode(record.source) && !overlay.hasRemovedNode(record.target)) yield record;
       }
     } catch (error) {
       markUnavailable();
-      rethrowAbort(error, options.signal);
+      rethrowAbort(error, scanSignal);
       if (isTypedMemorySourceError(error)) throw error;
       throw memorySourceError('source_unavailable', 'base edges unavailable', {
         cause: error,
