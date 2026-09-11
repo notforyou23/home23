@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
+const fs = require('node:fs');
 const {
   createOperationScratchQuota,
   openMemorySource,
@@ -613,6 +614,79 @@ test('iterateNodes abort after the first yield closes owned JSONL handles', asyn
     if (afterAbort !== null) assert.equal(afterAbort, 0);
   } finally {
     await source.close();
+  }
+});
+
+test('abort waits for an outstanding read without closing or reusing its descriptor', { timeout: 5000 }, async (t) => {
+  const dir = await tempDir();
+  const filePath = path.join(dir, 'pending-read.jsonl');
+  await writeJsonl(filePath, [{ id: 1 }]);
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel pending read'), { name: 'AbortError', code: 'cancelled' });
+  let releaseRead;
+  let readFd;
+  let announceRead;
+  const started = new Promise((resolve) => { announceRead = resolve; });
+  const actualRead = fs.read;
+  t.mock.method(fs, 'read', (...args) => {
+    readFd = args[0];
+    releaseRead = () => actualRead(...args);
+    announceRead();
+  });
+  const iterator = readJsonl(filePath, { confinedRoot: dir, signal: controller.signal });
+  const result = assert.rejects(iterator.next(), (error) => error === reason);
+  let settled = false;
+  result.then(() => { settled = true; }, () => { settled = true; });
+  try {
+    await started;
+    controller.abort(reason);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, 'cleanup must wait for the outstanding read');
+    assert.equal(fs.fstatSync(readFd).isFile(), true, 'read fd must stay owned until I/O settles');
+  } finally {
+    t.mock.restoreAll();
+    releaseRead?.();
+    await result;
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('abort cleanup cannot close a descriptor reused by an unrelated file', { timeout: 5000 }, async (t) => {
+  const dir = await tempDir();
+  const filePath = path.join(dir, 'abort-reuse.jsonl');
+  await writeJsonl(filePath, [{ id: 1 }, { id: 2 }]);
+  const opened = await openConfinedRegularFile(dir, filePath);
+  const controller = new AbortController();
+  const iterator = readJsonl(filePath, {
+    confinedRoot: dir, signal: controller.signal, [OPENED_JSONL_FILE]: opened,
+  });
+  let streamFd;
+  let reusedFd;
+  const actualCreate = fs.createReadStream;
+  const actualClose = fs.closeSync;
+  t.mock.method(fs, 'createReadStream', (file, options) => {
+    streamFd = options.fd;
+    return actualCreate(file, options);
+  });
+  t.mock.method(fs, 'closeSync', (fd) => {
+    actualClose(fd);
+    if (fd === streamFd) reusedFd = fs.openSync(filePath, 'r');
+  });
+  try {
+    assert.equal((await iterator.next()).done, false);
+    controller.abort();
+    await assert.rejects(iterator.next(), { name: 'AbortError' });
+    if (reusedFd !== undefined) {
+      assert.equal(fs.fstatSync(reusedFd).isFile(), true, 'cleanup closed an unrelated reused descriptor');
+    }
+    assert.equal((await opened.handle.stat()).isFile(), true, 'borrowed pin remains owned by its caller');
+  } finally {
+    t.mock.restoreAll();
+    if (reusedFd !== undefined) {
+      try { actualClose(reusedFd); } catch (error) { if (error.code !== 'EBADF') throw error; }
+    }
+    await opened.handle.close();
+    await fsp.rm(dir, { recursive: true, force: true });
   }
 });
 

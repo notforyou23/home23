@@ -863,64 +863,22 @@ async function* readJsonl(filePath, options = {}) {
     return;
   }
 
-  // ReadStream.destroy() closes a supplied numeric fd even when autoClose is
-  // false. Dup via /dev/fd so abort can close the stream's fd and unblock an
-  // in-flight kernel read without stealing a borrowed pin handle.
-  if (typeof opened.handle.fd !== 'number' || !Number.isInteger(opened.handle.fd)
-      || (process.platform !== 'darwin' && process.platform !== 'linux')) {
-    await closeOpened();
-    throw memorySourceError('source_unavailable', 'file descriptor duplication unavailable', {
-      retryable: true,
-    });
-  }
-  let streamOpened;
-  try {
-    streamOpened = await fsp.open(`/dev/fd/${opened.handle.fd}`, fs.constants.O_RDONLY);
-  } catch (error) {
-    await closeOpened();
-    throw memorySourceError('source_unavailable', 'file descriptor duplication failed', {
-      cause: error,
-      retryable: true,
-    });
-  }
-  const streamFd = streamOpened.fd;
-  let streamFdClosed = false;
-  const closeStreamFd = () => {
-    if (streamFdClosed) return;
-    streamFdClosed = true;
-    try {
-      fs.closeSync(streamFd);
-    } catch (error) {
-      if (error?.code !== 'EBADF') throw error;
-    }
-  };
+  // The FileHandle remains the sole descriptor owner. Stream teardown waits
+  // for pending reads before that owner closes it; closing a numeric fd here
+  // cannot reliably cancel kernel I/O and could race descriptor reuse.
   let input;
   let decoded;
   try {
     input = fs.createReadStream(null, {
-      fd: streamFd,
+      fd: opened.handle.fd,
       autoClose: false,
-      fs: {
-        read: NON_CLOSING_READ_STREAM_FS.read,
-        close(_fd, callback) {
-          try {
-            closeStreamFd();
-          } catch (error) {
-            queueMicrotask(() => callback(error));
-            return;
-          }
-          queueMicrotask(() => callback(null));
-        },
-      },
+      fs: NON_CLOSING_READ_STREAM_FS,
       start: 0,
       end: inputBytes - 1,
     });
     decoded = options.gzip ? input.pipe(zlib.createGunzip()) : input;
   } catch (error) {
-    closeStreamFd();
-    await streamOpened.close().catch((closeError) => {
-      if (closeError?.code !== 'EBADF') throw closeError;
-    });
+    if (input) await stopReadStreams(input, input);
     await closeOpened();
     throw error;
   }
@@ -933,10 +891,8 @@ async function* readJsonl(filePath, options = {}) {
     return stopPromise;
   };
   const abort = () => {
-    // Close the stream dup first so a pending positioned read fails instead of
-    // holding destroy() until that kernel I/O finishes. The iterator still
-    // settles through the same generator/finally path — not Promise.race.
-    closeStreamFd();
+    // Cancellation prevents further consumption. Cleanup remains cooperative:
+    // destroy waits for outstanding I/O rather than closing its fd underneath it.
     stop();
   };
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -963,6 +919,7 @@ async function* readJsonl(filePath, options = {}) {
   };
 
   try {
+    throwIfAborted(options.signal);
     for await (const chunk of decoded) {
       throwIfAborted(options.signal);
       prefixHash?.update(chunk);
@@ -1033,15 +990,7 @@ async function* readJsonl(filePath, options = {}) {
   } finally {
     options.signal?.removeEventListener('abort', abort);
     await stop();
-    closeStreamFd();
-    await streamOpened.close().catch((error) => {
-      if (error?.code !== 'EBADF') throw error;
-    });
-    if (!borrowed) {
-      await opened.handle.close().catch((error) => {
-        if (error?.code !== 'EBADF') throw error;
-      });
-    }
+    await closeOpened();
   }
 }
 
