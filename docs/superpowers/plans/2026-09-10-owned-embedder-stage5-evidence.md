@@ -31,7 +31,7 @@ Schema `home23.host.v2`, `encoderRequired: true`. Cache is that home's `runtime/
 | 2. Document retrieval by meaning | **pass** | **real** import + owned `/v1/embeddings` | `DocumentFeeder.ingestFile` of original USGS-style public prose; paraphrase cosine 0.711 hydrologic vs 0.555 granite distractor; `NetworkMemory.query` ranked hydrologic first; keyword-only ranked both 0.526 (granite first) |
 | 3. Semantic contact stamp | **pass** | **real** `embedTextSync` + Memory `0acc647f` stamp | New shipper line recipe hash + owned profile + 16-d projection; pre-existing unstamped line byte-identical; birth `modelInvocations: 0` and retry byte-identical |
 | 4. Restart continuity | **pass** | **real** stop/start of this home's encoder | After stop, `/ready` failed; after start, same recipe/dim/warm; seed id `seed_mtw5hi0c_282d4c00` and contact sha unchanged |
-| 5. Chat e2e answer | **unverified** | blocked | Chat-provider credentials were not supplied for this work |
+| 5. Chat e2e answer | **pass** | **real** | Owned retrieve ranked hydrologic 0.711 vs granite 0.555; `ollama-local` `llama3.2:1b` answered from that note (hydrologic yes, granite no). Receipt: `owned-embedder-stage5-evidence-5/chat-e2e.json` |
 
 Owned `matchFloor` stayed `null`. No calibration receipt was found or invented.
 

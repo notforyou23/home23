@@ -30,7 +30,7 @@ Preserved concurrent worktrees (not switched, not cleaned), including Encoder/Me
 | Encoder | Encoder worker | Stage 1 complete. Stage 3 serve exists. | `642b57f6`, `c273245a`, `6d170020` | Stage 1 JSON + Stage 3 `/ready` | Keep owned recipe off product default. Packaged Node/ORT payload still open. |
 | Memory | Memory worker | Stage 2 guards + writer stamps landed. | `8f42ae67`, `0acc647f` (here `a58e5c61`) | Contract tests (fixture) + Stage 5 live stamp | Stamp NetworkMemory nodes / ANN metadata if retrieval must carry recipe id. Do not rewrite history. |
 | Host | Host worker | Stage 4 admission for **new** `home23.host.v2` homes only. | `95e7f7ad` | Host `*-evidence-2` `/ready` | Do not expand `ownedProcessNames` for v1 homes. Packaged payload / codesign still open. |
-| Lead | Stage 5 worker | Isolated TEST home checks 1–4 **pass** on real inference. Chat e2e **unverified**. | this record + Stage 5 evidence note + `verify-embedder-stage5.mjs` | `owned-embedder-stage5-evidence-5/verification.json` | Do not flip defaults. Do not start Stage 6. Chat e2e waits on credentials supplied for this work. |
+| Lead | Stage 5 worker | Isolated TEST home checks 1–4 **pass**. Chat e2e **pass** (owned retrieve + local Ollama `llama3.2:1b`). | this record + Stage 5 evidence note + `chat-e2e-probe.mjs` | `owned-embedder-stage5-evidence-5/chat-e2e.json` | Do not flip defaults. Do not start Stage 6. Packaged Host GUI conversation still not run. |
 
 ## Stage 5 TEST home
 
@@ -44,7 +44,7 @@ Cache: that home's `runtime/embedder-cache` (copy of Encoder Stage 1). Never `~/
 | Document import + paraphrase retrieval | pass | real (`DocumentFeeder.ingestFile` + `NetworkMemory.query`) |
 | New Seed/contact stamp without rewriting history; birth `modelInvocations: 0` | pass | real stamp + real birth |
 | Stop/start: identity, history, encoder selection | pass | real |
-| Chat e2e answer | unverified | blocked on chat-provider credentials |
+| Chat e2e answer | pass | real owned retrieve + real `ollama-local` `llama3.2:1b` |
 
 Owned `matchFloor` remains `null`. No calibration receipt exists; none was invented.
 
@@ -60,16 +60,16 @@ Current Home23 Seed/Memory embeddings are Ollama `nomic-embed-text` with **no ta
 | 3 Owned inference service | **done as a new recipe** | `scripts/embedder/serve.mjs` @ `6d170020` |
 | 4 Host new-home admission | **done, not a default flip** | `95e7f7ad`; v1 homes unchanged |
 | Product default flip | **NO-GO** | Failed 0.99 / 4 d.p.; owned `matchFloor` null |
-| Stage 5 isolated TEST home | **partial** | Checks 1–4 real pass; chat e2e unverified |
+| Stage 5 isolated TEST home | **checks 1–5 pass** | Real encoder, retrieval, stamp, restart, retrieve-then-answer |
 | Existing-home switch | **NO-GO** | Plan Stage 6 |
-| Product milestone (Stages 1–5) | **not complete** | Stages 1–4 done; Stage 5 partial (no chat e2e) |
+| Product milestone (Stages 1–5) | **semantic checks passed** | Not a packaged Host GUI conversation; not a default flip |
 
 ## Unresolved limitations
 
 - No owned calibration receipt; `matchFloor` stays null (no semantic gate).
 - No packaged Host payload / codesign / notarization.
 - ORT teardown: Host mock stop once left the TEST encoder listening; explicit TERM then worked. Encoder Stage 3 still documents possible abort 134 on dispose.
-- Chat-provider credentials were not supplied for this work.
+- Chat e2e used Host’s `ollama-local` path with `llama3.2:1b` pulled for this isolated probe. It did not copy keys from existing homes.
 - Memory writer unit tests remain fixture-embed except the Stage 5 live shipper pass. Stage 3 protocol tests were not re-run here.
 - `NetworkMemory.addNode` does not persist `embedding_recipe_id`.
 
