@@ -29,9 +29,19 @@ function signingReadiness(config, minimumDays = 60) {
     const decoded = path.join(temporary, 'profile.plist');
     run('/usr/bin/security', ['cms', '-D', '-i', config.profile, '-o', decoded]);
     const raw = key => run('/usr/bin/plutil', ['-extract', key, 'raw', '-o', '-', decoded]).trim();
-    // Current pinned profile deliberately selects exactly one development certificate.
-    const certificate = new crypto.X509Certificate(Buffer.from(raw('DeveloperCertificates.0'), 'base64'));
-    insist(certificate.fingerprint.replaceAll(':', '').toUpperCase() === config.signingCertificateSHA1.toUpperCase(), 'Profile uses a different signing certificate.');
+    // Profiles may include both an expiring and a renewed certificate. Validate
+    // the exact configured signer, not whichever certificate Apple lists first.
+    let certificate;
+    for (let index = 0; ; index += 1) {
+      let encoded;
+      try { encoded = raw(`DeveloperCertificates.${index}`); } catch { break; }
+      const candidate = new crypto.X509Certificate(Buffer.from(encoded, 'base64'));
+      if (candidate.fingerprint.replaceAll(':', '').toUpperCase() === config.signingCertificateSHA1.toUpperCase()) {
+        certificate = candidate;
+        break;
+      }
+    }
+    insist(certificate, 'Profile does not contain the pinned signing certificate.');
     return verifySigningLifetime(raw('ExpirationDate'), certificate.validTo, Date.now(), minimumDays);
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
