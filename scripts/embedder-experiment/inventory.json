@@ -1,0 +1,251 @@
+{
+  "generated": "2026-09-10",
+  "sourceCommit": "44288211b1d11512bca2d590fccd7eb77024e7a4",
+  "planCommit": "3c7495d6dd5b424a7e17307364b1b5a26586e49a",
+  "notes": [
+    "Inventory from source review on the Encoder Stage 1 worktree. No live-home state was read.",
+    "Seed/contact writers and Memory retrieval are different protocols and different truncation rules.",
+    "Several evobrew/engine helpers still hardcode OpenAI text-embedding-3-small (1536 or stale 512). Those are not the home default encoder."
+  ],
+  "publishedProjection": {
+    "seed": 20260808,
+    "inputDim": 768,
+    "outputDim": 16,
+    "quantizeDecimals": 4,
+    "l2NormalizeBeforeProject": true,
+    "files": [
+      "substrate/src/semantic-projection.ts",
+      "src/substrate/embed-at-contact.ts"
+    ]
+  },
+  "protocols": {
+    "ollamaNative": {
+      "method": "POST",
+      "path": "/api/embeddings",
+      "request": { "model": "string", "prompt": "string" },
+      "response": { "embedding": "number[]" },
+      "defaultEndpoint": "http://127.0.0.1:11434/api/embeddings"
+    },
+    "openaiCompatible": {
+      "method": "POST",
+      "path": "/v1/embeddings",
+      "request": { "model": "string", "input": "string | string[]" },
+      "response": { "data": [{ "embedding": "number[]", "index": "number" }] },
+      "defaultEndpoint": "http://127.0.0.1:11434/v1"
+    }
+  },
+  "callers": [
+    {
+      "id": "harness-contact-fetch",
+      "file": "src/substrate/embed-at-contact.ts",
+      "role": "writer",
+      "protocol": "ollamaNative",
+      "env": ["SEED_EMBED_ENDPOINT", "SEED_EMBED_MODEL"],
+      "modelDefault": "nomic-embed-text",
+      "expectedDim": 768,
+      "preprocess": "trim; reject if length < 8; slice(0, 1000); no task prefix",
+      "deadlineMs": 1500,
+      "cache": "none at fetch; semantic-match caches raw vectors by exact text",
+      "outputs": ["embedTextRawSync: native 768", "embedTextSync: projected 16"]
+    },
+    {
+      "id": "substrate-contact-fetch",
+      "file": "substrate/src/embed-fetch.ts",
+      "role": "writer",
+      "protocol": "ollamaNative",
+      "env": ["SEED_EMBED_ENDPOINT", "SEED_EMBED_MODEL"],
+      "modelDefault": "nomic-embed-text",
+      "expectedDim": "caller-supplied (writers pass 768)",
+      "preprocess": "trim; reject if empty; slice(0, 1000); no task prefix; no min-8",
+      "deadlineMs": 2000,
+      "cache": "none",
+      "outputs": ["fetchRawEmbedding"]
+    },
+    {
+      "id": "conversation-shipper",
+      "file": "substrate/bin/conversation-shipper.ts",
+      "role": "writer",
+      "via": "fetchRawEmbedding + projectEmbedding",
+      "preprocess": "trim; reject if length < 8; then substrate fetch rules",
+      "persists": "semantic_vector (16-d); no encoder stamp",
+      "attentionGate": false
+    },
+    {
+      "id": "house-sense",
+      "file": "substrate/bin/house-sense.ts",
+      "role": "writer",
+      "via": "fetchRawEmbedding + projectEmbedding",
+      "preprocess": "narrated transition text; no min-8 at this layer",
+      "persists": "semantic_vector (16-d); no encoder stamp",
+      "attentionGate": false
+    },
+    {
+      "id": "relationship-ledger",
+      "file": "src/agent/relationship-ledger.ts",
+      "role": "writer",
+      "via": "embedTextSync",
+      "embeddedText": "semanticText (title/statement/why language)",
+      "persists": "payload.head = full trimmed semanticText; semantic_vector = projected 16. Migration trap: live embed slices to 1000 before fetch.",
+      "attentionGate": false
+    },
+    {
+      "id": "worker-receipts",
+      "file": "src/workers/receipts.ts",
+      "role": "writer",
+      "via": "embedTextSync(`${summary}. ${rootCause}`)",
+      "persists": "semantic_vector (16-d); no encoder stamp",
+      "attentionGate": false
+    },
+    {
+      "id": "promote-tool",
+      "file": "src/agent/tools/promote.ts",
+      "role": "writer",
+      "via": "embedTextSync(`${title}. ${statement}`)",
+      "persists": "payload.head sliced to 160 chars; vector from full title+statement (then contact 1000-slice)",
+      "attentionGate": false
+    },
+    {
+      "id": "semantic-match",
+      "file": "src/substrate/semantic-match.ts",
+      "role": "reader-gate",
+      "via": "embedTextRawSync (native 768, never persisted)",
+      "gates": {
+        "floor": 0.6,
+        "minAlnum": 20,
+        "margin": null
+      },
+      "cache": { "key": "exact input text", "max": 800, "recipeKey": false, "nullCached": false },
+      "cosine": "min(len(a),len(b)) — dimension mismatch is silently truncated (plan forbids this later)"
+    },
+    {
+      "id": "seed-context-expression",
+      "file": "src/substrate/seed-context.ts",
+      "role": "reader-gate",
+      "via": "embedTextRawSync + cachedEmbedRaw + cosine",
+      "gates": {
+        "floor": 0.6,
+        "margin": 0.12,
+        "minAlnum": 20,
+        "note": "Not an unchanged consumer of semantic-match.score; has its own floor/margin/length."
+      },
+      "cache": "shares semantic-match cache"
+    },
+    {
+      "id": "context-assembly",
+      "file": "src/agent/context-assembly.ts",
+      "role": "reader-gate",
+      "via": "semanticMatchScore / SEMANTIC_MATCH_FLOOR 0.6",
+      "gates": { "floor": 0.6, "minAlnum": 20, "margin": null, "fallback": "substring" }
+    },
+    {
+      "id": "trigger-index",
+      "file": "src/agent/trigger-index.ts",
+      "role": "reader-gate",
+      "via": "semanticMatchScore / SEMANTIC_MATCH_FLOOR 0.6",
+      "gates": { "floor": 0.6, "minAlnum": 20, "margin": null, "fallback": "keyword" }
+    },
+    {
+      "id": "memory-network",
+      "file": "engine/src/memory/network-memory.js",
+      "role": "writer-reader",
+      "protocol": "openaiCompatible",
+      "env": ["EMBEDDING_PROVIDER", "EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS"],
+      "modelDefault": "nomic-embed-text",
+      "expectedDim": 768,
+      "preprocess": "Ollama path: tokenizer text-embedding-3-small if available with 512-token cap, else slice(0, 2000). No task prefix. No min-8.",
+      "batch": { "maxInputs": 2048, "retry": "per-item on batch failure" },
+      "deadlineMs": null,
+      "persists": "node.embedding native vector; no recipe fingerprint beyond env model name",
+      "normalize": "optional normalizeEmbedding on regen path"
+    },
+    {
+      "id": "openai-embedding-client",
+      "file": "engine/src/core/openai-client.js",
+      "role": "client",
+      "protocol": "openaiCompatible",
+      "defaultBaseURL": "http://127.0.0.1:11434/v1",
+      "defaultQueryDimensions": 768
+    },
+    {
+      "id": "ann-index",
+      "file": "engine/src/merge/build-ann-index.js",
+      "role": "reader-index",
+      "metric": "hnswlib HierarchicalNSW cosine",
+      "indexes": "node.embedding as stored; does not re-embed node.concept",
+      "identity": "meta.provider + meta.model must match request; no checksum/recipe id",
+      "missingVectorRepair": "skips nodes that already have embeddings"
+    },
+    {
+      "id": "memory-search-dashboard",
+      "file": "engine/src/dashboard/memory-search.js",
+      "role": "reader",
+      "protocol": "openaiCompatible",
+      "modelDefault": "nomic-embed-text"
+    },
+    {
+      "id": "seed-config",
+      "file": "shared/seed-embedding-config.cjs",
+      "role": "config",
+      "rules": "credential-free http(s) only; no userinfo/query/hash; no apiKey/token/headers"
+    },
+    {
+      "id": "ecosystem-embedding-env",
+      "file": "cli/lib/generate-ecosystem.js",
+      "role": "config",
+      "selects": "home.embeddings.providers[0] or ollama-local/nomic-embed-text/768",
+      "rewrites": "Ollama /api/embeddings endpoint becomes /v1 for the OpenAI client"
+    },
+    {
+      "id": "host-new-home-embedding",
+      "file": "cli/lib/product-host.js",
+      "role": "config",
+      "behavior": "ollama-local chat profile also writes embeddings + substrate.embedding to the same Ollama /api/embeddings URL and nomic-embed-text"
+    }
+  ],
+  "outOfScopeHardcodedOpenAI": [
+    "engine/src/merge/domain-embeddings.js",
+    "engine/src/ide/codebase-indexer.js",
+    "engine/src/dashboard/query-engine.js",
+    "engine/src/dashboard/novelty-validator.js",
+    "engine/src/dashboard/coordinator-indexer.js",
+    "evobrew/lib/* and evobrew/server/codebase-indexer.js"
+  ],
+  "attentionGates": [
+    {
+      "name": "shared-matcher",
+      "files": ["src/substrate/semantic-match.ts", "src/agent/context-assembly.ts", "src/agent/trigger-index.ts"],
+      "floor": 0.6,
+      "margin": null,
+      "minAlnum": 20,
+      "space": "native 768 cosine",
+      "uncalibratedBehaviorSpecifiedByPlan": "must not gate semantically; use lexical/no-match"
+    },
+    {
+      "name": "seed-context",
+      "files": ["src/substrate/seed-context.ts"],
+      "floor": 0.6,
+      "margin": 0.12,
+      "minAlnum": 20,
+      "space": "native 768 cosine vs pool median",
+      "shortTurn": "skip semantic matching; surface nothing on a turn"
+    }
+  ],
+  "preparationBoundary": {
+    "seedBirth": "cli/lib/seed-birth.js + substrate SeedProcess.initialize write genesis only. No embedder call. genesis payload has no semantic_vector.",
+    "firstMeaningfulWriters": [
+      "conversation-shipper",
+      "house-sense",
+      "relationship-ledger",
+      "worker-receipts",
+      "promote-tool",
+      "memory-network ingest/backfill"
+    ],
+    "hostToday": "cli/lib/product-host.js points new homes at ambient Ollama embeddings; no owned encoder process or warm-up."
+  },
+  "historicalProvenance": {
+    "persistedSeedField": "semantic_vector only (projected 16). No semantic_encoder.",
+    "persistedMemoryField": "node.embedding (native). ANN meta stores provider+model names only.",
+    "unstampedMeaning": "unknown recipe. Plan: do not silently label as nomic-embed-text/768/20260808.",
+    "existingOverrides": "SEED_EMBED_* and EMBEDDING_* plus home.yaml embeddings.providers. Not inventoried from live homes in this public file."
+  }
+}

@@ -55,19 +55,8 @@ function checkPrerequisites(execute) {
     warnings.push('Python 3 not found — document ingestion (PDF/DOCX/images) will be unavailable');
   }
 
-  // Ollama (for embeddings)
-  try {
-    execute('ollama', ['--version'], { stdio: 'pipe' });
-    // Check if nomic-embed-text is pulled
-    try {
-      const models = execute('ollama', ['list'], { stdio: 'pipe', encoding: 'utf-8' });
-      if (!models.includes('nomic-embed-text')) {
-        warnings.push('Ollama installed but nomic-embed-text not pulled — run: ollama pull nomic-embed-text');
-      }
-    } catch { /* list failed, skip */ }
-  } catch {
-    warnings.push('Ollama not found — needed for local embeddings (free). Install from https://ollama.com or use cloud embeddings instead.');
-  }
+  // Owned semantic memory is prepared by Home23 Host. Do not ask the owner
+  // to install Ollama, pull models, or operate PM2 for embeddings.
 
   return { issues, warnings };
 }

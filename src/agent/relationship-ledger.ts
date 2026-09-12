@@ -40,6 +40,7 @@ import {
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { embedTextSync } from '../substrate/embed-at-contact.js';
+import { buildWriterSemanticStamp } from '../substrate/semantic-writer-stamp.js';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -283,10 +284,9 @@ export class RelationshipLedger {
   // eating this stream eat meaning. Degraded-honest: no embedder, no vector.
   private emitEvent(eventType: string, entryId: string, payload: Record<string, unknown> = {}, semanticText?: string): void {
     try {
-      let semanticVector: number[] | null = null;
-      if (semanticText !== undefined) {
-        semanticVector = embedTextSync(semanticText);
-      }
+      const stamp = semanticText !== undefined
+        ? buildWriterSemanticStamp({ vector: embedTextSync(semanticText), text: semanticText })
+        : {};
       const line = JSON.stringify({
         event_id: randomUUID(),
         event_type: eventType,
@@ -300,7 +300,7 @@ export class RelationshipLedger {
         payload: semanticText !== undefined
           ? { ...payload, head: semanticText.trim() }
           : payload,
-        ...(semanticVector !== null ? { semantic_vector: semanticVector } : {}),
+        ...stamp,
       }) + '\n';
       appendFileSync(this.eventsPath, line);
     } catch { /* best-effort */ }

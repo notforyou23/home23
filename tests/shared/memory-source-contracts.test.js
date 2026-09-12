@@ -347,6 +347,22 @@ test('aborting a JSONL iterator destroys the stream and preserves AbortError', a
   await assert.rejects(iterator.next(), (error) => error.name === 'AbortError');
 });
 
+test('an already-aborted JSONL signal fails before the first yield', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'memory-source-aborted-start-'));
+  const out = join(dir, 'nodes.jsonl.gz');
+  await writeJsonlGzAtomic(out, [{ id: 1 }, { id: 2 }]);
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('already cancelled'), {
+    name: 'AbortError',
+    code: 'cancelled',
+  });
+  controller.abort(reason);
+  await assert.rejects(
+    readJsonl(out, { gzip: true, signal: controller.signal }).next(),
+    (error) => error === reason,
+  );
+});
+
 test('caps decompressed bytes and a single JSONL record before parsing', async () => {
   const fixture = await writeHighlyCompressibleJsonlRecord({ conceptBytes: 8 * 1024 * 1024 });
   await assert.rejects(

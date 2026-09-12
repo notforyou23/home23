@@ -863,14 +863,25 @@ async function* readJsonl(filePath, options = {}) {
     return;
   }
 
-  const input = fs.createReadStream(null, {
-    fd: opened.handle.fd,
-    autoClose: false,
-    fs: NON_CLOSING_READ_STREAM_FS,
-    start: 0,
-    end: inputBytes - 1,
-  });
-  const decoded = options.gzip ? input.pipe(zlib.createGunzip()) : input;
+  // The FileHandle remains the sole descriptor owner. Stream teardown waits
+  // for pending reads before that owner closes it; closing a numeric fd here
+  // cannot reliably cancel kernel I/O and could race descriptor reuse.
+  let input;
+  let decoded;
+  try {
+    input = fs.createReadStream(null, {
+      fd: opened.handle.fd,
+      autoClose: false,
+      fs: NON_CLOSING_READ_STREAM_FS,
+      start: 0,
+      end: inputBytes - 1,
+    });
+    decoded = options.gzip ? input.pipe(zlib.createGunzip()) : input;
+  } catch (error) {
+    if (input) await stopReadStreams(input, input);
+    await closeOpened();
+    throw error;
+  }
   let stopPromise = null;
   const stop = () => {
     stopPromise ||= stopReadStreams(input, decoded);
@@ -880,6 +891,8 @@ async function* readJsonl(filePath, options = {}) {
     return stopPromise;
   };
   const abort = () => {
+    // Cancellation prevents further consumption. Cleanup remains cooperative:
+    // destroy waits for outstanding I/O rather than closing its fd underneath it.
     stop();
   };
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -906,6 +919,7 @@ async function* readJsonl(filePath, options = {}) {
   };
 
   try {
+    throwIfAborted(options.signal);
     for await (const chunk of decoded) {
       throwIfAborted(options.signal);
       prefixHash?.update(chunk);
@@ -976,9 +990,7 @@ async function* readJsonl(filePath, options = {}) {
   } finally {
     options.signal?.removeEventListener('abort', abort);
     await stop();
-    if (!borrowed) {
-      await opened.handle.close();
-    }
+    await closeOpened();
   }
 }
 

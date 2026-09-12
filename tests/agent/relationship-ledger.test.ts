@@ -9,6 +9,10 @@ import {
   type RelationshipEntryInput,
   type AuthenticatedCorrectionIngress,
 } from '../../src/agent/relationship-ledger.js';
+import {
+  LEGACY_EMBEDDING_PROFILE,
+  LEGACY_EMBEDDING_RECIPE_ID,
+} from '../../src/substrate/semantic-writer-stamp.js';
 
 function tmpBrain(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-rel-ledger-'));
@@ -222,6 +226,41 @@ test('maxEntries eviction drops closed entries before active, and never drops pr
   const keepC = ledger.addEntry(base({ type: 'decision', title: 'keepC', statement: 'active decision' }));
   assert.equal(ledger.listEntries().length, 3); // exceeds maxEntries, but all protected+active
   assert.ok(ledger.getEntry(keepC.id));
+});
+
+test('new ledger event lines stamp provenance; unstamped history is not rewritten', (t) => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  fs.mkdirSync(brain, { recursive: true });
+  const eventsPath = path.join(brain, 'relationship-ledger.events.jsonl');
+  const oldLine = JSON.stringify({
+    event_id: 'evt_old_unstamped',
+    event_type: 'entry_added',
+    entry_id: 'rel_old',
+    agent: 'jerry',
+    ts: '2026-08-05T11:00:00.000Z',
+    payload: { type: 'preference', actor: 'agent', method: 'agent_note', head: 'old. unstamped history' },
+    semantic_vector: Array.from({ length: 16 }, () => 0.1),
+  });
+  fs.writeFileSync(eventsPath, `${oldLine}\n`);
+
+  const ledger = new RelationshipLedger(brain, { now: clock(), idSuffix: counterSuffix() });
+  ledger.addEntry(base({ title: 'new preference', statement: 'stamp this new teaching line' }));
+
+  const raw = fs.readFileSync(eventsPath, 'utf8');
+  const lines = raw.split('\n').filter(Boolean);
+  assert.equal(lines[0], oldLine, 'existing event bytes must stay unknown and unstamped');
+  assert.ok(lines.length >= 2);
+  const newest = JSON.parse(lines[lines.length - 1]!);
+  assert.equal(newest.semantic_recipe_id, LEGACY_EMBEDDING_RECIPE_ID);
+  assert.equal(newest.semantic_encoder, LEGACY_EMBEDDING_PROFILE);
+  if (newest.semantic_vector) {
+    assert.equal(newest.semantic_absence, undefined);
+    assert.ok(Array.isArray(newest.semantic_vector));
+  } else {
+    assert.equal(newest.semantic_absence, 'unavailable');
+  }
+  assert.equal(Object.hasOwn(JSON.parse(lines[0]!), 'semantic_recipe_id'), false);
 });
 
 test('toPublicJSON exposes the full ledger including removed/superseded, newest-first', (t) => {

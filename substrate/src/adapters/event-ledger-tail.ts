@@ -32,6 +32,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { SourceAdapter, SourceEvent, EventCategory, SourceAuthority } from '../types.js';
 import { sanitizeSemanticVector } from '../semantic-projection.js';
+import { admitSourceEvent, withSemanticProvenance } from '../semantic-provenance.js';
 
 const DEFAULT_READ_WINDOW_BYTES = 1024 * 1024; // 1MB per pull
 const DEFAULT_OVERSIZED_LINE_MAX = 8 * 1024 * 1024; // single-line hard cap
@@ -295,12 +296,19 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     } catch {
       return null;
     }
-    if (this.sourceType === 'relationship-ledger') return this.mapRelationshipLine(parsed, line, endOffset);
-    if (this.sourceType === 'worker-runs') return this.mapWorkerRunLine(parsed, line, endOffset);
-    if (this.sourceType === 'conversation-stream') return this.mapConversationLine(parsed, line, endOffset);
-    if (this.sourceType === 'house-stream') return this.mapHouseLine(parsed, line, endOffset);
-    if (this.sourceType === 'dream-stream') return this.mapDreamLine(parsed, line, endOffset);
-    return this.mapHarnessLine(parsed as HarnessEntry, line, endOffset);
+    let mapped: TailedSourceEvent | null;
+    if (this.sourceType === 'relationship-ledger') mapped = this.mapRelationshipLine(parsed, line, endOffset);
+    else if (this.sourceType === 'worker-runs') mapped = this.mapWorkerRunLine(parsed, line, endOffset);
+    else if (this.sourceType === 'conversation-stream') mapped = this.mapConversationLine(parsed, line, endOffset);
+    else if (this.sourceType === 'house-stream') mapped = this.mapHouseLine(parsed, line, endOffset);
+    else if (this.sourceType === 'dream-stream') mapped = this.mapDreamLine(parsed, line, endOffset);
+    else mapped = this.mapHarnessLine(parsed as HarnessEntry, line, endOffset);
+    return this.admitMapped(mapped, parsed);
+  }
+
+  private admitMapped(event: TailedSourceEvent | null, parsed: Record<string, unknown>): TailedSourceEvent | null {
+    if (event === null) return null;
+    return admitSourceEvent(withSemanticProvenance(event, parsed));
   }
 
   /** House-sense lines (substrate/bin/house-sense.ts): the home's lived

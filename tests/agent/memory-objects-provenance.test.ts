@@ -272,4 +272,12 @@ test('promote_to_memory binds correction authority to the actual loop user messa
   assert.equal(stored.objects[0].actor, 'jtr');
   assert.equal(stored.objects[0].provenance.node_profile.authorityClass, 'jtr_correction');
   assert.ok(stored.objects[0].provenance.source_refs.includes('turn:turn-9:user'));
+  const eventsPath = path.join(root, 'brain', 'memory-objects.events.jsonl');
+  if (fs.existsSync(eventsPath)) {
+    const event = JSON.parse(fs.readFileSync(eventsPath, 'utf8').trim().split('\n').at(-1)!);
+    assert.equal(typeof event.semantic_recipe_id, 'string');
+    assert.equal(typeof event.semantic_encoder, 'string');
+    if (event.semantic_vector) assert.equal(event.semantic_absence, undefined);
+    else assert.ok(event.semantic_absence === 'unavailable' || event.semantic_absence === 'too_short');
+  }
 });

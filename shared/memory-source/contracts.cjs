@@ -130,6 +130,13 @@ function throwIfAborted(signal) {
   });
 }
 
+function composeAbortSignals(left, right) {
+  const signals = [left, right].filter((value) => value instanceof AbortSignal);
+  if (signals.length === 0) return undefined;
+  if (signals.length === 1 || signals[0] === signals[1]) return signals[0];
+  return AbortSignal.any(signals);
+}
+
 function rethrowAbort(error, signal) {
   if (!isAbortError(error, signal)) return;
   throw signal?.reason || error || Object.assign(new Error('cancelled'), {
@@ -484,6 +491,7 @@ module.exports = {
   sourceDescriptorDigest,
   isAbortError,
   throwIfAborted,
+  composeAbortSignals,
   rethrowAbort,
   isTypedMemorySourceError,
   createDiagnosticRing,

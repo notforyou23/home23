@@ -54,9 +54,19 @@ let cachedEmbeddingClient;
  * Kept separate from chat client to avoid cross-contamination of baseURL/apiKey.
  * Default: http://127.0.0.1:11434/v1 (local Ollama)
  */
+/** Chat OPENAI_BASE_URL must not select the encoder. */
+function resolveEmbeddingBaseUrl() {
+  const configured = String(process.env.EMBEDDING_BASE_URL || '').trim();
+  if (configured) return configured;
+  if ((process.env.EMBEDDING_PROVIDER || '') === 'home23-owned') {
+    throw new Error('Owned encoder is missing EMBEDDING_BASE_URL');
+  }
+  return 'http://127.0.0.1:11434/v1';
+}
+
 function getEmbeddingClient() {
   if (!cachedEmbeddingClient) {
-    const baseURL = process.env.EMBEDDING_BASE_URL || 'http://127.0.0.1:11434/v1';
+    const baseURL = resolveEmbeddingBaseUrl();
     const apiKey = process.env.EMBEDDING_API_KEY || 'ollama';
 
     const OpenAI = loadOpenAI();
@@ -89,5 +99,6 @@ function getOpenAIConfig() {
 module.exports = {
   getOpenAIClient,
   getEmbeddingClient,
-  getOpenAIConfig
+  getOpenAIConfig,
+  resolveEmbeddingBaseUrl,
 };

@@ -5,8 +5,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { absoluteHome, choosePortPlan, privateDirectory, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
+import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { inspectProductMemory } from './product-memory.js';
+import {
+  OWNED_EMBEDDER_PROCESS, OWNED_PROFILE_ID, OWNED_RECIPE_HASH,
+  beginSemanticPrepare, encoderRequiredFor, ensureOwnedEncoderStopped, probeOwnedReady, semanticStatusView,
+} from './product-embedder.js';
 
 const executeFile = promisify(execFile);
 const PROVIDERS = new Set(['anthropic', 'openai', 'minimax', 'xai', 'ollama-cloud', 'ollama-local']);
@@ -25,13 +29,22 @@ async function validateInstallation(root, { full = false } = {}) {
 }
 function stateFor(root) {
   const state = readPrivateJSON(statePath(root));
-  if (state && (state.schema !== 'home23.host.v1' || state.homeRoot !== root)) throw new Error('This Home23 state belongs to another installation.');
-  if (state) validatePortPlan(state.ports);
+  if (!state) return state;
+  if (state.homeRoot !== root) throw new Error('This Home23 state belongs to another installation.');
+  if (state.schema === 'home23.host.v2') {
+    if (state.encoderRequired !== true) throw new Error('This Home23 state belongs to another installation.');
+    validatePortPlan(state.ports, { encoderRequired: true });
+    return state;
+  }
+  if (state.schema !== 'home23.host.v1' || state.encoderRequired === true) throw new Error('This Home23 state belongs to another installation.');
+  validatePortPlan(state.ports);
   return state;
 }
-export function ownedProcessNames(name) {
+export function ownedProcessNames(name, { encoderRequired = false } = {}) {
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(name || '')) throw new Error('Invalid resident name.');
-  return ['home23-coordination', `home23-${name}`, `home23-${name}-dash`, `home23-${name}-harness`, `home23-${name}-seed`, `home23-${name}-shipper`, 'home23-seed-observatory', 'home23-evobrew'];
+  const names = ['home23-coordination', `home23-${name}`, `home23-${name}-dash`, `home23-${name}-harness`, `home23-${name}-seed`, `home23-${name}-shipper`, 'home23-seed-observatory', 'home23-evobrew'];
+  if (encoderRequired) names.push(OWNED_EMBEDDER_PROCESS);
+  return names;
 }
 export function safeProcesses(rows, homeRoot, names) {
   const appRoot = join(homeRoot, 'app');
@@ -56,10 +69,11 @@ function withoutStartupProfiling(args) {
   }
   return result;
 }
-export function productDefinitions(apps, homeRoot, name) {
-  const allowed = ownedProcessNames(name);
+export function productDefinitions(apps, homeRoot, name, { encoderRequired = false, embedderPort } = {}) {
+  const allowed = ownedProcessNames(name, { encoderRequired });
   const appRoot = join(homeRoot, 'app');
   const nodePath = join(homeRoot, 'bin', 'node');
+  const baseEnv = productEnvironment(homeRoot, { encoderRequired, embedderPort });
   return allowed.map(processName => {
     const definition = apps.find(app => app.name === processName);
     if (!definition) throw new Error(`Required Home23 process is not configured: ${processName}`);
@@ -75,20 +89,24 @@ export function productDefinitions(apps, homeRoot, name) {
     if (!executable || /\s/.test(executable) || resolve(cwd, executable) !== nodePath) throw new Error('Cannot safely resolve the bundled Home23 executable.');
     return { ...definition, script: executable, interpreter: 'none', node_args: [], args: [...withoutStartupProfiling(nodeArgs), script, ...args], cwd,
       autostart: true, autorestart: true, min_uptime: 10000, max_restarts: 5, restart_delay: 2000,
-      env: { ...definition.env, ...productEnvironment(homeRoot) },
+      env: { ...definition.env, ...baseEnv },
       // No profiling flags or dumps are required to run a user's home.
       filter_env: definition.filter_env || [],
     };
   });
 }
-function driver(homeRoot, dependencies) {
-  const env = productEnvironment(homeRoot, { prepare: true });
+function driver(homeRoot, dependencies, state) {
+  const encoderRequired = encoderRequiredFor(state);
+  const env = productEnvironment(homeRoot, { prepare: true, encoderRequired, embedderPort: state?.ports?.embedder });
   const nodePath = join(homeRoot, 'bin', 'node');
   const pm2Path = join(homeRoot, 'tools', 'node_modules', 'pm2', 'bin', 'pm2');
   const execute = dependencies.execute || executeFile;
   async function pm2(args) {
     try { return await execute(nodePath, [pm2Path, ...args], { cwd: join(homeRoot, 'app'), env, timeout: args[0] === 'stop' ? 240000 : 45000, maxBuffer: 8 * 1024 * 1024 }); }
-    catch { throw new Error(`Home23 process ${args[0]} failed. Check this home's runtime/pm2 logs.`); }
+    catch (error) {
+      if (args[0] === 'stop' && String(args[1] || '').includes('embedder')) return { stdout: '' };
+      throw new Error(`Home23 process ${args[0]} failed. Check this home's runtime/pm2 logs.`);
+    }
   }
   return {
     env,
@@ -108,7 +126,7 @@ function driver(homeRoot, dependencies) {
       generateEcosystem(join(homeRoot, 'app'), { quiet: true });
       const config = join(homeRoot, 'app', 'ecosystem.config.cjs');
       const { stdout } = await execute(nodePath, ['-e', 'process.stdout.write(JSON.stringify(require(process.argv[1]).apps))', config], { cwd: join(homeRoot, 'app'), env, timeout: 15000, maxBuffer: 8 * 1024 * 1024 });
-      return productDefinitions(JSON.parse(stdout), homeRoot, name);
+      return productDefinitions(JSON.parse(stdout), homeRoot, name, { encoderRequired, embedderPort: state?.ports?.embedder });
     },
   };
 }
@@ -228,8 +246,12 @@ async function loadHostSession(homeRoot, localURL, { create = false, resumeIniti
   }
 }
 export async function probeReadiness(homeRoot, state, processes, { createSession = false, request = requestJSON } = {}) {
-  const missing = ownedProcessNames(state.profile.name).filter(name => !processes.some(row => row.name === name && row.status === 'online' && row.owned));
+  const missing = ownedProcessNames(state.profile.name, { encoderRequired: encoderRequiredFor(state) }).filter(name => !processes.some(row => row.name === name && row.status === 'online' && row.owned));
   if (missing.length) return { ready: false, issues: missing.map(name => `${name} is not running from this installation.`) };
+  if (encoderRequiredFor(state)) {
+    const ready = await probeOwnedReady(state.ports.embedder);
+    if (!ready.warm) return { ready: false, issues: ['The owned semantic encoder is not warm yet.'] };
+  }
   const localURL = `http://127.0.0.1:${state.ports.coordination}`;
   const issues = [];
   let recoveryRequired = false;
@@ -263,7 +285,8 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
     } catch { issues.push(`${label} is not responding from this installation yet.`); }
   }));
   const memory = await inspectProductMemory(homeRoot);
-  return { ready: issues.length === 0, issues, memory, warnings: memory.warnings, ...(recoveryRequired ? { recoveryRequired: true } : {}) };
+  const semantic = semanticStatusView(homeRoot, state);
+  return { ready: issues.length === 0, issues, memory, warnings: memory.warnings, semantic, ...(recoveryRequired ? { recoveryRequired: true } : {}) };
 }
 async function status(homeRoot, dependencies = {}, createSession = false) {
   if (!existsSync(receiptPath(homeRoot))) return { ok: true, status: 'absent', homeRoot, desiredRunning: false, processes: [] };
@@ -271,9 +294,10 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
   const state = stateFor(homeRoot);
   if (!state) return { ok: true, status: 'installed', homeRoot, desiredRunning: false, processes: [] };
   const output = { ok: true, homeRoot, profile: state.profile, desiredRunning: state.desiredRunning === true,
+    encoderRequired: encoderRequiredFor(state), semantic: semanticStatusView(homeRoot, state),
     connection: { localURL: `http://127.0.0.1:${state.ports.coordination}`, dashboardURL: `http://127.0.0.1:${state.ports.dashboard}`, pairing: 'owner pairing code', access: 'loopback; use a trusted HTTPS or VPN transport for other devices' } };
-  const rows = await driver(homeRoot, dependencies).list();
-  const processes = safeProcesses(rows, homeRoot, ownedProcessNames(state.profile.name));
+  const rows = await driver(homeRoot, dependencies, state).list();
+  const processes = safeProcesses(rows, homeRoot, ownedProcessNames(state.profile.name, { encoderRequired: encoderRequiredFor(state) }));
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
   const readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
@@ -298,8 +322,8 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
   if (state?.phase !== 'creating' && state) return status(homeRoot, dependencies);
   if (!apiKey && profile.provider !== 'ollama-local' && !existsSync(join(appRoot, 'config', 'secrets.yaml'))) throw new Error('Enter your selected provider API key.');
   if (!state) {
-    state = { schema: 'home23.host.v1', homeRoot, profile, fingerprint: fingerprint(profile), ports: await choosePortPlan(), phase: 'creating', desiredRunning: false };
-    await withReservedPorts(state.ports, async () => privateJSON(statePath(homeRoot), state));
+    state = { schema: 'home23.host.v2', homeRoot, profile, fingerprint: fingerprint(profile), ports: await choosePortPlan({ encoderRequired: true }), phase: 'creating', desiredRunning: false, encoderRequired: true };
+    await withReservedPorts(state.ports, async () => privateJSON(statePath(homeRoot), state), { encoderRequired: true });
   }
   for (const file of ['home.yaml', 'targets.yaml', 'cron-jobs.json']) {
     const target = join(appRoot, 'config', file);
@@ -315,11 +339,12 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
   if (profile.provider === 'ollama-local') {
     home.providers[profile.provider] = { ...home.providers[profile.provider], defaultModels: [...new Set([...(home.providers[profile.provider]?.defaultModels || []), profile.model])] };
     home.models = { ...home.models, aliases: { ...home.models?.aliases, 'host-resident': { provider: profile.provider, model: profile.model } } };
-    if (baseUrl) {
-      const endpoint = `${baseUrl.replace(/\/v1$/, '')}/api/embeddings`;
-      home.embeddings = { ...home.embeddings, providers: [{ provider: 'ollama-local', model: 'nomic-embed-text', dimensions: 768, endpoint }] };
-      home.substrate = { ...home.substrate, embedding: { endpoint, model: 'nomic-embed-text' } };
-    }
+  }
+  if (encoderRequiredFor(state)) {
+    const endpoint = `http://127.0.0.1:${state.ports.embedder}/api/embeddings`;
+    home.embedder = { owned: true, port: state.ports.embedder, bind: '127.0.0.1' };
+    home.embeddings = { providers: [{ provider: 'home23-owned', model: OWNED_PROFILE_ID, dimensions: 768, endpoint, recipeId: OWNED_RECIPE_HASH }] };
+    home.substrate = { ...home.substrate, embedding: { endpoint, model: OWNED_PROFILE_ID, recipeId: OWNED_RECIPE_HASH } };
   }
   writeFileSync(homePath, yaml.dump(home), { mode: 0o600 });
   await secretsStore.updateHome23Secrets(appRoot, secrets => {
@@ -346,7 +371,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       providers: Object.entries(authority.executionCatalog.providers).filter(([id]) => PROVIDERS.has(id)).map(([id, provider]) => ({ id, name: provider.label || id, models: provider.models.filter(model => model.kind === 'chat').map(model => ({ id: model.id, name: model.label || model.id })) })) };
   }
   if (action === 'status') return status(homeRoot, dependencies);
-  if (!['install', 'create', 'start', 'stop'].includes(action)) throw new Error('Unknown Home23 Host action.');
+  if (!['install', 'create', 'start', 'stop', 'semantic-prepare'].includes(action)) throw new Error('Unknown Home23 Host action.');
   if (action === 'install') {
     if (typeof payloadPath !== 'string' || !isAbsolute(payloadPath)) throw new Error('Choose the absolute bundled Home23 payload directory.');
     const { installProductPayload } = await import('./product-payload.js');
@@ -362,8 +387,13 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     let state = stateFor(homeRoot);
     if (action === 'create') return await seedAndCreate(homeRoot, input, state, dependencies);
     if (!state || state.phase === 'creating') throw new Error('Finish creating this Home23 home before starting it.');
-    const processDriver = driver(homeRoot, dependencies);
-    const names = ownedProcessNames(state.profile.name);
+    if (action === 'semantic-prepare') {
+      if (!encoderRequiredFor(state)) return await status(homeRoot, dependencies);
+      const prep = beginSemanticPrepare(homeRoot, state, { spawnWorker: dependencies.spawnWorker, nodePath: join(homeRoot, 'bin', 'node') });
+      return { ...await status(homeRoot, dependencies), semantic: semanticStatusView(homeRoot, state), handle: prep.handle };
+    }
+    const processDriver = driver(homeRoot, dependencies, state);
+    const names = ownedProcessNames(state.profile.name, { encoderRequired: encoderRequiredFor(state) });
     const rows = await processDriver.list();
     const processes = safeProcesses(rows, homeRoot, names);
     if (rows.some(row => !names.includes(row.name)) || processes.some(row => !row.owned) || new Set(rows.map(row => row.name)).size !== rows.length) throw new Error('This private supervisor contains an unexpected process; no processes were changed.');
@@ -371,11 +401,43 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       state = { ...state, desiredRunning: false, phase: 'stopped' };
       privateJSON(statePath(homeRoot), state);
       await authorizeInitialHostPairing(homeRoot, false);
-      for (const row of [...processes].reverse()) if (row.status !== 'stopped') await processDriver.pm2(['stop', row.name, '--silent']);
+      for (const name of [...names].reverse()) {
+        const row = processes.find(item => item.name === name);
+        if (row?.status === 'stopped') continue;
+        try {
+          await processDriver.pm2(['stop', name, '--silent']);
+        } catch (error) {
+          if (row) throw error;
+        }
+      }
+      if (encoderRequiredFor(state)) {
+        try {
+          await ensureOwnedEncoderStopped(state, {
+            probe: dependencies.probeOwnedReady || probeOwnedReady,
+            ...(dependencies.signalProcess ? { signalProcess: dependencies.signalProcess } : {}),
+            ...(dependencies.sleep ? { sleep: dependencies.sleep } : {}),
+            ...(Number.isInteger(dependencies.stopTimeoutMs) ? { timeoutMs: dependencies.stopTimeoutMs } : {}),
+          });
+        } catch (error) {
+          return {
+            ...await status(homeRoot, dependencies),
+            ok: false,
+            desiredRunning: false,
+            error: {
+              code: error.code || 'host_encoder_still_warm',
+              message: error.message || 'The owned encoder is still answering /ready after Stop.',
+            },
+          };
+        }
+      }
       return await status(homeRoot, dependencies);
     }
+    if (encoderRequiredFor(state) && semanticStatusView(homeRoot, state).semanticReady !== true) {
+      return { ...await status(homeRoot, dependencies), ok: false, status: 'prepared',
+        error: { code: 'host_semantic_prepare_required', message: 'Semantic memory is still preparing. Resume preparation before starting this home. Your saved home stays in place.' } };
+    }
     const allRunning = names.every(name => processes.some(row => row.name === name && row.status === 'online'));
-    if (!processes.some(row => row.status === 'online')) await withReservedPorts(state.ports, async () => {});
+    if (!processes.some(row => row.status === 'online')) await withReservedPorts(state.ports, async () => {}, { encoderRequired: encoderRequiredFor(state) });
     state = { ...state, desiredRunning: true, phase: 'starting', startedAt: new Date().toISOString() };
     privateJSON(statePath(homeRoot), state);
     await authorizeInitialHostPairing(homeRoot, true);
@@ -383,10 +445,22 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       const definitions = dependencies.definitions ? await dependencies.definitions(state.profile.name) : await processDriver.definitions(state.profile.name);
       const config = join(homeRoot, 'runtime', 'ecosystem.config.json');
       privateJSON(config, { apps: definitions });
-      for (const name of names) {
+      const startOrder = encoderRequiredFor(state) ? [OWNED_EMBEDDER_PROCESS, ...names.filter(name => name !== OWNED_EMBEDDER_PROCESS)] : names;
+      for (const name of startOrder) {
         const current = processes.find(row => row.name === name);
         if (current?.status === 'online') continue;
         await processDriver.pm2([current ? 'restart' : 'start', current ? name : config, ...(current ? [] : ['--only', name]), '--update-env', '--silent']);
+        if (name === OWNED_EMBEDDER_PROCESS) {
+          const deadline = Date.now() + 30000;
+          let warm = false;
+          while (Date.now() < deadline) {
+            warm = (await probeOwnedReady(state.ports.embedder)).warm;
+            if (warm) break;
+            await (dependencies.sleep || sleep)(500);
+          }
+          if (!warm) return { ...await status(homeRoot, dependencies), ok: false, status: 'degraded',
+            error: { code: 'host_encoder_not_ready', message: 'The owned semantic encoder did not become ready. Check status, then retry Start. Your saved home stays in place.' } };
+        }
       }
     }
     const deadline = Date.now() + (dependencies.readinessWaitMs ?? 45000);

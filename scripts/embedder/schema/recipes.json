@@ -1,0 +1,73 @@
+{
+  "schema": "home23.embedder.recipes.v1",
+  "note": "Frozen Encoder seams. Host admits home23-embedder only on home23.host.v2 + encoderRequired. Product defaults stay legacy. These recipeId values are sha256 of canonical fingerprint JSON from Stage 1 pins — no new model download.",
+  "projection": {
+    "expected_dim": 768,
+    "projection_seed": 20260808,
+    "projection_dim": 16,
+    "metric": "cosine"
+  },
+  "profiles": {
+    "legacy-ollama-nomic-unprefixed": {
+      "profileId": "legacy-ollama-nomic-unprefixed",
+      "recipeId": "5128b29c886857aeb89b148d2d9f2edf2c20f63de15a764342c2a18da640f71a",
+      "role": "legacy-active-homes",
+      "compatibleWithOwned": false,
+      "attention": {
+        "matchFloor": 0.6,
+        "matchMargin": 0.12,
+        "minMatchableAlnum": 20
+      },
+      "fingerprint": {
+        "artifact_digests": {
+          "ollama/nomic-embed-text:latest": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+        },
+        "expected_dim": 768,
+        "family": "nomic-embed-text",
+        "normalization": "none-at-provider",
+        "pooling": "ollama-gguf-native",
+        "precision": "gguf-f16",
+        "prefix_policy": "none",
+        "projection_dim": 16,
+        "projection_seed": 20260808,
+        "source": "ollama:nomic-embed-text",
+        "truncation": {
+          "memory": { "maxChars": 2000, "maxTokensIfTokenizer": 512, "minLength": 0 },
+          "seed": { "maxChars": 1000, "minLength": 8 }
+        }
+      }
+    },
+    "owned-nomic-v1.5-onnx-fp32-mean-noprefix": {
+      "profileId": "owned-nomic-v1.5-onnx-fp32-mean-noprefix",
+      "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+      "role": "new-distinct-recipe",
+      "compatibleWithOwned": true,
+      "attention": {
+        "matchFloor": null,
+        "matchMargin": null,
+        "minMatchableAlnum": 20
+      },
+      "fingerprint": {
+        "artifact_digests": {
+          "config.json": "9ab00bd92cee80a569f708140b7b6c1661a65891ff3765b1519e181ba2f2c92b",
+          "onnx/model.onnx": "147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965",
+          "tokenizer.json": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+          "tokenizer_config.json": "d7e0000bcc80134debd2222220427e6bf5fa20a669f40a0d0d1409cc18e0a9bc"
+        },
+        "expected_dim": 768,
+        "family": "nomic-embed-text-v1.5",
+        "normalization": "none-at-provider",
+        "pooling": "mean",
+        "precision": "fp32",
+        "prefix_policy": "none",
+        "projection_dim": 16,
+        "projection_seed": 20260808,
+        "source": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+        "truncation": {
+          "memory": { "maxChars": 2000, "maxTokensIfTokenizer": 512, "minLength": 0 },
+          "seed": { "maxChars": 1000, "minLength": 8 }
+        }
+      }
+    }
+  }
+}

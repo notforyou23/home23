@@ -119,3 +119,14 @@ test('sanitizer accepts sane vectors and rejects garbage loudly-by-null', () => 
   assert.equal(sanitizeSemanticVector('nope'), null);
   assert.equal(sanitizeSemanticVector([0.1, 'x']), null);
 });
+
+test('encodeEvent boundary keeps recorded vectors and never fabricates one', async () => {
+  const { admitSourceEvent } = await import('../src/semantic-provenance.js');
+  const sem = projectEmbedding(fakeEmbedding(3));
+  const recorded = ev({ semanticVector: sem, semanticRecipeId: 'legacy-ollama-nomic-unprefixed' } as SourceEvent);
+  const admitted = admitSourceEvent(recorded);
+  assert.deepEqual(admitted.semanticVector, sem);
+  const absent = admitSourceEvent(ev({}));
+  assert.equal(absent.semanticVector, undefined);
+  assert.deepEqual([...encodeEvent(absent, 60)], [...encodeEvent(ev({}), 60)]);
+});

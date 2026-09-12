@@ -243,6 +243,57 @@ async function sourceSearch({ dir, embedQuery, loadAnn, query = 'canary', reques
   }
 }
 
+function fillerNodes(count, { prefix = 'filler', start = 0 } = {}) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `${prefix}-${start + index}`,
+    concept: `unrelated mineral specimen ${start + index}`,
+    embedding: [0, 1],
+  }));
+}
+
+const HYDRO_NODE = {
+  id: 'hydro',
+  concept: 'The hydrologic cycle is the continuous movement of H2O.',
+  embedding: [1, 0],
+};
+
+async function countedSourceSearch({
+  dir, embedQuery, loadAnn, query, request = {}, onVisit = null,
+}) {
+  const source = await openMemorySource(dir);
+  let visits = 0;
+  const original = source.iterateNodes.bind(source);
+  source.iterateNodes = async function* iterateNodes(opts) {
+    for await (const node of original(opts)) {
+      visits += 1;
+      if (onVisit) await onVisit({ visits, node });
+      yield node;
+    }
+  };
+  const cacheRoot = await tempDir('home23-memory-search-cache-');
+  const service = createMemorySearchService({
+    brainDir: dir,
+    embedQuery,
+    loadAnn,
+    deltaOverlayCache: createMemoryDeltaOverlayCache({ cacheRoot }),
+    logger: { warn() {} },
+  });
+  try {
+    const result = await service.search({
+      sourcePin: source,
+      identity: { operationId: 'test-search', requesterAgent: 'jerry', brainId: 'jerry' },
+      query,
+      topK: 5,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+      ...request,
+    });
+    return { result, visits, source };
+  } finally {
+    await source.close();
+  }
+}
+
 test('stale ANN cannot hide a new delta keyword canary', async () => {
   const dir = await createBrain({
     nodes: [{ id: 'old', concept: 'old semantic', embedding: [0, 1] }],
@@ -737,6 +788,75 @@ test('context mode skips the full-brain scan when ANN is missing', async () => {
   } finally {
     await source.close();
   }
+});
+
+test('context mode does not let conversation echoes bury an imported document', async () => {
+  const paraphrase = 'How does sunshine lift moisture that later falls as weather and replenishes hidden reservoirs?';
+  const hydro = {
+    id: 'hydro',
+    concept: 'The hydrologic cycle is the continuous movement of H2O. Solar energy drives vapor from seas into the sky.',
+    embedding: [1, 0],
+    tag: '.stage5-host-import',
+  };
+  const granite = {
+    id: 'granite',
+    concept: 'Granite crystallizes slowly from magma deep underground.',
+    embedding: [0.55, 0.84],
+    tag: '.stage5-host-import',
+  };
+  const echo = {
+    id: 'echo',
+    concept: `**Runtime input (see canonical conversation for authorship):** ${paraphrase}`,
+    embedding: [0.99, 0.14],
+    tag: 'conversation_sessions',
+  };
+  const plant = {
+    id: 'plant',
+    concept: 'Sunshine plays a crucial role in evapotranspiration, which is the process by which plants release water vapor.',
+    embedding: [0.84, 0.54],
+    tag: 'conversation_sessions',
+  };
+  const consolidated = {
+    id: 'consolidated',
+    concept: '[CONSOLIDATED] The interaction between sunshine and plants replenishes hidden reservoirs.',
+    embedding: [0.97, 0.24],
+    tag: 'consolidated',
+  };
+  const dir = await createBrain({ nodes: [hydro, granite, echo, plant, consolidated] });
+  await markAnn(dir);
+  const labels = [hydro, granite, echo, plant, consolidated];
+  const loadAnn = async () => ({
+    dimension: 2,
+    skipped: 0,
+    count: 5,
+    labels,
+    search: (_embedding, limit) => labels
+      .map((node) => ({
+        node,
+        similarity: node.embedding[0] / Math.hypot(node.embedding[0], node.embedding[1]),
+      }))
+      .sort((left, right) => right.similarity - left.similarity)
+      .slice(0, limit),
+  });
+  const embedQuery = async () => [1, 0];
+  const buried = await sourceSearch({
+    dir,
+    query: paraphrase,
+    embedQuery,
+    loadAnn,
+    request: { topK: 3, minSimilarity: 0.1, noiseFloor: 0.1 },
+  });
+  assert.equal(buried.results[0]?.id, 'echo');
+  const result = await sourceSearch({
+    dir,
+    query: paraphrase,
+    embedQuery,
+    loadAnn,
+    request: { topK: 3, minSimilarity: 0.1, noiseFloor: 0.1, mode: 'context' },
+  });
+  assert.deepEqual(result.results.map((row) => row.id), ['hydro', 'granite']);
+  assert.ok(Number(result.results[0].similarity) > Number(result.results[1].similarity));
+  assert.equal(result.results.some((row) => ['conversation_sessions', 'consolidated'].includes(row.tag)), false);
 });
 
 test('context mode still uses a stale ANN instead of scanning the corpus', async () => {
@@ -1295,6 +1415,194 @@ test('dimension mismatch and embedding failure use keyword retrieval', async () 
   });
   assert.equal(unavailable.results[0].retrievalMode, 'logical-source-scan');
   assert.equal(unavailable.evidence.fallback.reason, 'embedding_unavailable');
+});
+
+test('context mode uses keyword scan when the encoder is unavailable', async () => {
+  const dir = await createBrain({
+    nodes: [
+      {
+        id: 'hydro',
+        concept: 'The hydrologic cycle is the continuous movement of H2O.',
+        embedding: [1, 0],
+      },
+      {
+        id: 'granite',
+        concept: 'Granite crystallizes slowly from magma deep underground.',
+        embedding: [0, 1],
+      },
+    ],
+  });
+  const result = await sourceSearch({
+    dir,
+    query: 'hydrologic cycle',
+    embedQuery: async () => { throw new Error('owned encoder refused'); },
+    loadAnn: async () => null,
+    request: { mode: 'context' },
+  });
+  assert.equal(result.results[0]?.id, 'hydro');
+  assert.equal(result.results.some((row) => row.id === 'granite'), false);
+  assert.equal(result.evidence.fallback.reason, 'embedding_unavailable');
+  assert.equal(result.evidence.fallback.route, 'logical-keyword-scan');
+  assert.equal(result.evidence.fallback.completeness, 'complete');
+  assert.equal(result.evidence.completeCoverage, true);
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+});
+
+test('context mode keeps encoder outage distinct from a genuine empty miss', async () => {
+  const hydro = {
+    id: 'hydro',
+    concept: 'The hydrologic cycle is the continuous movement of H2O.',
+    embedding: [1, 0],
+  };
+  const outageDir = await createBrain({ nodes: [hydro] });
+  const outageMiss = await sourceSearch({
+    dir: outageDir,
+    query: 'obsidian xenolith',
+    embedQuery: async () => { throw new Error('owned encoder refused'); },
+    loadAnn: async () => null,
+    request: { mode: 'context' },
+  });
+  assert.equal(outageMiss.results.length, 0);
+  assert.equal(outageMiss.evidence.fallback.reason, 'embedding_unavailable');
+  assert.equal(outageMiss.evidence.sourceHealth, 'degraded');
+
+  const healthyDir = await createBrain({ nodes: [hydro] });
+  await markAnn(healthyDir);
+  const healthyMiss = await sourceSearch({
+    dir: healthyDir,
+    query: 'obsidian xenolith',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2,
+      skipped: 0,
+      labels: [hydro],
+      search: () => [],
+    }),
+    request: { mode: 'context' },
+  });
+  assert.equal(healthyMiss.results.length, 0);
+  assert.notEqual(healthyMiss.evidence.fallback?.reason, 'embedding_unavailable');
+});
+
+test('context outage scan stops at a visit budget on a larger on-disk source', async () => {
+  const dir = await createBrain({
+    nodes: [...fillerNodes(300), HYDRO_NODE],
+  });
+  const { result, visits } = await countedSourceSearch({
+    dir,
+    query: 'hydrologic cycle',
+    embedQuery: async () => { throw new Error('owned encoder refused'); },
+    loadAnn: async () => null,
+    request: {
+      mode: 'context',
+      contextOutageScanVisitBudget: 40,
+      contextOutageScanDeadlineMs: 60_000,
+    },
+  });
+  assert.equal(visits <= 41, true, `expected a bounded visit count, got ${visits}`);
+  assert.equal(visits >= 40, true, `expected the visit budget to be consumed, got ${visits}`);
+  assert.equal(result.results.some((row) => row.id === 'hydro'), false);
+  assert.equal(result.evidence.fallback.reason, 'embedding_unavailable');
+  assert.equal(result.evidence.fallback.completeness, 'incomplete');
+  assert.equal(result.evidence.completeCoverage, false);
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.fallback.scan?.exhausted, true);
+  assert.equal(result.evidence.fallback.scan?.exhaustedBy, 'visit_budget');
+});
+
+test('context outage scan can return an early lexical hit without claiming full coverage', async () => {
+  const dir = await createBrain({
+    nodes: [HYDRO_NODE, ...fillerNodes(300)],
+  });
+  const { result, visits } = await countedSourceSearch({
+    dir,
+    query: 'hydrologic cycle',
+    embedQuery: async () => { throw new Error('owned encoder refused'); },
+    loadAnn: async () => null,
+    request: {
+      mode: 'context',
+      contextOutageScanVisitBudget: 40,
+      contextOutageScanDeadlineMs: 60_000,
+    },
+  });
+  assert.equal(visits <= 41, true, `expected a bounded visit count, got ${visits}`);
+  assert.equal(result.results[0]?.id, 'hydro');
+  assert.equal(result.evidence.fallback.reason, 'embedding_unavailable');
+  assert.equal(result.evidence.fallback.completeness, 'incomplete');
+  assert.equal(result.evidence.completeCoverage, false);
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.fallback.scan?.exhausted, true);
+});
+
+test('default search still walks the on-disk source after an embedding outage', async () => {
+  const dir = await createBrain({
+    nodes: [...fillerNodes(300), HYDRO_NODE],
+  });
+  const { result, visits } = await countedSourceSearch({
+    dir,
+    query: 'hydrologic cycle',
+    embedQuery: async () => { throw new Error('owned encoder refused'); },
+    loadAnn: async () => null,
+    request: {
+      contextOutageScanVisitBudget: 40,
+      contextOutageScanDeadlineMs: 0,
+    },
+  });
+  assert.equal(visits >= 301, true, `default search must not inherit the context budget, got ${visits}`);
+  assert.equal(result.results[0]?.id, 'hydro');
+  assert.equal(result.evidence.fallback.reason, 'embedding_unavailable');
+  assert.equal(result.evidence.fallback.completeness, 'complete');
+  assert.equal(result.evidence.completeCoverage, true);
+});
+
+test('context outage deadline budget exhausts without walking the on-disk source', async () => {
+  const dir = await createBrain({
+    nodes: [...fillerNodes(300), HYDRO_NODE],
+  });
+  const { result, visits } = await countedSourceSearch({
+    dir,
+    query: 'hydrologic cycle',
+    embedQuery: async () => { throw new Error('owned encoder refused'); },
+    loadAnn: async () => null,
+    request: {
+      mode: 'context',
+      contextOutageScanVisitBudget: 4000,
+      contextOutageScanDeadlineMs: 0,
+    },
+  });
+  assert.equal(visits <= 1, true, `deadline exhaustion must not scan the corpus, got ${visits}`);
+  assert.equal(result.results.some((row) => row.id === 'hydro'), false);
+  assert.equal(result.evidence.fallback.reason, 'embedding_unavailable');
+  assert.equal(result.evidence.fallback.completeness, 'incomplete');
+  assert.equal(result.evidence.completeCoverage, false);
+  assert.equal(result.evidence.fallback.scan?.exhaustedBy, 'deadline');
+});
+
+test('context outage cancellation still aborts a larger on-disk scan', async () => {
+  const dir = await createBrain({
+    nodes: [...fillerNodes(300), HYDRO_NODE],
+  });
+  const controller = new AbortController();
+  await assert.rejects(
+    () => countedSourceSearch({
+      dir,
+      query: 'hydrologic cycle',
+      embedQuery: async () => { throw new Error('owned encoder refused'); },
+      loadAnn: async () => null,
+      request: {
+        mode: 'context',
+        signal: controller.signal,
+        contextOutageScanVisitBudget: 4000,
+        contextOutageScanDeadlineMs: 60_000,
+      },
+      onVisit({ visits }) {
+        if (visits === 12) {
+          controller.abort(Object.assign(new Error('stop'), { name: 'AbortError', code: 'cancelled' }));
+        }
+      },
+    }),
+    (error) => error.name === 'AbortError' || error.code === 'cancelled',
+  );
 });
 
 test('semantic vectors and final merged response are byte bounded', async () => {

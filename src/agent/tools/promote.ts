@@ -11,6 +11,7 @@ import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { embedTextSync } from '../../substrate/embed-at-contact.js';
+import { buildWriterSemanticStamp } from '../../substrate/semantic-writer-stamp.js';
 
 export const promoteToMemoryTool: ToolDefinition = {
   name: 'promote_to_memory',
@@ -197,7 +198,7 @@ Each promotion must include: what changed (before/after/why), when it should res
             actor: 'agent',
             head: semanticText.trim().slice(0, 160),
           },
-          ...(() => { const v = embedTextSync(semanticText); return v !== null ? { semantic_vector: v } : {}; })(),
+          ...buildWriterSemanticStamp({ vector: embedTextSync(semanticText), text: semanticText }),
         }) + '\n';
         appendFileSync(join(brainDir, 'memory-objects.events.jsonl'), line);
       } catch { /* the store write above is the contract; the teaching is best-effort */ }

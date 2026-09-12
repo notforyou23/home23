@@ -33,6 +33,19 @@ const EMBED_ENDPOINT = process.env['SEED_EMBED_ENDPOINT'] ?? 'http://127.0.0.1:1
 const EMBED_MODEL = process.env['SEED_EMBED_MODEL'] ?? 'nomic-embed-text';
 const MIN_TEXT_LENGTH = 8;
 const EMBED_TIMEOUT_MS = 1500;
+const KNOWN_SEED_EMBED_MODELS = new Set([
+  'nomic-embed-text',
+  'nomic-embed-text:latest',
+  'legacy-ollama-nomic-unprefixed',
+  'owned-nomic-v1.5-onnx-fp32-mean-noprefix',
+  '5128b29c886857aeb89b148d2d9f2edf2c20f63de15a764342c2a18da640f71a',
+  '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9',
+]);
+
+function seedEmbedModelAllowed(model: string): boolean {
+  if (!/^(nomic-embed|legacy-ollama|owned-nomic)/.test(model) && !/^[0-9a-f]{64}$/.test(model)) return true;
+  return KNOWN_SEED_EMBED_MODELS.has(model);
+}
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -84,6 +97,7 @@ export function projectEmbedding(embedding: readonly number[]): number[] {
 function fetchEmbedding(text: string): number[] | null {
   const trimmed = text.trim();
   if (trimmed.length < MIN_TEXT_LENGTH) return null;
+  if (!seedEmbedModelAllowed(EMBED_MODEL)) return null;
   try {
     const body = JSON.stringify({ model: EMBED_MODEL, prompt: trimmed.slice(0, 1000) });
     const raw = execFileSync('curl', ['-s', '-m', String(EMBED_TIMEOUT_MS / 1000), EMBED_ENDPOINT, '-d', body], {

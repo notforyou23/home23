@@ -1,0 +1,16 @@
+{
+  "name": "home23-embedder-experiment",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "description": "Stage 1 experiment plus Stage 2 contract-test seams. Not the owned inference service.",
+  "scripts": {
+    "experiment": "node run.mjs",
+    "test:seams": "node --test seams.test.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.7.6"
+  }
+}

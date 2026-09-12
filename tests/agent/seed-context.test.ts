@@ -171,6 +171,17 @@ test('tolerates a torn ledger tail (live mirror) and honors the legacy numeric-b
   assert.equal(block, composeSeedSituation(dir), 'legacy target must not remove selected memories');
 });
 
+test('owned null-cal recipe does not semantic-gate a matchable turn', (t) => {
+  const dir = makeSeedDir(t);
+  writeFixture(dir, { fresh: false });
+  const block = composeSeedSituation(dir, {
+    turnText: 'how are the workers doing?',
+    embed: fakeEmbed,
+    recipeId: 'owned-nomic-v1.5-onnx-fp32-mean-noprefix',
+  });
+  assert.equal(block, null, 'uncalibrated owned recipe must stay silent, not borrow 0.60');
+});
+
 test('ledger tail retains a complete oversized Unicode record and skips a torn final write', async (t) => {
   const dir = makeSeedDir(t);
   const { readSeedLedgerTail } = await import('../../src/substrate/seed-context.js');

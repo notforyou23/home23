@@ -363,6 +363,12 @@ export interface SourceEvent {
    * record forever. Replay never re-perceives — the record is what was seen.
    * Absent → the event encodes by identity hash exactly as before. */
   semanticVector?: number[];
+  /** Encoder recipe fingerprint. Absence is unknown — never auto-labeled. */
+  semanticRecipeId?: string;
+  /** Human profile id (legacy-… / owned-…). Not authority by itself. */
+  semanticEncoder?: string;
+  /** Typed absence on new lines only; never a fabricated vector. */
+  semanticAbsence?: string;
 }
 
 export interface TransitionResult {

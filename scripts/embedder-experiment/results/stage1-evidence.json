@@ -1,0 +1,5736 @@
+{
+  "generatedAt": "2026-09-10T21:54:17.624Z",
+  "hardware": {
+    "node": "v22.19.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "rssMbStart": 39.2
+  },
+  "baselineModel": {
+    "name": "nomic-embed-text:latest",
+    "digest": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f",
+    "size": 274302450,
+    "details": {
+      "parent_model": "",
+      "format": "gguf",
+      "family": "nomic-bert",
+      "families": [
+        "nomic-bert"
+      ],
+      "parameter_size": "137M",
+      "quantization_level": "F16"
+    },
+    "warmupOk": true,
+    "warmupMs": 352.52279099999987,
+    "warmupDim": 768,
+    "warmupL2": 21.810045425491282
+  },
+  "onnx": {
+    "model": "nomic-ai/nomic-embed-text-v1.5",
+    "dtype": "fp32",
+    "coldLoadMs": 1134.4958749999996,
+    "rssBeforeMb": 94,
+    "rssAfterLoadMb": 877.5,
+    "attempts": []
+  },
+  "modelCache": {
+    "dir": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-encoder-stage1/scripts/embedder-experiment/.cache",
+    "fileCount": 4,
+    "bytes": 548025400,
+    "topFiles": [
+      {
+        "rel": "nomic-ai/nomic-embed-text-v1.5/onnx/model.onnx",
+        "bytes": 547310275,
+        "sha256": "skipped-large"
+      },
+      {
+        "rel": "nomic-ai/nomic-embed-text-v1.5/tokenizer.json",
+        "bytes": 711396,
+        "sha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"
+      },
+      {
+        "rel": "nomic-ai/nomic-embed-text-v1.5/config.json",
+        "bytes": 2538,
+        "sha256": "9ab00bd92cee80a569f708140b7b6c1661a65891ff3765b1519e181ba2f2c92b"
+      },
+      {
+        "rel": "nomic-ai/nomic-embed-text-v1.5/tokenizer_config.json",
+        "bytes": 1191,
+        "sha256": "d7e0000bcc80134debd2222220427e6bf5fa20a669f40a0d0d1409cc18e0a9bc"
+      }
+    ]
+  },
+  "deadline1500ms": {
+    "trials": [
+      {
+        "ok": true,
+        "ms": 41.493499999999585,
+        "reason": null
+      },
+      {
+        "ok": true,
+        "ms": 25.45445800000016,
+        "reason": null
+      },
+      {
+        "ok": true,
+        "ms": 28.538082999999915,
+        "reason": null
+      },
+      {
+        "ok": true,
+        "ms": 25.97591700000021,
+        "reason": null
+      },
+      {
+        "ok": true,
+        "ms": 24.93154199999981,
+        "reason": null
+      },
+      {
+        "ok": true,
+        "ms": 17.985208000000057,
+        "reason": null
+      },
+      {
+        "ok": true,
+        "ms": 25.943166999999903,
+        "reason": null
+      },
+      {
+        "ok": true,
+        "ms": 30.43154199999981,
+        "reason": null
+      }
+    ],
+    "pass": 8,
+    "fail": 0
+  },
+  "timings": {
+    "ollama-seed": {
+      "n": 25,
+      "min": 10.446208000000297,
+      "p50": 26.116291999999703,
+      "p85": 40.681916999999885,
+      "p95": 47.73283300000003,
+      "max": 51.21600000000035,
+      "mean": 28.473725,
+      "failures": [
+        {
+          "id": "short_thanks",
+          "reason": "too-short",
+          "ms": null
+        },
+        {
+          "id": "short_gotit",
+          "reason": "too-short",
+          "ms": null
+        }
+      ]
+    },
+    "ollama-memory": {
+      "n": 27,
+      "min": 14.3446670000003,
+      "p50": 18.619916000000558,
+      "p85": 26.49133299999994,
+      "p95": 31.586209000000053,
+      "max": 49.145958000000064,
+      "mean": 20.970576,
+      "failures": []
+    },
+    "ollama-seed-search_document": {
+      "n": 25,
+      "min": 12.515916999999718,
+      "p50": 15.566749999999956,
+      "p85": 20.339625000000524,
+      "p95": 21.25995800000055,
+      "max": 25.257332999999562,
+      "mean": 16.628633,
+      "failures": [
+        {
+          "id": "short_thanks",
+          "reason": "too-short",
+          "ms": null
+        },
+        {
+          "id": "short_gotit",
+          "reason": "too-short",
+          "ms": null
+        }
+      ]
+    },
+    "onnx-fp32-noprefix": {
+      "n": 25,
+      "min": 10.114583000000493,
+      "p50": 25.725791999999274,
+      "p85": 44.85125000000153,
+      "p95": 103.5552090000001,
+      "max": 111.6416250000002,
+      "mean": 33.285418,
+      "failures": [
+        {
+          "id": "short_thanks",
+          "reason": "too-short",
+          "ms": null
+        },
+        {
+          "id": "short_gotit",
+          "reason": "too-short",
+          "ms": null
+        }
+      ]
+    },
+    "onnx-fp32-noprefix-l2": {
+      "n": 25,
+      "min": 9.90112500000032,
+      "p50": 25.366374999999607,
+      "p85": 43.77299999999923,
+      "p95": 47.325417000000016,
+      "max": 110.74912500000028,
+      "mean": 29.907688,
+      "failures": [
+        {
+          "id": "short_thanks",
+          "reason": "too-short",
+          "ms": null
+        },
+        {
+          "id": "short_gotit",
+          "reason": "too-short",
+          "ms": null
+        }
+      ]
+    },
+    "onnx-fp32-search_document": {
+      "n": 25,
+      "min": 18.93670799999927,
+      "p50": 36.38720900000044,
+      "p85": 56.29729200000111,
+      "p95": 62.55199999999968,
+      "max": 139.0849589999998,
+      "mean": 41.75895,
+      "failures": [
+        {
+          "id": "short_thanks",
+          "reason": "too-short",
+          "ms": null
+        },
+        {
+          "id": "short_gotit",
+          "reason": "too-short",
+          "ms": null
+        }
+      ]
+    },
+    "onnx-fp32-search_query": {
+      "n": 25,
+      "min": 21.78033300000061,
+      "p50": 43.95604099999946,
+      "p85": 82.23187499999949,
+      "p95": 104.5324580000015,
+      "max": 143.54674999999952,
+      "mean": 52.121755,
+      "failures": [
+        {
+          "id": "short_thanks",
+          "reason": "too-short",
+          "ms": null
+        },
+        {
+          "id": "short_gotit",
+          "reason": "too-short",
+          "ms": null
+        }
+      ]
+    },
+    "onnx-fp32-cls-noprefix": {
+      "n": 25,
+      "min": 13.330041999999594,
+      "p50": 38.678499999999985,
+      "p85": 97.78141700000015,
+      "p95": 138.63766700000087,
+      "max": 141.87754200000018,
+      "mean": 55.996227,
+      "failures": [
+        {
+          "id": "short_thanks",
+          "reason": "too-short",
+          "ms": null
+        },
+        {
+          "id": "short_gotit",
+          "reason": "too-short",
+          "ms": null
+        }
+      ]
+    }
+  },
+  "comparisons": {
+    "ollama-memory": {
+      "perVectorCosine": {
+        "n": 25,
+        "min": 0.9999999999999981,
+        "p50": 0.9999999999999999,
+        "p85": 1.0000000000000009,
+        "p95": 1.000000000000002,
+        "max": 1.0000000000000033,
+        "mean": 1
+      },
+      "below099": 0,
+      "below095": 0,
+      "projectionEqual4dp": 25,
+      "projectionTotal": 25,
+      "projectionMaxAbs": 0,
+      "projectionCosine": {
+        "n": 25,
+        "min": 0.9999999999999998,
+        "p50": 1,
+        "p85": 1.0000000000000002,
+        "p95": 1.0000000000000002,
+        "max": 1.0000000000000002,
+        "mean": 1
+      },
+      "pairGates": {
+        "agree": 18,
+        "disagree": 0,
+        "disagreements": []
+      },
+      "seedContextPools": [
+        {
+          "id": "sc-library",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.480454126976379
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.48045412588395703
+          },
+          "baselineTarget": 0.8994028669594516,
+          "candidateTarget": 0.8994028658670438
+        },
+        {
+          "id": "sc-recycle",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.43054022295554134
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.430540221501603
+          },
+          "baselineTarget": 0.7538009687559021,
+          "candidateTarget": 0.7538009690789546
+        },
+        {
+          "id": "sc-short",
+          "baseline": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "candidate": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "baselineTarget": 0.42327729213171744,
+          "candidateTarget": 0.4232772903656333
+        }
+      ],
+      "retrievalBaseline": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.753801
+            },
+            {
+              "id": "library_hours",
+              "score": 0.435668
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.43054
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.404433
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.386438
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.595905
+            },
+            {
+              "id": "node_install",
+              "score": 0.460429
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.396032
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.377329
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.334248
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.648451
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.489587
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.476024
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.447184
+            },
+            {
+              "id": "library_hours",
+              "score": 0.441491
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.899403
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.846679
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.537666
+            },
+            {
+              "id": "train_times",
+              "score": 0.536643
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.452185
+            }
+          ]
+        }
+      ],
+      "retrievalCandidate": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.753801
+            },
+            {
+              "id": "library_hours",
+              "score": 0.435668
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.43054
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.404433
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.386438
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.595905
+            },
+            {
+              "id": "node_install",
+              "score": 0.460429
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.396032
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.377329
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.334248
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.648451
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.489587
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.476024
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.447184
+            },
+            {
+              "id": "library_hours",
+              "score": 0.441491
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.899403
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.846679
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.537666
+            },
+            {
+              "id": "train_times",
+              "score": 0.536643
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.452185
+            }
+          ]
+        }
+      ],
+      "pairScoresBaseline": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.899403,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.674191,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.774751,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.859721,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.869003,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.811327,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.724067,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.528701,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.438847,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.572869,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.447108,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.455234,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.753801,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.595905,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.648451,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.404433,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.423277,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.565078,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "pairScoresCandidate": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.899403,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.674191,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.774751,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.859721,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.869003,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.811327,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.724067,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.528701,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.438847,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.572869,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.447108,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.455234,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.753801,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.595905,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.648451,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.404433,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.423277,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.541687,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.462676,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.565078,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "norms": {
+        "baseline": {
+          "n": 25,
+          "min": 16.762868908409345,
+          "p50": 20.368445201187306,
+          "p85": 21.689532024450134,
+          "p95": 22.932176318145675,
+          "max": 23.541110446572443,
+          "mean": 20.424549
+        },
+        "candidate": {
+          "n": 25,
+          "min": 0.9999995884977216,
+          "p50": 0.9999999566032829,
+          "p85": 1.000000135086858,
+          "p95": 1.0000004467130001,
+          "max": 1.000000507214298,
+          "mean": 1
+        }
+      }
+    },
+    "ollama-seed-search_document": {
+      "perVectorCosine": {
+        "n": 25,
+        "min": 0.7171735062809435,
+        "p50": 0.9187635006463266,
+        "p85": 0.9396658777675392,
+        "p95": 0.9445149091074249,
+        "max": 0.9478438486274174,
+        "mean": 0.90039
+      },
+      "below099": 25,
+      "below095": 25,
+      "projectionEqual4dp": 0,
+      "projectionTotal": 25,
+      "projectionMaxAbs": 0.0596,
+      "projectionCosine": {
+        "n": 25,
+        "min": 0.8261390324094708,
+        "p50": 0.915863784025983,
+        "p85": 0.9531640219143157,
+        "p95": 0.9563158938374776,
+        "max": 0.9582568755214425,
+        "mean": 0.911937
+      },
+      "pairGates": {
+        "agree": 16,
+        "disagree": 2,
+        "disagreements": [
+          {
+            "id": "p-train-airport",
+            "kind": "related",
+            "baselineScore": 0.572869,
+            "candidateScore": 0.617569,
+            "baselineAdmit": false,
+            "candidateAdmit": true
+          },
+          {
+            "id": "p-embed-retr",
+            "kind": "retrieval",
+            "baselineScore": 0.595905,
+            "candidateScore": 0.706498,
+            "baselineAdmit": false,
+            "candidateAdmit": true
+          }
+        ]
+      },
+      "seedContextPools": [
+        {
+          "id": "sc-library",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.480454126976379
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.5531291859550496
+          },
+          "baselineTarget": 0.8994028669594516,
+          "candidateTarget": 0.9160538781528824
+        },
+        {
+          "id": "sc-recycle",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.43054022295554134
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.5547185614009412
+          },
+          "baselineTarget": 0.7538009687559021,
+          "candidateTarget": 0.7893188906185157
+        },
+        {
+          "id": "sc-short",
+          "baseline": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "candidate": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "baselineTarget": 0.42327729213171744,
+          "candidateTarget": 0.5616357496280465
+        }
+      ],
+      "retrievalBaseline": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.753801
+            },
+            {
+              "id": "library_hours",
+              "score": 0.435668
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.43054
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.404433
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.386438
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.595905
+            },
+            {
+              "id": "node_install",
+              "score": 0.460429
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.396032
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.377329
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.334248
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.648451
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.489587
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.476024
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.447184
+            },
+            {
+              "id": "library_hours",
+              "score": 0.441491
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.899403
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.846679
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.537666
+            },
+            {
+              "id": "train_times",
+              "score": 0.536643
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.452185
+            }
+          ]
+        }
+      ],
+      "retrievalCandidate": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.789319
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.554719
+            },
+            {
+              "id": "library_hours",
+              "score": 0.518073
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.500373
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.470084
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.706498
+            },
+            {
+              "id": "node_install",
+              "score": 0.634676
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.568835
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.548468
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.491149
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.662055
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.593315
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.576067
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.575306
+            },
+            {
+              "id": "library_hours",
+              "score": 0.539302
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.916054
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.850844
+            },
+            {
+              "id": "train_times",
+              "score": 0.585833
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.563788
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.553129
+            }
+          ]
+        }
+      ],
+      "pairScoresBaseline": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.899403,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.674191,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.774751,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.859721,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.869003,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.811327,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.724067,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.528701,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.438847,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.572869,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.447108,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.455234,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.753801,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.595905,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.648451,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.404433,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.423277,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.565078,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "pairScoresCandidate": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.916054,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.719638,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.818095,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.854073,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.872676,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.822459,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.727216,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.576681,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.553943,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.617569,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.549104,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.529823,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.789319,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.706498,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.662055,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.554719,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.561636,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.518051,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "norms": {
+        "baseline": {
+          "n": 25,
+          "min": 16.762868908409345,
+          "p50": 20.368445201187306,
+          "p85": 21.689532024450134,
+          "p95": 22.932176318145675,
+          "max": 23.541110446572443,
+          "mean": 20.424549
+        },
+        "candidate": {
+          "n": 25,
+          "min": 18.31433627482144,
+          "p50": 20.93789787593679,
+          "p85": 21.75845561375117,
+          "p95": 22.2863809674844,
+          "max": 22.782122235051254,
+          "mean": 20.964609
+        }
+      }
+    },
+    "onnx-fp32-noprefix": {
+      "perVectorCosine": {
+        "n": 25,
+        "min": 0.5173577725113675,
+        "p50": 0.9235633343621424,
+        "p85": 0.9641055684179288,
+        "p95": 0.973000315500967,
+        "max": 0.9751949742753486,
+        "mean": 0.900851
+      },
+      "below099": 25,
+      "below095": 15,
+      "projectionEqual4dp": 0,
+      "projectionTotal": 25,
+      "projectionMaxAbs": 0.0774,
+      "projectionCosine": {
+        "n": 25,
+        "min": 0.6281230073590067,
+        "p50": 0.946470810391052,
+        "p85": 0.9730514376155963,
+        "p95": 0.9811575206871849,
+        "max": 0.9823448721784258,
+        "mean": 0.914152
+      },
+      "pairGates": {
+        "agree": 17,
+        "disagree": 1,
+        "disagreements": [
+          {
+            "id": "p-embed-retr",
+            "kind": "retrieval",
+            "baselineScore": 0.595905,
+            "candidateScore": 0.637494,
+            "baselineAdmit": false,
+            "candidateAdmit": true
+          }
+        ]
+      },
+      "seedContextPools": [
+        {
+          "id": "sc-library",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.480454126976379
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.3707443739593879
+          },
+          "baselineTarget": 0.8994028669594516,
+          "candidateTarget": 0.9012824730393352
+        },
+        {
+          "id": "sc-recycle",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.43054022295554134
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.3982393497355669
+          },
+          "baselineTarget": 0.7538009687559021,
+          "candidateTarget": 0.7833939563764656
+        },
+        {
+          "id": "sc-short",
+          "baseline": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "candidate": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "baselineTarget": 0.42327729213171744,
+          "candidateTarget": 0.31888689045498636
+        }
+      ],
+      "retrievalBaseline": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.753801
+            },
+            {
+              "id": "library_hours",
+              "score": 0.435668
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.43054
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.404433
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.386438
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.595905
+            },
+            {
+              "id": "node_install",
+              "score": 0.460429
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.396032
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.377329
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.334248
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.648451
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.489587
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.476024
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.447184
+            },
+            {
+              "id": "library_hours",
+              "score": 0.441491
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.899403
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.846679
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.537666
+            },
+            {
+              "id": "train_times",
+              "score": 0.536643
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.452185
+            }
+          ]
+        }
+      ],
+      "retrievalCandidate": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.783394
+            },
+            {
+              "id": "library_hours",
+              "score": 0.445249
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.410391
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.384852
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.34706
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.637494
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.393904
+            },
+            {
+              "id": "node_install",
+              "score": 0.378707
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.328894
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.30532
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.637365
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.463944
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.440303
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.425907
+            },
+            {
+              "id": "library_hours",
+              "score": 0.413126
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.901282
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.837417
+            },
+            {
+              "id": "train_times",
+              "score": 0.455864
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.447063
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.321361
+            }
+          ]
+        }
+      ],
+      "pairScoresBaseline": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.899403,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.674191,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.774751,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.859721,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.869003,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.811327,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.724067,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.528701,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.438847,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.572869,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.447108,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.455234,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.753801,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.595905,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.648451,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.404433,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.423277,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.565078,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "pairScoresCandidate": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.901282,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.686482,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.838813,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.861942,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.861553,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.812492,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.691909,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.494139,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.372814,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.512115,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.376221,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.421602,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.783394,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.637494,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.637365,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.384852,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.318887,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.538927,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "norms": {
+        "baseline": {
+          "n": 25,
+          "min": 16.762868908409345,
+          "p50": 20.368445201187306,
+          "p85": 21.689532024450134,
+          "p95": 22.932176318145675,
+          "max": 23.541110446572443,
+          "mean": 20.424549
+        },
+        "candidate": {
+          "n": 25,
+          "min": 17.00445516052136,
+          "p50": 20.44930280759967,
+          "p85": 21.46188165223441,
+          "p95": 22.709959748851112,
+          "max": 22.855867734582137,
+          "mean": 20.383187
+        }
+      }
+    },
+    "onnx-fp32-noprefix-l2": {
+      "perVectorCosine": {
+        "n": 25,
+        "min": 0.517357771630258,
+        "p50": 0.9235633342273712,
+        "p85": 0.9641055686284212,
+        "p95": 0.9730003152715145,
+        "max": 0.9751949746805413,
+        "mean": 0.900851
+      },
+      "below099": 25,
+      "below095": 15,
+      "projectionEqual4dp": 0,
+      "projectionTotal": 25,
+      "projectionMaxAbs": 0.0774,
+      "projectionCosine": {
+        "n": 25,
+        "min": 0.6281230073590067,
+        "p50": 0.946470810391052,
+        "p85": 0.9730514376155963,
+        "p95": 0.9811575206871849,
+        "max": 0.9823448721784258,
+        "mean": 0.914152
+      },
+      "pairGates": {
+        "agree": 17,
+        "disagree": 1,
+        "disagreements": [
+          {
+            "id": "p-embed-retr",
+            "kind": "retrieval",
+            "baselineScore": 0.595905,
+            "candidateScore": 0.637494,
+            "baselineAdmit": false,
+            "candidateAdmit": true
+          }
+        ]
+      },
+      "seedContextPools": [
+        {
+          "id": "sc-library",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.480454126976379
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.37074437305219043
+          },
+          "baselineTarget": 0.8994028669594516,
+          "candidateTarget": 0.901282473927104
+        },
+        {
+          "id": "sc-recycle",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.43054022295554134
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.39823934917285436
+          },
+          "baselineTarget": 0.7538009687559021,
+          "candidateTarget": 0.7833939565369661
+        },
+        {
+          "id": "sc-short",
+          "baseline": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "candidate": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "baselineTarget": 0.42327729213171744,
+          "candidateTarget": 0.31888689024335093
+        }
+      ],
+      "retrievalBaseline": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.753801
+            },
+            {
+              "id": "library_hours",
+              "score": 0.435668
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.43054
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.404433
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.386438
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.595905
+            },
+            {
+              "id": "node_install",
+              "score": 0.460429
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.396032
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.377329
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.334248
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.648451
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.489587
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.476024
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.447184
+            },
+            {
+              "id": "library_hours",
+              "score": 0.441491
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.899403
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.846679
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.537666
+            },
+            {
+              "id": "train_times",
+              "score": 0.536643
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.452185
+            }
+          ]
+        }
+      ],
+      "retrievalCandidate": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.783394
+            },
+            {
+              "id": "library_hours",
+              "score": 0.445249
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.410391
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.384852
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.34706
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.637494
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.393904
+            },
+            {
+              "id": "node_install",
+              "score": 0.378707
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.328894
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.30532
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.637365
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.463944
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.440303
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.425907
+            },
+            {
+              "id": "library_hours",
+              "score": 0.413126
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.901282
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.837417
+            },
+            {
+              "id": "train_times",
+              "score": 0.455864
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.447063
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.321361
+            }
+          ]
+        }
+      ],
+      "pairScoresBaseline": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.899403,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.674191,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.774751,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.859721,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.869003,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.811327,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.724067,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.528701,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.438847,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.572869,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.447108,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.455234,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.753801,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.595905,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.648451,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.404433,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.423277,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.565078,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "pairScoresCandidate": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.901282,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.686482,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.838813,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.861942,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.861553,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.812492,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.691909,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.494139,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.372814,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.512115,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.376221,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.421602,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.783394,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.637494,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.637365,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.384852,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.318887,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.538927,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "norms": {
+        "baseline": {
+          "n": 25,
+          "min": 16.762868908409345,
+          "p50": 20.368445201187306,
+          "p85": 21.689532024450134,
+          "p95": 22.932176318145675,
+          "max": 23.541110446572443,
+          "mean": 20.424549
+        },
+        "candidate": {
+          "n": 25,
+          "min": 0.9999996110675718,
+          "p50": 0.9999999597053273,
+          "p85": 1.0000004244590401,
+          "p95": 1.000000450769028,
+          "max": 1.0000006420324623,
+          "mean": 1
+        }
+      }
+    },
+    "onnx-fp32-search_document": {
+      "perVectorCosine": {
+        "n": 25,
+        "min": 0.5305050277533275,
+        "p50": 0.8883646293157186,
+        "p85": 0.911689837687574,
+        "p95": 0.9197383049541168,
+        "max": 0.9246012815218562,
+        "mean": 0.848147
+      },
+      "below099": 25,
+      "below095": 25,
+      "projectionEqual4dp": 0,
+      "projectionTotal": 25,
+      "projectionMaxAbs": 0.08489999999999999,
+      "projectionCosine": {
+        "n": 25,
+        "min": 0.581783910880472,
+        "p50": 0.8516303239939413,
+        "p85": 0.9422920563320025,
+        "p95": 0.9499393778881652,
+        "max": 0.9671678306097639,
+        "mean": 0.846
+      },
+      "pairGates": {
+        "agree": 17,
+        "disagree": 1,
+        "disagreements": [
+          {
+            "id": "p-embed-retr",
+            "kind": "retrieval",
+            "baselineScore": 0.595905,
+            "candidateScore": 0.721884,
+            "baselineAdmit": false,
+            "candidateAdmit": true
+          }
+        ]
+      },
+      "seedContextPools": [
+        {
+          "id": "sc-library",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.480454126976379
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.45279539701804944
+          },
+          "baselineTarget": 0.8994028669594516,
+          "candidateTarget": 0.9397948174897559
+        },
+        {
+          "id": "sc-recycle",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.43054022295554134
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.544770033508845
+          },
+          "baselineTarget": 0.7538009687559021,
+          "candidateTarget": 0.819240448370722
+        },
+        {
+          "id": "sc-short",
+          "baseline": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "candidate": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "baselineTarget": 0.42327729213171744,
+          "candidateTarget": 0.4755619360800953
+        }
+      ],
+      "retrievalBaseline": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.753801
+            },
+            {
+              "id": "library_hours",
+              "score": 0.435668
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.43054
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.404433
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.386438
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.595905
+            },
+            {
+              "id": "node_install",
+              "score": 0.460429
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.396032
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.377329
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.334248
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.648451
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.489587
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.476024
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.447184
+            },
+            {
+              "id": "library_hours",
+              "score": 0.441491
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.899403
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.846679
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.537666
+            },
+            {
+              "id": "train_times",
+              "score": 0.536643
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.452185
+            }
+          ]
+        }
+      ],
+      "retrievalCandidate": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.81924
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.555787
+            },
+            {
+              "id": "library_hours",
+              "score": 0.528373
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.498941
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.460605
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.721884
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.56826
+            },
+            {
+              "id": "node_install",
+              "score": 0.539688
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.504135
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.459132
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.646391
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.564889
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.534828
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.520434
+            },
+            {
+              "id": "library_hours",
+              "score": 0.482457
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.939795
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.900026
+            },
+            {
+              "id": "train_times",
+              "score": 0.543537
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.534723
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.380648
+            }
+          ]
+        }
+      ],
+      "pairScoresBaseline": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.899403,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.674191,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.774751,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.859721,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.869003,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.811327,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.724067,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.528701,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.438847,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.572869,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.447108,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.455234,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.753801,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.595905,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.648451,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.404433,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.423277,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.565078,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "pairScoresCandidate": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.939795,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.749129,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.871672,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.868597,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.871961,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.88228,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.746386,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.572523,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.51435,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.577826,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.441222,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.534633,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.81924,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.721884,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.646391,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.555787,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.475562,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.544056,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "norms": {
+        "baseline": {
+          "n": 25,
+          "min": 16.762868908409345,
+          "p50": 20.368445201187306,
+          "p85": 21.689532024450134,
+          "p95": 22.932176318145675,
+          "max": 23.541110446572443,
+          "mean": 20.424549
+        },
+        "candidate": {
+          "n": 25,
+          "min": 0.9999995556538201,
+          "p50": 1.000000030019976,
+          "p85": 1.0000001780223629,
+          "p95": 1.0000002798580079,
+          "max": 1.0000004061934027,
+          "mean": 1
+        }
+      }
+    },
+    "onnx-fp32-search_query": {
+      "perVectorCosine": {
+        "n": 25,
+        "min": 0.5752040950649939,
+        "p50": 0.9029609043945411,
+        "p85": 0.9459668148785214,
+        "p95": 0.9484899361097251,
+        "max": 0.9622587299503343,
+        "mean": 0.872997
+      },
+      "below099": 25,
+      "below095": 24,
+      "projectionEqual4dp": 0,
+      "projectionTotal": 25,
+      "projectionMaxAbs": 0.07100000000000001,
+      "projectionCosine": {
+        "n": 25,
+        "min": 0.6418490914042808,
+        "p50": 0.920050432856759,
+        "p85": 0.9639764082191888,
+        "p95": 0.9815691263551306,
+        "max": 0.9858148498446614,
+        "mean": 0.896184
+      },
+      "pairGates": {
+        "agree": 16,
+        "disagree": 2,
+        "disagreements": [
+          {
+            "id": "p-library-rain",
+            "kind": "unrelated",
+            "baselineScore": 0.528701,
+            "candidateScore": 0.622244,
+            "baselineAdmit": false,
+            "candidateAdmit": true
+          },
+          {
+            "id": "p-embed-retr",
+            "kind": "retrieval",
+            "baselineScore": 0.595905,
+            "candidateScore": 0.695179,
+            "baselineAdmit": false,
+            "candidateAdmit": true
+          }
+        ]
+      },
+      "seedContextPools": [
+        {
+          "id": "sc-library",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.480454126976379
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.4756222085256508
+          },
+          "baselineTarget": 0.8994028669594516,
+          "candidateTarget": 0.9234363391371475
+        },
+        {
+          "id": "sc-recycle",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.43054022295554134
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.5140817067222611
+          },
+          "baselineTarget": 0.7538009687559021,
+          "candidateTarget": 0.800977829362508
+        },
+        {
+          "id": "sc-short",
+          "baseline": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "candidate": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "baselineTarget": 0.42327729213171744,
+          "candidateTarget": 0.5197485663431052
+        }
+      ],
+      "retrievalBaseline": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.753801
+            },
+            {
+              "id": "library_hours",
+              "score": 0.435668
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.43054
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.404433
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.386438
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.595905
+            },
+            {
+              "id": "node_install",
+              "score": 0.460429
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.396032
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.377329
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.334248
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.648451
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.489587
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.476024
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.447184
+            },
+            {
+              "id": "library_hours",
+              "score": 0.441491
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.899403
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.846679
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.537666
+            },
+            {
+              "id": "train_times",
+              "score": 0.536643
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.452185
+            }
+          ]
+        }
+      ],
+      "retrievalCandidate": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.800978
+            },
+            {
+              "id": "library_hours",
+              "score": 0.540395
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.514082
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.468461
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.451853
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.695179
+            },
+            {
+              "id": "node_install",
+              "score": 0.52613
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.507022
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.464321
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.425345
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.660145
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.539344
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.529579
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.526827
+            },
+            {
+              "id": "library_hours",
+              "score": 0.495824
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.923436
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.904223
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.560417
+            },
+            {
+              "id": "train_times",
+              "score": 0.541511
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.459148
+            }
+          ]
+        }
+      ],
+      "pairScoresBaseline": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.899403,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.674191,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.774751,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.859721,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.869003,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.811327,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.724067,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.528701,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.438847,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.572869,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.447108,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.455234,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.753801,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.595905,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.648451,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.404433,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.423277,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.565078,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "pairScoresCandidate": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.923436,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.743123,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.882792,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.889918,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.897259,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.912019,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.774851,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.622244,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.510334,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.56416,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.577582,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.563166,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.800978,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.695179,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.660145,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.468461,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.519749,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.576235,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "norms": {
+        "baseline": {
+          "n": 25,
+          "min": 16.762868908409345,
+          "p50": 20.368445201187306,
+          "p85": 21.689532024450134,
+          "p95": 22.932176318145675,
+          "max": 23.541110446572443,
+          "mean": 20.424549
+        },
+        "candidate": {
+          "n": 25,
+          "min": 0.9999996211517432,
+          "p50": 0.9999999732583965,
+          "p85": 1.0000001777404506,
+          "p95": 1.0000002818024014,
+          "max": 1.0000002830326336,
+          "mean": 1
+        }
+      }
+    },
+    "onnx-fp32-cls-noprefix": {
+      "perVectorCosine": {
+        "n": 25,
+        "min": 0.43182995843652877,
+        "p50": 0.8011618193060698,
+        "p85": 0.879042672907745,
+        "p95": 0.8805449040551883,
+        "max": 0.8894665471849166,
+        "mean": 0.773335
+      },
+      "below099": 25,
+      "below095": 25,
+      "projectionEqual4dp": 0,
+      "projectionTotal": 25,
+      "projectionMaxAbs": 0.1169,
+      "projectionCosine": {
+        "n": 25,
+        "min": 0.46618583293537924,
+        "p50": 0.8132190884590096,
+        "p85": 0.933151519239052,
+        "p95": 0.9429776025534903,
+        "max": 0.9508702383792361,
+        "mean": 0.786795
+      },
+      "pairGates": {
+        "agree": 17,
+        "disagree": 1,
+        "disagreements": [
+          {
+            "id": "p-embed-retr",
+            "kind": "retrieval",
+            "baselineScore": 0.595905,
+            "candidateScore": 0.650515,
+            "baselineAdmit": false,
+            "candidateAdmit": true
+          }
+        ]
+      },
+      "seedContextPools": [
+        {
+          "id": "sc-library",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.480454126976379
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.3254037614284033
+          },
+          "baselineTarget": 0.8994028669594516,
+          "candidateTarget": 0.7726457530379558
+        },
+        {
+          "id": "sc-recycle",
+          "baseline": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.43054022295554134
+          },
+          "candidate": {
+            "skipped": false,
+            "admit": true,
+            "median": 0.42406474219963136
+          },
+          "baselineTarget": 0.7538009687559021,
+          "candidateTarget": 0.7389751310254694
+        },
+        {
+          "id": "sc-short",
+          "baseline": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "candidate": {
+            "skipped": true,
+            "admit": false,
+            "median": null
+          },
+          "baselineTarget": 0.42327729213171744,
+          "candidateTarget": 0.32511558197654
+        }
+      ],
+      "retrievalBaseline": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.753801
+            },
+            {
+              "id": "library_hours",
+              "score": 0.435668
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.43054
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.404433
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.386438
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.595905
+            },
+            {
+              "id": "node_install",
+              "score": 0.460429
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.396032
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.377329
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.334248
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.648451
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.489587
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.476024
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.447184
+            },
+            {
+              "id": "library_hours",
+              "score": 0.441491
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_hours",
+          "relevantRanks": [
+            1,
+            2
+          ],
+          "scores": [
+            {
+              "id": "library_hours",
+              "score": 0.899403
+            },
+            {
+              "id": "library_closed_sundays",
+              "score": 0.846679
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.537666
+            },
+            {
+              "id": "train_times",
+              "score": 0.536643
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.452185
+            }
+          ]
+        }
+      ],
+      "retrievalCandidate": [
+        {
+          "id": "r-recycle",
+          "ok": true,
+          "top": "recycle_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "recycle_doc",
+              "score": 0.738975
+            },
+            {
+              "id": "library_hours",
+              "score": 0.548386
+            },
+            {
+              "id": "embed_doc",
+              "score": 0.457767
+            },
+            {
+              "id": "orange_doc",
+              "score": 0.424065
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.372555
+            }
+          ]
+        },
+        {
+          "id": "r-embed",
+          "ok": true,
+          "top": "embed_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "embed_doc",
+              "score": 0.650515
+            },
+            {
+              "id": "node_install",
+              "score": 0.437432
+            },
+            {
+              "id": "unrelated_music",
+              "score": 0.411555
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.387047
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.351116
+            }
+          ]
+        },
+        {
+          "id": "r-orange",
+          "ok": true,
+          "top": "orange_doc",
+          "relevantRanks": [
+            1
+          ],
+          "scores": [
+            {
+              "id": "orange_doc",
+              "score": 0.621869
+            },
+            {
+              "id": "recycle_doc",
+              "score": 0.518853
+            },
+            {
+              "id": "bread_recipe",
+              "score": 0.501422
+            },
+            {
+              "id": "clear_skies",
+              "score": 0.428688
+            },
+            {
+              "id": "library_hours",
+              "score": 0.428445
+            }
+          ]
+        },
+        {
+          "id": "r-library",
+          "ok": true,
+          "top": "library_closed_sundays",
+          "relevantRanks": [
+            2,
+            1
+          ],
+          "scores": [
+            {
+              "id": "library_closed_sundays",
+              "score": 0.82622
+            },
+            {
+              "id": "library_hours",
+              "score": 0.772646
+            },
+            {
+              "id": "train_times",
+              "score": 0.427655
+            },
+            {
+              "id": "rain_forecast",
+              "score": 0.3386
+            },
+            {
+              "id": "unrelated_geology",
+              "score": 0.293035
+            }
+          ]
+        }
+      ],
+      "pairScoresBaseline": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.899403,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.674191,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.774751,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.859721,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.869003,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.811327,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.724067,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.528701,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.438847,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.572869,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.447108,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.455234,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.753801,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.595905,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.648451,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.404433,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.423277,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.565078,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "pairScoresCandidate": [
+        {
+          "id": "p-library-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.772646,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.696339,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-node-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.797655,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-train-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.759364,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-setup-para",
+          "kind": "paraphrase",
+          "expect": "same-side-high",
+          "score": 0.816122,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-sunday",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.826471,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-rain-clear",
+          "kind": "related-contrast",
+          "expect": "related-or-mid",
+          "score": 0.651028,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-library-rain",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.466712,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-node-bread",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.397483,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-train-airport",
+          "kind": "related",
+          "expect": "related",
+          "score": 0.481124,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-library-geology",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.441329,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-rain-music",
+          "kind": "unrelated",
+          "expect": "below-floor",
+          "score": 0.419328,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-recycle-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.738975,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-embed-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.650515,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-orange-retr",
+          "kind": "retrieval",
+          "expect": "same-side-high",
+          "score": 0.621869,
+          "sharedGate": {
+            "skipped": false,
+            "admit": true
+          },
+          "aboveFloor": true
+        },
+        {
+          "id": "p-recycle-wrong",
+          "kind": "retrieval-negative",
+          "expect": "below-floor",
+          "score": 0.457767,
+          "sharedGate": {
+            "skipped": false,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-ok-library",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.325116,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        },
+        {
+          "id": "p-short-thanks-rain",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-gotit-node",
+          "kind": "short-turn",
+          "ok": false,
+          "reason": "missing-vector"
+        },
+        {
+          "id": "p-short-morning-train",
+          "kind": "short-turn",
+          "expect": "skip-semantic",
+          "score": 0.559329,
+          "sharedGate": {
+            "skipped": true,
+            "admit": false
+          },
+          "aboveFloor": false
+        }
+      ],
+      "norms": {
+        "baseline": {
+          "n": 25,
+          "min": 16.762868908409345,
+          "p50": 20.368445201187306,
+          "p85": 21.689532024450134,
+          "p95": 22.932176318145675,
+          "max": 23.541110446572443,
+          "mean": 20.424549
+        },
+        "candidate": {
+          "n": 25,
+          "min": 24.211183405928885,
+          "p50": 24.48351618420465,
+          "p85": 24.69421067280341,
+          "p95": 24.819424459277386,
+          "max": 24.964482784830484,
+          "mean": 24.508787
+        }
+      }
+    }
+  },
+  "truncation": {
+    "rawChars": 6448,
+    "seedChars": 1000,
+    "memoryChars": 2000,
+    "seedVsMemoryCosine": 0.9810682607970653
+  },
+  "privateCalibration": {
+    "ran": false,
+    "reason": "no-private-corpus"
+  },
+  "inventoryRef": "44288211b1d11512bca2d590fccd7eb77024e7a4",
+  "corpusId": "home23-owned-embedder-stage1-public-20260910",
+  "fixture": false,
+  "realInference": {
+    "ollama": true,
+    "onnx": true
+  }
+}

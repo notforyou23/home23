@@ -1,0 +1,33 @@
+{
+  "schema": "home23.embedder.process.v1",
+  "processNameDocumentedOnly": "home23-embedder",
+  "note": "Host admits home23-embedder only via home23.host.v2 + encoderRequired. Do not unversioned-expand ownedProcessNames() or PORT_KEYS from this file. Port key embedder is for that versioned plan.",
+  "argv": ["node", "scripts/embedder/serve.mjs"],
+  "optionalArgv": ["--port", "--bind", "--cache"],
+  "bind": "127.0.0.1",
+  "portKey": "embedder",
+  "forbiddenPorts": [11435],
+  "env": {
+    "HOME23_EMBEDDER_PORT": "listen port (20000-60999). Required unless --port.",
+    "HOME23_EMBEDDER_BIND": "defaults to 127.0.0.1",
+    "HOME23_EMBEDDER_CACHE": "Host-selected explicit cache directory. Required. Not ~/ and not the GUI home.",
+    "HOME23_EMBEDDER_QUEUE_MAX": "optional waiting-queue cap (default 32)"
+  },
+  "healthPath": "/ready",
+  "notReady": ["/api/tags"],
+  "protocols": {
+    "ollamaNative": "POST /api/embeddings",
+    "openaiCompatible": "POST /v1/embeddings"
+  },
+  "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+  "profileId": "owned-nomic-v1.5-onnx-fp32-mean-noprefix",
+  "errorEnum": [
+    "too_short",
+    "timeout",
+    "unavailable",
+    "dimension_mismatch",
+    "bad_artifact",
+    "cancelled",
+    "recipe_mismatch"
+  ]
+}

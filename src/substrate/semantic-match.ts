@@ -12,14 +12,19 @@
  * surfaces, and the trigger index all share it, so a turn's text embeds
  * once per process no matter how many gates consult it.
  *
- * Degraded-honest: embedder down or text too short → null, and callers
- * fall back to their file-era mechanism (substring match). The organ owns
- * the gate only while it is actually alive.
+ * Degraded-honest: embedder down, text too short, null-cal, or dimension
+ * mismatch → null, and callers fall back to their file-era mechanism
+ * (substring match). The organ owns the gate only while it is actually alive.
  */
 
 import { embedTextRawSync } from './embed-at-contact.js';
+import {
+  LEGACY_EMBEDDING_PROFILE,
+  resolveAttentionPolicy,
+  type AttentionPolicy,
+} from './encoder-attention-policy.js';
 
-/** Calibrated floor for turn↔anchor genuine pull (native space). */
+/** Calibrated floor for turn↔anchor genuine pull (native space). Lived legacy. */
 export const SEMANTIC_MATCH_FLOOR = 0.6;
 /** Turns with less topical content than this cannot be matched on meaning. */
 export const MIN_MATCHABLE_ALNUM = 20;
@@ -27,9 +32,31 @@ const CACHE_MAX = 800;
 
 const cache = new Map<string, number[]>();
 
-/** Embed with a process-wide cache; null is degraded-honest (never cached). */
-export function cachedEmbedRaw(text: string, embed: (t: string) => number[] | null = embedTextRawSync): number[] | null {
-  const hit = cache.get(text);
+export interface SemanticMatchOptions {
+  recipeId?: string | null;
+}
+
+function cacheKey(recipeId: string, text: string): string {
+  return `${recipeId}\0${text}`;
+}
+
+function activeRecipeId(recipeId?: string | null): string {
+  return recipeId || process.env['SEED_EMBED_RECIPE_ID'] || LEGACY_EMBEDDING_PROFILE;
+}
+
+export function resetSemanticMatchCache(): void {
+  cache.clear();
+}
+
+/** Embed with a recipe-keyed process cache; null is degraded-honest (never cached). */
+export function cachedEmbedRaw(
+  text: string,
+  embed: (t: string) => number[] | null = embedTextRawSync,
+  recipeId?: string | null,
+): number[] | null {
+  const recipe = activeRecipeId(recipeId);
+  const key = cacheKey(recipe, text);
+  const hit = cache.get(key);
   if (hit !== undefined) return hit;
   const vec = embed(text);
   if (vec !== null) {
@@ -37,15 +64,16 @@ export function cachedEmbedRaw(text: string, embed: (t: string) => number[] | nu
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) cache.delete(oldest);
     }
-    cache.set(text, vec);
+    cache.set(key, vec);
   }
   return vec;
 }
 
-export function cosine(a: readonly number[], b: readonly number[]): number {
+/** Cosine in one space. Unequal lengths are rejected, not truncated. */
+export function cosine(a: readonly number[], b: readonly number[]): number | null {
+  if (a.length !== b.length) return null;
   let dot = 0, na = 0, nb = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < a.length; i++) {
     const x = a[i] ?? 0, y = b[i] ?? 0;
     dot += x * y; na += x * x; nb += y * y;
   }
@@ -57,20 +85,28 @@ export function alnumLength(text: string): number {
   return text.toLowerCase().replace(/[^a-z0-9]/g, '').length;
 }
 
+export function resolveMatchPolicy(recipeId?: string | null): AttentionPolicy {
+  return resolveAttentionPolicy(recipeId ?? process.env['SEED_EMBED_RECIPE_ID']);
+}
+
 /**
  * Score a turn against an anchor's meaning, or null when meaning-matching
- * is unavailable (short turn, embedder down) — callers must treat null as
- * "use your fallback", never as "no match".
+ * is unavailable (short turn, embedder down, null-cal, dim mismatch) —
+ * callers must treat null as "use your fallback", never as "no match".
  */
 export function semanticMatchScore(
   turnText: string,
   anchorText: string,
   embed?: (t: string) => number[] | null,
+  options?: SemanticMatchOptions,
 ): number | null {
-  if (alnumLength(turnText) < MIN_MATCHABLE_ALNUM) return null;
-  const turnVec = cachedEmbedRaw(turnText, embed);
+  const recipeId = options?.recipeId;
+  const policy = resolveMatchPolicy(recipeId);
+  if (!policy.canSemanticGate) return null;
+  if (alnumLength(turnText) < policy.minMatchableAlnum) return null;
+  const turnVec = cachedEmbedRaw(turnText, embed, recipeId);
   if (turnVec === null) return null;
-  const anchorVec = cachedEmbedRaw(anchorText, embed);
+  const anchorVec = cachedEmbedRaw(anchorText, embed, recipeId);
   if (anchorVec === null) return null;
   return cosine(turnVec, anchorVec);
 }
