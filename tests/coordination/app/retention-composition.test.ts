@@ -20,6 +20,7 @@ function processConfig(root: string, retentionEnabled = false) {
     databasePath: join(runtime, "home23-coordination.sqlite3"),
     socketPath: join(runtime, "coord.sock"),
     capabilityToken: "r".repeat(64),
+    residents: {},
     flags: {
       ...disabledCoordinationFeatureFlags(),
       "coordination.process.enabled": true,
