@@ -12,6 +12,7 @@ const {
   readManifest,
   rewriteMemoryBase,
   withEphemeralMemorySource,
+  withMemorySourceLock,
 } = require('../../../shared/memory-source');
 const { build } = require('../../../engine/src/merge/build-ann-index');
 const { createDefaultLoadAnn } = require('../../../engine/src/dashboard/memory-search');
@@ -102,6 +103,38 @@ async function canonicalResolve(dir) {
     },
   };
 }
+
+test('background ANN build waits for a concurrent source admission and publishes without another save', async (t) => {
+  const dir = await createBrain();
+  const home23Root = await tempDir('home23-ann-builder-contended-home-');
+  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const admissionRoot = path.join(home23Root, 'runtime', 'brain-source-compatibility-admission-locks');
+  await fsp.mkdir(admissionRoot, { recursive: true });
+  let release;
+  let entered;
+  const admitted = new Promise(resolve => { entered = resolve; });
+  const held = withMemorySourceLock(dir, { lockRoot: admissionRoot }, async () => {
+    entered();
+    await new Promise(resolve => { release = resolve; });
+  });
+  await admitted;
+  const pending = build(dir, {
+    home23Root,
+    requesterAgent: 'jerry',
+    resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+  }).then(value => ({ value }), error => ({ error }));
+  // Hold actual admission through the builder's open attempt. Old behavior
+  // fails immediately and leaves the new home's index absent until another save.
+  await new Promise(resolve => setTimeout(resolve, 250));
+  release();
+  await held;
+  const { value, error } = await pending;
+  assert.ifError(error);
+  assert.equal(value.advanced.advanced, true);
+  assert.equal((await readManifest(dir)).ann.builtFromRevision, value.builtFromRevision);
+});
 
 test('builder streams one pinned logical source and advances ANN watermark', async () => {
   const dir = await createBrain();

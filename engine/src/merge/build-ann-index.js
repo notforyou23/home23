@@ -539,6 +539,9 @@ async function build(brainDir, deps = {}) {
     },
     signal: deps.signal,
     prefix: 'ann-build',
+    // A new home's first index must survive another reader opening the brain.
+    // This runs outside the turn path; use the existing cancellable lock wait.
+    admissionLockTimeoutMs: 30_000,
   }, async (source, context) => {
     throwIfAborted(deps.signal);
     assertNativeAnnSource(source);

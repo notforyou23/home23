@@ -51,6 +51,38 @@ async function writeLegacyBrain() {
   return brain;
 }
 
+test('background admission remains bounded and caller cancellation keeps its identity', async (t) => {
+  const home23Root = await tempDir('home23-memory-source-wait-home-');
+  const brainDir = await writeManifestBrain();
+  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
+  t.after(() => fsp.rm(brainDir, { recursive: true, force: true }));
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-compatibility-admission-locks');
+  await fsp.mkdir(lockRoot, { recursive: true });
+  const entered = deferred();
+  const release = deferred();
+  const held = withMemorySourceLock(brainDir, { lockRoot }, async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  await entered.promise;
+  try {
+    const options = { home23Root, brainDir, requesterAgent: 'jerry' };
+    const callback = () => assert.fail('contended operation must not be admitted');
+    await assert.rejects(withEphemeralMemorySource({ ...options, admissionLockTimeoutMs: 20 }, callback),
+      error => error.code === 'source_busy' && error.retryable === true);
+    const controller = new AbortController();
+    const reason = Object.assign(new Error('cancel background builder'), { code: 'cancelled' });
+    const pending = withEphemeralMemorySource({ ...options, admissionLockTimeoutMs: 30_000, signal: controller.signal }, callback);
+    const rejected = assert.rejects(pending, error => error === reason);
+    const timer = setTimeout(() => controller.abort(reason), 50);
+    try { await rejected; } finally { clearTimeout(timer); }
+    assert.deepEqual(await operationRoots(home23Root), []);
+  } finally {
+    release.resolve();
+    await held;
+  }
+});
+
 function deferred() {
   let resolve;
   const promise = new Promise((settle) => {

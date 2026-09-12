@@ -159,11 +159,16 @@ async function withEphemeralMemorySource({
   identity = {},
   signal,
   prefix = 'local',
+  admissionLockTimeoutMs = 0,
   nodeOverlayProvider = null,
   uuid = randomUUID,
   _testHooks = {},
 } = {}, callback) {
   if (typeof callback !== 'function') throw memorySourceError('invalid_request', 'callback required');
+  if (!Number.isSafeInteger(admissionLockTimeoutMs) || admissionLockTimeoutMs < 0
+      || admissionLockTimeoutMs > 30_000) {
+    throw memorySourceError('invalid_request', 'invalid source admission wait');
+  }
   if (nodeOverlayProvider !== null && typeof nodeOverlayProvider?.refresh !== 'function') {
     throw memorySourceError('invalid_request', 'node overlay provider is invalid');
   }
@@ -190,8 +195,12 @@ async function withEphemeralMemorySource({
     ? assertAgentInstanceStorageReady(requesterPaths, { requireConfig: false })
     : null;
   const canonicalInstanceRoot = requesterStorage?.canonicalRoot || requesterPaths.instanceRoot;
+  const homeDirectory = await bindCanonicalDirectory(homeRoot, 'home root');
   if (!requesterPaths.hasConfig) {
-    await fsp.mkdir(canonicalInstanceRoot, { recursive: true, mode: 0o700 });
+    // Validate each parent before creating the default requester directory;
+    // recursive mkdir could otherwise follow an instances symlink into a brain.
+    const instancesDirectory = await createCanonicalDirectoryChild(homeDirectory, 'instances', 'instances root');
+    await createCanonicalDirectoryChild(instancesDirectory, safeRequester, 'requester instance root');
   }
   const canonicalBrain = await fsp.realpath(brainDir);
   const safePrefix = safeSegment(prefix, 'prefix');
@@ -204,7 +213,6 @@ async function withEphemeralMemorySource({
   if (!crossing || (!crossing.startsWith('..') && !path.isAbsolute(crossing))) {
     throw memorySourceError('invalid_request', 'operation root must not cross target');
   }
-  const homeDirectory = await bindCanonicalDirectory(homeRoot, 'home root');
   const requesterDirectory = await bindCanonicalDirectory(
     canonicalInstanceRoot,
     'requester instance root',
@@ -251,9 +259,11 @@ async function withEphemeralMemorySource({
     admittedResult = await withMemorySourceLock(canonicalBrain, {
       lockRoot: admissionLockRoot,
       signal,
-      lockRetryMs: 0,
-      lockJitterMs: 0,
-      lockTimeoutMs: 0,
+      // Interactive readers still fail busy immediately. Background builders
+      // may wait briefly for the same admission lock without bypassing it.
+      lockRetryMs: admissionLockTimeoutMs > 0 ? 25 : 0,
+      lockJitterMs: admissionLockTimeoutMs > 0 ? 25 : 0,
+      lockTimeoutMs: admissionLockTimeoutMs,
       ...(_testHooks.afterAdmissionLockReleased ? {
         _testHooks: { afterLockReleased: _testHooks.afterAdmissionLockReleased },
       } : {}),
