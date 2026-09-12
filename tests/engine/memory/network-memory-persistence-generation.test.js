@@ -20,6 +20,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 const { NetworkMemory } = require('../../../engine/src/memory/network-memory.js');
+const { ClusterAwareMemory } = require('../../../engine/src/cluster/cluster-aware-memory.js');
 Module._load = originalLoad;
 
 function memory(overrides = {}) {
@@ -685,6 +686,162 @@ test('changes-only capture rejects accessors without invoking their getter', asy
   );
   assert.equal(getterCalls, 0);
   assert.equal(mem.persistenceBarrierActive, false);
+});
+
+test('streaming capture detaches and freezes full records one at a time', () => {
+  const mem = memory();
+  mem.importGraphChanges({
+    nodes: [
+      { id: 'a', concept: 'alpha', cluster: 'one', embedding: [0.25, 0.75], metadata: { nested: { value: 'kept' } } },
+      { id: 'b', concept: 'beta', cluster: 'two', embedding: [0.75, 0.25] },
+    ],
+    edges: [{ source: 'a', target: 'b', weight: 0.4, confidence: 0.87, metadata: { source: 'extension' } }],
+  });
+  let callbackCalls = 0;
+  mem.nodes.get('a').toJSON = () => { callbackCalls += 1; };
+  mem.getPersistenceChanges = () => { throw new Error('eager changes capture'); };
+  mem.capturePersistenceSnapshot = () => { throw new Error('eager full capture'); };
+  mem.capturePersistenceChangesSnapshot = () => { throw new Error('eager changes snapshot'); };
+
+  const snapshot = mem.capturePersistenceStreamingSnapshot();
+  assert.equal(Object.isFrozen(snapshot), true);
+  assert.equal(Object.isFrozen(snapshot.summary), true);
+  assert.equal(Object.isFrozen(snapshot.fullView), true);
+  assert.equal(Object.isFrozen(snapshot.fullView.nodes), true);
+  assert.equal(Array.isArray(snapshot.fullView.nodes), false);
+  assert.equal(Array.isArray(snapshot.fullView.edges), false);
+  assert.deepEqual(snapshot.summary, { nodeCount: 2, edgeCount: 1, clusterCount: 2 });
+
+  const iterator = snapshot.fullView.nodes[Symbol.iterator]();
+  const first = iterator.next().value;
+  assert.equal(mem.persistenceBarrierActive, false);
+  assert.equal(first.id, 'a');
+  assert.equal(Object.isFrozen(first), true);
+  assert.equal(Object.isFrozen(first.embedding), true);
+  assert.equal(Object.isFrozen(first.metadata.nested), true);
+  assert.notEqual(first, mem.nodes.get('a'));
+  assert.notEqual(first.embedding, mem.nodes.get('a').embedding);
+  assert.throws(() => { first.embedding[0] = 99; }, TypeError);
+  assert.throws(() => { first.metadata.nested.value = 'changed'; }, TypeError);
+  assert.equal(first.metadata.nested.value, 'kept');
+  assert.equal(iterator.next().value.id, 'b');
+  assert.equal(iterator.next().done, true);
+  const [edge] = snapshot.fullView.edges;
+  assert.equal(edge.confidence, 0.87);
+  assert.equal(edge.metadata.source, 'extension');
+  assert.equal(Object.isFrozen(edge.metadata), true);
+  assert.equal(callbackCalls, 0);
+  assert.equal(snapshot.validate(), undefined);
+});
+
+test('streaming capture never clones later record payloads before they are requested', () => {
+  const mem = memory();
+  mem.importGraphChanges({ nodes: [
+    { id: 'a', concept: 'first', embedding: new Array(768).fill(0.125), cluster: null },
+    { id: 'b', concept: 'later', cluster: null },
+  ] });
+  // This invalid payload must only be reached while asking for the second
+  // row; an eager clone of all nodes would throw at snapshot/first-row capture.
+  mem.nodes.get('b').extension = 1n;
+  const snapshot = mem.capturePersistenceStreamingSnapshot();
+  const iterator = snapshot.fullView.nodes[Symbol.iterator]();
+  assert.equal(iterator.next().value.embedding.length, 768);
+  assert.throws(() => iterator.next(), /persistence_record_bigint_not_allowed/);
+  assert.equal(mem.persistenceBarrierActive, false);
+  assert.equal(mem.hasPersistenceChanges(), true);
+});
+
+test('streaming capture rejects record accessors without invoking them', () => {
+  const mem = memory();
+  mem.importGraphChanges({ nodes: [{ id: 'a', concept: 'alpha', cluster: null }] });
+  let getterCalls = 0;
+  Object.defineProperty(mem.nodes.get('a'), 'extension', {
+    enumerable: true,
+    get() { getterCalls += 1; return 'unsafe'; },
+  });
+  const snapshot = mem.capturePersistenceStreamingSnapshot();
+  assert.throws(() => [...snapshot.fullView.nodes], /persistence_record_accessor_not_allowed/);
+  assert.equal(getterCalls, 0);
+  assert.equal(mem.persistenceBarrierActive, false);
+});
+
+test('streaming capture aborts a generation change between record reads and preserves dirty state', () => {
+  const mem = memory();
+  mem.importGraphChanges({ nodes: [
+    { id: 'a', concept: 'alpha', cluster: null },
+    { id: 'b', concept: 'beta', cluster: null },
+  ] });
+  const snapshot = mem.capturePersistenceStreamingSnapshot();
+  const iterator = snapshot.fullView.nodes[Symbol.iterator]();
+  const first = iterator.next().value;
+  mem.recordNodeAccess(['a']);
+  assert.equal(first.accessCount, undefined);
+  assert.throws(() => iterator.next(), { code: 'source_changed', retryable: true });
+  assert.throws(() => snapshot.validate(), { code: 'source_changed' });
+  assert.equal(mem.markPersistenceCleanIfGeneration(snapshot.generation), false);
+  assert.equal(mem.hasPersistenceChanges(), true);
+  assert.equal(mem.persistenceBarrierActive, false);
+});
+
+test('streaming edge iteration detects changes after nodes were staged', () => {
+  const mem = memory();
+  mem.importGraphChanges({
+    nodes: [{ id: 'a', concept: 'alpha' }, { id: 'b', concept: 'beta' }],
+    edges: [{ source: 'a', target: 'b', weight: 0.4 }],
+  });
+  const snapshot = mem.capturePersistenceStreamingSnapshot();
+  assert.equal([...snapshot.fullView.nodes].length, 2);
+  mem.addEdge('a', 'b', 0.1);
+  assert.throws(() => [...snapshot.fullView.edges], { code: 'source_changed' });
+  assert.equal(mem.persistenceBarrierActive, false);
+});
+
+test('streaming validation covers empty graphs and mutations after the last row', () => {
+  const mem = memory();
+  const empty = mem.capturePersistenceStreamingSnapshot();
+  assert.deepEqual([...empty.fullView.nodes], []);
+  assert.deepEqual([...empty.fullView.edges], []);
+  assert.deepEqual(empty.summary, { nodeCount: 0, edgeCount: 0, clusterCount: 0 });
+  assert.equal(empty.validate(), undefined);
+  mem.importGraphChanges({ nodes: [{ id: 'a', concept: 'alpha', cluster: null }] });
+  assert.throws(() => empty.validate(), { code: 'source_changed' });
+
+  const single = mem.capturePersistenceStreamingSnapshot();
+  assert.equal([...single.fullView.nodes].length, 1);
+  assert.deepEqual([...single.fullView.edges], []);
+  mem.recordNodeAccess(['a']);
+  assert.throws(() => single.validate(), { code: 'source_changed' });
+});
+
+test('streaming snapshot captures typed identities and rejects logical ID aliases', () => {
+  const mem = memory();
+  mem.importGraphChanges({ nodes: [
+    { id: 42, concept: 'numeric', cluster: 1 },
+    { id: 'a', concept: 'string', cluster: 1 },
+  ] });
+  const snapshot = mem.capturePersistenceStreamingSnapshot();
+  assert.deepEqual([...snapshot.fullView.nodes].map((node) => node.id), [42, 'a']);
+  Map.prototype.set.call(mem.nodes, '42', { id: '42', concept: 'alias' });
+  assert.throws(
+    () => mem.capturePersistenceStreamingSnapshot(),
+    /memory_persistence_duplicate_logical_node_id:42/,
+  );
+});
+
+test('cluster memory interface exposes streaming snapshots and dirty counts without capture mutations', () => {
+  const mem = memory();
+  mem.importGraphChanges({ nodes: [{ id: 'a', concept: 'alpha', cluster: null, embedding: [0.25, 0.75] }] });
+  const cluster = new ClusterAwareMemory(mem, { logger: mem.logger });
+  const wrapped = cluster.getInterface();
+  const generation = mem.persistenceGeneration;
+  assert.equal(wrapped.dirtyNodeIds.size, 1);
+  const snapshot = wrapped.capturePersistenceStreamingSnapshot();
+  assert.deepEqual([...snapshot.fullView.nodes][0].embedding, [0.25, 0.75]);
+  assert.deepEqual([...snapshot.fullView.edges], []);
+  snapshot.validate();
+  assert.equal(mem.persistenceGeneration, generation);
+  wrapped.recordNodeAccess(['a']);
+  assert.throws(() => snapshot.validate(), { code: 'source_changed' });
 });
 
 test('persistence capture rejects numeric and string aliases for one logical node ID', () => {

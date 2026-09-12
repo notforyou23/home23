@@ -1842,6 +1842,74 @@ class NetworkMemory {
     });
   }
 
+  capturePersistenceStreamingSnapshot() {
+    return this.withPersistenceBarrier(() => {
+      assertUniqueLogicalNodeIds(this.nodes);
+      // Retain only identities here. A decay can dirty every embedding in a
+      // large brain, so capturing all record payloads would duplicate gigabytes
+      // before the bounded gzip writer has a chance to consume the first row.
+      const nodeIds = Array.from(Map.prototype.keys.call(this.nodes));
+      const edgeKeys = Array.from(Map.prototype.keys.call(this.edges));
+      const clusters = new Set();
+      for (const node of Map.prototype.values.call(this.nodes)) {
+        const cluster = readOwnDataProperty(node, 'cluster', 'persistence_record_accessor_not_allowed').value;
+        if (cluster !== null && cluster !== undefined) clusters.add(cluster);
+      }
+      const generation = this.persistenceGeneration;
+      const summary = Object.freeze({
+        nodeCount: nodeIds.length,
+        edgeCount: edgeKeys.length,
+        clusterCount: clusters.size,
+      });
+      const memory = this;
+      const assertCurrentGeneration = () => {
+        if (memory.persistenceGeneration !== generation
+            || memory.nodes.size !== nodeIds.length
+            || memory.edges.size !== edgeKeys.length) {
+          throw Object.assign(new Error('memory changed during persistence snapshot'), {
+            code: 'source_changed',
+            retryable: true,
+          });
+        }
+      };
+      const createRows = (keys, kind) => Object.freeze({
+        *[Symbol.iterator]() {
+          for (const key of keys) {
+            // No barrier spans a yield or I/O: each row is detached and frozen
+            // before handing it to the writer. A changed generation aborts the
+            // staged rewrite instead of publishing a mixture of generations.
+            yield memory.withPersistenceBarrier(() => {
+              assertCurrentGeneration();
+              const records = kind === 'node' ? memory.nodes : memory.edges;
+              if (!Map.prototype.has.call(records, key)) {
+                throw Object.assign(new Error('memory record changed during persistence snapshot'), {
+                  code: 'source_changed',
+                  retryable: true,
+                });
+              }
+              const record = Map.prototype.get.call(records, key);
+              return deepFreezeJson(kind === 'node'
+                ? serializeNodePersistenceRecord(record)
+                : serializeEdgePersistenceRecord(key, record));
+            });
+          }
+        },
+      });
+      return Object.freeze({
+        generation,
+        summary,
+        fullView: Object.freeze({
+          nodes: createRows(nodeIds, 'node'),
+          edges: createRows(edgeKeys, 'edge'),
+        }),
+        // The writer calls this after both streams finish, including empty
+        // graphs. Changes after successful validation remain dirty via the
+        // normal generation compare-and-swap at persistence completion.
+        validate: () => memory.withPersistenceBarrier(assertCurrentGeneration),
+      });
+    });
+  }
+
   markPersistenceCleanIfGeneration(expectedGeneration) {
     return this.withPersistenceBarrier(() => {
       if (!Number.isSafeInteger(expectedGeneration) || this.persistenceGeneration !== expectedGeneration) {

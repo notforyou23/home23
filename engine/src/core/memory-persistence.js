@@ -9,6 +9,8 @@ const {
   resolveMemorySourceSelection,
   appendMemoryRevision,
   rewriteMemoryBase,
+  rewriteMemoryBaseFromSnapshot,
+  compactMemoryBase,
   sourceDescriptorDigest,
   retireUnpinnedSources,
 } = require('../../../shared/memory-source');
@@ -204,7 +206,7 @@ async function persistMemoryRevision({
   retireUnpinnedSources: retire = retireUnpinnedSources,
   rebuildAnnIndex: rebuildAnn = defaultRebuildAnnIndex,
   logger = console,
-  writer = { readManifest, appendMemoryRevision, rewriteMemoryBase },
+  writer = { readManifest, appendMemoryRevision, rewriteMemoryBase, rewriteMemoryBaseFromSnapshot, compactMemoryBase },
 }) {
   const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
   const manifest = await writer.readManifest(brainDir);
@@ -249,46 +251,78 @@ async function persistMemoryRevision({
     || Date.now() - baseWrittenAtMs >= fullRewriteIntervalMs
     || deltaBytes >= fullRewriteDeltaBytes
     || deltaCount >= fullRewriteDeltaCount;
-  // A manifest-backed delta/reuse save must not clone the complete resident
-  // graph merely to discover that only its dirty generation is needed. At
-  // Jerry scale that redundant full materialization can exhaust the engine
-  // heap before appendMemoryRevision is reached. Full views remain mandatory
-  // for initial/forced/periodic base rewrites; ordinary saves capture the same
-  // immutable generation through the bounded changes-only surface.
-  let snapshot = !rewrite && typeof memory.capturePersistenceChangesSnapshot === 'function'
-    ? memory.capturePersistenceChangesSnapshot()
-    : memory.capturePersistenceSnapshot();
-  const capturedHasChanges = hasChanges(snapshot.changes);
+  // Routine rebases stream committed persistence, after appending this captured
+  // dirty generation. Cloning the full resident graph for an overdue base can
+  // otherwise OOM at every save and every subsequent crash-recovery boot.
+  // Explicit full saves and first writes still persist a complete graph,
+  // streaming it when supported. Older injected writers keep their contract.
+  const canCompact = rewrite && !forceFull && Boolean(manifest)
+    && typeof writer.compactMemoryBase === 'function';
+  const canStreamSnapshot = typeof memory.capturePersistenceStreamingSnapshot === 'function'
+    && typeof writer.rewriteMemoryBaseFromSnapshot === 'function';
+  const dirtyRecordCount = (memory.dirtyNodeIds?.size || 0)
+    + (memory.dirtyEdgeKeys?.size || 0)
+    + (memory.deletedNodeIds?.size || 0)
+    + (memory.deletedEdgeKeys?.size || 0);
+  // Daily decay may dirty the entire graph at once. Choose streaming BEFORE
+  // changes-only capture: a changes snapshot of all dirty nodes is still a
+  // full graph allocation, repeated by delta normalization in the writer.
+  let streamingSnapshot = canStreamSnapshot && ((rewrite && !canCompact) || dirtyRecordCount >= 1024);
+  let streamCompaction = canCompact && !streamingSnapshot;
+  let snapshot = streamingSnapshot
+    ? memory.capturePersistenceStreamingSnapshot()
+    : (!rewrite || streamCompaction) && typeof memory.capturePersistenceChangesSnapshot === 'function'
+      ? memory.capturePersistenceChangesSnapshot()
+      : memory.capturePersistenceSnapshot();
+  const capturedHasChanges = snapshot.changes ? hasChanges(snapshot.changes) : dirtyRecordCount > 0;
   // A revisioned load materializes every logical node, so a clean resident
   // graph can safely repair a node-count drift caused by historical ID type
   // aliases. Edge and cluster disagreement may instead reflect hydration
   // filtering; keep that fail-closed until a real graph mutation describes it.
-  const summaryRepair = Boolean(!rewrite && !capturedHasChanges && manifest
+  const summaryRepair = Boolean(!streamingSnapshot && (!rewrite || streamCompaction) && !capturedHasChanges && manifest
     && nodeSummaryRepairNeeded(manifest.summary, snapshot.summary));
-  const summaryRepairExpected = summaryRepair
-    ? {
+  // Resident loading canonicalizes historical numeric/string ID aliases. A
+  // clean node-count repair therefore needs those canonical rows atomically:
+  // changing only the summary would leave duplicate physical rows and cause
+  // the counted disk compactor to reject every retry. Preserve the original
+  // descriptor below and publish the repaired rows and counts together.
+  const canonicalResidentRewrite = summaryRepair && (canStreamSnapshot || streamCompaction);
+  if (canonicalResidentRewrite) {
+    streamCompaction = false;
+    streamingSnapshot = canStreamSnapshot;
+    snapshot = streamingSnapshot
+      ? memory.capturePersistenceStreamingSnapshot()
+      : memory.capturePersistenceSnapshot();
+  }
+  const capturedSourceExpected = summaryRepair || streamCompaction || canStreamSnapshot
+    ? manifest ? {
         expectedGeneration: manifest.generation,
         expectedRevision: manifest.currentRevision,
         expectedDigest: sourceDescriptorDigest(createDescriptor(
           await fsp.realpath(brainDir),
           manifest,
         )),
-      }
+      } : { expectedSourceAbsent: true }
     : null;
   let result;
-  let performedRewrite = rewrite;
-  if (rewrite) {
-    result = await writer.rewriteMemoryBase(brainDir, {
-      nodes: snapshot.fullView.nodes,
-      edges: snapshot.fullView.edges,
-      summary: snapshot.summary,
-    }, { lockRoot, level: gzipLevel });
+  let performedRewrite = false;
+  if (streamingSnapshot || (rewrite && !streamCompaction)) {
+    result = streamingSnapshot
+      ? await writer.rewriteMemoryBaseFromSnapshot(brainDir, snapshot, {
+        lockRoot, level: gzipLevel, ...capturedSourceExpected,
+      })
+      : await writer.rewriteMemoryBase(brainDir, {
+        nodes: snapshot.fullView.nodes,
+        edges: snapshot.fullView.edges,
+        summary: snapshot.summary,
+      }, { lockRoot, level: gzipLevel });
+    performedRewrite = true;
   } else if (capturedHasChanges || summaryRepair) {
     try {
       result = await writer.appendMemoryRevision(brainDir, snapshot.changes, {
         lockRoot,
         summary: snapshot.summary,
-        ...(summaryRepairExpected || {}),
+        ...(summaryRepair || streamCompaction ? capturedSourceExpected : {}),
       });
     } catch (error) {
       // A busy feeder can accumulate more than the writer's bounded 512 MiB
@@ -297,23 +331,49 @@ async function persistMemoryRevision({
       // the resident graph into a fresh base instead; the generation CAS below
       // keeps mutations that arrive during the rewrite dirty for the next save.
       if (error?.code !== 'result_too_large' || error?.limitKind !== 'delta_commit') throw error;
-      snapshot = memory.capturePersistenceSnapshot();
+      streamingSnapshot = canStreamSnapshot;
+      snapshot = streamingSnapshot
+        ? memory.capturePersistenceStreamingSnapshot()
+        : memory.capturePersistenceSnapshot();
       performedRewrite = true;
       logger.warn?.('Memory delta commit exceeded writer limit — rewriting full base', {
         nodes: snapshot.summary.nodeCount,
         edges: snapshot.summary.edgeCount,
       });
-      result = await writer.rewriteMemoryBase(brainDir, {
-        nodes: snapshot.fullView.nodes,
-        edges: snapshot.fullView.edges,
-        summary: snapshot.summary,
-      }, { lockRoot, level: gzipLevel });
+      result = streamingSnapshot
+        ? await writer.rewriteMemoryBaseFromSnapshot(brainDir, snapshot, {
+          lockRoot, level: gzipLevel, ...capturedSourceExpected,
+        })
+        : await writer.rewriteMemoryBase(brainDir, {
+          nodes: snapshot.fullView.nodes,
+          edges: snapshot.fullView.edges,
+          summary: snapshot.summary,
+        }, { lockRoot, level: gzipLevel });
     }
   } else {
     result = { manifest, count: 0 };
   }
+  if (streamCompaction && !performedRewrite) {
+    // Compact exactly the revision acknowledged by append (or by the initial
+    // read for reuse), never a concurrent writer's newer generation. Do not
+    // clear dirty markers until both operations succeed; retries remain safe
+    // if the append committed but compaction failed.
+    const committedManifest = result.manifest;
+    result = await writer.compactMemoryBase(brainDir, {
+      home23Root,
+      lockRoot,
+      level: gzipLevel,
+      expectedGeneration: committedManifest.generation,
+      expectedRevision: committedManifest.currentRevision,
+      expectedDigest: sourceDescriptorDigest(createDescriptor(
+        await fsp.realpath(brainDir),
+        committedManifest,
+      )),
+    });
+    performedRewrite = true;
+  }
   const committed = Boolean(result?.manifest && (performedRewrite || result.count > 0 || summaryRepair));
-  const cleaned = committed && (performedRewrite || capturedHasChanges)
+  const cleaned = committed && ((performedRewrite && !streamCompaction && !canonicalResidentRewrite) || capturedHasChanges)
     ? memory.markPersistenceCleanIfGeneration(snapshot.generation)
     : false;
   if (performedRewrite && result?.manifest) {
@@ -325,7 +385,8 @@ async function persistMemoryRevision({
     mode: performedRewrite ? 'full' : (result.count > 0 ? 'delta' : (summaryRepair ? 'summary-repair' : 'reused')),
     cleaned,
     persistedGeneration: snapshot.generation,
-    persistedChanges: snapshot.changes,
+    persistedChanges: snapshot.changes || null,
+    persistedChangesCaptured: Boolean(snapshot.changes),
   };
 }
 

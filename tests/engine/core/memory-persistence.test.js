@@ -12,9 +12,11 @@ const {
 } = require('../../../engine/src/core/memory-persistence.js');
 const {
   appendMemoryRevision,
+  compactMemoryBase,
   openMemorySource,
   readManifest,
   rewriteMemoryBase,
+  rewriteMemoryBaseFromSnapshot,
   writeJsonlGzAtomic,
 } = require('../../../shared/memory-source');
 
@@ -830,4 +832,440 @@ test('an ANN rebuild failure is loud but never breaks the save', async () => {
   for (const fn of scheduled) await fn(); // must not throw
   assert.ok(warnings.some((w) => JSON.stringify(w).includes('builder exploded')),
     'the failure must be reported, not swallowed');
+});
+
+async function createCompactionFixture(t) {
+  const home23Root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-routine-compaction-'));
+  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
+  const brainDir = path.join(home23Root, 'instances', 'jerry', 'brain');
+  await fsp.mkdir(brainDir, { recursive: true });
+  const nodes = [
+    { id: 'n1', concept: 'retained', embedding: [0.5, -0.25], metadata: { source: ['original'] } },
+    { id: 'n2', concept: 'removed later', embedding: [0.1, 0.9] },
+  ];
+  const edges = [{ key: 'n1->n2', source: 'n1', target: 'n2', weight: 0.5, metadata: { via: 'base' } }];
+  const summary = { nodeCount: 2, edgeCount: 1, clusterCount: 0 };
+  await rewriteMemoryBase(brainDir, { nodes, edges, summary }, {
+    lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks'),
+  });
+  return { home23Root, brainDir, nodes, edges, summary };
+}
+
+function createChangesOnlyMemory(changes, summary) {
+  let generation = 8;
+  let cleaned = false;
+  let cleanCalls = 0;
+  return {
+    advanceGeneration() { generation += 1; },
+    get cleaned() { return cleaned; },
+    get cleanCalls() { return cleanCalls; },
+    capturePersistenceSnapshot() { throw new Error('routine rebase cloned the full resident graph'); },
+    capturePersistenceChangesSnapshot() {
+      return { generation, changes, summary };
+    },
+    markPersistenceCleanIfGeneration(expected) {
+      cleanCalls += 1;
+      cleaned = generation === expected;
+      return cleaned;
+    },
+  };
+}
+
+const emptyCompactionChanges = () => ({ nodes: [], edges: [], removedNodeIds: [], removedEdgeKeys: [] });
+
+test('routine age and delta thresholds compact unchanged committed graphs without full capture', async (t) => {
+  for (const threshold of [
+    { fullRewriteIntervalMs: 0 },
+    { fullRewriteDeltaBytes: 0 },
+    { fullRewriteDeltaCount: 0 },
+  ]) {
+    const fixture = await createCompactionFixture(t);
+    const before = await readManifest(fixture.brainDir);
+    const memory = createChangesOnlyMemory(emptyCompactionChanges(), fixture.summary);
+    const scheduled = [];
+    const result = await persistMemoryRevision({
+      ...fixture, ...threshold, memory,
+      schedule: (task) => scheduled.push(task),
+    });
+    assert.equal(result.mode, 'full');
+    assert.notEqual(result.manifest.generation, before.generation);
+    assert.equal(result.manifest.activeDelta.count, 0);
+    assert.equal(result.manifest.currentRevision, before.currentRevision + 1);
+    assert.equal(memory.cleanCalls, 0, 'unchanged graph has no captured dirty markers to clear');
+    assert.equal(scheduled.length, 2, 'successful compaction schedules retirement and ANN rebuild');
+    const loaded = await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root });
+    assert.deepEqual(loaded.nodes, fixture.nodes);
+    assert.deepEqual(loaded.edges, fixture.edges);
+  }
+});
+
+test('overdue dirty save appends complete mutations before streaming the committed rebase', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const changes = {
+    nodes: [
+      { id: 'n1', concept: 'updated', embedding: [0.7, -0.4], metadata: { source: ['new'], nested: { kept: true } } },
+      { id: 'n3', concept: 'new node', embedding: [0.2, 0.8], extra: ['preserved'] },
+    ],
+    edges: [{ key: 'n1->n3', source: 'n1', target: 'n3', weight: 0.8, metadata: { via: 'delta' } }],
+    removedNodeIds: ['n2'],
+    removedEdgeKeys: ['n1->n2'],
+  };
+  const memory = createChangesOnlyMemory(changes, fixture.summary);
+  const events = [];
+  const result = await persistMemoryRevision({
+    ...fixture, memory, fullRewriteIntervalMs: 0, schedule: () => {},
+    writer: {
+      readManifest,
+      rewriteMemoryBase: async () => { throw new Error('full-view rewrite not expected'); },
+      appendMemoryRevision: async (brainDir, captured, options) => {
+        events.push('append');
+        assert.equal(captured, changes);
+        assert.match(options.expectedDigest, /^sha256:[a-f0-9]{64}$/);
+        return appendMemoryRevision(brainDir, captured, options);
+      },
+      compactMemoryBase: async (brainDir, options) => {
+        events.push('compact');
+        const committed = await readManifest(brainDir);
+        assert.ok(committed.activeDelta.count > 0);
+        assert.equal(options.expectedRevision, committed.currentRevision);
+        assert.equal(options.expectedGeneration, committed.generation);
+        return compactMemoryBase(brainDir, options);
+      },
+    },
+  });
+  assert.deepEqual(events, ['append', 'compact']);
+  assert.equal(result.cleaned, true);
+  assert.equal(result.manifest.activeDelta.count, 0);
+  const loaded = await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root });
+  assert.deepEqual(loaded.nodes, changes.nodes);
+  assert.deepEqual(loaded.edges, changes.edges);
+});
+
+test('failed overdue append never compacts or acknowledges dirty memory', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const memory = createChangesOnlyMemory({ ...emptyCompactionChanges(), nodes: [fixture.nodes[0]] }, fixture.summary);
+  let compactions = 0;
+  const scheduled = [];
+  await assert.rejects(persistMemoryRevision({
+    ...fixture, memory, fullRewriteIntervalMs: 0, schedule: (task) => scheduled.push(task),
+    writer: {
+      readManifest,
+      appendMemoryRevision: async () => { throw new Error('disk full'); },
+      compactMemoryBase: async () => { compactions += 1; },
+    },
+  }), /disk full/);
+  assert.equal(compactions, 0);
+  assert.equal(memory.cleanCalls, 0);
+  assert.equal(scheduled.length, 0);
+});
+
+test('failed compaction preserves appended data and dirty markers without scheduling maintenance', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const changes = { ...emptyCompactionChanges(), nodes: [{ ...fixture.nodes[0], concept: 'durably appended' }] };
+  const memory = createChangesOnlyMemory(changes, fixture.summary);
+  const before = await readManifest(fixture.brainDir);
+  const scheduled = [];
+  await assert.rejects(persistMemoryRevision({
+    ...fixture, memory, fullRewriteIntervalMs: 0, schedule: (task) => scheduled.push(task),
+    writer: {
+      readManifest, appendMemoryRevision,
+      compactMemoryBase: async () => {
+        throw Object.assign(new Error('compaction source changed'), { code: 'source_changed', retryable: true });
+      },
+    },
+  }), { code: 'source_changed', retryable: true });
+  assert.equal(memory.cleanCalls, 0);
+  assert.equal(scheduled.length, 0);
+  const after = await readManifest(fixture.brainDir);
+  assert.equal(after.generation, before.generation);
+  assert.ok(after.currentRevision > before.currentRevision);
+  const loaded = await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root });
+  assert.equal(loaded.nodes.find((node) => node.id === 'n1').concept, 'durably appended');
+});
+
+test('resident mutations during streaming compaction remain dirty after commit', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const memory = createChangesOnlyMemory({ ...emptyCompactionChanges(), nodes: [fixture.nodes[0]] }, fixture.summary);
+  const result = await persistMemoryRevision({
+    ...fixture, memory, fullRewriteIntervalMs: 0, schedule: () => {},
+    writer: {
+      readManifest, appendMemoryRevision,
+      compactMemoryBase: async (brainDir, options) => {
+        memory.advanceGeneration();
+        return compactMemoryBase(brainDir, options);
+      },
+    },
+  });
+  assert.equal(result.mode, 'full');
+  assert.equal(result.cleaned, false);
+  assert.equal(memory.cleaned, false);
+  assert.equal(memory.cleanCalls, 1);
+});
+
+test('compaction refuses a concurrent persisted revision instead of acknowledging its graph', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const memory = createChangesOnlyMemory({ ...emptyCompactionChanges(), nodes: [fixture.nodes[0]] }, fixture.summary);
+  const scheduled = [];
+  await assert.rejects(persistMemoryRevision({
+    ...fixture, memory, fullRewriteIntervalMs: 0, schedule: (task) => scheduled.push(task),
+    writer: {
+      readManifest, appendMemoryRevision,
+      compactMemoryBase: async (brainDir, options) => {
+        await appendMemoryRevision(brainDir, {
+          ...emptyCompactionChanges(), nodes: [{ id: 'other-writer', concept: 'concurrent' }],
+        }, { lockRoot: options.lockRoot, summary: { nodeCount: 3, edgeCount: 1, clusterCount: 0 } });
+        return compactMemoryBase(brainDir, options);
+      },
+    },
+  }), { code: 'source_changed', retryable: true });
+  assert.equal(memory.cleanCalls, 0);
+  assert.equal(scheduled.length, 0);
+  const loaded = await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root });
+  assert.ok(loaded.nodes.some((node) => node.id === 'other-writer'));
+});
+
+function createStreamingMemory(nodes, edges = []) {
+  let generation = 12;
+  let cleanCalls = 0;
+  const summary = { nodeCount: nodes.length, edgeCount: edges.length, clusterCount: 0 };
+  return {
+    dirtyNodeIds: new Set(nodes.map((node) => node.id)),
+    dirtyEdgeKeys: new Set(),
+    advanceGeneration() { generation += 1; },
+    get cleanCalls() { return cleanCalls; },
+    capturePersistenceSnapshot() { throw new Error('full graph allocation is forbidden'); },
+    capturePersistenceChangesSnapshot() { throw new Error('all-dirty changes allocation is forbidden'); },
+    capturePersistenceStreamingSnapshot() {
+      const capturedGeneration = generation;
+      const validate = () => {
+        if (capturedGeneration !== generation) {
+          throw Object.assign(new Error('resident generation changed'), { code: 'source_changed', retryable: true });
+        }
+      };
+      return {
+        generation: capturedGeneration,
+        summary,
+        fullView: {
+          nodes: { *[Symbol.iterator]() { for (const node of nodes) { validate(); yield node; } } },
+          edges: { *[Symbol.iterator]() { for (const edge of edges) { validate(); yield edge; } } },
+        },
+        validate,
+      };
+    },
+    markPersistenceCleanIfGeneration(expected) {
+      cleanCalls += 1;
+      if (expected !== generation) return false;
+      this.dirtyNodeIds.clear();
+      return true;
+    },
+  };
+}
+
+test('large dirty generations stream before any eager changes capture', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const nodes = Array.from({ length: 1024 }, (_, index) => ({
+    id: `dirty-${index}`, concept: `complete record ${index}`, embedding: [index / 1024, -0.5],
+    metadata: { preserved: [index, true] },
+  }));
+  const memory = createStreamingMemory(nodes);
+  const scheduled = [];
+  const result = await persistMemoryRevision({
+    ...fixture, memory, schedule: (task) => scheduled.push(task),
+  });
+  assert.equal(result.mode, 'full');
+  assert.equal(result.cleaned, true);
+  assert.equal(result.persistedChanges, null);
+  assert.equal(result.persistedChangesCaptured, false);
+  assert.equal(scheduled.length, 2);
+  const loaded = await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root });
+  assert.deepEqual(loaded.nodes, nodes);
+  assert.deepEqual(loaded.edges, []);
+});
+
+test('initial and explicit full saves use streaming snapshots when supported', async (t) => {
+  for (const forceFull of [false, true]) {
+    const fixture = await createCompactionFixture(t);
+    if (!forceFull) {
+      await fsp.rm(path.join(fixture.brainDir, 'memory-manifest.json'));
+    }
+    const memory = createStreamingMemory(fixture.nodes, fixture.edges);
+    const result = await persistMemoryRevision({
+      ...fixture, memory, forceFull, schedule: () => {},
+      writer: {
+        readManifest, compactMemoryBase,
+        rewriteMemoryBaseFromSnapshot: async (brainDir, snapshot, options) => {
+          if (forceFull) {
+            assert.match(options.expectedDigest, /^sha256:[a-f0-9]{64}$/);
+            assert.equal(options.expectedRevision, (await readManifest(brainDir)).currentRevision);
+          } else {
+            assert.equal(options.expectedSourceAbsent, true);
+          }
+          return rewriteMemoryBaseFromSnapshot(brainDir, snapshot, options);
+        },
+      },
+    });
+    assert.equal(result.mode, 'full');
+    assert.equal(result.cleaned, true);
+    assert.equal(result.persistedChangesCaptured, false);
+    const loaded = await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root });
+    assert.deepEqual(loaded.nodes, fixture.nodes);
+  }
+});
+
+test('oversized small deltas fall back to streaming snapshots without full materialization', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const memory = createStreamingMemory(fixture.nodes, fixture.edges);
+  memory.capturePersistenceChangesSnapshot = () => ({
+    generation: 12,
+    changes: { ...emptyCompactionChanges(), nodes: [fixture.nodes[0]] },
+    summary: fixture.summary,
+  });
+  const result = await persistMemoryRevision({
+    ...fixture, memory, schedule: () => {}, logger: { warn() {} },
+    writer: {
+      readManifest, compactMemoryBase, rewriteMemoryBaseFromSnapshot,
+      rewriteMemoryBase: async () => { throw new Error('eager full writer is forbidden'); },
+      appendMemoryRevision: async () => {
+        throw Object.assign(new Error('delta too large'), { code: 'result_too_large', limitKind: 'delta_commit' });
+      },
+    },
+  });
+  assert.equal(result.mode, 'full');
+  assert.equal(result.cleaned, true);
+  assert.equal(result.persistedChangesCaptured, false);
+  const loaded = await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root });
+  assert.deepEqual(loaded.nodes, fixture.nodes);
+});
+
+test('streaming snapshot failure keeps prior manifest, dirty markers, and maintenance untouched', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const memory = createStreamingMemory(fixture.nodes, fixture.edges);
+  const before = await readManifest(fixture.brainDir);
+  const scheduled = [];
+  await assert.rejects(persistMemoryRevision({
+    ...fixture, memory, forceFull: true, schedule: (task) => scheduled.push(task),
+    writer: {
+      readManifest,
+      rewriteMemoryBaseFromSnapshot: async (brainDir, snapshot, options) => {
+        memory.advanceGeneration();
+        return rewriteMemoryBaseFromSnapshot(brainDir, snapshot, options);
+      },
+    },
+  }), { code: 'source_changed', retryable: true });
+  assert.equal(memory.cleanCalls, 0);
+  assert.equal(memory.dirtyNodeIds.size, fixture.nodes.length);
+  assert.equal(scheduled.length, 0);
+  assert.deepEqual(await readManifest(fixture.brainDir), before);
+});
+
+test('overdue clean numeric and string node aliases rewrite canonical resident rows once', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const physicalNodes = [
+    { id: 42, concept: 'numeric alias', embedding: [0.2, 0.8] },
+    { id: '42', concept: 'canonical resident node', embedding: [0.4, 0.6], metadata: { preserved: true } },
+  ];
+  await rewriteMemoryBase(fixture.brainDir, {
+    nodes: physicalNodes, edges: [], summary: { nodeCount: 2, edgeCount: 0, clusterCount: 0 },
+  }, { lockRoot: path.join(fixture.home23Root, 'runtime', 'brain-source-locks') });
+  const before = {
+    ...await readManifest(fixture.brainDir),
+    baseWrittenAt: new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString(),
+  };
+  await fsp.writeFile(path.join(fixture.brainDir, 'memory-manifest.json'), JSON.stringify(before));
+  const memory = createStreamingMemory([physicalNodes[1]]);
+  memory.dirtyNodeIds.clear();
+  memory.capturePersistenceChangesSnapshot = () => ({
+    generation: 12, changes: emptyCompactionChanges(),
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 0 },
+  });
+  const scheduled = [];
+  let streamed = 0;
+  const writer = {
+    readManifest,
+    compactMemoryBase: async () => { throw new Error('alias repair must use canonical resident rows'); },
+    appendMemoryRevision: async () => { throw new Error('must not publish repaired counts over duplicate physical rows'); },
+    rewriteMemoryBaseFromSnapshot: async (brainDir, snapshot, options) => {
+      streamed += 1;
+      assert.equal(options.expectedGeneration, before.generation);
+      assert.equal(options.expectedRevision, before.currentRevision);
+      assert.match(options.expectedDigest, /^sha256:[a-f0-9]{64}$/);
+      return rewriteMemoryBaseFromSnapshot(brainDir, snapshot, options);
+    },
+  };
+  const first = await persistMemoryRevision({ ...fixture, memory, writer, schedule: (task) => scheduled.push(task) });
+  assert.equal(first.mode, 'full');
+  assert.equal(first.manifest.summary.nodeCount, 1);
+  assert.equal(first.manifest.activeBase.nodes.count, 1);
+  assert.equal(first.manifest.activeDelta.count, 0);
+  assert.equal(first.persistedChangesCaptured, false);
+  assert.equal(memory.cleanCalls, 0);
+  assert.equal(scheduled.length, 2);
+  assert.deepEqual((await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root })).nodes, [physicalNodes[1]]);
+
+  const second = await persistMemoryRevision({ ...fixture, memory, writer, schedule: (task) => scheduled.push(task) });
+  assert.equal(second.mode, 'reused');
+  assert.equal(second.manifest.generation, first.manifest.generation);
+  assert.equal(streamed, 1);
+  assert.equal(memory.cleanCalls, 0);
+  assert.equal(scheduled.length, 2, 'reuse must not reschedule maintenance');
+});
+
+test('overdue clean node-count repair supports older resident snapshot callers', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const canonical = {
+    generation: 15,
+    summary: { nodeCount: 1, edgeCount: 1, clusterCount: 0 },
+    changes: emptyCompactionChanges(),
+    fullView: { nodes: [fixture.nodes[0]], edges: fixture.edges },
+  };
+  let fullCaptures = 0;
+  const memory = {
+    capturePersistenceChangesSnapshot: () => canonical,
+    capturePersistenceSnapshot: () => { fullCaptures += 1; return canonical; },
+    markPersistenceCleanIfGeneration: () => { throw new Error('clean graph must not clear dirty markers'); },
+  };
+  const result = await persistMemoryRevision({
+    ...fixture, memory, fullRewriteIntervalMs: 0, schedule: () => {},
+    writer: {
+      readManifest, rewriteMemoryBase,
+      compactMemoryBase: async () => { throw new Error('canonical graph requires resident rewrite'); },
+      appendMemoryRevision: async () => { throw new Error('summary append must not precede canonical rewrite'); },
+    },
+  });
+  assert.equal(result.mode, 'full');
+  assert.equal(result.cleaned, false);
+  assert.equal(fullCaptures, 1);
+  assert.equal(result.manifest.summary.nodeCount, 1);
+});
+
+test('fresh alias repair publishes canonical rows before a later overdue disk compaction', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const canonical = { id: '42', concept: 'canonical node', embedding: [0.4, 0.6] };
+  await rewriteMemoryBase(fixture.brainDir, {
+    nodes: [{ id: 42, concept: 'old alias' }, canonical], edges: [],
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 0 },
+  }, { lockRoot: path.join(fixture.home23Root, 'runtime', 'brain-source-locks') });
+  const memory = createStreamingMemory([canonical]);
+  memory.dirtyNodeIds.clear();
+  memory.capturePersistenceChangesSnapshot = () => ({
+    generation: 12, changes: emptyCompactionChanges(),
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 0 },
+  });
+  const scheduled = [];
+  const options = { ...fixture, memory, schedule: (task) => scheduled.push(task) };
+  const repaired = await persistMemoryRevision(options);
+  assert.equal(repaired.mode, 'full');
+  assert.equal(repaired.manifest.summary.nodeCount, 1);
+  assert.equal(repaired.manifest.activeBase.nodes.count, 1);
+  assert.equal(repaired.persistedChangesCaptured, false);
+  const compacted = await persistMemoryRevision({ ...options, fullRewriteIntervalMs: 0 });
+  assert.equal(compacted.mode, 'full');
+  assert.notEqual(compacted.manifest.generation, repaired.manifest.generation);
+  assert.equal(compacted.manifest.activeBase.nodes.count, 1);
+  assert.deepEqual((await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root })).nodes, [canonical]);
+  assert.equal(memory.cleanCalls, 0);
+  assert.equal(scheduled.length, 4);
+  const reused = await persistMemoryRevision(options);
+  assert.equal(reused.mode, 'reused');
+  assert.equal(scheduled.length, 4);
 });

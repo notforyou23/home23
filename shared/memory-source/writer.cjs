@@ -13,6 +13,8 @@ const {
 } = require('./confined-file.cjs');
 const {
   withMemorySourceLock,
+  createMemorySourcePinProvider,
+  durableBrainOperationRoot,
   discoverOperationPinFiles,
   readDiscoveredOperationPinRecord,
 } = require('./pins.cjs');
@@ -23,6 +25,8 @@ const {
 } = require('./contracts.cjs');
 const { emptyDeltaDigest, nextDeltaChainDigest } = require('./delta-chain.cjs');
 const { createDescriptor } = require('./descriptor.cjs');
+const { createOperationScratchQuota } = require('./scratch-quota.cjs');
+const { createBoundedOverlayStore, applyOverlayEntriesInBatches } = require('./overlay-store.cjs');
 
 async function inject(options, point) {
   if (options.faultAt === point) throw new Error(`injected:${point}`);
@@ -380,6 +384,10 @@ async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
   const view = normalizeCapturedView(capturedView);
   await options.beforeLock?.();
   const previous = await readManifest(brainDir);
+  return writeMemoryBaseView(brainDir, view, previous, options);
+}
+
+async function writeMemoryBaseView(brainDir, view, previous, options) {
   const previousDigest = previous
     ? sourceDescriptorDigest(createDescriptor(await fsp.realpath(brainDir), previous))
     : null;
@@ -395,6 +403,7 @@ async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
     await inject(options, 'afterSourceSnapshot');
     const nodes = await writeJsonlGzAtomic(path.join(brainDir, nodeFile), view.nodes, options);
     const edges = await writeJsonlGzAtomic(path.join(brainDir, edgeFile), view.edges, options);
+    await view.validate?.({ nodes, edges });
     deltaHandle = await fsp.open(path.join(brainDir, deltaFile), 'wx', 0o600);
     await deltaHandle.sync();
     const deltaStat = await deltaHandle.stat({ bigint: true });
@@ -462,6 +471,257 @@ async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
     if (!published) {
       await Promise.all([nodeFile, edgeFile, deltaFile].map((file) =>
         fsp.rm(path.join(brainDir, file), { force: true }).catch(() => {})));
+    }
+  }
+}
+
+function countedMemoryView({ nodes, edges, summary, validate }, {
+  cloneRecords = false, deferClusterSummary = false,
+} = {}) {
+  const capturedSummary = validateScalarSummaryOnly(summary);
+  const clusters = new Set();
+  let clusterBytes = 0;
+  async function* records(input, countClusters) {
+    for await (const inputRecord of input) {
+      // The row is detached before the writer can yield for filesystem I/O.
+      // Never collect records or convert an entire snapshot into JSON arrays.
+      const record = cloneRecords ? cloneJson(inputRecord) : inputRecord;
+      if (countClusters) {
+        const cluster = record.cluster;
+        if (cluster !== undefined && cluster !== null && !clusters.has(cluster)) {
+          if (!['string', 'number', 'boolean'].includes(typeof cluster)) {
+            throw memorySourceError('source_unavailable', 'invalid graph cluster identity');
+          }
+          clusterBytes += Buffer.byteLength(String(cluster), 'utf8') + 32;
+          if (clusterBytes > 8 * 1024 * 1024
+              || (!deferClusterSummary && clusters.size >= capturedSummary.clusterCount)) {
+            throw memorySourceError('source_unavailable', 'graph cluster summary mismatch');
+          }
+          clusters.add(cluster);
+        }
+      }
+      yield record;
+    }
+  }
+  return {
+    nodes: records(nodes, true),
+    edges: records(edges, false),
+    summary: capturedSummary,
+    validate(counts) {
+      if (counts.nodes.count !== capturedSummary.nodeCount || counts.edges.count !== capturedSummary.edgeCount
+          || clusters.size !== capturedSummary.clusterCount) {
+        throw memorySourceError('source_unavailable', 'graph summary mismatch', {
+          retryable: false,
+          graphCounts: { nodes: counts.nodes.count, edges: counts.edges.count, clusters: clusters.size },
+        });
+      }
+      return validate?.();
+    },
+  };
+}
+
+function validateExpectedSnapshotSource(options) {
+  const hasExpectedSource = options.expectedGeneration !== undefined
+    || options.expectedRevision !== undefined || options.expectedDigest !== undefined;
+  if (hasExpectedSource && (
+    options.expectedSourceAbsent === true
+    || typeof options.expectedGeneration !== 'string' || !options.expectedGeneration
+    || !Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0
+    || typeof options.expectedDigest !== 'string'
+    || !/^sha256:[a-f0-9]{64}$/.test(options.expectedDigest)
+  )) {
+    throw memorySourceError('invalid_request', 'exact expected source contract required');
+  }
+  return hasExpectedSource;
+}
+
+async function assertExpectedSnapshotSource(brainDir, manifest, options) {
+  const hasExpectedSource = validateExpectedSnapshotSource(options);
+  if (options.expectedSourceAbsent === true && manifest !== null) {
+    throw memorySourceError('source_changed', 'memory source appeared before snapshot rewrite', {
+      retryable: true,
+    });
+  }
+  if (hasExpectedSource && (!manifest
+      || manifest.generation !== options.expectedGeneration
+      || manifest.currentRevision !== options.expectedRevision
+      || sourceDescriptorDigest(createDescriptor(await fsp.realpath(brainDir), manifest)) !== options.expectedDigest)) {
+    throw memorySourceError('source_changed', 'expected source changed before snapshot rewrite', {
+      retryable: true,
+    });
+  }
+}
+
+/** Stream a generation-checked resident snapshot; legacy array callers keep the existing API. */
+async function rewriteMemoryBaseFromSnapshot(brainDir, snapshot, options = {}) {
+  validateExpectedSnapshotSource(options);
+  const iterable = value => value && (
+    typeof value[Symbol.iterator] === 'function' || typeof value[Symbol.asyncIterator] === 'function'
+  );
+  if (!snapshot || !iterable(snapshot.fullView?.nodes) || !iterable(snapshot.fullView?.edges)
+      || typeof snapshot.validate !== 'function') {
+    throw memorySourceError('invalid_request', 'generation-checked streaming snapshot required');
+  }
+  const view = countedMemoryView({
+    nodes: snapshot.fullView.nodes,
+    edges: snapshot.fullView.edges,
+    summary: snapshot.summary,
+    validate: () => snapshot.validate(),
+  }, { cloneRecords: true });
+  await options.beforeLock?.();
+  const previous = await readManifest(brainDir);
+  await assertExpectedSnapshotSource(brainDir, previous, options);
+  return writeMemoryBaseView(brainDir, view, previous, options);
+}
+
+async function compactHistoricalNodeAliases(brainDir, source, options, originalError) {
+  // Old numeric/string node identities can normalize to the same logical ID.
+  // A previous summary-only repair may already count them once while the old
+  // base still contains both records. Prove that exact discrepancy before
+  // selecting the same last-record-wins view used by resident hydration.
+  const ordinals = await createBoundedOverlayStore({
+    operationRoot: options.operationRoot,
+    scratchQuota: options.scratchQuota,
+    signal: options.signal,
+    maxMemoryBytes: Math.min(options.maxOverlayMemoryBytes ?? 8 * 1024 * 1024, 8 * 1024 * 1024),
+    maxDiskBytes: options.maxOverlayDiskBytes,
+  });
+  try {
+    let rawCount = 0;
+    let uniqueCount = 0;
+    async function* sentinelEntries() {
+      for await (const node of source.iterateNodes()) {
+        yield { op: 'upsert_node', record: { id: node.id, lastOrdinal: rawCount++ } };
+      }
+    }
+    await applyOverlayEntriesInBatches(ordinals, sentinelEntries(), { signal: options.signal });
+    for await (const _sentinel of ordinals.iterateNodeUpserts({ signal: options.signal })) uniqueCount++;
+    if (rawCount !== originalError.graphCounts.nodes || rawCount <= uniqueCount
+        || uniqueCount !== source.manifest.summary.nodeCount) throw originalError;
+    await inject(options, 'afterAliasProof');
+    async function* canonicalNodes() {
+      let ordinal = 0;
+      for await (const node of source.iterateNodes()) {
+        if (ordinals.node(node.id)?.lastOrdinal === ordinal) yield node;
+        ordinal++;
+      }
+      if (ordinal !== rawCount) {
+        throw memorySourceError('source_changed', 'pinned alias source changed during compaction', {
+          retryable: true,
+        });
+      }
+    }
+    const view = countedMemoryView({
+      nodes: canonicalNodes(),
+      edges: source.iterateEdges(),
+      summary: source.manifest.summary,
+    });
+    return await writeMemoryBaseView(brainDir, view, source.manifest, options);
+  } finally {
+    await ordinals.close();
+  }
+}
+
+/**
+ * Fold a pinned committed base and delta into a new generation without copying
+ * the resident graph. Dirty resident changes must be appended before calling.
+ * The descriptor CAS keeps a concurrent writer from being overwritten.
+ */
+async function compactMemoryBase(brainDir, options = {}) {
+  const home23Root = options.home23Root;
+  const requesterAgent = options.requesterAgent || 'memory-compaction';
+  if (typeof home23Root !== 'string' || !path.isAbsolute(home23Root)) {
+    throw memorySourceError('invalid_request', 'compaction home23 root required');
+  }
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  if (options.lockRoot && path.resolve(options.lockRoot) !== lockRoot) {
+    throw memorySourceError('invalid_request', 'compaction must use the home source lock root');
+  }
+  const hasExpectedSource = options.expectedGeneration !== undefined
+    || options.expectedRevision !== undefined || options.expectedDigest !== undefined;
+  if (hasExpectedSource && (
+    typeof options.expectedGeneration !== 'string' || !options.expectedGeneration
+    || !Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0
+    || typeof options.expectedDigest !== 'string'
+    || !/^sha256:[a-f0-9]{64}$/.test(options.expectedDigest)
+  )) {
+    throw memorySourceError('invalid_request', 'exact expected source contract required');
+  }
+  throwIfAborted(options.signal);
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent });
+  const operationId = `compact-${process.pid}-${randomUUID()}`;
+  const operationRoot = durableBrainOperationRoot(home23Root, requesterAgent, operationId);
+  let source = null;
+  let scratchQuota = null;
+  let operationIdentity = null;
+  try {
+    // Legacy migration has a separate authority path. Refuse it before pinning
+    // rather than accidentally materializing a legacy projection here.
+    if (!await readManifest(brainDir)) {
+      throw memorySourceError('source_unavailable', 'memory manifest required', { retryable: true });
+    }
+    await options.beforeLock?.();
+    await fsp.mkdir(operationRoot, { recursive: true, mode: 0o700 });
+    operationIdentity = await fsp.lstat(operationRoot);
+    const pinned = await provider.pin(brainDir, operationId);
+    throwIfAborted(options.signal);
+    if (hasExpectedSource && (
+      pinned.descriptor.generation !== options.expectedGeneration
+      || pinned.descriptor.cutoffRevision !== options.expectedRevision
+      || pinned.digest !== options.expectedDigest
+    )) {
+      throw memorySourceError('source_changed', 'expected source changed before compaction', {
+        retryable: true,
+      });
+    }
+    scratchQuota = await createOperationScratchQuota({ operationRoot });
+    source = await provider.openPinnedSource(pinned.descriptor, {
+      operationId,
+      scratchQuota,
+      signal: options.signal,
+      expectedDigest: pinned.digest,
+      expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+      expectedRevision: pinned.descriptor.cutoffRevision,
+      maxOverlayMemoryBytes: options.maxOverlayMemoryBytes,
+      maxOverlayDiskBytes: options.maxOverlayDiskBytes,
+    });
+    if (!source.manifest) {
+      throw memorySourceError('source_unavailable', 'pinned compaction source unavailable', { retryable: true });
+    }
+    const view = countedMemoryView({
+      nodes: source.iterateNodes(),
+      edges: source.iterateEdges(),
+      summary: source.manifest.summary,
+    }, { deferClusterSummary: true });
+    try {
+      return await writeMemoryBaseView(brainDir, view, source.manifest, { ...options, lockRoot });
+    } catch (error) {
+      if (error?.code !== 'source_unavailable'
+          || !(error.graphCounts?.nodes > source.manifest.summary.nodeCount)) throw error;
+      return await compactHistoricalNodeAliases(brainDir, source, {
+        ...options, lockRoot, operationRoot, scratchQuota,
+      }, error);
+    }
+  } finally {
+    try {
+      await source?.release();
+    } finally {
+      try {
+        await scratchQuota?.close();
+      } finally {
+        await provider.releaseOperationPins(operationId);
+        // This unique internal operation owns its scratch tree. Check ownership
+        // before removing it; never remove a replaced operation directory.
+        const current = await fsp.lstat(operationRoot).catch((error) => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        });
+        if (current && operationIdentity && !current.isSymbolicLink()
+            && current.isDirectory() && current.dev === operationIdentity.dev
+            && current.ino === operationIdentity.ino) {
+          await fsp.rm(operationRoot, { recursive: true, force: false });
+        }
+      }
     }
   }
 }
@@ -631,6 +891,8 @@ async function retireUnpinnedSources(brainDir, options = {}) {
 module.exports = {
   appendMemoryRevision,
   rewriteMemoryBase,
+  compactMemoryBase,
+  rewriteMemoryBaseFromSnapshot,
   advanceAnnBuiltFromRevision,
   compareAndSwapSourceRevision,
   retireUnpinnedSources,

@@ -52,7 +52,6 @@
     "tests/shared/memory-source-lock.test.js",
     "tests/shared/memory-source-operation-context.test.js",
     "tests/shared/memory-source-overlay-store.test.js",
-    "tests/shared/memory-source-writer.test.js",
     "tests/shared/pgs-partition-coarsening.test.cjs",
     "tests/shared/research-run-target.test.cjs",
     "tests/shared/verified-follow-up-support.test.cjs"
