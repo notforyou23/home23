@@ -6,7 +6,50 @@ has taken over local correction and consolidation at the owner’s request.
 Publication, installation and live transitions remain separate actions; this
 record does not grant or narrow the owner’s authorization.
 
-## Revisions
+## September 12 integrated Mac candidate
+
+The owner requested one integrated, installable Mac candidate. Codex owns this
+milestone through package verification and return to maintained source.
+
+- Backend `0b5fb604f37f02b33b8bfa7ff2d2e1761b2a1244` merges candidate
+  `7223d855` into current local main, preserving the later chat/attachment work.
+- Apple `f9adcbfba6115c149bf3caa098ccf7d48a7e67c7` merges Host `9cc694df`
+  into current local main, preserving the current native chat work.
+- Both are integrated into local main and the maintained development checkouts.
+- Runtime package `7f07d020b35e150bf478a7c40d6a15e07f477341c47fadb904f3c1bf6be59075`
+  was built from that backend SHA with official Node 22.23.2, darwin/arm64.
+- The full Host bundle contains that exact payload. Native Host command checks,
+  copied-payload integrity and local ad-hoc signing passed. The matching native
+  Mac client Release build passed and is development-signed as build 151.
+- Combined backend checks: 322 passed, one optional PM2 fixture skipped.
+  Contracts: 71 passed, two skipped. The first source test run lacked compiled
+  `dist`; after providing the exact packaged build, the affected Host suite
+  passed (29 passed, one skipped). The other source suites were not rerun.
+
+The first exact-artifact native trial installed successfully, created its own
+resident and Seed, downloaded verified artifacts from an empty cache, and warmed
+preparation. Its first Start failed: the encoder's cold launch became warm after
+about 32 seconds, beyond the backend's 30-second wait. The trial was stopped and
+its private supervisor terminated; its state and failure receipt are retained.
+This is not passing installed acceptance.
+
+Backend `a12ffcb3` raises the bounded encoder wait to 90 seconds. Apple
+`cf33bec7` allows 300 seconds for native Start, covering payload verification,
+encoder startup and resident readiness. Neither timeout is an I/O preemption
+guarantee. The corrected package and its installed acceptance supersede the
+first artifact only when their own receipts pass.
+
+Private package, signing, test and installation receipts belong in the development
+verification area under `integrated-mac-candidate-20260912`. Native installed-home
+verification is tracked there separately from compilation. These are developer
+artifacts, not a notarized public release. Measured attention remains null-cal;
+existing homes retain their embedding provider. Nothing has been pushed or
+activated in the owner's live installation by this milestone.
+
+The following sections preserve the earlier evidence at its original revisions.
+Their old Mac trial and Linux home are not silently upgraded by this candidate.
+
+## Earlier revisions
 
 | Layer | Repository | SHA | Role |
 |---|---|---|---|
@@ -183,12 +226,11 @@ blocker. See `2026-09-11-owned-embedder-owned-attention-calibration.md`.
   no second home).
 - Host-path interrupt/resume on Mac used an overlay; restored payload
   Start/Stop of `d8f45ba3` copies worked after revert.
-- Existing Mac TEST is **not** an exact artifact of `be625487` or later
-  follow-ups. Overlay is not an acceptable trial. Do not create another Mac
-  TEST home until authorized. Proposed exact-artifact trial: package the
-  chosen backend SHA for darwin/arm64 with Host `package.mjs`, then install
-  only onto a home that can take that `packageId` (D08 or a later-authorized
-  isolated home). Not authorized now. Do not build or install yet.
+- The earlier Mac TEST is **not** an exact artifact of `be625487` or later
+  follow-ups. Overlay is not an acceptable trial. The September 12 owner request
+  authorizes the integrated candidate build and its isolated verification;
+  that milestone is recorded above. It does not authorize overwriting the
+  earlier home or an existing-home migration.
 
 **Other.** Stage 6 / default flip NO-GO. Source `init` still defaults to
 Ollama. Chat OAuth out of Linux scope. `4000` / cooperative `1500ms` are a
