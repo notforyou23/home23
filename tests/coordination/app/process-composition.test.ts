@@ -23,6 +23,7 @@ test("shadow composition advertises no unfinished product capability and closes 
     databasePath,
     socketPath: join(runtime, "coord.sock"),
     capabilityToken: "c".repeat(64),
+    residents: {},
     flags: {
       ...disabledCoordinationFeatureFlags(),
       "coordination.process.enabled": true,
@@ -69,6 +70,7 @@ test("raw M16 injection and Activity stay off without their independent activati
     databasePath: join(runtime, "home23-coordination.sqlite3"),
     socketPath: join(runtime, "coord.sock"),
     capabilityToken: "d".repeat(64),
+    residents: {},
     flags: {
       ...disabledCoordinationFeatureFlags(),
       "coordination.process.enabled": true,

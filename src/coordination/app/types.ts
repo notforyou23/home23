@@ -191,6 +191,7 @@ export interface CoordinationServices {
   unread?: CoordinationUnreadPort;
   search?: CanonicalSearchService;
   messageSubmission?: CoordinationMessageSubmissionPort;
+  liveVoice?: import("./live-voice.js").LiveVoiceService;
   work?: CoordinationWorkPort;
   workControl?: Omit<ProductWorkControlPort, "cancel"> & { cancel(input: Parameters<ProductWorkControlPort["cancel"]>[0]): ReturnType<ProductWorkControlPort["cancel"]> | Promise<ReturnType<ProductWorkControlPort["cancel"]>> };
   leases?: CoordinationLeasePort;

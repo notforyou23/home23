@@ -21,6 +21,7 @@ import { encodeCommunicationEventEnvelope } from "../communications/index.js";
 import { MessagingError } from "../channels/index.js";
 import { once } from "node:events";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../../agent/reasoning-effort.js";
+import { mountLiveVoiceRoutes } from "./live-voice-routes.js";
 
 type CapabilityName = keyof CoordinationAdvertisedCapabilities;
 
@@ -713,6 +714,7 @@ export function createCoordinationRouter(input: {
     }),
   );
 
+  mountLiveVoiceRoutes(router, application);
   router.use((_request, _response, next) => {
     next(new CoordinationHttpError(
       "route_not_found",

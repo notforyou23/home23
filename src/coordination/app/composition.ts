@@ -1,4 +1,5 @@
 import type { MessagingActorContext } from '../channels/types.js';
+import { createLiveVoiceService, type LiveVoiceService } from './live-voice.js';
 import { ProjectContinuityStore } from '../projects/continuity.js';
 import { boundHistoricalContext } from '../../agent/historical-context.js';
 import { createResidentNotifications } from './resident-notifications.js';
@@ -748,7 +749,12 @@ export function createCoordinationProcess(
     residentAttestationTimer = undefined;
     await residentAttestationRun;
   };
+  let liveVoice: LiveVoiceService | undefined;
   const lifecycle = createCoordinationLifecycle([{
+    name: "live-voice",
+    drain: async () => liveVoice?.drain(),
+    close: async () => liveVoice?.drain(),
+  }, {
     name: "coordination-completion-ingress",
     drain: async () => completionIngress?.close(),
     close: async () => completionIngress?.close(),
@@ -1358,10 +1364,17 @@ export function createCoordinationProcess(
         replayed: result.replayed, work: projection };
     },
   };
+  if (messageSubmission && directMessageContext) {
+    liveVoice = createLiveVoiceService({ auth, targets: directMessageContext, messages,
+      submission: messageSubmission, work,
+      journalDirectory: join(dirname(config.databasePath), "voice-sessions"),
+      isAccepting: () => lifecycle.state() === "accepting" });
+  }
   const application = createCoordinationApplication({
     flags: config.flags,
     services: {
       auth, bootstrap, bots: botDirectory, channels, projects, messages, unread, search,
+      ...(liveVoice === undefined ? {} : { liveVoice }),
       work, workControl: stoppedWorkControl, leases, events, communications,
       authorityEpochs,
       ...(attachments === undefined ? {} : { attachments }),
