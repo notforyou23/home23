@@ -134,6 +134,8 @@ export interface CoordinationMessageSubmissionPort {
     channelId: string;
     idempotencyKey: string;
     body: CoordinationMessageSubmissionRequest;
+    /** Trusted canonical owner speech partition; never accepted from the public body. */
+    instructionMessageIds?: readonly string[];
   }): Promise<Readonly<Record<string, unknown> & { response?: Promise<unknown> }>>;
   selectionOptions?(input: {
     botId?: string;
@@ -147,7 +149,7 @@ export type CoordinationWorkPort = Pick<
   ReturnType<typeof createWorkService>,
   "create" | "cancelQueued" | "get" | "getTurnSelection" | "listResidentRecoverable" |
   "listSucceededMissingResult"
-> & Partial<Pick<ReturnType<typeof createWorkService>, "getPlannedInvocation" | "getInvocationExecution">>;
+> & Partial<Pick<ReturnType<typeof createWorkService>, "getPlannedInvocation" | "getInvocationExecution" | "getInstructionMessageIds">>;
 
 /** Exact M11 fenced execution boundary; no resident process is activated by injection. */
 export type CoordinationLeasePort = ReturnType<typeof createLeaseService>;

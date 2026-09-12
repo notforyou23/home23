@@ -92,6 +92,8 @@ export interface CreateWorkInput {
   correlationId: string;
   /** Omitted by pre-selection callers; omission is exactly the null/default pair. */
   turnSelection?: WorkTurnSelection;
+  /** Ordered canonical owner Messages jointly forming this direct turn's instruction. */
+  instructionMessageIds?: readonly string[];
   /** Owner-safe immutable product copy for independently visible Working Threads. */
   presentation?: { title: string; summary: string };
   plannedInvocation?: ForegroundDetachmentRequest;

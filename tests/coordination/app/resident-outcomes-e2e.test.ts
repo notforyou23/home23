@@ -29,7 +29,7 @@ const canonicalMessagesAuthority = Object.freeze({
   rollbackEpoch: 1,
 });
 
-for (const [laterMessages, legacySnapshot] of [[2,false],[102,false],[2,true]] as const) test(`outcome follow-through preserves the strict resident history boundary with ${laterMessages} later messages, legacy snapshot ${legacySnapshot}`, async (t) => {
+for (const [laterMessages, legacySnapshot, splitVoice] of [[2,false,false],[102,false,false],[2,true,false],[2,false,true],[102,false,true]] as const) test(`outcome follow-through preserves the strict resident history boundary with ${laterMessages} later messages, legacy snapshot ${legacySnapshot}, split voice ${splitVoice}`, async (t) => {
   const database = M11TestDatabase.temporary();
   t.after(() => database.close());
   database.raw.prepare("INSERT INTO conversation_handles (id, channel_id, created_at) VALUES (?, ?, ?)")
@@ -144,7 +144,14 @@ for (const [laterMessages, legacySnapshot] of [[2,false],[102,false],[2,true]] a
   const service=createDirectMessageSubmissionService({messages,context:new SqliteDirectMessageContext(database,messages),work,leases,communications,outcomes,
     resolveResident:()=>({resident,holderInstanceId:'resident-1',models:agent,context:input=>residentContext({...input,residentBinding:'jerry'})}),
     authority:{current:()=>canonicalMessagesAuthority},beginWork,recoveryIdentity:()=>({requestId:fixtureId('request',999),correlationId:fixtureId('correlation',999)})});
-  const accepted=await service.submitMessage({context:owner,channelId:CHANNEL_ID,idempotencyKey:'outcome-origin-0001',body:{messageId:fixtureId('message',900),clientMessageId:'client-outcome',text:'Review the work and preserve my changes.',attachmentIds:[],mentions:[],replyToMessageId:null}});
+  const originalText = splitVoice ? 'Review the work\nand preserve my changes.' : 'Review the work and preserve my changes.';
+  if (splitVoice) await messages.sendMessage({ context: owner, channelId: CHANNEL_ID, messageId: fixtureId('message', 899),
+    authorPrincipalId: OWNER_ID, idempotencyKey: 'outcome-voice-first-segment', kind: 'text', text: 'Review the work',
+    mentions: [], clientMessageId: fixtureId('message', 899), replyToMessageId: null, tombstonesMessageId: null,
+    provenance: { roundId: null, workId: null } });
+  const accepted=await service.submitMessage({context:owner,channelId:CHANNEL_ID,idempotencyKey:'outcome-origin-0001',
+    ...(splitVoice ? { instructionMessageIds: [fixtureId('message',899),fixtureId('message',900)] } : {}),
+    body:{messageId:fixtureId('message',900),clientMessageId:'client-outcome',text:splitVoice?'and preserve my changes.':originalText,attachmentIds:[],mentions:[],replyToMessageId:null}});
   resolveAgent({text:'Evidence report',model:'gpt-5.6-terra',toolCallCount:0,durationMs:1});await accepted.response;
   for(let n=0;n<laterMessages;n++)await messages.sendMessage({context:owner,channelId:CHANNEL_ID,messageId:fixtureId('message',50000+n),authorPrincipalId:OWNER_ID,idempotencyKey:`outcome-latest-${n}`,kind:'text',text:`Latest correction ${n}: do not publish`,mentions:[],clientMessageId:null,replyToMessageId:null,tombstonesMessageId:null,provenance:{roundId:null,workId:null}});
   outcomes.enqueue('specialist:fixture',accepted.work.id,{status:'completed',result:'Untrusted worker evidence'});
@@ -160,11 +167,14 @@ for (const [laterMessages, legacySnapshot] of [[2,false],[102,false],[2,true]] a
   await service.awaitSettlement(review);await service.processResidentOutcomes();
   assert.equal(residentAttachments,2);assert.match(instructions[1],/INTERNAL WORK OUTCOME/);
   assert.match(instructions[1],/preserve my changes/);assert.ok(JSON.stringify(histories[1]).includes(`Latest correction ${laterMessages-1}`));
+  assert.equal(instructions[0], originalText);
+  assert.ok(instructions[1].includes(JSON.stringify(originalText)));
   assert.equal(work.get(review)?.state,'succeeded');assert.equal(outcomes.pending().length,0);
   assert.equal(database.readOne<{n:number}>("SELECT count(*) AS n FROM messages WHERE work_id=? AND kind='result'",review)?.n,1);
   database.reopen();await service.processResidentOutcomes();assert.equal(residentAttachments,2);
   const recovered = await new SqliteDirectMessageContext(database, messages).recover(work.get(review)!);
   assert.match(recovered.prepared.instruction, /INTERNAL WORK OUTCOME/);
+  assert.equal(recovered.prepared.originalOwnerRequest, originalText);
   assert.ok(JSON.stringify(recovered.prepared.historyBackfill).includes(`Latest correction ${laterMessages-1}`));
   const row = outcomes.forReview(review)!;
   const snapshot = JSON.parse(row.prepared!);
@@ -183,6 +193,7 @@ for (const [laterMessages, legacySnapshot] of [[2,false],[102,false],[2,true]] a
   }).work;
   const recoveredChild = await new SqliteDirectMessageContext(database, messages).recover(child);
   assert.match(recoveredChild.prepared.instruction, /INTERNAL WORK OUTCOME/);
+  assert.equal(recoveredChild.prepared.originalOwnerRequest, originalText);
   assert.ok(JSON.stringify(recoveredChild.prepared.historyBackfill).includes(`Latest correction ${laterMessages-1}`));
   database.reopen();
   assert.equal((await new SqliteDirectMessageContext(database, messages).recover(work.get(child.id)!)).originMessageId, parent.originMessageId);

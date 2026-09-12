@@ -150,6 +150,102 @@ function readTurnSelection(database: M11Database, workId: string): WorkTurnSelec
   return Object.freeze({ ...selection });
 }
 
+function normalizeInstructionMessageIds(value: readonly string[] | undefined): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100 || new Set(value).size !== value.length) {
+    throw new WorkError("invalid_request", "instruction Message references must be distinct and bounded");
+  }
+  return Object.freeze(value.map(id => assertId("message", id, "invalid_request")));
+}
+
+function workRequestDigest(input: Pick<CreateWorkInput,
+  "principalId" | "targetPrincipalId" | "channelId" | "originMessageId" | "roundId" | "kind" | "maxAutomaticOffers"> & {
+  manifest: ReturnType<typeof normalizeManifest>;
+  turnSelection: WorkTurnSelection;
+  presentation: CreateWorkInput["presentation"] | null;
+  plannedInvocation: ForegroundDetachmentRequest | null;
+  instructionMessageIds?: readonly string[];
+}): string {
+  const { turnSelection, presentation, plannedInvocation, instructionMessageIds, ...base } = input;
+  const digestInput: Record<string, unknown> = { ...base };
+  // Omitted extensions retain the exact digest used by pre-extension callers.
+  if (turnSelection.modelAlias !== null || turnSelection.reasoningEffort !== null) digestInput.turnSelection = turnSelection;
+  if (presentation !== null) digestInput.presentation = presentation;
+  if (plannedInvocation !== null) digestInput.plannedInvocation = plannedInvocation;
+  if (instructionMessageIds !== undefined) digestInput.instructionMessageIds = instructionMessageIds;
+  return sha256(canonicalJson(digestInput));
+}
+
+function readPlannedInvocation(database: M11Database, workId: string): ForegroundDetachmentRequest | null {
+  const row = database.readOne<{ assignmentJson: string }>(
+    "SELECT assignment_json AS assignmentJson FROM work_planned_invocations WHERE work_id = ?", workId);
+  return row ? parseForegroundDetachmentRequest(JSON.parse(row.assignmentJson)) : null;
+}
+
+/** Read the immutable instruction partition, binding event metadata to the durable Work digest. */
+export function readWorkInstructionMessageIds(database: M11Database, work: WorkRecord): readonly string[] | undefined {
+  const event = database.readOne<{ payloadJson: string; payloadDigest: string }>(
+    `SELECT payload_json AS payloadJson, payload_digest AS payloadDigest FROM events
+     WHERE aggregate_kind='work' AND aggregate_id=? AND aggregate_version=1 AND type='turn.updated'`, work.id);
+  let ids: readonly string[] | undefined;
+  if (event) {
+    if (sha256(event.payloadJson) !== event.payloadDigest) throw new WorkError("invalid_request", "Work creation evidence digest differs");
+    const payload = JSON.parse(event.payloadJson);
+    if (payload.workId !== work.id || payload.requestDigest !== work.requestDigest ||
+        payload.contextManifestId !== work.contextManifestId || payload.targetPrincipalId !== work.targetPrincipalId) {
+      throw new WorkError("invalid_request", "Work creation evidence binding differs");
+    }
+    ids = normalizeInstructionMessageIds(payload.instructionMessageIds);
+  }
+  const row = database.readOne<ManifestRow>(`${MANIFEST_SELECT} WHERE id=?`, work.contextManifestId);
+  if (!row) throw new WorkError("invalid_manifest", "Work context manifest is unavailable");
+  const { id: _id, createdAt: _createdAt, ...manifest } = freezeManifest(row);
+  const presentation = database.readOne<{ title: string; summary: string }>(
+    "SELECT title, summary FROM work_thread_presentations WHERE work_id=?", work.id) ?? null;
+  const digest = workRequestDigest({ principalId: work.principalId, targetPrincipalId: work.targetPrincipalId,
+    channelId: work.channelId, originMessageId: work.originMessageId, roundId: work.roundId,
+    kind: work.kind, maxAutomaticOffers: work.maxAutomaticOffers, manifest,
+    turnSelection: readTurnSelection(database, work.id), presentation,
+    plannedInvocation: readPlannedInvocation(database, work.id),
+    ...(ids === undefined ? {} : { instructionMessageIds: ids }) });
+  if (digest !== work.requestDigest) throw new WorkError("invalid_request", "Work instruction evidence differs from its request digest");
+  return ids;
+}
+
+/** A planned child may inherit owner context only through its exact immutable parent snapshot. */
+export function readInheritedWorkInstructionMessageIds(database: M11Database, work: WorkRecord): readonly string[] | undefined {
+  let current = work;
+  const visited = new Set<string>();
+  for (let depth = 0; depth < 64; depth += 1) {
+    if (visited.has(current.id)) throw new WorkError("invalid_request", "Work instruction lineage cycles");
+    visited.add(current.id);
+    const ids = readWorkInstructionMessageIds(database, current);
+    if (ids !== undefined) return ids;
+    if (current.kind !== "resident_work_thread") return undefined;
+    const planned = readPlannedInvocation(database, current.id);
+    if (!planned) return undefined;
+    const parent = database.readOne<WorkRow>(`${WORK_SELECT} WHERE id=?`, planned.parentOrigin.workId);
+    if (!parent || parent.channelId !== current.channelId || parent.principalId !== current.principalId ||
+        parent.targetPrincipalId !== current.targetPrincipalId || parent.originMessageId !== current.originMessageId ||
+        parent.roundId !== current.roundId || planned.parentOrigin.channelId !== current.channelId ||
+        planned.parentOrigin.originMessageId !== current.originMessageId || planned.parentOrigin.roundId !== current.roundId ||
+        planned.parentOrigin.holderPrincipalId !== current.targetPrincipalId) {
+      throw new WorkError("invalid_request", "Work instruction parent binding differs");
+    }
+    const snapshot = (manifestId: string) => {
+      const row = database.readOne<ManifestRow>(`${MANIFEST_SELECT} WHERE id=?`, manifestId);
+      if (!row) throw new WorkError("invalid_manifest", "Work instruction parent snapshot is unavailable");
+      const { id: _id, createdAt: _createdAt, ...manifest } = freezeManifest(row);
+      return canonicalJson(manifest);
+    };
+    if (snapshot(parent.contextManifestId) !== snapshot(current.contextManifestId)) {
+      throw new WorkError("invalid_manifest", "Work instruction parent snapshot differs");
+    }
+    current = freezeWork(parent);
+  }
+  throw new WorkError("invalid_request", "Work instruction lineage is unbounded");
+}
+
 function freezeWork(row: WorkRow): WorkRecord {
   return Object.freeze({ ...row });
 }
@@ -294,7 +390,7 @@ function readQueuedCancellationResult(
   });
 }
 
-function assertNewWorkEligibility(database: M11Database, input: CreateWorkInput, manifest: ReturnType<typeof normalizeManifest>): void {
+function assertNewWorkEligibility(database: Pick<M11Database, "readOne">, input: CreateWorkInput, manifest: ReturnType<typeof normalizeManifest>): void {
   const channel = database.readOne<{ lifecycle: string }>(
     "SELECT lifecycle FROM channels WHERE id = ?",
     input.channelId,
@@ -326,6 +422,28 @@ function assertNewWorkEligibility(database: M11Database, input: CreateWorkInput,
   if (input.originMessageId !== null && !manifest.messageIds.includes(input.originMessageId)) {
     throw new WorkError("invalid_manifest", "origin Message must be present in the context manifest");
   }
+  if (input.instructionMessageIds !== undefined) {
+    if (input.principalId !== "user_owner" || input.roundId !== null ||
+        !["resident_turn", "bot_turn"].includes(input.kind) || input.instructionMessageIds.at(-1) !== input.originMessageId) {
+      throw new WorkError("invalid_request", "instruction Message references require an owner direct turn ending at its origin");
+    }
+    let priorSequence = 0;
+    for (const id of input.instructionMessageIds) {
+      const message = database.readOne<{ sequence: number }>(
+        `SELECT m.channel_sequence AS sequence FROM messages m
+         WHERE m.id=? AND m.channel_id=? AND m.author_principal_id=? AND m.author_kind='owner'
+           AND m.kind='text' AND m.body_text IS NOT NULL AND length(trim(m.body_text))>0
+           AND m.stored_visibility='visible'
+           AND NOT EXISTS(SELECT 1 FROM messages t WHERE t.tombstones_message_id=m.id)
+           AND NOT EXISTS(SELECT 1 FROM message_artifacts a WHERE a.message_id=m.id)`,
+        id, input.channelId, input.principalId);
+      if (!message || !manifest.messageIds.includes(id) || message.sequence <= priorSequence || message.sequence > manifest.channelWatermark) {
+        throw new WorkError("invalid_manifest", "instruction Message references are not ordered visible owner speech in this snapshot");
+      }
+      priorSequence = message.sequence;
+    }
+    if (priorSequence !== manifest.channelWatermark) throw new WorkError("invalid_manifest", "instruction origin must end the snapshot");
+  }
   if (input.roundId !== null) {
     const round = database.readOne<{ count: number }>(
       "SELECT count(*) AS count FROM rounds WHERE id = ? AND channel_id = ?",
@@ -346,6 +464,7 @@ export function createWorkService(options: CreateWorkServiceOptions) {
         "roundId", "kind", "idempotencyKey", "manifest", "maxAutomaticOffers",
         "requestId", "correlationId",
         ...(Object.prototype.hasOwnProperty.call(input, "turnSelection") ? ["turnSelection"] : []),
+        ...(Object.prototype.hasOwnProperty.call(input, "instructionMessageIds") ? ["instructionMessageIds"] : []),
         ...(Object.prototype.hasOwnProperty.call(input, "presentation") ? ["presentation"] : []),
         ...(Object.prototype.hasOwnProperty.call(input, "plannedInvocation") ? ["plannedInvocation"] : []),
       ];
@@ -386,6 +505,7 @@ export function createWorkService(options: CreateWorkServiceOptions) {
       }
       const manifest = normalizeManifest(input.manifest);
       const turnSelection = normalizeTurnSelection(input.turnSelection);
+      const instructionMessageIds = normalizeInstructionMessageIds(input.instructionMessageIds);
       const presentation = input.presentation === undefined ? null : (() => {
         assertExactKeys(input.presentation!, ["title", "summary"], "invalid_request", "Work presentation");
         const { title, summary } = input.presentation!;
@@ -401,29 +521,14 @@ export function createWorkService(options: CreateWorkServiceOptions) {
         throw new WorkError("invalid_manifest", "manifest Channel differs from Work Channel");
       }
       const idempotencyKeyDigest = sha256(input.idempotencyKey);
-      const digestInput: Record<string, unknown> = {
-        principalId,
-        targetPrincipalId,
-        channelId,
-        originMessageId,
-        roundId,
-        kind: input.kind,
-        manifest,
-        maxAutomaticOffers: input.maxAutomaticOffers,
-      };
-      // Preserve replay compatibility for every Work created before model and
-      // effort selection existed.  Only a non-default selection extends the
-      // immutable request digest.
-      if (turnSelection.modelAlias !== null || turnSelection.reasoningEffort !== null) {
-        digestInput.turnSelection = turnSelection;
-      }
-      if (presentation !== null) digestInput.presentation = presentation;
       const plannedInvocation = input.plannedInvocation === undefined ? null : parseForegroundDetachmentRequest(input.plannedInvocation);
       if (plannedInvocation !== null) {
         if (input.kind !== 'resident_work_thread') throw new WorkError('invalid_request', 'planned invocation requires Working Thread');
-        digestInput.plannedInvocation = plannedInvocation;
       }
-      const requestDigest = sha256(canonicalJson(digestInput));
+      const requestDigest = workRequestDigest({ principalId, targetPrincipalId, channelId, originMessageId,
+        roundId, kind: input.kind, manifest, maxAutomaticOffers: input.maxAutomaticOffers,
+        turnSelection, presentation, plannedInvocation,
+        ...(instructionMessageIds === undefined ? {} : { instructionMessageIds }) });
       const existing = options.database.readOne<WorkRow>(
         `${WORK_SELECT} WHERE principal_id = ? AND idempotency_key_digest = ?`,
         principalId,
@@ -467,6 +572,10 @@ export function createWorkService(options: CreateWorkServiceOptions) {
       }));
 
       const committed = options.database.mutateWithEvent((transaction) => {
+        // Recheck the speech binding under the same transaction as the Work and its event.
+        if (instructionMessageIds !== undefined) {
+          assertNewWorkEligibility(transaction, { ...input, instructionMessageIds }, manifest);
+        }
         transaction.run(
           `INSERT INTO context_manifests (
             id, privacy, channel_id, message_refs_json, artifact_refs_json,
@@ -614,6 +723,7 @@ export function createWorkService(options: CreateWorkServiceOptions) {
                 targetPrincipalId,
                 automaticOfferCount: 0,
                 maxAutomaticOffers: input.maxAutomaticOffers,
+                ...(instructionMessageIds === undefined ? {} : { instructionMessageIds: [...instructionMessageIds] }),
               },
               createdAt,
             },
@@ -835,9 +945,14 @@ export function createWorkService(options: CreateWorkServiceOptions) {
 
     getPlannedInvocation(workId: string): ForegroundDetachmentRequest | null {
       assertId('work', workId, 'invalid_request');
-      const row = options.database.readOne<{ assignmentJson: string }>(
-        'SELECT assignment_json AS assignmentJson FROM work_planned_invocations WHERE work_id = ?', workId);
-      return row ? parseForegroundDetachmentRequest(JSON.parse(row.assignmentJson)) : null;
+      return readPlannedInvocation(options.database, workId);
+    },
+
+    getInstructionMessageIds(workId: string): readonly string[] | undefined {
+      assertId("work", workId, "invalid_request");
+      const row = options.database.readOne<WorkRow>(`${WORK_SELECT} WHERE id=?`, workId);
+      if (!row) throw new WorkError("not_found", "Work is unavailable");
+      return readWorkInstructionMessageIds(options.database, freezeWork(row));
     },
 
     getInvocationExecution(workId: string): { workId: string; attemptId: string; leaseId: string; fencingToken: number; invocationId: string; startedAt: string } | null {

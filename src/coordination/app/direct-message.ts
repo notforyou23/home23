@@ -43,6 +43,7 @@ export interface DirectMessageChannelContext {
   targetPrincipalId: string;
   residentBinding: string;
   instruction: string;
+  instructionMessageIds?: readonly string[];
   /** Original canonical request, never a recursively wrapped runtime prompt. */
   originalOwnerRequest?: string;
   historyBackfill: readonly DirectMessageHistoryEntry[];
@@ -66,6 +67,7 @@ export interface DirectMessageContextPort {
     channelId: string;
     originMessage: MessageProjection;
     attachmentIds: readonly string[];
+    instructionMessageIds?: readonly string[];
   }): Promise<DirectMessageChannelContext>;
   recover(work: WorkRecord): Promise<{
     prepared: DirectMessageChannelContext;
@@ -556,22 +558,28 @@ export function createDirectMessageSubmissionService(options: {
               const target = await executionTargetFor(recovered.prepared);
               const page = await options.messages.listMessages({ context: target.context({
                 principalId: source.targetPrincipalId, ...identity }), channelId: source.channelId, limit: 100 });
-              const history = page.messages.filter(m => m.text !== null && m.id !== source.originMessageId).map(m => ({
+              const instructionMessageIds = recovered.prepared.instructionMessageIds;
+              const history = page.messages.filter(m => m.text !== null &&
+                !(instructionMessageIds ?? [source.originMessageId]).includes(m.id)).map(m => ({
                 messageId: m.id, sequence: m.sequence, role: m.author.principalId === source.targetPrincipalId ? 'assistant' as const : 'user' as const,
                 text: m.text!, createdAt: m.createdAt,
               }));
               const originalMessage = page.messages.find(message => message.id === source.originMessageId)
                 ?? await options.messages.getMessage?.({ context: target.context({ principalId: source.targetPrincipalId, ...identity }), messageId: source.originMessageId });
-              const original = originalMessage?.text ?? recovered.prepared.originalOwnerRequest
+              const original = recovered.prepared.originalOwnerRequest
+                ?? (instructionMessageIds && !recovered.prepared.instruction.startsWith('INTERNAL WORK OUTCOME')
+                  ? recovered.prepared.instruction : originalMessage?.text)
                 ?? (recovered.prepared.instruction.startsWith('INTERNAL WORK OUTCOME') ? null : recovered.prepared.instruction);
               if (original === null) throw new Error('Canonical original request unavailable; refusing to wrap an internal outcome as owner intent');
               prepared = { ...recovered.prepared,
                 originalOwnerRequest: original,
                 instruction: residentOutcomeInstruction(original, row.evidence, source.id),
                 historyBackfill: boundHistoricalContext(history),
-                manifest: directMessageManifest({ channelId: source.channelId, messageIds: [...new Set([source.originMessageId, ...page.messages.map(m => m.id)])],
+                manifest: directMessageManifest({ channelId: source.channelId,
+                  messageIds: [...new Set([...(instructionMessageIds ?? [source.originMessageId]), ...page.messages.map(m => m.id)])],
                   attachmentIds: recovered.prepared.manifest.artifactIds,
-                  channelSequence: Math.max(0, ...page.messages.map(m => m.sequence)), eventSequence: store.eventWatermark() }),
+                  channelSequence: Math.max(0, ...page.messages.map(m => m.sequence)), eventSequence: store.eventWatermark(),
+                  ...(instructionMessageIds === undefined ? {} : { instructionMessageIds }) }),
               };
               store.update(row, 'prepared_json', JSON.stringify(prepared));
             }
@@ -692,6 +700,7 @@ export function createDirectMessageSubmissionService(options: {
 
     async submitMessage(input: {
       context: MessagingActorContext; channelId: string; idempotencyKey: string;
+      instructionMessageIds?: readonly string[];
       body: { messageId: string; clientMessageId: string; text: string | null;
         attachmentIds: readonly string[]; mentions: readonly string[]; replyToMessageId: string | null;
         modelAlias: string | null; reasoningEffort: import("../../agent/reasoning-effort.js").ReasoningEffort | null };
@@ -715,6 +724,15 @@ export function createDirectMessageSubmissionService(options: {
           input.context.principalId, sha256(input.idempotencyKey),
         );
         const priorWork = priorWorkId ? options.work.get(priorWorkId) : null;
+        if (priorWork) {
+          if (input.instructionMessageIds !== undefined && !options.work.getInstructionMessageIds) {
+            throw new MessagingError("authority_unavailable");
+          }
+          const recordedInstructionIds = options.work.getInstructionMessageIds?.(priorWork.id);
+          if (JSON.stringify(recordedInstructionIds) !== JSON.stringify(input.instructionMessageIds)) {
+            throw new MessagingError("idempotency_conflict");
+          }
+        }
         if (!priorWork && (turnSelection.modelAlias !== null || turnSelection.reasoningEffort !== null)) {
           const resolved = await options.context.resolveTarget({
             context: input.context,
@@ -794,6 +812,7 @@ export function createDirectMessageSubmissionService(options: {
         const prepared = await options.context.prepare({
           context: input.context, channelId: input.channelId,
           originMessage: appended.message, attachmentIds: input.body.attachmentIds,
+          ...(input.instructionMessageIds === undefined ? {} : { instructionMessageIds: input.instructionMessageIds }),
         });
         // Refuse a disabled target before creating durable Work or returning
         // an accepted response. The owner Message remains the canonical record
@@ -809,6 +828,7 @@ export function createDirectMessageSubmissionService(options: {
           manifest: prepared.manifest, maxAutomaticOffers: 1,
           requestId: input.context.requestId, correlationId: input.context.correlationId,
           turnSelection,
+          ...(prepared.instructionMessageIds === undefined ? {} : { instructionMessageIds: prepared.instructionMessageIds }),
         });
         let response: Promise<MessageProjection>;
         if (created.work.state === "succeeded") {
@@ -878,6 +898,7 @@ export function createDirectMessageSubmissionService(options: {
 export function directMessageManifest(input: {
   channelId: string; messageIds: readonly string[]; attachmentIds: readonly string[];
   channelSequence: number; eventSequence: number;
+  instructionMessageIds?: readonly string[];
 }): ContextManifestInput {
   const messageIds = [...input.messageIds];
   const attachmentIds = [...input.attachmentIds].sort();
@@ -887,6 +908,7 @@ export function directMessageManifest(input: {
     attachmentIds,
     channelSequence: input.channelSequence,
     eventSequence: input.eventSequence,
+    ...(input.instructionMessageIds === undefined ? {} : { instructionMessageIds: [...input.instructionMessageIds] }),
   });
   return Object.freeze({
     privacy: "channel_only", channelId: input.channelId,

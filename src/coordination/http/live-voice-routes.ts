@@ -1,7 +1,7 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import type { CoordinationApplication } from "../app/types.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../../agent/reasoning-effort.js";
-import { LIVE_VOICE_MODEL, type LiveVoiceAccess } from "../app/live-voice.js";
+import { LIVE_VOICE_MODEL, LIVE_VOICE_VOICES, LIVE_VOICE_PACES, type LiveVoiceAccess, type LiveVoiceStart } from "../app/live-voice.js";
 import { CoordinationHttpError } from "./errors.js";
 import { requireCoordinationAuth, requireCoordinationContext, requireCoordinationMetadata,
   requireIdempotencyKey, coordinationIdempotencyKey } from "./middleware.js";
@@ -41,12 +41,15 @@ export function mountLiveVoiceRoutes(router: Express, application: CoordinationA
     if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.sdp !== "string" ||
       !body.sdp.trim() || Buffer.byteLength(body.sdp) > 65_536 ||
       (body.modelAlias != null && (typeof body.modelAlias !== "string" || body.modelAlias.length > 256)) ||
+      (body.voice != null && !LIVE_VOICE_VOICES.includes(body.voice)) ||
+      (body.speakingPace != null && !LIVE_VOICE_PACES.includes(body.speakingPace)) ||
       (body.reasoningEffort != null && !REASONING_EFFORTS.includes(body.reasoningEffort))) {
       throw new CoordinationHttpError("request_invalid", 400, false);
     }
     response.set("Cache-Control", "no-store");
     response.status(201).json(await service().start({ ...access(request, response),
       idempotencyKey: coordinationIdempotencyKey(response), sdp: body.sdp,
+      voice: (body.voice ?? "marin") as LiveVoiceStart["voice"], speakingPace: (body.speakingPace ?? "normal") as LiveVoiceStart["speakingPace"],
       modelAlias: body.modelAlias ?? null, reasoningEffort: (body.reasoningEffort ?? null) as ReasoningEffort | null }));
   }));
   router.post(`${base}/sessions/:sessionId/heartbeat`, auth, idempotency, json, route(async (request, response) => {

@@ -5,6 +5,8 @@ import type { AttachmentSummary } from "../artifacts/index.js";
 import type { ResidentInputAttachment } from "../../coordination-adapter/index.js";
 import type { M11Database } from "../work/index.js";
 import type { WorkRecord } from "../work/index.js";
+import { readInheritedWorkInstructionMessageIds } from "../work/service.js";
+import { assertCoordinationId } from "../ids/index.js";
 import {
   directMessageManifest,
   type DirectMessageContextPort,
@@ -98,6 +100,29 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     )?.id ?? null;
   }
 
+  private instructionRows(input: {
+    ids: readonly string[]; principalId: string; channelId: string; originMessageId: string;
+    manifestIds: readonly string[];
+  }): readonly { id: string; sequence: number; text: string }[] {
+    const { ids } = input;
+    if (input.principalId !== "user_owner" || !Array.isArray(ids) || ids.length < 1 || ids.length > 100 ||
+        new Set(ids).size !== ids.length || ids.at(-1) !== input.originMessageId ||
+        ids.some(id => !input.manifestIds.includes(id))) throw new MessagingError("invalid_relation");
+    try { for (const id of ids) assertCoordinationId("message", id); }
+    catch { throw new MessagingError("invalid_relation"); }
+    const rows = this.database.readAll<{ id: string; sequence: number; text: string }>(
+      `SELECT m.id, m.channel_sequence AS sequence, m.body_text AS text FROM messages m
+       WHERE m.channel_id=? AND m.id IN (${ids.map(() => "?").join(",")})
+         AND m.author_principal_id=? AND m.author_kind='owner' AND m.kind='text'
+         AND m.body_text IS NOT NULL AND length(trim(m.body_text))>0 AND m.stored_visibility='visible'
+         AND NOT EXISTS(SELECT 1 FROM messages t WHERE t.tombstones_message_id=m.id)
+         AND NOT EXISTS(SELECT 1 FROM message_artifacts a WHERE a.message_id=m.id)
+       ORDER BY m.channel_sequence ASC`, input.channelId, ...ids, input.principalId);
+    if (rows.length !== ids.length || rows.some((row, index) => row.id !== ids[index] ||
+        (index > 0 && row.sequence <= rows[index - 1]!.sequence))) throw new MessagingError("invalid_relation");
+    return rows;
+  }
+
   private async materialize(
     attachments: readonly AttachmentSummary[],
   ): Promise<readonly ResidentInputAttachment[]> {
@@ -187,10 +212,22 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     )?.count ?? 0;
     if (tombstonedAfterSnapshot !== 0) throw new MessagingError("invalid_relation");
     const transcript = boundedMessages.filter((message) => message.text !== null);
-    // Prior requests remain history; only this message is the current instruction.
-    const instruction = projectedOrigin.text ?? "";
+    if (input.instructionMessageIds !== undefined && !Array.isArray(input.instructionMessageIds)) {
+      throw new MessagingError("invalid_relation");
+    }
+    const instructionMessageIds = input.instructionMessageIds === undefined
+      ? undefined : Object.freeze([...input.instructionMessageIds]);
+    if (instructionMessageIds !== undefined && (input.context.identity?.kind !== "owner" ||
+        input.context.identity.auth.principalId !== input.context.principalId)) throw new MessagingError("identity_context_mismatch");
+    const selected = instructionMessageIds === undefined ? undefined : this.instructionRows({
+      ids: instructionMessageIds, principalId: input.context.principalId, channelId: input.channelId,
+      originMessageId: input.originMessage.id, manifestIds: boundedMessageIds,
+    });
+    // A trusted speech partition may span multiple canonical owner rows. All other
+    // requests remain historical context and never become instructions implicitly.
+    const instruction = selected?.map(row => row.text).join("\n") ?? projectedOrigin.text ?? "";
     const historyBackfill: readonly DirectMessageHistoryEntry[] = Object.freeze(transcript
-      .filter((message) => message.id !== input.originMessage.id)
+      .filter((message) => !(instructionMessageIds ?? [input.originMessage.id]).includes(message.id))
       .map((message) => Object.freeze({
         messageId: message.id,
         sequence: message.sequence,
@@ -208,6 +245,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       targetPrincipalId: binding.targetPrincipalId,
       residentBinding: binding.residentBinding,
       instruction,
+      ...(instructionMessageIds === undefined ? {} : { instructionMessageIds }),
       historyBackfill: binding.residentBinding.startsWith("bot-") ? historyBackfill : boundHistoricalContext(historyBackfill),
       attachments,
       manifest: directMessageManifest({
@@ -216,6 +254,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
         attachmentIds: input.attachmentIds,
         channelSequence: input.originMessage.sequence,
         eventSequence,
+        ...(instructionMessageIds === undefined ? {} : { instructionMessageIds }),
       }),
     });
   }
@@ -308,7 +347,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     )?.count ?? 0;
     // Review descendants inherit a later, coordinator-saved context snapshot.
     // Bind it through canonical parent lineage; do not relax ordinary foreground recovery.
-    let reviewSnapshot: { instruction: string; manifest: { messageIds: string[]; digests: { context: string; source: string }; watermarks: { channelSequence: number; eventSequence: number } }; channelId: string; targetPrincipalId: string } | undefined;
+    let reviewSnapshot: { instruction: string; originalOwnerRequest?: string; instructionMessageIds?: readonly string[]; manifest: { messageIds: string[]; digests: { context: string; source: string }; watermarks: { channelSequence: number; eventSequence: number } }; channelId: string; targetPrincipalId: string } | undefined;
     if (this.database.readOne("SELECT name FROM sqlite_master WHERE type='table' AND name='resident_outcomes'")) {
       const saved = this.database.readOne<{ prepared: string }>(`
         WITH RECURSIVE lineage(id, depth) AS (
@@ -329,18 +368,29 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
             value.manifest?.digests?.source !== manifest.sourceDigest ||
             value.manifest?.watermarks?.channelSequence !== manifest.channelWatermark ||
             value.manifest?.watermarks?.eventSequence !== manifest.eventWatermark ||
-            typeof value.instruction !== 'string' || !Array.isArray(value.manifest.messageIds) ||
+            typeof value.instruction !== 'string' ||
+            (value.originalOwnerRequest !== undefined && typeof value.originalOwnerRequest !== 'string') ||
+            !Array.isArray(value.manifest.messageIds) ||
             value.manifest.messageIds.length !== messageIds.length ||
             !value.manifest.messageIds.every((id: string) => messageIds.includes(id))) throw new MessagingError('invalid_relation');
         reviewSnapshot = value;
       }
     }
+    let recordedInstructionMessageIds: readonly string[] | undefined;
+    try { recordedInstructionMessageIds = readInheritedWorkInstructionMessageIds(this.database, work); }
+    catch { throw new MessagingError("invalid_relation"); }
+    const instructionMessageIds = reviewSnapshot?.instructionMessageIds ?? recordedInstructionMessageIds;
+    const selected = instructionMessageIds === undefined ? undefined : this.instructionRows({
+      ids: instructionMessageIds, principalId: work.principalId, channelId: work.channelId,
+      originMessageId: work.originMessageId, manifestIds: messageIds,
+    });
     const canonicalManifest = directMessageManifest({
       channelId: work.channelId,
       messageIds: reviewSnapshot ? reviewSnapshot.manifest.messageIds : rows.map((row) => row.id),
       attachmentIds: artifactIds,
       channelSequence: manifest.channelWatermark,
       eventSequence: manifest.eventWatermark,
+      ...(instructionMessageIds === undefined ? {} : { instructionMessageIds }),
     });
     if (
       rows.length !== messageIds.length ||
@@ -374,9 +424,9 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     const attachments = await this.materialize(attachmentRows);
     const transcript = rows.filter((message) => message.text !== null);
     const origin = rows.find(row => row.id === work.originMessageId)!;
-    const instruction = reviewSnapshot?.instruction ?? origin.text ?? "";
+    const instruction = reviewSnapshot?.instruction ?? selected?.map(row => row.text).join("\n") ?? origin.text ?? "";
     const historyBackfill: readonly DirectMessageHistoryEntry[] = Object.freeze(transcript
-      .filter((message) => message.id !== work.originMessageId)
+      .filter((message) => !(instructionMessageIds ?? [work.originMessageId]).includes(message.id))
       .map((message) => Object.freeze({
         messageId: message.id,
         sequence: message.sequence,
@@ -396,6 +446,8 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
         targetPrincipalId: binding.targetPrincipalId,
         residentBinding: binding.residentBinding,
         instruction,
+        ...(reviewSnapshot?.originalOwnerRequest === undefined ? {} : { originalOwnerRequest: reviewSnapshot.originalOwnerRequest }),
+        ...(instructionMessageIds === undefined ? {} : { instructionMessageIds }),
         historyBackfill: binding.residentBinding.startsWith("bot-") ? historyBackfill : boundHistoricalContext(historyBackfill),
         attachments,
         manifest: canonicalManifest,

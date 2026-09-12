@@ -1,5 +1,6 @@
 import type { MessagingActorContext } from '../channels/types.js';
 import { createLiveVoiceService, type LiveVoiceService } from './live-voice.js';
+import { createLiveVoiceTranscriptPort } from './live-voice-transcripts.js';
 import { ProjectContinuityStore } from '../projects/continuity.js';
 import { boundHistoricalContext } from '../../agent/historical-context.js';
 import { createResidentNotifications } from './resident-notifications.js';
@@ -1367,6 +1368,14 @@ export function createCoordinationProcess(
   if (messageSubmission && directMessageContext) {
     liveVoice = createLiveVoiceService({ auth, targets: directMessageContext, messages,
       submission: messageSubmission, work,
+      transcripts: createLiveVoiceTranscriptPort({ messages, targets: directMessageContext,
+        resolveResident: binding => completionTargets.get(binding),
+        recordMessage: createCanonicalMessageRecorder(communications),
+        assertAuthority() {
+          if (!isCanonicalMessagesAuthority(currentAuthority("messages"))) {
+            throw new MessagingError("authority_unavailable");
+          }
+        } }),
       journalDirectory: join(dirname(config.databasePath), "voice-sessions"),
       isAccepting: () => lifecycle.state() === "accepting" });
   }

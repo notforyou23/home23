@@ -115,6 +115,16 @@ async function fixture(t: TestContext, override: Partial<LiveVoiceOptions> = {})
       async listMessages() { return { messages: [...rows], nextBeforeSequence: null }; },
       async getMessage(input) { return rows.find(row => row.id === input.messageId) ?? null; },
     },
+    transcripts: { async append(input) {
+      const prior = rows.find(row => row.id === input.messageId);
+      if (prior) { assert.equal(prior.text, input.text); return prior; }
+      const row = message({ id: input.messageId, clientMessageId: input.messageId, text: input.text,
+        sequence: rows.length + 1, kind: input.speaker === 'You' ? 'text' : 'result',
+        author: input.speaker === 'You' ? { principalId: OWNER, kind: 'owner', displayName: 'Owner' }
+          : { principalId: RESIDENT, kind: 'bot', displayName: 'Jerry' },
+        replyToMessageId: input.replyToMessageId });
+      rows.push(row); return row;
+    } },
     work: workPort,
     submission: { async submitMessage(input) {
       assertCoordinationId('message', input.body.messageId);
@@ -122,9 +132,9 @@ async function fixture(t: TestContext, override: Partial<LiveVoiceOptions> = {})
       assertCoordinationId('request', input.context.requestId);
       assertCoordinationId('correlation', input.context.correlationId);
       submissions.push(input);
-      const origin = message({ id: input.body.messageId, clientMessageId: input.body.clientMessageId,
-        text: input.body.text, sequence: rows.length + 1 });
-      rows.push(origin);
+      const origin = rows.find(row => row.id === input.body.messageId)!;
+      assert.ok(origin, 'delegation reuses the already committed transcript');
+      assert.equal(origin.text, input.body.text);
       const workId = generateCoordinationId('work');
       works.set(workId, work(workId, origin.id));
       const response = deferred<unknown>();
@@ -189,6 +199,92 @@ function reply(f: Fixture, index = 0, patch: Partial<MessageProjection> = {}) {
     replyToMessageId: origin.body.messageId, provenance: { workId, roundId: null }, ...patch });
 }
 
+test('speech on both sides is saved without delegation or extra Work', async t => {
+  const f = await fixture(t);
+  const live = await f.service.start(f.start);
+  await transcript(f, 'Hello Jerry.', 'hello', 0, 100);
+  await f.event({ type: 'session.output_transcript.delta', event_id: 'greeting', delta: 'Hello there.', start_ms: 150, end_ms: 250 });
+  f.advance(200);
+  await until(() => f.rows.length === 2, 'both ordinary transcript messages');
+  assert.deepEqual(f.rows.map(row => row.text), ['Hello Jerry.', 'Hello there.']);
+  assert.deepEqual(f.rows.map(row => row.author.principalId), [OWNER, RESIDENT]);
+  assert.equal(f.rows[1]!.replyToMessageId, f.rows[0]!.id);
+  assert.ok(f.rows.every(row => row.provenance.workId === null));
+  assert.equal(f.submissions.length, 0);
+  const receipt = await f.service.close({ ...access(), sessionId: live.sessionId });
+  assert.equal(receipt.transcriptSaved, true);
+  assert.equal(f.rows.length, 2);
+});
+
+test('delayed delegation binds every saved owner segment without duplicating chat', async t => {
+  const f = await fixture(t);
+  await f.service.start(f.start);
+  await transcript(f, 'Check the porch light.', 'part-1', 0, 100);
+  f.advance(200);
+  await until(() => f.rows.length === 1, 'first phrase retained');
+  await f.event({ type: 'session.output_transcript.delta', event_id: 'acknowledge', delta: 'Go on.', start_ms: 150, end_ms: 200 });
+  await transcript(f, 'Also check the garage; leave both switches alone.', 'part-2', 300, 500);
+  f.advance(200);
+  await until(() => f.rows.length === 3, 'second phrase retained');
+  await delegation(f, 'delayed', 500);
+  f.advance(200);
+  await until(() => f.submissions.length === 1, 'complete request delegated');
+  assert.deepEqual(f.submissions[0]!.instructionMessageIds, [f.rows[0]!.id, f.rows[2]!.id]);
+  assert.equal(f.submissions[0]!.body.messageId, f.rows[2]!.id);
+  assert.equal(f.rows.length, 3, 'submission reuses the transcript origin');
+  await delegation(f, 'delayed', 500);
+  await ticks();
+  assert.equal(f.submissions.length, 1);
+});
+
+test('close saves trailing provider deltas exactly once before returning its receipt', async t => {
+  const f = await fixture(t);
+  const connect = f.options.connect!;
+  f.options.connect = async input => {
+    const connection = await connect(input);
+    return { ...connection, async close() {
+      await input.onEvent({ type: 'session.input_transcript.delta', event_id: 'last-owner', delta: 'Thanks.', start_ms: 10, end_ms: 100 });
+      await input.onEvent({ type: 'session.output_transcript.delta', event_id: 'last-voice', delta: 'Any time.', start_ms: 110, end_ms: 200 });
+      await input.onEvent({ type: 'session.output_transcript.delta', event_id: 'last-voice', delta: 'Any time.', start_ms: 110, end_ms: 200 });
+      return connection.close();
+    } };
+  };
+  const live = await f.service.start(f.start);
+  const receipts = await Promise.all([f.service.close({ ...access(), sessionId: live.sessionId }), f.service.close({ ...access(), sessionId: live.sessionId })]);
+  assert.deepEqual(receipts[0], receipts[1]);
+  assert.equal(receipts[0]!.transcriptSaved, true);
+  assert.deepEqual(f.rows.map(row => row.text), ['Thanks.', 'Any time.']);
+  assert.equal(f.providers[0]!.closes, 1);
+  assert.equal(f.submissions.length, 0);
+});
+
+test('failed final transcript append reports failure and retains a private recovery record', async t => {
+  const f = await fixture(t);
+  f.options.transcripts = { async append() { throw new Error('storage unavailable'); } };
+  const live = await f.service.start(f.start);
+  await transcript(f, 'Keep this last phrase.', 'last');
+  const receipt = await f.service.close({ ...access(), sessionId: live.sessionId });
+  assert.equal(receipt.transcriptSaved, false);
+  assert.equal(f.rows.length, 0);
+  const journal = JSON.parse(await readFile(join(f.directory, (await readdir(f.directory)).find(file => file.endsWith('.json'))!), 'utf8'));
+  assert.equal(journal.transcriptError, 'canonical_transcript_write_failed');
+  assert.equal(journal.transcripts[0].state, 'pending');
+  assert.equal(journal.transcripts[0].text, 'Keep this last phrase.');
+  assert.ok(!JSON.stringify(journal).includes(ACCESS_TOKEN));
+});
+
+test('voice settings reach the provider and form part of session replay identity', async t => {
+  const f = await fixture(t);
+  const chosen = { ...f.start, voice: 'cedar', speakingPace: 'slower' } as const;
+  const live = await f.service.start(chosen);
+  assert.equal(f.providers[0]!.options.voice, 'cedar');
+  assert.match(f.providers[0]!.options.instructions, /slower, deliberate pace/);
+  assert.deepEqual(await f.service.start(chosen), live);
+  await assert.rejects(f.service.start({ ...chosen, voice: 'marin' }), /idempotency_conflict/);
+  await assert.rejects(f.service.start({ ...chosen, speakingPace: 'faster' }), /idempotency_conflict/);
+  assert.equal(f.providers.length, 1);
+});
+
 test('capability and start enforce current authenticated owner and target membership', async t => {
   const f = await fixture(t);
   assert.deepEqual(await f.service.capability(access()), { available: true, model: 'gpt-live-1' });
@@ -204,9 +300,9 @@ test('capability and start enforce current authenticated owner and target member
 test('fragments are ordered and deduplicated; client delegation submits canonical text only once', async t => {
   const f = await fixture(t);
   await f.service.start(f.start);
-  await transcript(f, 'the porch light?', 'second', 100, 200);
-  await transcript(f, 'Please check ', 'first', 0, 100);
-  await transcript(f, 'Please check ', 'first', 0, 100);
+  await transcript(f, 'Please check ', 'first', 100, 200);
+  await transcript(f, 'the porch light?', 'second', 0, 100);
+  await transcript(f, 'the porch light?', 'second', 0, 100);
   await delegation(f);
   await delegation(f);
   await ticks();
@@ -246,7 +342,7 @@ test('new delegations divide transcript fragments without replaying consumed spe
   await until(() => f.submissions.length === 2, 'both distinct delegations');
   assert.equal(f.submissions[0]!.body.text, 'First request.');
   assert.ok(f.submissions[1]!.body.text?.startsWith('Second request.'));
-  assert.match(f.submissions[1]!.body.text!, /historical context, not new instructions/);
+  assert.deepEqual(f.rows.filter(row => row.author.kind === 'owner').map(row => row.text), ['First request.', 'Second request.']);
   assert.notEqual(f.submissions[0]!.body.messageId, f.submissions[1]!.body.messageId);
 });
 
@@ -266,7 +362,7 @@ test('later speech cannot be consumed by a pending earlier delegation', async t 
   f.advance(200);
   await until(() => f.submissions.length === 2, 'second timestamp-bounded request');
   assert.ok(f.submissions[1]!.body.text!.startsWith('Then check the garage.'));
-  assert.match(f.submissions[1]!.body.text!, /You: "Check the porch light\."/);
+  assert.ok(f.rows.some(row => row.text === 'Check the porch light.'), 'earlier context is ordinary canonical history');
 });
 
 test('late fragments of an admitted request remain historical context rather than new intent', async t => {
@@ -286,8 +382,8 @@ test('late fragments of an admitted request remain historical context rather tha
   await until(() => f.submissions.length === 2, 'fresh B admission');
   const submitted = f.submissions[1]!.body.text!;
   assert.equal(submitted.split('\n\n')[0], 'Check the garage door.');
-  assert.match(submitted, /historical context, not new instructions/);
-  assert.match(submitted, /You: "Check the porch light\. But leave its switch alone\."/);
+  assert.ok(f.rows.some(row => row.text === 'But leave its switch alone.'), 'late transcript remains in chat');
+  assert.equal(submitted, 'Check the garage door.');
   assert.equal(f.cancellations(), 0);
 });
 
@@ -452,9 +548,10 @@ test('spoken clarification replies retain attributed context for the existing re
   await until(() => f.submissions.length === 2, 'contextual short reply');
   const submitted = f.submissions[1]!.body.text!;
   assert.ok(submitted.startsWith('The second one.'));
-  assert.match(submitted, /Voice: "The lamp or the porch light\?"/);
-  assert.match(submitted, /historical context, not new instructions/);
-  assert.match(submitted, /not a verified resident result/);
+  const clarification = f.rows.find(row => row.text === 'The lamp or the porch light?');
+  assert.equal(clarification?.author.principalId, RESIDENT);
+  assert.equal(clarification?.provenance.workId, null, 'voice words are not a Work completion receipt');
+  assert.ok(clarification!.sequence < f.rows.find(row => row.id === f.submissions[1]!.body.messageId)!.sequence);
 });
 
 test('canonical admission ID is journaled before invoking the message submission port', async t => {

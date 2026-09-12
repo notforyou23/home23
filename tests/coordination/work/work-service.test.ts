@@ -50,6 +50,7 @@ test("Work creation and its one wake intent survive reopen and exact retry", asy
   assert.equal(first.manifest.messageCount, 1);
   assert.equal(first.manifest.artifactCount, 0);
   assert.deepEqual(service.getTurnSelection(first.work.id), selection);
+  assert.equal(service.getInstructionMessageIds(first.work.id), undefined);
   assert.throws(
     () => database.raw.prepare(
       "UPDATE work_turn_selections SET requested_model_alias = 'terra' WHERE work_id = ?",
@@ -68,6 +69,7 @@ test("Work creation and its one wake intent survive reopen and exact retry", asy
   assert.equal(replay.work.id, first.work.id);
   assert.equal(replay.wakeOutboxId, first.wakeOutboxId);
   assert.deepEqual(service.getTurnSelection(first.work.id), selection);
+  assert.equal(service.getInstructionMessageIds(first.work.id), undefined);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 1);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM outbox")?.count, 1);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM context_manifests")?.count, 1);
@@ -135,6 +137,7 @@ test("legacy Work creation defaults to an explicit durable no-override selection
     now: () => new Date(AT),
   });
   const created = service.create(creationInput());
+  assert.equal(service.getInstructionMessageIds(created.work.id), undefined);
   assert.deepEqual(service.getTurnSelection(created.work.id), {
     modelAlias: null,
     reasoningEffort: null,
