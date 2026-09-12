@@ -98,16 +98,26 @@ session boundary across dashboard pages, APIs, streams and files; merely exposin
 operator ports or adding TLS does not establish that boundary. Reconnect,
 revocation, wrong-home selection and host-offline states need clear behavior.
 
-## Current verified milestone
+## Developer milestones and current candidate
 
-The September 9 developer milestone built a complete Mac Host/runtime package
+The September 12 integrated Mac candidate joins the owned embedder with the
+current backend, native Host, and Mac conversation client. It includes automatic
+model preparation for new homes, encoder provenance, native semantic recovery,
+and degraded keyword retrieval during embedding outages. Backend and native
+builds and the affected contracts passed. The [candidate record](../superpowers/plans/2026-09-11-owned-embedder-candidate-status.md)
+names the exact source/package identities and installed verification separately.
+The independent Linux installation previously proved download/resume, owned
+inference, document retrieval and restart continuity at its recorded revision.
+Neither that Linux receipt nor a source build establishes a public Mac release.
+
+The earlier September 9 developer milestone built a complete Mac Host/runtime package
 and installed an independent home on the development Mac. Real owned services
 reached readiness; a client paired and received a persisted model-fixture
 answer. Stop/restart preserved home identity, Seed identity, pairing and history.
 The test home was stopped afterward. Native app compilation and local ad-hoc
 signature checks also passed.
 
-This establishes installed routing and continuity with a local model fixture.
+That earlier trial establishes installed routing and continuity with a local model fixture.
 It does not establish a clean-Mac install, paid-provider behavior, semantic
 embedding inference, document ingestion quality, Windows browser compatibility,
 remote connectivity, public distribution or physical owner acceptance. Private

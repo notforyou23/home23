@@ -101,19 +101,22 @@ browser OAuth setup is not automatically an app-native OAuth flow.
 Track those items and public website/download work in
 [the delivery backlog](PRODUCT-DELIVERY.md#delivery-work-to-address).
 
-API-key setup can run in Memory Lite mode: conversation history and text memory
-are retained while semantic search needs a separate embedding service. Host
-reports whether the configured local model is detected and displays missing
-dependency warnings beside runtime readiness. Model detection is distinct from
-a successful embedding call. Host does not yet install Ollama or its model.
-Seed contact encoding remains credential-free and 768-dimensional; its explicit
-endpoint is shared by the harness and conversation feed. No paid-provider key
-is added to that encoding interface. Completing semantic setup without an
-additional installation remains part of the distribution work.
+New Host homes prepare a private owned ONNX embedding service automatically.
+Host downloads and verifies pinned artifacts, retains genuine partial downloads,
+warms inference before admitting writers, and supervises the encoder with the
+home. Its endpoint and recipe identity are shared by document memory and Seed
+contact encoding. New owners do not install Ollama for this function. Selecting
+a local conversational model is a separate provider choice and dependency.
+
+Existing homes retain their configured provider. During an embedding outage,
+context retrieval can return keyword hits with degraded/incomplete evidence.
+Its scan budget is cooperative; it does not forcibly interrupt operating-system
+reads. Owned attention remains explicitly uncalibrated until measured rather
+than borrowing another encoder's thresholds.
 
 The [owned embedder integration plan](../superpowers/plans/2026-09-10-owned-embedder-host-integration.md)
-defines that next step: a per-home service managed by the existing private
-supervisor, automatic model preparation with durable progress, actual inference
-readiness, and native recovery actions. It retains the shared birth operation
-and separates new-home delivery from existing residents' encoder transitions.
-This is planned work; the current readiness and installation limits above remain.
+records the implementation and separates new-home delivery from existing
+residents' encoder transitions. The [candidate record](../superpowers/plans/2026-09-11-owned-embedder-candidate-status.md)
+identifies integrated revisions and the distinct source, packaged-install and
+independent Linux evidence. Developer verification does not establish public
+signing, clean-machine acceptance, provider authorization, or remote transport.
