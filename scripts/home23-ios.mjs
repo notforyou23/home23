@@ -123,6 +123,13 @@ function sourceInventory(source) {
   return result;
 }
 
+export function extensionSigningManifest(config) {
+  const manifest = config.extensionSigningManifest;
+  insist(typeof manifest === 'string' && path.isAbsolute(manifest), 'Pin an absolute extensionSigningManifest path in the installation configuration.');
+  insist(fs.statSync(manifest).isFile(), 'The extension signing manifest must be a file.');
+  return manifest;
+}
+
 function verifyApp(app, config) {
   insist(path.isAbsolute(app), 'Use an absolute app path.');
   const info = plist(path.join(app, 'Info.plist'));
@@ -147,7 +154,12 @@ function verifyApp(app, config) {
   const ent = JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], { input: signature }));
   const expected = plist(config.entitlements);
   insist(JSON.stringify(Object.entries(ent).sort()) === JSON.stringify(Object.entries(expected).sort()), 'Signed entitlements differ from the pinned identity.');
-  return { info, files: inventory(app) };
+  const extensionVerification = run('/usr/bin/python3', [
+    path.join(config.sourceRoot, 'scripts/ios-extension-signing.py'), 'verify',
+    '--app', app, '--parent-profile', config.profile,
+    '--identity', config.signingCertificateSHA1, '--manifest', extensionSigningManifest(config),
+  ]).trim();
+  return { info, files: inventory(app), extensionVerification };
 }
 
 async function main() {
@@ -159,13 +171,14 @@ async function main() {
   }
   if (command === 'verify') {
     const result = verifyApp(arg, config);
-    console.log(JSON.stringify({ info: result.info, artifactSHA256: sha(JSON.stringify(result.files)) }, null, 2));
+    console.log(JSON.stringify({ info: result.info, artifactSHA256: sha(JSON.stringify(result.files)), extensionVerification: result.extensionVerification }, null, 2));
     return;
   }
   if (command === 'build' || command === 'compile') {
     insist(/^\d+$/.test(arg ?? '') && Number(arg) >= config.minimumBuild, 'Provide a numeric build at or above the current build floor.');
     insist(output && path.isAbsolute(output) && !fs.existsSync(output), 'Provide a new absolute output directory.');
     const signing = command === 'build' ? signingReadiness(config) : null;
+    const extensionManifest = command === 'build' ? extensionSigningManifest(config) : null;
     const source = verifySource(config), before = sourceInventory(source);
     fs.mkdirSync(output, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(output, 'source-before.json'), JSON.stringify(before, null, 2));
@@ -183,7 +196,9 @@ async function main() {
       return;
     }
 
-    run(path.join(source, 'scripts/sign-home23-ios.sh'), [app, config.profile, config.entitlements, config.signingCertificateSHA1], { stdio: 'inherit' });
+    run(path.join(source, 'scripts/sign-home23-ios.sh'), [app, config.profile, config.entitlements, config.signingCertificateSHA1], {
+      stdio: 'inherit', env: { ...process.env, HOME23_IOS_EXTENSION_SIGNING_MANIFEST: extensionManifest },
+    });
     const verified = verifyApp(app, config);
     fs.writeFileSync(path.join(output, 'verified-artifact.json'), JSON.stringify(verified, null, 2));
     console.log(`Verified Home23 ${arg}: ${app}\nInstallation is a separate explicit operation.`);
