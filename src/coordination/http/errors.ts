@@ -8,6 +8,8 @@ import { ChannelCoordinatorError } from "../channel-coordinator/index.js";
 import { WorkError } from "../work/index.js";
 import { LeaseError } from "../leases/index.js";
 import { ActivityReadError } from "../activity/index.js";
+import { LiveVoiceError } from "../app/live-voice.js";
+import { GptLiveProviderError } from "../../voice/gpt-live-provider.js";
 
 export class CoordinationHttpError extends Error {
   readonly name = "CoordinationHttpError";
@@ -44,6 +46,10 @@ function isBodyParserFailure(error: unknown): boolean {
 }
 
 export function toCoordinationHttpFailure(error: unknown): CoordinationHttpFailure {
+  if (error instanceof LiveVoiceError || error instanceof GptLiveProviderError) {
+    return { code: error.code, httpStatus: error instanceof LiveVoiceError ? error.httpStatus : 502,
+      retryable: false, details: {}, message: "The voice session could not complete this request." };
+  }
   if (error instanceof CoordinationHttpError) {
     return {
       code: error.code,
