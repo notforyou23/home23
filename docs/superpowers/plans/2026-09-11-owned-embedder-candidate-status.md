@@ -11,43 +11,84 @@ record does not grant or narrow the owner’s authorization.
 The owner requested one integrated, installable Mac candidate. Codex owns this
 milestone through package verification and return to maintained source.
 
-- Backend `0b5fb604f37f02b33b8bfa7ff2d2e1761b2a1244` merges candidate
-  `7223d855` into current local main, preserving the later chat/attachment work.
-- Apple `f9adcbfba6115c149bf3caa098ccf7d48a7e67c7` merges Host `9cc694df`
-  into current local main, preserving the current native chat work.
-- Both are integrated into local main and the maintained development checkouts.
-- Runtime package `7f07d020b35e150bf478a7c40d6a15e07f477341c47fadb904f3c1bf6be59075`
-  was built from that backend SHA with official Node 22.23.2, darwin/arm64.
-- The full Host bundle contains that exact payload. Native Host command checks,
-  copied-payload integrity and local ad-hoc signing passed. The matching native
-  Mac client Release build passed and is development-signed as build 151.
-- Combined backend checks: 322 passed, one optional PM2 fixture skipped.
-  Contracts: 71 passed, two skipped. The first source test run lacked compiled
-  `dist`; after providing the exact packaged build, the affected Host suite
-  passed (29 passed, one skipped). The other source suites were not rerun.
+| Candidate layer | Exact identity |
+|---|---|
+| Backend payload | `7e85a6530c7d9e2dba8c9fd6b4a31eb9a2267617` |
+| Native Host | Apple `cf33bec7b807a4d0bb79b37717d75787e69b7d7d` |
+| Runtime package | `06bd5b655a00232a20e3106ea9b4bc83ec846b8ce9ad4b8fc4c6a2e34fffa62e` |
+| Runtime | Official Node 22.23.2, darwin/arm64; 48,256 verified entries |
+| Mac client | Build 151, Release, existing bundle identity/sandbox and Apple Development profile |
 
-The first exact-artifact native trial installed successfully, created its own
-resident and Seed, downloaded verified artifacts from an empty cache, and warmed
-preparation. Its first Start failed: the encoder's cold launch became warm after
-about 32 seconds, beyond the backend's 30-second wait. The trial was stopped and
-its private supervisor terminated; its state and failure receipt are retained.
-This is not passing installed acceptance.
+The Mac client was compiled at `f9adcbf`; its sources are identical at
+`cf33bec7` (the intervening change only affects native Host Start). Host includes
+the complete pinned runtime, has no development-only home-root overrides, and
+passed copied-payload verification and strict local ad-hoc signature verification.
+The client also passed strict/deep signature verification. This is a local
+engineering candidate, not a notarized public distribution. Host supports macOS
+14+, while this client requires macOS 27+; both artifacts target Apple silicon.
 
-Backend `a12ffcb3` raises the bounded encoder wait to 90 seconds. Apple
-`cf33bec7` allows 300 seconds for native Start, covering payload verification,
-encoder startup and resident readiness. Neither timeout is an I/O preemption
-guarantee. The corrected package and its installed acceptance supersede the
-first artifact only when their own receipts pass.
+**Installed engineering acceptance: PASS.** The native Host command layer
+installed this exact bundled payload and created an independent resident/Seed.
+Real owned ONNX preparation and startup passed. Both public documents were
+imported; context retrieval ranked hydrologic **0.7111** above granite **0.5555**
+through semantic ANN plus its delta overlay. Pairing and a persisted chat reply
+passed using a local chat-protocol fixture. With the owned encoder stopped,
+lexical hits and misses carried the correct degraded/outage evidence. Native
+Start restored semantic retrieval. Full Stop/Start retained home and Seed
+identity, pairing, conversation and semantic retrieval. No embedding request
+went to the chat fixture. All nine private processes were stopped and the private
+supervisor terminated; the test home and receipts are retained.
 
-Private package, signing, test and installation receipts belong in the development
-verification area under `integrated-mac-candidate-20260912`. Native installed-home
-verification is tracked there separately from compilation. These are developer
-artifacts, not a notarized public release. Measured attention remains null-cal;
-existing homes retain their embedding provider. Nothing has been pushed or
-activated in the owner's live installation by this milestone.
+This is not real-provider or physical UI acceptance. The final trial reused the
+verified model cache: an actual download from empty cache had passed in the first
+artifact trial, and final preparation reverified the unchanged model digests.
+It does not claim a second download or a new Mac download-interruption receipt.
 
-The following sections preserve the earlier evidence at its original revisions.
-Their old Mac trial and Linux home are not silently upgraded by this candidate.
+Two installed findings were corrected before acceptance:
+
+- First package `7f07d020` reached encoder warmth after about 32 seconds, beyond
+  its 30-second Start gate. Backend `a12ffcb3` allows a bounded 90-second encoder
+  wait; Apple `cf33bec7` allows 300 seconds for the complete native Start.
+- Package `9ad90ad0` imported documents but its background ANN builder received
+  `source_busy` during concurrent source admission and abandoned the first index
+  until cron. `7e85a653` allows background builds to wait up to 30 seconds on the
+  existing cancellable admission lock. Interactive readers still default to
+  immediate busy. The same change moves existing parent-path validation ahead
+  of directory creation, fixing a reproduced pre-existing symlink guard failure.
+
+The discarded attempts remain visible in the receipts. A concurrent external-disk
+verification caused an earlier 600-second install timeout before birth; supported
+resume completed that same installation. The final candidate's first chat fixture
+also returned canned answers to document compilation. Acceptance resumed on the
+same package/home after correcting that fixture: no synthesis, raw public text,
+and a one-newline input refresh through normal ingestion. No installed source or
+brain overlay, new package, or replacement Seed was used for that correction.
+
+**Source verification:** combined backend checks 322 passed / one optional skip;
+contracts 71 passed / two skips. A missing compiled `dist` prerequisite was
+corrected before rerunning the affected Host suite (29 passed / one skip).
+Native Host command checks and the Mac client Release build passed. After the
+ANN correction, the affected source-context, ANN-builder, persistence and search
+checks total 132 passing: the initial batch's one symlink failure also reproduced
+on unchanged `d7a3bbd2`; after correction the affected 42 checks passed. The
+contention regression first failed on the prior source, then passed. No successful
+unrelated suite was repeated for a documentation update.
+
+Backend and Apple feature work is integrated into local main and the maintained
+checkouts. Backend merge `0017fc33` preserves the concurrent GPT Live voice work
+that arrived during packaging. That later voice work is outside this frozen
+candidate; the artifact identities above remain authoritative. Nothing was
+pushed or activated in the owner's live installation by this milestone.
+
+Private package, signing, test, installation and delivery receipts are in the
+development verification area under `integrated-mac-candidate-20260912`.
+Public signing/notarization, a clean-Mac/real-provider trial, physical interface
+acceptance, simpler remote connections and the state-preserving updater remain
+product delivery work. Measured attention remains null-calibrated; Stage 6 and
+existing-home provider migration are outside this milestone.
+
+The following sections preserve earlier evidence at its original revisions.
+Their old Mac trial and Linux home were not upgraded by this candidate.
 
 ## Earlier revisions
 
