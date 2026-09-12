@@ -451,7 +451,10 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
         if (current?.status === 'online') continue;
         await processDriver.pm2([current ? 'restart' : 'start', current ? name : config, ...(current ? [] : ['--only', name]), '--update-env', '--silent']);
         if (name === OWNED_EMBEDDER_PROCESS) {
-          const deadline = Date.now() + 30000;
+          // A cold ONNX launch includes artifact verification and model loading.
+          // The integrated Mac trial took 32 seconds on external storage, so a
+          // 30-second gate rejected a healthy encoder before admitting writers.
+          const deadline = Date.now() + 90000;
           let warm = false;
           while (Date.now() < deadline) {
             warm = (await probeOwnedReady(state.ports.embedder)).warm;
