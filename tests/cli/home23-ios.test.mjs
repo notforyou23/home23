@@ -3,16 +3,51 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { verifyMetadata, verifySource } from '../../scripts/home23-ios.mjs';
+import { buildArguments, parseInvocation, verifyMetadata, verifySource } from '../../scripts/home23-ios.mjs';
 
 const config = { bundleIdentifier: 'com.example.current', displayName: 'Home23', minimumBuild: 106, port: '18443', contractSHA256: 'current-pack' };
 const info = { CFBundleIdentifier: config.bundleIdentifier, CFBundleDisplayName: 'Home23', CFBundleName: 'Home23', CFBundleVersion: '106', Home23ConnectedAgentsPort: '18443' };
 
 test('promotion retains the installed identity and refuses old labels, builds and endpoints', () => {
   verifyMetadata(info, config);
-  for (const change of [{ CFBundleIdentifier: 'com.example.legacy' }, { CFBundleDisplayName: 'Home23 Canary' }, { CFBundleVersion: '105' }, { CFBundleVersion: '106x' }, { Home23ConnectedAgentsPort: '8443' }]) {
+  for (const change of [{ CFBundleIdentifier: 'com.example.legacy' }, { CFBundleDisplayName: 'Home23 Canary' }, { CFBundleName: 'Home23 Canary' }, { CFBundleVersion: '105' }, { CFBundleVersion: '106x' }, { Home23ConnectedAgentsPort: '8443' }]) {
     assert.throws(() => verifyMetadata({ ...info, ...change }, config));
   }
+});
+
+test('the build preserves target identities while sharing version, port and executable layout', () => {
+  const args = buildArguments({ source: '/source with spaces', output: '/build output', buildNumber: '153', port: '18443' });
+  assert.equal(args[args.indexOf('-project') + 1], '/source with spaces/Home23.xcodeproj');
+  assert.equal(args[args.indexOf('-derivedDataPath') + 1], '/build output/DerivedData');
+  const settings = Object.fromEntries(args.filter(value => /^[A-Za-z_][A-Za-z0-9_]*=/.test(value)).map(value => {
+    const index = value.indexOf('=');
+    return [value.slice(0, index), value.slice(index + 1)];
+  }));
+  for (const key of ['PRODUCT_BUNDLE_IDENTIFIER', 'PRODUCT_NAME', 'INFOPLIST_KEY_CFBundleDisplayName', 'INFOPLIST_KEY_CFBundleName']) {
+    assert.equal(Object.hasOwn(settings, key), false, `${key} must remain target-specific`);
+  }
+  assert.equal(settings.CURRENT_PROJECT_VERSION, '153');
+  assert.equal(settings.HOME23_CONNECTED_AGENTS_PORT, '18443');
+  assert.equal(settings.ENABLE_DEBUG_DYLIB, 'NO');
+  assert.equal(settings.CODE_SIGNING_ALLOWED, 'NO');
+});
+
+test('maintained tooling can select installation config without changing legacy default invocation', () => {
+  const positional = ['build', '153', '/build output'];
+  assert.deepEqual(parseInvocation(positional, '/default installation'), {
+    installation: '/default installation', command: 'build', arg: '153', output: '/build output',
+  });
+  for (const argv of [
+    ['--installation', '/selected installation', ...positional],
+    [...positional, '--installation', '/selected installation'],
+  ]) {
+    assert.deepEqual(parseInvocation(argv, '/default installation'), {
+      installation: '/selected installation', command: 'build', arg: '153', output: '/build output',
+    });
+  }
+  assert.throws(() => parseInvocation(['status', '--installation']), /Provide a path/);
+  assert.throws(() => parseInvocation(['status', '--installation', '/one', '--installation', '/two']), /only once/);
+  assert.throws(() => parseInvocation(['status', '--instalation', '/typo']), /Unknown option/);
 });
 
 test('a numerically newer build cannot bypass missing current source or an incompatible persisted contract', () => {

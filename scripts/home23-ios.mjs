@@ -14,6 +14,41 @@ const readJSON = p => JSON.parse(fs.readFileSync(p, 'utf8'));
 const plist = p => JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '--', p]));
 const insist = (condition, message) => { if (!condition) throw new Error(message); };
 
+export function parseInvocation(argv, defaultInstallation = root) {
+  const positional = [];
+  let installation = defaultInstallation;
+  let installationSelected = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--installation') {
+      insist(!installationSelected, 'Provide --installation only once.');
+      const selected = argv[++index];
+      insist(selected && !selected.startsWith('-'), 'Provide a path after --installation.');
+      installation = path.resolve(selected);
+      installationSelected = true;
+    } else {
+      insist(!value.startsWith('--'), `Unknown option: ${value}`);
+      positional.push(value);
+    }
+  }
+  insist(positional.length <= 3, 'Too many command arguments.');
+  const [command, arg, output] = positional;
+  return { installation, command, arg, output };
+}
+
+export function buildArguments({ source, output, buildNumber, port }) {
+  // Scheme-wide identity overrides also rename every embedded extension.
+  // Target identities come from the selected source and are checked afterward.
+  return [
+    '-project', path.join(source, 'Home23.xcodeproj'), '-scheme', 'Home23',
+    '-configuration', 'Debug', '-derivedDataPath', path.join(output, 'DerivedData'),
+    '-destination', 'generic/platform=iOS', '-disableAutomaticPackageResolution',
+    'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'CODE_SIGN_ENTITLEMENTS=',
+    'ENABLE_DEBUG_DYLIB=NO', `CURRENT_PROJECT_VERSION=${buildNumber}`,
+    'MARKETING_VERSION=1.10', `HOME23_CONNECTED_AGENTS_PORT=${port}`, 'build',
+  ];
+}
+
 export function verifySigningLifetime(profileExpiresAt, certificateExpiresAt, now = Date.now(), minimumDays = 60) {
   const expiresAt = Math.min(Date.parse(profileExpiresAt), Date.parse(certificateExpiresAt));
   insist(Number.isFinite(expiresAt), 'Signing expiration is invalid.');
@@ -116,8 +151,8 @@ function verifyApp(app, config) {
 }
 
 async function main() {
-  const config = readJSON(path.join(root, 'instances/.house/home23-ios.json'));
-  const [command, arg, output] = process.argv.slice(2);
+  const { installation, command, arg, output } = parseInvocation(process.argv.slice(2));
+  const config = readJSON(path.join(installation, 'instances/.house/home23-ios.json'));
   if (command === 'status') {
     console.log(JSON.stringify({ ...config, verifiedSource: verifySource(config), signing: signingReadiness(config, 0) }, null, 2));
     return;
@@ -134,13 +169,14 @@ async function main() {
     const source = verifySource(config), before = sourceInventory(source);
     fs.mkdirSync(output, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(output, 'source-before.json'), JSON.stringify(before, null, 2));
-    const args = ['-project', path.join(source, 'Home23.xcodeproj'), '-scheme', 'Home23', '-configuration', 'Debug', '-derivedDataPath', path.join(output, 'DerivedData'), '-destination', 'generic/platform=iOS', '-disableAutomaticPackageResolution', 'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'CODE_SIGN_ENTITLEMENTS=', `PRODUCT_BUNDLE_IDENTIFIER=${config.bundleIdentifier}`, 'PRODUCT_NAME=Home23', 'INFOPLIST_KEY_CFBundleDisplayName=Home23', 'INFOPLIST_KEY_CFBundleName=Home23', `CURRENT_PROJECT_VERSION=${arg}`, 'MARKETING_VERSION=1.10', `HOME23_CONNECTED_AGENTS_PORT=${config.port}`, 'build'];
-    fs.writeFileSync(path.join(output, 'build-request.json'), JSON.stringify({ source, args, signing }, null, 2));
+    const args = buildArguments({ source, output, buildNumber: arg, port: config.port });
+    fs.writeFileSync(path.join(output, 'build-request.json'), JSON.stringify({ installation, source, args, signing }, null, 2));
     run('/usr/bin/xcodebuild', args, { cwd: source, env: { ...process.env, DEVELOPER_DIR: config.developerDir }, stdio: 'inherit' });
     const after = sourceInventory(source);
     fs.writeFileSync(path.join(output, 'source-after.json'), JSON.stringify(after, null, 2));
     insist(JSON.stringify(before) === JSON.stringify(after), 'Source changed during build. Review it before signing.');
     const app = path.join(output, 'DerivedData/Build/Products/Debug-iphoneos/Home23.app');
+    verifyMetadata(plist(path.join(app, 'Info.plist')), config);
     if (command === 'compile') {
       fs.writeFileSync(path.join(output, 'unsigned-artifact.json'), JSON.stringify({ app, signed: false, installable: false, sourceUnchanged: true }, null, 2));
       console.log(`Compiled unsigned Home23 ${arg}: ${app}. Signing and verification are still required; do not install this artifact.`);
@@ -153,7 +189,7 @@ async function main() {
     console.log(`Verified Home23 ${arg}: ${app}\nInstallation is a separate explicit operation.`);
     return;
   }
-  throw new Error('Usage: node scripts/home23-ios.mjs status | verify /absolute/Home23.app | compile NUMBER /absolute/new-output-directory | build NUMBER /absolute/new-output-directory');
+  throw new Error('Usage: node scripts/home23-ios.mjs [--installation /path/to/installation] status | verify /absolute/Home23.app | compile NUMBER /absolute/new-output-directory | build NUMBER /absolute/new-output-directory');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
