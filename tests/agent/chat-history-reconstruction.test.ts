@@ -5,6 +5,8 @@ import {
   createChatHistoryHandler,
   projectChatHistoryRecords,
 } from '../../src/routes/chat-history.js';
+// @ts-expect-error — shared browser projection has no declaration file
+import { projectHistoryToRows } from '../../engine/src/dashboard/home23-chat-transcript.mjs';
 
 function chunk(turnId: string, seq: number, text: string) {
   return {
@@ -103,6 +105,63 @@ test('pending history coalesces response deltas before applying the record limit
   assert.equal(responseChunks.length, 1);
   assert.equal(responseChunks[0].data.chunk, full);
   assert.equal(responseChunks[0].seq, 180, 'coalesced event retains the newest cursor');
+});
+
+test('child and nested-child deltas coalesce within ownership before bounding display history', () => {
+  const progress = (seq: number, subagentId: string, activity: object) => ({
+    type: 'event', turn_id: 'parent', seq, ts: '2026-09-13T12:00:00Z', kind: 'subagent_progress',
+    data: { type: 'subagent_progress', subagentId, activity },
+  });
+  const records = [
+    progress(1, 'a', { type: 'tool_start', tool: 'read_file', toolCallId: 'call-a', args: {} }),
+    ...Array.from({ length: 220 }, (_, index) => progress(index + 2, 'a', { type: 'response_chunk', chunk: `${index},` })),
+    progress(222, 'b', { type: 'response_chunk', chunk: 'Other child' }),
+    progress(223, 'a', { type: 'subagent_progress', subagentId: 'nested', activity: { type: 'thinking', content: 'First ' } }),
+    progress(224, 'a', { type: 'subagent_progress', subagentId: 'nested', activity: { type: 'thinking', content: 'second' } }),
+  ];
+  const projected = projectChatHistoryRecords(records, 5) as any[];
+  assert.equal(projected.length, 4);
+  assert.equal(projected[0].data.activity.toolCallId, 'call-a');
+  assert.equal(projected[1].data.activity.chunk, Array.from({ length: 220 }, (_, index) => `${index},`).join(''));
+  assert.equal(projected[1].seq, 221);
+  assert.equal(projected[1].display_start_seq, 2);
+  assert.equal(projected[2].data.subagentId, 'b');
+  assert.equal(projected[3].data.activity.activity.content, 'First second');
+  assert.equal(projected[3].display_start_seq, 223);
+});
+
+test('completed history retains interim commentary and deduplicates only its exact final segment', () => {
+  const turnId = 't_commentary';
+  const event = (kind: string, seq: number, data: object) => ({
+    type: 'event', turn_id: turnId, seq, kind, ts: '2026-09-13T12:00:00Z', data: { type: kind, ...data },
+  });
+  const records = [
+    turn(turnId, 'pending'),
+    chunk(turnId, 0, 'I am checking the file.'),
+    event('tool_start', 1, { tool: 'read_file', toolCallId: 'read1' }),
+    event('tool_result', 2, { tool: 'read_file', toolCallId: 'read1', result: 'Found it', success: true }),
+    chunk(turnId, 3, 'The file '),
+    event('status', 4, { status: 'provider_active' }),
+    chunk(turnId, 5, 'is ready.'),
+    { role: 'assistant', content: 'The file is ready.' },
+    turn(turnId, 'complete', 5),
+  ];
+  const projected = projectChatHistoryRecords(records, 100) as any[];
+  const rows = projectHistoryToRows(projected);
+  assert.deepEqual(rows.map((row: any) => row.kind), ['assistant', 'tool', 'assistant']);
+  assert.deepEqual(rows.filter((row: any) => row.kind === 'assistant').map((row: any) => row.text), [
+    'I am checking the file.', 'The file is ready.',
+  ]);
+  assert.equal(projected.filter(record => record.kind === 'response_chunk').length, 1);
+});
+
+test('completed history preserves partial final text rather than guessing it duplicates the canonical answer', () => {
+  const turnId = 't_partial';
+  const records = [turn(turnId, 'pending'), chunk(turnId, 0, 'The file'),
+    { role: 'assistant', content: 'The file is ready.' }, turn(turnId, 'complete', 0)];
+  const projected = projectChatHistoryRecords(records, 100) as any[];
+  assert.equal(projected.find(record => record.kind === 'response_chunk')?.data.chunk, 'The file');
+  assert.equal(projected.find(record => record.canonical)?.content, 'The file is ready.');
 });
 
 test('history route limits semantic projection rather than raw JSONL transport records', async () => {

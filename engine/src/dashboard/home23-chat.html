@@ -657,7 +657,7 @@
             <button class="h23-chat-effort-pill" id="chat-effort-pill" type="button" title="Change reasoning effort">
               <span id="chat-effort-pill-label">Effort</span>
             </button>
-            <button class="h23-chat-thinking-pill" id="chat-thinking-toggle" type="button" aria-pressed="true" title="Hide thinking">
+            <button class="h23-chat-thinking-pill" id="chat-thinking-toggle" type="button" aria-pressed="false" title="Expand all thoughts">
               <span id="chat-thinking-toggle-label">Thoughts</span>
             </button>
             <button class="h23-chat-expand-btn" id="chat-more-btn" type="button" title="More" aria-haspopup="menu" aria-expanded="false">&#8230;</button>
@@ -681,12 +681,6 @@
             </div>
             <button class="h23-chat-jump-latest" id="chat-jump-latest" type="button" hidden>Latest</button>
           </div>
-          <aside class="h23-chat-thought-dock" id="chat-thought-dock" hidden>
-            <div class="h23-chat-thought-dock-head">
-              <span class="h23-chat-thought-dock-label" id="chat-thought-dock-label">Thought</span>
-            </div>
-            <pre class="h23-chat-thought-dock-body" id="chat-thought-dock-body"></pre>
-          </aside>
         </div>
         <div class="h23-chat-work-strip" id="chat-work-strip" hidden></div>
         <div class="h23-chat-input-area" id="chat-input-area">
@@ -705,7 +699,7 @@
   </template>
 
   <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
-  <script type="module" src="/home23-chat.js?v=20260820-thought-turn-2"></script>
+  <script type="module" src="/home23-chat.js?v=20260913-inline-activity"></script>
   <script>
     (function setupKeyboardOffset() {
       const vv = window.visualViewport;

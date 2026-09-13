@@ -142,3 +142,17 @@ test('reads reasoning event type from the SSE event header when JSON type is abs
   assert.equal(result.hasFull, true);
   assert.equal(result.thinking.join(''), 'Grok full thought. Still going.');
 });
+
+test('completed provider markers retain their exact evidence but add no invented thought text', () => {
+  const result = play([
+    { type: 'response.reasoning_summary_text.delta', delta: '**Checking existing Home support**' },
+    { type: 'response.reasoning_summary_text.done', text: '**Checking existing Home support**' },
+    { type: 'response.output_item.done', item: { type: 'reasoning', summary: [{ type: 'summary_text', text: '**Checking existing Home support**' }] } },
+  ]);
+  assert.equal(result.visible, '**Checking existing Home support**');
+  assert.deepEqual(result.evidence.map(event => event.content), ['**Checking existing Home support**', '', '']);
+  assert.deepEqual(result.evidence.map(event => event.sourceEventType), [
+    'response.reasoning_summary_text.delta', 'response.reasoning_summary_text.done', 'response.output_item.done',
+  ]);
+  assert.doesNotMatch(result.thinking.join(''), /response\./);
+});

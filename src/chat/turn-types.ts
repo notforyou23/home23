@@ -54,9 +54,11 @@ export interface TurnEvent {
   type: 'event';
   turn_id: string;
   seq: number;
+  /** First covered sequence in a coalesced display-history event, never a replay cursor. */
+  display_start_seq?: number;
   ts: string;
   kind: 'thinking' | 'tool_start' | 'tool_result' | 'response_chunk' | 'media'
-    | 'subagent_start' | 'subagent_result' | 'cache' | 'status';
+    | 'subagent_start' | 'subagent_progress' | 'subagent_result' | 'cache' | 'status';
   data: Record<string, unknown>;
 }
 

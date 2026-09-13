@@ -78,6 +78,18 @@ export function enrichTerminalEnvelope(
 
 function coalesceEvent(previous: unknown, current: TurnEvent): TurnEvent | null {
   if (!isTurnEvent(previous) || previous.turn_id !== current.turn_id || previous.kind !== current.kind) return null;
+  if (current.kind === 'subagent_progress') {
+    if (typeof current.data.subagentId !== 'string' || previous.data.subagentId !== current.data.subagentId) return null;
+    const before = asRecord(previous.data.activity);
+    const after = asRecord(current.data.activity);
+    if (!before || !after || typeof after.type !== 'string' || before.type !== after.type) return null;
+    const joined = coalesceEvent(
+      { ...previous, kind: before.type, data: before },
+      { ...current, kind: after.type as TurnEvent['kind'], data: after },
+    );
+    return joined ? { ...current, display_start_seq: previous.display_start_seq ?? previous.seq,
+      data: { ...previous.data, ...current.data, activity: joined.data } } : null;
+  }
   if (current.kind !== 'response_chunk' && current.kind !== 'thinking') return null;
 
   const field = current.kind === 'thinking' ? 'content' : 'chunk';
@@ -85,17 +97,44 @@ function coalesceEvent(previous: unknown, current: TurnEvent): TurnEvent | null 
   const after = typeof current.data[field] === 'string' ? current.data[field] as string : '';
   return {
     ...current,
+    display_start_seq: previous.display_start_seq ?? previous.seq,
     data: { ...previous.data, ...current.data, [field]: before + after },
   };
 }
 
+/** Only the final response segment can be replaced by the durable answer. */
+function canonicalFinalChunkIndexes(records: unknown[], canonical: Map<string, CanonicalAssistant>): Set<number> {
+  const replaced = new Set<number>();
+  for (const [turnId, answer] of canonical) {
+    let segment: { text: string; indexes: number[] } | null = null;
+    for (let index = answer.startIndex + 1; index < answer.index; index++) {
+      const record = records[index];
+      if (!isTurnEvent(record) || record.turn_id !== turnId) continue;
+      if (record.kind === 'response_chunk') {
+        segment ??= { text: '', indexes: [] };
+        segment.text += typeof record.data.chunk === 'string' ? record.data.chunk : '';
+        segment.indexes.push(index);
+      } else if (['tool_start', 'subagent_start', 'subagent_result', 'media'].includes(record.kind)
+          || (record.kind === 'thinking' && (record.data.content || record.data.message))) {
+        segment = null;
+      }
+    }
+    // A partial prefix, repeated earlier commentary, or a different answer is
+    // not sufficient evidence to hide the streamed text.
+    if (segment?.text === answer.content) for (const index of segment.indexes) replaced.add(index);
+  }
+  return replaced;
+}
+
 /**
  * Project mixed persistence/transport JSONL into a bounded display history.
- * Completed response deltas are replaced by the one durable assistant message;
- * pending deltas are coalesced before limiting so their prefix is not lost.
+ * Only an exact final response segment is replaced by the durable assistant
+ * message. Interim commentary and pending deltas survive and are coalesced
+ * before limiting so their prefix is not lost.
  */
 export function projectChatHistoryRecords(records: unknown[], limit: number): unknown[] {
   const canonical = canonicalAssistantsForCompletedTurns(records);
+  const replacedFinalChunks = canonicalFinalChunkIndexes(records, canonical);
   const canonicalIndex = new Map<number, { turnId: string; content: string }>();
   const supersededAssistantIndexes = new Set<number>();
   const completedTurnIds = new Set<string>();
@@ -118,11 +157,7 @@ export function projectChatHistoryRecords(records: unknown[], limit: number): un
   for (let index = 0; index < records.length; index++) {
     const record = records[index];
     if (supersededAssistantIndexes.has(index)) continue;
-    if (isTurnEvent(record)
-        && record.kind === 'response_chunk'
-        && canonical.has(record.turn_id)) {
-      continue;
-    }
+    if (replacedFinalChunks.has(index)) continue;
 
     // Drop pending turn envelopes once the turn has a terminal status — they
     // otherwise project as blank assistant-shaped rows for naive clients.

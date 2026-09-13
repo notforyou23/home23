@@ -219,6 +219,13 @@ export const spawnAgentTool: ToolDefinition = {
     const subCtx: ToolContext = {
       ...ctx,
       chatId: subChatId,
+      // A child's response is evidence for this specialist, never part of the
+      // resident's answer. Keep the exact event inside its owning lifecycle.
+      onEvent: ctx.onEvent ? (activity) => ctx.onEvent?.({
+        type: 'subagent_progress', subagentId, task, label: headline,
+        parentToolCallId: ctx.parentToolCallId, activity,
+        sourceEventType: 'runtime.subagent_progress',
+      }) : undefined,
       // The canonical wrk_ root is the public lineage. aw_ records are hidden
       // hands and must not become the parent of a deeper specialist.
       parentWorkId: canonicalDestination?.parentWorkId ?? work?.workId ?? ctx.parentWorkId,

@@ -7,7 +7,7 @@ import {
 } from '../../../src/agent/tools/subagent.js';
 import { createSeededToolRegistry } from '../../../src/agent/tools/index.js';
 import { executeAndFormatTool, executePlannedTool } from '../../../src/agent/tool-result.js';
-import type { ToolContext, AgentResponse, ToolDefinition } from '../../../src/agent/types.js';
+import type { ToolContext, AgentResponse, AgentEvent, ToolDefinition } from '../../../src/agent/types.js';
 
 interface Captured {
   ctx: ToolContext | null;
@@ -70,6 +70,37 @@ function makeCtx(parentChatId: string): { ctx: ToolContext; captured: Captured }
 
   return { ctx, captured };
 }
+
+test('joined and detached specialist streams retain ownership instead of becoming the parent answer', async () => {
+  const activity: AgentEvent[] = [
+    { type: 'thinking', content: 'Checking the supplied facts.', provenance: 'provider_reasoning_summary', sourceEventType: 'response.reasoning_summary_text.delta' },
+    { type: 'tool_start', tool: 'channel_manage', toolCallId: 'child-call', args: { operation: 'list' } },
+    { type: 'tool_result', tool: 'channel_manage', toolCallId: 'child-call', result: '{"channels":[]}', success: true },
+    { type: 'response_chunk', chunk: 'Only the specialist says this.' },
+  ];
+  for (const mode of ['joined', 'detached'] as const) {
+    const { ctx, captured } = makeCtx('parent-chat');
+    const events: AgentEvent[] = [];
+    ctx.onEvent = event => events.push(event);
+    ctx.parentToolCallId = 'parent-spawn';
+    ctx.runAgentLoop = async (_system, _message, _tools, child) => {
+      activity.forEach(event => child.onEvent?.(event));
+      return { text: 'Specialist result.', model: 'test', toolCallCount: 1, durationMs: 1 };
+    };
+    await spawnAgentTool.execute({ task: 'Check the facts', label: 'Fact checker', mode }, ctx);
+    if (mode === 'detached') await captured.delivered;
+    const start = events.find(event => event.type === 'subagent_start');
+    assert.ok(start?.type === 'subagent_start');
+    const updates = events.filter(event => event.type === 'subagent_progress');
+    assert.equal(updates.length, activity.length);
+    assert.deepEqual(updates.map(event => event.activity), activity);
+    assert.ok(updates.every(event => event.subagentId === start.subagentId
+      && event.parentToolCallId === 'parent-spawn' && event.label === 'Fact checker'));
+    assert.equal(events.filter(event => event.type === 'response_chunk' || event.type === 'thinking'
+      || event.type === 'tool_start' || event.type === 'tool_result').length, 0);
+    assert.equal(events.at(-1)?.type, 'subagent_result');
+  }
+});
 
 test('noncanonical spawn_agent without a mode remains detached', async () => {
   const { ctx, captured } = makeCtx('parent-chat');

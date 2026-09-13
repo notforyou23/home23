@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { ResidentCoordinationAdapter, residentRecoveryTruth } from '../../src/coordination-adapter/index.js';
 import { ConversationHistory } from '../../src/agent/history.js';
 import type { AgentEvent } from '../../src/agent/types.js';
+import { ResidentCommunicationEventProjector } from '../../src/coordination-adapter/resident-adapter.js';
 import { TurnStore } from '../../src/chat/turn-store.js';
 import {
   SqliteCommunicationEventRepository,
@@ -53,6 +54,43 @@ function request(): ResidentWorkRequest {
     },
   };
 }
+
+test('specialist progress is scoped, nonterminal and never attributed as parent response or provider', () => {
+  const projector = new ResidentCommunicationEventProjector({
+    conversationId: fixtureId('conversation', 201), responseMessageId: fixtureId('message', 202),
+    actor: { principalId: BOT_ID, displayName: 'Jerry', kind: 'bot' },
+  }, request().origin);
+  let sequence = 0;
+  const project = (event: AgentEvent) => projector.project({
+    turnId: 'parent-turn', sequence: ++sequence, occurredAt: AT,
+    provider: 'parent-provider', model: 'parent-model', reasoningEffort: 'high', event,
+  });
+  const start = project({ type: 'subagent_start', subagentId: 'child-1', task: 'Check facts', label: 'Fact checker' });
+  const activity: AgentEvent = { type: 'response_chunk', chunk: 'Child answer.' };
+  const progress = project({ type: 'subagent_progress', subagentId: 'child-1', task: 'Check facts', label: 'Fact checker', activity });
+  assert.equal(progress.kind, 'subagent_progress');
+  assert.equal(progress.parentEventId, start.eventId);
+  assert.equal(progress.terminal, false);
+  assert.equal(progress.workId, request().origin.workId);
+  assert.deepEqual(progress.actor, { principalId: 'child-1', displayName: 'Fact checker', kind: 'subagent' });
+  assert.equal(progress.source.provider, null);
+  assert.equal(progress.source.model, null);
+  assert.deepEqual(progress.payload.activity, activity);
+  assert.equal(progress.payload.delta, undefined);
+  const media = project({ type: 'subagent_progress', subagentId: 'child-1', task: 'Check facts',
+    activity: { type: 'media', mediaType: 'image', path: '/private/child/image.png', caption: 'Child image' } });
+  assert.equal(JSON.stringify(media).includes('/private/child'), false);
+  const nestedArtifact = project({ type: 'subagent_progress', subagentId: 'child-1', task: 'Check facts',
+    activity: { type: 'subagent_progress', subagentId: 'grandchild', task: 'Prepare file', activity: {
+      type: 'tool_start', tool: 'return_artifact', toolCallId: 'private-artifact',
+      args: { path: '/private/child/file' }, providerEvent: { path: '/private/provider' },
+    } } });
+  assert.equal(JSON.stringify(nestedArtifact).includes('/private/'), false);
+  assert.match(JSON.stringify(nestedArtifact), /privateWorkspaceArtifact/);
+  const result = project({ type: 'subagent_result', subagentId: 'child-1', task: 'Check facts', result: 'Checked.', success: true });
+  assert.equal(result.parentEventId, start.eventId);
+  assert.equal(result.terminal, true);
+});
 
 function harness(options: {
   staleAfter?: number;

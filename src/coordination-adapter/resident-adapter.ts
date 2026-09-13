@@ -141,6 +141,7 @@ function communicationKind(event: AgentEvent): string {
     case 'response_chunk': return 'assistant_response_delta';
     case 'media': return 'media';
     case 'subagent_start': return 'subagent_started';
+    case 'subagent_progress': return 'subagent_progress';
     case 'subagent_result': return 'subagent_completed';
     case 'cache': return 'cache';
     case 'status': return 'status';
@@ -173,17 +174,23 @@ function communicationToolCallId(
   return durableCommunicationEventId(durable, taxonomy);
 }
 
+function communicationRawEvent(activity: AgentEvent): Record<string, JsonValue> {
+  const event = exactJsonRecord(activity);
+  if (activity.type === 'media') delete event.path;
+  if (activity.type === 'tool_start' && activity.tool === 'return_artifact') {
+    event.args = { privateWorkspaceArtifact: true };
+    delete event.providerEvent;
+  }
+  if (activity.type === 'subagent_progress') event.activity = communicationRawEvent(activity.activity);
+  return event;
+}
+
 function communicationPayload(
   durable: ResidentDurableEvent,
   parentEventId: string | null,
   taxonomy: CoordinationExecutionEvidenceTaxonomy,
 ): Record<string, JsonValue> {
-  const event = exactJsonRecord(durable.event);
-  if (durable.event.type === 'media') delete event.path;
-  if (durable.event.type === 'tool_start' && durable.event.tool === 'return_artifact') {
-    event.args = { privateWorkspaceArtifact: true };
-    delete event.providerEvent;
-  }
+  const event = communicationRawEvent(durable.event);
   const common: Record<string, JsonValue> = {
     [taxonomy.sequenceField]: durable.sequence,
     rawEvent: event,
@@ -214,6 +221,10 @@ function communicationPayload(
     case 'subagent_start':
       return { ...common, subagentId: durable.event.subagentId, task: durable.event.task,
         label: durable.event.label ?? null, parentToolCallId: durable.event.parentToolCallId ?? null };
+    case 'subagent_progress':
+      return { ...common, subagentId: durable.event.subagentId, task: durable.event.task,
+        label: durable.event.label ?? null, parentToolCallId: durable.event.parentToolCallId ?? null,
+        activity: event.activity! };
     case 'subagent_result':
       return { ...common,
         ...(typeof durable.event.subagentId === 'string' && durable.event.subagentId.length > 0
@@ -254,15 +265,17 @@ function communicationEvent(input: {
     attemptId: origin.attemptId,
     turnId: durable.turnId,
     parentEventId: input.parentEventId,
-    actor: context.actor,
+    actor: event.type === 'subagent_progress'
+      ? { principalId: event.subagentId, displayName: event.label ?? 'Subagent', kind: 'subagent' }
+      : context.actor,
     source: {
       system: providerOrigin ? 'provider' : taxonomy.runtimeSystem,
-      provider: durable.provider,
-      model: durable.model,
+      provider: event.type === 'subagent_progress' ? null : durable.provider,
+      model: event.type === 'subagent_progress' ? null : durable.model,
       adapter: 'agent_loop',
       sourceEventType: event.sourceEventType ?? `agent.${event.type}`,
       additionalFields: {
-        reasoningEffort: durable.reasoningEffort,
+        reasoningEffort: event.type === 'subagent_progress' ? null : durable.reasoningEffort,
         [taxonomy.sequenceField]: durable.sequence,
       },
     },
@@ -400,7 +413,7 @@ function parentCommunicationEventId(
       ? `tool:${event.toolCallId}`
       : event.type === 'subagent_start' && event.parentToolCallId
         ? `tool:${event.parentToolCallId}`
-        : event.type === 'subagent_result'
+        : (event.type === 'subagent_result' || event.type === 'subagent_progress')
             && typeof event.subagentId === 'string' && event.subagentId.length > 0
           ? `subagent:${event.subagentId}`
           : event.type === 'tool_start' && event.parentActivityId

@@ -10,6 +10,10 @@ The queue persists the prepared context before creating a review Work with an ou
 
 The review receives worker evidence as quoted data. It must verify relevant outcomes, finish remaining authorized work, respect later corrections, and never restart an intentional Stop. A worker response is not new authority. The model still decides what verification and continuation are appropriate; a recorded review is not proof of correctness. Tools, source-write restrictions and coding-backend permissions remain in force.
 
+An admitted review is Following up in the product, including a revisit of the exact blocked assessment that requested it. A newer explicit assessment takes precedence. A successful settled review with no recorded assessment is Delivered rather than Completed; failed or pending unassessed reviews remain awaiting review. Ordinary finished executions that never required a review retain their completion behavior.
+
+An overdue explicit blocked assessment can recover a missing or rejected revisit assessment with at most two additional review attempts, after one minute and five minutes. Each attempt has its own durable outcome key and the budget belongs to the blocked assessment's event sequence, so restart cannot reset it. An active review prevents duplicate admission; cancelled reviews do not retry. This rechecks the assessment rather than replaying the original task. A new explicit blocked assessment can supply its own future revisit condition. Reports must reconcile the latest top-level owner message sequence; a historical conclusion's sequence cannot acknowledge newer instructions.
+
 ## Coding capability selection
 
 Specialists can declare analysis, local-state changes or source changes through `task_kind`. Declared source changes are refused before detachment/allocation with a concrete route to `coding_run`; local-state changes require a files or shell grant. Resident instructions require selecting the coding route for tracked source. This validates declared needs, not arbitrary natural-language task understanding, and does not expand specialist privileges.

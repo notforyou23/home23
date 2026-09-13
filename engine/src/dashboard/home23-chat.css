@@ -1947,7 +1947,9 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-messages .h23-chat-thinking {
-  display: none;
+  display: block;
+  margin: 3px 0;
+  max-width: 46rem;
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-thinking-summary {
@@ -1970,11 +1972,11 @@ body.h23-chat-page .h23-chat-sidebar {
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-thinking-body {
-  padding: 0 12px 10px;
+  padding: 10px 12px;
   white-space: pre-wrap;
-  font-family: var(--h23-font-mono);
-  font-size: 12px;
-  line-height: 1.45;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
   font-style: normal;
 }
 
@@ -1993,8 +1995,31 @@ body.h23-chat-page .h23-chat-sidebar {
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool:not([open]),
 .h23-chat-slot > .h23-chat-shared .h23-chat-work:not([open]) {
-  height: 40px;
+  height: auto;
 }
+
+.h23-chat-work-body {
+  padding: 4px 12px 12px;
+  overflow-wrap: anywhere;
+}
+
+.h23-chat-work-body[hidden],
+.h23-chat-tool-body[hidden] { display: none; }
+
+.h23-chat-work-actions { display: flex; gap: 8px; }
+.h23-chat-work-actions button,
+.h23-work-details button {
+  border: 1px solid var(--h23-hairline, #7774);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.h23-chat-work-task { white-space: pre-wrap; }
+.h23-work-details summary { cursor: pointer; }
+.h23-work-details[open] { grid-column: 1 / -1; }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool-header,
 .h23-chat-slot > .h23-chat-shared .h23-chat-work-header {
@@ -2016,7 +2041,7 @@ body.h23-chat-page .h23-chat-sidebar {
   color: var(--h23-paper-faint);
   font-size: 12px;
   font-weight: 500;
-  font-family: var(--h23-font-mono);
+  font-family: inherit;
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-tool-status,
@@ -2182,7 +2207,7 @@ body.h23-chat-page .h23-chat-sidebar {
   font-size: 13px;
 }
 
-/* Author display:flex beats UA [hidden]; match thought-dock pattern so terminal turns can hide Working/Stop. */
+/* Keep terminal Working/Stop controls hidden despite their flex layout. */
 .h23-chat-slot > .h23-chat-shared .h23-chat-turn-hud[hidden] {
   display: none;
 }
@@ -2221,85 +2246,6 @@ body.h23-chat-page .h23-chat-sidebar {
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-thinking-pill[aria-pressed="false"] {
   opacity: 0.55;
-}
-
-.h23-chat-slot > .h23-chat-shared .h23-chat-thought-dock {
-  flex: 0 0 20rem;
-  width: 20rem;
-  max-width: 38%;
-  min-width: 16rem;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  margin: 0;
-  padding: 0;
-  border-left: 2px solid var(--h23-hairline-14);
-  background: transparent;
-  color: var(--h23-paper-faint);
-}
-
-.h23-chat-slot > .h23-chat-shared .h23-chat-thought-dock[hidden] {
-  display: none;
-}
-
-.h23-chat-slot > .h23-chat-shared .h23-chat-thought-dock-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex: 0 0 auto;
-  padding: 10px 14px 6px;
-}
-
-.h23-chat-slot > .h23-chat-shared .h23-chat-thought-dock-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-
-.h23-chat-slot > .h23-chat-shared .h23-chat-thought-dock[data-live="true"] .h23-chat-thought-dock-label::before {
-  content: '';
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--h23-signal);
-  animation: h23-house-glow-ice 2s ease-in-out infinite;
-}
-
-.h23-chat-slot > .h23-chat-shared .h23-chat-thought-dock-body {
-  flex: 1 1 0;
-  min-height: 0;
-  overflow: auto;
-  margin: 0;
-  padding: 0 14px 14px;
-  white-space: pre-wrap;
-  font-family: var(--h23-font-ui);
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--h23-paper-faint);
-  -webkit-mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
-}
-
-@media (max-width: 900px) {
-  .h23-chat-slot > .h23-chat-shared .h23-chat-thought-dock {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: min(20rem, 78%);
-    max-width: none;
-    min-width: 0;
-    flex: none;
-    z-index: 4;
-    background: var(--h23-raised);
-    box-shadow: -16px 0 28px rgba(30, 45, 70, 0.12);
-  }
 }
 
 .h23-chat-slot > .h23-chat-shared .h23-chat-jump-latest {
@@ -2671,7 +2617,7 @@ body.h23-chat-page .h23-chat-shared {
 
 .h23-work-row {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) auto auto;
+  grid-template-columns: 72px minmax(0, 1.4fr) minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: center;
   padding: 10px 12px;

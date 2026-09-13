@@ -85,6 +85,8 @@ for (const scenario of ['succeeded','failed','cancelled','delivery_recovery','re
   assert.equal(calls,1);assert.equal(posted.size,1);assert.equal(store.pending().length,0);
   assert.match(seen!.instruction,/INTERNAL WORK OUTCOME/);assert.match(seen!.instruction,/do not publish/);
   assert.match(seen!.instruction,/owner has said Stop/);assert.match(JSON.stringify(seen!.historyBackfill),/Latest correction/);
+  assert.match(seen!.instruction,/latest top-level ownerMessageSequence/);
+  assert.match(seen!.instruction,/historical conclusion is not the current owner direction/);
   assert.equal(seen!.plannedExecution,undefined,'review cannot replay the original planned tool');
  });
 }

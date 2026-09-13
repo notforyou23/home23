@@ -411,7 +411,7 @@
         <div class="h23-workers-header">
           <div>
             <h2>Live Work</h2>
-            <div class="h23-workers-subtitle">Running subagents, cron agent-turns, and coding jobs for this agent. Open a chat-backed run to watch it and steer.</div>
+            <div class="h23-workers-subtitle">Active and recent tasks. Open a task to return to its conversation.</div>
           </div>
         </div>
         <section class="h23-work-section">
@@ -639,7 +639,7 @@
             <button class="h23-chat-effort-pill" id="chat-effort-pill" type="button" title="Change reasoning effort">
               <span id="chat-effort-pill-label">Effort</span>
             </button>
-            <button class="h23-chat-thinking-pill" id="chat-thinking-toggle" type="button" aria-pressed="true" title="Hide thinking">
+            <button class="h23-chat-thinking-pill" id="chat-thinking-toggle" type="button" aria-pressed="false" title="Expand all thoughts">
               <span id="chat-thinking-toggle-label">Thoughts</span>
             </button>
             <button class="h23-chat-expand-btn" id="chat-more-btn" type="button" title="More" aria-haspopup="menu" aria-expanded="false">&#8230;</button>
@@ -663,12 +663,6 @@
             </div>
             <button class="h23-chat-jump-latest" id="chat-jump-latest" type="button" hidden>Latest</button>
           </div>
-          <aside class="h23-chat-thought-dock" id="chat-thought-dock" hidden>
-            <div class="h23-chat-thought-dock-head">
-              <span class="h23-chat-thought-dock-label" id="chat-thought-dock-label">Thought</span>
-            </div>
-            <pre class="h23-chat-thought-dock-body" id="chat-thought-dock-body"></pre>
-          </aside>
         </div>
         <div class="h23-chat-work-strip" id="chat-work-strip" hidden></div>
         <div class="h23-chat-input-area" id="chat-input-area">
@@ -687,7 +681,7 @@
   </template>
 
   <script async src="https://unpkg.com/3d-force-graph@1.73.3/dist/3d-force-graph.min.js"></script>
-  <script type="module" src="/home23-chat.js?v=20260820-thought-turn-2"></script>
+  <script type="module" src="/home23-chat.js?v=20260913-inline-activity"></script>
   <script src="/home23-brain-map.js?v=20260716-tag-communities-2"></script>
   <script src="/home23-query.js?v=20260712-durable-pgs1"></script>
   <script src="/home23-dashboard.js?v=20260717-agent-kicker"></script>

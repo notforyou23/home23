@@ -8,7 +8,7 @@ import { chatState } from './home23-chat-state.mjs';
 import { reconcileCanonicalAssistantElements } from './home23-chat-reconstruction.mjs';
 import { decodeModelPair, encodeModelPair } from './home23-model-pair.mjs';
 import { renderMarkdown } from './home23-chat-markdown.mjs';
-import { collectThinkingText, createTranscript } from './home23-chat-transcript.mjs';
+import { collectThinkingText, createTranscript, workConversationId, workReceiptPresentation, subagentStatus, toolLabel, activityStatusLabel } from './home23-chat-transcript.mjs';
 import {
   CHAT_REASONING_EFFORTS,
   encodeChatEffortKey,
@@ -437,7 +437,8 @@ async function refreshTurnStatus(expectedTurnId = activeTurnId, expectedChatId =
       });
       return;
     }
-    setHud(true, data.phase || data.status || 'Working');
+    const label = activityStatusLabel(data.phase || data.status);
+    if (label) setHud(true, label);
   } catch { /* ignore */ }
 }
 
@@ -642,7 +643,7 @@ function readShowThinking() {
     if (stored === '0') return false;
     if (stored === '1') return true;
   } catch { /* keep the page usable without storage */ }
-  return true;
+  return false;
 }
 
 function applyShowThinkingUi() {
@@ -651,11 +652,9 @@ function applyShowThinkingUi() {
   const btn = document.getElementById('chat-thinking-toggle');
   if (btn) {
     btn.setAttribute('aria-pressed', chatShowThinking ? 'true' : 'false');
-    btn.title = chatShowThinking ? 'Hide thinking' : 'Show thinking';
+    btn.title = chatShowThinking ? 'Collapse all thoughts' : 'Expand all thoughts';
   }
   transcript?.setShowThinking(chatShowThinking);
-  if (!chatShowThinking) hideThoughtDock();
-  else updateThoughtDock(conversationThinking, { live: chatStreaming });
 }
 
 function setShowThinking(next) {
@@ -675,50 +674,27 @@ function setupThinkingToggle() {
   applyShowThinkingUi();
 }
 
-function setThoughtRailLive(live) {
-  const dock = document.getElementById('chat-thought-dock');
-  const label = document.getElementById('chat-thought-dock-label');
-  if (dock) dock.dataset.live = live ? 'true' : 'false';
-  if (label) label.textContent = live ? 'Thinking' : 'Thought';
-}
-
-function updateThoughtDock(text, { live = false } = {}) {
-  const dock = document.getElementById('chat-thought-dock');
-  const body = document.getElementById('chat-thought-dock-body');
-  if (!dock || !body) return;
-  const next = String(text || '');
-  conversationThinking = next;
-  setThoughtRailLive(Boolean(live && next.trim()));
-  if (!chatShowThinking || !next.trim()) {
-    dock.hidden = true;
-    return;
-  }
-  body.textContent = next;
-  dock.hidden = false;
-  body.scrollTop = body.scrollHeight;
-}
-
-function syncThoughtRailFromRecords(records) {
-  updateThoughtDock(collectThinkingText(records), { live: chatStreaming });
+function syncThinkingFromRecords(records) {
+  conversationThinking = collectThinkingText(records);
 }
 
 function pauseTurnThinking(ctx) {
   if (!ctx) return;
   ctx.thinkingPaused = Boolean(ctx.currentThinking && String(ctx.currentThinking).trim());
+  ctx.currentThinkingSegment = '';
+  transcript?.collapseThinking();
 }
 
 function appendTurnThinking(ctx, chunk) {
   const piece = chunk || '';
   if (!piece) return;
+  if (!ctx.currentThinkingSegment) ctx.currentResponse = '';
   if (ctx.thinkingPaused && ctx.currentThinking) ctx.currentThinking += '\n\n';
   ctx.thinkingPaused = false;
   ctx.currentThinking += piece;
-  updateThoughtDock(ctx.currentThinking, { live: true });
-}
-
-function hideThoughtDock() {
-  const dock = document.getElementById('chat-thought-dock');
-  if (dock) dock.hidden = true;
+  ctx.currentThinkingSegment = (ctx.currentThinkingSegment || '') + piece;
+  transcript?.updateThinking(ctx.currentThinkingSegment, { turnId: ctx.turnId });
+  conversationThinking = ctx.currentThinking;
 }
 
 function getChatEffortStorageKey() {
@@ -1085,6 +1061,11 @@ function isResumableConversation(conversation) {
 async function loadHistory(agentName, conversationId) {
   if (!transcript) return;
   const convId = conversationId || chatConversationId;
+  // Freeze the old tail while replacing its history. The resumed tail starts
+  // after the sequence retained by this history snapshot.
+  if (activeEventSource) { activeEventSource.close(); activeEventSource = null; }
+  if (turnStatusPollTimer) { clearInterval(turnStatusPollTimer); turnStatusPollTimer = null; }
+  const stillSelected = () => convId === chatConversationId && agentName === chatAgent?.agentName;
   if (chatAgent?.bridgePort && convId) {
     try {
       const res = await fetch(
@@ -1093,12 +1074,13 @@ async function loadHistory(agentName, conversationId) {
       );
       if (res.ok) {
         const data = await res.json();
+        if (!stillSelected()) return;
         transcript.renderHistory(data.records || []);
-        syncThoughtRailFromRecords(data.records || []);
+        syncThinkingFromRecords(data.records || []);
         const lastAssistant = [...(data.records || [])].reverse().find((r) => r?.role === 'assistant' && r.content);
         lastPreviewSnippet = lastAssistant?.content?.slice(0, 140) || lastPreviewSnippet;
         scheduleChatPersist();
-        await resumePendingTurns();
+        await resumePendingTurns(data.records || [], convId, agentName);
         _syncState();
         return;
       }
@@ -1110,19 +1092,22 @@ async function loadHistory(agentName, conversationId) {
   try {
     const res = await fetch(`${CHAT_API}/history/${agentName}?limit=100${convParam}`);
     const data = await res.json();
+    if (!stillSelected()) return;
     const records = (data.messages || []).map((m) => ({ role: m.role, content: m.content }));
     transcript.renderHistory(records);
-    syncThoughtRailFromRecords(records);
+    syncThinkingFromRecords(records);
   } catch {
+    if (!stillSelected()) return;
     transcript.emptyState();
-    if (!chatStreaming) syncThoughtRailFromRecords([]);
+    if (!chatStreaming) syncThinkingFromRecords([]);
   }
-  await resumePendingTurns();
+  await resumePendingTurns([], convId, agentName);
   _syncState();
 }
 
-async function resumePendingTurns() {
+async function resumePendingTurns(records = [], conversationId = chatConversationId, agentName = chatAgent?.agentName) {
   if (!chatAgent?.bridgePort || !chatConversationId) return;
+  const stillSelected = () => conversationId === chatConversationId && agentName === chatAgent?.agentName;
   try {
     const res = await fetch(
       `${bridgeBase()}/api/chat/pending?chatId=${encodeURIComponent(chatConversationId)}`,
@@ -1130,6 +1115,7 @@ async function resumePendingTurns() {
     );
     if (!res.ok) return;
     const data = await res.json();
+    if (!stillSelected()) return;
     const pending = data.pending || [];
     if (!pending.length) {
       // History reload after a finished turn must not leave a sticky HUD.
@@ -1145,21 +1131,19 @@ async function resumePendingTurns() {
       );
       if (statusRes.ok) {
         const status = await statusRes.json();
+        if (!stillSelected()) return;
         if (isTerminalTurnStatus(status.status) || status.active === false) {
           if (chatStreaming || activeTurnId) finalizeTurn(status);
           return;
         }
       }
     } catch { /* fall through to resume */ }
-    currentTurnCtx = {
-      turnId: turn.turn_id,
-      currentResponse: '',
-      currentThinking: '',
-      thinkingPaused: false,
-    };
+    if (!stillSelected()) return;
+    currentTurnCtx = transcript.resumeTurn(records, turn.turn_id);
+    conversationThinking = currentTurnCtx.currentThinking;
     activeTurnId = turn.turn_id;
     activeChatId = chatConversationId;
-    activeCursor = -1;
+    activeCursor = currentTurnCtx.cursor;
     chatStreaming = true;
     setSendAsStop();
     setHud(true, 'Resuming');
@@ -1168,7 +1152,7 @@ async function resumePendingTurns() {
         bridgeBase: bridgeBase(),
         chatId: activeChatId,
         turnId: turn.turn_id,
-        cursor: -1,
+        cursor: activeCursor,
       });
     }
     _syncState();
@@ -1184,7 +1168,7 @@ function newConversation() {
   seenWorkReceipts = new Set();
   transcript?.emptyState();
   lastPreviewSnippet = '';
-  updateThoughtDock('');
+  conversationThinking = '';
   restoreChatReasoningEffort();
   updateConversationListHighlight();
   scheduleChatPersist();
@@ -1324,7 +1308,7 @@ async function sendMessage() {
     currentThinking: '',
     thinkingPaused: false,
   };
-  updateThoughtDock('', { live: true });
+  conversationThinking = '';
   activeChatId = chatConversationId;
   activeCursor = -1;
   _syncState();
@@ -1374,12 +1358,12 @@ async function sendMessage() {
   openTurnStream({ bridgeBase: bridgeBase(), chatId: activeChatId, turnId, cursor: -1 });
 }
 
-function dispatchLegacyEvent(event, ctx) {
+function dispatchLegacyEvent(event, ctx, sequence) {
   if (event.type === 'text' || event.type === 'response_chunk') {
     pauseTurnThinking(ctx);
     ctx.currentResponse += event.text || event.chunk || '';
     transcript?.updateAssistant(ctx.currentResponse, ctx.turnId);
-    setHud(true, hudToolName ? `Streaming · ${hudToolName}` : 'Streaming');
+    setHud(true, hudToolName ? `Streaming · ${toolLabel(hudToolName)}` : 'Streaming');
   } else if (event.type === 'thinking') {
     appendTurnThinking(ctx, event.content || event.message || '');
     setHud(true, 'Thinking');
@@ -1387,24 +1371,33 @@ function dispatchLegacyEvent(event, ctx) {
     hudToolName = event.tool || event.name || 'tool';
     pauseTurnThinking(ctx);
     ctx.currentResponse = '';
-    transcript?.appendTool(hudToolName, event.args, 'running');
-    setHud(true, `Running ${hudToolName}`);
+    transcript?.appendTool(hudToolName, event.args, 'running', event.toolCallId, ctx.turnId);
+    setHud(true, toolLabel(hudToolName, event.args));
     if (hudToolName === 'spawn_agent' || hudToolName === 'coding_run' || hudToolName === 'coding_continue') {
       refreshWorkSnapshot();
     }
   } else if (event.type === 'tool_complete' || event.type === 'tool_result') {
-    transcript?.updateTool(event.tool || event.name, event.result || event.summary || event.output, event.success !== false);
+    transcript?.updateTool(event.tool || event.name, event.exactResult ?? event.result ?? event.summary ?? event.output, event.success, event.toolCallId, ctx.turnId);
     hudToolName = '';
   } else if (event.type === 'media') {
     transcript?.appendMedia(event.mediaType, event.path, event.caption);
-  } else if (event.type === 'subagent_result') {
+  } else if (event.type === 'subagent_progress') {
+    transcript?.appendSubagentProgress(event, { turnId: ctx.turnId, sequence });
+  } else if (event.type === 'subagent_start' || event.type === 'subagent_result') {
+    pauseTurnThinking(ctx);
+    ctx.currentResponse = '';
     transcript?.appendWorkReceipt({
-      label: event.task || 'Sub-agent',
+      workId: event.subagentId,
+      turnId: ctx.turnId,
+      ...(event.type === 'subagent_start' ? { label: event.label || event.task || 'Subagent' } : {}),
+      task: event.task || '',
       result: event.result || '',
-      status: String(event.result || '').startsWith('Error:') ? 'failed' : 'completed',
+      ...(event.type === 'subagent_result' ? { onCancel: undefined, progressSummary: undefined } : {}),
+      status: subagentStatus(event),
     });
   } else if (event.type === 'status') {
-    setHud(true, event.status || event.content || 'Working');
+    const label = activityStatusLabel(event.status);
+    if (label) setHud(true, label);
   }
 }
 
@@ -1440,8 +1433,9 @@ function openTurnStream({ bridgeBase: base, chatId, turnId, cursor }) {
     let record;
     try { record = JSON.parse(msg.data); } catch { return; }
     if (record.type === 'event') {
+      if (record.seq <= activeCursor) return;
       activeCursor = record.seq;
-      if (currentTurnCtx) dispatchLegacyEvent(record.data, currentTurnCtx);
+      if (currentTurnCtx) dispatchLegacyEvent(record.data, currentTurnCtx, record.seq);
     } else if (record.type === 'turn' && record.status !== 'pending') {
       es.close();
       if (activeEventSource === es) activeEventSource = null;
@@ -1485,6 +1479,10 @@ function finalizeTurn(finalEnvelope) {
       renderMarkdown,
     );
     if (!reconciled) transcript?.appendAssistant(finalEnvelope.assistant_content, finalEnvelope.turn_id);
+    else if (transcript) {
+      transcript.liveAssistant = reconciled;
+      transcript.updateAssistant(finalEnvelope.assistant_content, finalEnvelope.turn_id);
+    }
     lastPreviewSnippet = finalEnvelope.assistant_content.slice(0, 140);
   }
   if (finalEnvelope?.status === 'error') {
@@ -1504,7 +1502,7 @@ function finalizeTurn(finalEnvelope) {
   currentTurnCtx = null;
   resetSendButtons();
   setHud(false);
-  updateThoughtDock(conversationThinking, { live: false });
+  transcript?.collapseThinking();
   cacheHistory();
   scheduleChatPersist();
   _syncState();
@@ -1591,6 +1589,18 @@ function pinConversation(id, label) {
 }
 
 async function openWorkConversation(work) {
+  const chatId = workConversationId(work);
+  if (!chatId || !chatAgent) return;
+  pinConversation(chatId, work.label);
+  document.querySelector('.h23-tab[data-tab="chat"]')?.click();
+  await openConversation(chatId);
+  attachedWorkId = null;
+  transcript?.appendWorkReceipt(inlineWorkRow(work));
+  renderConversationList();
+  if (chatStreaming) setSendAsStop();
+}
+
+async function openWorkDetails(work) {
   const chatId = workChatId(work);
   if (!chatId || !chatAgent) return;
   pinConversation(chatId, work.label);
@@ -1599,6 +1609,19 @@ async function openWorkConversation(work) {
   attachedWorkId = work.workId;
   renderConversationList();
   if (chatStreaming) setSendAsStop();
+}
+
+function inlineWorkRow(work) {
+  const terminal = TERMINAL_WORK.has(work.status);
+  return {
+    workId: work.workId, label: work.label || 'Task',
+    turnId: work.originTurnId, updatedAt: work.updatedAt, preserveStream: true,
+    ...(work.taskBrief ? { task: work.taskBrief } : {}),
+    ...(work.terminalResult?.resultText || work.error ? { result: work.terminalResult?.resultText || work.error } : {}),
+    status: work.status, progressSummary: work.progressSummary,
+    onDetails: workChatId(work) ? () => openWorkDetails(work) : undefined,
+    onCancel: terminal ? undefined : () => cancelWork(work.workId),
+  };
 }
 
 async function openWorkById(workId) {
@@ -1635,42 +1658,8 @@ async function injectSteer(workId, text) {
 
 function renderWorkStrip() {
   const el = document.getElementById('chat-work-strip');
-  if (!el) return;
-  if (!activeWork.length) {
-    el.hidden = true;
-    el.innerHTML = '';
-    return;
-  }
-  el.hidden = false;
-  el.innerHTML = activeWork.map((item) => {
-    const canOpen = Boolean(workChatId(item));
-    return `
-    <div class="h23-chat-work-row" data-work-id="${escapeHtml(item.workId)}">
-      <span class="h23-chat-work-kind">${escapeHtml(item.kind || '')}</span>
-      <span class="h23-chat-work-label">${escapeHtml(item.label || item.kind)}</span>
-      <span class="h23-chat-work-progress">${escapeHtml(item.progressSummary || item.status)}</span>
-      ${canOpen ? `<button type="button" class="h23-chat-work-open" data-work-id="${escapeHtml(item.workId)}">Open</button>` : ''}
-      <button type="button" class="h23-chat-work-cancel" data-work-id="${escapeHtml(item.workId)}">Cancel</button>
-    </div>`;
-  }).join('');
-  el.querySelectorAll('.h23-chat-work-cancel').forEach((btn) => {
-    btn.addEventListener('click', (event) => {
-      event.stopPropagation();
-      cancelWork(btn.dataset.workId);
-    });
-  });
-  el.querySelectorAll('.h23-chat-work-open').forEach((btn) => {
-    btn.addEventListener('click', (event) => {
-      event.stopPropagation();
-      openWorkById(btn.dataset.workId);
-    });
-  });
-  el.querySelectorAll('.h23-chat-work-row').forEach((row) => {
-    row.addEventListener('click', (event) => {
-      if (event.target.closest('.h23-chat-work-cancel, .h23-chat-work-open')) return;
-      openWorkById(row.dataset.workId);
-    });
-  });
+  if (el) { el.hidden = true; el.replaceChildren(); }
+  for (const work of activeWork) transcript?.appendWorkReceipt(inlineWorkRow(work));
 }
 
 async function cancelWork(workId) {
@@ -1687,14 +1676,19 @@ async function cancelWork(workId) {
 
 async function refreshWorkSnapshot() {
   if (!chatAgent?.bridgePort || !chatConversationId) return;
+  const conversationId = chatConversationId;
+  const agentName = chatAgent.agentName;
   try {
     const res = await fetch(
-      `${bridgeBase()}/api/work?chatId=${encodeURIComponent(chatConversationId)}&active=1`,
+      `${bridgeBase()}/api/work?chatId=${encodeURIComponent(conversationId)}&limit=40`,
       { headers: bridgeAuthHeaders() },
     );
     if (!res.ok) return;
     const data = await res.json();
-    activeWork = data.work || [];
+    if (chatConversationId !== conversationId || chatAgent?.agentName !== agentName) return;
+    const works = data.work || [];
+    activeWork = works.filter(work => !TERMINAL_WORK.has(work.status));
+    for (const work of [...works].reverse()) transcript?.appendWorkReceipt(inlineWorkRow(work));
     renderWorkStrip();
     _syncState();
   } catch { /* ignore */ }
@@ -1704,10 +1698,12 @@ function openWorkStream() {
   if (workEventSource) { try { workEventSource.close(); } catch { /* ignore */ } workEventSource = null; }
   if (!chatAgent?.bridgePort || !chatConversationId) return;
   refreshWorkSnapshot();
-  const url = `${bridgeBase()}/api/work/stream?chatId=${encodeURIComponent(chatConversationId)}${bridgeTokenParam()}`;
+  const conversationId = chatConversationId;
+  const url = `${bridgeBase()}/api/work/stream?chatId=${encodeURIComponent(conversationId)}${bridgeTokenParam()}`;
   const es = new EventSource(url);
   workEventSource = es;
   es.onmessage = (msg) => {
+    if (workEventSource !== es || chatConversationId !== conversationId) return;
     if (!msg.data || msg.data.startsWith(':')) return;
     let record;
     try { record = JSON.parse(msg.data); } catch { return; }
@@ -1721,6 +1717,7 @@ function openWorkStream() {
       const next = record.work;
       const terminal = ['completed', 'failed', 'cancelled', 'interrupted'].includes(next.status);
       if (terminal) {
+        transcript?.appendWorkReceipt(inlineWorkRow(next));
         activeWork = activeWork.filter((w) => w.workId !== next.workId);
         if (!seenWorkReceipts.has(next.workId)) {
           seenWorkReceipts.add(next.workId);
@@ -1742,23 +1739,27 @@ function openWorkStream() {
 }
 
 async function fetchWorkReceipt(workId, work) {
+  const conversationId = chatConversationId;
+  const agentName = chatAgent?.agentName;
   try {
     const res = await fetch(`${bridgeBase()}/api/work/${encodeURIComponent(workId)}/receipt`, { headers: bridgeAuthHeaders() });
-    let result = work?.error || work?.status || '';
+    let receiptWork = work;
+    let detail;
     if (res.ok) {
       const data = await res.json();
-      result = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || data.work, null, 2);
+      receiptWork = data.work || work;
+      detail = data.detail;
     }
+    if (chatConversationId !== conversationId || chatAgent?.agentName !== agentName) return;
     transcript?.appendWorkReceipt({
-      label: work?.label || 'Background work',
-      result,
-      status: work?.status || 'completed',
+      ...inlineWorkRow(receiptWork),
+      ...workReceiptPresentation(receiptWork, detail),
     });
   } catch {
+    if (chatConversationId !== conversationId || chatAgent?.agentName !== agentName) return;
     transcript?.appendWorkReceipt({
-      label: work?.label || 'Background work',
-      result: work?.error || 'Finished.',
-      status: work?.status || 'completed',
+      ...inlineWorkRow(work),
+      ...workReceiptPresentation(work),
     });
   }
 }
@@ -1811,15 +1812,16 @@ function restoreChatState(agentName) {
 const TERMINAL_WORK = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 
 function workTabRowHtml(item) {
-  const canOpen = Boolean(workChatId(item));
+  const canOpen = Boolean(workConversationId(item));
   return `
     <div class="h23-work-row" data-work-id="${escapeHtml(item.workId)}">
       <span class="h23-work-kind">${escapeHtml(item.kind || '')}</span>
       <span class="h23-work-label">${escapeHtml(item.label || item.kind || item.workId)}</span>
-      <span class="h23-work-origin">${escapeHtml(item.originChatId || '')}</span>
       <span class="h23-work-progress">${escapeHtml(item.progressSummary || item.status || '')}</span>
-      ${canOpen ? `<button type="button" class="h23-chat-work-open" data-work-id="${escapeHtml(item.workId)}">Open</button>` : ''}
-      ${TERMINAL_WORK.has(item.status) ? '' : `<button type="button" class="h23-chat-work-cancel" data-work-id="${escapeHtml(item.workId)}">Cancel</button>`}
+      ${canOpen ? `<button type="button" class="h23-chat-work-open" data-work-id="${escapeHtml(item.workId)}">Open chat</button>` : ''}
+      <details class="h23-work-details"><summary>Details</summary><p>${escapeHtml(item.taskBrief || item.label || '')}</p>
+      ${workChatId(item) ? `<button type="button" class="h23-chat-work-details" data-work-id="${escapeHtml(item.workId)}">View subagent</button>` : ''}
+      ${TERMINAL_WORK.has(item.status) ? '' : `<button type="button" class="h23-chat-work-cancel" data-work-id="${escapeHtml(item.workId)}">Stop</button>`}</details>
     </div>`;
 }
 
@@ -1830,6 +1832,12 @@ function bindWorkList(el) {
   });
   el.querySelectorAll('.h23-chat-work-cancel').forEach((btn) => {
     btn.addEventListener('click', () => cancelWork(btn.dataset.workId));
+  });
+  el.querySelectorAll('.h23-chat-work-details').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const work = [...agentWork, ...agentRecentWork].find(item => item.workId === btn.dataset.workId);
+      if (work) void openWorkDetails(work);
+    });
   });
 }
 

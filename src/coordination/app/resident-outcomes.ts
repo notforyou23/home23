@@ -12,6 +12,10 @@ export interface ResidentOutcome {
   prepared: string | null;
 }
 
+// A missed assessment may be retried; the original execution is never replayed.
+// The budget belongs to one explicit blocked conclusion and survives restart.
+const REVISIT_ASSESSMENT_BACKOFF_MS = [60_000, 5 * 60_000] as const;
+
 /** Read the current attempt's durable terminal event, not a tool-result event
  * (tool results also carry terminal=true). Keep receipt status and execution
  * error evidence separate: receipt_failed means a failed execution was recorded. */
@@ -55,8 +59,27 @@ export function createResidentOutcomeStore(database: M11Database) {
     },
     /** Existing terminal Work is the durable trigger, even if the producer crashed before delivery. */
     discover() {
-      for (const value of assignments.revisits()) enqueue(`assignment-revisit:${value.workId}:${value.eventSequence}`,
-        value.workId, { reason: 'A recorded dependency finished or the resident-requested revisit time arrived.', assignment: value });
+      for (const value of assignments.revisits()) {
+        const key = `assignment-revisit:${value.workId}:${value.eventSequence}`;
+        enqueue(key, value.workId, { reason: 'A recorded dependency finished or the resident-requested revisit time arrived.', assignment: value });
+        const keys = [key, ...REVISIT_ASSESSMENT_BACKOFF_MS.map((_, index) => `${key}:assessment-retry:${index + 1}`)];
+        const attempts = keys.flatMap(attemptKey => {
+          const row = database.readOne<{ settledAt: string | null; reviewState: string | null }>(`SELECT o.settled_at AS settledAt,w.state AS reviewState
+            FROM resident_outcomes o LEFT JOIN works w ON w.id=o.review_work_id WHERE o.outcome_key=?`, attemptKey);
+          return row ? [row] : [];
+        });
+        const previous = attempts.at(-1)!;
+        const delay = REVISIT_ASSESSMENT_BACKOFF_MS[attempts.length - 1];
+        if (delay === undefined || previous.settledAt === null || previous.reviewState === null
+            || !['succeeded','failed'].includes(previous.reviewState)
+            || Date.now() - Date.parse(previous.settledAt) < delay) continue;
+        // Another pending follow-through already owns this same assignment.
+        if (database.readOne('SELECT outcome_key FROM resident_outcomes WHERE source_work_id=? AND settled_at IS NULL LIMIT 1', value.workId)) continue;
+        enqueue(keys[attempts.length]!, value.workId, {
+          reason: 'The previous revisit returned without an accepted assignment assessment. Inspect the current assignment and resolve the rejected or missing assessment. Do not replay the original execution or repeat side effects.',
+          assignment: value, assessmentRetry: attempts.length, maximumAssessmentRetries: REVISIT_ASSESSMENT_BACKOFF_MS.length,
+        });
+      }
       const rows = database.readAll<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`
         SELECT w.id, w.state, w.terminal_reason AS reason, p.assignment_json AS assignment,
           m.body_text AS text FROM works w JOIN work_planned_invocations p ON p.work_id = w.id
@@ -125,6 +148,7 @@ export function residentOutcomeInstruction(original: string, evidence: string, w
     'A receipt_failed reason records an execution that failed; it does not mean receipt persistence or work_report_outcome failed. Inspect terminalEvidence for the recorded error. If it is absent, the cause is unknown. work_report_outcome records an assignment assessment; it does not update project files, STATE.json, or a learning ledger. Attribute missing writes or reporting errors only to inspected evidence.',
     'Determine what actually finished, what is saved, what remains unverified, and whether the owner\'s requested outcome is complete. Verify relevant files or receipts when needed.',
     `Record your conclusion with work_report_outcome${workId ? ` for ${workId}` : ''} before your final response: complete only with inspected evidence, blocked with the exact dependency or revisit condition, active if a linked execution continues, or cancelled when stopped. An owner-facing explanation alone leaves the assignment unfinished.`,
+    'If an assessment needs owner_message_sequence, read work_list or work_status and use the latest top-level ownerMessageSequence after reconciling its current messages. A sequence inside a historical conclusion is not the current owner direction. If the report is rejected, correct the reported arguments and confirm its accepted result before saying the assignment cleared.',
     'Continue remaining work only within existing owner authorization. Use coding_run for tracked-source edits; do not send source fixes to a files/shell specialist that cannot edit source.',
     'If the outcome is cancelled or the owner has said Stop, acknowledge it without restarting. If failed or interrupted, inspect saved state before deciding whether a bounded continuation is safe. Do not blindly replay side effects.',
     'If another worker is still doing the same assignment, do not start a duplicate. A tool or capability limitation requires finding the supported route or reporting the exact blocker, not claiming completion.',

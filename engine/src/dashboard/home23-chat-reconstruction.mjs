@@ -6,10 +6,14 @@
 export function reconcileCanonicalAssistantElements(elements, turnId, canonicalContent, render) {
   if (!turnId || typeof canonicalContent !== 'string') return null;
   const matching = Array.from(elements || []).filter(element => element?.dataset?.turnId === turnId);
-  const alreadyCanonical = matching.find(element => element.textContent === canonicalContent);
+  const alreadyCanonical = matching.find(element => (element.dataset.sourceText ?? element.textContent) === canonicalContent);
   if (alreadyCanonical) return alreadyCanonical;
 
   const target = matching[matching.length - 1] || null;
-  if (target) target.innerHTML = render(canonicalContent);
+  if (target) {
+    const body = target.querySelector?.('.h23-chat-msg-text') || target;
+    body.innerHTML = render(canonicalContent);
+    target.dataset.sourceText = canonicalContent;
+  }
   return target;
 }

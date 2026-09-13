@@ -293,7 +293,8 @@ function statusFromPending(active: boolean, lastEvent: TurnEvent | null): Exclud
   if (lastEvent?.kind === 'tool_start') return 'tool_running';
   if (lastEvent?.kind === 'tool_result') return 'running';
   if (lastEvent?.kind === 'thinking' || lastEvent?.kind === 'cache' || lastEvent?.kind === 'status'
-      || lastEvent?.kind === 'subagent_start' || lastEvent?.kind === 'subagent_result') return 'awaiting_model';
+      || lastEvent?.kind === 'subagent_start' || lastEvent?.kind === 'subagent_progress'
+      || lastEvent?.kind === 'subagent_result') return 'awaiting_model';
   return active ? 'running' : 'accepted';
 }
 

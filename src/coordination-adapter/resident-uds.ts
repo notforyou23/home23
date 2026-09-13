@@ -619,7 +619,7 @@ function exactTimestamp(value: unknown, label: string): string {
 
 const TURN_EVENT_KINDS=new Set([
   "thinking","tool_start","tool_result","response_chunk","media",
-  "subagent_start","subagent_result","cache","status",
+  "subagent_start","subagent_progress","subagent_result","cache","status",
 ]);
 
 function decodeTurnEvent(encoded:Buffer,turnId:string,sequence:number):TurnEvent{

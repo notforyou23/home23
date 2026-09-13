@@ -332,6 +332,8 @@ export type AgentEvent =
       toolCallId?: string; sourceEventType?: string }
   | { type: 'subagent_start'; subagentId: string; task: string;
       parentToolCallId?: string; label?: string; sourceEventType?: string }
+  | { type: 'subagent_progress'; subagentId: string; task: string;
+      parentToolCallId?: string; label?: string; activity: AgentEvent; sourceEventType?: string }
   | { type: 'subagent_result'; subagentId: string; task: string; result: string;
       success: boolean; parentToolCallId?: string; sourceEventType?: string }
   | { type: 'cache'; read: number | null; write: number | null; input: number | null; output: number | null; inputTotal?: number | null; provider?: string; model?: string;

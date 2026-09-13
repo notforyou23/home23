@@ -39,15 +39,29 @@ export function createResidentAssignments(database: M11Database) {
     return record ? { ...JSON.parse(record.payload), eventSequence: record.sequence } : null;
   }
   function presentationState(workId: string, executionState: string, conclusion = latest(workId)): string {
-    if (conclusion) return conclusion.state;
-    if (executionState === 'cancelled' || executionState === 'failed') return executionState;
-    if (executionState !== 'succeeded') return 'active';
-    const pending = hasOutcomeStore && database.readOne(`SELECT 1 FROM resident_outcomes o
-      WHERE o.source_work_id=? AND o.settled_at IS NULL
-        AND (o.review_work_id IS NULL OR EXISTS (SELECT 1 FROM works review
-          WHERE review.id=o.review_work_id AND review.state IN ('queued','leased','running','cancelling')))
+    if (conclusion && conclusion.state !== 'blocked') return conclusion.state;
+    const outcome = hasOutcomeStore && database.readOne<{ key: string; reviewState: string | null; settledAt: string | null }>(`SELECT o.outcome_key AS key,review.state AS reviewState,o.settled_at AS settledAt FROM resident_outcomes o
+      LEFT JOIN works review ON review.id=o.review_work_id
+      WHERE o.source_work_id=?
+      ORDER BY CASE WHEN o.settled_at IS NULL AND review.state IN ('queued','leased','running','cancelling') THEN 0 ELSE 1 END,
+        o.created_at DESC,o.outcome_key DESC
       LIMIT 1`, workId);
-    return pending ? 'needs_review' : 'complete';
+    // An admitted resident follow-through is still doing the assignment. Its
+    // execution is separate from the helper that already returned a result;
+    // it is not an owner-facing request for attention or proof of completion.
+    const reviewing = outcome && outcome.settledAt === null && outcome.reviewState !== null
+      && ['queued','leased','running','cancelling'].includes(outcome.reviewState);
+    if (conclusion) {
+      const revisitKey = `assignment-revisit:${conclusion.workId}:${conclusion.eventSequence}`;
+      return reviewing && (outcome.key === revisitKey || outcome.key.startsWith(`${revisitKey}:assessment-retry:`))
+        ? 'active' : conclusion.state;
+    }
+    if (executionState === 'cancelled' || executionState === 'failed') return executionState;
+    if (executionState !== 'succeeded' || reviewing) return 'active';
+    // Settlement confirms delivery of the review, not its assessed outcome.
+    if (outcome && outcome.settledAt !== null && outcome.reviewState === 'succeeded') return 'returned';
+    // Preserve ordinary completed executions that never required follow-through.
+    return outcome ? 'needs_review' : 'complete';
   }
   function assertOpen(workId: string) {
     const conclusion = latest(workId);
@@ -112,7 +126,8 @@ export function createResidentAssignments(database: M11Database) {
     }
     const current = direction(origin.workId);
     if ((current.ownerMessageSequence > current.acknowledgedSequence || ownerMessageSequence !== null)
-        && ownerMessageSequence !== current.ownerMessageSequence) throw new Error('Read work_list and reconcile the latest owner messages; include its ownerMessageSequence in this assessment');
+        && ownerMessageSequence !== current.ownerMessageSequence) throw new WorkError('invalid_request',
+          `Read work_list and reconcile the latest owner messages; use its current top-level ownerMessageSequence (${current.ownerMessageSequence}) as owner_message_sequence, not the sequence saved in an earlier conclusion`);
     if (revisitAt !== null && Date.parse(revisitAt) <= Date.now()) invalid('revisit_at must be in the future');
     if (state !== 'blocked' && (waitFor.length || revisitAt !== null)) invalid('Revisit conditions belong to a blocked assignment');
     if (state === 'active') {

@@ -41,9 +41,114 @@ function fixture(t: { after(fn: () => void): void }) {
     residentSlug: 'jerry', invocationId, toolName: 'spawn_agent', canonicalArgs: { task: 'Verify the repair' },
     executionInstruction: 'Verify the repair', title: 'Repair the launcher', summary: 'Running and verified', recoveryPolicy: 'safe_before_start' } }).workId;
   const cancel = (id: string) => work.cancelQueued({ workId: id, actorPrincipalId: OWNER_ID, reasonCode: 'operator_stop', sourceReference: 'owner:stop', timestamp: AT, ...identity });
+  const finish = (id: string, status: 'succeeded' | 'failed' = 'succeeded') => {
+    const offered = leases.offer({ workId: id, holderPrincipalId: BOT_ID, holderInstanceId: 'instance-jerry',
+      authorityReference: 'resident:jerry', automatic: true, ...identity });
+    const execution = { workId: id, attemptId: offered.attempt.id, leaseId: offered.lease.id,
+      holderPrincipalId: BOT_ID, holderInstanceId: 'instance-jerry', fencingToken: offered.fencingToken, ...identity };
+    leases.accept(execution); leases.start(execution);
+    leases.terminalize({ ...execution, receipt: { status, sourceReference: 'resident:jerry',
+      resultDigest: 'a'.repeat(64), artifactIds: [], timestamp: AT } });
+  };
   const assignments = createResidentAssignments(database);
-  return { database, work, origin, context, consumer, admit, cancel, assignments };
+  return { database, work, origin, context, consumer, admit, cancel, finish, assignments };
 }
+
+for (const reviewResult of ['succeeded', 'failed'] as const) {
+  test(`resident follow-through stays active while executing and ${reviewResult} review cannot silently close an unassessed assignment`, t => {
+    const f = fixture(t), id = f.admit(`review-${reviewResult}`);
+    f.finish(id);
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'complete', 'ordinary no-review completion is preserved');
+    const outcomes = createResidentOutcomeStore(f.database);
+    outcomes.enqueue(`work:${id}`, id, { status: 'succeeded', result: 'Candidate findings; assessment remains' });
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'needs_review', 'review has not been admitted');
+    const review = f.work.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
+      originMessageId: MESSAGE_ID, roundId: null, kind: 'resident_turn', idempotencyKey: `resident-review-${reviewResult}`,
+      manifest: manifestInput(), maxAutomaticOffers: 1, requestId: fixtureId('request', 90), correlationId: fixtureId('correlation', 90) }).work;
+    outcomes.update(outcomes.pending()[0], 'review_work_id', review.id);
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'active', 'resident is following through, not asking owner for attention');
+    f.finish(review.id, reviewResult);
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'needs_review', 'terminal review alone is not a completion assessment');
+    outcomes.update(outcomes.pending()[0], 'settled_at', AT);
+    const deliveredState = reviewResult === 'succeeded' ? 'returned' : 'needs_review';
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), deliveredState, 'successful delivery is returned, not a completion assessment');
+    assert.equal(f.assignments.list(BOT_ID).find(value => value.id === id)?.assignmentState, deliveredState,
+      'unassessed delivery remains in the resident accountability list');
+    f.database.reopen();
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), deliveredState);
+    f.assignments.report(f.context, f.origin, { work_id: id, state: 'complete', summary: 'Current result inspected',
+      evidence: ['receipt:independent-verification'] }, `assessed-${reviewResult}`);
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'complete');
+  });
+}
+
+test('missed blocked-revisit assessments retry with durable backoff and a fixed budget, preserving every review identity', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse(AT) });
+  const f = fixture(t), id = f.admit('revisit-assessment');
+  f.finish(id);
+  f.assignments.report(f.context, f.origin, { work_id: id, state: 'blocked', summary: 'Waiting for verification',
+    revisit_at: new Date(Date.now() + 1000).toISOString() }, 'revisit-assessment-block');
+  let store = createResidentOutcomeStore(f.database);
+  const revisitRows = () => f.database.readAll<{ key: string }>(
+    "SELECT outcome_key AS key FROM resident_outcomes WHERE outcome_key LIKE 'assignment-revisit:%' ORDER BY created_at,outcome_key");
+  const settle = (number: number, status: 'succeeded' | 'failed') => {
+    const row = store.pending().find(value => value.key.startsWith('assignment-revisit:'))!;
+    const review = f.work.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
+      originMessageId: MESSAGE_ID, roundId: null, kind: 'resident_turn', idempotencyKey: `revisit-assessment-proof-${number}`,
+      manifest: manifestInput(), maxAutomaticOffers: 1, requestId: fixtureId('request', 91), correlationId: fixtureId('correlation', 91) }).work;
+    store.update(row, 'review_work_id', review.id);
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'active', 'a current revisit is following through on the older block');
+    f.finish(review.id, status);
+    store.update(row, 'settled_at', new Date().toISOString());
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'blocked', 'missing assessment does not erase the blocker');
+    return review.id;
+  };
+  t.mock.timers.tick(1000); store.discover();
+  assert.equal(revisitRows().length, 1);
+  const originalReview = settle(0, 'succeeded');
+  t.mock.timers.tick(59_999); store.discover();
+  assert.equal(revisitRows().length, 1);
+  t.mock.timers.tick(1); store.discover(); store.discover();
+  assert.equal(revisitRows().length, 2, 'only one retry after the first minute');
+  f.database.reopen(); store = createResidentOutcomeStore(f.database); store.discover();
+  assert.equal(revisitRows().length, 2, 'restart retains the retry identity and budget');
+  assert.equal(f.assignments.root(originalReview), id, 'retry does not overwrite the original review lineage');
+  settle(1, 'failed');
+  t.mock.timers.tick(299_999); store.discover();
+  assert.equal(revisitRows().length, 2);
+  t.mock.timers.tick(1); store.discover();
+  assert.equal(revisitRows().length, 3);
+  settle(2, 'failed');
+  t.mock.timers.tick(86_400_000); store.discover();
+  assert.equal(revisitRows().length, 3, 'the same blocked conclusion cannot repeat forever');
+  assert.equal(f.work.get(id)?.state, 'succeeded', 'assessment retries never replay the original execution');
+  f.assignments.report(f.context, f.origin, { work_id: id, state: 'blocked', summary: 'New inspected dependency',
+    revisit_at: new Date(Date.now() + 1000).toISOString() }, 'new-blocked-assessment');
+  t.mock.timers.tick(1000); store.discover();
+  assert.equal(revisitRows().length, 4, 'a new explicit assessment owns a distinct revisit budget');
+  f.assignments.report(f.context, f.origin, { work_id: id, state: 'complete', summary: 'Verified',
+    evidence: ['receipt:verified'] }, 'finally-assessed');
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'complete');
+  t.mock.timers.tick(86_400_000); store.discover();
+  assert.equal(revisitRows().length, 4, 'completion does not create another assessment retry');
+});
+
+test('a stopped revisit is not automatically retried', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse(AT) });
+  const f = fixture(t), id = f.admit('stopped-revisit'); f.finish(id);
+  f.assignments.report(f.context, f.origin, { work_id: id, state: 'blocked', summary: 'Waiting',
+    revisit_at: new Date(Date.now() + 1000).toISOString() }, 'stopped-revisit-block');
+  const store = createResidentOutcomeStore(f.database);
+  t.mock.timers.tick(1000); store.discover();
+  const row = store.pending()[0];
+  const review = f.work.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
+    originMessageId: MESSAGE_ID, roundId: null, kind: 'resident_turn', idempotencyKey: 'stopped-revisit-review',
+    manifest: manifestInput(), maxAutomaticOffers: 1, requestId: fixtureId('request', 92), correlationId: fixtureId('correlation', 92) }).work;
+  store.update(row, 'review_work_id', review.id); f.cancel(review.id);
+  store.update(row, 'settled_at', new Date().toISOString());
+  t.mock.timers.tick(86_400_000); store.discover();
+  assert.equal(store.pending().length, 0, 'an explicit stop is not a transient assessment failure');
+});
 
 test('execution termination remains an obligation until the resident records its assessed outcome', t => {
   const f = fixture(t), id = f.admit('first');
@@ -135,6 +240,10 @@ test('changed direction requires explicit assessment; newly admitted children in
   });
   assert.throws(() => f.admit('stale'), /Owner direction changed/);
   assert.throws(() => f.assignments.report(f.context, f.origin, { work_id: f.origin.workId, state: 'active', summary: 'Continue' }, 'missing-read'), /latest owner messages/);
+  assert.throws(() => f.assignments.report(f.context, f.origin, {
+    work_id: f.origin.workId, state: 'cancelled', summary: 'Retire an obsolete task', owner_message_sequence: 1,
+  }, 'stale-conclusion-sequence'), (error: unknown) => error instanceof WorkError
+    && error.code === 'invalid_request' && /top-level ownerMessageSequence \(2\)/.test(error.message));
   const direction = f.assignments.direction(f.origin.workId);
   f.assignments.report(f.context, f.origin, { work_id: f.origin.workId, state: 'active', summary: 'Owner asks for an update while the repair continues', owner_message_sequence: direction.ownerMessageSequence }, 'current-read');
   const id = f.admit('current');
