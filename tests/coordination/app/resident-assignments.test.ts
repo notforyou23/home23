@@ -82,6 +82,90 @@ for (const reviewResult of ['succeeded', 'failed'] as const) {
   });
 }
 
+function visibleResult(f: ReturnType<typeof fixture>, id: string, overrides: {
+  workId?: string; channelId?: string; visibility?: 'visible' | 'tombstoned'; kind?: 'result' | 'text'; author?: string;
+} = {}) {
+  const messageId = `msg_${id.slice(4)}`, channelId = overrides.channelId ?? CHANNEL_ID;
+  const author = overrides.author ?? BOT_ID;
+  f.database.mutateWithEvent(tx => {
+    tx.run(`INSERT INTO messages(id,channel_id,channel_sequence,author_principal_id,author_kind,
+      author_display_name,kind,body_text,stored_visibility,work_id,created_at)
+      VALUES(?,?,2,?,?,'Resident',?,'Candidate findings delivered to the owner',?,?,?)`,
+    messageId, channelId, author, author === OWNER_ID ? 'owner' : 'bot', overrides.kind ?? 'result',
+    overrides.visibility ?? 'visible', overrides.workId ?? id, AT);
+    return { value: undefined, event: { type: 'message.appended', aggregateKind: 'message', aggregateId: messageId,
+      aggregateVersion: 1, channelId, actorPrincipalId: author, requestId: fixtureId('request', 95),
+      correlationId: fixtureId('correlation', 95), payload: {}, createdAt: AT } };
+  });
+}
+
+function failedFollowThrough(f: ReturnType<typeof fixture>, id: string, settled = true) {
+  const store = createResidentOutcomeStore(f.database);
+  store.enqueue(`work:${id}`, id, { status: 'succeeded', result: 'Candidate findings' });
+  const review = f.work.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
+    originMessageId: MESSAGE_ID, roundId: null, kind: 'resident_turn', idempotencyKey: `failed-follow-through-${id}`,
+    manifest: manifestInput(), maxAutomaticOffers: 1, requestId: fixtureId('request', 93), correlationId: fixtureId('correlation', 93) }).work;
+  store.update(store.pending()[0], 'review_work_id', review.id);
+  f.finish(review.id, 'failed');
+  if (settled) store.update(store.pending()[0], 'settled_at', AT);
+  return review;
+}
+
+for (const settled of [false, true]) {
+  test(`a visible delivered result survives a failed ${settled ? 'settled' : 'unsettled'} background review without closing accountability`, t => {
+    const f = fixture(t), id = f.admit('visible-delivery'); f.finish(id);
+    visibleResult(f, id);
+    const review = failedFollowThrough(f, id, settled);
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'returned');
+    assert.equal(f.assignments.list(BOT_ID).find(row => row.id === id)?.assignmentState, 'returned');
+    assert.equal(f.assignments.latest(id), null, 'delivery does not invent an explicit conclusion');
+    assert.doesNotThrow(() => f.assignments.assertOpen(id));
+    assert.equal(f.work.get(review.id)?.state, 'failed', 'review failure remains available');
+    f.database.reopen();
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'returned');
+    assert.equal(f.work.get(id)?.state, 'succeeded');
+  });
+}
+
+for (const mismatch of ['missing', 'hidden', 'wrong_work', 'wrong_channel', 'not_result', 'wrong_author'] as const) {
+  test(`${mismatch} result cannot label a failed background review Delivered`, t => {
+    const f = fixture(t), id = f.admit(`delivery-${mismatch}`); f.finish(id);
+    failedFollowThrough(f, id);
+    if (mismatch === 'wrong_channel') {
+      const otherChannel = fixtureId('channel', 2);
+      f.database.raw.prepare(`INSERT INTO channels(id,kind,title,purpose,owner_principal_id,responder_mode,
+        coordinator_bot_id,response_order,max_bot_turns,lifecycle,pinned,version,next_message_sequence,created_at,updated_at)
+        VALUES(?,'direct','Other chat','','user_owner','mentions_only',NULL,'parallel',1,'active',0,1,3,?,?)`).run(otherChannel, AT, AT);
+      f.database.raw.prepare(`INSERT INTO channel_members(channel_id,principal_id,kind,role,active,joined_at,left_at)
+        VALUES(?,?,'bot','member',1,?,NULL)`).run(otherChannel, BOT_ID, AT);
+      visibleResult(f, id, { channelId: otherChannel });
+    } else if (mismatch !== 'missing') visibleResult(f, id, {
+      ...(mismatch === 'hidden' ? { visibility: 'tombstoned' } : {}),
+      ...(mismatch === 'wrong_work' ? { workId: f.origin.workId } : {}),
+      ...(mismatch === 'not_result' ? { kind: 'text' } : {}),
+      ...(mismatch === 'wrong_author' ? { author: OWNER_ID } : {}),
+    });
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'needs_review');
+  });
+}
+
+test('visible delivery does not override an admitted follow-through or an explicit assessment', t => {
+  const f = fixture(t), id = f.admit('visible-follow-through'); f.finish(id); visibleResult(f, id);
+  const store = createResidentOutcomeStore(f.database);
+  store.enqueue(`work:${id}`, id, { status: 'succeeded' });
+  const review = f.work.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
+    originMessageId: MESSAGE_ID, roundId: null, kind: 'resident_turn', idempotencyKey: 'active-visible-follow-through',
+    manifest: manifestInput(), maxAutomaticOffers: 1, requestId: fixtureId('request', 94), correlationId: fixtureId('correlation', 94) }).work;
+  store.update(store.pending()[0], 'review_work_id', review.id);
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'active');
+  f.finish(review.id, 'failed'); store.update(store.pending()[0], 'settled_at', AT);
+  f.assignments.report(f.context, f.origin, { work_id: id, state: 'blocked', summary: 'Owner input required' }, 'visible-explicit-block');
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'blocked');
+  f.assignments.report(f.context, f.origin, { work_id: id, state: 'complete', summary: 'Result independently verified',
+    evidence: ['receipt:verified-result'] }, 'visible-explicit-complete');
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'complete');
+});
+
 test('missed blocked-revisit assessments retry with durable backoff and a fixed budget, preserving every review identity', t => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse(AT) });
   const f = fixture(t), id = f.admit('revisit-assessment');
