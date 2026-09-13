@@ -62,7 +62,9 @@ export function createResidentAssignments(database: M11Database) {
     // background follow-through fails. This does not assess or close the assignment.
     if (outcome && database.readOne(`SELECT m.id FROM messages m JOIN works w ON w.id=?
       WHERE m.work_id=w.id AND m.channel_id=w.channel_id AND m.author_principal_id=w.target_principal_id
-        AND m.kind='result' AND m.stored_visibility='visible' LIMIT 1`, workId)) return 'returned';
+        AND m.kind='result' AND m.stored_visibility='visible'
+        AND NOT EXISTS(SELECT 1 FROM messages tombstone WHERE tombstone.tombstones_message_id=m.id)
+      LIMIT 1`, workId)) return 'returned';
     // Settlement confirms delivery of the review, not its assessed outcome.
     if (outcome && outcome.settledAt !== null && outcome.reviewState === 'succeeded') return 'returned';
     // Preserve ordinary completed executions that never required follow-through.

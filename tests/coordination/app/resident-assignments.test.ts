@@ -149,6 +149,25 @@ for (const mismatch of ['missing', 'hidden', 'wrong_work', 'wrong_channel', 'not
   });
 }
 
+test('a canonical tombstone hides a delivered result even though its original stored visibility stays visible', t => {
+  const f = fixture(t), id = f.admit('deleted-visible-result'); f.finish(id);
+  failedFollowThrough(f, id); visibleResult(f, id);
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'returned');
+  const messageId = `msg_${id.slice(4)}`, tombstoneId = fixtureId('message', 96);
+  f.database.mutateWithEvent(tx => {
+    tx.run(`INSERT INTO messages(id,channel_id,channel_sequence,author_principal_id,author_kind,
+      author_display_name,kind,body_text,stored_visibility,tombstones_message_id,created_at)
+      VALUES(?,?,3,?,'owner','Owner','system',NULL,'visible',?,?)`, tombstoneId, CHANNEL_ID, OWNER_ID, messageId, AT);
+    return { value: undefined, event: { type: 'message.appended', aggregateKind: 'message', aggregateId: tombstoneId,
+      aggregateVersion: 1, channelId: CHANNEL_ID, actorPrincipalId: OWNER_ID, requestId: fixtureId('request', 96),
+      correlationId: fixtureId('correlation', 96), payload: {}, createdAt: AT } };
+  });
+  assert.equal(f.database.readOne<{ visibility: string }>('SELECT stored_visibility AS visibility FROM messages WHERE id=?', messageId)?.visibility, 'visible');
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'needs_review');
+  f.database.reopen();
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'needs_review');
+});
+
 test('visible delivery does not override an admitted follow-through or an explicit assessment', t => {
   const f = fixture(t), id = f.admit('visible-follow-through'); f.finish(id); visibleResult(f, id);
   const store = createResidentOutcomeStore(f.database);
