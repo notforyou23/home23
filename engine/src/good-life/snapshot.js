@@ -8,6 +8,8 @@ const { isAgendaHandoffProblem } = require('../live-problems/store.js');
 
 const { classifyHome23Process } = topology;
 
+const JSONL_READ_CHUNK_BYTES = 64 * 1024;
+
 function buildGoodLifeSnapshot({
   runtimeRoot,
   workspacePath,
@@ -619,14 +621,94 @@ function summarizeJsonl(file) {
 
 function tailJsonl(file, limit) {
   try {
-    if (!file || !fs.existsSync(file)) return [];
-    const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
-    return lines.slice(-limit).map((line) => {
-      try { return JSON.parse(line); } catch { return null; }
-    }).filter(Boolean);
+    const rows = [];
+    scanJsonlReverse(file, limit, (line) => {
+      try {
+        const row = JSON.parse(line.toString('utf8'));
+        if (row) rows.push(row);
+      } catch {
+        // Malformed lines still consume the tail limit, matching the prior behavior.
+      }
+      return false;
+    });
+    return rows.reverse();
   } catch {
     return [];
   }
+}
+
+function scanJsonlReverse(file, maxLines, visitLine) {
+  const lineLimit = Math.max(0, Math.floor(Number(maxLines) || 0));
+  if (!file || lineLimit === 0) return;
+
+  let descriptor;
+  try {
+    descriptor = fs.openSync(file, 'r');
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.size <= 0) return;
+
+    let position = stat.size;
+    let scannedLines = 0;
+    let pendingParts = [];
+    let pendingBytes = 0;
+
+    const visitCompleteLine = (firstPart) => {
+      const line = assembleReverseLine(firstPart, pendingParts, pendingBytes);
+      pendingParts = [];
+      pendingBytes = 0;
+      if (line.length === 0) return false;
+      scannedLines += 1;
+      return visitLine(line) === true;
+    };
+
+    while (position > 0 && scannedLines < lineLimit) {
+      const bytesToRead = Math.min(JSONL_READ_CHUNK_BYTES, position);
+      position -= bytesToRead;
+      const chunk = Buffer.allocUnsafe(bytesToRead);
+      let chunkOffset = 0;
+      while (chunkOffset < bytesToRead) {
+        const bytesRead = fs.readSync(
+          descriptor,
+          chunk,
+          chunkOffset,
+          bytesToRead - chunkOffset,
+          position + chunkOffset,
+        );
+        if (bytesRead === 0) throw new Error('Unexpected end of JSONL file during reverse scan');
+        chunkOffset += bytesRead;
+      }
+
+      let lineEnd = chunk.length;
+      while (lineEnd > 0 && scannedLines < lineLimit) {
+        const newline = chunk.lastIndexOf(0x0a, lineEnd - 1);
+        if (newline < 0) {
+          const part = chunk.subarray(0, lineEnd);
+          if (part.length > 0) {
+            pendingParts.push(part);
+            pendingBytes += part.length;
+          }
+          break;
+        }
+        if (visitCompleteLine(chunk.subarray(newline + 1, lineEnd))) return;
+        lineEnd = newline;
+      }
+    }
+
+    if (position === 0 && scannedLines < lineLimit && pendingBytes > 0) {
+      visitCompleteLine(Buffer.alloc(0));
+    }
+  } finally {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch {}
+    }
+  }
+}
+
+function assembleReverseLine(firstPart, pendingParts, pendingBytes) {
+  if (pendingParts.length === 0) return firstPart;
+  const parts = [firstPart];
+  for (let i = pendingParts.length - 1; i >= 0; i -= 1) parts.push(pendingParts[i]);
+  return Buffer.concat(parts, firstPart.length + pendingBytes);
 }
 
 function readJsonl(file) {
@@ -642,15 +724,15 @@ function readJsonl(file) {
 
 function findLatestJsonl(file, predicate, maxScan = 5000) {
   try {
-    if (!file || !fs.existsSync(file)) return null;
-    const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
-    let scanned = 0;
-    for (let i = lines.length - 1; i >= 0 && scanned < maxScan; i -= 1, scanned += 1) {
+    let match = null;
+    scanJsonlReverse(file, maxScan, (line) => {
       let row = null;
-      try { row = JSON.parse(lines[i]); } catch { continue; }
-      if (predicate(row)) return row;
-    }
-    return null;
+      try { row = JSON.parse(line.toString('utf8')); } catch { return false; }
+      if (!predicate(row)) return false;
+      match = row;
+      return true;
+    });
+    return match;
   } catch {
     return null;
   }
@@ -754,4 +836,4 @@ function sizeOf(maybeMap) {
   return 0;
 }
 
-module.exports = { buildGoodLifeSnapshot, readCurrentPm2List };
+module.exports = { buildGoodLifeSnapshot, findLatestJsonl, readCurrentPm2List, tailJsonl };
