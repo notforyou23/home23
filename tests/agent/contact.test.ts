@@ -61,6 +61,30 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
+function tmpMailHome(): { home: string; envelopeIndex: string } {
+  const home = mkdtempSync(path.join(tmpdir(), 'home23-mail-home-'));
+  for (const version of ['V9', 'V10']) {
+    const mailData = path.join(home, 'Library', 'Mail', version, 'MailData');
+    mkdirSync(mailData, { recursive: true });
+    writeFileSync(path.join(mailData, 'Envelope Index'), '');
+  }
+  return {
+    home,
+    envelopeIndex: path.join(home, 'Library', 'Mail', 'V10', 'MailData', 'Envelope Index'),
+  };
+}
+
+async function withHome<T>(home: string, action: () => Promise<T>): Promise<T> {
+  const previous = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    return await action();
+  } finally {
+    if (previous === undefined) delete process.env.HOME;
+    else process.env.HOME = previous;
+  }
+}
+
 test('house lane: lights autonomous, garage/locks policy', () => {
   assert.equal(classifyHouseAction('light.kitchen'), 'autonomous');
   assert.equal(classifyHouseAction('scene.evening'), 'autonomous');
@@ -124,7 +148,9 @@ test('house closed-loop refuses policy actions without confirm and verifies afte
 
 test('mac named reads use the runner and never accept arbitrary script', async () => {
   const runner: MacRunner = {
-    async jxa(_script, args = []) {
+    async jxa(script, args = []) {
+      assert.match(script, /requestAccessToEntityTypeCompletion\(0/);
+      assert.match(script, /NSRunLoop\.currentRunLoop\.runModeBeforeDate/);
       return JSON.stringify([{
         kind: 'event',
         id: 'e1',
@@ -139,6 +165,141 @@ test('mac named reads use the runner and never accept arbitrary script', async (
   assert.equal(items[0]?.title, 'cal-12');
   const dry = await macWrite('create_reminder', { title: 'Buy milk', dryRun: true }, runner);
   assert.equal(dry.dryRun, true);
+});
+
+test('mac mail reads the newest inbox rows from the highest Envelope Index', async () => {
+  const fixture = tmpMailHome();
+  let dbPath = '';
+  let sql = '';
+  const runner: MacRunner = {
+    async jxa() {
+      throw new Error('mail must not invoke JXA');
+    },
+    async sqliteJson(receivedDbPath, receivedSql) {
+      dbPath = receivedDbPath;
+      sql = receivedSql;
+      return JSON.stringify([
+        {
+          rowid: 41,
+          subject: 'Quarterly update',
+          addr: 'alice@example.com',
+          name: 'Alice Example',
+          ts: 1_700_000_000,
+          read: 0,
+          mailbox: 'imap://alice@example.com/INBOX',
+        },
+        {
+          rowid: 42,
+          subject: null,
+          addr: 'alerts@example.com',
+          name: null,
+          ts: 1_700_000_060,
+          read: 1,
+          mailbox: 'imap://alice@example.com/INBOX/Alerts',
+        },
+      ]);
+    },
+  };
+
+  const items = await withHome(fixture.home, () => macRead('mail', '', runner));
+
+  assert.equal(dbPath, fixture.envelopeIndex);
+  assert.match(sql, /mb\.url\s+like\s+'%\/INBOX'/i);
+  assert.match(sql, /order\s+by\s+m\.date_received\s+desc/i);
+  assert.match(sql, /limit\s+15\b/i);
+  assert.deepEqual(items.map(({ kind, id, title, who, when, needsOwner, source }) => ({
+    kind, id, title, who, when, needsOwner, source,
+  })), [
+    {
+      kind: 'message',
+      id: 'mac.mail:41',
+      title: 'Quarterly update',
+      who: 'Alice Example <alice@example.com>',
+      when: '2023-11-14T22:13:20.000Z',
+      needsOwner: true,
+      source: 'mac.mail',
+    },
+    {
+      kind: 'message',
+      id: 'mac.mail:42',
+      title: '(no subject)',
+      who: 'alerts@example.com',
+      when: '2023-11-14T22:14:20.000Z',
+      needsOwner: false,
+      source: 'mac.mail',
+    },
+  ]);
+});
+
+test('mac mail escapes quote and wildcard characters in search queries', async () => {
+  const fixture = tmpMailHome();
+  let sql = '';
+  const runner: MacRunner = {
+    async jxa() {
+      throw new Error('mail must not invoke JXA');
+    },
+    async sqliteJson(_dbPath, receivedSql) {
+      sql = receivedSql;
+      return '[]';
+    },
+  };
+
+  await withHome(fixture.home, () => macRead('mail', "o'brien %_", runner));
+
+  assert.equal(sql.match(/o''brien !%!_/gi)?.length, 3);
+  assert.equal(sql.match(/escape '!'/gi)?.length, 3);
+  assert.equal(sql.includes("o'brien"), false);
+  assert.equal(sql.includes("o''brien %_"), false);
+  assert.match(sql, /limit\s+25\b/i);
+});
+
+test('mac mail reports an unavailable surface when sqlite access is unsupported', async () => {
+  const fixture = tmpMailHome();
+  const runner: MacRunner = {
+    async jxa() {
+      throw new Error('mail must not invoke JXA');
+    },
+  };
+
+  await assert.rejects(
+    () => withHome(fixture.home, () => macRead('mail', '', runner)),
+    (error: unknown) => error instanceof Error && error.message.startsWith('mac.mail unavailable:'),
+  );
+});
+
+test('mac reminders preserve EventKit list, ownership and ISO due date fields', async () => {
+  const runner: MacRunner = {
+    async jxa(script, args = []) {
+      assert.match(script, /requestAccessToEntityTypeCompletion\(1/);
+      assert.match(script, /NSRunLoop\.currentRunLoop\.runModeBeforeDate/);
+      assert.match(script, /who:\s*String\(r\.calendar\.title\.js\)/);
+      assert.deepEqual(args, ['false']);
+      return JSON.stringify([{
+        kind: 'commitment',
+        id: 'eventkit-reminder-1',
+        title: 'Pick up medicine',
+        when: '2026-09-15T18:30:00.000Z',
+        who: 'Errands',
+        source: 'mac.reminders',
+        needsOwner: true,
+        excerpt: 'Use the side entrance',
+      }]);
+    },
+  };
+
+  const items = await macRead('reminders', '', runner);
+
+  assert.deepEqual(items, [{
+    kind: 'commitment',
+    id: 'eventkit-reminder-1',
+    title: 'Pick up medicine',
+    when: '2026-09-15T18:30:00.000Z',
+    who: 'Errands',
+    source: 'mac.reminders',
+    needsOwner: true,
+    waitingOn: undefined,
+    excerpt: 'Use the side entrance',
+  }]);
 });
 
 test('attention_scan is degraded-honest when a surface fails', async () => {

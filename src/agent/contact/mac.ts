@@ -1,5 +1,8 @@
 import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
+import { access, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
 import type { AttentionItem } from './types.js';
@@ -12,6 +15,7 @@ export type MacWriteAction = 'create_reminder' | 'run_shortcut';
 export interface MacRunner {
   jxa(script: string, args?: string[]): Promise<string>;
   spotlight?(query: string, onlyIn: string): Promise<string>;
+  sqliteJson?(dbPath: string, sql: string): Promise<string>;
 }
 
 const CALENDAR_SCRIPT = `
@@ -24,6 +28,13 @@ function iso(date) {
 function run(argv) {
   const hours = Number(argv[0] || 36);
   const store = $.EKEventStore.alloc.init;
+  let authDone = false, granted = false;
+  store.requestAccessToEntityTypeCompletion(0, (g) => { granted = g; authDone = true; });
+  const t0 = $.NSDate.date;
+  while (!authDone && $.NSDate.date.timeIntervalSinceDate(t0) < 10) {
+    $.NSRunLoop.currentRunLoop.runModeBeforeDate($.NSDefaultRunLoopMode, $.NSDate.dateWithTimeIntervalSinceNow(0.05));
+  }
+  if (!granted) throw new Error('calendar access denied');
   const start = $.NSDate.date;
   const end = start.dateByAddingTimeInterval(hours * 3600);
   const cals = store.calendarsForEntityType(0);
@@ -49,39 +60,37 @@ function run(argv) {
 
 const REMINDERS_SCRIPT = `
 ObjC.import('EventKit');
-function iso(date) {
-  if (!date) return null;
-  const js = date.js ? date.js : date;
-  try { return new Date(js).toISOString(); } catch (e) { return String(js); }
-}
 function run(argv) {
   const includeCompleted = String(argv[0] || 'false') === 'true';
   const store = $.EKEventStore.alloc.init;
-  const lists = store.calendarsForEntityType(1);
-  const pred = store.predicateForRemindersInCalendars(lists);
-  const out = [];
-  const sem = $.NSCondition.alloc.init;
-  let done = false;
-  store.fetchRemindersMatchingPredicateCompletion(pred, reminders => {
-    const arr = reminders || $.NSArray.array;
-    for (let i = 0; i < arr.count; i++) {
-      const r = arr.objectAtIndex(i);
-      const completed = Boolean(r.completed);
+  let authDone = false, granted = false;
+  store.requestAccessToEntityTypeCompletion(1, (g) => { granted = g; authDone = true; });
+  const t0 = $.NSDate.date;
+  while (!authDone && $.NSDate.date.timeIntervalSinceDate(t0) < 10) {
+    $.NSRunLoop.currentRunLoop.runModeBeforeDate($.NSDefaultRunLoopMode, $.NSDate.dateWithTimeIntervalSinceNow(0.05));
+  }
+  if (!granted) throw new Error('reminders access denied');
+  const cals = store.calendarsForEntityType(1);
+  const pred = store.predicateForRemindersInCalendars(cals);
+  let fetched = false; const out = [];
+  store.fetchRemindersMatchingPredicateCompletion(pred, (rems) => {
+    const n = Number(rems.count);
+    for (let i = 0; i < n; i++) {
+      const r = rems.objectAtIndex(i);
+      const completed = r.completed;
       if (completed && !includeCompleted) continue;
-      out.push({
-        kind: 'commitment',
-        id: String(r.calendarItemIdentifier.js),
-        title: String(r.title.js),
-        when: iso(r.dueDate),
-        source: 'mac.reminders',
-        needsOwner: !completed,
-        excerpt: r.notes ? String(r.notes.js).slice(0, 240) : undefined
-      });
+      let due = null;
+      const dd = r.dueDateComponents;
+      if (!dd.isNil()) { const d = $.NSCalendar.currentCalendar.dateFromComponents(dd); if (!d.isNil()) due = new Date(d.js).toISOString(); }
+      out.push({ kind: 'commitment', id: String(r.calendarItemIdentifier.js), title: String(r.title.js), when: due, who: String(r.calendar.title.js), source: 'mac.reminders', needsOwner: !completed, excerpt: r.notes.isNil() ? undefined : String(r.notes.js).slice(0, 240) });
     }
-    done = true;
-    sem.signal();
+    fetched = true;
   });
-  if (!done) sem.waitUntilDate($.NSDate.dateWithTimeIntervalSinceNow(8));
+  const t1 = $.NSDate.date;
+  while (!fetched && $.NSDate.date.timeIntervalSinceDate(t1) < 15) {
+    $.NSRunLoop.currentRunLoop.runModeBeforeDate($.NSDefaultRunLoopMode, $.NSDate.dateWithTimeIntervalSinceNow(0.05));
+  }
+  if (!fetched) throw new Error('reminders fetch timed out');
   return JSON.stringify(out);
 }
 `;
@@ -106,33 +115,6 @@ function run(argv) {
       title,
       source: 'mac.notes',
       excerpt: body.slice(0, 280)
-    });
-  }
-  return JSON.stringify(out);
-}
-`;
-
-const MAIL_SCRIPT = `
-function run(argv) {
-  const query = String(argv[0] || '').toLowerCase();
-  const Mail = Application('Mail');
-  const inbox = Mail.inbox.messages;
-  const count = Math.min(Number(inbox.count()), 40);
-  const out = [];
-  for (let i = 0; i < count && out.length < 15; i++) {
-    const m = inbox[i];
-    const subject = String(m.subject());
-    const sender = String(m.sender());
-    const hay = (subject + ' ' + sender).toLowerCase();
-    if (query && hay.indexOf(query) === -1) continue;
-    out.push({
-      kind: 'message',
-      id: String(m.id()),
-      title: subject,
-      who: sender,
-      when: String(m.dateReceived()),
-      source: 'mac.mail',
-      needsOwner: Boolean(m.readStatus && m.readStatus() === false)
     });
   }
   return JSON.stringify(out);
@@ -166,7 +148,7 @@ export function createOsascriptRunner(): MacRunner {
   return {
     async jxa(script: string, args: string[] = []): Promise<string> {
       const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script, ...args], {
-        timeout: 20_000,
+        timeout: 30_000,
         maxBuffer: 2_000_000,
         env: unprivilegedChildEnv(),
       });
@@ -180,7 +162,126 @@ export function createOsascriptRunner(): MacRunner {
       });
       return stdout.trim();
     },
+    async sqliteJson(dbPath: string, sql: string): Promise<string> {
+      const absolutePath = resolve(dbPath);
+      const uri = `file:${encodeURI(absolutePath).replace(/#/g, '%23')}?mode=ro`;
+      const { stdout } = await execFileAsync('sqlite3', ['-json', uri, sql], {
+        timeout: 15_000,
+        maxBuffer: 2_000_000,
+        env: unprivilegedChildEnv(),
+      });
+      return stdout.trim();
+    },
   };
+}
+
+interface MailIndexRow {
+  rowid: string | number;
+  subject: string | null;
+  addr: string | null;
+  name: string | null;
+  ts: string | number;
+  read: number;
+  mailbox: string | null;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function discoverMailEnvelopeIndex(): Promise<string> {
+  const mailRoot = resolve(process.env.HOME?.trim() || homedir(), 'Library', 'Mail');
+  let entries: string[];
+  try {
+    entries = await readdir(mailRoot);
+  } catch (error) {
+    throw new Error(`Envelope Index discovery failed under ${mailRoot}: ${errorMessage(error)}`);
+  }
+
+  const versions = entries
+    .map((name) => ({ name, version: /^V(\d+)$/.exec(name)?.[1] }))
+    .filter((entry): entry is { name: string; version: string } => entry.version !== undefined)
+    .sort((left, right) => Number(right.version) - Number(left.version));
+
+  for (const version of versions) {
+    const candidate = join(mailRoot, version.name, 'MailData', 'Envelope Index');
+    try {
+      const info = await stat(candidate);
+      if (!info.isFile()) continue;
+      await access(candidate, constants.R_OK);
+      return candidate;
+    } catch {
+      // Keep looking for the highest version with a readable index.
+    }
+  }
+
+  throw new Error(`no readable Envelope Index found under ${mailRoot}/V*/MailData`);
+}
+
+function escapeSqlLike(value: string): string {
+  return value
+    .replace(/!/g, '!!')
+    .replace(/'/g, "''")
+    .replace(/%/g, '!%')
+    .replace(/_/g, '!_');
+}
+
+function mailIndexQuery(query: string): string {
+  const normalized = query.trim();
+  const filter = normalized
+    ? `\n and (lower(coalesce(s.subject,'')) like lower('%${escapeSqlLike(normalized)}%') escape '!'\n  or lower(coalesce(a.address,'')) like lower('%${escapeSqlLike(normalized)}%') escape '!'\n  or lower(coalesce(a.comment,'')) like lower('%${escapeSqlLike(normalized)}%') escape '!')`
+    : '';
+  const limit = normalized ? 25 : 15;
+  return `select m.ROWID as rowid, s.subject as subject, a.address as addr, a.comment as name, m.date_received as ts, m.read as read, mb.url as mailbox
+from messages m
+ join mailboxes mb on mb.ROWID = m.mailbox
+ left join subjects s on s.ROWID = m.subject
+ left join addresses a on a.ROWID = m.sender
+where m.deleted = 0 and (mb.url like '%/INBOX' or mb.url like '%/INBOX/%')${filter}
+order by m.date_received desc limit ${limit};`;
+}
+
+function mailboxExcerpt(mailbox: string | null): string | undefined {
+  const segment = mailbox?.split('/').filter(Boolean).at(-1);
+  if (!segment) return undefined;
+  let decoded = segment;
+  try {
+    decoded = decodeURIComponent(segment);
+  } catch {
+    // Preserve a malformed but still useful mailbox hint.
+  }
+  return `Mailbox: ${decoded.slice(0, 120)}`;
+}
+
+function parseMailIndexRows(raw: string): AttentionItem[] {
+  const parsed = JSON.parse(raw || '[]');
+  if (!Array.isArray(parsed)) throw new Error('sqlite output was not a JSON array');
+  return (parsed as MailIndexRow[]).map((row) => {
+    const name = row.name ? String(row.name) : '';
+    const address = row.addr ? String(row.addr) : '';
+    return {
+      kind: 'message' as const,
+      id: `mac.mail:${row.rowid}`,
+      title: row.subject ? String(row.subject) : '(no subject)',
+      who: name ? `${name} <${address}>` : (address || 'unknown'),
+      when: new Date(Number(row.ts) * 1000).toISOString(),
+      needsOwner: row.read === 0,
+      source: 'mac.mail',
+      excerpt: mailboxExcerpt(row.mailbox),
+    };
+  });
+}
+
+async function readMail(query: string, runner: MacRunner): Promise<AttentionItem[]> {
+  if (!runner.sqliteJson) throw new Error('mac.mail unavailable: sqlite runner unavailable');
+  try {
+    const dbPath = await discoverMailEnvelopeIndex();
+    const raw = await runner.sqliteJson(dbPath, mailIndexQuery(query));
+    return parseMailIndexRows(raw);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('mac.mail unavailable:')) throw error;
+    throw new Error(`mac.mail unavailable: ${errorMessage(error)}`);
+  }
 }
 
 function parseItems(raw: string, fallbackSource: string): AttentionItem[] {
@@ -220,7 +321,7 @@ export async function macRead(
     return parseItems(await runner.jxa(NOTES_SCRIPT, [query]), 'mac.notes');
   }
   if (surface === 'mail') {
-    return parseItems(await runner.jxa(MAIL_SCRIPT, [query]), 'mac.mail');
+    return readMail(query, runner);
   }
   if (surface === 'finder') {
     const home = homedir();
