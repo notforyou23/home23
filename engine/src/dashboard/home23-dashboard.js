@@ -5907,9 +5907,50 @@ function renderGoodLifeResolutionDetail(problem) {
 }
 
 function formatGoodLifeGb(bytes) {
+  if (bytes == null || bytes === '') return null;
   const value = Number(bytes);
   if (!Number.isFinite(value)) return null;
   return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function goodLifeFinitePercent(...values) {
+  for (const value of values) {
+    if (typeof value !== 'number' && typeof value !== 'string') continue;
+    if (typeof value === 'string' && value.trim() === '') continue;
+    const number = Number(value);
+    if (Number.isFinite(number) && number >= 0 && number <= 100) return number;
+  }
+  return null;
+}
+
+function goodLifeMemoryPressurePresentation(memory) {
+  const pressureFreePct = goodLifeFinitePercent(
+    memory?.pressureFreePct,
+    memory?.memoryPressure?.freePct,
+  );
+  const rawFreePct = goodLifeFinitePercent(memory?.rawFreePct, memory?.freePct);
+  const rawFreeGb = formatGoodLifeGb(memory?.rawFreeBytes ?? memory?.freeBytes);
+  const rawTotalGb = formatGoodLifeGb(memory?.rawTotalBytes ?? memory?.totalBytes);
+  const rawByteDetail = [rawFreeGb, rawTotalGb ? `of ${rawTotalGb}` : null]
+    .filter(Boolean)
+    .join(' ');
+
+  if (pressureFreePct != null) {
+    return {
+      value: `${pressureFreePct.toFixed(1)}% available capacity`,
+      detail: [
+        rawFreePct != null ? `${rawFreePct.toFixed(1)}% unused physical RAM` : null,
+        rawByteDetail,
+      ].filter(Boolean).join(' - '),
+      hasPressure: true,
+    };
+  }
+
+  return {
+    value: rawFreePct != null ? `${rawFreePct.toFixed(1)}% unused physical RAM` : null,
+    detail: rawByteDetail,
+    hasPressure: false,
+  };
 }
 
 function compactGoodLifeHostDetail(value, max = 180) {
@@ -5925,7 +5966,10 @@ function goodLifeHostPressureStatus(kind, host) {
     return { className: 'info', label: 'below rest threshold' };
   }
   if (kind === 'memory') {
-    return { className: 'info', label: 'informational; swap drives pressure' };
+    const presentation = goodLifeMemoryPressurePresentation(host?.memory);
+    return presentation.hasPressure
+      ? { className: 'info', label: 'system pressure availability' }
+      : { className: 'info', label: 'raw fallback; pressure unavailable' };
   }
   if (kind === 'swap') {
     const usedPct = Number(host?.swap?.usedPct);
@@ -5948,6 +5992,9 @@ function goodLifeHostPressureStatus(kind, host) {
 
 function renderGoodLifeHostPressure(host) {
   if (!host) return '';
+  const memoryPresentation = host.memory
+    ? goodLifeMemoryPressurePresentation(host.memory)
+    : null;
   const rows = [
     host.cpu ? {
       label: 'CPU Load',
@@ -5960,11 +6007,8 @@ function renderGoodLifeHostPressure(host) {
     } : null,
     host.memory ? {
       label: 'Memory',
-      value: host.memory.freePct != null ? `${Number(host.memory.freePct).toFixed(1)}% raw free` : null,
-      detail: [
-        formatGoodLifeGb(host.memory.freeBytes),
-        host.memory.totalBytes != null ? `of ${formatGoodLifeGb(host.memory.totalBytes)}` : null,
-      ].filter(Boolean).join(' '),
+      value: memoryPresentation.value,
+      detail: memoryPresentation.detail,
       status: goodLifeHostPressureStatus('memory', host),
     } : null,
     host.swap ? {
