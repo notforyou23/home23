@@ -5189,13 +5189,24 @@ test('authenticated worker gap reconstructs the latest settled PGS progress snap
     sweepOutputs: 419,
   });
 
-  const recovered = await eventually(async () => {
-    const current = await fixture.store.get(operation.operationId);
-    assert.equal(current.progressSnapshot?.completed, 420);
-    assert.equal(current.progressSnapshot?.pending, 1);
-    assert.equal(current.progressSnapshot?.stage, 'synthesizing');
-    return current;
-  });
+  // Gap recovery publishes queued filesystem writes; give them elapsed time to settle.
+  const recovered = await (async () => {
+    const deadline = Date.now() + 10_000;
+    let lastError;
+    do {
+      try {
+        const current = await fixture.store.get(operation.operationId);
+        assert.equal(current.progressSnapshot?.completed, 420);
+        assert.equal(current.progressSnapshot?.pending, 1);
+        assert.equal(current.progressSnapshot?.stage, 'synthesizing');
+        return current;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    } while (Date.now() < deadline);
+    throw lastError;
+  })();
   assert.equal(recovered.state, 'running');
   assert.equal(recovered.progressSnapshot.successful, 419);
   assert.equal(recovered.progressSnapshot.lastProgressAt, new Date(fixture.timers.now).toISOString());
