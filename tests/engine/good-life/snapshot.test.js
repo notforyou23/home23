@@ -6,7 +6,78 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { buildGoodLifeSnapshot } = require('../../../engine/src/good-life/snapshot.js');
+const {
+  buildGoodLifeSnapshot,
+  findLatestJsonl,
+  tailJsonl,
+} = require('../../../engine/src/good-life/snapshot.js');
+
+test('tailJsonl preserves order for empty, trailing-newline, and unterminated files', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-jsonl-tail-small-'));
+  const file = join(dir, 'events.jsonl');
+  const rows = [{ id: 1 }, { id: 2 }, { id: 3 }];
+  try {
+    writeFileSync(file, '');
+    assert.deepEqual(tailJsonl(file, 2), []);
+
+    writeFileSync(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+    assert.deepEqual(tailJsonl(file, 2), rows.slice(-2));
+
+    writeFileSync(file, rows.map((row) => JSON.stringify(row)).join('\n'));
+    assert.deepEqual(tailJsonl(file, 2), rows.slice(-2));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('tailJsonl filters malformed lines without backfilling beyond the requested tail', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-jsonl-tail-malformed-'));
+  const file = join(dir, 'events.jsonl');
+  try {
+    writeFileSync(file, `${JSON.stringify({ id: 'older' })}\nnot-json\n${JSON.stringify({ id: 'latest' })}\n`);
+
+    assert.deepEqual(tailJsonl(file, 2), [{ id: 'latest' }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('tailJsonl assembles a JSONL line larger than its read chunk', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-jsonl-tail-large-line-'));
+  const file = join(dir, 'events.jsonl');
+  const largeValue = 'é🙂'.repeat(200_000);
+  try {
+    writeFileSync(file, [
+      JSON.stringify({ id: 'older' }),
+      JSON.stringify({ id: 'large', value: largeValue }),
+      JSON.stringify({ id: 'latest' }),
+    ].join('\n'));
+
+    const rows = tailJsonl(file, 2);
+    assert.deepEqual(rows.map((row) => row.id), ['large', 'latest']);
+    assert.equal(Buffer.from(rows[0].value).equals(Buffer.from(largeValue)), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('findLatestJsonl scans backward within its physical-line budget', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-jsonl-find-latest-'));
+  const file = join(dir, 'events.jsonl');
+  const expected = { id: 'older-match', useful: true };
+  try {
+    writeFileSync(file, [
+      JSON.stringify(expected),
+      'not-json',
+      JSON.stringify({ id: 'latest-no-match', useful: false }),
+    ].join('\n'));
+
+    assert.equal(findLatestJsonl(file, (row) => row.useful === true, 2), null);
+    assert.deepEqual(findLatestJsonl(file, (row) => row.useful === true, 3), expected);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('Good Life snapshot excludes agenda handoff workflows from operational viability counts', () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-snapshot-'));
