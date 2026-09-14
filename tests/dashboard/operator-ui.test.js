@@ -2,8 +2,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 
 const HOME23_ROOT = process.cwd();
+
+function loadGoodLifeHostPressureRenderer() {
+  const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.js'), 'utf8');
+  const start = js.indexOf('function formatGoodLifeGb(');
+  const end = js.indexOf('\nfunction renderGoodLifePm2Changes(', start);
+  assert.notEqual(start, -1, 'missing Good Life host pressure helpers');
+  assert.notEqual(end, -1, 'missing end of Good Life host pressure helpers');
+  return vm.runInNewContext(`${js.slice(start, end)}\nrenderGoodLifeHostPressure`, {
+    escapeHtml: (value) => String(value ?? ''),
+  });
+}
 
 test('query dashboard describes durable PGS work without short fixed-time promises', () => {
   const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-query.js'), 'utf8');
@@ -121,6 +133,55 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(css, /\.h23-goodlife-overlay-workspace[\s\S]*overflow:\s*hidden/);
   assert.match(css, /\.h23-goodlife-overlay-list,\s*\n\.h23-goodlife-overlay-detail[\s\S]*overflow-y:\s*auto/);
   assert.match(css, /\.h23-goodlife-overlay-action-status[\s\S]*pointer-events:\s*none/);
+});
+
+test('Good Life host pressure presents Darwin availability before unused physical RAM', () => {
+  const renderGoodLifeHostPressure = loadGoodLifeHostPressureRenderer();
+  const html = renderGoodLifeHostPressure({
+    memory: {
+      freePct: 1.2,
+      freeBytes: 206158430,
+      totalBytes: 17179869184,
+      rawFreePct: 1.2,
+      rawFreeBytes: 206158430,
+      rawTotalBytes: 17179869184,
+      pressureFreePct: 43.7,
+    },
+  });
+
+  assert.match(html, /<span>43\.7% available capacity<\/span>/);
+  assert.match(html, /<small>1\.2% unused physical RAM - 0\.2 GB of 16\.0 GB<\/small>/);
+  assert.match(html, /<em>system pressure availability<\/em>/);
+  assert.doesNotMatch(html, /% raw free/);
+});
+
+test('Good Life host pressure honestly falls back when pressure availability is absent or malformed', () => {
+  const renderGoodLifeHostPressure = loadGoodLifeHostPressureRenderer();
+  for (const pressureFreePct of [undefined, null, 'unavailable', '  ', false, []]) {
+    const html = renderGoodLifeHostPressure({
+      memory: {
+        freePct: 1.2,
+        freeBytes: 206158430,
+        totalBytes: 17179869184,
+        pressureFreePct,
+      },
+    });
+
+    assert.match(html, /<span>1\.2% unused physical RAM<\/span>/);
+    assert.match(html, /<small>0\.2 GB of 16\.0 GB<\/small>/);
+    assert.match(html, /<em>raw fallback; pressure unavailable<\/em>/);
+    assert.doesNotMatch(html, /available capacity|% raw free/);
+  }
+});
+
+test('Good Life host pressure preserves zero as valid available capacity', () => {
+  const renderGoodLifeHostPressure = loadGoodLifeHostPressureRenderer();
+  const html = renderGoodLifeHostPressure({
+    memory: { freePct: 0.4, rawFreePct: 0.4, pressureFreePct: 0 },
+  });
+
+  assert.match(html, /<span>0\.0% available capacity<\/span>/);
+  assert.match(html, /<small>0\.4% unused physical RAM<\/small>/);
 });
 
 test('Good Life issue detail shows user-facing repair context before raw JSON', () => {
