@@ -10,6 +10,8 @@ const path = require('node:path');
 
 const sourceScript = path.resolve(__dirname, '../../scripts/rebuild-ann-indexes.sh');
 const sourceHealthWriter = path.resolve(__dirname, '../../scripts/lib/ann-index-health.cjs');
+const sourceInstancePaths = path.resolve(__dirname, '../../shared/agent-instance-paths.cjs');
+const sourceNodeModules = path.dirname(path.dirname(require.resolve('js-yaml/package.json')));
 
 async function createAgent(root, agent, { configured = true, manifest = true } = {}) {
   const instanceDir = path.join(root, 'instances', agent);
@@ -24,12 +26,16 @@ async function createFixture(builderSource) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-rebuild-ann-'));
   const scriptDir = path.join(root, 'scripts');
   const scriptLibDir = path.join(scriptDir, 'lib');
+  const sharedDir = path.join(root, 'shared');
   const builderDir = path.join(root, 'engine', 'src', 'merge');
   await fsp.mkdir(scriptDir, { recursive: true });
   await fsp.mkdir(scriptLibDir, { recursive: true });
+  await fsp.mkdir(sharedDir, { recursive: true });
   await fsp.mkdir(builderDir, { recursive: true });
   await fsp.copyFile(sourceScript, path.join(scriptDir, 'rebuild-ann-indexes.sh'));
   await fsp.copyFile(sourceHealthWriter, path.join(scriptLibDir, 'ann-index-health.cjs'));
+  await fsp.copyFile(sourceInstancePaths, path.join(sharedDir, 'agent-instance-paths.cjs'));
+  await fsp.symlink(sourceNodeModules, path.join(root, 'node_modules'), 'dir');
   await fsp.chmod(path.join(scriptDir, 'rebuild-ann-indexes.sh'), 0o700);
   await fsp.writeFile(path.join(builderDir, 'build-ann-index.js'), builderSource);
   await createAgent(root, 'jerry');
@@ -105,6 +111,90 @@ ${successReceipt}
     path.join(root, 'instances', 'ada', 'brain'),
     path.join(root, 'instances', 'morgan', 'brain'),
   ]);
+});
+
+test('wrapper resolves a configured external brain path containing spaces', async (t) => {
+  const root = await createFixture(`
+const fs = require('node:fs');
+fs.appendFileSync(process.env.INVOCATIONS, process.argv[2] + '\\n');
+${successReceipt}
+`);
+  const externalRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'Home23 external root '));
+  t.after(() => Promise.all([
+    fsp.rm(root, { recursive: true, force: true }),
+    fsp.rm(externalRoot, { recursive: true, force: true }),
+  ]));
+  const localRoot = path.join(root, 'instances', 'grokbot');
+  const brainDir = path.join(externalRoot, 'brain');
+  await fsp.mkdir(localRoot, { recursive: true });
+  await fsp.mkdir(brainDir, { recursive: true });
+  await fsp.writeFile(
+    path.join(localRoot, 'config.yaml'),
+    `system:\n  instanceRoot: ${JSON.stringify(externalRoot)}\n`,
+  );
+  await fsp.writeFile(path.join(brainDir, 'memory-manifest.json'), '{}\n');
+  const invocations = path.join(root, 'invocations.txt');
+
+  const result = runFixture(root, ['grokbot'], { env: { INVOCATIONS: invocations } });
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  assert.equal((await fsp.readFile(invocations, 'utf8')).trim(), brainDir);
+});
+
+test('wrapper records an unavailable configured external root without invoking the builder', async (t) => {
+  const root = await createFixture(`
+const fs = require('node:fs');
+fs.appendFileSync(process.env.INVOCATIONS, process.argv[2] + '\\n');
+${successReceipt}
+`);
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const localRoot = path.join(root, 'instances', 'grokbot');
+  const unavailableRoot = path.join(root, 'unmounted external volume', 'instances', 'grokbot');
+  await fsp.mkdir(localRoot, { recursive: true });
+  await fsp.writeFile(
+    path.join(localRoot, 'config.yaml'),
+    `system:\n  instanceRoot: ${JSON.stringify(unavailableRoot)}\n`,
+  );
+  const invocations = path.join(root, 'invocations.txt');
+
+  const result = runFixture(root, ['grokbot'], { env: { INVOCATIONS: invocations } });
+  const output = `${result.stdout}${result.stderr}`;
+  assert.notEqual(result.status, 0, output);
+  assert.match(output, /grokbot FAILED code=ann_brain_root_unavailable/);
+  assert.doesNotMatch(output, /ann_manifest_missing/);
+  assert.equal(fs.existsSync(invocations), false, 'unavailable roots must not invoke the builder');
+  const health = JSON.parse(await fsp.readFile(
+    path.join(localRoot, 'runtime', 'ann-index-health.json'), 'utf8',
+  ));
+  assert.equal(health.coverageStatus, 'brain_root_unavailable');
+  assert.equal(health.lastAttemptOutcome, 'brain_root_unavailable');
+});
+
+test('wrapper isolates helper resolution errors and records a hard failure', async (t) => {
+  const root = await createFixture(`
+const fs = require('node:fs');
+fs.appendFileSync(process.env.INVOCATIONS, process.argv[2] + '\\n');
+${successReceipt}
+`);
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const brokenRoot = path.join(root, 'instances', 'broken');
+  await fsp.mkdir(brokenRoot, { recursive: true });
+  await fsp.writeFile(path.join(brokenRoot, 'config.yaml'), 'system: [unterminated\n');
+  const invocations = path.join(root, 'invocations.txt');
+
+  const result = runFixture(root, [], { env: { INVOCATIONS: invocations } });
+  const output = `${result.stdout}${result.stderr}`;
+  assert.notEqual(result.status, 0, output);
+  assert.match(output, /broken FAILED code=ann_instance_paths_unresolved/);
+  const invokedBrains = (await fsp.readFile(invocations, 'utf8')).trim().split('\n');
+  assert.deepEqual(invokedBrains, [
+    path.join(root, 'instances', 'forrest', 'brain'),
+    path.join(root, 'instances', 'jerry', 'brain'),
+  ]);
+  const health = JSON.parse(await fsp.readFile(
+    path.join(brokenRoot, 'runtime', 'ann-index-health.json'), 'utf8',
+  ));
+  assert.equal(health.coverageStatus, 'instance_paths_unresolved');
+  assert.equal(health.lastAttemptOutcome, 'instance_paths_unresolved');
 });
 
 test('wrapper accepts explicit bounded agent selectors and rejects traversal', async (t) => {

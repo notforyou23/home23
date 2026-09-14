@@ -86,7 +86,25 @@ if [ "${#AGENTS[@]}" -eq 0 ]; then
 fi
 
 for AGENT in "${AGENTS[@]}"; do
-  BRAIN_DIR="$HOME23_ROOT/instances/$AGENT/brain"
+  RESOLVED_PATHS="$(node -e '
+    const { resolveAgentInstancePaths } = require(process.argv[1]);
+    const paths = resolveAgentInstancePaths(process.argv[2], process.argv[3], { requireConfig: true });
+    process.stdout.write([paths.storageMode, paths.instanceRoot, paths.brainDir].join("\t"));
+  ' "$HOME23_ROOT/shared/agent-instance-paths.cjs" "$HOME23_ROOT" "$AGENT")"
+  PATHS_RC=$?
+  if [ "$PATHS_RC" -ne 0 ]; then
+    echo "[rebuild-ann] $AGENT FAILED code=ann_instance_paths_unresolved"
+    record_hard_failure "$AGENT" "instance_paths_unresolved"
+    RC=1
+    continue
+  fi
+  IFS=$'\t' read -r STORAGE_MODE INSTANCE_ROOT BRAIN_DIR <<< "$RESOLVED_PATHS"
+  if [ "$STORAGE_MODE" = "external" ] && [ ! -d "$INSTANCE_ROOT" ]; then
+    echo "[rebuild-ann] $AGENT FAILED code=ann_brain_root_unavailable"
+    record_hard_failure "$AGENT" "brain_root_unavailable"
+    RC=1
+    continue
+  fi
   if [ ! -d "$BRAIN_DIR" ] || [ -L "$BRAIN_DIR" ] \
       || [ ! -f "$BRAIN_DIR/memory-manifest.json" ] \
       || [ -L "$BRAIN_DIR/memory-manifest.json" ]; then

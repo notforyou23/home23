@@ -179,7 +179,14 @@ function updateAnnIndexHealth({
       || !Number.isSafeInteger(maxGapValue) || maxGapValue < 0) {
     throw new Error('valid ANN health threshold and max gap required');
   }
-  if (!['success', 'manifest_missing', 'builder_failed', 'receipt_invalid'].includes(outcome)) {
+  if (![
+    'success',
+    'manifest_missing',
+    'brain_root_unavailable',
+    'instance_paths_unresolved',
+    'builder_failed',
+    'receipt_invalid',
+  ].includes(outcome)) {
     throw new Error('valid ANN health outcome required');
   }
   const root = bindDirectory(fs.realpathSync(home23Root), 'Home23 root');
