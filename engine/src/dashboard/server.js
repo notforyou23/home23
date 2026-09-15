@@ -2442,6 +2442,7 @@ class DashboardServer {
               { method: 'GET', path: '/home23/config.json' },
               { method: 'GET', path: '/home23/api/agency/state' },
               { method: 'GET', path: '/home23/api/agency/brief' },
+              { method: 'POST', path: '/home23/api/agency/brief' },
               { method: 'GET', path: '/home23/api/agency/pursuits' },
               { method: 'GET', path: '/home23/api/agency/events' },
               { method: 'POST', path: '/home23/api/agency/tick' },
@@ -2670,6 +2671,9 @@ class DashboardServer {
     });
     this.app.get(['/api/agency/brief', '/home23/api/agency/brief'], (req, res) => {
       this.proxyWorkerConnector(req, res, 'GET', '/api/agency/brief', 10_000);
+    });
+    this.app.post(['/api/agency/brief', '/home23/api/agency/brief'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'POST', '/api/agency/brief', 10_000);
     });
     this.app.get(['/api/agency/inspector', '/home23/api/agency/inspector'], (req, res) => {
       this.proxyWorkerConnector(req, res, 'GET', '/api/agency/inspector', 10_000);

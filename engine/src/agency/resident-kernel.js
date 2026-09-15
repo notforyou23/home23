@@ -38,7 +38,10 @@ function renderBriefText(questions = {}) {
     : '- no meaningful change recorded yet';
   const next = questions.whatDoingNext || {};
   const needs = Array.isArray(questions.whatNeedFromJtr) && questions.whatNeedFromJtr.length
-    ? questions.whatNeedFromJtr.map(item => `- ${item.authorityLevel || 'approval'}${item.pursuitId ? ` for ${item.pursuitId}` : ''}: ${briefText(item.reason || 'decision needed', 180)}`).join('\n')
+    ? questions.whatNeedFromJtr.map(item => `- ${item.kind || item.authorityLevel || 'operator decision'}${item.pursuitId ? ` for ${item.pursuitId}` : ''}: ${briefText(item.reason || 'decision needed', 180)}`).join('\n')
+    : '- nothing right now';
+  const owed = Array.isArray(questions.whatIOwe) && questions.whatIOwe.length
+    ? questions.whatIOwe.map(item => `- ${item.kind || item.actionKind || 'resident obligation'}${item.pursuitId ? ` for ${item.pursuitId}` : ''}: ${briefText(item.reason || 'resident follow-through needed', 180)}`).join('\n')
     : '- nothing right now';
   return [
     'What we are following:',
@@ -52,6 +55,9 @@ function renderBriefText(questions = {}) {
     '',
     'What I need from jtr:',
     needs,
+    '',
+    'What I owe:',
+    owed,
   ].join('\n');
 }
 
@@ -59,6 +65,100 @@ function briefText(value, max = 160) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (text.length <= max) return text;
   return `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function obligationSourceId(item = {}) {
+  if (item.kind === 'authority_request') return item.pursuitId || item.candidateId || item.at || briefText(item.reason || 'unidentified', 120);
+  if (item.kind === 'operator_question') return item.questionId || item.pursuitId || item.at || briefText(item.reason || 'unidentified', 120);
+  if (item.kind === 'blocked_pursuit') return item.pursuitId || item.at || briefText(item.reason || 'unidentified', 120);
+  if (item.kind === 'open_task') return item.taskId || item.pursuitId || item.at || briefText(item.reason || 'unidentified', 120);
+  if (item.kind === 'truth_contradiction') return item.claimId || item.at || briefText(item.reason || 'unidentified', 120);
+  return item.questionId || item.taskId || item.claimId || item.candidateId
+    || item.pursuitId || item.at || briefText(item.reason || 'unidentified', 120);
+}
+
+function obligationId(item = {}) {
+  const sourceId = obligationSourceId(item);
+  const occurrence = ['authority_request', 'blocked_pursuit'].includes(item.kind) && item.at
+    ? `:${item.at}`
+    : '';
+  return `${item.kind || 'obligation'}:${sourceId}${occurrence}`;
+}
+
+function blockerText(value) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(blockerText).join(' ');
+  if (value && typeof value === 'object') {
+    try { return JSON.stringify(value); } catch { return ''; }
+  }
+  return '';
+}
+
+function blockedPursuitAudience(pursuit = {}) {
+  const latestHistoryReason = Array.isArray(pursuit.history)
+    ? pursuit.history.at(-1)?.reason
+    : null;
+  const blocker = [
+    pursuit.blockedOn,
+    pursuit.blockedReason,
+    pursuit.reason,
+    latestHistoryReason,
+  ].map(blockerText).filter(Boolean).join(' ');
+  return /\b(?:operator|authority|jtr)\b/i.test(blocker) ? 'operator' : 'self';
+}
+
+const TERMINAL_COORDINATION_WORK_STATES = new Set([
+  'complete',
+  'completed',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'interrupted',
+]);
+
+function coordinationWorkId(task = {}) {
+  const direct = String(task.id || '').match(/^coordination:(wrk_[a-z0-9_-]+)$/i)?.[1];
+  if (direct) return direct;
+  const handoff = task.handoff && typeof task.handoff === 'object' ? task.handoff : {};
+  if (/^wrk_[a-z0-9_-]+$/i.test(String(handoff.workId || ''))) return String(handoff.workId);
+  return String(task.summary || '').match(/\b(wrk_[a-z0-9_-]+)\b/i)?.[1] || null;
+}
+
+function coordinationWorkIsTerminal(task = {}) {
+  if (!coordinationWorkId(task)) return false;
+  const handoff = task.handoff && typeof task.handoff === 'object' ? task.handoff : {};
+  const work = handoff.work && typeof handoff.work === 'object' ? handoff.work : {};
+  const states = [
+    task.workStatus,
+    task.workState,
+    handoff.workStatus,
+    handoff.workState,
+    handoff.executionState,
+    handoff.state,
+    handoff.assignmentState,
+    work.status,
+    work.state,
+  ];
+  return states.some(state => TERMINAL_COORDINATION_WORK_STATES.has(String(state || '').toLowerCase()));
+}
+
+function compactBriefObligation(item = {}) {
+  return {
+    obligationId: item.obligationId || null,
+    kind: item.kind || null,
+    audience: item.audience || null,
+    status: item.status || 'open',
+    surfacedAt: item.surfacedAt || null,
+    at: item.at || null,
+    candidateId: item.candidateId || null,
+    questionId: item.questionId || null,
+    taskId: item.taskId || null,
+    claimId: item.claimId || null,
+    pursuitId: item.pursuitId || null,
+    authorityLevel: item.authorityLevel || 'unknown',
+    actionKind: item.actionKind || null,
+    reason: item.reason || (item.audience === 'self' ? 'resident follow-through needed' : 'operator decision needed'),
+  };
 }
 
 function compactStatePursuit(pursuit = {}) {
@@ -112,7 +212,7 @@ function compactStateTask(task = {}) {
     pursuitId: task.pursuitId || null,
     summary: task.summary || null,
     actionKind: task.actionKind || 'bounded_action',
-    authorityLevel: task.authorityLevel || 'L2',
+    authorityLevel: task.authorityLevel || 'unknown',
     handoff: task.handoff || null,
     stopCondition: task.stopCondition || null,
     updatedAt: task.updatedAt || task.createdAt || null,
@@ -232,7 +332,10 @@ export class AgencyKernel {
       });
     }
     const postureOverride = existing.governance?.postureOverride || null;
-    const obligations = this.deriveObligations({ truthSummary });
+    const obligations = this.deriveObligations({
+      truthSummary,
+      existingObligations: existing.obligations,
+    });
     const state = {
       schema: 'home23.agency.state.v1',
       agent: this.agentName,
@@ -289,17 +392,29 @@ export class AgencyKernel {
     return state;
   }
 
-  deriveObligations({ truthSummary = {} } = {}) {
+  deriveObligations({ truthSummary = {}, existingObligations = [] } = {}) {
     const obligations = [];
     const seen = new Set();
+    const surfacedAtById = new Map();
+    for (const item of Array.isArray(existingObligations) ? existingObligations : []) {
+      if (item?.obligationId && item?.surfacedAt) surfacedAtById.set(item.obligationId, item.surfacedAt);
+    }
+    for (const row of this.store.listReceipts({ limit: 5000 })) {
+      if (row.event !== 'obligation_surfaced_to_jtr' || !row.obligationId) continue;
+      if (!surfacedAtById.has(row.obligationId)) surfacedAtById.set(row.obligationId, row.at || null);
+    }
     const add = (item = {}) => {
-      const key = `${item.kind}:${item.pursuitId || item.candidateId || item.claimId || item.reason || item.at || obligations.length}`;
+      const key = `${item.kind}:${obligationSourceId(item) || obligations.length}`;
       if (seen.has(key)) return;
       seen.add(key);
+      const id = obligationId(item);
+      const surfacedAt = surfacedAtById.get(id);
       obligations.push({
         schema: 'home23.agency.obligation.v1',
         status: 'open',
         ...item,
+        obligationId: id,
+        ...(surfacedAt ? { surfacedAt } : {}),
       });
     };
     for (const row of this.store.listReceipts({ limit: 200 })) {
@@ -308,6 +423,7 @@ export class AgencyKernel {
       if (pursuit && (pursuit.status === 'closed' || pursuit.status === 'discarded')) continue;
       add({
         kind: 'authority_request',
+        audience: 'operator',
         at: row.at,
         candidateId: row.candidateId || null,
         pursuitId: row.pursuitId || null,
@@ -333,6 +449,7 @@ export class AgencyKernel {
       if (pursuit && (pursuit.status === 'closed' || pursuit.status === 'discarded')) continue;
       add({
         kind: 'operator_question',
+        audience: 'operator',
         at: row.at,
         questionId: row.questionId || null,
         pursuitId: row.pursuitId || null,
@@ -341,21 +458,29 @@ export class AgencyKernel {
       });
     }
     for (const pursuit of this.store.listPursuits({ status: 'blocked', limit: 100 })) {
+      const latestHistoryReason = Array.isArray(pursuit.history) ? pursuit.history.at(-1)?.reason : null;
       add({
         kind: 'blocked_pursuit',
+        audience: blockedPursuitAudience(pursuit),
         at: pursuit.updatedAt,
         pursuitId: pursuit.id,
         authorityLevel: pursuit.authorityLevel || 'unknown',
-        reason: pursuit.nextMove || pursuit.summary || 'blocked pursuit needs operator decision',
+        reason: pursuit.blockedOn || pursuit.blockedReason || pursuit.reason || latestHistoryReason
+          || pursuit.nextMove || pursuit.summary || 'blocked pursuit needs resident follow-through',
       });
     }
-    for (const task of this.store.listTasks({ status: 'open', limit: 100 })) {
+    for (const task of this.store.listTasks({ status: 'open', limit: 10000 })) {
+      // A coordination task is a projection of canonical Work, not a second
+      // promise. Only positive terminal evidence suppresses it; missing or
+      // unfamiliar Work state remains open.
+      if (coordinationWorkIsTerminal(task)) continue;
       add({
         kind: 'open_task',
+        audience: 'self',
         at: task.updatedAt || task.createdAt,
         taskId: task.id,
         pursuitId: task.pursuitId || null,
-        authorityLevel: task.authorityLevel || 'L2',
+        authorityLevel: task.authorityLevel || 'unknown',
         actionKind: task.actionKind || 'bounded_action',
         reason: task.summary || 'open resident task needs closure receipt',
       });
@@ -364,6 +489,7 @@ export class AgencyKernel {
     for (const claim of unresolvedClaims.slice(0, 20)) {
       add({
         kind: 'truth_contradiction',
+        audience: 'self',
         at: claim.at,
         claimId: claim.id || null,
         authorityLevel: 'jtr_correction',
@@ -1741,7 +1867,43 @@ export class AgencyKernel {
     };
   }
 
-  brief() {
+  recordObligationsSurfaced(input = {}) {
+    const requested = input.surfacedObligationIds;
+    if (!Array.isArray(requested) || requested.length === 0) return [];
+    if (requested.some(id => typeof id !== 'string' || !id.trim())) {
+      throw new Error('surfacedObligationIds must contain non-empty obligation ids');
+    }
+    const ids = [...new Set(requested.map(id => id.trim()))];
+    const state = this.ensureState();
+    const pending = new Map((Array.isArray(state.obligations) ? state.obligations : [])
+      .filter(item => item.status === 'open' && item.audience === 'operator' && !item.surfacedAt)
+      .map(item => [item.obligationId, item]));
+    const missing = ids.filter(id => !pending.has(id));
+    if (missing.length > 0) {
+      throw new Error(`Operator obligation is not pending: ${missing.join(', ')}`);
+    }
+    const at = input.at || nowIso();
+    // Displayed is not handled. Context rendering never writes this receipt;
+    // only an explicit post-voice acknowledgement is evidence that jtr saw it.
+    const receipts = ids.map(id => {
+      const obligation = pending.get(id);
+      return this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at,
+        event: 'obligation_surfaced_to_jtr',
+        obligationId: id,
+        kind: obligation.kind,
+        route: 'operator_surface',
+        reason: 'explicit_post_voice_acknowledgement',
+        mode: this.config.mode,
+      });
+    });
+    this.ensureState();
+    return receipts;
+  }
+
+  brief(input = {}) {
+    const surfaced = this.recordObligationsSurfaced(input);
     const state = this.ensureState();
     const following = [
       ...this.store.listPursuits({ status: 'active', limit: 5 }),
@@ -1771,19 +1933,19 @@ export class AgencyKernel {
       kind: 'rest',
       reason: 'no_next_action_recorded',
     };
-    const needFromJtr = Array.isArray(state.obligations)
-      ? state.obligations.slice(0, 8).map(item => ({
-          at: item.at,
-          pursuitId: item.pursuitId || null,
-          authorityLevel: item.authorityLevel || 'unknown',
-          reason: item.reason || 'operator decision needed',
-        }))
-      : [];
+    const obligations = Array.isArray(state.obligations) ? state.obligations : [];
+    const needFromJtr = obligations
+      .filter(item => item.audience !== 'self')
+      .map(compactBriefObligation);
+    const whatIOwe = obligations
+      .filter(item => item.audience === 'self')
+      .map(compactBriefObligation);
     const questions = {
       whatFollowing: following,
       whatChanged: changed,
       whatDoingNext: nextAction,
       whatNeedFromJtr: needFromJtr,
+      whatIOwe,
     };
     return {
       schema: 'home23.agency.brief.v1',
@@ -1792,6 +1954,7 @@ export class AgencyKernel {
       mode: state.mode,
       questions,
       text: renderBriefText(questions),
+      ...(surfaced.length > 0 ? { surfaced } : {}),
     };
   }
 

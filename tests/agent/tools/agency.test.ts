@@ -60,9 +60,11 @@ test('agency_list reads state and pursuits from bridge API', async () => {
   assert.match(result.content, /Verify dashboard/);
 });
 
-test('agency_brief answers the resident success-test questions from bridge API', async () => {
-  const fakeFetch = async (url: string | URL | Request) => {
+test('agency_brief answers the resident success-test questions with a read-only GET', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
     assert.equal(String(url), 'http://bridge.test/api/agency/brief');
+    assert.equal(init?.method, undefined);
+    assert.equal(init?.body, undefined);
     return new Response(JSON.stringify({
       text: [
         'What we are following: Repair agency dashboard receipt chain.',
@@ -77,6 +79,34 @@ test('agency_brief answers the resident success-test questions from bridge API',
   assert.match(result.content, /What we are following/);
   assert.match(result.content, /What changed/);
   assert.match(result.content, /What I need from jtr/);
+});
+
+test('agency_brief posts explicitly surfaced obligation IDs after they were voiced', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/brief');
+    assert.equal(init?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(init?.body)), {
+      surfacedObligationIds: ['authority:req_1', 'question:q_2'],
+    });
+    return new Response(JSON.stringify({ text: 'What I need from jtr: Nothing pending.' }), { status: 200 });
+  };
+
+  const result = await agencyBriefTool.execute({
+    surfacedObligationIds: ['authority:req_1', 'question:q_2'],
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /Nothing pending/);
+});
+
+test('agency_brief keeps an empty surfaced-obligation list read-only', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/brief');
+    assert.equal(init?.method, undefined);
+    assert.equal(init?.body, undefined);
+    return new Response(JSON.stringify({ text: 'What I need from jtr: Nothing pending.' }), { status: 200 });
+  };
+
+  await agencyBriefTool.execute({ surfacedObligationIds: [] }, ctx(fakeFetch as typeof fetch));
 });
 
 test('agency_create_pursuit posts an intake packet', async () => {

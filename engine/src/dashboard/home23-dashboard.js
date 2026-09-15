@@ -3179,9 +3179,9 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   const nextActionHtml = renderResidentNextAction(state);
   toggleResidentNextActionPanel(nextActionHtml);
   setHtml('resident-next-action', nextActionHtml);
-  const operatorItems = residentOperatorItems(state, brief);
-  toggleResidentOperatorPanel(operatorItems);
-  setHtml('resident-operator-needed', operatorItems.length ? renderResidentOperatorNeeded(operatorItems) : '');
+  const obligationItems = residentObligationItems(state, brief);
+  toggleResidentOperatorPanel(obligationItems);
+  setHtml('resident-operator-needed', obligationItems.length ? renderResidentObligations(obligationItems) : '');
   const pursuitSource = Array.isArray(state.activePursuits) ? state.activePursuits : pursuits;
   const activePursuits = filterResidentBacklogPursuits(pursuitSource, state.currentPursuit?.id);
   toggleResidentAttentionPanel(activePursuits);
@@ -3455,20 +3455,49 @@ function renderResidentNextAction(state) {
   `;
 }
 
-function residentOperatorItems(state, brief) {
-  const obligations = Array.isArray(state.obligations) ? state.obligations : [];
-  const questions = brief?.questions?.whatNeedFromJtr || brief?.questions?.whatNeedsJtr || [];
-  return obligations.length ? obligations : questions;
+function residentObligationAudience(item) {
+  return item?.audience === 'self' ? 'self' : 'operator';
 }
 
-function renderResidentOperatorNeeded(items) {
-  const title = '<div class="h23-resident-section-title">Needed From You</div>';
-  return `${title}${items.slice(0, 4).map((item) => `
+function splitResidentObligations(items = []) {
+  return (items || []).filter(Boolean).reduce((split, item) => {
+    split[residentObligationAudience(item)].push(item);
+    return split;
+  }, { operator: [], self: [] });
+}
+
+function residentBriefObligationItems(brief) {
+  const questions = brief?.questions || {};
+  const operatorItems = Array.isArray(questions.whatNeedFromJtr)
+    ? questions.whatNeedFromJtr
+    : Array.isArray(questions.whatNeedsJtr)
+      ? questions.whatNeedsJtr
+      : [];
+  const selfItems = Array.isArray(questions.whatIOwe) ? questions.whatIOwe : [];
+  return [...operatorItems, ...selfItems];
+}
+
+function residentObligationItems(state, brief) {
+  const obligations = Array.isArray(state.obligations) ? state.obligations : [];
+  return obligations.length ? obligations : residentBriefObligationItems(brief);
+}
+
+function renderResidentObligationSection(title, items, fallbackKind) {
+  if (!items.length) return '';
+  return `<div class="h23-resident-section-title">${escapeHtml(title)}</div>${items.map((item) => `
     <div class="h23-resident-alert">
-      <strong>${escapeHtml(item.kind || item.type || item.title || 'operator input')}</strong>
+      <strong>${escapeHtml(item.kind || item.type || item.title || fallbackKind)}</strong>
       <span>${escapeHtml(item.summary || item.reason || item.text || item.pursuitId || '')}</span>
     </div>
   `).join('')}`;
+}
+
+function renderResidentObligations(items) {
+  const obligations = splitResidentObligations(items);
+  return [
+    renderResidentObligationSection('Needed From You', obligations.operator, 'operator input'),
+    renderResidentObligationSection('What I Owe', obligations.self, 'resident obligation'),
+  ].filter(Boolean).join('');
 }
 
 function renderResidentPursuitCard(p) {
@@ -3903,13 +3932,9 @@ function residentAgencyVisiblePursuits(state, pursuits = []) {
 }
 
 function agencyOperatorNeedCount(state, brief) {
-  const obligations = Array.isArray(state.obligations) ? state.obligations.length : 0;
-  const questions = Array.isArray(brief?.questions?.whatNeedFromJtr)
-    ? brief.questions.whatNeedFromJtr.length
-    : Array.isArray(brief?.questions?.whatNeedsJtr)
-      ? brief.questions.whatNeedsJtr.length
-      : 0;
-  return obligations || questions || 0;
+  const obligations = Array.isArray(state.obligations) ? state.obligations : [];
+  const items = obligations.length ? obligations : residentBriefObligationItems(brief);
+  return splitResidentObligations(items).operator.length;
 }
 
 function residentAgencyModeLabel(mode) {
@@ -3980,22 +4005,25 @@ function renderAgencyScratchRow(row) {
 function renderAgencyBriefBlock(brief) {
   if (!brief) return '<p class="h23-muted">No resident brief reported.</p>';
   const questions = brief.questions || {};
+  const obligations = splitResidentObligations(residentBriefObligationItems(brief));
   const blocks = [
     renderAgencyBriefQuestionBlock('Following', questions.whatFollowing, renderAgencyBriefFollowingRow),
     renderAgencyBriefQuestionBlock('Changed', agencyMeaningfulBriefChanges(questions.whatChanged), renderAgencyBriefChangeRow),
     renderAgencyBriefQuestionBlock('Next', questions.whatDoingNext ? [questions.whatDoingNext] : [], renderAgencyBriefNextRow),
-    renderAgencyBriefQuestionBlock('Needs jtr', questions.whatNeedFromJtr, renderAgencyBriefNeedRow),
+    renderAgencyBriefQuestionBlock('Needs jtr', obligations.operator, renderAgencyBriefNeedRow, Number.POSITIVE_INFINITY),
+    renderAgencyBriefQuestionBlock('What I Owe', obligations.self, renderAgencyBriefNeedRow, Number.POSITIVE_INFINITY),
   ].filter(Boolean);
   return blocks.join('') || '<p class="h23-muted">No resident brief reported.</p>';
 }
 
-function renderAgencyBriefQuestionBlock(label, items, renderRow) {
+function renderAgencyBriefQuestionBlock(label, items, renderRow, limit = 4) {
   const rows = Array.isArray(items) ? items.filter(Boolean) : [];
   if (!rows.length) return '';
+  const visibleRows = Number.isFinite(limit) ? rows.slice(0, limit) : rows;
   return `
     <div class="h23-agency-brief-block">
       <div class="h23-agency-brief-label">${escapeHtml(label)}</div>
-      ${rows.slice(0, 4).map(renderRow).join('')}
+      ${visibleRows.map(renderRow).join('')}
     </div>
   `;
 }
@@ -4039,9 +4067,10 @@ function renderAgencyBriefNextRow(item) {
 }
 
 function renderAgencyBriefNeedRow(item) {
+  const fallbackKind = residentObligationAudience(item) === 'self' ? 'resident obligation' : 'jtr decision';
   return `
     <div class="h23-agency-brief-row">
-      <strong>${escapeHtml(item.kind || item.type || item.title || 'jtr decision')}</strong>
+      <strong>${escapeHtml(item.kind || item.type || item.title || fallbackKind)}</strong>
       <span>${escapeHtml(item.summary || item.reason || item.text || '')}</span>
     </div>
   `;

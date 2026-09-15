@@ -36,10 +36,29 @@ export const agencyListTool: ToolDefinition = {
 
 export const agencyBriefTool: ToolDefinition = {
   name: 'agency_brief',
-  description: 'Answer the resident success-test question from live agency state: what this agent is following, what changed, what it is doing next, and what it needs from jtr.',
-  input_schema: { type: 'object', properties: {}, additionalProperties: false },
-  async execute(_input, ctx) {
-    const data = await jsonRequest(ctx, '/api/agency/brief') as { text?: string };
+  description: 'Answer the resident success-test question from live agency state: what this agent is following, what changed, what it is doing next, what it needs from jtr, and what it owes. Supply surfacedObligationIds only after those obligations were actually voiced to jtr, never merely because context displayed them.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      surfacedObligationIds: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Obligation IDs that were actually voiced to jtr in this conversation; never include an ID merely because it appeared in context.',
+      },
+    },
+    additionalProperties: false,
+  },
+  async execute(input, ctx) {
+    const surfacedObligationIds = Array.isArray(input.surfacedObligationIds)
+      ? input.surfacedObligationIds
+      : [];
+    // Displayed-is-not-handled: context visibility is not a surfaced receipt. POST only after the agent voiced it to jtr.
+    const data = await jsonRequest(ctx, '/api/agency/brief', surfacedObligationIds.length > 0
+      ? {
+          method: 'POST',
+          body: JSON.stringify({ surfacedObligationIds }),
+        }
+      : undefined) as { text?: string };
     return { content: data.text || JSON.stringify(data, null, 2) };
   },
 };

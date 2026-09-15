@@ -80,6 +80,13 @@ interface AssemblyConfig {
   skipBrainEnrichment?: boolean;
 }
 
+interface AgencyContextSnapshot {
+  agencyDir: string;
+  statePath: string;
+  state: Record<string, unknown>;
+  stateReadable: boolean;
+}
+
 // ─── Domain Surfaces ────────────────────────────────────
 const DOMAIN_SURFACES = [
   { name: 'TOPOLOGY', file: 'TOPOLOGY.md', budget: 2500, alwaysBoost: false, isFact: true },
@@ -349,7 +356,7 @@ export function buildWorkerContextSection(projectRoot: string, agentName: string
   ].join('\n');
 }
 
-export function buildAgencyContextSection(projectRoot: string, agentName: string): string {
+function loadAgencyContextSnapshot(projectRoot: string, agentName: string): AgencyContextSnapshot | null {
   let agencyDir: string;
   try {
     agencyDir = join(
@@ -357,18 +364,89 @@ export function buildAgencyContextSection(projectRoot: string, agentName: string
       'agency',
     );
   } catch {
-    return '';
+    return null;
   }
   const statePath = join(agencyDir, 'state.json');
-  const pursuitsPath = join(agencyDir, 'pursuits.jsonl');
-  if (!existsSync(statePath) && !existsSync(pursuitsPath)) return '';
-
   let state: Record<string, unknown> = {};
+  let stateReadable = false;
   try {
-    state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown> : {};
+    const parsed = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) as unknown : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      state = parsed as Record<string, unknown>;
+      stateReadable = true;
+    }
   } catch {
     state = {};
   }
+  return { agencyDir, statePath, state, stateReadable };
+}
+
+function oneLine(value: unknown, max: number): string {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function renderOperatorObligationContextSection(snapshot: AgencyContextSnapshot, now: number): string {
+  if (!snapshot.stateReadable) return '';
+  const obligations = Array.isArray(snapshot.state.obligations)
+    ? snapshot.state.obligations.filter((item): item is Record<string, unknown> => (
+        Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+      ))
+    : [];
+  const pending = obligations
+    .map((item, index) => {
+      const parsedAt = Date.parse(String(item.at || ''));
+      return { item, index, at: Number.isFinite(parsedAt) ? parsedAt : null };
+    })
+    .filter(({ item }) => (
+      String(item.status || 'open') === 'open'
+      && item.audience === 'operator'
+      && !item.surfacedAt
+    ))
+    .sort((left, right) => {
+      if (left.at !== null && right.at !== null) return left.at - right.at;
+      if (left.at !== null) return -1;
+      if (right.at !== null) return 1;
+      return left.index - right.index;
+    });
+  if (pending.length === 0) return '';
+
+  const shown = pending.slice(0, 5).map(({ item, at }) => {
+    const age = at === null
+      ? 'age=unknown'
+      : `age=${Math.max(0, Math.floor((now - at) / 86_400_000))}d`;
+    const reason = oneLine(item.reason || 'no reason recorded', 140);
+    const id = typeof item.obligationId === 'string' && item.obligationId
+      ? ` | obligationId=${item.obligationId}`
+      : '';
+    return `- ${item.kind || 'operator_obligation'} | ${age} | ${reason}${id}`;
+  });
+  const overflow = pending.length - shown.length;
+
+  // Displayed is not handled: merely injecting this block must never write an
+  // obligation_surfaced_to_jtr receipt or create the same false-green state.
+  return [
+    '## OWED TO JTR — surface these in conversation, do not let them sit.',
+    'Raise stale operator obligations in your own voice during this conversation, not by silently re-queuing them; after voicing one, record its obligationId with agency_brief.',
+    ...shown,
+    ...(overflow > 0 ? [`Overflow: ${overflow} more operator obligation${overflow === 1 ? '' : 's'}.`] : []),
+  ].join('\n');
+}
+
+export function buildOperatorObligationContextSection(
+  projectRoot: string,
+  agentName: string,
+  now = Date.now(),
+): string {
+  const snapshot = loadAgencyContextSnapshot(projectRoot, agentName);
+  return snapshot ? renderOperatorObligationContextSection(snapshot, now) : '';
+}
+
+function renderAgencyContextSection(snapshot: AgencyContextSnapshot): string {
+  const { state } = snapshot;
+  const pursuitsPath = join(snapshot.agencyDir, 'pursuits.jsonl');
+  if (!snapshot.stateReadable && !existsSync(pursuitsPath)) return '';
 
   const latest = new Map<string, Record<string, unknown>>();
   for (const row of readJsonlTail(pursuitsPath, 300)) {
@@ -440,6 +518,11 @@ export function buildAgencyContextSection(projectRoot: string, agentName: string
     'Active pursuits:',
     ...lines,
   ].join('\n');
+}
+
+export function buildAgencyContextSection(projectRoot: string, agentName: string): string {
+  const snapshot = loadAgencyContextSnapshot(projectRoot, agentName);
+  return snapshot ? renderAgencyContextSection(snapshot) : '';
 }
 
 function managedWorkspaceContext(
@@ -785,6 +868,11 @@ export async function assembleContext(
   };
   const projectRoot = projectRootFromWorkspace(config.workspacePath);
   const agentName = agentNameFromWorkspace(config.workspacePath);
+  const agencySnapshot = loadAgencyContextSnapshot(projectRoot, agentName);
+  const operatorObligationSection = agencySnapshot
+    ? renderOperatorObligationContextSection(agencySnapshot, Date.now())
+    : '';
+  if (operatorObligationSection) surfacesLoaded.push('OWED_TO_JTR');
 
   if (shouldLoadOperationalSurface({
     ...opsGateBase,
@@ -812,7 +900,7 @@ export async function assembleContext(
     anchors: AGENCY_MEANING_ANCHORS,
   })) {
     try {
-      const agencySection = buildAgencyContextSection(projectRoot, agentName);
+      const agencySection = agencySnapshot ? renderAgencyContextSection(agencySnapshot) : '';
       if (agencySection) {
         surfacesLoaded.push('AGENCY');
         salienceItems.push({
@@ -892,6 +980,7 @@ export async function assembleContext(
           'Returned cues (if any), local trigger matches, and domain surfaces below remain available. ' +
             'Retry the operation or inspect brain_status; success is not yet established.',
         ];
+    if (operatorObligationSection) pieces.push(operatorObligationSection);
     if (localEvidence.length > 0) pieces.push(localEvidence.join('\n'));
     pieces.push('[/SITUATIONAL AWARENESS]');
 
@@ -913,7 +1002,9 @@ export async function assembleContext(
   if (rankedParts.length === 0) {
     if (ledger) { ledger.emit(events); }
     return {
-      block: '',
+      block: operatorObligationSection
+        ? `[SITUATIONAL AWARENESS]\n\n${operatorObligationSection}\n\n[/SITUATIONAL AWARENESS]`
+        : '',
       degraded: false,
       brainCueCount: brainCues.length,
       triggerCount: triggerMatches.length,
@@ -950,7 +1041,7 @@ export async function assembleContext(
     .filter(p => p.startsWith('\nRelevant context'))
     .join('\n');
 
-  const block = `[SITUATIONAL AWARENESS]\n\n${
+  const block = `[SITUATIONAL AWARENESS]\n\n${operatorObligationSection ? `${operatorObligationSection}\n\n` : ''}${
     brainCues.length > 0
       ? '[CONTINUITY ENRICHMENT] This block includes automatic pre-turn brain cues. Do not treat them as brain_search results.\n\n'
       : ''

@@ -1459,6 +1459,14 @@ async function main(): Promise<void> {
       res.status(500).json({ error: err?.message || String(err) });
     }
   });
+  bridgeApp.post('/api/agency/brief', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json(kernel.brief({ surfacedObligationIds: req.body?.surfacedObligationIds }));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || String(err) });
+    }
+  });
   bridgeApp.get('/api/agency/inspector', async (req: any, res: any) => {
     try {
       const kernel = await getAgencyKernel();

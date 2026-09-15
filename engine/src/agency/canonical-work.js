@@ -10,22 +10,23 @@ export function reconcileCanonicalWork(kernel, sourcePath, resident) {
   let changed = 0;
   for (const assignment of snapshot.assignments) {
     if (typeof assignment.id !== 'string' || !assignment.id.startsWith('wrk_') || typeof assignment.title !== 'string'
-        || !['active','needs_review','blocked','complete','cancelled'].includes(assignment.assignmentState)) throw new Error('Invalid canonical assignment');
+        || !['active','needs_review','blocked','complete','failed','returned','cancelled'].includes(assignment.assignmentState)) throw new Error('Invalid canonical assignment');
     const id = `coordination:${assignment.id}`;
     const digest = createHash('sha256').update(JSON.stringify(assignment)).digest('hex');
     const existing = kernel.store.getTask(id);
-    if (existing?.handoff?.canonicalDigest === digest) continue;
+    const authorityLevel = assignment.authorityLevel || 'unknown';
+    if (existing?.handoff?.canonicalDigest === digest && existing.authorityLevel === authorityLevel) continue;
     const closed = ['complete','cancelled'].includes(assignment.assignmentState);
     const evidence = [{ type: 'reference', ref: id }, ...(assignment.conclusion?.evidence ?? []).map(ref => ({ type: 'reference', ref }))];
     const handoff = { source: 'coordination', canonicalDigest: digest, workId: assignment.id,
       channelId: assignment.channelId, originMessageId: assignment.originMessageId,
       originalRequest: assignment.originalRequest, executionState: assignment.state,
       assignmentState: assignment.assignmentState, conclusion: assignment.conclusion };
-    if (!existing) kernel.recordTask({ id, summary: assignment.title, status: closed ? 'closed' : 'open',
+    if (!existing) kernel.recordTask({ id, summary: assignment.title, status: closed ? 'closed' : 'open', authorityLevel,
       actionKind: 'canonical_assignment', handoff, evidence, at: assignment.createdAt,
       reason: 'canonical_assignment_observed', stopCondition: 'resident assessment records completion or cancellation; execution termination alone is insufficient' });
     else kernel.store.updateTask(id, { status: closed ? 'closed' : 'open', summary: assignment.title,
-      handoff, evidence, closureSummary: closed ? assignment.conclusion?.summary ?? null : null,
+      authorityLevel, handoff, evidence, closureSummary: closed ? assignment.conclusion?.summary ?? null : null,
       closureEvidence: closed ? evidence : [], closedAt: closed ? assignment.conclusion?.recordedAt ?? null : null },
       { type: 'canonical_assignment_observed', detail: { workId: assignment.id, state: assignment.assignmentState } });
     changed++;

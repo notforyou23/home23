@@ -962,6 +962,236 @@ test('AgencyKernel raises first-class jtr questions as obligations with conseque
   assert.equal(inboxRows.length, 1);
 });
 
+test('AgencyKernel assigns obligation audiences without turning resident work into operator debt', () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  kernel.store.appendReceipt({
+    schema: 'home23.agency.receipt.v1',
+    at: '2026-09-10T12:00:00.000Z',
+    event: 'authority_requested',
+    candidateId: 'candidate_operator_authority',
+    authorityLevel: 'L4',
+    reason: 'Publishing requires owner authority.',
+  });
+  kernel.store.appendReceipt({
+    schema: 'home23.agency.receipt.v1',
+    at: '2026-09-10T12:01:00.000Z',
+    event: 'jtr_question_raised',
+    questionId: 'q_operator_taste',
+    question: 'Which owner-facing version should ship?',
+    reason: 'operator_judgment_required',
+    authorityLevel: 'L3',
+  });
+  const operatorBlocked = kernel.store.createPursuit({
+    summary: 'Choose the owner-facing release treatment.',
+    authorityLevel: 'L2',
+  }, { route: 'pursue', reason: 'test_operator_blocker' });
+  kernel.store.transition(operatorBlocked.id, {
+    status: 'blocked',
+    reason: 'waiting for jtr decision on the release treatment',
+  });
+  const selfBlocked = kernel.store.createPursuit({
+    summary: 'Verify the local reconciliation receipt.',
+    authorityLevel: 'L2',
+  }, { route: 'pursue', reason: 'test_self_blocker' });
+  kernel.store.transition(selfBlocked.id, {
+    status: 'blocked',
+    reason: 'waiting for verifier output from the local test harness',
+  });
+  kernel.store.appendTask({
+    type: 'created',
+    at: '2026-09-10T12:02:00.000Z',
+    task: {
+      schema: 'home23.agency.task.v1',
+      id: 'task_missing_authority',
+      createdAt: '2026-09-10T12:02:00.000Z',
+      updatedAt: '2026-09-10T12:02:00.000Z',
+      status: 'open',
+      summary: 'Finish the resident-owned verifier.',
+      actionKind: 'bounded_action',
+    },
+  });
+
+  const obligations = kernel.deriveObligations({
+    truthSummary: {
+      unresolvedClaims: [{
+        id: 'claim_self_contradiction',
+        at: '2026-09-10T12:03:00.000Z',
+        claim: 'The local verifier both passed and failed.',
+      }],
+    },
+  });
+
+  assert.equal(obligations.find(item => item.kind === 'authority_request')?.audience, 'operator');
+  assert.equal(obligations.find(item => item.kind === 'operator_question')?.audience, 'operator');
+  assert.equal(obligations.find(item => item.pursuitId === operatorBlocked.id)?.audience, 'operator');
+  assert.equal(obligations.find(item => item.pursuitId === selfBlocked.id)?.audience, 'self');
+  const openTask = obligations.find(item => item.taskId === 'task_missing_authority');
+  assert.equal(openTask?.audience, 'self');
+  assert.equal(openTask?.authorityLevel, 'unknown');
+  assert.notEqual(openTask?.authorityLevel, 'L2');
+  assert.equal(obligations.find(item => item.claimId === 'claim_self_contradiction')?.audience, 'self');
+  assert.equal(obligations.every(item => item.audience === 'operator' || item.audience === 'self'), true);
+});
+
+test('AgencyKernel suppresses only coordination obligations with explicit terminal Work evidence', () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const terminalStates = ['complete', 'completed', 'succeeded', 'failed', 'cancelled', 'interrupted'];
+  for (const state of terminalStates) {
+    kernel.store.appendTask({
+      type: 'created',
+      at: '2026-09-10T13:00:00.000Z',
+      task: {
+        schema: 'home23.agency.task.v1',
+        id: `coordination:wrk_terminal_${state}`,
+        createdAt: '2026-09-10T13:00:00.000Z',
+        updatedAt: '2026-09-10T13:00:00.000Z',
+        status: 'open',
+        summary: `Coordinate Work wrk_terminal_${state}.`,
+        handoff: {
+          workId: `wrk_terminal_${state}`,
+          executionState: state,
+        },
+      },
+    });
+  }
+  kernel.store.appendTask({
+    type: 'created',
+    at: '2026-09-10T13:01:00.000Z',
+    task: {
+      schema: 'home23.agency.task.v1',
+      id: 'coordination:wrk_state_unknown',
+      createdAt: '2026-09-10T13:01:00.000Z',
+      updatedAt: '2026-09-10T13:01:00.000Z',
+      status: 'open',
+      summary: 'Coordinate Work wrk_state_unknown.',
+      handoff: { workId: 'wrk_state_unknown' },
+    },
+  });
+
+  const obligations = kernel.deriveObligations();
+
+  for (const state of terminalStates) {
+    assert.equal(obligations.some(item => item.taskId === `coordination:wrk_terminal_${state}`), false);
+  }
+  const unknownWork = obligations.find(item => item.taskId === 'coordination:wrk_state_unknown');
+  assert.equal(unknownWork?.audience, 'self');
+  assert.equal(unknownWork?.authorityLevel, 'unknown');
+  assert.equal(kernel.store.listTasks({ status: 'open', limit: 20 }).length, terminalStates.length + 1);
+});
+
+test('AgencyKernel brief keeps every projected self obligation under What I owe', () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  for (let index = 1; index <= 10; index++) {
+    const at = `2026-09-10T13:${String(index).padStart(2, '0')}:00.000Z`;
+    kernel.store.appendTask({
+      type: 'created',
+      at,
+      task: {
+        schema: 'home23.agency.task.v1',
+        id: `task_self_${index}`,
+        createdAt: at,
+        updatedAt: at,
+        status: 'open',
+        summary: `Resident follow-through ${index}.`,
+      },
+    });
+  }
+
+  const brief = kernel.brief();
+
+  assert.equal(brief.questions.whatNeedFromJtr.length, 0);
+  assert.equal(brief.questions.whatIOwe.length, 10);
+  assert.equal(brief.questions.whatIOwe.every(item => item.audience === 'self'), true);
+  assert.match(brief.text, /Resident follow-through 10\./);
+});
+
+test('AgencyKernel records surfacing only on explicit brief acknowledgement and keeps the obligation open', () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  kernel.store.appendReceipt({
+    schema: 'home23.agency.receipt.v1',
+    at: '2026-09-10T14:00:00.000Z',
+    event: 'jtr_question_raised',
+    questionId: 'q_surface_owner_question',
+    question: 'Should this owner-facing change proceed?',
+    reason: 'operator_judgment_required',
+    authorityLevel: 'L3',
+  });
+  kernel.store.appendTask({
+    type: 'created',
+    at: '2026-09-10T14:01:00.000Z',
+    task: {
+      schema: 'home23.agency.task.v1',
+      id: 'task_surface_self_work',
+      createdAt: '2026-09-10T14:01:00.000Z',
+      updatedAt: '2026-09-10T14:01:00.000Z',
+      status: 'open',
+      summary: 'Finish the local evidence review.',
+    },
+  });
+
+  const plainBrief = kernel.brief();
+  const operatorObligation = plainBrief.questions.whatNeedFromJtr.find(
+    item => item.questionId === 'q_surface_owner_question',
+  );
+  const selfObligation = plainBrief.questions.whatIOwe.find(
+    item => item.taskId === 'task_surface_self_work',
+  );
+  assert.ok(operatorObligation?.obligationId);
+  assert.equal(operatorObligation.audience, 'operator');
+  assert.equal(selfObligation?.audience, 'self');
+  assert.match(plainBrief.text, /What I need from jtr:/);
+  assert.match(plainBrief.text, /What I owe:/);
+  assert.equal('surfaced' in plainBrief, false);
+  assert.equal(readJsonl(join(dir, 'agency', 'receipts.jsonl'))
+    .some(row => row.event === 'obligation_surfaced_to_jtr'), false);
+  assert.throws(() => kernel.brief({
+    surfacedObligationIds: [selfObligation.obligationId],
+    at: '2026-09-10T14:02:00.000Z',
+  }), /Operator obligation is not pending/);
+
+  const acknowledged = kernel.brief({
+    surfacedObligationIds: [operatorObligation.obligationId],
+    at: '2026-09-10T14:03:00.000Z',
+  });
+  const receiptRows = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const surfaceReceipts = receiptRows
+    .filter(row => row.event === 'obligation_surfaced_to_jtr');
+  const state = kernel.state();
+  const stillOpen = state.obligations.find(item => item.obligationId === operatorObligation.obligationId);
+
+  assert.equal(acknowledged.surfaced.length, 1);
+  assert.equal(acknowledged.surfaced[0].obligationId, operatorObligation.obligationId);
+  assert.equal(acknowledged.surfaced[0].kind, 'operator_question');
+  assert.equal(surfaceReceipts.length, 1);
+  assert.equal(surfaceReceipts[0].at, '2026-09-10T14:03:00.000Z');
+  assert.equal(surfaceReceipts[0].obligationId, operatorObligation.obligationId);
+  assert.equal(surfaceReceipts[0].kind, 'operator_question');
+  assert.equal(stillOpen?.status, 'open');
+  assert.equal(stillOpen?.surfacedAt, '2026-09-10T14:03:00.000Z');
+  assert.equal(kernel.store.getTask('task_surface_self_work')?.status, 'open');
+  assert.equal(receiptRows.some(row => row.event === 'jtr_question_resolved'), false);
+});
+
 test('AgencyKernel builds the live success-test brief from resident state', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
