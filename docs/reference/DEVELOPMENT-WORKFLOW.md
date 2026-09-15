@@ -8,6 +8,20 @@ Use the maintained backend repository for backend, engines, web dashboard and su
 
 The live installation owns configuration, credentials, resident state and selected release pointers. Managed Core and harnesses execute a verified package; some engine, dashboard and substrate services still execute installation files. A source commit is not evidence of deployment. Never overlay a source checkout onto a live installation.
 
+### Land receipts
+
+When a verified fix is committed to maintained `home23` or `home23-apple` source but is not yet running, append a land receipt immediately:
+
+```bash
+node scripts/development/land-receipt.mjs record --commit <sha> --summary "<one-line repair>" --verification <receipt-path-or-test-name-or-none> --surfaces <service,component> --recorded-by <agent-or-tool>
+```
+
+Run the command from the checkout being recorded. From the maintained Apple checkout, invoke the shared backend tool as `node ../home23/scripts/development/land-receipt.mjs record ...` so it records the Apple repository and branch while appending to the shared backend ledger.
+
+`state/land-receipts.jsonl` is append-only. Deployment adds another record with `land --commit <sha> --release <releaseId>`; never rewrite the original receipt or infer deployment from ancestry, timestamps, or package selection. `scripts/development/status.mjs --installation <live-root>` reports the active release's recorded source provenance, source commits after that commit, and folded undeployed receipts. An unrecorded commit is unrecorded, not assumed deployed; missing or malformed ledger data is unavailable, never zero.
+
+Candidate preparation records its reviewed `baseRef` as `sourceCommit`, plus the source repository, branch, dirty state and preparation time. A provenance-capable rebind plan names `preparation` (the directory containing `prepared.json`) and `verificationReceipt` (the passing `verification.json`). Rebind revalidates the receipt and exact selected package, then carries that provenance into `active-release.json` only after runtime readback. A legacy release without those artifacts must instead name a short `sourceProvenanceUnavailable` reason; it records `sourceCommit:null` and that reason. Never reconstruct or guess either provenance or deployment.
+
 Read repository AGENTS.md and applicable local instructions before work. Historical handoffs are evidence, not current authority. Check the current branch, changed files, remotes, selected package and relevant app receipts. The source reconciliation baseline may be historical; do not update it just to silence a warning.
 
 Keep current entry-point instructions concise and consistent with the actual source and supported commands. Move superseded commands, architecture descriptions and release snapshots into clearly labeled historical references instead of appending contradictory instructions. Link to the current authority from each tool's entry point.

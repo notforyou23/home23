@@ -15,7 +15,21 @@ function fixture(t) {
     execFileSync('git', ['-C', dir, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'base']);
     execFileSync('git', ['-C', dir, 'update-ref', 'refs/remotes/origin/main', 'HEAD']);
   }
-  return { root, backend: path.join(root, 'backend'), apple: path.join(root, 'apple') };
+  const backend = path.join(root, 'backend');
+  return { root, backend, apple: path.join(root, 'apple'),
+    backendBase: execFileSync('git', ['-C', backend, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() };
+}
+
+function receipt(commit, overrides = {}) {
+  return { schemaVersion: 1, recordedAt: '2026-09-15T12:00:00.000Z', commit, repo: 'home23', branch: 'main',
+    summary: 'Verified repair', verification: 'tests/repair.test.js', surfaces: ['fixture'], deployed: false,
+    deployedReleaseId: null, deployedAt: null, recordedBy: 'test', ...overrides };
+}
+
+function writeLedger(root, records) {
+  const file = path.join(root, 'state', 'land-receipts.jsonl');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n') + '\n');
 }
 
 test('reports dirty source and independent main comparisons without altering files or HEAD', t => {
@@ -35,14 +49,138 @@ test('marks stale release baseline and mismatched phone selection without readin
   const f = fixture(t); const installation = path.join(f.root, 'live');
   const house = path.join(installation, 'instances/.house'); fs.mkdirSync(path.join(house, 'coordination'), { recursive: true });
   const write = (p, x) => fs.writeFileSync(path.join(house, p), JSON.stringify(x));
-  write('coordination/active-release.json', { releaseId: 'new' });
-  write('source-authority.json', { deployedReleaseId: 'old' });
+  write('coordination/active-release.json', { schemaVersion: 2, releaseId: 'a'.repeat(40) });
+  write('source-authority.json', { deployedReleaseId: 'b'.repeat(40) });
   write('home23-ios.json', { installedBuild: 135, sourceRoot: '/different/source', receipt: '/private/receipt', secret: 'never-report' });
   const report = workspaceStatus({ ...f, installation });
   assert.equal(report.selected.phone.build, 135);
   assert.equal(report.concerns.length, 2);
   assert.ok(!JSON.stringify(report).includes('never-report'));
   assert.equal(report.selected.phone.evidence, 'installation record');
+  assert.match(formatStatus(report), /Deployed source: unknown .*no recorded source provenance/);
+  assert.doesNotMatch(formatStatus(report), /running package/);
+});
+
+test('missing active release remains unavailable while the ledger is still reported', t => {
+  const f=fixture(t),installation=path.join(f.root,'live');
+  fs.mkdirSync(path.join(installation,'instances/.house/coordination'),{recursive:true});
+  writeLedger(f.backend,[receipt(f.backendBase)]);
+
+  const report=workspaceStatus({...f,installation});
+  const text=formatStatus(report);
+
+  assert.equal(report.selected.backendRelease,null);
+  assert.equal(report.selected.backendSource,null);
+  assert.deepEqual(report.landReceipts.undeployed.map(value=>value.commit),[f.backendBase]);
+  assert.match(text,/Deployed source: unavailable: active release record does not exist/);
+  assert.match(text,/Undeployed land receipts: 1/);
+  assert.doesNotMatch(text,/running package/);
+});
+
+test('malformed active release and runtime inspection errors never suppress the ledger', t => {
+  const f=fixture(t),installation=path.join(f.root,'live'),house=path.join(installation,'instances/.house');
+  fs.mkdirSync(path.join(house,'coordination'),{recursive:true});
+  fs.writeFileSync(path.join(house,'coordination/active-release.json'),'{broken}\n');
+  writeLedger(f.backend,[receipt(f.backendBase)]);
+
+  for(const runtime of [false,true]) {
+    const report=workspaceStatus({...f,installation,runtime});
+    const text=formatStatus(report);
+    assert.equal(report.selected.backendRelease,null);
+    assert.match(report.selected.backendReleaseError,/invalid JSON/);
+    assert.match(text,/Undeployed land receipts: 1/);
+    assert.doesNotMatch(text,/running package/);
+    if(runtime) assert.match(report.runtime.error,/Release inspection failed|Unexpected token|JSON/);
+  }
+});
+
+test('unsupported active release schema remains unavailable rather than becoming deployment evidence', t => {
+  const f=fixture(t),installation=path.join(f.root,'live'),house=path.join(installation,'instances/.house');
+  fs.mkdirSync(path.join(house,'coordination'),{recursive:true});
+  fs.writeFileSync(path.join(house,'coordination/active-release.json'),JSON.stringify({schemaVersion:99,releaseId:'a'.repeat(40)}));
+  writeLedger(f.backend,[receipt(f.backendBase)]);
+
+  const report=workspaceStatus({...f,installation});
+
+  assert.equal(report.selected.backendRelease,null);
+  assert.match(report.selected.backendReleaseError,/unsupported schemaVersion/);
+  assert.equal(report.landReceipts.undeployed.length,1);
+  assert.match(formatStatus(report),/Deployed source: unavailable/);
+});
+
+test('legacy active release keeps source provenance explicitly unknown', t => {
+  const f=fixture(t),installation=path.join(f.root,'live'),house=path.join(installation,'instances/.house');
+  fs.mkdirSync(path.join(house,'coordination'),{recursive:true});
+  fs.writeFileSync(path.join(house,'coordination/active-release.json'),JSON.stringify({
+    schemaVersion:2,releaseId:'a'.repeat(40),residents:{jerry:{keyVersion:1}},
+  }));
+
+  const report=workspaceStatus({...f,installation});
+
+  assert.equal(report.selected.backendSource.commit,null);
+  assert.equal(report.selected.backendSource.dirty,null);
+  assert.match(report.selected.backendSource.provenance,/no recorded source provenance/);
+  assert.match(formatStatus(report),/Deployed source: unknown/);
+});
+
+test('reports recorded deployed source history separately from folded undeployed land receipts', t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.backend, 'later.txt'), 'later\n');
+  execFileSync('git', ['-C', f.backend, 'add', 'later.txt']);
+  execFileSync('git', ['-C', f.backend, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'not running']);
+  const later = execFileSync('git', ['-C', f.backend, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(f.backend, 'unrecorded.txt'), 'unrecorded\n');
+  execFileSync('git', ['-C', f.backend, 'add', 'unrecorded.txt']);
+  execFileSync('git', ['-C', f.backend, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'unrecorded commit']);
+  const unrecorded = execFileSync('git', ['-C', f.backend, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const releaseId = 'a'.repeat(40), installation = path.join(f.root, 'live');
+  const house = path.join(installation, 'instances/.house');
+  fs.mkdirSync(path.join(house, 'coordination'), { recursive: true });
+  fs.writeFileSync(path.join(house, 'coordination/active-release.json'), JSON.stringify({
+    schemaVersion: 2, releaseId, residents: { jerry: { keyVersion: 1 } },
+    sourceCommit: f.backendBase, sourceRepo: 'home23', sourceBranch: 'main',
+    sourceDirty: false, preparedAt: '2026-09-15T11:00:00.000Z',
+    sourceProvenance: 'prepared artifact verification matched selected release',
+  }));
+  writeLedger(f.backend, [
+    receipt(f.backendBase, { summary: 'Already running' }),
+    { schemaVersion: 1, recordType: 'deployment', recordedAt: '2026-09-15T12:30:00.000Z', commit: f.backendBase, releaseId },
+    receipt(later, { summary: 'Still waiting', surfaces: ['mail', 'reminders'] }),
+  ]);
+  const pointerFile=path.join(house,'coordination/active-release.json'),ledgerFile=path.join(f.backend,'state/land-receipts.jsonl');
+  const before={head:execFileSync('git',['-C',f.backend,'rev-parse','HEAD'],{encoding:'utf8'}),
+    status:execFileSync('git',['-C',f.backend,'status','--porcelain=v1'],{encoding:'utf8'}),
+    pointer:fs.readFileSync(pointerFile),ledger:fs.readFileSync(ledgerFile)};
+  const expectedHistory=execFileSync('git',['--no-optional-locks','-C',f.backend,'log','--oneline',`${f.backendBase}..HEAD`],{encoding:'utf8'}).trimEnd().split('\n');
+
+  const report = workspaceStatus({ ...f, installation });
+
+  assert.equal(report.selected.backendSource.commit, f.backendBase);
+  assert.deepEqual(report.selected.backendSource.commitsNotRunning.lines, expectedHistory);
+  assert.deepEqual(report.landReceipts.undeployed.map(value => value.commit), [later]);
+  assert.equal(report.landReceipts.undeployed.some(value=>value.commit===unrecorded),false);
+  assert.equal(execFileSync('git',['-C',f.backend,'rev-parse','HEAD'],{encoding:'utf8'}),before.head);
+  assert.equal(execFileSync('git',['-C',f.backend,'status','--porcelain=v1'],{encoding:'utf8'}),before.status);
+  assert.equal(fs.readFileSync(pointerFile).equals(before.pointer),true);
+  assert.equal(fs.readFileSync(ledgerFile).equals(before.ledger),true);
+  const text = formatStatus(report);
+  assert.match(text, new RegExp(`Deployed source: home23 ${f.backendBase}`));
+  assert.match(text, /Source commits not running: 2/);
+  assert.match(text, /Undeployed land receipts: 1/);
+  assert.match(text, /Still waiting \[mail, reminders\]/);
+});
+
+test('malformed or missing ledger is unavailable rather than reported as zero', t => {
+  const f = fixture(t);
+  const missing = workspaceStatus(f);
+  assert.equal(missing.landReceipts.available, false);
+  assert.match(formatStatus(missing), /ledger unavailable: .*does not exist/);
+  writeLedger(f.backend, [receipt(f.backendBase)]);
+  fs.appendFileSync(path.join(f.backend, 'state/land-receipts.jsonl'), '{broken}\n');
+  const malformed = workspaceStatus(f);
+  assert.equal(malformed.landReceipts.available, false);
+  assert.match(formatStatus(malformed), /ledger unavailable: .*line 2/);
+  assert.doesNotMatch(formatStatus(malformed), /Undeployed land receipts: 0/);
 });
 
 test('missing repository is unavailable rather than clean, and remote credentials are omitted', t => {

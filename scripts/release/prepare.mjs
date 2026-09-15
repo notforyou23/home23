@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const inside = (parent, child) => child === parent || child.startsWith(parent + path.sep);
 const forbidden = p => /^(instances|\.git|runtime|logs)(\/|$)/.test(p) || /^(ecosystem\.config\.cjs|config\/(home|targets|secrets)\.yaml|config\/(agents|cron-jobs)\.json)$/.test(p);
+const sourceRepositories = new Set(['home23', 'home23-apple']);
 export function relativeFile(p) {
   if (typeof p !== 'string' || !p || path.isAbsolute(p) || p.includes('\\') || p.split('/').some(x => !x || x === '.' || x === '..') || forbidden(p)) throw new Error('Unsafe release input path');
   return p;
@@ -38,6 +39,17 @@ function regular(root, rel) {
   if (!inside(root, fs.realpathSync(file)) || !fs.lstatSync(file).isFile()) throw new Error(`Input is not a contained regular file: ${rel}`);
   return fs.readFileSync(file);
 }
+function sourceIdentity(source, sourceCommit) {
+  const sourceBranch = execFileSync('git', ['branch', '--show-current'], { cwd: source, encoding: 'utf8' }).trim() || null;
+  const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: source, encoding: 'utf8' }).trim();
+  const dirtyState = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=normal'], { cwd: source, encoding: 'utf8' });
+  const candidate = path.basename(path.dirname(common));
+  const sourceRepo = sourceRepositories.has(candidate) ? candidate : null;
+  const missing = [sourceRepo ? null : 'repository', sourceBranch ? null : 'branch'].filter(Boolean);
+  return { provenance: { sourceCommit, sourceRepo, sourceBranch, sourceDirty: dirtyState.length > 0,
+    sourceProvenance: missing.length ? `Source ${missing.join(' and ')} unavailable during preparation` : 'captured from prepared base and source checkout' },
+    checkoutState: { common, sourceBranch, dirtyState } };
+}
 export function prepare({ baseline, source, baseRef, files, output }) {
   baseline = fs.realpathSync(baseline); source = fs.realpathSync(source);
   const parent = fs.realpathSync(path.dirname(path.resolve(output)));
@@ -46,6 +58,7 @@ export function prepare({ baseline, source, baseRef, files, output }) {
   if (!Array.isArray(files) || !files.length || new Set(files).size !== files.length) throw new Error('Explicit unique files required');
   files.forEach(relativeFile);
   const base = execFileSync('git', ['rev-parse', '--verify', `${baseRef}^{commit}`], { cwd: source, encoding: 'utf8' }).trim();
+  const sourceState = sourceIdentity(source, base);
   const before = inventory(baseline);
   if (before.rows.some(row => forbidden(row.path))) throw new Error('Baseline contains installation state');
   // Capture selected input bytes before materializing anything. Untracked files
@@ -95,8 +108,12 @@ export function prepare({ baseline, source, baseRef, files, output }) {
     }
     changes.push({ path:rel, status, evidence:key, base:original ? hash(original):null, source:hash(feature), deployed:deployed ? hash(deployed):null });
   }
-  if (inventory(baseline).digest !== before.digest || inputs.some(i => !regular(source,i.rel).equals(i.feature))) throw new Error('Inputs changed during preparation; discard candidate');
-  const report = { schemaVersion:1, preparedAt:new Date().toISOString(), baseline, source, base, candidate, baselineDigest:before.digest, changes, activationReady:false };
+  if (inventory(baseline).digest !== before.digest || inputs.some(i => !regular(source,i.rel).equals(i.feature))
+      || JSON.stringify(sourceIdentity(source, base).checkoutState) !== JSON.stringify(sourceState.checkoutState)) {
+    throw new Error('Inputs changed during preparation; discard candidate');
+  }
+  const report = { schemaVersion:1, preparedAt:new Date().toISOString(), baseline, source, base, ...sourceState.provenance,
+    candidate, baselineDigest:before.digest, changes, activationReady:false };
   json(path.join(output,'baseline.json'),before);
   json(path.join(output,'prepared.json'),report);
   return report;
