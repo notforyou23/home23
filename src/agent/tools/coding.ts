@@ -10,6 +10,7 @@
 
 import type { ToolContext, ToolDefinition, ToolResult, CodingBridgeRef } from '../types.js';
 import type { BridgeEvent, CodingJobRecord, CodingJobReceipt, CodingIsolation } from '../../acp/types.js';
+import { formatDependencyProvisioning } from '../../acp/worktrees.js';
 import { mustDetachLongTool } from '../../work/detach.js';
 import { TERMINAL_JOB_STATUSES } from '../../acp/types.js';
 import { isSelectableBackendId, listSelectableBackendIds } from '../../acp/backends.js';
@@ -67,6 +68,8 @@ function jobSummary(job: CodingJobRecord): string {
   ];
   if (job.label) lines.push(`Label: ${job.label}`);
   lines.push(`Cwd: ${describeLocation(job)}`);
+  const provisioningText = job.worktree ? formatDependencyProvisioning(job.worktree) : undefined;
+  if (provisioningText) lines.push(provisioningText);
   lines.push(`Started: ${job.startedAt}`);
   if (job.finishedAt) lines.push(`Finished: ${job.finishedAt}`);
   if (job.exitCode !== undefined && job.exitCode !== null) lines.push(`Exit code: ${job.exitCode}`);
@@ -103,6 +106,8 @@ function integrationNotes(receipt: Pick<CodingJobReceipt, 'worktree' | 'checkpoi
   if (receipt.worktree) {
     const { repoRoot, path, branch, baseCommit } = receipt.worktree;
     lines.push(`Worktree: ${path} (branch ${branch}, base ${baseCommit})`);
+    const provisioningText = formatDependencyProvisioning(receipt.worktree);
+    if (provisioningText) lines.push(provisioningText);
     lines.push(`Integration target: ${repoRoot}. Inspect committed and uncommitted changes in the job workspace, then integrate only the authorized diff into the current target state and verify it.`);
     lines.push('The worktree started from committed HEAD; local uncommitted and untracked files were not copied. A worktree is not a machine sandbox. Preserve the job workspace until its work is integrated or explicitly discarded.');
   }

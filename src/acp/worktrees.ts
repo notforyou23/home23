@@ -13,9 +13,17 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
-import type { CheckpointInfo, WorktreeInfo } from './types.js';
+import type {
+  CheckpointInfo,
+  DependencyProvisioning,
+  DependencyTreeProvision,
+  WorktreeInfo,
+} from './types.js';
+
+/** Documented default: root and engine dependency trees. Absent trees are skipped, not invented. */
+export const DEFAULT_DEPENDENCY_TREES = ['node_modules', 'engine/node_modules'] as const;
 
 const SLUG_MAX = 40;
 const DIFF_STAT_MAX = 2000;
@@ -68,7 +76,109 @@ export function createJobWorktree(opts: { repoRoot: string; slug: string }): Wor
   const dir = path.join(baseDir, slug);
   const baseCommit = git(opts.repoRoot, ['rev-parse', 'HEAD']);
   git(opts.repoRoot, ['worktree', 'add', dir, '-b', branch]);
-  return { repoRoot: opts.repoRoot, path: dir, branch, baseCommit };
+  const dependencyProvisioning = provisionWorktreeDependencies(opts.repoRoot, dir);
+  return { repoRoot: opts.repoRoot, path: dir, branch, baseCommit, dependencyProvisioning };
+}
+
+function execReason(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const rec = err as { stderr?: unknown; message?: unknown };
+    const stderr = typeof rec.stderr === 'string'
+      ? rec.stderr.trim()
+      : Buffer.isBuffer(rec.stderr)
+        ? rec.stderr.toString('utf8').trim()
+        : '';
+    if (stderr) return stderr;
+    if (typeof rec.message === 'string' && rec.message.trim()) return rec.message;
+  }
+  return String(err);
+}
+
+function lstatOrNull(p: string) {
+  try {
+    return lstatSync(p);
+  } catch {
+    return null;
+  }
+}
+
+function provisionDependencyTree(repoRoot: string, worktreePath: string, rel: string): DependencyTreeProvision {
+  const src = path.join(repoRoot, rel);
+  const dest = path.join(worktreePath, rel);
+  const srcStat = lstatOrNull(src);
+  if (!srcStat) {
+    return { path: rel, strategy: 'skipped', ok: false, reason: `source tree absent: ${rel}` };
+  }
+  if (srcStat.isSymbolicLink()) {
+    return { path: rel, strategy: 'skipped', ok: false, reason: `source is a symbolic link: ${rel}` };
+  }
+  if (!srcStat.isDirectory()) {
+    return { path: rel, strategy: 'skipped', ok: false, reason: `source is not a directory: ${rel}` };
+  }
+  const destStat = lstatOrNull(dest);
+  if (destStat) {
+    if (destStat.isSymbolicLink()) {
+      return { path: rel, strategy: 'apfs-clonefile', ok: false, reason: `destination is a symbolic link: ${rel}` };
+    }
+    return { path: rel, strategy: 'apfs-clonefile', ok: false, reason: `destination already exists: ${rel}` };
+  }
+  try {
+    execFileSync('cp', ['-Rc', src, dest], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    const leftover = lstatOrNull(dest);
+    if (leftover?.isSymbolicLink()) {
+      try { unlinkSync(dest); } catch { /* still report the clone failure */ }
+    }
+    return { path: rel, strategy: 'apfs-clonefile', ok: false, reason: execReason(err) };
+  }
+  const after = lstatOrNull(dest);
+  if (!after) {
+    return { path: rel, strategy: 'apfs-clonefile', ok: false, reason: `clone reported success but destination is absent: ${rel}` };
+  }
+  if (after.isSymbolicLink()) {
+    try {
+      unlinkSync(dest);
+    } catch (unlinkErr) {
+      return {
+        path: rel,
+        strategy: 'apfs-clonefile',
+        ok: false,
+        reason: `clone produced a symlink at ${rel} and removal failed: ${execReason(unlinkErr)}`,
+      };
+    }
+    return { path: rel, strategy: 'apfs-clonefile', ok: false, reason: `clone produced a symlink at ${rel}; removed` };
+  }
+  if (!after.isDirectory()) {
+    return { path: rel, strategy: 'apfs-clonefile', ok: false, reason: `clone destination is not a directory: ${rel}` };
+  }
+  return { path: rel, strategy: 'apfs-clonefile', ok: true };
+}
+
+export function provisionWorktreeDependencies(repoRoot: string, worktreePath: string): DependencyProvisioning {
+  const trees = DEFAULT_DEPENDENCY_TREES.map(rel => provisionDependencyTree(repoRoot, worktreePath, rel));
+  return { trees, ok: trees.every(tree => tree.ok) };
+}
+
+/** Human-readable provisioning outcome. Returns undefined when the record is absent (unknown). */
+export function formatDependencyProvisioning(info: Pick<WorktreeInfo, 'dependencyProvisioning'>): string | undefined {
+  const record = info.dependencyProvisioning;
+  if (!record) return undefined;
+  const lines = [`Dependencies: ${record.ok ? 'provisioned' : 'not fully provisioned'}`];
+  for (const tree of record.trees) {
+    if (tree.ok) {
+      lines.push(`- ${tree.path}: ${tree.strategy} ok`);
+      continue;
+    }
+    if (tree.strategy === 'skipped') {
+      lines.push(tree.reason ? `- ${tree.path}: skipped (${tree.reason})` : `- ${tree.path}: skipped`);
+    } else {
+      lines.push(tree.reason ? `- ${tree.path}: ${tree.strategy} failed (${tree.reason})` : `- ${tree.path}: ${tree.strategy} failed`);
+    }
+  }
+  return lines.join('\n');
 }
 
 /** Record recoverable pre-job state. NEVER modifies the working tree. */
@@ -99,6 +209,32 @@ export function diffStat(cwd: string, baseCommit?: string): string | undefined {
   }
 }
 
+function restoreWritePermission(dir: string): void {
+  const st = lstatOrNull(dir);
+  if (!st) return;
+  if (st.isSymbolicLink()) {
+    throw new Error(`refusing to chmod through a symlink: ${dir}`);
+  }
+  if (!st.isDirectory()) return;
+  try {
+    execFileSync('chmod', ['-R', 'u+w', dir], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    throw new Error(`could not restore write permissions on ${dir}: ${execReason(err)}`);
+  }
+}
+
 export function removeWorktree(info: WorktreeInfo): void {
-  git(info.repoRoot, ['worktree', 'remove', '--force', info.path]);
+  try {
+    if (info.dependencyProvisioning) {
+      for (const tree of info.dependencyProvisioning.trees) {
+        restoreWritePermission(path.join(info.path, tree.path));
+      }
+    }
+    git(info.repoRoot, ['worktree', 'remove', '--force', info.path]);
+  } catch (err) {
+    throw new Error(`worktree teardown failed for ${info.path}: ${execReason(err)}`);
+  }
 }
