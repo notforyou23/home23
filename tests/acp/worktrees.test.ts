@@ -33,6 +33,28 @@ function gitAvailable(): boolean {
   }
 }
 
+let cpCloneCapability: boolean | undefined;
+function cpCloneInvocationAvailable(): boolean {
+  if (cpCloneCapability !== undefined) return cpCloneCapability;
+  const probe = mkdtempSync(path.join(tmpdir(), 'home23-cp-clone-probe-'));
+  const source = path.join(probe, 'source');
+  const destination = path.join(probe, 'destination');
+  try {
+    mkdirSync(source);
+    writeFileSync(path.join(source, 'marker'), 'probe\n');
+    execFileSync('cp', ['-Rc', source, destination], { stdio: 'ignore' });
+    const stat = lstatSync(destination);
+    cpCloneCapability = stat.isDirectory()
+      && !stat.isSymbolicLink()
+      && existsSync(path.join(destination, 'marker'));
+  } catch {
+    cpCloneCapability = false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+  return cpCloneCapability;
+}
+
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
@@ -184,6 +206,7 @@ test('formatDependencyProvisioning leaves a missing record as unknown', () => {
 
 test('createJobWorktree clones present dependency trees and records a real directory, not a symlink', (t) => {
   if (!gitAvailable()) return t.skip('git unavailable');
+  if (!cpCloneInvocationAvailable()) return t.skip('cp -Rc clone capability unavailable');
   const repo = makeRepo();
   try {
     mkdirSync(path.join(repo, 'engine'), { recursive: true });
@@ -273,9 +296,7 @@ test('a clone failure records ok:false with a reason and never produces a symlin
     seedDependencyTree(repo, 'engine/node_modules');
     const info = createJobWorktree({ repoRoot: repo, slug: 'deps-clone-fail' });
     const dest = path.join(info.path, 'engine', 'node_modules');
-    if (existsSync(dest)) {
-      assert.equal(lstatSync(dest).isSymbolicLink(), false);
-    }
+    assert.equal(existsSync(dest), false);
 
     const engineTree = treeRecord(info, 'engine/node_modules');
     assert.equal(engineTree.ok, false);
@@ -298,6 +319,7 @@ test('a clone failure records ok:false with a reason and never produces a symlin
 
 test('removeWorktree tears down a read-only provisioned dependency tree', (t) => {
   if (!gitAvailable()) return t.skip('git unavailable');
+  if (!cpCloneInvocationAvailable()) return t.skip('cp -Rc clone capability unavailable');
   const repo = makeRepo();
   try {
     seedDependencyTree(repo, 'node_modules', 0o555);

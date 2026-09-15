@@ -44,14 +44,14 @@ function readEvidenceJSON(file, label) {
     return { value:null, error:`${label} is unreadable: ${error.code || error.message}` };
   }
 }
-function sourceComparison(provenance, repositories) {
+function commitsSincePreparationBase(provenance, repositories) {
   if (!provenance.sourceCommit) return { available:false, lines:null,
     reason:provenance.sourceProvenance || 'source provenance is unknown' };
   const root = provenance.sourceRepo === 'home23' ? repositories.backend
     : provenance.sourceRepo === 'home23-apple' ? repositories.apple : null;
   if (!root) return { available:false, lines:null, reason:'recorded source repository is unavailable' };
   if (git(root, ['cat-file', '-e', `${provenance.sourceCommit}^{commit}`], true) === null) {
-    return { available:false, lines:null, reason:`cannot verify the recorded source commit in ${provenance.sourceRepo}` };
+    return { available:false, lines:null, reason:`cannot verify the recorded preparation base in ${provenance.sourceRepo}` };
   }
   const output = git(root, ['log', '--oneline', `${provenance.sourceCommit}..HEAD`], true);
   if (output === null) return { available:false, lines:null, reason:'Git history comparison failed' };
@@ -64,9 +64,9 @@ function backendSource(active, repositories) {
     provenance = { sourceCommit:null, sourceRepo:null, sourceBranch:null, sourceDirty:null, preparedAt:null,
       sourceProvenance:`invalid active release source provenance: ${error.message}` };
   }
-  return { commit:provenance.sourceCommit, repo:provenance.sourceRepo, branch:provenance.sourceBranch,
+  return { preparationBaseCommit:provenance.sourceCommit, repo:provenance.sourceRepo, branch:provenance.sourceBranch,
     dirty:provenance.sourceDirty, preparedAt:provenance.preparedAt, provenance:provenance.sourceProvenance,
-    commitsNotRunning:sourceComparison(provenance, repositories) };
+    commitsSincePreparationBase:commitsSincePreparationBase(provenance, repositories) };
 }
 function ledgerStatus(backend) {
   try {
@@ -133,14 +133,14 @@ export function formatStatus(value) {
       `Phone build: ${value.selected.phone?.build ?? 'unknown'} (installation record)`,
       `Phone receipt: ${value.selected.phone?.receipt ?? 'unavailable'}`);
     const source = value.selected.backendSource;
-    if (value.selected.backendReleaseError) lines.push(`Deployed source: unavailable: ${value.selected.backendReleaseError}`);
-    else if (!source?.commit) lines.push(`Deployed source: unknown${source?.provenance ? ` (${source.provenance})` : ''}`);
+    if (value.selected.backendReleaseError) lines.push(`Release preparation base: unavailable: ${value.selected.backendReleaseError}`);
+    else if (!source?.preparationBaseCommit) lines.push(`Release preparation base: unknown${source?.provenance ? ` (${source.provenance})` : ''}`);
     else {
-      lines.push(`Deployed source: ${source.repo} ${source.commit} (${source.branch}; source ${source.dirty ? 'dirty' : 'clean'}; prepared ${source.preparedAt})`);
-      if (source.commitsNotRunning.available) {
-        lines.push(`Source commits not running: ${source.commitsNotRunning.lines.length}`,
-          ...source.commitsNotRunning.lines.map(line => `- ${line}`));
-      } else lines.push(`Source commits not running: unavailable: ${source.commitsNotRunning.reason}`);
+      lines.push(`Release preparation base: ${source.repo} ${source.preparationBaseCommit} (${source.branch}; source ${source.dirty ? 'dirty' : 'clean'}; prepared ${source.preparedAt})`);
+      if (source.commitsSincePreparationBase.available) {
+        lines.push(`Source commits since preparation base in inspected checkout: ${source.commitsSincePreparationBase.lines.length}`,
+          ...source.commitsSincePreparationBase.lines.map(line => `- ${line}`));
+      } else lines.push(`Source commits since preparation base in inspected checkout: unavailable: ${source.commitsSincePreparationBase.reason}`);
     }
   }
   if (value.runtime?.error) lines.push(`Managed runtime bindings: unavailable: ${value.runtime.error}`);

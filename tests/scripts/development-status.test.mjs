@@ -5,18 +5,19 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { workspaceStatus, formatStatus } from '../../scripts/development/status.mjs';
+import { prepare } from '../../scripts/release/prepare.mjs';
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23 workspace '));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  for (const name of ['backend', 'apple']) {
+  for (const name of ['home23', 'home23-apple']) {
     const dir = path.join(root, name); fs.mkdirSync(dir);
     execFileSync('git', ['init', '-q', '-b', 'main', dir]);
     execFileSync('git', ['-C', dir, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'base']);
     execFileSync('git', ['-C', dir, 'update-ref', 'refs/remotes/origin/main', 'HEAD']);
   }
-  const backend = path.join(root, 'backend');
-  return { root, backend, apple: path.join(root, 'apple'),
+  const backend = path.join(root, 'home23');
+  return { root, backend, apple: path.join(root, 'home23-apple'),
     backendBase: execFileSync('git', ['-C', backend, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() };
 }
 
@@ -57,7 +58,7 @@ test('marks stale release baseline and mismatched phone selection without readin
   assert.equal(report.concerns.length, 2);
   assert.ok(!JSON.stringify(report).includes('never-report'));
   assert.equal(report.selected.phone.evidence, 'installation record');
-  assert.match(formatStatus(report), /Deployed source: unknown .*no recorded source provenance/);
+  assert.match(formatStatus(report), /Release preparation base: unknown .*no recorded source provenance/);
   assert.doesNotMatch(formatStatus(report), /running package/);
 });
 
@@ -72,7 +73,7 @@ test('missing active release remains unavailable while the ledger is still repor
   assert.equal(report.selected.backendRelease,null);
   assert.equal(report.selected.backendSource,null);
   assert.deepEqual(report.landReceipts.undeployed.map(value=>value.commit),[f.backendBase]);
-  assert.match(text,/Deployed source: unavailable: active release record does not exist/);
+  assert.match(text,/Release preparation base: unavailable: active release record does not exist/);
   assert.match(text,/Undeployed land receipts: 1/);
   assert.doesNotMatch(text,/running package/);
 });
@@ -105,7 +106,7 @@ test('unsupported active release schema remains unavailable rather than becoming
   assert.equal(report.selected.backendRelease,null);
   assert.match(report.selected.backendReleaseError,/unsupported schemaVersion/);
   assert.equal(report.landReceipts.undeployed.length,1);
-  assert.match(formatStatus(report),/Deployed source: unavailable/);
+  assert.match(formatStatus(report),/Release preparation base: unavailable/);
 });
 
 test('legacy active release keeps source provenance explicitly unknown', t => {
@@ -117,13 +118,13 @@ test('legacy active release keeps source provenance explicitly unknown', t => {
 
   const report=workspaceStatus({...f,installation});
 
-  assert.equal(report.selected.backendSource.commit,null);
+  assert.equal(report.selected.backendSource.preparationBaseCommit,null);
   assert.equal(report.selected.backendSource.dirty,null);
   assert.match(report.selected.backendSource.provenance,/no recorded source provenance/);
-  assert.match(formatStatus(report),/Deployed source: unknown/);
+  assert.match(formatStatus(report),/Release preparation base: unknown/);
 });
 
-test('reports recorded deployed source history separately from folded undeployed land receipts', t => {
+test('reports preparation-base checkout history separately from folded undeployed land receipts', t => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.backend, 'later.txt'), 'later\n');
   execFileSync('git', ['-C', f.backend, 'add', 'later.txt']);
@@ -155,8 +156,8 @@ test('reports recorded deployed source history separately from folded undeployed
 
   const report = workspaceStatus({ ...f, installation });
 
-  assert.equal(report.selected.backendSource.commit, f.backendBase);
-  assert.deepEqual(report.selected.backendSource.commitsNotRunning.lines, expectedHistory);
+  assert.equal(report.selected.backendSource.preparationBaseCommit, f.backendBase);
+  assert.deepEqual(report.selected.backendSource.commitsSincePreparationBase.lines, expectedHistory);
   assert.deepEqual(report.landReceipts.undeployed.map(value => value.commit), [later]);
   assert.equal(report.landReceipts.undeployed.some(value=>value.commit===unrecorded),false);
   assert.equal(execFileSync('git',['-C',f.backend,'rev-parse','HEAD'],{encoding:'utf8'}),before.head);
@@ -164,10 +165,60 @@ test('reports recorded deployed source history separately from folded undeployed
   assert.equal(fs.readFileSync(pointerFile).equals(before.pointer),true);
   assert.equal(fs.readFileSync(ledgerFile).equals(before.ledger),true);
   const text = formatStatus(report);
-  assert.match(text, new RegExp(`Deployed source: home23 ${f.backendBase}`));
-  assert.match(text, /Source commits not running: 2/);
+  assert.match(text, new RegExp(`Release preparation base: home23 ${f.backendBase}`));
+  assert.match(text, /Source commits since preparation base in inspected checkout: 2/);
   assert.match(text, /Undeployed land receipts: 1/);
   assert.match(text, /Still waiting \[mail, reminders\]/);
+});
+
+test('reports a prepared base as comparison context without claiming selected source bytes are not running', t => {
+  const f = fixture(t);
+  fs.mkdirSync(path.join(f.backend, 'src'));
+  fs.writeFileSync(path.join(f.backend, 'src/a.js'), 'base\n');
+  execFileSync('git', ['-C', f.backend, 'add', 'src/a.js']);
+  execFileSync('git', ['-C', f.backend, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'reviewed base']);
+  const base = execFileSync('git', ['-C', f.backend, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const baseline = path.join(f.root, 'baseline');
+  fs.mkdirSync(path.join(baseline, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(baseline, 'src/a.js'), 'base\n');
+
+  fs.writeFileSync(path.join(f.backend, 'src/a.js'), 'selected candidate bytes\n');
+  execFileSync('git', ['-C', f.backend, 'add', 'src/a.js']);
+  execFileSync('git', ['-C', f.backend, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'selected candidate change']);
+  const selectedCommit = execFileSync('git', ['-C', f.backend, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const prepared = prepare({
+    baseline,
+    source: f.backend,
+    baseRef: base,
+    files: ['src/a.js'],
+    output: path.join(f.root, 'preparation'),
+  });
+  assert.equal(fs.readFileSync(path.join(prepared.candidate, 'src/a.js'), 'utf8'), 'selected candidate bytes\n');
+
+  const installation = path.join(f.root, 'live');
+  const house = path.join(installation, 'instances/.house');
+  fs.mkdirSync(path.join(house, 'coordination'), { recursive: true });
+  fs.writeFileSync(path.join(house, 'coordination/active-release.json'), JSON.stringify({
+    schemaVersion: 2,
+    releaseId: 'a'.repeat(40),
+    residents: { jerry: { keyVersion: 1 } },
+    sourceCommit: prepared.sourceCommit,
+    sourceRepo: prepared.sourceRepo,
+    sourceBranch: prepared.sourceBranch,
+    sourceDirty: prepared.sourceDirty,
+    preparedAt: prepared.preparedAt,
+    sourceProvenance: 'prepared artifact verification matched selected release',
+  }));
+
+  const report = workspaceStatus({ ...f, installation });
+  const source = report.selected.backendSource;
+  const text = formatStatus(report);
+
+  assert.equal(source.preparationBaseCommit, base);
+  assert.match(source.commitsSincePreparationBase.lines[0], new RegExp(`^${selectedCommit.slice(0, 7)} selected candidate change$`));
+  assert.match(text, new RegExp(`Release preparation base: home23 ${base}`));
+  assert.match(text, /Source commits since preparation base in inspected checkout: 1/);
+  assert.doesNotMatch(text, /Deployed source:|Source commits not running:/);
 });
 
 test('malformed or missing ledger is unavailable rather than reported as zero', t => {
