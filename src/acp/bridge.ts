@@ -35,6 +35,7 @@ import {
   createJobWorktree,
   detectGitRepo,
   diffStat,
+  formatDependencyProvisioning,
   sanitizeSlug,
 } from './worktrees.js';
 import { unprivilegedChildEnv } from '../security/child-process-env.js';
@@ -354,6 +355,8 @@ export class ACPBridge {
           slug: opts.label ? sanitizeSlug(opts.label) : jobId.replace(/_/g, '-'),
         });
         cwd = worktree.path;
+        const provisioningText = formatDependencyProvisioning(worktree);
+        if (provisioningText) this.log(`job ${jobId} ${provisioningText.replace(/\n/g, ' | ')}`);
       } else {
         effectiveIsolation = 'none';
       }

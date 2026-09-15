@@ -53,11 +53,32 @@ export interface CodingJobRecord {
   error?: string;                // spawn/parse failure detail
 }
 
+export type DependencyProvisionStrategy = 'apfs-clonefile' | 'skipped';
+
+/** Outcome for one documented dependency tree. `reason` is set when ok is false. */
+export interface DependencyTreeProvision {
+  path: string;                  // relative to repo/worktree root, e.g. node_modules
+  strategy: DependencyProvisionStrategy;
+  ok: boolean;
+  reason?: string;
+}
+
+export interface DependencyProvisioning {
+  trees: DependencyTreeProvision[];
+  /** True only when every documented tree cloned successfully. */
+  ok: boolean;
+}
+
 export interface WorktreeInfo {
   repoRoot: string;              // main checkout the worktree was created from
   path: string;                  // worktree directory
   branch: string;                // e.g. home23-agent/<slug>
   baseCommit: string;            // HEAD at creation
+  /**
+   * Recorded at worktree creation. Absent on legacy persisted jobs:
+   * missing means unknown — not provisioned and not failed.
+   */
+  dependencyProvisioning?: DependencyProvisioning;
 }
 
 export interface CheckpointInfo {
