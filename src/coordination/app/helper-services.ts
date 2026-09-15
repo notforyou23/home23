@@ -72,7 +72,7 @@ export function createHelperServices(input: {
   const agencyRequest=async(path:string,init?:RequestInit)=>{
     const k=await kernel(),body=init?.body?JSON.parse(String(init.body)):{};
     if (path==='/api/agency/state') return k.state();
-    if (path==='/api/agency/brief') return k.brief();
+    if (path==='/api/agency/brief') return k.brief(init?.method==='POST'?body:undefined);
     if (path==='/api/agency/pursuits') return {pursuits:k.pursuits({limit:100})};
     if (path==='/api/agency/intake') return k.intake(body);
     if (path==='/api/agency/world-stream') return k.intakeWorldStream(body);

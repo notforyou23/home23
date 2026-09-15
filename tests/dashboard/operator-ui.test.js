@@ -17,6 +17,74 @@ function loadGoodLifeHostPressureRenderer() {
   });
 }
 
+function loadResidentObligationRenderers() {
+  const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.js'), 'utf8');
+  const renderStart = js.indexOf('function residentObligationAudience(');
+  const renderEnd = js.indexOf('\nfunction renderResidentPursuitCard(', renderStart);
+  const countStart = js.indexOf('function agencyOperatorNeedCount(');
+  const countEnd = js.indexOf('\nfunction residentAgencyModeLabel(', countStart);
+  assert.notEqual(renderStart, -1, 'missing resident obligation helpers');
+  assert.notEqual(renderEnd, -1, 'missing end of resident obligation helpers');
+  assert.notEqual(countStart, -1, 'missing resident operator count helper');
+  assert.notEqual(countEnd, -1, 'missing end of resident operator count helper');
+  return vm.runInNewContext(`
+    ${js.slice(renderStart, renderEnd)}
+    ${js.slice(countStart, countEnd)}
+    ({ residentObligationItems, splitResidentObligations, renderResidentObligations, agencyOperatorNeedCount })
+  `, {
+    escapeHtml: (value) => String(value ?? ''),
+  });
+}
+
+test('resident obligations render and count by audience while legacy items remain operator-facing', () => {
+  const {
+    residentObligationItems,
+    splitResidentObligations,
+    renderResidentObligations,
+    agencyOperatorNeedCount,
+  } = loadResidentObligationRenderers();
+  const items = [
+    { kind: 'authority_request', audience: 'operator', reason: 'Choose a deployment window.' },
+    { kind: 'open_task', audience: 'self', reason: 'Finish the resident cleanup.' },
+    { kind: 'operator_question', reason: 'Legacy question without an audience.' },
+  ];
+  const split = splitResidentObligations(items);
+  assert.deepEqual(Array.from(split.operator, (item) => item.kind), ['authority_request', 'operator_question']);
+  assert.deepEqual(Array.from(split.self, (item) => item.kind), ['open_task']);
+
+  const rendered = renderResidentObligations(items);
+  assert.match(rendered, /Needed From You/);
+  assert.match(rendered, /Choose a deployment window\./);
+  assert.match(rendered, /Legacy question without an audience\./);
+  assert.match(rendered, /What I Owe/);
+  assert.match(rendered, /Finish the resident cleanup\./);
+  assert.ok(rendered.indexOf('What I Owe') > rendered.indexOf('Legacy question without an audience.'));
+  assert.equal(agencyOperatorNeedCount({ obligations: items }, {}), 2);
+  const selfReasons = Array.from({ length: 5 }, (_, index) => ({
+    kind: 'open_task',
+    audience: 'self',
+    reason: `Self obligation ${index + 1}`,
+  }));
+  assert.match(renderResidentObligations(selfReasons), /Self obligation 5/);
+
+  const briefItems = residentObligationItems({}, {
+    questions: {
+      whatNeedFromJtr: [{ kind: 'authority_request', audience: 'operator' }],
+      whatIOwe: [{ kind: 'truth_contradiction', audience: 'self' }],
+    },
+  });
+  assert.deepEqual(Array.from(briefItems, (item) => item.kind), ['authority_request', 'truth_contradiction']);
+  assert.equal(agencyOperatorNeedCount({}, {
+    questions: {
+      whatNeedFromJtr: [{ kind: 'operator_question' }],
+      whatIOwe: [{ kind: 'open_task', audience: 'self' }],
+    },
+  }), 1);
+  assert.equal(agencyOperatorNeedCount({}, {
+    questions: { whatNeedsJtr: [{ kind: 'legacy_operator_question' }] },
+  }), 1);
+});
+
 test('query dashboard describes durable PGS work without short fixed-time promises', () => {
   const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-query.js'), 'utf8');
 
@@ -234,6 +302,11 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   assert.match(js, /agency-retirement-drawer/);
   assert.match(js, /retirementDrawer\.hidden = !proposals\.length/);
   assert.match(js, /agencyOperatorNeedCount\(state, brief\)/);
+  assert.match(js, /item\?\.audience === 'self' \? 'self' : 'operator'/);
+  assert.match(js, /renderResidentObligationSection\('What I Owe', obligations\.self/);
+  assert.match(js, /renderAgencyBriefQuestionBlock\('Needs jtr', obligations\.operator, renderAgencyBriefNeedRow, Number\.POSITIVE_INFINITY\)/);
+  assert.match(js, /renderAgencyBriefQuestionBlock\('What I Owe', obligations\.self, renderAgencyBriefNeedRow, Number\.POSITIVE_INFINITY\)/);
+  assert.match(js, /questions\.whatIOwe/);
   assert.match(js, /residentAgencyModeLabel\(state\.mode\)/);
   assert.match(js, /residentActionAuthorityLabel\(state\.nextAction\)/);
   assert.match(js, /<label>Needs jtr<\/label>/);

@@ -248,6 +248,41 @@ test('assembleContext: mid-session greeting does not load AGENCY or WORKERS', as
   }
 });
 
+test('assembleContext: operator obligations remain always-on when AGENCY is keyword-gated off', async () => {
+  const { root, workspacePath } = agentInstall();
+  try {
+    const statePath = path.join(root, 'instances', 'jerry', 'brain', 'agency', 'state.json');
+    writeFileSync(statePath, JSON.stringify({
+      schema: 'home23.agency.state.v1',
+      agent: 'jerry',
+      mode: 'dry_run',
+      attention: { currentPursuitId: 'ap_chrono', queueDepth: 2 },
+      obligations: [{
+        obligationId: 'operator_question:q_owner_route',
+        kind: 'operator_question',
+        audience: 'operator',
+        status: 'open',
+        at: '2026-09-10T12:00:00.000Z',
+        reason: 'Choose the owner-approved route for the bounded change.',
+      }],
+    }));
+
+    const result = await assemble(
+      workspacePath,
+      'Evening jerry. What\'s good',
+      [{ role: 'user', content: 'earlier hello' }, { role: 'assistant', content: 'hey' }],
+    );
+
+    assert.ok(!result.surfacesLoaded.includes('AGENCY'), 'AGENCY must stay keyword-gated off');
+    assert.ok(result.surfacesLoaded.includes('OWED_TO_JTR'));
+    assert.match(result.block, /OWED TO JTR — surface these in conversation, do not let them sit/);
+    assert.match(result.block, /Choose the owner-approved route for the bounded change/);
+    assert.doesNotMatch(result.block, /Chronesthesia II Applied Unit 3/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('assembleContext: mid-session pursuit question loads AGENCY by meaning', async () => {
   const { root, workspacePath } = agentInstall();
   try {

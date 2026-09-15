@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createResidentAssignments } from '../../../src/coordination/app/resident-assignments.js';
@@ -379,4 +379,44 @@ test('canonical observations reach the existing agency and preserve private task
   assert.equal(kernel.store.getTask('private-promise').status, 'open');
   assert.throws(() => reconcileCanonicalWork(kernel, source, 'forrest'), /Invalid canonical resident/);
   assert.equal(JSON.parse(readFileSync(source, 'utf8')).assignments[0].id, id);
+});
+
+test('canonical terminal Work is not projected as an open agency obligation while unknown Work stays open', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'canonical-obligation-filter-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  // @ts-expect-error existing engine module is JavaScript
+  const { AgencyKernel } = await import('../../../engine/src/agency/resident-kernel.js');
+  // @ts-expect-error existing engine module is JavaScript
+  const { reconcileCanonicalWork } = await import('../../../engine/src/agency/canonical-work.js');
+  const kernel = new AgencyKernel({
+    brainDir: join(directory, 'brain'),
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const source = join(directory, 'jerry.work.json');
+  writeFileSync(source, JSON.stringify({
+    schema: 'home23.resident.work.v1',
+    resident: 'jerry',
+    assignments: [
+      { id: 'wrk_failed_terminal', title: 'Failed terminal Work', state: 'failed', assignmentState: 'failed' },
+      { id: 'wrk_returned_terminal', title: 'Returned terminal Work', state: 'succeeded', assignmentState: 'returned' },
+      { id: 'wrk_state_unknown', title: 'Work without known execution state', assignmentState: 'active' },
+    ],
+  }));
+
+  assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 3);
+  const state = kernel.state();
+  assert.equal(state.obligations.some((item: { taskId?: string }) => item.taskId === 'coordination:wrk_failed_terminal'), false);
+  assert.equal(state.obligations.some((item: { taskId?: string }) => item.taskId === 'coordination:wrk_returned_terminal'), false);
+  const unknown = state.obligations.find((item: { taskId?: string }) => item.taskId === 'coordination:wrk_state_unknown');
+  assert.equal(unknown?.audience, 'self');
+  assert.equal(unknown?.authorityLevel, 'unknown');
+  assert.equal(kernel.store.getTask('coordination:wrk_failed_terminal').status, 'open', 'derive-time filtering does not rewrite the task store');
+  kernel.store.updateTask('coordination:wrk_state_unknown', { authorityLevel: 'L2' }, {
+    type: 'legacy_manufactured_authority',
+    detail: { reason: 'fixture reproduces the old absence-to-L2 default' },
+  });
+  assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 1, 'authority normalization must bypass the unchanged-digest fast path');
+  assert.equal(kernel.store.getTask('coordination:wrk_state_unknown').authorityLevel, 'unknown');
+  assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 0);
 });
