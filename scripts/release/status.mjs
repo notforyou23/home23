@@ -6,6 +6,36 @@ import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+const SOURCE_COMMIT = /^[a-f0-9]{40}$/;
+const SOURCE_REPOSITORIES = new Set(['home23', 'home23-apple']);
+const SOURCE_PROVENANCE_FIELDS = ['sourceCommit', 'sourceRepo', 'sourceBranch', 'sourceDirty', 'preparedAt', 'sourceProvenance'];
+
+export function pointerProvenance(pointer) {
+  const present = SOURCE_PROVENANCE_FIELDS.filter(key => Object.hasOwn(pointer, key));
+  if (!present.length) return {
+    sourceCommit:null, sourceRepo:null, sourceBranch:null, sourceDirty:null, preparedAt:null,
+    sourceProvenance:'active release record has no recorded source provenance',
+  };
+  if (present.length !== SOURCE_PROVENANCE_FIELDS.length) throw new Error('Invalid recorded source provenance');
+  const reason = typeof pointer.sourceProvenance === 'string' && pointer.sourceProvenance.trim()
+    ? pointer.sourceProvenance : null;
+  if (pointer.sourceCommit === null) {
+    if (!['sourceRepo', 'sourceBranch', 'sourceDirty', 'preparedAt'].every(key => Object.hasOwn(pointer, key) && pointer[key] === null)
+        || !reason) throw new Error('Invalid recorded source provenance');
+    return { sourceCommit:null, sourceRepo:null, sourceBranch:null, sourceDirty:null, preparedAt:null, sourceProvenance:reason };
+  }
+  const prepared = new Date(pointer.preparedAt);
+  if (!SOURCE_COMMIT.test(pointer.sourceCommit || '') || !SOURCE_REPOSITORIES.has(pointer.sourceRepo)
+      || typeof pointer.sourceBranch !== 'string' || !pointer.sourceBranch.trim()
+      || typeof pointer.sourceDirty !== 'boolean'
+      || !Number.isFinite(prepared.valueOf()) || prepared.toISOString() !== pointer.preparedAt
+      || !reason) {
+    throw new Error('Invalid recorded source provenance');
+  }
+  return { sourceCommit:pointer.sourceCommit, sourceRepo:pointer.sourceRepo, sourceBranch:pointer.sourceBranch,
+    sourceDirty:pointer.sourceDirty, preparedAt:pointer.preparedAt, sourceProvenance:reason };
+}
+
 export function compareDefinitions({ root, release, residents, saved, running }) {
   const problems = [], processes = [];
   const canonical = value => { try { return fs.realpathSync(value); } catch { return null; } };
@@ -36,6 +66,7 @@ export function status(root) {
   const raw=fs.readFileSync(pointerFile);
   const pointer=JSON.parse(raw);
   if(![1,2].includes(pointer.schemaVersion) || !/^[a-f0-9]{40}$/.test(pointer.releaseId)) throw new Error('Invalid managed release pointer');
+  const provenance=pointerProvenance(pointer);
   const residents=pointer.schemaVersion===1 ? [pointer.residentSlug] : Object.keys(pointer.residents || {});
   if(!residents.length || residents.some(x=>!['jerry','forrest'].includes(x))) throw new Error('Unsupported resident pointer');
   const release=fs.realpathSync(path.join(runtime,'releases',pointer.releaseId));
@@ -48,7 +79,7 @@ export function status(root) {
   const rows=JSON.parse(execFileSync('pm2',['jlist'],{encoding:'utf8',maxBuffer:16*1024*1024}));
   const running=rows.map(row=>({name:row.name,pid:row.pid,status:row.pm2_env?.status,script:row.pm2_env?.pm_exec_path,cwd:row.pm2_env?.pm_cwd,runtime:row.pm2_env?.HOME23_COORDINATION_RESIDENT_RUNTIME_ROOT}));
   if(!raw.equals(fs.readFileSync(pointerFile))) throw new Error('Pointer changed during inspection');
-  return { observedAt:new Date().toISOString(),releaseId:pointer.releaseId,...compareDefinitions({root,release,residents,saved,running}) };
+  return { observedAt:new Date().toISOString(),releaseId:pointer.releaseId,...provenance,...compareDefinitions({root,release,residents,saved,running}) };
 }
 export function isMain(entry = process.argv[1]) {
   try { return !!entry && fs.realpathSync(entry) === fs.realpathSync(fileURLToPath(import.meta.url)); }

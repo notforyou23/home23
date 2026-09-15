@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { status as releaseStatus } from '../release/status.mjs';
+import { status as releaseStatus, pointerProvenance } from '../release/status.mjs';
+import { loadLandReceipts } from './land-receipt.mjs';
 
 function git(root, args, optional = false) {
   try {
@@ -35,32 +36,81 @@ function repository(root) {
       worktreeCount: (git(root, ['worktree', 'list', '--porcelain']).match(/^worktree /gm) || []).length };
   } catch (error) { return { root, error: error.message }; }
 }
-function readJSON(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
-  catch (error) { if (error.code === 'ENOENT') return null; throw new Error(`Cannot read ${file}`); }
+function readEvidenceJSON(file, label) {
+  try { return { value:JSON.parse(fs.readFileSync(file, 'utf8')), error:null }; }
+  catch (error) {
+    if (error.code === 'ENOENT') return { value:null, error:`${label} does not exist` };
+    if (error instanceof SyntaxError) return { value:null, error:`${label} is invalid JSON` };
+    return { value:null, error:`${label} is unreadable: ${error.code || error.message}` };
+  }
+}
+function sourceComparison(provenance, repositories) {
+  if (!provenance.sourceCommit) return { available:false, lines:null,
+    reason:provenance.sourceProvenance || 'source provenance is unknown' };
+  const root = provenance.sourceRepo === 'home23' ? repositories.backend
+    : provenance.sourceRepo === 'home23-apple' ? repositories.apple : null;
+  if (!root) return { available:false, lines:null, reason:'recorded source repository is unavailable' };
+  if (git(root, ['cat-file', '-e', `${provenance.sourceCommit}^{commit}`], true) === null) {
+    return { available:false, lines:null, reason:`cannot verify the recorded source commit in ${provenance.sourceRepo}` };
+  }
+  const output = git(root, ['log', '--oneline', `${provenance.sourceCommit}..HEAD`], true);
+  if (output === null) return { available:false, lines:null, reason:'Git history comparison failed' };
+  return { available:true, lines:output ? output.split('\n') : [], reason:null };
+}
+function backendSource(active, repositories) {
+  let provenance;
+  try { provenance = pointerProvenance(active); }
+  catch (error) {
+    provenance = { sourceCommit:null, sourceRepo:null, sourceBranch:null, sourceDirty:null, preparedAt:null,
+      sourceProvenance:`invalid active release source provenance: ${error.message}` };
+  }
+  return { commit:provenance.sourceCommit, repo:provenance.sourceRepo, branch:provenance.sourceBranch,
+    dirty:provenance.sourceDirty, preparedAt:provenance.preparedAt, provenance:provenance.sourceProvenance,
+    commitsNotRunning:sourceComparison(provenance, repositories) };
+}
+function ledgerStatus(backend) {
+  try {
+    return { available:true, undeployed:loadLandReceipts(path.join(backend, 'state/land-receipts.jsonl')).filter(receipt => !receipt.deployed), error:null };
+  } catch (error) { return { available:false, undeployed:null, error:error.message }; }
 }
 export function workspaceStatus({ backend, apple, installation, runtime = false }) {
+  const repositoryPaths = { backend, apple };
   const result = { observedAt: new Date().toISOString(), repositories: { backend: repository(backend), apple: repository(apple) },
-    selected: null, runtime: null, concerns: [],
+    selected: null, runtime: null, landReceipts: ledgerStatus(backend), concerns: [],
     limits: ['Remote comparisons use locally stored refs; no network fetch is performed.',
       'An installation record is not physical device acceptance. This command never changes source, state or services.'] };
   if (installation) {
     const house = path.join(installation, 'instances/.house');
-    const active = readJSON(path.join(house, 'coordination/active-release.json'));
-    const phone = readJSON(path.join(house, 'home23-ios.json'));
-    const authority = readJSON(path.join(house, 'source-authority.json'));
+    const activeRecord = readEvidenceJSON(path.join(house, 'coordination/active-release.json'), 'active release record');
+    const phoneRecord = readEvidenceJSON(path.join(house, 'home23-ios.json'), 'phone installation record');
+    const authorityRecord = readEvidenceJSON(path.join(house, 'source-authority.json'), 'source authority record');
+    const activeValue = activeRecord.value;
+    const active = activeValue && typeof activeValue === 'object' && !Array.isArray(activeValue)
+      && [1, 2].includes(activeValue.schemaVersion) && /^[a-f0-9]{40}$/.test(activeValue.releaseId || '') ? activeValue : null;
+    const phone = phoneRecord.value, authority = authorityRecord.value;
+    const activeError = active ? null : activeRecord.error ?? 'active release record has unsupported schemaVersion or no valid releaseId';
+    const phoneError = phone ? null : phoneRecord.error ?? 'phone installation record contains no selection';
     result.selected = { installation, backendRelease: active?.releaseId ?? null,
+      backendReleaseError: activeError,
+      backendSource: active ? backendSource(active, repositoryPaths) : null,
       phone: phone ? { build: phone.installedBuild, source: phone.sourceRoot, receipt: phone.receipt ?? null, evidence: 'installation record' } : null };
-    if (!active) result.concerns.push('Backend release selection is unavailable.');
-    if (!phone) result.concerns.push('Phone installation record is unavailable.');
+    if (!active) result.concerns.push(`Backend release selection is unavailable: ${activeError}.`);
+    if (!phone) result.concerns.push(`Phone installation record is unavailable: ${phoneError}.`);
+    if (!authority && authorityRecord.error && !authorityRecord.error.endsWith('does not exist')) result.concerns.push(`Source authority is unavailable: ${authorityRecord.error}.`);
     if (authority && active && authority.deployedReleaseId !== active.releaseId)
       result.concerns.push('The source reconciliation baseline predates the selected release; review newer receipts before preparing another release.');
     if (phone?.sourceRoot && path.resolve(phone.sourceRoot) !== path.resolve(apple))
       result.concerns.push('The phone source selection differs from the Apple repository being inspected.');
     if (runtime) {
-      const value = releaseStatus(installation);
-      result.runtime = { releaseId: value.releaseId, bindingsAgree: value.ok, problems: value.problems,
-        processes: value.processes.map(p => ({ name: p.name, running: p.running.map(r => ({ pid: r.pid, status: r.status, script: r.script })) })) };
+      try {
+        const value = releaseStatus(installation);
+        result.runtime = { releaseId: value.releaseId, sourceCommit:value.sourceCommit, sourceProvenance:value.sourceProvenance,
+          bindingsAgree: value.ok, problems: value.problems,
+          processes: value.processes.map(p => ({ name: p.name, running: p.running.map(r => ({ pid: r.pid, status: r.status, script: r.script })) })) };
+      } catch (error) {
+        result.runtime = { error:`managed runtime inspection unavailable: ${error.message}`, bindingsAgree:null, problems:[], processes:[] };
+        result.concerns.push(result.runtime.error);
+      }
     }
   } else if (runtime) throw new Error('--runtime requires --installation');
   for (const [name, repo] of Object.entries(result.repositories)) {
@@ -82,8 +132,22 @@ export function formatStatus(value) {
     lines.push('', `Selected backend: ${value.selected.backendRelease ?? 'unknown'}`,
       `Phone build: ${value.selected.phone?.build ?? 'unknown'} (installation record)`,
       `Phone receipt: ${value.selected.phone?.receipt ?? 'unavailable'}`);
+    const source = value.selected.backendSource;
+    if (value.selected.backendReleaseError) lines.push(`Deployed source: unavailable: ${value.selected.backendReleaseError}`);
+    else if (!source?.commit) lines.push(`Deployed source: unknown${source?.provenance ? ` (${source.provenance})` : ''}`);
+    else {
+      lines.push(`Deployed source: ${source.repo} ${source.commit} (${source.branch}; source ${source.dirty ? 'dirty' : 'clean'}; prepared ${source.preparedAt})`);
+      if (source.commitsNotRunning.available) {
+        lines.push(`Source commits not running: ${source.commitsNotRunning.lines.length}`,
+          ...source.commitsNotRunning.lines.map(line => `- ${line}`));
+      } else lines.push(`Source commits not running: unavailable: ${source.commitsNotRunning.reason}`);
+    }
   }
-  if (value.runtime) lines.push(`Managed runtime bindings: ${value.runtime.bindingsAgree ? 'agree' : 'NEED REVIEW'}`);
+  if (value.runtime?.error) lines.push(`Managed runtime bindings: unavailable: ${value.runtime.error}`);
+  else if (value.runtime) lines.push(`Managed runtime bindings: ${value.runtime.bindingsAgree ? 'agree' : 'NEED REVIEW'}`);
+  if (value.landReceipts.available) lines.push('', `Undeployed land receipts: ${value.landReceipts.undeployed.length}`,
+    ...value.landReceipts.undeployed.map(receipt => `- ${receipt.commit} ${receipt.repo}/${receipt.branch}: ${receipt.summary} [${receipt.surfaces.join(', ')}]`));
+  else lines.push('', `Undeployed land receipts: ledger unavailable: ${value.landReceipts.error}`);
   if (value.concerns.length) lines.push('', 'Review:', ...value.concerns.map(x => `- ${x}`));
   lines.push('', ...value.limits);
   return lines.join('\n');
@@ -105,6 +169,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }
     const result = workspaceStatus(options);
     console.log(json ? JSON.stringify(result, null, 2) : formatStatus(result));
-    if (Object.values(result.repositories).some(r => r.error) || result.runtime?.bindingsAgree === false) process.exitCode = 1;
+    if (Object.values(result.repositories).some(r => r.error) || result.runtime?.bindingsAgree === false || result.runtime?.error) process.exitCode = 1;
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

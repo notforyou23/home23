@@ -134,6 +134,27 @@ test('active release grants distinct reviewed credentials to Jerry and Forrest h
   assert.equal(source.includes(FORREST_KEY), false, 'generated config must not copy Forrest secret');
 });
 
+test('active release resolver accepts additive source provenance fields', (t) => {
+  const root = makeInstall({
+    pointer: {
+      schemaVersion: 2,
+      releaseId: RELEASE_ID,
+      predecessorReleaseId: PREDECESSOR_ID,
+      activatedAt: '2026-09-15T12:00:00.000Z',
+      residents: { jerry: { keyVersion: 1 }, forrest: { keyVersion: 2 } },
+      sourceCommit: 'f'.repeat(40),
+      sourceRepo: 'home23',
+      sourceBranch: 'main',
+      sourceDirty: false,
+      preparedAt: '2026-09-15T11:00:00.000Z',
+      sourceProvenance: 'prepared artifact verification matched selected release',
+    },
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  assert.doesNotThrow(() => generateEcosystem(root, { quiet: true }));
+});
+
 test('active release fails closed when runtime secrets are exposed', (t) => {
   const root = makeInstall();
   t.after(() => rmSync(root, { recursive: true, force: true }));
