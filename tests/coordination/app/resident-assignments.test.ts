@@ -381,7 +381,7 @@ test('canonical observations reach the existing agency and preserve private task
   assert.equal(JSON.parse(readFileSync(source, 'utf8')).assignments[0].id, id);
 });
 
-test('canonical terminal Work is not projected as an open agency obligation while unknown Work stays open', async t => {
+test('canonical execution termination remains an open agency obligation while assignment state is not closed', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'canonical-obligation-filter-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   // @ts-expect-error existing engine module is JavaScript
@@ -406,8 +406,8 @@ test('canonical terminal Work is not projected as an open agency obligation whil
 
   assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 3);
   const state = kernel.state();
-  assert.equal(state.obligations.some((item: { taskId?: string }) => item.taskId === 'coordination:wrk_failed_terminal'), false);
-  assert.equal(state.obligations.some((item: { taskId?: string }) => item.taskId === 'coordination:wrk_returned_terminal'), false);
+  assert.equal(state.obligations.some((item: { taskId?: string }) => item.taskId === 'coordination:wrk_failed_terminal'), true);
+  assert.equal(state.obligations.some((item: { taskId?: string }) => item.taskId === 'coordination:wrk_returned_terminal'), true);
   const unknown = state.obligations.find((item: { taskId?: string }) => item.taskId === 'coordination:wrk_state_unknown');
   assert.equal(unknown?.audience, 'self');
   assert.equal(unknown?.authorityLevel, 'unknown');

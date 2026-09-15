@@ -1038,32 +1038,84 @@ test('AgencyKernel assigns obligation audiences without turning resident work in
   assert.equal(obligations.every(item => item.audience === 'operator' || item.audience === 'self'), true);
 });
 
-test('AgencyKernel suppresses only coordination obligations with explicit terminal Work evidence', () => {
+test('AgencyKernel suppresses only coordination obligations with explicit terminal assignment state', () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
     brainDir: dir,
     agentName: 'jerry',
     config: { enabled: true, mode: 'dry_run' },
   });
-  const terminalStates = ['complete', 'completed', 'succeeded', 'failed', 'cancelled', 'interrupted'];
-  for (const state of terminalStates) {
+  const terminalAssignmentStates = ['complete', 'cancelled'];
+  for (const state of terminalAssignmentStates) {
     kernel.store.appendTask({
       type: 'created',
       at: '2026-09-10T13:00:00.000Z',
       task: {
         schema: 'home23.agency.task.v1',
-        id: `coordination:wrk_terminal_${state}`,
+        id: `coordination:wrk_assignment_${state}`,
         createdAt: '2026-09-10T13:00:00.000Z',
         updatedAt: '2026-09-10T13:00:00.000Z',
         status: 'open',
-        summary: `Coordinate Work wrk_terminal_${state}.`,
+        summary: `Coordinate Work wrk_assignment_${state}.`,
         handoff: {
-          workId: `wrk_terminal_${state}`,
+          workId: `wrk_assignment_${state}`,
+          assignmentState: state,
+        },
+      },
+    });
+  }
+  const terminalExecutionStates = ['complete', 'completed', 'succeeded', 'failed', 'cancelled', 'interrupted'];
+  for (const state of terminalExecutionStates) {
+    kernel.store.appendTask({
+      type: 'created',
+      at: '2026-09-10T13:00:30.000Z',
+      task: {
+        schema: 'home23.agency.task.v1',
+        id: `coordination:wrk_execution_${state}`,
+        createdAt: '2026-09-10T13:00:30.000Z',
+        updatedAt: '2026-09-10T13:00:30.000Z',
+        status: 'open',
+        summary: `Coordinate Work wrk_execution_${state}.`,
+        handoff: {
+          workId: `wrk_execution_${state}`,
           executionState: state,
         },
       },
     });
   }
+  kernel.store.appendTask({
+    type: 'created',
+    at: '2026-09-10T13:00:45.000Z',
+    task: {
+      schema: 'home23.agency.task.v1',
+      id: 'coordination:wrk_assignment_active_execution_succeeded',
+      createdAt: '2026-09-10T13:00:45.000Z',
+      updatedAt: '2026-09-10T13:00:45.000Z',
+      status: 'open',
+      summary: 'Assess the succeeded execution for active Work wrk_assignment_active_execution_succeeded.',
+      handoff: {
+        workId: 'wrk_assignment_active_execution_succeeded',
+        assignmentState: 'active',
+        executionState: 'succeeded',
+      },
+    },
+  });
+  kernel.store.appendTask({
+    type: 'created',
+    at: '2026-09-10T13:00:50.000Z',
+    task: {
+      schema: 'home23.agency.task.v1',
+      id: 'coordination:wrk_work_status_complete',
+      createdAt: '2026-09-10T13:00:50.000Z',
+      updatedAt: '2026-09-10T13:00:50.000Z',
+      status: 'open',
+      summary: 'Assess Work wrk_work_status_complete without assignment closure.',
+      handoff: {
+        workId: 'wrk_work_status_complete',
+        work: { status: 'complete' },
+      },
+    },
+  });
   kernel.store.appendTask({
     type: 'created',
     at: '2026-09-10T13:01:00.000Z',
@@ -1080,13 +1132,19 @@ test('AgencyKernel suppresses only coordination obligations with explicit termin
 
   const obligations = kernel.deriveObligations();
 
-  for (const state of terminalStates) {
-    assert.equal(obligations.some(item => item.taskId === `coordination:wrk_terminal_${state}`), false);
+  for (const state of terminalAssignmentStates) {
+    assert.equal(obligations.some(item => item.taskId === `coordination:wrk_assignment_${state}`), false);
   }
+  for (const state of terminalExecutionStates) {
+    assert.equal(obligations.some(item => item.taskId === `coordination:wrk_execution_${state}`), true);
+  }
+  assert.equal(obligations.some(item => item.taskId === 'coordination:wrk_assignment_active_execution_succeeded'), true);
+  assert.equal(obligations.some(item => item.taskId === 'coordination:wrk_work_status_complete'), true);
   const unknownWork = obligations.find(item => item.taskId === 'coordination:wrk_state_unknown');
   assert.equal(unknownWork?.audience, 'self');
   assert.equal(unknownWork?.authorityLevel, 'unknown');
-  assert.equal(kernel.store.listTasks({ status: 'open', limit: 20 }).length, terminalStates.length + 1);
+  assert.equal(kernel.store.listTasks({ status: 'open', limit: 20 }).length,
+    terminalAssignmentStates.length + terminalExecutionStates.length + 3);
 });
 
 test('AgencyKernel brief keeps every projected self obligation under What I owe', () => {

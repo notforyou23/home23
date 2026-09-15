@@ -107,13 +107,9 @@ function blockedPursuitAudience(pursuit = {}) {
   return /\b(?:operator|authority|jtr)\b/i.test(blocker) ? 'operator' : 'self';
 }
 
-const TERMINAL_COORDINATION_WORK_STATES = new Set([
+const TERMINAL_COORDINATION_ASSIGNMENT_STATES = new Set([
   'complete',
-  'completed',
-  'succeeded',
-  'failed',
   'cancelled',
-  'interrupted',
 ]);
 
 function coordinationWorkId(task = {}) {
@@ -127,19 +123,7 @@ function coordinationWorkId(task = {}) {
 function coordinationWorkIsTerminal(task = {}) {
   if (!coordinationWorkId(task)) return false;
   const handoff = task.handoff && typeof task.handoff === 'object' ? task.handoff : {};
-  const work = handoff.work && typeof handoff.work === 'object' ? handoff.work : {};
-  const states = [
-    task.workStatus,
-    task.workState,
-    handoff.workStatus,
-    handoff.workState,
-    handoff.executionState,
-    handoff.state,
-    handoff.assignmentState,
-    work.status,
-    work.state,
-  ];
-  return states.some(state => TERMINAL_COORDINATION_WORK_STATES.has(String(state || '').toLowerCase()));
+  return TERMINAL_COORDINATION_ASSIGNMENT_STATES.has(String(handoff.assignmentState || '').toLowerCase());
 }
 
 function compactBriefObligation(item = {}) {
