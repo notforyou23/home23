@@ -82,6 +82,54 @@ test('fresh synthesis config resolves the exact minimax pair and capabilities', 
   assert.equal(typeof resolved.client.generate, 'function');
 });
 
+test('ollama-local synthesis uses the configured local chat completions endpoint without credentials', (t) => {
+  const originalOpenAiKey = process.env.OPENAI_API_KEY;
+  const originalLocalKey = process.env.LOCAL_LLM_API_KEY;
+  process.env.OPENAI_API_KEY = 'must-not-leak-to-local-ollama';
+  delete process.env.LOCAL_LLM_API_KEY;
+  t.after(() => {
+    if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiKey;
+    if (originalLocalKey === undefined) delete process.env.LOCAL_LLM_API_KEY;
+    else process.env.LOCAL_LLM_API_KEY = originalLocalKey;
+  });
+  const modelCatalog = normalizeModelCatalog({
+    version: 1,
+    providers: {
+      'ollama-local': {
+        label: 'Ollama Local',
+        executionDefaults: {
+          maxOutputTokens: 8192,
+          contextWindowTokens: 32768,
+          providerStallMs: 900000,
+          transport: 'chat-completions',
+        },
+        models: [{ id: 'qwen3:8b', label: 'Qwen 3 8B', kind: 'chat' }],
+      },
+    },
+  });
+  const registry = createBrainProviderClientRegistry({
+    catalog: modelCatalog,
+    providerConfig: {
+      'ollama-local': { baseUrl: 'http://127.0.0.1:11434/v1' },
+    },
+  });
+
+  const resolved = resolveSynthesisConfig({
+    homeConfig: { synthesis: { provider: 'ollama-local', model: 'qwen3:8b' } },
+    env: {},
+    modelCatalog,
+    providerRegistry: registry,
+  });
+
+  assert.equal(resolved.client.providerId, 'ollama-local');
+  assert.deepEqual(resolved.client.clientConfig, {
+    apiKey: 'not-needed',
+    baseURL: 'http://127.0.0.1:11434/v1',
+  });
+  assert.equal(resolved.client.defaultModel, 'qwen3:8b');
+});
+
 test('explicit and unique legacy synthesis choices preserve exact provider identity', () => {
   const modelCatalog = catalog();
   const registry = exactRegistry(modelCatalog);

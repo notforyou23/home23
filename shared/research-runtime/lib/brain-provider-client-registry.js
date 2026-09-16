@@ -69,20 +69,29 @@ function createChatCompletionsClient({
   provider, model, modelConfig, providerConfig, logger,
 }) {
   requireTransport(provider, modelConfig, ['chat-completions']);
-  const envName = provider === 'xai' ? 'XAI_API_KEY' : 'OLLAMA_CLOUD_API_KEY';
+  const isLocalOllama = provider === 'ollama-local';
+  const envName = provider === 'xai'
+    ? 'XAI_API_KEY'
+    : isLocalOllama ? 'LOCAL_LLM_API_KEY' : 'OLLAMA_CLOUD_API_KEY';
   const apiKey = providerSecret(providerConfig, envName);
-  if (!apiKey && !providerConfig.client) unavailable(provider, 'credentials are unavailable');
-  const fallback = provider === 'xai' ? 'https://api.x.ai/v1' : 'https://ollama.com/v1';
+  if (!isLocalOllama && !apiKey && !providerConfig.client) {
+    unavailable(provider, 'credentials are unavailable');
+  }
+  const fallback = provider === 'xai'
+    ? 'https://api.x.ai/v1'
+    : isLocalOllama ? 'http://127.0.0.1:11434/v1' : 'https://ollama.com/v1';
   const baseURL = providerBaseUrl(
     providerConfig,
-    provider === 'xai' ? 'XAI_BASE_URL' : 'OLLAMA_CLOUD_BASE_URL',
+    provider === 'xai'
+      ? 'XAI_BASE_URL'
+      : isLocalOllama ? 'LOCAL_LLM_BASE_URL' : 'OLLAMA_CLOUD_BASE_URL',
     fallback,
   );
   const { ChatCompletionsClient } = require('../engine/src/core/chat-completions-client.js');
   return new ChatCompletionsClient({
     ...providerConfig,
     providerId: provider,
-    apiKey,
+    apiKey: isLocalOllama ? apiKey || 'not-needed' : apiKey,
     baseURL,
     client: providerConfig.client || null,
     defaultModel: model,
@@ -157,6 +166,7 @@ function createBuiltInPairFactories() {
     minimax: createAnthropicMessagesClient,
     xai: createXaiClient,
     'ollama-cloud': createChatCompletionsClient,
+    'ollama-local': createChatCompletionsClient,
   });
 }
 
