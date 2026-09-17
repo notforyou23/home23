@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { inspectResidentWrite } from '../tools/tracked-source-guard.js';
 import type { ArtifactRecord } from './types.js';
@@ -52,7 +52,7 @@ export function captureArtifact(input: {
   const dir = join(artifactRoot(input.workspacePath), id);
   const originalName = basename(sourcePath);
   const archivePath = join(dir, originalName);
-  const decision = inspectResidentWrite(archivePath, input.projectRoot);
+  const decision = inspectResidentWrite(archivePath, input.projectRoot, dirname(input.workspacePath));
   if (!decision.allow) throw new Error(decision.reason);
 
   mkdirSync(dir, { recursive: true });

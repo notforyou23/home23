@@ -51,6 +51,7 @@ test('resolver keeps ordinary local agents on instances/<agent>', () => {
     assert.equal(resolved.workspaceDir, join(localRoot, 'workspace'));
     assert.equal(resolved.conversationsDir, join(localRoot, 'conversations'));
     assert.equal(resolved.logsDir, join(localRoot, 'logs'));
+    assert.equal(resolved.scratchDir, join(localRoot, 'scratch'));
     assert.doesNotThrow(() => assertAgentInstanceStorageReady(resolved));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

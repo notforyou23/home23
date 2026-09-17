@@ -161,3 +161,7 @@ export function loadHomeConfig(): HomeConfig {
 export function getAgentDir(agentName: string): string {
   return getAgentPaths(agentName).instanceRoot;
 }
+
+export function getAgentScratchDir(agentName: string): string {
+  return getAgentPaths(agentName).scratchDir;
+}

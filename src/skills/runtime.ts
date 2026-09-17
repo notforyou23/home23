@@ -1,3 +1,13 @@
+/**
+ * Skills load and run in-process via a dynamic `import()` of workspace/skills/index.js
+ * (see loadSkillsModule below) and call fs directly — they do not go through
+ * tracked-source-guard / shell-write-guard at all. This is deliberate, not
+ * an oversight: skills are maintained first-party code shipped the same way
+ * the rest of the harness is, not agent-authored shell improvisation. A
+ * guard fenced around trusted code you already reviewed and shipped would
+ * cost real complexity for no real protection. If skills ever start
+ * accepting untrusted, model-authored code paths, this needs revisiting.
+ */
 import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';

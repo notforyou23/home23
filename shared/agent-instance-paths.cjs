@@ -99,6 +99,10 @@ function resolveAgentInstancePaths(home23Root, agentName, options = {}) {
     storageMode,
     brainDir: path.join(configuredRoot, 'brain'),
     workspaceDir: path.join(configuredRoot, 'workspace'),
+    // Throwaway shell/exec output — stdout captures, probe scripts,
+    // intermediate files. Reaped on a schedule; never cited by a receipt.
+    // Sibling of workspace/conversations, not nested under either.
+    scratchDir: path.join(configuredRoot, 'scratch'),
     conversationsDir: path.join(configuredRoot, 'conversations'),
     logsDir: path.join(configuredRoot, 'logs'),
     runtimeDir: path.join(configuredRoot, 'runtime'),

@@ -136,8 +136,13 @@ export function createHelperServices(input: {
             else {
               writeFileSync(started,JSON.stringify({jobId:job.id,payload:p}),{flag:'wx',mode:0o600});
               const at=Date.now();
+              // Jobs that genuinely need the source checkout (git, npm run,
+              // scripts/*) pass an explicit payload.cwd; anything else
+              // defaults to this bot's own scratch dir, never input.root
+              // (which is the source root for on-demand bots).
+              if(p.kind==='exec'&&!p.cwd) mkdirSync(join(input.botRoot,'scratch'),{recursive:true});
               try {
-                result=p.kind==='exec' ? {status:'ok',response:(await promisify(exec)(p.command,{cwd:input.root,
+                result=p.kind==='exec' ? {status:'ok',response:(await promisify(exec)(p.command,{cwd:p.cwd||join(input.botRoot,'scratch'),
                   timeout:(p.timeoutSeconds??60)*1000,signal:joined?.abortSignal,env:unprivilegedChildEnv(),maxBuffer:10*1024*1024})).stdout.trim(),durationMs:Date.now()-at}
                   : {...await runCronBrainQueryJob(brainOperations,p,ctx.modelAliases??{},{signal:joined?.abortSignal}),durationMs:Date.now()-at};
               } catch(error) {result={status:'error',error:error instanceof Error?error.message:String(error),durationMs:Date.now()-at};}

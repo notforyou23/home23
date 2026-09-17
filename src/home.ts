@@ -151,6 +151,13 @@ const SESSIONS_DIR = join(CONVERSATIONS_DIR, 'sessions');
 const LOGS_DIR = process.env.HOME23_LOGS_DIR
   ? resolve(process.env.HOME23_LOGS_DIR)
   : join(INSTANCE_DIR, 'logs');
+// Throwaway shell/exec output — stdout captures, probe scripts, intermediate
+// files. The default cwd for exec-kind cron jobs (see cronHandler below) and
+// the destination tool descriptions point residents to. Reaped on a
+// schedule; nothing here is ever citable by a receipt.
+const SCRATCH_DIR = process.env.HOME23_SCRATCH_DIR
+  ? resolve(process.env.HOME23_SCRATCH_DIR)
+  : join(INSTANCE_DIR, 'scratch');
 const RUNTIME_DIR = CONVERSATIONS_DIR; // backwards compat for modules that use RUNTIME_DIR
 const HOME_PORT = parseInt(process.env.HOME_PORT ?? '4610', 10);
 const CACHE_DIAGNOSTICS_ENABLED = /^(1|true|yes|on)$/i.test(process.env.CACHE_DIAGNOSTICS ?? '');
@@ -288,6 +295,7 @@ async function main(): Promise<void> {
   mkdirSync(tempDir, { recursive: true });
   mkdirSync(join(workspacePath, 'intake'), { recursive: true });
   mkdirSync(join(workspacePath, 'comms', 'drafts'), { recursive: true });
+  mkdirSync(SCRATCH_DIR, { recursive: true });
 
   let agencyKernelPromise: Promise<any> | null = null;
   const getAgencyKernel = async () => {
@@ -956,12 +964,16 @@ async function main(): Promise<void> {
 
         if (job.payload.kind === 'exec') {
           const timeoutMs = (job.payload.timeoutSeconds ?? 60) * 1000;
-          const execCwd = (job.payload as Record<string, unknown>).cwd as string | undefined;
+          // Jobs that genuinely need the source checkout (git, npm run,
+          // scripts/*) pass an explicit cwd; anything else defaults to this
+          // resident's own scratch dir, never the source root.
+          const execCwd = job.payload.cwd;
+          if (!execCwd) mkdirSync(SCRATCH_DIR, { recursive: true });
           const { stdout } = await execAsync(job.payload.command, {
             timeout: timeoutMs,
             signal: caller?.abortSignal,
             encoding: 'utf-8',
-            cwd: execCwd || PROJECT_ROOT,
+            cwd: execCwd || SCRATCH_DIR,
             env: unprivilegedChildEnv(),
             maxBuffer: 10 * 1024 * 1024,
           });

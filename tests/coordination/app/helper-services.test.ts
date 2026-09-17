@@ -1,7 +1,7 @@
 import {TelegramAdapter} from '../../../src/channels/telegram.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,rmSync,readFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,rmSync,readFileSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {createHelperServices} from '../../../src/coordination/app/helper-services.js';
 import type {ToolContext} from '../../../src/agent/types.js';
@@ -27,6 +27,29 @@ test('helper scheduled commands execute directly, retain results across service 
  runtime.scheduler.addJob({...job,id:'announced'});
  assert.equal((await runtime.scheduler.runJobNow('announced')).status,'ok');
  assert.equal(delivered.length,1);assert.match(delivered[0]!,/already-executed/);assert.match(delivered[0]!,/actual-execution/);
+});
+
+test('helper exec jobs default to this bot\'s scratch dir, never the source root, unless given an explicit cwd',async t=>{
+ const root=mkdtempSync('/private/tmp/home23-helper-exec-cwd-');t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const botRoot=join(root,'bot');mkdirSync(join(botRoot,'workspace'),{recursive:true});
+ const elsewhere=mkdtempSync('/private/tmp/home23-helper-exec-cwd-elsewhere-');t.after(()=>rmSync(elsewhere,{recursive:true,force:true}));
+ const config={scheduler:{timezone:'UTC',jobsFile:'ignored',runsDir:'ignored'}} as HomeConfig;
+ const services=createHelperServices({root,botRoot,workspace:join(botRoot,'workspace'),agentName:'bot-helper',enginePort:1,config,schedule:async()=>{throw new Error('unused: delivery mode is none')}});
+ t.after(()=>services.close());
+ const ctx={...services.context,modelAliases:{}} as ToolContext;
+ services.attach({runWithTurn:()=>{throw new Error('unused')}} as any,ctx);
+ const scheduler=ctx.scheduler!;
+
+ scheduler.addJob({id:'default-cwd',name:'default cwd',enabled:true,schedule:{kind:'every',everyMs:60000},sessionTarget:'isolated',wakeMode:'now',payload:{kind:'exec',command:'pwd'},delivery:{mode:'none'},state:{nextRunAtMs:Date.now()+60000,consecutiveErrors:0}});
+ const defaultResult=await scheduler.runJobNow('default-cwd');
+ assert.equal(defaultResult.status,'ok');
+ assert.equal(defaultResult.response,realpathSync(join(botRoot,'scratch')));
+ assert.notEqual(defaultResult.response,realpathSync(root));
+
+ scheduler.addJob({id:'explicit-cwd',name:'explicit cwd',enabled:true,schedule:{kind:'every',everyMs:60000},sessionTarget:'isolated',wakeMode:'now',payload:{kind:'exec',command:'pwd',cwd:elsewhere},delivery:{mode:'none'},state:{nextRunAtMs:Date.now()+60000,consecutiveErrors:0}});
+ const explicitResult=await scheduler.runJobNow('explicit-cwd');
+ assert.equal(explicitResult.status,'ok');
+ assert.equal(explicitResult.response,realpathSync(elsewhere));
 });
 
 

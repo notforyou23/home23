@@ -141,6 +141,52 @@ test('shell write detector extracts redirects and common write commands', () => 
   assert.equal(extractShellWriteTargets(`echo "note > src/agent/tools/web.ts"`, root).length, 0);
 });
 
+test('shell write detector covers dd, curl, wget, ln, sort, tar, unzip', () => {
+  const { root } = houseFixture();
+  const tracked = path.join(root, 'src/agent/tools/web.ts');
+  const trackedDir = path.join(root, 'src/agent/tools');
+  assert.deepEqual(extractShellWriteTargets(`dd if=/dev/zero of=src/agent/tools/web.ts bs=1 count=1`, root), [tracked]);
+  assert.deepEqual(extractShellWriteTargets(`curl -fsS https://example.com -o src/agent/tools/web.ts`, root), [tracked]);
+  assert.deepEqual(extractShellWriteTargets(`curl https://example.com --output src/agent/tools/web.ts`, root), [tracked]);
+  assert.deepEqual(extractShellWriteTargets(`wget https://example.com -O src/agent/tools/web.ts`, root), [tracked]);
+  assert.deepEqual(extractShellWriteTargets(`ln -sf /tmp/x src/agent/tools/web.ts`, root), [tracked]);
+  assert.deepEqual(extractShellWriteTargets(`sort /tmp/in -o src/agent/tools/web.ts`, root), [tracked]);
+  assert.deepEqual(extractShellWriteTargets(`tar -xf archive.tar -C src/agent/tools`, root), [trackedDir]);
+  assert.deepEqual(extractShellWriteTargets(`tar cf archive.tar -C src/agent/tools .`, root), [], 'create mode reads -C, does not write it');
+  assert.deepEqual(extractShellWriteTargets(`unzip archive.zip -d src/agent/tools`, root), [trackedDir]);
+  // split with only an input positional reads that file; it does not write it.
+  assert.deepEqual(extractShellWriteTargets(`split src/agent/tools/web.ts`, root), []);
+});
+
+test('shell write detector reads a diff’s destinations for patch and git apply', () => {
+  const { root } = houseFixture();
+  const tracked = path.join(root, 'src/agent/tools/web.ts');
+  const diffPath = path.join(root, 'fix.diff');
+  writeFileSync(diffPath, [
+    '--- a/src/agent/tools/web.ts',
+    '+++ b/src/agent/tools/web.ts',
+    '@@ -1 +1 @@',
+    "-const url = 'http://localhost:8888';",
+    "+const url = 'http://192.168.4.63:8888';",
+    '',
+  ].join('\n'));
+  assert.deepEqual(extractShellWriteTargets(`git apply fix.diff`, root), [tracked]);
+  assert.deepEqual(extractShellWriteTargets(`patch -p1 < fix.diff`, root), [tracked]);
+  assert.deepEqual(extractShellWriteTargets(`git diff fix.diff`, root), [], 'git diff is read-only');
+});
+
+test('shell write detector does not scan heredoc bodies as shell syntax', () => {
+  const { root } = houseFixture();
+  const probe = path.join(root, 'probe.sh');
+  const command = [
+    `cat <<'EOF' > probe.sh`,
+    'sample: echo hi > src/agent/tools/web.ts',
+    'cp /tmp/x src/agent/tools/web.ts',
+    'EOF',
+  ].join('\n');
+  assert.deepEqual(extractShellWriteTargets(command, root), [probe]);
+});
+
 test('shell tool refuses tracked-source writes and allows local house writes', async () => {
   const { root, ctx } = houseFixture();
   const tracked = path.join(root, 'src/agent/tools/web.ts');
@@ -157,4 +203,48 @@ test('shell tool refuses tracked-source writes and allows local house writes', a
   assert.match(readFileSync(local, 'utf-8'), /192\.168\.4\.63/);
 
   assert.equal(refuseShellWrite('rg localhost src/agent/tools/web.ts', root, root), null);
+});
+
+test('refusal wording distinguishes tracked source from a new untracked file, and names the scratch path', () => {
+  const { root } = houseFixture();
+  const instanceDir = path.join(root, 'instances/jerry');
+
+  const trackedDecision = inspectResidentWrite(path.join(root, 'src/agent/tools/web.ts'), root, instanceDir);
+  assert.equal(trackedDecision.allow, false);
+  assert.match((trackedDecision as { reason: string }).reason, /tracked repo source/);
+  assert.match((trackedDecision as { reason: string }).reason, /coding_run/);
+
+  const untrackedDecision = inspectResidentWrite(path.join(root, 'src/agent/tools/new.ts'), root, instanceDir);
+  assert.equal(untrackedDecision.allow, false);
+  assert.match((untrackedDecision as { reason: string }).reason, /untracked file in the working tree/);
+  assert.match((untrackedDecision as { reason: string }).reason, /instances\/jerry\/scratch/);
+  assert.doesNotMatch((untrackedDecision as { reason: string }).reason, /coding_run/);
+});
+
+test('house state under instances/ and tmp/ allows even when git is unusable', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-write-guard-broken-git-'));
+  fixtures.push(root);
+  // A .git directory that is not an actual repository: resolveRepoRoot only
+  // checks for its existence, so every classification git call below fails.
+  mkdirSync(path.join(root, '.git'));
+  mkdirSync(path.join(root, 'instances/jerry/workspace'), { recursive: true });
+  mkdirSync(path.join(root, 'tmp'), { recursive: true });
+  mkdirSync(path.join(root, 'engine'), { recursive: true });
+  mkdirSync(path.join(root, 'src'), { recursive: true });
+  writeFileSync(path.join(root, 'instances/jerry/workspace/NOTE.md'), 'local\n');
+  writeFileSync(path.join(root, 'tmp/scratch-file.txt'), 'x\n');
+  writeFileSync(path.join(root, 'engine/.env'), 'SEARXNG_URL=http://localhost:8888\n');
+  writeFileSync(path.join(root, 'src/new.ts'), 'x\n');
+
+  // The static allowlist never touches git, so these stay allowed.
+  assert.equal(inspectResidentWrite(path.join(root, 'instances/jerry/workspace/NOTE.md'), root).allow, true);
+  assert.equal(inspectResidentWrite(path.join(root, 'tmp/scratch-file.txt'), root).allow, true);
+  assert.equal(inspectResidentWrite(path.join(root, 'engine/.env'), root).allow, true);
+
+  // A path outside the allowlist still needs git, and refuses (fails
+  // closed) when git can't classify it — the pre-existing, still-correct
+  // behavior for the long tail of paths not in the static allowlist.
+  const outside = inspectResidentWrite(path.join(root, 'src/new.ts'), root);
+  assert.equal(outside.allow, false);
+  assert.match((outside as { reason: string }).reason, /could not classify/);
 });

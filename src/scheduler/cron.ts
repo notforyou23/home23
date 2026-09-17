@@ -24,7 +24,7 @@ export type ScheduleSpec =
 
 export type JobPayload =
   | { kind: 'agentTurn'; channelId?: string; message?: string; messagePath?: string; model?: string; effort?: import('../agent/reasoning-effort.js').ReasoningEffort; timeoutSeconds?: number; sessionHistory?: 'persistent' | 'fresh' }
-  | { kind: 'exec'; channelId?: string; command: string; timeoutSeconds?: number }
+  | { kind: 'exec'; channelId?: string; command: string; timeoutSeconds?: number; cwd?: string }
   | { kind: 'query'; channelId?: string; message: string; mode?: string; model?: string; timeoutSeconds?: number }
   | { kind: 'systemEvent'; text: string };
 

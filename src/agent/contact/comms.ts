@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { inspectResidentWrite } from '../tools/tracked-source-guard.js';
 import { commsDraftDir } from './paths.js';
@@ -50,7 +50,7 @@ export function createDraft(input: {
   };
   const dir = commsDraftDir(input.workspacePath);
   const filePath = join(dir, `${draft.id}.json`);
-  const decision = inspectResidentWrite(filePath, input.projectRoot);
+  const decision = inspectResidentWrite(filePath, input.projectRoot, dirname(input.workspacePath));
   if (!decision.allow) throw new Error(decision.reason);
   mkdirSync(dir, { recursive: true });
   writeFileSync(filePath, JSON.stringify(draft, null, 2), 'utf8');

@@ -190,7 +190,7 @@ export const writeFileTool: ToolDefinition = {
     const path = resolvePath(input.path as string, ctx.workspacePath);
     const escaped = refuseWorkspaceEscape(path, ctx.workspacePath, { allowMissingLeaf: true });
     if (escaped) return escaped;
-    const refused = refuseResidentWrite(path, ctx.projectRoot);
+    const refused = refuseResidentWrite(path, ctx.projectRoot, ctx.instanceDir);
     if (refused) return refused;
     const content = input.content as string;
     try {
@@ -220,7 +220,7 @@ export const editFileTool: ToolDefinition = {
     const path = resolvePath(input.path as string, ctx.workspacePath);
     const escaped = refuseWorkspaceEscape(path, ctx.workspacePath, { allowMissingLeaf: false });
     if (escaped) return escaped;
-    const refused = refuseResidentWrite(path, ctx.projectRoot);
+    const refused = refuseResidentWrite(path, ctx.projectRoot, ctx.instanceDir);
     if (refused) return refused;
     const oldStr = input.old_string as string;
     const newStr = input.new_string as string;

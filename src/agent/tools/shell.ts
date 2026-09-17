@@ -37,7 +37,7 @@ function formatStream(label: 'STDOUT' | 'STDERR', text: string, limit: number): 
 
 export const shellTool: ToolDefinition = {
   name: 'shell',
-  description: 'Run a bash command within granted filesystem roots (default: Home23 install + this resident instance). Returns bounded stdout/stderr plus exit code. Prefer narrow commands (rg, head, tail, git diff --stat) before large dumps. Writes to tracked repo source are refused; local house state under roots is allowed. Owner may expand shell.roots or set shell.machineAccess: true.',
+  description: 'Run a bash command within granted filesystem roots (default: Home23 install + this resident instance). Returns bounded stdout/stderr plus exit code. Prefer narrow commands (rg, head, tail, git diff --stat) before large dumps. Writes to tracked repo source are refused; local house state under roots is allowed. Throwaway output (stdout captures, probe scripts, intermediate files) belongs in instances/<agent>/scratch/, not the project root — it is reaped automatically and is never citable by a receipt. Owner may expand shell.roots or set shell.machineAccess: true.',
   input_schema: {
     type: 'object',
     properties: {
@@ -70,7 +70,7 @@ export const shellTool: ToolDefinition = {
     const fsRefused = refuseShellFsAuthority({ cwd, command, authority });
     if (fsRefused) return fsRefused;
 
-    const refused = refuseShellWrite(command, cwd, ctx.projectRoot);
+    const refused = refuseShellWrite(command, cwd, ctx.projectRoot, ctx.instanceDir);
     if (refused) return refused;
 
     return new Promise((resolve) => {

@@ -59,7 +59,7 @@ Delivery:
       delivery_channel: { type: 'string', description: 'Channel: "home23", "telegram", "discord", or "auto". Defaults to Home23 when enabled.' },
       delivery_to: { type: 'string', description: 'Durable chat ID for delivery (Telegram numeric ID, Discord channel ID). REQUIRED for delivery to work.' },
       announce_mode: { type: 'string', enum: ['none', 'failures', 'summary', 'full'], description: 'When to deliver results (default: failures)' },
-      cwd: { type: 'string', description: 'Working directory for exec commands (default: home23 project root)' },
+      cwd: { type: 'string', description: 'Working directory for exec commands (default: this resident’s scratch directory, not the source checkout — pass an explicit cwd when the job genuinely needs the project root, e.g. git/npm run/scripts/*)' },
       message_path: { type: 'string', description: 'Path to a prompt file (alternative to message). Relative paths resolve from the home23 project root. Preferred for long prompts — makes them editable as files.' },
       channel_id: { type: 'string', description: 'Canonical topic channel ID for a scheduled agentTurn. The run, Activity and final result live there and reattach after restart.' },
       session_history: { type: 'string', enum: ['persistent', 'fresh'], description: 'Session lifecycle for agentTurn jobs. "fresh" rotates chat history before each run (cleanest for stateless jobs). Default: "persistent".' },
