@@ -72,13 +72,13 @@ import {
 } from './reasoning-stream.js';
 import { takeOperatorSteer } from './steer-queue.js';
 
-const MAX_ITERATIONS = 500;
+const MAX_ITERATIONS = 5000;
 const TYPING_INTERVAL_MS = 4000;
 const MODEL_TOOL_RESULT_LIMIT_CHARS = 4000;
 const TOOL_EVENT_RESULT_LIMIT_CHARS = 4000;
-const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
-const DEFAULT_TURN_HARD_DURATION_MS = 8 * 60 * 60 * 1000;
-const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_TURN_TIMEOUT_MS = 60 * 60 * 1000;
+const DEFAULT_TURN_HARD_DURATION_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 3 * 60 * 1000;
 
 function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);

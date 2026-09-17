@@ -90,7 +90,7 @@ export function createHelperServices(input: {
   const context:Partial<ToolContext>={projectRoot:input.root,personalWorkspacePath:input.workspace,artifactWorkspacePath:input.workspace,brainOperations,agencyRequest,
     browser:config?.browser?.enabled?new BrowserController(config.browser):null,
     ttsService:tts.enabled&&tts.apiKey?new TTSService(tts as HomeConfig['tts']):null,
-    codingBridge:bridge,workRegistry,subAgentTracker:{active:0,maxConcurrent:config?.agent?.maxSubAgents??3,queue:[]}};
+    codingBridge:bridge,workRegistry,subAgentTracker:{active:0,maxConcurrent:config?.agent?.maxSubAgents??8,queue:[]}};
   if (config?.channels?.telegram?.enabled) {
     const tc=config.channels.telegram,botToken=tc.botToken||process.env.TELEGRAM_BOT_TOKEN;
     if (!botToken) throw new Error('House Telegram is enabled but has no configured token');

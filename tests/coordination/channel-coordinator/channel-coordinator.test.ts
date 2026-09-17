@@ -223,14 +223,14 @@ test("mentions-only Channels use the first selected Bot only as Round lifecycle 
   } finally { database.close(); }
 });
 
-test("capacity is exactly four turns per Bot and twelve per Round", () => {
-  assert.doesNotThrow(() => assertChannelTurnCapacity({ roundTurns: 11, botTurns: 3 }));
+test("capacity is exactly 100 turns per Bot and 500 per Round", () => {
+  assert.doesNotThrow(() => assertChannelTurnCapacity({ roundTurns: 499, botTurns: 99 }));
   assert.throws(
-    () => assertChannelTurnCapacity({ roundTurns: 11, botTurns: 4 }),
+    () => assertChannelTurnCapacity({ roundTurns: 499, botTurns: 100 }),
     (error: unknown) => error instanceof ChannelCoordinatorError && error.code === "turn_limit",
   );
   assert.throws(
-    () => assertChannelTurnCapacity({ roundTurns: 12, botTurns: 0 }),
+    () => assertChannelTurnCapacity({ roundTurns: 500, botTurns: 0 }),
     (error: unknown) => error instanceof ChannelCoordinatorError && error.code === "round_limit",
   );
 });

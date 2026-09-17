@@ -129,7 +129,7 @@ export class ResidentUdsServer {
       this.#credentialByIdentity.set(key, credential);
     }
     if (this.#credentialByIdentity.size === 0) throw new TypeError("at least one resident credential is required");
-    if (!Number.isSafeInteger(options.maxConcurrentRequests ?? 16) || (options.maxConcurrentRequests ?? 16) < 1) {
+    if (!Number.isSafeInteger(options.maxConcurrentRequests ?? 64) || (options.maxConcurrentRequests ?? 64) < 1) {
       throw new TypeError("maxConcurrentRequests must be positive");
     }
     const rate = options.requestRateLimit ?? { limit: 64, intervalMs: 1_000 };
@@ -301,7 +301,7 @@ export class ResidentUdsServer {
       );
       return;
     }
-    if (this.#activeRequestKeys.size >= (this.#options.maxConcurrentRequests ?? 16)) {
+    if (this.#activeRequestKeys.size >= (this.#options.maxConcurrentRequests ?? 64)) {
       this.#sendError(
         state,
         request.requestId,

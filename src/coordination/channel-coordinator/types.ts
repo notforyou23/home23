@@ -8,8 +8,8 @@ import type {
   WorkTurnSelection,
 } from "../work/index.js";
 
-export const MAX_CHANNEL_TURNS_PER_BOT = 4;
-export const MAX_CHANNEL_TURNS_PER_ROUND = 12;
+export const MAX_CHANNEL_TURNS_PER_BOT = 100;
+export const MAX_CHANNEL_TURNS_PER_ROUND = 500;
 
 export interface CoordinatorAuthority {
   capability: "messages";

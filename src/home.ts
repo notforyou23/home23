@@ -360,7 +360,7 @@ async function main(): Promise<void> {
   const browser = config.browser.enabled ? new BrowserController(config.browser) : null;
 
   // ── Sub-agent tracker ──
-  const subAgentTracker: SubAgentTracker = { active: 0, maxConcurrent: config.agent?.maxSubAgents ?? 3, queue: [] };
+  const subAgentTracker: SubAgentTracker = { active: 0, maxConcurrent: config.agent?.maxSubAgents ?? 8, queue: [] };
 
   // Model aliases — loaded from config
   const MODEL_ALIASES: ModelAliases = config.models?.aliases ?? {};
