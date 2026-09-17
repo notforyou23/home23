@@ -905,7 +905,7 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
           workspacePath,
           tempDir,
           contextManager,
-          subAgentTracker: { active: 0, maxConcurrent: 0, queue: [] },
+          subAgentTracker: { active: 0, maxConcurrent: config.services?.agent?.maxSubAgents ?? 8, queue: [] },
           modelAliases: { ...config.modelAliases },
           restrictedToolSource: registry,
           chatId: "",
