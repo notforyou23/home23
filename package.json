@@ -12,7 +12,7 @@
   "scripts": {
     "build": "node scripts/release/build.mjs",
     "pretest": "node --test --test-concurrency=1 tests/scripts/brain-acceptance-common.test.cjs && npm run test:brain-acceptance-runtime",
-    "posttest": "npm run test:coordination && node --import tsx --test --test-concurrency=1 tests/agent/install-cron-jobs.test.ts tests/commands/handler.test.ts tests/dashboard/connected-agents-inspector.test.cjs tests/dashboard/connected-agents-selection.test.cjs tests/dashboard/connected-agents-ui.test.cjs tests/engine/dashboard/connected-agents-proxy.test.cjs",
+    "posttest": "npm run test:chess && npm run test:coordination && node --import tsx --test --test-concurrency=1 tests/agent/install-cron-jobs.test.ts tests/commands/handler.test.ts tests/dashboard/connected-agents-inspector.test.cjs tests/dashboard/connected-agents-selection.test.cjs tests/dashboard/connected-agents-ui.test.cjs tests/engine/dashboard/connected-agents-proxy.test.cjs",
     "test:brain-acceptance-runtime": "node --test --test-concurrency=1 tests/scripts/live-brain-tools-authority.test.cjs tests/scripts/isolated-brain-fixture.test.cjs tests/scripts/isolated-brain-cli.test.cjs",
     "test:coordination": "node scripts/run-coordination-tests.mjs",
     "test:live-voice": "node --import tsx --test --test-concurrency=1 tests/voice/gpt-live-provider.test.ts tests/coordination/app/live-voice.test.ts tests/coordination/app/live-voice-transcripts.test.ts tests/coordination/app/live-voice-on-demand-transcripts.test.ts tests/coordination/http/live-voice.test.ts",
@@ -55,12 +55,15 @@
     "test:source-reconciliation": "node --test tests/cli/home23-ios.test.mjs tests/cli/source-status.test.mjs",
     "source:status": "node scripts/release/source-status.mjs",
     "test:resident-repairs": "node --import tsx --test --test-concurrency=2 tests/acp/source-authority.test.ts tests/agent/identity-maintenance.test.ts tests/agent/identity-assembly.test.ts tests/agent/tools/coding.test.ts tests/coordination/app/resident-outcomes-e2e.test.ts tests/agent/triggered-surfaces.test.ts tests/coordination/app/channel-operations.test.ts",
-    "identity:audit": "node --import tsx scripts/identity-audit.ts"
+    "identity:audit": "node --import tsx scripts/identity-audit.ts",
+    "chess:watch": "node scripts/chess/watch.mjs",
+    "test:chess": "node --import tsx --test tests/chess/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
     "@modelcontextprotocol/sdk": "^1.19.1",
     "better-sqlite3": "^11.0.0",
+    "chess.js": "1.4.0",
     "chokidar": "^4.0.0",
     "express": "^5.0.0",
     "hnswlib-node": "^3.0.0",
