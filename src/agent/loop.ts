@@ -48,6 +48,8 @@ import { EventLedger } from './event-ledger.js';
 import { TriggerIndex } from './trigger-index.js';
 import { MemoryObjectStore } from './memory-objects.js';
 import { RelationshipLedger } from './relationship-ledger.js';
+import { createExecutionOutputCapture } from './execution-output.js';
+import { DurableExecutionSteering, type ExactSteerRequest, type ExecutionControlReceipt } from './execution-control.js';
 import { TurnStore } from '../chat/turn-store.js';
 import { turnBus } from '../chat/turn-bus.js';
 import { newTurnId, type TurnEvent } from '../chat/turn-types.js';
@@ -399,6 +401,7 @@ export class AgentLoop {
   private memoryStore: MemoryObjectStore;
   private relationshipLedger: RelationshipLedger;
   private turnStore: TurnStore;
+  private executionSteering: DurableExecutionSteering;
   private turnTiming = {
     now: Date.now,
     setTimeout: (fn: () => void, ms: number): unknown => setTimeout(fn, ms),
@@ -445,6 +448,7 @@ export class AgentLoop {
     this.contextManager = opts.contextManager;
     this.history = opts.history;
     this.turnStore = new TurnStore(this.history);
+    this.executionSteering = new DurableExecutionSteering(this.history, (chatId, turnId) => this.isTurnActive(chatId, turnId));
     this.toolContext = opts.toolContext;
     this.memory = new MemoryManager({
       client: this.client,
@@ -744,6 +748,23 @@ export class AgentLoop {
     return this.workspacePath;
   }
 
+  isTurnActive(chatId: string, turnId: string): boolean {
+    return this.activeRuns.get(chatId)?.has(turnId) === true;
+  }
+
+  executionTurnState(chatId: string, turnId: string): 'active' | 'terminal' | 'unknown' {
+    if (this.isTurnActive(chatId, turnId)) return 'active';
+    return this.turnStore.finalEnvelope(chatId, turnId) ? 'terminal' : 'unknown';
+  }
+
+  executionTurnOrigin(chatId: string, turnId: string): import('./types.js').DelegationTurnOrigin | undefined {
+    return this.turnStore.startEnvelope(chatId, turnId)?.delegation_origin;
+  }
+
+  steerExecution(request: ExactSteerRequest): ExecutionControlReceipt {
+    return this.executionSteering.enqueue(request);
+  }
+
   /** Stop an active run. Returns true if a run was aborted. */
   stop(chatId?: string, turnId?: string, reason: 'operator_stop' | 'harness_shutdown' = 'operator_stop'): AgentStopResult {
     if (chatId) {
@@ -881,7 +902,11 @@ export class AgentLoop {
     turnMessages: HistoryRecord[],
     appendToApi: (text: string) => void,
     onEvent?: AgentEventCallback,
+    turnId?: string,
   ): void {
+    if (turnId) this.executionSteering.consume(chatId, turnId, appendToApi, receipt => {
+      onEvent?.({ type: 'status', status: 'execution_control', operationId: receipt.operationId, controlStatus: receipt.status });
+    });
     const text = takeOperatorSteer(chatId);
     if (!text) return;
     appendToApi(text);
@@ -1007,6 +1032,7 @@ export class AgentLoop {
       historyBackfill?: readonly HistoricalContextEntry[];
       coordinationWorkDestination?: import('../work/types.js').CoordinationWorkDestination;
       parentWorkId?: string;
+      delegationOrigin?: import('./types.js').DelegationTurnOrigin;
       onDurableStart?: (start: import('./types.js').DurableTurnStart) => void | Promise<void>;
     } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
@@ -1032,7 +1058,8 @@ export class AgentLoop {
 
     let seq = 0;
     const persistAndFanOut = (event: import('./types.js').AgentEvent): void => {
-      if (this.terminalTurnOverrides.has(this.turnKey(chatId, turnId))) return;
+      if (this.terminalTurnOverrides.has(this.turnKey(chatId, turnId))
+          && !(event.type === 'status' && event.status === 'execution_control')) return;
       seq++;
       const record: TurnEvent = {
         type: 'event',
@@ -1137,7 +1164,22 @@ export class AgentLoop {
         activity_deadline_at: new Date(lease.activityDeadlineMs!).toISOString(),
         hard_deadline_at: new Date(lease.hardDeadlineMs!).toISOString() });
     };
+    let captureFinalizing = false;
+    const executionOutput = opts.delegationOrigin && this.toolContext.instanceDir
+      ? createExecutionOutputCapture({ instanceDir: this.toolContext.instanceDir, turnId,
+          onUnavailable: reason => { if (!captureFinalizing) persistAndFanOut({ type: 'status', status: 'execution_output_unavailable', message: reason }); } })
+      : undefined;
+    const finalizeCapture = async (): Promise<'closed' | 'incomplete' | 'unavailable' | undefined> => {
+      if (!executionOutput) return undefined;
+      captureFinalizing = true;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([executionOutput.close(), new Promise<void>(resolve => { timer = setTimeout(resolve, 250); })]);
+      if (timer) clearTimeout(timer);
+      const state = executionOutput.status();
+      return state === 'closed' || state === 'unavailable' ? state : 'incomplete';
+    };
     const turnRuntime: TurnRuntimeContext = Object.freeze({
+      ...(executionOutput ? { executionOutput } : {}),
       onProviderActivity,
       turnId,
       abortController: ac,
@@ -1178,6 +1220,7 @@ export class AgentLoop {
         first_token_deadline_at,
         reasoning_effort: runtime.reasoningEffort,
         coordination_origin: opts.coordinationOrigin,
+        delegation_origin: opts.delegationOrigin,
       });
       await opts.onDurableStart?.({
         turnId,
@@ -1190,6 +1233,7 @@ export class AgentLoop {
         this.turnTiming.clearTimeout(firstTokenWatchdog);
         firstTokenWatchdog = null;
       }
+      void executionOutput?.close();
       this.unregisterActiveRun(chatId, turnId, ac);
       this.terminalTurnOverrides.delete(this.turnKey(chatId, turnId));
       throw err;
@@ -1226,11 +1270,15 @@ export class AgentLoop {
         const terminalActivityDeadlineAt = new Date(
           lease.activityDeadlineMs ?? startedAtMs + inactivityMs,
         ).toISOString();
+        this.executionSteering.finish(chatId, turnId, receipt => {
+          persistAndFanOut({ type: 'status', status: 'execution_control', operationId: receipt.operationId, controlStatus: receipt.status });
+        });
         const existingEnd = terminalOverride
           ? this.turnStore.finalEnvelope(chatId, turnId)
           : null;
         const endEnv = existingEnd ?? this.turnStore.writeEnd(chatId, turnId, terminalOverride?.status ?? 'complete', {
           last_seq: seq,
+          execution_output_capture: await finalizeCapture(),
           stop_reason: terminalOverride?.stop_reason ?? 'end_turn',
           error_code: terminalOverride?.error_code,
           error_message: terminalOverride?.error_message,
@@ -1272,11 +1320,15 @@ export class AgentLoop {
         const terminalActivityDeadlineAt = new Date(
           lease.activityDeadlineMs ?? startedAtMs + inactivityMs,
         ).toISOString();
+        this.executionSteering.finish(chatId, turnId, receipt => {
+          persistAndFanOut({ type: 'status', status: 'execution_control', operationId: receipt.operationId, controlStatus: receipt.status });
+        });
         const existingEnd = terminalOverride
           ? this.turnStore.finalEnvelope(chatId, turnId)
           : null;
         const endEnv = existingEnd ?? this.turnStore.writeEnd(chatId, turnId, status, {
           last_seq: seq,
+          execution_output_capture: await finalizeCapture(),
           error: msg,
           error_code: terminalOverride?.error_code ?? (isTimeout ? 'turn_timeout' : (status === 'error' ? 'provider_error' : undefined)),
           error_message: terminalOverride?.error_message ?? (status === 'error' || status === 'timeout' ? msg : undefined),
@@ -1292,6 +1344,8 @@ export class AgentLoop {
         }
         throw err;
       } finally {
+        this.executionSteering.finish(chatId, turnId);
+        void executionOutput?.close();
         lease.close();
         if (firstTokenWatchdog !== null) {
           this.turnTiming.clearTimeout(firstTokenWatchdog);
@@ -1847,7 +1901,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               }
               this.consumeOperatorSteer(chatId, turnMessages, (text) => {
                 apiMessages.push({ role: 'user', content: text });
-              }, onEvent);
+              }, onEvent, activeTurnId);
               maintainModelWindow(apiMessages);
 
               // ── Convert apiMessages → Responses API input ──
@@ -2296,7 +2350,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   role: 'user',
                   content: [{ type: 'input_text', text }],
                 });
-              }, onEvent);
+              }, onEvent, activeTurnId);
 
               maintainModelWindow(xaiInputItems);
               const xaiBody = {
@@ -2609,7 +2663,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             }
             this.consumeOperatorSteer(chatId, turnMessages, (text) => {
               apiMessages.push({ role: 'user', content: text });
-            }, onEvent);
+            }, onEvent, activeTurnId);
             maintainModelWindow(apiMessages);
 
             // ── Make the API call ──
@@ -2802,7 +2856,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
         }
         this.consumeOperatorSteer(chatId, turnMessages, (text) => {
           messages.push({ role: 'user', content: text });
-        }, onEvent);
+        }, onEvent, activeTurnId);
 
         let response: Anthropic.Message;
         let streamedThinking = false;

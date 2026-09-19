@@ -26,7 +26,9 @@
   "security": [{"bearerSession": []}],
   "paths": {
     "/api/v1/capabilities": {
-      "get": {"operationId": "getCapabilities", "security": [], "responses": {"200": {"description": "Safe version, pairing availability, limits, and exact composed route capabilities", "content": {"application/json": {"schema": {"type": "object", "required": ["contractVersion", "apiBase", "pairingAvailable", "limits", "capabilities"], "properties": {"contractVersion": {"const": 1}, "apiBase": {"const": "/api/v1"}, "pairingAvailable": {"type": "boolean"}, "limits": {"type": "object", "required": ["jsonBodyBytes", "idempotencyKeyMinimum", "idempotencyKeyMaximum"], "properties": {"jsonBodyBytes": {"type": "integer", "minimum": 1}, "idempotencyKeyMinimum": {"type": "integer", "minimum": 1}, "idempotencyKeyMaximum": {"type": "integer", "minimum": 1}}, "additionalProperties": true}, "capabilities": {"type": "object", "required": ["bootstrap", "channelsRead", "channelMutation", "conversationsRead", "messagesRead", "unreadRead", "messageSubmission", "readCursorMutation", "search", "eventReplay", "attachments", "work", "workMutation", "activity", "botLifecycle", "importShadow"], "properties": {"bootstrap": {"type": "boolean"}, "channelsRead": {"type": "boolean"}, "channelMutation": {"type": "boolean"}, "conversationsRead": {"type": "boolean"}, "messagesRead": {"type": "boolean"}, "unreadRead": {"type": "boolean"}, "messageSubmission": {"type": "boolean"}, "readCursorMutation": {"type": "boolean"}, "search": {"type": "boolean"}, "eventReplay": {"type": "boolean"}, "attachments": {"type": "boolean"}, "work": {"type": "boolean"}, "workMutation": {"type": "boolean"}, "activity": {"type": "boolean"}, "botLifecycle": {"type": "boolean"}, "importShadow": {"type": "boolean"}}, "additionalProperties": true}}, "additionalProperties": true}}}}}}
+      "get": {"operationId": "getCapabilities", "security": [], "responses": {"200": {"description": "Safe version, pairing availability, limits, and exact composed route capabilities", "content": {"application/json": {"schema": {"type": "object", "required": ["contractVersion", "apiBase", "pairingAvailable", "limits", "capabilities"], "properties": {"contractVersion": {"const": 1}, "apiBase": {"const": "/api/v1"}, "pairingAvailable": {"type": "boolean"}, "limits": {"type": "object", "required": ["jsonBodyBytes", "idempotencyKeyMinimum", "idempotencyKeyMaximum"], "properties": {"jsonBodyBytes": {"type": "integer", "minimum": 1}, "idempotencyKeyMinimum": {"type": "integer", "minimum": 1}, "idempotencyKeyMaximum": {"type": "integer", "minimum": 1}}, "additionalProperties": true}, "capabilities": {"type": "object", "required": ["bootstrap", "channelsRead", "channelMutation", "conversationsRead", "messagesRead", "unreadRead", "messageSubmission", "readCursorMutation", "search", "eventReplay", "attachments", "work", "workMutation", "activity", "botLifecycle", "importShadow"], "properties": {"bootstrap": {"type": "boolean"}, "channelsRead": {"type": "boolean"}, "channelMutation": {"type": "boolean"}, "conversationsRead": {"type": "boolean"}, "messagesRead": {"type": "boolean"}, "unreadRead": {"type": "boolean"}, "messageSubmission": {"type": "boolean"}, "readCursorMutation": {"type": "boolean"}, "search": {"type": "boolean"}, "eventReplay": {"type": "boolean"}, "attachments": {"type": "boolean"}, "work": {"type": "boolean"}, "workMutation": {"type": "boolean"}, "activity": {"type": "boolean"}, "botLifecycle": {"type": "boolean"},
+                  "consoleRead": {"type": "boolean"},
+                  "consoleControl": {"type": "boolean"}, "importShadow": {"type": "boolean"}}, "additionalProperties": true}}, "additionalProperties": true}}}}}}
     },
     "/api/v1/pairing/sessions": {
       "post": {"operationId": "createPairingSession", "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["deviceName"], "properties": {"deviceName": {"type": "string", "minLength": 1, "maxLength": 128}}, "additionalProperties": true}}}}, "responses": {"201": {"description": "One-use short-lived pairing session; the human code is returned once", "content": {"application/json": {"schema": {"type": "object", "required": ["pairingSession", "pairingCode"], "properties": {"pairingSession": {"type": "object", "required": ["id", "state", "expiresAt"], "properties": {"id": {"$ref": "./schema.json#/$defs/pairingSessionId"}, "state": {"const": "pending"}, "expiresAt": {"$ref": "./schema.json#/$defs/timestamp"}}, "additionalProperties": true}, "pairingCode": {"type": "string", "description": "Returned once and never logged"}}, "additionalProperties": true}}}}, "default": {"$ref": "#/components/responses/Error"}}}
@@ -114,6 +116,357 @@
     },
     "/api/v1/events": {
       "get": {"operationId": "listEvents", "parameters": [{"name": "after", "in": "query", "required": false, "schema": {"$ref": "#/components/schemas/EventSequence"}}, {"name": "Last-Event-ID", "in": "header", "required": false, "description": "Decimal integer global event sequence", "schema": {"type": "string", "pattern": "^[0-9]+$"}}], "responses": {"200": {"description": "SSE stream; id field is the decimal integer sequence", "content": {"text/event-stream": {"schema": {"$ref": "./schema.json#/$defs/eventFixture"}, "x-canonical-fixture": "event-message-appended"}}}, "409": {"description": "Cursor predates retained event floor", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/eventCursorResetFixture"}, "x-canonical-fixture": "event-cursor-reset"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/console/sources": {
+      "get": {
+        "operationId": "listConsoleSources",
+        "description": "Owner-only. Uses the normal House origin and bearer session. Unknown output formats retain raw content.",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "recent"
+              ],
+              "default": "recent"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-authenticated Console response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/consoleSourceList"
+                },
+                "x-canonical-fixture": "console-sources"
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/console/sources/{sourceId}": {
+      "get": {
+        "operationId": "getConsoleSource",
+        "description": "Owner-only. Uses the normal House origin and bearer session. Unknown output formats retain raw content.",
+        "parameters": [
+          {
+            "name": "sourceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-authenticated Console response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/consoleSourceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/console/sources/{sourceId}/records": {
+      "get": {
+        "operationId": "listConsoleRecords",
+        "description": "Owner-only. Uses the normal House origin and bearer session. Unknown output formats retain raw content.",
+        "parameters": [
+          {
+            "name": "sourceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-authenticated Console response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/consoleRecordPage"
+                },
+                "x-canonical-fixture": "console-records-codex"
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/console/stream": {
+      "get": {
+        "operationId": "streamConsole",
+        "description": "Owner-only. Uses the normal House origin and bearer session. Unknown output formats retain raw content. sourceId selection and scope=active are mutually exclusive. One-source history resumeCursor is accepted. Conflicting Last-Event-ID and after are rejected. Only checkpoint events set the SSE id; source completion does not close an active feed.",
+        "parameters": [
+          {
+            "name": "sourceId",
+            "in": "query",
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active"
+              ]
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "maxLength": 8192
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-authenticated Console response",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/consoleStreamEvent"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/console/sources/{sourceId}/records/{recordId}/raw": {
+      "get": {
+        "operationId": "getConsoleRawRecord",
+        "description": "Owner-only. Uses the normal House origin and bearer session. Unknown output formats retain raw content.",
+        "parameters": [
+          {
+            "name": "sourceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "recordId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-authenticated Console response",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/executions/{sourceId}/cancel": {
+      "post": {
+        "operationId": "cancelExecution",
+        "description": "Owner-only. Uses the normal House origin and bearer session. Unknown output formats retain raw content.",
+        "parameters": [
+          {
+            "name": "sourceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-authenticated Console response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/consoleCommandReceipt"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "202": {
+            "description": "Execution command admitted; receipt status is not proof of completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/consoleCommandReceipt"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "./schema.json#/$defs/consoleCommandRequest"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/executions/{sourceId}/steer": {
+      "post": {
+        "operationId": "steerExecution",
+        "description": "Owner-only. Uses the normal House origin and bearer session. Unknown output formats retain raw content.",
+        "parameters": [
+          {
+            "name": "sourceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-authenticated Console response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/consoleCommandReceipt"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "202": {
+            "description": "Execution command admitted; receipt status is not proof of completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/consoleCommandReceipt"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "./schema.json#/$defs/consoleCommandRequest"
+                  },
+                  {
+                    "required": [
+                      "text"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

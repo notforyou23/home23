@@ -58,7 +58,15 @@ export interface SubAgentTracker {
 
 export type SubAgentExecutionMode = 'joined' | 'detached';
 
+export interface DelegationTurnOrigin {
+  harnessWorkId: string;
+  parentChatId: string;
+  parentTurnId?: string;
+  parentToolCallId?: string;
+}
+
 export interface TurnRuntimeContext {
+  executionOutput?: import('./execution-output.js').ExecutionOutputCapture;
   /** Meaningful provider progress renews inactivity, never the hard deadline. */
   onProviderActivity?: (sequence: number) => void;
   turnId: string;
@@ -186,6 +194,9 @@ export interface ToolContext {
   onForegroundDetachRequired?: (
     request: import('./foreground-tool-policy.js').ForegroundDetachRequest,
   ) => import('./foreground-tool-policy.js').ForegroundDetachOutcome | void | Promise<import('./foreground-tool-policy.js').ForegroundDetachOutcome | void>;
+  /** Durable identity of this delegated turn, distinct from canonical Work lineage. */
+  delegationOrigin?: DelegationTurnOrigin;
+  onDelegatedDurableStart?: (start: DurableTurnStart) => void | Promise<void>;
   runAgentLoop: AgentLoopRunner | null;
   workerConnectorBaseUrl?: string;
   fetch?: typeof fetch;
@@ -245,9 +256,10 @@ export interface WorkRegistryRef {
     taskBrief?: string;
     resultHandle:
       | { type: 'coding_job'; jobId: string }
-      | { type: 'subagent_chat'; chatId: string }
+      | { type: 'subagent_chat'; chatId: string; turnId?: string }
       | { type: 'cron_chat'; chatId: string };
   }): { workId: string; originChatId: string };
+  bindTurn?(workId: string, chatId: string, turnId: string): void;
   get(workId: string): AsyncWorkRecord | undefined;
   list(filter?: { originChatId?: string; active?: boolean; limit?: number }): AsyncWorkRecord[];
   complete(
@@ -339,6 +351,7 @@ export type AgentEvent =
   | { type: 'cache'; read: number | null; write: number | null; input: number | null; output: number | null; inputTotal?: number | null; provider?: string; model?: string;
       sourceEventType?: string }
   | { type: 'status'; status: string; message?: string;
+      operationId?: string; controlStatus?: import('./execution-control.js').ExecutionControlStatus;
       activity_deadline_at?: string; hard_deadline_at?: string; sourceEventType?: string };
 
 export type AgentEventCallback = (event: AgentEvent) => void;

@@ -115,6 +115,18 @@ export class WorkRegistry {
     return next;
   }
 
+  /** Lookup index only: the durable turn start remains the execution authority. */
+  bindTurn(workId: string, chatId: string, turnId: string): void {
+    const work = this.get(workId);
+    if (!work || work.resultHandle.type === 'coding_job' || work.resultHandle.chatId !== chatId) {
+      throw new Error('work turn binding does not match the delegated chat');
+    }
+    if (work.resultHandle.turnId && work.resultHandle.turnId !== turnId) {
+      throw new Error('work is already bound to a different turn');
+    }
+    this.update(workId, { resultHandle: { ...work.resultHandle, turnId } });
+  }
+
   /** Record operator cancel intent so a kill that lands as 'failed' reports 'cancelled'. */
   requestCancel(workId: string): void {
     this.cancelRequested.add(workId);

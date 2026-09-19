@@ -85,7 +85,16 @@
     "pairingSessionStatus": {"values": ["pending", "redeemed", "expired", "locked"], "unknownPolicy": "preserve", "unknownAction": "disable_redemption"},
     "importItemStatus": {"values": ["discovered", "selected", "imported", "verified", "quarantined", "rolled_back", "skipped_with_reason"], "unknownPolicy": "preserve", "unknownAction": "diagnostic_attention"},
     "activityStatus": {"values": ["idle", "accepted", "working", "background", "stopping", "attention", "failed"], "unknownPolicy": "preserve", "unknownAction": "diagnostic_attention"},
-    "eventType": {"values": ["bot.created", "bot.updated", "channel.created", "channel.updated", "conversation.updated", "message.appended", "turn.updated", "activity.updated", "attachment.updated", "unread.updated", "device.updated", "authority.epoch_changed", "import.updated"], "unknownPolicy": "ignore_and_advance_cursor", "unknownAction": "ignore_and_advance_cursor"}
+    "eventType": {"values": ["bot.created", "bot.updated", "channel.created", "channel.updated", "conversation.updated", "message.appended", "turn.updated", "activity.updated", "attachment.updated", "unread.updated", "device.updated", "authority.epoch_changed", "import.updated"], "unknownPolicy": "ignore_and_advance_cursor", "unknownAction": "ignore_and_advance_cursor"},
+    "consoleSourceKind": {"values": ["coding","subagent"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
+    "consoleState": {"values": ["queued","starting","running","blocked","stopping","completed","failed","cancelled","interrupted","unknown"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
+    "consoleFormat": {"values": ["codex-jsonl","cursor-jsonl","home23-turn","text"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
+    "consoleOutputAvailability": {"values": ["pending","available","unavailable"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
+    "consoleHistoryCompleteness": {"values": ["complete","partial","unknown"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
+    "consoleShellOutputTiming": {"values": ["at_completion","incremental","mixed","unknown"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
+    "consoleOutputTimeBasis": {"values": ["source_timestamp","observed_append","file_modified","unknown"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
+    "consoleRawEncoding": {"values": ["utf8","binary"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
+    "consoleCommandStatus": {"values": ["cancellation_requested","already_terminal","stale_target","queued","applied","not_applied","unknown"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"}
   },
   "featureFlags": {
     "coordination.process.enabled": {"default": false, "effectWhenOff": "process does not advertise product capability"},
@@ -118,7 +127,8 @@
     "requestCorrelation": {"requestId": "server-assigned req_ UUIDv7", "correlationId": "caller-supplied or server-assigned cor_ UUIDv7", "responseEcho": true, "logs": "IDs retained while private bodies and credentials are redacted"},
     "idempotency": {"header": "Idempotency-Key", "length": {"minimum": 16, "maximum": 128}, "characters": "printable ASCII", "scope": ["principalId", "operation", "key"], "sameDigest": "return original committed response", "differentDigest": "409 idempotency_conflict", "allMutations": true},
     "events": {"durableSequence": "integer global sequence", "resume": "strictly_after", "delivery": "at_least_once", "heartbeatSeconds": 15, "duplicate": "no_op", "gap": "409 cursor_expired with bootstrapRequired", "unknownType": "validate envelope, advance cursor, ignore payload", "malformedEnvelope": "reject without advancing cursor", "transientTypes": ["message.delta"]},
-    "compatibility": {"major": 1, "breakingMutation": "prohibited", "contractDelta": "numbered and reviewed by Core and Apple owners", "unknownFields": "accepted", "unknownEnums": "per publicEnums registry"}
+    "compatibility": {"major": 1, "breakingMutation": "prohibited", "contractDelta": "numbered and reviewed by Core and Apple owners", "unknownFields": "accepted", "unknownEnums": "per publicEnums registry"},
+    "console": {"access": "owner House session only; reauthorize sources and long streams","sourceIdentity": "opaque namespace-qualified execution identity, distinct from canonical Work","resume": "opaque exclusive per-source byte positions; Last-Event-ID on complete checkpoints only","ordering": "source stream order; cross-source connection observation order","inlineRecordBytes": 49152,"maximumCheckpointBytes": 8192,"rawContent": "relative authenticated source/generation/range URL, exact retained bytes","discovery": "selected sources or active catalog; disconnected discovery gaps are explicit","controls": "expectedExecutionId plus Idempotency-Key; acknowledgement is not settlement","steerApplied": "inserted in the exact turn durable model input, not proof of model obedience","scope": ["coding","subagent"]}
   },
   "scope": {
     "channelMembers": "user_owner plus local persistent Bots only",
@@ -188,6 +198,13 @@
     "getWork": {"method": "GET", "path": "/api/v1/work/{workId}", "authorityCapability": "activity"},
     "cancelWork": {"method": "POST", "path": "/api/v1/work/{workId}/cancel", "authorityCapability": "messages"},
     "retryWork": {"method": "POST", "path": "/api/v1/work/{workId}/retry", "authorityCapability": "messages"},
-    "listEvents": {"method": "GET", "path": "/api/v1/events", "authorityCapability": null}
+    "listEvents": {"method": "GET", "path": "/api/v1/events", "authorityCapability": null},
+    "listConsoleSources": {"method": "GET","path": "/api/v1/console/sources","authorityCapability": null},
+    "getConsoleSource": {"method": "GET","path": "/api/v1/console/sources/{sourceId}","authorityCapability": null},
+    "listConsoleRecords": {"method": "GET","path": "/api/v1/console/sources/{sourceId}/records","authorityCapability": null},
+    "streamConsole": {"method": "GET","path": "/api/v1/console/stream","authorityCapability": null},
+    "getConsoleRawRecord": {"method": "GET","path": "/api/v1/console/sources/{sourceId}/records/{recordId}/raw","authorityCapability": null},
+    "cancelExecution": {"method": "POST","path": "/api/v1/executions/{sourceId}/cancel","authorityCapability": null},
+    "steerExecution": {"method": "POST","path": "/api/v1/executions/{sourceId}/steer","authorityCapability": null}
   }
 }

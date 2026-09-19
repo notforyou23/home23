@@ -1,0 +1,587 @@
+{
+  "sources": [
+    {
+      "id": "cs_sanitized_coding",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": "cj_fixture",
+      "conversationId": null,
+      "state": "running",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": null,
+      "lastOutputAt": "2026-09-19T12:00:09.000Z",
+      "lastOutputAtBasis": "observed_append",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "available",
+        "reason": null,
+        "format": "codex-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": true,
+          "reason": null,
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": "/api/v1/executions/cs_sanitized_coding/cancel"
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_sanitized_subagent",
+      "kind": "subagent",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "home23",
+      "parentSourceId": "cs_sanitized_coding",
+      "workId": null,
+      "harnessWorkId": "aw_fixture",
+      "executionId": "t_fixture",
+      "conversationId": null,
+      "state": "running",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": null,
+      "lastOutputAt": "2026-09-19T12:00:09.000Z",
+      "lastOutputAtBasis": "observed_append",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "available",
+        "reason": null,
+        "format": "home23-turn",
+        "shellOutputTiming": "incremental",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": true,
+          "reason": null,
+          "scope": "source",
+          "targetId": "t_fixture",
+          "url": "/api/v1/executions/cs_sanitized_subagent/cancel"
+        },
+        {
+          "operation": "steer",
+          "available": true,
+          "reason": null,
+          "scope": "source",
+          "targetId": "t_fixture",
+          "url": "/api/v1/executions/cs_sanitized_subagent/steer"
+        }
+      ]
+    },
+    {
+      "id": "cs_sanitized_cursor",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": "cj_fixture",
+      "conversationId": null,
+      "state": "running",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": null,
+      "lastOutputAt": "2026-09-19T12:00:09.000Z",
+      "lastOutputAtBasis": "observed_append",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "available",
+        "reason": null,
+        "format": "cursor-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": true,
+          "reason": null,
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": "/api/v1/executions/cs_sanitized_cursor/cancel"
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_fixture_queued",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": null,
+      "conversationId": null,
+      "state": "queued",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": null,
+      "lastOutputAt": null,
+      "lastOutputAtBasis": "unknown",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "pending",
+        "reason": null,
+        "format": "codex-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": false,
+          "reason": "identity_unresolved",
+          "scope": "source",
+          "targetId": null,
+          "url": "/api/v1/executions/cs_fixture_queued/cancel"
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "identity_unresolved",
+          "scope": "source",
+          "targetId": null,
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_fixture_starting",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": null,
+      "conversationId": null,
+      "state": "starting",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": null,
+      "lastOutputAt": null,
+      "lastOutputAtBasis": "unknown",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "pending",
+        "reason": null,
+        "format": "codex-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": false,
+          "reason": "identity_unresolved",
+          "scope": "source",
+          "targetId": null,
+          "url": "/api/v1/executions/cs_fixture_starting/cancel"
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "identity_unresolved",
+          "scope": "source",
+          "targetId": null,
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_fixture_blocked",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": "cj_fixture",
+      "conversationId": null,
+      "state": "blocked",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": null,
+      "lastOutputAt": "2026-09-19T12:00:09.000Z",
+      "lastOutputAtBasis": "observed_append",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "available",
+        "reason": null,
+        "format": "codex-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": true,
+          "reason": null,
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": "/api/v1/executions/cs_fixture_blocked/cancel"
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_fixture_stopping",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": "cj_fixture",
+      "conversationId": null,
+      "state": "stopping",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": null,
+      "lastOutputAt": "2026-09-19T12:00:09.000Z",
+      "lastOutputAtBasis": "observed_append",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "available",
+        "reason": null,
+        "format": "codex-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": true,
+          "reason": null,
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": "/api/v1/executions/cs_fixture_stopping/cancel"
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_fixture_completed",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": "cj_fixture",
+      "conversationId": null,
+      "state": "completed",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": "2026-09-19T12:00:10.000Z",
+      "lastOutputAt": null,
+      "lastOutputAtBasis": "unknown",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "unavailable",
+        "reason": "output_unavailable",
+        "format": "codex-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_fixture_failed",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": "cj_fixture",
+      "conversationId": null,
+      "state": "failed",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": "2026-09-19T12:00:10.000Z",
+      "lastOutputAt": "2026-09-19T12:00:09.000Z",
+      "lastOutputAtBasis": "observed_append",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "available",
+        "reason": null,
+        "format": "codex-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_fixture_cancelled",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": "cj_fixture",
+      "conversationId": null,
+      "state": "cancelled",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": "2026-09-19T12:00:10.000Z",
+      "lastOutputAt": "2026-09-19T12:00:09.000Z",
+      "lastOutputAtBasis": "observed_append",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "available",
+        "reason": null,
+        "format": "codex-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_fixture_interrupted",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": "cj_fixture",
+      "conversationId": null,
+      "state": "interrupted",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": "2026-09-19T12:00:10.000Z",
+      "lastOutputAt": "2026-09-19T12:00:09.000Z",
+      "lastOutputAtBasis": "observed_append",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "available",
+        "reason": null,
+        "format": "codex-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_fixture_unknown",
+      "kind": "coding",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": "cj_fixture",
+      "conversationId": null,
+      "state": "unknown",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": null,
+      "lastOutputAt": "2026-09-19T12:00:09.000Z",
+      "lastOutputAtBasis": "observed_append",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "available",
+        "reason": null,
+        "format": "codex-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": [
+        {
+          "operation": "cancel",
+          "available": true,
+          "reason": null,
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": "/api/v1/executions/cs_fixture_unknown/cancel"
+        },
+        {
+          "operation": "steer",
+          "available": false,
+          "reason": "unsupported",
+          "scope": "source",
+          "targetId": "cj_fixture",
+          "url": null
+        }
+      ]
+    },
+    {
+      "id": "cs_future",
+      "kind": "future_kind",
+      "label": "Inspect a sample project",
+      "actor": {
+        "id": "resident:sample",
+        "name": "Sample"
+      },
+      "backend": "codex",
+      "parentSourceId": null,
+      "workId": null,
+      "harnessWorkId": null,
+      "executionId": "cj_fixture",
+      "conversationId": null,
+      "state": "future_state",
+      "startedAt": "2026-09-19T12:00:00.000Z",
+      "finishedAt": null,
+      "lastOutputAt": "2026-09-19T12:00:09.000Z",
+      "lastOutputAtBasis": "observed_append",
+      "checkedAt": "2026-09-19T12:00:10.000Z",
+      "output": {
+        "availability": "available",
+        "reason": null,
+        "format": "future-jsonl",
+        "shellOutputTiming": "at_completion",
+        "historyCompleteness": "unknown"
+      },
+      "actions": []
+    }
+  ],
+  "nextCursor": null,
+  "notices": []
+}

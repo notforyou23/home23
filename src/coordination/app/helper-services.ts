@@ -1,3 +1,4 @@
+import { createExecutionControlPort, type ExecutionControlRequest } from "../../agent/execution-control.js";
 import { TelegramAdapter } from '../../channels/telegram.js';
 import { requestAsyncWorkCancel } from '../../work/cancel.js';
 import { exec } from 'node:child_process';
@@ -87,7 +88,7 @@ export function createHelperServices(input: {
     throw new Error('Unknown helper agency operation');
   };
   let scheduler:CronScheduler|null=null;
-  const context:Partial<ToolContext>={projectRoot:input.root,personalWorkspacePath:input.workspace,artifactWorkspacePath:input.workspace,brainOperations,agencyRequest,
+  const context:Partial<ToolContext>={projectRoot:input.root,instanceDir:input.botRoot,personalWorkspacePath:input.workspace,artifactWorkspacePath:input.workspace,brainOperations,agencyRequest,
     browser:config?.browser?.enabled?new BrowserController(config.browser):null,
     ttsService:tts.enabled&&tts.apiKey?new TTSService(tts as HomeConfig['tts']):null,
     codingBridge:bridge,workRegistry,subAgentTracker:{active:0,maxConcurrent:config?.agent?.maxSubAgents??8,queue:[]}};
@@ -99,13 +100,19 @@ export function createHelperServices(input: {
     context.telegramAdapter={sendText:adapter.sendText.bind(adapter),sendTyping:adapter.sendTyping.bind(adapter),
       sendPhoto:adapter.sendPhoto.bind(adapter),sendVoice:adapter.sendVoice.bind(adapter),sendDocument:adapter.sendDocument.bind(adapter)};
   }
+  let executionControl: ReturnType<typeof createExecutionControlPort> | undefined;
   return {registry,context,
+    executeControl(request: ExecutionControlRequest) {
+      if (!executionControl) throw new Error("Helper execution runtime unavailable");
+      return executionControl.execute(request);
+    },
     async initialize() { if(bridge) await bridge.recover(); workRegistry.reconcileOnBoot({jobs:bridge?.listJobs()??[]}); },
     attach(agent:AgentLoop,ctx:ToolContext) {
+      executionControl=createExecutionControlPort({instanceDir:input.botRoot,agent,codingBridge:bridge??undefined,registry:workRegistry});
       ctx.runAgentLoop=createTrackedAgentRunner(agent);
       ctx.requestWorkCancel=workId=>requestAsyncWorkCancel({registry:workRegistry,
         cancelCodingJob:async jobId=>{if(bridge) await bridge.cancelJob(jobId);},
-        stopChat:chatId=>agent.stop(chatId).stopped},workId);
+        stopChat:(chatId,turnId)=>agent.stop(chatId,turnId).stopped},workId);
       const workers=createWorkerHandlers({projectRoot:input.root,ctx});
       ctx.workerConnectorBaseUrl='http://home23-helper.local';
       ctx.fetch=async(url,init)=>{

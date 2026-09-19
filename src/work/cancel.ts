@@ -9,7 +9,7 @@ export type WorkCancelOutcome =
 export interface WorkCancelDeps {
   registry: WorkRegistry;
   cancelCodingJob: (jobId: string) => Promise<void>;
-  stopChat: (chatId: string) => boolean;
+  stopChat: (chatId: string, turnId?: string) => boolean;
   warn?: (message: string) => void;
 }
 
@@ -34,7 +34,7 @@ export function requestAsyncWorkCancel(
       (deps.warn ?? console.warn)(`[work] cancel of ${jobId} failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   } else {
-    deps.stopChat(work.resultHandle.chatId);
+    deps.stopChat(work.resultHandle.chatId, work.resultHandle.turnId);
   }
   return { status: 'accepted', work };
 }

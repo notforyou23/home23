@@ -1,0 +1,153 @@
+{
+  "events": [
+    {
+      "event": "source",
+      "data": {
+        "source": {
+          "id": "cs_sanitized_coding",
+          "kind": "coding",
+          "label": "Inspect a sample project",
+          "actor": {
+            "id": "resident:sample",
+            "name": "Sample"
+          },
+          "backend": "codex",
+          "parentSourceId": null,
+          "workId": null,
+          "harnessWorkId": null,
+          "executionId": "cj_fixture",
+          "conversationId": null,
+          "state": "running",
+          "startedAt": "2026-09-19T12:00:00.000Z",
+          "finishedAt": null,
+          "lastOutputAt": "2026-09-19T12:00:09.000Z",
+          "lastOutputAtBasis": "observed_append",
+          "checkedAt": "2026-09-19T12:00:10.000Z",
+          "output": {
+            "availability": "available",
+            "reason": null,
+            "format": "codex-jsonl",
+            "shellOutputTiming": "at_completion",
+            "historyCompleteness": "unknown"
+          },
+          "actions": [
+            {
+              "operation": "cancel",
+              "available": true,
+              "reason": null,
+              "scope": "source",
+              "targetId": "cj_fixture",
+              "url": "/api/v1/executions/cs_sanitized_coding/cancel"
+            },
+            {
+              "operation": "steer",
+              "available": false,
+              "reason": "unsupported",
+              "scope": "source",
+              "targetId": "cj_fixture",
+              "url": null
+            }
+          ]
+        },
+        "beforeCursor": "fixture_older_cursor"
+      }
+    },
+    {
+      "event": "record",
+      "data": {
+        "record": {
+          "id": "cr_fixture_cs_sanitized_coding_1",
+          "sourceId": "cs_sanitized_coding",
+          "stream": "events",
+          "format": "codex-jsonl",
+          "kind": "item.started",
+          "occurredAt": null,
+          "observedAt": "2026-09-19T12:00:10.000Z",
+          "raw": "{\"type\":\"item.started\",\"item\":{\"id\":\"item_1\",\"type\":\"command_execution\",\"command\":\"git status --short\",\"aggregated_output\":\"\",\"status\":\"in_progress\"}}",
+          "rawUrl": null,
+          "rawEncoding": "utf8",
+          "byteLength": 150,
+          "partial": false,
+          "sequence": null,
+          "forwardedFromSourceId": null
+        }
+      }
+    },
+    {
+      "event": "checkpoint",
+      "data": {
+        "cursor": "fixture_opaque_checkpoint"
+      }
+    },
+    {
+      "event": "record",
+      "data": {
+        "record": {
+          "id": "cr_fixture_cs_sanitized_coding_1",
+          "sourceId": "cs_sanitized_coding",
+          "stream": "events",
+          "format": "codex-jsonl",
+          "kind": "item.started",
+          "occurredAt": null,
+          "observedAt": "2026-09-19T12:00:10.000Z",
+          "raw": "{\"type\":\"item.started\",\"item\":{\"id\":\"item_1\",\"type\":\"command_execution\",\"command\":\"git status --short\",\"aggregated_output\":\"\",\"status\":\"in_progress\"}}",
+          "rawUrl": null,
+          "rawEncoding": "utf8",
+          "byteLength": 150,
+          "partial": false,
+          "sequence": null,
+          "forwardedFromSourceId": null
+        }
+      }
+    },
+    {
+      "event": "gap",
+      "data": {
+        "sourceId": "cs_sanitized_coding",
+        "stream": "events",
+        "reason": "source_reset"
+      }
+    },
+    {
+      "event": "end",
+      "data": {
+        "sourceId": "cs_sanitized_coding",
+        "status": "drained"
+      }
+    },
+    {
+      "event": "record",
+      "data": {
+        "record": {
+          "id": "cr_fixture_cs_sanitized_subagent_1",
+          "sourceId": "cs_sanitized_subagent",
+          "stream": "journal",
+          "format": "home23-turn",
+          "kind": "tool_start",
+          "occurredAt": "2026-09-19T12:00:10.000Z",
+          "observedAt": "2026-09-19T12:00:10.000Z",
+          "raw": "{\"type\":\"event\",\"turn_id\":\"t_fixture\",\"seq\":1,\"ts\":\"2026-09-19T12:00:10.000Z\",\"kind\":\"tool_start\",\"data\":{\"type\":\"tool_start\",\"tool\":\"shell\",\"toolCallId\":\"call_shell\",\"args\":{\"command\":\"git status --short\"}}}",
+          "rawUrl": null,
+          "rawEncoding": "utf8",
+          "byteLength": 208,
+          "partial": false,
+          "sequence": 1,
+          "forwardedFromSourceId": null
+        }
+      }
+    },
+    {
+      "event": "end",
+      "data": {
+        "sourceId": "cs_fixture_incomplete",
+        "status": "incomplete"
+      }
+    },
+    {
+      "event": "gap",
+      "data": {
+        "reason": "catalog_coverage_unknown"
+      }
+    }
+  ]
+}

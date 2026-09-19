@@ -1,3 +1,4 @@
+import type { ExecutionControlRequest } from "../../agent/execution-control.js";
 import { attachmentContentType, isAttachmentContentType } from "../../attachment-content.js";
 import { createHelperServices } from './helper-services.js';
 import type { HomeConfig } from '../../types.js';
@@ -829,6 +830,7 @@ function assertOnDemandBot(
 export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
   const warm = new Map<string, () => Promise<void>>();
   const serviceRuntimes = new Set<ReturnType<typeof createHelperServices>>();
+  const liveServices = new Map<string,ReturnType<typeof createHelperServices>>();
   const targets = new Map<string, { version: number; target: DirectMessageExecutionTarget }>();
   const modelConfiguration = options.loadModelConfiguration ?? defaultModelConfiguration;
   const inputAttachmentsEnabled = options.artifactPromotion !== undefined &&
@@ -844,7 +846,13 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
     async resume(descriptors: readonly DirectMessageTargetDescriptor[]) {
       for (const descriptor of descriptors) { await this.resolve(descriptor); await warm.get(descriptor.targetBotId)?.(); }
     },
-    close() { for (const service of serviceRuntimes) service.close(); },
+    close() { for (const service of serviceRuntimes) service.close(); liveServices.clear(); },
+    executionControlsAvailable(botId:string) { return liveServices.has(botId); },
+    executeControl(botId:string,request:ExecutionControlRequest) {
+      const service=liveServices.get(botId);
+      if(!service) throw new Error("Helper execution runtime unavailable");
+      return service.executeControl(request);
+    },
     async stopRevoked(botId: string, binding: Parameters<ResidentCoordinationAdapter['stopRevoked']>[0]) {
       return await targets.get(botId)?.target.execution.stopRevoked?.(binding) ?? false;
     },
@@ -934,7 +942,7 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
         });
         if (config.providerMap) agent.setProviderMap(config.providerMap);
         services.attach(agent, toolContext);
-        const ready = services.initialize().then(() => services.start());
+        const ready = services.initialize().then(() => { services.start(); liveServices.set(bot.id,services); });
         const port = new OnDemandBotAgentPort(
           bot,
           agent,

@@ -46,6 +46,10 @@ export interface TurnEnvelope {
   assistant_content?: string;
   /** Max seq of any event belonging to this turn. Written on status-end records. */
   last_seq?: number;
+  /** Capture finalization evidence; absent means capture was not enabled. */
+  execution_output_capture?: 'closed' | 'incomplete' | 'unavailable';
+  /** Exact delegated execution binding, written atomically with the turn start. */
+  delegation_origin?: import('../agent/types.js').DelegationTurnOrigin;
   /** Coordination provenance only; never contains prompts or resident private state. */
   coordination_origin?: import('../agent/types.js').CoordinationTurnOrigin;
 }

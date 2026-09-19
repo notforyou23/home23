@@ -95,7 +95,12 @@ export const shellTool: ToolDefinition = {
           env.PATH = `${extras.join(':')}:${env.PATH}`;
         }
       }
-      exec(command, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024 * 10, env, signal: ctx.abortSignal }, (error, stdout, stderr) => {
+      const capture = ctx.turnRuntime?.executionOutput;
+      const toolCallId = ctx.parentToolCallId;
+      if (capture && toolCallId) capture.toolStart(toolCallId);
+      // Buffer mode preserves original stream bytes for observation. Model-facing
+      // formatting still decodes UTF-8 exactly as the previous exec callback did.
+      const child = exec(command, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024 * 10, encoding: 'buffer', env, signal: ctx.abortSignal }, (error, stdout, stderr) => {
         const execError = error as (Error & { code?: number; killed?: boolean; signal?: string }) | null;
         const aborted = Boolean(ctx.abortSignal?.aborted) || execError?.name === 'AbortError';
         const exitCode = aborted
@@ -105,8 +110,8 @@ export const shellTool: ToolDefinition = {
             : (execError?.code ?? 0);
         const parts: string[] = [];
 
-        const stdoutPart = formatStream('STDOUT', stdout, stdoutLimit);
-        const stderrPart = formatStream('STDERR', stderr, stderrLimit);
+        const stdoutPart = formatStream('STDOUT', stdout.toString('utf8'), stdoutLimit);
+        const stderrPart = formatStream('STDERR', stderr.toString('utf8'), stderrLimit);
         if (stdoutPart) parts.push(stdoutPart);
         if (stderrPart) parts.push(stderrPart);
         parts.push(`Exit code: ${exitCode}`);
@@ -116,6 +121,11 @@ export const shellTool: ToolDefinition = {
           is_error: exitCode !== 0 && exitCode !== '0',
         });
       });
+      if (capture && toolCallId) {
+        child.stdout?.on('data', (chunk: Buffer) => capture.write(toolCallId, 'stdout', chunk));
+        child.stderr?.on('data', (chunk: Buffer) => capture.write(toolCallId, 'stderr', chunk));
+        child.once('close', () => capture.toolEnd(toolCallId));
+      }
     });
   },
 };

@@ -13,12 +13,13 @@ import { WorkRegistry } from '../../src/work/registry.js';
 import { WorkStore } from '../../src/work/work-store.js';
 import { requestAsyncWorkCancel } from '../../src/work/cancel.js';
 
-for (const { cancel, resident } of [{ cancel: false, resident: false }, { cancel: true, resident: false }, { cancel: false, resident: true }]) test(`production tracked delegation: resident=${resident}, cancellation=${cancel}`, async () => {
+for (const { cancel, resident, indexFailure } of [{ cancel: false, resident: false }, { cancel: true, resident: false }, { cancel: false, resident: true }, { cancel: false, resident: false, indexFailure: true }]) test(`production tracked delegation: resident=${resident}, cancellation=${cancel}, indexFailure=${!!indexFailure}`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'h23-delegation-'));
   const workspace = join(root, 'worker');
   mkdirSync(workspace);
   const history = new ConversationHistory(join(root, 'history'), 400_000, 'harness-test');
   const workRegistry = new WorkRegistry({ store: new WorkStore(join(root, 'work')), agent: 'harness-test' });
+  if (indexFailure) workRegistry.bindTurn = () => { throw new Error('simulated index unavailable'); };
   const originalFetch = globalThis.fetch;
   const priorKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = 'test-key';
@@ -85,11 +86,21 @@ for (const { cancel, resident } of [{ cancel: false, resident: false }, { cancel
     assert.ok(child, 'actual nested delegation must preserve parent linkage');
     assert.equal(child.originChatId, 'ios_harness');
     assert.equal(child.taskBrief, 'child task');
+    assert.equal(child.resultHandle.type, 'subagent_chat');
+    if (child.resultHandle.type !== 'subagent_chat') throw new Error('wrong handle');
+    const childTurn = probes[0].turnRuntime!.turnId;
+    assert.equal(child.resultHandle.turnId, indexFailure ? undefined : childTurn);
+    const origin = agent.executionTurnOrigin(probes[0].chatId, childTurn);
+    assert.equal(origin?.harnessWorkId, child.workId);
+    assert.equal(origin?.parentChatId, 'worker:parent');
+    assert.equal(origin?.parentTurnId, child.originTurnId);
+    assert.ok(origin?.parentToolCallId);
+
     assert.equal(probes[0].parentWorkId, child.workId);
     assert.equal(probes[0].workspacePath, resident ? root : workspace);
     assert.equal(probes[0].turnRuntime?.registry, scoped);
     if (cancel) {
-      const outcome = requestAsyncWorkCancel({ registry: workRegistry, cancelCodingJob: async () => {}, stopChat: id => agent.stop(id).stopped }, child.workId);
+      const outcome = requestAsyncWorkCancel({ registry: workRegistry, cancelCodingJob: async () => {}, stopChat: (id, turnId) => agent.stop(id, turnId).stopped }, child.workId);
       assert.equal(outcome.status, 'accepted');
     }
     const deadline = Date.now() + 5000;

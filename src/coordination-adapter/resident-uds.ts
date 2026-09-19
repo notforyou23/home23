@@ -1,3 +1,4 @@
+import type { ExecutionControlRequest, ExecutionControlReceipt } from "../agent/execution-control.js";
 import { plannedRecoveryPolicy } from '../agent/operation-work-policy.js';
 import { parseHistoricalContext, type HistoricalContextEntry } from '../agent/historical-context.js';
 import type { ToolContext } from '../agent/types.js';
@@ -719,6 +720,7 @@ export interface ResidentTurnUdsServerOptions {
   coordinationCompletionClient?:ResidentUdsClient;
   coordinationClient?:ResidentUdsClient;
   exactToolRuntime?: { registry: ToolRegistry; context: ToolContext };
+  executionControl?: { available?(): boolean; execute(request: ExecutionControlRequest): Promise<ExecutionControlReceipt> };
   now?:()=>number;
 }
 
@@ -939,6 +941,13 @@ export class ResidentTurnUdsServer {
     }
   }
   async #handle(request:ResidentRequestFrame,signal:AbortSignal):Promise<JsonValue>{
+    if(request.method==="GET"&&request.path==="/internal/v1/executions/capabilities") return {available:Boolean(this.options.executionControl) && (this.options.executionControl?.available?.() ?? true)};
+    if(request.method==="POST"&&request.path==="/internal/v1/executions/control"){
+      if(!this.options.executionControl || this.options.executionControl.available?.() === false) throw new ResidentProtocolError("request_invalid","execution controls unavailable");
+      const p=object(request.payload);
+      if((p.operation!=="cancel"&&p.operation!=="steer")||typeof p.idempotencyKey!=="string"||p.idempotencyKey.length<16||p.idempotencyKey.length>128) throw new ResidentProtocolError("request_invalid","invalid execution control");
+      return await this.options.executionControl.execute(p as unknown as ExecutionControlRequest) as unknown as JsonValue;
+    }
     if(request.method==="GET"&&request.path===MODEL_CATALOG){
       const aliases=this.#modelAliases;
       return {
@@ -1137,6 +1146,14 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
     this.#startTimeoutMs=positiveSafeInteger(options.startTimeoutMs??DEFAULT_START_TIMEOUT_MS,"resident start timeout");
     this.#resultTimeoutMs=positiveSafeInteger(options.resultTimeoutMs??DEFAULT_RESULT_TIMEOUT_MS,"resident result timeout");
     this.#retryDelayMs=positiveSafeInteger(options.retryDelayMs??RESULT_RETRY_MS,"resident result retry delay");
+  }
+  async executionCapabilities(input:{requestId:string;correlationId:string}):Promise<boolean>{
+    const response=await this.options.client.request({method:"GET",path:"/internal/v1/executions/capabilities",payload:{},deadlineAtMs:(this.options.now?.()??Date.now())+Math.min(this.#requestDeadlineMs,2000),requestId:input.requestId,correlationId:input.correlationId});
+    return object(response.payload).available===true;
+  }
+  async executeControl(request:ExecutionControlRequest,input:{requestId:string;correlationId:string}):Promise<ExecutionControlReceipt>{
+    const response=await this.options.client.request({method:"POST",path:"/internal/v1/executions/control",payload:request as unknown as JsonValue,deadlineAtMs:(this.options.now?.()??Date.now())+this.#requestDeadlineMs,requestId:input.requestId,correlationId:input.correlationId});
+    return object(response.payload) as unknown as ExecutionControlReceipt;
   }
   async modelCatalog(input:{requestId:string;correlationId:string}):Promise<ResidentModelCatalog>{
     const now=()=>this.options.now?.()??Date.now();

@@ -189,6 +189,7 @@ export interface CoordinationAttachmentPort {
 
 export interface CoordinationServices {
   auth: CoordinationAuthPort;
+  console?: import("../console/service.js").ConsoleService;
   bootstrap?: BootstrapService;
   unread?: CoordinationUnreadPort;
   search?: CanonicalSearchService;
@@ -239,6 +240,8 @@ export interface CoordinationAdvertisedCapabilities {
   search: boolean;
   eventReplay: boolean;
   communicationEvidence: boolean;
+  consoleRead?: boolean;
+  consoleControl?: boolean;
   attachments: boolean;
   work: boolean;
   workMutation: boolean;

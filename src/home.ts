@@ -1,3 +1,4 @@
+import { createExecutionControlPort } from "./agent/execution-control.js";
 import { Home23Adapter } from './channels/home23.js';
 import { runScheduledChannelTurn } from './scheduler/channel-run.js';
 /**
@@ -563,11 +564,18 @@ async function main(): Promise<void> {
     xai: { apiKey: resolveApiKey('xai'), baseURL: resolveBaseUrl('xai') },
     'ollama-cloud': { apiKey: resolveApiKey('ollama-cloud'), baseURL: resolveBaseUrl('ollama-cloud') },
   });
+  let executionControlsReady = false;
+  let executionControl: ReturnType<typeof createExecutionControlPort> | undefined;
   const residentCoordinationHarness = await startResidentCoordinationHarness({
     agent,
     history,
     modelAliases: MODEL_ALIASES,
     exactToolRuntime: { registry, context: toolContext },
+    executionControl: { available: () => executionControlsReady, execute: request => {
+      if (!executionControlsReady) throw new Error("Execution controls are starting");
+      executionControl ??= createExecutionControlPort({instanceDir:INSTANCE_DIR,agent, codingBridge:toolContext.codingBridge ?? undefined, registry:toolContext.workRegistry as WorkRegistry | undefined});
+      return executionControl.execute(request);
+    } },
   });
 
   const CHAT_TURN_ORPHAN_MAX_AGE_MS = 10 * 60 * 1000;
@@ -1260,8 +1268,10 @@ async function main(): Promise<void> {
     cancelCodingJob: async (jobId) => {
       if (codingBridge) await codingBridge.cancelJob(jobId);
     },
-    stopChat: (chatId) => agent.stop(chatId).stopped,
+    stopChat: (chatId: string, turnId?: string) => agent.stop(chatId, turnId).stopped,
   }, workId);
+
+  executionControlsReady = true;
 
   // ── Async-work boot reconciliation (Step 31) ──
   // Runs even when the coding bridge is disabled so lost sub-agents are still
@@ -1440,7 +1450,7 @@ async function main(): Promise<void> {
     registry: workRegistry,
     token: bridgeToken,
     cancelCodingJob: async (jobId) => { if (codingBridge) await codingBridge.cancelJob(jobId); },
-    stopChat: (chatId) => agent.stop(chatId).stopped,
+    stopChat: (chatId: string, turnId?: string) => agent.stop(chatId, turnId).stopped,
     readReceiptDetail: (work) => {
       if (work.resultHandle.type === 'coding_job' && codingBridge) {
         return {

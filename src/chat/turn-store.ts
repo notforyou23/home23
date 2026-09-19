@@ -25,6 +25,7 @@ export class TurnStore {
     first_token_deadline_at?: string;
     reasoning_effort?: ReasoningEffort;
     coordination_origin?: import('../agent/types.js').CoordinationTurnOrigin;
+    delegation_origin?: import('../agent/types.js').DelegationTurnOrigin;
   } = {}): TurnEnvelope {
     const env: TurnEnvelope = {
       type: 'turn',
@@ -41,6 +42,7 @@ export class TurnStore {
       provider,
       reasoning_effort: extras.reasoning_effort,
       coordination_origin: extras.coordination_origin,
+      delegation_origin: extras.delegation_origin,
     };
     this.history.appendRecord(chatId, env);
     return env;
@@ -71,6 +73,7 @@ export class TurnStore {
 
   writeEnd(chatId: string, turn_id: string, status: Exclude<TurnStatus, 'pending'>, extras: {
     last_seq: number;
+    execution_output_capture?: TurnEnvelope['execution_output_capture'];
     stop_reason?: string;
     error?: string;
     error_code?: string;
@@ -93,6 +96,7 @@ export class TurnStore {
       hard_deadline_at: extras.hard_deadline_at,
       first_token_deadline_at: extras.first_token_deadline_at,
       last_seq: extras.last_seq,
+      execution_output_capture: extras.execution_output_capture,
       stop_reason: extras.stop_reason,
       error: extras.error,
       error_code: extras.error_code,

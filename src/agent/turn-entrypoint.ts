@@ -87,6 +87,8 @@ export function createTrackedAgentRunner(agent: Parameters<typeof executeTracked
       effort: options?.effort,
       onEvent: ctx.onEvent,
       parentWorkId: ctx.parentWorkId,
+      delegationOrigin: ctx.delegationOrigin,
+      onDurableStart: ctx.onDelegatedDurableStart,
       coordinationWorkDestination: ctx.coordinationWorkDestination,
       ...(_systemPrompt
         ? { delegatedContext: { systemPrompt: _systemPrompt, workspacePath: ctx.workspacePath } }

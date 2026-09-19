@@ -1,3 +1,8 @@
+import { ConsoleCatalog } from "../console/catalog.js";
+import { ConsoleService } from "../console/service.js";
+import type { ConsoleRoot } from "../console/types.js";
+import { createRequire } from "node:module";
+import { CoordinationHttpError } from "../http/errors.js";
 import type { MessagingActorContext } from '../channels/types.js';
 import { createLiveVoiceService, type LiveVoiceService } from './live-voice.js';
 import { createLiveVoiceTranscriptPort } from './live-voice-transcripts.js';
@@ -7,7 +12,7 @@ import { createResidentNotifications } from './resident-notifications.js';
 import { createResidentContactProjection } from './resident-contact.js';
 import { projectResidentWork } from './resident-work-projection.js';
 import { createResidentAssignments } from './resident-assignments.js';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createScheduledChannelTurns } from './scheduled-turns.js';
 import { createBotInvocationService } from './bot-invocations.js';
 import { resolveMessagingActor } from '../channels/access.js';
@@ -1379,10 +1384,59 @@ export function createCoordinationProcess(
       journalDirectory: join(dirname(config.databasePath), "voice-sessions"),
       isAccepting: () => lifecycle.state() === "accepting" });
   }
+  const resolveInstancePaths = createRequire(import.meta.url)("../../../shared/agent-instance-paths.cjs").resolveAgentInstancePaths as (root:string,slug:string)=>{instanceRoot:string;conversationsDir:string};
+  const consoleRoot = config.home23Root ?? resolve(dirname(config.databasePath),"../../..");
+  const consoleBotRoot = config.botRootDirectory ?? join(dirname(config.databasePath),"..","bots");
+  const consoleCatalog = new ConsoleCatalog(async () => {
+    const bots = database.readAll<{id:string;name:string;binding:string}>("SELECT id,name,resident_binding AS binding FROM bots");
+    const roots:ConsoleRoot[]=[];
+    for(const [slug,resident] of Object.entries(config.residents)) {
+      if(!resident.enabled) continue;
+      const paths=resolveInstancePaths(consoleRoot,slug);
+      const instanceDir=resident.instanceDirectory??paths.instanceRoot;
+      const bot=bots.find(bot=>bot.binding===slug);
+      roots.push({id:`resident:${slug}`,actor:{id:bot?.id??slug,name:bot?.name??slug},runtimeKind:'resident',
+        jobsDir:join(instanceDir,'coding-jobs'),workDir:join(instanceDir,'async-work'),
+        historyDir:resident.conversationsDirectory??join(instanceDir,'conversations'),historyNamespace:slug,executionOutputDir:join(instanceDir,'execution-output')});
+    }
+    for(const bot of bots.filter(bot=>bot.binding.startsWith('bot-'))) {
+      const root=join(consoleBotRoot,bot.id);
+      roots.push({id:`helper:${bot.id}`,actor:{id:bot.id,name:bot.name},runtimeKind:'helper',jobsDir:join(root,'coding-jobs'),
+        workDir:join(root,'async-work'),historyDir:join(root,'state','history'),historyNamespace:bot.id,executionOutputDir:join(root,'execution-output')});
+    }
+    return roots;
+  });
+  const consoleRuntimeAvailability=new Map<string,{checked:number;available:Promise<boolean>}>();
+  const executionConsole = new ConsoleService({catalog:consoleCatalog,
+    authorize:async(source,context)=>{
+      if(source.channelId) await channels.getChannel({context,channelId:source.channelId});
+      else if(source.source.workId) workControl.get({context,workId:source.source.workId});
+    },
+    controls:{
+      available:async(source)=>{
+        const id=source.target.runtimeId;
+        if(id.startsWith('helper:')) return helperRuntime?.executionControlsAvailable(id.slice(7))??false;
+        const cached=consoleRuntimeAvailability.get(id);
+        if(cached&&Date.now()-cached.checked<5000) return cached.available;
+        const port=residentAgents.get(id.replace(/^resident:/,''));
+        const available=port?.executionCapabilities({requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')}).catch(()=>false)??Promise.resolve(false);
+        consoleRuntimeAvailability.set(id,{checked:Date.now(),available});
+        return available;
+      },
+      execute:async(source,request,context)=>{
+        const id=source.target.runtimeId;
+        if(id.startsWith('helper:')&&helperRuntime?.executionControlsAvailable(id.slice(7))) return helperRuntime.executeControl(id.slice(7),request);
+        const port=residentAgents.get(id.replace(/^resident:/,''));
+        if(!port) throw new CoordinationHttpError('console_control_unavailable',503,true);
+        try { return await port.executeControl(request,{requestId:context.requestId,correlationId:context.correlationId}); }
+        catch { throw new CoordinationHttpError('console_control_unconfirmed',503,true,{},'Execution control acknowledgement unavailable; retry with the same Idempotency-Key.'); }
+      },
+    },
+  });
   const application = createCoordinationApplication({
     flags: config.flags,
     services: {
-      auth, bootstrap, bots: botDirectory, channels, projects, messages, unread, search,
+      auth, bootstrap, bots: botDirectory, channels, projects, messages, unread, search, console:executionConsole,
       ...(liveVoice === undefined ? {} : { liveVoice }),
       work, workControl: stoppedWorkControl, leases, events, communications,
       authorityEpochs,

@@ -9,7 +9,7 @@ import { ResidentTurnUdsServer, type ResidentTurnUdsServerOptions } from "./resi
 const KEY=/^[a-f0-9]{64}$/i;
 function exact(value:string|undefined,name:string){if(value==="true")return true;if(value===undefined||value===""||value==="false")return false;throw new Error(`${name} must be exactly true or false`);}
 
-export async function startResidentCoordinationHarness(input:{agent:Pick<AgentLoop,"runWithTurn"|"stop"|"isRunning"|"getModel"|"getProvider"|"getReasoningEffort">;history:ConversationHistory;modelAliases?:ModelAliases;exactToolRuntime?:ResidentTurnUdsServerOptions["exactToolRuntime"];environment?:NodeJS.ProcessEnv}){
+export async function startResidentCoordinationHarness(input:{agent:Pick<AgentLoop,"runWithTurn"|"stop"|"isRunning"|"getModel"|"getProvider"|"getReasoningEffort">;history:ConversationHistory;modelAliases?:ModelAliases;exactToolRuntime?:ResidentTurnUdsServerOptions["exactToolRuntime"];executionControl?:ResidentTurnUdsServerOptions["executionControl"];environment?:NodeJS.ProcessEnv}){
   const env=input.environment??process.env;
   if(!exact(env.HOME23_COORDINATION_RESIDENT_ENABLED,"HOME23_COORDINATION_RESIDENT_ENABLED"))return null;
   const slug=env.HOME23_AGENT??"";if(!/^[a-z][a-z0-9-]{0,62}$/.test(slug))throw new Error("HOME23_AGENT is not a valid resident slug");
@@ -27,6 +27,6 @@ export async function startResidentCoordinationHarness(input:{agent:Pick<AgentLo
   const coordinatorClient=coordinatorSocketPath
     ? new ResidentUdsClient({socketPath:coordinatorSocketPath,serverInstanceId:coordinatorServerInstanceId,credential})
     : undefined;
-  const server=new ResidentTurnUdsServer({socketPath,serverInstanceId,credential,residentSlug:slug,agent:input.agent,history:input.history,modelAliases:input.modelAliases??{},...(attachmentRoot?{attachmentRoot}:{}),...(coordinatorClient?{coordinationClient:coordinatorClient}:{}),...(input.exactToolRuntime?{exactToolRuntime:input.exactToolRuntime}:{})});
+  const server=new ResidentTurnUdsServer({socketPath,serverInstanceId,credential,residentSlug:slug,executionControl:input.executionControl,agent:input.agent,history:input.history,modelAliases:input.modelAliases??{},...(attachmentRoot?{attachmentRoot}:{}),...(coordinatorClient?{coordinationClient:coordinatorClient}:{}),...(input.exactToolRuntime?{exactToolRuntime:input.exactToolRuntime}:{})});
   await server.start();return server;
 }

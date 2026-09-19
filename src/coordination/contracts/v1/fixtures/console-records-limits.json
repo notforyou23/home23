@@ -1,0 +1,56 @@
+{
+  "records": [
+    {
+      "id": "cr_fixture_cs_sanitized_coding_99",
+      "sourceId": "cs_sanitized_coding",
+      "stream": "events",
+      "format": "codex-jsonl",
+      "kind": "item.completed",
+      "occurredAt": null,
+      "observedAt": "2026-09-19T12:00:10.000Z",
+      "raw": null,
+      "rawUrl": "/api/v1/console/sources/cs_sanitized_coding/records/cr_fixture_cs_sanitized_coding_99/raw",
+      "rawEncoding": "utf8",
+      "byteLength": 65700,
+      "partial": false,
+      "sequence": null,
+      "forwardedFromSourceId": null
+    },
+    {
+      "id": "cr_fixture_cs_sanitized_coding_100",
+      "sourceId": "cs_sanitized_coding",
+      "stream": "stderr",
+      "format": "text",
+      "kind": "text",
+      "occurredAt": null,
+      "observedAt": "2026-09-19T12:00:10.000Z",
+      "raw": "last line without a newline",
+      "rawUrl": null,
+      "rawEncoding": "utf8",
+      "byteLength": 27,
+      "partial": true,
+      "sequence": null,
+      "forwardedFromSourceId": null
+    },
+    {
+      "id": "cr_fixture_cs_sanitized_coding_101",
+      "sourceId": "cs_sanitized_coding",
+      "stream": "stderr",
+      "format": "text",
+      "kind": "text",
+      "occurredAt": null,
+      "observedAt": "2026-09-19T12:00:10.000Z",
+      "raw": null,
+      "rawUrl": "/api/v1/console/sources/cs_sanitized_coding/records/cr_fixture_cs_sanitized_coding_101/raw",
+      "rawEncoding": "binary",
+      "byteLength": 3,
+      "partial": false,
+      "sequence": null,
+      "forwardedFromSourceId": null
+    }
+  ],
+  "beforeCursor": null,
+  "resumeCursor": "fixture_opaque_resume_cursor",
+  "hasMore": false,
+  "gaps": []
+}

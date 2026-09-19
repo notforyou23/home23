@@ -1,0 +1,56 @@
+{
+  "records": [
+    {
+      "id": "cr_fixture_cs_sanitized_cursor_1",
+      "sourceId": "cs_sanitized_cursor",
+      "stream": "events",
+      "format": "cursor-jsonl",
+      "kind": "tool_call",
+      "occurredAt": "2026-09-19T12:00:10.000Z",
+      "observedAt": "2026-09-19T12:00:10.000Z",
+      "raw": "{\"type\":\"tool_call\",\"subtype\":\"started\",\"call_id\":\"call_fixture\",\"tool_call\":{\"readToolCall\":{\"args\":{\"path\":\"README.md\"}},\"toolCallId\":\"call_fixture\",\"startedAtMs\":1789819200000},\"session_id\":\"session_fixture\",\"timestamp_ms\":1789819200001}",
+      "rawUrl": null,
+      "rawEncoding": "utf8",
+      "byteLength": 240,
+      "partial": false,
+      "sequence": null,
+      "forwardedFromSourceId": null
+    },
+    {
+      "id": "cr_fixture_cs_sanitized_cursor_2",
+      "sourceId": "cs_sanitized_cursor",
+      "stream": "events",
+      "format": "cursor-jsonl",
+      "kind": "tool_call",
+      "occurredAt": "2026-09-19T12:00:10.000Z",
+      "observedAt": "2026-09-19T12:00:10.000Z",
+      "raw": "{\"type\":\"tool_call\",\"subtype\":\"completed\",\"call_id\":\"call_fixture\",\"tool_call\":{\"readToolCall\":{\"args\":{\"path\":\"README.md\"},\"result\":{\"success\":{\"content\":\"# Sample project\\n\",\"totalLines\":1}}},\"toolCallId\":\"call_fixture\",\"startedAtMs\":1789819200000},\"session_id\":\"session_fixture\",\"timestamp_ms\":1789819200002}",
+      "rawUrl": null,
+      "rawEncoding": "utf8",
+      "byteLength": 311,
+      "partial": false,
+      "sequence": null,
+      "forwardedFromSourceId": null
+    },
+    {
+      "id": "cr_fixture_cs_sanitized_cursor_3",
+      "sourceId": "cs_sanitized_cursor",
+      "stream": "events",
+      "format": "cursor-jsonl",
+      "kind": "thinking",
+      "occurredAt": null,
+      "observedAt": "2026-09-19T12:00:10.000Z",
+      "raw": "{\"type\":\"thinking\",\"subtype\":\"delta\",\"text\":\"Checking the file.\"}",
+      "rawUrl": null,
+      "rawEncoding": "utf8",
+      "byteLength": 65,
+      "partial": false,
+      "sequence": null,
+      "forwardedFromSourceId": null
+    }
+  ],
+  "beforeCursor": null,
+  "resumeCursor": "fixture_opaque_resume_cursor",
+  "hasMore": false,
+  "gaps": []
+}

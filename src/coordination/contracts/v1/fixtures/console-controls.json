@@ -1,0 +1,43 @@
+{
+  "request": {
+    "expectedExecutionId": "t_fixture",
+    "text": "Focus on the failing check."
+  },
+  "receipts": [
+    {
+      "operationId": "console_operation_fixture",
+      "targetId": "t_fixture",
+      "status": "queued"
+    },
+    {
+      "operationId": "console_operation_fixture",
+      "targetId": "t_fixture",
+      "status": "applied"
+    },
+    {
+      "operationId": "console_operation_fixture",
+      "targetId": "t_fixture",
+      "status": "not_applied"
+    },
+    {
+      "operationId": "console_operation_fixture",
+      "targetId": "t_fixture",
+      "status": "unknown"
+    },
+    {
+      "operationId": "console_operation_fixture",
+      "targetId": "t_fixture",
+      "status": "cancellation_requested"
+    },
+    {
+      "operationId": "console_operation_fixture",
+      "targetId": "t_fixture",
+      "status": "already_terminal"
+    },
+    {
+      "operationId": "console_operation_fixture",
+      "targetId": "t_fixture",
+      "status": "stale_target"
+    }
+  ]
+}

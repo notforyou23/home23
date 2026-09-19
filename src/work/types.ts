@@ -33,8 +33,8 @@ export type VerificationStatus = 'none' | 'pending' | 'reviewed' | 'skipped';
 
 export type WorkResultHandle =
   | { type: 'coding_job'; jobId: string }
-  | { type: 'subagent_chat'; chatId: string }
-  | { type: 'cron_chat'; chatId: string };
+  | { type: 'subagent_chat'; chatId: string; turnId?: string }
+  | { type: 'cron_chat'; chatId: string; turnId?: string };
 
 export type ChatWorkHandle = Extract<WorkResultHandle, { chatId: string }>;
 

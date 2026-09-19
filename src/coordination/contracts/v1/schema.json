@@ -481,6 +481,767 @@
         {"$ref": "#/$defs/fixtureHeader"},
         {"type": "object", "required": ["query", "scope", "results", "nextCursor", "completeness", "throughEventSequence"], "properties": {"fixtureKind": {"const": "search"}, "query": {"type": "string", "minLength": 1}, "scope": {"type": "string"}, "results": {"type": "array", "items": {"type": "object", "required": ["type", "id", "conversationId", "channelId", "title", "excerpt", "sequence", "createdAt"], "properties": {"id": {"$ref": "#/$defs/messageId"}, "conversationId": {"$ref": "#/$defs/conversationId"}, "channelId": {"$ref": "#/$defs/channelId"}, "sequence": {"type": "integer", "minimum": 1}, "createdAt": {"$ref": "#/$defs/timestamp"}}, "additionalProperties": true}}, "nextCursor": {"type": ["string", "null"]}, "completeness": {"type": "object", "required": ["status", "respondingRoute", "authoritativeSource", "sourceEventSequence", "indexRoute", "indexedThroughEventSequence", "crossingProof", "filters", "samePathCanary", "importCoverage", "verdict", "reason"], "properties": {"status": {"type": "string"}, "respondingRoute": {"const": "/api/v1/search"}, "sourceEventSequence": {"$ref": "#/$defs/eventSequence"}, "indexedThroughEventSequence": {"$ref": "#/$defs/eventSequence"}, "samePathCanary": {"type": "object", "required": ["id", "found", "checkedAt"], "properties": {"found": {"type": "boolean"}, "checkedAt": {"$ref": "#/$defs/timestamp"}}, "additionalProperties": true}}, "additionalProperties": true}, "throughEventSequence": {"$ref": "#/$defs/eventSequence"}}, "additionalProperties": true}
       ]
+    },
+    "consoleSource": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "actor",
+        "backend",
+        "parentSourceId",
+        "workId",
+        "harnessWorkId",
+        "executionId",
+        "conversationId",
+        "state",
+        "startedAt",
+        "finishedAt",
+        "lastOutputAt",
+        "lastOutputAtBasis",
+        "checkedAt",
+        "output",
+        "actions"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "x-known-values": [
+            "coding",
+            "subagent"
+          ],
+          "description": "Preserve unknown future values."
+        },
+        "label": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "object",
+          "required": [
+            "id",
+            "name"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "backend": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentSourceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harnessWorkId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conversationId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "x-known-values": [
+            "queued",
+            "starting",
+            "running",
+            "blocked",
+            "stopping",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted",
+            "unknown"
+          ],
+          "description": "Preserve unknown future values."
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastOutputAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastOutputAtBasis": {
+          "type": "string",
+          "x-known-values": [
+            "source_timestamp",
+            "observed_append",
+            "file_modified",
+            "unknown"
+          ],
+          "description": "Preserve unknown future values."
+        },
+        "checkedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "output": {
+          "type": "object",
+          "required": [
+            "availability",
+            "reason",
+            "format",
+            "shellOutputTiming",
+            "historyCompleteness"
+          ],
+          "properties": {
+            "availability": {
+              "type": "string",
+              "x-known-values": [
+                "pending",
+                "available",
+                "unavailable"
+              ],
+              "description": "Preserve unknown future values."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "format": {
+              "type": "string",
+              "x-known-values": [
+                "codex-jsonl",
+                "cursor-jsonl",
+                "home23-turn",
+                "text"
+              ],
+              "description": "Preserve unknown future values."
+            },
+            "shellOutputTiming": {
+              "type": "string",
+              "x-known-values": [
+                "at_completion",
+                "incremental",
+                "mixed",
+                "unknown"
+              ],
+              "description": "Preserve unknown future values."
+            },
+            "historyCompleteness": {
+              "type": "string",
+              "x-known-values": [
+                "complete",
+                "partial",
+                "unknown"
+              ],
+              "description": "Preserve unknown future values."
+            }
+          },
+          "additionalProperties": true
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "operation",
+              "available",
+              "reason",
+              "scope",
+              "targetId"
+            ],
+            "properties": {
+              "operation": {
+                "type": "string",
+                "x-known-values": [
+                  "cancel",
+                  "steer"
+                ],
+                "description": "Preserve unknown future values."
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scope": {
+                "type": "string",
+                "x-known-values": [
+                  "source",
+                  "work"
+                ],
+                "description": "Preserve unknown future values."
+              },
+              "targetId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "consoleAction": {
+      "type": "object",
+      "required": [
+        "operation",
+        "available",
+        "reason",
+        "scope",
+        "targetId"
+      ],
+      "properties": {
+        "operation": {
+          "type": "string",
+          "x-known-values": [
+            "cancel",
+            "steer"
+          ],
+          "description": "Preserve unknown future values."
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "x-known-values": [
+            "source",
+            "work"
+          ],
+          "description": "Preserve unknown future values."
+        },
+        "targetId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "consoleRecord": {
+      "type": "object",
+      "required": [
+        "id",
+        "sourceId",
+        "stream",
+        "format",
+        "kind",
+        "occurredAt",
+        "observedAt",
+        "raw",
+        "rawUrl",
+        "rawEncoding",
+        "byteLength",
+        "partial",
+        "sequence",
+        "forwardedFromSourceId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "stream": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string",
+          "x-known-values": [
+            "codex-jsonl",
+            "cursor-jsonl",
+            "home23-turn",
+            "text"
+          ],
+          "description": "Preserve unknown future values."
+        },
+        "kind": {
+          "type": "string"
+        },
+        "occurredAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "raw": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rawUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^/api/v1/console/sources/[^/]+/records/[^/]+/raw$"
+        },
+        "rawEncoding": {
+          "type": "string",
+          "x-known-values": [
+            "utf8",
+            "binary"
+          ],
+          "description": "Preserve unknown future values."
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "partial": {
+          "type": "boolean"
+        },
+        "sequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "forwardedFromSourceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "raw": {
+                  "type": "string"
+                },
+                "rawUrl": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "raw": {
+                  "type": "null"
+                },
+                "rawUrl": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "consoleGap": {
+      "type": "object",
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "sourceId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "consoleSourceList": {
+      "type": "object",
+      "required": [
+        "sources",
+        "nextCursor",
+        "notices"
+      ],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/consoleSource"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "runtimeId",
+              "reason"
+            ],
+            "properties": {
+              "runtimeId": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "consoleRecordPage": {
+      "type": "object",
+      "required": [
+        "records",
+        "beforeCursor",
+        "resumeCursor",
+        "hasMore",
+        "gaps"
+      ],
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/consoleRecord"
+          }
+        },
+        "beforeCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resumeCursor": {
+          "type": "string"
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/consoleGap"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "consoleCommandRequest": {
+      "type": "object",
+      "required": [
+        "expectedExecutionId"
+      ],
+      "properties": {
+        "expectedExecutionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "consoleCommandReceipt": {
+      "type": "object",
+      "required": [
+        "operationId",
+        "targetId",
+        "status"
+      ],
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "targetId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "x-known-values": [
+            "cancellation_requested",
+            "already_terminal",
+            "stale_target",
+            "queued",
+            "applied",
+            "not_applied",
+            "unknown"
+          ],
+          "description": "Preserve unknown future values."
+        }
+      },
+      "additionalProperties": true
+    },
+    "consoleStreamEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "event",
+            "data"
+          ],
+          "properties": {
+            "event": {
+              "const": "source"
+            },
+            "data": {
+              "type": "object",
+              "required": [
+                "source"
+              ],
+              "properties": {
+                "source": {
+                  "$ref": "#/$defs/consoleSource"
+                },
+                "beforeCursor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "event",
+            "data"
+          ],
+          "properties": {
+            "event": {
+              "const": "record"
+            },
+            "data": {
+              "type": "object",
+              "required": [
+                "record"
+              ],
+              "properties": {
+                "record": {
+                  "$ref": "#/$defs/consoleRecord"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "event",
+            "data"
+          ],
+          "properties": {
+            "event": {
+              "const": "checkpoint"
+            },
+            "data": {
+              "type": "object",
+              "required": [
+                "cursor"
+              ],
+              "properties": {
+                "cursor": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "event",
+            "data"
+          ],
+          "properties": {
+            "event": {
+              "const": "gap"
+            },
+            "data": {
+              "$ref": "#/$defs/consoleGap"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "event",
+            "data"
+          ],
+          "properties": {
+            "event": {
+              "const": "end"
+            },
+            "data": {
+              "type": "object",
+              "required": [
+                "sourceId",
+                "status"
+              ],
+              "properties": {
+                "sourceId": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "consoleStreamFixture": {
+      "type": "object",
+      "required": [
+        "events"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/consoleStreamEvent"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "consoleControlsFixture": {
+      "type": "object",
+      "required": [
+        "request",
+        "receipts"
+      ],
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/consoleCommandRequest"
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/consoleCommandReceipt"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "consoleSourceResponse": {
+      "type": "object",
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/consoleSource"
+        }
+      },
+      "additionalProperties": true
     }
   }
 }

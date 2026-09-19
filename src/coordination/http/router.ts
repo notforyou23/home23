@@ -21,6 +21,7 @@ import { encodeCommunicationEventEnvelope } from "../communications/index.js";
 import { MessagingError } from "../channels/index.js";
 import { once } from "node:events";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../../agent/reasoning-effort.js";
+import { mountConsoleRoutes } from "../console/routes.js";
 import { mountLiveVoiceRoutes } from "./live-voice-routes.js";
 
 type CapabilityName = keyof CoordinationAdvertisedCapabilities;
@@ -124,6 +125,8 @@ export function createCoordinationRouter(input: {
   router.delete("/api/v1/sessions/current",requireIdempotencyKey(application),
     asyncRoute(async(request,response)=>{if(!application.services.auth.revokeCurrentSession)throw unavailable("bootstrap");const metadata=requireCoordinationMetadata(response);const authorization=request.get("authorization");if(!authorization?.startsWith("Bearer "))throw new CoordinationHttpError("unauthorized",401,false);await application.services.auth.revokeCurrentSession({accessToken:authorization.slice(7),network:metadata.networkEvidence,mutation:{idempotencyKey:coordinationIdempotencyKey(response),requestId:metadata.requestId,correlationId:metadata.correlationId}});response.status(204).end();}),
   );
+
+  mountConsoleRoutes(router, application, lifecycle);
 
   const productRead = requireCoordinationAuth(application, ["product:read"]);
   const messageSend = requireCoordinationAuth(application, ["message:send"]);

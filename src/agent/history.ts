@@ -139,9 +139,12 @@ export class ConversationHistory {
           const rec = JSON.parse(line) as HistoryRecord;
           // Skip turn envelopes and events — those are for turn endpoints, not message history
           if (rec && typeof rec === 'object' && ('type' in rec) &&
-              ((rec as { type: string }).type === 'turn' || (rec as { type: string }).type === 'event')) {
+              ((rec as { type: string }).type === 'turn' || (rec as { type: string }).type === 'event'
+                || (rec as { type: string }).type === 'execution_control')) {
             continue;
           }
+          // Exact-turn operator instructions are replay evidence, not input for sibling/successor turns.
+          if (rec && typeof rec === 'object' && 'executionControl' in rec) continue;
           if (rec && typeof rec === 'object' && !('type' in rec && (rec as { type: string }).type === 'session_boundary')) {
             records.push(hydrateImageRefs(stripThinking(rec as StoredMessage)));
           } else {

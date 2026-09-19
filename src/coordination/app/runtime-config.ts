@@ -28,6 +28,8 @@ export interface CoordinationRuntimeConfig {
   host: "127.0.0.1" | "::1";
   port: number;
   databasePath: string;
+  /** Maintained installation root for read-only execution inventory. */
+  home23Root?: string;
   /** Core-owned private state for deliberately created processless Bots. */
   botRootDirectory: string;
   socketPath: string;
@@ -53,6 +55,8 @@ export interface CoordinationRuntimeConfig {
   home?: Readonly<{ id: string; name: string; primaryResident: string }>;
   residents: Readonly<Record<string, {
     enabled: boolean;
+    instanceDirectory?: string;
+    conversationsDirectory?: string;
     socketPath: string;
     serverInstanceId: string;
     clientInstanceId: string;
@@ -250,7 +254,10 @@ export function loadCoordinationRuntimeConfig(
     const key = environment[`HOME23_COORDINATION_RESIDENT_${upper}_KEY`] ?? "";
     if (residentEnabled && !TOKEN_PATTERN.test(key)) throw new Error(`HOME23_COORDINATION_RESIDENT_${upper}_KEY must contain exactly 32 bytes of hex`);
     if (![serverInstanceId, clientInstanceId].every((value) => /^[A-Za-z0-9._:-]{1,128}$/.test(value))) throw new Error(`HOME23_COORDINATION_RESIDENT_${upper} instance IDs are invalid`);
-    return [slug, Object.freeze({ enabled: residentEnabled, socketPath, serverInstanceId, clientInstanceId, keyVersion: Number(rawVersion), key })];
+    const instanceDirectory=environment[`HOME23_COORDINATION_RESIDENT_${upper}_INSTANCE_DIR`];
+    const conversationsDirectory=environment[`HOME23_COORDINATION_RESIDENT_${upper}_CONVERSATIONS_DIR`];
+    for(const value of [instanceDirectory,conversationsDirectory]) if(value!==undefined&&(!isAbsolute(value)||value.includes("\0"))) throw new Error("Console resident roots must be absolute paths");
+    return [slug, Object.freeze({ enabled: residentEnabled, instanceDirectory, conversationsDirectory, socketPath, serverInstanceId, clientInstanceId, keyVersion: Number(rawVersion), key })];
   })) as CoordinationRuntimeConfig["residents"];
 
   return Object.freeze({
@@ -258,6 +265,7 @@ export function loadCoordinationRuntimeConfig(
     host,
     port,
     databasePath,
+    home23Root,
     botRootDirectory,
     socketPath,
     capabilityToken,

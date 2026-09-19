@@ -219,6 +219,16 @@ export const spawnAgentTool: ToolDefinition = {
     const subCtx: ToolContext = {
       ...ctx,
       chatId: subChatId,
+      delegationOrigin: work ? {
+        harnessWorkId: work.workId,
+        parentChatId: ctx.chatId,
+        parentTurnId: ctx.turnRuntime?.turnId,
+        parentToolCallId: ctx.parentToolCallId,
+      } : undefined,
+      onDelegatedDurableStart: work ? ({ chatId, turnId }) => {
+        try { ctx.workRegistry?.bindTurn?.(work.workId, chatId, turnId); }
+        catch (error) { console.warn(`[subagent] turn index unavailable for ${work.workId}: ${errorMessage(error)}`); }
+      } : undefined,
       // A child's response is evidence for this specialist, never part of the
       // resident's answer. Keep the exact event inside its owning lifecycle.
       onEvent: ctx.onEvent ? (activity) => ctx.onEvent?.({

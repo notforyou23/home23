@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentLoop } from '../../src/agent/loop.js';
 import { ConversationHistory } from '../../src/agent/history.js';
+import { createSeededToolRegistry } from '../../src/agent/tools/index.js';
 import { steerQueue } from '../../src/agent/steer-queue.js';
 
 const TOOL_NAME = 'noop_tool';
@@ -106,6 +107,64 @@ test('queued steer appears on the next iteration and leaves the current model ca
     globalThis.fetch = originalFetch;
     if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = priorKey;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+for (const applied of [true, false]) test(`exact steer produces durable ${applied ? 'applied' : 'not_applied'} receipt in its real turn`, async () => {
+  const root = join(tmpdir(), `exact-steer-loop-${process.pid}-${Math.random()}`);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  const agent = new AgentLoop({
+    apiKey: 'test-key', model: 'gpt-5.5', provider: 'openai', registry: createSeededToolRegistry([{
+      name: 'verify_note', description: 'a harmless second model round', input_schema: { type: 'object', properties: {} },
+      execute: async () => ({ content: 'checked' }),
+    }]),
+    contextManager: { getSystemPrompt: () => 'Test.', getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
+    history, toolContext: { brainOperations: { withActivityHandler() { return this; } }, turnRuntime: null } as never,
+    workspacePath: join(root, 'workspace'),
+  });
+  const priorFetch = globalThis.fetch;
+  const priorKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+  let turnId = '';
+  const inputs: unknown[] = [];
+  const request = () => ({ chatId: 'shared', turnId, idempotencyKey: 'exact-steer', text: 'only this turn' });
+  try {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url);
+      if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') return new Response('{}', { status: 503 });
+      inputs.push(JSON.parse(String(init?.body)));
+      if (!applied) assert.equal(agent.steerExecution(request()).status, 'queued');
+      if (applied && inputs.length === 1) return Response.json({ choices: [{ message: {
+        role: 'assistant', content: null, tool_calls: [{ id: 'verify-1', type: 'function', function: { name: 'verify_note', arguments: '{}' } }],
+      } }] });
+      return Response.json({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
+    }) as typeof fetch;
+    const started = await agent.runWithTurn('shared', 'begin', { onDurableStart: start => {
+      turnId = start.turnId;
+      if (applied) {
+        assert.equal(agent.steerExecution(request()).status, 'queued');
+        assert.equal(agent.steerExecution(request()).status, 'queued');
+      }
+    } });
+    await started.response;
+    const serialized = JSON.stringify(inputs);
+    assert.equal(serialized.includes('only this turn'), applied);
+    assert.equal(inputs.length, applied ? 2 : 1);
+    if (applied) for (const input of inputs) assert.equal(JSON.stringify(input).split('only this turn').length - 1, 1);
+    const raw = history.loadRaw('shared') as Array<any>;
+    const receipts = raw.filter(row => row.kind === 'status' && row.data.status === 'execution_control');
+    assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].data.controlStatus, applied ? 'applied' : 'not_applied');
+    assert.equal('message' in receipts[0].data, false);
+    assert.ok(raw.indexOf(receipts[0]) < raw.findIndex(row => row.type === 'turn' && row.status === 'complete'));
+    assert.equal(agent.steerExecution(request()).status, applied ? 'applied' : 'not_applied');
+    assert.equal(JSON.stringify(history.load('shared')).includes('only this turn'), false);
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = priorKey;
     rmSync(root, { recursive: true, force: true });
   }
 });

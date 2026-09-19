@@ -4,7 +4,13 @@
     "algorithm": "SHA-256",
     "ordering": "canonicalFiles sorted by UTF-8 relative path",
     "framing": "<path-byte-count>:<relative-path>\\n<content-byte-count>:<exact-file-bytes>\\n",
-    "excludes": ["generated Apple source", "receipts", "build logs", "absolute paths", "noncanonical timestamps"]
+    "excludes": [
+      "generated Apple source",
+      "receipts",
+      "build logs",
+      "absolute paths",
+      "noncanonical timestamps"
+    ]
   },
   "canonicalFiles": [
     "fixtures/attachment.json",
@@ -12,6 +18,13 @@
     "fixtures/bots.json",
     "fixtures/channel-direct.json",
     "fixtures/channel-group.json",
+    "fixtures/console-controls.json",
+    "fixtures/console-records-codex.json",
+    "fixtures/console-records-cursor.json",
+    "fixtures/console-records-limits.json",
+    "fixtures/console-records-subagent.json",
+    "fixtures/console-sources.json",
+    "fixtures/console-stream.json",
     "fixtures/conversations.json",
     "fixtures/error.json",
     "fixtures/event-cursor-reset.json",
@@ -39,6 +52,13 @@
     {"name": "bots", "file": "fixtures/bots.json", "schemaDefinition": "botsFixture"},
     {"name": "channel-direct", "file": "fixtures/channel-direct.json", "schemaDefinition": "channelFixture"},
     {"name": "channel-group", "file": "fixtures/channel-group.json", "schemaDefinition": "channelFixture"},
+    {"name": "console-controls", "file": "fixtures/console-controls.json", "schemaDefinition": "consoleControlsFixture"},
+    {"name": "console-records-codex", "file": "fixtures/console-records-codex.json", "schemaDefinition": "consoleRecordPage"},
+    {"name": "console-records-cursor", "file": "fixtures/console-records-cursor.json", "schemaDefinition": "consoleRecordPage"},
+    {"name": "console-records-limits", "file": "fixtures/console-records-limits.json", "schemaDefinition": "consoleRecordPage"},
+    {"name": "console-records-subagent", "file": "fixtures/console-records-subagent.json", "schemaDefinition": "consoleRecordPage"},
+    {"name": "console-sources", "file": "fixtures/console-sources.json", "schemaDefinition": "consoleSourceList"},
+    {"name": "console-stream", "file": "fixtures/console-stream.json", "schemaDefinition": "consoleStreamFixture"},
     {"name": "conversations", "file": "fixtures/conversations.json", "schemaDefinition": "conversationsFixture"},
     {"name": "error", "file": "fixtures/error.json", "schemaDefinition": "errorFixture"},
     {"name": "event-cursor-reset", "file": "fixtures/event-cursor-reset.json", "schemaDefinition": "eventCursorResetFixture"},
