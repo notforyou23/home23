@@ -10,6 +10,7 @@ import { LeaseError } from "../leases/index.js";
 import { ActivityReadError } from "../activity/index.js";
 import { LiveVoiceError } from "../app/live-voice.js";
 import { GptLiveProviderError } from "../../voice/gpt-live-provider.js";
+import { ChessError } from "../chess/service.js";
 
 export class CoordinationHttpError extends Error {
   readonly name = "CoordinationHttpError";
@@ -46,6 +47,11 @@ function isBodyParserFailure(error: unknown): boolean {
 }
 
 export function toCoordinationHttpFailure(error: unknown): CoordinationHttpFailure {
+  if (error instanceof ChessError) {
+    const status = error.code === 'not_found' ? 404 : error.code === 'forbidden' ? 403
+      : error.code === 'invalid_request' || error.code === 'illegal_move' ? 400 : 409;
+    return { code: error.code, httpStatus: status, retryable: false, details: {}, message: 'Chess request failed.' };
+  }
   if (error instanceof LiveVoiceError || error instanceof GptLiveProviderError) {
     return { code: error.code, httpStatus: error instanceof LiveVoiceError ? error.httpStatus : 502,
       retryable: false, details: {}, message: "The voice session could not complete this request." };

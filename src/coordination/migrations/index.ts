@@ -1,4 +1,5 @@
 import { ARTIFACT_GENERAL_FILES_MIGRATION_SQL } from "./0016-artifact-general-files.js";
+import { NATIVE_CHESS_MIGRATION_SQL } from "./0017-native-chess.js";
 import { EVENT_RETENTION_COUNT_MIGRATION_SQL } from './0015-event-retention-count.js';
 import { RESIDENT_OUTCOMES_MIGRATION_SQL } from './0014-resident-outcomes.js';
 import { PLANNED_INVOCATIONS_MIGRATION_SQL } from './0013-planned-invocations.js';
@@ -174,6 +175,7 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(14, 'resident-outcomes', RESIDENT_OUTCOMES_MIGRATION_SQL, '726089aaa4cf18a3d8285e54e52df5ce6b4ffddf1d8aac3fe13d95a7fe222c42', '6ed74df1e2f0f29e8b707905b6d863469f23b49966ebe7587b47856814638e89'),
   defineMigration(15, 'event-retention-count', EVENT_RETENTION_COUNT_MIGRATION_SQL, 'ad7ee2e588c159d64df0f955a03c221fc85cc598603a03b4c6f459aa2eff0123', '31ecd08c0414e273df1e4a80232fef7928e0ebb305d0e9635e90c833a3baf763'),
   defineMigration(16, 'artifact-general-files', ARTIFACT_GENERAL_FILES_MIGRATION_SQL, '5e8a2aa8840efb060a0f630c8dc4cf5a7ea5a2e1536fc2610053d5ef29494752', 'dd8cddcd3bb1883499a6f03723de3113d3f27f0d297fa2b4a11cd1e3254fd6e0'),
+  defineMigration(17, 'native-chess', NATIVE_CHESS_MIGRATION_SQL, 'a80592694cac6e666e866bbf2c32518b0dcc0a2bf1e301611e59cee8b997046b', 'f233967dee0435a0685bc6a2d1bc206eeec96fc9aedd872ef322b23c9a99dab9'),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -193,7 +195,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "0f020230791cb6ba776d320185fc2f1f0a2ce116a3a63aae4b02a6d9219f92da";
+  "dd341802880f85a911f41da6c75e331638b93eb2ac3d2896d6820eea086e65ea";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

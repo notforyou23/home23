@@ -18,6 +18,9 @@
     "fixtures/bots.json",
     "fixtures/channel-direct.json",
     "fixtures/channel-group.json",
+    "fixtures/chess-game.json",
+    "fixtures/chess-position.json",
+    "fixtures/chess-snapshot.json",
     "fixtures/console-controls.json",
     "fixtures/console-records-codex.json",
     "fixtures/console-records-cursor.json",
@@ -74,6 +77,9 @@
     {"name": "search", "file": "fixtures/search.json", "schemaDefinition": "searchFixture"},
     {"name": "unread-read-cursor", "file": "fixtures/unread-read-cursor.json", "schemaDefinition": "unreadFixture"},
     {"name": "work-attempt-lease-activity", "file": "fixtures/work-attempt-lease-activity.json", "schemaDefinition": "workActivityFixture"},
-    {"name": "working-threads", "file": "fixtures/working-threads.json", "schemaDefinition": "workingThreadList"}
+    {"name": "working-threads", "file": "fixtures/working-threads.json", "schemaDefinition": "workingThreadList"},
+    {"name": "chess-game", "file": "fixtures/chess-game.json", "schemaDefinition": "chessGameResponse"},
+    {"name": "chess-position", "file": "fixtures/chess-position.json", "schemaDefinition": "chessPositionResponse"},
+    {"name": "chess-snapshot", "file": "fixtures/chess-snapshot.json", "schemaDefinition": "chessSnapshot"}
   ]
 }

@@ -1,3 +1,6 @@
+import { executeChessOperation, resolveChessMoveTurnId } from '../chess/operations.js';
+import { NativeChessService } from '../chess/service.js';
+import { createChessTurnDispatcher } from '../chess/turns.js';
 import { ConsoleCatalog } from "../console/catalog.js";
 import { ConsoleService } from "../console/service.js";
 import type { ConsoleRoot } from "../console/types.js";
@@ -465,6 +468,7 @@ export function createCoordinationProcess(
       ? {}
       : { artifactMessageLink: artifactRepository }),
   });
+  const nativeChess = new NativeChessService({ database });
   const channels = createChannelService({ repository: messagingRepository, participantDirectory, cursorSigningKey: channelCursorKey });
   const projects = new ProjectContinuityStore(config.botRootDirectory,
     (context, channelId) => channels.getChannel({context, channelId}),
@@ -803,6 +807,7 @@ export function createCoordinationProcess(
   let composedChannelCoordinator: CoordinationChannelCoordinatorPort | undefined;
   let outcomeTimer: ReturnType<typeof setInterval> | undefined;
   let processResidentOutcomes: (() => Promise<void>) | undefined;
+  let reconcileChessTurns: (() => Promise<void>) | undefined;
   let reconcileScheduledTurns: (() => void) | undefined;
   let reconcileBotInvocations: (() => Promise<void>) | undefined;
   let stopInvokedBot: ((workId: string) => Promise<void>) | undefined;
@@ -1182,6 +1187,8 @@ export function createCoordinationProcess(
     });
     reconcileBotInvocations = botInvocations.reconcile;
     const scheduledTurns = createScheduledChannelTurns({database, channels, submit: messageSubmission, beginWork: lifecycle.beginWork,
+      canDispatch: input => !input.jobId.startsWith('native-chess:') || !!database.readOne(
+        "SELECT i.id FROM chess_turn_intents i JOIN chess_games g ON g.id=i.game_id AND g.version=i.game_version AND g.status='active' WHERE i.run_id=? AND i.status IN ('queued','dispatched')", input.runId),
       expireWork: workId => {
         const current = work.get(workId);
         if (!current) throw new Error('Scheduled execution unavailable');
@@ -1206,9 +1213,17 @@ export function createCoordinationProcess(
         if (!resident) throw new Error('Executive resident unavailable');
         return resident.context({principalId:database.readOne<{id:string}>("SELECT id FROM bots WHERE resident_binding = ? AND lifecycle = 'active'",primaryResident)!.id,requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')});
       }});
+    reconcileChessTurns = createChessTurnDispatcher({ chess: nativeChess, accepting: () => lifecycle.state() === 'accepting', run: scheduledTurns.run });
     helperScheduledTurn=(bot,input)=>scheduledTurns.run(input,bot.id);
     reconcileScheduledTurns = scheduledTurns.reconcile;
     const channelOperations = createChannelOperationConsumer({
+      chess: async (context, origin, args, key) => {
+        const actor = { principalId: context.principalId,
+          ...((args.operation === 'chess_move' || (args.operation === 'chess_control' && args.action === 'resign')) && typeof args.gameId === 'string'
+            ? { turnId: resolveChessMoveTurnId(database, origin, context.principalId, args.gameId) }
+            : {}) };
+        return executeChessOperation(nativeChess, actor, args, key);
+      },
       authorize: detachments.authorize,
       authorizeRead: detachments.authorizeRead,
       assertCurrentDirection: id => { residentAssignments.assertOpen(id); detachments.assertCurrentDirection(id); },
@@ -1436,7 +1451,7 @@ export function createCoordinationProcess(
   const application = createCoordinationApplication({
     flags: config.flags,
     services: {
-      auth, bootstrap, bots: botDirectory, channels, projects, messages, unread, search, console:executionConsole,
+      auth, bootstrap, bots: botDirectory, channels, projects, messages, unread, search, console:executionConsole, chess:nativeChess,
       ...(liveVoice === undefined ? {} : { liveVoice }),
       work, workControl: stoppedWorkControl, leases, events, communications,
       authorityEpochs,
@@ -1484,6 +1499,7 @@ export function createCoordinationProcess(
       outcomeTimer = setInterval(() => {
         try { residentContact.pump(); } catch (error) { console.error('[resident-contact]', error); }
         try { projectResidentWork(database, join(dirname(config.databasePath), 'resident-contact'), Object.entries(config.residents).filter(([, value]) => value.enabled).map(([slug]) => slug)); } catch (error) { console.error('[resident-work]', error); }
+        void reconcileChessTurns?.().catch(error => console.error('[native-chess]', error));
         try { reconcileScheduledTurns?.(); } catch (error) { console.error('[scheduled-turns]', error); }
         try { reconcileJoinedStops(); } catch(error) { console.error('[joined-stop]',error); }
         void reconcileBotInvocations?.().catch(error => console.error('[bot-invocations]', error));

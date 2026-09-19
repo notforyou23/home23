@@ -89,3 +89,14 @@ test('explicit target keeps resident authorship, tracks only target Work and bin
  database.reopen();service=createScheduledChannelTurns(options);service.reconcile();
  assert.deepEqual((await service.run(input)).workIds,result.workIds);assert.equal(submissions.length,1);
 });
+
+test('superseded native game turns do not dispatch after a busy admission and restart', async t => {
+ const database=M11TestDatabase.temporary();t.after(()=>database.close());let active=true;let submissions=0;
+ const options={database,channels:{getChannel:async()=>({kind:'group',lifecycle:'active',members:[{principalId:BOT_ID}]})} as any,
+ context:()=>({principalId:BOT_ID}) as any,beginWork:()=>()=>{},canDispatch:()=>active,
+ submit:{submitMessage:async()=>{submissions++;throw Object.assign(new Error('Busy'),{code:'turn_in_progress'});}}};
+ const input={runId:'sched-run-0198d95f-6c00-7000-8000-000000000019',jobId:'native-chess:fixture:2',channelId:CHANNEL_ID,prompt:'Play the current game turn'};
+ let service=createScheduledChannelTurns(options);await service.run(input);await new Promise(r=>setImmediate(r));
+ active=false;database.reopen();service=createScheduledChannelTurns(options);service.reconcile();await new Promise(r=>setImmediate(r));
+ assert.equal(submissions,1);assert.equal((await service.run(input)).state,'failed');service.reconcile();assert.equal(submissions,1);
+});

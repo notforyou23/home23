@@ -1,5 +1,31 @@
 import type { ToolContext, ToolDefinition } from '../types.js';
 
+export const nativeChessTool: ToolDefinition = {
+  name: 'native_chess',
+  description: 'Play and study native Chess in a Connected Agents channel. Always identify the gameId. Read the current game and board before moving, then supply its expectedVersion with from and to squares (and promotion if needed). Algebraic notation alone cannot submit a move. Save a teaching position with save_position; this does not alter a live game. A boardReference URL in the result can be shared as a normal chat link for an inline board.',
+  input_schema: { type: 'object', required: ['operation'], properties: {
+    operation: { type: 'string', enum: ['list', 'get', 'create', 'move', 'control', 'save_position', 'get_position', 'list_positions', 'export'] },
+    gameId: { type: 'string' }, positionId: { type: 'string' }, channelId: { type: 'string' },
+    players: { type: 'object', required: ['white', 'black'], properties: { white: { type: 'string' }, black: { type: 'string' } } },
+    title: { type: 'string' }, initialPgn: { type: 'string' },
+    expectedVersion: { type: 'integer' }, from: { type: 'string' }, to: { type: 'string' }, promotion: { type: 'string' },
+    action: { type: 'string', enum: ['pause', 'resume', 'resign', 'retry_turn'] },
+    fen: { type: 'string' }, note: { type: 'string' }, label: { type: 'string' },
+    cursor: { type: 'string' }, limit: { type: 'integer' },
+  } },
+  async execute(input, ctx: ToolContext) {
+    const origin = ctx.turnRuntime?.coordinationOrigin;
+    if (!origin || !ctx.coordinationChannelOperation || !ctx.parentToolCallId)
+      return { content: 'Native Chess requires an authenticated current resident turn.', is_error: true };
+    const operation = String(input.operation);
+    if (!['list', 'get', 'create', 'move', 'control', 'save_position', 'get_position', 'list_positions', 'export'].includes(operation))
+      return { content: 'Unknown native Chess operation.', is_error: true };
+    const result = await ctx.coordinationChannelOperation({ origin, invocationId: ctx.parentToolCallId,
+      args: { ...input, operation: `chess_${operation}` } });
+    return { content: JSON.stringify(result) };
+  },
+};
+
 export const channelManageTool: ToolDefinition = {
   name: 'channel_manage',
   description: 'Manage Connected Agents topic/group channels through the owner’s standing household authority. List or inspect channels, create one, or update subject, purpose, members, responder policy, pinning and archive/restore state. Read current state/version before updating. Use operation bot_list to discover IDs, bot_create to create a durable helper, and bot_archive or bot_restore to manage its lifecycle. Use history to retrieve earlier channel messages beyond the current context, paging with beforeSequence. Use project_read to read the channel’s shared instructions and memory; project_write saves one document with its expectedRevision from the read. Archiving preserves history; this tool does not permanently delete conversations.',

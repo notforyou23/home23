@@ -1,0 +1,32 @@
+{
+  "position": {
+    "id": "chesspos_00000000-0000-7000-8000-000000000001",
+    "channelId": "chn_0198d95f-6c00-7000-8000-000000000001",
+    "title": "Control the centre",
+    "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+    "annotations": {
+      "arrows": [
+        {
+          "from": "e2",
+          "to": "e4",
+          "color": "green"
+        }
+      ],
+      "highlights": [
+        {
+          "square": "e4",
+          "color": "green"
+        }
+      ]
+    },
+    "sourceGameId": "chess_00000000-0000-7000-8000-000000000001",
+    "sourcePly": 1,
+    "createdBy": "user_owner",
+    "createdAt": "2026-09-19T12:00:00.000Z"
+  },
+  "boardReference": {
+    "kind": "chess_position",
+    "positionId": "chesspos_00000000-0000-7000-8000-000000000001",
+    "url": "home23://chess/positions/chesspos_00000000-0000-7000-8000-000000000001"
+  }
+}

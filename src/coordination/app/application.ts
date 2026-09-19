@@ -101,6 +101,8 @@ function capabilityDocument(input: {
         input.flags["coordination.search.canonical"] === true &&
         input.services.search !== undefined,
       eventReplay: processEnabled && input.services.events !== undefined,
+      chessRead: processEnabled && input.services.chess !== undefined,
+      chessMutation: messageSubmission && input.flags["coordination.channels.enabled"] === true && input.services.chess !== undefined,
       consoleRead: processEnabled && input.services.console !== undefined,
       consoleControl: mutationsEnabled && input.services.console?.options.controls !== undefined,
       communicationEvidence:

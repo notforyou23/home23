@@ -189,6 +189,7 @@ export interface CoordinationAttachmentPort {
 
 export interface CoordinationServices {
   auth: CoordinationAuthPort;
+  chess?: import('../chess/service.js').NativeChessService;
   console?: import("../console/service.js").ConsoleService;
   bootstrap?: BootstrapService;
   unread?: CoordinationUnreadPort;
@@ -230,6 +231,8 @@ export interface CoordinationHttpLimits {
 export interface CoordinationAdvertisedCapabilities {
   bootstrap: boolean;
   channelsRead: boolean;
+  chessRead: boolean;
+  chessMutation: boolean;
   channelMutation: boolean;
   conversationsRead: boolean;
   messagesRead: boolean;

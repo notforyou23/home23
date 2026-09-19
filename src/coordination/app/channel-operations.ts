@@ -18,11 +18,12 @@ export function createChannelOperationConsumer(options: {
   invoke?(credential: DetachmentCredential, input: { origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown> }): Promise<unknown>;
   history?(context: MessagingActorContext, args: Record<string, unknown>, origin: CoordinationTurnOrigin): Promise<unknown>;
   project?(context: MessagingActorContext, origin: CoordinationTurnOrigin, args: Record<string, unknown>): Promise<unknown>;
+  chess?(context: MessagingActorContext, origin: CoordinationTurnOrigin, args: Record<string, unknown>, key: string): unknown;
   botOperation(context: MessagingActorContext, args: Record<string, unknown>, key: string): Promise<unknown>;
 }) {
   return async (credential: DetachmentCredential, raw: unknown) => {
     const input = raw as { origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown> };
-    const diagnostics = ['work_list', 'work_status'].includes(String(input?.args?.operation));
+    const diagnostics = ['work_list', 'work_status', 'chess_list', 'chess_get', 'chess_list_positions', 'chess_get_position', 'chess_export'].includes(String(input?.args?.operation));
     if (!input?.origin ||
         typeof input.invocationId !== 'string' || !input.invocationId || input.invocationId.length > 256 ||
         !input.args || typeof input.args !== 'object' || Array.isArray(input.args)) {
@@ -38,13 +39,13 @@ export function createChannelOperationConsumer(options: {
     }
     if (diagnostics) (options.authorizeRead ?? options.authorize)(credential, input.origin);
     else options.authorize(credential, input.origin);
-    if (diagnostics) {
+    if (['work_list', 'work_status'].includes(String(input.args.operation))) {
       if (!options.workDiagnostics) throw new Error('Canonical work diagnostics unavailable');
       return options.workDiagnostics(input.origin.holderPrincipalId, input.args, input.origin);
     }
     const context = options.context(input.origin);
     const args = input.args;
-    if (!['work_cancel', 'work_report_outcome', 'get', 'list', 'bot_list', 'project_context', 'project_read', 'history'].includes(String(args.operation))) options.assertCurrentDirection?.(input.origin.workId);
+    if (!['work_cancel', 'work_report_outcome', 'get', 'list', 'bot_list', 'project_context', 'project_read', 'history', 'chess_list', 'chess_get', 'chess_list_positions', 'chess_get_position', 'chess_export'].includes(String(args.operation))) options.assertCurrentDirection?.(input.origin.workId);
     const key = `${input.origin.workId}:${input.origin.attemptId}:${input.invocationId}`;
     const text = (name: string) => {
       if (typeof args[name] !== 'string') throw new WorkError('invalid_request', `${name} is required`);
@@ -56,6 +57,11 @@ export function createChannelOperationConsumer(options: {
       return args.memberBotIds as string[];
     };
     switch (args.operation) {
+      case 'chess_list': case 'chess_get': case 'chess_create': case 'chess_move':
+      case 'chess_control': case 'chess_save_position': case 'chess_get_position':
+      case 'chess_list_positions': case 'chess_export':
+        if (!options.chess) throw new Error('Native Chess unavailable');
+        return options.chess(context, input.origin, args, key);
       case 'history':
         if (!options.history) throw new Error('Channel history unavailable');
         return options.history(context,args,input.origin);

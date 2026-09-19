@@ -1,0 +1,42 @@
+{
+  "game": {
+    "id": "chess_00000000-0000-7000-8000-000000000001",
+    "channelId": "chn_0198d95f-6c00-7000-8000-000000000001",
+    "title": "Chess with Chester",
+    "players": {
+      "white": "user_owner",
+      "black": "bot_0198d95f-6c00-7000-8000-000000000001"
+    },
+    "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+    "turn": "b",
+    "ply": 1,
+    "moves": [
+      {
+        "ply": 1,
+        "uci": "e2e4",
+        "san": "e4",
+        "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+      }
+    ],
+    "status": "active",
+    "result": "*",
+    "version": 2,
+    "createdAt": "2026-09-19T12:00:00.000Z",
+    "updatedAt": "2026-09-19T12:00:00.000Z",
+    "turnDelivery": {
+      "id": "chessturn_00000000-0000-7000-8000-000000000001",
+      "gameVersion": 2,
+      "status": "queued",
+      "workIds": [],
+      "error": null
+    }
+  },
+  "boardReference": {
+    "kind": "chess_game",
+    "gameId": "chess_00000000-0000-7000-8000-000000000001",
+    "sharedVersion": 2,
+    "sharedPly": 1,
+    "url": "home23://chess/games/chess_00000000-0000-7000-8000-000000000001?sharedVersion=2&sharedPly=1"
+  }
+}

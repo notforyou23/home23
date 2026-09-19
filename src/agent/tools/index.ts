@@ -1,4 +1,4 @@
-import { channelManageTool, botInvokeTool } from './channels.js';
+import { channelManageTool, botInvokeTool, nativeChessTool } from './channels.js';
 /**
  * COSMO Home 2.3 — Tool Registry
  *
@@ -307,6 +307,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig; coding?: { defa
   registry.register(compileBrainTool);
   registry.register(compileSectionTool);
   registry.register(channelManageTool);
+  registry.register(nativeChessTool);
   registry.register(botInvokeTool);
   registry.register(workerListTool);
   registry.register(workerRunTool);

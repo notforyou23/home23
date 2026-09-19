@@ -94,7 +94,9 @@
     "consoleShellOutputTiming": {"values": ["at_completion","incremental","mixed","unknown"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
     "consoleOutputTimeBasis": {"values": ["source_timestamp","observed_append","file_modified","unknown"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
     "consoleRawEncoding": {"values": ["utf8","binary"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
-    "consoleCommandStatus": {"values": ["cancellation_requested","already_terminal","stale_target","queued","applied","not_applied","unknown"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"}
+    "consoleCommandStatus": {"values": ["cancellation_requested","already_terminal","stale_target","queued","applied","not_applied","unknown"],"unknownPolicy": "preserve","unknownAction": "retain_raw_and_disable_unrecognized_actions"},
+    "chessGameStatus": {"values": ["active","paused","finished"],"unknownPolicy": "preserve","unknownAction": "Render read-only until the client understands this status."},
+    "chessTurnDelivery": {"values": ["queued","dispatched","failed"],"unknownPolicy": "preserve","unknownAction": "Keep the board visible; disable unsupported turn controls."}
   },
   "featureFlags": {
     "coordination.process.enabled": {"default": false, "effectWhenOff": "process does not advertise product capability"},
@@ -205,6 +207,16 @@
     "streamConsole": {"method": "GET","path": "/api/v1/console/stream","authorityCapability": null},
     "getConsoleRawRecord": {"method": "GET","path": "/api/v1/console/sources/{sourceId}/records/{recordId}/raw","authorityCapability": null},
     "cancelExecution": {"method": "POST","path": "/api/v1/executions/{sourceId}/cancel","authorityCapability": null},
-    "steerExecution": {"method": "POST","path": "/api/v1/executions/{sourceId}/steer","authorityCapability": null}
+    "steerExecution": {"method": "POST","path": "/api/v1/executions/{sourceId}/steer","authorityCapability": null},
+    "listChessGames": {"method": "GET","path": "/api/v1/chess/games","authorityCapability": null},
+    "createChessGame": {"method": "POST","path": "/api/v1/chess/games","authorityCapability": null},
+    "getChessGame": {"method": "GET","path": "/api/v1/chess/games/{gameId}","authorityCapability": null},
+    "moveChessPiece": {"method": "POST","path": "/api/v1/chess/games/{gameId}/moves","authorityCapability": null},
+    "controlChessGame": {"method": "POST","path": "/api/v1/chess/games/{gameId}/control","authorityCapability": null},
+    "exportChessPgn": {"method": "GET","path": "/api/v1/chess/games/{gameId}/pgn","authorityCapability": null},
+    "streamChessGame": {"method": "GET","path": "/api/v1/chess/games/{gameId}/stream","authorityCapability": null},
+    "listChessPositions": {"method": "GET","path": "/api/v1/chess/positions","authorityCapability": null},
+    "saveChessPosition": {"method": "POST","path": "/api/v1/chess/positions","authorityCapability": null},
+    "getChessPosition": {"method": "GET","path": "/api/v1/chess/positions/{positionId}","authorityCapability": null}
   }
 }

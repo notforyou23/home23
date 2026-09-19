@@ -22,6 +22,7 @@ export function createScheduledChannelTurns(options: {
   submit: CoordinationMessageSubmissionPort;
   context(botId?: string): MessagingActorContext; beginWork(): () => void;
   expireWork?(workId: string): void; now?(): number;
+  canDispatch?(input: ScheduledChannelTurn): boolean;
 }) {
   const db = options.database;
   const pending = new Map<string,Promise<void>>();
@@ -58,6 +59,7 @@ export function createScheduledChannelTurns(options: {
   function dispatch(value: Admission) {
     enforceDeadline(value);
     if (pending.has(value.runId)||children(value).length||failure(value.runId)) return;
+    if (options.canDispatch && !options.canDispatch(value)) { record(value, 2, 'Scheduled turn superseded'); return; }
     const done = options.beginWork();
     const promise = options.submit.submitMessage({context:options.context(value.botId),channelId:value.channelId,idempotencyKey:`scheduled:${value.runId}`,
       body:{messageId:value.messageId,clientMessageId:value.messageId,text:value.prompt,attachmentIds:[],mentions:[value.targetBotId ?? value.botId],replyToMessageId:null,
