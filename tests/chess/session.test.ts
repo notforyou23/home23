@@ -9,7 +9,7 @@ import { AX_SCRIPT, type Binding, type Sample, hash, placement, replay, uniqueTr
 import { atomicWrite } from '../../src/chess/store.js';
 import { signedChessWake } from '../../src/chess/wake.js';
 const initial = ['d2d4','d7d5','e2e4','d5e4'];
-const binding: Binding = { windowMarker:'Game 2 | owner - Auto-Match Player', documentPath:'/fixture/game', documentMarker:'fixture-marker', moves:initial, ownerColor:'w', channelId:'chn_01a0ba12-afc6-704a-9ad5-d4665e2e3fda' };
+const binding: Binding = { windowMarker:'Game 2 | owner - Auto-Match Player', documentPath:'/fixture/game', documentMarker:'fixture-marker', moves:initial, ownerColor:'w', botId:'bot_chester', channelId:'chn_01a0ba12-afc6-704a-9ad5-d4665e2e3fda' };
 function sample(moves = initial): Sample { const fen = replay(moves).fen(); return { pid:42,windowMarker:binding.windowMarker,documentMarker:binding.documentMarker,moves:[...moves],fen,placement:fen.split(' ')[0]! }; }
 function rig(wake?: (input: any) => Promise<any>, prior?: Session) {
   const writes: Session[] = [], sends: any[] = [], reports: string[] = [];
@@ -67,7 +67,7 @@ test('pause/resume needs fresh stability; stop is terminal', async () => {
 });
 test('bootstrap rejects wrong color, history, placement and document', () => {
   for (const value of [{...sample(),placement:'8/8/8/8/8/8/8/8'},{...sample(),documentMarker:'other'},sample([...initial,'b1c3'])]) assert.throws(()=>bootstrap(binding,value));
-  assert.throws(()=>bootstrap({...binding,ownerColor:'b' as 'w'},sample()));
+  assert.throws(()=>bootstrap({...binding,ownerColor:'invalid' as 'w'},sample()));
 });
 test('legal validator handles castling, en passant, promotion and rejects pinned movement', () => {
   for (const [fen,lan] of [
@@ -100,4 +100,35 @@ test('terminal White move pauses without requesting an impossible Black response
   const state=bootstrap({...binding,moves},sample(moves));let sends=0;
   const c=new ChessSession(state,async()=>{},async()=>{sends++;return {state:'running'};},()=>{});
   await stable(c,sample([...moves,'h5f7'])); assert.equal(c.state.mode,'paused'); assert.equal(c.state.reason,'Game over');assert.equal(sends,0);
+});
+test('either owner color targets the configured bot; initial bot turn requires explicit opt-in', async () => {
+  const blackBinding = {...binding, ownerColor:'b' as const, moves:[]};
+  let sends:any[]=[];
+  const c=new ChessSession(bootstrap(blackBinding,sample([])),async()=>{},async input=>{sends.push(input);return {state:'succeeded',workIds:['w']};},()=>{});
+  await stable(c,sample([])); assert.equal(sends.length,0);
+  await stable(c,sample(['e2e4'])); assert.equal(sends.length,0);
+  await stable(c,sample(['e2e4','e7e5'])); assert.equal(sends.length,1);
+  assert.equal(sends[0].targetBotId,'bot_chester'); assert.match(sends[0].prompt,/plays White/); assert.doesNotMatch(sends[0].prompt,/Jerry/);
+  sends=[];
+  const initialState=bootstrap({...blackBinding,initialBotTurn:true},sample([]));
+  const first=new ChessSession(initialState,async()=>{},async input=>{sends.push(input);return {state:'succeeded',workIds:['first']};},()=>{});
+  await stable(first,sample([])); await stable(first,sample([])); assert.equal(sends.length,1);
+  const restored=new ChessSession(structuredClone(first.state),async()=>{},async()=>{throw new Error('duplicate');},()=>{});
+  await stable(restored,sample([])); assert.equal(restored.state.mode,'running');
+});
+test('transient read outage resets stability without pausing or losing durable pending request', async()=>{
+  const {c,sends}=rig(async()=>({state:'running'})); const next=sample([...initial,'b1c3']);
+  await stable(c,next); const runId=c.state.pending!.runId;
+  await c.observationFailed('Chess temporarily unavailable'); assert.equal(c.state.mode,'running');
+  const count=sends.length; await c.observe(next); assert.equal(sends.length,count);
+  await c.observe(next); assert.equal(sends.length,count+1);assert.equal(sends.at(-1).runId,runId);assert.equal(c.state.observationError,undefined);
+});
+test('running restart revalidates before replaying the exact durable pending target and run ID',async()=>{
+  const {c}=rig(async()=>({state:'running'}));const board=sample([...initial,'b1c3']);await stable(c,board);
+  const pending=structuredClone(c.state.pending);let sends=0;
+  const restored=new ChessSession(structuredClone(c.state),async()=>{},async input=>{assert.deepEqual(input,pending);sends++;return {state:'succeeded',workIds:['same']};},()=>{});
+  await restored.observe(board);assert.equal(sends,0);await restored.observe(board);assert.equal(sends,1);
+  await stable(restored,board);assert.equal(sends,1);
+  const changed=new ChessSession(structuredClone(c.state),async()=>{},async()=>{throw new Error('must not deliver');},()=>{});
+  await stable(changed,{...board,documentMarker:'another-game'});assert.equal(changed.state.mode,'paused');assert.deepEqual(changed.state.pending,pending);
 });

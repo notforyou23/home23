@@ -4,26 +4,26 @@ import { homedir } from 'node:os';
 import { createServer, createConnection } from 'node:net';
 import { unlink } from 'node:fs/promises';
 import lockfile from 'proper-lockfile';
-import { type Binding, readBoard, hash } from './board.js';
-import { bootstrap, ChessSession, type Session } from './session.js';
+import { type Binding, readBoard, hash, BoardValidationError } from './board.js';
+import { bootstrap, ChessSession, validateBinding, type Session } from './session.js';
 import { atomicWrite } from './store.js';
 import { signedChessWake } from './wake.js';
 
-const usage = 'Usage: chess-watch inspect <window-marker> <document-path> | start <session-directory> <binding.json> | status|pause|resume|stop <session-directory>';
-export async function main(args: string[], dependencies: { read?: typeof readBoard; wake?: typeof signedChessWake; lockRoot?: string } = {}) {
+const usage = 'Usage: chess-watch inspect <window-marker> <document-path> | start|serve <session-directory> <binding.json> | status|pause|resume|stop <session-directory>';
+export async function main(args: string[], dependencies: { read?: typeof readBoard; wake?: typeof signedChessWake; lockRoot?: string; shutdownSignal?: AbortSignal } = {}) {
   const reader = dependencies.read ?? readBoard;
   const [command, directory, bindingFile] = args;
   if (command === 'inspect' && args.length === 3) {
     const sample = await reader({ windowMarker: directory!, documentPath: resolve(bindingFile!) });
-    console.log(JSON.stringify({ sample, binding: { windowMarker: sample.windowMarker, documentPath: resolve(bindingFile!), documentMarker: sample.documentMarker, moves: sample.moves, ownerColor: 'w', channelId: 'SET_CANONICAL_CHANNEL_ID' } }, null, 2)); return;
+    console.log(JSON.stringify({ sample, binding: { windowMarker: sample.windowMarker, documentPath: resolve(bindingFile!), documentMarker: sample.documentMarker, moves: sample.moves, ownerColor: 'w', botId: 'SET_CANONICAL_BOT_ID', initialBotTurn: false, channelId: 'SET_CANONICAL_CHANNEL_ID' } }, null, 2)); return;
   }
-  if (!directory || !['start','status','pause','resume','stop'].includes(command!) || args.length !== (command === 'start' ? 3 : 2)) throw new Error(usage);
+  if (!directory || !['start','serve','status','pause','resume','stop'].includes(command!) || args.length !== (['start', 'serve'].includes(command!) ? 3 : 2)) throw new Error(usage);
   const dir = resolve(directory), stateFile = join(dir, 'state.json');
   // Keep Unix socket paths below macOS's length limit.
   const lockRoot = dependencies.lockRoot ?? join(homedir(), '.home23', 'chess-watch-locks');
   await mkdir(lockRoot, { recursive: true, mode: 0o700 });
   const socket = join(lockRoot, hash(dir).slice(0, 24) + '.sock');
-  if (command !== 'start') {
+  if (command !== 'start' && command !== 'serve') {
     try {
       const result = await new Promise<string>((resolveResult, reject) => {
         const client = createConnection(socket); let data = '';
@@ -40,6 +40,7 @@ export async function main(args: string[], dependencies: { read?: typeof readBoa
     return;
   }
   const binding: Binding = JSON.parse(await readFile(resolve(bindingFile!), 'utf8'));
+  validateBinding(binding);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   // Global per-document lease prevents duplicate processes even with different session directories.
   const leasePath = join(lockRoot, hash(await realpath(binding.documentPath)));
@@ -55,8 +56,8 @@ export async function main(args: string[], dependencies: { read?: typeof readBoa
     let state: Session;
     try {
       state = JSON.parse(await readFile(stateFile, 'utf8'));
-      if (state.version !== 1 || hash(state.binding) !== hash(binding) || state.mode === 'stopped') throw new Error('Stored session differs or is stopped; use a new session directory');
-      state.mode = 'paused'; state.reason = 'Process restarted; explicit resume required';
+      if (state.version !== 1 || hash(state.binding) !== hash(binding) || (command === 'start' && state.mode === 'stopped')) throw new Error('Stored session differs or is stopped; use a new session directory');
+      if (command === 'start') { state.mode = 'paused'; state.reason = 'Process restarted; explicit resume required'; }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       const a = await reader(binding); await new Promise(resolve => setTimeout(resolve, 500));
@@ -89,20 +90,27 @@ export async function main(args: string[], dependencies: { read?: typeof readBoa
     });
     await new Promise<void>((resolveListen, reject) => { server!.once('error', reject); server!.listen(socket, resolveListen); });
     ownsSocket = true;
-    const signal = () => { void enqueue(() => controller.stop()); };
+    let exiting = false;
+    const signal = () => { exiting = true; };
     process.on('SIGINT', signal); process.on('SIGTERM', signal);
+    dependencies.shutdownSignal?.addEventListener('abort', signal, { once: true });
+    if (dependencies.shutdownSignal?.aborted) signal();
     console.log(JSON.stringify({ sessionId: state.id, mode: state.mode, directory: dir }));
     try {
-      while (controller.state.mode !== 'stopped') {
+      while (!exiting && (command === 'serve' || controller.state.mode !== 'stopped')) {
         await enqueue(async () => {
           if (compromised) { await controller.stop(); throw new Error('Session lease lost'); }
           if (controller.state.mode !== 'running') return;
           try { await controller.observe(await reader(binding)); }
-          catch (error) { await controller.pause(error instanceof Error ? error.message : String(error)); }
+          catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            if (error instanceof BoardValidationError) await controller.pause(reason);
+            else await controller.observationFailed(reason);
+          }
         });
         await new Promise(resolve => setTimeout(resolve, 500));
       }
-    } finally { process.off('SIGINT', signal); process.off('SIGTERM', signal); }
+    } finally { process.off('SIGINT', signal); process.off('SIGTERM', signal); dependencies.shutdownSignal?.removeEventListener('abort', signal); }
   } finally {
     if (server) await new Promise<void>(resolveClose => server!.close(() => resolveClose()));
     await adapter?.close();

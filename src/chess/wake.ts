@@ -3,11 +3,11 @@ import { ResidentUdsClient } from '../coordination/transport/uds/index.js';
 import type { ScheduledChannelTurn } from '../coordination/app/scheduled-turns.js';
 /** Uses the same signed resident capability as the harness; never creates credentials. */
 export function signedChessWake(env: NodeJS.ProcessEnv = process.env) {
-  if (env.HOME23_AGENT !== 'jerry' || !/^[a-f0-9]{64}$/i.test(env.HOME23_COORDINATION_RESIDENT_KEY ?? '') ||
+  if (!env.HOME23_AGENT || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(env.HOME23_AGENT) || !/^[a-f0-9]{64}$/i.test(env.HOME23_COORDINATION_RESIDENT_KEY ?? '') ||
       !env.HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID || !/^[1-9][0-9]*$/.test(env.HOME23_COORDINATION_RESIDENT_KEY_VERSION ?? '') ||
-      !env.HOME23_COORDINATION_SOCKET_PATH?.startsWith('/')) throw new Error('Existing Jerry signed resident environment required');
+      !env.HOME23_COORDINATION_SOCKET_PATH?.startsWith('/')) throw new Error('Existing signed resident environment required');
   const rootKey = Buffer.from(env.HOME23_COORDINATION_RESIDENT_KEY!, 'hex');
-  const credential = createResidentCredential({ residentSlug: 'jerry', role: 'resident', instanceId: env.HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID,
+  const credential = createResidentCredential({ residentSlug: env.HOME23_AGENT, role: 'resident', instanceId: env.HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID,
     keyVersion: Number(env.HOME23_COORDINATION_RESIDENT_KEY_VERSION), rootKey });
   rootKey.fill(0);
   const client = new ResidentUdsClient({ socketPath: env.HOME23_COORDINATION_SOCKET_PATH,

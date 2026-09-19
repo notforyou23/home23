@@ -57,7 +57,7 @@
     "test:resident-repairs": "node --import tsx --test --test-concurrency=2 tests/acp/source-authority.test.ts tests/agent/identity-maintenance.test.ts tests/agent/identity-assembly.test.ts tests/agent/tools/coding.test.ts tests/coordination/app/resident-outcomes-e2e.test.ts tests/agent/triggered-surfaces.test.ts tests/coordination/app/channel-operations.test.ts",
     "identity:audit": "node --import tsx scripts/identity-audit.ts",
     "chess:watch": "node scripts/chess/watch.mjs",
-    "test:chess": "node --import tsx --test tests/chess/*.test.ts"
+    "test:chess": "node --import tsx --test tests/chess/*.test.ts tests/scripts/chess-service.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

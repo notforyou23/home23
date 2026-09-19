@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 const exec = promisify(execFile);
 export const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-export interface Binding { windowMarker: string; documentPath: string; documentMarker: string; moves: string[]; ownerColor: 'w'; channelId: string }
+export interface Binding { windowMarker: string; documentPath: string; documentMarker: string; moves: string[]; ownerColor: 'w' | 'b'; channelId: string; botId: string; botName?: string; initialBotTurn?: boolean }
 export interface Sample { pid: number; windowMarker: string; placement: string; documentMarker: string; moves: string[]; fen: string }
 export function replay(moves: string[]) {
   const chess = new Chess();
@@ -48,11 +48,13 @@ export const AX_SCRIPT = `function run(args) {
   if (wins.length !== 1) throw Error('Bound Chess window unavailable or ambiguous');
   return JSON.stringify({pid:p.unixId(),windowMarker:args[0],names:wins[0].groups[0].buttons.name()});
 }`;
+export class BoardValidationError extends Error {}
 export async function readBoard(binding: Pick<Binding, 'windowMarker' | 'documentPath'>): Promise<Sample> {
   if (process.platform !== 'darwin') throw new Error('Native Chess watcher requires macOS');
   const { stdout } = await exec('/usr/bin/osascript', ['-l', 'JavaScript', '-e', AX_SCRIPT, binding.windowMarker], { timeout: 4000, maxBuffer: 32768 });
   const ax = JSON.parse(stdout);
   const { stdout: document } = await exec('/usr/bin/plutil', ['-convert', 'json', '-o', '-', binding.documentPath], { timeout: 2000, maxBuffer: 262144 });
+  try {
   const doc = JSON.parse(document);
   if (doc.Variant !== 'normal' || doc.Result !== '*' || typeof doc.Moves !== 'string' || typeof doc.Position !== 'string' || !doc.StartDate || !doc.StartTime || !doc.White) throw new Error('Unsupported or finished Chess document');
   const moves = doc.Moves.trim() ? doc.Moves.trim().split(/\s+/) : [];
@@ -60,4 +62,5 @@ export async function readBoard(binding: Pick<Binding, 'windowMarker' | 'documen
   // chess.js normalizes unusable en-passant fields; compare normalized FENs.
   if (chess.fen() !== new Chess(doc.Position).fen()) throw new Error('Document move history and FEN disagree');
   return { pid: ax.pid, windowMarker: ax.windowMarker, placement: placement(ax.names), documentMarker: hash([doc.StartDate, doc.StartTime, doc.White, doc.Variant]), moves, fen: chess.fen() };
+  } catch (error) { throw new BoardValidationError(error instanceof Error ? error.message : String(error)); }
 }
