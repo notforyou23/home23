@@ -63,3 +63,9 @@ Canonical schemas and examples are in `src/coordination/contracts/v1/`: `chess-g
 Migration 17 adds isolated game, position, mutation-receipt and turn-intent tables. Existing channels, messages and Work remain their current authorities. Native Chess is independent of the retired optional Apple Chess watcher.
 
 Focused verification uses real SQLite persistence, legal chess moves, authenticated HTTP/fenced tool paths, restart recovery, stale-turn rejection, and canonical fixture validation. No live game or paid model turn is required to run it.
+
+### Bot move arguments
+
+Use `native_chess` with `operation: "move"`, the current `gameId` and `expectedVersion`, and lowercase `from`/`to` squares. Omit `promotion` or send `null` for ordinary moves; choose `q`, `r`, `b`, or `n` only when a pawn reaches its last rank. Do not fill unrelated fields such as players, title, or initialPgn. The tool normalizes legacy blank/none promotion placeholders; the public HTTP move contract is unchanged.
+
+Example ordinary move: `{"operation":"move","gameId":"<current game>","expectedVersion":2,"from":"e7","to":"e5","promotion":null}`. A returned game with the new move is the success receipt.

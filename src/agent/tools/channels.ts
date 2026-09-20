@@ -2,13 +2,15 @@ import type { ToolContext, ToolDefinition } from '../types.js';
 
 export const nativeChessTool: ToolDefinition = {
   name: 'native_chess',
-  description: 'Play and study native Chess in a Connected Agents channel. Always identify the gameId. Read the current game and board before moving, then supply its expectedVersion with from and to squares (and promotion if needed). Algebraic notation alone cannot submit a move. Save a teaching position with save_position; this does not alter a live game. A boardReference URL in the result can be shared as a normal chat link for an inline board.',
+  description: 'Play and study native Chess in a Connected Agents channel. Always identify the gameId. Read the current game and board before moving, then supply its expectedVersion with from and to squares (and promotion if needed). For an ordinary move, omit promotion or use null; only a pawn reaching its last rank uses q, r, b, or n. Send only fields needed by the selected operation. Example: {"operation":"move","gameId":"<current game>","expectedVersion":2,"from":"e7","to":"e5","promotion":null}. Algebraic notation alone cannot submit a move. Save a teaching position with save_position; this does not alter a live game. A boardReference URL in the result can be shared as a normal chat link for an inline board.',
   input_schema: { type: 'object', required: ['operation'], properties: {
     operation: { type: 'string', enum: ['list', 'get', 'create', 'move', 'control', 'save_position', 'get_position', 'list_positions', 'export'] },
     gameId: { type: 'string' }, positionId: { type: 'string' }, channelId: { type: 'string' },
     players: { type: 'object', required: ['white', 'black'], properties: { white: { type: 'string' }, black: { type: 'string' } } },
     title: { type: 'string' }, initialPgn: { type: 'string' },
-    expectedVersion: { type: 'integer' }, from: { type: 'string' }, to: { type: 'string' }, promotion: { type: 'string' },
+    expectedVersion: { type: 'integer', description: 'Current game.version from get.' },
+    from: { type: 'string', description: 'Origin square, e.g. e7.' }, to: { type: 'string', description: 'Destination square, e.g. e5.' },
+    promotion: { type: ['string', 'null'], enum: ['q', 'r', 'b', 'n', null], description: 'Omit or use null for ordinary moves. For pawn promotion choose q, r, b, or n.' },
     action: { type: 'string', enum: ['pause', 'resume', 'resign', 'retry_turn'] },
     fen: { type: 'string' }, note: { type: 'string' }, label: { type: 'string' },
     cursor: { type: 'string' }, limit: { type: 'integer' },
@@ -20,8 +22,14 @@ export const nativeChessTool: ToolDefinition = {
     const operation = String(input.operation);
     if (!['list', 'get', 'create', 'move', 'control', 'save_position', 'get_position', 'list_positions', 'export'].includes(operation))
       return { content: 'Unknown native Chess operation.', is_error: true };
-    const result = await ctx.coordinationChannelOperation({ origin, invocationId: ctx.parentToolCallId,
-      args: { ...input, operation: `chess_${operation}` } });
+    // Older model context can retain blank/none placeholders from failed calls.
+    // Normalize only this optional tool field; the public API stays unchanged.
+    const args: Record<string, unknown> = { ...input, operation: `chess_${operation}` };
+    if (operation === 'move' && (args.promotion == null
+      || (typeof args.promotion === 'string' && ['', 'none'].includes(args.promotion.trim().toLowerCase())))) {
+      delete args.promotion;
+    }
+    const result = await ctx.coordinationChannelOperation({ origin, invocationId: ctx.parentToolCallId, args });
     return { content: JSON.stringify(result) };
   },
 };

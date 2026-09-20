@@ -1875,11 +1875,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             ];
 
             // Convert OAI tools to Responses API format.
-            // Do NOT set strict:true — it requires additionalProperties:false recursively on all
-            // nested schemas, which our tool definitions don't guarantee.
+            // Preserve optional fields: Responses may normalize an omitted strict flag
+            // into strict mode and require every property, unlike Chat Completions.
             type OAITool = { type: string; function: { name: string; description?: string; parameters?: unknown } };
             const codexTools = (registry.getOpenAITools() as OAITool[]).map(t => ({
               type: 'function',
+              strict: false,
               name: t.function.name,
               description: t.function.description ?? null,
               parameters: t.function.parameters ?? null,

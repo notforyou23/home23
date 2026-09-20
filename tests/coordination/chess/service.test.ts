@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { openCoordinationDatabase } from '../../../src/coordination/db/index.js';
+import { nativeChessTool } from '../../../src/agent/tools/channels.js';
+import { executeChessOperation } from '../../../src/coordination/chess/operations.js';
 import { NativeChessService, ChessError } from '../../../src/coordination/chess/service.js';
 
 const BOT='bot_0198d95f-6c00-7000-8000-000000000301';
@@ -98,4 +100,44 @@ test('cached create replay still requires current channel access',t=>{
   });
   assert.throws(()=>f.service.create(input,bot,'bot-create'),(e:unknown)=>e instanceof ChessError&&e.code==='forbidden');
   f.database.close();
+});
+
+async function moveThroughTool(service: NativeChessService, actor: {principalId: string; turnId: string}, input: Record<string, unknown>, key: string) {
+  return nativeChessTool.execute(input, {
+    turnRuntime: { coordinationOrigin: { workId: 'offline-chess-regression' } }, parentToolCallId: key,
+    coordinationChannelOperation: async ({ args }: {args: Record<string, unknown>}) => executeChessOperation(service, actor, args, key),
+  } as never);
+}
+
+test('recorded ordinary-move promotion placeholders succeed through tool, operation and durable service', async t => {
+  const f = fixture(t);
+  try {
+    for (const [i, promotion] of [undefined, null, '', ' ', 'none', 'q'].entries()) {
+      const game = f.service.create({channelId: CHANNEL, players: {white: 'user_owner', black: BOT}}, owner, `create-${i}`);
+      const afterOwner = f.service.move(game.id, {expectedVersion: 1, from: 'e2', to: 'e4'}, owner, `owner-${i}`);
+      const actor = {...bot, turnId: f.service.dueTurns().find(turn => turn.gameId === game.id)!.id};
+      const input = {operation: 'move', gameId: game.id, expectedVersion: afterOwner.version, from: 'e7', to: 'e5', ...(promotion === undefined ? {} : {promotion}), positionId: '', players: {white: '', black: ''}, initialPgn: '', action: 'pause', cursor: ''};
+      const result = await moveThroughTool(f.service, actor, input, `move-${i}`);
+      assert.equal(JSON.parse(result.content).game.moves.at(-1).uci, 'e7e5');
+      assert.equal(f.service.get(game.id, owner).ply, 2);
+      const replay = await moveThroughTool(f.service, actor, input, `move-${i}`);
+      assert.equal(replay.content, result.content);
+      assert.equal(f.service.get(game.id, owner).ply, 2);
+    }
+  } finally { f.database.close(); }
+});
+
+test('tool preserves explicit underpromotion and rejects missing or invalid promotion without moving', async t => {
+  const f = fixture(t);
+  try {
+    const game = f.service.create({channelId: CHANNEL, players: {white: BOT, black: 'user_owner'}, initialPgn: '1. a4 h5 2. a5 h4 3. a6 h3 4. axb7 hxg2'}, owner, 'promotion-game');
+    const actor = {...bot, turnId: f.service.dueTurns()[0]!.id};
+    const input = {operation: 'move', gameId: game.id, expectedVersion: game.version, from: 'b7', to: 'a8'};
+    await assert.rejects(moveThroughTool(f.service, actor, {...input, promotion: null}, 'missing'), /illegal chess move/);
+    await assert.rejects(moveThroughTool(f.service, actor, {...input, promotion: 'king'}, 'invalid'), /promotion must be/);
+    await assert.rejects(moveThroughTool(f.service, actor, {...input, from: ''}, 'bad-from'), /from must be a nonempty string/);
+    assert.equal(f.service.get(game.id, owner).version, game.version);
+    const result = await moveThroughTool(f.service, actor, {...input, promotion: 'n'}, 'underpromotion');
+    assert.equal(JSON.parse(result.content).game.moves.at(-1).uci, 'b7a8n');
+  } finally { f.database.close(); }
 });

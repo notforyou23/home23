@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fetchCodexResponse } from '../../src/agent/codex-fetch.js';
+import { nativeChessTool } from '../../src/agent/tools/channels.js';
 import { AgentLoop } from '../../src/agent/loop.js';
 import { ConversationHistory } from '../../src/agent/history.js';
 
@@ -77,10 +78,10 @@ test('HTTP responses and partial stream failures are never retried', async () =>
   });
 });
 
-function makeAgent(root: string) {
+function makeAgent(root: string, tools: unknown[] = []) {
   mkdirSync(join(root, 'workspace'));
   const agent = new AgentLoop({ apiKey: 'test-key', model: 'gpt-5.6-sol', provider: 'openai-codex',
-    registry: { getAnthropicTools: () => [], getOpenAITools: () => [], get: () => undefined, execute: async () => assert.fail('no tool replay') } as never,
+    registry: { getAnthropicTools: () => [], getOpenAITools: () => tools, get: () => undefined, execute: async () => assert.fail('no tool replay') } as never,
     contextManager: { getSystemPrompt: () => 'Test.', getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
     history: new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent'), toolContext: {} as never, workspacePath: join(root, 'workspace'),
   });
@@ -154,4 +155,21 @@ test('actual Codex loop refreshes the exact rejected credential once', async () 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// Exercise the actual request boundary, not a copied schema converter.
+test('Codex request preserves optional Chess fields instead of defaulting to strict normalization', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-chess-optional-'));
+  let sent: any;
+  try {
+    await withFetch((async (_url, init) => { sent = JSON.parse(init!.body as string); return successful(); }) as typeof fetch, async () => {
+      const agent = makeAgent(root, [{ type: 'function', function: { name: nativeChessTool.name, description: nativeChessTool.description, parameters: nativeChessTool.input_schema } }]);
+      const run = await agent.runWithTurn('chess-schema', 'Play one move.');
+      await run.response;
+    });
+    const tool = sent.tools.find((item: any) => item.name === 'native_chess');
+    assert.equal(tool.strict, false);
+    assert.deepEqual(tool.parameters.required, ['operation']);
+    assert.deepEqual(tool.parameters.properties.promotion.enum, ['q', 'r', 'b', 'n', null]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -88,7 +88,7 @@ export class NativeChessService {
     const target=row.turn==='w'?row.white_principal_id:row.black_principal_id;
     if (!target.startsWith('bot_')) return;
     const turnId=id('chessturn'); const runId=`sched-run-${randomUUID()}`;
-    const prompt=`Play one legal chess move for game ${row.id} as ${row.turn==='w'?'White':'Black'}. Current FEN: ${row.fen}. Current version: ${row.version}. Use native_chess get if needed, then native_chess move with gameId ${row.id}, expectedVersion ${row.version}, from, to, and promotion if applicable. Do not merely narrate a move.`;
+    const prompt=`Play one legal chess move for game ${row.id} as ${row.turn==='w'?'White':'Black'}. Current FEN: ${row.fen}. Current version: ${row.version}. Use native_chess get if needed, then native_chess move with gameId ${row.id}, expectedVersion ${row.version}, from and to squares. Omit promotion or use null for ordinary moves; use q, r, b, or n only when a pawn reaches its last rank. Do not fill unrelated fields. Do not merely narrate a move.`;
     t.run("INSERT INTO chess_turn_intents (id,game_id,game_version,channel_id,target_bot_id,run_id,prompt,status,work_ids_json,error,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'queued',NULL,NULL,?,?)",turnId,row.id,row.version,row.channel_id,target,runId,prompt,at,at);
   }
   private cancelTurns(t:CoordinationTransaction,gameId:string,at:string):void { t.run("UPDATE chess_turn_intents SET status = 'cancelled', updated_at = ? WHERE game_id = ? AND status IN ('queued','dispatched','failed')",at,gameId); }
@@ -116,7 +116,7 @@ export class NativeChessService {
     }).value;
   }
   move(gameId:string,input:{expectedVersion:number;from:string;to:string;promotion?:string},actor:ChessActor,key:string):ChessGame {
-    version(input.expectedVersion);const from=square(input.from),to=square(input.to);const promotion=input.promotion;if(promotion!==undefined && !['q','r','b','n'].includes(promotion)) throw new ChessError('invalid_request','invalid promotion');
+    version(input.expectedVersion);const from=square(input.from),to=square(input.to);const promotion=input.promotion;if(promotion!==undefined && !['q','r','b','n'].includes(promotion)) throw new ChessError('invalid_request','promotion must be q, r, b, or n for pawn promotion; omit it otherwise');
     const at=now();const request={gameId,expectedVersion:input.expectedVersion,from,to,promotion:promotion??null};const prior=this.prior<ChessGame>(actor.principalId,key,'move',request,this.row(gameId).channel_id);if(prior)return prior;
     return this.db.mutateWithEvent(t=>{const row=this.row(gameId,t);this.channel(t,row.channel_id,actor,true);const replay=this.replay(t,actor.principalId,key,'move',request);if(replay.existing)throw new ChessError('conflict','concurrent replay');
       if(row.version!==input.expectedVersion)throw new ChessError('conflict','stale game version');if(row.status!=='active')throw new ChessError('illegal_state','game is not active');if((row.turn==='w'?row.white_principal_id:row.black_principal_id)!==actor.principalId)throw new ChessError('forbidden','not this side to move');
