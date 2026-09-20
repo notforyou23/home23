@@ -41,6 +41,21 @@ function temporaryDatabase(t: test.TestContext): string {
   return join(directory, "coordination.sqlite3");
 }
 
+test("resident outcome lookups use the Work indexes after migration", (t) => {
+  const database = openCoordinationDatabase({ path: temporaryDatabase(t), applicationVersion: "outcome-index-test" });
+  t.after(() => database.close());
+  const busy = database.readAll<{ detail: string }>(`EXPLAIN QUERY PLAN SELECT id FROM works
+    WHERE channel_id = 'chn_test' AND kind <> 'resident_work_thread'
+      AND state IN ('queued','leased','running','cancelling')
+      AND (NULL IS NULL OR id <> NULL) LIMIT 1`);
+  assert.ok(busy.some(row => row.detail.includes("works_busy_channel")));
+  const scheduled = database.readAll<{ detail: string }>(`EXPLAIN QUERY PLAN SELECT w.id FROM events e
+    JOIN works w ON w.origin_message_id = json_extract(e.payload_json, '$.messageId')
+    WHERE e.aggregate_kind = 'scheduled_channel_run' AND e.aggregate_version = 1
+      AND w.kind = 'channel.bot_turn' AND w.state IN ('succeeded','failed','cancelled')`);
+  assert.ok(scheduled.some(row => row.detail.includes("works_scheduled_origin")));
+});
+
 test("a zero-byte database migrates to the current checksummed schema and reopens", (t) => {
   const path = temporaryDatabase(t);
   writeFileSync(path, "");
@@ -53,7 +68,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   );
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 17);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 18);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -159,6 +174,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 15, checksum: "ad7ee2e588c159d64df0f955a03c221fc85cc598603a03b4c6f459aa2eff0123" },
       { version: 16, checksum: COORDINATION_MIGRATIONS[15]!.checksum },
       { version: 17, checksum: COORDINATION_MIGRATIONS[16]!.checksum },
+      { version: 18, checksum: COORDINATION_MIGRATIONS[17]!.checksum },
     ],
   );
   assert.deepEqual(
