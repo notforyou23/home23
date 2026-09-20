@@ -1,6 +1,7 @@
 import { ARTIFACT_GENERAL_FILES_MIGRATION_SQL } from "./0016-artifact-general-files.js";
 import { NATIVE_CHESS_MIGRATION_SQL } from "./0017-native-chess.js";
 import { WORK_OUTCOME_INDEXES_MIGRATION_SQL } from "./0018-work-outcome-indexes.js";
+import { INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL } from "./0019-inbox-and-reconciliation-indexes.js";
 import { EVENT_RETENTION_COUNT_MIGRATION_SQL } from './0015-event-retention-count.js';
 import { RESIDENT_OUTCOMES_MIGRATION_SQL } from './0014-resident-outcomes.js';
 import { PLANNED_INVOCATIONS_MIGRATION_SQL } from './0013-planned-invocations.js';
@@ -178,6 +179,7 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(16, 'artifact-general-files', ARTIFACT_GENERAL_FILES_MIGRATION_SQL, '5e8a2aa8840efb060a0f630c8dc4cf5a7ea5a2e1536fc2610053d5ef29494752', 'dd8cddcd3bb1883499a6f03723de3113d3f27f0d297fa2b4a11cd1e3254fd6e0'),
   defineMigration(17, 'native-chess', NATIVE_CHESS_MIGRATION_SQL, 'a80592694cac6e666e866bbf2c32518b0dcc0a2bf1e301611e59cee8b997046b', 'f233967dee0435a0685bc6a2d1bc206eeec96fc9aedd872ef322b23c9a99dab9'),
   defineMigration(18, 'work-outcome-indexes', WORK_OUTCOME_INDEXES_MIGRATION_SQL, 'bb32ab88f8aea9728cd96a0e091560358a0579d888c2c9c1a88823ee7dddb2e9', 'd6d6e15d61b86093e7b993e2de76dd7d99dff47f49d0644cb51c3b72020a12a8'),
+  defineMigration(19, 'inbox-and-reconciliation-indexes', INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL, 'df58e0a3beedf3a7aec735f0e9a5d9f1c2caa2b1c027a00bea4071411ca64275', 'bd0798cf6439403133937130f2efc2eabc586552ebc0cfd545c742fc057d02d1'),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -197,7 +199,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "9c9e50b2ef99d7daf53a22467b8177324cb44fbfd8d1b68b9e2f8d9015a7710e";
+  "2a232f392025fd4d1851ef8bdb45a39bd72698b20d45e4857ec214dbe973c493";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

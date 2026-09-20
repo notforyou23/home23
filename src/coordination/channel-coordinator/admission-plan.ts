@@ -238,8 +238,10 @@ export function findCoordinatorAdmissionRoundIds(
       AND e.aggregate_version = 1 AND e.type = 'turn.updated'
      WHERE r.channel_id = ?
        AND json_type(e.payload_json, '$.admissionPlan') = 'object'
+       AND json_extract(e.payload_json, '$.admissionPlan.originMessageId') = ?
      ORDER BY r.created_at, r.id`,
     input.channelId,
+    input.originMessageId,
   );
   return Object.freeze(rows.flatMap((row) => {
     const plan = planFromEvent(row);

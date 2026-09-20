@@ -53,7 +53,35 @@ test("resident outcome lookups use the Work indexes after migration", (t) => {
     JOIN works w ON w.origin_message_id = json_extract(e.payload_json, '$.messageId')
     WHERE e.aggregate_kind = 'scheduled_channel_run' AND e.aggregate_version = 1
       AND w.kind = 'channel.bot_turn' AND w.state IN ('succeeded','failed','cancelled')`);
-  assert.ok(scheduled.some(row => row.detail.includes("works_scheduled_origin")));
+  assert.ok(scheduled.some(row => /works_(scheduled_origin|origin_message)/.test(row.detail)));
+});
+
+test("inbox and recurring reconciliation lookups use their indexes", (t) => {
+  const database = openCoordinationDatabase({ path: temporaryDatabase(t), applicationVersion: "inbox-index-test" });
+  t.after(() => database.close());
+  const plan = (sql: string) => database.readAll<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`).map(row => row.detail).join("\n");
+  assert.match(plan(`SELECT state FROM works WHERE channel_id='chn_test'
+    AND state NOT IN ('succeeded','failed','cancelled') ORDER BY created_at DESC,id DESC LIMIT 1`), /works_channel_created/);
+  assert.match(plan(`SELECT state FROM works WHERE channel_id='chn_test' AND state='failed'
+    AND NOT EXISTS(SELECT 1 FROM messages result WHERE result.channel_id=works.channel_id
+      AND result.kind='result' AND result.work_id=works.id)
+    AND NOT EXISTS(SELECT 1 FROM works later WHERE later.channel_id=works.channel_id
+      AND (later.created_at>works.created_at OR (later.created_at=works.created_at AND later.id>works.id)))
+    ORDER BY terminal_at DESC,id DESC LIMIT 1`), /works_failed_channel_terminal[\s\S]*messages_work_channel_kind[\s\S]*works_channel_created/);
+  assert.match(plan(`SELECT w.id FROM works w LEFT JOIN work_thread_presentations p ON p.work_id=w.id
+    WHERE w.target_principal_id='bot_test' AND (w.kind='resident_work_thread' OR p.work_id IS NOT NULL)
+    ORDER BY w.created_at DESC LIMIT 1000`), /works_target_created/);
+  assert.match(plan(`SELECT outcome_key FROM resident_outcomes WHERE source_work_id='wrk_test'
+    ORDER BY created_at DESC LIMIT 1`), /resident_outcomes_source_created/);
+  assert.match(plan(`SELECT e.payload_json FROM events e WHERE e.aggregate_kind='scheduled_channel_run'
+    AND e.aggregate_version=1 AND EXISTS(SELECT 1 FROM works w WHERE
+      w.kind IN ('channel.bot_turn','bot_turn') AND w.origin_message_id=json_extract(e.payload_json,'$.messageId')
+      AND w.state NOT IN ('succeeded','failed','cancelled'))`), /works_origin_message/);
+  assert.match(plan(`SELECT r.id FROM rounds r JOIN events e ON e.aggregate_kind='round'
+    AND e.aggregate_id=r.id AND e.aggregate_version=1 AND e.type='turn.updated'
+    WHERE r.channel_id='chn_test' AND json_type(e.payload_json,'$.admissionPlan')='object'
+      AND json_extract(e.payload_json,'$.admissionPlan.originMessageId')='msg_test'
+    ORDER BY r.created_at,r.id`), /events_admission_origin_message/);
 });
 
 test("a zero-byte database migrates to the current checksummed schema and reopens", (t) => {
@@ -68,7 +96,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   );
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 18);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 19);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -175,6 +203,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 16, checksum: COORDINATION_MIGRATIONS[15]!.checksum },
       { version: 17, checksum: COORDINATION_MIGRATIONS[16]!.checksum },
       { version: 18, checksum: COORDINATION_MIGRATIONS[17]!.checksum },
+      { version: 19, checksum: COORDINATION_MIGRATIONS[18]!.checksum },
     ],
   );
   assert.deepEqual(
