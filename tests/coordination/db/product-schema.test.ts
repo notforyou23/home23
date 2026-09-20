@@ -121,6 +121,7 @@ const EXPECTED_INDEXES = [
   "communication_events_event_id_unique",
   "communication_events_turn_sequence",
   "devices_principal_status",
+  "events_admission_origin_message",
   "events_aggregate_sequence",
   "events_correlation_sequence",
   "events_type_sequence",
@@ -136,16 +137,22 @@ const EXPECTED_INDEXES = [
   "messages_channel_sequence_desc",
   "messages_reply",
   "messages_tombstone",
+  "messages_work_channel_kind",
   "outbox_claimable",
   "outbox_stale_claims",
   "pairing_sessions_state_expiry",
   "resident_outcomes_pending",
+  "resident_outcomes_source_created",
   "session_refresh_tokens_family_state",
   "work_observations_bounded_history",
   "work_planned_invocations_parent",
   "work_retry_provenance_source",
   "works_busy_channel",
+  "works_channel_created",
+  "works_failed_channel_terminal",
+  "works_origin_message",
   "works_scheduled_origin",
+  "works_target_created",
 ] as const;
 
 const EXPECTED_TRIGGERS = [
@@ -293,10 +300,10 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
     now: () => new Date("2026-08-25T12:01:00.000Z"),
   });
   assert.equal(database.openReceipt.migratedFrom, 1);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 18);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 19);
   assert.equal(
     COORDINATION_SCHEMA_CHECKSUM,
-    "d6d6e15d61b86093e7b993e2de76dd7d99dff47f49d0644cb51c3b72020a12a8",
+    "bd0798cf6439403133937130f2efc2eabc586552ebc0cfd545c742fc057d02d1",
   );
   assert.equal(
     COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
@@ -304,7 +311,7 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
   );
   assert.equal(
     COORDINATION_MIGRATION_PLAN_CHECKSUM,
-    "9c9e50b2ef99d7daf53a22467b8177324cb44fbfd8d1b68b9e2f8d9015a7710e",
+    "2a232f392025fd4d1851ef8bdb45a39bd72698b20d45e4857ec214dbe973c493",
   );
   assert.equal(
     COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
@@ -409,6 +416,7 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
       {version:16,name:"artifact-general-files",checksum:"5e8a2aa8840efb060a0f630c8dc4cf5a7ea5a2e1536fc2610053d5ef29494752",checksumLength:64},
       {version:17,name:"native-chess",checksum:"a80592694cac6e666e866bbf2c32518b0dcc0a2bf1e301611e59cee8b997046b",checksumLength:64},
       {version:18,name:"work-outcome-indexes",checksum:"bb32ab88f8aea9728cd96a0e091560358a0579d888c2c9c1a88823ee7dddb2e9",checksumLength:64},
+      {version:19,name:"inbox-and-reconciliation-indexes",checksum:"df58e0a3beedf3a7aec735f0e9a5d9f1c2caa2b1c027a00bea4071411ca64275",checksumLength:64},
     ],
   );
   assert.deepEqual(
@@ -447,7 +455,7 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
   database.close();
 
   const reopened = openCoordinationDatabase({ path });
-  assert.equal(reopened.openReceipt.migratedFrom, 18);
+  assert.equal(reopened.openReceipt.migratedFrom, 19);
   assert.equal(reopened.openReceipt.startupCheck, "quick_check");
   assert.deepEqual(catalogNames(reopened, "table"), EXPECTED_TABLES);
   reopened.close();
@@ -758,7 +766,7 @@ test("restoring an exact schema v1 snapshot permits a clean migration reapply", 
   copyFileSync(snapshot, path);
   const reapplied = openCoordinationDatabase({ path });
   assert.equal(reapplied.openReceipt.migratedFrom, 1);
-  assert.equal(reapplied.openReceipt.schemaVersion, 18);
+  assert.equal(reapplied.openReceipt.schemaVersion, 19);
   assert.deepEqual(catalogNames(reapplied, "table"), EXPECTED_TABLES);
   reapplied.close();
 });
