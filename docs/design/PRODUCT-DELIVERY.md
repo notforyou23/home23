@@ -125,8 +125,13 @@ artifact paths and operational receipts stay outside this public document.
 
 ## Delivery work to address
 
-The next milestone is a small Mac-hosted private beta. These are implementation
-and delivery items with observable completion criteria, not a list of tests alone.
+The delivery goal is a small Mac-hosted private beta. The immediate engineering
+priority is safe updates and portability for the existing owner as well as new
+homes, even if public distribution never follows. The
+[home updates and portability plan](HOME-UPDATES-AND-PORTABILITY.md) defines
+Check for Updates, recovery, backup/transfer and the ordered D08 implementation.
+These are implementation and delivery items with observable completion criteria,
+not a list of tests alone.
 
 | ID | Work and responsibility | Done when |
 |---|---|---|
@@ -137,7 +142,7 @@ and delivery items with observable completion criteria, not a list of tests alon
 | D05 | Backend + Host onboarding: complete real-provider setup, optional dependency guidance, embeddings and document ingestion; remove feature-specific provider assumptions | A new owner can configure the supported provider, bring in documents, retrieve useful memory and understand costs/readiness without inheriting developer accounts; API-key/local setup and future native OAuth are distinguished |
 | D06 | Host + web: add Open Dashboard, actual per-home URL handoff and missing-Mac-client guidance; check dashboard parity and browser behavior | A browser-only owner can enter and use the same home; Windows Edge/Chrome acceptance covers chat/streaming, reports, files and reconnect through the supported connection path |
 | D07 | Backend + web + Apple: deliver secure discovery/pairing and authenticated cross-device/remote transport | Phone and Windows can connect to the intended home, recover from interruptions, revoke access and handle an offline host; private operator routes remain protected |
-| D08 | Backend + Apple delivery: implement updates, backup/restore and recovery that preserve home state, Seed lineage and client compatibility | An upgrade or interrupted upgrade preserves the resident and history with a recovery receipt; restoring a home cannot start two runners on the same Seed |
+| D08 | Backend + Apple delivery: [Check for Updates, safe activation, backup/restore and portability](HOME-UPDATES-AND-PORTABILITY.md), including existing-home adoption | An upgrade or interrupted upgrade preserves the resident and history with a recovery receipt; a move preserves identity and enforces its declared cross-host ownership policy |
 | D09 | Website + release: finish first-run progress, permissions/data explanations, troubleshooting, support and a documented end-to-end beta journey | A new owner can install, configure, converse, import, reconnect and recover using the released apps and docs; local fixtures and developer signatures are not the acceptance evidence |
 | D10 | Later, connectors: app-native account authorization/import for Google and other selected services | Account scopes, data ingestion, refresh, revocation and deletion behavior are explicit and useful; connecting an account does not imply a hosting service exists |
 | D11 | Later, hosting: provision and operate homes for people without a Mac | Shared home birth/continuity is retained with account isolation, credential handling, storage, recovery, service lifecycle and an agreed operating/cost model |
@@ -157,14 +162,16 @@ explicitly unavailable. D10–D11 are later
 phases, not prerequisites for the Mac-hosted foundation.
 
 Open implementation choices include the website's domain/source, Mac download
-container and update mechanism, supported release OS/architectures, secure remote
-transport, and eventual provider/hosting commercial model. These choices should
+container and the updater details tracked in D08, supported release
+OS/architectures, secure remote transport, and eventual provider/hosting
+commercial model. These choices should
 be resolved in their corresponding work rather than silently assumed here.
 
 ## Related implementation and distribution references
 
 - [Home birth and Seed continuity](HOME-BIRTH.md)
 - [Host packaging and lifecycle](HOST-COMPANION.md)
+- [Safe updates, recovery and home portability](HOME-UPDATES-AND-PORTABILITY.md)
 - [Source/operator onboarding](../ONBOARDING.md)
 - [Apple distribution guidance](https://developer.apple.com/documentation/xcode/distributing-your-app-for-beta-testing-and-releases/)
 - [TestFlight invitations](https://testflight.apple.com/)

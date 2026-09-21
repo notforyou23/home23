@@ -45,6 +45,12 @@ The initial runtime keeps its mutable configuration and `instances/` under
 `app/`; upgrading that layout requires a separate state-preserving updater.
 The source Git updater must refuse these installations.
 
+[Home updates and portability](HOME-UPDATES-AND-PORTABILITY.md) defines the
+replacement lifecycle: Check for Updates, compatible staged releases, consistent
+checkpoints, durable activation/recovery and state-preserving home transfer.
+It covers existing Host installations and adoption of managed/source homes.
+This is the next engineering priority; the update operation is not implemented.
+
 The companion invokes the bundled Node with `app/scripts/product/host.mjs`.
 The protocol accepts one action and an absolute `--home` path; `install` also
 accepts `--payload`. Creation data arrives over stdin, including any credential,
