@@ -20,3 +20,16 @@ test('LiveProblemsChannel primes on first poll then emits on change', async () =
   assert.equal(changed.length, 1);
   assert.equal(changed[0].state, 'resolved');
 });
+
+test('LiveProblemsChannel ignores verifier-only updatedAt bumps', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lp-'));
+  const path = join(dir, 'live-problems.json');
+  const write = (problem) => writeFileSync(path, JSON.stringify({ problems: [{ id: 'p1', ...problem }] }));
+  write({ state: 'open', stepIndex: 0, updatedAt: '2026-09-21T00:00:00Z' });
+  const ch = new LiveProblemsChannel({ path, intervalMs: 10 });
+  await ch.poll();
+  write({ state: 'open', stepIndex: 0, updatedAt: '2026-09-21T00:05:00Z' });
+  assert.equal((await ch.poll()).length, 0);
+  write({ state: 'open', stepIndex: 1, updatedAt: '2026-09-21T00:10:00Z' });
+  assert.equal((await ch.poll()).length, 1);
+});

@@ -1,7 +1,10 @@
 /**
  * LiveProblemsChannel — polls brain/live-problems.json and emits an
- * observation whenever a problem's updatedAt changes. Crystallizes each
- * transition as a work_event so the brain sees its own problem lifecycle.
+ * observation whenever a problem's lifecycle changes (state, remediation step
+ * or escalation). updatedAt moves on every verifier check, so keying on it
+ * archived one snapshot per check: 133k records for 1.2k real transitions.
+ * Crystallizes each transition as a work_event so the brain sees its own
+ * problem lifecycle.
  */
 
 'use strict';
@@ -26,10 +29,10 @@ export class LiveProblemsChannel extends PollChannel {
     const out = [];
     for (const p of problems) {
       const key = p.id || `${p.state}:${p.firstSeenAt}`;
-      const updatedAt = p.updatedAt || p.openedAt || p.firstSeenAt;
+      const lifecycle = JSON.stringify([p.state ?? null, p.stepIndex ?? null, Boolean(p.escalated)]);
       const prev = this._seen.get(key);
-      if (prev !== updatedAt) {
-        this._seen.set(key, updatedAt);
+      if (prev !== lifecycle) {
+        this._seen.set(key, lifecycle);
         if (this._primed) out.push(p);
       }
     }
