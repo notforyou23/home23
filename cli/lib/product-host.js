@@ -361,6 +361,11 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
 }
 export async function runHostAction(action, { homeRoot, payloadPath, input = {} } = {}, dependencies = {}) {
   homeRoot = absoluteHome(homeRoot);
+  if (action === 'preview') {
+    if (typeof payloadPath !== 'string' || !isAbsolute(payloadPath)) throw new Error('Choose the absolute candidate Home23 payload directory.');
+    const { previewProductUpdate } = await import('./product-update.js');
+    return previewProductUpdate({ homeRoot, candidatePayload: payloadPath });
+  }
   if (action === 'catalog') {
     const require = createRequire(import.meta.url);
     const { buildHome23ModelAuthority } = require('../../engine/src/dashboard/home23-model-catalog.js');

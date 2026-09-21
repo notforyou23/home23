@@ -1,7 +1,7 @@
 # Home updates and portability
 
-Status: agreed product direction and engineering plan, September 21, 2026.
-The updater, transfer flow and acceptance described below are not implemented.
+Status: engineering plan with an initial read-only backend preview, September
+21, 2026. Installation of updates, transfer and their acceptance remain unimplemented.
 
 Home23 must remain usable, recoverable and movable for its current owner even
 if it is never distributed to anyone else. The same lifecycle must support a
@@ -47,6 +47,29 @@ managed/source installation whose services can execute from different roots.
 Both need coverage. A new empty Host home alone cannot prove the current
 owner's portability. The [September candidate](../superpowers/plans/2026-09-11-owned-embedder-candidate-status.md)
 remains historical installed evidence, not update acceptance.
+
+### Implemented preview
+
+From the maintained backend source, inspect an explicit home and candidate:
+
+```sh
+node scripts/product/host.mjs preview --home /absolute/home --payload /absolute/candidate
+```
+
+`cli/lib/product-update.js` reads installation receipts and package manifests,
+verifies declared package files, and returns current/candidate identities and
+typed reasons for a same/different package, damaged inputs or unsupported layout
+and platform. It bypasses Host status/readiness because those paths can refresh
+authentication state. It does not call providers, manage processes or write
+either input directory. It does not perform a backup inventory of resident
+memory or workspaces.
+
+`canInstall` is always `false`; publisher trust and state-migration compatibility
+are explicitly unverified. A successful preview means the inspection returned,
+not that an update can be applied. Managed/source markers identify an adoption
+case; complete state inventory, schema compatibility and adoption remain work.
+There is no native update button or release feed in this increment. Earlier
+installed runtimes do not acquire this command until deliberately updated.
 
 ## Engineering contracts
 

@@ -12,7 +12,7 @@ try {
   const options = {};
   while (args.length) {
     const key = args.shift();
-    if (!['--home', '--payload'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS]');
+    if (!['--home', '--payload'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS]');
     options[key] = args.shift();
   }
   homeRoot = absoluteHome(options['--home']);
