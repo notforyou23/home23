@@ -4,7 +4,6 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { CodeCreationAgent: HomeCodeCreationAgent } = require('../../../engine/src/agents/code-creation-agent.js');
-const { CodeCreationAgent: CosmoCodeCreationAgent } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/agents/code-creation-agent.js'));
 
 function makeAgent(AgentClass) {
   return Object.create(AgentClass.prototype);
@@ -12,7 +11,6 @@ function makeAgent(AgentClass) {
 
 for (const [label, AgentClass] of [
   ['home engine', HomeCodeCreationAgent],
-  ['cosmo23 vendored engine', CosmoCodeCreationAgent],
 ]) {
   test(`${label} does not treat FILE_WRITTEN logs as artifact metadata`, () => {
     const agent = makeAgent(AgentClass);

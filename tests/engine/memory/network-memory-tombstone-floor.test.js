@@ -17,7 +17,6 @@ Module._load = function patchedLoad(request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 const { NetworkMemory: RootNetworkMemory } = require('../../../engine/src/memory/network-memory.js');
-const { NetworkMemory: CosmoNetworkMemory } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/memory/network-memory.js'));
 Module._load = originalLoad;
 
 function config() {
@@ -33,7 +32,6 @@ function config() {
 
 for (const [name, NetworkMemory] of [
   ['root', RootNetworkMemory],
-  ['COSMO', CosmoNetworkMemory],
 ]) {
   test(`${name} tombstone-only imports persist node identity without inventing cluster state`, async () => {
     const memory = new NetworkMemory(config(), {

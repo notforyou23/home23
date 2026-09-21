@@ -7,11 +7,9 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { IngestionManifest } = require('../../../engine/src/ingestion/ingestion-manifest.js');
-const { IngestionManifest: CosmoIngestionManifest } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/ingestion/ingestion-manifest.js'));
 
 for (const [label, Manifest] of [
   ['root', IngestionManifest],
-  ['COSMO', CosmoIngestionManifest],
 ]) {
   test(`${label} ingestion metadata is committed through patchNode without a direct record write`, async (t) => {
     const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-ingestion-barrier-'));

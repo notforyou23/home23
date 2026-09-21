@@ -7,7 +7,6 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const engineExecutorModule = require('../../../engine/src/agents/agent-executor');
-const cosmoExecutorModule = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/agents/agent-executor'));
 const { rewriteMemoryBase } = require('../../../shared/memory-source');
 const {
   createMemoryDeltaOverlayCache,
@@ -15,7 +14,6 @@ const {
 
 const implementations = [
   ['engine', engineExecutorModule],
-  ['cosmo23', cosmoExecutorModule],
 ];
 
 const logger = {
@@ -165,40 +163,6 @@ for (const [name, module] of implementations) {
     );
   });
 }
-
-test('COSMO AgentExecutor accepts only an explicitly owned local run context', async (t) => {
-  const createdRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-executor-run-'));
-  const home23Root = await fsp.realpath(createdRoot);
-  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
-  const runDir = path.join(home23Root, 'cosmo23', 'runs', 'owned-run-1');
-  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
-  await fsp.mkdir(runDir, { recursive: true });
-  await rewriteMemoryBase(runDir, {
-    nodes: [{ id: 'owned-canary', concept: 'owned run canary', cluster: 'run' }],
-    edges: [],
-    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
-  }, { lockRoot });
-
-  const context = cosmoExecutorModule.createTrustedAgentBrainSourceContext({
-    home23Root,
-    requesterAgent: 'jerry',
-    brainDir: runDir,
-    sourceKind: 'owned-run',
-  });
-  const resolved = await context.resolveTargetContext({});
-  assert.equal(resolved.accessMode, 'owned-run');
-  assert.equal(resolved.target.ownerAgent, 'jerry');
-  assert.equal(resolved.target.canonicalRoot, runDir);
-
-  const executor = new cosmoExecutorModule.AgentExecutor(
-    executorSubsystems(context),
-    executorConfig(runDir),
-    logger,
-  );
-  const query = await executor.mcpBridge.query_memory('owned run', 5);
-  assert.equal(query.ok, true);
-  assert.equal(query.results[0].id, 'owned-canary');
-});
 
 test('engine AgentExecutor forwards the process-owned overlay provider into its MCP bridge', async (t) => {
   const fixture = await createResidentFixture();

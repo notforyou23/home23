@@ -13,7 +13,6 @@ const {
   issueCapability,
   verifyCapability,
 } = require('../../../shared/brain-operations/capability.cjs');
-const { CapabilityNonceStore } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('server/lib/capability-nonce-store.js'));
 
 const TEST_KEY = '1'.repeat(64);
 const NOW = 1_700_000;
@@ -321,65 +320,4 @@ test('capability issue and verify reject missing keys or non-object claims witho
       (error) => error?.code === 'capability_invalid',
     );
   }
-});
-
-test('nonce store accepts one of 32 concurrent consumes and rejects replay', async () => {
-  let now = NOW;
-  const store = new CapabilityNonceStore({ now: () => now });
-  const attempts = await Promise.allSettled(
-    Array.from({ length: 32 }, () => Promise.resolve().then(() => store.consume({
-      nonce: 'shared-nonce',
-      operationId: 'op-123',
-      expiresAt: NOW + 60_000,
-    }))),
-  );
-  assert.equal(attempts.filter((result) => result.status === 'fulfilled').length, 1);
-  assert.equal(attempts.filter((result) => result.reason?.code === 'capability_replay').length, 31);
-
-  now = NOW + 60_001;
-  assert.equal(store.consume({ nonce: 'shared-nonce', operationId: 'op-new', expiresAt: now + 1_000 }), true);
-});
-
-test('nonce store prunes expired entries and fails closed at live capacity', () => {
-  let now = NOW;
-  const store = new CapabilityNonceStore({ now: () => now, maxEntries: 2 });
-  assert.equal(store.consume({ nonce: 'n1', operationId: 'op-1', expiresAt: now + 100 }), true);
-  assert.equal(store.consume({ nonce: 'n2', operationId: 'op-2', expiresAt: now + 100 }), true);
-  assert.throws(
-    () => store.consume({ nonce: 'n3', operationId: 'op-3', expiresAt: now + 100 }),
-    (error) => error?.code === 'capability_nonce_capacity',
-  );
-  assert.throws(
-    () => store.consume({ nonce: 'n1', operationId: 'other', expiresAt: now + 100 }),
-    (error) => error?.code === 'capability_replay',
-  );
-  now += 101;
-  assert.equal(store.consume({ nonce: 'n3', operationId: 'op-3', expiresAt: now + 100 }), true);
-});
-
-test('nonce store defaults to 100000 and rejects invalid or already-expired records', () => {
-  const store = new CapabilityNonceStore({ now: () => NOW });
-  assert.equal(store.maxEntries, 100_000);
-  for (const record of [
-    null,
-    {},
-    { nonce: '', operationId: 'op', expiresAt: NOW + 1 },
-    { nonce: 'nonce', operationId: '', expiresAt: NOW + 1 },
-    { nonce: 'nonce', operationId: 'op', expiresAt: 'later' },
-    { nonce: 'nonce', operationId: 'op', expiresAt: NOW },
-  ]) {
-    assert.throws(
-      () => store.consume(record),
-      (error) => error?.code === 'capability_invalid' || error?.code === 'capability_expired',
-    );
-  }
-});
-
-test('nonce store rejects a nonfinite injected clock without accepting a replay marker', () => {
-  const store = new CapabilityNonceStore({ now: () => Number.NaN });
-  assert.throws(
-    () => store.consume({ nonce: 'nonce', operationId: 'op', expiresAt: NOW + 1 }),
-    (error) => error?.code === 'capability_invalid',
-  );
-  assert.equal(store.entries.size, 0);
 });

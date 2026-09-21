@@ -7,7 +7,6 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { DocumentFeeder } = require('../../../engine/src/ingestion/document-feeder');
-const { DocumentFeeder: CosmoDocumentFeeder } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/ingestion/document-feeder'));
 const { DocumentCompiler } = require('../../../engine/src/ingestion/document-compiler');
 
 function makeFeeder(config = {}, logs = []) {
@@ -192,7 +191,7 @@ test('document feeder watcher leaves existing files to the explicit startup scan
   assert.equal(feeder._watcherOptions().ignoreInitial, true);
 });
 
-for (const [name, Feeder] of [['Root', DocumentFeeder], ['COSMO', CosmoDocumentFeeder]]) {
+for (const [name, Feeder] of [['Root', DocumentFeeder]]) {
   test(`${name} maintenance mode initializes queue state without watchers, scans, or flush timers`, async (t) => {
     const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-maintenance-'));
     t.after(() => fs.rmSync(runPath, { recursive: true, force: true }));
@@ -212,12 +211,6 @@ for (const [name, Feeder] of [['Root', DocumentFeeder], ['COSMO', CosmoDocumentF
     await feeder.shutdown();
   });
 }
-
-test('COSMO feeder status endpoint reads the durable authoritative status snapshot', () => {
-  const source = fs.readFileSync(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('server/index.js'), 'utf8');
-  assert.match(source, /readDurableIngestionQueueStats/);
-  assert.doesNotMatch(source.slice(source.indexOf("app.get('/api/feeder/status'"), source.indexOf("app.post('/api/feeder/ingest'")), /createReadStream\(pendingJsonlPath\)/);
-});
 
 test('document feeder rejects compile jobs when pending queue is full', async () => {
   const logs = [];

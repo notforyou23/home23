@@ -4,9 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { Orchestrator } = require('../../../engine/src/core/orchestrator.js');
-const { Orchestrator: CosmoOrchestrator } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/core/orchestrator.js'));
 const { MemorySummarizer } = require('../../../engine/src/memory/summarizer.js');
-const { MemorySummarizer: CosmoMemorySummarizer } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/memory/summarizer.js'));
 const { planConsolidationBacklogCompost } = require('../../../engine/src/memory/consolidation-backlog.js');
 
 function makeLogger() {
@@ -137,7 +135,6 @@ for (const mode of ['off', 'dry-run', 'apply']) {
 
 for (const implementation of [
   { name: 'root', Orchestrator, MemorySummarizer },
-  { name: 'COSMO', Orchestrator: CosmoOrchestrator, MemorySummarizer: CosmoMemorySummarizer },
 ]) {
   test(`${implementation.name} consolidation replacement race leaves all current sources unmarked`, async () => {
     const logger = makeLogger();
@@ -184,7 +181,6 @@ for (const implementation of [
 
 for (const implementation of [
   { name: 'root', Orchestrator },
-  { name: 'COSMO', Orchestrator: CosmoOrchestrator },
 ]) {
   test(`${implementation.name} consolidation catches summary creation errors before marker commit`, async () => {
     const logger = makeLogger();
@@ -269,57 +265,6 @@ test('performMemoryConsolidation excludes failed summary creation and partial fi
   assert.equal(
     logger.entries.some((entry) => entry.level === 'warn' && entry.data?.reason === 'source_identity_changed'),
     true,
-  );
-});
-
-test('COSMO performMemoryConsolidation counts only stored summaries with committed source markers', async () => {
-  const logger = makeLogger();
-  const consolidations = [consolidation('missing'), consolidation('partial'), consolidation('accepted')];
-  const createdNodes = [null, { id: 'summary-partial' }, { id: 'summary-accepted' }];
-  const commitCalls = [];
-  const orchestrator = Object.create(CosmoOrchestrator.prototype);
-  Object.assign(orchestrator, {
-    logger,
-    memory: {
-      async addNode() { return createdNodes.shift(); },
-    },
-    summarizer: {
-      async consolidateMemories() { return consolidations; },
-      commitConsolidationSources(_memory, candidate) {
-        commitCalls.push(candidate);
-        if (candidate.sourceNodes[0] === 'source-partial') {
-          return {
-            committed: false,
-            mode: 'partial',
-            reason: 'source_identity_changed',
-            updatedSourceNodes: 0,
-            skippedSourceNodes: 1,
-          };
-        }
-        return { committed: true, mode: 'apply', updatedSourceNodes: 1, skippedSourceNodes: 0 };
-      },
-    },
-  });
-
-  const result = await orchestrator.performMemoryConsolidation();
-
-  assert.deepEqual(result, { created: 1, skipped: 2 });
-  assert.equal(commitCalls.length, 2);
-  assert.deepEqual(commitCalls.map((candidate) => candidate.sourceNodes[0]), [
-    'source-partial',
-    'source-accepted',
-  ]);
-  assert.equal(
-    logger.entries.some((entry) => entry.level === 'warn' && entry.data?.reason === 'summary_node_creation_failed'),
-    true,
-  );
-  assert.equal(
-    logger.entries.some((entry) => entry.level === 'warn' && entry.data?.reason === 'source_identity_changed'),
-    true,
-  );
-  assert.deepEqual(
-    logger.entries.find((entry) => entry.message === 'Consolidation complete (GPT-5.2)')?.data,
-    { created: 1, skipped: 2 },
   );
 });
 

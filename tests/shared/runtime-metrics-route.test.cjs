@@ -89,10 +89,8 @@ test('runtime metric registration binds exactly one explicit internal route', ()
   }]);
 });
 
-test('executing dashboard and COSMO servers register their distinct loopback metric routes', () => {
+test('executing dashboard registers its loopback metric route', () => {
   const root = path.resolve(__dirname, '..', '..');
   const dashboard = readFileSync(path.join(root, 'engine/src/dashboard/server.js'), 'utf8');
-  const cosmo = readFileSync(require('../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('server/index.js'), 'utf8');
   assert.match(dashboard, /registerRuntimeMetricsRoute\(this\.app, \{\s*route: '\/home23\/api\/internal\/runtime-metrics',\s*role: 'dashboard',\s*\}\);/);
-  assert.match(cosmo, /registerRuntimeMetricsRoute\(app, \{\s*route: '\/api\/internal\/runtime-metrics',\s*role: 'cosmo',\s*\}\);/);
 });

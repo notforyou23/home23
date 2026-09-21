@@ -10,13 +10,9 @@ const express = require('express');
 const {
   requestAbortController: dashboardRequestAbortController,
 } = require('../../../engine/src/dashboard/brain-source-api.js');
-const {
-  requestAbortController: cosmoRequestAbortController,
-} = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('server/lib/brain-source-router.js'));
 
 const implementations = [
   ['dashboard', dashboardRequestAbortController],
-  ['COSMO', cosmoRequestAbortController],
 ];
 
 function deferred() {

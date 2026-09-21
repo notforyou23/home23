@@ -8,7 +8,6 @@ import { gzipSync } from 'node:zlib';
 
 const require = createRequire(import.meta.url);
 const { MCPBridge: EngineMCPBridge } = require('../../../engine/src/agents/mcp-bridge');
-const { MCPBridge: CosmoMCPBridge } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/agents/mcp-bridge'));
 const {
   appendMemoryRevision,
   rewriteMemoryBase,
@@ -22,7 +21,6 @@ const {
 
 const implementations = [
   ['engine', EngineMCPBridge],
-  ['cosmo23', CosmoMCPBridge],
 ];
 
 const logger = { warn() {}, debug() {}, error() {} };
@@ -261,18 +259,6 @@ for (const [name, Bridge] of implementations) {
     );
   });
 }
-
-test('COSMO MCP bridge preserves the legacy positional ClusterStateStore constructor', async (t) => {
-  const fixture = await createFixture({ withManifest: false });
-  t.after(fixture.cleanup);
-  const clusterStateStore = { getPlan() {}, getTask() {} };
-  const bridge = new CosmoMCPBridge(fixture.brainDir, logger, clusterStateStore);
-  assert.equal(bridge.clusterStateStore, clusterStateStore);
-  const result = await bridge.query_memory('anything');
-  assert.equal(result.ok, false);
-  assert.equal(result.totalNodes, null);
-  assert.equal(result.error.code, 'mcp_source_context_required');
-});
 
 test('supplied brain source context must select the bridge logs directory', async (t) => {
   const fixture = await createFixture({ withManifest: false });

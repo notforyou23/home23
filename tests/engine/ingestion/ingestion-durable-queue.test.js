@@ -12,7 +12,6 @@ const {
   readDurableIngestionQueueStats,
 } = require('../../../shared/ingestion-durable-queue.cjs');
 const { IngestionManifest } = require('../../../engine/src/ingestion/ingestion-manifest.js');
-const { IngestionManifest: CosmoIngestionManifest } = require(require('../../../scripts/lib/cosmo-source.cjs').cosmoSourcePath('engine/src/ingestion/ingestion-manifest.js'));
 
 function tempRun(t) {
   const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-durable-ingestion-'));
@@ -660,7 +659,6 @@ test('a partial dead-letter write is quarantined before the idempotent retry', (
 
 for (const [name, Manifest] of [
   ['Root', IngestionManifest],
-  ['COSMO', CosmoIngestionManifest],
 ]) {
   test(`${name} retains an entire generation across batches and applies relationships once`, async (t) => {
     const runPath = tempRun(t);

@@ -7,8 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const { cosmoSourcePath } = require('../../../scripts/lib/cosmo-source.cjs');
-const read = (relativePath) => fs.readFileSync(relativePath.startsWith('cosmo23/') ? cosmoSourcePath(relativePath.slice(8)) : path.join(root, relativePath), 'utf8');
+const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
 
 function sliceBetween(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
@@ -55,21 +54,11 @@ test('recluster, summarizer, and ingestion callers expose no raw NetworkMemory w
   assert.match(ingestion, /this\.memory\.patchNode\(/);
   assert.doesNotMatch(ingestion, /\bnode\.metadata\s*=/);
 
-  const cosmoSummarizer = read('cosmo23/engine/src/memory/summarizer.js');
-  assert.match(cosmoSummarizer, /memoryNetwork\.patchNodes\(/);
-  assert.match(cosmoSummarizer, /memoryNetwork\.removeNodes\(/);
-  assert.doesNotMatch(cosmoSummarizer, /memoryNetwork\.(?:nodes|edges|clusters)\.(?:set|delete|clear)\(/);
-  assert.doesNotMatch(cosmoSummarizer, /\bnode\.consolidatedAt\s*=/);
-
-  const cosmoIngestion = read('cosmo23/engine/src/ingestion/ingestion-manifest.js');
-  assert.match(cosmoIngestion, /this\.memory\.patchNode\(/);
-  assert.doesNotMatch(cosmoIngestion, /\bnode\.metadata\s*=/);
 });
 
-test('root and COSMO topology writers preserve typed edge endpoints', () => {
+test('topology writers preserve typed edge endpoints', () => {
   for (const relativePath of [
     'engine/src/memory/network-memory.js',
-    'cosmo23/engine/src/memory/network-memory.js',
   ]) {
     const source = read(relativePath);
     const rewire = sliceBetween(source, 'async rewireSmallWorld(p)', 'Apply decay to unused nodes');
@@ -79,10 +68,9 @@ test('root and COSMO topology writers preserve typed edge endpoints', () => {
   }
 });
 
-test('root and COSMO cluster merge paths use one suppressed graph import without raw map bypasses', () => {
+test('cluster merge paths use one suppressed graph import without raw map bypasses', () => {
   for (const relativePath of [
     'engine/src/cluster/cluster-aware-memory.js',
-    'cosmo23/engine/src/cluster/cluster-aware-memory.js',
   ]) {
     const source = read(relativePath);
     const merge = sliceBetween(source, 'async fetchMergedState(cycle)', 'applyNodeSnapshot(data)');
