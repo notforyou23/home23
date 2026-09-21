@@ -3,8 +3,9 @@
 const crypto = require('crypto');
 
 class DocumentChunker {
-  constructor({ maxChunkSize = 3000, overlap = 300, logger = null }) {
+  constructor({ maxChunkSize = 3000, minChunkSize = 400, overlap = 300, logger = null }) {
     this.maxChunkSize = maxChunkSize;
+    this.minChunkSize = minChunkSize;
     this.overlap = overlap;
     this.logger = logger;
   }
@@ -69,7 +70,7 @@ class DocumentChunker {
     }
 
     // Number the blocks and build output
-    const chunks = finalBlocks.map((b, i) => ({
+    const chunks = this._mergeSmallBlocks(finalBlocks).map((b, i) => ({
       blockId: this._shortId(),
       type: b.type,
       level: b.level,
@@ -437,6 +438,43 @@ class DocumentChunker {
 
     const relationships = this._buildRelationships(chunks);
     return { chunks, relationships };
+  }
+
+  // ─── Small-block merging ───────────────────────────────────
+
+  /**
+   * A heading line, a one-line paragraph or a short list is not worth its own
+   * memory node (and its own embedding). Merge a block below minChunkSize into
+   * the block that follows it (a heading attaches to its content), and a small
+   * trailing block into the one before. Never merges code fences, never
+   * exceeds maxChunkSize, never drops or reorders text.
+   */
+  _mergeSmallBlocks(blocks) {
+    const merged = [];
+    const fits = (a, b) => a.text.length + b.text.length + 2 <= this.maxChunkSize;
+    const joinable = (a, b) => a.type !== 'code' && b.type !== 'code' && fits(a, b);
+    for (const block of blocks) {
+      const prev = merged[merged.length - 1];
+      if (prev && prev.text.trim().length < this.minChunkSize && joinable(prev, block)) {
+        merged[merged.length - 1] = {
+          ...block,
+          type: prev.type === 'heading' ? block.type : (prev.type === block.type ? block.type : 'section'),
+          path: block.path.length >= prev.path.length ? block.path : prev.path,
+          level: Math.min(prev.level ?? 0, block.level ?? 0),
+          text: `${prev.text}\n\n${block.text}`,
+        };
+      } else {
+        merged.push({ ...block });
+      }
+    }
+    if (merged.length > 1) {
+      const last = merged[merged.length - 1];
+      const prev = merged[merged.length - 2];
+      if (last.text.trim().length < this.minChunkSize && joinable(prev, last)) {
+        merged.splice(-2, 2, { ...prev, text: `${prev.text}\n\n${last.text}` });
+      }
+    }
+    return merged;
   }
 
   // ─── Relationships ─────────────────────────────────────────

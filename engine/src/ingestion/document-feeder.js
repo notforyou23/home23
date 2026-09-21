@@ -10,6 +10,7 @@ const { DocumentValidator } = require('./document-validator');
 const { DocumentClassifier } = require('./document-classifier');
 const { IngestionManifest, isIngestionInternalFile } = require('./ingestion-manifest');
 const { DocumentCompiler } = require('./document-compiler');
+const { normalizeTranscript } = require('./transcript-normalizer');
 
 class DocumentFeeder {
   /**
@@ -437,6 +438,16 @@ class DocumentFeeder {
         return;
       }
       semanticEventAt = deriveDocumentSemanticTime(text, filePath);
+
+      // Session transcripts: keep dialogue (or a cron run's outcome), drop
+      // operational events and tool chatter; skip chats another export covers.
+      const transcript = normalizeTranscript(filePath, text);
+      if (transcript.action === 'skip') {
+        await this.manifest.removeFile(filePath);
+        this.logger?.info?.('Skipped session transcript', { filePath, reason: transcript.reason });
+        return;
+      }
+      if (transcript.action === 'ingest') text = transcript.text;
 
       // Compile — LLM synthesizes the document in context of existing knowledge
       // Uses concurrency-limited queue to avoid 429 rate-limit avalanche on bulk ingestion
