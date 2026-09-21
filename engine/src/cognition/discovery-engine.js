@@ -782,13 +782,32 @@ function semanticObservationBucket(obs) {
     const cpuCount = Math.max(1, Number(payload.cpuCount) || 1);
     if (!Number.isFinite(load1)) return null;
     const ratio = load1 / cpuCount;
-    if (ratio >= 1.05) return 'cpu:overcommitted';
-    if (ratio >= 0.8) return 'cpu:saturated';
+    const utilization = payload.cpuUtilization;
+    const aggregateBusyPct = Number(utilization?.aggregate?.busyPct);
+    const aggregateIdlePct = Number(utilization?.aggregate?.idlePct);
+    const perCore = Array.isArray(utilization?.perCore) ? utilization.perCore : [];
+    const runnableProcesses = Number(payload.scheduler?.runnableProcesses);
+    const busyCores = perCore.filter(core => Number(core?.busyPct) >= 80).length;
+    const saturationCorroborated = utilization?.available === true
+      && payload.scheduler?.available === true
+      && Number.isFinite(aggregateBusyPct) && aggregateBusyPct >= 80
+      && Number.isFinite(aggregateIdlePct) && aggregateIdlePct <= 20
+      && perCore.length >= cpuCount
+      && busyCores >= Math.ceil(cpuCount * 0.75)
+      && Number.isFinite(runnableProcesses) && runnableProcesses > 0;
+    if (saturationCorroborated && ratio >= 1.05) return 'cpu:overcommitted';
+    if (saturationCorroborated && ratio >= 0.8) return 'cpu:saturated';
+    if (ratio >= 0.8) return 'cpu:load-pressure';
     if (ratio >= 0.5) return 'cpu:elevated';
     return 'cpu:normal';
   }
 
   if (obs.channelId === 'machine.memory') {
+    if (payload.memoryPressure?.available === false
+      && payload.memoryPressure?.source === 'memory_pressure -Q') {
+      return 'memory:pressure-unavailable';
+    }
+
     const pressureFreePct = Number(payload.pressureFreePct ?? payload.memoryPressure?.freePct);
     if (Number.isFinite(pressureFreePct)) {
       if (pressureFreePct <= 10) return 'memory:critical';

@@ -21,6 +21,23 @@ function engine() {
   });
 }
 
+function saturatedCpuPayload({ load1 = 11.5, cpuCount = 10 } = {}) {
+  return {
+    cpuCount,
+    loadAvg: [load1, load1 - 0.6, load1 - 1.3],
+    cpuUtilization: {
+      available: true,
+      aggregate: { busyPct: 92, idlePct: 8 },
+      perCore: Array.from({ length: cpuCount }, (_, index) => ({
+        index,
+        busyPct: index < Math.ceil(cpuCount * 0.8) ? 94 : 70,
+        idlePct: index < Math.ceil(cpuCount * 0.8) ? 6 : 30,
+      })),
+    },
+    scheduler: { available: true, runnableProcesses: 1, runQueueProxy: 1 },
+  };
+}
+
 test('DiscoveryEngine suppresses repeated machine CPU observation buckets', () => {
   const d = engine();
   const base = {
@@ -38,8 +55,60 @@ test('DiscoveryEngine suppresses repeated machine CPU observation buckets', () =
   assert.equal(d.peek(1).length, 0);
   assert.equal(d.getStats().candidatesByeSignal['observation-suppressed'], 1);
 
-  assert.equal(d.injectObservation({ ...base, sourceRef: 'cpu:t3', producedAt: '2026-05-01T12:20:00.000Z', payload: { cpuCount: 10, loadAvg: [11.5, 10.9, 10.2] } }), true);
+  assert.equal(d.injectObservation({ ...base, sourceRef: 'cpu:t3', producedAt: '2026-05-01T12:20:00.000Z', payload: saturatedCpuPayload() }), true);
   assert.equal(d.pop(1)[0].key, 'observation:machine.cpu:cpu:overcommitted');
+});
+
+test('DiscoveryEngine keeps high load without CPU evidence out of saturation buckets', () => {
+  const cases = [
+    {
+      sourceRef: 'cpu:missing',
+      payload: { cpuCount: 10, loadAvg: [12, 11, 10] },
+    },
+    {
+      sourceRef: 'cpu:idle',
+      payload: {
+        ...saturatedCpuPayload({ load1: 12 }),
+        cpuUtilization: {
+          available: true,
+          aggregate: { busyPct: 10, idlePct: 90 },
+          perCore: Array.from({ length: 10 }, (_, index) => ({ index, busyPct: 10, idlePct: 90 })),
+        },
+        scheduler: { available: true, runnableProcesses: 0, runQueueProxy: 0 },
+      },
+    },
+  ];
+
+  for (const [index, item] of cases.entries()) {
+    const d = engine();
+    assert.equal(d.injectObservation({
+      channelId: 'machine.cpu',
+      flag: 'COLLECTED',
+      confidence: 0.95,
+      producedAt: `2026-05-01T12:0${index}:00.000Z`,
+      ...item,
+    }), true);
+    assert.equal(d.pop(1)[0].key, 'observation:machine.cpu:cpu:load-pressure');
+  }
+});
+
+test('DiscoveryEngine allows saturation buckets with one runnable multithreaded process', () => {
+  const cases = [
+    [8.5, 'saturated'],
+    [11.5, 'overcommitted'],
+  ];
+  for (const [load1, bucket] of cases) {
+    const d = engine();
+    assert.equal(d.injectObservation({
+      channelId: 'machine.cpu',
+      flag: 'COLLECTED',
+      confidence: 0.95,
+      sourceRef: `cpu:${bucket}`,
+      producedAt: '2026-05-01T12:30:00.000Z',
+      payload: saturatedCpuPayload({ load1 }),
+    }), true);
+    assert.equal(d.pop(1)[0].key, `observation:machine.cpu:cpu:${bucket}`);
+  }
 });
 
 test('DiscoveryEngine allows repeated machine observation bucket after dedupe window', () => {
@@ -95,6 +164,31 @@ test('DiscoveryEngine retains legacy raw-free memory buckets without pressure ca
     payload: { freePct: 4.9 },
   }), true);
   assert.equal(d.pop(1)[0].key, 'observation:machine.memory:memory:severe');
+});
+
+test('DiscoveryEngine does not classify unavailable Darwin pressure from raw free percent', () => {
+  const d = engine();
+  assert.equal(d.injectObservation({
+    channelId: 'machine.memory',
+    flag: 'COLLECTED',
+    confidence: 0.95,
+    sourceRef: 'mem:darwin-pressure-unavailable',
+    producedAt: '2026-05-01T12:00:00.000Z',
+    payload: {
+      freePct: 0.8,
+      rawFreePct: 0.8,
+      memoryPressure: {
+        metric: 'system-wide-memory-free-percentage',
+        source: 'memory_pressure -Q',
+        available: false,
+        unavailableReason: 'sample-unavailable',
+      },
+    },
+  }), true);
+  assert.equal(
+    d.pop(1)[0].key,
+    'observation:machine.memory:memory:pressure-unavailable',
+  );
 });
 
 test('DiscoveryEngine does not enqueue Good Life telemetry as deep-thought material', () => {
