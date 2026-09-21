@@ -3,6 +3,7 @@ import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { absoluteHome, readPrivateJSON } from './product-environment.js';
 import { readProductManifest, verifyProductPayload } from './product-payload.js';
+import { compareUpdateContracts, inspectStatePreservation } from './product-update-plan.js';
 
 const INSTALL_SCHEMA = 'home23.product-install.v1';
 const reason = (code, message) => ({ code, message });
@@ -99,6 +100,13 @@ export function previewProductUpdate({ homeRoot, candidatePayload }) {
     if (!current.reasons.length) result.reasons.push(reason('unsupported_layout', 'The current home is not an owned product installation.'));
     return result;
   }
+  result.preservation = inspectStatePreservation(current.root);
+  const installed = readProductManifest(current.root);
+  if (installed.packageId !== current.identity.packageId) {
+    result.reasons.push(reason('installation_changed', 'The installed package changed during preview.'));
+    return result;
+  }
+  result.compatibility = compareUpdateContracts(installed, manifest);
   if (current.identity.packageId === manifest.packageId) result.reasons.push(reason('same_package', 'The candidate is the same package already installed.'));
   else result.reasons.push(reason('different_package', 'The candidate is a different structurally valid package.'));
   return result;

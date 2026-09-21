@@ -1,8 +1,8 @@
 # Home updates and portability
 
-Status: engineering plan with backend preview and local candidate staging,
-September 21, 2026. Installation of updates, transfer and their acceptance
-remain unimplemented.
+Status: engineering plan with backend preview, declared-state preservation
+checks, contract comparison and local candidate staging, September 21, 2026.
+Installation of updates, transfer and their acceptance remain unimplemented.
 
 Home23 must remain usable, recoverable and movable for its current owner even
 if it is never distributed to anyone else. The same lifecycle must support a
@@ -71,6 +71,22 @@ not that an update can be applied. Managed/source markers identify an adoption
 case; complete state inventory, schema compatibility and adoption remain work.
 There is no native update button or release feed in this increment. Earlier
 installed runtimes do not acquire this command until deliberately updated.
+
+Preview also returns `preservation` and `compatibility` evidence. The shared
+`PRODUCT_STATE_PATHS` table in `product-payload.js` retains the existing local
+state allowances and labels installation receipts/launcher metadata for future
+rebinding. All other declared roots are preserved. Inspection uses file metadata
+only, stops at links and reports absent, linked, unreadable or wrong-type paths.
+It does not enumerate brains, parse secrets, discover external references or
+take a checkpoint; its scope is `declared_state_roots` and `complete` is false.
+
+Contract comparison uses verified manifest entries for compiled coordination
+migrations and the v1 contract pack. Each group reports `unchanged`, `changed`
+or `unavailable`, fingerprints and changed paths. Both sides must contain the
+group's required entry point and supporting assets before equality is reported.
+No candidate JavaScript is imported. Equal hashes describe packaged assets,
+not the home database's actual version, supported schema ranges, other state
+formats or safe rollback. Those remain unverified; `canInstall` stays false.
 
 ### Implemented local staging
 
@@ -206,9 +222,11 @@ Contributions must return to that lead; the owner is not a message relay.
 | U6 — Deliver | Apple + release: sign/notarize compatible artifacts, publish authenticated feed and finish first-owner instructions | A supported Mac installs and subsequently checks for and applies a release through the UI; private-beta and public-release evidence stay distinct |
 
 The implemented preview and local staging are bounded parts of **U1/U2**.
-State-path inventory, release/schema compatibility and publisher trust still
-need implementation before a button can promise installation. Neither current
-command replaces packages, exports private state or modifies a running home.
+Declared-state paths and coordination contract changes are now visible. Complete
+writer/external-path inventory, actual database/schema compatibility and publisher
+trust still need implementation before a button can promise installation.
+Neither current command replaces packages, exports private state or modifies
+a running home.
 
 Verification follows these boundaries rather than accumulating unrelated suite
 runs. Reuse the known home and receipts when valid; publish one result for each

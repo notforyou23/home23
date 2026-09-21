@@ -45,6 +45,16 @@ test('refuses changed payload files, executable modes, and undeclared additions 
   assert.throws(() => verifyProductPayload(payload), /Product file changed/);
 });
 
+test('state policy retains the Evobrew prefix exclusion from shipped payloads', t => {
+  const { payload } = fixture(t);
+  const directory = path.join(payload, 'app/evobrew/config.json');
+  fs.mkdirSync(directory, { recursive: true, mode: 0o755 });
+  fs.writeFileSync(path.join(directory, 'private-state'), 'must stay local');
+  fs.unlinkSync(path.join(payload, 'manifest.json'));
+  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2' });
+  assert.throws(() => verifyProductPayload(payload), /cannot contain installation state/);
+});
+
 test('refuses an unowned destination and never overwrites its files', t => {
   const { payload, homeRoot } = fixture(t);
   fs.mkdirSync(homeRoot); fs.writeFileSync(path.join(homeRoot, 'owner.txt'), 'keep');

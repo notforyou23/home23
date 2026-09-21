@@ -12,7 +12,12 @@ function fixture(t, { sourceCommit = 'a'.repeat(40), platform = process.platform
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const payload = path.join(root, 'payload'), home = path.join(root, 'home');
   for (const [relative, contents] of Object.entries({ 'bin/node': '#!/bin/sh\n', 'app/cli/home23.js': 'export {};\n',
-    'app/cli/lib/product-payload.js': 'export {};\n', 'app/scripts/product/host.mjs': 'export {};\n', 'tools/node_modules/pm2/bin/pm2': 'pm2\n' })) {
+    'app/cli/lib/product-payload.js': 'export {};\n', 'app/scripts/product/host.mjs': 'export {};\n', 'tools/node_modules/pm2/bin/pm2': 'pm2\n',
+    'app/dist/coordination/migrations/index.js': 'throw new Error("Candidate code must never execute in a preview");\n',
+    'app/dist/coordination/migrations/0001-spine.js': 'throw new Error("Do not import migrations");\n',
+    'app/dist/coordination/contracts/v1/pack-manifest.json': '{}\n',
+    'app/dist/coordination/contracts/v1/schema.json': '{}\n',
+  })) {
     const file = path.join(payload, relative); fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
     fs.writeFileSync(file, contents, { mode: relative === 'bin/node' ? 0o755 : 0o644 });
   }
@@ -45,6 +50,10 @@ test('preview distinguishes same and different intact candidates without changin
   const same = previewProductUpdate({ homeRoot: current.home, candidatePayload: current.payload });
   assert.equal(same.canInstall, false); assert.ok(same.reasons.some(item => item.code === 'same_package'));
   assert.equal(same.publisherTrust, 'unverified'); assert.equal(same.stateMigrationCompatibility, 'unverified');
+  assert.equal(same.preservation.complete, false);
+  assert.equal(same.preservation.paths.find(item => item.path === 'app/instances').status, 'present');
+  assert.equal(same.compatibility.groups.coordinationMigrations.status, 'unchanged');
+  assert.equal(same.compatibility.groups.coordinationContracts.status, 'unchanged');
   const different = previewProductUpdate({ homeRoot: current.home, candidatePayload: candidate.payload });
   assert.ok(different.reasons.some(item => item.code === 'different_package'));
   assert.deepEqual(tree(current.home), beforeHome);

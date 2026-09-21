@@ -115,13 +115,26 @@ export function readProductManifest(payloadPath) {
   if (manifest.files.find(item => item.path === 'bin/node').mode !== 0o755) throw new Error('Product Node is not executable');
   return manifest;
 }
+/** Installed-file allowances, not a complete backup inventory. Rebinding these
+ * two metadata files requires the future activation transaction. */
+export const PRODUCT_STATE_PATHS = Object.freeze([
+  ...['.home23-install.json', '.home23-host.json',
+    ...['home.yaml', 'targets.yaml', 'secrets.yaml', 'agents.json', 'cron-jobs.json'].map(name => `app/config/${name}`),
+    'app/ecosystem.config.cjs', 'app/.home23-state.json',
+    ...['.evobrew-config.json', 'config.json', 'runtime-state.json', 'model-catalog-cache.json'].map(name => `app/evobrew/${name}`),
+  ].map(path => Object.freeze({ path, type: 'file', role: ['.home23-install.json', 'app/ecosystem.config.cjs'].includes(path) ? 'rebind' : 'preserve',
+    // Preserve the pre-existing Evobrew prefix allowance. Inspection still
+    // reports a directory at one of these file paths as a type mismatch.
+    ...(path.startsWith('app/evobrew/') ? { allowDescendants: true } : {}),
+  })),
+  ...['runtime', 'app/instances', 'app/logs', 'app/runtime',
+    ...['.evobrew-workspaces', 'conversations', 'snapshots'].map(name => `app/evobrew/${name}`),
+    ...['runtime', 'logs', 'runs', 'data', 'artifacts', 'outputs', 'backups', '.backups'].map(name => `app/engine/${name}`),
+  ].map(path => Object.freeze({ path, type: 'directory', role: 'preserve' })),
+]);
 function isLocalState(relative) {
-  return relative === '.home23-install.json' || relative === '.home23-host.json' || relative === 'runtime' || relative.startsWith('runtime/') ||
-    /^app\/(instances|logs|runtime)(\/|$)/.test(relative) ||
-    /^app\/config\/(home\.yaml|targets\.yaml|secrets\.yaml|agents\.json|cron-jobs\.json)$/.test(relative) ||
-    /^app\/(ecosystem\.config\.cjs|\.home23-state\.json)$/.test(relative) ||
-    /^app\/evobrew\/(\.evobrew-config\.json|config\.json|runtime-state\.json|model-catalog-cache\.json|\.evobrew-workspaces|conversations|snapshots)(\/|$)/.test(relative) ||
-    /^app\/engine\/(runtime|logs|runs|data|artifacts|outputs|backups|\.backups)(\/|$)/.test(relative);
+  return PRODUCT_STATE_PATHS.some(entry => relative === entry.path ||
+    ((entry.type === 'directory' || entry.allowDescendants) && relative.startsWith(entry.path + '/')));
 }
 export function verifyProductPayload(payloadPath, { allowRuntimeState = false } = {}) {
   const root = path.resolve(payloadPath), manifest = readProductManifest(root);

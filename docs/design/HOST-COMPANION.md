@@ -54,6 +54,10 @@ The backend supports a read-only `preview --home ABS --payload ABS` and local
 Staging prepares a separate verified payload with an owned resumable claim.
 Applying an update is not implemented; both commands report installation
 unavailable and publisher/migration checks unverified.
+Preview includes a metadata-only preservation plan for declared state roots and
+hash comparisons of packaged coordination migrations/contracts. It does not
+inspect the actual home database or claim that equal contract bytes make an
+update safe.
 
 The companion invokes the bundled Node with `app/scripts/product/host.mjs`.
 The protocol accepts one action and an absolute `--home` path; `install`,
