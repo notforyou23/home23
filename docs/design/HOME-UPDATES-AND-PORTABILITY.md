@@ -143,10 +143,15 @@ import the `app/` tree being replaced. Resume with `update-resume` or that
 copied controller. A busy home returns wait/defer unless maintenance is
 explicitly admitted; admission stops owned writers through the normal supervisor
 stop and does not force-kill them. Desired running state is preserved: a
-stopped home stays stopped, and a home that was meant to be running is started
-on the selected package. Code rollback is available only before the new runtime
-accepts work. After that, a failed check is recovery-required and the previous
-data snapshot is not restored.
+stopped home stays stopped. Before any candidate writer is admitted, quiesced
+byte identity is checked again and software rollback is still possible. Admitting
+a running home records that boundary before Start. After Start, checks use stable
+identity — resident profile, canonical state, encoder recipe and coordination
+schema — and may see lifecycle fields such as host phase and `startedAt` change.
+A failed check after admission fences writers and is recovery-required. It does
+not restore previous software or the data snapshot. A rollback that happens
+before admission, for a home that was meant to be running, starts the restored
+software again.
 
 Process-kill and resume coverage is not a power-loss proof. This path does not
 migrate data, publish a feed, or move a home.

@@ -15,7 +15,7 @@ const executeFile = promisify(execFile);
 const SCHEMA = 'home23.product-update.v1';
 const INSTALL_SCHEMA = 'home23.product-install.v1';
 const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
-const RANK = { claimed: 0, quiesced: 1, checkpointed: 2, retained: 3, applying: 4, selected: 5, verifying: 6, accepted: 7, committed: 8, aborted: 8, rolled_back: 8, recovery_required: 8 };
+const RANK = { claimed: 0, quiesced: 1, checkpointed: 2, retained: 3, applying: 4, selected: 5, verifying: 6, writers_admitted: 7, accepted: 8, committed: 9, aborted: 9, rolled_back: 9, recovery_required: 9 };
 const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs'];
 const DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const libDirectory = dirname(fileURLToPath(import.meta.url));
@@ -55,7 +55,7 @@ export function readUpdateJournal(homeRoot) {
 /** Normal Start must wait. The update owner may start only after selection, with the journal token. */
 export function updateBlocksStart(journal, token) {
   if (!journal || ['committed', 'rolled_back', 'aborted'].includes(journal.phase)) return false;
-  return !(token && token === journal.ownerToken && ['selected', 'verifying', 'accepted'].includes(journal.phase));
+  return !(token && token === journal.ownerToken && ['selected', 'verifying', 'writers_admitted', 'accepted'].includes(journal.phase));
 }
 function publicResult(journal, extras = {}) {
   const deferred = extras.deferred === true;
@@ -66,6 +66,7 @@ function publicResult(journal, extras = {}) {
     acceptedWork: journal.acceptedWork === true, publisherTrust: 'unverified', networkInstall: false, distribution: 'local-untrusted',
     canInstall: false, stateMigration: 'schema_preserving_only', identityPreserved: journal.identityPreserved !== false,
     replayed: extras.replayed === true, recoveryRequired: journal.phase === 'recovery_required',
+    runningRestored: journal.runningRestored === true,
     admission: deferred ? 'wait' : undefined, reasons: extras.reasons || journal.reasons || [],
   };
 }
@@ -126,6 +127,33 @@ function sameIdentity(home, expected) {
   const current = identityMap(home);
   const keys = Object.keys(expected || {});
   return keys.length === Object.keys(current).length && keys.every(key => current[key] === expected[key]);
+}
+function isCanonicalState(relative) {
+  return relative !== '.home23-host.json' && relative !== 'app/ecosystem.config.cjs' && relative !== DATABASE
+    && !relative.endsWith('-wal') && !relative.endsWith('-shm') && !relative.includes('/.house/coordination/');
+}
+function canonicalFrom(hashes) {
+  return Object.fromEntries(Object.entries(hashes || {}).filter(([relative]) => isCanonicalState(relative)));
+}
+function hostIdentity(home) {
+  const state = readPrivateJSON(join(home, '.home23-host.json'));
+  if (!state) return null;
+  return { homeRoot: state.homeRoot, profile: state.profile, encoderRequired: state.encoderRequired === true, desiredRunning: state.desiredRunning === true };
+}
+async function sameCanonical(home, journal) {
+  const current = canonicalFrom(identityMap(home));
+  const expected = journal.canonical || {};
+  const keys = Object.keys(expected);
+  if (keys.length !== Object.keys(current).length || keys.some(key => current[key] !== expected[key])) return false;
+  const host = hostIdentity(home), saved = journal.hostIdentity;
+  if (!host || !saved || host.homeRoot !== saved.homeRoot || host.encoderRequired !== saved.encoderRequired) return false;
+  if (JSON.stringify(host.profile) !== JSON.stringify(saved.profile)) return false;
+  if (host.desiredRunning !== (journal.desiredRunning === true)) return false;
+  if (journal.checkpointDatabase?.present) {
+    const database = await inspectCoordinationDatabase(join(home, DATABASE));
+    if (!database.compatible || database.version !== journal.checkpointDatabase.version) return false;
+  }
+  return true;
 }
 async function defaultListProcesses(home) {
   const node = join(home, 'bin', 'node'), pm2 = join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2');
@@ -319,10 +347,10 @@ function defaultBehavior({ home, journal, identityPreserved }) {
     const receipt = readPrivateJSON(join(home, '.home23-install.json'));
     if (receipt?.packageId !== journal.toPackageId || receipt?.nodePath !== join(home, 'bin', 'node')) issues.push('The installation receipt does not name the selected package.');
   } catch { issues.push('The selected installation no longer verifies.'); }
-  if (!identityPreserved) issues.push('Home identity files changed during the update.');
+  if (!identityPreserved) issues.push(journal.writersAdmitted ? 'Canonical home identity changed after the candidate started.' : 'Home identity files changed during the update.');
   if (journal.desiredRunning && journal.startOk === false) issues.push('Candidate start failed.');
-  if (process.env.HOME23_UPDATE_VERIFY_RESULT === 'fail') issues.push('Candidate health was forced to fail before the new runtime accepted work.');
-  if (journal.identity?.[DATABASE] && exists(join(home, DATABASE)) && hashFile(join(home, DATABASE)) !== journal.identity[DATABASE]) issues.push('The coordination database changed after the checkpoint.');
+  if (process.env.HOME23_UPDATE_VERIFY_RESULT === 'fail') issues.push('Candidate health was forced to fail.');
+  if (!journal.writersAdmitted && journal.identity?.[DATABASE] && exists(join(home, DATABASE)) && hashFile(join(home, DATABASE)) !== journal.identity[DATABASE]) issues.push('The coordination database changed after the checkpoint.');
   return { ok: issues.length === 0, issues };
 }
 
@@ -350,7 +378,7 @@ async function mutate(journal, dependencies) {
       return { done: publicResult(journal) };
     }
     const checkpoint = await (dependencies.writeCheckpoint || writeCheckpoint)(home, updateDirectoryFor(home));
-    journal = await commitPhase(file, { ...journal, phase: 'checkpointed', identity: checkpoint.hashes, checkpointDatabase: checkpoint.database }, dependencies);
+    journal = await commitPhase(file, { ...journal, phase: 'checkpointed', identity: checkpoint.hashes, canonical: canonicalFrom(checkpoint.hashes), hostIdentity: hostIdentity(home), checkpointDatabase: checkpoint.database }, dependencies);
   }
   if (rank() < RANK.retained) {
     const installed = readProductManifest(home);
@@ -370,36 +398,85 @@ async function mutate(journal, dependencies) {
 }
 async function finish(journal, dependencies) {
   const file = journalPath(journal.homeRoot), home = journal.homeRoot;
-  if (['committed', 'rolled_back', 'aborted', 'recovery_required'].includes(journal.phase)) return publicResult(journal, { replayed: true });
-  if (RANK[journal.phase] < RANK.verifying) journal = await commitPhase(file, { ...journal, phase: 'verifying' }, dependencies);
-  if (journal.desiredRunning && journal.candidateStarted !== true && RANK[journal.phase] < RANK.accepted) {
-    let startOk = false;
-    try { startOk = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
-    catch { startOk = false; }
-    journal = await commitPhase(file, { ...journal, candidateStarted: true, startOk, phase: 'verifying' }, dependencies);
+  if (['committed', 'rolled_back', 'aborted'].includes(journal.phase)) return publicResult(journal, { replayed: true });
+  if (journal.phase === 'recovery_required' && !journal.writersAdmitted) return publicResult(journal, { replayed: true });
+  const list = dependencies.listProcesses || defaultListProcesses;
+  const busy = async () => classifyProcesses(await list(home), journal.writerNames || []).busy.length > 0;
+  const fence = async () => {
+    if (!(await busy())) return true;
+    await (dependencies.quiesce || defaultQuiesce)(home, journal.writerNames || []);
+    return !(await busy());
+  };
+  async function rollback(reason) {
+    if (journal.writersAdmitted || journal.acceptedWork || !(await fence())) {
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'recovery_required', message: 'Software was not restored because writers were admitted or could not be fenced. The data snapshot was not restored.' }] }, dependencies);
+      return publicResult(journal);
+    }
+    try { (dependencies.restorePrevious || restorePrevious)(home, updateDirectoryFor(home), previousManifest(home), readProductManifest(journal.stagedPayload)); }
+    catch (error) {
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'recovery_required', message: `No safe automatic rollback is available (${error.message}). Home state was not replaced from the checkpoint.` }] }, dependencies);
+      return publicResult(journal);
+    }
+    const preserved = sameIdentity(home, journal.identity);
+    let restoredRunning = false;
+    if (journal.desiredRunning) {
+      try { restoredRunning = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
+      catch { restoredRunning = false; }
+      if (!restoredRunning) {
+        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', identityPreserved: preserved, reasons: [{ code: 'recovery_required', message: 'Previous software was restored, but the home did not return to its desired running state.' }] }, dependencies);
+        return publicResult(journal);
+      }
+    }
+    journal = await commitPhase(file, { ...journal, phase: 'rolled_back', identityPreserved: preserved, runningRestored: restoredRunning, reasons: [{ code: 'candidate_unhealthy', message: reason }] }, dependencies);
+    return publicResult(journal);
   }
-  const identityPreserved = sameIdentity(home, journal.identity);
-  const behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved });
-  if (!behavior.ok) {
-    if (journal.acceptedWork) {
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', identityPreserved, reasons: [{ code: 'recovery_required', message: 'The new runtime already accepted work and a later check failed. The previous data snapshot was not restored.' }] }, dependencies);
-      return publicResult(journal);
-    }
+  if (!journal.writersAdmitted && !journal.acceptedWork) {
+    const release = await (dependencies.acquireHostLock || defaultAcquireHostLock)(home, journal);
+    if (release === null) return deferred(home, 'busy', 'Another lifecycle operation holds this home.', journal);
+    let rollbackReason = null;
     try {
-      (dependencies.restorePrevious || restorePrevious)(home, updateDirectoryFor(home), previousManifest(home), readProductManifest(journal.stagedPayload));
-      journal = await commitPhase(file, { ...journal, phase: 'rolled_back', identityPreserved: sameIdentity(home, journal.identity), reasons: [{ code: 'candidate_unhealthy', message: behavior.issues?.[0] || 'The candidate did not become healthy. Previous software was restored and home state was left in place.' }] }, dependencies);
-      return publicResult(journal);
-    } catch (error) {
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', identityPreserved, reasons: [{ code: 'recovery_required', message: `No safe automatic rollback is available (${error.message}). Home state was not replaced from the checkpoint.` }] }, dependencies);
+      if (await busy()) {
+        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'recovery_required', message: 'Writers are active before the candidate was admitted. They were not replaced or force-killed.' }] }, dependencies);
+        return publicResult(journal);
+      }
+      if (!sameIdentity(home, journal.identity)) {
+        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', identityPreserved: false, reasons: [{ code: 'recovery_required', message: 'Quiesced home identity changed before writers were admitted. Software and the data snapshot were not restored.' }] }, dependencies);
+        return publicResult(journal);
+      }
+      let packageOk = true;
+      try { if (verifyProductPayload(home, { allowRuntimeState: true }).packageId !== journal.toPackageId) packageOk = false; }
+      catch { packageOk = false; }
+      if (!packageOk) rollbackReason = 'The selected package did not verify while writers were still fenced.';
+      else if (journal.desiredRunning) journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies);
+    } finally { if (release) await release(); }
+    if (rollbackReason) return rollback(rollbackReason);
+    if (['recovery_required', 'rolled_back'].includes(journal.phase)) return publicResult(journal);
+  }
+  if (journal.desiredRunning && journal.candidateStarted !== true) {
+    let startOk = false;
+    if (!(await busy())) {
+      try { startOk = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
+      catch { startOk = false; }
+    } else startOk = true;
+    journal = await commitPhase(file, { ...journal, candidateStarted: true, startOk, phase: 'writers_admitted' }, dependencies);
+  }
+  const identityPreserved = journal.writersAdmitted ? await sameCanonical(home, journal) : sameIdentity(home, journal.identity);
+  const behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved });
+  if (!behavior.ok || !identityPreserved) {
+    if (journal.writersAdmitted || journal.acceptedWork) {
+      const fenced = await fence();
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', identityPreserved, reasons: [{ code: 'recovery_required', message: fenced ? 'The candidate started and a later check failed. Writers were fenced. Previous software and the data snapshot were not restored.' : 'The candidate started and writers could not be fenced. Previous software and the data snapshot were not restored.' }] }, dependencies);
       return publicResult(journal);
     }
+    return rollback(behavior.issues?.[0] || 'The candidate did not become healthy. Previous software was restored and home state was left in place.');
   }
   if (RANK[journal.phase] < RANK.accepted) journal = await commitPhase(file, { ...journal, phase: 'accepted', acceptedWork: true, identityPreserved }, dependencies);
-  journal = await commitPhase(file, { ...journal, phase: 'committed', acceptedWork: true, identityPreserved }, dependencies);
+  journal = await commitPhase(file, { ...journal, phase: 'committed', acceptedWork: true, writersAdmitted: journal.writersAdmitted === true, identityPreserved }, dependencies);
   return publicResult(journal);
 }
 async function runTransaction(journal, dependencies) {
-  if (['committed', 'rolled_back', 'aborted', 'recovery_required'].includes(journal.phase)) return publicResult(journal, { replayed: true });
+  if (['committed', 'rolled_back', 'aborted'].includes(journal.phase)) return publicResult(journal, { replayed: true });
+  if (journal.phase === 'recovery_required' && !journal.writersAdmitted) return publicResult(journal, { replayed: true });
   let releaseHost = async () => {};
   if (RANK[journal.phase] < RANK.verifying) {
     const acquired = await (dependencies.acquireHostLock || defaultAcquireHostLock)(journal.homeRoot, journal);

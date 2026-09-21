@@ -274,6 +274,69 @@ test('killing the controller before and after selection resumes without a second
   assert.deepEqual(preserved(selected.home), selectedState);
 });
 
+test('real startup may rewrite lifecycle fields without losing canonical identity', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const before = preserved(fixture.home);
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging, admit: true }, {
+    ...quiet,
+    start: async () => {
+      const file = path.join(fixture.home, '.home23-host.json');
+      const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+      state.phase = 'starting';
+      state.startedAt = '2026-09-21T20:00:00.000Z';
+      fs.writeFileSync(file, JSON.stringify(state), { mode: 0o600 });
+      return { ok: true, status: 'ready' };
+    },
+  });
+  assert.equal(result.status, 'committed');
+  assert.equal(result.identityPreserved, true);
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.equal(preserved(fixture.home).conversation, before.conversation);
+  assert.equal(preserved(fixture.home).seed, before.seed);
+  assert.equal(preserved(fixture.home).value, before.value);
+  const host = JSON.parse(fs.readFileSync(path.join(fixture.home, '.home23-host.json'), 'utf8'));
+  assert.equal(host.phase, 'starting');
+  assert.equal(host.profile.name, 'milo');
+  assert.equal(host.desiredRunning, true);
+});
+
+test('a failed check after candidate startup fences writers and does not restore software', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const before = preserved(fixture.home);
+  let online = false, fenced = 0;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging, admit: true }, {
+    ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { online = true; return { ok: true, status: 'ready' }; },
+    quiesce: async () => { fenced += 1; online = false; return []; },
+    verifyBehavior: async () => ({ ok: false, issues: ['candidate unhealthy after start'] }),
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(result.recoveryRequired, true);
+  assert.equal(fenced, 1);
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+  assert.match(result.reasons[0].message, /not restored/);
+});
+
+test('fenced rollback of a running home restores previous software and starts it', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const before = preserved(fixture.home);
+  let started = 0;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging, admit: true }, {
+    ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase === 'selected') fs.writeFileSync(path.join(fixture.home, 'bin/node'), '#!/bin/sh\nbroken\n');
+    },
+    start: async () => { started += 1; return { ok: true, status: 'ready' }; },
+  });
+  assert.equal(result.status, 'rolled_back');
+  assert.equal(result.runningRestored, true);
+  assert.equal(started, 1);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+});
+
 test('a forced health failure in the real controller restores the previous package', async t => {
   const fixture = homeFixture(t);
   const before = preserved(fixture.home);
