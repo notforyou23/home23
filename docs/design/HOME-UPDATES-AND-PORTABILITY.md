@@ -148,7 +148,9 @@ byte identity is checked again and software rollback is still possible. Admittin
 a running home records that boundary before Start. After Start, checks use stable
 identity — resident profile, canonical state, encoder recipe and coordination
 schema — and may see lifecycle fields such as host phase and `startedAt` change.
-A failed check after admission fences writers and is recovery-required. It does
+Seed ledgers may grow by append. Living brain and log writes are not treated as
+lost identity. A failed check after admission fences writers and is
+recovery-required. It does
 not restore previous software or the data snapshot. A rollback that happens
 before admission, for a home that was meant to be running, starts the restored
 software again.
