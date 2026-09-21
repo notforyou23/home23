@@ -371,6 +371,12 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     const { stageProductPayload } = await import('./product-update-stage.js');
     return stageProductPayload({ homeRoot, candidatePayload: payloadPath, staging: input.staging });
   }
+  if (action === 'update' || action === 'update-resume') {
+    const { applyProductUpdate, resumeProductUpdate } = await import('./product-update-apply.js');
+    if (action === 'update-resume') return resumeProductUpdate({ homeRoot });
+    if (typeof payloadPath !== 'string' || !isAbsolute(payloadPath) || typeof input.staging !== 'string' || !isAbsolute(input.staging)) throw new Error('Choose absolute candidate and staging directories.');
+    return applyProductUpdate({ homeRoot, candidatePayload: payloadPath, staging: input.staging, admit: input.admit === true });
+  }
   if (action === 'catalog') {
     const require = createRequire(import.meta.url);
     const { buildHome23ModelAuthority } = require('../../engine/src/dashboard/home23-model-catalog.js');
@@ -380,7 +386,25 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     return { ok: true, status: existsSync(receiptPath(homeRoot)) ? 'installed' : 'absent', homeRoot,
       providers: Object.entries(authority.executionCatalog.providers).filter(([id]) => PROVIDERS.has(id)).map(([id, provider]) => ({ id, name: provider.label || id, models: provider.models.filter(model => model.kind === 'chat').map(model => ({ id: model.id, name: model.label || model.id })) })) };
   }
-  if (action === 'status') return status(homeRoot, dependencies);
+  if (action === 'status' || action === 'start' || action === 'create' || action === 'semantic-prepare') {
+    const { readUpdateJournal, updateBlocksStart } = await import('./product-update-apply.js');
+    let journal = null;
+    try { journal = readUpdateJournal(homeRoot); }
+    catch { journal = { phase: 'recovery_required' }; }
+    if (action === 'status') {
+      try {
+        const result = await status(homeRoot, dependencies);
+        if (updateBlocksStart(journal)) return { ...result, ok: true, status: 'recovery_required', update: { phase: journal.phase, acceptedWork: journal.acceptedWork === true } };
+        return result;
+      } catch (error) {
+        if (updateBlocksStart(journal)) return { ok: false, status: 'recovery_required', homeRoot, update: { phase: journal.phase }, error: { code: 'update_recovery_required', message: error.message } };
+        throw error;
+      }
+    }
+    if (updateBlocksStart(journal, action === 'start' ? input.updateOwnerToken : undefined)) {
+      return { ok: false, status: 'recovery_required', homeRoot, error: { code: 'update_recovery_required', message: 'Resume the unfinished Home23 update before starting this home.' } };
+    }
+  }
   if (!['install', 'create', 'start', 'stop', 'semantic-prepare'].includes(action)) throw new Error('Unknown Home23 Host action.');
   if (action === 'install') {
     if (typeof payloadPath !== 'string' || !isAbsolute(payloadPath)) throw new Error('Choose the absolute bundled Home23 payload directory.');

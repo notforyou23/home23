@@ -1,0 +1,281 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { installProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
+import { previewProductUpdate } from '../../cli/lib/product-update.js';
+import { applyProductUpdate, resumeProductUpdate, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
+import { SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
+
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const quiet = { listProcesses: async () => [], acquireHostLock: async () => async () => {} };
+const hostStub = `export async function runHostAction(action, { homeRoot, input } = {}) {
+  if (!input?.updateOwnerToken) return { ok: false, status: 'recovery_required' };
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  fs.mkdirSync(path.join(homeRoot, 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(homeRoot, 'runtime/started.txt'), action);
+  return { ok: true, status: 'ready' };
+}\n`;
+
+function tempRoot(t) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-apply-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+function payload(dir, { sourceCommit, extra = {} } = {}) {
+  const files = { 'bin/node': '#!/bin/sh\n', 'app/cli/home23.js': 'export {};\n', 'app/cli/lib/product-payload.js': 'export {};\n',
+    'app/scripts/product/host.mjs': 'export {};\n', 'tools/node_modules/pm2/bin/pm2': 'pm2\n',
+    'app/dist/coordination/migrations/index.js': 'migration-index\n', 'app/dist/coordination/migrations/0001-coordination-spine.js': 'migration-one\n',
+    'app/dist/coordination/contracts/v1/pack-manifest.json': '{}\n', 'app/dist/coordination/contracts/v1/schema.json': '{}\n', ...extra };
+  for (const [relative, contents] of Object.entries(files)) {
+    const file = path.join(dir, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(file, contents, { mode: relative === 'bin/node' ? 0o755 : 0o644 });
+  }
+  fs.mkdirSync(path.join(dir, 'app/config'), { recursive: true, mode: 0o755 });
+  return writeProductManifest(dir, { sourceCommit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+}
+function database(file, version = SUPPORTED_COORDINATION_SCHEMA) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  db.exec(`PRAGMA user_version = ${version};
+    CREATE TABLE schema_migrations (version INTEGER, name TEXT, checksum TEXT, applied_at TEXT, application_version TEXT);
+    INSERT INTO schema_migrations VALUES (${version}, 'chess-engines', '${SUPPORTED_COORDINATION_MIGRATION_CHECKSUM}', 't', 'test');
+    CREATE TABLE kernel_meta (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
+    INSERT INTO kernel_meta VALUES ('schema.checksum', '${SUPPORTED_COORDINATION_SCHEMA_CHECKSUM}', 't');
+    INSERT INTO kernel_meta VALUES ('schema.version', '${version}', 't');
+    CREATE TABLE kept (value TEXT);
+    INSERT INTO kept VALUES ('same-home');`);
+  db.close();
+}
+function populate(home, { desiredRunning = false, version = SUPPORTED_COORDINATION_SCHEMA } = {}) {
+  const profile = { name: 'milo', provider: 'ollama-local', model: 'fixture' };
+  fs.mkdirSync(path.join(home, 'app/config'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'app/config/home.yaml'), 'name: milo\n', { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/config/secrets.yaml'), 'providers: {}\n', { mode: 0o600 });
+  fs.mkdirSync(path.join(home, 'app/instances/milo/conversations'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'app/instances/milo/brain'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'app/instances/milo/conversations/session.txt'), 'hello-milo');
+  fs.writeFileSync(path.join(home, 'app/instances/milo/brain/event-ledger.jsonl'), '{"id":"seed-1"}\n');
+  database(path.join(home, 'app/instances/.house/coordination/home23-coordination.sqlite3'), version);
+  fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({ schema: 'home23.host.v2', homeRoot: home, profile, desiredRunning, encoderRequired: true, phase: 'prepared' }), { mode: 0o600 });
+}
+function homeFixture(t, options = {}) {
+  const root = tempRoot(t);
+  const current = path.join(root, 'current'), candidate = path.join(root, 'candidate'), home = path.join(root, 'home'), staging = path.join(root, 'staging');
+  const installed = payload(current, { sourceCommit: 'a'.repeat(40) });
+  const next = payload(candidate, { sourceCommit: 'b'.repeat(40), extra: options.extra || { 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n' } });
+  installProductPayload({ payloadPath: current, homeRoot: home });
+  populate(home, options);
+  return { root, current, candidate, home, staging, installed, next };
+}
+function kept(home) {
+  const db = new DatabaseSync(path.join(home, 'app/instances/.house/coordination/home23-coordination.sqlite3'), { readOnly: true });
+  try { return { value: db.prepare('SELECT value FROM kept').get().value, version: Number(db.prepare('PRAGMA user_version').get().user_version) }; }
+  finally { db.close(); }
+}
+function packageId(home) { return JSON.parse(fs.readFileSync(path.join(home, '.home23-install.json'), 'utf8')).packageId; }
+function preserved(home) {
+  return { conversation: fs.readFileSync(path.join(home, 'app/instances/milo/conversations/session.txt'), 'utf8'),
+    seed: fs.readFileSync(path.join(home, 'app/instances/milo/brain/event-ledger.jsonl'), 'utf8'),
+    config: fs.readFileSync(path.join(home, 'app/config/home.yaml'), 'utf8'), ...kept(home) };
+}
+function run(command, args, env) {
+  return new Promise(resolve => {
+    const child = spawn(command, args, { cwd: rootDir, env });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+}
+
+test('reviewed schema constants and writer names stay aligned with source', () => {
+  const migrations = fs.readFileSync(path.join(rootDir, 'src/coordination/migrations/index.ts'), 'utf8');
+  const source = fs.readFileSync(path.join(rootDir, 'cli/lib/product-host.js'), 'utf8');
+  assert.match(migrations, new RegExp(SUPPORTED_COORDINATION_SCHEMA_CHECKSUM));
+  assert.match(migrations, new RegExp(SUPPORTED_COORDINATION_MIGRATION_CHECKSUM));
+  assert.match(source, /const names = \['home23-coordination', `home23-\$\{name\}`, `home23-\$\{name\}-dash`, `home23-\$\{name\}-harness`, `home23-\$\{name\}-seed`, `home23-\$\{name\}-shipper`, 'home23-seed-observatory', 'home23-evobrew'\];/);
+  assert.deepEqual(ownedWriterNames('milo', { encoderRequired: true }), ['home23-coordination', 'home23-milo', 'home23-milo-dash', 'home23-milo-harness', 'home23-milo-seed', 'home23-milo-shipper', 'home23-seed-observatory', 'home23-evobrew', 'home23-embedder']);
+  assert.equal(updateBlocksStart({ phase: 'applying', ownerToken: 'token' }, 'token'), true);
+  assert.equal(updateBlocksStart({ phase: 'selected', ownerToken: 'token' }, 'token'), false);
+  assert.equal(updateBlocksStart({ phase: 'committed' }), false);
+  assert.equal(updateBlocksStart({ phase: 'rolled_back' }), false);
+});
+
+test('refusals happen before a journal or package change', async t => {
+  const bad = homeFixture(t, { version: SUPPORTED_COORDINATION_SCHEMA + 1 });
+  const refused = await applyProductUpdate({ homeRoot: bad.home, candidatePayload: bad.candidate, staging: bad.staging }, quiet);
+  assert.equal(refused.reasons[0].code, 'unsupported_data_version');
+  assert.equal(fs.existsSync(updateDirectoryFor(bad.home)), false);
+  assert.equal(packageId(bad.home), bad.installed.packageId);
+  assert.equal(preserved(bad.home).value, 'same-home');
+
+  const unknown = homeFixture(t);
+  fs.writeFileSync(path.join(unknown.home, 'notes.txt'), 'classify me');
+  assert.equal((await applyProductUpdate({ homeRoot: unknown.home, candidatePayload: unknown.candidate, staging: unknown.staging }, quiet)).reasons.some(item => item.code === 'unknown_state'), true);
+  assert.equal(packageId(unknown.home), unknown.installed.packageId);
+
+  const linked = homeFixture(t);
+  const outside = path.join(linked.root, 'outside');
+  fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'poison'), 'POISON-BYTES');
+  fs.rmSync(path.join(linked.home, 'app/instances/milo/brain'), { recursive: true });
+  fs.symlinkSync(outside, path.join(linked.home, 'app/instances/milo/brain'));
+  const linkedResult = await applyProductUpdate({ homeRoot: linked.home, candidatePayload: linked.candidate, staging: linked.staging }, quiet);
+  assert.equal(linkedResult.reasons.some(item => item.code === 'linked_state_path'), true);
+  assert.equal(JSON.stringify(linkedResult).includes('POISON-BYTES'), false);
+
+  const external = homeFixture(t);
+  fs.writeFileSync(path.join(external.home, 'app/config/home.yaml'), 'imports: /Volumes/Outside/photos\n', { mode: 0o600 });
+  assert.equal((await applyProductUpdate({ homeRoot: external.home, candidatePayload: external.candidate, staging: external.staging }, quiet)).reasons.some(item => item.code === 'external_reference'), true);
+
+  const tight = homeFixture(t);
+  const space = await applyProductUpdate({ homeRoot: tight.home, candidatePayload: tight.candidate, staging: tight.staging }, { ...quiet, statfs: () => ({ bavail: 1n, bsize: 1n }) });
+  assert.equal(space.reasons[0].code, 'insufficient_space');
+  assert.equal(fs.existsSync(updateDirectoryFor(tight.home)), false);
+  assert.equal((await applyProductUpdate({ homeRoot: tight.home, candidatePayload: tight.current, staging: path.join(tight.root, 'other-stage') }, quiet)).reasons[0].code, 'same_package');
+
+  const root = tempRoot(t);
+  const current = path.join(root, 'current'), candidate = path.join(root, 'candidate'), home = path.join(root, 'home');
+  const installed = payload(current, { sourceCommit: 'a'.repeat(40) });
+  payload(candidate, { sourceCommit: 'c'.repeat(40), extra: { 'app/dist/coordination/migrations/0001-coordination-spine.js': 'changed-migration\n' } });
+  installProductPayload({ payloadPath: current, homeRoot: home });
+  populate(home);
+  const changed = await applyProductUpdate({ homeRoot: home, candidatePayload: candidate, staging: path.join(root, 'staging') }, quiet);
+  assert.equal(changed.reasons.some(item => item.code === 'schema_assets_changed'), true);
+  assert.equal(packageId(home), installed.packageId);
+
+  const busy = homeFixture(t);
+  const deferred = await applyProductUpdate({ homeRoot: busy.home, candidatePayload: busy.candidate, staging: busy.staging }, { ...quiet, listProcesses: async () => [{ name: 'home23-milo', status: 'online' }] });
+  assert.equal(deferred.status, 'deferred');
+  assert.equal(deferred.admission, 'wait');
+  assert.equal(fs.existsSync(updateDirectoryFor(busy.home)), false);
+  assert.equal(packageId(busy.home), busy.installed.packageId);
+});
+
+test('a stopped home updates in place and a running home waits until admission', async t => {
+  const stopped = homeFixture(t);
+  const before = preserved(stopped.home);
+  let started = 0;
+  const preview = previewProductUpdate({ homeRoot: stopped.home, candidatePayload: stopped.candidate });
+  assert.equal(preview.canInstall, false);
+  assert.equal(preview.publisherTrust, 'unverified');
+  const result = await applyProductUpdate({ homeRoot: stopped.home, candidatePayload: stopped.candidate, staging: stopped.staging }, { ...quiet, start: async () => { started += 1; return { ok: true }; } });
+  assert.equal(result.status, 'committed');
+  assert.equal(result.ok, true);
+  assert.equal(result.canInstall, false);
+  assert.equal(result.networkInstall, false);
+  assert.equal(result.publisherTrust, 'unverified');
+  assert.equal(result.resumedRunning, false);
+  assert.equal(started, 0);
+  assert.equal(packageId(stopped.home), stopped.next.packageId);
+  assert.equal(fs.readFileSync(path.join(stopped.home, 'app/cli/lib/update-marker.txt'), 'utf8'), 'schema-preserving-apply\n');
+  assert.deepEqual(preserved(stopped.home), before);
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(stopped.home), 'controller/node')), true);
+  const replay = await applyProductUpdate({ homeRoot: stopped.home, candidatePayload: stopped.candidate, staging: stopped.staging }, quiet);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.status, 'committed');
+
+  const running = homeFixture(t, { desiredRunning: true, extra: { 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/cli/lib/product-host.js': hostStub } });
+  let online = true, quiesced = 0;
+  const admitted = await applyProductUpdate({ homeRoot: running.home, candidatePayload: running.candidate, staging: running.staging, admit: true }, {
+    ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { quiesced += 1; online = false; return []; },
+    start: async () => { started += 1; return { ok: true, status: 'ready' }; },
+  });
+  assert.equal(quiesced, 1);
+  assert.equal(admitted.status, 'committed');
+  assert.equal(admitted.resumedRunning, true);
+  assert.equal(packageId(running.home), running.next.packageId);
+  assert.equal(preserved(running.home).conversation, 'hello-milo');
+  assert.equal(preserved(running.home).version, SUPPORTED_COORDINATION_SCHEMA);
+});
+
+test('failed candidate health restores previous software and leaves state in place', async t => {
+  const fixture = homeFixture(t);
+  const before = preserved(fixture.home);
+  const failed = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, { ...quiet, verifyBehavior: async () => ({ ok: false, issues: ['health failed'] }) });
+  assert.equal(failed.status, 'rolled_back');
+  assert.equal(failed.ok, false);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(fs.existsSync(path.join(fixture.home, 'app/cli/lib/update-marker.txt')), false);
+  assert.deepEqual(preserved(fixture.home), before);
+
+  const broken = homeFixture(t);
+  const state = preserved(broken.home);
+  await assert.rejects(() => applyProductUpdate({ homeRoot: broken.home, candidatePayload: broken.candidate, staging: broken.staging }, {
+    ...quiet,
+    afterPhase: async journal => { if (journal.phase === 'accepted') throw new Error('stop-after-accepted'); },
+  }), /stop-after-accepted/);
+  assert.equal(packageId(broken.home), broken.next.packageId);
+  const recovered = await resumeProductUpdate({ homeRoot: broken.home }, { ...quiet, verifyBehavior: async () => ({ ok: false, issues: ['later'] }) });
+  assert.equal(recovered.status, 'recovery_required');
+  assert.equal(recovered.recoveryRequired, true);
+  assert.match(recovered.reasons[0].message, /not restored/);
+  assert.equal(packageId(broken.home), broken.next.packageId);
+  assert.deepEqual(preserved(broken.home), state);
+
+  const tampered = homeFixture(t);
+  const tamperedState = preserved(tampered.home);
+  const rollback = await applyProductUpdate({ homeRoot: tampered.home, candidatePayload: tampered.candidate, staging: tampered.staging }, {
+    ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase === 'selected') fs.writeFileSync(path.join(updateDirectoryFor(tampered.home), 'previous/bin/node'), 'tampered');
+    },
+    verifyBehavior: async () => ({ ok: false, issues: ['health failed'] }),
+  });
+  assert.equal(rollback.status, 'recovery_required');
+  assert.equal(fs.readFileSync(path.join(tampered.home, 'bin/node'), 'utf8').includes('tampered'), false);
+  assert.deepEqual(preserved(tampered.home), tamperedState);
+});
+
+test('killing the controller before and after selection resumes without a second home', async t => {
+  const retained = homeFixture(t);
+  const before = preserved(retained.home);
+  const killed = await run(process.execPath, ['scripts/product/host.mjs', 'update', '--home', retained.home, '--payload', retained.candidate, '--staging', retained.staging], { ...process.env, HOME23_UPDATE_INTERRUPT_AFTER: 'retained' });
+  assert.equal(killed.signal, 'SIGKILL', killed.stderr);
+  assert.equal(packageId(retained.home), retained.installed.packageId);
+  const update = updateDirectoryFor(retained.home);
+  const resumed = await run(path.join(update, 'controller/node'), [path.join(update, 'controller/lib/product-update-recover.mjs'), '--home', retained.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: retained.root, TMPDIR: retained.root, LANG: 'en_US.UTF-8' });
+  assert.equal(resumed.code, 0, resumed.stderr + resumed.stdout);
+  const parsed = JSON.parse(resumed.stdout.trim());
+  assert.equal(parsed.status, 'committed');
+  assert.equal(parsed.resumedRunning, false);
+  assert.equal(packageId(retained.home), retained.next.packageId);
+  assert.deepEqual(preserved(retained.home), before);
+
+  const selected = homeFixture(t, { desiredRunning: true, extra: { 'app/package.json': '{"type":"module"}\n', 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/cli/lib/product-host.js': hostStub } });
+  const selectedState = preserved(selected.home);
+  const killedAfter = await run(process.execPath, ['scripts/product/host.mjs', 'update', '--home', selected.home, '--payload', selected.candidate, '--staging', selected.staging], { ...process.env, HOME23_UPDATE_INTERRUPT_AFTER: 'selected' });
+  assert.equal(killedAfter.signal, 'SIGKILL', killedAfter.stderr);
+  assert.equal(packageId(selected.home), selected.next.packageId);
+  assert.equal(fs.existsSync(path.join(selected.home, 'runtime/started.txt')), false);
+  const selectedUpdate = updateDirectoryFor(selected.home);
+  const resumedAfter = await run(path.join(selectedUpdate, 'controller/node'), [path.join(selectedUpdate, 'controller/lib/product-update-recover.mjs'), '--home', selected.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: selected.root, TMPDIR: selected.root, LANG: 'en_US.UTF-8' });
+  assert.equal(resumedAfter.code, 0, resumedAfter.stderr + resumedAfter.stdout);
+  assert.equal(JSON.parse(resumedAfter.stdout.trim()).status, 'committed');
+  assert.equal(fs.readFileSync(path.join(selected.home, 'runtime/started.txt'), 'utf8'), 'start');
+  assert.deepEqual(preserved(selected.home), selectedState);
+});
+
+test('a forced health failure in the real controller restores the previous package', async t => {
+  const fixture = homeFixture(t);
+  const before = preserved(fixture.home);
+  const previous = process.env.HOME23_UPDATE_VERIFY_RESULT;
+  process.env.HOME23_UPDATE_VERIFY_RESULT = 'fail';
+  try {
+    const failed = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+    assert.equal(failed.status, 'rolled_back');
+    assert.equal(packageId(fixture.home), fixture.installed.packageId);
+    assert.deepEqual(preserved(fixture.home), before);
+  } finally {
+    if (previous === undefined) delete process.env.HOME23_UPDATE_VERIFY_RESULT;
+    else process.env.HOME23_UPDATE_VERIFY_RESULT = previous;
+  }
+});
