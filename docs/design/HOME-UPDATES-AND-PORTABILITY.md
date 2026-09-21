@@ -1,8 +1,9 @@
 # Home updates and portability
 
 Status: engineering plan with backend preview, declared-state preservation
-checks, contract comparison and local candidate staging, September 21, 2026.
-Installation of updates, transfer and their acceptance remain unimplemented.
+checks, contract comparison, local candidate staging, and one schema-preserving
+local apply/recovery path, September 21, 2026. Network installation, publisher
+trust, backup/move, and existing-owner adoption remain unimplemented.
 
 Home23 must remain usable, recoverable and movable for its current owner even
 if it is never distributed to anyone else. The same lifecycle must support a
@@ -114,6 +115,49 @@ Source verification uses synthetic packages, CLI dispatch, directory-preservatio
 checks and a simulated copy interruption. It does not establish power-loss
 recovery, a packaged Mac trial or the complete U2/U3 lifecycle.
 
+### Implemented local schema-preserving apply
+
+```sh
+node scripts/product/host.mjs update --home /absolute/home --payload /absolute/candidate --staging /absolute/stage
+node scripts/product/host.mjs update-resume --home /absolute/home
+```
+
+`update` is an explicit local opt-in. It stages through the existing command,
+then applies only when the home is an owned Host v1 installation, package bytes
+differ, coordination migration and contract assets are unchanged, and the stored
+coordination database is exactly the supported schema. Other data versions,
+unknown files, linked state, and external paths refuse before package files
+change. Preview and stage still return `canInstall: false`. There is no
+download, publisher signature, or trusted-release label. Manifest hashes remain
+integrity checks.
+
+The v1 layout stays in place: `bin/node`, `app/`, `tools/`, and the installation
+receipt paths do not move. Mutable state stays on its existing real paths.
+Immutable package files are replaced individually. `app/` is not swapped as a
+directory, brains are not replaced with links, and birth is not called.
+
+The journal, previous software, verified coordination snapshot, and recovery
+controller live outside the home at `dirname(home)/.${basename}.home23-update/`.
+The controller is a copy of Node plus the updater modules, so recovery does not
+import the `app/` tree being replaced. Resume with `update-resume` or that
+copied controller. A busy home returns wait/defer unless maintenance is
+explicitly admitted; admission stops owned writers through the normal supervisor
+stop and does not force-kill them. Desired running state is preserved: a
+stopped home stays stopped. Before any candidate writer is admitted, quiesced
+byte identity is checked again and software rollback is still possible. Admitting
+a running home records that boundary before Start. After Start, checks use stable
+identity — resident profile, canonical state, encoder recipe and coordination
+schema — and may see lifecycle fields such as host phase and `startedAt` change.
+Seed ledgers may grow by append. Living brain and log writes are not treated as
+lost identity. A failed check after admission fences writers and is
+recovery-required. It does
+not restore previous software or the data snapshot. A rollback that happens
+before admission, for a home that was meant to be running, starts the restored
+software again.
+
+Process-kill and resume coverage is not a power-loss proof. This path does not
+migrate data, publish a feed, or move a home.
+
 ## Engineering contracts
 
 ### A home survives its software
@@ -222,11 +266,13 @@ Contributions must return to that lead; the owner is not a message relay.
 | U6 — Deliver | Apple + release: sign/notarize compatible artifacts, publish authenticated feed and finish first-owner instructions | A supported Mac installs and subsequently checks for and applies a release through the UI; private-beta and public-release evidence stay distinct |
 
 The implemented preview and local staging are bounded parts of **U1/U2**.
-Declared-state paths and coordination contract changes are now visible. Complete
-writer/external-path inventory, actual database/schema compatibility and publisher
-trust still need implementation before a button can promise installation.
-Neither current command replaces packages, exports private state or modifies
-a running home.
+Declared-state paths and coordination contract changes are now visible.
+`update` adds the schema-preserving slice of **U3** for one owned Host v1
+home: inventory, stored-schema refusal, a journal outside `app/`, and local
+apply/recovery. Publisher trust, downloads, native Check for Updates,
+backup/move, and adoption of an existing owner home are still unimplemented.
+Preview and stage do not replace packages. `update` does not export private
+state or claim a trusted release.
 
 Verification follows these boundaries rather than accumulating unrelated suite
 runs. Reuse the known home and receipts when valid; publish one result for each

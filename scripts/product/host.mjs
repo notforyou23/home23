@@ -12,13 +12,27 @@ try {
   const options = {};
   while (args.length) {
     const key = args.shift();
-    if (!['--home', '--payload', '--staging'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS]');
+    if (key === '--admit') {
+      if (action !== 'update' || options.admit) throw new Error('Usage: host.mjs preview|stage|update|update-resume|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--admit]');
+      options.admit = true;
+      continue;
+    }
+    if (!['--home', '--payload', '--staging'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|update|update-resume|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--admit]');
     options[key] = args.shift();
   }
   homeRoot = absoluteHome(options['--home']);
-  if (options['--staging'] && action !== 'stage') throw new Error('--staging is only supported by the stage action.');
+  if (options['--staging'] && !['stage', 'update'].includes(action)) throw new Error('--staging is only supported by stage and update.');
   let input = {};
-  if (action === 'stage') input.staging = options['--staging'];
+  if (action === 'stage' || action === 'update') input.staging = options['--staging'];
+  if (options.admit) input.admit = true;
+  if (action === 'update' || action === 'update-resume') {
+    const { applyProductUpdate, resumeProductUpdate } = await import('../../cli/lib/product-update-apply.js');
+    const result = action === 'update-resume'
+      ? await resumeProductUpdate({ homeRoot })
+      : await applyProductUpdate({ homeRoot, candidatePayload: options['--payload'], staging: input.staging, admit: input.admit === true });
+    originalStdout(JSON.stringify(result) + '\n');
+    if (result.ok === false) process.exitCode = 1;
+  } else {
   if (action === 'create') {
     let raw = '';
     for await (const part of process.stdin) { raw += part; if (Buffer.byteLength(raw) > 65536) throw new Error('Home23 setup input is too large.'); }
@@ -35,6 +49,7 @@ try {
   const result = await runHostAction(action, { homeRoot, payloadPath: options['--payload'], input });
   originalStdout(JSON.stringify(result) + '\n');
   if (result.ok === false) process.exitCode = 1;
+  }
 } catch (error) {
   const message = sensitive.filter(Boolean).reduce((value, secret) => value.split(secret).join('[redacted]'), String(error.message || 'Home23 Host operation failed.'));
   originalStdout(JSON.stringify({ ok: false, status: 'degraded', homeRoot, error: { code: error.code || 'host_operation_failed', message } }) + '\n');

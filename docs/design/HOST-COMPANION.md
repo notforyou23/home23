@@ -52,12 +52,15 @@ It covers existing Host installations and adoption of managed/source homes.
 The backend supports a read-only `preview --home ABS --payload ABS` and local
 `stage --home ABS --payload ABS --staging ABS` for an explicit candidate.
 Staging prepares a separate verified payload with an owned resumable claim.
-Applying an update is not implemented; both commands report installation
-unavailable and publisher/migration checks unverified.
-Preview includes a metadata-only preservation plan for declared state roots and
-hash comparisons of packaged coordination migrations/contracts. It does not
-inspect the actual home database or claim that equal contract bytes make an
-update safe.
+Both commands still report `canInstall: false`; publisher trust stays
+unverified. Preview's preservation plan and contract hashes do not by
+themselves make an update safe.
+
+`update --home ABS --payload ABS --staging ABS` is a separate local opt-in for
+a schema-preserving Host v1 package replacement. It keeps the v1 path contract,
+checks the stored coordination schema, and resumes from a journal outside
+`app/`. It does not download a release, migrate data, or provide the native
+Check for Updates screen. See [Home updates and portability](HOME-UPDATES-AND-PORTABILITY.md).
 
 The companion invokes the bundled Node with `app/scripts/product/host.mjs`.
 The protocol accepts one action and an absolute `--home` path; `install`,
