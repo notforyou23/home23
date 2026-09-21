@@ -148,12 +148,16 @@ async function sameCanonical(home, journal) {
     if (relative.endsWith('/checkpoints/CHECKPOINT_INDEX.json')) continue;
     const currentPath = join(home, relative);
     if (!exists(currentPath) || lstatSync(currentPath).isSymbolicLink()) return false;
-    if (relative.includes('/substrate/') && relative.endsWith('.jsonl')) {
-      const previousPath = join(checkpointRoot, relative);
-      if (!exists(previousPath)) return false;
-      const previous = readFileSync(previousPath);
-      const current = readFileSync(currentPath);
-      if (current.length < previous.length || !current.subarray(0, previous.length).equals(previous)) return false;
+    if (relative.includes('/substrate/')) {
+      if (relative.endsWith('/birth-receipt.json')) {
+        if (hashFile(currentPath) !== digest) return false;
+      } else if (relative.endsWith('.jsonl')) {
+        const previousPath = join(checkpointRoot, relative);
+        if (!exists(previousPath)) return false;
+        const previous = readFileSync(previousPath);
+        const current = readFileSync(currentPath);
+        if (current.length < previous.length || !current.subarray(0, previous.length).equals(previous)) return false;
+      }
       continue;
     }
     if (hashFile(currentPath) !== digest) return false;
@@ -508,7 +512,7 @@ async function runTransaction(journal, dependencies) {
       journal = mutated.journal;
     } finally { await releaseHost(); }
   } else journal = readUpdateJournal(journal.homeRoot);
-  if (['recovery_required', 'aborted', 'rolled_back'].includes(journal.phase)) return publicResult(journal);
+  if (['aborted', 'rolled_back'].includes(journal.phase) || (journal.phase === 'recovery_required' && !journal.writersAdmitted)) return publicResult(journal);
   return finish(journal, dependencies);
 }
 
