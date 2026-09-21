@@ -55,7 +55,7 @@ export function readUpdateJournal(homeRoot) {
 /** Normal Start must wait. The update owner may start only after selection, with the journal token. */
 export function updateBlocksStart(journal, token) {
   if (!journal || ['committed', 'rolled_back', 'aborted'].includes(journal.phase)) return false;
-  return !(token && token === journal.ownerToken && ['selected', 'verifying', 'writers_admitted', 'accepted'].includes(journal.phase));
+  return !(token && token === journal.ownerToken && ['selected', 'verifying', 'writers_admitted', 'accepted', 'recovery_required'].includes(journal.phase));
 }
 function publicResult(journal, extras = {}) {
   const deferred = extras.deferred === true;
@@ -472,6 +472,9 @@ async function finish(journal, dependencies) {
     if (['recovery_required', 'rolled_back'].includes(journal.phase)) return publicResult(journal);
   }
   if (journal.desiredRunning && !(await busy())) {
+    // The installed Host allows this owner token only for an admitted phase.
+    // Persist that phase before Start so the gate and the journal agree.
+    journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies);
     let startOk = false;
     try { startOk = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
     catch { startOk = false; }
