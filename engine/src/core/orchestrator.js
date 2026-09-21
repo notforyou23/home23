@@ -7356,11 +7356,15 @@ class Orchestrator {
       return this._saveStatePromise;
     }
 
+    // A streaming save aborts if memory changes before it finishes; the
+    // document feeder checks this flag and defers its flush until we are done.
+    if (this.memory) this.memory.persistenceSaveActive = true;
     this._saveStatePromise = this._saveStateUnlocked();
     try {
       return await this._saveStatePromise;
     } finally {
       this._saveStatePromise = null;
+      if (this.memory) this.memory.persistenceSaveActive = false;
     }
   }
 

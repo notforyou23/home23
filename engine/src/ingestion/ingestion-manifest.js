@@ -156,6 +156,9 @@ class IngestionManifest {
     return this._withLock(async () => {
       this._adoptCompatPending();
       if (this._flushInProgress || this._queue.pendingCount === 0) return;
+      // Adding nodes mid-save makes the brain save refuse; the next interval
+      // flush picks the batch up once the save completes.
+      if (this.memory?.persistenceSaveActive) return;
       this._flushInProgress = true;
 
       const batchSize = this.config.batchSize || 20;
