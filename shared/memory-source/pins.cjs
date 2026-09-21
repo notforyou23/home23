@@ -2112,6 +2112,126 @@ async function pruneStalePins(home23Root, {
   return removed;
 }
 
+// compactMemoryBase names each run compact-<pid>-<uuid> and never resumes it.
+// If that process dies mid-run (engine restart, reboot), its finally block
+// never releases the coordinator pin, and retirement then keeps the pinned
+// generation forever. Only this internal operation shape is eligible here;
+// user brain operations keep their durable coordinator records for retry.
+const ABANDONED_COMPACTION_OPERATION = /^compact-([1-9][0-9]{0,9})-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+async function currentBootTimeMs() {
+  if (process.platform === 'darwin') {
+    try {
+      const { stdout } = await execFileAsync('/usr/sbin/sysctl', ['-n', 'kern.boottime'], {
+        encoding: 'utf8', maxBuffer: 4096, env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
+      });
+      const seconds = /\bsec\s*=\s*(\d+)/.exec(stdout);
+      return seconds ? Number(seconds[1]) * 1000 : null;
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform === 'linux') {
+    const stat = await fsp.readFile('/proc/stat', 'utf8').catch(() => null);
+    const seconds = stat && /^btime\s+(\d+)$/m.exec(stat);
+    return seconds ? Number(seconds[1]) * 1000 : null;
+  }
+  return null;
+}
+
+async function isPidRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    return null;
+  }
+}
+
+// true only when every piece of evidence says the owning process is gone.
+// Any live, unverifiable or unreadable evidence keeps the pin.
+async function compactionOwnerIsDead(entry, processEntries, {
+  isProcessAlive, isPidAlive, bootTimeMs,
+}) {
+  if (processEntries.length > 0) {
+    for (const processEntry of processEntries) {
+      let record;
+      try {
+        record = await readDiscoveredOperationPinRecord(processEntry);
+      } catch {
+        return false;
+      }
+      if (await isProcessAlive(record) !== false) return false;
+    }
+    return true;
+  }
+  const pid = Number(ABANDONED_COMPACTION_OPERATION.exec(entry.operationId)[1]);
+  const running = await isPidAlive(pid);
+  if (running === false) return true;
+  if (running !== true) return false;
+  // A running PID may be a reuse. Only a coordinator record written before
+  // the current boot proves its owner is gone.
+  const bootMs = await bootTimeMs();
+  const stat = await fsp.lstat(entry.path).catch(() => null);
+  return Boolean(bootMs && stat && stat.mtimeMs < bootMs);
+}
+
+async function pruneAbandonedCompactionPins(home23Root, {
+  canonicalRoot = null,
+  isProcessAlive = defaultIsProcessPinAlive,
+  isPidAlive = isPidRunning,
+  bootTimeMs = currentBootTimeMs,
+} = {}) {
+  const canonicalHome23Root = await fsp.realpath(home23Root);
+  const targetRoot = canonicalRoot ? await fsp.realpath(canonicalRoot) : null;
+  const discovered = await discoverOperationPinFiles(canonicalHome23Root);
+  const released = [];
+  const failed = [];
+  for (const entry of discovered) {
+    if (entry.kind !== 'coordinator' || !ABANDONED_COMPACTION_OPERATION.test(entry.operationId)) continue;
+    let coordinator;
+    try {
+      coordinator = await readDiscoveredOperationPinRecord(entry);
+    } catch {
+      continue;
+    }
+    if (coordinator?.operationId !== entry.operationId
+        || coordinator?.requesterAgent !== entry.requesterAgent) continue;
+    if (targetRoot && coordinator.canonicalRoot !== targetRoot) continue;
+    const processEntries = discovered.filter((candidate) => candidate.kind === 'process'
+      && candidate.requesterAgent === entry.requesterAgent
+      && candidate.operationId === entry.operationId);
+    if (!await compactionOwnerIsDead(entry, processEntries, { isProcessAlive, isPidAlive, bootTimeMs })) continue;
+    const operationRoot = path.dirname(entry.path);
+    try {
+      const operationIdentity = await captureExactOperationDirectory(operationRoot, 'operation root', { optional: true });
+      if (operationIdentity === null) continue;
+      await releaseOperationSource({
+        home23Root: canonicalHome23Root,
+        requesterAgent: entry.requesterAgent,
+        operationId: entry.operationId,
+      });
+      // The dead run's own finally would have removed its scratch tree. Remove
+      // it only if it is still the exact directory inspected above.
+      const current = await fsp.lstat(operationRoot).catch(() => null);
+      if (current && !current.isSymbolicLink() && current.isDirectory()
+          && sameOperationPathIdentity(current, operationIdentity)) {
+        await fsp.rm(operationRoot, { recursive: true, force: false });
+      }
+    } catch (error) {
+      failed.push({ operationId: entry.operationId, error: error.message });
+      continue;
+    }
+    released.push({
+      requesterAgent: entry.requesterAgent,
+      operationId: entry.operationId,
+      canonicalRoot: coordinator.canonicalRoot,
+    });
+  }
+  return { released, failed };
+}
+
 async function removeExactOperationRegularFile(operationRoot, operationIdentity, filePath, label) {
   await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
   const stat = await operationPathLstatOptional(filePath);
@@ -2427,5 +2547,6 @@ module.exports = {
   discoverOperationPinFiles,
   readDiscoveredOperationPinRecord,
   pruneStalePins,
+  pruneAbandonedCompactionPins,
   releaseOperationSource,
 };

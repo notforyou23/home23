@@ -17,6 +17,7 @@ const {
   durableBrainOperationRoot,
   discoverOperationPinFiles,
   readDiscoveredOperationPinRecord,
+  pruneAbandonedCompactionPins,
 } = require('./pins.cjs');
 const {
   memorySourceError,
@@ -855,7 +856,14 @@ async function compareAndSwapSourceRevision(brainDir, update = {}) {
 }
 
 async function retireUnpinnedSources(brainDir, options = {}) {
-  return withMemorySourceLock(brainDir, { lockRoot: options.lockRoot }, async () => {
+  // Release pins left by compaction runs whose process died, before taking
+  // the source lock (release takes that lock itself). Injected pin lists are
+  // an explicit caller contract and skip discovery-based recovery.
+  let abandonedCompactions = null;
+  if (options.home23Root && !options.pinFiles && options.pruneAbandonedCompactions !== false) {
+    abandonedCompactions = await pruneAbandonedCompactionPins(options.home23Root, { canonicalRoot: brainDir });
+  }
+  const result = await withMemorySourceLock(brainDir, { lockRoot: options.lockRoot }, async () => {
     const manifest = await readManifest(brainDir);
     if (!manifest) return { retired: [], retained: [], reason: 'manifest_missing' };
     const pinEntries = options.pinFiles || (options.home23Root
@@ -886,6 +894,7 @@ async function retireUnpinnedSources(brainDir, options = {}) {
     }
     return { retired: retired.sort(), retained: retained.sort() };
   });
+  return abandonedCompactions ? { ...result, abandonedCompactions } : result;
 }
 
 module.exports = {

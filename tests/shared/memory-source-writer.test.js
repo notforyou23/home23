@@ -18,6 +18,7 @@ const {
   openPinnedSource,
   readJsonl,
   readManifest,
+  pruneAbandonedCompactionPins,
   releaseOperationSource,
   retireUnpinnedSources,
   rewriteMemoryBase,
@@ -670,4 +671,119 @@ test('readManifest rejects an unparseable baseWrittenAt', async () => {
   manifest.baseWrittenAt = 'not a date';
   await fsp.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   await assert.rejects(() => readManifest(dir), /invalid base written at/);
+});
+
+async function pinLikeCompaction(dir, home23Root, operationId, { requesterAgent = 'memory-compaction' } = {}) {
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent });
+  const pinnedDescriptor = await provider.pin(dir, operationId);
+  const operationRoot = path.join(
+    home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations', 'operations', operationId,
+  );
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const pinned = await openPinnedSource(pinnedDescriptor.descriptor, {
+    expectedDigest: pinnedDescriptor.digest,
+    expectedCanonicalRoot: pinnedDescriptor.descriptor.canonicalRoot,
+    expectedRevision: pinnedDescriptor.descriptor.cutoffRevision,
+    operationId,
+    requesterAgent,
+    operationRoot,
+    scratchQuota,
+    processIdentity: 'compaction-process',
+  });
+  return { pinned, scratchQuota, operationRoot, oldNodeFile: pinned.manifest.activeBase.nodes.file };
+}
+
+async function markProcessPinsDead(operationRoot) {
+  const pinDir = path.join(operationRoot, 'pins', 'compaction-process');
+  for (const name of await fsp.readdir(pinDir)) {
+    const file = path.join(pinDir, name);
+    const record = JSON.parse(await fsp.readFile(file, 'utf8'));
+    await fsp.writeFile(file, `${JSON.stringify({ ...record, processStartToken: `${record.processStartToken}-exited` })}\n`);
+  }
+}
+
+const exists = (file) => fsp.access(file).then(() => true, () => false);
+
+test('retirement releases a crashed compaction pin and retires its generation', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const home23Root = await fsp.realpath(await tempDir('home23-memory-source-writer-crashed-compaction-'));
+  const operationId = `compact-${process.pid}-0b3c2d1e-4f5a-4b6c-8d7e-9f0a1b2c3d4e`;
+  const { pinned, scratchQuota, operationRoot, oldNodeFile } = await pinLikeCompaction(dir, home23Root, operationId);
+  // Simulate the process dying mid-compaction: handles gone, pins left behind.
+  await pinned.close();
+  scratchQuota.close();
+  await markProcessPinsDead(operationRoot);
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+
+  const result = await retireUnpinnedSources(dir, { home23Root, lockRoot });
+
+  assert.deepEqual(result.abandonedCompactions.released.map((entry) => entry.operationId), [operationId]);
+  assert.deepEqual(result.abandonedCompactions.failed, []);
+  assert.equal(result.retired.includes(oldNodeFile), true);
+  assert.equal(await exists(path.join(dir, oldNodeFile)), false);
+  assert.equal(await exists(operationRoot), false);
+});
+
+test('a live compaction keeps its pin and generation', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const home23Root = await fsp.realpath(await tempDir('home23-memory-source-writer-live-compaction-'));
+  const operationId = `compact-${process.pid}-1b3c2d1e-4f5a-4b6c-8d7e-9f0a1b2c3d4e`;
+  const { pinned, scratchQuota, operationRoot, oldNodeFile } = await pinLikeCompaction(dir, home23Root, operationId);
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+
+  const result = await retireUnpinnedSources(dir, { home23Root, lockRoot });
+
+  assert.deepEqual(result.abandonedCompactions.released, []);
+  assert.equal(result.retired.includes(oldNodeFile), false);
+  assert.equal(await exists(path.join(operationRoot, 'coordinator-source-pin.json')), true);
+  await pinned.release();
+  await releaseOperationSource({ home23Root, requesterAgent: 'memory-compaction', operationId });
+  scratchQuota.close();
+});
+
+test('abandoned-compaction recovery never releases a user brain operation', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const home23Root = await fsp.realpath(await tempDir('home23-memory-source-writer-user-operation-'));
+  const operationId = 'brop_user_operation_retry';
+  const { pinned, scratchQuota, operationRoot, oldNodeFile } = await pinLikeCompaction(
+    dir, home23Root, operationId, { requesterAgent: 'ada' },
+  );
+  await pinned.close();
+  scratchQuota.close();
+  await markProcessPinsDead(operationRoot);
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+
+  const result = await retireUnpinnedSources(dir, { home23Root, lockRoot });
+
+  assert.deepEqual(result.abandonedCompactions.released, []);
+  assert.equal(result.retired.includes(oldNodeFile), false);
+  assert.equal(await exists(path.join(operationRoot, 'coordinator-source-pin.json')), true);
+});
+
+test('a compaction without process pins is released only when its owner is provably gone', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const home23Root = await fsp.realpath(await tempDir('home23-memory-source-writer-pinless-compaction-'));
+  const operationId = `compact-${process.pid}-2b3c2d1e-4f5a-4b6c-8d7e-9f0a1b2c3d4e`;
+  const { pinned, scratchQuota, operationRoot } = await pinLikeCompaction(dir, home23Root, operationId);
+  await pinned.close();
+  scratchQuota.close();
+  await fsp.rm(path.join(operationRoot, 'pins'), { recursive: true, force: true });
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+
+  // PID running and record written this boot: could be the live owner.
+  const kept = await pruneAbandonedCompactionPins(home23Root, {
+    canonicalRoot: dir, isPidAlive: async () => true, bootTimeMs: async () => 0,
+  });
+  assert.deepEqual(kept.released, []);
+  // Unknown liveness is never treated as dead.
+  const unknown = await pruneAbandonedCompactionPins(home23Root, {
+    canonicalRoot: dir, isPidAlive: async () => null, bootTimeMs: async () => null,
+  });
+  assert.deepEqual(unknown.released, []);
+  // Record predates the current boot: the PID is a reuse.
+  const released = await pruneAbandonedCompactionPins(home23Root, {
+    canonicalRoot: dir, isPidAlive: async () => true, bootTimeMs: async () => Date.now() + 60_000,
+  });
+  assert.deepEqual(released.released.map((entry) => entry.operationId), [operationId]);
+  assert.equal(await exists(operationRoot), false);
 });
