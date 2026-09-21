@@ -281,8 +281,14 @@ function applyPackage(home, staged, previousManifest) {
     chmodSync(join(home, entry.path), entry.mode);
   }
   for (const entry of manifest.files.filter(item => item.type === 'file')) {
-    if (isProductStatePath(entry.path)) throw new Error(`Candidate contains home state: ${entry.path}`);
     const destination = join(home, entry.path);
+    if (isProductStatePath(entry.path)) {
+      // Packaged .gitkeep markers keep empty state directories in the manifest.
+      // They must not replace a home's real files or abort selection.
+      if (entry.path.endsWith('/.gitkeep') && !exists(destination)) durableCopy(join(staged, entry.path), destination, entry.mode);
+      else if (!entry.path.endsWith('/.gitkeep')) throw new Error(`Candidate contains home state: ${entry.path}`);
+      continue;
+    }
     if (exists(destination) && lstatSync(destination).isFile() && hashFile(destination) === entry.sha256 && (lstatSync(destination).mode & 0o777) === entry.mode) continue;
     durableCopy(join(staged, entry.path), destination, entry.mode);
   }
