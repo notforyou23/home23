@@ -42,10 +42,19 @@ export function mountChessRoutes(router: Express, application: CoordinationAppli
   };
   const actor = (response: Response) => ({ principalId: requireCoordinationContext(response).principalId });
   const listArgs = (request: Request) => ({ channelId: optionalString(request.query.channelId), limit: queryLimit(request.query.limit), cursor: optionalString(request.query.cursor) });
+  router.get('/api/v1/chess/options', read, route(async (_request, response) => { response.json(service().engineOptions()); }));
+  router.post('/api/v1/chess/analysis', read, json, route(async (request, response) => {
+    const body=object(request.body);
+    if(body.moves !== undefined && (!Array.isArray(body.moves) || body.moves.length > 1000 || body.moves.some(move=>typeof move!=='string'))) throw invalid();
+    const controller=new AbortController(); const stop=()=>controller.abort();
+    response.once('close',stop);
+    try { response.json(await service().analyze({fen:string(body.fen),...(body.moves ? {moves:body.moves as string[]} : {})},actor(response),controller.signal)); }
+    finally { response.off('close',stop); }
+  }));
   router.get('/api/v1/chess/games', read, route(async (request, response) => { response.json(service().list(listArgs(request), actor(response))); }));
   router.post('/api/v1/chess/games', write, requireIdempotencyKey(application), json, route(async (request, response) => {
     const body = object(request.body), players = object(body.players);
-    const game = service(true).create({ channelId: string(body.channelId), players: { white: string(players.white), black: string(players.black) }, title: optionalString(body.title), initialPgn: optionalString(body.initialPgn) }, actor(response), coordinationIdempotencyKey(response));
+    const game = service(true).create({ channelId: string(body.channelId), players: { white: string(players.white), black: string(players.black) }, title: optionalString(body.title), initialPgn: optionalString(body.initialPgn), ...(body.automation !== undefined ? {automation:{maxPlies:integer(object(body.automation).maxPlies)}} : {}), ...(body.startPaused !== undefined ? {startPaused:body.startPaused as boolean} : {}) }, actor(response), coordinationIdempotencyKey(response));
     response.status(201).json({ game, ...reference(game) });
   }));
   router.get('/api/v1/chess/games/:gameId', read, route(async (request, response) => {
@@ -58,8 +67,8 @@ export function mountChessRoutes(router: Express, application: CoordinationAppli
   }));
   router.post('/api/v1/chess/games/:gameId/control', write, requireIdempotencyKey(application), json, route(async (request, response) => {
     const body = object(request.body), action = string(body.action);
-    if (!['pause', 'resume', 'resign', 'retry_turn'].includes(action)) throw invalid();
-    const game = service(true).control(string(request.params.gameId), { expectedVersion: integer(body.expectedVersion), action: action as 'pause' | 'resume' | 'resign' | 'retry_turn' }, actor(response), coordinationIdempotencyKey(response));
+    if (!['pause', 'resume', 'resign', 'retry_turn', 'step'].includes(action)) throw invalid();
+    const game = service(true).control(string(request.params.gameId), { expectedVersion: integer(body.expectedVersion), action: action as 'pause' | 'resume' | 'resign' | 'retry_turn' | 'step' }, actor(response), coordinationIdempotencyKey(response));
     response.json({ game, ...reference(game) });
   }));
   router.get('/api/v1/chess/games/:gameId/pgn', read, route(async (request, response) => {

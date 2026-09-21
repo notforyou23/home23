@@ -1,4 +1,4 @@
-import type { NativeChessService } from './service.js';
+import { engineSkill, type NativeChessService } from './service.js';
 import type { ScheduledChannelTurn } from '../app/scheduled-turns.js';
 
 /** The durable intent belongs to the game transaction; canonical Work owns execution. */
@@ -15,6 +15,10 @@ export function createChessTurnDispatcher(options: {
       for (const turn of options.chess.dueTurns(20)) {
         if (!options.accepting()) break;
         try {
+          if (engineSkill(turn.targetBotId) !== undefined) {
+            await options.chess.runEngineTurn(turn, undefined, options.accepting);
+            continue;
+          }
           const result = await options.run({ runId: turn.runId, jobId: `native-chess:${turn.gameId}:${turn.gameVersion}`,
             channelId: turn.channelId, targetBotId: turn.targetBotId, prompt: turn.prompt }, turn.targetBotId);
           if (['failed', 'cancelled', 'succeeded'].includes(result.state)) {
@@ -26,8 +30,8 @@ export function createChessTurnDispatcher(options: {
           }
         } catch (error) {
           if (!options.accepting()) break;
-          if (['server_busy', 'turn_in_progress', 'deadline_exceeded', 'connection_lost', 'request_rate_limited'].includes(String((error as { code?: string }).code))) continue;
-          options.chess.settleTurn(turn.id, { status: 'failed', error: 'Bot turn could not be admitted. Check that the player is an active channel member, then retry.' });
+          if (['server_busy', 'turn_in_progress', 'deadline_exceeded', 'connection_lost', 'request_rate_limited', 'engine_busy'].includes(String((error as { code?: string }).code))) continue;
+          options.chess.settleTurn(turn.id, { status: 'failed', error: engineSkill(turn.targetBotId) !== undefined ? 'Engine turn failed. Check Stockfish on this House, then retry.' : 'Bot turn could not be admitted. Check that the player is an active channel member, then retry.' });
         }
       }
     } finally { running = false; }

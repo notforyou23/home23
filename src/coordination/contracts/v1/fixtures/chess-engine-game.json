@@ -1,0 +1,33 @@
+{
+  "game": {
+    "id": "chess_00000000-0000-7000-8000-000000000005",
+    "channelId": "chn_0198d95f-6c00-7000-8000-000000000001",
+    "title": "Chess game",
+    "players": {
+      "white": "engine_stockfish_5",
+      "black": "bot_0198d95f-6c00-7000-8000-000000000001"
+    },
+    "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "turn": "w",
+    "ply": 0,
+    "moves": [],
+    "status": "paused",
+    "result": "*",
+    "version": 1,
+    "createdAt": "2026-09-20T12:00:00.000Z",
+    "updatedAt": "2026-09-20T12:00:00.000Z",
+    "automation": {
+      "maxPlies": 20,
+      "remainingPlies": 20
+    },
+    "pauseReason": "Ready to play"
+  },
+  "boardReference": {
+    "kind": "chess_game",
+    "gameId": "chess_00000000-0000-7000-8000-000000000005",
+    "sharedVersion": 1,
+    "sharedPly": 0,
+    "url": "home23://chess/games/chess_00000000-0000-7000-8000-000000000005?sharedVersion=1&sharedPly=0"
+  }
+}

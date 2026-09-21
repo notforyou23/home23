@@ -5,7 +5,7 @@ import { loadCanonicalFixture, validateCanonicalFixture } from '../../../src/coo
 import type { ChessGame, ChessPosition } from '../../../src/coordination/chess/types.js';
 
 test('native Chess fixtures agree on legal history, immutable position and compact Apple stream', () => {
-  for (const name of ['chess-game','chess-position','chess-snapshot']) assert.deepEqual(validateCanonicalFixture(name),{valid:true,errors:[]});
+  for (const name of ['chess-game','chess-position','chess-snapshot','chess-engine-game','chess-options']) assert.deepEqual(validateCanonicalFixture(name),{valid:true,errors:[]});
   const {game,boardReference} = loadCanonicalFixture('chess-game') as {game:ChessGame;boardReference:{sharedPly:number;sharedVersion:number}};
   const {position} = loadCanonicalFixture('chess-position') as {position:ChessPosition};
   const board = new Chess(game.initialFen);

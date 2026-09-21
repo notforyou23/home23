@@ -9,6 +9,8 @@ export interface ChessGame {
   initialFen: string; fen: string; turn: ChessSide; ply: number; moves: ChessMove[];
   status: ChessStatus; result: ChessResult; version: number; createdAt: string; updatedAt: string;
   turnDelivery?: ChessTurnDelivery;
+  automation?: { maxPlies: number; remainingPlies: number };
+  pauseReason?: string;
 }
 export interface ChessPosition {
   id: string; channelId: string; title: string; fen: string;

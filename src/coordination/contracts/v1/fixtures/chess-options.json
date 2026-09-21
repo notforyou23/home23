@@ -1,0 +1,11 @@
+{
+  "engine": {
+    "id": "stockfish",
+    "name": "Stockfish",
+    "available": true,
+    "skillMin": 0,
+    "skillMax": 20
+  },
+  "botVsBot": true,
+  "analysis": true
+}

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Chess, DEFAULT_POSITION, type Square } from 'chess.js';
+import { StockfishError, type StockfishEngine } from './stockfish.js';
 import type { M11Database } from '../work/types.js';
 import { generateCoordinationId, uuidV7 } from '../ids/index.js';
 import type { CoordinationTransaction } from '../db/index.js';
@@ -11,10 +12,15 @@ export class ChessError extends Error {
   constructor(public readonly code: ChessErrorCode, message: string) { super(message); this.name = 'ChessError'; }
 }
 
-type GameRow = { id:string; channel_id:string; white_principal_id:string; black_principal_id:string; title:string; initial_fen:string; fen:string; pgn:string; moves_json:string; status:ChessGame['status']; result:ChessGame['result']; turn:'w'|'b'; ply:number; version:number; created_at:string; updated_at:string };
+type GameRow = { id:string; channel_id:string; white_principal_id:string; black_principal_id:string; title:string; initial_fen:string; fen:string; pgn:string; moves_json:string; status:ChessGame['status']; result:ChessGame['result']; turn:'w'|'b'; ply:number; version:number; created_at:string; updated_at:string; automatic_max_plies:number; automatic_remaining:number; pause_reason:string|null };
 type PositionRow = { id:string; channel_id:string; title:string; fen:string; annotations_json:string; source_game_id:string|null; source_ply:number|null; created_by:string; created_at:string };
 type IntentRow = { id:string; game_id:string; game_version:number; channel_id:string; target_bot_id:string; run_id:string; prompt:string; status:ChessTurnIntent['status']|'cancelled'; work_ids_json:string|null; error:string|null };
 type ReplayRow = { request_digest:string; operation:string; response_json:string };
+export const engineSkill = (id: string): number | undefined => {
+  const match = /^engine_stockfish_([0-9]|1[0-9]|20)$/.exec(id);
+  return match ? Number(match[1]) : undefined;
+};
+const automatic = (id: string) => id.startsWith('bot_') || engineSkill(id) !== undefined;
 const digest = (value:string) => createHash('sha256').update(value).digest('hex');
 const id = (prefix:string) => `${prefix}_${uuidV7()}`;
 const now = () => new Date().toISOString();
@@ -30,7 +36,32 @@ const version = (value:unknown) => { if (!Number.isSafeInteger(value) || (value 
 const hashRequest = (operation:string, data:unknown) => digest(JSON.stringify([operation,data]));
 
 export class NativeChessService {
-  constructor(private readonly options: { database: M11Database }) {}
+  constructor(private readonly options: { database: M11Database; engine?: Pick<StockfishEngine, 'available' | 'analyze'> }) {}
+  engineOptions() {
+    const available = this.options.engine?.available() ?? false;
+    return { engine: { id: 'stockfish', name: 'Stockfish', available, skillMin: 0, skillMax: 20,
+      ...(!available ? { reason: 'Stockfish is not installed on this House.' } : {}) }, botVsBot: true, analysis: available };
+  }
+  async analyze(input: {fen: string; moves?: string[]}, actor: ChessActor, signal?: AbortSignal) {
+    if (actor.principalId !== 'user_owner') throw new ChessError('forbidden', 'Only the owner can request analysis');
+    if (!this.options.engine?.available()) throw new StockfishError('engine_unavailable', 'Stockfish is not available on this House');
+    return this.options.engine.analyze({...input, moveTimeMs: 700, multiPV: 3}, signal);
+  }
+  /** Called only by the House dispatcher, never exposed as a player credential. */
+  async runEngineTurn(turn: ChessTurnIntent, signal?: AbortSignal, accepting: () => boolean = () => true): Promise<void> {
+    const skillLevel = engineSkill(turn.targetBotId);
+    if (skillLevel === undefined) throw new ChessError('invalid_request', 'Not an engine turn');
+    const current = this.row(turn.gameId);
+    if (current.version !== turn.gameVersion || current.status !== 'active') return;
+    if (!this.options.engine?.available()) throw new StockfishError('engine_unavailable', 'Stockfish is not available on this House');
+    const result = await this.options.engine.analyze({ fen: current.initial_fen,
+      moves: (JSON.parse(current.moves_json) as ChessMove[]).map(move => move.uci), skillLevel, moveTimeMs: 350 }, signal);
+    if (!result.bestMove || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(result.bestMove)) throw new ChessError('illegal_move', 'Stockfish returned no legal move');
+    if (signal?.aborted || !accepting()) return;
+    const move = result.bestMove;
+    this.applyMove(turn.gameId, {expectedVersion: turn.gameVersion, from: move.slice(0,2), to: move.slice(2,4), ...(move[4] ? {promotion:move[4]} : {})},
+      {principalId: 'user_owner', turnId: turn.id}, `engine-turn:${turn.id}`, turn.targetBotId);
+  }
   private get db() { return this.options.database; }
   private channel(t:CoordinationTransaction, channelId:string, actor:ChessActor, active=false): void {
     const channel = t.readOne<{lifecycle:string}>('SELECT lifecycle FROM channels WHERE id = ?',channelId);
@@ -55,7 +86,7 @@ export class NativeChessService {
   }
   private game(row:GameRow,t?:CoordinationTransaction):ChessGame {
     const turnDelivery=this.delivery(row.id,row.version,t);
-    return {id:row.id,channelId:row.channel_id,title:row.title,players:{white:row.white_principal_id,black:row.black_principal_id},initialFen:row.initial_fen,fen:row.fen,turn:row.turn,ply:row.ply,moves:JSON.parse(row.moves_json),status:row.status,result:row.result,version:row.version,createdAt:row.created_at,updatedAt:row.updated_at,...(turnDelivery?{turnDelivery}:{})};
+    return {id:row.id,channelId:row.channel_id,title:row.title,players:{white:row.white_principal_id,black:row.black_principal_id},initialFen:row.initial_fen,fen:row.fen,turn:row.turn,ply:row.ply,moves:JSON.parse(row.moves_json),status:row.status,result:row.result,version:row.version,createdAt:row.created_at,updatedAt:row.updated_at,automation:{maxPlies:row.automatic_max_plies,remainingPlies:row.automatic_remaining},...(row.pause_reason?{pauseReason:row.pause_reason}:{}),...(turnDelivery?{turnDelivery}:{})};
   }
   private position(row:PositionRow):ChessPosition { return {id:row.id,channelId:row.channel_id,title:row.title,fen:row.fen,annotations:JSON.parse(row.annotations_json),...(row.source_game_id?{sourceGameId:row.source_game_id,sourcePly:row.source_ply!}:{}),createdBy:row.created_by,createdAt:row.created_at}; }
   private event(kind:'chess_game'|'chess_position'|'chess_turn_delivery',resourceId:string,aggregateVersion:number,channelId:string,actor:string,at:string,payload:Record<string,string|number|null>) {
@@ -78,6 +109,10 @@ export class NativeChessService {
     t.run('INSERT INTO chess_idempotency (actor_principal_id,key_digest,request_digest,operation,resource_id,response_json,created_at) VALUES (?,?,?,?,?,?,?)',actor,keyDigest,hashRequest(op,request),op,resourceId,JSON.stringify(response),at);
   }
   private requirePlayer(t:CoordinationTransaction,channelId:string,principalId:string):void {
+    if (engineSkill(principalId) !== undefined) {
+      if (!this.options.engine?.available()) throw new StockfishError('engine_unavailable', 'Stockfish is not available on this House');
+      return;
+    }
     const member=t.readOne<{active:number}>('SELECT active FROM channel_members WHERE channel_id = ? AND principal_id = ?',channelId,principalId);
     if (member?.active !== 1) throw new ChessError('invalid_request','each player must be an active channel member');
     if (principalId !== 'user_owner' && !principalId.startsWith('bot_')) throw new ChessError('invalid_request','invalid player');
@@ -86,7 +121,7 @@ export class NativeChessService {
   private queueTurn(t:CoordinationTransaction,row:GameRow,at:string):void {
     if (row.status !== 'active' || row.result !== '*') return;
     const target=row.turn==='w'?row.white_principal_id:row.black_principal_id;
-    if (!target.startsWith('bot_')) return;
+    if (!automatic(target)) return;
     const turnId=id('chessturn'); const runId=`sched-run-${randomUUID()}`;
     const prompt=`Play one legal chess move for game ${row.id} as ${row.turn==='w'?'White':'Black'}. Current FEN: ${row.fen}. Current version: ${row.version}. Use native_chess get if needed, then native_chess move with gameId ${row.id}, expectedVersion ${row.version}, from and to squares. Omit promotion or use null for ordinary moves; use q, r, b, or n only when a pawn reaches its last rank. Do not fill unrelated fields. Do not merely narrate a move.`;
     t.run("INSERT INTO chess_turn_intents (id,game_id,game_version,channel_id,target_bot_id,run_id,prompt,status,work_ids_json,error,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'queued',NULL,NULL,?,?)",turnId,row.id,row.version,row.channel_id,target,runId,prompt,at,at);
@@ -99,44 +134,91 @@ export class NativeChessService {
     const items=rows.slice(0,limit).map(row=>this.game(row));return {items,...(rows.length>limit?{nextCursor:items.at(-1)!.id}:{})};
   }
   get(gameId:string,actor:ChessActor):ChessGame { const row=this.row(gameId);this.readChannel(row.channel_id,actor);return this.game(row); }
-  create(input:{channelId:string;title?:string;players:{white:string;black:string};initialPgn?:string},actor:ChessActor,key:string):ChessGame {
-    bounded(input.channelId,'channelId',100);if (!input.players || input.players.white===input.players.black) throw new ChessError('invalid_request','distinct players required');
+  create(input:{channelId:string;title?:string;players:{white:string;black:string};initialPgn?:string;automation?:{maxPlies:number};startPaused?:boolean},actor:ChessActor,key:string):ChessGame {
+    bounded(input.channelId,'channelId',100);if (!input.players || (input.players.white===input.players.black && engineSkill(input.players.white) === undefined)) throw new ChessError('invalid_request','distinct players required');
     const white=bounded(input.players.white,'white',100),black=bounded(input.players.black,'black',100),title=bounded(input.title??'Chess game','title',120);
+    const maxPlies = input.automation?.maxPlies ?? 80;
+    if (!Number.isSafeInteger(maxPlies) || maxPlies < 1 || maxPlies > 400 || (input.startPaused !== undefined && typeof input.startPaused !== 'boolean')) throw new ChessError('invalid_request','Invalid automatic move allowance or paused flag');
+    if (actor.principalId !== 'user_owner' && (white !== 'user_owner' && black !== 'user_owner')) throw new ChessError('forbidden','Only the owner can create spectator games');
     const chess=new Chess();if (input.initialPgn) {if (input.initialPgn.length>100_000) throw new ChessError('invalid_request','PGN too large');try { chess.loadPgn(input.initialPgn); } catch {throw new ChessError('invalid_request','invalid PGN');}if(chess.header().FEN && chess.header().FEN!==DEFAULT_POSITION)throw new ChessError('invalid_request','PGN must start from standard position');}
     const moves:ChessMove[]=[];const replayChess=new Chess();for(const move of chess.history({verbose:true})){const applied=replayChess.move(move.san);moves.push({ply:moves.length+1,uci:`${applied.from}${applied.to}${applied.promotion??''}`,san:applied.san,fen:replayChess.fen()});}
     const boardResult=chess.isCheckmate()?(chess.turn()==='w'?'0-1':'1-0'):chess.isDraw()?'1/2-1/2':'*';
     const declaredResult=chess.header().Result;
     if(input.initialPgn && boardResult!=='*' && declaredResult && declaredResult!=='*' && declaredResult!==boardResult)throw new ChessError('invalid_request','PGN result conflicts with the final board position');
     const importedResult=boardResult==='*' && ['1-0','0-1','1/2-1/2'].includes(declaredResult??'') ? declaredResult as ChessGame['result'] : boardResult;
-    const at=now(); const gameId=id('chess');const request={channelId:input.channelId,title,players:{white,black},initialPgn:input.initialPgn??null};const prior=this.prior<ChessGame>(actor.principalId,key,'create',request,input.channelId);if(prior)return prior;
-    return this.db.mutateWithEvent(t=>{this.channel(t,input.channelId,actor,true);this.requirePlayer(t,input.channelId,white);this.requirePlayer(t,input.channelId,black);if((white==='user_owner')===(black==='user_owner'))throw new ChessError('invalid_request','one owner and one bot required');if(actor.principalId!=='user_owner'&&actor.principalId!==white&&actor.principalId!==black) throw new ChessError('forbidden','bot must be a player to create a game');const replay=this.replay(t,actor.principalId,key,'create',request);if(replay.existing)throw new ChessError('conflict','concurrent replay');
-      const result=importedResult;const status=result==='*'?'active':'finished';
+    const at=now(); const gameId=id('chess');const request={channelId:input.channelId,title,players:{white,black},initialPgn:input.initialPgn??null,...(input.automation ? {automation:{maxPlies}} : {}),...(input.startPaused !== undefined ? {startPaused:input.startPaused} : {})};const prior=this.prior<ChessGame>(actor.principalId,key,'create',request,input.channelId);if(prior)return prior;
+    return this.db.mutateWithEvent(t=>{this.channel(t,input.channelId,actor,true);this.requirePlayer(t,input.channelId,white);this.requirePlayer(t,input.channelId,black);if(actor.principalId!=='user_owner'&&actor.principalId!==white&&actor.principalId!==black) throw new ChessError('forbidden','bot must be a player to create a game');const replay=this.replay(t,actor.principalId,key,'create',request);if(replay.existing)throw new ChessError('conflict','concurrent replay');
+      const result=importedResult;const status=result==='*'?(input.startPaused?'paused':'active'):'finished';
       t.run('INSERT INTO chess_games (id,channel_id,white_principal_id,black_principal_id,title,initial_fen,fen,pgn,moves_json,status,result,turn,ply,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)',gameId,input.channelId,white,black,title,DEFAULT_POSITION,chess.fen(),chess.pgn(),JSON.stringify(moves),status,result,chess.turn(),moves.length,at,at);
+      t.run('UPDATE chess_games SET automatic_max_plies=?, automatic_remaining=?, pause_reason=? WHERE id=?',maxPlies,maxPlies,input.startPaused?'Ready to play':null,gameId);
       const row=this.row(gameId,t);this.queueTurn(t,row,at);const game=this.game(row,t);this.record(t,actor.principalId,replay.digest,'create',request,gameId,game,at);return {value:game,event:this.event('chess_game',gameId,1,input.channelId,actor.principalId,at,{gameId,version:1})};
     }).value;
   }
   move(gameId:string,input:{expectedVersion:number;from:string;to:string;promotion?:string},actor:ChessActor,key:string):ChessGame {
+    return this.applyMove(gameId,input,actor,key);
+  }
+  private applyMove(gameId:string,input:{expectedVersion:number;from:string;to:string;promotion?:string},actor:ChessActor,key:string,enginePlayer?:string):ChessGame {
+    const player = enginePlayer ?? actor.principalId;
     version(input.expectedVersion);const from=square(input.from),to=square(input.to);const promotion=input.promotion;if(promotion!==undefined && !['q','r','b','n'].includes(promotion)) throw new ChessError('invalid_request','promotion must be q, r, b, or n for pawn promotion; omit it otherwise');
     const at=now();const request={gameId,expectedVersion:input.expectedVersion,from,to,promotion:promotion??null};const prior=this.prior<ChessGame>(actor.principalId,key,'move',request,this.row(gameId).channel_id);if(prior)return prior;
     return this.db.mutateWithEvent(t=>{const row=this.row(gameId,t);this.channel(t,row.channel_id,actor,true);const replay=this.replay(t,actor.principalId,key,'move',request);if(replay.existing)throw new ChessError('conflict','concurrent replay');
-      if(row.version!==input.expectedVersion)throw new ChessError('conflict','stale game version');if(row.status!=='active')throw new ChessError('illegal_state','game is not active');if((row.turn==='w'?row.white_principal_id:row.black_principal_id)!==actor.principalId)throw new ChessError('forbidden','not this side to move');
-      if(actor.principalId.startsWith('bot_')) {
+      if(row.version!==input.expectedVersion)throw new ChessError('conflict','stale game version');if(row.status!=='active')throw new ChessError('illegal_state','game is not active');if((row.turn==='w'?row.white_principal_id:row.black_principal_id)!==player)throw new ChessError('forbidden','not this side to move');
+      if(automatic(player)) {
         const intent=t.readOne<IntentRow>("SELECT * FROM chess_turn_intents WHERE game_id = ? AND game_version = ? AND status IN ('queued','dispatched')",gameId,row.version);
-        if(!intent||intent.id!==actor.turnId||intent.target_bot_id!==actor.principalId)throw new ChessError('forbidden','bot move requires its current scheduled turn');
+        if(!intent||intent.id!==actor.turnId||intent.target_bot_id!==player)throw new ChessError('forbidden','automatic move requires its current scheduled turn');
+        this.requirePlayer(t,row.channel_id,player);
       }
       const chess=new Chess();if(row.pgn) chess.loadPgn(row.pgn);let move;try{move=chess.move({from,to,...(promotion?{promotion}:{})});}catch{throw new ChessError('illegal_move','illegal chess move');}if(!move)throw new ChessError('illegal_move','illegal chess move');
       const moves:ChessMove[]=JSON.parse(row.moves_json);moves.push({ply:row.ply+1,uci:`${move.from}${move.to}${move.promotion??''}`,san:move.san,fen:chess.fen()});const result=chess.isCheckmate()?(chess.turn()==='w'?'0-1':'1-0'):chess.isDraw()?'1/2-1/2':'*';this.cancelTurns(t,gameId,at);
-      t.run('UPDATE chess_games SET fen=?,pgn=?,moves_json=?,status=?,result=?,turn=?,ply=?,version=version+1,updated_at=? WHERE id=? AND version=?',chess.fen(),chess.pgn(),JSON.stringify(moves),result==='*'?'active':'finished',result,chess.turn(),moves.length,at,gameId,row.version);
+      const remaining = Math.max(0, row.automatic_remaining - (automatic(player) ? 1 : 0));
+      const limited = result === '*' && remaining === 0;
+      const pauseReason = limited ? (row.pause_reason === 'Single turn' ? 'Single turn complete' : 'Automatic move allowance reached') : null;
+      t.run('UPDATE chess_games SET fen=?,pgn=?,moves_json=?,status=?,result=?,turn=?,ply=?,version=version+1,updated_at=?,automatic_remaining=?,pause_reason=? WHERE id=? AND version=?',chess.fen(),chess.pgn(),JSON.stringify(moves),result!=='*'?'finished':limited?'paused':'active',result,chess.turn(),moves.length,at,remaining,pauseReason,gameId,row.version);
       const updated=this.row(gameId,t);this.queueTurn(t,updated,at);const game=this.game(updated,t);this.record(t,actor.principalId,replay.digest,'move',request,gameId,game,at);return {value:game,event:this.event('chess_game',gameId,updated.version,row.channel_id,actor.principalId,at,{gameId,version:updated.version})};
     }).value;
   }
-  control(gameId:string,input:{expectedVersion:number;action:'pause'|'resume'|'resign'|'retry_turn'},actor:ChessActor,key:string):ChessGame {
-    version(input.expectedVersion);if(!['pause','resume','resign','retry_turn'].includes(input.action))throw new ChessError('invalid_request','invalid action');const at=now();const request={gameId,...input};const prior=this.prior<ChessGame>(actor.principalId,key,'control',request,this.row(gameId).channel_id);if(prior)return prior;
-    return this.db.mutateWithEvent(t=>{const row=this.row(gameId,t);this.channel(t,row.channel_id,actor,true);const replay=this.replay(t,actor.principalId,key,'control',request);if(replay.existing)throw new ChessError('conflict','concurrent replay');
-      if(row.version!==input.expectedVersion)throw new ChessError('conflict','stale game version');if(row.status==='finished')throw new ChessError('illegal_state','game is finished');let status:ChessGame['status']=row.status,result:ChessGame['result']=row.result;
-      if(input.action==='pause'||input.action==='resume'||input.action==='retry_turn') {if(actor.principalId!=='user_owner')throw new ChessError('forbidden','owner control required');if(input.action==='pause'){if(row.status!=='active')throw new ChessError('illegal_state','game is already paused');status='paused';}else if(input.action==='resume'){if(row.status!=='paused')throw new ChessError('illegal_state','game is already active');status='active';}else {if(row.status!=='active'||!(row.turn==='w'?row.white_principal_id:row.black_principal_id).startsWith('bot_')||this.delivery(row.id,row.version,t)?.status!=='failed')throw new ChessError('illegal_state','only a failed bot turn can be retried');}}
-      else {if(actor.principalId!==row.white_principal_id&&actor.principalId!==row.black_principal_id)throw new ChessError('forbidden','only a player may resign');if(actor.principalId.startsWith('bot_')){const intent=t.readOne<IntentRow>("SELECT * FROM chess_turn_intents WHERE game_id = ? AND game_version = ? AND status IN ('queued','dispatched')",gameId,row.version);if(!intent||intent.id!==actor.turnId||intent.target_bot_id!==actor.principalId)throw new ChessError('forbidden','bot resignation requires its current scheduled turn');}status='finished';result=actor.principalId===row.white_principal_id?'0-1':'1-0';}
-      this.cancelTurns(t,gameId,at);t.run('UPDATE chess_games SET status=?,result=?,version=version+1,updated_at=? WHERE id=? AND version=?',status,result,at,gameId,row.version);const updated=this.row(gameId,t);if(input.action==='resume'||input.action==='retry_turn')this.queueTurn(t,updated,at);const game=this.game(updated,t);this.record(t,actor.principalId,replay.digest,'control',request,gameId,game,at);return {value:game,event:this.event('chess_game',gameId,updated.version,row.channel_id,actor.principalId,at,{gameId,version:updated.version})};
+  control(gameId:string,input:{expectedVersion:number;action:'pause'|'resume'|'resign'|'retry_turn'|'step'},actor:ChessActor,key:string):ChessGame {
+    version(input.expectedVersion);
+    if (!['pause','resume','resign','retry_turn','step'].includes(input.action)) throw new ChessError('invalid_request','invalid action');
+    const at=now(), request={gameId,...input};
+    const prior=this.prior<ChessGame>(actor.principalId,key,'control',request,this.row(gameId).channel_id); if(prior)return prior;
+    return this.db.mutateWithEvent(t=>{
+      const row=this.row(gameId,t); this.channel(t,row.channel_id,actor,true);
+      const replay=this.replay(t,actor.principalId,key,'control',request); if(replay.existing)throw new ChessError('conflict','concurrent replay');
+      if(row.version!==input.expectedVersion)throw new ChessError('conflict','stale game version');
+      if(row.status==='finished')throw new ChessError('illegal_state','game is finished');
+      let status:ChessGame['status']=row.status;
+      let result=row.result,remaining=row.automatic_remaining,reason:string|null=null;
+      const mover=row.turn==='w'?row.white_principal_id:row.black_principal_id;
+      if(input.action==='resign') {
+        if(actor.principalId!==row.white_principal_id&&actor.principalId!==row.black_principal_id)throw new ChessError('forbidden','only a player may resign');
+        if(actor.principalId.startsWith('bot_')) {
+          const intent=t.readOne<IntentRow>("SELECT * FROM chess_turn_intents WHERE game_id=? AND game_version=? AND status IN ('queued','dispatched')",gameId,row.version);
+          if(!intent||intent.id!==actor.turnId||intent.target_bot_id!==actor.principalId)throw new ChessError('forbidden','bot resignation requires its current scheduled turn');
+        }
+        status='finished'; result=actor.principalId===row.white_principal_id?'0-1':'1-0';
+      } else {
+        if(actor.principalId!=='user_owner')throw new ChessError('forbidden','owner control required');
+        switch(input.action) {
+          case 'pause':
+            if(row.status!=='active')throw new ChessError('illegal_state','game is already paused');
+            status='paused'; reason='Paused by you'; break;
+          case 'resume':
+            if(row.status!=='paused')throw new ChessError('illegal_state','game is already active');
+            status='active'; remaining=row.automatic_max_plies; break;
+          case 'step':
+            if(row.status!=='paused'||!automatic(mover))throw new ChessError('illegal_state','Pause on an automatic player’s turn before stepping');
+            status='active'; remaining=1; reason='Single turn'; break;
+          case 'retry_turn':
+            if(row.status!=='active'||!automatic(mover)||this.delivery(row.id,row.version,t)?.status!=='failed')throw new ChessError('illegal_state','only a failed automatic turn can be retried');
+            reason=row.pause_reason; break;
+        }
+      }
+      this.cancelTurns(t,gameId,at);
+      t.run('UPDATE chess_games SET status=?,result=?,version=version+1,updated_at=?,automatic_remaining=?,pause_reason=? WHERE id=? AND version=?',status,result,at,remaining,reason,gameId,row.version);
+      const updated=this.row(gameId,t); if(status==='active')this.queueTurn(t,updated,at);
+      const game=this.game(updated,t);this.record(t,actor.principalId,replay.digest,'control',request,gameId,game,at);
+      return {value:game,event:this.event('chess_game',gameId,updated.version,row.channel_id,actor.principalId,at,{gameId,version:updated.version})};
     }).value;
   }
   exportPgn(gameId:string,actor:ChessActor):string {const row=this.row(gameId);this.readChannel(row.channel_id,actor);const chess=new Chess();if(row.pgn)chess.loadPgn(row.pgn);chess.setHeader('White',row.white_principal_id);chess.setHeader('Black',row.black_principal_id);chess.setHeader('Result',row.result);return chess.pgn();}

@@ -1,4 +1,5 @@
 import { executeChessOperation, resolveChessMoveTurnId } from '../chess/operations.js';
+import { StockfishEngine } from '../chess/stockfish.js';
 import { NativeChessService } from '../chess/service.js';
 import { createChessTurnDispatcher } from '../chess/turns.js';
 import { ConsoleCatalog } from "../console/catalog.js";
@@ -468,7 +469,7 @@ export function createCoordinationProcess(
       ? {}
       : { artifactMessageLink: artifactRepository }),
   });
-  const nativeChess = new NativeChessService({ database });
+  const nativeChess = new NativeChessService({ database, engine: new StockfishEngine() });
   const channels = createChannelService({ repository: messagingRepository, participantDirectory, cursorSigningKey: channelCursorKey });
   const projects = new ProjectContinuityStore(config.botRootDirectory,
     (context, channelId) => channels.getChannel({context, channelId}),

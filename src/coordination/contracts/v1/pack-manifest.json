@@ -18,7 +18,9 @@
     "fixtures/bots.json",
     "fixtures/channel-direct.json",
     "fixtures/channel-group.json",
+    "fixtures/chess-engine-game.json",
     "fixtures/chess-game.json",
+    "fixtures/chess-options.json",
     "fixtures/chess-position.json",
     "fixtures/chess-snapshot.json",
     "fixtures/console-controls.json",
@@ -50,36 +52,170 @@
     "schema.json"
   ],
   "fixtures": [
-    {"name": "attachment", "file": "fixtures/attachment.json", "schemaDefinition": "attachmentFixture"},
-    {"name": "bootstrap", "file": "fixtures/bootstrap.json", "schemaDefinition": "bootstrapFixture"},
-    {"name": "bots", "file": "fixtures/bots.json", "schemaDefinition": "botsFixture"},
-    {"name": "channel-direct", "file": "fixtures/channel-direct.json", "schemaDefinition": "channelFixture"},
-    {"name": "channel-group", "file": "fixtures/channel-group.json", "schemaDefinition": "channelFixture"},
-    {"name": "console-controls", "file": "fixtures/console-controls.json", "schemaDefinition": "consoleControlsFixture"},
-    {"name": "console-records-codex", "file": "fixtures/console-records-codex.json", "schemaDefinition": "consoleRecordPage"},
-    {"name": "console-records-cursor", "file": "fixtures/console-records-cursor.json", "schemaDefinition": "consoleRecordPage"},
-    {"name": "console-records-limits", "file": "fixtures/console-records-limits.json", "schemaDefinition": "consoleRecordPage"},
-    {"name": "console-records-subagent", "file": "fixtures/console-records-subagent.json", "schemaDefinition": "consoleRecordPage"},
-    {"name": "console-sources", "file": "fixtures/console-sources.json", "schemaDefinition": "consoleSourceList"},
-    {"name": "console-stream", "file": "fixtures/console-stream.json", "schemaDefinition": "consoleStreamFixture"},
-    {"name": "conversations", "file": "fixtures/conversations.json", "schemaDefinition": "conversationsFixture"},
-    {"name": "error", "file": "fixtures/error.json", "schemaDefinition": "errorFixture"},
-    {"name": "event-cursor-reset", "file": "fixtures/event-cursor-reset.json", "schemaDefinition": "eventCursorResetFixture"},
-    {"name": "event-message-appended", "file": "fixtures/event-message-appended.json", "schemaDefinition": "eventFixture"},
-    {"name": "import-provenance", "file": "fixtures/import-provenance.json", "schemaDefinition": "importFixture"},
-    {"name": "message-exact", "file": "fixtures/message-exact.json", "schemaDefinition": "messageExactFixture"},
-    {"name": "messages-mentions", "file": "fixtures/messages-mentions.json", "schemaDefinition": "messagesFixture"},
-    {"name": "pairing-session", "file": "fixtures/pairing-session.json", "schemaDefinition": "pairingSessionFixture"},
-    {"name": "resident-presence-admission-while-work", "file": "fixtures/resident-presence-admission-while-work.json", "schemaDefinition": "residentPresenceAdmissionFixture"},
-    {"name": "resident-presence-cursor-reconnect", "file": "fixtures/resident-presence-cursor-reconnect.json", "schemaDefinition": "residentPresenceCursorFixture"},
-    {"name": "resident-presence-one-result", "file": "fixtures/resident-presence-one-result.json", "schemaDefinition": "residentPresenceOneResultFixture"},
-    {"name": "resident-presence-projections", "file": "fixtures/resident-presence-projections.json", "schemaDefinition": "residentPresenceProjectionsFixture"},
-    {"name": "search", "file": "fixtures/search.json", "schemaDefinition": "searchFixture"},
-    {"name": "unread-read-cursor", "file": "fixtures/unread-read-cursor.json", "schemaDefinition": "unreadFixture"},
-    {"name": "work-attempt-lease-activity", "file": "fixtures/work-attempt-lease-activity.json", "schemaDefinition": "workActivityFixture"},
-    {"name": "working-threads", "file": "fixtures/working-threads.json", "schemaDefinition": "workingThreadList"},
-    {"name": "chess-game", "file": "fixtures/chess-game.json", "schemaDefinition": "chessGameResponse"},
-    {"name": "chess-position", "file": "fixtures/chess-position.json", "schemaDefinition": "chessPositionResponse"},
-    {"name": "chess-snapshot", "file": "fixtures/chess-snapshot.json", "schemaDefinition": "chessSnapshot"}
+    {
+      "name": "attachment",
+      "file": "fixtures/attachment.json",
+      "schemaDefinition": "attachmentFixture"
+    },
+    {
+      "name": "bootstrap",
+      "file": "fixtures/bootstrap.json",
+      "schemaDefinition": "bootstrapFixture"
+    },
+    {
+      "name": "bots",
+      "file": "fixtures/bots.json",
+      "schemaDefinition": "botsFixture"
+    },
+    {
+      "name": "channel-direct",
+      "file": "fixtures/channel-direct.json",
+      "schemaDefinition": "channelFixture"
+    },
+    {
+      "name": "channel-group",
+      "file": "fixtures/channel-group.json",
+      "schemaDefinition": "channelFixture"
+    },
+    {
+      "name": "chess-engine-game",
+      "file": "fixtures/chess-engine-game.json",
+      "schemaDefinition": "chessGameResponse"
+    },
+    {
+      "name": "chess-game",
+      "file": "fixtures/chess-game.json",
+      "schemaDefinition": "chessGameResponse"
+    },
+    {
+      "name": "chess-options",
+      "file": "fixtures/chess-options.json",
+      "schemaDefinition": "chessOptions"
+    },
+    {
+      "name": "chess-position",
+      "file": "fixtures/chess-position.json",
+      "schemaDefinition": "chessPositionResponse"
+    },
+    {
+      "name": "chess-snapshot",
+      "file": "fixtures/chess-snapshot.json",
+      "schemaDefinition": "chessSnapshot"
+    },
+    {
+      "name": "console-controls",
+      "file": "fixtures/console-controls.json",
+      "schemaDefinition": "consoleControlsFixture"
+    },
+    {
+      "name": "console-records-codex",
+      "file": "fixtures/console-records-codex.json",
+      "schemaDefinition": "consoleRecordPage"
+    },
+    {
+      "name": "console-records-cursor",
+      "file": "fixtures/console-records-cursor.json",
+      "schemaDefinition": "consoleRecordPage"
+    },
+    {
+      "name": "console-records-limits",
+      "file": "fixtures/console-records-limits.json",
+      "schemaDefinition": "consoleRecordPage"
+    },
+    {
+      "name": "console-records-subagent",
+      "file": "fixtures/console-records-subagent.json",
+      "schemaDefinition": "consoleRecordPage"
+    },
+    {
+      "name": "console-sources",
+      "file": "fixtures/console-sources.json",
+      "schemaDefinition": "consoleSourceList"
+    },
+    {
+      "name": "console-stream",
+      "file": "fixtures/console-stream.json",
+      "schemaDefinition": "consoleStreamFixture"
+    },
+    {
+      "name": "conversations",
+      "file": "fixtures/conversations.json",
+      "schemaDefinition": "conversationsFixture"
+    },
+    {
+      "name": "error",
+      "file": "fixtures/error.json",
+      "schemaDefinition": "errorFixture"
+    },
+    {
+      "name": "event-cursor-reset",
+      "file": "fixtures/event-cursor-reset.json",
+      "schemaDefinition": "eventCursorResetFixture"
+    },
+    {
+      "name": "event-message-appended",
+      "file": "fixtures/event-message-appended.json",
+      "schemaDefinition": "eventFixture"
+    },
+    {
+      "name": "import-provenance",
+      "file": "fixtures/import-provenance.json",
+      "schemaDefinition": "importFixture"
+    },
+    {
+      "name": "message-exact",
+      "file": "fixtures/message-exact.json",
+      "schemaDefinition": "messageExactFixture"
+    },
+    {
+      "name": "messages-mentions",
+      "file": "fixtures/messages-mentions.json",
+      "schemaDefinition": "messagesFixture"
+    },
+    {
+      "name": "pairing-session",
+      "file": "fixtures/pairing-session.json",
+      "schemaDefinition": "pairingSessionFixture"
+    },
+    {
+      "name": "resident-presence-admission-while-work",
+      "file": "fixtures/resident-presence-admission-while-work.json",
+      "schemaDefinition": "residentPresenceAdmissionFixture"
+    },
+    {
+      "name": "resident-presence-cursor-reconnect",
+      "file": "fixtures/resident-presence-cursor-reconnect.json",
+      "schemaDefinition": "residentPresenceCursorFixture"
+    },
+    {
+      "name": "resident-presence-one-result",
+      "file": "fixtures/resident-presence-one-result.json",
+      "schemaDefinition": "residentPresenceOneResultFixture"
+    },
+    {
+      "name": "resident-presence-projections",
+      "file": "fixtures/resident-presence-projections.json",
+      "schemaDefinition": "residentPresenceProjectionsFixture"
+    },
+    {
+      "name": "search",
+      "file": "fixtures/search.json",
+      "schemaDefinition": "searchFixture"
+    },
+    {
+      "name": "unread-read-cursor",
+      "file": "fixtures/unread-read-cursor.json",
+      "schemaDefinition": "unreadFixture"
+    },
+    {
+      "name": "work-attempt-lease-activity",
+      "file": "fixtures/work-attempt-lease-activity.json",
+      "schemaDefinition": "workActivityFixture"
+    },
+    {
+      "name": "working-threads",
+      "file": "fixtures/working-threads.json",
+      "schemaDefinition": "workingThreadList"
+    }
   ]
 }

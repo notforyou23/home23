@@ -141,3 +141,67 @@ test('tool preserves explicit underpromotion and rejects missing or invalid prom
     assert.equal(JSON.parse(result.content).game.moves.at(-1).uci, 'b7a8n');
   } finally { f.database.close(); }
 });
+
+test('engine seats stay outside House principals, step once, resume to limit and survive restart', async t => {
+  const f=fixture(t); t.after(()=>f.database.close());
+  const {Chess}=await import('chess.js');
+  const engine={available:()=>true, analyze:async (input:{fen:string;moves?:string[]})=>{
+    const board=new Chess(input.fen); for(const uci of input.moves??[]) board.move({from:uci.slice(0,2),to:uci.slice(2,4),promotion:uci[4]});
+    const m=board.moves({verbose:true})[0]!;
+    return {fen:board.fen(),bestMove:m.from+m.to+(m.promotion??''),lines:[]};
+  }};
+  let service=new NativeChessService({database:f.database,engine});
+  let game=service.create({channelId:CHANNEL,players:{white:'engine_stockfish_3',black:'engine_stockfish_3'},startPaused:true,automation:{maxPlies:2}},owner,'engine-game');
+  assert.equal(game.status,'paused'); assert.equal(service.dueTurns().length,0);
+  assert.equal(f.database.readOne("SELECT id FROM principals WHERE id LIKE 'engine_%'"),undefined);
+  game=service.control(game.id,{expectedVersion:game.version,action:'step'},owner,'engine-step');
+  const first=service.dueTurns()[0]!; await service.runEngineTurn(first);
+  game=service.get(game.id,owner); assert.equal(game.ply,1);assert.equal(game.status,'paused');assert.equal(game.pauseReason,'Single turn complete');
+  await service.runEngineTurn(first); assert.equal(service.get(game.id,owner).ply,1);
+  game=service.control(game.id,{expectedVersion:game.version,action:'resume'},owner,'engine-run');
+  service=new NativeChessService({database:f.database,engine});
+  await service.runEngineTurn(service.dueTurns()[0]!); await service.runEngineTurn(service.dueTurns()[0]!);
+  game=service.get(game.id,owner); assert.equal(game.ply,3);assert.equal(game.status,'paused');assert.equal(game.automation?.remainingPlies,0);
+  assert.equal(service.dueTurns().length,0);
+  assert.deepEqual(f.database.readAll('PRAGMA foreign_key_check'),[]);
+});
+
+test('engine results cannot move after pause or draining; public owner cannot impersonate engine', async t => {
+  const f=fixture(t); t.after(()=>f.database.close());
+  let finish!: (value:{fen:string;bestMove:string;lines:never[]})=>void;
+  const service=new NativeChessService({database:f.database,engine:{available:()=>true,analyze:()=>new Promise(resolve=>{finish=resolve;})}});
+  let game=service.create({channelId:CHANNEL,players:{white:'engine_stockfish_0',black:BOT}},owner,'race-game');
+  assert.throws(()=>service.move(game.id,{expectedVersion:1,from:'e2',to:'e4'},owner,'impersonate'),/not this side/);
+  const turn=service.dueTurns()[0]!;const work=service.runEngineTurn(turn);
+  service.control(game.id,{expectedVersion:1,action:'pause'},owner,'pause-race');
+  finish({fen:game.fen,bestMove:'e2e4',lines:[]}); await assert.rejects(work,/stale game version/);
+  assert.equal(service.get(game.id,owner).ply,0);
+  game=service.get(game.id,owner); game=service.control(game.id,{expectedVersion:game.version,action:'resume'},owner,'resume-race');
+  let accepting=true; const drain=service.runEngineTurn(service.dueTurns()[0]!,undefined,()=>accepting); accepting=false;
+  finish({fen:game.fen,bestMove:'e2e4',lines:[]}); await drain;assert.equal(service.get(game.id,owner).ply,0);
+});
+
+test('owner creates bot-vs-bot; bots cannot start spectator games; next turn alternates with a cap',t=>{
+  const f=fixture(t); t.after(()=>f.database.close());
+  f.database.mutateWithEvent(tx=>{
+    tx.run("INSERT INTO channel_members (channel_id,principal_id,kind,role,active,joined_at,left_at) VALUES (?,?,'bot','member',1,?,NULL)",CHANNEL,OTHER,NOW);
+    return {value:undefined,event:{type:'test.member',aggregateKind:'test',aggregateId:'second-member',aggregateVersion:1,channelId:CHANNEL,actorPrincipalId:'user_owner',requestId:'req_0198d95f-6c00-7000-8000-000000000399',correlationId:'cor_0198d95f-6c00-7000-8000-000000000398',payload:{},createdAt:NOW}};
+  });
+  const input={channelId:CHANNEL,players:{white:BOT,black:OTHER},automation:{maxPlies:2}};
+  assert.throws(()=>f.service.create(input,bot,'bot-spectator'),/Only the owner/);
+  let game=f.service.create(input,owner,'owner-spectator');
+  let turn=f.service.dueTurns()[0]!;assert.equal(turn.targetBotId,BOT);
+  game=f.service.move(game.id,{expectedVersion:game.version,from:'e2',to:'e4'},{principalId:BOT,turnId:turn.id},'bot-white');
+  turn=f.service.dueTurns()[0]!;assert.equal(turn.targetBotId,OTHER);
+  game=f.service.move(game.id,{expectedVersion:game.version,from:'e7',to:'e5'},{principalId:OTHER,turnId:turn.id},'bot-black');
+  assert.equal(game.status,'paused');assert.equal(game.ply,2);assert.equal(f.service.dueTurns().length,0);
+  assert.throws(()=>f.service.control(game.id,{expectedVersion:game.version,action:'resign'},owner,'spectator-resign'),/only a player/);
+});
+
+test('analysis is owner-only and an absent engine reports availability without mutating games',async t=>{
+  const f=fixture(t);t.after(()=>f.database.close());
+  assert.equal(f.service.engineOptions().engine.available,false);
+  await assert.rejects(f.service.analyze({fen:'ignored'},bot),(error:unknown)=>(error as {code:string}).code==='forbidden');
+  await assert.rejects(f.service.analyze({fen:'ignored'},owner),(error:unknown)=>(error as {code:string}).code==='engine_unavailable');
+  assert.equal(f.service.list({channelId:CHANNEL},owner).items.length,0);
+});

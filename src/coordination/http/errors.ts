@@ -10,6 +10,7 @@ import { LeaseError } from "../leases/index.js";
 import { ActivityReadError } from "../activity/index.js";
 import { LiveVoiceError } from "../app/live-voice.js";
 import { GptLiveProviderError } from "../../voice/gpt-live-provider.js";
+import { StockfishError } from "../chess/stockfish.js";
 import { ChessError } from "../chess/service.js";
 
 export class CoordinationHttpError extends Error {
@@ -47,6 +48,10 @@ function isBodyParserFailure(error: unknown): boolean {
 }
 
 export function toCoordinationHttpFailure(error: unknown): CoordinationHttpFailure {
+  if (error instanceof StockfishError) {
+    const httpStatus = error.code === 'invalid_input' ? 400 : error.code === 'engine_busy' ? 429 : 503;
+    return {code: error.code, httpStatus, retryable: error.code === 'engine_busy', details: {}, message: 'Chess analysis could not complete.'};
+  }
   if (error instanceof ChessError) {
     const status = error.code === 'not_found' ? 404 : error.code === 'forbidden' ? 403
       : error.code === 'invalid_request' || error.code === 'illegal_move' ? 400 : 409;

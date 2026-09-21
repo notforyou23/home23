@@ -96,7 +96,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   );
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 19);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 20);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -204,6 +204,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 17, checksum: COORDINATION_MIGRATIONS[16]!.checksum },
       { version: 18, checksum: COORDINATION_MIGRATIONS[17]!.checksum },
       { version: 19, checksum: COORDINATION_MIGRATIONS[18]!.checksum },
+      { version: 20, checksum: COORDINATION_MIGRATIONS[19]!.checksum },
     ],
   );
   assert.deepEqual(
