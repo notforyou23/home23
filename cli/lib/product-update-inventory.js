@@ -48,6 +48,14 @@ function absoluteTokens(text) {
   for (const match of text.matchAll(pattern)) found.push(match[1].replace(/[,}]+$/, ''));
   return found;
 }
+function escapeRegex(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+/** YAML folds paths at spaces, so a token may be only the first fragment of this home. */
+function refersToHome(text, home, token) {
+  if (token === home || token.startsWith(`${home}/`)) return true;
+  const boundary = home[token.length];
+  if (!home.startsWith(token) || (boundary !== undefined && boundary !== ' ' && boundary !== '/')) return false;
+  return new RegExp(escapeRegex(home).replaceAll(' ', '\\s+')).test(text);
+}
 function recipeIds(file) {
   const parsed = JSON.parse(readFileSync(file, 'utf8'));
   return Object.values(parsed.profiles || {}).map(profile => profile.recipeId).filter(Boolean);
@@ -128,8 +136,9 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate } 
       reasons.push(reason('state_uninspected', `Config file ${relative} is too large to classify external paths.`, { path: relative }));
       continue;
     }
-    for (const token of absoluteTokens(readFileSync(file, 'utf8'))) {
-      if (!allowedExternal(root, token)) external.push({ path: relative, target: relative.endsWith('secrets.yaml') ? '[redacted]' : token });
+    const text = readFileSync(file, 'utf8');
+    for (const token of absoluteTokens(text)) {
+      if (!allowedExternal(root, token) && !refersToHome(text, root, token)) external.push({ path: relative, target: relative.endsWith('secrets.yaml') ? '[redacted]' : token });
     }
   }
   for (const item of external) reasons.push(reason('external_reference', `External path in ${item.path} is not part of this home. Reconnect or remove it before a software update.`, { path: item.path }));

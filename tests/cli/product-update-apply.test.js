@@ -9,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { installProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
 import { applyProductUpdate, resumeProductUpdate, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
-import { SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
+import { inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const quiet = { listProcesses: async () => [], acquireHostLock: async () => async () => {} };
@@ -106,6 +106,16 @@ test('reviewed schema constants and writer names stay aligned with source', () =
   assert.equal(updateBlocksStart({ phase: 'selected', ownerToken: 'token' }, 'token'), false);
   assert.equal(updateBlocksStart({ phase: 'committed' }), false);
   assert.equal(updateBlocksStart({ phase: 'rolled_back' }), false);
+});
+
+test('a folded in-home path keeps its volume name with spaces', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'Casey Jones', 'home');
+  fs.mkdirSync(path.join(home, 'app/config'), { recursive: true });
+  const inside = path.join(home, 'app/instances/milo');
+  fs.writeFileSync(path.join(home, 'app/config/home.yaml'), `shell:\n  roots:\n    - >-\n      ${inside.split(' ').join('\n      ')}\n`, { mode: 0o600 });
+  const result = await inspectUpdateInventory(home);
+  assert.equal(result.reasons.some(item => item.code === 'external_reference'), false);
 });
 
 test('refusals happen before a journal or package change', async t => {
