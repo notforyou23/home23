@@ -484,7 +484,16 @@ async function finish(journal, dependencies) {
     catch { startOk = false; }
     journal = await commitPhase(file, { ...journal, candidateStarted: true, startOk, phase: 'writers_admitted' }, dependencies);
   }
-  const identityPreserved = journal.writersAdmitted ? await sameCanonical(home, journal) : sameIdentity(home, journal.identity);
+  let identityPreserved = journal.writersAdmitted ? await sameCanonical(home, journal) : sameIdentity(home, journal.identity);
+  if (journal.writersAdmitted && !identityPreserved) {
+    await fence();
+    identityPreserved = await sameCanonical(home, journal);
+    if (identityPreserved && journal.desiredRunning && !(await busy())) {
+      try { journal.startOk = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
+      catch { journal.startOk = false; }
+      journal = await commitPhase(file, { ...journal, candidateStarted: true, startOk: journal.startOk, phase: 'writers_admitted' }, dependencies);
+    }
+  }
   const behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved });
   if (!behavior.ok || !identityPreserved) {
     if (journal.writersAdmitted || journal.acceptedWork) {
