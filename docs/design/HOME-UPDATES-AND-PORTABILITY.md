@@ -1,7 +1,8 @@
 # Home updates and portability
 
-Status: engineering plan with an initial read-only backend preview, September
-21, 2026. Installation of updates, transfer and their acceptance remain unimplemented.
+Status: engineering plan with backend preview and local candidate staging,
+September 21, 2026. Installation of updates, transfer and their acceptance
+remain unimplemented.
 
 Home23 must remain usable, recoverable and movable for its current owner even
 if it is never distributed to anyone else. The same lifecycle must support a
@@ -70,6 +71,32 @@ not that an update can be applied. Managed/source markers identify an adoption
 case; complete state inventory, schema compatibility and adoption remain work.
 There is no native update button or release feed in this increment. Earlier
 installed runtimes do not acquire this command until deliberately updated.
+
+### Implemented local staging
+
+```sh
+node scripts/product/host.mjs stage --home /absolute/home --payload /absolute/candidate --staging /absolute/stage
+```
+
+Staging copies an explicit local candidate into `stage/payload/`, separate from
+the current home and original candidate. Its private adjacent
+`stage.home23-stage.json` claim binds the home location, current package and
+candidate identity. The existing installation lock guards claim creation,
+copying and exact retry. Completed files must match the pinned manifest;
+interrupted copying can resume with the same claim. Unknown/tampered stage
+contents, overlapping or linked paths, changed bindings and competing writers
+are refused. The package is verified again before `status: staged` is recorded.
+
+Capacity preflight requires the remaining file bytes plus 64 MiB headroom on
+the stage volume. This is not a reservation against concurrent disk use;
+copy failures preserve the claim for retry. No home data is copied and no
+installation receipt, release selection or running process is changed. This
+is local preparation, not a publisher-authenticated download or an update.
+`canInstall` remains `false` and publisher/migration checks remain unverified.
+
+Source verification uses synthetic packages, CLI dispatch, directory-preservation
+checks and a simulated copy interruption. It does not establish power-loss
+recovery, a packaged Mac trial or the complete U2/U3 lifecycle.
 
 ## Engineering contracts
 
@@ -178,9 +205,10 @@ Contributions must return to that lead; the owner is not a message relay.
 | U5 — Adopt the existing owner home | Lead: inventory all mixed-runtime services and external dependencies, rehearse the adapter on protected copied state, then prepare exact cutover and recovery | Rehearsal uses disabled integrations and fenced writers; no external side effects or new Seed; actual owner-home transition requires its scoped activation authorization |
 | U6 — Deliver | Apple + release: sign/notarize compatible artifacts, publish authenticated feed and finish first-owner instructions | A supported Mac installs and subsequently checks for and applies a release through the UI; private-beta and public-release evidence stay distinct |
 
-The first implementation slice is **U1**. It establishes what can safely be
-updated or adopted before a button can promise installation. It does not
-replace packages, export private state or modify any running home.
+The implemented preview and local staging are bounded parts of **U1/U2**.
+State-path inventory, release/schema compatibility and publisher trust still
+need implementation before a button can promise installation. Neither current
+command replaces packages, exports private state or modifies a running home.
 
 Verification follows these boundaries rather than accumulating unrelated suite
 runs. Reuse the known home and receipts when valid; publish one result for each

@@ -366,6 +366,11 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     const { previewProductUpdate } = await import('./product-update.js');
     return previewProductUpdate({ homeRoot, candidatePayload: payloadPath });
   }
+  if (action === 'stage') {
+    if (typeof payloadPath !== 'string' || !isAbsolute(payloadPath) || typeof input.staging !== 'string' || !isAbsolute(input.staging)) throw new Error('Choose absolute candidate and staging directories.');
+    const { stageProductPayload } = await import('./product-update-stage.js');
+    return stageProductPayload({ homeRoot, candidatePayload: payloadPath, staging: input.staging });
+  }
   if (action === 'catalog') {
     const require = createRequire(import.meta.url);
     const { buildHome23ModelAuthority } = require('../../engine/src/dashboard/home23-model-catalog.js');

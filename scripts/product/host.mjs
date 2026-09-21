@@ -12,11 +12,13 @@ try {
   const options = {};
   while (args.length) {
     const key = args.shift();
-    if (!['--home', '--payload'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS]');
+    if (!['--home', '--payload', '--staging'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS]');
     options[key] = args.shift();
   }
   homeRoot = absoluteHome(options['--home']);
+  if (options['--staging'] && action !== 'stage') throw new Error('--staging is only supported by the stage action.');
   let input = {};
+  if (action === 'stage') input.staging = options['--staging'];
   if (action === 'create') {
     let raw = '';
     for await (const part of process.stdin) { raw += part; if (Buffer.byteLength(raw) > 65536) throw new Error('Home23 setup input is too large.'); }

@@ -11,7 +11,7 @@ function marker(root, relative) {
   try { lstatSync(join(root, relative)); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
 }
 
-function previewRoot(value) {
+export function previewRoot(value) {
   const root = absoluteHome(value);
   // absoluteHome's existsSync guard skips dangling links. Do not mistake a
   // location below one for a new, absent home.

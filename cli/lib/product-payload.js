@@ -155,7 +155,7 @@ function installationReceipt(homeRoot, manifest, replayed) {
     nodePath: path.join(homeRoot, 'bin', 'node'), pm2Path: path.join(homeRoot, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'),
     packageId: manifest.packageId, sourceCommit: manifest.sourceCommit, replayed };
 }
-function acquireInstallLock(lockPath) {
+export function acquireInstallLock(lockPath) {
   const owner = { pid: process.pid, id: randomUUID() };
   const candidate = `${lockPath}.${owner.id}.tmp`;
   const contents = JSON.stringify(owner);

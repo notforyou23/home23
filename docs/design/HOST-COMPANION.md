@@ -49,13 +49,16 @@ The source Git updater must refuse these installations.
 replacement lifecycle: Check for Updates, compatible staged releases, consistent
 checkpoints, durable activation/recovery and state-preserving home transfer.
 It covers existing Host installations and adoption of managed/source homes.
-The backend now supports a read-only `preview --home ABS --payload ABS` for an
-explicit candidate. Applying an update is not implemented; preview always
-reports installation unavailable and publisher/migration checks unverified.
+The backend supports a read-only `preview --home ABS --payload ABS` and local
+`stage --home ABS --payload ABS --staging ABS` for an explicit candidate.
+Staging prepares a separate verified payload with an owned resumable claim.
+Applying an update is not implemented; both commands report installation
+unavailable and publisher/migration checks unverified.
 
 The companion invokes the bundled Node with `app/scripts/product/host.mjs`.
-The protocol accepts one action and an absolute `--home` path; `install` and
-`preview` also accept `--payload`. Creation data arrives over stdin, including any credential,
+The protocol accepts one action and an absolute `--home` path; `install`,
+`preview` and `stage` also accept `--payload`. Only `stage` accepts `--staging`.
+Creation data arrives over stdin, including any credential,
 so keys never appear in arguments, preferences, or returned receipts. Stdout is
 one JSON result. Diagnostic progress goes to stderr.
 
