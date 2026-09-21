@@ -443,8 +443,12 @@ class DocumentFeeder {
       // operational events and tool chatter; skip chats another export covers.
       const transcript = normalizeTranscript(filePath, text);
       if (transcript.action === 'skip') {
-        await this.manifest.removeFile(filePath);
-        this.logger?.info?.('Skipped session transcript', { filePath, reason: transcript.reason });
+        // Purge only a previously ingested file: removeFile rewrites the whole
+        // manifest, and a startup scan revisits thousands of skipped files.
+        if (this.manifest.getEntry(filePath)) {
+          await this.manifest.removeFile(filePath);
+          this.logger?.info?.('Purged skipped session transcript', { filePath, reason: transcript.reason });
+        }
         return;
       }
       if (transcript.action === 'ingest') text = transcript.text;
