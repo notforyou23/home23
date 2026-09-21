@@ -1,7 +1,7 @@
 /** Classifies a Host v1 home for a schema-preserving update. No package writes. */
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 import { absoluteHome, readPrivateJSON, socketRootFor } from './product-environment.js';
 import { PRODUCT_STATE_PATHS } from './product-payload.js';
 import { compareUpdateContracts } from './product-update-plan.js';
@@ -102,10 +102,15 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate } 
     const absolute = join(root, relative);
     const stat = lstatSync(absolute);
     if (stat.isSymbolicLink()) {
-      if (isProductStatePath(relative) || !manifestPaths.has(relative)) {
-        reasons.push(reason(isProductStatePath(relative) ? 'linked_state_path' : 'unknown_state',
-          isProductStatePath(relative) ? `State path ${relative} is a link. Keep the real directory in place before updating.` : `Unclassified path ${relative} is a link.`,
-          { path: relative }));
+      if (isProductStatePath(relative)) {
+        let target = '';
+        try { target = readlinkSync(absolute); }
+        catch { reasons.push(reason('state_path_unreadable', `State link ${relative} could not be read.`, { path: relative })); return; }
+        const resolved = resolve(dirname(absolute), target);
+        const insideHome = resolved === root || resolved.startsWith(root + sep);
+        if (!insideHome) reasons.push(reason('linked_state_path', `State path ${relative} points outside this home. Keep the real directory in place before updating.`, { path: relative }));
+      } else if (!manifestPaths.has(relative)) {
+        reasons.push(reason('unknown_state', `Unclassified path ${relative} is a link.`, { path: relative }));
       }
       return;
     }

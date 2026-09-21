@@ -508,7 +508,8 @@ async function openTransaction({ home, candidate, staging, admit }, dependencies
   const installed = readProductManifest(home);
   if (installed.packageId === candidateManifest.packageId) return refuse(home, [{ code: 'same_package', message: 'The candidate is the package already installed.' }]);
   const inventory = await inspectUpdateInventory(home, { installed, candidate: candidateManifest });
-  if (!inventory.complete) return refuse(home, inventory.reasons);
+  const blocking = inventory.reasons.filter(item => item.code !== 'database_busy');
+  if (blocking.length) return refuse(home, blocking);
   try { verifyProductPayload(home, { allowRuntimeState: true }); }
   catch { return refuse(home, [{ code: 'modified_installation', message: 'A declared installed file, mode, link, or layout has changed.' }]); }
   let processes;
@@ -516,7 +517,12 @@ async function openTransaction({ home, candidate, staging, admit }, dependencies
   catch (error) { return refuse(home, [{ code: error.code || 'process_inventory_unavailable', message: error.message }]); }
   const classified = classifyProcesses(processes, inventory.writers);
   if (classified.unknown.length) return deferred(home, 'unknown_writer', 'An unexpected process is using this home. Wait for it to exit before updating.');
-  if (classified.busy.length && !admit) return deferred(home, 'busy', 'This home is still working. Stage can continue, but installation waits until work is quiet or maintenance is explicitly admitted.', { desiredRunning: inventory.desiredRunning });
+  if ((classified.busy.length || inventory.reasons.some(item => item.code === 'database_busy')) && !admit) {
+    return deferred(home, 'busy', 'This home is still working. Stage can continue, but installation waits until work is quiet or maintenance is explicitly admitted.', { desiredRunning: inventory.desiredRunning });
+  }
+  if (inventory.reasons.some(item => item.code === 'database_busy') && !classified.busy.length) {
+    return deferred(home, 'database_busy', 'The coordination database is busy and no owned writer explains it. Wait, then retry. Nothing was changed.');
+  }
   if (!spaceFor(home, installed, dependencies)) return refuse(home, [{ code: 'insufficient_space', message: 'Not enough free space for the previous software, the verified checkpoint, and 64 MiB of headroom.' }]);
   const staged = stageProductPayload({ homeRoot: home, candidatePayload: candidate, staging });
   if (verifyProductPayload(staged.payloadPath).packageId !== candidateManifest.packageId) return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);

@@ -109,6 +109,20 @@ test('reviewed schema constants and writer names stay aligned with source', () =
   assert.equal(updateBlocksStart({ phase: 'rolled_back' }), false);
 });
 
+test('an in-home relative state link is preserved and an outside link is refused', async t => {
+  const fixture = homeFixture(t);
+  const directory = path.join(fixture.home, 'app/instances/milo/brain/coordinator');
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, 'insights_curated_cycle.md'), 'inside\n');
+  fs.symlinkSync('insights_curated_cycle.md', path.join(directory, 'insights_curated_LATEST.md'));
+  const allowed = await inspectUpdateInventory(fixture.home);
+  assert.equal(allowed.reasons.some(item => item.code === 'linked_state_path'), false);
+  fs.unlinkSync(path.join(directory, 'insights_curated_LATEST.md'));
+  fs.symlinkSync('/tmp/outside-insight.md', path.join(directory, 'insights_curated_LATEST.md'));
+  const refused = await inspectUpdateInventory(fixture.home);
+  assert.equal(refused.reasons.some(item => item.code === 'linked_state_path'), true);
+});
+
 test('a folded in-home path keeps its volume name with spaces', async t => {
   const root = tempRoot(t);
   const home = path.join(root, 'Casey Jones', 'home');
