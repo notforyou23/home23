@@ -230,7 +230,16 @@ export class NativeChessService {
     }).value;
   }
   getPosition(positionId:string,actor:ChessActor):ChessPosition {const row=this.db.readOne<PositionRow>('SELECT * FROM chess_positions WHERE id = ?',positionId);if(!row)throw new ChessError('not_found','position not found');this.readChannel(row.channel_id,actor);return this.position(row);}
-  listPositions(input:{channelId:string;limit?:number;cursor?:string},actor:ChessActor):{items:ChessPosition[];nextCursor?:string} {this.readChannel(input.channelId,actor);const limit=Math.min(Math.max(input.limit??20,1),100);const rows=this.db.readAll<PositionRow>('SELECT * FROM chess_positions WHERE channel_id = ? AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?',input.channelId,input.cursor??null,input.cursor??null,limit+1);const items=rows.slice(0,limit).map(row=>this.position(row));return {items,...(rows.length>limit?{nextCursor:items.at(-1)!.id}:{})};}
+  listPositions(input:{channelId?:string;limit?:number;cursor?:string},actor:ChessActor):{items:ChessPosition[];nextCursor?:string} {
+    if(input.channelId)this.readChannel(input.channelId,actor);
+    const limit=Math.min(Math.max(input.limit??20,1),100);
+    const rows=this.db.readAll<PositionRow>(`SELECT p.* FROM chess_positions p
+      JOIN channel_members m ON m.channel_id=p.channel_id AND m.principal_id=? AND m.active=1
+      WHERE (? IS NULL OR p.channel_id=?) AND (? IS NULL OR p.id < ?) ORDER BY p.id DESC LIMIT ?`,
+      actor.principalId,input.channelId??null,input.channelId??null,input.cursor??null,input.cursor??null,limit+1);
+    const items=rows.slice(0,limit).map(row=>this.position(row));
+    return {items,...(rows.length>limit?{nextCursor:items.at(-1)!.id}:{})};
+  }
   dueTurns(limit=20):ChessTurnIntent[] {const rows=this.db.readAll<IntentRow>("SELECT i.* FROM chess_turn_intents i JOIN chess_games g ON g.id=i.game_id AND g.version=i.game_version AND g.status='active' WHERE i.status IN ('queued','dispatched') ORDER BY i.created_at,i.id LIMIT ?",Math.min(Math.max(limit,1),100));return rows.map(r=>({id:r.id,gameId:r.game_id,gameVersion:r.game_version,channelId:r.channel_id,targetBotId:r.target_bot_id,runId:r.run_id,prompt:r.prompt,status:r.status as 'queued'|'dispatched',workIds:JSON.parse(r.work_ids_json??'[]'),error:r.error}));}
   settleTurn(intentId:string,input:{status:'dispatched'|'failed';workIds?:string[];error?:string}):void {
     if(!['dispatched','failed'].includes(input.status)||input.workIds?.some(v=>typeof v!=='string'||v.length>120)||(input.error?.length??0)>1000)throw new ChessError('invalid_request','invalid turn receipt');

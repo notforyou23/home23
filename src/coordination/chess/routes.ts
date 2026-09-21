@@ -75,7 +75,7 @@ export function mountChessRoutes(router: Express, application: CoordinationAppli
     const pgn = service().exportPgn(string(request.params.gameId), actor(response));
     response.set('Content-Type', 'application/x-chess-pgn; charset=utf-8').set('Cache-Control', 'private, no-store').send(pgn);
   }));
-  router.get('/api/v1/chess/positions', read, route(async (request, response) => { response.json(service().listPositions({ ...listArgs(request), channelId: string(request.query.channelId) }, actor(response))); }));
+  router.get('/api/v1/chess/positions', read, route(async (request, response) => { response.json(service().listPositions({ ...listArgs(request), channelId: optionalString(request.query.channelId) }, actor(response))); }));
   router.post('/api/v1/chess/positions', write, requireIdempotencyKey(application), json, route(async (request, response) => {
     const body = object(request.body);
     const position = service(true).savePosition(body as Parameters<ReturnType<typeof service>['savePosition']>[0], actor(response), coordinationIdempotencyKey(response));

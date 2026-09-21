@@ -205,3 +205,14 @@ test('analysis is owner-only and an absent engine reports availability without m
   await assert.rejects(f.service.analyze({fen:'ignored'},owner),(error:unknown)=>(error as {code:string}).code==='engine_unavailable');
   assert.equal(f.service.list({channelId:CHANNEL},owner).items.length,0);
 });
+
+
+test('global study library lists accessible channels and preserves explicit channel filtering', t=>{
+  const f=fixture(t);t.after(()=>f.database.close());
+  const game=f.service.create({channelId:CHANNEL,players:{white:'user_owner',black:BOT}},owner,'study-game');
+  const position=f.service.savePosition({channelId:CHANNEL,title:'Study',fen:game.fen},owner,'global-study');
+  assert.equal(f.service.listPositions({},owner).items[0]?.id,position.id);
+  assert.equal(f.service.listPositions({},bot).items[0]?.id,position.id);
+  assert.deepEqual(f.service.listPositions({},{principalId:OTHER}).items,[]);
+  assert.equal(f.service.listPositions({channelId:CHANNEL},owner).items[0]?.id,position.id);
+});
