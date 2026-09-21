@@ -139,3 +139,6 @@ published/
 
 # Coding-job worktrees (Step 29)
 .home23-worktrees/
+
+# Land-receipt ledger is private workspace state (<workspace>/verification/land-receipts.jsonl)
+state/land-receipts.jsonl

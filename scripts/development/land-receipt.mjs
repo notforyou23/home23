@@ -10,7 +10,7 @@ const SHA_PREFIX = /^[a-f0-9]{7,40}$/;
 const RELEASE_ID = /^[a-f0-9]{40}$/;
 const REPOSITORIES = new Set(['home23', 'home23-apple']);
 const SCRIPT_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const DEFAULT_LEDGER = path.join(SCRIPT_REPO_ROOT, 'state', 'land-receipts.jsonl');
+export const LEDGER_ENV = 'HOME23_LAND_RECEIPT_LEDGER';
 
 function lineError(lineNumber, message) {
   throw new Error(`Malformed land-receipt ledger line ${lineNumber}: ${message}`);
@@ -86,7 +86,7 @@ export function foldLandReceipts(records) {
   return [...byCommit.values()];
 }
 
-export function loadLandReceipts(ledgerPath = DEFAULT_LEDGER) {
+export function loadLandReceipts(ledgerPath = defaultLedgerPath()) {
   let bytes;
   try { bytes = fs.readFileSync(ledgerPath); }
   catch (error) {
@@ -96,8 +96,15 @@ export function loadLandReceipts(ledgerPath = DEFAULT_LEDGER) {
   return foldLandReceipts(parseLandReceiptLedger(bytes));
 }
 
+function assertLedgerDirectory(ledgerPath) {
+  const directory = path.dirname(ledgerPath);
+  let stat;
+  try { stat = fs.statSync(directory); }
+  catch { throw new Error(`ledger directory does not exist: ${directory}`); }
+  if (!stat.isDirectory()) throw new Error(`ledger directory is not a directory: ${directory}`);
+}
+
 function appendRecord(ledgerPath, record) {
-  fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
   let separator = '';
   if (fs.existsSync(ledgerPath)) {
     const stat = fs.lstatSync(ledgerPath);
@@ -131,6 +138,21 @@ function git(repoRoot, args) {
   }).trim();
 }
 
+// The ledger is private workspace state shared by every checkout and task
+// worktree: <workspace>/verification/land-receipts.jsonl, where <workspace>
+// contains the backend repository's main checkout. It is never tracked source.
+export function defaultLedgerPath(repoRoot = SCRIPT_REPO_ROOT, env = process.env) {
+  const override = env[LEDGER_ENV];
+  if (override) {
+    if (!path.isAbsolute(override)) throw new Error(`${LEDGER_ENV} must be an absolute path`);
+    return override;
+  }
+  let common;
+  try { common = git(repoRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir']); }
+  catch { throw new Error(`Cannot locate the ledger: ${repoRoot} is not a Git checkout`); }
+  return path.join(path.dirname(path.dirname(common)), 'verification', 'land-receipts.jsonl');
+}
+
 function fullCommit(repoRoot, commit) {
   const candidate = String(commit || '').toLowerCase();
   if (!SHA_PREFIX.test(candidate)) throw new Error(`Commit ${String(commit)} does not exist in the repository`);
@@ -157,16 +179,9 @@ function assertCommitOnBranch(repoRoot, commit, branch) {
   catch { throw new Error(`Commit ${commit} is not reachable from branch ${branch}`); }
 }
 
-function ledgerLock(ledgerPath) {
-  const repositoryRoot = path.resolve(path.dirname(ledgerPath), '..');
-  let common;
-  try { common = git(repositoryRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir']); }
-  catch { throw new Error(`Cannot locate the ledger repository for ${ledgerPath}`); }
-  return { lockPath:path.join(common, 'home23-land-receipts.lock.sqlite3') };
-}
-
 function withLedgerWriteLock(ledgerPath, operation) {
-  const { lockPath } = ledgerLock(ledgerPath);
+  assertLedgerDirectory(ledgerPath);
+  const lockPath = `${ledgerPath}.lock.sqlite3`;
   const Database = createRequire(import.meta.url)('better-sqlite3');
   const database = new Database(lockPath, { timeout: 10_000 });
   try {
@@ -193,7 +208,7 @@ function validateInputLine(value, name) {
 
 export function recordLandReceipt({
   repoRoot,
-  ledgerPath = DEFAULT_LEDGER,
+  ledgerPath = defaultLedgerPath(),
   commit,
   summary,
   verification,
@@ -236,7 +251,7 @@ function receiptCommit(receipts, commit) {
   return matches[0].commit;
 }
 
-export function recordDeployment({ ledgerPath = DEFAULT_LEDGER, commit, releaseId, now = () => new Date() }) {
+export function recordDeployment({ ledgerPath = defaultLedgerPath(), commit, releaseId, now = () => new Date() }) {
   if (!RELEASE_ID.test(releaseId || '')) throw new Error('release must be a 40-character lowercase hexadecimal releaseId');
   return withLedgerWriteLock(ledgerPath, () => {
     const receipts = loadLandReceipts(ledgerPath);
@@ -277,13 +292,14 @@ function printJson(write, value) {
 
 export function runLandReceiptCommand(argv, {
   repoRoot,
-  ledgerPath = DEFAULT_LEDGER,
+  ledgerPath,
   now = () => new Date(),
   stdout = value => process.stdout.write(value),
   stderr = value => process.stderr.write(value),
   cwd = process.cwd(),
 } = {}) {
   try {
+    ledgerPath ??= defaultLedgerPath();
     const [command, ...args] = argv;
     if (command === 'record') {
       const parsed = options(args, ['--commit', '--summary', '--verification', '--surfaces', '--recorded-by']);

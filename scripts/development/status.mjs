@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { status as releaseStatus, pointerProvenance } from '../release/status.mjs';
-import { loadLandReceipts } from './land-receipt.mjs';
+import { defaultLedgerPath, loadLandReceipts } from './land-receipt.mjs';
 
 function git(root, args, optional = false) {
   try {
@@ -70,7 +70,7 @@ function backendSource(active, repositories) {
 }
 function ledgerStatus(backend) {
   try {
-    return { available:true, undeployed:loadLandReceipts(path.join(backend, 'state/land-receipts.jsonl')).filter(receipt => !receipt.deployed), error:null };
+    return { available:true, undeployed:loadLandReceipts(defaultLedgerPath(backend)).filter(receipt => !receipt.deployed), error:null };
   } catch (error) { return { available:false, undeployed:null, error:error.message }; }
 }
 export function workspaceStatus({ backend, apple, installation, runtime = false }) {

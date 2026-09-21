@@ -27,8 +27,12 @@ function receipt(commit, overrides = {}) {
     deployedReleaseId: null, deployedAt: null, recordedBy: 'test', ...overrides };
 }
 
-function writeLedger(root, records) {
-  const file = path.join(root, 'state', 'land-receipts.jsonl');
+function ledgerFile(backend) {
+  return path.join(path.dirname(backend), 'verification', 'land-receipts.jsonl');
+}
+
+function writeLedger(backend, records) {
+  const file = ledgerFile(backend);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n') + '\n');
 }
@@ -148,7 +152,7 @@ test('reports preparation-base checkout history separately from folded undeploye
     { schemaVersion: 1, recordType: 'deployment', recordedAt: '2026-09-15T12:30:00.000Z', commit: f.backendBase, releaseId },
     receipt(later, { summary: 'Still waiting', surfaces: ['mail', 'reminders'] }),
   ]);
-  const pointerFile=path.join(house,'coordination/active-release.json'),ledgerFile=path.join(f.backend,'state/land-receipts.jsonl');
+  const pointerFile=path.join(house,'coordination/active-release.json'),ledgerFile=path.join(f.root,'verification','land-receipts.jsonl');
   const before={head:execFileSync('git',['-C',f.backend,'rev-parse','HEAD'],{encoding:'utf8'}),
     status:execFileSync('git',['-C',f.backend,'status','--porcelain=v1'],{encoding:'utf8'}),
     pointer:fs.readFileSync(pointerFile),ledger:fs.readFileSync(ledgerFile)};
@@ -227,7 +231,7 @@ test('malformed or missing ledger is unavailable rather than reported as zero', 
   assert.equal(missing.landReceipts.available, false);
   assert.match(formatStatus(missing), /ledger unavailable: .*does not exist/);
   writeLedger(f.backend, [receipt(f.backendBase)]);
-  fs.appendFileSync(path.join(f.backend, 'state/land-receipts.jsonl'), '{broken}\n');
+  fs.appendFileSync(ledgerFile(f.backend), '{broken}\n');
   const malformed = workspaceStatus(f);
   assert.equal(malformed.landReceipts.available, false);
   assert.match(formatStatus(malformed), /ledger unavailable: .*line 2/);

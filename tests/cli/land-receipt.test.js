@@ -8,6 +8,8 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 import {
+  LEDGER_ENV,
+  defaultLedgerPath,
   foldLandReceipts,
   loadLandReceipts,
   recordDeployment,
@@ -31,7 +33,8 @@ function fixture(t, repoName = 'home23') {
   execFileSync('git', ['-C', repoRoot, 'add', 'fixture.txt']);
   execFileSync('git', ['-C', repoRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'second']);
   const second = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  const ledgerPath = path.join(repoRoot, 'state', 'land-receipts.jsonl');
+  fs.mkdirSync(path.join(parent, 'verification'));
+  const ledgerPath = path.join(parent, 'verification', 'land-receipts.jsonl');
   return { parent, repoRoot, ledgerPath, first, second };
 }
 
@@ -259,4 +262,39 @@ test('concurrent CLI records serialize duplicate detection and append exactly on
   assert.equal(results.filter(result => result.status !== 0).length, 19);
   assert.equal(loadLandReceipts(f.ledgerPath).length, 1);
   assert.equal(fs.readFileSync(f.ledgerPath, 'utf8').trimEnd().split('\n').length, 1);
+});
+
+test('every checkout and task worktree resolves the one workspace ledger outside tracked source', (t) => {
+  const f = fixture(t);
+  const worktree = path.join(f.parent, 'task-worktree');
+  execFileSync('git', ['-C', f.repoRoot, 'worktree', 'add', '-q', '-b', 'task', worktree, 'HEAD']);
+  const expected = path.join(fs.realpathSync(f.parent), 'verification', 'land-receipts.jsonl');
+  assert.equal(defaultLedgerPath(f.repoRoot, {}), expected);
+  assert.equal(defaultLedgerPath(worktree, {}), expected);
+});
+
+test('CLI in a task worktree appends to the shared workspace ledger, not the worktree', async (t) => {
+  const f = fixture(t);
+  const worktree = path.join(f.parent, 'task-worktree');
+  execFileSync('git', ['-C', f.repoRoot, 'worktree', 'add', '-q', '-b', 'task', worktree, 'HEAD']);
+  const script = installCli({ repoRoot: worktree });
+  const result = await runCli(script, worktree, ['record', '--commit', f.second, '--summary', details.summary,
+    '--verification', details.verification, '--surfaces', 'fixture', '--recorded-by', 'worktree-test']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(loadLandReceipts(f.ledgerPath)[0].branch, 'task');
+  assert.equal(fs.existsSync(path.join(worktree, 'state', 'land-receipts.jsonl')), false);
+});
+
+test('record fails closed when the workspace verification directory is missing', (t) => {
+  const f = fixture(t);
+  fs.rmdirSync(path.dirname(f.ledgerPath));
+  assert.throws(() => recordLandReceipt({ repoRoot: f.repoRoot, ledgerPath: f.ledgerPath, commit: f.first, ...details }),
+    /ledger directory does not exist/);
+  assert.equal(fs.existsSync(path.dirname(f.ledgerPath)), false);
+});
+
+test('ledger override must be absolute and is used verbatim', (t) => {
+  const f = fixture(t);
+  assert.throws(() => defaultLedgerPath(f.repoRoot, { [LEDGER_ENV]: 'relative/ledger.jsonl' }), /absolute path/);
+  assert.equal(defaultLedgerPath(f.repoRoot, { [LEDGER_ENV]: '/elsewhere/ledger.jsonl' }), '/elsewhere/ledger.jsonl');
 });
