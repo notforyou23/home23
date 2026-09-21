@@ -13,19 +13,26 @@ try {
   while (args.length) {
     const key = args.shift();
     if (key === '--admit') {
-      if (action !== 'update' || options.admit) throw new Error('Usage: host.mjs preview|stage|update|update-resume|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--admit]');
+      if (action !== 'update' || options.admit) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--admit]');
       options.admit = true;
       continue;
     }
-    if (!['--home', '--payload', '--staging'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|update|update-resume|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--admit]');
+    if (!['--home', '--payload', '--staging', '--feed'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--admit]');
     options[key] = args.shift();
   }
   homeRoot = absoluteHome(options['--home']);
   if (options['--staging'] && !['stage', 'update'].includes(action)) throw new Error('--staging is only supported by stage and update.');
+  if (options['--feed'] && action !== 'check-update') throw new Error('--feed is only supported by check-update.');
   let input = {};
   if (action === 'stage' || action === 'update') input.staging = options['--staging'];
   if (options.admit) input.admit = true;
-  if (action === 'update' || action === 'update-resume') {
+  if (action === 'check-update') {
+    if (!options['--feed']) throw new Error('check-update requires --feed ABS.');
+    const { inspectReleaseFeed } = await import('../../cli/lib/product-update-feed.js');
+    const result = inspectReleaseFeed({ homeRoot, feedPath: options['--feed'] });
+    originalStdout(JSON.stringify(result) + '\n');
+    if (result.status === 'unavailable' || result.status === 'damaged' || result.status === 'incompatible') process.exitCode = 1;
+  } else if (action === 'update' || action === 'update-resume') {
     const { applyProductUpdate, resumeProductUpdate } = await import('../../cli/lib/product-update-apply.js');
     const result = action === 'update-resume'
       ? await resumeProductUpdate({ homeRoot })
