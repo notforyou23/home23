@@ -455,7 +455,9 @@ class DocumentFeeder {
       let usedCompiler = false;
       let compilerProvenance = null;
       try {
-        const compiled = this.compilerConfig.enabled === false
+        // A normalized transcript is already clean dialogue; an LLM synthesis
+        // per chat is not worth one model call per session file.
+        const compiled = this.compilerConfig.enabled === false || transcript.action === 'ingest'
           ? null
           : await this._queueCompile(text, {
               filePath,
