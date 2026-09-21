@@ -208,6 +208,7 @@
     "getConsoleRawRecord": {"method": "GET","path": "/api/v1/console/sources/{sourceId}/records/{recordId}/raw","authorityCapability": null},
     "cancelExecution": {"method": "POST","path": "/api/v1/executions/{sourceId}/cancel","authorityCapability": null},
     "steerExecution": {"method": "POST","path": "/api/v1/executions/{sourceId}/steer","authorityCapability": null},
+    "chessStatistics": {"method":"GET","path":"/api/v1/chess/stats","authorityCapability":null},
     "chessOptions": {"method":"GET","path":"/api/v1/chess/options","authorityCapability":null},
     "analyzeChess": {"method":"POST","path":"/api/v1/chess/analysis","authorityCapability":null},
     "listChessGames": {"method": "GET","path": "/api/v1/chess/games","authorityCapability": null},

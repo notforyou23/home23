@@ -133,6 +133,31 @@ export class NativeChessService {
     const rows=this.db.readAll<GameRow>(`SELECT g.* FROM chess_games g JOIN channel_members m ON m.channel_id=g.channel_id AND m.principal_id=? AND m.active=1 WHERE (? IS NULL OR g.channel_id=?) AND (? IS NULL OR g.id < ?) ORDER BY g.id DESC LIMIT ?`,actor.principalId,input.channelId??null,input.channelId??null,input.cursor??null,input.cursor??null,limit+1);
     const items=rows.slice(0,limit).map(row=>this.game(row));return {items,...(rows.length>limit?{nextCursor:items.at(-1)!.id}:{})};
   }
+  statistics(actor:ChessActor) {
+    const access = `FROM chess_games g JOIN channel_members m ON m.channel_id=g.channel_id
+      AND m.principal_id=? AND m.active=1`;
+    const counts=this.db.readAll<{status:string;n:number}>(`SELECT g.status,count(*) n ${access} GROUP BY g.status`,actor.principalId);
+    const results = `WITH results AS (
+      SELECT g.white_principal_id id,g.black_principal_id opponent,
+        CASE g.result WHEN '1-0' THEN 1 ELSE 0 END wins,
+        CASE g.result WHEN '0-1' THEN 1 ELSE 0 END losses,
+        CASE g.result WHEN '1/2-1/2' THEN 1 ELSE 0 END draws
+      ${access} WHERE g.status='finished' AND g.result<>'*'
+      UNION ALL
+      SELECT g.black_principal_id,g.white_principal_id,
+        CASE g.result WHEN '0-1' THEN 1 ELSE 0 END,
+        CASE g.result WHEN '1-0' THEN 1 ELSE 0 END,
+        CASE g.result WHEN '1/2-1/2' THEN 1 ELSE 0 END
+      ${access} WHERE g.status='finished' AND g.result<>'*'
+    )`;
+    type Record = {id:string;games:number;wins:number;losses:number;draws:number};
+    const players=this.db.readAll<Record>(`${results} SELECT id,count(*) games,sum(wins) wins,sum(losses) losses,sum(draws) draws
+      FROM results GROUP BY id ORDER BY games DESC,id`,actor.principalId,actor.principalId);
+    const opponents=this.db.readAll<Record>(`${results} SELECT opponent id,count(*) games,sum(wins) wins,sum(losses) losses,sum(draws) draws
+      FROM results WHERE id=? GROUP BY opponent ORDER BY games DESC,opponent`,actor.principalId,actor.principalId,actor.principalId);
+    const count=(status:string)=>counts.find(row=>row.status===status)?.n??0;
+    return {finishedGames:count('finished'),activeGames:count('active'),pausedGames:count('paused'),players,opponents};
+  }
   get(gameId:string,actor:ChessActor):ChessGame { const row=this.row(gameId);this.readChannel(row.channel_id,actor);return this.game(row); }
   create(input:{channelId:string;title?:string;players:{white:string;black:string};initialPgn?:string;automation?:{maxPlies:number};startPaused?:boolean},actor:ChessActor,key:string):ChessGame {
     bounded(input.channelId,'channelId',100);if (!input.players || (input.players.white===input.players.black && engineSkill(input.players.white) === undefined)) throw new ChessError('invalid_request','distinct players required');

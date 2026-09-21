@@ -125,3 +125,11 @@ The allowance limits automatic moves, not a monetary amount or bot token spend.
 It returns a best move and up to three variations without changing any game.
 An engine error produces a failed turn or an analysis error; it never silently
 substitutes another player. Retrying a failed turn remains an explicit action.
+
+The dedicated Chess workspace can omit `channelId` on games and saved-position
+lists to read across accessible channel memberships. `GET /api/v1/chess/stats`
+computes wins, losses, draws, and games played from completed persisted results,
+with a viewer-versus-opponent breakdown and all-player records. Imported finished
+games count; active and paused games do not affect outcomes. Each engine skill
+level is a distinct player. Self-play records both seats. No separate counters
+need synchronization with game writes.

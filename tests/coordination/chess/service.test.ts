@@ -216,3 +216,24 @@ test('global study library lists accessible channels and preserves explicit chan
   assert.deepEqual(f.service.listPositions({},{principalId:OTHER}).items,[]);
   assert.equal(f.service.listPositions({channelId:CHANNEL},owner).items[0]?.id,position.id);
 });
+
+test('records count completed outcomes once, distinguish opponents, exclude unfinished games and respect access', t=>{
+  const f=fixture(t);t.after(()=>f.database.close());
+  const service=new NativeChessService({database:f.database,engine:{available:()=>true,analyze:async()=>{throw Error('unused');}}});
+  const pairing={channelId:CHANNEL,players:{white:'user_owner',black:BOT}};
+  service.create({...pairing,initialPgn:'1. e4 1-0'},owner,'record-win');
+  service.create({...pairing,initialPgn:'1. e4 1-0'},owner,'record-win'); // exact retry is not another game
+  service.create({...pairing,initialPgn:'1. e4 1/2-1/2'},owner,'record-draw');
+  const engineGame=service.create({channelId:CHANNEL,players:{white:'engine_stockfish_4',black:'user_owner'}},owner,'record-engine');
+  service.control(engineGame.id,{expectedVersion:1,action:'resign'},owner,'record-resign');
+  service.create({...pairing,startPaused:true},owner,'record-paused');
+  service.create(pairing,owner,'record-active');
+  const stats=service.statistics(owner);
+  assert.equal(stats.finishedGames,3);assert.equal(stats.activeGames,1);assert.equal(stats.pausedGames,1);
+  assert.deepEqual(stats.players.find(p=>p.id==='user_owner'),{id:'user_owner',games:3,wins:1,losses:1,draws:1});
+  assert.deepEqual(stats.opponents.find(p=>p.id===BOT),{id:BOT,games:2,wins:1,losses:0,draws:1});
+  assert.deepEqual(stats.opponents.find(p=>p.id==='engine_stockfish_4'),{id:'engine_stockfish_4',games:1,wins:0,losses:1,draws:0});
+  assert.deepEqual(service.statistics({principalId:OTHER}),{finishedGames:0,activeGames:0,pausedGames:0,players:[],opponents:[]});
+  service.create({channelId:CHANNEL,players:{white:'engine_stockfish_6',black:'engine_stockfish_6'},initialPgn:'1. e4 1-0'},owner,'same-engine-record');
+  assert.deepEqual(service.statistics(owner).players.find(p=>p.id==='engine_stockfish_6'),{id:'engine_stockfish_6',games:2,wins:1,losses:1,draws:0});
+});
