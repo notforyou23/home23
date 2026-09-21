@@ -315,6 +315,25 @@ test('real startup may rewrite lifecycle fields without losing canonical identit
   assert.equal(host.desiredRunning, true);
 });
 
+test('resident writes after startup keep seed lineage and do not restore software', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const ledger = path.join(fixture.home, 'app/instances/milo/substrate/seed-01/seed-ledger.jsonl');
+  fs.mkdirSync(path.dirname(ledger), { recursive: true });
+  fs.writeFileSync(ledger, '{"seq":1}\n');
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging, admit: true }, {
+    ...quiet,
+    start: async () => {
+      fs.appendFileSync(ledger, '{"seq":2}\n');
+      fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/brain/thoughts.jsonl'), 'live\n');
+      return { ok: true, status: 'ready' };
+    },
+  });
+  assert.equal(result.status, 'committed');
+  assert.equal(result.identityPreserved, true);
+  assert.equal(fs.readFileSync(ledger, 'utf8'), '{"seq":1}\n{"seq":2}\n');
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+});
+
 test('a failed check after candidate startup fences writers and does not restore software', async t => {
   const fixture = homeFixture(t, { desiredRunning: true });
   const before = preserved(fixture.home);

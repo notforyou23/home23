@@ -141,10 +141,23 @@ function hostIdentity(home) {
   return { homeRoot: state.homeRoot, profile: state.profile, encoderRequired: state.encoderRequired === true, desiredRunning: state.desiredRunning === true };
 }
 async function sameCanonical(home, journal) {
-  const current = canonicalFrom(identityMap(home));
   const expected = journal.canonical || {};
-  const keys = Object.keys(expected);
-  if (keys.length !== Object.keys(current).length || keys.some(key => current[key] !== expected[key])) return false;
+  const checkpointRoot = join(updateDirectoryFor(home), 'checkpoint', 'state');
+  for (const [relative, digest] of Object.entries(expected)) {
+    if (relative.includes('/brain/') || relative.includes('/logs/') || relative.includes('/cron-runs/')) continue;
+    if (relative.endsWith('/checkpoints/CHECKPOINT_INDEX.json')) continue;
+    const currentPath = join(home, relative);
+    if (!exists(currentPath) || lstatSync(currentPath).isSymbolicLink()) return false;
+    if (relative.includes('/substrate/') && relative.endsWith('.jsonl')) {
+      const previousPath = join(checkpointRoot, relative);
+      if (!exists(previousPath)) return false;
+      const previous = readFileSync(previousPath);
+      const current = readFileSync(currentPath);
+      if (current.length < previous.length || !current.subarray(0, previous.length).equals(previous)) return false;
+      continue;
+    }
+    if (hashFile(currentPath) !== digest) return false;
+  }
   const host = hostIdentity(home), saved = journal.hostIdentity;
   if (!host || !saved || host.homeRoot !== saved.homeRoot || host.encoderRequired !== saved.encoderRequired) return false;
   if (JSON.stringify(host.profile) !== JSON.stringify(saved.profile)) return false;
@@ -458,12 +471,10 @@ async function finish(journal, dependencies) {
     if (rollbackReason) return rollback(rollbackReason);
     if (['recovery_required', 'rolled_back'].includes(journal.phase)) return publicResult(journal);
   }
-  if (journal.desiredRunning && journal.candidateStarted !== true) {
+  if (journal.desiredRunning && !(await busy())) {
     let startOk = false;
-    if (!(await busy())) {
-      try { startOk = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
-      catch { startOk = false; }
-    } else startOk = true;
+    try { startOk = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
+    catch { startOk = false; }
     journal = await commitPhase(file, { ...journal, candidateStarted: true, startOk, phase: 'writers_admitted' }, dependencies);
   }
   const identityPreserved = journal.writersAdmitted ? await sameCanonical(home, journal) : sameIdentity(home, journal.identity);
