@@ -591,6 +591,53 @@ function seedRecoverableHome(home, {
   return { birthBytes, resident };
 }
 
+test('moveHome and recoverInspectedHome leave only the destination root mode 0700', async t => {
+  const moveFixture = stoppedHome(t);
+  const birth = path.join(moveFixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(birth, { recursive: true });
+  fs.writeFileSync(path.join(birth, 'birth-receipt.json'), '{"seedId":"milo-seed"}\n');
+  fs.writeFileSync(path.join(birth, 'seed-ledger.jsonl'), '{"event":"birth"}\n');
+  fs.writeFileSync(path.join(moveFixture.home, '.home23-install.json'), '{"schema":"home23.product-install.v1","status":"installed","packageId":"abc","sourceCommit":"123"}\n');
+  const moveDestination = path.join(moveFixture.root, 'destination');
+  fs.mkdirSync(moveDestination, { mode: 0o755 });
+  assert.equal(fs.statSync(moveDestination).mode & 0o777, 0o755);
+  await moveHome({
+    sourceHome: moveFixture.home,
+    destinationRoot: moveDestination,
+    archivePath: moveFixture.archivePath,
+    keyPath: moveFixture.keyPath,
+  }, quiet);
+  assert.equal(fs.statSync(moveDestination).mode & 0o777, 0o700);
+
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const { payload, manifest, nodeMarker } = fixturePayload(root);
+  seedRecoverableHome(home, {
+    packageId: manifest.packageId, sourceCommit: manifest.sourceCommit,
+  });
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const archivePath = path.join(out, 'home.h23b');
+  const keyPath = path.join(out, 'home.backup-key.json');
+  const inspectionRoot = path.join(root, 'inspect');
+  fs.mkdirSync(inspectionRoot, { mode: 0o755 });
+  assert.equal(fs.statSync(inspectionRoot).mode & 0o777, 0o755);
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  fs.rmSync(home, { recursive: true, force: true });
+  fs.chmodSync(inspectionRoot, 0o755);
+  assert.equal(fs.statSync(inspectionRoot).mode & 0o777, 0o755);
+
+  const recovered = await recoverInspectedHome({
+    inspectionRoot, payloadPath: payload, archivePath, keyPath,
+  }, quiet);
+  assert.equal(recovered.ok, true);
+  assert.equal(fs.statSync(inspectionRoot).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(path.join(inspectionRoot, 'bin/node')).mode & 0o777, 0o755);
+  assert.equal(fs.readFileSync(path.join(inspectionRoot, 'bin/node'), 'utf8'), nodeMarker);
+  assert.equal(fs.statSync(path.join(inspectionRoot, 'manifest.json')).mode & 0o777, 0o644);
+});
+
 test('recoverInspectedHome installs a matching payload and status works without the original source', async t => {
   const root = tempRoot(t);
   const home = path.join(root, 'home');

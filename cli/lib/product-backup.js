@@ -979,6 +979,14 @@ function writeRecoveredInstallReceipt(destination, manifest) {
   })}\n`, { mode: 0o600 });
 }
 
+/** Native Host rejects a home root with group/other bits. Only the destination inode. */
+function secureOwnedDestinationRoot(directory) {
+  const stat = lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return;
+  if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return;
+  chmodSync(directory, 0o700);
+}
+
 function replaceHomePath(value, source, destination) {
   if (value === source || value.startsWith(`${source}${sep}`)) return `${destination}${value.slice(source.length)}`;
   return value;
@@ -1392,6 +1400,7 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
     if (rebound.homeRoot !== destination) fail('backup_recover_invalid', 'Recovery did not keep the inspected home directory.');
     if (rebound.desiredRunning === true) fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
     if (rebound.phase !== 'stopped') fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
+    secureOwnedDestinationRoot(destination);
     return {
       ok: true,
       schema: BACKUP_SCHEMA,
@@ -1503,6 +1512,7 @@ export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPa
       const packageId = await rebindDestination(source, destination);
       const identity = compareIdentity(source, destination);
       if (!readFileSync(join(source, '.home23-host.json')).equals(sourceHostBefore)) fail('backup_identity_mismatch', 'Move changed the source host record.');
+      secureOwnedDestinationRoot(destination);
       return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed: true };
     }
     let journal = readMoveJournal(source) || { schema: 'home23.move-journal.v1', sourceHome: source, destinationRoot: destination, phase: 'claimed' };
@@ -1530,6 +1540,7 @@ export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPa
     journal = { ...journal, phase: 'fenced' };
     writeMoveJournal(source, journal);
     assertWritersStopped(source, await list(source));
+    secureOwnedDestinationRoot(destination);
     return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed };
   } finally {
     lock.release();
