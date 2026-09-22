@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
-import { inspectProductInstallation, planManagedSourceAdoption, previewProductUpdate } from '../../cli/lib/product-update.js';
+import { adoptManagedSourceHome, inspectProductInstallation, planManagedSourceAdoption, previewProductUpdate } from '../../cli/lib/product-update.js';
 
 function fixture(t, { sourceCommit = 'a'.repeat(40), platform = process.platform } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-preview-')));
@@ -39,6 +39,32 @@ function tree(root) {
     }
   };
   visit(''); return entries.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function managedHome(root, { name = 'ada', recipeId = 'recipe-adopt-1' } = {}) {
+  const home = path.join(root, 'managed-source');
+  fs.mkdirSync(path.join(home, 'instances/.house/coordination'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'instances', name, 'substrate/seed-01'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'config'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'runtime'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'instances/.house/coordination/active-release.json'), '{"releaseId":"ready"}\n');
+  fs.writeFileSync(path.join(home, 'ecosystem.config.cjs'), 'module.exports = { apps: [] };\n');
+  fs.writeFileSync(path.join(home, 'config/home.yaml'), `name: ${name}\n`);
+  fs.writeFileSync(path.join(home, 'config/secrets.yaml'), 'secret: keep\n', { mode: 0o600 });
+  const birth = '{"seedId":"ada-seed"}\n';
+  const ledger = '{"event":"birth","seedId":"ada-seed"}\n';
+  fs.writeFileSync(path.join(home, 'instances', name, 'substrate/seed-01/birth-receipt.json'), birth);
+  fs.writeFileSync(path.join(home, 'instances', name, 'substrate/seed-01/seed-ledger.jsonl'), ledger);
+  fs.writeFileSync(path.join(home, 'runtime/semantic-prep.json'), JSON.stringify({
+    schema: 'home23.semantic-prep.v1', homeRoot: home, recipeId, port: 21000, workerPid: 0, cacheDir: path.join(home, 'runtime/embedder-cache'),
+  }, null, 2) + '\n');
+  fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({
+    schema: 'home23.host.v2', homeRoot: home, profile: { name }, fingerprint: 'source', ports: {
+      coordination: 21001, engine: 21002, dashboard: 21003, mcp: 21004, bridge: 21005, evobrew: 21006, observatory: 21007, embedder: 21000,
+    }, phase: 'stopped', desiredRunning: false, encoderRequired: true,
+  }, null, 2) + '\n', { mode: 0o600 });
+  return { home, birth, ledger, recipeId, name };
 }
 
 test('preview distinguishes same and different intact candidates without changing either root', t => {
@@ -192,4 +218,100 @@ test('managed and source adoption plans stay fail-closed and never write', t => 
     /Refusing to adopt an existing directory as a Home23 installation/,
   );
   assert.deepEqual(fs.readFileSync(ledgerPath), beforeLedger);
+});
+
+test('adoption refuses external preserve links and does not create the destination', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const linked = path.join(source.home, 'instances', source.name, 'substrate/seed-01/birth-receipt.json');
+  fs.rmSync(linked);
+  fs.symlinkSync('/tmp/home23-missing-birth-receipt', linked);
+  const destination = path.join(pack.root, 'destination');
+  const plan = planManagedSourceAdoption(source.home);
+  assert.equal(plan.canAdopt, false);
+  assert.ok(plan.reasons.some(item => item.code === 'external_state'));
+  assert.ok(plan.inventory.paths.some(item => item.path.endsWith('birth-receipt.json') && item.external === true));
+  const refused = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.status, 'refused');
+  assert.equal(refused.destinationCreated, false);
+  assert.equal(fs.existsSync(destination), false);
+});
+
+test('adoption installs a new product home without birth and preserves Seed and recipe', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const destination = path.join(pack.root, 'destination');
+  const beforeLedger = fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl'));
+  const beforeBirth = fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/birth-receipt.json'));
+  let birthCalls = 0;
+  const result = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  }, { afterPreserve: () => { birthCalls += 0; } });
+  assert.equal(result.ok, true);
+  assert.equal(result.homeBirth, 'not_run');
+  assert.equal(result.phase, 'stopped');
+  assert.equal(result.desiredRunning, false);
+  assert.equal(result.profile.name, source.name);
+  assert.equal(birthCalls, 0);
+  assert.equal(fs.existsSync(path.join(source.home, '.home23-install.json')), false);
+  assert.equal(fs.readFileSync(path.join(destination, 'app/instances', source.name, 'substrate/seed-01/birth-receipt.json'), 'utf8'), beforeBirth.toString());
+  assert.deepEqual(fs.readFileSync(path.join(destination, 'app/instances', source.name, 'substrate/seed-01/seed-ledger.jsonl')), beforeLedger);
+  assert.deepEqual(fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl')), beforeLedger);
+  const prep = JSON.parse(fs.readFileSync(path.join(destination, 'runtime/semantic-prep.json'), 'utf8'));
+  assert.equal(prep.recipeId, source.recipeId);
+  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
+  assert.equal(host.phase, 'stopped');
+  assert.equal(host.desiredRunning, false);
+  assert.throws(
+    () => installProductPayload({ payloadPath: pack.payload, homeRoot: source.home }),
+    /Refusing to adopt an existing directory as a Home23 installation/,
+  );
+});
+
+test('adoption resumes after install interrupt without a second birth or Seed rewrite', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root, { recipeId: 'recipe-resume-9' });
+  const destination = path.join(pack.root, 'destination');
+  const beforeLedger = fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl'));
+  const beforeBirth = fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/birth-receipt.json'));
+  let installs = 0;
+  await assert.rejects(() => adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  }, {
+    installProductPayload: (...args) => { installs += 1; return installProductPayload(...args); },
+    afterInstall: () => { throw new Error('interrupt after install'); },
+  }), /interrupt after install/);
+  assert.equal(installs, 1);
+  assert.equal(fs.existsSync(path.join(destination, '.home23-install.json')), true);
+  const journal = JSON.parse(fs.readFileSync(path.join(pack.root, `.destination.home23-adoption.json`), 'utf8'));
+  assert.equal(journal.phase, 'preserving');
+  assert.equal(journal.homeBirth, 'not_run');
+  let birthInvoked = false;
+  const resumed = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  }, {
+    installProductPayload: (...args) => { installs += 1; birthInvoked = true; return installProductPayload(...args); },
+  });
+  assert.equal(resumed.ok, true);
+  assert.equal(resumed.resumed, true);
+  assert.equal(installs, 1);
+  assert.equal(birthInvoked, false);
+  assert.equal(resumed.homeBirth, 'not_run');
+  const birthFiles = [];
+  const walk = dir => {
+    for (const name of fs.readdirSync(dir)) {
+      const file = path.join(dir, name);
+      if (fs.lstatSync(file).isDirectory()) walk(file);
+      else if (name === 'birth-receipt.json') birthFiles.push(file);
+    }
+  };
+  walk(path.join(destination, 'app/instances'));
+  assert.equal(birthFiles.length, 1);
+  assert.equal(fs.readFileSync(birthFiles[0], 'utf8'), beforeBirth.toString());
+  assert.deepEqual(fs.readFileSync(path.join(destination, 'app/instances', source.name, 'substrate/seed-01/seed-ledger.jsonl')), beforeLedger);
+  assert.deepEqual(fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl')), beforeLedger);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(destination, 'runtime/semantic-prep.json'), 'utf8')).recipeId, 'recipe-resume-9');
 });
