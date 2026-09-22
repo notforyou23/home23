@@ -6,7 +6,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { absoluteHome, choosePortPlan, privateJSON, readPrivateJSON } from './product-environment.js';
-import { assertWritersIdle, listInstalledWriters, rebindAdoptedHome } from './product-backup.js';
+import { rebindAdoptedHome } from './product-backup.js';
 import { installProductPayload, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { compareUpdateContracts, inspectStatePreservation } from './product-update-plan.js';
 
@@ -313,10 +313,36 @@ function copyableEntries(paths) {
   return paths.filter(entry => entry.mapping?.action === 'copy' && entry.type === 'file' && !entry.external);
 }
 
-function sourcePreservationSnapshot(source, paths) {
+const ADOPTION_IDENTITY_FILES = [
+  '.home23-host.json',
+  'instances/.house/coordination/active-release.json',
+  'instances/.house/source-authority.json',
+];
+
+/** Snapshot of preserved bytes, identity inputs, and mapping destinations. */
+export function sourceAdoptionSnapshot(source, paths, identity) {
   const hash = createHash('sha256');
+  hash.update(JSON.stringify({
+    profileName: identity.profile?.name || null,
+    encoderRequired: identity.encoderRequired === true,
+    fingerprint: identity.fingerprint || null,
+    identitySource: identity.source || null,
+  }));
+  hash.update('\0');
+  for (const relative of [...ADOPTION_IDENTITY_FILES].sort()) {
+    const absolute = join(source, relative);
+    if (!existsSync(absolute)) continue;
+    const stat = lstatSync(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink()) continue;
+    hash.update(relative);
+    hash.update('\0');
+    hash.update(readFileSync(absolute));
+    hash.update('\0');
+  }
   for (const entry of copyableEntries(paths).sort((a, b) => a.path.localeCompare(b.path))) {
     hash.update(entry.path);
+    hash.update('\0');
+    hash.update(entry.mapping.destination);
     hash.update('\0');
     hash.update(readFileSync(join(source, entry.path)));
     hash.update('\0');
@@ -365,8 +391,35 @@ function refuseAdoption(plan, reasons, destination) {
 }
 
 /**
+ * Product PM2 inventory and the Host Start lock do not fence a managed or source supervisor.
+ * There is no caller override. A layout that cannot be fenced refuses before mutation.
+ */
+function requireSupervisorFence(layout) {
+  if (layout === 'managed' || layout === 'source') {
+    throw Object.assign(
+      new Error('Managed/source writer state cannot be fenced by product PM2 inventory or the Host Start lock. Adoption refuses this layout until a managed supervisor fence exists.'),
+      { code: 'supervisor_fence_unavailable' },
+    );
+  }
+}
+
+function verifyAdoptionPackages(payload, destination, destinationPresent) {
+  try { verifyProductPayload(payload); }
+  catch (error) {
+    throw Object.assign(new Error(error.message || 'Candidate package failed integrity verification.'), { code: 'package_integrity_failed' });
+  }
+  if (destinationPresent && marker(destination, '.home23-install.json')) {
+    try { verifyProductPayload(destination, { allowRuntimeState: true }); }
+    catch (error) {
+      throw Object.assign(new Error(error.message || 'Destination package failed integrity verification.'), { code: 'package_integrity_failed' });
+    }
+  }
+}
+
+/**
  * Adopt a stopped managed/source home into a new product destination.
  * Never installs over the source, never runs home birth, never starts writers.
+ * Managed and source layouts refuse before mutation: no existing authority fences their writers.
  */
 export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payloadPath } = {}, dependencies = {}) {
   const source = previewRoot(sourceHome);
@@ -377,13 +430,9 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
   const plan = planManagedSourceAdoption(source);
   if (!plan.canAdopt) return refuseAdoption(plan, plan.reasons, destination);
 
-  const list = dependencies.listInstalledWriters || listInstalledWriters;
-  try {
-    const rows = await list(source);
-    assertWritersIdle(rows);
-  } catch (error) {
-    const code = error.code || 'process_inventory_unavailable';
-    return refuseAdoption(plan, [reason(code, error.message)], destination);
+  const identity = resolveAdoptionIdentity(source);
+  if (!identity.ok) {
+    return refuseAdoption(plan, [reason(identity.code, identity.message)], destination);
   }
 
   let manifest;
@@ -392,11 +441,7 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
     return refuseAdoption(plan, [reason('candidate_manifest_invalid', 'The candidate manifest is missing or invalid.')], destination);
   }
   const packageId = manifest.packageId;
-  const sourceSnapshot = sourcePreservationSnapshot(source, plan.inventory.paths);
-  const identity = resolveAdoptionIdentity(source);
-  if (!identity.ok) {
-    return refuseAdoption(plan, [reason(identity.code, identity.message)], destination);
-  }
+  const sourceSnapshot = sourceAdoptionSnapshot(source, plan.inventory.paths, identity);
 
   let journal = null;
   try { journal = readAdoptionJournal(destination); }
@@ -404,14 +449,19 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
 
   const destinationPresent = existsSync(destination);
   if (!journal && destinationPresent) throw new Error('Adoption destination already exists.');
+
   if (journal) {
     if (journal.sourceHome !== source) throw new Error('Adoption journal belongs to another source.');
     if (journal.payloadPath !== payload) throw new Error('Adoption journal belongs to another payload.');
+    try { verifyAdoptionPackages(payload, destination, destinationPresent); }
+    catch (error) {
+      return refuseAdoption(plan, [reason(error.code || 'package_integrity_failed', error.message)], destination);
+    }
     if (journal.packageId !== packageId) {
       return refuseAdoption(plan, [reason('package_identity_changed', 'The candidate package identity changed since adoption started.')], destination);
     }
     if (journal.sourceSnapshot !== sourceSnapshot) {
-      return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source bytes changed since adoption started.')], destination);
+      return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source or adoption identity inputs changed since adoption started.')], destination);
     }
     if (destinationPresent && marker(destination, '.home23-install.json')) {
       const receipt = readPrivateJSON(join(destination, '.home23-install.json'));
@@ -421,9 +471,23 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
     }
   }
 
+  const resumed = Boolean(journal && journal.phase !== 'installing');
+  if (journal?.phase === 'completed') {
+    const host = JSON.parse(readFileSync(join(destination, '.home23-host.json'), 'utf8'));
+    return {
+      ok: true, status: 'adopted', schema: ADOPTION_SCHEMA, canAdopt: true,
+      sourceHome: source, destinationRoot: destination, resumed: true, homeBirth: 'not_run',
+      desiredRunning: host.desiredRunning === true, phase: host.phase, profile: host.profile || null, plan,
+    };
+  }
+
+  try { requireSupervisorFence(plan.layout); }
+  catch (error) {
+    return refuseAdoption(plan, [reason(error.code || 'supervisor_fence_unavailable', error.message)], destination);
+  }
+
   const rebind = dependencies.rebindAdoptedHome || rebindAdoptedHome;
   const install = dependencies.installProductPayload || installProductPayload;
-  const resumed = Boolean(journal && journal.phase !== 'installing');
 
   if (!journal) {
     journal = {
@@ -445,10 +509,18 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       if (!(receipt?.schema === INSTALL_SCHEMA && receipt.status === 'installed' && receipt.packageId === packageId)) {
         return refuseAdoption(plan, [reason('receipt_mismatch', 'The destination receipt does not match the recorded package identity.')], destination);
       }
+      try { verifyProductPayload(destination, { allowRuntimeState: true }); }
+      catch (error) {
+        return refuseAdoption(plan, [reason('package_integrity_failed', error.message)], destination);
+      }
     } else {
       journal = { ...journal, phase: 'installing', packageId, sourceSnapshot };
       writeAdoptionJournal(destination, journal);
       install({ payloadPath: payload, homeRoot: destination });
+      try { verifyProductPayload(destination, { allowRuntimeState: true }); }
+      catch (error) {
+        return refuseAdoption(plan, [reason('package_integrity_failed', error.message)], destination);
+      }
     }
     journal = { ...journal, phase: 'preserving', packageId, sourceSnapshot };
     writeAdoptionJournal(destination, journal);
@@ -456,11 +528,18 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
   }
 
   if (!['rebind', 'completed'].includes(journal.phase)) {
-    const currentSnapshot = sourcePreservationSnapshot(source, plan.inventory.paths);
+    const currentSnapshot = sourceAdoptionSnapshot(source, plan.inventory.paths, identity);
     if (currentSnapshot !== journal.sourceSnapshot) {
-      return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source bytes changed before preservation completed.')], destination);
+      return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source or adoption identity inputs changed before preservation completed.')], destination);
     }
+    if (dependencies.beforePreserveCopy) await dependencies.beforePreserveCopy({ source, destination, journal });
     copyPreservedState(source, destination, plan.inventory.paths);
+    if (dependencies.afterPreserveCopy) await dependencies.afterPreserveCopy({ source, destination, journal });
+    const afterIdentity = resolveAdoptionIdentity(source);
+    if (!afterIdentity.ok
+      || sourceAdoptionSnapshot(source, plan.inventory.paths, afterIdentity) !== journal.sourceSnapshot) {
+      return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source or adoption identity inputs changed during preservation copy.')], destination);
+    }
     await writeStoppedHost(destination, identity);
     journal = { ...journal, phase: 'rebind' };
     writeAdoptionJournal(destination, journal);
@@ -468,6 +547,10 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
   }
 
   if (journal.phase !== 'completed') {
+    try { verifyProductPayload(payload); }
+    catch (error) {
+      return refuseAdoption(plan, [reason('package_integrity_failed', error.message)], destination);
+    }
     await rebind(source, destination);
     const host = JSON.parse(readFileSync(join(destination, '.home23-host.json'), 'utf8'));
     host.desiredRunning = false;

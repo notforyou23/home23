@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
-import { adoptManagedSourceHome, inspectProductInstallation, planManagedSourceAdoption, previewProductUpdate } from '../../cli/lib/product-update.js';
+import { adoptManagedSourceHome, inspectProductInstallation, planManagedSourceAdoption, previewProductUpdate, resolveAdoptionIdentity, sourceAdoptionSnapshot } from '../../cli/lib/product-update.js';
 
 function fixture(t, { sourceCommit = 'a'.repeat(40), platform = process.platform } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-preview-')));
@@ -263,121 +263,109 @@ test('adoption refuses external preserve links and does not create the destinati
   assert.equal(fs.existsSync(destination), false);
 });
 
-test('adoption installs a new product home without birth and preserves Seed and recipe', async t => {
+test('managed/source adoption refuses product PM2 inventory as a supervisor fence', async t => {
   const pack = fixture(t);
-  const source = managedHome(pack.root);
+  const source = managedHome(pack.root, { writers: 'idle' });
   const destination = path.join(pack.root, 'destination');
-  const beforeLedger = fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl'));
-  const beforeBirth = fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/birth-receipt.json'));
-  let birthCalls = 0;
-  const result = await adoptManagedSourceHome({
+  const refused = await adoptManagedSourceHome({
     sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
-  }, { afterPreserve: () => { birthCalls += 0; } });
-  assert.equal(result.ok, true);
-  assert.equal(result.homeBirth, 'not_run');
-  assert.equal(result.phase, 'stopped');
-  assert.equal(result.desiredRunning, false);
-  assert.equal(result.profile.name, source.name);
-  assert.equal(birthCalls, 0);
-  assert.equal(fs.existsSync(path.join(source.home, '.home23-install.json')), false);
-  assert.equal(fs.readFileSync(path.join(destination, 'app/instances', source.name, 'substrate/seed-01/birth-receipt.json'), 'utf8'), beforeBirth.toString());
-  assert.deepEqual(fs.readFileSync(path.join(destination, 'app/instances', source.name, 'substrate/seed-01/seed-ledger.jsonl')), beforeLedger);
-  assert.deepEqual(fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl')), beforeLedger);
-  const prep = JSON.parse(fs.readFileSync(path.join(destination, 'runtime/semantic-prep.json'), 'utf8'));
-  assert.equal(prep.recipeId, source.recipeId);
-  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
-  assert.equal(host.phase, 'stopped');
-  assert.equal(host.desiredRunning, false);
+  });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.status, 'refused');
+  assert.ok(refused.reasons.some(item => item.code === 'supervisor_fence_unavailable'));
+  assert.equal(fs.existsSync(destination), false);
+  assert.equal(fs.existsSync(path.join(pack.root, '.destination.home23-adoption.json')), false);
   assert.throws(
     () => installProductPayload({ payloadPath: pack.payload, homeRoot: source.home }),
     /Refusing to adopt an existing directory as a Home23 installation/,
   );
 });
 
-test('adoption resumes after install interrupt without a second birth or Seed rewrite', async t => {
-  const pack = fixture(t);
-  const source = managedHome(pack.root, { recipeId: 'recipe-resume-9' });
-  const destination = path.join(pack.root, 'destination');
-  const beforeLedger = fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl'));
-  const beforeBirth = fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/birth-receipt.json'));
-  let installs = 0;
-  await assert.rejects(() => adoptManagedSourceHome({
-    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
-  }, {
-    installProductPayload: (...args) => { installs += 1; return installProductPayload(...args); },
-    afterInstall: () => { throw new Error('interrupt after install'); },
-  }), /interrupt after install/);
-  assert.equal(installs, 1);
-  assert.equal(fs.existsSync(path.join(destination, '.home23-install.json')), true);
-  const journal = JSON.parse(fs.readFileSync(path.join(pack.root, `.destination.home23-adoption.json`), 'utf8'));
-  assert.equal(journal.phase, 'preserving');
-  assert.equal(journal.homeBirth, 'not_run');
-  let birthInvoked = false;
-  const resumed = await adoptManagedSourceHome({
-    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
-  }, {
-    installProductPayload: (...args) => { installs += 1; birthInvoked = true; return installProductPayload(...args); },
-  });
-  assert.equal(resumed.ok, true);
-  assert.equal(resumed.resumed, true);
-  assert.equal(installs, 1);
-  assert.equal(birthInvoked, false);
-  assert.equal(resumed.homeBirth, 'not_run');
-  const birthFiles = [];
-  const walk = dir => {
-    for (const name of fs.readdirSync(dir)) {
-      const file = path.join(dir, name);
-      if (fs.lstatSync(file).isDirectory()) walk(file);
-      else if (name === 'birth-receipt.json') birthFiles.push(file);
-    }
-  };
-  walk(path.join(destination, 'app/instances'));
-  assert.equal(birthFiles.length, 1);
-  assert.equal(fs.readFileSync(birthFiles[0], 'utf8'), beforeBirth.toString());
-  assert.deepEqual(fs.readFileSync(path.join(destination, 'app/instances', source.name, 'substrate/seed-01/seed-ledger.jsonl')), beforeLedger);
-  assert.deepEqual(fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl')), beforeLedger);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(destination, 'runtime/semantic-prep.json'), 'utf8')).recipeId, 'recipe-resume-9');
-});
-
-test('adoption refuses busy writers before creating the destination', async t => {
-  const pack = fixture(t);
-  const source = managedHome(pack.root, { writers: 'busy' });
-  const destination = path.join(pack.root, 'destination');
-  const refused = await adoptManagedSourceHome({
-    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
-  });
-  assert.equal(refused.ok, false);
-  assert.ok(refused.reasons.some(item => item.code === 'writers_active'));
-  assert.equal(fs.existsSync(destination), false);
-  assert.equal(fs.existsSync(path.join(pack.root, '.destination.home23-adoption.json')), false);
-});
-
-test('adoption refuses missing process inventory before creating the destination', async t => {
+test('a writer restart cannot finish adoption because the layout is refused before copy', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root);
-  fs.rmSync(path.join(source.home, 'bin/node'));
-  const destination = path.join(pack.root, 'no-supervisor-dest');
+  const destination = path.join(pack.root, 'destination');
+  const ledger = path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl');
+  const beforeLedger = fs.readFileSync(ledger);
   const refused = await adoptManagedSourceHome({
     sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
   });
   assert.equal(refused.ok, false);
-  assert.ok(refused.reasons.some(item => item.code === 'process_inventory_unavailable'));
+  assert.notEqual(refused.status, 'adopted');
+  assert.ok(refused.reasons.some(item => item.code === 'supervisor_fence_unavailable'));
   assert.equal(fs.existsSync(destination), false);
+  assert.equal(fs.existsSync(path.join(pack.root, '.destination.home23-adoption.json')), false);
+  assert.deepEqual(fs.readFileSync(ledger), beforeLedger);
+  assert.equal(fs.existsSync(path.join(source.home, '.home23-install.json')), false);
 });
 
-test('adoption without a Host record uses exactly one active-release resident', async t => {
+function interruptedJournal(sourceHome, destination, payloadPath) {
+  const source = fs.realpathSync(sourceHome);
+  const payload = fs.realpathSync(payloadPath);
+  const plan = planManagedSourceAdoption(source);
+  const identity = resolveAdoptionIdentity(source);
+  const snapshot = sourceAdoptionSnapshot(source, plan.inventory.paths, identity);
+  const manifest = JSON.parse(fs.readFileSync(path.join(payload, 'manifest.json'), 'utf8'));
+  const journal = {
+    schema: 'home23.managed-source-adoption-journal.v1',
+    sourceHome: source,
+    destinationRoot: path.resolve(destination),
+    payloadPath: payload,
+    packageId: manifest.packageId,
+    sourceSnapshot: snapshot,
+    phase: 'preserving',
+    homeBirth: 'not_run',
+  };
+  fs.writeFileSync(path.join(path.dirname(destination), `.${path.basename(destination)}.home23-adoption.json`), `${JSON.stringify(journal, null, 2)}\n`);
+  return journal;
+}
+
+test('resume refuses candidate byte substitution without packageId change', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const destination = path.join(pack.root, 'destination');
+  interruptedJournal(source.home, destination, pack.payload);
+  fs.appendFileSync(path.join(pack.payload, 'app/cli/home23.js'), 'substituted-runtime-bytes');
+  const refused = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  });
+  assert.equal(refused.ok, false);
+  assert.notEqual(refused.status, 'adopted');
+  assert.ok(refused.reasons.some(item => item.code === 'package_integrity_failed'));
+});
+
+test('resume refuses when host or release identity inputs change', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const destination = path.join(pack.root, 'destination');
+  interruptedJournal(source.home, destination, pack.payload);
+  const hostPath = path.join(source.home, '.home23-host.json');
+  const host = JSON.parse(fs.readFileSync(hostPath, 'utf8'));
+  host.fingerprint = 'redirected-identity';
+  fs.writeFileSync(hostPath, `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
+  const refused = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  });
+  assert.equal(refused.ok, false);
+  assert.notEqual(refused.status, 'adopted');
+  assert.ok(refused.reasons.some(item => item.code === 'source_identity_changed'));
+  assert.equal(fs.existsSync(path.join(destination, '.home23-host.json')), false);
+});
+
+test('adoption without a Host record plans one resident and still refuses the unfenced layout', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: { release: true } } });
   assert.equal(fs.existsSync(path.join(source.home, '.home23-host.json')), false);
+  const plan = planManagedSourceAdoption(source.home);
+  assert.equal(plan.canAdopt, true);
+  assert.equal(plan.identity.profile.name, 'ada');
   const destination = path.join(pack.root, 'destination');
-  const result = await adoptManagedSourceHome({
+  const refused = await adoptManagedSourceHome({
     sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
   });
-  assert.equal(result.ok, true);
-  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
-  assert.equal(host.profile.name, 'ada');
-  assert.equal(Object.hasOwn(host, 'fingerprint'), false);
-  assert.equal(host.phase, 'stopped');
+  assert.equal(refused.ok, false);
+  assert.ok(refused.reasons.some(item => item.code === 'supervisor_fence_unavailable'));
+  assert.equal(fs.existsSync(destination), false);
 
   const multi = managedHome(path.join(pack.root, 'multi'), {
     hostRecord: false, name: 'ada', residents: { ada: {}, forrest: {} },
@@ -393,7 +381,7 @@ test('adoption without a Host record uses exactly one active-release resident', 
   assert.equal(fs.existsSync(multiDest), false);
 });
 
-test('adoption plans refuse unmapped root preserve paths', t => {
+test('adoption plans map root preserve paths explicitly', t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-unmap-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, 'home');
@@ -415,9 +403,7 @@ test('interrupted adoption refuses when preserved source bytes change', async t 
   const pack = fixture(t);
   const source = managedHome(pack.root);
   const destination = path.join(pack.root, 'destination');
-  await assert.rejects(() => adoptManagedSourceHome({
-    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
-  }, { afterInstall: () => { throw new Error('interrupt after install'); } }), /interrupt after install/);
+  interruptedJournal(source.home, destination, pack.payload);
   const ledger = path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl');
   fs.appendFileSync(ledger, '{"event":"edited-after-interrupt"}\n');
   const refused = await adoptManagedSourceHome({
