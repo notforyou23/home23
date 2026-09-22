@@ -917,6 +917,11 @@ async function rebindDestination(source, destination) {
   return rebound.packageId || null;
 }
 
+/** Port/path rebind for an adopted destination. Does not copy state or start writers. */
+export async function rebindAdoptedHome(source, destination) {
+  return rebindDestination(source, destination);
+}
+
 function copyInstalledFile(from, to, mode, lock) {
   mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
   const temporary = `${to}.${randomUUID()}.next`;
