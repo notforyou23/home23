@@ -163,11 +163,22 @@
       </p>
       <p class="notice">
         Public downloads are unavailable. There is no published download URL,
-        store listing, consumer release package, or public update feed to fetch
-        from this page. The September&nbsp;22 06:44 stub package (fixture
-        candidate with stub Node) is not a release. Do not treat this preview as
-        proof that Developer&nbsp;ID signing, notarization, TestFlight, or an
-        existing owner’s home is ready for distribution.
+        store listing, or public update feed on this page. A local engineering
+        candidate exists only on disk (ad-hoc signed, not notarized, not
+        published, not installed): package
+        <code>72a996151605ab2580eb6060a62abdf762d3246f5502cff1c19cce73bfaa01a5</code>,
+        archive
+        <code>Home23-arm64-72a996151605-c4fdd5a4bbf6.zip</code>
+        (sha256
+        <code>e4fd3a2da590123db4049a61422b4ba366594ac78c8d9f4dec9698e863d0c148</code>,
+        448010070 bytes), backend
+        <code>98aa10a0</code>, Apple
+        <code>c4fdd5a4</code>. Host
+        <code>com.home23.host</code> 0.1 (14+); Mac client
+        <code>com.regina6.home23.mac</code> 2.0 build 140 (27+); combined
+        minimum macOS 27.0 arm64. An ad-hoc signature is not consumer
+        distribution. Do not treat this preview as Developer&nbsp;ID,
+        notarization, TestFlight, or owner-home readiness.
       </p>
     </header>
 
@@ -194,11 +205,11 @@
         Host being running, awake, and reachable.
       </p>
       <p>
-        Engineering assembly (not performed from this page) builds a product
-        payload with <code>node scripts/product/package.mjs</code>, then a Host
-        app with <code>home23-apple/scripts/build-home23-host.mjs</code>. See
-        <code>SIGNING.md</code> for the owner approval sequence before any of
-        that becomes a public download.
+        Local assembly of Host + Mac client (not performed from this page) uses
+        <code>node scripts/product/assemble-mac-release.mjs</code> against a
+        verified Darwin payload and a pinned Apple checkout. See
+        <code>SIGNING.md</code> for that command, the current local candidate
+        path, and the owner actions still required before any public download.
       </p>
       <p class="boundary">
         Intended delivery is a signed, notarized Host download from a public
@@ -273,11 +284,11 @@
         Development Check can pass a local <code>--trust-key</code> only when the
         dispatched runtime’s
         <code>app/scripts/product/host-command-contract.json</code> lists
-        <code>check-update</code> in <code>trustKeyActions</code> (Apple
-        <code>243147d</code>, backend <code>8903df6c</code>). A missing or older
-        contract omits the flag. That verifies a development Ed25519 signature
-        over the release <code>packageId</code>; it is not public publisher trust.
-        Production trust claims and bad signatures are refused.
+        <code>check-update</code> in <code>trustKeyActions</code>. A missing or
+        older contract omits the flag. That verifies a development Ed25519
+        signature over the release <code>packageId</code>; it is not public
+        publisher trust and is not the same as this ad-hoc Mac ZIP. Production
+        trust claims and bad signatures are refused.
         <code>canInstall</code> stays false on Check.
       </p>
       <p>
@@ -288,11 +299,9 @@
         controllers that accept those actions.
       </p>
       <p class="boundary">
-        There is no public update feed. The 06:44 stub package is fixture-only
-        and must not be installed as a release. A runnable install may be in
-        progress elsewhere; do not treat earlier ~33–35&nbsp;minute preview
-        timings as the measured wall time for that trial. Record that trial’s
-        own elapsed time when it finishes.
+        There is no public update feed. Package
+        <code>72a996151605…</code> is a local engineering candidate only; it is
+        not published for Check/Download as a consumer release.
       </p>
     </section>
 

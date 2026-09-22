@@ -4,6 +4,31 @@ Home23 Host and the Mac conversation client are separate applications, delivered
 in one folder. Local assembly is engineering work; publication, Apple submission,
 and changes to an owner's installed apps are separate actions. This document does
 not introduce an additional approval gate for already-authorized local builds.
+An ad-hoc or development signature is not consumer distribution.
+
+## Current local engineering candidate (not published)
+
+Verified against `assembly-receipt.json` only; do not rebuild from this note.
+
+| Field | Value |
+|---|---|
+| Status | `local-engineering-candidate` |
+| Archive | `…/mac-release-recovery-20260922/assembly/Home23-arm64-72a996151605-c4fdd5a4bbf6.zip` |
+| sha256 | `e4fd3a2da590123db4049a61422b4ba366594ac78c8d9f4dec9698e863d0c148` |
+| Bytes | 448010070 |
+| Backend | `98aa10a0a956852519ee9d2d61f2f9af0b24e1c1` |
+| Apple | `c4fdd5a4bbf6722f1a5bcf21177c766a9aae47c3` |
+| Runtime `packageId` | `72a996151605ab2580eb6060a62abdf762d3246f5502cff1c19cce73bfaa01a5` |
+| Host | `com.home23.host` 0.1 build 1, macOS 14.0+, arm64 |
+| Mac client | `com.regina6.home23.mac` 2.0 build 140, macOS 27.0+, arm64 |
+| Combined minimum | macOS 27.0 arm64 |
+| Signing | ad-hoc; client sandbox true; APNs / time-sensitive entitlements omitted |
+| Notarized / published / installed | false / false / false |
+
+Receipt path:
+`…/mac-release-recovery-20260922/assembly/assembly-receipt.json`.
+Full verification root prefix:
+`/Volumes/Casey Jones/Home23-local-disk-relief/2026-09-09/verified-relocations/Users__jtr___JTR23___development__verification/owned-embedder-review-20260911/`.
 
 ## Build a local download
 
@@ -72,17 +97,25 @@ A development trust key is only for an isolated development feed. It is never
 production publisher trust. Do not invent a new signature schema or substitute
 an archive checksum for publisher authentication.
 
-## Remaining external actions
+## Remaining owner actions to publish (stop here)
 
-Prepare exact artifacts and request only authority that is still missing:
+These require the owner. Do not run them from this documentation lane:
 
-- Developer ID identities and the agreed signing operation for Host and client;
-- notarization submission and clean-Mac Gatekeeper acceptance;
-- the public domain/feed/artifact destination and production feed signing key;
-- iPhone build upload and TestFlight distribution, separately from Mac release.
+1. Authorize **Developer ID Application** signing of Host (`com.home23.host`) and
+   the Mac client (`com.regina6.home23.mac`) for this frozen release set (or a
+   deliberately rebuilt successor), following the integrity order above—not
+   ad-hoc, not Apple Development.
+2. Authorize **notarization** (and stapling / container attachment) and confirm
+   Gatekeeper on a clean supported Mac.
+3. Choose and publish the **public domain, download URL, and authenticated
+   release feed**, including the production feed signing key (distinct from any
+   local development trust-key). Publish the approved archive, checksum,
+   descriptors, and notes together.
+4. Authorize **iPhone TestFlight** (build upload and invites) separately; a Mac
+   ZIP does not create TestFlight availability.
+5. Authorize any **install or replacement** of apps on an owner machine; this
+   candidate’s `installed: false` must stay false until that happens.
 
-Keep existing bundle and Keychain identities. The Mac client is
-`com.regina6.home23.mac`; Host is `com.home23.host`. iPhone TestFlight does not
-become available because a Mac build exists. Public downloads remain unavailable
-until publication actually succeeds. Do not bypass macOS security prompts as a
+Keep existing bundle and Keychain identities. Public downloads remain unavailable
+until steps 1–3 actually succeed. Do not bypass macOS security prompts as a
 substitute for distribution acceptance.
