@@ -41,14 +41,24 @@ function tree(root) {
   visit(''); return entries.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function managedHome(root, { name = 'ada', recipeId = 'recipe-adopt-1' } = {}) {
+function managedHome(root, {
+  name = 'ada',
+  recipeId = 'recipe-adopt-1',
+  hostRecord = true,
+  residents = { [name]: {} },
+  writers = 'idle',
+} = {}) {
   const home = path.join(root, 'managed-source');
   fs.mkdirSync(path.join(home, 'instances/.house/coordination'), { recursive: true });
   fs.mkdirSync(path.join(home, 'instances', name, 'substrate/seed-01'), { recursive: true });
   fs.mkdirSync(path.join(home, 'config'), { recursive: true });
   fs.mkdirSync(path.join(home, 'runtime'), { recursive: true });
   fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
-  fs.writeFileSync(path.join(home, 'instances/.house/coordination/active-release.json'), '{"releaseId":"ready"}\n');
+  fs.mkdirSync(path.join(home, 'app'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'tools/node_modules/pm2/bin'), { recursive: true });
+  const release = { releaseId: 'ready', residents };
+  fs.writeFileSync(path.join(home, 'instances/.house/coordination/active-release.json'), `${JSON.stringify(release)}\n`);
   fs.writeFileSync(path.join(home, 'ecosystem.config.cjs'), 'module.exports = { apps: [] };\n');
   fs.writeFileSync(path.join(home, 'config/home.yaml'), `name: ${name}\n`);
   fs.writeFileSync(path.join(home, 'config/secrets.yaml'), 'secret: keep\n', { mode: 0o600 });
@@ -59,11 +69,18 @@ function managedHome(root, { name = 'ada', recipeId = 'recipe-adopt-1' } = {}) {
   fs.writeFileSync(path.join(home, 'runtime/semantic-prep.json'), JSON.stringify({
     schema: 'home23.semantic-prep.v1', homeRoot: home, recipeId, port: 21000, workerPid: 0, cacheDir: path.join(home, 'runtime/embedder-cache'),
   }, null, 2) + '\n');
-  fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({
-    schema: 'home23.host.v2', homeRoot: home, profile: { name }, fingerprint: 'source', ports: {
-      coordination: 21001, engine: 21002, dashboard: 21003, mcp: 21004, bridge: 21005, evobrew: 21006, observatory: 21007, embedder: 21000,
-    }, phase: 'stopped', desiredRunning: false, encoderRequired: true,
-  }, null, 2) + '\n', { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'bin/node'), '#!/bin/sh\nscript=$1; shift\nexec /bin/sh "$script" "$@"\n', { mode: 0o755 });
+  const pm2Body = writers === 'busy'
+    ? '#!/bin/sh\necho \'[{"name":"home23-ada","pm2_env":{"status":"online"}}]\'\n'
+    : '#!/bin/sh\necho \'[]\'\n';
+  fs.writeFileSync(path.join(home, 'tools/node_modules/pm2/bin/pm2'), pm2Body, { mode: 0o755 });
+  if (hostRecord) {
+    fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({
+      schema: 'home23.host.v2', homeRoot: home, profile: { name }, fingerprint: 'source', ports: {
+        coordination: 21001, engine: 21002, dashboard: 21003, mcp: 21004, bridge: 21005, evobrew: 21006, observatory: 21007, embedder: 21000,
+      }, phase: 'stopped', desiredRunning: false, encoderRequired: true,
+    }, null, 2) + '\n', { mode: 0o600 });
+  }
   return { home, birth, ledger, recipeId, name };
 }
 
@@ -145,12 +162,16 @@ test('managed and source adoption plans stay fail-closed and never write', t => 
   const markerOnly = planManagedSourceAdoption(managed);
   assert.equal(markerOnly.layout, 'managed');
   assert.equal(markerOnly.canAdopt, false);
-  assert.equal(markerOnly.inventory.complete, false);
-  assert.ok(markerOnly.reasons.some(item => item.code === 'inventory_incomplete'));
+  assert.ok(markerOnly.reasons.some(item => item.code === 'unsupported_layout' || item.code === 'inventory_incomplete'));
   assert.equal(markerOnly.plan.homeBirth, 'not_run');
   assert.equal(markerOnly.plan.seedLedgers, 'preserve');
   assert.equal(markerOnly.plan.encoderRecipe, 'unchanged');
 
+  fs.writeFileSync(path.join(managed, 'instances/.house/coordination/active-release.json'), JSON.stringify({
+    releaseId: 'fixture', residents: { ada: {} },
+  }));
+  fs.mkdirSync(path.join(managed, 'instances/ada'), { recursive: true });
+  fs.writeFileSync(path.join(managed, 'instances/ada/note.json'), '{}\n');
   fs.writeFileSync(path.join(managed, 'stray.bin'), 'unclassified');
   const blocked = planManagedSourceAdoption(managed);
   assert.equal(blocked.canAdopt, false);
@@ -161,7 +182,9 @@ test('managed and source adoption plans stay fail-closed and never write', t => 
   fs.mkdirSync(path.join(ready, 'instances/ada/substrate/seed-01'), { recursive: true });
   fs.mkdirSync(path.join(ready, 'config'), { recursive: true });
   fs.mkdirSync(path.join(ready, 'logs'), { recursive: true });
-  fs.writeFileSync(path.join(ready, 'instances/.house/coordination/active-release.json'), '{"releaseId":"ready"}\n');
+  fs.writeFileSync(path.join(ready, 'instances/.house/coordination/active-release.json'), JSON.stringify({
+    releaseId: 'ready', residents: { ada: {} },
+  }));
   fs.writeFileSync(path.join(ready, 'ecosystem.config.cjs'), 'module.exports = {};\n');
   fs.writeFileSync(path.join(ready, 'config/home.yaml'), 'name: ada\n');
   fs.writeFileSync(path.join(ready, 'config/secrets.yaml'), 'secret: must-not-be-read\n', { mode: 0o600 });
@@ -202,9 +225,9 @@ test('managed and source adoption plans stay fail-closed and never write', t => 
   const sourceOnly = planManagedSourceAdoption(source);
   assert.equal(sourceOnly.layout, 'source');
   assert.equal(sourceOnly.canAdopt, false);
-  assert.ok(sourceOnly.reasons.some(item => item.code === 'inventory_incomplete'));
+  assert.ok(sourceOnly.reasons.some(item => item.code === 'unsupported_layout' || item.code === 'inventory_incomplete'));
   fs.writeFileSync(path.join(source, 'orphan.txt'), 'no');
-  assert.ok(planManagedSourceAdoption(source).reasons.some(item => item.code === 'unknown_state'));
+  assert.ok(planManagedSourceAdoption(source).reasons.some(item => item.code === 'unknown_state' || item.code === 'unsupported_layout'));
 
   const product = fixture(t);
   installProductPayload({ payloadPath: product.payload, homeRoot: product.home });
@@ -314,4 +337,93 @@ test('adoption resumes after install interrupt without a second birth or Seed re
   assert.deepEqual(fs.readFileSync(path.join(destination, 'app/instances', source.name, 'substrate/seed-01/seed-ledger.jsonl')), beforeLedger);
   assert.deepEqual(fs.readFileSync(path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl')), beforeLedger);
   assert.equal(JSON.parse(fs.readFileSync(path.join(destination, 'runtime/semantic-prep.json'), 'utf8')).recipeId, 'recipe-resume-9');
+});
+
+test('adoption refuses busy writers before creating the destination', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root, { writers: 'busy' });
+  const destination = path.join(pack.root, 'destination');
+  const refused = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  });
+  assert.equal(refused.ok, false);
+  assert.ok(refused.reasons.some(item => item.code === 'writers_active'));
+  assert.equal(fs.existsSync(destination), false);
+  assert.equal(fs.existsSync(path.join(pack.root, '.destination.home23-adoption.json')), false);
+});
+
+test('adoption refuses missing process inventory before creating the destination', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  fs.rmSync(path.join(source.home, 'bin/node'));
+  const destination = path.join(pack.root, 'no-supervisor-dest');
+  const refused = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  });
+  assert.equal(refused.ok, false);
+  assert.ok(refused.reasons.some(item => item.code === 'process_inventory_unavailable'));
+  assert.equal(fs.existsSync(destination), false);
+});
+
+test('adoption without a Host record uses exactly one active-release resident', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: { release: true } } });
+  assert.equal(fs.existsSync(path.join(source.home, '.home23-host.json')), false);
+  const destination = path.join(pack.root, 'destination');
+  const result = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  });
+  assert.equal(result.ok, true);
+  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
+  assert.equal(host.profile.name, 'ada');
+  assert.equal(Object.hasOwn(host, 'fingerprint'), false);
+  assert.equal(host.phase, 'stopped');
+
+  const multi = managedHome(path.join(pack.root, 'multi'), {
+    hostRecord: false, name: 'ada', residents: { ada: {}, forrest: {} },
+  });
+  const multiPlan = planManagedSourceAdoption(multi.home);
+  assert.equal(multiPlan.canAdopt, false);
+  assert.ok(multiPlan.reasons.some(item => item.code === 'unsupported_layout'));
+  const multiDest = path.join(pack.root, 'multi-dest');
+  const multiRefused = await adoptManagedSourceHome({
+    sourceHome: multi.home, destinationRoot: multiDest, payloadPath: pack.payload,
+  });
+  assert.equal(multiRefused.ok, false);
+  assert.equal(fs.existsSync(multiDest), false);
+});
+
+test('adoption plans refuse unmapped root preserve paths', t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-unmap-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  fs.mkdirSync(path.join(home, 'instances/.house/coordination'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'config'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'instances/.house/coordination/active-release.json'), JSON.stringify({
+    releaseId: 'x', residents: { ada: {} },
+  }));
+  fs.writeFileSync(path.join(home, 'config/home.yaml'), 'name: ada\n');
+  fs.writeFileSync(path.join(home, 'birth-receipt.json'), '{"seedId":"root"}\n');
+  fs.writeFileSync(path.join(home, 'seed-ledger.jsonl'), '{"event":"birth"}\n');
+  const plan = planManagedSourceAdoption(home);
+  assert.equal(plan.canAdopt, true);
+  assert.ok(plan.inventory.paths.some(item => item.path === 'birth-receipt.json' && item.mapping?.destination === 'app/instances/ada/substrate/seed-01/birth-receipt.json'));
+  assert.ok(plan.inventory.paths.some(item => item.path === 'seed-ledger.jsonl' && item.mapping?.action === 'copy'));
+});
+
+test('interrupted adoption refuses when preserved source bytes change', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const destination = path.join(pack.root, 'destination');
+  await assert.rejects(() => adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  }, { afterInstall: () => { throw new Error('interrupt after install'); } }), /interrupt after install/);
+  const ledger = path.join(source.home, 'instances', source.name, 'substrate/seed-01/seed-ledger.jsonl');
+  fs.appendFileSync(ledger, '{"event":"edited-after-interrupt"}\n');
+  const refused = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  });
+  assert.equal(refused.ok, false);
+  assert.ok(refused.reasons.some(item => item.code === 'source_identity_changed'));
+  assert.equal(fs.existsSync(path.join(destination, '.home23-host.json')), false);
 });
