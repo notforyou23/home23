@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHomeBackup, inspectHomeBackup, moveHome, readAuthenticatedBackupHeader, readMoveFence, recoverInspectedHome } from '../../cli/lib/product-backup.js';
+import {
+  createHomeBackup, inspectHomeBackup, moveHome, readAuthenticatedBackupHeader, readMoveFence, recoverInspectedHome, rebindAdoptedHome,
+} from '../../cli/lib/product-backup.js';
 import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
 
@@ -663,4 +665,70 @@ test('recoverInspectedHome installs a matching payload and status works without 
   const instance = yaml.load(fs.readFileSync(path.join(inspectionRoot, `app/instances/${resident}/config.yaml`), 'utf8'));
   assert.equal(instance.ports.engine, host.ports.engine);
   assert.equal(instance.ports.dashboard, host.ports.dashboard);
+});
+
+test('rebindAdoptedHome rewrites from destination hostRoot when the source directory is gone', async t => {
+  const root = tempRoot(t);
+  const gone = path.join(root, 'original-home');
+  const destination = path.join(root, 'destination');
+  assert.equal(fs.existsSync(gone), false);
+  fs.mkdirSync(path.join(destination, 'app/config'), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.join(destination, 'app/instances/ada'), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.join(destination, 'app/instances/zed'), { recursive: true, mode: 0o755 });
+  fs.writeFileSync(path.join(destination, '.home23-host.json'), JSON.stringify({
+    schema: 'home23.host.v2',
+    homeRoot: gone,
+    profile: { name: 'ada', provider: 'ollama-local', model: 'fixture' },
+    desiredRunning: false,
+    phase: 'prepared',
+    encoderRequired: false,
+    ports: {
+      coordination: 22000, engine: 22001, dashboard: 22002, mcp: 22003, bridge: 22004, embedder: 22005,
+    },
+    residentMap: { ada: { role: 'primary' }, zed: { role: 'secondary' } },
+  }), { mode: 0o600 });
+  fs.writeFileSync(path.join(destination, 'app/config/home.yaml'), [
+    'home:',
+    '  primaryAgent: ada',
+    'shell:',
+    '  roots:',
+    `    - ${gone}/app/instances/ada`,
+    '',
+  ].join('\n'), { mode: 0o600 });
+  for (const name of ['ada', 'zed']) {
+    fs.writeFileSync(path.join(destination, `app/instances/${name}/config.yaml`), [
+      'agent:',
+      `  name: ${name}`,
+      'ports:',
+      '  engine: 22001',
+      '  dashboard: 22002',
+      '  mcp: 22003',
+      '  bridge: 22004',
+      'paths:',
+      `  root: ${gone}/app/instances/${name}`,
+      '',
+    ].join('\n'), { mode: 0o600 });
+  }
+
+  const packageId = await rebindAdoptedHome(gone, destination);
+  assert.equal(packageId, null);
+  assert.equal(fs.existsSync(gone), false);
+  assert.equal(fs.existsSync(path.join(destination, '.home23-install.json')), false);
+  assert.equal(fs.existsSync(path.join(gone, '.home23-install.json')), false);
+
+  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
+  assert.equal(host.homeRoot, destination);
+  assert.equal(host.desiredRunning, false);
+  assert.notEqual(host.residentMap.ada.ports.engine, host.residentMap.zed.ports.engine);
+
+  const { default: yaml } = await import('js-yaml');
+  const homeYaml = yaml.load(fs.readFileSync(path.join(destination, 'app/config/home.yaml'), 'utf8'));
+  assert.equal(homeYaml.shell.roots[0], `${destination}/app/instances/ada`);
+  assert.equal(JSON.stringify(homeYaml).includes(gone), false);
+  const ada = yaml.load(fs.readFileSync(path.join(destination, 'app/instances/ada/config.yaml'), 'utf8'));
+  const zed = yaml.load(fs.readFileSync(path.join(destination, 'app/instances/zed/config.yaml'), 'utf8'));
+  assert.equal(ada.ports.engine, host.residentMap.ada.ports.engine);
+  assert.equal(zed.ports.engine, host.residentMap.zed.ports.engine);
+  assert.equal(ada.paths.root, `${destination}/app/instances/ada`);
+  assert.equal(zed.paths.root, `${destination}/app/instances/zed`);
 });
