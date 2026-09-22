@@ -433,6 +433,26 @@ function createSettingsRouter(home23Root, options = {}) {
     return restartOnlineEcosystemProcesses([name]).includes(name);
   }
 
+  /** Refuse writer admission while adoption (or another Start) holds the managed supervisor lock. */
+  async function withManagedStartAdmission(writers, work) {
+    const { acquireManagedStartLocks } = await import(
+      pathToFileURL(path.join(__dirname, '../../../cli/lib/pm2-commands.js')).href
+    );
+    let release;
+    try {
+      release = acquireManagedStartLocks(home23Root, { writers });
+    } catch (error) {
+      const refused = new Error(error.message || 'Managed supervisor lock is held; refusing to start writers.');
+      refused.code = error.code || 'supervisor_lock_unavailable';
+      throw refused;
+    }
+    try {
+      return await work();
+    } finally {
+      try { release(); } catch { /* unlock best-effort */ }
+    }
+  }
+
   function syncAgentDefaultModelFiles(agentName, provider, model) {
     if (!agentName || !provider || !model) return;
     const agentPaths = resolveAgentPaths(agentName, { requireConfig: false });
@@ -1608,22 +1628,25 @@ function createSettingsRouter(home23Root, options = {}) {
 
     try {
       const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
-      const { coordinateSharedServiceStartup } = await import('../../../cli/lib/shared-service-start.js');
-      await coordinateSharedServiceStartup({ home23Root });
       // Config-conditional processes (-mcp, -seed) included; filtered to what
       // the generated ecosystem declares so --only never names a missing app.
       const names = filterNamesByEcosystem(
         agentProcessNames({ home23Root, agentName }),
         ecosystemPath,
       );
-      require('node:child_process').execFileSync('pm2', ['start', ecosystemPath, '--only', names.join(','), '--update-env', '--silent'], { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 30000 });
+      await withManagedStartAdmission(names, async () => {
+        const { coordinateSharedServiceStartup } = await import('../../../cli/lib/shared-service-start.js');
+        await coordinateSharedServiceStartup({ home23Root });
+        require('node:child_process').execFileSync('pm2', ['start', ecosystemPath, '--only', names.join(','), '--update-env', '--silent'], { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 30000 });
+      });
       res.json({ ok: true, status: 'starting' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      const status = err?.code === 'supervisor_lock_unavailable' ? 409 : 500;
+      res.status(status).json({ error: err.message, code: err?.code || 'agent_start_failed' });
     }
   });
 
-  router.post('/agents/:name/restart-engine', (req, res) => {
+  router.post('/agents/:name/restart-engine', async (req, res) => {
     const agentName = req.params.name;
     const agentPaths = resolveAgentPaths(agentName, { requireConfig: true });
     if (!agentPaths || !fs.existsSync(agentPaths.configPath)) {
@@ -1631,24 +1654,27 @@ function createSettingsRouter(home23Root, options = {}) {
     }
 
     try {
-      const restarted = recycleManagedProcess(`home23-${agentName}`);
-      res.json({ ok: true, restarted: restarted ? `home23-${agentName}` : null });
+      const processName = `home23-${agentName}`;
+      const restarted = await withManagedStartAdmission([processName], () => recycleManagedProcess(processName));
+      res.json({ ok: true, restarted: restarted ? processName : null });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      const status = err?.code === 'supervisor_lock_unavailable' ? 409 : 500;
+      res.status(status).json({ error: err.message, code: err?.code || 'agent_restart_failed' });
     }
   });
 
   // Restart just the harness — used after channel/model/token changes.
   // Doing this via the /stop+/start flow kills the dashboard serving the request,
   // so we shell out pm2 in detached mode and target harness only.
-  router.post('/agents/:name/restart-harness', (req, res) => {
+  router.post('/agents/:name/restart-harness', async (req, res) => {
     const agentName = req.params.name;
     const harnessProc = `home23-${agentName}-harness`;
     try {
-      const restarted = recycleManagedProcess(harnessProc);
+      const restarted = await withManagedStartAdmission([harnessProc], () => recycleManagedProcess(harnessProc));
       res.json({ ok: true, restarted: restarted ? harnessProc : null });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      const status = err?.code === 'supervisor_lock_unavailable' ? 409 : 500;
+      res.status(status).json({ error: err.message, code: err?.code || 'agent_restart_failed' });
     }
   });
 

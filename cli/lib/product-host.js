@@ -282,6 +282,16 @@ async function loadHostSession(homeRoot, localURL, { create = false, resumeIniti
     return saveCredentials(paired);
   }
 }
+/** Ports for one resident: prefer residentMap bindings after rebind, else shared Host ports. */
+export function residentPortsFor(state, residentName) {
+  const mapped = state?.residentMap?.[residentName]?.ports;
+  if (mapped && typeof mapped === 'object'
+    && Number.isInteger(mapped.engine) && Number.isInteger(mapped.dashboard)) {
+    return mapped;
+  }
+  return state?.ports || null;
+}
+
 export async function probeReadiness(homeRoot, state, processes, { createSession = false, request = requestJSON } = {}) {
   const residents = hostResidentNames(state);
   const primary = state.profile?.name && residents.includes(state.profile.name) ? state.profile.name : residents[0];
@@ -310,17 +320,28 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
     if (bootstrap.home?.id !== state.birth?.home?.id) throw new Error('The local API belongs to a different home.');
     if (!bot || !['available', 'busy'].includes(bot.availability) || !bot.conversationId) throw new Error('The resident has not completed signed registration and become available.');
   } catch (error) { recoveryRequired = error.code === 'host_session_recovery_required'; issues.push(error.message); }
-  const checks = [
-    ['Resident engine', `http://127.0.0.1:${state.ports.engine}/health`],
-    ['Resident dashboard', `http://127.0.0.1:${state.ports.dashboard}/home23/process.json`],
+  const checks = [];
+  for (const name of residents) {
+    const ports = residentPortsFor(state, name);
+    if (!ports || !Number.isInteger(ports.engine) || !Number.isInteger(ports.dashboard)) {
+      issues.push(`Resident ${name} has no engine/dashboard ports to probe.`);
+      continue;
+    }
+    checks.push([`Resident engine (${name})`, `http://127.0.0.1:${ports.engine}/health`, 'json', name, 'engine']);
+    checks.push([`Resident dashboard (${name})`, `http://127.0.0.1:${ports.dashboard}/home23/process.json`, 'json', name, 'dashboard']);
+  }
+  checks.push(
     ['Seed observatory', `http://127.0.0.1:${state.ports.observatory}/healthz`, 'text'],
-    ['Evobrew', `http://127.0.0.1:${state.ports.evobrew}/api/health`],
-  ];
-  await Promise.all(checks.map(async ([label, url, responseType = 'json']) => {
+    ['Evobrew', `http://127.0.0.1:${state.ports.evobrew}/api/health`, 'json'],
+  );
+  await Promise.all(checks.map(async ([label, url, responseType = 'json', residentName, kind]) => {
     try {
       const value = await request(url, { responseType });
       if (label === 'Seed observatory' && (typeof value !== 'string' || value.trim() !== 'ok')) throw new Error('Observatory liveness response differs.');
-      if (label === 'Resident dashboard' && value.pid !== processes.find(row => row.name === `home23-${primary}-dash`)?.pid) throw new Error('Dashboard process identity differs.');
+      if (kind === 'dashboard' && residentName) {
+        const dash = processes.find(row => row.name === `home23-${residentName}-dash`);
+        if (value.pid !== dash?.pid) throw new Error('Dashboard process identity differs.');
+      }
     } catch { issues.push(`${label} is not responding from this installation yet.`); }
   }));
   const memory = await inspectProductMemory(homeRoot);
@@ -333,11 +354,18 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
   const state = stateFor(homeRoot);
   if (!state) return { ok: true, status: 'installed', homeRoot, desiredRunning: false, processes: [] };
   const residents = hostResidentNames(state);
+  const primary = state.profile?.name && residents.includes(state.profile.name) ? state.profile.name : residents[0];
+  const primaryPorts = residentPortsFor(state, primary) || state.ports;
   const output = { ok: true, homeRoot, profile: state.profile || null, residents,
     residentMap: state.residentMap || null,
     desiredRunning: state.desiredRunning === true,
     encoderRequired: encoderRequiredFor(state), semantic: semanticStatusView(homeRoot, state),
-    connection: { localURL: `http://127.0.0.1:${state.ports.coordination}`, dashboardURL: `http://127.0.0.1:${state.ports.dashboard}`, pairing: 'owner pairing code', access: 'loopback; use a trusted HTTPS or VPN transport for other devices' } };
+    connection: {
+      localURL: `http://127.0.0.1:${state.ports.coordination}`,
+      dashboardURL: `http://127.0.0.1:${primaryPorts.dashboard}`,
+      pairing: 'owner pairing code',
+      access: 'loopback; use a trusted HTTPS or VPN transport for other devices',
+    } };
   const rows = await driver(homeRoot, dependencies, state).list();
   const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state));
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
