@@ -129,6 +129,25 @@ test('start persists intent and returns starting until readiness succeeds', asyn
   assert.equal(calls.filter(args => args[0] === 'start').length, 8);
 });
 
+test('Start reports a restarting service as failed instead of starting', async t => {
+  const { homeRoot } = await prepared(t), rows = [];
+  const execute = async (_node, args) => {
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'start') {
+      const name = args[args.indexOf('--only') + 1];
+      rows.push(row(homeRoot, name, name === 'home23-milo-dash' ? 'waiting restart' : 'online'));
+    }
+    return { stdout: '' };
+  };
+  const dependencies = { execute, definitions: () => productDefinitions(definitions(homeRoot), homeRoot, 'milo'), readinessWaitMs: 0,
+    probeReadiness: async () => ({ ready: false, issues: ['dashboard is restarting'] }) };
+  const result = await runHostAction('start', { homeRoot }, dependencies);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'degraded');
+  assert.equal(result.error?.code, 'host_process_failed');
+  assert.equal((await runHostAction('status', { homeRoot }, dependencies)).status, 'degraded');
+});
+
 test('fake or redirected installation receipts are refused before process control', async t => {
   const homeRoot = home(t);
   const receipt = JSON.parse(fs.readFileSync(path.join(homeRoot, '.home23-install.json')));

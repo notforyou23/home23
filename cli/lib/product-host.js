@@ -185,6 +185,9 @@ export function safeProcesses(rows, homeRoot, names) {
       owned: ownScript && typeof env.pm_cwd === 'string' && (env.pm_cwd === appRoot || env.pm_cwd.startsWith(appRoot + '/')) };
   });
 }
+function failedProcess(row) {
+  return !row.owned || row.status === 'errored' || row.status === 'waiting restart';
+}
 function withoutStartupProfiling(args) {
   const result = [];
   for (let index = 0; index < args.length; index++) {
@@ -472,9 +475,10 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
   const readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
-  const starting = state.desiredRunning && !readiness.recoveryRequired && !processes.some(row => row.status === 'errored' || !row.owned)
+  const failed = processes.some(failedProcess);
+  const starting = state.desiredRunning && !readiness.recoveryRequired && !failed
     && Date.now() - Date.parse(state.startedAt || '') < 120000;
-  return { ...output, status: readiness.ready ? 'ready' : starting ? 'starting' : 'degraded', processes, readiness };
+  return { ...output, status: !failed && readiness.ready ? 'ready' : starting ? 'starting' : 'degraded', processes, readiness };
 }
 async function seedAndCreate(homeRoot, input, state, dependencies) {
   const appRoot = join(homeRoot, 'app');
@@ -747,7 +751,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     do {
       result = await status(homeRoot, dependencies, true);
       if (result.status === 'ready') break;
-      if (result.processes?.some(row => row.status === 'errored')) return { ...result, ok: false, status: 'degraded',
+      if (result.processes?.some(failedProcess)) return { ...result, ok: false, status: 'degraded',
         error: { code: 'host_process_failed', message: 'A Home23 service could not stay running. Check this home\'s process logs, then retry Start.' } };
       if (Date.now() >= deadline) break;
       await (dependencies.sleep || sleep)(1000);
