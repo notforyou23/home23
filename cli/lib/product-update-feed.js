@@ -1,9 +1,12 @@
 /** Local release-feed inspection and authenticated development staging. */
 import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
-import { createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
+import {
+  chmodSync, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync,
+  readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync,
+} from 'node:fs';
 import http from 'node:http';
-import { isAbsolute, join, resolve } from 'node:path';
-import { readPrivateJSON } from './product-environment.js';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { privateJSON, readPrivateJSON } from './product-environment.js';
 import { readProductManifest, verifyProductPayload } from './product-payload.js';
 import { stageProductPayload } from './product-update-stage.js';
 
@@ -96,9 +99,16 @@ function offeredRelease(feed) {
   if (!compatibility || typeof compatibility !== 'object') return null;
   const artifact = release.artifact;
   if (!artifact || typeof artifact !== 'object') return null;
-  if (artifact.kind !== 'local-directory') return null;
-  if (typeof artifact.path !== 'string' || !isAbsolute(artifact.path)) return null;
   if (typeof artifact.sha256 !== 'string' || !HEX64.test(artifact.sha256)) return null;
+  if (artifact.kind === 'local-directory') {
+    if (typeof artifact.path !== 'string' || !isAbsolute(artifact.path)) return null;
+  } else if (artifact.kind === 'local-archive') {
+    if (typeof artifact.url !== 'string' || !artifact.url) return null;
+    try { assertLoopbackHttpArchiveUrl(artifact.url); }
+    catch { return null; }
+  } else {
+    return null;
+  }
   return release;
 }
 
@@ -139,31 +149,33 @@ export function inspectReleaseFeed({ homeRoot, feedPath } = {}) {
     return result;
   }
 
-  if (release.artifact.sha256 !== release.packageId) {
-    result.status = 'damaged';
-    result.reasons.push(reason('digest_mismatch', 'The release artifact digest does not match its package id.'));
-    return result;
-  }
+  if (release.artifact.kind === 'local-directory') {
+    if (release.artifact.sha256 !== release.packageId) {
+      result.status = 'damaged';
+      result.reasons.push(reason('digest_mismatch', 'The release artifact digest does not match its package id.'));
+      return result;
+    }
 
-  const artifactPath = resolve(release.artifact.path);
-  if (!artifactDirectoryPresent(artifactPath)) {
-    result.status = 'damaged';
-    result.reasons.push(reason('artifact_missing', 'The release artifact directory is missing.'));
-    return result;
-  }
+    const artifactPath = resolve(release.artifact.path);
+    if (!artifactDirectoryPresent(artifactPath)) {
+      result.status = 'damaged';
+      result.reasons.push(reason('artifact_missing', 'The release artifact directory is missing.'));
+      return result;
+    }
 
-  let manifest;
-  try {
-    manifest = readProductManifest(artifactPath);
-  } catch {
-    result.status = 'damaged';
-    result.reasons.push(reason('manifest_unreadable', 'The release artifact manifest could not be read.'));
-    return result;
-  }
-  if (manifest.packageId !== release.packageId) {
-    result.status = 'damaged';
-    result.reasons.push(reason('manifest_package_mismatch', 'The artifact manifest package id does not match the offered release.'));
-    return result;
+    let manifest;
+    try {
+      manifest = readProductManifest(artifactPath);
+    } catch {
+      result.status = 'damaged';
+      result.reasons.push(reason('manifest_unreadable', 'The release artifact manifest could not be read.'));
+      return result;
+    }
+    if (manifest.packageId !== release.packageId) {
+      result.status = 'damaged';
+      result.reasons.push(reason('manifest_package_mismatch', 'The artifact manifest package id does not match the offered release.'));
+      return result;
+    }
   }
 
   if (release.platform !== process.platform || release.arch !== process.arch || !compatibilityMatches(release.compatibility)) {
@@ -263,6 +275,10 @@ function resolveDevelopmentReleaseForStaging({ feedPath, trustKeyPath }) {
 
   verifyDevelopmentReleaseSignature(release, trustKeyPath);
 
+  if (release.artifact.kind === 'local-archive') {
+    return { release, artifactKind: 'local-archive', artifactPath: null, manifest: null };
+  }
+
   if (release.artifact.sha256 !== release.packageId) {
     throw codedError('digest_mismatch', 'The release artifact digest does not match its package id.');
   }
@@ -278,7 +294,7 @@ function resolveDevelopmentReleaseForStaging({ feedPath, trustKeyPath }) {
     throw codedError('digest_mismatch', 'The artifact manifest package id does not match the offered release.');
   }
 
-  return { release, artifactPath, manifest };
+  return { release, artifactKind: 'local-directory', artifactPath, manifest };
 }
 
 function manifestFileBytesTotal(manifest) {
@@ -317,7 +333,11 @@ function stageClaimIsCopying(staging) {
  * Unverified feeds stay inspection-only; non-development trust claims are refused.
  */
 export function stageAuthenticatedRelease({ homeRoot, feedPath, staging, trustKeyPath } = {}) {
-  const { release, artifactPath } = resolveDevelopmentReleaseForStaging({ feedPath, trustKeyPath });
+  const resolved = resolveDevelopmentReleaseForStaging({ feedPath, trustKeyPath });
+  if (resolved.artifactKind !== 'local-directory' || !resolved.artifactPath) {
+    throw codedError('feed_unavailable', 'stage-release accepts only local-directory artifacts; use download-release for loopback archives.');
+  }
+  const { release, artifactPath } = resolved;
 
   if (typeof staging !== 'string' || !staging) {
     throw codedError('feed_unavailable', 'A staging path is required.');
@@ -335,11 +355,14 @@ export function stageAuthenticatedRelease({ homeRoot, feedPath, staging, trustKe
     throw codedError('digest_mismatch', 'The staged payload package id does not match the offered release.');
   }
 
+  recordDevelopmentTrust(destination, release);
+
   return {
     ok: true,
     status: 'staged',
     packageId: release.packageId,
     publisherTrust: 'development',
+    developmentSignatureVerified: true,
     canInstall: false,
     networkInstall: false,
     homeMutated: false,
@@ -347,10 +370,12 @@ export function stageAuthenticatedRelease({ homeRoot, feedPath, staging, trustKe
 }
 
 /**
- * Download (stage) a development-signed local release with resumable copy progress.
+ * Download (stage) a development-signed release with resumable copy progress.
+ * Local-directory artifacts copy in-process. Local-archive artifacts download
+ * payload.bin over loopback HTTP, extract safely, verify, then stage.
  * Never mutates the home, never applies an update, and never claims production trust.
  */
-export function downloadDevelopmentRelease({
+export async function downloadDevelopmentRelease({
   homeRoot,
   feedPath,
   trustKeyPath,
@@ -366,17 +391,29 @@ export function downloadDevelopmentRelease({
   let bytesTotal = 0;
 
   try {
-    const { release, artifactPath, manifest } = resolveDevelopmentReleaseForStaging({
+    const resolved = resolveDevelopmentReleaseForStaging({
       feedPath,
       trustKeyPath,
     });
+    const { release } = resolved;
     packageId = release.packageId;
-    bytesTotal = manifestFileBytesTotal(manifest);
 
     if (typeof staging !== 'string' || !staging) {
       throw codedError('feed_unavailable', 'A staging path is required.');
     }
     const destination = resolve(staging);
+
+    if (resolved.artifactKind === 'local-archive') {
+      return await stageLoopbackArchiveRelease({
+        homeRoot,
+        release,
+        destination,
+        report,
+      });
+    }
+
+    const { artifactPath, manifest } = resolved;
+    bytesTotal = manifestFileBytesTotal(manifest);
 
     report({ phase: 'checking', bytesCopied: 0, bytesTotal, packageId });
 
@@ -400,6 +437,7 @@ export function downloadDevelopmentRelease({
       throw codedError('digest_mismatch', 'The staged payload package id does not match the offered release.');
     }
 
+    recordDevelopmentTrust(destination, release);
     bytesCopied = bytesTotal;
     report({ phase: 'staged', bytesCopied, bytesTotal, packageId });
 
@@ -408,6 +446,7 @@ export function downloadDevelopmentRelease({
       status: 'staged',
       packageId: release.packageId,
       publisherTrust: 'development',
+      developmentSignatureVerified: true,
       canInstall: false,
       networkInstall: false,
       homeMutated: false,
@@ -417,6 +456,93 @@ export function downloadDevelopmentRelease({
     report({ phase: 'failed', bytesCopied, bytesTotal, packageId });
     throw error;
   }
+}
+
+async function stageLoopbackArchiveRelease({ homeRoot, release, destination, report }) {
+  const packageId = release.packageId;
+  let bytesCopied = 0;
+  let bytesTotal = 0;
+
+  report({ phase: 'checking', bytesCopied: 0, bytesTotal: 0, packageId });
+
+  const parent = dirname(destination);
+  const base = destination.split(sep).pop();
+  const archiveDir = join(parent, `.${base}.archive-download`);
+  const extractRoot = join(parent, `.${base}.extracted`);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  rmSync(archiveDir, { recursive: true, force: true });
+  rmSync(extractRoot, { recursive: true, force: true });
+
+  const archived = await downloadReleaseArchive({
+    url: release.artifact.url,
+    destinationDirectory: archiveDir,
+    expectedSha256: release.artifact.sha256,
+    onProgress: (progress) => {
+      bytesCopied = progress.bytesCopied || 0;
+      bytesTotal = progress.bytesTotal || bytesTotal;
+      report({
+        phase: progress.phase === 'verified' ? 'copying' : (progress.phase || 'downloading'),
+        bytesCopied,
+        bytesTotal,
+        packageId,
+      });
+    },
+  });
+
+  mkdirSync(extractRoot, { recursive: true, mode: 0o700 });
+  extractProductArchive({ archivePath: archived.path, destinationDirectory: extractRoot });
+
+  const verified = verifyProductPayload(extractRoot);
+  if (verified.packageId !== release.packageId) {
+    throw codedError('digest_mismatch', 'The extracted payload package id does not match the offered release.');
+  }
+
+  bytesTotal = manifestFileBytesTotal(verified);
+  report({ phase: 'copying', bytesCopied: bytesTotal, bytesTotal, packageId });
+
+  stageProductPayload({
+    homeRoot,
+    candidatePayload: extractRoot,
+    staging: destination,
+  });
+
+  const staged = verifyProductPayload(join(destination, 'payload'));
+  if (staged.packageId !== release.packageId) {
+    throw codedError('digest_mismatch', 'The staged payload package id does not match the offered release.');
+  }
+
+  recordDevelopmentTrust(destination, release);
+  report({ phase: 'staged', bytesCopied: bytesTotal, bytesTotal, packageId });
+
+  return {
+    ok: true,
+    status: 'staged',
+    packageId: release.packageId,
+    publisherTrust: 'development',
+    developmentSignatureVerified: true,
+    canInstall: false,
+    networkInstall: false,
+    homeMutated: false,
+    resumed: false,
+    archivePath: archived.path,
+  };
+}
+
+function recordDevelopmentTrust(staging, release) {
+  const signature = release?.trust?.signature;
+  const packageId = release?.packageId;
+  if (typeof signature !== 'string' || !signature || typeof packageId !== 'string') return;
+  const claimPath = stageClaimPath(staging);
+  if (!existsSync(claimPath)) return;
+  let claim;
+  try { claim = readPrivateJSON(claimPath); }
+  catch { return; }
+  if (!claim || claim.candidatePackageId !== packageId) return;
+  privateJSON(claimPath, {
+    ...claim,
+    developmentSignature: signature,
+    developmentSignatureAlgorithm: 'ed25519',
+  });
 }
 
 const STAGE_CLAIM_SCHEMA = 'home23.product-stage.v1';
@@ -480,7 +606,7 @@ export function recoverDownload({ staging } = {}) {
  * Select a verified staged download for install via the existing update controller.
  * Does not apply. Absent/copying/damaged stay canInstall false with no candidate path.
  */
-export function selectStagedInstall({ staging } = {}) {
+export function selectStagedInstall({ staging, trustKeyPath } = {}) {
   const recovery = recoverDownload({ staging });
   if (recovery.status !== 'staged') {
     return {
@@ -493,9 +619,27 @@ export function selectStagedInstall({ staging } = {}) {
       selected: false,
       candidatePayload: null,
       usesUpdateController: true,
+      publisherTrust: 'unverified',
+      developmentSignatureVerified: false,
     };
   }
   const destination = resolve(staging);
+  let publisherTrust = 'unverified';
+  let developmentSignatureVerified = false;
+  try {
+    const claim = readPrivateJSON(stageClaimPath(destination));
+    if (trustKeyPath && claim?.developmentSignature && claim.candidatePackageId === recovery.packageId
+        && claim.developmentSignatureAlgorithm === 'ed25519') {
+      verifyDevelopmentReleaseSignature({
+        packageId: recovery.packageId,
+        trust: { algorithm: 'ed25519', signature: claim.developmentSignature },
+      }, trustKeyPath);
+      publisherTrust = 'development';
+      developmentSignatureVerified = true;
+    }
+  } catch {
+    // A stage claim or a digest match is not publisher authentication.
+  }
   return {
     ok: true,
     status: 'staged',
@@ -507,6 +651,8 @@ export function selectStagedInstall({ staging } = {}) {
     candidatePayload: join(destination, 'payload'),
     staging: destination,
     usesUpdateController: true,
+    publisherTrust,
+    developmentSignatureVerified,
   };
 }
 
@@ -541,6 +687,101 @@ function unlinkQuiet(path) {
   } catch {
     // Best-effort cleanup of a partial temp download.
   }
+}
+
+function assertSafeArchiveEntryPath(relative) {
+  if (typeof relative !== 'string' || relative.includes('\0')) {
+    throw codedError('archive_unsafe', 'The release archive contains an unsafe path.');
+  }
+  let normalized = relative.replace(/\\/g, '/');
+  while (normalized.startsWith('./')) normalized = normalized.slice(2);
+  if (normalized.endsWith('/')) normalized = normalized.slice(0, -1);
+  // Tar root and AppleDouble/Pax sidecars are skipped by the caller.
+  if (!normalized || normalized === '.') return null;
+  if (normalized.split('/').some(part => part.startsWith('._') || part === 'PaxHeader')) return null;
+  if (isAbsolute(normalized) || normalized.startsWith('/')
+      || normalized.split('/').some(part => part === '..' || part === '')) {
+    throw codedError('archive_unsafe', 'The release archive contains a path escape.');
+  }
+  return normalized;
+}
+
+function readTarString(buffer, start, length) {
+  const slice = buffer.subarray(start, start + length);
+  const end = slice.indexOf(0);
+  return slice.subarray(0, end === -1 ? slice.length : end).toString('utf8').trim();
+}
+
+/**
+ * Extract a ustar payload.bin into destinationDirectory.
+ * Relative paths only; rejects `..`, absolute paths, and symlink escape.
+ */
+export function extractProductArchive({ archivePath, destinationDirectory } = {}) {
+  if (typeof archivePath !== 'string' || !archivePath || typeof destinationDirectory !== 'string' || !destinationDirectory) {
+    throw codedError('archive_unsafe', 'Archive and destination paths are required.');
+  }
+  const archive = resolve(archivePath);
+  const destination = resolve(destinationDirectory);
+  if (!existsSync(archive) || !lstatSync(archive).isFile()) {
+    throw codedError('download_incomplete', 'The release archive is missing.');
+  }
+  mkdirSync(destination, { recursive: true, mode: 0o700 });
+  const bytes = readFileSync(archive);
+  let offset = 0;
+  let entries = 0;
+  while (offset + 512 <= bytes.length) {
+    const header = bytes.subarray(offset, offset + 512);
+    offset += 512;
+    if (header.every(value => value === 0)) break;
+    const name = readTarString(header, 0, 100);
+    const prefix = readTarString(header, 345, 155);
+    const rawPath = prefix ? `${prefix}/${name}` : name;
+    const typeFlag = String.fromCharCode(header[156] || 48);
+    const size = Number.parseInt(readTarString(header, 124, 12), 8) || 0;
+    const mode = Number.parseInt(readTarString(header, 100, 8), 8) || 0o644;
+    const linkname = readTarString(header, 157, 100);
+    const dataEnd = offset + size;
+    if (dataEnd > bytes.length) {
+      throw codedError('archive_unsafe', 'The release archive is truncated.');
+    }
+    const data = bytes.subarray(offset, dataEnd);
+    offset += Math.ceil(size / 512) * 512;
+    if (typeFlag === 'x' || typeFlag === 'g' || typeFlag === 'X') {
+      continue;
+    }
+    const relative = assertSafeArchiveEntryPath(rawPath);
+    if (relative === null) continue;
+    const target = join(destination, relative);
+    if (!target.startsWith(destination + sep) && target !== destination) {
+      throw codedError('archive_unsafe', 'The release archive would escape its destination.');
+    }
+    if (typeFlag === '5' || typeFlag === 'D') {
+      mkdirSync(target, { recursive: true, mode: (mode & 0o7777) || 0o755 });
+    } else if (typeFlag === '2') {
+      const linkTarget = linkname;
+      if (!linkTarget || isAbsolute(linkTarget) || linkTarget.split(/[/\\]/).includes('..')) {
+        throw codedError('archive_unsafe', 'The release archive contains an unsafe symlink.');
+      }
+      mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
+      symlinkSync(linkTarget, target);
+      const resolved = resolve(dirname(target), linkTarget);
+      if (!resolved.startsWith(destination + sep) && resolved !== destination) {
+        unlinkSync(target);
+        throw codedError('archive_unsafe', 'The release archive symlink escapes its destination.');
+      }
+    } else if (typeFlag === '0' || typeFlag === '\0' || typeFlag === '') {
+      mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
+      writeFileSync(target, data, { mode: (mode & 0o7777) || 0o644, flag: 'wx' });
+      chmodSync(target, (mode & 0o7777) || 0o644);
+    } else {
+      throw codedError('archive_unsafe', 'The release archive contains an unsupported entry type.');
+    }
+    entries += 1;
+  }
+  if (entries === 0) {
+    throw codedError('archive_unsafe', 'The release archive is empty.');
+  }
+  return { ok: true, destination, entries };
 }
 
 /**

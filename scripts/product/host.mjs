@@ -15,7 +15,7 @@ try {
   while (args.length) {
     const key = args.shift();
     if (key === '--admit') {
-      if (action !== 'update' || options.admit) throw new Error(USAGE);
+      if (!['update', 'install-staged'].includes(action) || options.admit) throw new Error(USAGE);
       options.admit = true;
       continue;
     }
@@ -25,7 +25,7 @@ try {
   if (action !== 'backup-inspect') homeRoot = absoluteHome(options['--home']);
   if (options['--staging'] && !['stage', 'update', 'stage-release', 'download-release', 'install-staged'].includes(action)) throw new Error('--staging is only supported by stage, update, stage-release, download-release, and install-staged.');
   if (options['--feed'] && !['check-update', 'stage-release', 'download-release'].includes(action)) throw new Error('--feed is only supported by check-update, stage-release, and download-release.');
-  if (options['--trust-key'] && !['stage-release', 'download-release'].includes(action)) throw new Error('--trust-key is only supported by stage-release and download-release.');
+  if (options['--trust-key'] && !['stage-release', 'download-release', 'install-staged'].includes(action)) throw new Error('--trust-key is only supported by stage-release, download-release, and install-staged.');
   let input = {};
   if (action === 'stage' || action === 'update') input.staging = options['--staging'];
   if (options.admit) input.admit = true;
@@ -45,7 +45,7 @@ try {
   } else if (action === 'download-release') {
     if (!options['--feed'] || !options['--staging'] || !options['--trust-key']) throw new Error('download-release requires --feed, --staging, and --trust-key.');
     const { downloadDevelopmentRelease } = await import('../../cli/lib/product-update-feed.js');
-    const result = downloadDevelopmentRelease({
+    const result = await downloadDevelopmentRelease({
       homeRoot, feedPath: options['--feed'], staging: options['--staging'], trustKeyPath: options['--trust-key'],
       onProgress: progress => process.stderr.write(`${JSON.stringify(progress)}\n`),
     });
@@ -66,7 +66,7 @@ try {
   } else if (action === 'install-staged') {
     if (!options['--staging']) throw new Error('install-staged requires --staging ABS.');
     const { selectStagedInstall } = await import('../../cli/lib/product-update-feed.js');
-    const selection = selectStagedInstall({ staging: options['--staging'] });
+    const selection = selectStagedInstall({ staging: options['--staging'], trustKeyPath: options['--trust-key'] });
     if (!selection.selected) {
       originalStdout(JSON.stringify(selection) + '\n');
       process.exitCode = 1;
@@ -78,14 +78,22 @@ try {
         homeRoot,
         candidatePayload: selection.candidatePayload,
         staging: `${resolve(options['--staging'])}-apply`,
+        admit: options.admit === true,
       });
       originalStdout(JSON.stringify({
         ...result,
         usesUpdateController: true,
         selectedCandidatePayload: selection.candidatePayload,
         packageId: result.toPackageId || selection.packageId,
+        // Integrity and stage selection are not publisher authentication.
+        // Retain development signature evidence from the authenticated download path.
+        publisherTrust: selection.publisherTrust === 'development' && selection.developmentSignatureVerified === true
+          ? 'development'
+          : (result.publisherTrust || 'unverified'),
+        developmentSignatureVerified: selection.developmentSignatureVerified === true,
         // Not installed until the update controller returns committed.
         installed: result.status === 'committed',
+        canInstall: false,
       }) + '\n');
       if (result.ok === false) process.exitCode = 1;
     }

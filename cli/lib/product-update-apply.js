@@ -28,6 +28,16 @@ export function updateDirectoryFor(homeRoot) {
   return join(dirname(root), `.${basename(root)}.home23-update`);
 }
 function journalPath(homeRoot) { return join(updateDirectoryFor(homeRoot), 'journal.json'); }
+/** Paths for the retained external controller kept beside the journal. */
+export function retainedUpdateController(homeRoot) {
+  const updateDirectory = updateDirectoryFor(homeRoot);
+  return {
+    updateDirectory,
+    journalPath: journalPath(homeRoot),
+    nodePath: join(updateDirectory, 'controller', 'node'),
+    recoverEntryPath: join(updateDirectory, 'controller', 'lib', 'product-update-recover.mjs'),
+  };
+}
 function fsyncDirectory(directory) {
   const fd = openSync(directory, 'r');
   try { fsyncSync(fd); } finally { closeSync(fd); }
