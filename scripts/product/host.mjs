@@ -13,17 +13,17 @@ try {
   while (args.length) {
     const key = args.shift();
     if (key === '--admit') {
-      if (action !== 'update' || options.admit) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]');
+      if (action !== 'update' || options.admit) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|download-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]');
       options.admit = true;
       continue;
     }
-    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection', '--destination'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]');
+    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection', '--destination'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|download-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]');
     options[key] = args.shift();
   }
   if (action !== 'backup-inspect') homeRoot = absoluteHome(options['--home']);
-  if (options['--staging'] && !['stage', 'update', 'stage-release'].includes(action)) throw new Error('--staging is only supported by stage, update, and stage-release.');
-  if (options['--feed'] && !['check-update', 'stage-release'].includes(action)) throw new Error('--feed is only supported by check-update and stage-release.');
-  if (options['--trust-key'] && action !== 'stage-release') throw new Error('--trust-key is only supported by stage-release.');
+  if (options['--staging'] && !['stage', 'update', 'stage-release', 'download-release'].includes(action)) throw new Error('--staging is only supported by stage, update, stage-release, and download-release.');
+  if (options['--feed'] && !['check-update', 'stage-release', 'download-release'].includes(action)) throw new Error('--feed is only supported by check-update, stage-release, and download-release.');
+  if (options['--trust-key'] && !['stage-release', 'download-release'].includes(action)) throw new Error('--trust-key is only supported by stage-release and download-release.');
   let input = {};
   if (action === 'stage' || action === 'update') input.staging = options['--staging'];
   if (options.admit) input.admit = true;
@@ -38,6 +38,15 @@ try {
     const result = action === 'backup'
       ? await createHomeBackup({ homeRoot, archivePath: options['--archive'], keyPath: options['--key'] })
       : await inspectHomeBackup({ archivePath: options['--archive'], keyPath: options['--key'], inspectionRoot: options['--inspection'] });
+    originalStdout(JSON.stringify(result) + '\n');
+    if (result.ok === false) process.exitCode = 1;
+  } else if (action === 'download-release') {
+    if (!options['--feed'] || !options['--staging'] || !options['--trust-key']) throw new Error('download-release requires --feed, --staging, and --trust-key.');
+    const { downloadDevelopmentRelease } = await import('../../cli/lib/product-update-feed.js');
+    const result = downloadDevelopmentRelease({
+      homeRoot, feedPath: options['--feed'], staging: options['--staging'], trustKeyPath: options['--trust-key'],
+      onProgress: progress => process.stderr.write(`${JSON.stringify(progress)}\n`),
+    });
     originalStdout(JSON.stringify(result) + '\n');
     if (result.ok === false) process.exitCode = 1;
   } else if (action === 'stage-release') {
