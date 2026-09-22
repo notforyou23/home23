@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Home23 — product journey preview</title>
+  <title>Home23 — release preview</title>
   <style>
     :root {
       --ink: #1c1917;
@@ -136,6 +136,11 @@
       font-size: 0.95rem;
     }
 
+    code {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+    }
+
     footer {
       margin-top: 3rem;
       padding-top: 1.25rem;
@@ -143,29 +148,26 @@
       color: var(--muted);
       font-size: 0.9rem;
     }
-
-    footer code {
-      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      font-size: 0.85em;
-    }
   </style>
 </head>
 <body>
   <main>
     <header>
       <p class="brand">Home23</p>
-      <h1>Product journey preview</h1>
+      <h1>Release preview</h1>
       <p class="lede">
-        A local outline of the Mac-hosted owner path: install Host, create your
+        Local outline of the Mac-hosted owner path: install Host, create your
         own home, talk and import documents, open the dashboard, check for
-        updates, and back up or move. This file is documentation for review—not
-        a live product site.
+        updates, recover, and back up or move. This file is documentation for
+        review—not a live product site and not a download page.
       </p>
       <p class="notice">
-        Public downloads are not available yet. There is no published download
-        URL, store listing, or consumer release package to fetch from this page.
-        Do not treat this preview as proof that signing, notarization, TestFlight,
-        or an existing owner’s home is ready for distribution.
+        Public downloads are unavailable. There is no published download URL,
+        store listing, consumer release package, or public update feed to fetch
+        from this page. The September&nbsp;22 06:44 stub package (fixture
+        candidate with stub Node) is not a release. Do not treat this preview as
+        proof that Developer&nbsp;ID signing, notarization, TestFlight, or an
+        existing owner’s home is ready for distribution.
       </p>
     </header>
 
@@ -177,6 +179,7 @@
         <li><a href="#talk">Talk and import documents</a></li>
         <li><a href="#dashboard">Open the dashboard</a></li>
         <li><a href="#updates">Check for updates</a></li>
+        <li><a href="#recovery">Recovery and adoption</a></li>
         <li><a href="#backup">Back up and move</a></li>
       </ol>
     </nav>
@@ -186,15 +189,22 @@
       <p>
         The consumer path starts on a Mac with <strong>Home23 Host</strong>—the
         companion that runs and keeps your home. The Mac conversation client is a
-        separate app with its own responsibilities; installing a client does not
-        create another home. Closing a conversation app does not stop the home;
-        availability still depends on Host being running, awake, and reachable.
+        separate app; installing a client does not create another home. Closing a
+        conversation app does not stop the home; availability still depends on
+        Host being running, awake, and reachable.
+      </p>
+      <p>
+        Engineering assembly (not performed from this page) builds a product
+        payload with <code>node scripts/product/package.mjs</code>, then a Host
+        app with <code>home23-apple/scripts/build-home23-host.mjs</code>. See
+        <code>SIGNING.md</code> for the owner approval sequence before any of
+        that becomes a public download.
       </p>
       <p class="boundary">
         Intended delivery is a signed, notarized Host download from a public
         website. That website and download are not selected or published here.
         Source/operator setup (Git, npm, Terminal) remains a separate developer
-        path and is not the ordinary owner journey described on this page.
+        path.
       </p>
     </section>
 
@@ -203,9 +213,9 @@
       <p>
         Creating a home is a shared birth operation: your own owner context,
         residents, purpose, credentials, and Seed lineage. It does not copy
-        another person’s resident or lived memory. After birth, you connect a
-        model provider you control (API key or other supported setup) so the
-        home can talk with your account—not a shared developer fixture.
+        another person’s resident or lived memory. After birth, connect a model
+        provider you control so the home talks with your account—not a shared
+        developer fixture.
       </p>
       <ul>
         <li>Choose or confirm the resident and home purpose during first-run.</li>
@@ -221,10 +231,10 @@
     <section id="talk">
       <h2>3. Talk and import documents</h2>
       <p>
-        Once the home is running and a provider is connected, you converse with
-        your resident and bring in documents and context so memory and retrieval
-        belong to that home. Apps and the private dashboard access the same home
-        and residents; feature parity between them should be checked, not assumed.
+        Once the home is running and a provider is connected, converse with your
+        resident and bring in documents so memory belongs to that home. Apps and
+        the private dashboard access the same home; feature parity should be
+        checked, not assumed.
       </p>
       <ul>
         <li>Talk through the Mac client or the home’s private dashboard when those surfaces are available for your install.</li>
@@ -260,30 +270,68 @@
         reported as “up to date.”
       </p>
       <p>
+        Development Check can pass a local <code>--trust-key</code> only when the
+        dispatched runtime’s
+        <code>app/scripts/product/host-command-contract.json</code> lists
+        <code>check-update</code> in <code>trustKeyActions</code> (Apple
+        <code>243147d</code>, backend <code>8903df6c</code>). A missing or older
+        contract omits the flag. That verifies a development Ed25519 signature
+        over the release <code>packageId</code>; it is not public publisher trust.
+        Production trust claims and bad signatures are refused.
+        <code>canInstall</code> stays false on Check.
+      </p>
+      <p>
         <strong>Download and Install</strong> (when delivered) verifies and stages
         a release while the current home keeps working, with a chance to defer
         before a disruptive step and clear recovery if something interrupts.
+        Download and install-staged still require a development trust key on
+        controllers that accept those actions.
       </p>
       <p class="boundary">
-        Network installation, publisher trust, and a native update feed for
-        consumer homes remain unfinished. A local engineering preview of package
-        comparison is not the same as a shipped Check for Updates button.
+        There is no public update feed. The 06:44 stub package is fixture-only
+        and must not be installed as a release. A runnable install may be in
+        progress elsewhere; do not treat earlier ~33–35&nbsp;minute preview
+        timings as the measured wall time for that trial. Record that trial’s
+        own elapsed time when it finishes.
+      </p>
+    </section>
+
+    <section id="recovery">
+      <h2>6. Recovery and adoption</h2>
+      <p>
+        Interrupted update recovery resumes from durable journal evidence for
+        that home. A stopped home must remain stopped; desired-running choice is
+        preserved across a successful cutover. Recovery after a failed or
+        interrupted update is not the same as adopting a managed or source
+        installation into a product home.
+      </p>
+      <p class="boundary">
+        Managed and source adoption stay unavailable until a held supervisor
+        fence exists that keeps every resident’s writers quiet for the copy
+        window. A completed adoption journal alone is not success
+        (<code>supervisor_fence_unavailable</code>). Product writer lists and
+        release maintenance locks are not that fence. Multi-resident managed
+        homes are unsupported until each resident’s process set and Seed
+        identity are preserved under the fence.
       </p>
     </section>
 
     <section id="backup">
-      <h2>6. Back up and move</h2>
+      <h2>7. Back up and move</h2>
       <p>
         <strong>Back Up Home</strong> and <strong>Move Home</strong> preserve the
-        existing home rather than create a new resident. Restore verifies the
-        archive and required runtime before writers start again. Missing external
-        folders, services, or credentials should appear as reconnection work—not
-        as silent omissions.
+        existing home rather than create a new resident. Backup streams an
+        encrypted archive only when owned writers are quiet and the host
+        lifecycle lock is held. Inspect/restore authenticates the archive before
+        writers start. Move restores into an empty destination, rebinds that
+        copy’s home path, and fences the source so Start there refuses rather
+        than running two lives of one individual.
       </p>
       <p class="boundary">
-        Backup, move, and existing-owner adoption are planned delivery work. This
-        preview does not claim they are finished or that any particular home has
-        been migrated.
+        Missing external folders, services, or credentials should appear as
+        reconnection work—not as silent omissions. Native Host UI for these
+        operations is delivery work; operator host commands are not a substitute
+        for a finished owner journey.
       </p>
     </section>
 
@@ -291,8 +339,9 @@
       <p>
         Open this file locally from
         <code>docs/product-preview/index.html</code>.
-        Signing and notarization steps for a future consumer package are listed
-        separately in <code>SIGNING.md</code> (checklist only—not a signing script).
+        Owner approval steps for Developer&nbsp;ID signing, notarization, a
+        public feed, and TestFlight are listed in <code>SIGNING.md</code>
+        (checklist only—do not run signing or packaging from that file).
       </p>
     </footer>
   </main>
