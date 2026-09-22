@@ -935,6 +935,39 @@ export async function rebindAdoptedHome(source, destination) {
   return rebindDestination(source, destination);
 }
 
+/**
+ * Finish owner recovery in the same directory Inspect/Restore wrote.
+ * Reuses the move rebind path for ports, supervisor registration, and absolute paths.
+ * Does not run birth and does not start writers.
+ */
+export async function recoverInspectedHome({ inspectionRoot } = {}) {
+  const destination = absoluteRoot(inspectionRoot, 'inspection directory');
+  const host = readHostState(destination);
+  if (typeof host.homeRoot !== 'string' || !isAbsolute(host.homeRoot) || host.homeRoot.includes('\0')) {
+    fail('backup_recover_invalid', 'Inspected home has no recorded home path to rebind from.');
+  }
+  const sourceHome = resolve(host.homeRoot);
+  // Destination must stay the inspected tree. Source is only the recorded path for string rewrites;
+  // the original machine directory may already be gone.
+  const packageId = await rebindDestination(sourceHome, destination);
+  const rebound = readHostState(destination);
+  if (rebound.homeRoot !== destination) fail('backup_recover_invalid', 'Recovery did not keep the inspected home directory.');
+  if (rebound.desiredRunning === true) fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
+  return {
+    ok: true,
+    schema: BACKUP_SCHEMA,
+    packageId,
+    homeRoot: destination,
+    sourceHome,
+    writersStarted: false,
+    restoredRunning: false,
+    birthInvoked: false,
+    machineBindingsRebound: true,
+    desiredRunning: false,
+    ports: rebound.ports || null,
+  };
+}
+
 function copyInstalledFile(from, to, mode, lock) {
   mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
   const temporary = `${to}.${randomUUID()}.next`;

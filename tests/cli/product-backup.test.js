@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHomeBackup, inspectHomeBackup, moveHome, readMoveFence } from '../../cli/lib/product-backup.js';
+import { createHomeBackup, inspectHomeBackup, moveHome, readMoveFence, recoverInspectedHome } from '../../cli/lib/product-backup.js';
 import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
 
@@ -499,4 +499,96 @@ test('a resumed move corrects existing directory and file modes from the manifes
   assert.equal(fs.statSync(path.join(destination, 'app')).mode & 0o777, 0o755);
   assert.equal(fs.statSync(path.join(destination, 'app/marker.txt')).mode & 0o777, 0o644);
   assert.equal(fs.readFileSync(path.join(destination, 'app/instances/milo/substrate/seed-01/birth-receipt.json'), 'utf8'), '{"seedId":"modes"}\n');
+});
+
+test('recoverInspectedHome rebinds machine bindings in the inspected tree without birth', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const resident = 'ada';
+  fs.mkdirSync(path.join(home, `app/instances/${resident}/workspace`), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.join(home, 'app/config'), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.join(home, `app/instances/${resident}/substrate/seed-01`), { recursive: true });
+  const birthBytes = '{"seedId":"ada-seed"}\n';
+  fs.writeFileSync(path.join(home, `app/instances/${resident}/substrate/seed-01/birth-receipt.json`), birthBytes);
+  fs.writeFileSync(path.join(home, `app/instances/${resident}/substrate/seed-01/seed-ledger.jsonl`), '{"event":"birth"}\n');
+  fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({
+    schema: 'home23.host.v2',
+    homeRoot: home,
+    profile: { name: resident, provider: 'ollama-local', model: 'fixture-local' },
+    desiredRunning: false,
+    phase: 'prepared',
+    encoderRequired: false,
+    ports: {
+      coordination: 21089, engine: 21090, dashboard: 21091, mcp: 21092, bridge: 21093,
+      evobrew: 21094, observatory: 21095,
+    },
+  }), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/config/home.yaml'), [
+    'home:',
+    `  primaryAgent: ${resident}`,
+    'coordination:',
+    '  publicApi:',
+    '    port: 21089',
+    '  socketDirectory: /tmp/old-ada-socket',
+    'shell:',
+    '  roots:',
+    `    - ${home}/app/instances/${resident}`,
+    '',
+  ].join('\n'), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, `app/instances/${resident}/config.yaml`), [
+    'agent:',
+    `  name: ${resident}`,
+    'ports:',
+    '  engine: 21090',
+    '  dashboard: 21091',
+    '  mcp: 21092',
+    '  bridge: 21093',
+    '',
+  ].join('\n'));
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const archivePath = path.join(out, 'home.h23b');
+  const keyPath = path.join(out, 'home.backup-key.json');
+  const inspectionRoot = path.join(root, 'inspect');
+  fs.mkdirSync(inspectionRoot, { mode: 0o755 });
+
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  const birthBefore = fs.readFileSync(path.join(inspectionRoot, `app/instances/${resident}/substrate/seed-01/birth-receipt.json`));
+  assert.equal(birthBefore.toString('utf8'), birthBytes);
+  const inspectedHost = JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-host.json'), 'utf8'));
+  assert.equal(inspectedHost.homeRoot, home);
+  assert.equal(inspectedHost.ports.coordination, 21089);
+
+  const recovered = await recoverInspectedHome({ inspectionRoot });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.homeRoot, inspectionRoot);
+  assert.equal(recovered.sourceHome, home);
+  assert.equal(recovered.writersStarted, false);
+  assert.equal(recovered.restoredRunning, false);
+  assert.equal(recovered.birthInvoked, false);
+  assert.equal(recovered.machineBindingsRebound, true);
+  assert.equal(recovered.desiredRunning, false);
+
+  const host = JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-host.json'), 'utf8'));
+  assert.equal(host.homeRoot, inspectionRoot);
+  assert.equal(host.desiredRunning, false);
+  assert.equal(host.profile.name, resident);
+  assert.notEqual(host.ports.coordination, 21089);
+  assert.equal(
+    fs.readFileSync(path.join(inspectionRoot, `app/instances/${resident}/substrate/seed-01/birth-receipt.json`), 'utf8'),
+    birthBytes,
+  );
+  assert.equal(fs.existsSync(path.join(inspectionRoot, `app/instances/${resident}/substrate/seed-02`)), false);
+
+  const { default: yaml } = await import('js-yaml');
+  const rebound = yaml.load(fs.readFileSync(path.join(inspectionRoot, 'app/config/home.yaml'), 'utf8'));
+  assert.equal(rebound.home.primaryAgent, resident);
+  assert.equal(rebound.coordination.publicApi.port, host.ports.coordination);
+  assert.equal(rebound.coordination.socketDirectory.includes('/tmp/old-ada-socket'), false);
+  assert.equal(rebound.shell.roots[0], `${inspectionRoot}/app/instances/${resident}`);
+  assert.equal(JSON.stringify(rebound).includes(home), false);
+  const instance = yaml.load(fs.readFileSync(path.join(inspectionRoot, `app/instances/${resident}/config.yaml`), 'utf8'));
+  assert.equal(instance.ports.engine, host.ports.engine);
+  assert.equal(instance.ports.dashboard, host.ports.dashboard);
 });
