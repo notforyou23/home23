@@ -9,7 +9,7 @@ const args = process.argv.slice(2);
 const action = args.shift();
 let homeRoot;
 const sensitive = [];
-const USAGE = 'Usage: host.mjs preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|backup-recover|move|install|catalog|status|create|oauth-start|oauth-complete|oauth-status|oauth-cancel|oauth-logout|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]';
+const USAGE = 'Usage: host.mjs preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|backup-recover|move|install|catalog|status|create|oauth-start|oauth-complete|oauth-status|oauth-cancel|oauth-logout|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--provider ABS] [--admit]';
 
 /** Owner-facing wrappers: these replies are host.mjs command results, not installed-UI proof or public trust. */
 function portabilityReply(kind, result) {
@@ -72,13 +72,15 @@ try {
       options.admit = true;
       continue;
     }
-    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection', '--destination'].includes(key) || !args.length || options[key]) throw new Error(USAGE);
+    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection', '--destination', '--provider'].includes(key) || !args.length || options[key]) throw new Error(USAGE);
     options[key] = args.shift();
   }
   if (action !== 'backup-inspect' && action !== 'backup-recover') homeRoot = absoluteHome(options['--home']);
   if (options['--staging'] && !['stage', 'update', 'stage-release', 'download-release', 'install-staged'].includes(action)) throw new Error('--staging is only supported by stage, update, stage-release, download-release, and install-staged.');
   if (options['--feed'] && !['check-update', 'stage-release', 'download-release'].includes(action)) throw new Error('--feed is only supported by check-update, stage-release, and download-release.');
   if (options['--trust-key'] && !['check-update', 'stage-release', 'download-release', 'install-staged'].includes(action)) throw new Error('--trust-key is only supported by check-update, stage-release, download-release, and install-staged.');
+  const oauthActions = ['oauth-start', 'oauth-complete', 'oauth-status', 'oauth-cancel', 'oauth-logout'];
+  if (options['--provider'] && !oauthActions.includes(action)) throw new Error('--provider is only supported by oauth-start, oauth-complete, oauth-status, oauth-cancel, and oauth-logout.');
   let input = {};
   if (action === 'stage' || action === 'update') input.staging = options['--staging'];
   if (options.admit) input.admit = true;
@@ -216,6 +218,10 @@ try {
     try { input = JSON.parse(raw || '{}'); } catch { throw new Error(action === 'create' ? 'Home23 setup requires a valid JSON profile on stdin.' : 'Home23 OAuth requires valid JSON on stdin.'); }
     if (typeof input.credential?.apiKey === 'string') sensitive.push(input.credential.apiKey, input.credential.apiKey.trim());
     if (typeof input.callbackUrl === 'string' && input.callbackUrl) sensitive.push(input.callbackUrl);
+    if (oauthActions.includes(action) && options['--provider']) {
+      if (input.provider && input.provider !== options['--provider']) throw new Error('The provider on stdin must match --provider.');
+      input.provider ||= options['--provider'];
+    }
   }
   const cleanEnv = productEnvironment(homeRoot);
   for (const key of Object.keys(process.env)) delete process.env[key];
