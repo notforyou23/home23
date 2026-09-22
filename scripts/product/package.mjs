@@ -75,6 +75,51 @@ function normalizeModes(root) {
     else throw new Error(`Unexpected special file in package: ${file}`);
   }
 }
+function pruneRuntimeDependencies(app, tools, { platform, arch }) {
+  // npm's production install still ships authoring files. They cost an I/O
+  // operation each during every package stage and integrity check.
+  let removed = 0;
+  for (const relative of ['tests', 'engine/tests']) {
+    const directory = path.join(app, relative);
+    if (fs.existsSync(directory)) { fs.rmSync(directory, { recursive: true }); removed += 1; }
+  }
+  const visit = directory => {
+    if (!fs.existsSync(directory)) return;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (['test', 'tests', '__tests__'].includes(entry.name)) {
+          fs.rmSync(file, { recursive: true }); removed += 1;
+        } else visit(file);
+      } else if (entry.isFile() && /(?:\.d\.[cm]?ts|\.map)$/.test(entry.name)) {
+        fs.unlinkSync(file); removed += 1;
+      }
+    }
+  };
+  for (const relative of ['node_modules', 'engine/node_modules', 'scripts/embedder/node_modules']) {
+    visit(path.join(app, relative));
+  }
+  visit(path.join(tools, 'node_modules'));
+  const nativeBins = path.join(app, 'scripts', 'embedder', 'node_modules', 'onnxruntime-node', 'bin');
+  if (fs.existsSync(nativeBins)) {
+    for (const napi of fs.readdirSync(nativeBins, { withFileTypes: true }).filter(entry => entry.isDirectory() && entry.name.startsWith('napi-'))) {
+      const napiRoot = path.join(nativeBins, napi.name);
+      for (const targetPlatform of fs.readdirSync(napiRoot, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+        const platformRoot = path.join(napiRoot, targetPlatform.name);
+        if (targetPlatform.name !== platform) {
+          fs.rmSync(platformRoot, { recursive: true }); removed += 1;
+          continue;
+        }
+        for (const targetArch of fs.readdirSync(platformRoot, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+          if (targetArch.name !== arch) {
+            fs.rmSync(path.join(platformRoot, targetArch.name), { recursive: true }); removed += 1;
+          }
+        }
+      }
+    }
+  }
+  return removed;
+}
 export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, nodePath, npmPath, cachePath }) {
   sourceRoot = fs.realpathSync(sourceRoot); outputPath = path.resolve(outputPath);
   nodePath = fs.realpathSync(nodePath); npmPath = fs.realpathSync(npmPath); cachePath = path.resolve(cachePath);
@@ -138,6 +183,7 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
     run(path.join(bin, 'node'), [npmPath, 'prune', '--omit=dev', '--ignore-scripts', '--offline', '--no-audit', '--no-fund'],
       { cwd: directory, env, stdio: 'inherit', timeout: 5 * 60 * 1000 });
   }
+  process.stderr.write(`Removing ${pruneRuntimeDependencies(app, tools, metadata)} runtime-unneeded development entries\n`);
   // Load the important native modules with exactly the binary distributed to
   // recipients. Compilation success alone does not prove the ABI matches.
   run(path.join(bin, 'node'), ['--input-type=commonjs', '-e', `
