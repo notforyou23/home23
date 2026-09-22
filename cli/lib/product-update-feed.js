@@ -238,10 +238,10 @@ function verifyDevelopmentReleaseSignature(release, trustKeyPath) {
 }
 
 /**
- * Stage a development-signed local release without mutating the home or applying it.
+ * Resolve a development-signed local release for staging. Does not copy or touch the home.
  * Unverified feeds stay inspection-only; non-development trust claims are refused.
  */
-export function stageAuthenticatedRelease({ homeRoot, feedPath, staging, trustKeyPath } = {}) {
+function resolveDevelopmentReleaseForStaging({ feedPath, trustKeyPath }) {
   const loaded = readFeed(feedPath);
   if (loaded.error) throw codedError(loaded.error.code, loaded.error.message);
 
@@ -275,6 +275,47 @@ export function stageAuthenticatedRelease({ homeRoot, feedPath, staging, trustKe
     throw codedError('digest_mismatch', 'The artifact manifest package id does not match the offered release.');
   }
 
+  return { release, artifactPath, manifest };
+}
+
+function manifestFileBytesTotal(manifest) {
+  return manifest.files
+    .filter(entry => entry.type === 'file')
+    .reduce((total, entry) => total + entry.size, 0);
+}
+
+function stagedFileBytesCopied(staging, manifest) {
+  const payload = join(staging, 'payload');
+  let copied = 0;
+  for (const entry of manifest.files) {
+    if (entry.type !== 'file') continue;
+    try {
+      if (existsSync(join(payload, entry.path))) copied += entry.size;
+    } catch {
+      // Ignore probe failures; stageProductPayload owns integrity.
+    }
+  }
+  return copied;
+}
+
+function stageClaimIsCopying(staging) {
+  const claimPath = `${staging}.home23-stage.json`;
+  try {
+    if (!existsSync(claimPath)) return false;
+    const claim = readPrivateJSON(claimPath);
+    return Boolean(claim && claim.status === 'copying');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stage a development-signed local release without mutating the home or applying it.
+ * Unverified feeds stay inspection-only; non-development trust claims are refused.
+ */
+export function stageAuthenticatedRelease({ homeRoot, feedPath, staging, trustKeyPath } = {}) {
+  const { release, artifactPath } = resolveDevelopmentReleaseForStaging({ feedPath, trustKeyPath });
+
   if (typeof staging !== 'string' || !staging) {
     throw codedError('feed_unavailable', 'A staging path is required.');
   }
@@ -300,4 +341,77 @@ export function stageAuthenticatedRelease({ homeRoot, feedPath, staging, trustKe
     networkInstall: false,
     homeMutated: false,
   };
+}
+
+/**
+ * Download (stage) a development-signed local release with resumable copy progress.
+ * Never mutates the home, never applies an update, and never claims production trust.
+ */
+export function downloadDevelopmentRelease({
+  homeRoot,
+  feedPath,
+  trustKeyPath,
+  staging,
+  onProgress,
+} = {}) {
+  const report = (progress) => {
+    if (typeof onProgress === 'function') onProgress(progress);
+  };
+
+  let packageId = null;
+  let bytesCopied = 0;
+  let bytesTotal = 0;
+
+  try {
+    const { release, artifactPath, manifest } = resolveDevelopmentReleaseForStaging({
+      feedPath,
+      trustKeyPath,
+    });
+    packageId = release.packageId;
+    bytesTotal = manifestFileBytesTotal(manifest);
+
+    if (typeof staging !== 'string' || !staging) {
+      throw codedError('feed_unavailable', 'A staging path is required.');
+    }
+    const destination = resolve(staging);
+
+    report({ phase: 'checking', bytesCopied: 0, bytesTotal, packageId });
+
+    const resumed = stageClaimIsCopying(destination);
+    bytesCopied = resumed ? stagedFileBytesCopied(destination, manifest) : 0;
+    report({
+      phase: resumed ? 'resuming' : 'copying',
+      bytesCopied,
+      bytesTotal,
+      packageId,
+    });
+
+    stageProductPayload({
+      homeRoot,
+      candidatePayload: artifactPath,
+      staging: destination,
+    });
+
+    const staged = verifyProductPayload(join(destination, 'payload'));
+    if (staged.packageId !== release.packageId) {
+      throw codedError('digest_mismatch', 'The staged payload package id does not match the offered release.');
+    }
+
+    bytesCopied = bytesTotal;
+    report({ phase: 'staged', bytesCopied, bytesTotal, packageId });
+
+    return {
+      ok: true,
+      status: 'staged',
+      packageId: release.packageId,
+      publisherTrust: 'development',
+      canInstall: false,
+      networkInstall: false,
+      homeMutated: false,
+      resumed,
+    };
+  } catch (error) {
+    report({ phase: 'failed', bytesCopied, bytesTotal, packageId });
+    throw error;
+  }
 }

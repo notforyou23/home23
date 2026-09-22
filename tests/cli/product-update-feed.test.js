@@ -5,7 +5,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { installProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
-import { inspectReleaseFeed, stageAuthenticatedRelease } from '../../cli/lib/product-update-feed.js';
+import {
+  downloadDevelopmentRelease,
+  inspectReleaseFeed,
+  stageAuthenticatedRelease,
+} from '../../cli/lib/product-update-feed.js';
 
 function tempRoot(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feed-')));
@@ -348,4 +352,136 @@ test('production publisherTrust refuses staging and writes nothing', t => {
   assert.equal(fs.existsSync(staging), false);
   assert.equal(fs.existsSync(`${staging}.home23-stage.json`), false);
   assert.deepEqual(listPayloadFiles(staging), []);
+});
+
+function signedDevelopmentFixture(t, { sourceCommit = 'b'.repeat(40) } = {}) {
+  const { root, home } = installedHome(t);
+  const artifact = path.join(root, 'artifact');
+  const manifest = payload(artifact, { sourceCommit });
+  const { publicKey, privateKey } = developmentKeyPair();
+  const trustKeyPath = path.join(root, 'trust.json');
+  writeTrustKey(trustKeyPath, publicKey);
+  const feedPath = path.join(root, 'feed.json');
+  writeFeed(feedPath, feedBody([releaseFor(artifact, manifest, {
+    trust: { algorithm: 'ed25519', signature: signPackageId(manifest.packageId, privateKey) },
+  })], { publisherTrust: 'development' }));
+  return {
+    root,
+    home,
+    artifact,
+    manifest,
+    trustKeyPath,
+    feedPath,
+    staging: path.join(root, 'staging'),
+  };
+}
+
+test('downloadDevelopmentRelease reports checking then copying then staged without changing home bytes', t => {
+  const f = signedDevelopmentFixture(t);
+  const before = snapshotHome(f.home);
+  const phases = [];
+  const result = downloadDevelopmentRelease({
+    homeRoot: f.home,
+    feedPath: f.feedPath,
+    trustKeyPath: f.trustKeyPath,
+    staging: f.staging,
+    onProgress: progress => phases.push(progress),
+  });
+  assert.deepEqual(result, {
+    ok: true,
+    status: 'staged',
+    packageId: f.manifest.packageId,
+    publisherTrust: 'development',
+    canInstall: false,
+    networkInstall: false,
+    homeMutated: false,
+    resumed: false,
+  });
+  assert.equal(phases.at(-1)?.phase, 'staged');
+  assert.deepEqual(phases.map(item => item.phase), ['checking', 'copying', 'staged']);
+  assert.ok(phases.every(item => item.packageId === f.manifest.packageId));
+  assert.ok(phases.every(item => Number.isInteger(item.bytesCopied) && Number.isInteger(item.bytesTotal)));
+  assert.equal(phases.at(-1).bytesCopied, phases.at(-1).bytesTotal);
+  assert.ok(fs.existsSync(path.join(f.staging, 'payload', 'manifest.json')));
+  assert.deepEqual(snapshotHome(f.home), before);
+});
+
+test('downloadDevelopmentRelease resumes a partial stage without writing the home', t => {
+  const f = signedDevelopmentFixture(t);
+  const before = snapshotHome(f.home);
+  const original = fs.copyFileSync;
+  let copies = 0;
+  fs.copyFileSync = (source, destination, flags) => {
+    if (++copies === 2) {
+      fs.writeFileSync(destination, 'partial', { flag: 'wx' });
+      throw new Error('Simulated copy interruption');
+    }
+    return original(source, destination, flags);
+  };
+  const failedPhases = [];
+  try {
+    assert.throws(
+      () => downloadDevelopmentRelease({
+        homeRoot: f.home,
+        feedPath: f.feedPath,
+        trustKeyPath: f.trustKeyPath,
+        staging: f.staging,
+        onProgress: progress => failedPhases.push(progress.phase),
+      }),
+      /Simulated copy interruption/,
+    );
+  } finally {
+    fs.copyFileSync = original;
+  }
+  assert.ok(failedPhases.includes('failed'));
+  assert.equal(JSON.parse(fs.readFileSync(`${f.staging}.home23-stage.json`, 'utf8')).status, 'copying');
+  assert.deepEqual(snapshotHome(f.home), before);
+
+  const phases = [];
+  const result = downloadDevelopmentRelease({
+    homeRoot: f.home,
+    feedPath: f.feedPath,
+    trustKeyPath: f.trustKeyPath,
+    staging: f.staging,
+    onProgress: progress => phases.push(progress),
+  });
+  assert.equal(result.status, 'staged');
+  assert.equal(result.ok, true);
+  assert.equal(result.homeMutated, false);
+  assert.ok(result.resumed === true || result.status === 'staged');
+  assert.equal(result.resumed, true);
+  assert.deepEqual(phases.map(item => item.phase), ['checking', 'resuming', 'staged']);
+  assert.ok(fs.existsSync(path.join(f.staging, 'payload', 'manifest.json')));
+  assert.deepEqual(snapshotHome(f.home), before);
+});
+
+test('downloadDevelopmentRelease rejects a bad signature without leaving a payload', t => {
+  const { root, home } = installedHome(t);
+  const artifact = path.join(root, 'artifact');
+  const manifest = payload(artifact, { sourceCommit: 'b'.repeat(40) });
+  const { publicKey } = developmentKeyPair();
+  const other = developmentKeyPair();
+  const trustKeyPath = path.join(root, 'trust.json');
+  writeTrustKey(trustKeyPath, publicKey);
+  const feedPath = path.join(root, 'feed.json');
+  writeFeed(feedPath, feedBody([releaseFor(artifact, manifest, {
+    trust: { algorithm: 'ed25519', signature: signPackageId(manifest.packageId, other.privateKey) },
+  })], { publisherTrust: 'development' }));
+  const staging = path.join(root, 'staging');
+  const before = snapshotHome(home);
+  const phases = [];
+  assert.throws(
+    () => downloadDevelopmentRelease({
+      homeRoot: home,
+      feedPath,
+      trustKeyPath,
+      staging,
+      onProgress: progress => phases.push(progress),
+    }),
+    error => error.code === 'signature_invalid',
+  );
+  assert.deepEqual(phases.map(item => item.phase), ['failed']);
+  assert.deepEqual(snapshotHome(home), before);
+  assert.deepEqual(listPayloadFiles(staging), []);
+  assert.equal(fs.existsSync(path.join(staging, 'payload')), false);
 });
