@@ -414,14 +414,18 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     return { ok: true, status: 'installed', homeRoot, packageId: receipt.packageId };
   }
   if (!existsSync(receiptPath(homeRoot))) throw new Error('Install the Home23 runtime before creating or starting a home.');
-  if (action === 'start' && readMoveFence(homeRoot)) {
-    return { ok: false, status: 'move_fenced', homeRoot, error: { code: 'move_source_fenced', message: 'This home was moved. Start stays fenced and the destination was not started.' } };
-  }
-  await validateInstallation(homeRoot, { full: action === 'create' || action === 'start' });
   productEnvironment(homeRoot, { prepare: true });
-  const { default: lockfile } = await import('proper-lockfile');
-  const release = await lockfile.lock(homeRoot, { realpath: false, lockfilePath: join(homeRoot, 'runtime', '.host.lock'), stale: 180000, update: 10000, retries: 0 });
+  const { acquireHostLock } = await import('./product-backup.js');
+  const hostLock = action === 'start' || action === 'stop' || action === 'create' || action === 'semantic-prepare' ? acquireHostLock(homeRoot) : null;
+  if ((action === 'start' || action === 'stop' || action === 'create' || action === 'semantic-prepare') && !hostLock) {
+    return { ok: false, status: 'busy', homeRoot, error: { code: 'host_lifecycle_busy', message: 'Another lifecycle operation holds this home.' } };
+  }
+  const release = () => { if (hostLock) hostLock.release(); };
   try {
+    if (action === 'start' && readMoveFence(homeRoot)) {
+      return { ok: false, status: 'move_fenced', homeRoot, error: { code: 'move_source_fenced', message: 'This home was moved. Start stays fenced and the destination was not started.' } };
+    }
+    await validateInstallation(homeRoot, { full: action === 'create' || action === 'start' });
     let state = stateFor(homeRoot);
     if (action === 'create') return await seedAndCreate(homeRoot, input, state, dependencies);
     if (!state || state.phase === 'creating') throw new Error('Finish creating this Home23 home before starting it.');

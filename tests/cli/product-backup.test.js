@@ -246,3 +246,70 @@ test('move fences the source and leaves the destination stopped', async t => {
   assert.equal(started.ok, false);
   assert.equal(started.error.code, 'move_source_fenced');
 });
+
+test('move requires the resident Seed even when the resident is not Milo', async t => {
+  const fixture = stoppedHome(t);
+  const hostPath = path.join(fixture.home, '.home23-host.json');
+  const host = JSON.parse(fs.readFileSync(hostPath, 'utf8'));
+  host.profile.name = 'ada';
+  fs.writeFileSync(hostPath, JSON.stringify(host));
+  const destination = path.join(fixture.root, 'ada-dest');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  await assert.rejects(
+    () => moveHome({ sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet),
+    error => error.code === 'backup_identity_missing',
+  );
+});
+
+test('a live move owner keeps the lock after its mtime goes stale', async t => {
+  const fixture = stoppedHome(t);
+  const seed = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(seed, { recursive: true });
+  fs.writeFileSync(path.join(seed, 'birth-receipt.json'), '{"seedId":"milo"}\n');
+  let blocked = false;
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, {
+    ...quiet,
+    afterLock: async () => {
+      const lockPath = path.join(fixture.home, 'runtime', '.host.lock');
+      const stale = new Date(Date.now() - 400000);
+      fs.utimesSync(lockPath, stale, stale);
+      await assert.rejects(
+        () => createHomeBackup({
+          homeRoot: fixture.home,
+          archivePath: path.join(fixture.root, 'out', 'other.h23b'),
+          keyPath: path.join(fixture.root, 'out', 'other-key.json'),
+        }, quiet),
+        error => error.code === 'backup_lifecycle_busy',
+      );
+      blocked = true;
+    },
+  });
+  assert.equal(blocked, true);
+});
+
+test('an interrupted move resumes the fence without rewriting the source host record', async t => {
+  const fixture = stoppedHome(t);
+  const seed = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(seed, { recursive: true });
+  fs.writeFileSync(path.join(seed, 'birth-receipt.json'), '{"seedId":"resume"}\n');
+  fs.writeFileSync(path.join(fixture.home, '.home23-install.json'), '{"schema":"home23.product-install.v1","status":"installed"}\n');
+  const hostPath = path.join(fixture.home, '.home23-host.json');
+  const before = fs.readFileSync(hostPath);
+  const destination = path.join(fixture.root, 'resume-dest');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  await assert.rejects(
+    () => moveHome({
+      sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+    }, { ...quiet, afterRestore: () => { throw Object.assign(new Error('interrupted'), { code: 'move_interrupted' }); } }),
+    error => error.code === 'move_interrupted',
+  );
+  assert.equal(readMoveFence(fixture.home), null);
+  assert.equal(fs.readFileSync(hostPath).equals(before), true);
+  const moved = await moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, quiet);
+  assert.equal(moved.fenced, true);
+  assert.equal(moved.resumed, true);
+  assert.equal(fs.readFileSync(hostPath).equals(before), true);
+  assert.equal(fs.readFileSync(path.join(destination, 'app/instances/milo/substrate/seed-01/birth-receipt.json'), 'utf8'), '{"seedId":"resume"}\n');
+});
