@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { installProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
-import { applyProductUpdate, resumeProductUpdate, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
+import { applyProductUpdate, readUpdateJournal, resumeProductUpdate, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
 import { inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -434,4 +434,95 @@ test('unchanged trees reuse payload verification and tampering still fails', asy
   );
   assert.equal(packageId(tampered.home), tampered.installed.packageId);
   assert.equal(preserved(tampered.home).conversation, 'hello-milo');
+});
+
+test('retained unchanged files stay independent after live overwrite and chmod', async t => {
+  const fixture = homeFixture(t);
+  const relative = 'bin/node';
+  const beforeBytes = fs.readFileSync(path.join(fixture.home, relative));
+  const beforeMode = fs.lstatSync(path.join(fixture.home, relative)).mode & 0o777;
+  assert.equal(beforeBytes.equals(fs.readFileSync(path.join(fixture.candidate, relative))), true);
+  const result = await applyProductUpdate(
+    { homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging },
+    quiet,
+  );
+  assert.equal(result.status, 'committed');
+  const previousFile = path.join(updateDirectoryFor(fixture.home), 'previous', relative);
+  const liveFile = path.join(fixture.home, relative);
+  assert.equal(fs.lstatSync(previousFile).isFile(), true);
+  assert.notEqual(fs.lstatSync(previousFile).ino, fs.lstatSync(liveFile).ino);
+  assert.deepEqual(fs.readFileSync(previousFile), beforeBytes);
+  assert.equal(fs.lstatSync(previousFile).mode & 0o777, beforeMode);
+  fs.writeFileSync(liveFile, 'live-overwrite-after-update\n', { mode: 0o600 });
+  fs.chmodSync(liveFile, 0o600);
+  assert.deepEqual(fs.readFileSync(previousFile), beforeBytes);
+  assert.equal(fs.lstatSync(previousFile).mode & 0o777, beforeMode);
+  assert.equal(fs.readFileSync(liveFile, 'utf8'), 'live-overwrite-after-update\n');
+});
+
+test('interrupted retention resumes by rebuilding previous without a second home', async t => {
+  const fixture = homeFixture(t);
+  const before = preserved(fixture.home);
+  let attempts = 0;
+  await assert.rejects(
+    () => applyProductUpdate(
+      { homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging },
+      {
+        ...quiet,
+        retainPrevious(home, updateDirectory) {
+          attempts += 1;
+          const previous = path.join(updateDirectory, 'previous');
+          fs.rmSync(previous, { recursive: true, force: true });
+          fs.mkdirSync(previous, { recursive: true, mode: 0o700 });
+          fs.writeFileSync(path.join(previous, 'incomplete'), 'partial-retention\n');
+          throw new Error('injected retention interrupt');
+        },
+      },
+    ),
+    /injected retention interrupt/,
+  );
+  assert.equal(attempts, 1);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'checkpointed');
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'previous', 'incomplete')), true);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+  assert.equal(resumed.status, 'committed');
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+  const previous = path.join(updateDirectoryFor(fixture.home), 'previous');
+  assert.equal(fs.existsSync(path.join(previous, 'incomplete')), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(previous, 'manifest.json'), 'utf8')).packageId, fixture.installed.packageId);
+  assert.equal(fs.readFileSync(path.join(previous, 'bin/node'), 'utf8'), fs.readFileSync(path.join(fixture.current, 'bin/node'), 'utf8'));
+  assert.equal(fs.readdirSync(fixture.root).filter(name => name === 'home').length, 1);
+});
+
+test('cross-device link fallback retains an independent regular file', async t => {
+  const fixture = homeFixture(t);
+  let sawExdev = false;
+  const result = await applyProductUpdate(
+    { homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging },
+    {
+      ...quiet,
+      linkSync() {
+        sawExdev = true;
+        const error = new Error('cross-device link');
+        error.code = 'EXDEV';
+        throw error;
+      },
+    },
+  );
+  assert.equal(result.status, 'committed');
+  assert.equal(sawExdev, true);
+  const previousFile = path.join(updateDirectoryFor(fixture.home), 'previous', 'bin/node');
+  const liveFile = path.join(fixture.home, 'bin/node');
+  assert.equal(fs.lstatSync(previousFile).isFile(), true);
+  assert.equal(fs.lstatSync(previousFile).isSymbolicLink(), false);
+  assert.equal(fs.lstatSync(previousFile).nlink, 1);
+  assert.notEqual(fs.lstatSync(previousFile).ino, fs.lstatSync(liveFile).ino);
+  const before = fs.readFileSync(previousFile);
+  const beforeMode = fs.lstatSync(previousFile).mode & 0o777;
+  fs.writeFileSync(liveFile, 'live-after-exdev-fallback\n', { mode: 0o700 });
+  fs.chmodSync(liveFile, 0o700);
+  assert.deepEqual(fs.readFileSync(previousFile), before);
+  assert.equal(fs.lstatSync(previousFile).mode & 0o777, beforeMode);
 });
