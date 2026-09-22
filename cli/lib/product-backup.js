@@ -2,6 +2,7 @@
 import { execFile } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
   constants as fsConstants,
   fsyncSync,
@@ -818,12 +819,80 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
   }
   const ecosystem = join(destination, 'app/ecosystem.config.cjs');
   if (exists(ecosystem)) {
-    const text = readFileSync(ecosystem, 'utf8').split(source).join(destination);
+    let text = readFileSync(ecosystem, 'utf8').split(source).join(destination);
+    text = replaceAssignedPorts(text, oldPorts, newPorts);
     if (text.includes(source)) fail('move_rebind_incomplete', 'Destination process registration still names the source home.');
     const temporary = `${ecosystem}.${randomUUID()}.tmp`;
     writeFileSync(temporary, text, { mode: lstatSync(ecosystem).mode & 0o777 });
     renameSync(temporary, ecosystem);
   }
+  rebindSemanticPrep(source, destination, newPorts);
+  rebindAgentsManifest(source, destination);
+  const savedProcesses = join(destination, 'runtime/ecosystem.config.json');
+  if (exists(savedProcesses)) unlinkSync(savedProcesses);
+}
+
+function replaceAssignedPorts(text, oldPorts, newPorts) {
+  if (!oldPorts || !newPorts) return text;
+  let next = text;
+  for (const key of Object.keys(newPorts)) {
+    const previous = oldPorts[key];
+    const assigned = newPorts[key];
+    if (!Number.isInteger(previous) || !Number.isInteger(assigned) || previous === assigned) continue;
+    next = next.split(`127.0.0.1:${previous}`).join(`127.0.0.1:${assigned}`);
+    next = next.split(`String(${previous})`).join(`String(${assigned})`);
+  }
+  return next;
+}
+
+function writePrivateJSON(file, value) {
+  const mode = exists(file) ? (lstatSync(file).mode & 0o777) : 0o600;
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode });
+  renameSync(temporary, file);
+}
+
+function rebindSemanticPrep(source, destination, newPorts) {
+  const file = join(destination, 'runtime/semantic-prep.json');
+  if (!exists(file)) return;
+  let prep;
+  try { prep = JSON.parse(readFileSync(file, 'utf8')); }
+  catch { fail('move_rebind_incomplete', 'Destination semantic preparation could not be read.'); }
+  if (prep?.schema !== 'home23.semantic-prep.v1') fail('move_rebind_incomplete', 'Destination semantic preparation has an unknown schema.');
+  const recipeId = prep.recipeId;
+  prep.homeRoot = destination;
+  prep.workerPid = 0;
+  if (Number.isInteger(newPorts?.embedder)) prep.port = newPorts.embedder;
+  if (typeof prep.cacheDir === 'string') prep.cacheDir = replaceHomePath(prep.cacheDir, source, destination);
+  if (Array.isArray(prep.workerArgv)) {
+    prep.workerArgv = prep.workerArgv.map(part => (typeof part === 'string' ? replaceHomePath(part, source, destination) : part));
+    const node = join(destination, 'bin/node');
+    const worker = join(destination, 'app/scripts/product/semantic-prepare-worker.mjs');
+    if (typeof prep.workerArgv[0] === 'string' && !prep.workerArgv[0].startsWith(`${destination}${sep}`)) prep.workerArgv[0] = node;
+    const workerIndex = prep.workerArgv.findIndex(part => typeof part === 'string' && part.endsWith('semantic-prepare-worker.mjs'));
+    if (workerIndex >= 0 && !prep.workerArgv[workerIndex].startsWith(`${destination}${sep}`)) prep.workerArgv[workerIndex] = worker;
+  }
+  if (recipeId) prep.recipeId = recipeId;
+  if (treeContains(prep, source)) fail('move_rebind_incomplete', 'Destination semantic preparation still names the source home.');
+  writePrivateJSON(file, prep);
+}
+
+function rebindAgentsManifest(source, destination) {
+  const file = join(destination, 'app/config/agents.json');
+  if (!exists(file)) return;
+  let agents;
+  try { agents = JSON.parse(readFileSync(file, 'utf8')); }
+  catch { fail('move_rebind_incomplete', 'Destination agent registry could not be read.'); }
+  if (!Array.isArray(agents)) fail('move_rebind_incomplete', 'Destination agent registry is not a list.');
+  const keys = ['configPath', 'instanceRoot', 'brainPath', 'workspacePath', 'conversationsPath', 'logsPath'];
+  for (const agent of agents) {
+    if (!agent || typeof agent !== 'object') continue;
+    for (const key of keys) {
+      if (typeof agent[key] === 'string') agent[key] = replaceHomePath(agent[key], source, destination);
+    }
+  }
+  if (treeContains(agents, source)) fail('move_rebind_incomplete', 'Destination agent registry still names the source home.');
+  writePrivateJSON(file, agents);
 }
 
 async function rebindDestination(source, destination) {
@@ -880,6 +949,10 @@ function installMovedRuntime(source, destination, lock) {
     if (!exists(from)) continue;
     if (entry.type === 'directory') {
       mkdirSync(to, { recursive: true, mode: entry.mode });
+      if (exists(to)) {
+        const stat = lstatSync(to);
+        if (stat.isDirectory() && !stat.isSymbolicLink()) chmodSync(to, entry.mode);
+      }
       continue;
     }
     if (entry.type === 'symlink') {
@@ -888,7 +961,10 @@ function installMovedRuntime(source, destination, lock) {
       symlinkSync(readlinkSync(from), to);
       continue;
     }
-    if (exists(to) && lstatSync(to).isFile() && streamHash(from, lock) === streamHash(to, lock)) continue;
+    if (exists(to) && lstatSync(to).isFile() && streamHash(from, lock) === streamHash(to, lock)) {
+      if ((lstatSync(to).mode & 0o777) !== entry.mode) chmodSync(to, entry.mode);
+      continue;
+    }
     copyInstalledFile(from, to, entry.mode, lock);
   }
   copyInstalledFile(join(source, 'manifest.json'), join(destination, 'manifest.json'), 0o644, lock);

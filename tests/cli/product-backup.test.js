@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHomeBackup, inspectHomeBackup, moveHome, readMoveFence } from '../../cli/lib/product-backup.js';
+import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
 
 const quiet = { listProcesses: async () => [] };
@@ -377,6 +378,29 @@ test('move rebinds destination ports and source paths without changing identity 
     '',
   ].join('\n'));
   fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/engine.yaml'), `model: fixture-local\nfeeder:\n  path: ${fixture.home}/app/instances/milo/workspace\n`);
+  fs.mkdirSync(path.join(fixture.home, 'runtime'), { recursive: true, mode: 0o700 });
+  const recipeId = '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9';
+  fs.writeFileSync(path.join(fixture.home, 'runtime/semantic-prep.json'), JSON.stringify({
+    schema: 'home23.semantic-prep.v1',
+    homeRoot: fixture.home,
+    phase: 'ready',
+    recipeId,
+    port: 21096,
+    cacheDir: path.join(fixture.home, 'runtime/embedder-cache'),
+    workerPid: 0,
+    workerArgv: [path.join(fixture.home, 'bin/node'), path.join(fixture.root, 'package-a/app/scripts/product/semantic-prepare-worker.mjs'), '--home', fixture.home],
+  }), { mode: 0o600 });
+  fs.writeFileSync(path.join(fixture.home, 'app/config/agents.json'), JSON.stringify([{
+    name: 'milo',
+    configPath: path.join(fixture.home, 'app/instances/milo/config.yaml'),
+    instanceRoot: path.join(fixture.home, 'app/instances/milo'),
+    brainPath: path.join(fixture.home, 'app/instances/milo/brain'),
+  }]), { mode: 0o600 });
+  fs.mkdirSync(path.join(fixture.home, 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(fixture.home, 'runtime/ecosystem.config.json'), JSON.stringify({
+    apps: [{ cwd: path.join(fixture.home, 'app'), env: { HOME23_EMBEDDER_PORT: '21096' } }],
+  }), { mode: 0o600 });
+  const sourcePrep = fs.readFileSync(path.join(fixture.home, 'runtime/semantic-prep.json'));
   const destination = path.join(fixture.root, 'rebind-dest');
   fs.mkdirSync(destination, { mode: 0o755 });
   const moved = await moveHome({
@@ -412,4 +436,67 @@ test('move rebinds destination ports and source paths without changing identity 
   const engine = yaml.load(fs.readFileSync(path.join(destination, 'app/instances/milo/engine.yaml'), 'utf8'));
   assert.equal(engine.model, 'fixture-local');
   assert.equal(engine.feeder.path, `${destination}/app/instances/milo/workspace`);
+  assert.equal(fs.readFileSync(path.join(fixture.home, 'runtime/semantic-prep.json')).equals(sourcePrep), true);
+  const prep = JSON.parse(fs.readFileSync(path.join(destination, 'runtime/semantic-prep.json'), 'utf8'));
+  assert.equal(prep.homeRoot, destination);
+  assert.equal(prep.phase, 'ready');
+  assert.equal(prep.recipeId, recipeId);
+  assert.equal(prep.port, destHost.ports.embedder);
+  assert.equal(prep.cacheDir, path.join(destination, 'runtime/embedder-cache'));
+  assert.equal(prep.workerArgv[0], path.join(destination, 'bin/node'));
+  assert.equal(prep.workerArgv[1], path.join(destination, 'app/scripts/product/semantic-prepare-worker.mjs'));
+  assert.equal(prep.workerArgv[3], destination);
+  assert.equal(JSON.stringify(prep).includes(fixture.home), false);
+  const agents = JSON.parse(fs.readFileSync(path.join(destination, 'app/config/agents.json'), 'utf8'));
+  assert.equal(agents[0].instanceRoot, path.join(destination, 'app/instances/milo'));
+  assert.equal(agents[0].brainPath, path.join(destination, 'app/instances/milo/brain'));
+  assert.equal(JSON.stringify(agents).includes(fixture.home), false);
+  assert.equal(fs.existsSync(path.join(destination, 'runtime/ecosystem.config.json')), false);
+  assert.equal(fs.existsSync(path.join(fixture.home, 'runtime/ecosystem.config.json')), true);
+});
+
+test('a resumed move corrects existing directory and file modes from the manifest', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const files = {
+    'bin/node': [0o755, '#!/bin/sh\n'],
+    'app/marker.txt': [0o644, 'marker\n'],
+    'app/cli/home23.js': [0o644, 'export {};\n'],
+    'app/cli/lib/product-payload.js': [0o644, 'export {};\n'],
+    'app/scripts/product/host.mjs': [0o644, 'export {};\n'],
+    'tools/node_modules/pm2/bin/pm2': [0o644, 'pm2\n'],
+  };
+  for (const [relative, [mode, contents]] of Object.entries(files)) {
+    const file = path.join(home, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(file, contents, { mode });
+    fs.chmodSync(file, mode);
+  }
+  for (const dir of ['bin', 'app', 'app/cli', 'app/cli/lib', 'app/scripts', 'app/scripts/product', 'tools', 'tools/node_modules', 'tools/node_modules/pm2', 'tools/node_modules/pm2/bin']) {
+    fs.chmodSync(path.join(home, dir), 0o755);
+  }
+  writeProductManifest(home, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+  fs.mkdirSync(path.join(home, 'app/instances/milo/substrate/seed-01'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'app/instances/milo/substrate/seed-01/birth-receipt.json'), '{"seedId":"modes"}\n');
+  fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({
+    schema: 'home23.host.v2', homeRoot: home, profile: { name: 'milo', provider: 'ollama-local', model: 'fixture-local' },
+    desiredRunning: false, phase: 'prepared', encoderRequired: false,
+  }), { mode: 0o600 });
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const destination = path.join(root, 'dest');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  const moveArgs = { sourceHome: home, destinationRoot: destination, archivePath: path.join(out, 'home.h23b'), keyPath: path.join(out, 'key.json') };
+  await assert.rejects(
+    () => moveHome(moveArgs, { ...quiet, afterRestore: () => { throw Object.assign(new Error('interrupted'), { code: 'move_interrupted' }); } }),
+    error => error.code === 'move_interrupted',
+  );
+  fs.mkdirSync(path.join(destination, 'app'), { recursive: true });
+  fs.writeFileSync(path.join(destination, 'app/marker.txt'), 'marker\n', { mode: 0o600 });
+  fs.chmodSync(path.join(destination, 'app'), 0o700);
+  const moved = await moveHome(moveArgs, quiet);
+  assert.equal(moved.fenced, true);
+  assert.equal(fs.statSync(path.join(destination, 'app')).mode & 0o777, 0o755);
+  assert.equal(fs.statSync(path.join(destination, 'app/marker.txt')).mode & 0o777, 0o644);
+  assert.equal(fs.readFileSync(path.join(destination, 'app/instances/milo/substrate/seed-01/birth-receipt.json'), 'utf8'), '{"seedId":"modes"}\n');
 });
