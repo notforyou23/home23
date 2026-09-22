@@ -473,12 +473,10 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
 
   const resumed = Boolean(journal && journal.phase !== 'installing');
   if (journal?.phase === 'completed') {
-    const host = JSON.parse(readFileSync(join(destination, '.home23-host.json'), 'utf8'));
-    return {
-      ok: true, status: 'adopted', schema: ADOPTION_SCHEMA, canAdopt: true,
-      sourceHome: source, destinationRoot: destination, resumed: true, homeBirth: 'not_run',
-      desiredRunning: host.desiredRunning === true, phase: host.phase, profile: host.profile || null, plan,
-    };
+    return refuseAdoption(plan, [reason(
+      'supervisor_fence_unavailable',
+      'Managed/source adoption is unavailable. A journal already marked completed is not adoption success.',
+    )], destination);
   }
 
   try { requireSupervisorFence(plan.layout); }
