@@ -715,7 +715,7 @@ class ProviderRegistry {
 
       if (!assignment) {
         console.warn(`[Registry] No assignment for context: ${context}, using default provider`);
-        return this.getProvider('claude-sonnet-4-7');
+        return this.getProvider('claude-sonnet-5');
       }
 
       // Try primary provider
@@ -737,7 +737,7 @@ class ProviderRegistry {
 
       if (!provider) {
         console.warn(`[Registry] No provider available for context: ${context}`);
-        return this.getProvider('claude-sonnet-4-7');  // Ultimate fallback
+        return this.getProvider('claude-sonnet-5');  // Ultimate fallback
       }
 
       // Register model assignment for later lookups
@@ -748,7 +748,7 @@ class ProviderRegistry {
       return provider;
     } catch (e) {
       console.warn('[Registry] Config error, using default provider:', e.message);
-      return this.getProvider('claude-sonnet-4-7');
+      return this.getProvider('claude-sonnet-5');
     }
   }
 

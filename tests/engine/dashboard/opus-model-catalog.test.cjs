@@ -17,7 +17,7 @@ test('Home23 model defaults use Claude Opus 4.8 instead of the previous Opus rel
   const homeConfig = yaml.load(fs.readFileSync(path.join(repoRoot, 'config/home.yaml.example'), 'utf8'));
 
   assert.deepEqual(homeConfig.providers.anthropic.defaultModels, [
-    'claude-sonnet-4-7',
+    'claude-sonnet-5',
     'claude-opus-4-8',
     'claude-haiku-4-5'
   ]);

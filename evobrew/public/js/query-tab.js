@@ -429,7 +429,7 @@ function getQueryFallbackModelHtml() {
   return `
     <option value="openai-codex/gpt-5.5" data-provider="openai-codex">GPT-5.5</option>
     <option value="anthropic/claude-opus-4-8" data-provider="anthropic">Claude Opus 4.8</option>
-    <option value="anthropic/claude-sonnet-4-7" data-provider="anthropic">Claude Sonnet 4.7</option>
+    <option value="anthropic/claude-sonnet-5" data-provider="anthropic">Claude Sonnet 5</option>
     <option value="anthropic/claude-haiku-4-5" data-provider="anthropic">Claude Haiku 4.5</option>
     <option value="openai/gpt-5.5" data-provider="openai">GPT-5.5 API</option>
     <option value="openai/gpt-5.5-pro" data-provider="openai">GPT-5.5 Pro API</option>
@@ -469,7 +469,7 @@ function seedQueryModelSelects() {
     } else if ([...sweepSelect.options].some((option) => option.value === 'minimax/MiniMax-M3')) {
       sweepSelect.value = 'minimax/MiniMax-M3';
     } else {
-      sweepSelect.value = 'anthropic/claude-sonnet-4-7';
+      sweepSelect.value = 'anthropic/claude-sonnet-5';
     }
   }
 
@@ -540,7 +540,7 @@ function applyQueryModelCatalog(data) {
       sweepSelect.appendChild(buildQueryModelOptions(byProvider, currentSweepValue));
       if (![...sweepSelect.options].some((option) => option.selected)) {
         const fallbackSweep = [...sweepSelect.options].find((option) => option.value === 'minimax/MiniMax-M3')
-          || [...sweepSelect.options].find((option) => option.value === 'anthropic/claude-sonnet-4-7')
+          || [...sweepSelect.options].find((option) => option.value === 'anthropic/claude-sonnet-5')
           || sweepSelect.options[0];
         if (fallbackSweep) fallbackSweep.selected = true;
       }

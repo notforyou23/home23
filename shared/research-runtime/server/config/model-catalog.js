@@ -137,7 +137,7 @@ const BUILTIN_MODEL_CATALOG = {
       label: 'Anthropic',
       executionDefaults: BUILTIN_EXECUTION_DEFAULTS.anthropic,
       models: [
-        { id: 'claude-sonnet-4-7', label: 'Claude Sonnet 4.7', kind: 'chat' },
+        { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', kind: 'chat' },
         { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', kind: 'chat' },
         { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', kind: 'chat' }
       ]

@@ -9,7 +9,7 @@
  * - Tool calling (OpenAI format → Anthropic format)
  * - Streaming responses
  * - Extended thinking (reasoning effort → extended_thinking)
- * - Web search via native web_search_20250305 tool (Claude Sonnet 4.7+)
+ * - Web search via native web_search_20250305 tool
  */
 
 const Anthropic = require('@anthropic-ai/sdk');
@@ -37,12 +37,12 @@ class AnthropicClient {
 
     // Model mapping (GPT names → Claude models)
     this.modelMapping = config.modelMapping || {
-      'gpt-5.5': 'claude-sonnet-4-7',
+      'gpt-5.5': 'claude-sonnet-5',
       'gpt-5.5-pro': 'claude-opus-4-8',
-      'gpt-5.4': 'claude-sonnet-4-7',
-      'gpt-5.4-mini': 'claude-sonnet-4-7',
+      'gpt-5.4': 'claude-sonnet-5',
+      'gpt-5.4-mini': 'claude-sonnet-5',
       'gpt-5.4-nano': 'claude-haiku-4-5',
-      'gpt-5': 'claude-sonnet-4-7'
+      'gpt-5': 'claude-sonnet-5'
     };
 
     // Default settings
@@ -393,7 +393,7 @@ class AnthropicClient {
 
   /**
    * Generate with web search
-   * Uses Anthropic's native web_search_20250305 tool (Claude Sonnet 4.7+)
+   * Uses Anthropic's native web_search_20250305 tool
    * Falls back to DuckDuckGo if native search not available
    */
   async generateWithWebSearch(options = {}) {
@@ -870,12 +870,12 @@ class AnthropicClient {
    * Get model with mapping
    */
   _getModelFromOptions(options) {
-    const requestedModel = options.model || 'claude-sonnet-4-7';
+    const requestedModel = options.model || 'claude-sonnet-5';
     // If already a Claude model, use it directly
     if (requestedModel.startsWith('claude-')) {
       return requestedModel;
     }
-    return this.modelMapping[requestedModel] || 'claude-sonnet-4-7';
+    return this.modelMapping[requestedModel] || 'claude-sonnet-5';
   }
 
   /**

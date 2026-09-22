@@ -93,8 +93,8 @@ class QueryEngine {
     this.embeddingsCache = path.join(runtimeDir, 'embeddings-cache.json');
     this.exportsDir = path.join(runtimeDir, 'exports');
     this.modelDefaults = {
-      queryModel: process.env.COSMO_QUERY_MODEL || 'claude-sonnet-4-7',
-      pgsSweepModel: process.env.COSMO_PGS_SWEEP_MODEL || process.env.PGS_SWEEP_MODEL || 'claude-sonnet-4-7'
+      queryModel: process.env.COSMO_QUERY_MODEL || 'claude-sonnet-5',
+      pgsSweepModel: process.env.COSMO_PGS_SWEEP_MODEL || process.env.PGS_SWEEP_MODEL || 'claude-sonnet-5'
     };
     
     // OpenAI is optional - only needed for semantic search embeddings
@@ -1268,7 +1268,7 @@ STYLE:
     'gpt-5': 128000,
     'claude-opus-4-8': 200000,
     'claude-opus': 200000,
-    'claude-sonnet-4-7': 128000,
+    'claude-sonnet-5': 128000,
     'claude-sonnet': 128000,
     'default': 128000
   };
@@ -1284,7 +1284,7 @@ STYLE:
     'gpt-5': 3000,         // 128K context, max reasoning
     'claude-opus-4-8': 4200,
     'claude-opus': 4000,
-    'claude-sonnet-4-7': 3000,
+    'claude-sonnet-5': 3000,
     'claude-sonnet': 2800,
     'default': 2500
   };
@@ -1307,7 +1307,7 @@ STYLE:
     const startTime = Date.now(); // Performance tracking
 
     const {
-      model: requestedModel = this.modelDefaults?.queryModel || 'claude-sonnet-4-7',
+      model: requestedModel = this.modelDefaults?.queryModel || 'claude-sonnet-5',
       mode = 'normal',
       exportFormat = null,
       // NEW: Enhancement options (all opt-in)
@@ -1320,7 +1320,7 @@ STYLE:
       priorContext = null, // NEW: For follow-up queries - includes prior query and answer
       onChunk = null // NEW (2026-01-21): Optional streaming callback
     } = options;
-    const model = getModelId(requestedModel) || this.modelDefaults?.queryModel || 'claude-sonnet-4-7';
+    const model = getModelId(requestedModel) || this.modelDefaults?.queryModel || 'claude-sonnet-5';
     
     // Validate model - GPT-5 and Claude models supported
     const isClaudeModel = model.startsWith('claude');
@@ -1859,7 +1859,7 @@ STYLE:
     return result;
   }
 
-  buildContext(state, relevantMemory, relevantThoughts, metrics, report, mode, outputFiles = null, model = 'claude-sonnet-4-7') {
+  buildContext(state, relevantMemory, relevantThoughts, metrics, report, mode, outputFiles = null, model = 'claude-sonnet-5') {
     let context = `# COSMO Research State\n\n`;
     const isGrounded = mode === 'grounded';
     
@@ -2677,7 +2677,7 @@ SECTION E: Prioritize immediate next actions (design partners, pilots, validatio
    * This ensures executives get compressed views that are 100% faithful to the original answer
    */
   async executeExecutiveCompression(query, baseAnswer, options = {}) {
-    const { model = this.modelDefaults?.queryModel || 'claude-sonnet-4-7', baseMetadata = {} } = options;
+    const { model = this.modelDefaults?.queryModel || 'claude-sonnet-5', baseMetadata = {} } = options;
     
     // SMART DETECTION: Determine query type to add contextual emphasis
     const queryType = this.detectQueryType(query, baseAnswer);
@@ -3867,7 +3867,7 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
    */
   async executeEnhancedQuery(query, options = {}) {
     const {
-      model: requestedModel = this.modelDefaults?.queryModel || 'claude-sonnet-4-7',
+      model: requestedModel = this.modelDefaults?.queryModel || 'claude-sonnet-5',
       mode = 'normal',
       exportFormat = null,
       includeFiles = true,
@@ -3887,7 +3887,7 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
       priorContext = null, // For follow-up queries
       onChunk = null // NEW (2026-01-21): Optional streaming callback
     } = options;
-    const model = getModelId(requestedModel) || this.modelDefaults?.queryModel || 'claude-sonnet-4-7';
+    const model = getModelId(requestedModel) || this.modelDefaults?.queryModel || 'claude-sonnet-5';
     
     // PGS: Partitioned Graph Synthesis for full-coverage queries
     if (enablePGS) {

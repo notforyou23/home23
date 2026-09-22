@@ -8,7 +8,7 @@
       'openai-codex/gpt-5.6-luna',
       'openai-codex/gpt-5.5',
       'anthropic/claude-opus-4-8',
-      'anthropic/claude-sonnet-4-7',
+      'anthropic/claude-sonnet-5',
       'openai/gpt-5.5',
       'openai/gpt-5.5-pro',
       'minimax/MiniMax-M3',
@@ -32,7 +32,7 @@
     {
       title: 'Anthropic',
       note: 'Home23 Claude models from the shared provider catalog.',
-      values: ['anthropic/claude-opus-4-8', 'anthropic/claude-sonnet-4-7', 'anthropic/claude-haiku-4-5']
+      values: ['anthropic/claude-opus-4-8', 'anthropic/claude-sonnet-5', 'anthropic/claude-haiku-4-5']
     },
     {
       title: 'OpenAI Codex',
