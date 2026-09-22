@@ -1,9 +1,11 @@
 # Home updates and portability
 
 Status: engineering plan with backend preview, declared-state preservation
-checks, contract comparison, local candidate staging, and one schema-preserving
-local apply/recovery path, September 21, 2026. Network installation, publisher
-trust, backup/move, and existing-owner adoption remain unimplemented.
+checks, contract comparison, local candidate staging, one schema-preserving
+local apply/recovery path, a local unverified release-feed check, and an
+encrypted stopped-home backup that can be inspected before writers start,
+September 21, 2026. Network installation, publisher trust, native Check for
+Updates, Move Home, and existing-owner adoption remain unimplemented.
 
 Home23 must remain usable, recoverable and movable for its current owner even
 if it is never distributed to anyone else. The same lifecycle must support a

@@ -60,11 +60,15 @@ themselves make an update safe.
 a schema-preserving Host v1 package replacement. It keeps the v1 path contract,
 checks the stored coordination schema, and resumes from a journal outside
 `app/`. It does not download a release, migrate data, or provide the native
-Check for Updates screen. See [Home updates and portability](HOME-UPDATES-AND-PORTABILITY.md).
+Check for Updates screen. `check-update --home ABS --feed ABS` reads one local
+unverified feed and reports unavailable, damaged, incompatible, current, or
+available. A missing feed is not up to date. It does not download or install,
+and `canInstall` stays false. See [Home updates and portability](HOME-UPDATES-AND-PORTABILITY.md).
 
 The companion invokes the bundled Node with `app/scripts/product/host.mjs`.
 The protocol accepts one action and an absolute `--home` path; `install`,
-`preview` and `stage` also accept `--payload`. Only `stage` accepts `--staging`.
+`preview` and `stage` also accept `--payload`. Only `stage` and `update` accept
+`--staging`. Only `check-update` accepts `--feed`.
 Creation data arrives over stdin, including any credential,
 so keys never appear in arguments, preferences, or returned receipts. Stdout is
 one JSON result. Diagnostic progress goes to stderr.
