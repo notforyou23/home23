@@ -305,6 +305,7 @@ test('development signature stages a fixture payload without mutating the home',
     status: 'staged',
     packageId: manifest.packageId,
     publisherTrust: 'development',
+    developmentSignatureVerified: true,
     canInstall: false,
     networkInstall: false,
     homeMutated: false,
@@ -382,11 +383,11 @@ function signedDevelopmentFixture(t, { sourceCommit = 'b'.repeat(40) } = {}) {
   };
 }
 
-test('downloadDevelopmentRelease reports checking then copying then staged without changing home bytes', t => {
+test('downloadDevelopmentRelease reports checking then copying then staged without changing home bytes', async t => {
   const f = signedDevelopmentFixture(t);
   const before = snapshotHome(f.home);
   const phases = [];
-  const result = downloadDevelopmentRelease({
+  const result = await downloadDevelopmentRelease({
     homeRoot: f.home,
     feedPath: f.feedPath,
     trustKeyPath: f.trustKeyPath,
@@ -398,6 +399,7 @@ test('downloadDevelopmentRelease reports checking then copying then staged witho
     status: 'staged',
     packageId: f.manifest.packageId,
     publisherTrust: 'development',
+    developmentSignatureVerified: true,
     canInstall: false,
     networkInstall: false,
     homeMutated: false,
@@ -412,7 +414,7 @@ test('downloadDevelopmentRelease reports checking then copying then staged witho
   assert.deepEqual(snapshotHome(f.home), before);
 });
 
-test('downloadDevelopmentRelease resumes a partial stage without writing the home', t => {
+test('downloadDevelopmentRelease resumes a partial stage without writing the home', async t => {
   const f = signedDevelopmentFixture(t);
   const before = snapshotHome(f.home);
   const original = fs.copyFileSync;
@@ -426,7 +428,7 @@ test('downloadDevelopmentRelease resumes a partial stage without writing the hom
   };
   const failedPhases = [];
   try {
-    assert.throws(
+    await assert.rejects(
       () => downloadDevelopmentRelease({
         homeRoot: f.home,
         feedPath: f.feedPath,
@@ -444,7 +446,7 @@ test('downloadDevelopmentRelease resumes a partial stage without writing the hom
   assert.deepEqual(snapshotHome(f.home), before);
 
   const phases = [];
-  const result = downloadDevelopmentRelease({
+  const result = await downloadDevelopmentRelease({
     homeRoot: f.home,
     feedPath: f.feedPath,
     trustKeyPath: f.trustKeyPath,
@@ -461,7 +463,7 @@ test('downloadDevelopmentRelease resumes a partial stage without writing the hom
   assert.deepEqual(snapshotHome(f.home), before);
 });
 
-test('downloadDevelopmentRelease rejects a bad signature without leaving a payload', t => {
+test('downloadDevelopmentRelease rejects a bad signature without leaving a payload', async t => {
   const { root, home } = installedHome(t);
   const artifact = path.join(root, 'artifact');
   const manifest = payload(artifact, { sourceCommit: 'b'.repeat(40) });
@@ -476,7 +478,7 @@ test('downloadDevelopmentRelease rejects a bad signature without leaving a paylo
   const staging = path.join(root, 'staging');
   const before = snapshotHome(home);
   const phases = [];
-  assert.throws(
+  await assert.rejects(
     () => downloadDevelopmentRelease({
       homeRoot: home,
       feedPath,
@@ -607,7 +609,7 @@ test('loopback manifest download then recoverDownload reports copying or staged'
   assert.equal(fs.existsSync(path.join(archiveDir, 'payload.bin')), true);
 
   const before = snapshotHome(f.home);
-  const staged = downloadDevelopmentRelease({
+  const staged = await downloadDevelopmentRelease({
     homeRoot: f.home,
     feedPath: f.feedPath,
     trustKeyPath: f.trustKeyPath,
@@ -625,7 +627,7 @@ test('loopback manifest download then recoverDownload reports copying or staged'
   assert.equal(staged.canInstall, false);
 });
 
-test('selectStagedInstall selects a staged payload path and refuses copying claims', t => {
+test('selectStagedInstall selects a staged payload path and refuses copying claims', async t => {
   const f = signedDevelopmentFixture(t);
   assert.deepEqual(selectStagedInstall({ staging: path.join(f.root, 'missing') }), {
     ok: false,
@@ -637,6 +639,8 @@ test('selectStagedInstall selects a staged payload path and refuses copying clai
     selected: false,
     candidatePayload: null,
     usesUpdateController: true,
+    publisherTrust: 'unverified',
+    developmentSignatureVerified: false,
   });
 
   const copyingStaging = path.join(f.root, 'copying-stage');
@@ -659,14 +663,17 @@ test('selectStagedInstall selects a staged payload path and refuses copying clai
   assert.equal(copying.usesUpdateController, true);
   assert.equal(copying.resumed, true);
 
-  const staged = downloadDevelopmentRelease({
+  const staged = await downloadDevelopmentRelease({
     homeRoot: f.home,
     feedPath: f.feedPath,
     trustKeyPath: f.trustKeyPath,
     staging: f.staging,
   });
   assert.equal(staged.status, 'staged');
-  const selected = selectStagedInstall({ staging: f.staging });
+  const unsigned = selectStagedInstall({ staging: f.staging });
+  assert.equal(unsigned.publisherTrust, 'unverified');
+  assert.equal(unsigned.developmentSignatureVerified, false);
+  const selected = selectStagedInstall({ staging: f.staging, trustKeyPath: f.trustKeyPath });
   assert.equal(selected.ok, true);
   assert.equal(selected.selected, true);
   assert.equal(selected.status, 'staged');
@@ -674,6 +681,8 @@ test('selectStagedInstall selects a staged payload path and refuses copying clai
   assert.equal(selected.usesUpdateController, true);
   assert.equal(selected.packageId, f.manifest.packageId);
   assert.equal(selected.candidatePayload, path.join(f.staging, 'payload'));
+  assert.equal(selected.publisherTrust, 'development');
+  assert.equal(selected.developmentSignatureVerified, true);
   assert.ok(fs.existsSync(path.join(selected.candidatePayload, 'manifest.json')));
 });
 
