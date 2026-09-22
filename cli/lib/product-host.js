@@ -17,7 +17,8 @@ const require = createRequire(import.meta.url);
 const { agentProcessNames } = require('../../shared/agent-process-names.cjs');
 
 const executeFile = promisify(execFile);
-const PROVIDERS = new Set(['anthropic', 'openai', 'minimax', 'xai', 'ollama-cloud', 'ollama-local']);
+const PROVIDERS = new Set(['anthropic', 'openai', 'openai-codex', 'minimax', 'xai', 'ollama-cloud', 'ollama-local']);
+const OAUTH_PROVIDERS = new Set(['anthropic', 'openai-codex']);
 const statePath = root => join(root, '.home23-host.json');
 const receiptPath = root => join(root, '.home23-install.json');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -27,6 +28,72 @@ function appRootFor(homeRoot) {
   if (!homeRoot) return undefined;
   const nested = join(homeRoot, 'app');
   return existsSync(join(nested, 'instances')) || existsSync(join(nested, 'cli')) ? nested : homeRoot;
+}
+function assertHostOAuthProvider(provider) {
+  if (!OAUTH_PROVIDERS.has(provider)) throw new Error('Choose Anthropic or OpenAI account sign-in.');
+  return provider;
+}
+function hostOAuthBroker(appRoot, dependencies = {}) {
+  if (dependencies.oauthBroker) return dependencies.oauthBroker;
+  const { createHome23OAuthBroker } = require('../../shared/home23-oauth.cjs');
+  return createHome23OAuthBroker({
+    home23Root: appRoot,
+    ...(typeof dependencies.oauthFetch === 'function' ? { fetchImpl: dependencies.oauthFetch } : {}),
+    ...(typeof dependencies.oauthNow === 'function' ? { now: dependencies.oauthNow } : {}),
+  });
+}
+function oauthPublicStatus(result) {
+  return {
+    configured: result?.configured === true,
+    valid: result?.valid === true,
+    refreshable: result?.refreshable === true,
+    source: result?.source || 'none',
+    expiresAt: result?.expiresAt ?? null,
+    accountId: result?.accountId ?? null,
+  };
+}
+async function cancelHostOAuthPending(appRoot, provider) {
+  assertHostOAuthProvider(provider);
+  const { default: secretsStore } = await import('../../shared/home23-secrets.cjs');
+  const outcome = await secretsStore.updateHome23Secrets(appRoot, secrets => {
+    const entry = secrets?.providers?.[provider];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || entry.oauthPending === undefined) {
+      return { changed: false };
+    }
+    delete entry.oauthPending;
+    return { changed: true };
+  });
+  return { ok: true, provider, cancelled: outcome.changed === true };
+}
+async function runHostOAuthAction(action, homeRoot, input = {}, dependencies = {}) {
+  const appRoot = join(homeRoot, 'app');
+  const provider = assertHostOAuthProvider(typeof input.provider === 'string' ? input.provider.trim() : '');
+  const broker = hostOAuthBroker(appRoot, dependencies);
+  if (action === 'oauth-start') {
+    const started = await broker.begin(provider);
+    return { ok: true, provider, ...started };
+  }
+  if (action === 'oauth-complete') {
+    const callbackUrl = typeof input.callbackUrl === 'string' ? input.callbackUrl : '';
+    const completed = await broker.complete(provider, callbackUrl);
+    return { ok: true, provider, ...oauthPublicStatus(completed) };
+  }
+  if (action === 'oauth-status') {
+    return { ok: true, provider, ...oauthPublicStatus(await broker.status(provider)) };
+  }
+  if (action === 'oauth-cancel') {
+    return cancelHostOAuthPending(appRoot, provider);
+  }
+  if (action === 'oauth-logout') {
+    const cleared = await broker.clear(provider);
+    return { ok: true, provider, cleared: cleared?.cleared === true, ...oauthPublicStatus(await broker.status(provider)) };
+  }
+  throw new Error('Unknown Home23 Host OAuth action.');
+}
+async function providerHasConnectedOAuth(appRoot, provider, dependencies = {}) {
+  if (!OAUTH_PROVIDERS.has(provider)) return false;
+  const status = await hostOAuthBroker(appRoot, dependencies).status(provider);
+  return status?.configured === true;
 }
 async function validateInstallation(root, { full = false } = {}) {
   const { readProductManifest, verifyProductPayload } = await import('./product-payload.js');
@@ -405,7 +472,7 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
   const { profileFrom, createHome } = await import('./create-home.js');
   const { default: secretsStore } = await import('../../shared/home23-secrets.cjs');
   const profile = profileFrom(input.profile || {});
-  if (!PROVIDERS.has(profile.provider)) throw new Error('Choose a supported API-key provider or local Ollama. Account OAuth setup is not available in Host yet.');
+  if (!PROVIDERS.has(profile.provider)) throw new Error('Choose a supported provider, account sign-in, or local Ollama.');
   const credential = input.credential || {};
   if (credential.provider && credential.provider !== profile.provider) throw new Error('The credential provider must match the selected provider.');
   const apiKey = typeof credential.apiKey === 'string' ? credential.apiKey.trim() : '';
@@ -414,7 +481,10 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
   if (baseUrl && profile.provider !== 'ollama-local') throw new Error('Custom model endpoints currently require local Ollama.');
   if (state && state.fingerprint !== fingerprint(profile)) throw new Error('This home already has a saved profile. Resume it with the same profile.');
   if (state?.phase !== 'creating' && state) return status(homeRoot, dependencies);
-  if (!apiKey && profile.provider !== 'ollama-local' && !existsSync(join(appRoot, 'config', 'secrets.yaml'))) throw new Error('Enter your selected provider API key.');
+  const oauthConnected = await providerHasConnectedOAuth(appRoot, profile.provider, dependencies);
+  if (!apiKey && profile.provider !== 'ollama-local' && !oauthConnected) {
+    throw new Error('Enter your selected provider API key or finish account sign-in.');
+  }
   if (!state) {
     state = { schema: 'home23.host.v2', homeRoot, profile, fingerprint: fingerprint(profile), ports: await choosePortPlan({ encoderRequired: true }), phase: 'creating', desiredRunning: false, encoderRequired: true };
     await withReservedPorts(state.ports, async () => privateJSON(statePath(homeRoot), state), { encoderRequired: true });
@@ -443,9 +513,18 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
   writeFileSync(homePath, yaml.dump(home), { mode: 0o600 });
   await secretsStore.updateHome23Secrets(appRoot, secrets => {
     secrets.providers ||= {};
-    if (apiKey) secrets.providers[profile.provider] = { apiKey };
-    if (profile.provider !== 'ollama-local' && !secrets.providers[profile.provider]?.apiKey) throw new Error('Enter your selected provider API key.');
-    return { changed: true };
+    const existing = secrets.providers[profile.provider];
+    const oauthManaged = existing && typeof existing === 'object' && !Array.isArray(existing) && existing.oauthManaged === true;
+    if (apiKey) {
+      if (oauthManaged) throw new Error('This provider already has a signed-in account. Do not replace it with an API key; create with the account or clear sign-in first.');
+      secrets.providers[profile.provider] = { apiKey };
+    }
+    const entry = secrets.providers[profile.provider];
+    const storedKey = entry && typeof entry === 'object' && !Array.isArray(entry) && typeof entry.apiKey === 'string' ? entry.apiKey.trim() : '';
+    if (profile.provider !== 'ollama-local' && !storedKey) {
+      throw new Error('Enter your selected provider API key or finish account sign-in.');
+    }
+    return { changed: Boolean(apiKey) };
   });
   const ports = Object.fromEntries(['engine', 'dashboard', 'mcp', 'bridge'].map(key => [key, state.ports[key]]));
   const birth = await (dependencies.createHome || createHome)(appRoot, profile, { ports, coordinationPort: state.ports.coordination });
@@ -499,7 +578,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       return { ok: false, status: 'recovery_required', homeRoot, error: { code: 'update_recovery_required', message: 'Resume the unfinished Home23 update before starting this home.' } };
     }
   }
-  if (!['install', 'create', 'start', 'stop', 'semantic-prepare'].includes(action)) throw new Error('Unknown Home23 Host action.');
+  if (!['install', 'create', 'start', 'stop', 'semantic-prepare', 'oauth-start', 'oauth-complete', 'oauth-status', 'oauth-cancel', 'oauth-logout'].includes(action)) throw new Error('Unknown Home23 Host action.');
   if (action === 'install') {
     if (typeof payloadPath !== 'string' || !isAbsolute(payloadPath)) throw new Error('Choose the absolute bundled Home23 payload directory.');
     const { installProductPayload } = await import('./product-payload.js');
@@ -508,9 +587,12 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
   }
   if (!existsSync(receiptPath(homeRoot))) throw new Error('Install the Home23 runtime before creating or starting a home.');
   productEnvironment(homeRoot, { prepare: true });
+  const oauthAction = action.startsWith('oauth-');
   const { acquireHostLock } = await import('./product-backup.js');
-  const hostLock = action === 'start' || action === 'stop' || action === 'create' || action === 'semantic-prepare' ? acquireHostLock(homeRoot) : null;
-  if ((action === 'start' || action === 'stop' || action === 'create' || action === 'semantic-prepare') && !hostLock) {
+  const hostLock = action === 'start' || action === 'stop' || action === 'create' || action === 'semantic-prepare' || oauthAction
+    ? acquireHostLock(homeRoot)
+    : null;
+  if ((action === 'start' || action === 'stop' || action === 'create' || action === 'semantic-prepare' || oauthAction) && !hostLock) {
     return { ok: false, status: 'busy', homeRoot, error: { code: 'host_lifecycle_busy', message: 'Another lifecycle operation holds this home.' } };
   }
   const release = () => { if (hostLock) hostLock.release(); };
@@ -565,6 +647,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     }
     try {
     await validateInstallation(homeRoot, { full: action === 'create' || action === 'start' });
+    if (oauthAction) return await runHostOAuthAction(action, homeRoot, input, dependencies);
     let state = stateFor(homeRoot);
     if (action === 'create') return await seedAndCreate(homeRoot, input, state, dependencies);
     if (!state || state.phase === 'creating') throw new Error('Finish creating this Home23 home before starting it.');

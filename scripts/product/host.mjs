@@ -9,7 +9,7 @@ const args = process.argv.slice(2);
 const action = args.shift();
 let homeRoot;
 const sensitive = [];
-const USAGE = 'Usage: host.mjs preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|backup-recover|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]';
+const USAGE = 'Usage: host.mjs preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|backup-recover|move|install|catalog|status|create|oauth-start|oauth-complete|oauth-status|oauth-cancel|oauth-logout|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]';
 
 /** Owner-facing wrappers: these replies are host.mjs command results, not installed-UI proof or public trust. */
 function portabilityReply(kind, result) {
@@ -210,11 +210,12 @@ try {
     originalStdout(JSON.stringify(result) + '\n');
     if (result.ok === false) process.exitCode = 1;
   } else {
-  if (action === 'create') {
+  if (action === 'create' || action === 'oauth-start' || action === 'oauth-complete' || action === 'oauth-status' || action === 'oauth-cancel' || action === 'oauth-logout') {
     let raw = '';
     for await (const part of process.stdin) { raw += part; if (Buffer.byteLength(raw) > 65536) throw new Error('Home23 setup input is too large.'); }
-    try { input = JSON.parse(raw || '{}'); } catch { throw new Error('Home23 setup requires a valid JSON profile on stdin.'); }
+    try { input = JSON.parse(raw || '{}'); } catch { throw new Error(action === 'create' ? 'Home23 setup requires a valid JSON profile on stdin.' : 'Home23 OAuth requires valid JSON on stdin.'); }
     if (typeof input.credential?.apiKey === 'string') sensitive.push(input.credential.apiKey, input.credential.apiKey.trim());
+    if (typeof input.callbackUrl === 'string' && input.callbackUrl) sensitive.push(input.callbackUrl);
   }
   const cleanEnv = productEnvironment(homeRoot);
   for (const key of Object.keys(process.env)) delete process.env[key];

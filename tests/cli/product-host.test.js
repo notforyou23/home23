@@ -749,3 +749,165 @@ test('v2 stop still stops owned names when jlist is empty and fails closed if /r
   assert.equal(result.error.code, 'host_encoder_still_warm');
   assert.ok(probeTimeouts.every(ms => ms >= 2000));
 });
+
+function readHostSecrets(homeRoot) {
+  const yaml = createRequire(import.meta.url)('js-yaml');
+  return yaml.load(fs.readFileSync(path.join(homeRoot, 'app/config/secrets.yaml'), 'utf8'));
+}
+
+function writeConnectedOAuthFixture(homeRoot, provider, { accountId = 'acct-fixture' } = {}) {
+  const yaml = createRequire(import.meta.url)('js-yaml');
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({
+    exp: 2_000_000_000,
+    sub: accountId,
+    'https://api.openai.com/auth': { chatgpt_account_id: accountId },
+  })).toString('base64url');
+  const accessToken = `${header}.${body}.signature`;
+  const configDir = path.join(homeRoot, 'app/config');
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(configDir, 'secrets.yaml'), yaml.dump({
+    providers: {
+      [provider]: {
+        apiKey: accessToken,
+        oauthManaged: true,
+        oauth: {
+          refreshToken: 'refresh-fixture',
+          expiresAt: '2033-01-01T00:00:00.000Z',
+          ...(provider === 'openai-codex' ? { accountId } : {}),
+        },
+      },
+    },
+  }), { mode: 0o600 });
+  return accessToken;
+}
+
+test('catalog includes openai-codex beside API-key providers', t => {
+  const homeRoot = path.join(home(t), 'never-created');
+  const result = JSON.parse(execFileSync(process.execPath, ['scripts/product/host.mjs', 'catalog', '--home', homeRoot], {
+    cwd: path.resolve(import.meta.dirname, '../..'),
+    encoding: 'utf8',
+  }));
+  assert.ok(result.providers.some(provider => provider.id === 'openai-codex' && provider.models.length));
+  assert.ok(result.providers.some(provider => provider.id === 'anthropic' && provider.models.length));
+  assert.ok(result.providers.some(provider => provider.id === 'openai' && provider.models.length));
+});
+
+test('Host oauth start, cancel, status, and logout reuse the broker without networking', async t => {
+  const homeRoot = home(t);
+  const oauthFetch = async () => {
+    throw new Error('Host oauth tests must not call the network');
+  };
+  const started = await runHostAction('oauth-start', {
+    homeRoot,
+    input: { provider: 'anthropic' },
+  }, { oauthFetch });
+  assert.equal(started.ok, true);
+  assert.equal(started.provider, 'anthropic');
+  assert.match(started.authUrl, /^https:\/\/claude\.ai\/oauth\/authorize\?/);
+  assert.ok(started.expiresInSeconds > 0);
+  const pending = readHostSecrets(homeRoot).providers.anthropic.oauthPending;
+  assert.equal(typeof pending.state, 'string');
+  assert.equal(typeof pending.verifier, 'string');
+  assert.equal(started.authUrl.includes(pending.verifier), false);
+
+  const cancelled = await runHostAction('oauth-cancel', {
+    homeRoot,
+    input: { provider: 'anthropic' },
+  }, { oauthFetch });
+  assert.equal(cancelled.ok, true);
+  assert.equal(cancelled.cancelled, true);
+  assert.equal(readHostSecrets(homeRoot).providers.anthropic.oauthPending, undefined);
+
+  const accessToken = writeConnectedOAuthFixture(homeRoot, 'openai-codex');
+  await runHostAction('oauth-start', {
+    homeRoot,
+    input: { provider: 'openai-codex' },
+  }, { oauthFetch });
+  assert.equal(typeof readHostSecrets(homeRoot).providers['openai-codex'].oauthPending?.state, 'string');
+  assert.equal(readHostSecrets(homeRoot).providers['openai-codex'].oauthManaged, true);
+  assert.equal(readHostSecrets(homeRoot).providers['openai-codex'].apiKey, accessToken);
+  const cancelConnected = await runHostAction('oauth-cancel', {
+    homeRoot,
+    input: { provider: 'openai-codex' },
+  }, { oauthFetch });
+  assert.equal(cancelConnected.cancelled, true);
+  assert.equal(readHostSecrets(homeRoot).providers['openai-codex'].oauthPending, undefined);
+  assert.equal(readHostSecrets(homeRoot).providers['openai-codex'].oauthManaged, true);
+  assert.equal(readHostSecrets(homeRoot).providers['openai-codex'].apiKey, accessToken);
+  assert.equal(readHostSecrets(homeRoot).providers['openai-codex'].oauth.refreshToken, 'refresh-fixture');
+
+  const connected = await runHostAction('oauth-status', {
+    homeRoot,
+    input: { provider: 'openai-codex' },
+  }, { oauthFetch });
+  assert.equal(connected.ok, true);
+  assert.equal(connected.configured, true);
+  assert.equal(connected.valid, true);
+  assert.equal(connected.accountId, 'acct-fixture');
+
+  const loggedOut = await runHostAction('oauth-logout', {
+    homeRoot,
+    input: { provider: 'openai-codex' },
+  }, { oauthFetch });
+  assert.equal(loggedOut.ok, true);
+  assert.equal(loggedOut.cleared, true);
+  assert.equal(loggedOut.configured, false);
+  assert.equal(readHostSecrets(homeRoot).providers['openai-codex']?.apiKey, undefined);
+  assert.equal(readHostSecrets(homeRoot).providers['openai-codex']?.oauthManaged, undefined);
+});
+
+test('create admits a fixture oauth account and refuses a missing account without converting credentials', async t => {
+  const missing = home(t, { birth: true });
+  const oauthFetch = async () => {
+    throw new Error('Host oauth tests must not call the network');
+  };
+  await assert.rejects(
+    runHostAction('create', {
+      homeRoot: missing,
+      input: {
+        profile: { name: 'milo', ownerName: 'Alex', provider: 'openai-codex', model: 'gpt-5.6-sol', timezone: 'UTC' },
+        credential: { provider: 'openai-codex' },
+      },
+    }, { oauthFetch, createHome: async () => { throw new Error('create must not run without credentials'); } }),
+    /API key or finish account sign-in/,
+  );
+
+  const homeRoot = home(t, { birth: true });
+  const accessToken = writeConnectedOAuthFixture(homeRoot, 'openai-codex');
+  const created = await runHostAction('create', {
+    homeRoot,
+    input: {
+      profile: { name: 'milo', ownerName: 'Alex', provider: 'openai-codex', model: 'gpt-5.6-sol', timezone: 'UTC' },
+      credential: { provider: 'openai-codex' },
+    },
+  }, {
+    oauthFetch,
+    createHome: async (_appRoot, profile) => {
+      assert.equal(profile.provider, 'openai-codex');
+      return { home: { id: 'home-oauth-fixture' }, coordination: { botId: 'bot-oauth-fixture' } };
+    },
+  });
+  assert.equal(created.status, 'prepared');
+  const stored = readHostSecrets(homeRoot).providers['openai-codex'];
+  assert.equal(stored.apiKey, accessToken);
+  assert.equal(stored.oauthManaged, true);
+  assert.equal(stored.oauth.refreshToken, 'refresh-fixture');
+
+  const replaceRoot = home(t, { birth: true });
+  writeConnectedOAuthFixture(replaceRoot, 'anthropic');
+  await assert.rejects(
+    runHostAction('create', {
+      homeRoot: replaceRoot,
+      input: {
+        profile: { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-4-7', timezone: 'UTC' },
+        credential: { provider: 'anthropic', apiKey: 'sk-should-not-replace-oauth' },
+      },
+    }, {
+      oauthFetch,
+      createHome: async () => { throw new Error('must not create after oauth replacement attempt'); },
+    }),
+    /signed-in account/,
+  );
+  assert.equal(readHostSecrets(replaceRoot).providers.anthropic.oauthManaged, true);
+});
