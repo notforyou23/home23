@@ -163,6 +163,18 @@ function assertWritersStopped(home, rows) {
   if (busy.length) fail('backup_writers_active', 'Owned writers are still running. Stop them before backup. The desired-running flag is not proof they are stopped.');
 }
 
+/** Busy or unknown process rows refuse adoption/backup. An empty inventory is not inferred from a missing supervisor. */
+export function assertWritersIdle(rows) {
+  if (!Array.isArray(rows)) fail('process_inventory_unavailable', 'Home process inventory is unavailable.');
+  const active = rows.filter(row => {
+    const status = row?.status || 'unknown';
+    return BUSY.has(status) || status === 'unknown';
+  });
+  if (active.length) {
+    fail('writers_active', 'Writers are still running or have unknown status. Stop them before adoption. The desired-running flag is not proof they are stopped.');
+  }
+}
+
 /** Holds runtime/.host.lock, the same path Start uses. Refresh from the copy loop: a blocked event loop never runs setInterval, and Start treats a lock older than 180s as stale. */
 export function acquireHostLock(home, { staleMs = HOST_LOCK_STALE_MS } = {}) {
   const runtime = join(home, 'runtime');
@@ -896,7 +908,8 @@ function rebindAgentsManifest(source, destination) {
 }
 
 async function rebindDestination(source, destination) {
-  const sourceHost = readHostState(source);
+  const sourceHostPath = join(source, '.home23-host.json');
+  const sourceHost = exists(sourceHostPath) ? readHostState(source) : { ports: null };
   const host = readHostState(destination);
   const oldPorts = sourceHost.ports && typeof sourceHost.ports === 'object' ? sourceHost.ports : null;
   host.homeRoot = destination;

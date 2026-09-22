@@ -1,11 +1,12 @@
 /** Product installation preview and managed/source adoption. Preview stays read-only. */
+import { createHash } from 'node:crypto';
 import {
   copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync,
   realpathSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { absoluteHome, choosePortPlan, privateJSON, readPrivateJSON } from './product-environment.js';
-import { rebindAdoptedHome } from './product-backup.js';
+import { assertWritersIdle, listInstalledWriters, rebindAdoptedHome } from './product-backup.js';
 import { installProductPayload, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { compareUpdateContracts, inspectStatePreservation } from './product-update-plan.js';
 
@@ -13,6 +14,7 @@ const INSTALL_SCHEMA = 'home23.product-install.v1';
 const ADOPTION_SCHEMA = 'home23.managed-source-adoption.v1';
 const ADOPTION_JOURNAL_SCHEMA = 'home23.managed-source-adoption-journal.v1';
 const reason = (code, message, extra = {}) => ({ code, message, ...extra });
+const RESIDENT_NAME = /^[a-z][a-z0-9-]{0,62}$/;
 
 const ADOPTION_REBIND = new Set([
   '.home23-host.json',
@@ -27,10 +29,11 @@ const ADOPTION_PRESERVE_FILES = new Set([
 ]);
 const ADOPTION_REBUILDABLE = new Set([
   'package.json', 'package-lock.json', 'npm-shrinkwrap.json',
-  'node_modules', 'dist', 'logs', '.git',
+  'node_modules', 'dist', 'logs', '.git', 'bin', 'tools', 'app',
 ]);
 const ADOPTION_REBUILDABLE_PREFIXES = [
   'node_modules/', 'dist/', 'logs/', '.git/',
+  'bin/', 'tools/', 'app/',
   'engine/logs/',
 ];
 
@@ -113,6 +116,110 @@ function adoptionHasHomeState(paths) {
   });
 }
 
+/** Resolve resident profile without inventing names or fingerprints. */
+export function resolveAdoptionIdentity(sourceRoot) {
+  const hostPath = join(sourceRoot, '.home23-host.json');
+  if (existsSync(hostPath)) {
+    try {
+      const stat = lstatSync(hostPath);
+      if (stat.isFile() && !stat.isSymbolicLink()) {
+        const host = JSON.parse(readFileSync(hostPath, 'utf8'));
+        if (RESIDENT_NAME.test(host?.profile?.name || '')) {
+          return {
+            ok: true,
+            profile: { ...host.profile },
+            encoderRequired: host.encoderRequired === true,
+            fingerprint: typeof host.fingerprint === 'string' ? host.fingerprint : undefined,
+            source: 'host',
+          };
+        }
+      }
+    } catch { /* fall through to release residents */ }
+  }
+  const releasePath = join(sourceRoot, 'instances/.house/coordination/active-release.json');
+  if (!existsSync(releasePath) || !lstatSync(releasePath).isFile() || lstatSync(releasePath).isSymbolicLink()) {
+    return { ok: false, code: 'unsupported_layout', message: 'Managed/source adoption needs a Host record or exactly one active-release resident.' };
+  }
+  let release;
+  try { release = JSON.parse(readFileSync(releasePath, 'utf8')); }
+  catch {
+    return { ok: false, code: 'unsupported_layout', message: 'The active-release residents record could not be read.' };
+  }
+  const residents = release?.residents;
+  if (!residents || typeof residents !== 'object' || Array.isArray(residents)) {
+    return { ok: false, code: 'unsupported_layout', message: 'active-release residents must be an object of resident names.' };
+  }
+  const names = Object.keys(residents).filter(name => RESIDENT_NAME.test(name));
+  if (names.length !== 1) {
+    return { ok: false, code: 'unsupported_layout', message: 'Managed/source adoption requires exactly one active-release resident when no Host record is present.' };
+  }
+  return { ok: true, profile: { name: names[0] }, encoderRequired: false, fingerprint: undefined, source: 'active-release' };
+}
+
+/** Explicit destination mapping for preserve/rebind entries. Silent omission is not allowed. */
+export function mapAdoptionEntry(entry, residentName) {
+  if (entry.role === 'rebuildable' || entry.type === 'directory') {
+    return { ok: true, action: entry.type === 'directory' ? 'container' : 'rebuildable' };
+  }
+  if (entry.role === 'unknown' || entry.type === 'other') {
+    return { ok: false, code: 'unknown_state' };
+  }
+  if (entry.type === 'symlink') {
+    return { ok: true, action: 'external' };
+  }
+  if (entry.role === 'rebind') {
+    if (entry.path === 'ecosystem.config.cjs') {
+      return { ok: true, action: 'copy', destination: 'app/ecosystem.config.cjs' };
+    }
+    if (entry.path === '.home23-host.json') {
+      return { ok: true, action: 'source_only', reason: 'host_rewritten' };
+    }
+    if (entry.path === 'instances/.house/coordination/active-release.json'
+      || entry.path === 'instances/.house/source-authority.json') {
+      return { ok: true, action: 'source_only', reason: 'managed_marker_source_only' };
+    }
+    return { ok: false, code: 'unmapped_rebind', message: `Rebind path ${entry.path} has no adoption mapping.` };
+  }
+  if (entry.role === 'preserve') {
+    if (entry.path === 'runtime/semantic-prep.json') {
+      return { ok: true, action: 'copy', destination: 'runtime/semantic-prep.json' };
+    }
+    if (entry.path.startsWith('config/')) {
+      return { ok: true, action: 'copy', destination: `app/${entry.path}` };
+    }
+    if (entry.path.startsWith('instances/')) {
+      return { ok: true, action: 'copy', destination: `app/${entry.path}` };
+    }
+    if (entry.path === 'birth-receipt.json') {
+      if (!residentName) return { ok: false, code: 'unmapped_preserve', message: 'Root birth-receipt.json needs a resolved resident.' };
+      return { ok: true, action: 'copy', destination: `app/instances/${residentName}/substrate/seed-01/birth-receipt.json` };
+    }
+    if (entry.path === 'seed-ledger.jsonl') {
+      if (!residentName) return { ok: false, code: 'unmapped_preserve', message: 'Root seed-ledger.jsonl needs a resolved resident.' };
+      return { ok: true, action: 'copy', destination: `app/instances/${residentName}/substrate/seed-01/seed-ledger.jsonl` };
+    }
+    if (entry.path.endsWith('/birth-receipt.json') || entry.path.endsWith('/seed-ledger.jsonl')) {
+      if (entry.path.startsWith('instances/')) {
+        return { ok: true, action: 'copy', destination: `app/${entry.path}` };
+      }
+    }
+    return { ok: false, code: 'unmapped_preserve', message: `Preserve path ${entry.path} has no adoption mapping.` };
+  }
+  return { ok: false, code: 'unmapped_preserve', message: `Path ${entry.path} has no adoption mapping.` };
+}
+
+function annotateMappings(paths, residentName, reasons) {
+  for (const entry of paths) {
+    if (entry.role !== 'preserve' && entry.role !== 'rebind') continue;
+    if (entry.type === 'directory' || entry.type === 'symlink') continue;
+    const mapped = mapAdoptionEntry(entry, residentName);
+    entry.mapping = mapped;
+    if (!mapped.ok) {
+      reasons.push(reason(mapped.code || 'unmapped_preserve', mapped.message || `Path ${entry.path} is not mapped for adoption.`, { path: entry.path }));
+    }
+  }
+}
+
 /**
  * Read-only managed/source adoption plan. Never writes, never opens secrets or
  * token files, never runs home birth, and never claims product install adoption.
@@ -133,6 +240,7 @@ export function planManagedSourceAdoption(homeRoot) {
     reasons: [],
     inventory: { complete: false, paths: [] },
     plan,
+    identity: null,
   };
   if (current.layout === 'absent') {
     result.reasons.push(reason('layout_absent', 'No home directory is present to adopt.'));
@@ -146,6 +254,12 @@ export function planManagedSourceAdoption(homeRoot) {
     result.reasons.push(reason('unsupported_layout', 'Only managed or source layouts produce an adoption plan.'));
     return result;
   }
+  const identity = resolveAdoptionIdentity(root);
+  if (!identity.ok) {
+    result.reasons.push(reason(identity.code, identity.message));
+    return result;
+  }
+  result.identity = { profile: identity.profile, source: identity.source };
   let paths;
   try { paths = walkAdoptionPaths(root, result.reasons); }
   catch {
@@ -160,6 +274,7 @@ export function planManagedSourceAdoption(homeRoot) {
   if (!adoptionHasHomeState(paths)) {
     result.reasons.push(reason('inventory_incomplete', 'Managed/source adoption requires classified home state beyond release or source markers.'));
   }
+  annotateMappings(paths, identity.profile.name, result.reasons);
   result.inventory.complete = result.reasons.length === 0;
   result.canAdopt = result.inventory.complete;
   return result;
@@ -194,29 +309,24 @@ function disjointRoots(...roots) {
   }
 }
 
-function mapPreservedRelative(relative) {
-  if (relative === 'ecosystem.config.cjs') return 'app/ecosystem.config.cjs';
-  if (relative === 'runtime/semantic-prep.json') return 'runtime/semantic-prep.json';
-  if (relative.startsWith('config/')) return `app/${relative}`;
-  if (relative.startsWith('instances/')) return `app/${relative}`;
-  return null;
+function copyableEntries(paths) {
+  return paths.filter(entry => entry.mapping?.action === 'copy' && entry.type === 'file' && !entry.external);
 }
 
-function shouldCopyForAdoption(entry) {
-  if (entry.type !== 'file' || entry.external) return false;
-  if (entry.path === 'runtime/semantic-prep.json') return true;
-  if (entry.path === 'ecosystem.config.cjs') return true;
-  if (entry.role !== 'preserve') return false;
-  if (entry.path === 'instances/.house/coordination/active-release.json') return false;
-  if (entry.path === 'instances/.house/source-authority.json') return false;
-  return Boolean(mapPreservedRelative(entry.path));
+function sourcePreservationSnapshot(source, paths) {
+  const hash = createHash('sha256');
+  for (const entry of copyableEntries(paths).sort((a, b) => a.path.localeCompare(b.path))) {
+    hash.update(entry.path);
+    hash.update('\0');
+    hash.update(readFileSync(join(source, entry.path)));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
 }
 
 function copyPreservedState(source, destination, paths) {
-  for (const entry of paths) {
-    if (!shouldCopyForAdoption(entry)) continue;
-    const mapped = mapPreservedRelative(entry.path);
-    if (!mapped) continue;
+  for (const entry of copyableEntries(paths)) {
+    const mapped = entry.mapping.destination;
     const from = join(source, entry.path);
     const stat = lstatSync(from);
     if (!stat.isFile() || stat.isSymbolicLink()) continue;
@@ -226,48 +336,32 @@ function copyPreservedState(source, destination, paths) {
   }
 }
 
-function sourceResidentName(source) {
-  const hostPath = join(source, '.home23-host.json');
-  if (existsSync(hostPath) && lstatSync(hostPath).isFile() && !lstatSync(hostPath).isSymbolicLink()) {
-    try {
-      const host = JSON.parse(readFileSync(hostPath, 'utf8'));
-      if (/^[a-z][a-z0-9-]{0,62}$/.test(host?.profile?.name || '')) return host.profile.name;
-    } catch { /* fall through to directory scan */ }
-  }
-  const instances = join(source, 'instances');
-  if (!existsSync(instances)) return null;
-  for (const name of readdirSync(instances).sort()) {
-    if (name.startsWith('.')) continue;
-    if (lstatSync(join(instances, name)).isDirectory()) return name;
-  }
-  return null;
-}
-
-async function writeStoppedHost(source, destination) {
-  const name = sourceResidentName(source);
-  let encoderRequired = false;
-  let profile = name ? { name } : undefined;
-  const hostPath = join(source, '.home23-host.json');
-  if (existsSync(hostPath) && lstatSync(hostPath).isFile() && !lstatSync(hostPath).isSymbolicLink()) {
-    try {
-      const host = JSON.parse(readFileSync(hostPath, 'utf8'));
-      encoderRequired = host.encoderRequired === true;
-      if (host.profile && typeof host.profile === 'object') profile = { ...host.profile, ...(name ? { name } : {}) };
-    } catch { /* keep scanned profile */ }
-  }
-  const ports = await choosePortPlan({ encoderRequired });
+async function writeStoppedHost(destination, identity) {
+  const ports = await choosePortPlan({ encoderRequired: identity.encoderRequired === true });
   const state = {
     schema: 'home23.host.v2',
     homeRoot: destination,
-    profile: profile || { name: 'resident' },
-    fingerprint: 'adopted',
+    profile: identity.profile,
     ports,
     phase: 'stopped',
     desiredRunning: false,
-    encoderRequired,
+    encoderRequired: identity.encoderRequired === true,
   };
+  if (typeof identity.fingerprint === 'string') state.fingerprint = identity.fingerprint;
   writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   return state;
+}
+
+function refuseAdoption(plan, reasons, destination) {
+  return {
+    ok: false,
+    status: 'refused',
+    schema: ADOPTION_SCHEMA,
+    canAdopt: false,
+    reasons: reasons || plan.reasons,
+    destinationCreated: existsSync(destination),
+    plan,
+  };
 }
 
 /**
@@ -281,16 +375,27 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
   disjointRoots(source, destination, payload);
 
   const plan = planManagedSourceAdoption(source);
-  if (!plan.canAdopt) {
-    return {
-      ok: false,
-      status: 'refused',
-      schema: ADOPTION_SCHEMA,
-      canAdopt: false,
-      reasons: plan.reasons,
-      destinationCreated: existsSync(destination),
-      plan,
-    };
+  if (!plan.canAdopt) return refuseAdoption(plan, plan.reasons, destination);
+
+  const list = dependencies.listInstalledWriters || listInstalledWriters;
+  try {
+    const rows = await list(source);
+    assertWritersIdle(rows);
+  } catch (error) {
+    const code = error.code || 'process_inventory_unavailable';
+    return refuseAdoption(plan, [reason(code, error.message)], destination);
+  }
+
+  let manifest;
+  try { manifest = readProductManifest(payload); }
+  catch {
+    return refuseAdoption(plan, [reason('candidate_manifest_invalid', 'The candidate manifest is missing or invalid.')], destination);
+  }
+  const packageId = manifest.packageId;
+  const sourceSnapshot = sourcePreservationSnapshot(source, plan.inventory.paths);
+  const identity = resolveAdoptionIdentity(source);
+  if (!identity.ok) {
+    return refuseAdoption(plan, [reason(identity.code, identity.message)], destination);
   }
 
   let journal = null;
@@ -299,8 +404,22 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
 
   const destinationPresent = existsSync(destination);
   if (!journal && destinationPresent) throw new Error('Adoption destination already exists.');
-  if (journal && journal.sourceHome !== source) throw new Error('Adoption journal belongs to another source.');
-  if (journal && journal.payloadPath !== payload) throw new Error('Adoption journal belongs to another payload.');
+  if (journal) {
+    if (journal.sourceHome !== source) throw new Error('Adoption journal belongs to another source.');
+    if (journal.payloadPath !== payload) throw new Error('Adoption journal belongs to another payload.');
+    if (journal.packageId !== packageId) {
+      return refuseAdoption(plan, [reason('package_identity_changed', 'The candidate package identity changed since adoption started.')], destination);
+    }
+    if (journal.sourceSnapshot !== sourceSnapshot) {
+      return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source bytes changed since adoption started.')], destination);
+    }
+    if (destinationPresent && marker(destination, '.home23-install.json')) {
+      const receipt = readPrivateJSON(join(destination, '.home23-install.json'));
+      if (!(receipt?.schema === INSTALL_SCHEMA && receipt.status === 'installed' && receipt.packageId === packageId)) {
+        return refuseAdoption(plan, [reason('receipt_mismatch', 'The destination receipt does not match the recorded package identity.')], destination);
+      }
+    }
+  }
 
   const rebind = dependencies.rebindAdoptedHome || rebindAdoptedHome;
   const install = dependencies.installProductPayload || installProductPayload;
@@ -312,6 +431,8 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       sourceHome: source,
       destinationRoot: destination,
       payloadPath: payload,
+      packageId,
+      sourceSnapshot,
       phase: 'installing',
       homeBirth: 'not_run',
     };
@@ -321,25 +442,26 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
   if (!['preserving', 'rebind', 'completed'].includes(journal.phase)) {
     if (destinationPresent && marker(destination, '.home23-install.json')) {
       const receipt = readPrivateJSON(join(destination, '.home23-install.json'));
-      const manifest = readProductManifest(payload);
-      if (receipt?.schema === INSTALL_SCHEMA && receipt.status === 'installed' && receipt.packageId === manifest.packageId) {
-        // Owned same-package receipt: resume without a second full install copy.
-      } else {
-        throw new Error('Adoption destination receipt does not match the candidate package.');
+      if (!(receipt?.schema === INSTALL_SCHEMA && receipt.status === 'installed' && receipt.packageId === packageId)) {
+        return refuseAdoption(plan, [reason('receipt_mismatch', 'The destination receipt does not match the recorded package identity.')], destination);
       }
     } else {
-      journal = { ...journal, phase: 'installing' };
+      journal = { ...journal, phase: 'installing', packageId, sourceSnapshot };
       writeAdoptionJournal(destination, journal);
       install({ payloadPath: payload, homeRoot: destination });
     }
-    journal = { ...journal, phase: 'preserving' };
+    journal = { ...journal, phase: 'preserving', packageId, sourceSnapshot };
     writeAdoptionJournal(destination, journal);
     if (dependencies.afterInstall) await dependencies.afterInstall({ source, destination, journal });
   }
 
   if (!['rebind', 'completed'].includes(journal.phase)) {
+    const currentSnapshot = sourcePreservationSnapshot(source, plan.inventory.paths);
+    if (currentSnapshot !== journal.sourceSnapshot) {
+      return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source bytes changed before preservation completed.')], destination);
+    }
     copyPreservedState(source, destination, plan.inventory.paths);
-    await writeStoppedHost(source, destination);
+    await writeStoppedHost(destination, identity);
     journal = { ...journal, phase: 'rebind' };
     writeAdoptionJournal(destination, journal);
     if (dependencies.afterPreserve) await dependencies.afterPreserve({ source, destination, journal });
@@ -351,6 +473,7 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
     host.desiredRunning = false;
     host.phase = 'stopped';
     host.homeRoot = destination;
+    if (host.profile?.name !== identity.profile.name) host.profile = { ...host.profile, ...identity.profile };
     writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
     journal = { ...journal, phase: 'completed', homeBirth: 'not_run' };
     writeAdoptionJournal(destination, journal);
