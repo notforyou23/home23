@@ -25,9 +25,8 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { choosePortPlan, productEnvironment, socketRootFor } from './product-environment.js';
-import { PRODUCT_STATE_PATHS } from './product-payload.js';
+import { PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { isProductStatePath, isRebuildableStatePath, ownedWriterNames, SUPPORTED_COORDINATION_SCHEMA } from './product-update-inventory.js';
-import { readProductManifest } from './product-payload.js';
 
 const executeFile = promisify(execFile);
 const BACKUP_SCHEMA = 'home23.backup.v1';
@@ -572,23 +571,27 @@ function createExtractor(root, expectedFiles, sourceHome) {
   };
 }
 
-export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot } = {}) {
-  if (typeof archivePath !== 'string' || typeof keyPath !== 'string' || typeof inspectionRoot !== 'string' || !isAbsolute(archivePath) || !isAbsolute(keyPath) || !isAbsolute(inspectionRoot)) {
-    throw new Error('Archive, key, and inspection paths must be absolute.');
-  }
-  const archive = resolve(archivePath);
-  const keyFile = resolve(keyPath);
-  const root = absoluteRoot(inspectionRoot, 'inspection directory');
-  if (readdirSync(root).length !== 0) throw new Error('Inspection directory must be empty.');
-  let wrote = false;
-  let archiveFd = null;
-  let plainPath = null;
+function readAuthenticatedHeader(plainPath) {
+  const fd = openSync(plainPath, 'r');
   try {
-    const keyDocument = JSON.parse(readFileSync(keyFile, 'utf8'));
-    if (keyDocument?.schema !== KEY_SCHEMA || keyDocument.algorithm !== 'aes-256-gcm' || typeof keyDocument.key !== 'string') throw new Error('Backup key is invalid.');
-    const key = Buffer.from(keyDocument.key, 'base64');
-    if (key.length !== 32) throw new Error('Backup key is invalid.');
-    archiveFd = openSync(archive, 'r');
+    const lengthBytes = Buffer.alloc(4);
+    if (readSync(fd, lengthBytes, 0, 4, 0) !== 4) throw new Error('Truncated backup payload.');
+    const headerLength = lengthBytes.readUInt32BE(0);
+    if (headerLength < 2 || headerLength > 32 * 1024 * 1024) throw new Error('Backup header is invalid.');
+    const headerBytes = Buffer.alloc(headerLength);
+    if (readSync(fd, headerBytes, 0, headerLength, 4) !== headerLength) throw new Error('Truncated backup payload.');
+    return { header: JSON.parse(headerBytes.toString('utf8')), recordsOffset: 4 + headerLength };
+  } finally { closeSync(fd); }
+}
+
+/** Decrypt and authenticate a backup; returns the inner header and plaintext path. Caller deletes plainPath. */
+function authenticateBackupArchive(archive, keyFile, plainPath) {
+  const keyDocument = JSON.parse(readFileSync(keyFile, 'utf8'));
+  if (keyDocument?.schema !== KEY_SCHEMA || keyDocument.algorithm !== 'aes-256-gcm' || typeof keyDocument.key !== 'string') throw new Error('Backup key is invalid.');
+  const key = Buffer.from(keyDocument.key, 'base64');
+  if (key.length !== 32) throw new Error('Backup key is invalid.');
+  const archiveFd = openSync(archive, 'r');
+  try {
     const prefix = Buffer.alloc(8);
     if (readSync(archiveFd, prefix, 0, 8, 0) !== 8 || prefix.subarray(0, 4).toString('ascii') !== 'H23B') throw new Error('Not a Home23 backup archive.');
     const headerLength = prefix.readUInt32BE(4);
@@ -601,7 +604,6 @@ export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot }
     const tag = Buffer.from(outer.encrypted.tag, 'base64');
     const decipher = createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAuthTag(tag);
-    plainPath = join(dirname(root), `.home23-backup-auth-${randomUUID()}`);
     const plainFd = openSync(plainPath, 'wx', 0o600);
     const buffer = Buffer.alloc(CHUNK);
     let position = 8 + headerLength;
@@ -617,8 +619,40 @@ export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot }
       if (tail.length) writeSync(plainFd, tail);
       fsyncSync(plainFd);
     } finally { closeSync(plainFd); }
-    const authenticated = readAuthenticatedHeader(plainPath);
-    if (!authenticated?.header || authenticated.header.schema !== BACKUP_SCHEMA || !Array.isArray(authenticated.header.files)) throw new Error('Backup header is invalid.');
+  } finally { closeSync(archiveFd); }
+  const authenticated = readAuthenticatedHeader(plainPath);
+  if (!authenticated?.header || authenticated.header.schema !== BACKUP_SCHEMA || !Array.isArray(authenticated.header.files)) throw new Error('Backup header is invalid.');
+  return authenticated;
+}
+
+/** Re-read the authenticated archive header (same authenticator as inspect). Does not extract files. */
+export function readAuthenticatedBackupHeader({ archivePath, keyPath } = {}) {
+  if (typeof archivePath !== 'string' || typeof keyPath !== 'string' || !isAbsolute(archivePath) || !isAbsolute(keyPath)) {
+    throw new Error('Archive and key paths must be absolute.');
+  }
+  const archive = resolve(archivePath);
+  const keyFile = resolve(keyPath);
+  const plainPath = join(dirname(archive), `.home23-backup-auth-${randomUUID()}`);
+  try {
+    return authenticateBackupArchive(archive, keyFile, plainPath).header;
+  } finally {
+    if (exists(plainPath)) unlinkSync(plainPath);
+  }
+}
+
+export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot } = {}) {
+  if (typeof archivePath !== 'string' || typeof keyPath !== 'string' || typeof inspectionRoot !== 'string' || !isAbsolute(archivePath) || !isAbsolute(keyPath) || !isAbsolute(inspectionRoot)) {
+    throw new Error('Archive, key, and inspection paths must be absolute.');
+  }
+  const archive = resolve(archivePath);
+  const keyFile = resolve(keyPath);
+  const root = absoluteRoot(inspectionRoot, 'inspection directory');
+  if (readdirSync(root).length !== 0) throw new Error('Inspection directory must be empty.');
+  let wrote = false;
+  let plainPath = null;
+  try {
+    plainPath = join(dirname(root), `.home23-backup-auth-${randomUUID()}`);
+    const authenticated = authenticateBackupArchive(archive, keyFile, plainPath);
     const header = authenticated.header;
     if (!header.homeRoot || resolve(header.homeRoot) === root) throw new Error('Inspection directory must not be the backed-up home.');
     const extractor = createExtractor(root, header.files, header.homeRoot);
@@ -632,22 +666,8 @@ export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot }
     if (wrote || readdirSync(root).length) emptyDirectory(root);
     throw error;
   } finally {
-    if (archiveFd !== null) closeSync(archiveFd);
     if (plainPath && exists(plainPath)) unlinkSync(plainPath);
   }
-}
-
-function readAuthenticatedHeader(plainPath) {
-  const fd = openSync(plainPath, 'r');
-  try {
-    const lengthBytes = Buffer.alloc(4);
-    if (readSync(fd, lengthBytes, 0, 4, 0) !== 4) throw new Error('Truncated backup payload.');
-    const headerLength = lengthBytes.readUInt32BE(0);
-    if (headerLength < 2 || headerLength > 32 * 1024 * 1024) throw new Error('Backup header is invalid.');
-    const headerBytes = Buffer.alloc(headerLength);
-    if (readSync(fd, headerBytes, 0, headerLength, 4) !== headerLength) throw new Error('Truncated backup payload.');
-    return { header: JSON.parse(headerBytes.toString('utf8')), recordsOffset: 4 + headerLength };
-  } finally { closeSync(fd); }
 }
 
 function pushPlainRecords(plainPath, offset, extractor) {
@@ -937,26 +957,59 @@ export async function rebindAdoptedHome(source, destination) {
 
 /**
  * Finish owner recovery in the same directory Inspect/Restore wrote.
- * Reuses the move rebind path for ports, supervisor registration, and absolute paths.
- * Does not run birth and does not start writers.
+ * Installs a verified compatible runtime into the inspected tree, then reuses the move
+ * rebind path for ports, supervisor registration, and absolute paths.
+ * Does not require the original source directory, does not run birth, and does not start writers.
  */
-export async function recoverInspectedHome({ inspectionRoot } = {}) {
+export async function recoverInspectedHome({ inspectionRoot, payloadPath, expectedPackageId } = {}) {
   const destination = absoluteRoot(inspectionRoot, 'inspection directory');
+  if (typeof payloadPath !== 'string' || !isAbsolute(payloadPath) || payloadPath.includes('\0')) {
+    fail('backup_recover_invalid', 'Choose an absolute compatible payload directory.');
+  }
+  const payload = resolve(payloadPath);
   const host = readHostState(destination);
+  // Identity comes from the extracted host record (recorded homeRoot, profile, residentMap, encoder flag).
+  // The original machine directory may already be gone; do not require it to exist.
   if (typeof host.homeRoot !== 'string' || !isAbsolute(host.homeRoot) || host.homeRoot.includes('\0')) {
     fail('backup_recover_invalid', 'Inspected home has no recorded home path to rebind from.');
   }
+  if (!host.profile || typeof host.profile !== 'object' || typeof host.profile.name !== 'string') {
+    fail('backup_recover_invalid', 'Inspected home has no resident profile to recover.');
+  }
   const sourceHome = resolve(host.homeRoot);
-  // Destination must stay the inspected tree. Source is only the recorded path for string rewrites;
-  // the original machine directory may already be gone.
-  const packageId = await rebindDestination(sourceHome, destination);
+  let manifest;
+  try { manifest = verifyProductPayload(payload); }
+  catch (error) {
+    fail('backup_recover_payload_invalid', error?.message || 'Payload is not a compatible Home23 runtime.');
+  }
+  if (typeof expectedPackageId === 'string' && expectedPackageId.length > 0 && manifest.packageId !== expectedPackageId) {
+    fail('backup_recover_package_mismatch', 'Payload packageId does not match the authenticated archive.');
+  }
+  const installedId = installMovedRuntime(payload, destination, null);
+  if (!installedId || installedId !== manifest.packageId) {
+    fail('backup_recover_payload_invalid', 'Compatible runtime was not installed into the inspected home.');
+  }
+  // Path/port rebind. A null return from a missing source receipt is expected after source deletion.
+  await rebindDestination(sourceHome, destination);
+  writeFileSync(join(destination, '.home23-install.json'), `${JSON.stringify({
+    schema: INSTALL_SCHEMA,
+    status: 'installed',
+    homeRoot: destination,
+    appRoot: join(destination, 'app'),
+    nodePath: join(destination, 'bin', 'node'),
+    pm2Path: join(destination, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'),
+    packageId: manifest.packageId,
+    sourceCommit: manifest.sourceCommit,
+    replayed: false,
+  })}\n`, { mode: 0o600 });
   const rebound = readHostState(destination);
   if (rebound.homeRoot !== destination) fail('backup_recover_invalid', 'Recovery did not keep the inspected home directory.');
   if (rebound.desiredRunning === true) fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
+  if (rebound.phase !== 'stopped') fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
   return {
     ok: true,
     schema: BACKUP_SCHEMA,
-    packageId,
+    packageId: manifest.packageId,
     homeRoot: destination,
     sourceHome,
     writersStarted: false,
