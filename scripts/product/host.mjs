@@ -94,18 +94,15 @@ try {
     originalStdout(JSON.stringify(result) + '\n');
     if (result.ok === false) process.exitCode = 1;
   } else if (action === 'backup-recover') {
-    if (!options['--inspection'] || !options['--payload']) throw new Error('backup-recover requires --inspection and --payload.');
-    const { readAuthenticatedBackupHeader, recoverInspectedHome } = await import('../../cli/lib/product-backup.js');
-    let expectedPackageId;
-    if (options['--archive'] || options['--key']) {
-      if (!options['--archive'] || !options['--key']) throw new Error('backup-recover archive identity requires both --archive and --key.');
-      const header = readAuthenticatedBackupHeader({ archivePath: options['--archive'], keyPath: options['--key'] });
-      if (typeof header.packageId === 'string' && header.packageId.length > 0) expectedPackageId = header.packageId;
+    if (!options['--inspection'] || !options['--payload'] || !options['--archive'] || !options['--key']) {
+      throw new Error('backup-recover requires --inspection, --payload, --archive, and --key.');
     }
+    const { recoverInspectedHome } = await import('../../cli/lib/product-backup.js');
     const result = portabilityReply('backup-recover', await recoverInspectedHome({
       inspectionRoot: options['--inspection'],
       payloadPath: options['--payload'],
-      expectedPackageId,
+      archivePath: options['--archive'],
+      keyPath: options['--key'],
     }));
     originalStdout(JSON.stringify(result) + '\n');
     if (result.ok === false) process.exitCode = 1;

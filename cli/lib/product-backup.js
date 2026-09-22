@@ -41,6 +41,7 @@ const CHUNK = 64 * 1024;
 const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
 const HOST_LOCK_STALE_MS = 180000;
 const MOVE_FENCE_SCHEMA = 'home23.move-fence.v1';
+const RECOVER_JOURNAL_SCHEMA = 'home23.recover-journal.v1';
 
 const exists = file => {
   try { lstatSync(file); return true; }
@@ -751,6 +752,119 @@ function writeMoveJournal(source, journal) {
   renameSync(temporary, file);
 }
 
+function recoverJournalPath(destination) {
+  return join(dirname(destination), `.${basename(destination)}.home23-recover`, 'journal.json');
+}
+
+function readRecoverJournal(destination) {
+  const file = recoverJournalPath(destination);
+  if (!exists(file)) return null;
+  const journal = JSON.parse(readFileSync(file, 'utf8'));
+  if (journal?.schema !== RECOVER_JOURNAL_SCHEMA || journal.inspectionRoot !== destination) {
+    fail('backup_recover_journal_invalid', 'The recovery journal belongs to another home.');
+  }
+  return journal;
+}
+
+function writeRecoverJournal(destination, journal) {
+  const file = recoverJournalPath(destination);
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, file);
+}
+
+function archiveFilesDigest(files) {
+  return sha256(JSON.stringify(Array.isArray(files) ? files : []));
+}
+
+function archiveBindingFromHeader(header) {
+  if (!header?.homeRoot || !isAbsolute(header.homeRoot) || header.homeRoot.includes('\0')) {
+    fail('backup_recover_archive_mismatch', 'Authenticated archive has no recorded home path.');
+  }
+  if (!Array.isArray(header.files)) fail('backup_recover_archive_mismatch', 'Authenticated archive has no file inventory.');
+  return {
+    sourceHome: resolve(header.homeRoot),
+    packageId: typeof header.packageId === 'string' && header.packageId.length > 0 ? header.packageId : null,
+    sourceCommit: typeof header.sourceCommit === 'string' && header.sourceCommit.length > 0 ? header.sourceCommit : null,
+    filesDigest: archiveFilesDigest(header.files),
+  };
+}
+
+function bindingsMatch(left, right) {
+  return left.sourceHome === right.sourceHome
+    && left.packageId === right.packageId
+    && left.sourceCommit === right.sourceCommit
+    && left.filesDigest === right.filesDigest;
+}
+
+function hasRecoverableIdentity(host) {
+  if (host.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap)
+    && Object.keys(host.residentMap).some(name => /^[a-z][a-z0-9-]{0,62}$/.test(name))) {
+    return true;
+  }
+  return typeof host.profile?.name === 'string' && /^[a-z][a-z0-9-]{0,62}$/.test(host.profile.name);
+}
+
+function assertExtractMatchesArchive(destination, header) {
+  for (const entry of header.files) {
+    if (!entry || typeof entry.path !== 'string' || !safeRelative(entry.path)) {
+      fail('backup_recover_archive_mismatch', 'Authenticated archive inventory is invalid.');
+    }
+    if (isLifecycleLockPath(entry.path)) continue;
+    const absolute = join(destination, entry.path);
+    if (!exists(absolute)) {
+      fail('backup_recover_archive_mismatch', `Inspected home is missing archived path: ${entry.path}`);
+    }
+    if (entry.type === 'symlink') {
+      const target = readlinkSync(absolute);
+      if (sha256(Buffer.from(target, 'utf8')) !== entry.sha256) {
+        fail('backup_recover_archive_mismatch', `Inspected home does not match the authenticated archive: ${entry.path}`);
+      }
+      continue;
+    }
+    if (entry.type !== 'file') continue;
+    if (!lstatSync(absolute).isFile() || streamHash(absolute) !== entry.sha256) {
+      fail('backup_recover_archive_mismatch', `Inspected home does not match the authenticated archive: ${entry.path}`);
+    }
+  }
+}
+
+async function inventoryDestinationWriters(destination, dependencies = {}) {
+  if (dependencies.listProcesses) return dependencies.listProcesses(destination);
+  const node = join(destination, 'bin', 'node');
+  const pm2 = join(destination, 'tools', 'node_modules', 'pm2', 'bin', 'pm2');
+  if (!exists(node) || !exists(pm2)) return [];
+  return listInstalledWriters(destination);
+}
+
+/** Backup may capture the update-lock marker while the source lock is held. Without the lock directory it is not a live claim. */
+function clearOrphanedHostLockMarker(home) {
+  const lockPath = join(home, 'runtime', '.host.lock');
+  const markerPath = join(home, 'runtime', '.home23-update-lock.json');
+  if (!exists(lockPath) && exists(markerPath)) unlinkSync(markerPath);
+}
+
+function isLifecycleLockPath(relative) {
+  return relative === 'runtime/.home23-update-lock.json'
+    || relative === 'runtime/.host.lock'
+    || relative.startsWith('runtime/.host.lock/');
+}
+
+function writeRecoveredInstallReceipt(destination, manifest) {
+  writeFileSync(join(destination, '.home23-install.json'), `${JSON.stringify({
+    schema: INSTALL_SCHEMA,
+    status: 'installed',
+    homeRoot: destination,
+    appRoot: join(destination, 'app'),
+    nodePath: join(destination, 'bin', 'node'),
+    pm2Path: join(destination, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'),
+    packageId: manifest.packageId,
+    sourceCommit: manifest.sourceCommit,
+    replayed: false,
+  })}\n`, { mode: 0o600 });
+}
+
 function replaceHomePath(value, source, destination) {
   if (value === source || value.startsWith(`${source}${sep}`)) return `${destination}${value.slice(source.length)}`;
   return value;
@@ -1029,68 +1143,117 @@ export async function rebindAdoptedHome(source, destination) {
 
 /**
  * Finish owner recovery in the same directory Inspect/Restore wrote.
- * Installs a verified compatible runtime into the inspected tree, then reuses the move
- * rebind path for ports, supervisor registration, and absolute paths.
- * Does not require the original source directory, does not run birth, and does not start writers.
+ * Authenticates the archive, locks the destination, refuses unrelated installed or busy
+ * homes, binds the destination to that archive in a durable journal, installs a verified
+ * compatible runtime, then reuses the move rebind path. Does not run birth or start writers.
  */
-export async function recoverInspectedHome({ inspectionRoot, payloadPath, expectedPackageId } = {}) {
+export async function recoverInspectedHome({ inspectionRoot, payloadPath, archivePath, keyPath } = {}, dependencies = {}) {
   const destination = absoluteRoot(inspectionRoot, 'inspection directory');
   if (typeof payloadPath !== 'string' || !isAbsolute(payloadPath) || payloadPath.includes('\0')) {
     fail('backup_recover_invalid', 'Choose an absolute compatible payload directory.');
   }
+  if (typeof archivePath !== 'string' || !isAbsolute(archivePath) || archivePath.includes('\0')
+    || typeof keyPath !== 'string' || !isAbsolute(keyPath) || keyPath.includes('\0')) {
+    fail('backup_recover_invalid', 'Recovery requires absolute archive and key paths.');
+  }
   const payload = resolve(payloadPath);
-  const host = readHostState(destination);
-  // Identity comes from the extracted host record (recorded homeRoot, profile, residentMap, encoder flag).
-  // The original machine directory may already be gone; do not require it to exist.
-  if (typeof host.homeRoot !== 'string' || !isAbsolute(host.homeRoot) || host.homeRoot.includes('\0')) {
-    fail('backup_recover_invalid', 'Inspected home has no recorded home path to rebind from.');
+  const archive = resolve(archivePath);
+  const keyFile = resolve(keyPath);
+  const header = readAuthenticatedBackupHeader({ archivePath: archive, keyPath: keyFile });
+  const binding = archiveBindingFromHeader(header);
+
+  clearOrphanedHostLockMarker(destination);
+  const lock = acquireHostLock(destination, { staleMs: dependencies.staleMs });
+  if (!lock) fail('backup_lifecycle_busy', 'Another lifecycle operation holds this home. Recovery did not start.');
+  lock.hooks = { beforeChunk: dependencies.beforeChunk, onLockRefresh: dependencies.onLockRefresh, refreshMs: dependencies.lockRefreshMs };
+  try {
+    assertWritersIdle(await inventoryDestinationWriters(destination, dependencies));
+
+    let journal = readRecoverJournal(destination);
+    if (journal) {
+      if (!bindingsMatch(journal, binding)) {
+        fail('backup_recover_archive_mismatch', 'This inspected home is already bound to a different archive.');
+      }
+    } else {
+      const host = readHostState(destination);
+      if (resolve(host.homeRoot) === destination) {
+        fail('backup_recover_destination_refused', 'This home is already installed here. Choose the inspected restore folder for this archive.');
+      }
+      if (resolve(host.homeRoot) !== binding.sourceHome) {
+        fail('backup_recover_archive_mismatch', 'Inspected home does not match the authenticated archive home.');
+      }
+      if (!hasRecoverableIdentity(host)) {
+        fail('backup_recover_invalid', 'Inspected home has no resident identity to recover.');
+      }
+      assertExtractMatchesArchive(destination, header);
+      journal = {
+        schema: RECOVER_JOURNAL_SCHEMA,
+        inspectionRoot: destination,
+        archivePath: archive,
+        keyPath: keyFile,
+        sourceHome: binding.sourceHome,
+        packageId: binding.packageId,
+        sourceCommit: binding.sourceCommit,
+        filesDigest: binding.filesDigest,
+        phase: 'claimed',
+      };
+      writeRecoverJournal(destination, journal);
+    }
+
+    let manifest;
+    try { manifest = verifyProductPayload(payload); }
+    catch (error) {
+      fail('backup_recover_payload_invalid', error?.message || 'Payload is not a compatible Home23 runtime.');
+    }
+    if (binding.packageId && manifest.packageId !== binding.packageId) {
+      fail('backup_recover_package_mismatch', 'Payload packageId does not match the authenticated archive.');
+    }
+    if (binding.sourceCommit && manifest.sourceCommit !== binding.sourceCommit) {
+      fail('backup_recover_package_mismatch', 'Payload sourceCommit does not match the authenticated archive.');
+    }
+
+    const sourceHome = binding.sourceHome;
+    if (journal.phase === 'claimed') {
+      const installedId = installMovedRuntime(payload, destination, lock);
+      if (!installedId || installedId !== manifest.packageId) {
+        fail('backup_recover_payload_invalid', 'Compatible runtime was not installed into the inspected home.');
+      }
+      journal = { ...journal, phase: 'runtime_installed', payloadPath: payload };
+      writeRecoverJournal(destination, journal);
+    }
+    if (journal.phase === 'runtime_installed') {
+      await rebindDestination(sourceHome, destination);
+      journal = { ...journal, phase: 'rebound' };
+      writeRecoverJournal(destination, journal);
+    }
+    writeRecoveredInstallReceipt(destination, manifest);
+    if (journal.phase !== 'committed') {
+      journal = { ...journal, phase: 'committed' };
+      writeRecoverJournal(destination, journal);
+    }
+
+    const rebound = readHostState(destination);
+    if (rebound.homeRoot !== destination) fail('backup_recover_invalid', 'Recovery did not keep the inspected home directory.');
+    if (rebound.desiredRunning === true) fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
+    if (rebound.phase !== 'stopped') fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
+    return {
+      ok: true,
+      schema: BACKUP_SCHEMA,
+      packageId: manifest.packageId,
+      homeRoot: destination,
+      sourceHome,
+      writersStarted: false,
+      restoredRunning: false,
+      birthInvoked: false,
+      machineBindingsRebound: true,
+      desiredRunning: false,
+      ports: rebound.ports || null,
+      archiveBound: true,
+      filesDigest: binding.filesDigest,
+    };
+  } finally {
+    lock.release();
   }
-  if (!host.profile || typeof host.profile !== 'object' || typeof host.profile.name !== 'string') {
-    fail('backup_recover_invalid', 'Inspected home has no resident profile to recover.');
-  }
-  const sourceHome = resolve(host.homeRoot);
-  let manifest;
-  try { manifest = verifyProductPayload(payload); }
-  catch (error) {
-    fail('backup_recover_payload_invalid', error?.message || 'Payload is not a compatible Home23 runtime.');
-  }
-  if (typeof expectedPackageId === 'string' && expectedPackageId.length > 0 && manifest.packageId !== expectedPackageId) {
-    fail('backup_recover_package_mismatch', 'Payload packageId does not match the authenticated archive.');
-  }
-  const installedId = installMovedRuntime(payload, destination, null);
-  if (!installedId || installedId !== manifest.packageId) {
-    fail('backup_recover_payload_invalid', 'Compatible runtime was not installed into the inspected home.');
-  }
-  // Path/port rebind. A null return from a missing source receipt is expected after source deletion.
-  await rebindDestination(sourceHome, destination);
-  writeFileSync(join(destination, '.home23-install.json'), `${JSON.stringify({
-    schema: INSTALL_SCHEMA,
-    status: 'installed',
-    homeRoot: destination,
-    appRoot: join(destination, 'app'),
-    nodePath: join(destination, 'bin', 'node'),
-    pm2Path: join(destination, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'),
-    packageId: manifest.packageId,
-    sourceCommit: manifest.sourceCommit,
-    replayed: false,
-  })}\n`, { mode: 0o600 });
-  const rebound = readHostState(destination);
-  if (rebound.homeRoot !== destination) fail('backup_recover_invalid', 'Recovery did not keep the inspected home directory.');
-  if (rebound.desiredRunning === true) fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
-  if (rebound.phase !== 'stopped') fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
-  return {
-    ok: true,
-    schema: BACKUP_SCHEMA,
-    packageId: manifest.packageId,
-    homeRoot: destination,
-    sourceHome,
-    writersStarted: false,
-    restoredRunning: false,
-    birthInvoked: false,
-    machineBindingsRebound: true,
-    desiredRunning: false,
-    ports: rebound.ports || null,
-  };
 }
 
 function copyInstalledFile(from, to, mode, lock) {
