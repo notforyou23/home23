@@ -63,7 +63,10 @@ checks the stored coordination schema, and resumes from a journal outside
 Check for Updates screen. `check-update --home ABS --feed ABS` reads one local
 unverified feed and reports unavailable, damaged, incompatible, current, or
 available. A missing feed is not up to date. It does not download or install,
-and `canInstall` stays false. `backup --home ABS --archive ABS --key ABS`
+and `canInstall` stays false. `stage-release --home ABS --feed ABS --staging ABS --trust-key ABS`
+copies a development-signed local release into a stage directory after Ed25519
+and package-id checks. An unverified or production trust claim is refused.
+The home is not modified, and `canInstall` stays false. `backup --home ABS --archive ABS --key ABS`
 streams an encrypted archive only after the owned-writer inventory is quiet
 and while it holds the host lifecycle lock. `backup-inspect` restores that
 archive into an empty directory for inspection and does not start writers.

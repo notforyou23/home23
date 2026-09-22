@@ -13,16 +13,17 @@ try {
   while (args.length) {
     const key = args.shift();
     if (key === '--admit') {
-      if (action !== 'update' || options.admit) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|backup|backup-inspect|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--admit]');
+      if (action !== 'update' || options.admit) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|backup|backup-inspect|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--admit]');
       options.admit = true;
       continue;
     }
-    if (!['--home', '--payload', '--staging', '--feed', '--archive', '--key', '--inspection'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|backup|backup-inspect|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--admit]');
+    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|backup|backup-inspect|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--admit]');
     options[key] = args.shift();
   }
   if (action !== 'backup-inspect') homeRoot = absoluteHome(options['--home']);
-  if (options['--staging'] && !['stage', 'update'].includes(action)) throw new Error('--staging is only supported by stage and update.');
-  if (options['--feed'] && action !== 'check-update') throw new Error('--feed is only supported by check-update.');
+  if (options['--staging'] && !['stage', 'update', 'stage-release'].includes(action)) throw new Error('--staging is only supported by stage, update, and stage-release.');
+  if (options['--feed'] && !['check-update', 'stage-release'].includes(action)) throw new Error('--feed is only supported by check-update and stage-release.');
+  if (options['--trust-key'] && action !== 'stage-release') throw new Error('--trust-key is only supported by stage-release.');
   let input = {};
   if (action === 'stage' || action === 'update') input.staging = options['--staging'];
   if (options.admit) input.admit = true;
@@ -31,6 +32,12 @@ try {
     const result = action === 'backup'
       ? await createHomeBackup({ homeRoot, archivePath: options['--archive'], keyPath: options['--key'] })
       : await inspectHomeBackup({ archivePath: options['--archive'], keyPath: options['--key'], inspectionRoot: options['--inspection'] });
+    originalStdout(JSON.stringify(result) + '\n');
+    if (result.ok === false) process.exitCode = 1;
+  } else if (action === 'stage-release') {
+    if (!options['--feed'] || !options['--staging'] || !options['--trust-key']) throw new Error('stage-release requires --feed, --staging, and --trust-key.');
+    const { stageAuthenticatedRelease } = await import('../../cli/lib/product-update-feed.js');
+    const result = stageAuthenticatedRelease({ homeRoot, feedPath: options['--feed'], staging: options['--staging'], trustKeyPath: options['--trust-key'] });
     originalStdout(JSON.stringify(result) + '\n');
     if (result.ok === false) process.exitCode = 1;
   } else if (action === 'check-update') {
