@@ -169,6 +169,42 @@ test('host move fences source and leaves destination stopped via command path', 
   assert.equal(fs.existsSync(path.join(fixture.home, 'runtime/home23-move-fence.json')), true);
 });
 
+test('host backup-inspect recovers after the source home is gone', async t => {
+  const fixture = fixtureHome(t, { withSeed: true });
+  const backed = await runHost([
+    'backup', '--home', fixture.home, '--archive', fixture.archivePath, '--key', fixture.keyPath,
+  ]);
+  assert.equal(JSON.parse(backed.stdout).ok, true);
+  fs.rmSync(fixture.home, { recursive: true, force: true });
+  assert.equal(fs.existsSync(fixture.home), false);
+
+  fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
+  const result = await runHost([
+    'backup-inspect',
+    '--archive', fixture.archivePath,
+    '--key', fixture.keyPath,
+    '--inspection', fixture.inspectionRoot,
+  ]);
+  const body = JSON.parse(result.stdout);
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  assert.equal(fs.existsSync(fixture.home), false);
+  assert.equal(body.ok, true);
+  assert.equal(body.restoredRunning, false);
+  assert.equal(body.writersStarted, false);
+  assert.deepEqual(body.reconnects[0], {
+    kind: 'machine-bindings',
+    required: true,
+    message: 'Ports, supervisor registration, and absolute machine paths have to be rebound before this home runs.',
+  });
+  const restoredHost = JSON.parse(fs.readFileSync(path.join(fixture.inspectionRoot, '.home23-host.json'), 'utf8'));
+  assert.equal(restoredHost.profile.name, 'ada');
+  assert.equal(restoredHost.desiredRunning, false);
+  assert.equal(
+    fs.readFileSync(path.join(fixture.inspectionRoot, 'app/instances/ada/substrate/seed-01/birth-receipt.json'), 'utf8'),
+    '{"seedId":"ada-seed"}\n',
+  );
+});
+
 test('host backup refuses missing archive and key flags', async t => {
   const fixture = fixtureHome(t);
   const result = await runHost(['backup', '--home', fixture.home]);
