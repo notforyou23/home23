@@ -12,7 +12,7 @@ import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, s
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 
-function home(t, { birth = false } = {}) {
+function home(t, { birth = false, omitEvobrew = false } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'host-unit-')));
   const payload = path.join(base, 'payload'), homeRoot = path.join(base, 'home');
   t.after(() => { fs.rmSync(base, { force: true, recursive: true }); fs.rmSync(socketRootFor(homeRoot), { force: true, recursive: true }); });
@@ -25,12 +25,13 @@ function home(t, { birth = false } = {}) {
     for (const file of ['home.yaml', 'targets.yaml', 'cron-jobs.json']) fs.copyFileSync(new URL(`../../config/${file}.example`, import.meta.url), path.join(payload, 'app/config', `${file}.example`));
     fs.cpSync(new URL('../../cli/templates', import.meta.url), path.join(payload, 'app/cli/templates'), { recursive: true });
   }
+  if (omitEvobrew) fs.writeFileSync(path.join(payload, 'app/.home23-product-no-evobrew'), '');
   writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2' });
   installProductPayload({ payloadPath: payload, homeRoot });
   return homeRoot;
 }
-async function prepared(t) {
-  const homeRoot = home(t), ports = await choosePortPlan();
+async function prepared(t, options = {}) {
+  const homeRoot = home(t, options), ports = await choosePortPlan();
   const state = { schema: 'home23.host.v1', homeRoot, ports, profile: { name: 'milo', provider: 'ollama-local', model: 'fixture' }, phase: 'prepared', desiredRunning: false, birth: { home: { id: 'home-fixture' }, coordination: { botId: 'bot-fixture' } } };
   privateJSON(path.join(homeRoot, '.home23-host.json'), state);
   return { homeRoot, state };
@@ -146,6 +147,28 @@ test('Start reports a restarting service as failed instead of starting', async t
   assert.equal(result.status, 'degraded');
   assert.equal(result.error?.code, 'host_process_failed');
   assert.equal((await runHostAction('status', { homeRoot }, dependencies)).status, 'degraded');
+});
+
+test('consumer Host skips Evobrew and accepts only its stopped legacy supervisor row', async t => {
+  const { homeRoot } = await prepared(t, { omitEvobrew: true });
+  const required = ownedProcessNames('milo', { home23Root: homeRoot });
+  assert.ok(!required.includes('home23-evobrew'));
+  const rows = [row(homeRoot, 'home23-evobrew', 'stopped')];
+  const starts = [];
+  const execute = async (_node, args) => {
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'start') {
+      const name = args[args.indexOf('--only') + 1];
+      starts.push(name); rows.push(row(homeRoot, name));
+    }
+    return { stdout: '' };
+  };
+  const dependencies = { execute, definitions: () => productDefinitions(definitions(homeRoot), homeRoot, 'milo'), readinessWaitMs: 0,
+    probeReadiness: async () => ({ ready: true, issues: [] }) };
+  assert.equal((await runHostAction('start', { homeRoot }, dependencies)).status, 'ready');
+  assert.ok(!starts.includes('home23-evobrew'));
+  rows[0].pm2_env.status = 'online';
+  await assert.rejects(runHostAction('stop', { homeRoot }, dependencies), /unexpected process/);
 });
 
 test('fake or redirected installation receipts are refused before process control', async t => {

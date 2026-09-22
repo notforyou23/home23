@@ -1005,7 +1005,7 @@ function createSettingsRouter(home23Root, options = {}) {
       regenerateEvobrewConfig();
       targets = [
         ...discoverAgents().flatMap(name => [`home23-${name}`, `home23-${name}-harness`]),
-        'home23-evobrew',
+        ...(evobrewAvailable() ? ['home23-evobrew'] : []),
       ];
     } catch (err) {
       return res.status(500).json({ ok: false, error: err.message });
@@ -1281,7 +1281,12 @@ function createSettingsRouter(home23Root, options = {}) {
     "`, { cwd: home23Root, stdio: 'pipe', timeout: 10000 });
   }
 
+  function evobrewAvailable() {
+    return !fs.existsSync(path.join(home23Root, '.home23-product-no-evobrew'));
+  }
+
   function regenerateEvobrewConfig() {
+    if (!evobrewAvailable()) return;
     const { execSync } = require('child_process');
     execSync(`node --input-type=module -e "
       import { writeEvobrewConfig } from './cli/lib/evobrew-config.js';
@@ -2318,6 +2323,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   router.get('/system', (req, res) => {
     const homeConfig = loadHomeConfig();
     res.json({
+      evobrewAvailable: evobrewAvailable(),
       evobrew: homeConfig.evobrew || {},
       cosmo23: homeConfig.cosmo23 || {},
       embeddings: homeConfig.embeddings || {},
@@ -2335,7 +2341,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     const homeConfig = loadYaml(configPath);
     const { evobrew, cosmo23, embeddings, chat } = req.body;
 
-    if (evobrew?.port !== undefined) {
+    if (evobrewAvailable() && evobrew?.port !== undefined) {
       if (!homeConfig.evobrew) homeConfig.evobrew = {};
       homeConfig.evobrew.port = evobrew.port;
     }

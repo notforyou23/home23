@@ -13,7 +13,7 @@ const TEST_NODE_MODULES = dirname(dirname(require.resolve('js-yaml/package.json'
 const OWNED_PROFILE = 'owned-nomic-v1.5-onnx-fp32-mean-noprefix';
 const OWNED_RECIPE = '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9';
 
-function generate(home = {}) {
+function generate(home = {}, { omitEvobrew = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'home23-owned-embedding-eco-'));
   mkdirSync(join(root, 'config'), { recursive: true });
   mkdirSync(join(root, 'instances', 'jerry'), { recursive: true });
@@ -27,9 +27,18 @@ function generate(home = {}) {
     agent: { displayName: 'Jerry' },
     ports: { engine: 5001, dashboard: 5002, mcp: 5003, bridge: 5004 },
   }));
+  if (omitEvobrew) writeFileSync(join(root, '.home23-product-no-evobrew'), '');
   generateEcosystem(root);
   return root;
 }
+
+test('consumer package ecosystem omits the standalone Evobrew process', t => {
+  const root = generate({}, { omitEvobrew: true });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = require(join(root, 'ecosystem.config.cjs')).apps;
+  assert.ok(!apps.some(app => app.name === 'home23-evobrew'));
+  assert.ok(apps.some(app => app.name === 'home23-jerry'));
+});
 
 function engineEnv(root) {
   return require(join(root, 'ecosystem.config.cjs')).apps

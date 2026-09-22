@@ -44,6 +44,12 @@ a different package. The installation receipt is `.home23-install.json`.
 The initial runtime keeps its mutable configuration and `instances/` under
 `app/`; upgrading that layout requires a separate state-preserving updater.
 The source Git updater must refuse these installations.
+The consumer Host package omits the standalone Evobrew app and its dependency
+tree. Home23's resident chat/device/agency bridge remains part of Home23.
+Source installations may still run Evobrew separately. When an older Host home
+updates to a package without Evobrew, its Evobrew conversations, workspaces and
+configuration remain as local state; the old process is stopped and not
+restarted. Removing those saved files is a separate owner decision.
 
 [Home updates and portability](HOME-UPDATES-AND-PORTABILITY.md) defines the
 replacement lifecycle: Check for Updates, compatible staged releases, consistent

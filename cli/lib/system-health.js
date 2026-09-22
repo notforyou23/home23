@@ -46,11 +46,13 @@ export async function ensureSystemHealth(home23Root) {
   generateEcosystem(home23Root);
 
   // 5. Generate evobrew config
-  try {
-    const { writeEvobrewConfig } = await import('./evobrew-config.js');
-    writeEvobrewConfig(home23Root);
-  } catch (err) {
-    console.warn(`  evobrew config failed: ${err.message}`);
+  if (!existsSync(join(home23Root, '.home23-product-no-evobrew'))) {
+    try {
+      const { writeEvobrewConfig } = await import('./evobrew-config.js');
+      writeEvobrewConfig(home23Root);
+    } catch (err) {
+      console.warn(`  evobrew config failed: ${err.message}`);
+    }
   }
 
   if (!changed) {

@@ -1618,13 +1618,14 @@ async function loadAgents() {
     if (cfgRes.ok) {
       const cfg = await cfgRes.json();
       cosmo23Url = `http://${host}:${cfg.cosmo23Port}`;
-      evobrewUrl = `http://${host}:${cfg.evobrewPort}`;
+      evobrewUrl = cfg.evobrewPort ? `http://${host}:${cfg.evobrewPort}` : '';
 
       // Wire evobrew button
       const evobrewBtn = document.getElementById('evobrew-btn');
       if (evobrewBtn && evobrewUrl) {
         evobrewBtn.href = `${evobrewUrl}/?agent=${primaryAgent.name}`;
         evobrewBtn.target = '_blank';
+        evobrewBtn.style.display = '';
       }
     }
   } catch { /* config offline */ }

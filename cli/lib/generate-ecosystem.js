@@ -712,27 +712,30 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`      env: { ...sharedServiceEnv, CDP_PORT: '9222' },`);
   lines.push(`    },`);
 
-  // Evobrew — shared process (one per installation)
-  lines.push(``);
-  lines.push(`    // ── evobrew (shared) ──`);
-  lines.push(`    {`);
-  lines.push(`      name: 'home23-evobrew',`);
-  lines.push(`      script: 'server/server.js',`);
-  lines.push(`      cwd: path.join(HOME23, 'evobrew'),`);
-  lines.push(`      filter_env: ['HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
-  lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-  lines.push(`      out_file: path.join(HOME23, 'logs', 'evobrew-out.log'),`);
-  lines.push(`      error_file: path.join(HOME23, 'logs', 'evobrew-err.log'),`);
-  lines.push(`      env: {`);
-  lines.push(`        ...commonEnv,`);
-  lines.push(`        ANTHROPIC_API_KEY: secrets.providers?.anthropic?.apiKey || commonEnv.ANTHROPIC_AUTH_TOKEN || '',`);
-  lines.push(`        COSMO_ADMIN_MODE: 'true',`);
-  lines.push(`        PORT: String(homeConfig.evobrew?.port || 3405),`);
-  lines.push(`        EVOBREW_CONFIG_DIR: path.join(HOME23, 'evobrew'),`);
-  lines.push(`        HOME23_MANAGED: 'true',`);
-  lines.push(`        NODE_ENV: 'production',`);
-  lines.push(`      },`);
-  lines.push(`    },`);
+  // Source installs may retain Evobrew; consumer Host packages omit it.
+  if (!existsSync(join(home23Root, '.home23-product-no-evobrew'))) {
+    // Evobrew — shared process (one per installation)
+    lines.push(``);
+    lines.push(`    // ── evobrew (shared) ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-evobrew',`);
+    lines.push(`      script: 'server/server.js',`);
+    lines.push(`      cwd: path.join(HOME23, 'evobrew'),`);
+    lines.push(`      filter_env: ['HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    lines.push(`      out_file: path.join(HOME23, 'logs', 'evobrew-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'logs', 'evobrew-err.log'),`);
+    lines.push(`      env: {`);
+    lines.push(`        ...commonEnv,`);
+    lines.push(`        ANTHROPIC_API_KEY: secrets.providers?.anthropic?.apiKey || commonEnv.ANTHROPIC_AUTH_TOKEN || '',`);
+    lines.push(`        COSMO_ADMIN_MODE: 'true',`);
+    lines.push(`        PORT: String(homeConfig.evobrew?.port || 3405),`);
+    lines.push(`        EVOBREW_CONFIG_DIR: path.join(HOME23, 'evobrew'),`);
+    lines.push(`        HOME23_MANAGED: 'true',`);
+    lines.push(`        NODE_ENV: 'production',`);
+    lines.push(`      },`);
+    lines.push(`    },`);
+  }
   if (homeConfig.embedder?.owned === true && Number(homeConfig.embedder?.port) >= 20000) {
     lines.push(``);
     lines.push(`    // ── owned embedder (Host-admitted homes only; not a source default) ──`);

@@ -408,6 +408,13 @@ test('fresh homes skip explicitly disabled ScreenLogic without requiring optiona
   assert.deepEqual(result.services.map(({ name }) => name), ['home23-coordination', 'home23-evobrew']);
 });
 
+test('consumer Host startup does not request standalone Evobrew', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'home23-no-evobrew-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, '.home23-product-no-evobrew'), '');
+  assert.ok(!configuredSharedServices(root).some(service => service.name === 'home23-evobrew'));
+});
+
 test('named ecosystem starts use exact PM2 targets with a sanitized environment', () => {
   let invocation;
   const env = {

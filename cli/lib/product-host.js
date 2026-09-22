@@ -29,6 +29,9 @@ function appRootFor(homeRoot) {
   const nested = join(homeRoot, 'app');
   return existsSync(join(nested, 'instances')) || existsSync(join(nested, 'cli')) ? nested : homeRoot;
 }
+function packagedWithoutEvobrew(homeRoot) {
+  return Boolean(homeRoot && existsSync(join(appRootFor(homeRoot), '.home23-product-no-evobrew')));
+}
 function assertHostOAuthProvider(provider) {
   if (!OAUTH_PROVIDERS.has(provider)) throw new Error('Choose Anthropic or OpenAI account sign-in.');
   return provider;
@@ -142,7 +145,7 @@ export function hostResidentNames(state) {
 /**
  * Host-owned PM2 names for one resident. Agent processes come from
  * agentProcessNames (same substrate/mcp conditions as generate-ecosystem).
- * coordination and evobrew are always required; seed observatory only when
+ * coordination is always required; seed observatory only when
  * this resident's agent list includes a seed runner.
  */
 export function ownedProcessNames(name, { encoderRequired = false, home23Root, config } = {}) {
@@ -154,7 +157,7 @@ export function ownedProcessNames(name, { encoderRequired = false, home23Root, c
   });
   const names = ['home23-coordination', ...agentNames];
   if (agentNames.some(processName => processName.endsWith('-seed'))) names.push('home23-seed-observatory');
-  names.push('home23-evobrew');
+  if (!packagedWithoutEvobrew(home23Root)) names.push('home23-evobrew');
   if (encoderRequired) names.push(OWNED_EMBEDDER_PROCESS);
   return names;
 }
@@ -437,7 +440,7 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
   if (owned.includes('home23-seed-observatory')) {
     checks.push(['Seed observatory', `http://127.0.0.1:${state.ports.observatory}/healthz`, 'text']);
   }
-  checks.push(['Evobrew', `http://127.0.0.1:${state.ports.evobrew}/api/health`, 'json']);
+  if (owned.includes('home23-evobrew')) checks.push(['Evobrew', `http://127.0.0.1:${state.ports.evobrew}/api/health`, 'json']);
   await Promise.all(checks.map(async ([label, url, responseType = 'json', residentName, kind]) => {
     try {
       const value = await request(url, { responseType });
@@ -511,7 +514,7 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
   const homePath = join(appRoot, 'config', 'home.yaml');
   const home = yaml.load(readFileSync(homePath, 'utf8')) || {};
   home.coordination = { ...home.coordination, socketDirectory: socketRootFor(homeRoot), publicApi: { ...home.coordination?.publicApi, port: state.ports.coordination } };
-  home.evobrew = { ...home.evobrew, port: state.ports.evobrew };
+  if (!packagedWithoutEvobrew(homeRoot)) home.evobrew = { ...home.evobrew, port: state.ports.evobrew };
   home.substrate = { ...home.substrate, observatory: { ...home.substrate?.observatory, port: state.ports.observatory } };
   home.screenlogic = { enabled: false };
   if (baseUrl) home.providers[profile.provider] = { ...home.providers[profile.provider], baseUrl };
@@ -676,7 +679,12 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     const names = ownedProcessNamesForState(state);
     const rows = await processDriver.list();
     const processes = safeProcesses(rows, homeRoot, names);
-    if (rows.some(row => !names.includes(row.name)) || processes.some(row => !row.owned) || new Set(rows.map(row => row.name)).size !== rows.length) throw new Error('This private supervisor contains an unexpected process; no processes were changed.');
+    // An update from an older package leaves Evobrew's stopped PM2 record so
+    // rollback can still restart it. It is never admitted in the new package.
+    const legacyEvobrew = packagedWithoutEvobrew(homeRoot)
+      ? safeProcesses(rows, homeRoot, ['home23-evobrew']).find(row => row.name === 'home23-evobrew' && row.status === 'stopped' && row.owned)
+      : null;
+    if (rows.some(row => !names.includes(row.name) && row.name !== legacyEvobrew?.name) || processes.some(row => !row.owned) || new Set(rows.map(row => row.name)).size !== rows.length) throw new Error('This private supervisor contains an unexpected process; no processes were changed.');
     if (action === 'stop') {
       state = { ...state, desiredRunning: false, phase: 'stopped' };
       privateJSON(statePath(homeRoot), state);

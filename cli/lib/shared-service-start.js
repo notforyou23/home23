@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -36,7 +37,8 @@ export function configuredSharedServices(home23Root) {
   // disable it and may not have its Python dependencies; that must not block
   // the resident. An absent setting preserves legacy startup behavior.
   const services = SHARED_SERVICES.filter((service) =>
-    service.name !== 'home23-screenlogic' || homeConfig.screenlogic?.enabled !== false);
+    (service.name !== 'home23-screenlogic' || homeConfig.screenlogic?.enabled !== false)
+    && (service.name !== 'home23-evobrew' || !existsSync(join(home23Root, '.home23-product-no-evobrew'))));
   return homeConfig.coordination?.process?.enabled === true
     ? [COORDINATION_SERVICE, ...services]
     : services;

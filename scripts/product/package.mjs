@@ -89,7 +89,7 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
   const tracked = run('git', ['ls-tree', '-r', '--name-only', sourceCommit], { cwd: sourceRoot }).trim().split('\n');
   const forbidden = tracked.filter(file => /^(instances\/|config\/(home|targets|secrets)\.yaml$|config\/(agents|cron-jobs)\.json$|ecosystem\.config\.cjs$|\.env$|engine\/\.env$|evobrew\/\.env$)/.test(file));
   if (forbidden.length) throw new Error(`Source commit contains local installation state: ${forbidden.join(', ')}`);
-  for (const file of ['package-lock.json', 'engine/package-lock.json', 'evobrew/package-lock.json', 'scripts/product/runtime-tools/package-lock.json', 'scripts/embedder/package-lock.json']) {
+  for (const file of ['package-lock.json', 'engine/package-lock.json', 'scripts/product/runtime-tools/package-lock.json', 'scripts/embedder/package-lock.json']) {
     if (!tracked.includes(file)) throw new Error(`Pinned product dependency lock is missing: ${file}`);
   }
   fs.mkdirSync(outputPath, { mode: 0o755 });
@@ -99,6 +99,12 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
   // credentials, symlinked dependencies or lived resident state are copied.
   run('git', ['archive', '--format=tar', '--output', archive, sourceCommit], { cwd: sourceRoot });
   run('/usr/bin/tar', ['-xf', archive, '-C', app]); fs.unlinkSync(archive);
+  // The standalone Evobrew app is not part of the consumer Host runtime.
+  // Retain its directory as a parent for lived Evobrew state in older homes.
+  fs.rmSync(path.join(app, 'evobrew'), { recursive: true, force: true });
+  fs.mkdirSync(path.join(app, 'evobrew'));
+  fs.writeFileSync(path.join(app, 'evobrew', '.gitkeep'), '');
+  fs.writeFileSync(path.join(app, '.home23-product-no-evobrew'), '');
   normalizeModes(app); inventoryProductPayload(app);
   const bin = path.join(outputPath, 'bin'); fs.mkdirSync(bin, { mode: 0o755 });
   fs.copyFileSync(nodePath, path.join(bin, 'node')); fs.chmodSync(path.join(bin, 'node'), 0o755);
@@ -120,7 +126,7 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
     npm_config_nodedir: headerAlias, npm_config_userconfig: '/dev/null', npm_config_audit: 'false', npm_config_fund: 'false' };
   fs.mkdirSync(env.TMPDIR, { recursive: true });
   try {
-  for (const directory of [app, path.join(app, 'engine'), path.join(app, 'evobrew'), path.join(app, 'scripts', 'embedder'), tools]) {
+  for (const directory of [app, path.join(app, 'engine'), path.join(app, 'scripts', 'embedder'), tools]) {
     process.stderr.write(`Installing locked dependencies: ${path.relative(outputPath, directory)}\n`);
     run(path.join(bin, 'node'), [npmPath, 'ci', '--no-audit', '--no-fund'], { cwd: directory, env, stdio: 'inherit', timeout: 20 * 60 * 1000 });
   }
@@ -141,7 +147,6 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
     root('hnswlib-node');
     createRequire(process.cwd()+'/engine/package.json')('hnswlib-node');
     createRequire(process.cwd()+'/engine/package.json')('msgpackr');
-    createRequire(process.cwd()+'/evobrew/package.json')('node-pty');
     createRequire(process.cwd()+'/package.json')('tsx');
     createRequire(process.cwd()+'/package.json')('ajv/dist/2020');
     const embedder=createRequire(process.cwd()+'/scripts/embedder/package.json');

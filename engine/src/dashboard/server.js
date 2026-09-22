@@ -2386,8 +2386,9 @@ class DashboardServer {
     // Home23 config (ports for client-side URL construction)
     this.app.get('/home23/config.json', (req, res) => {
       const agentName = this.getHome23AgentName();
+      const hasEvobrew = !require('node:fs').existsSync(path.join(this.getHome23Root(), '.home23-product-no-evobrew'));
       res.json({
-        evobrewPort: parseInt(process.env.EVOBREW_PORT || '3415', 10),
+        evobrewPort: hasEvobrew ? parseInt(process.env.EVOBREW_PORT || '3415', 10) : null,
         cosmo23Port: parseInt(process.env.COSMO23_PORT || '43210', 10),
         agent: agentName,
         agentName,
@@ -2518,6 +2519,7 @@ class DashboardServer {
           },
         };
 
+        if (require('node:fs').existsSync(path.join(this.getHome23Root(), '.home23-product-no-evobrew'))) delete tabs.evobrew;
         res.json({
           version: 1,
           dashboardAgent,

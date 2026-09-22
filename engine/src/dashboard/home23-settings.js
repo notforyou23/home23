@@ -1903,6 +1903,7 @@ function tokensToHuman(tokens) {
 }
 
 function renderSystem(data) {
+  document.getElementById('sys-evobrew-field').style.display = data.evobrewAvailable === false ? 'none' : '';
   document.getElementById('sys-evobrew-port').value = data.evobrew?.port || 3415;
   document.getElementById('sys-cosmo-app').value = data.cosmo23?.ports?.app || 43210;
   document.getElementById('sys-cosmo-ws').value = data.cosmo23?.ports?.websocket || 43240;
@@ -1992,7 +1993,8 @@ async function saveSystem() {
   }).filter(Boolean);
 
   const body = {
-    evobrew: { port: parseInt(document.getElementById('sys-evobrew-port').value) },
+    ...(document.getElementById('sys-evobrew-field').style.display === 'none' ? {} :
+      { evobrew: { port: parseInt(document.getElementById('sys-evobrew-port').value) } }),
     cosmo23: {
       ports: {
         app: parseInt(document.getElementById('sys-cosmo-app').value),
