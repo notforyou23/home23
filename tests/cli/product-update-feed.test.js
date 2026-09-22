@@ -2,12 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { installProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import {
   downloadDevelopmentRelease,
+  downloadReleaseArchive,
   inspectReleaseFeed,
+  recoverDownload,
   stageAuthenticatedRelease,
 } from '../../cli/lib/product-update-feed.js';
 
@@ -484,4 +487,137 @@ test('downloadDevelopmentRelease rejects a bad signature without leaving a paylo
   assert.deepEqual(snapshotHome(home), before);
   assert.deepEqual(listPayloadFiles(staging), []);
   assert.equal(fs.existsSync(path.join(staging, 'payload')), false);
+});
+
+function listenLoopbackArchive(t, handler) {
+  const server = http.createServer(handler);
+  t.after(() => new Promise(resolve => server.close(() => resolve())));
+  return new Promise((resolve, reject) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      resolve({ server, port, origin: `http://127.0.0.1:${port}` });
+    });
+    server.on('error', reject);
+  });
+}
+
+test('downloadReleaseArchive writes payload.bin when the digest matches', async t => {
+  const root = tempRoot(t);
+  const body = Buffer.from('home23-local-archive-fixture\n');
+  const expectedSha256 = crypto.createHash('sha256').update(body).digest('hex');
+  const { origin } = await listenLoopbackArchive(t, (_req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': body.length,
+    });
+    res.end(body);
+  });
+  const destinationDirectory = path.join(root, 'download');
+  const phases = [];
+  const result = await downloadReleaseArchive({
+    url: `${origin}/payload.bin`,
+    destinationDirectory,
+    expectedSha256,
+    onProgress: progress => phases.push(progress),
+  });
+  const payloadPath = path.join(destinationDirectory, 'payload.bin');
+  assert.equal(result.ok, true);
+  assert.equal(result.path, payloadPath);
+  assert.equal(fs.readFileSync(payloadPath).equals(body), true);
+  assert.ok(phases.some(item => item.phase === 'downloading'));
+  assert.equal(phases.at(-1)?.phase, 'verified');
+  assert.equal(phases.at(-1).bytesCopied, body.length);
+  assert.equal(phases.at(-1).bytesTotal, body.length);
+  assert.equal(fs.readdirSync(destinationDirectory).includes('payload.bin'), true);
+  assert.ok(fs.readdirSync(destinationDirectory).every(name => !name.endsWith('.tmp')));
+});
+
+test('downloadReleaseArchive refuses a wrong digest without leaving payload.bin', async t => {
+  const root = tempRoot(t);
+  const body = Buffer.from('home23-local-archive-wrong-digest\n');
+  const { origin } = await listenLoopbackArchive(t, (_req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': body.length,
+    });
+    res.end(body);
+  });
+  const destinationDirectory = path.join(root, 'download');
+  const phases = [];
+  await assert.rejects(
+    () => downloadReleaseArchive({
+      url: `${origin}/payload.bin`,
+      destinationDirectory,
+      expectedSha256: 'a'.repeat(64),
+      onProgress: progress => phases.push(progress),
+    }),
+    error => error.code === 'digest_mismatch',
+  );
+  assert.equal(phases.at(-1)?.phase, 'failed');
+  assert.equal(fs.existsSync(path.join(destinationDirectory, 'payload.bin')), false);
+  if (fs.existsSync(destinationDirectory)) {
+    assert.ok(fs.readdirSync(destinationDirectory).every(name => !name.endsWith('.tmp') && name !== 'payload.bin'));
+  }
+});
+
+test('downloadReleaseArchive refuses a non-loopback URL without listening', t => {
+  const root = tempRoot(t);
+  const destinationDirectory = path.join(root, 'download');
+  const phases = [];
+  assert.throws(
+    () => downloadReleaseArchive({
+      url: 'http://example.com:443/payload.bin',
+      destinationDirectory,
+      expectedSha256: 'b'.repeat(64),
+      onProgress: progress => phases.push(progress),
+    }),
+    error => error.code === 'network_refused',
+  );
+  assert.equal(phases.at(-1)?.phase, 'failed');
+  assert.equal(fs.existsSync(path.join(destinationDirectory, 'payload.bin')), false);
+});
+
+test('loopback manifest download then recoverDownload reports copying or staged', async t => {
+  const f = signedDevelopmentFixture(t);
+  assert.deepEqual(recoverDownload({ staging: path.join(f.root, 'no-claim-yet') }), {
+    status: 'absent',
+    packageId: null,
+    resumed: false,
+  });
+
+  const manifestBytes = fs.readFileSync(path.join(f.artifact, 'manifest.json'));
+  const expectedSha256 = crypto.createHash('sha256').update(manifestBytes).digest('hex');
+  const { origin } = await listenLoopbackArchive(t, (_req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': manifestBytes.length,
+    });
+    res.end(manifestBytes);
+  });
+  const archiveDir = path.join(f.root, 'archive-download');
+  const archived = await downloadReleaseArchive({
+    url: `${origin}/manifest.bin`,
+    destinationDirectory: archiveDir,
+    expectedSha256,
+  });
+  assert.equal(archived.ok, true);
+  assert.equal(fs.existsSync(path.join(archiveDir, 'payload.bin')), true);
+
+  const before = snapshotHome(f.home);
+  const staged = downloadDevelopmentRelease({
+    homeRoot: f.home,
+    feedPath: f.feedPath,
+    trustKeyPath: f.trustKeyPath,
+    staging: f.staging,
+  });
+  assert.equal(staged.status, 'staged');
+  assert.deepEqual(snapshotHome(f.home), before);
+
+  const recovered = recoverDownload({ staging: f.staging });
+  assert.ok(recovered.status === 'copying' || recovered.status === 'staged');
+  assert.equal(recovered.status, 'staged');
+  assert.equal(recovered.packageId, f.manifest.packageId);
+  assert.equal(recovered.resumed, false);
+  assert.equal(staged.homeMutated, false);
+  assert.equal(staged.canInstall, false);
 });
