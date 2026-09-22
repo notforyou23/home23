@@ -51,7 +51,7 @@ function portabilityReply(kind, result) {
       birthInvoked: false,
       ownerMessage: result.ok === false
         ? undefined
-        : 'Recovery rebound ports, supervisor registration, and absolute machine paths in the inspected folder. Writers were not started and birth was not run. This is a command result, not an installed-UI proof. Local trust is not public trust.',
+        : 'Recovery installed a verified runtime into the inspected folder and rebound ports, supervisor registration, and absolute machine paths. Writers were not started and birth was not run. This is a command result, not an installed-UI proof. Local trust is not public trust.',
     };
   }
   return {
@@ -94,9 +94,19 @@ try {
     originalStdout(JSON.stringify(result) + '\n');
     if (result.ok === false) process.exitCode = 1;
   } else if (action === 'backup-recover') {
-    if (!options['--inspection']) throw new Error('backup-recover requires --inspection.');
-    const { recoverInspectedHome } = await import('../../cli/lib/product-backup.js');
-    const result = portabilityReply('backup-recover', await recoverInspectedHome({ inspectionRoot: options['--inspection'] }));
+    if (!options['--inspection'] || !options['--payload']) throw new Error('backup-recover requires --inspection and --payload.');
+    const { readAuthenticatedBackupHeader, recoverInspectedHome } = await import('../../cli/lib/product-backup.js');
+    let expectedPackageId;
+    if (options['--archive'] || options['--key']) {
+      if (!options['--archive'] || !options['--key']) throw new Error('backup-recover archive identity requires both --archive and --key.');
+      const header = readAuthenticatedBackupHeader({ archivePath: options['--archive'], keyPath: options['--key'] });
+      if (typeof header.packageId === 'string' && header.packageId.length > 0) expectedPackageId = header.packageId;
+    }
+    const result = portabilityReply('backup-recover', await recoverInspectedHome({
+      inspectionRoot: options['--inspection'],
+      payloadPath: options['--payload'],
+      expectedPackageId,
+    }));
     originalStdout(JSON.stringify(result) + '\n');
     if (result.ok === false) process.exitCode = 1;
   } else if (action === 'backup' || action === 'backup-inspect') {

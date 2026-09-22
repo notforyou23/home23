@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  createHomeBackup, inspectHomeBackup, moveHome, readMoveFence, recoverInspectedHome, rebindAdoptedHome,
+  createHomeBackup, inspectHomeBackup, moveHome, readAuthenticatedBackupHeader, readMoveFence, recoverInspectedHome, rebindAdoptedHome,
 } from '../../cli/lib/product-backup.js';
 import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
@@ -503,10 +503,30 @@ test('a resumed move corrects existing directory and file modes from the manifes
   assert.equal(fs.readFileSync(path.join(destination, 'app/instances/milo/substrate/seed-01/birth-receipt.json'), 'utf8'), '{"seedId":"modes"}\n');
 });
 
-test('recoverInspectedHome rebinds machine bindings in the inspected tree without birth', async t => {
+test('recoverInspectedHome installs a matching payload and status works without the original source', async t => {
   const root = tempRoot(t);
   const home = path.join(root, 'home');
   const resident = 'ada';
+  const payload = path.join(root, 'payload');
+  const nodeMarker = '#!/bin/sh\n# recovered-payload-node\n';
+  for (const [relative, contents] of Object.entries({
+    'bin/node': nodeMarker,
+    'app/cli/home23.js': 'export {};\n',
+    'app/cli/lib/product-payload.js': 'export {};\n',
+    'app/scripts/product/host.mjs': 'export {};\n',
+    'tools/node_modules/pm2/bin/pm2': 'pm2\n',
+  })) {
+    const file = path.join(payload, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(file, contents, { mode: relative === 'bin/node' ? 0o755 : 0o644 });
+  }
+  const manifest = writeProductManifest(payload, {
+    sourceCommit: 'b'.repeat(40),
+    platform: process.platform,
+    arch: process.arch,
+    nodeVersion: 'v22.19.0',
+  });
+
   fs.mkdirSync(path.join(home, `app/instances/${resident}/workspace`), { recursive: true, mode: 0o755 });
   fs.mkdirSync(path.join(home, 'app/config'), { recursive: true, mode: 0o755 });
   fs.mkdirSync(path.join(home, `app/instances/${resident}/substrate/seed-01`), { recursive: true });
@@ -517,14 +537,26 @@ test('recoverInspectedHome rebinds machine bindings in the inspected tree withou
     schema: 'home23.host.v2',
     homeRoot: home,
     profile: { name: resident, provider: 'ollama-local', model: 'fixture-local' },
+    residentMap: { primary: resident },
     desiredRunning: false,
     phase: 'prepared',
-    encoderRequired: false,
+    encoderRequired: true,
     ports: {
       coordination: 21089, engine: 21090, dashboard: 21091, mcp: 21092, bridge: 21093,
-      evobrew: 21094, observatory: 21095,
+      evobrew: 21094, observatory: 21095, embedder: 21096,
     },
   }), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, '.home23-install.json'), JSON.stringify({
+    schema: 'home23.product-install.v1',
+    status: 'installed',
+    homeRoot: home,
+    appRoot: path.join(home, 'app'),
+    nodePath: path.join(home, 'bin', 'node'),
+    pm2Path: path.join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'),
+    packageId: manifest.packageId,
+    sourceCommit: manifest.sourceCommit,
+    replayed: false,
+  }) + '\n', { mode: 0o600 });
   fs.writeFileSync(path.join(home, 'app/config/home.yaml'), [
     'home:',
     `  primaryAgent: ${resident}`,
@@ -554,18 +586,37 @@ test('recoverInspectedHome rebinds machine bindings in the inspected tree withou
   const inspectionRoot = path.join(root, 'inspect');
   fs.mkdirSync(inspectionRoot, { mode: 0o755 });
 
-  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  const created = await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  assert.equal(created.packageId, manifest.packageId);
   await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
   const birthBefore = fs.readFileSync(path.join(inspectionRoot, `app/instances/${resident}/substrate/seed-01/birth-receipt.json`));
   assert.equal(birthBefore.toString('utf8'), birthBytes);
   const inspectedHost = JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-host.json'), 'utf8'));
   assert.equal(inspectedHost.homeRoot, home);
-  assert.equal(inspectedHost.ports.coordination, 21089);
+  assert.equal(inspectedHost.profile.name, resident);
+  assert.deepEqual(inspectedHost.residentMap, { primary: resident });
+  assert.equal(inspectedHost.encoderRequired, true);
 
-  const recovered = await recoverInspectedHome({ inspectionRoot });
+  const header = readAuthenticatedBackupHeader({ archivePath, keyPath });
+  assert.equal(header.packageId, manifest.packageId);
+
+  fs.rmSync(home, { recursive: true, force: true });
+  assert.equal(fs.existsSync(home), false);
+
+  await assert.rejects(
+    () => recoverInspectedHome({ inspectionRoot, payloadPath: payload, expectedPackageId: '0'.repeat(64) }),
+    error => error.code === 'backup_recover_package_mismatch',
+  );
+
+  const recovered = await recoverInspectedHome({
+    inspectionRoot,
+    payloadPath: payload,
+    expectedPackageId: header.packageId,
+  });
   assert.equal(recovered.ok, true);
   assert.equal(recovered.homeRoot, inspectionRoot);
   assert.equal(recovered.sourceHome, home);
+  assert.equal(recovered.packageId, manifest.packageId);
   assert.equal(recovered.writersStarted, false);
   assert.equal(recovered.restoredRunning, false);
   assert.equal(recovered.birthInvoked, false);
@@ -575,13 +626,34 @@ test('recoverInspectedHome rebinds machine bindings in the inspected tree withou
   const host = JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-host.json'), 'utf8'));
   assert.equal(host.homeRoot, inspectionRoot);
   assert.equal(host.desiredRunning, false);
+  assert.equal(host.phase, 'stopped');
   assert.equal(host.profile.name, resident);
+  assert.deepEqual(host.residentMap, { primary: resident });
+  assert.equal(host.encoderRequired, true);
   assert.notEqual(host.ports.coordination, 21089);
   assert.equal(
     fs.readFileSync(path.join(inspectionRoot, `app/instances/${resident}/substrate/seed-01/birth-receipt.json`), 'utf8'),
     birthBytes,
   );
-  assert.equal(fs.existsSync(path.join(inspectionRoot, `app/instances/${resident}/substrate/seed-02`)), false);
+  assert.equal(fs.readFileSync(path.join(inspectionRoot, 'bin/node'), 'utf8'), nodeMarker);
+  assert.equal(fs.existsSync(home), false);
+
+  const receipt = JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-install.json'), 'utf8'));
+  assert.equal(receipt.schema, 'home23.product-install.v1');
+  assert.equal(receipt.status, 'installed');
+  assert.equal(receipt.homeRoot, inspectionRoot);
+  assert.equal(receipt.packageId, manifest.packageId);
+  assert.equal(receipt.sourceCommit, manifest.sourceCommit);
+  assert.equal(receipt.nodePath, path.join(inspectionRoot, 'bin', 'node'));
+  assert.equal(receipt.pm2Path, path.join(inspectionRoot, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'));
+
+  const status = await runHostAction('status', { homeRoot: inspectionRoot });
+  assert.equal(status.ok, true);
+  assert.equal(status.status, 'stopped');
+  assert.equal(status.homeRoot, inspectionRoot);
+  assert.equal(status.profile.name, resident);
+  assert.equal(status.desiredRunning, false);
+  assert.equal(fs.readFileSync(status.homeRoot + '/bin/node', 'utf8'), nodeMarker);
 
   const { default: yaml } = await import('js-yaml');
   const rebound = yaml.load(fs.readFileSync(path.join(inspectionRoot, 'app/config/home.yaml'), 'utf8'));
