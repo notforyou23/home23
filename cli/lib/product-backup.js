@@ -797,6 +797,26 @@ function assignInstancePorts(config, ports) {
   }
 }
 
+/** Distinct engine/dashboard/mcp/bridge bindings per resident. Shared home ports stay on the Host record. */
+export function residentInstancePortSets(homePorts, residentNames) {
+  const names = Array.isArray(residentNames) ? residentNames.filter(name => typeof name === 'string' && name) : [];
+  const used = new Set(Object.values(homePorts || {}).filter(value => Number.isInteger(value)));
+  let cursor = Math.max(20000, ...used, 19999) + 1;
+  const sets = {};
+  for (const name of names) {
+    const ports = {};
+    for (const key of ['engine', 'dashboard', 'mcp', 'bridge']) {
+      while (used.has(cursor)) cursor += 1;
+      if (cursor > 60999) throw new Error('Could not allocate distinct resident ports.');
+      ports[key] = cursor;
+      used.add(cursor);
+      cursor += 1;
+    }
+    sets[name] = ports;
+  }
+  return sets;
+}
+
 function writePrivateYaml(file, value, yaml) {
   const mode = exists(file) ? (lstatSync(file).mode & 0o777) : 0o600;
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -804,18 +824,18 @@ function writePrivateYaml(file, value, yaml) {
   renameSync(temporary, file);
 }
 
-async function rebindMachineConfiguration(source, destination, oldPorts, newPorts) {
+async function rebindMachineConfiguration(source, destination, oldPorts, newPorts, { residentPorts = null } = {}) {
   const { default: yaml } = await import('js-yaml');
   const files = [];
   const homeYaml = join(destination, 'app/config/home.yaml');
-  if (exists(homeYaml)) files.push({ file: homeYaml, kind: 'home' });
+  if (exists(homeYaml)) files.push({ file: homeYaml, kind: 'home', resident: null });
   const instances = join(destination, 'app/instances');
   if (exists(instances)) {
     for (const name of readdirSync(instances)) {
       if (name.startsWith('.')) continue;
       for (const [leaf, kind] of [['config.yaml', 'instance'], ['engine.yaml', 'engine']]) {
         const file = join(instances, name, leaf);
-        if (exists(file)) files.push({ file, kind });
+        if (exists(file)) files.push({ file, kind, resident: name });
       }
     }
   }
@@ -825,7 +845,12 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     catch { fail('move_rebind_incomplete', `Destination configuration could not be read: ${relative(destination, entry.file)}`); }
     document = rewriteMachineStrings(document, source, destination, oldPorts, newPorts);
     if (entry.kind === 'home') assignHomePorts(document, destination, newPorts);
-    if (entry.kind === 'instance') assignInstancePorts(document, newPorts);
+    if (entry.kind === 'instance') {
+      const portsForResident = (residentPorts && entry.resident && residentPorts[entry.resident])
+        ? residentPorts[entry.resident]
+        : newPorts;
+      assignInstancePorts(document, portsForResident);
+    }
     if (treeContains(document, source)) fail('move_rebind_incomplete', `Destination configuration still names the source home: ${relative(destination, entry.file)}`);
     writePrivateYaml(entry.file, document, yaml);
   }
@@ -833,6 +858,11 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
   if (exists(ecosystem)) {
     let text = readFileSync(ecosystem, 'utf8').split(source).join(destination);
     text = replaceAssignedPorts(text, oldPorts, newPorts);
+    if (residentPorts) {
+      for (const ports of Object.values(residentPorts)) {
+        text = replaceAssignedPorts(text, oldPorts, { ...newPorts, ...ports });
+      }
+    }
     if (text.includes(source)) fail('move_rebind_incomplete', 'Destination process registration still names the source home.');
     const temporary = `${ecosystem}.${randomUUID()}.tmp`;
     writeFileSync(temporary, text, { mode: lstatSync(ecosystem).mode & 0o777 });
@@ -907,19 +937,61 @@ function rebindAgentsManifest(source, destination) {
   writePrivateJSON(file, agents);
 }
 
+function sourceHomePresent(source) {
+  if (typeof source !== 'string' || !source || source.includes('\0')) return false;
+  try {
+    if (!exists(source)) return false;
+    const stat = lstatSync(source);
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 async function rebindDestination(source, destination) {
-  const sourceHostPath = join(source, '.home23-host.json');
-  const sourceHost = exists(sourceHostPath) ? readHostState(source) : { ports: null };
   const host = readHostState(destination);
-  const oldPorts = sourceHost.ports && typeof sourceHost.ports === 'object' ? sourceHost.ports : null;
+  const recordedHomeRoot = (typeof host.homeRoot === 'string' && isAbsolute(host.homeRoot) && !host.homeRoot.includes('\0'))
+    ? resolve(host.homeRoot)
+    : null;
+  const sourcePresent = sourceHomePresent(source);
+
+  // When the original machine directory is gone, rewrite from the destination Host
+  // record's homeRoot string. Do not touch source install receipts or invent a payload.
+  let rewriteFrom;
+  let oldPorts = null;
+  if (sourcePresent) {
+    rewriteFrom = resolve(source);
+    const sourceHostPath = join(rewriteFrom, '.home23-host.json');
+    if (exists(sourceHostPath)) {
+      const sourceHost = readHostState(rewriteFrom);
+      oldPorts = sourceHost.ports && typeof sourceHost.ports === 'object' ? sourceHost.ports : null;
+    }
+  } else {
+    if (!recordedHomeRoot) {
+      fail('move_rebind_incomplete', 'Destination host has no recorded home path to rewrite from.');
+    }
+    rewriteFrom = recordedHomeRoot;
+  }
+
   host.homeRoot = destination;
   host.desiredRunning = false;
   host.phase = 'stopped';
   const disjoint = Boolean(oldPorts && host.ports && Number.isInteger(host.ports.coordination) && host.ports.coordination !== oldPorts.coordination);
   if (!disjoint) host.ports = await choosePortPlan({ encoderRequired: host.encoderRequired === true });
+  let residentPorts = null;
+  if (host.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap)) {
+    const residents = Object.keys(host.residentMap).filter(name => /^[a-z][a-z0-9-]{0,62}$/.test(name));
+    if (residents.length > 1) {
+      residentPorts = residentInstancePortSets(host.ports, residents);
+      for (const name of residents) {
+        host.residentMap[name] = { ...(host.residentMap[name] || {}), ports: residentPorts[name] };
+      }
+    }
+  }
   writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
-  await rebindMachineConfiguration(source, destination, oldPorts, host.ports);
-  const receiptPath = join(source, '.home23-install.json');
+  await rebindMachineConfiguration(rewriteFrom, destination, oldPorts, host.ports, { residentPorts });
+  if (!sourcePresent) return null;
+  const receiptPath = join(rewriteFrom, '.home23-install.json');
   if (!exists(receiptPath)) return null;
   const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
   const rebound = {

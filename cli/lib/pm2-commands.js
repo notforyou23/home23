@@ -8,12 +8,14 @@ import { execSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
 import { ensureSystemHealth } from './system-health.js';
 import {
   ALL_SHARED_SERVICES,
   coordinateSharedServiceStartup,
   startEcosystemProcesses,
 } from './shared-service-start.js';
+import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 
 const require = createRequire(import.meta.url);
 const { assertHomeCreationReady } = require('../../shared/home-creation-state.cjs');
@@ -41,6 +43,51 @@ function exec(cmd, opts = {}) {
     if (err.stdout) return err.stdout;
     throw err;
   }
+}
+
+function hostResidentNamesFromDisk(home23Root) {
+  try {
+    const hostPath = join(home23Root, '.home23-host.json');
+    if (!existsSync(hostPath)) return null;
+    const host = JSON.parse(readFileSync(hostPath, 'utf8'));
+    if (host?.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap)) {
+      const names = Object.keys(host.residentMap).filter((name) => /^[a-z][a-z0-9-]{0,62}$/.test(name));
+      if (names.length) return { names, profileName: host.profile?.name || null };
+    }
+    if (/^[a-z][a-z0-9-]{0,62}$/.test(host?.profile?.name || '')) {
+      return { names: [host.profile.name], profileName: host.profile.name };
+    }
+  } catch { /* Host record is optional for CLI stop of a named agent. */ }
+  return null;
+}
+
+/** Acquire the managed supervisor lock before spawning writers. Adoption holding it must refuse Start. */
+export function acquireManagedStartLocks(home23Root, { writers = [], Database = DatabaseSync } = {}) {
+  const dirs = [];
+  const productMaintenance = join(home23Root, 'app/instances/.house/maintenance');
+  const managedMaintenance = join(home23Root, 'instances/.house/maintenance');
+  // Product homes fence under app/instances. Only touch a root instances/ tree when it already exists.
+  dirs.push(productMaintenance);
+  if (existsSync(join(home23Root, 'instances'))) dirs.push(managedMaintenance);
+  const releases = [];
+  try {
+    for (const dir of dirs) {
+      releases.push(acquireSupervisorLock(dir, Database, { purpose: 'start', writers }));
+    }
+  } catch (error) {
+    for (const release of releases.reverse()) {
+      try { release(); } catch { /* unwind */ }
+    }
+    throw Object.assign(
+      new Error(error.message || 'Managed supervisor lock is held; refusing to start writers.'),
+      { code: 'supervisor_lock_unavailable' },
+    );
+  }
+  return () => {
+    for (const release of releases.reverse()) {
+      try { release(); } catch { /* start lock release */ }
+    }
+  };
 }
 
 /**
@@ -185,20 +232,36 @@ export async function runStart(home23Root, agentName) {
     names = filterNamesByEcosystem(names, ecosystemPath);
   }
 
-  const sharedStartup = await coordinateSharedServiceStartup({ home23Root });
-  for (const service of sharedStartup.services) {
-    const label = SHARED_SERVICE_LABELS.get(service.name) || service.name;
-    console.log(`  ${label}: ${service.action}`);
+  // Hold the managed supervisor lock before any shared service or writer is
+  // spawned so adoption holding that lock refuses Start.
+  let releaseStartLock;
+  try {
+    releaseStartLock = acquireManagedStartLocks(home23Root, { writers: names });
+  } catch (error) {
+    console.error(error.message || 'Managed supervisor lock is held; refusing to start writers.');
+    throw Object.assign(new Error(error.message || 'Managed supervisor lock is held; refusing to start writers.'), {
+      code: error.code || 'supervisor_lock_unavailable',
+    });
   }
 
-  // Core must complete its shared startup before a canonical resident tries
-  // to bind to it. Starting one named agent needs this dependency as well.
-  console.log(agentName ? `Starting ${agentName}...` : 'Starting all agents...');
   try {
-    startEcosystemProcesses({ home23Root, names, stdio: 'inherit' });
-  } catch (err) {
-    console.error(`Failed to start ${agentName || 'Home23'}: ${err.message}`);
-    process.exit(1);
+    const sharedStartup = await coordinateSharedServiceStartup({ home23Root });
+    for (const service of sharedStartup.services) {
+      const label = SHARED_SERVICE_LABELS.get(service.name) || service.name;
+      console.log(`  ${label}: ${service.action}`);
+    }
+
+    // Core must complete its shared startup before a canonical resident tries
+    // to bind to it. Starting one named agent needs this dependency as well.
+    console.log(agentName ? `Starting ${agentName}...` : 'Starting all agents...');
+    try {
+      startEcosystemProcesses({ home23Root, names, stdio: 'inherit' });
+    } catch (err) {
+      console.error(`Failed to start ${agentName || 'Home23'}: ${err.message}`);
+      process.exit(1);
+    }
+  } finally {
+    releaseStartLock();
   }
 
   // Find dashboard port for the URL
@@ -240,23 +303,33 @@ export async function runStart(home23Root, agentName) {
 
 export async function runStop(home23Root, agentName) {
   const ecosystemPath = join(home23Root, 'ecosystem.config.cjs');
+  const hostResidents = hostResidentNamesFromDisk(home23Root);
 
-  if (agentName) {
-    // Stop every process that could belong to the agent, not just what the
-    // current config declares — a -seed/-mcp process from an earlier config
-    // state must not be left running behind a "stopped" report. home23Root
-    // lets the helper drop names that are really a sibling agent's engine.
-    const names = agentProcessNameCandidates(agentName, home23Root);
-    console.log(`Stopping ${agentName}...`);
-    for (const name of names) {
-      try {
-        execSync(`pm2 stop ${name}`, { stdio: 'pipe' });
-        console.log(`  ${name}: stopped`);
-      } catch {
-        console.log(`  ${name}: not running`);
+  if (agentName || (hostResidents && hostResidents.names.length > 1)) {
+    // When residentMap exists, stop every mapped resident — not only profile.name.
+    const targets = hostResidents?.names?.length
+      ? (agentName && !hostResidents.names.includes(agentName)
+        ? [agentName, ...hostResidents.names]
+        : hostResidents.names)
+      : (agentName ? [agentName] : []);
+    if (targets.length) {
+      console.log(targets.length > 1 ? `Stopping residents ${targets.join(', ')}...` : `Stopping ${targets[0]}...`);
+      for (const target of targets) {
+        const names = agentProcessNameCandidates(target, home23Root);
+        for (const name of names) {
+          try {
+            execSync(`pm2 stop ${name}`, { stdio: 'pipe' });
+            console.log(`  ${name}: stopped`);
+          } catch {
+            console.log(`  ${name}: not running`);
+          }
+        }
       }
+      if (agentName || !existsSync(ecosystemPath)) return;
     }
-  } else {
+  }
+
+  if (!agentName) {
     console.log('Stopping all Home23 agents...');
     // Also stop evobrew
     try {

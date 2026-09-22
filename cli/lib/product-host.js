@@ -33,18 +33,45 @@ function stateFor(root) {
   if (!state) return state;
   if (state.homeRoot !== root) throw new Error('This Home23 state belongs to another installation.');
   if (state.schema === 'home23.host.v2') {
-    if (state.encoderRequired !== true) throw new Error('This Home23 state belongs to another installation.');
-    validatePortPlan(state.ports, { encoderRequired: true });
+    // Adoption may write v2 with encoderRequired false and residentMap.
+    validatePortPlan(state.ports, { encoderRequired: state.encoderRequired === true });
     return state;
   }
   if (state.schema !== 'home23.host.v1' || state.encoderRequired === true) throw new Error('This Home23 state belongs to another installation.');
   validatePortPlan(state.ports);
   return state;
 }
+
+/** Resident names from Host state. Prefers residentMap key order; never invents names. */
+export function hostResidentNames(state) {
+  const map = state?.residentMap;
+  if (map && typeof map === 'object' && !Array.isArray(map)) {
+    const names = Object.keys(map).filter(name => /^[a-z][a-z0-9-]{0,62}$/.test(name));
+    if (names.length) return names;
+  }
+  if (/^[a-z][a-z0-9-]{0,62}$/.test(state?.profile?.name || '')) return [state.profile.name];
+  throw new Error('Invalid resident name.');
+}
+
 export function ownedProcessNames(name, { encoderRequired = false } = {}) {
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(name || '')) throw new Error('Invalid resident name.');
   const names = ['home23-coordination', `home23-${name}`, `home23-${name}-dash`, `home23-${name}-harness`, `home23-${name}-seed`, `home23-${name}-shipper`, 'home23-seed-observatory', 'home23-evobrew'];
   if (encoderRequired) names.push(OWNED_EMBEDDER_PROCESS);
+  return names;
+}
+
+/** Every owned process for the Host record — all residentMap residents, or profile.name alone. */
+export function ownedProcessNamesForState(state) {
+  const encoderRequired = encoderRequiredFor(state);
+  const seen = new Set();
+  const names = [];
+  for (const resident of hostResidentNames(state)) {
+    for (const name of ownedProcessNames(resident, { encoderRequired })) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      names.push(name);
+    }
+  }
   return names;
 }
 export function safeProcesses(rows, homeRoot, names) {
@@ -70,8 +97,17 @@ function withoutStartupProfiling(args) {
   }
   return result;
 }
-export function productDefinitions(apps, homeRoot, name, { encoderRequired = false, embedderPort } = {}) {
-  const allowed = ownedProcessNames(name, { encoderRequired });
+export function productDefinitions(apps, homeRoot, nameOrNames, { encoderRequired = false, embedderPort } = {}) {
+  const residents = Array.isArray(nameOrNames) ? nameOrNames : [nameOrNames];
+  const allowed = [];
+  const seen = new Set();
+  for (const resident of residents) {
+    for (const processName of ownedProcessNames(resident, { encoderRequired })) {
+      if (seen.has(processName)) continue;
+      seen.add(processName);
+      allowed.push(processName);
+    }
+  }
   const appRoot = join(homeRoot, 'app');
   const nodePath = join(homeRoot, 'bin', 'node');
   const baseEnv = productEnvironment(homeRoot, { encoderRequired, embedderPort });
@@ -122,12 +158,12 @@ function driver(homeRoot, dependencies, state) {
       catch { throw new Error('Home23 supervisor returned an invalid process inventory.'); }
     },
     pm2,
-    async definitions(name) {
+    async definitions(nameOrNames) {
       const { generateEcosystem } = await import('./generate-ecosystem.js');
       generateEcosystem(join(homeRoot, 'app'), { quiet: true });
       const config = join(homeRoot, 'app', 'ecosystem.config.cjs');
       const { stdout } = await execute(nodePath, ['-e', 'process.stdout.write(JSON.stringify(require(process.argv[1]).apps))', config], { cwd: join(homeRoot, 'app'), env, timeout: 15000, maxBuffer: 8 * 1024 * 1024 });
-      return productDefinitions(JSON.parse(stdout), homeRoot, name, { encoderRequired, embedderPort: state?.ports?.embedder });
+      return productDefinitions(JSON.parse(stdout), homeRoot, nameOrNames, { encoderRequired, embedderPort: state?.ports?.embedder });
     },
   };
 }
@@ -247,7 +283,9 @@ async function loadHostSession(homeRoot, localURL, { create = false, resumeIniti
   }
 }
 export async function probeReadiness(homeRoot, state, processes, { createSession = false, request = requestJSON } = {}) {
-  const missing = ownedProcessNames(state.profile.name, { encoderRequired: encoderRequiredFor(state) }).filter(name => !processes.some(row => row.name === name && row.status === 'online' && row.owned));
+  const residents = hostResidentNames(state);
+  const primary = state.profile?.name && residents.includes(state.profile.name) ? state.profile.name : residents[0];
+  const missing = ownedProcessNamesForState(state).filter(name => !processes.some(row => row.name === name && row.status === 'online' && row.owned));
   if (missing.length) return { ready: false, issues: missing.map(name => `${name} is not running from this installation.`) };
   if (encoderRequiredFor(state)) {
     const ready = await probeOwnedReady(state.ports.embedder);
@@ -282,7 +320,7 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
     try {
       const value = await request(url, { responseType });
       if (label === 'Seed observatory' && (typeof value !== 'string' || value.trim() !== 'ok')) throw new Error('Observatory liveness response differs.');
-      if (label === 'Resident dashboard' && value.pid !== processes.find(row => row.name === `home23-${state.profile.name}-dash`)?.pid) throw new Error('Dashboard process identity differs.');
+      if (label === 'Resident dashboard' && value.pid !== processes.find(row => row.name === `home23-${primary}-dash`)?.pid) throw new Error('Dashboard process identity differs.');
     } catch { issues.push(`${label} is not responding from this installation yet.`); }
   }));
   const memory = await inspectProductMemory(homeRoot);
@@ -294,11 +332,14 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
   await validateInstallation(homeRoot);
   const state = stateFor(homeRoot);
   if (!state) return { ok: true, status: 'installed', homeRoot, desiredRunning: false, processes: [] };
-  const output = { ok: true, homeRoot, profile: state.profile, desiredRunning: state.desiredRunning === true,
+  const residents = hostResidentNames(state);
+  const output = { ok: true, homeRoot, profile: state.profile || null, residents,
+    residentMap: state.residentMap || null,
+    desiredRunning: state.desiredRunning === true,
     encoderRequired: encoderRequiredFor(state), semantic: semanticStatusView(homeRoot, state),
     connection: { localURL: `http://127.0.0.1:${state.ports.coordination}`, dashboardURL: `http://127.0.0.1:${state.ports.dashboard}`, pairing: 'owner pairing code', access: 'loopback; use a trusted HTTPS or VPN transport for other devices' } };
   const rows = await driver(homeRoot, dependencies, state).list();
-  const processes = safeProcesses(rows, homeRoot, ownedProcessNames(state.profile.name, { encoderRequired: encoderRequiredFor(state) }));
+  const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state));
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
   const readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
@@ -425,6 +466,52 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     if (action === 'start' && readMoveFence(homeRoot)) {
       return { ok: false, status: 'move_fenced', homeRoot, error: { code: 'move_source_fenced', message: 'This home was moved. Start stays fenced and the destination was not started.' } };
     }
+    let releaseSupervisor = null;
+    if (action === 'start') {
+      try {
+        const { acquireSupervisorLock } = await import('../../scripts/release/supervisor.mjs');
+        const { DatabaseSync } = await import('node:sqlite');
+        const stateEarly = stateFor(homeRoot);
+        const writers = stateEarly ? ownedProcessNamesForState(stateEarly) : [];
+        const maintenance = [join(homeRoot, 'app/instances/.house/maintenance')];
+        if (existsSync(join(homeRoot, 'instances'))) {
+          maintenance.push(join(homeRoot, 'instances/.house/maintenance'));
+        }
+        const releases = [];
+        try {
+          for (const dir of maintenance) {
+            releases.push(acquireSupervisorLock(dir, DatabaseSync, { purpose: 'start', writers }));
+          }
+        } catch (error) {
+          for (const releaseHeld of releases.reverse()) {
+            try { releaseHeld(); } catch { /* prior lock release */ }
+          }
+          return {
+            ok: false,
+            status: 'supervisor_locked',
+            homeRoot,
+            residents: stateEarly ? hostResidentNames(stateEarly) : [],
+            error: {
+              code: 'supervisor_lock_unavailable',
+              message: error.message || 'Managed supervisor lock is held; refusing to start writers.',
+            },
+          };
+        }
+        releaseSupervisor = () => {
+          for (const releaseHeld of releases.reverse()) {
+            try { releaseHeld(); } catch { /* start lock release */ }
+          }
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          status: 'supervisor_locked',
+          homeRoot,
+          error: { code: 'supervisor_lock_unavailable', message: error.message || 'Managed supervisor lock is unavailable.' },
+        };
+      }
+    }
+    try {
     await validateInstallation(homeRoot, { full: action === 'create' || action === 'start' });
     let state = stateFor(homeRoot);
     if (action === 'create') return await seedAndCreate(homeRoot, input, state, dependencies);
@@ -435,7 +522,8 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       return { ...await status(homeRoot, dependencies), semantic: semanticStatusView(homeRoot, state), handle: prep.handle };
     }
     const processDriver = driver(homeRoot, dependencies, state);
-    const names = ownedProcessNames(state.profile.name, { encoderRequired: encoderRequiredFor(state) });
+    const residents = hostResidentNames(state);
+    const names = ownedProcessNamesForState(state);
     const rows = await processDriver.list();
     const processes = safeProcesses(rows, homeRoot, names);
     if (rows.some(row => !names.includes(row.name)) || processes.some(row => !row.owned) || new Set(rows.map(row => row.name)).size !== rows.length) throw new Error('This private supervisor contains an unexpected process; no processes were changed.');
@@ -484,7 +572,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     privateJSON(statePath(homeRoot), state);
     await authorizeInitialHostPairing(homeRoot, true);
     if (!allRunning) {
-      const definitions = dependencies.definitions ? await dependencies.definitions(state.profile.name) : await processDriver.definitions(state.profile.name);
+      const definitions = dependencies.definitions ? await dependencies.definitions(residents) : await processDriver.definitions(residents);
       const config = join(homeRoot, 'runtime', 'ecosystem.config.json');
       privateJSON(config, { apps: definitions });
       const startOrder = encoderRequiredFor(state) ? [OWNED_EMBEDDER_PROCESS, ...names.filter(name => name !== OWNED_EMBEDDER_PROCESS)] : names;
@@ -519,5 +607,8 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       await (dependencies.sleep || sleep)(1000);
     } while (true);
     return result;
+    } finally {
+      if (releaseSupervisor) releaseSupervisor();
+    }
   } finally { await release(); }
 }

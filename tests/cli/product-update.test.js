@@ -11,7 +11,9 @@ import {
   adoptManagedSourceHome, holdAdoptionSupervisorLock, inspectProductInstallation,
   planManagedSourceAdoption, previewProductUpdate, resolveAdoptionIdentity, sourceAdoptionSnapshot,
 } from '../../cli/lib/product-update.js';
-import { acquireSupervisorLock, restartManaged } from '../../scripts/release/supervisor.mjs';
+import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
+import { acquireManagedStartLocks } from '../../cli/lib/pm2-commands.js';
+import { runHostAction, hostResidentNames, ownedProcessNamesForState } from '../../cli/lib/product-host.js';
 
 const require = createRequire(import.meta.url);
 const Database = DatabaseSync;
@@ -78,6 +80,15 @@ function managedHome(root, {
     const ledger = `{"event":"birth","seedId":"${resident}-seed"}\n`;
     fs.writeFileSync(path.join(home, 'instances', resident, 'substrate/seed-01/birth-receipt.json'), birth);
     fs.writeFileSync(path.join(home, 'instances', resident, 'substrate/seed-01/seed-ledger.jsonl'), ledger);
+    fs.writeFileSync(path.join(home, 'instances', resident, 'config.yaml'), [
+      `name: ${resident}`,
+      'ports:',
+      '  engine: 22002',
+      '  dashboard: 22003',
+      '  mcp: 22004',
+      '  bridge: 22005',
+      '',
+    ].join('\n'));
     seeds[resident] = { birth, ledger };
   }
   fs.writeFileSync(path.join(home, 'runtime/semantic-prep.json'), JSON.stringify({
@@ -334,9 +345,9 @@ test('two-resident adoption holds the fence, keeps both Seed identities, and blo
         () => acquireSupervisorLock(maintenance, Database, { purpose: 'restart-managed' }),
         /Another maintenance supervisor owns the service lock/,
       );
-      await assert.rejects(
-        () => restartManaged(home, path.join(maintenance, 'start-while-adopting-receipt.json')),
-        /Another maintenance supervisor owns the service lock/,
+      assert.throws(
+        () => acquireManagedStartLocks(home, { Database }),
+        (error) => error.code === 'supervisor_lock_unavailable',
       );
       startBlocked = true;
     },
@@ -356,7 +367,10 @@ test('two-resident adoption holds the fence, keeps both Seed identities, and blo
     agentProcessNames({ home23Root: source.home, agentName: 'ada' }),
   );
   const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
-  assert.deepEqual(host.residentMap, adopted.residentMap);
+  assert.equal(host.encoderRequired, false);
+  assert.ok(host.residentMap.zed.ports);
+  assert.ok(host.residentMap.ada.ports);
+  assert.notEqual(host.residentMap.zed.ports.engine, host.residentMap.ada.ports.engine);
   assert.equal(host.fingerprint, undefined);
   assert.equal(host.desiredRunning, false);
   assert.equal(host.phase, 'stopped');
@@ -377,6 +391,76 @@ test('two-resident adoption holds the fence, keeps both Seed identities, and blo
     source.seeds.ada.birth,
   );
   assert.deepEqual(fs.readFileSync(path.join(destination, 'runtime/semantic-prep.json')), recipeBefore);
+});
+
+test('real rebind and host status keep distinct resident ports; Start refuses under the lock', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root, {
+    hostRecord: false,
+    name: 'ada',
+    residents: { zed: {}, ada: {} },
+  });
+  const destination = path.join(pack.root, 'destination');
+  const adopted = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  }, {
+    // Real rebindAdoptedHome and real choosePortPlan — do not stub either.
+    Database,
+  });
+  assert.equal(adopted.ok, true);
+  assert.equal(adopted.status, 'adopted');
+  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
+  assert.equal(host.encoderRequired, false);
+  assert.deepEqual(Object.keys(host.residentMap), ['zed', 'ada']);
+  assert.notEqual(host.residentMap.zed.ports.engine, host.residentMap.ada.ports.engine);
+  assert.notEqual(host.residentMap.zed.ports.dashboard, host.residentMap.ada.ports.dashboard);
+  const zedConfig = fs.readFileSync(path.join(destination, 'app/instances/zed/config.yaml'), 'utf8');
+  const adaConfig = fs.readFileSync(path.join(destination, 'app/instances/ada/config.yaml'), 'utf8');
+  assert.match(zedConfig, new RegExp(`engine: ${host.residentMap.zed.ports.engine}`));
+  assert.match(adaConfig, new RegExp(`engine: ${host.residentMap.ada.ports.engine}`));
+
+  const status = await runHostAction('status', { homeRoot: destination });
+  assert.equal(status.ok, true);
+  assert.deepEqual(status.residents, ['zed', 'ada']);
+  assert.ok(status.residentMap);
+  assert.deepEqual(hostResidentNames({ residentMap: status.residentMap, profile: status.profile }), ['zed', 'ada']);
+  const owned = ownedProcessNamesForState(host);
+  assert.ok(owned.includes('home23-zed'));
+  assert.ok(owned.includes('home23-ada'));
+
+  // Fence proof: the same acquireManagedStartLocks call runStart uses before spawn.
+  // Hold the product maintenance path Start acquires for installed homes.
+  const maintenance = path.join(destination, 'app/instances/.house/maintenance');
+  fs.mkdirSync(maintenance, { recursive: true, mode: 0o700 });
+  const held = acquireSupervisorLock(maintenance, Database, { purpose: 'adoption', writers: owned });
+  t.after(() => held());
+  assert.throws(
+    () => acquireManagedStartLocks(destination, { Database, writers: owned }),
+    (error) => error.code === 'supervisor_lock_unavailable',
+  );
+  const locked = await runHostAction('start', { homeRoot: destination }, {
+    execute: async () => {
+      throw new Error('Start must not spawn writers while the supervisor lock is held.');
+    },
+  });
+  assert.equal(locked.ok, false);
+  assert.equal(locked.error?.code, 'supervisor_lock_unavailable');
+});
+
+test('a new preserve file during the copy window cannot finish as adopted', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const destination = path.join(pack.root, 'destination');
+  const refused = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  }, adoptionDeps({
+    beforePreserveCopy: async ({ source: home }) => {
+      fs.writeFileSync(path.join(home, 'instances', source.name, 'late-note.json'), '{"late":true}\n');
+    },
+  }));
+  assert.equal(refused.ok, false);
+  assert.notEqual(refused.status, 'adopted');
+  assert.ok(refused.reasons.some(item => item.code === 'source_identity_changed'));
 });
 
 function interruptedJournal(sourceHome, destination, payloadPath) {

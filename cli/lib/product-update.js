@@ -1,18 +1,22 @@
 /** Product installation preview and managed/source adoption. Preview stays read-only. */
 import { createHash } from 'node:crypto';
 import {
-  copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync,
+  copyFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync,
   realpathSync, writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { absoluteHome, choosePortPlan, privateJSON, readPrivateJSON } from './product-environment.js';
-import { rebindAdoptedHome } from './product-backup.js';
+import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, readPrivateJSON } from './product-environment.js';
+import { assertWritersIdle, rebindAdoptedHome, residentInstancePortSets } from './product-backup.js';
 import { installProductPayload, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { compareUpdateContracts, inspectStatePreservation } from './product-update-plan.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
+const executeFile = promisify(execFile);
 const require = createRequire(import.meta.url);
 const { agentProcessNames, managedResidentWriters } = require('../../shared/agent-process-names.cjs');
 
@@ -36,11 +40,13 @@ const ADOPTION_PRESERVE_FILES = new Set([
 const ADOPTION_REBUILDABLE = new Set([
   'package.json', 'package-lock.json', 'npm-shrinkwrap.json',
   'node_modules', 'dist', 'logs', '.git', 'bin', 'tools', 'app',
+  'instances/.house/maintenance',
 ]);
 const ADOPTION_REBUILDABLE_PREFIXES = [
   'node_modules/', 'dist/', 'logs/', '.git/',
   'bin/', 'tools/', 'app/',
   'engine/logs/',
+  'instances/.house/maintenance/',
 ];
 
 function marker(root, relative) {
@@ -59,6 +65,8 @@ export function classifyAdoptionPath(relative) {
   if (relative === 'seed-ledger.jsonl' || relative.endsWith('/seed-ledger.jsonl')) return 'preserve';
   if (ADOPTION_PRESERVE_FILES.has(relative)) return 'preserve';
   if (relative === 'config' || relative.startsWith('config/')) return 'preserve';
+  // Supervisor lock artifacts are created under the fence and must not alter the preserve snapshot.
+  if (relative === 'instances/.house/maintenance' || relative.startsWith('instances/.house/maintenance/')) return 'rebuildable';
   if (relative === 'instances' || relative.startsWith('instances/')) return 'preserve';
   if (relative === 'runtime') return 'preserve';
   if (ADOPTION_REBUILDABLE.has(relative)) return 'rebuildable';
@@ -438,8 +446,62 @@ function copyPreservedState(source, destination, paths) {
     const stat = lstatSync(from);
     if (!stat.isFile() || stat.isSymbolicLink()) continue;
     const to = join(destination, mapped);
-    mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
+    const mode = mapped === 'runtime' || mapped.startsWith('runtime/') ? 0o700 : 0o755;
+    mkdirSync(dirname(to), { recursive: true, mode });
+    if (mapped.startsWith('runtime/')) {
+      try { chmodSync(join(destination, 'runtime'), 0o700); } catch { /* created mode may already be private */ }
+    }
     copyFileSync(from, to);
+  }
+}
+
+/** Live process inventory for a managed/source home. Unavailable inventory refuses adoption. */
+export async function listSourceWriters(home) {
+  const node = join(home, 'bin', 'node');
+  const pm2 = join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2');
+  if (!existsSync(node) || !existsSync(pm2)) {
+    throw Object.assign(
+      new Error('Process inventory cannot be established. A missing supervisor is not proof that writers are stopped.'),
+      { code: 'process_inventory_unavailable' },
+    );
+  }
+  try {
+    const { stdout } = await executeFile(node, [pm2, 'jlist', '--silent'], {
+      cwd: existsSync(join(home, 'app')) ? join(home, 'app') : home,
+      env: productEnvironment(home),
+      timeout: 20000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (!String(stdout || '').trim()) return [];
+    const rows = JSON.parse(stdout);
+    if (!Array.isArray(rows)) {
+      throw Object.assign(new Error('Home process inventory is unavailable.'), { code: 'process_inventory_unavailable' });
+    }
+    return rows.map(row => ({ name: row.name, status: row.pm2_env?.status || 'unknown' }));
+  } catch (error) {
+    if (error.code === 'process_inventory_unavailable') throw error;
+    throw Object.assign(new Error('Home process inventory is unavailable.'), { code: 'process_inventory_unavailable' });
+  }
+}
+
+async function assertAdoptionWritersStopped(source, dependencies = {}) {
+  const list = dependencies.listWriters || listSourceWriters;
+  let rows;
+  try {
+    rows = await list(source);
+  } catch (error) {
+    throw Object.assign(
+      new Error(error.message || 'Home process inventory is unavailable.'),
+      { code: error.code || 'process_inventory_unavailable' },
+    );
+  }
+  try {
+    assertWritersIdle(rows);
+  } catch (error) {
+    throw Object.assign(
+      new Error(error.message || 'Writers are still running or have unknown status.'),
+      { code: error.code || 'writers_active' },
+    );
   }
 }
 
@@ -462,7 +524,9 @@ function loadBetterSqlite3(sourceRoot) {
 export function holdAdoptionSupervisorLock(source, identity, dependencies = {}) {
   const maintenance = join(source, 'instances/.house/maintenance');
   mkdirSync(maintenance, { recursive: true, mode: 0o700 });
-  const Database = dependencies.Database || loadBetterSqlite3(source);
+  // Prefer an explicit Database, then a working better-sqlite3, else node:sqlite —
+  // mixed native builds across Node versions must not silently lose the fence.
+  const Database = dependencies.Database || loadBetterSqlite3(source) || DatabaseSync;
   const acquire = dependencies.acquireSupervisorLock || acquireSupervisorLock;
   const writers = Array.isArray(identity.writers) ? identity.writers : [];
   try {
@@ -486,11 +550,22 @@ async function writeStoppedHost(destination, identity, dependencies = {}) {
     ports,
     phase: 'stopped',
     desiredRunning: false,
+    // Preserve the source encoder contract. Do not invent encoderRequired:true.
     encoderRequired: identity.encoderRequired === true,
   };
   if (identity.profile?.name) state.profile = { ...identity.profile };
   if (typeof identity.fingerprint === 'string') state.fingerprint = identity.fingerprint;
-  if (identity.residentMap) state.residentMap = identity.residentMap;
+  if (identity.residentMap) {
+    const residents = Object.keys(identity.residentMap);
+    const portSets = residents.length > 1 ? residentInstancePortSets(ports, residents) : null;
+    state.residentMap = Object.fromEntries(residents.map(name => [
+      name,
+      {
+        ...identity.residentMap[name],
+        ...(portSets ? { ports: portSets[name] } : {}),
+      },
+    ]));
+  }
   writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   return state;
 }
@@ -640,13 +715,34 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       if (currentSnapshot !== journal.sourceSnapshot) {
         return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source or adoption identity inputs changed before preservation completed.')], destination);
       }
+      try {
+        await assertAdoptionWritersStopped(source, dependencies);
+      } catch (error) {
+        return refuseAdoption(plan, [reason(error.code || 'process_inventory_unavailable', error.message)], destination);
+      }
       if (dependencies.beforePreserveCopy) await dependencies.beforePreserveCopy({ source, destination, journal, releaseLock });
       copyPreservedState(source, destination, plan.inventory.paths);
       if (dependencies.afterPreserveCopy) await dependencies.afterPreserveCopy({ source, destination, journal, releaseLock });
+      // Re-walk after copy so files created during the window change the snapshot.
+      const liveReasons = [];
+      let livePaths;
+      try { livePaths = walkAdoptionPaths(source, liveReasons); }
+      catch {
+        return refuseAdoption(plan, [reason('inventory_unreadable', 'The adoption inventory could not be re-walked after preservation.')], destination);
+      }
+      if (liveReasons.length) {
+        return refuseAdoption(plan, liveReasons, destination);
+      }
       const afterIdentity = resolveAdoptionIdentity(source);
-      if (!afterIdentity.ok
-        || sourceAdoptionSnapshot(source, plan.inventory.paths, afterIdentity) !== journal.sourceSnapshot) {
-        return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source or adoption identity inputs changed during preservation copy.')], destination);
+      if (!afterIdentity.ok) {
+        return refuseAdoption(plan, [reason(afterIdentity.code, afterIdentity.message)], destination);
+      }
+      annotateMappings(livePaths, afterIdentity, liveReasons);
+      if (liveReasons.length) {
+        return refuseAdoption(plan, liveReasons, destination);
+      }
+      if (sourceAdoptionSnapshot(source, livePaths, afterIdentity) !== journal.sourceSnapshot) {
+        return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source changed during the copy window; newly created files cannot finish as adopted.')], destination);
       }
       await writeStoppedHost(destination, identity, dependencies);
       journal = { ...journal, phase: 'rebind', residents: identity.residents, residentMap: identity.residentMap || null };
@@ -667,8 +763,20 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       if (identity.profile?.name) {
         host.profile = { ...(host.profile || {}), ...identity.profile };
       }
-      if (identity.residentMap) host.residentMap = identity.residentMap;
-      else delete host.residentMap;
+      if (identity.residentMap) {
+        const current = host.residentMap && typeof host.residentMap === 'object' ? host.residentMap : {};
+        host.residentMap = Object.fromEntries(Object.keys(identity.residentMap).map(name => [
+          name,
+          {
+            ...identity.residentMap[name],
+            ...(current[name] && typeof current[name] === 'object' ? current[name] : {}),
+            ...identity.residentMap[name],
+            ...(current[name]?.ports ? { ports: current[name].ports } : {}),
+          },
+        ]));
+      } else {
+        delete host.residentMap;
+      }
       if (typeof identity.fingerprint === 'string') host.fingerprint = identity.fingerprint;
       writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
       journal = { ...journal, phase: 'completed', homeBirth: 'not_run' };
