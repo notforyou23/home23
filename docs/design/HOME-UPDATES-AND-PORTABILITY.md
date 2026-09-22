@@ -135,9 +135,21 @@ download, publisher signature, or trusted-release label. Manifest hashes remain
 integrity checks.
 
 The v1 layout stays in place: `bin/node`, `app/`, `tools/`, and the installation
-receipt paths do not move. Mutable state stays on its existing real paths.
-Immutable package files are replaced individually. `app/` is not swapped as a
-directory, brains are not replaced with links, and birth is not called.
+receipt paths keep their locations. Mutable state stays on its existing real
+paths. Software switches by whole units. Each package subtree or loose file that
+holds no home state is a unit: `bin`, `tools`, `app/node_modules`, `app/dist`,
+and files such as `app/package.json`. The installed unit moves into `previous/`
+with one rename, and the staged unit moves in with another. A current package is
+79 units, so a switch is about 160 renames and a few directory fsyncs regardless
+of its 43,000 files. The retained version is the installed tree itself, verified
+before it moves, and it shares no inode with the new software. The staged
+candidate is hashed once before anything moves, and the selected home is verified
+again before any writer is admitted. A mismatch reverses the switch. The stage
+must be on the home's volume, and the switch consumes it. `app/`, `app/config`,
+`app/engine`, and `app/evobrew` hold state and never move. Brains are not
+replaced with links, and birth is not called. An earlier previous version is set
+aside by one rename and removed in the background after the next result is
+durable.
 
 The journal, previous software, verified coordination snapshot, and recovery
 controller live outside the home at `dirname(home)/.${basename}.home23-update/`.
