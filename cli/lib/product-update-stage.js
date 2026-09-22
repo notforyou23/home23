@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, sep } from 'node:path';
 import { privateDirectory, privateJSON, readPrivateJSON } from './product-environment.js';
-import { inspectProductInstallation, previewProductUpdate, previewRoot } from './product-update.js';
+import { inspectProductInstallation, previewProductUpdate, previewRoot } from './product-update-preview.js';
 import { acquireInstallLock, inventoryProductPayload, verifyProductPayload as verifyProductPayloadDefault } from './product-payload.js';
 
 const SCHEMA = 'home23.product-stage.v1';

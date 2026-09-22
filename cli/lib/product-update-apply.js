@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { absoluteHome, privateDirectory, productEnvironment, readPrivateJSON } from './product-environment.js';
 import { acquireInstallLock, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
-import { inspectProductInstallation } from './product-update.js';
+import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
 import { hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath, SUPPORTED_COORDINATION_SCHEMA } from './product-update-inventory.js';
 
@@ -16,7 +16,7 @@ const SCHEMA = 'home23.product-update.v1';
 const INSTALL_SCHEMA = 'home23.product-install.v1';
 const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
 const RANK = { claimed: 0, quiesced: 1, checkpointed: 2, retained: 3, applying: 4, selected: 5, verifying: 6, writers_admitted: 7, accepted: 8, committed: 9, aborted: 9, rolled_back: 9, recovery_required: 9 };
-const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs'];
+const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update-preview.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs'];
 const DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 // Home state and every directory above it stay in place during a version switch.
 // Everything else in a package is software and moves as whole subtrees.
