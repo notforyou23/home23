@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Home23 — product journey preview</title>
+  <style>
+    :root {
+      --ink: #1c1917;
+      --muted: #57534e;
+      --line: #d6d3d1;
+      --paper: #fafaf9;
+      --panel: #ffffff;
+      --accent: #0f766e;
+      --warn-bg: #fff7ed;
+      --warn-ink: #9a3412;
+      --warn-line: #fdba74;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse 80% 50% at 10% 0%, #ecfdf5 0%, transparent 55%),
+        radial-gradient(ellipse 60% 40% at 100% 100%, #f5f5f4 0%, transparent 50%),
+        var(--paper);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+
+    main {
+      max-width: 42rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+
+    header {
+      margin-bottom: 2rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand {
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-size: 0.8rem;
+      color: var(--accent);
+      margin: 0 0 0.75rem;
+    }
+
+    h1 {
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      font-weight: 600;
+      font-size: clamp(1.6rem, 4vw, 2rem);
+      line-height: 1.2;
+      margin: 0 0 0.75rem;
+      letter-spacing: -0.02em;
+    }
+
+    .lede {
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .notice {
+      margin: 1.5rem 0 0;
+      padding: 0.9rem 1rem;
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-line);
+      color: var(--warn-ink);
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    nav.toc {
+      margin: 2rem 0;
+      padding: 1rem 1.1rem;
+      background: var(--panel);
+      border: 1px solid var(--line);
+    }
+
+    nav.toc h2 {
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin: 0 0 0.6rem;
+      font-weight: 600;
+    }
+
+    nav.toc ol {
+      margin: 0;
+      padding-left: 1.2rem;
+    }
+
+    nav.toc a {
+      color: var(--ink);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 0.15em;
+    }
+
+    nav.toc a:hover { color: var(--accent); }
+
+    section {
+      margin: 2.25rem 0;
+      scroll-margin-top: 1rem;
+    }
+
+    section h2 {
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      font-size: 1.2rem;
+      font-weight: 600;
+      margin: 0 0 0.6rem;
+      letter-spacing: -0.01em;
+    }
+
+    section p { margin: 0 0 0.85rem; }
+
+    section ul {
+      margin: 0 0 0.85rem;
+      padding-left: 1.2rem;
+    }
+
+    section li { margin-bottom: 0.35rem; }
+
+    .boundary {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    footer code {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.85em;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="brand">Home23</p>
+      <h1>Product journey preview</h1>
+      <p class="lede">
+        A local outline of the Mac-hosted owner path: install Host, create your
+        own home, talk and import documents, open the dashboard, check for
+        updates, and back up or move. This file is documentation for review—not
+        a live product site.
+      </p>
+      <p class="notice">
+        Public downloads are not available yet. There is no published download
+        URL, store listing, or consumer release package to fetch from this page.
+        Do not treat this preview as proof that signing, notarization, TestFlight,
+        or an existing owner’s home is ready for distribution.
+      </p>
+    </header>
+
+    <nav class="toc" aria-label="Journeys on this page">
+      <h2>Journeys</h2>
+      <ol>
+        <li><a href="#install">Install a Mac-hosted home</a></li>
+        <li><a href="#create">Create the home and connect your provider</a></li>
+        <li><a href="#talk">Talk and import documents</a></li>
+        <li><a href="#dashboard">Open the dashboard</a></li>
+        <li><a href="#updates">Check for updates</a></li>
+        <li><a href="#backup">Back up and move</a></li>
+      </ol>
+    </nav>
+
+    <section id="install">
+      <h2>1. Install a Mac-hosted home</h2>
+      <p>
+        The consumer path starts on a Mac with <strong>Home23 Host</strong>—the
+        companion that runs and keeps your home. The Mac conversation client is a
+        separate app with its own responsibilities; installing a client does not
+        create another home. Closing a conversation app does not stop the home;
+        availability still depends on Host being running, awake, and reachable.
+      </p>
+      <p class="boundary">
+        Intended delivery is a signed, notarized Host download from a public
+        website. That website and download are not selected or published here.
+        Source/operator setup (Git, npm, Terminal) remains a separate developer
+        path and is not the ordinary owner journey described on this page.
+      </p>
+    </section>
+
+    <section id="create">
+      <h2>2. Create the home and connect your provider</h2>
+      <p>
+        Creating a home is a shared birth operation: your own owner context,
+        residents, purpose, credentials, and Seed lineage. It does not copy
+        another person’s resident or lived memory. After birth, you connect a
+        model provider you control (API key or other supported setup) so the
+        home can talk with your account—not a shared developer fixture.
+      </p>
+      <ul>
+        <li>Choose or confirm the resident and home purpose during first-run.</li>
+        <li>Connect your own provider; understand readiness and costs before relying on it.</li>
+        <li>If you already have a home, connect a client or dashboard to that home—do not run birth again.</li>
+      </ul>
+      <p class="boundary">
+        Hosted homes for people without a Mac are later work, not an available
+        setup button on this preview.
+      </p>
+    </section>
+
+    <section id="talk">
+      <h2>3. Talk and import documents</h2>
+      <p>
+        Once the home is running and a provider is connected, you converse with
+        your resident and bring in documents and context so memory and retrieval
+        belong to that home. Apps and the private dashboard access the same home
+        and residents; feature parity between them should be checked, not assumed.
+      </p>
+      <ul>
+        <li>Talk through the Mac client or the home’s private dashboard when those surfaces are available for your install.</li>
+        <li>Import starter folders or documents as part of first-run or later ingestion—not as a copy of someone else’s private library.</li>
+        <li>Embeddings and retrieval readiness are part of setup; an interrupted or degraded path should be explained honestly.</li>
+      </ul>
+    </section>
+
+    <section id="dashboard">
+      <h2>4. Open the dashboard</h2>
+      <p>
+        Each home serves a <strong>private web dashboard</strong> in a browser.
+        The intended Host action is <strong>Open Dashboard</strong>, using that
+        home’s actual address. <strong>Open Home23</strong> remains the native
+        client action. The dashboard is a full way to use the home; it is not
+        replaced by a public marketing site.
+      </p>
+      <p class="boundary">
+        Current packaged services often bind to loopback. A browser on another
+        machine cannot use a Mac’s <code>localhost</code> until a secure
+        home-specific address and access flow exist. Cross-device and Windows
+        browser access are delivery work—not advertised as ready from this page.
+      </p>
+    </section>
+
+    <section id="updates">
+      <h2>5. Check for updates</h2>
+      <p>
+        Host is meant to offer <strong>Check for Updates</strong>: show the
+        installed version, any available version, release notes, and
+        compatibility. Checking alone must not stop a home, migrate data, or
+        download a runtime. An unavailable or unconfigured feed must not be
+        reported as “up to date.”
+      </p>
+      <p>
+        <strong>Download and Install</strong> (when delivered) verifies and stages
+        a release while the current home keeps working, with a chance to defer
+        before a disruptive step and clear recovery if something interrupts.
+      </p>
+      <p class="boundary">
+        Network installation, publisher trust, and a native update feed for
+        consumer homes remain unfinished. A local engineering preview of package
+        comparison is not the same as a shipped Check for Updates button.
+      </p>
+    </section>
+
+    <section id="backup">
+      <h2>6. Back up and move</h2>
+      <p>
+        <strong>Back Up Home</strong> and <strong>Move Home</strong> preserve the
+        existing home rather than create a new resident. Restore verifies the
+        archive and required runtime before writers start again. Missing external
+        folders, services, or credentials should appear as reconnection work—not
+        as silent omissions.
+      </p>
+      <p class="boundary">
+        Backup, move, and existing-owner adoption are planned delivery work. This
+        preview does not claim they are finished or that any particular home has
+        been migrated.
+      </p>
+    </section>
+
+    <footer>
+      <p>
+        Open this file locally from
+        <code>docs/product-preview/index.html</code>.
+        Signing and notarization steps for a future consumer package are listed
+        separately in <code>SIGNING.md</code> (checklist only—not a signing script).
+      </p>
+    </footer>
+  </main>
+</body>
+</html>
