@@ -93,14 +93,21 @@ export async function inspectCoordinationDatabase(file) {
  * Read-only inventory. Unknown files, links, external paths and unsupported
  * schema versions are reasons to refuse before any package byte changes.
  */
-export async function inspectUpdateInventory(homeRoot, { installed, candidate } = {}) {
+export async function inspectUpdateInventory(homeRoot, { installed, candidate, scanSoftware = true } = {}) {
   const root = absoluteHome(homeRoot);
   const reasons = [];
   const unknown = [];
-  const manifestPaths = new Set((installed?.files || []).map(entry => entry.path));
+  const manifestEntries = new Map((installed?.files || []).map(entry => [entry.path, entry]));
+  const manifestPaths = new Set(manifestEntries.keys());
   function visit(relative) {
     const absolute = join(root, relative);
     const stat = lstatSync(absolute);
+    const declared = manifestEntries.get(relative);
+    if (!scanSoftware && declared && (
+      (stat.isDirectory() && declared.type !== 'directory') ||
+      (stat.isFile() && declared.type !== 'file') ||
+      (stat.isSymbolicLink() && declared.type !== 'symlink')
+    )) reasons.push(reason('modified_installation', `Package path ${relative} changed type.`, { path: relative }));
     if (stat.isSymbolicLink()) {
       if (isProductStatePath(relative)) {
         let target = '';
@@ -116,6 +123,10 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate } 
     }
     if (stat.isDirectory()) {
       if (!manifestPaths.has(relative) && !containsState(relative) && relative !== '') unknown.push(relative);
+      // During Install from a claimed Stage, software moves as whole subtrees.
+      // Visit state-bearing paths and unknown top-level paths, but do not walk
+      // thousands of dependency files that will be replaced by that switch.
+      if (!scanSoftware && !containsState(relative)) return;
       for (const name of readdirSync(absolute).sort()) visit(relative ? `${relative}/${name}` : name);
       return;
     }

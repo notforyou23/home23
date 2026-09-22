@@ -652,7 +652,10 @@ async function runTransaction(journal, dependencies, verify) {
 }
 
 async function openTransaction({ home, candidate, staging, admit, reuseVerifiedStage = false }, dependencies, verify) {
-  const installation = inspectProductInstallation(home);
+  // A completed Stage already checked the candidate. Its Install still checks
+  // the selected tree before admitting writers. Avoid rereading every byte of
+  // the previous software here; rollback verifies that retained copy if used.
+  const installation = inspectProductInstallation(home, { verifyFiles: !reuseVerifiedStage });
   if (installation.layout !== 'product') return refuse(home, installation.reasons.length ? installation.reasons : [{ code: 'unsupported_layout', message: 'The current home is not an owned product installation.' }]);
   if (reuseVerifiedStage && installation.reasons.length) return refuse(home, installation.reasons);
   if (installation.reasons.some(item => item.code !== 'modified_installation')) return refuse(home, installation.reasons);
@@ -661,7 +664,8 @@ async function openTransaction({ home, candidate, staging, admit, reuseVerifiedS
   catch { return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]); }
   const installed = readProductManifest(home);
   if (installed.packageId === candidateManifest.packageId) return refuse(home, [{ code: 'same_package', message: 'The candidate is the package already installed.' }]);
-  const inventory = await inspectUpdateInventory(home, { installed, candidate: candidateManifest });
+  const inventory = await inspectUpdateInventory(home, { installed, candidate: candidateManifest,
+    scanSoftware: !reuseVerifiedStage });
   const blocking = inventory.reasons.filter(item => item.code !== 'database_busy');
   if (blocking.length) return refuse(home, blocking);
   if (!reuseVerifiedStage) {

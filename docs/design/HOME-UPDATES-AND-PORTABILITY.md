@@ -109,7 +109,10 @@ under the same claim before retry, while completed individual files can be
 resumed. Completed files must match the pinned manifest. Unknown/tampered stage
 contents, overlapping or linked paths, changed bindings and competing writers
 are refused. Stage verifies the finished package byte-for-byte before
-`status: staged`; Install verifies the current home before selection.
+`status: staged`. Install from that Stage checks the installed receipt and
+state-bearing paths before selection, then verifies the selected version
+byte-for-byte before starting writers. The retained old version is fully
+verified only if rollback needs it.
 
 Capacity preflight requires the remaining file bytes plus 64 MiB headroom on
 the stage volume. This is not a reservation against concurrent disk use;
@@ -133,8 +136,10 @@ node scripts/product/host.mjs update-resume --home /absolute/home
 then applies only when the home is an owned Host v1 installation, package bytes
 differ, coordination migration and contract assets are unchanged, and the stored
 coordination database is exactly the supported schema. Other data versions,
-unknown files, linked state, and external paths refuse before package files
-change. Preview and stage still return `canInstall: false`. There is no
+unknown files outside replaceable software units, linked state, and external
+paths refuse before package files change. An extra or modified file inside a
+software-only unit is replaced by a staged update; lived state paths are still
+inspected. Preview and stage still return `canInstall: false`. There is no
 download, publisher signature, or trusted-release label. Manifest hashes remain
 integrity checks.
 
@@ -148,9 +153,9 @@ with one rename, and the staged unit moves in with another. A current package is
 of its many thousands of files. The retained version is the installed tree itself and
 shares no inode with the new software. A completed download stage was hashed
 before Install and remains locked during the switch. Install checks its claim,
-baseline and manifest, then verifies every selected file once before any writer
-is admitted. A mismatch reverses the switch and verifies the previous version
-before restoring it. A direct, unstaged `update` still checks both inputs before
+baseline receipt, state layout and manifest, then verifies every selected file
+once before any writer is admitted. A mismatch reverses the switch and verifies
+the previous version before restoring it. A direct, unstaged `update` still checks both inputs before
 switching. The stage
 must be on the home's volume, and the switch consumes it. `app/`, `app/config`,
 `app/engine`, and `app/evobrew` hold state and never move. Brains are not

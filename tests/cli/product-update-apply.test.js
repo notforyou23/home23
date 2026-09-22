@@ -732,20 +732,35 @@ test('reuseVerifiedStage refuses wrong home baseline candidate tampering and con
   }
 });
 
-test('staged Install refuses changed installed software before selecting the candidate', async t => {
+test('staged Install repairs old software but still refuses unknown and linked home state', async t => {
   const fixture = homeFixture(t);
   stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging });
-  fs.appendFileSync(path.join(fixture.home, 'app/cli/home23.js'), '// local edit\n');
-  const result = await applyProductUpdate({
+  const install = () => applyProductUpdate({
     homeRoot: fixture.home,
     candidatePayload: path.join(fixture.staging, 'payload'),
     staging: fixture.staging,
     reuseVerifiedStage: true,
   }, quiet);
-  assert.equal(result.status, 'refused');
-  assert.equal(result.reasons.some(item => item.code === 'modified_installation'), true);
-  assert.equal(packageId(fixture.home), fixture.installed.packageId);
-  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'journal.json')), false);
+  const before = preserved(fixture.home);
+  const note = path.join(fixture.home, 'notes.txt');
+  fs.writeFileSync(note, 'keep me');
+  assert.equal((await install()).reasons.some(item => item.code === 'unknown_state'), true);
+  fs.unlinkSync(note);
+  const link = path.join(fixture.home, 'app/instances/milo/brain/outside');
+  fs.symlinkSync('/tmp/outside-home23-state', link);
+  assert.equal((await install()).reasons.some(item => item.code === 'linked_state_path'), true);
+  fs.unlinkSync(link);
+  const cli = path.join(fixture.home, 'app/cli'), held = path.join(fixture.root, 'held-cli');
+  fs.renameSync(cli, held);
+  fs.symlinkSync('/tmp/outside-home23-software', cli);
+  assert.equal((await install()).reasons.some(item => item.code === 'modified_installation'), true);
+  fs.unlinkSync(cli);
+  fs.renameSync(held, cli);
+  fs.appendFileSync(path.join(fixture.home, 'app/cli/home23.js'), '// local edit\n');
+  const result = await install();
+  assert.equal(result.status, 'committed');
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
 });
 
 test('interrupted reuseVerifiedStage resumes against the same valid stage', async t => {
