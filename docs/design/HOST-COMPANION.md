@@ -69,7 +69,13 @@ and package-id checks. An unverified or production trust claim is refused.
 The home is not modified, and `canInstall` stays false. `backup --home ABS --archive ABS --key ABS`
 streams an encrypted archive only after the owned-writer inventory is quiet
 and while it holds the host lifecycle lock. `backup-inspect` restores that
-archive into an empty directory for inspection and does not start writers.
+archive into an empty directory only after the archive authenticates, and does
+not start writers. `move --home ABS --destination ABS --archive ABS --key ABS`
+restores into an empty directory, rebinds that copy's home path, and writes a
+source fence. Start on the fenced source returns `move_source_fenced` and does
+not start the destination. A missing supervisor is not treated as proof that
+writers are stopped. The copy loop refreshes the host lock itself so a long
+backup cannot go stale while the event loop is blocked.
 See [Home updates and portability](HOME-UPDATES-AND-PORTABILITY.md).
 
 The companion invokes the bundled Node with `app/scripts/product/host.mjs`.
