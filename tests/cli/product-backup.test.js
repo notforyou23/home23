@@ -80,14 +80,42 @@ test('round-trips a stopped fixture home with workspace and home.yaml', async t 
   assert.equal(inspected.reconnects.some(item => item.kind === 'provider-credentials' && item.transferred === true), true);
 });
 
-test('desiredRunning true creates no archive and no key', async t => {
-  const fixture = stoppedHome(t, { desiredRunning: true });
+test('a busy writer blocks backup even when desiredRunning is false', async t => {
+  const fixture = stoppedHome(t, { desiredRunning: false });
   await assert.rejects(
-    () => createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }),
-    error => error.code === 'backup_requires_quiesce',
+    () => createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, {
+      listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    }),
+    error => error.code === 'backup_writers_active',
   );
   assert.equal(fs.existsSync(fixture.archivePath), false);
   assert.equal(fs.existsSync(fixture.keyPath), false);
+  assert.equal(fs.existsSync(path.join(fixture.home, 'runtime', '.host.lock')), false);
+});
+
+test('desiredRunning true still backs up when writers are stopped and Start is locked out', async t => {
+  const fixture = stoppedHome(t, { desiredRunning: true });
+  let locked = false;
+  const created = await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, {
+    listProcesses: async () => [{ name: 'home23-milo', status: 'stopped' }],
+    afterLock: () => {
+      locked = fs.lstatSync(path.join(fixture.home, 'runtime', '.host.lock')).isDirectory();
+      assert.throws(() => fs.mkdirSync(path.join(fixture.home, 'runtime', '.host.lock')));
+    },
+  });
+  assert.equal(locked, true);
+  assert.equal(created.writersStarted, false);
+  assert.equal(fs.existsSync(path.join(fixture.home, 'runtime', '.host.lock')), false);
+});
+
+test('a multi-chunk file round-trips without retaining the source', async t => {
+  const fixture = stoppedHome(t);
+  const payload = Buffer.alloc(256 * 1024, 7);
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/workspace/note.txt'), payload);
+  fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  assert.equal(fs.readFileSync(path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/note.txt')).equals(payload), true);
 });
 
 test('wrong key throws and leaves inspection empty', async t => {
