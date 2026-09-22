@@ -82,7 +82,15 @@ test('resumes a simulated copy interruption with the same claim and rejects a ch
   fs.writeFileSync(receiptPath, JSON.stringify({ ...receipt, sourceCommit: body.sourceCommit, packageId: newId }));
   assert.throws(() => stageProductPayload(args), /baseline/);
   fs.appendFileSync(path.join(f.home, 'app/cli/home23.js'), 'local change');
-  assert.throws(() => stageProductPayload(args), /eligible/);
+  assert.throws(() => stageProductPayload(args), /baseline/);
+});
+
+test('a changed candidate cannot become a completed stage', t => {
+  const f = fixture(t), candidate = fixture(t, 'b'.repeat(40)), staging = path.join(f.root, 'changed-stage');
+  fs.appendFileSync(path.join(candidate.payload, 'app/cli/home23.js'), 'changed after packaging');
+  assert.throws(() => stageProductPayload({ homeRoot: f.home, candidatePayload: candidate.payload, staging }), /Product file changed/);
+  assert.equal(JSON.parse(fs.readFileSync(`${staging}.home23-stage.json`, 'utf8')).status, 'copying');
+  assert.equal(fs.readFileSync(path.join(f.home, 'app/cli/home23.js'), 'utf8'), 'export {};\n');
 });
 
 test('refuses foreign, overlapping, linked, and locked stage destinations before copying', t => {

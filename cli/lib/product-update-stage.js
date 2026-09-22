@@ -1,12 +1,14 @@
 /** Prepare a local candidate without changing or starting the current home. */
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { dirname, join, sep } from 'node:path';
 import { privateDirectory, privateJSON, readPrivateJSON } from './product-environment.js';
 import { inspectProductInstallation, previewProductUpdate, previewRoot } from './product-update-preview.js';
 import { acquireInstallLock, inventoryProductPayload, readProductManifest, verifyProductPayload as verifyProductPayloadDefault } from './product-payload.js';
 
 const SCHEMA = 'home23.product-stage.v1';
+const BULK_CLONE_MIN_ENTRIES = 512;
 const inside = (root, target) => target === root || target.startsWith(root + sep);
 function present(file) {
   try { fs.lstatSync(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
@@ -32,17 +34,35 @@ function inspectPartial(payload, manifest) {
   }
 }
 
+function tryBulkClone({ candidate, destination, payload, temporary, probe }) {
+  if (process.platform !== 'darwin' || fs.statSync(candidate).dev !== fs.statSync(destination).dev) return false;
+  // Node's FICLONE flag falls back on some macOS volumes; /bin/cp -c uses
+  // clonefile directly. Probe the volume before taking the bulk path.
+  try { execFileSync('/bin/cp', ['-c', join(candidate, 'bin/node'), probe], { stdio: 'ignore', timeout: 30000 }); }
+  catch { if (present(probe)) fs.unlinkSync(probe); return false; }
+  fs.unlinkSync(probe);
+  fs.rmdirSync(payload); // Only an empty, newly owned payload can take this path.
+  execFileSync('/bin/cp', ['-Rc', candidate, temporary], { timeout: 180000 });
+  fs.renameSync(temporary, payload);
+  return true;
+}
+
 export function stageProductPayload({ homeRoot, candidatePayload, staging, verifyProductPayload = verifyProductPayloadDefault }) {
   const home = previewRoot(homeRoot), candidate = previewRoot(candidatePayload), destination = previewRoot(staging);
   const roots = [home, candidate, destination];
   if (roots.some((root, i) => roots.some((other, j) => i !== j && inside(root, other)))) {
     throw new Error('Home, candidate, and staging directories must be separate.');
   }
-  const preview = previewProductUpdate({ homeRoot: home, candidatePayload: candidate });
+  // Stage cannot change the current home. Hash the finished stage once; Install
+  // checks the current home immediately before selection and the selected tree
+  // before writers start.
+  const preview = previewProductUpdate({ homeRoot: home, candidatePayload: candidate }, { verifyFiles: false });
   if (preview.reasons.length !== 1 || !['same_package', 'different_package'].includes(preview.reasons[0].code)) {
     throw new Error('The home or candidate is not eligible for local staging.');
   }
-  const manifest = verifyProductPayload(candidate);
+  // Preview checked structure and compatibility. Re-read candidate identity;
+  // the completed stage is checked byte-for-byte before its claim commits.
+  const manifest = readProductManifest(candidate);
   if (manifest.packageId !== preview.candidate.identity.packageId) throw new Error('Candidate changed during staging inspection.');
   const binding = { schema: SCHEMA, homeRoot: home, staging: destination,
     currentPackageId: preview.current.identity.packageId, candidatePackageId: manifest.packageId,
@@ -68,6 +88,14 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
       privateJSON(claimPath, receipt);
     }
     const payload = join(destination, 'payload'), temporary = join(destination, 'copy.tmp');
+    const cloneTemporary = join(destination, 'payload.clone.tmp'), cloneProbe = join(destination, 'clone-probe.tmp');
+    const finish = () => {
+      verifyProductPayload(payload, { fresh: true });
+      const current = inspectProductInstallation(home, { verifyFiles: false });
+      if (current.reasons.length || current.identity?.packageId !== binding.currentPackageId) throw new Error('Home baseline changed during staging.');
+      receipt = { ...receipt, status: 'staged' }; privateJSON(claimPath, receipt);
+      return stageResult(destination, receipt, false);
+    };
     if (receipt.status === 'staged') {
       privateDirectory(destination);
       if (fs.readdirSync(destination).some(name => name !== 'payload')) throw new Error('Unexpected staging contents.');
@@ -75,22 +103,37 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
       return stageResult(destination, receipt, true);
     }
     privateDirectory(destination);
-    if (fs.readdirSync(destination).some(name => !['payload', 'copy.tmp'].includes(name))) throw new Error('Unexpected staging contents.');
+    if (fs.readdirSync(destination).some(name => !['payload', 'copy.tmp', 'payload.clone.tmp', 'clone-probe.tmp'].includes(name))) throw new Error('Unexpected staging contents.');
+    const interruptedClone = present(cloneTemporary);
+    if (interruptedClone) {
+      if (!fs.lstatSync(cloneTemporary).isDirectory()) throw new Error('Unsafe interrupted clone.');
+      fs.rmSync(cloneTemporary, { recursive: true });
+    }
+    if (present(cloneProbe)) {
+      if (!fs.lstatSync(cloneProbe).isFile()) throw new Error('Unsafe interrupted clone probe.');
+      fs.unlinkSync(cloneProbe);
+    }
     previewRoot(payload);
-    if (!present(payload)) fs.mkdirSync(payload, { mode: 0o755 });
+    const hadPayload = present(payload);
+    if (!hadPayload) fs.mkdirSync(payload, { mode: 0o755 });
     inspectPartial(payload, manifest);
+    const emptyPayload = fs.readdirSync(payload).length === 0;
     // Only this owned regular file may contain incomplete bytes from a failed copy.
     if (present(temporary)) {
       const stat = fs.lstatSync(temporary);
       if (!stat.isFile() || stat.nlink !== 1 || (process.getuid && stat.uid !== process.getuid())) throw new Error('Unsafe interrupted copy.');
       fs.unlinkSync(temporary);
     }
-    const remaining = manifest.files.filter(entry => entry.type === 'file' && !present(join(payload, entry.path)))
+    const remaining = manifest.files.filter(entry => entry.type === 'file' && (emptyPayload || !present(join(payload, entry.path))))
       .reduce((bytes, entry) => bytes + BigInt(entry.size), 0n);
     const space = fs.statfsSync(destination, { bigint: true });
     // This is a capacity preflight, not a reservation against other disk users.
     if (space.bavail * space.bsize < remaining + 64n * 1024n * 1024n) {
       throw new Error('Insufficient free space to stage the candidate with 64 MiB of headroom.');
+    }
+    if (emptyPayload && !interruptedClone && manifest.files.length >= BULK_CLONE_MIN_ENTRIES &&
+        tryBulkClone({ candidate, destination, payload, temporary: cloneTemporary, probe: cloneProbe })) {
+      return finish();
     }
     const directories = manifest.files.filter(entry => entry.type === 'directory').sort((a, b) => a.path.split('/').length - b.path.split('/').length);
     for (const entry of directories) {
@@ -101,7 +144,9 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
       const target = join(payload, entry.path);
       previewRoot(dirname(target));
       if (present(target)) continue; // inspectPartial already verified these bytes.
-      fs.copyFileSync(join(candidate, entry.path), temporary, fs.constants.COPYFILE_EXCL);
+      // Request a clone where Node supports it; its fallback remains a copy.
+      fs.copyFileSync(join(candidate, entry.path), temporary,
+        fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
       fs.chmodSync(temporary, entry.mode); fs.renameSync(temporary, target);
     }
     // Create links only after their targets, so interruption never strands a
@@ -120,11 +165,7 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
     // Retain the verified in-memory manifest rather than rereading mutable source metadata.
     fs.writeFileSync(temporary, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o644 });
     fs.renameSync(temporary, join(payload, 'manifest.json'));
-    verifyProductPayload(payload, { fresh: true });
-    const current = inspectProductInstallation(home);
-    if (current.reasons.length || current.identity?.packageId !== binding.currentPackageId) throw new Error('Home baseline changed during staging.');
-    receipt = { ...receipt, status: 'staged' }; privateJSON(claimPath, receipt);
-    return stageResult(destination, receipt, false);
+    return finish();
   } finally { unlock(); }
 }
 

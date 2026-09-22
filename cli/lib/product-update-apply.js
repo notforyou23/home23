@@ -652,8 +652,9 @@ async function runTransaction(journal, dependencies, verify) {
 }
 
 async function openTransaction({ home, candidate, staging, admit, reuseVerifiedStage = false }, dependencies, verify) {
-  const installation = inspectProductInstallation(home, { verifyFiles: !reuseVerifiedStage });
+  const installation = inspectProductInstallation(home);
   if (installation.layout !== 'product') return refuse(home, installation.reasons.length ? installation.reasons : [{ code: 'unsupported_layout', message: 'The current home is not an owned product installation.' }]);
+  if (reuseVerifiedStage && installation.reasons.length) return refuse(home, installation.reasons);
   if (installation.reasons.some(item => item.code !== 'modified_installation')) return refuse(home, installation.reasons);
   let candidateManifest;
   try { candidateManifest = reuseVerifiedStage ? readProductManifest(candidate) : verify(candidate); }

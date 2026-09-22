@@ -125,6 +125,13 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
     run(path.join(bin, 'node'), [npmPath, 'ci', '--no-audit', '--no-fund'], { cwd: directory, env, stdio: 'inherit', timeout: 20 * 60 * 1000 });
   }
   run(path.join(bin, 'node'), [path.join(app, 'scripts', 'release', 'build.mjs')], { cwd: app, env, stdio: 'inherit', timeout: 180000 });
+  // Build tooling is needed above, but not in a recipient's runtime. Keep
+  // tsx/Ajv and engine msgpackr as production dependencies before pruning.
+  for (const directory of [app, path.join(app, 'engine')]) {
+    process.stderr.write(`Removing build-only dependencies: ${path.relative(outputPath, directory)}\n`);
+    run(path.join(bin, 'node'), [npmPath, 'prune', '--omit=dev', '--ignore-scripts', '--offline', '--no-audit', '--no-fund'],
+      { cwd: directory, env, stdio: 'inherit', timeout: 5 * 60 * 1000 });
+  }
   // Load the important native modules with exactly the binary distributed to
   // recipients. Compilation success alone does not prove the ABI matches.
   run(path.join(bin, 'node'), ['--input-type=commonjs', '-e', `
@@ -133,12 +140,17 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
     const db=new (root('better-sqlite3'))(':memory:'); db.prepare('SELECT 1').get(); db.close();
     root('hnswlib-node');
     createRequire(process.cwd()+'/engine/package.json')('hnswlib-node');
+    createRequire(process.cwd()+'/engine/package.json')('msgpackr');
     createRequire(process.cwd()+'/evobrew/package.json')('node-pty');
     createRequire(process.cwd()+'/package.json')('tsx');
+    createRequire(process.cwd()+'/package.json')('ajv/dist/2020');
     const embedder=createRequire(process.cwd()+'/scripts/embedder/package.json');
     embedder('onnxruntime-node');
     if (typeof embedder('@huggingface/transformers').pipeline !== 'function') throw new Error('Packaged transformers failed to load');
   `], { cwd: app, env, stdio: 'inherit', timeout: 30000 });
+  run(path.join(bin, 'node'), ['--import', 'tsx', '--input-type=module', '-e',
+    'import("./src/coordination/contracts/contract-pack.ts")'],
+    { cwd: app, env, stdio: 'inherit', timeout: 30000 });
   normalizeModes(outputPath);
   const manifest = writeProductManifest(outputPath, { ...metadata, sourceCommit });
   verifyProductPayload(outputPath);

@@ -732,6 +732,22 @@ test('reuseVerifiedStage refuses wrong home baseline candidate tampering and con
   }
 });
 
+test('staged Install refuses changed installed software before selecting the candidate', async t => {
+  const fixture = homeFixture(t);
+  stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging });
+  fs.appendFileSync(path.join(fixture.home, 'app/cli/home23.js'), '// local edit\n');
+  const result = await applyProductUpdate({
+    homeRoot: fixture.home,
+    candidatePayload: path.join(fixture.staging, 'payload'),
+    staging: fixture.staging,
+    reuseVerifiedStage: true,
+  }, quiet);
+  assert.equal(result.status, 'refused');
+  assert.equal(result.reasons.some(item => item.code === 'modified_installation'), true);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'journal.json')), false);
+});
+
 test('interrupted reuseVerifiedStage resumes against the same valid stage', async t => {
   const fixture = homeFixture(t);
   const staging = fixture.staging;

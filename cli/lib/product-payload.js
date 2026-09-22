@@ -247,7 +247,8 @@ export function installProductPayload({ payloadPath, homeRoot }) {
       else {
         const temporary = `${destination}.home23-copy`;
         if (has(temporary)) { if (!fs.lstatSync(temporary).isFile()) throw new Error('Unsafe interrupted copy'); fs.unlinkSync(temporary); }
-        fs.copyFileSync(source, temporary, fs.constants.COPYFILE_EXCL); fs.chmodSync(temporary, entry.mode); fs.renameSync(temporary, destination);
+        fs.copyFileSync(source, temporary, fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
+        fs.chmodSync(temporary, entry.mode); fs.renameSync(temporary, destination);
       }
     }
     fs.copyFileSync(path.join(payloadPath, 'manifest.json'), path.join(staging, 'manifest.json'));

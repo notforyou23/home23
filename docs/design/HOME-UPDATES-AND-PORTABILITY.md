@@ -102,10 +102,14 @@ Staging copies an explicit local candidate into `stage/payload/`, separate from
 the current home and original candidate. Its private adjacent
 `stage.home23-stage.json` claim binds the home location, current package and
 candidate identity. The existing installation lock guards claim creation,
-copying and exact retry. Completed files must match the pinned manifest;
-interrupted copying can resume with the same claim. Unknown/tampered stage
+copying and exact retry. On a supported same-volume Mac filesystem, a large
+package is cloned into a private temporary tree and moved into the stage;
+elsewhere, files are copied individually. An interrupted clone is discarded
+under the same claim before retry, while completed individual files can be
+resumed. Completed files must match the pinned manifest. Unknown/tampered stage
 contents, overlapping or linked paths, changed bindings and competing writers
-are refused. The package is verified again before `status: staged` is recorded.
+are refused. Stage verifies the finished package byte-for-byte before
+`status: staged`; Install verifies the current home before selection.
 
 Capacity preflight requires the remaining file bytes plus 64 MiB headroom on
 the stage volume. This is not a reservation against concurrent disk use;
@@ -114,9 +118,9 @@ installation receipt, release selection or running process is changed. This
 is local preparation, not a publisher-authenticated download or an update.
 `canInstall` remains `false` and publisher/migration checks remain unverified.
 
-Source verification uses synthetic packages, CLI dispatch, directory-preservation
-checks and a simulated copy interruption. It does not establish power-loss
-recovery, a packaged Mac trial or the complete U2/U3 lifecycle.
+Focused source checks cover package integrity, CLI dispatch, preservation and
+interrupted copies. Isolated Mac trials cover an exact staged update; power-loss
+recovery and a publicly trusted release remain separate acceptance work.
 
 ### Implemented local schema-preserving apply
 
@@ -141,7 +145,7 @@ holds no home state is a unit: `bin`, `tools`, `app/node_modules`, `app/dist`,
 and files such as `app/package.json`. The installed unit moves into `previous/`
 with one rename, and the staged unit moves in with another. A current package is
 79 units, so a switch is about 160 renames and a few directory fsyncs regardless
-of its 43,000 files. The retained version is the installed tree itself and
+of its many thousands of files. The retained version is the installed tree itself and
 shares no inode with the new software. A completed download stage was hashed
 before Install and remains locked during the switch. Install checks its claim,
 baseline and manifest, then verifies every selected file once before any writer

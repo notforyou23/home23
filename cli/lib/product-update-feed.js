@@ -7,7 +7,7 @@ import {
 import http from 'node:http';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { privateJSON, readPrivateJSON } from './product-environment.js';
-import { readProductManifest, verifyProductPayload } from './product-payload.js';
+import { readProductManifest } from './product-payload.js';
 import { stageProductPayload } from './product-update-stage.js';
 
 const FEED_SCHEMA = 'home23.release-feed.v1';
@@ -359,14 +359,12 @@ export function stageAuthenticatedRelease({ homeRoot, feedPath, staging, trustKe
   }
   const destination = resolve(staging);
 
-  stageProductPayload({
+  const staged = stageProductPayload({
     homeRoot,
     candidatePayload: artifactPath,
     staging: destination,
   });
-
-  const staged = verifyProductPayload(join(destination, 'payload'));
-  if (staged.packageId !== release.packageId) {
+  if (staged.receipt.candidatePackageId !== release.packageId) {
     throw codedError('digest_mismatch', 'The staged payload package id does not match the offered release.');
   }
 
@@ -441,14 +439,12 @@ export async function downloadDevelopmentRelease({
       packageId,
     });
 
-    stageProductPayload({
+    const staged = stageProductPayload({
       homeRoot,
       candidatePayload: artifactPath,
       staging: destination,
     });
-
-    const staged = verifyProductPayload(join(destination, 'payload'));
-    if (staged.packageId !== release.packageId) {
+    if (staged.receipt.candidatePackageId !== release.packageId) {
       throw codedError('digest_mismatch', 'The staged payload package id does not match the offered release.');
     }
 
@@ -507,22 +503,20 @@ async function stageLoopbackArchiveRelease({ homeRoot, release, destination, rep
   mkdirSync(extractRoot, { recursive: true, mode: 0o700 });
   extractProductArchive({ archivePath: archived.path, destinationDirectory: extractRoot });
 
-  const verified = verifyProductPayload(extractRoot);
-  if (verified.packageId !== release.packageId) {
+  const extracted = readProductManifest(extractRoot);
+  if (extracted.packageId !== release.packageId) {
     throw codedError('digest_mismatch', 'The extracted payload package id does not match the offered release.');
   }
 
-  bytesTotal = manifestFileBytesTotal(verified);
+  bytesTotal = manifestFileBytesTotal(extracted);
   report({ phase: 'copying', bytesCopied: bytesTotal, bytesTotal, packageId });
 
-  stageProductPayload({
+  const staged = stageProductPayload({
     homeRoot,
     candidatePayload: extractRoot,
     staging: destination,
   });
-
-  const staged = verifyProductPayload(join(destination, 'payload'));
-  if (staged.packageId !== release.packageId) {
+  if (staged.receipt.candidatePackageId !== release.packageId) {
     throw codedError('digest_mismatch', 'The staged payload package id does not match the offered release.');
   }
 
