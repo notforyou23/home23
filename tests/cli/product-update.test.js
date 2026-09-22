@@ -9,11 +9,14 @@ import { execFileSync } from 'node:child_process';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 import {
   adoptManagedSourceHome, holdAdoptionSupervisorLock, inspectProductInstallation,
-  planManagedSourceAdoption, previewProductUpdate, resolveAdoptionIdentity, sourceAdoptionSnapshot,
+  listSourceWriters, managedSupervisorEnvironment, planManagedSourceAdoption,
+  previewProductUpdate, resolveAdoptionIdentity, sourceAdoptionSnapshot,
 } from '../../cli/lib/product-update.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 import { acquireManagedStartLocks } from '../../cli/lib/pm2-commands.js';
-import { runHostAction, hostResidentNames, ownedProcessNamesForState } from '../../cli/lib/product-host.js';
+import {
+  runHostAction, hostResidentNames, ownedProcessNamesForState, probeReadiness, residentPortsFor,
+} from '../../cli/lib/product-host.js';
 
 const require = createRequire(import.meta.url);
 const Database = DatabaseSync;
@@ -71,7 +74,12 @@ function managedHome(root, {
   const release = { releaseId: 'ready', residents };
   fs.writeFileSync(path.join(home, 'instances/.house/coordination/active-release.json'), `${JSON.stringify(release)}\n`);
   fs.writeFileSync(path.join(home, 'ecosystem.config.cjs'), 'module.exports = { apps: [] };\n');
-  fs.writeFileSync(path.join(home, 'config/home.yaml'), `name: ${name}\n`);
+  fs.writeFileSync(path.join(home, 'config/home.yaml'), [
+    'home:',
+    `  primaryAgent: ${name}`,
+    'name: ' + name,
+    '',
+  ].join('\n'));
   fs.writeFileSync(path.join(home, 'config/secrets.yaml'), 'secret: keep\n', { mode: 0o600 });
   const seeds = {};
   for (const resident of Object.keys(residents)) {
@@ -120,6 +128,8 @@ function adoptionDeps(overrides = {}) {
   return {
     choosePortPlan: async () => ({ ...FIXED_PORTS }),
     rebindAdoptedHome: async () => null,
+    // Default idle inventory — real listSourceWriters must not hit ambient PM2 during fixtures.
+    listWriters: async () => [],
     ...overrides,
   };
 }
@@ -406,6 +416,7 @@ test('real rebind and host status keep distinct resident ports; Start refuses un
   }, {
     // Real rebindAdoptedHome and real choosePortPlan — do not stub either.
     Database,
+    listWriters: async () => [],
   });
   assert.equal(adopted.ok, true);
   assert.equal(adopted.status, 'adopted');
@@ -424,18 +435,65 @@ test('real rebind and host status keep distinct resident ports; Start refuses un
   assert.deepEqual(status.residents, ['zed', 'ada']);
   assert.ok(status.residentMap);
   assert.deepEqual(hostResidentNames({ residentMap: status.residentMap, profile: status.profile }), ['zed', 'ada']);
-  const owned = ownedProcessNamesForState(host);
-  assert.ok(owned.includes('home23-zed'));
-  assert.ok(owned.includes('home23-ada'));
+  // Primary (ada) dashboard URL must use residentMap ports, not the shared Host dashboard port.
+  assert.equal(
+    status.connection.dashboardURL,
+    `http://127.0.0.1:${host.residentMap.ada.ports.dashboard}`,
+  );
+  assert.notEqual(status.connection.dashboardURL, `http://127.0.0.1:${host.ports.dashboard}`);
+  assert.deepEqual(residentPortsFor(host, 'ada').engine, host.residentMap.ada.ports.engine);
+  assert.deepEqual(residentPortsFor(host, 'zed').dashboard, host.residentMap.zed.ports.dashboard);
+
+  const { privateJSON } = await import('../../cli/lib/product-environment.js');
+  fs.mkdirSync(path.join(destination, 'runtime'), { recursive: true, mode: 0o700 });
+  privateJSON(path.join(destination, 'runtime/host-session.json'), {
+    accessToken: 'fixture-access',
+    refreshToken: 'fixture-refresh',
+    accessExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    refreshExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+  });
+
+  const probed = [];
+  const online = ownedProcessNamesForState(host).map((name, index) => ({
+    name, status: 'online', pid: 4000 + index, owned: true,
+  }));
+  host.birth = { home: { id: 'home-adopt-fixture' }, coordination: { botId: 'bot-adopt-fixture' } };
+  const readiness = await probeReadiness(destination, host, online, {
+    request: async (url) => {
+      probed.push(url);
+      if (url.endsWith('/api/v1/capabilities')) {
+        return { pairingAvailable: true, capabilities: { bootstrap: true, messageSubmission: true } };
+      }
+      if (url.endsWith('/api/v1/bootstrap')) {
+        return {
+          home: { id: 'home-adopt-fixture' },
+          snapshot: { bots: [{ id: 'bot-adopt-fixture', availability: 'available', conversationId: 'c1' }] },
+        };
+      }
+      if (url.includes('/home23/process.json')) {
+        const name = url.includes(String(host.residentMap.ada.ports.dashboard)) ? 'ada' : 'zed';
+        return { pid: online.find(row => row.name === `home23-${name}-dash`).pid };
+      }
+      if (url.endsWith('/healthz')) return 'ok';
+      return { ok: true };
+    },
+  });
+  assert.equal(readiness.ready, true, readiness.issues?.join('; '));
+  assert.ok(probed.some(url => url.includes(`:${host.residentMap.ada.ports.engine}/`)));
+  assert.ok(probed.some(url => url.includes(`:${host.residentMap.zed.ports.engine}/`)));
+  assert.ok(probed.some(url => url.includes(`:${host.residentMap.ada.ports.dashboard}/`)));
+  assert.ok(probed.some(url => url.includes(`:${host.residentMap.zed.ports.dashboard}/`)));
+  assert.equal(probed.some(url => url.includes(`:${host.ports.engine}/`)), false);
+  assert.equal(probed.some(url => url.includes(`:${host.ports.dashboard}/`)), false);
 
   // Fence proof: the same acquireManagedStartLocks call runStart uses before spawn.
   // Hold the product maintenance path Start acquires for installed homes.
   const maintenance = path.join(destination, 'app/instances/.house/maintenance');
   fs.mkdirSync(maintenance, { recursive: true, mode: 0o700 });
-  const held = acquireSupervisorLock(maintenance, Database, { purpose: 'adoption', writers: owned });
+  const held = acquireSupervisorLock(maintenance, Database, { purpose: 'adoption', writers: ownedProcessNamesForState(host) });
   t.after(() => held());
   assert.throws(
-    () => acquireManagedStartLocks(destination, { Database, writers: owned }),
+    () => acquireManagedStartLocks(destination, { Database, writers: ownedProcessNamesForState(host) }),
     (error) => error.code === 'supervisor_lock_unavailable',
   );
   const locked = await runHostAction('start', { homeRoot: destination }, {
@@ -445,6 +503,81 @@ test('real rebind and host status keep distinct resident ports; Start refuses un
   });
   assert.equal(locked.ok, false);
   assert.equal(locked.error?.code, 'supervisor_lock_unavailable');
+});
+
+test('listSourceWriters inventories PATH pm2 with product PM2 sockets stripped', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: {} } });
+  const calls = [];
+  const rows = await listSourceWriters(source.home, {
+    pm2Command: 'pm2-fixture',
+    env: managedSupervisorEnvironment({
+      PATH: '/bin',
+      PM2_HOME: path.join(source.home, 'runtime/pm2'),
+      PM2_DAEMON_RPC_PORT: '/tmp/product-rpc.sock',
+      PM2_DAEMON_PUB_PORT: '/tmp/product-pub.sock',
+      HOME23_PRODUCT_HOST: 'true',
+      HOME23_AGENT: 'should-strip',
+    }),
+    executeFile: async (command, args, options) => {
+      calls.push({ command, args, env: options.env });
+      return { stdout: '[]\n' };
+    },
+  });
+  assert.deepEqual(rows, []);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'pm2-fixture');
+  assert.deepEqual(calls[0].args, ['jlist', '--silent']);
+  assert.equal(calls[0].env.PM2_HOME, undefined);
+  assert.equal(calls[0].env.PM2_DAEMON_RPC_PORT, undefined);
+  assert.equal(calls[0].env.HOME23_PRODUCT_HOST, undefined);
+  assert.equal(calls[0].env.HOME23_AGENT, undefined);
+});
+
+test('adoption refuses when the managed supervisor inventory is unavailable', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const destination = path.join(pack.root, 'destination');
+  const refused = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  }, adoptionDeps({
+    listWriters: async () => {
+      throw Object.assign(new Error('Home process inventory is unavailable.'), { code: 'process_inventory_unavailable' });
+    },
+  }));
+  assert.equal(refused.ok, false);
+  assert.equal(refused.status, 'refused');
+  assert.ok(refused.reasons.some(item => item.code === 'process_inventory_unavailable'));
+  assert.equal(fs.existsSync(destination), false);
+});
+
+test('writeStoppedHost copies birth from the create-home receipt authority', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: {} } });
+  fs.writeFileSync(path.join(source.home, 'instances/.house/creation.json'), `${JSON.stringify({
+    schema: 'home23.create-home.v1',
+    status: 'prepared',
+    home: { id: 'home_from_creation', name: "Ada's Home" },
+    receipt: {
+      schema: 'home23.create-home.v1',
+      status: 'prepared',
+      home: { id: 'home_from_creation', name: "Ada's Home" },
+      coordination: { botId: 'bot_from_creation' },
+    },
+  }, null, 2)}\n`, { mode: 0o600 });
+  const identity = resolveAdoptionIdentity(source.home);
+  assert.equal(identity.ok, true);
+  assert.equal(identity.birth.home.id, 'home_from_creation');
+  assert.equal(identity.birth.coordination.botId, 'bot_from_creation');
+  const destination = path.join(pack.root, 'destination');
+  const adopted = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  }, adoptionDeps());
+  assert.equal(adopted.ok, true);
+  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
+  assert.equal(host.birth.home.id, 'home_from_creation');
+  assert.equal(host.birth.coordination.botId, 'bot_from_creation');
+  assert.equal(host.encoderRequired, false);
 });
 
 test('a new preserve file during the copy window cannot finish as adopted', async t => {
