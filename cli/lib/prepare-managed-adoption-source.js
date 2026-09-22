@@ -4,7 +4,7 @@
  * from ChatHistory.append. The encoder file records the owned recipe id and
  * does not claim the encoder finished. No live home is read.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { prepareSeedBirth } from './seed-birth.js';
 import { OWNED_RECIPE_HASH, writeSemanticPrep } from './product-embedder.js';
@@ -17,6 +17,12 @@ export async function prepareManagedAdoptionSource({ root, residents } = {}) {
   const names = residents.map(resident => resident?.name);
   if (new Set(names).size !== names.length || names.some(name => !NAME.test(name || ''))) {
     throw new Error('Resident names must be unique lowercase slugs.');
+  }
+  if (existsSync(root)) {
+    const stat = lstatSync(root);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || readdirSync(root).length) {
+      throw new Error('Adoption source root already exists and is not an empty directory. Refusing to write birth, config, or release markers.');
+    }
   }
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const births = [];

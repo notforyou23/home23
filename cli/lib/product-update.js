@@ -540,10 +540,32 @@ function copyPreservedState(source, destination, paths) {
   }
 }
 
-function sourceProcessBelongsToHome(row, home) {
+function processPathOwnership(row, home) {
   const env = row?.pm2_env || {};
-  const paths = [env.pm_cwd, env.cwd, env.HOME23_ROOT, env.HOME23_INSTANCE_DIR];
-  return paths.some(value => typeof value === 'string' && (value === home || value.startsWith(`${home}${sep}`)));
+  const raw = [env.pm_cwd, env.cwd, env.HOME23_ROOT, env.HOME23_INSTANCE_DIR]
+    .filter(value => typeof value === 'string' && value.startsWith('/'));
+  if (!raw.length) return 'unattributed';
+  let homeReal = home;
+  try { homeReal = realpathSync(home); } catch { /* compare the given path */ }
+  let sawThis = false;
+  let sawOther = false;
+  let unresolved = false;
+  for (const value of raw) {
+    let resolved = null;
+    try { resolved = realpathSync(value); } catch { unresolved = true; continue; }
+    if (resolved === homeReal || resolved.startsWith(`${homeReal}${sep}`) || homeReal.startsWith(`${resolved}${sep}`)) sawThis = true;
+    else sawOther = true;
+  }
+  if (sawThis && !sawOther) return 'this';
+  if (sawOther && !sawThis && !unresolved) return 'other';
+  return 'ambiguous';
+}
+
+function keepSourceWriter(row, home, expected) {
+  const ownership = processPathOwnership(row, home);
+  if (ownership === 'other') return false;
+  if (ownership === 'this') return true;
+  return expected.has(row?.name);
 }
 
 /** Live process inventory for a managed/source home. Unavailable inventory refuses adoption. */
@@ -567,8 +589,10 @@ export async function listSourceWriters(home, dependencies = {}) {
     if (!Array.isArray(rows)) {
       throw Object.assign(new Error('Home process inventory is unavailable.'), { code: 'process_inventory_unavailable' });
     }
-    // The global daemon also runs other homes. Only paths inside this source count.
-    return rows.filter(row => sourceProcessBelongsToHome(row, home)).map(row => ({
+    const expected = new Set(Array.isArray(dependencies.expectedWriters) ? dependencies.expectedWriters : []);
+    // Another home's row is ignored only when its path is unambiguously elsewhere.
+    // An expected writer with no usable path stays in the inventory.
+    return rows.filter(row => keepSourceWriter(row, home, expected)).map(row => ({
       name: row.name,
       status: row.pm2_env?.status || 'unknown',
     }));
@@ -578,11 +602,11 @@ export async function listSourceWriters(home, dependencies = {}) {
   }
 }
 
-async function assertAdoptionWritersStopped(source, dependencies = {}) {
+async function assertAdoptionWritersStopped(source, dependencies = {}, expectedWriters = []) {
   const list = dependencies.listWriters || listSourceWriters;
   let rows;
   try {
-    rows = await list(source, dependencies);
+    rows = await list(source, { ...dependencies, expectedWriters });
   } catch (error) {
     throw Object.assign(
       new Error(error.message || 'Home process inventory is unavailable.'),
@@ -772,7 +796,7 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
 
   try {
     // Inventory the managed supervisor before any destination mutation or preserve copy.
-    await assertAdoptionWritersStopped(source, dependencies);
+    await assertAdoptionWritersStopped(source, dependencies, identity.writers);
   } catch (error) {
     try { releaseLock(); } catch { /* unlock best-effort */ }
     return refuseAdoption(plan, [reason(error.code || 'process_inventory_unavailable', error.message)], destination);
@@ -830,7 +854,7 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       }
       // Re-check under the held lock immediately before the preserve copy.
       try {
-        await assertAdoptionWritersStopped(source, dependencies);
+        await assertAdoptionWritersStopped(source, dependencies, identity.writers);
       } catch (error) {
         return refuseAdoption(plan, [reason(error.code || 'process_inventory_unavailable', error.message)], destination);
       }

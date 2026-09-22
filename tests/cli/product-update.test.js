@@ -12,6 +12,7 @@ import {
   listSourceWriters, managedSupervisorEnvironment, planManagedSourceAdoption,
   previewProductUpdate, resolveAdoptionIdentity, sourceAdoptionSnapshot,
 } from '../../cli/lib/product-update.js';
+import { assertWritersIdle } from '../../cli/lib/product-backup.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 import { acquireManagedStartLocks } from '../../cli/lib/pm2-commands.js';
 import {
@@ -546,6 +547,22 @@ test('listSourceWriters ignores processes that belong to another home', async t 
     }),
   });
   assert.deepEqual(rows, [{ name: 'home23-ada', status: 'online' }]);
+});
+
+test('listSourceWriters refuses an active expected writer with no path metadata', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: {} } });
+  const rows = await listSourceWriters(source.home, {
+    expectedWriters: ['home23-ada'],
+    executeFile: async () => ({
+      stdout: JSON.stringify([
+        { name: 'home23-ada', pm2_env: { status: 'online' } },
+        { name: 'home23-jerry', pm2_env: { status: 'online', pm_cwd: '/Users/jtr/_JTR23_/release/home23/engine' } },
+      ]),
+    }),
+  });
+  assert.deepEqual(rows, [{ name: 'home23-ada', status: 'online' }]);
+  assert.throws(() => assertWritersIdle(rows), /Writers are still running/);
 });
 
 test('adoption refuses when the managed supervisor inventory is unavailable', async t => {

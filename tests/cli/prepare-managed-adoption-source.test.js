@@ -37,3 +37,23 @@ test('prepareManagedAdoptionSource births two residents without copying a live h
   assert.equal(plan.plan.homeBirth, 'not_run');
   assert.deepEqual(plan.identity.residents, ['ada', 'zed']);
 });
+
+test('prepareManagedAdoptionSource refuses a nonempty root before writing', async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-managed-source-')));
+  const source = path.join(root, 'source');
+  fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, 'keep.txt'), 'already here\n');
+  await assert.rejects(
+    () => prepareManagedAdoptionSource({
+      root: source,
+      residents: [
+        { name: 'ada', ownerName: 'Fixture Owner', purpose: 'Adoption proof', provider: 'ollama-local', model: 'fixture', note: 'Ada local note.' },
+        { name: 'zed', ownerName: 'Fixture Owner', purpose: 'Adoption proof', provider: 'ollama-local', model: 'fixture', note: 'Zed local note.' },
+      ],
+    }),
+    /not an empty directory/,
+  );
+  assert.deepEqual(fs.readdirSync(source), ['keep.txt']);
+  assert.equal(fs.existsSync(path.join(source, 'instances')), false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
