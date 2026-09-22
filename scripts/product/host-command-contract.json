@@ -1,0 +1,9 @@
+{
+  "schema": "home23.host-command.v1",
+  "trustKeyActions": [
+    "check-update",
+    "stage-release",
+    "download-release",
+    "install-staged"
+  ]
+}
