@@ -1,15 +1,26 @@
-/** Read-only local release-feed inspection. No network, staging, or home writes. */
+/** Local release-feed inspection and authenticated development staging. */
+import { createPublicKey, verify } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { readPrivateJSON } from './product-environment.js';
-import { readProductManifest } from './product-payload.js';
+import { readProductManifest, verifyProductPayload } from './product-payload.js';
+import { stageProductPayload } from './product-update-stage.js';
 
 const FEED_SCHEMA = 'home23.release-feed.v1';
+const TRUST_SCHEMA = 'home23.release-trust.v1';
 const INSTALL_SCHEMA = 'home23.product-install.v1';
 const HEX64 = /^[a-f0-9]{64}$/;
 const HEX40 = /^[a-f0-9]{40}$/;
+/** SPKI prefix for a 32-byte Ed25519 public key (RFC 8410). */
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
 const reason = (code, message) => ({ code, message });
+
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
 
 function baseResult(extra = {}) {
   return {
@@ -165,4 +176,128 @@ export function inspectReleaseFeed({ homeRoot, feedPath } = {}) {
 
   result.status = 'available';
   return result;
+}
+
+function readDevelopmentTrustKey(trustKeyPath) {
+  if (typeof trustKeyPath !== 'string' || !trustKeyPath) {
+    throw codedError('signature_invalid', 'A development release trust key path is required.');
+  }
+  const path = resolve(trustKeyPath);
+  let body;
+  try {
+    if (!existsSync(path) || !lstatSync(path).isFile()) {
+      throw codedError('signature_invalid', 'The development release trust key is missing.');
+    }
+    body = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    if (error.code === 'signature_invalid') throw error;
+    throw codedError('signature_invalid', 'The development release trust key could not be read.');
+  }
+  if (!body || body.schema !== TRUST_SCHEMA || body.algorithm !== 'ed25519' || body.trust !== 'development'
+      || typeof body.publicKey !== 'string' || !body.publicKey) {
+    throw codedError('signature_invalid', 'The development release trust key is invalid.');
+  }
+  let raw;
+  try {
+    raw = Buffer.from(body.publicKey, 'base64');
+  } catch {
+    throw codedError('signature_invalid', 'The development release trust key public key is invalid.');
+  }
+  if (raw.length !== 32) {
+    throw codedError('signature_invalid', 'The development release trust key public key must be 32 raw bytes.');
+  }
+  try {
+    return createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, raw]), format: 'der', type: 'spki' });
+  } catch {
+    throw codedError('signature_invalid', 'The development release trust key public key could not be loaded.');
+  }
+}
+
+function verifyDevelopmentReleaseSignature(release, trustKeyPath) {
+  const trust = release.trust;
+  if (!trust || typeof trust !== 'object' || trust.algorithm !== 'ed25519'
+      || typeof trust.signature !== 'string' || !trust.signature) {
+    throw codedError('signature_invalid', 'The offered release is missing a development Ed25519 signature.');
+  }
+  const publicKey = readDevelopmentTrustKey(trustKeyPath);
+  let signature;
+  try {
+    signature = Buffer.from(trust.signature, 'base64');
+  } catch {
+    throw codedError('signature_invalid', 'The offered release signature is not valid base64.');
+  }
+  let ok = false;
+  try {
+    ok = verify(null, Buffer.from(release.packageId, 'utf8'), publicKey, signature);
+  } catch {
+    throw codedError('signature_invalid', 'The offered release signature could not be verified.');
+  }
+  if (!ok) {
+    throw codedError('signature_invalid', 'The offered release signature does not match the development trust key.');
+  }
+}
+
+/**
+ * Stage a development-signed local release without mutating the home or applying it.
+ * Unverified feeds stay inspection-only; non-development trust claims are refused.
+ */
+export function stageAuthenticatedRelease({ homeRoot, feedPath, staging, trustKeyPath } = {}) {
+  const loaded = readFeed(feedPath);
+  if (loaded.error) throw codedError(loaded.error.code, loaded.error.message);
+
+  const feed = loaded.feed;
+  const release = offeredRelease(feed);
+  if (!release) {
+    throw codedError('feed_unavailable', 'The release feed has no offered release.');
+  }
+
+  if (feed.publisherTrust === 'unverified') {
+    throw codedError('trust_required', 'Unverified local feeds must be inspected; they cannot be staged as authenticated releases.');
+  }
+  if (feed.publisherTrust !== 'development') {
+    throw codedError('untrusted_feed_claim', 'Only development-signed local release feeds may be staged in this milestone.');
+  }
+
+  verifyDevelopmentReleaseSignature(release, trustKeyPath);
+
+  if (release.artifact.sha256 !== release.packageId) {
+    throw codedError('digest_mismatch', 'The release artifact digest does not match its package id.');
+  }
+
+  const artifactPath = resolve(release.artifact.path);
+  let manifest;
+  try {
+    manifest = readProductManifest(artifactPath);
+  } catch {
+    throw codedError('digest_mismatch', 'The release artifact manifest could not be read for digest verification.');
+  }
+  if (manifest.packageId !== release.packageId) {
+    throw codedError('digest_mismatch', 'The artifact manifest package id does not match the offered release.');
+  }
+
+  if (typeof staging !== 'string' || !staging) {
+    throw codedError('feed_unavailable', 'A staging path is required.');
+  }
+  const destination = resolve(staging);
+
+  stageProductPayload({
+    homeRoot,
+    candidatePayload: artifactPath,
+    staging: destination,
+  });
+
+  const staged = verifyProductPayload(join(destination, 'payload'));
+  if (staged.packageId !== release.packageId) {
+    throw codedError('digest_mismatch', 'The staged payload package id does not match the offered release.');
+  }
+
+  return {
+    ok: true,
+    status: 'staged',
+    packageId: release.packageId,
+    publisherTrust: 'development',
+    canInstall: false,
+    networkInstall: false,
+    homeMutated: false,
+  };
 }

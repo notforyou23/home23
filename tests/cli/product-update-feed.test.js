@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { writeProductManifest } from '../../cli/lib/product-payload.js';
-import { inspectReleaseFeed } from '../../cli/lib/product-update-feed.js';
+import { installProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
+import { inspectReleaseFeed, stageAuthenticatedRelease } from '../../cli/lib/product-update-feed.js';
 
 function tempRoot(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feed-')));
@@ -86,13 +87,66 @@ function snapshotHome(home) {
   function visit(directory, prefix = '') {
     for (const name of fs.readdirSync(directory).sort()) {
       const relative = prefix ? `${prefix}/${name}` : name;
-      const full = path.join(directory, relative);
+      const full = path.join(home, relative);
       const stat = fs.lstatSync(full);
-      if (stat.isDirectory()) visit(directory, relative);
-      else entries.push({ relative, mode: stat.mode & 0o7777, bytes: fs.readFileSync(full) });
+      if (stat.isDirectory()) visit(full, relative);
+      else if (stat.isSymbolicLink()) {
+        entries.push({ relative, mode: stat.mode & 0o7777, target: fs.readlinkSync(full) });
+      } else {
+        entries.push({ relative, mode: stat.mode & 0o7777, bytes: fs.readFileSync(full) });
+      }
     }
   }
   visit(home);
+  return entries;
+}
+
+function developmentKeyPair() {
+  return crypto.generateKeyPairSync('ed25519');
+}
+
+function rawPublicKeyBase64(publicKey) {
+  const jwk = publicKey.export({ format: 'jwk' });
+  return Buffer.from(jwk.x, 'base64url').toString('base64');
+}
+
+function writeTrustKey(file, publicKey) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    schema: 'home23.release-trust.v1',
+    algorithm: 'ed25519',
+    trust: 'development',
+    publicKey: rawPublicKeyBase64(publicKey),
+  }, null, 2) + '\n', { mode: 0o600 });
+}
+
+function signPackageId(packageId, privateKey) {
+  return crypto.sign(null, Buffer.from(packageId), privateKey).toString('base64');
+}
+
+function installedHome(t, commit = 'a'.repeat(40)) {
+  const root = tempRoot(t);
+  const source = path.join(root, 'installed-source');
+  const home = path.join(root, 'home');
+  const manifest = payload(source, { sourceCommit: commit });
+  installProductPayload({ payloadPath: source, homeRoot: home });
+  return { root, home, manifest };
+}
+
+function listPayloadFiles(staging) {
+  const payloadDir = path.join(staging, 'payload');
+  if (!fs.existsSync(staging) && !fs.existsSync(payloadDir)) return [];
+  if (!fs.existsSync(payloadDir)) return fs.existsSync(staging) ? fs.readdirSync(staging) : [];
+  const entries = [];
+  function visit(directory, prefix = '') {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const relative = prefix ? `${prefix}/${name}` : name;
+      const full = path.join(directory, relative);
+      if (fs.lstatSync(full).isDirectory()) visit(full, relative);
+      else entries.push(relative);
+    }
+  }
+  visit(payloadDir);
   return entries;
 }
 
@@ -220,4 +274,78 @@ test('inspecting the feed does not change home bytes', t => {
   assert.equal(result.status, 'available');
   assert.equal(result.installedPackageId, 'e'.repeat(64));
   assert.deepEqual(snapshotHome(home), before);
+});
+
+test('development signature stages a fixture payload without mutating the home', t => {
+  const { root, home } = installedHome(t);
+  const artifact = path.join(root, 'artifact');
+  const manifest = payload(artifact, { sourceCommit: 'b'.repeat(40) });
+  const { publicKey, privateKey } = developmentKeyPair();
+  const trustKeyPath = path.join(root, 'trust.json');
+  writeTrustKey(trustKeyPath, publicKey);
+  const feedPath = path.join(root, 'feed.json');
+  writeFeed(feedPath, feedBody([releaseFor(artifact, manifest, {
+    trust: { algorithm: 'ed25519', signature: signPackageId(manifest.packageId, privateKey) },
+  })], { publisherTrust: 'development' }));
+  const staging = path.join(root, 'staging');
+  const before = snapshotHome(home);
+  const result = stageAuthenticatedRelease({ homeRoot: home, feedPath, staging, trustKeyPath });
+  assert.deepEqual(result, {
+    ok: true,
+    status: 'staged',
+    packageId: manifest.packageId,
+    publisherTrust: 'development',
+    canInstall: false,
+    networkInstall: false,
+    homeMutated: false,
+  });
+  assert.equal(result.canInstall, false);
+  assert.ok(fs.existsSync(path.join(staging, 'payload', 'manifest.json')));
+  assert.deepEqual(snapshotHome(home), before);
+});
+
+test('bad development signature creates no staged payload files', t => {
+  const { root, home } = installedHome(t);
+  const artifact = path.join(root, 'artifact');
+  const manifest = payload(artifact, { sourceCommit: 'b'.repeat(40) });
+  const { publicKey, privateKey } = developmentKeyPair();
+  const other = developmentKeyPair();
+  const trustKeyPath = path.join(root, 'trust.json');
+  writeTrustKey(trustKeyPath, publicKey);
+  const feedPath = path.join(root, 'feed.json');
+  writeFeed(feedPath, feedBody([releaseFor(artifact, manifest, {
+    trust: { algorithm: 'ed25519', signature: signPackageId(manifest.packageId, other.privateKey) },
+  })], { publisherTrust: 'development' }));
+  const staging = path.join(root, 'staging');
+  const before = snapshotHome(home);
+  assert.throws(
+    () => stageAuthenticatedRelease({ homeRoot: home, feedPath, staging, trustKeyPath }),
+    error => error.code === 'signature_invalid',
+  );
+  assert.deepEqual(snapshotHome(home), before);
+  assert.deepEqual(listPayloadFiles(staging), []);
+  assert.equal(fs.existsSync(path.join(staging, 'payload')), false);
+});
+
+test('production publisherTrust refuses staging and writes nothing', t => {
+  const { root, home } = installedHome(t);
+  const artifact = path.join(root, 'artifact');
+  const manifest = payload(artifact, { sourceCommit: 'b'.repeat(40) });
+  const { publicKey, privateKey } = developmentKeyPair();
+  const trustKeyPath = path.join(root, 'trust.json');
+  writeTrustKey(trustKeyPath, publicKey);
+  const feedPath = path.join(root, 'feed.json');
+  writeFeed(feedPath, feedBody([releaseFor(artifact, manifest, {
+    trust: { algorithm: 'ed25519', signature: signPackageId(manifest.packageId, privateKey) },
+  })], { publisherTrust: 'production' }));
+  const staging = path.join(root, 'staging');
+  const before = snapshotHome(home);
+  assert.throws(
+    () => stageAuthenticatedRelease({ homeRoot: home, feedPath, staging, trustKeyPath }),
+    error => error.code === 'untrusted_feed_claim',
+  );
+  assert.deepEqual(snapshotHome(home), before);
+  assert.equal(fs.existsSync(staging), false);
+  assert.equal(fs.existsSync(`${staging}.home23-stage.json`), false);
+  assert.deepEqual(listPayloadFiles(staging), []);
 });
