@@ -139,7 +139,7 @@ not a list of tests alone.
 | D02 | Backend + Apple distribution: narrow the developer source payload to reviewed runtime contents; sign/notarize the runtime and apps in the correct integrity-manifest order; assemble a coherent Host/Mac download | A signed release installs on a clean supported Mac without developer tooling or copied owner state; interruption/recovery is understandable |
 | D03 | Apple release: prepare iPhone TestFlight, then App Store submission and real website links; settle distribution identities without disrupting existing installs | Beta invite installs and connects; public store link appears only after release approval; existing identity/data are preserved through any deliberate migration |
 | D04 | Apple + website: reconcile minimum OS versions, supported architectures, download selection and compatibility | Host and client requirements are individually stated and tested; a source target or successful build is not marketed as a shipped platform |
-| D05 | Backend + Host onboarding: complete real-provider setup including OpenAI and Anthropic subscription sign-in beside API keys and local models, optional dependency guidance, owned embeddings and document ingestion; remove feature-specific provider assumptions | A new owner can authorize a supported chat provider (subscription sign-in where permitted, or API key / local), bring in documents, retrieve useful memory and understand costs/readiness without inheriting developer accounts; subscription, API-key and local setup remain distinct billing paths |
+| D05 | Backend + Host onboarding: complete real-provider setup including OpenAI and Anthropic subscription sign-in beside API keys and local models, optional dependency guidance, owned embeddings and document ingestion; remove feature-specific provider assumptions | A new owner can authorize a supported chat provider via the existing Home23 OAuth broker (Anthropic and OpenAI subscription sign-in), an API key, or a local model; bring in documents; retrieve useful memory; and understand costs/readiness without inheriting developer accounts; subscription, API-key and local setup remain distinct billing paths |
 | D06 | Host + web: add Open Dashboard, actual per-home URL handoff and missing-Mac-client guidance; check dashboard parity and browser behavior | A browser-only owner can enter and use the same home; Windows Edge/Chrome acceptance covers chat/streaming, reports, files and reconnect through the supported connection path |
 | D07 | Backend + web + Apple: deliver secure discovery/pairing and authenticated cross-device/remote transport | Phone and Windows can connect to the intended home, recover from interruptions, revoke access and handle an offline host; private operator routes remain protected |
 | D08 | Backend + Apple delivery: [Check for Updates, safe activation, backup/restore and portability](HOME-UPDATES-AND-PORTABILITY.md), including existing-home adoption | An upgrade or interrupted upgrade preserves the resident and history with a recovery receipt; a move preserves identity and enforces its declared cross-host ownership policy |
@@ -153,9 +153,10 @@ It includes backend inference, model delivery, native setup/recovery, attention
 and retrieval integration, and a separate existing-home continuity stage.
 Owned embeddings remove an embedding-service credential requirement; they do not
 complete chat-provider authorization. Subscription sign-in for OpenAI and
-Anthropic is part of D05 completion beside API keys and local models, using the
-existing Home23 OAuth broker and Host/setup surfaces rather than a second
-credential system. Archive package
+Anthropic is part of D05 completion beside API keys and local models. Host
+first-home creation and reconnect must use the existing Home23 broker
+(`shared/home23-oauth.cjs` and the dashboard oauth routes) for those flows—not
+a second credential system. Archive package
 `72a996151605ab2580eb6060a62abdf762d3246f5502cff1c19cce73bfaa01a5`
 (Apple `c4fdd5a`, backend `98aa10a0`) is API-key and local-provider setup only;
 it is not a consumer release and does not prove subscription-capable Host birth.

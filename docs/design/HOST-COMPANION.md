@@ -137,12 +137,13 @@ delivery work. No package or test receipt should be described as proving those
 steps. The initial Host form today supports API-key and local-provider setup.
 Subscription sign-in for OpenAI and Anthropic is required delivery work for
 Host first-home creation and reconnect (product delivery D05), beside those
-paths and owned embeddings. The existing Home23 OAuth broker and dashboard
-settings routes are the reuse starting point; Host must authorize accounts
-before the resident is running, without treating an ad-hoc archive ZIP as a
-consumer release. Archive package
+paths and owned embeddings. Host must carry those existing flows through the
+Home23 broker (`shared/home23-oauth.cjs` and the dashboard oauth routes)—not a
+second credential system—and must authorize accounts before the resident is
+running. Archive package
 `72a996151605ab2580eb6060a62abdf762d3246f5502cff1c19cce73bfaa01a5`
-(Apple `c4fdd5a`, backend `98aa10a0`) remains API/local setup only.
+(Apple `c4fdd5a`, backend `98aa10a0`) remains API/local Host setup only; do not
+treat an ad-hoc archive ZIP as a consumer release.
 Track those items and public website/download work in
 [the delivery backlog](PRODUCT-DELIVERY.md#delivery-work-to-address).
 
