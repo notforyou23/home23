@@ -1,7 +1,7 @@
 /** One home-scoped schema-preserving update. The journal and recovery Node live outside app/. */
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, constants, copyFileSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, symlinkSync, unlinkSync, utimesSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, constants, copyFileSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, symlinkSync, unlinkSync, utimesSync, writeSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -265,32 +265,6 @@ function durableCopy(source, destination, mode) {
   try { fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temporary, destination);
 }
-const LINK_FALLBACK = new Set(['EXDEV', 'EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EINVAL']);
-/** Prefer a same-device hard link; fall back to durableCopy when link is impossible. */
-function retainFile(source, destination, mode, link = linkSync) {
-  mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
-  try {
-    link(source, destination);
-  } catch (error) {
-    if (!LINK_FALLBACK.has(error?.code)) throw error;
-    durableCopy(source, destination, mode);
-    return;
-  }
-  // A hard link shares mode with the live inode; mismatch means we cannot keep the alias.
-  if ((lstatSync(destination).mode & 0o777) !== (mode & 0o777)) {
-    unlinkSync(destination);
-    durableCopy(source, destination, mode);
-  }
-}
-/** If previous/ still aliases the live file, replace the retained path with an independent durable copy. */
-function detachRetainedAlias(homeFile, retainedFile) {
-  if (!exists(retainedFile) || !exists(homeFile)) return;
-  const retained = lstatSync(retainedFile);
-  const live = lstatSync(homeFile);
-  if (!retained.isFile() || !live.isFile() || retained.isSymbolicLink() || live.isSymbolicLink()) return;
-  if (retained.dev !== live.dev || retained.ino !== live.ino) return;
-  durableCopy(homeFile, retainedFile, retained.mode & 0o777);
-}
 function payloadMatches(root, manifest) {
   for (const entry of manifest.files) {
     const file = join(root, entry.path);
@@ -335,15 +309,14 @@ async function writeCheckpoint(home, updateDirectory) {
   fsyncDirectory(checkpoint);
   return { hashes, database };
 }
-function retainPrevious(home, updateDirectory, manifest, dependencies = {}) {
+function retainPrevious(home, updateDirectory, manifest) {
   const previous = join(updateDirectory, 'previous');
-  const link = dependencies.linkSync || linkSync;
   rmSync(previous, { recursive: true, force: true });
   mkdirSync(previous, { recursive: true, mode: 0o700 });
   for (const entry of manifest.files) {
     if (entry.type === 'directory') { mkdirSync(join(previous, entry.path), { recursive: true, mode: entry.mode }); continue; }
     if (entry.type === 'symlink') { symlinkSync(entry.target, join(previous, entry.path)); continue; }
-    retainFile(join(home, entry.path), join(previous, entry.path), entry.mode, link);
+    durableCopy(join(home, entry.path), join(previous, entry.path), entry.mode);
   }
   durableCopy(join(home, 'manifest.json'), join(previous, 'manifest.json'), 0o644);
   durableCopy(join(home, '.home23-install.json'), join(previous, '.home23-install.json'), 0o600);
@@ -367,11 +340,7 @@ function applyPackage(home, staged, previousManifest, verify) {
       else if (!entry.path.endsWith('/.gitkeep')) throw new Error(`Candidate contains home state: ${entry.path}`);
       continue;
     }
-    if (exists(destination) && lstatSync(destination).isFile() && hashFile(destination) === entry.sha256 && (lstatSync(destination).mode & 0o777) === entry.mode) {
-      // Skipped live files keep their inode; break any retainPrevious hard link before writers return.
-      detachRetainedAlias(destination, join(updateDirectoryFor(home), 'previous', entry.path));
-      continue;
-    }
+    if (exists(destination) && lstatSync(destination).isFile() && hashFile(destination) === entry.sha256 && (lstatSync(destination).mode & 0o777) === entry.mode) continue;
     durableCopy(join(staged, entry.path), destination, entry.mode);
   }
   for (const entry of manifest.files.filter(item => item.type === 'symlink')) {
@@ -474,7 +443,7 @@ async function mutate(journal, dependencies, verify) {
       journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'baseline_changed', message: 'The installed package changed before selection. Automatic recovery stopped.' }] }, dependencies);
       return { done: publicResult(journal) };
     }
-    (dependencies.retainPrevious || retainPrevious)(home, updateDirectoryFor(home), installed, dependencies);
+    (dependencies.retainPrevious || retainPrevious)(home, updateDirectoryFor(home), installed);
     journal = await commitPhase(file, { ...journal, phase: 'retained' }, dependencies);
   }
   if (rank() < RANK.applying) journal = await commitPhase(file, { ...journal, phase: 'applying' }, dependencies);

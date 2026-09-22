@@ -495,34 +495,3 @@ test('interrupted retention resumes by rebuilding previous without a second home
   assert.equal(fs.readFileSync(path.join(previous, 'bin/node'), 'utf8'), fs.readFileSync(path.join(fixture.current, 'bin/node'), 'utf8'));
   assert.equal(fs.readdirSync(fixture.root).filter(name => name === 'home').length, 1);
 });
-
-test('cross-device link fallback retains an independent regular file', async t => {
-  const fixture = homeFixture(t);
-  let sawExdev = false;
-  const result = await applyProductUpdate(
-    { homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging },
-    {
-      ...quiet,
-      linkSync() {
-        sawExdev = true;
-        const error = new Error('cross-device link');
-        error.code = 'EXDEV';
-        throw error;
-      },
-    },
-  );
-  assert.equal(result.status, 'committed');
-  assert.equal(sawExdev, true);
-  const previousFile = path.join(updateDirectoryFor(fixture.home), 'previous', 'bin/node');
-  const liveFile = path.join(fixture.home, 'bin/node');
-  assert.equal(fs.lstatSync(previousFile).isFile(), true);
-  assert.equal(fs.lstatSync(previousFile).isSymbolicLink(), false);
-  assert.equal(fs.lstatSync(previousFile).nlink, 1);
-  assert.notEqual(fs.lstatSync(previousFile).ino, fs.lstatSync(liveFile).ino);
-  const before = fs.readFileSync(previousFile);
-  const beforeMode = fs.lstatSync(previousFile).mode & 0o777;
-  fs.writeFileSync(liveFile, 'live-after-exdev-fallback\n', { mode: 0o700 });
-  fs.chmodSync(liveFile, 0o700);
-  assert.deepEqual(fs.readFileSync(previousFile), before);
-  assert.equal(fs.lstatSync(previousFile).mode & 0o777, beforeMode);
-});
