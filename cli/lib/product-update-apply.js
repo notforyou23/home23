@@ -621,10 +621,20 @@ async function locked(home, dependencies, body) {
 async function withReusedStageLock(journal, verify, body) {
   let releaseStage = null;
   try {
-    if (journal?.reuseVerifiedStage === true && typeof journal.staging === 'string') {
+    // Only phases that can still copy or reapply need the reused stage. Terminal
+    // replay and post-selection/admission work use previous/ or the installed tree.
+    const needsVerifiedStage = journal?.reuseVerifiedStage === true
+      && typeof journal.staging === 'string'
+      && Object.hasOwn(RANK, journal.phase)
+      && RANK[journal.phase] < RANK.selected;
+    if (needsVerifiedStage) {
       releaseStage = acquireInstallLock(stageLockPath(journal.staging));
-      if (verify(journal.stagedPayload).packageId !== journal.toPackageId) {
-        return refuse(journal.homeRoot, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);
+      try {
+        if (verify(journal.stagedPayload).packageId !== journal.toPackageId) {
+          return refuse(journal.homeRoot, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);
+        }
+      } catch {
+        return refuse(journal.homeRoot, [{ code: 'candidate_integrity_failed', message: 'The staged candidate is missing or no longer verifies.' }]);
       }
     }
     return await body();

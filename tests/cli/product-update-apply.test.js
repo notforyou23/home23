@@ -603,3 +603,94 @@ test('interrupted reuseVerifiedStage resumes against the same valid stage', asyn
   assert.deepEqual(preserved(fixture.home), before);
   assert.equal(fs.existsSync(`${staging}-apply`), false);
 });
+
+test('committed reuseVerifiedStage replay succeeds when the reused stage is gone', async t => {
+  const fixture = homeFixture(t);
+  const staging = fixture.staging;
+  stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging });
+  const result = await applyProductUpdate({
+    homeRoot: fixture.home,
+    candidatePayload: path.join(staging, 'payload'),
+    staging,
+    reuseVerifiedStage: true,
+  }, quiet);
+  assert.equal(result.status, 'committed');
+  fs.rmSync(staging, { recursive: true, force: true });
+  fs.rmSync(`${staging}.home23-stage.json`, { force: true });
+  const replayed = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+  assert.equal(replayed.status, 'committed');
+  assert.equal(replayed.replayed, true);
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+});
+
+test('early reuseVerifiedStage resume refuses a missing or damaged stage', async t => {
+  async function interruptAtRetained(fixture, staging) {
+    stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging });
+    await assert.rejects(
+      () => applyProductUpdate({
+        homeRoot: fixture.home,
+        candidatePayload: path.join(staging, 'payload'),
+        staging,
+        reuseVerifiedStage: true,
+      }, {
+        ...quiet,
+        afterPhase: async journal => {
+          if (journal.phase === 'retained') throw new Error('injected early-phase interrupt');
+        },
+      }),
+      /injected early-phase interrupt/,
+    );
+    assert.equal(readUpdateJournal(fixture.home).phase, 'retained');
+  }
+
+  const missingFixture = homeFixture(t);
+  await interruptAtRetained(missingFixture, missingFixture.staging);
+  fs.rmSync(missingFixture.staging, { recursive: true, force: true });
+  fs.rmSync(`${missingFixture.staging}.home23-stage.json`, { force: true });
+  const missing = await resumeProductUpdate({ homeRoot: missingFixture.home }, quiet);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.status, 'refused');
+  assert.equal(missing.reasons[0].code, 'candidate_integrity_failed');
+  assert.equal(readUpdateJournal(missingFixture.home).phase, 'retained');
+
+  const damagedFixture = homeFixture(t);
+  await interruptAtRetained(damagedFixture, damagedFixture.staging);
+  fs.appendFileSync(path.join(damagedFixture.staging, 'payload/bin/node'), '#damaged-early\n');
+  const damaged = await resumeProductUpdate({ homeRoot: damagedFixture.home }, quiet);
+  assert.equal(damaged.ok, false);
+  assert.equal(damaged.status, 'refused');
+  assert.equal(damaged.reasons[0].code, 'candidate_integrity_failed');
+  assert.equal(readUpdateJournal(damagedFixture.home).phase, 'retained');
+});
+
+test('post-selection reuseVerifiedStage resume does not require the download stage', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const staging = fixture.staging;
+  stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging });
+  await assert.rejects(
+    () => applyProductUpdate({
+      homeRoot: fixture.home,
+      candidatePayload: path.join(staging, 'payload'),
+      staging,
+      reuseVerifiedStage: true,
+      admit: true,
+    }, {
+      ...quiet,
+      start: async () => ({ ok: true, status: 'ready' }),
+      afterPhase: async journal => {
+        if (journal.phase === 'writers_admitted') throw new Error('injected post-admission interrupt');
+      },
+    }),
+    /injected post-admission interrupt/,
+  );
+  assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
+  assert.equal(readUpdateJournal(fixture.home).writersAdmitted, true);
+  fs.rmSync(staging, { recursive: true, force: true });
+  fs.rmSync(`${staging}.home23-stage.json`, { force: true });
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, {
+    ...quiet,
+    start: async () => ({ ok: true, status: 'ready' }),
+  });
+  assert.equal(resumed.status, 'committed');
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+});
