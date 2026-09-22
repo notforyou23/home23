@@ -7,7 +7,7 @@ import {
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, readPrivateJSON } from './product-environment.js';
+import { absoluteHome, choosePortPlan, privateJSON, readPrivateJSON } from './product-environment.js';
 import { assertWritersIdle, rebindAdoptedHome, residentInstancePortSets } from './product-backup.js';
 import { installProductPayload, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { compareUpdateContracts, inspectStatePreservation } from './product-update-plan.js';
@@ -19,6 +19,72 @@ import { promisify } from 'node:util';
 const executeFile = promisify(execFile);
 const require = createRequire(import.meta.url);
 const { agentProcessNames, managedResidentWriters } = require('../../shared/agent-process-names.cjs');
+
+const CREATION_JOURNAL = 'instances/.house/creation.json';
+
+/** Same supervisor contract as the managed dashboard: PATH `pm2`, no product-private PM2 sockets. */
+const MANAGED_PM2_ENV_BLOCKLIST = [
+  'cron_restart',
+  'watch',
+  'HOME23_AGENT',
+  'INSTANCE_ID',
+  'DASHBOARD_PORT',
+  'COSMO_DASHBOARD_PORT',
+  'REALTIME_PORT',
+  'MCP_HTTP_PORT',
+  'COSMO_RUNTIME_DIR',
+  'COSMO_WORKSPACE_PATH',
+  'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY',
+  'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY',
+  // Product Host private daemon — must not invent an empty inventory.
+  'PM2_HOME',
+  'PM2_DAEMON_RPC_PORT',
+  'PM2_DAEMON_PUB_PORT',
+  'PM2_INTERACTOR_RPC_PORT',
+  'HOME23_PRODUCT_HOST',
+];
+
+export function managedSupervisorEnvironment(base = process.env) {
+  const env = { ...base };
+  for (const key of MANAGED_PM2_ENV_BLOCKLIST) delete env[key];
+  return env;
+}
+
+/**
+ * Existing home/bot identity for readiness. Prefer Host birth, else the create-home receipt.
+ * Never invents ids.
+ */
+export function resolveAdoptionBirth(sourceRoot, host = null) {
+  const fromHost = host?.birth;
+  if (typeof fromHost?.home?.id === 'string' && fromHost.home.id
+    && typeof fromHost?.coordination?.botId === 'string' && fromHost.coordination.botId) {
+    return {
+      home: {
+        id: fromHost.home.id,
+        ...(typeof fromHost.home.name === 'string' && fromHost.home.name ? { name: fromHost.home.name } : {}),
+      },
+      coordination: { botId: fromHost.coordination.botId },
+    };
+  }
+  const journalPath = join(sourceRoot, CREATION_JOURNAL);
+  if (!existsSync(journalPath)) return null;
+  try {
+    const creation = JSON.parse(readFileSync(journalPath, 'utf8'));
+    const receipt = creation?.receipt && typeof creation.receipt === 'object' ? creation.receipt : null;
+    const homeId = typeof receipt?.home?.id === 'string' ? receipt.home.id
+      : (typeof creation?.home?.id === 'string' ? creation.home.id : null);
+    const botId = typeof receipt?.coordination?.botId === 'string' ? receipt.coordination.botId : null;
+    const homeName = typeof receipt?.home?.name === 'string' ? receipt.home.name
+      : (typeof creation?.home?.name === 'string' ? creation.home.name : null);
+    if (!homeId || !botId) return null;
+    return {
+      home: { id: homeId, ...(homeName ? { name: homeName } : {}) },
+      coordination: { botId },
+    };
+  } catch {
+    return null;
+  }
+}
 
 const INSTALL_SCHEMA = 'home23.product-install.v1';
 const ADOPTION_SCHEMA = 'home23.managed-source-adoption.v1';
@@ -161,16 +227,29 @@ export function resolveAdoptionIdentity(sourceRoot) {
     } catch { /* Host is optional when active-release names residents. */ }
   }
 
+  // When there is no Host profile, prefer home.yaml primaryAgent over residentMap key order.
+  let primaryFromConfig = null;
+  const homeYamlPath = join(sourceRoot, 'config/home.yaml');
+  if (existsSync(homeYamlPath)) {
+    try {
+      const text = readFileSync(homeYamlPath, 'utf8');
+      const match = text.match(/^\s*primaryAgent:\s*([a-z][a-z0-9-]{0,62})\s*$/m);
+      if (match && residentNames.includes(match[1])) primaryFromConfig = match[1];
+    } catch { /* config is optional for identity */ }
+  }
+
   if (residentNames.length === 0) {
     if (!host) {
       return { ok: false, code: 'unsupported_layout', message: 'Managed/source adoption needs a Host record or active-release residents.' };
     }
+    const birth = resolveAdoptionBirth(sourceRoot, host);
     return {
       ok: true,
       profile: { ...host.profile },
       encoderRequired: host.encoderRequired === true,
       fingerprint: typeof host.fingerprint === 'string' ? host.fingerprint : undefined,
       ports: host.ports && typeof host.ports === 'object' ? host.ports : undefined,
+      ...(birth ? { birth } : {}),
       source: 'host',
       residents: [host.profile.name],
       residentMap: null,
@@ -189,6 +268,7 @@ export function resolveAdoptionIdentity(sourceRoot) {
     };
   }
   const writers = managedResidentWriters(sourceRoot, Object.fromEntries(residentNames.map(name => [name, residentsRecord[name]])));
+  const birth = resolveAdoptionBirth(sourceRoot, host);
 
   if (residentNames.length === 1) {
     const name = residentNames[0];
@@ -199,6 +279,7 @@ export function resolveAdoptionIdentity(sourceRoot) {
         encoderRequired: host.encoderRequired === true,
         fingerprint: typeof host.fingerprint === 'string' ? host.fingerprint : undefined,
         ports: host.ports && typeof host.ports === 'object' ? host.ports : undefined,
+        ...(birth ? { birth } : {}),
         source: 'host',
         residents: residentNames,
         residentMap: null,
@@ -210,6 +291,7 @@ export function resolveAdoptionIdentity(sourceRoot) {
       profile: { name },
       encoderRequired: false,
       fingerprint: undefined,
+      ...(birth ? { birth } : {}),
       source: 'active-release',
       residents: residentNames,
       residentMap: null,
@@ -219,10 +301,13 @@ export function resolveAdoptionIdentity(sourceRoot) {
 
   return {
     ok: true,
-    profile: host ? { ...host.profile } : undefined,
+    profile: host
+      ? { ...host.profile }
+      : (primaryFromConfig ? { name: primaryFromConfig } : undefined),
     encoderRequired: host?.encoderRequired === true,
     fingerprint: typeof host?.fingerprint === 'string' ? host.fingerprint : undefined,
     ports: host?.ports && typeof host.ports === 'object' ? host.ports : undefined,
+    ...(birth ? { birth } : {}),
     source: host ? 'host+active-release' : 'active-release',
     residents: residentNames,
     residentMap,
@@ -456,23 +541,22 @@ function copyPreservedState(source, destination, paths) {
 }
 
 /** Live process inventory for a managed/source home. Unavailable inventory refuses adoption. */
-export async function listSourceWriters(home) {
-  const node = join(home, 'bin', 'node');
-  const pm2 = join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2');
-  if (!existsSync(node) || !existsSync(pm2)) {
-    throw Object.assign(
-      new Error('Process inventory cannot be established. A missing supervisor is not proof that writers are stopped.'),
-      { code: 'process_inventory_unavailable' },
-    );
-  }
+export async function listSourceWriters(home, dependencies = {}) {
+  // Inventory the same supervisor the managed dashboard uses (PATH pm2 + clean env).
+  // Never point PM2 at a product-private daemon — an empty private jlist is not proof.
+  const env = dependencies.env || managedSupervisorEnvironment();
+  const command = dependencies.pm2Command || 'pm2';
+  const execute = dependencies.executeFile || executeFile;
   try {
-    const { stdout } = await executeFile(node, [pm2, 'jlist', '--silent'], {
-      cwd: existsSync(join(home, 'app')) ? join(home, 'app') : home,
-      env: productEnvironment(home),
+    const { stdout } = await execute(command, ['jlist', '--silent'], {
+      cwd: home,
+      env,
       timeout: 20000,
       maxBuffer: 8 * 1024 * 1024,
     });
-    if (!String(stdout || '').trim()) return [];
+    if (!String(stdout || '').trim()) {
+      throw Object.assign(new Error('Home process inventory is unavailable.'), { code: 'process_inventory_unavailable' });
+    }
     const rows = JSON.parse(stdout);
     if (!Array.isArray(rows)) {
       throw Object.assign(new Error('Home process inventory is unavailable.'), { code: 'process_inventory_unavailable' });
@@ -488,7 +572,7 @@ async function assertAdoptionWritersStopped(source, dependencies = {}) {
   const list = dependencies.listWriters || listSourceWriters;
   let rows;
   try {
-    rows = await list(source);
+    rows = await list(source, dependencies);
   } catch (error) {
     throw Object.assign(
       new Error(error.message || 'Home process inventory is unavailable.'),
@@ -555,6 +639,17 @@ async function writeStoppedHost(destination, identity, dependencies = {}) {
   };
   if (identity.profile?.name) state.profile = { ...identity.profile };
   if (typeof identity.fingerprint === 'string') state.fingerprint = identity.fingerprint;
+  if (identity.birth?.home?.id && identity.birth?.coordination?.botId) {
+    state.birth = {
+      home: {
+        id: identity.birth.home.id,
+        ...(typeof identity.birth.home.name === 'string' && identity.birth.home.name
+          ? { name: identity.birth.home.name }
+          : {}),
+      },
+      coordination: { botId: identity.birth.coordination.botId },
+    };
+  }
   if (identity.residentMap) {
     const residents = Object.keys(identity.residentMap);
     const portSets = residents.length > 1 ? residentInstancePortSets(ports, residents) : null;
@@ -665,6 +760,14 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
     return refuseAdoption(plan, [reason(error.code || 'supervisor_lock_unavailable', error.message)], destination);
   }
 
+  try {
+    // Inventory the managed supervisor before any destination mutation or preserve copy.
+    await assertAdoptionWritersStopped(source, dependencies);
+  } catch (error) {
+    try { releaseLock(); } catch { /* unlock best-effort */ }
+    return refuseAdoption(plan, [reason(error.code || 'process_inventory_unavailable', error.message)], destination);
+  }
+
   const resumed = Boolean(journal && journal.phase !== 'installing');
   const rebind = dependencies.rebindAdoptedHome || rebindAdoptedHome;
   const install = dependencies.installProductPayload || installProductPayload;
@@ -715,6 +818,7 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       if (currentSnapshot !== journal.sourceSnapshot) {
         return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source or adoption identity inputs changed before preservation completed.')], destination);
       }
+      // Re-check under the held lock immediately before the preserve copy.
       try {
         await assertAdoptionWritersStopped(source, dependencies);
       } catch (error) {
