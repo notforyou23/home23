@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   closeSync,
+  constants as fsConstants,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -19,7 +20,7 @@ import {
   writeSync,
   symlinkSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { productEnvironment } from './product-environment.js';
 import { PRODUCT_STATE_PATHS } from './product-payload.js';
@@ -36,6 +37,8 @@ const TYPE_FILE = 1;
 const TYPE_SYMLINK = 2;
 const CHUNK = 64 * 1024;
 const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
+const HOST_LOCK_STALE_MS = 180000;
+const MOVE_FENCE_SCHEMA = 'home23.move-fence.v1';
 
 const exists = file => {
   try { lstatSync(file); return true; }
@@ -127,11 +130,13 @@ function assertSymlinkInside(homeRoot, relative) {
   return target;
 }
 
-/** Same supervisor inventory as the update controller. A missing supervisor means there is no owned writer. */
+/** Same supervisor inventory as the update controller. A missing supervisor is not proof that writers are stopped. */
 export async function listInstalledWriters(home) {
   const node = join(home, 'bin', 'node');
   const pm2 = join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2');
-  if (!exists(node) || !exists(pm2)) return [];
+  if (!exists(node) || !exists(pm2)) {
+    fail('process_inventory_unavailable', 'Installed process inventory cannot be established. A missing supervisor is not proof that writers are stopped.');
+  }
   try {
     const { stdout } = await executeFile(node, [pm2, 'jlist', '--silent'], {
       cwd: join(home, 'app'), env: productEnvironment(home), timeout: 20000, maxBuffer: 8 * 1024 * 1024,
@@ -141,10 +146,7 @@ export async function listInstalledWriters(home) {
     if (!Array.isArray(rows)) fail('process_inventory_unavailable', 'Home process inventory is unavailable.');
     return rows.map(row => ({ name: row.name, status: row.pm2_env?.status || 'unknown' }));
   } catch (error) {
-    if (error.code === 'ENOENT' || error.code === 'process_inventory_unavailable') {
-      if (error.code === 'process_inventory_unavailable') throw error;
-      return [];
-    }
+    if (error.code === 'process_inventory_unavailable') throw error;
     fail('process_inventory_unavailable', 'Home process inventory is unavailable.');
   }
 }
@@ -158,8 +160,8 @@ function assertWritersStopped(home, rows) {
   if (busy.length) fail('backup_writers_active', 'Owned writers are still running. Stop them before backup. The desired-running flag is not proof they are stopped.');
 }
 
-/** Holds runtime/.host.lock, the same path Start uses, so a concurrent Start cannot begin. */
-function acquireHostLock(home) {
+/** Holds runtime/.host.lock, the same path Start uses. Refresh from the copy loop: a blocked event loop never runs setInterval, and Start treats a lock older than 180s as stale. */
+function acquireHostLock(home, { staleMs = HOST_LOCK_STALE_MS } = {}) {
   const runtime = join(home, 'runtime');
   mkdirSync(runtime, { recursive: true, mode: 0o700 });
   const lockPath = join(runtime, '.host.lock');
@@ -173,18 +175,28 @@ function acquireHostLock(home) {
     if (error.code !== 'EEXIST') throw error;
     let marker = null;
     try { marker = JSON.parse(readFileSync(markerPath, 'utf8')); } catch { marker = null; }
-    const fresh = Date.now() - lstatSync(lockPath).mtimeMs < 180000;
-    if ((marker && alive(marker.pid) && marker.pid !== process.pid) || (!marker && fresh)) return null;
+    const fresh = Date.now() - lstatSync(lockPath).mtimeMs < staleMs;
+    if ((marker && alive(marker.pid) && marker.pid !== process.pid) || (!marker && fresh) || (marker?.purpose === 'backup' && fresh)) return null;
     rmSync(lockPath, { recursive: true, force: true });
     if (exists(markerPath)) unlinkSync(markerPath);
     claim();
   }
-  const timer = setInterval(() => { try { utimesSync(lockPath, new Date(), new Date()); } catch { /* The lock is already gone. */ } }, 20000);
-  timer.unref();
-  return () => {
-    clearInterval(timer);
-    rmSync(lockPath, { recursive: true, force: true });
-    if (exists(markerPath)) rmSync(markerPath, { force: true });
+  let touchedAt = Date.now();
+  return {
+    path: lockPath,
+    noteActivity() {
+      const hooks = this.hooks || {};
+      if (hooks.beforeChunk) hooks.beforeChunk(lockPath);
+      if (Date.now() - touchedAt >= (hooks.refreshMs ?? 5000)) {
+        utimesSync(lockPath, new Date(), new Date());
+        touchedAt = Date.now();
+        if (hooks.onLockRefresh) hooks.onLockRefresh(lockPath);
+      }
+    },
+    release() {
+      rmSync(lockPath, { recursive: true, force: true });
+      if (exists(markerPath)) rmSync(markerPath, { force: true });
+    },
   };
 }
 
@@ -208,12 +220,13 @@ function recordHeader(relative, type, size) {
   return header;
 }
 
-function streamHash(absolute) {
+function streamHash(absolute, lock) {
   const hash = createHash('sha256');
   const fd = openSync(absolute, 'r');
   const buffer = Buffer.alloc(CHUNK);
   try {
     while (true) {
+      lock?.noteActivity();
       const count = readSync(fd, buffer, 0, CHUNK, null);
       if (count <= 0) break;
       hash.update(buffer.subarray(0, count));
@@ -222,13 +235,14 @@ function streamHash(absolute) {
   return hash.digest('hex');
 }
 
-function streamFile(sink, absolute, size) {
+function streamFile(sink, absolute, size, lock) {
   const hash = createHash('sha256');
   const fd = openSync(absolute, 'r');
   const buffer = Buffer.alloc(CHUNK);
   let read = 0;
   try {
     while (read < size) {
+      lock?.noteActivity();
       const count = readSync(fd, buffer, 0, Math.min(CHUNK, size - read), read);
       if (count <= 0) break;
       hash.update(buffer.subarray(0, count));
@@ -262,7 +276,7 @@ function cipherSink(tempPath) {
   };
 }
 
-async function collectRecords(homeRoot, sink, archiveParent) {
+async function collectRecords(homeRoot, sink, archiveParent, lock) {
   const files = [];
   const seen = new Set();
   let temporaryDatabase = null;
@@ -270,12 +284,9 @@ async function collectRecords(homeRoot, sink, archiveParent) {
     if (seen.has(relative) || isRebuildableStatePath(relative) || omitSidecar(relative)) return;
     seen.add(relative);
     sink.write(recordHeader(relative, type, size));
-    const digest = type === 'symlink'
-      ? sha256(readFileSync(absolute).length ? readFileSync(absolute) : Buffer.alloc(0))
-      : streamFile(sink, absolute, size);
-    if (type === 'symlink') sink.write(readFileSync(absolute));
+    const digest = streamFile(sink, absolute, size, lock);
     if (type !== 'symlink') {
-      const again = streamHash(absolute);
+      const again = streamHash(absolute, lock);
       if (again !== digest) fail('backup_state_changed', `State changed while checkpointing ${relative}.`);
     }
     files.push({ path: relative, sha256: digest, bytes: size, type });
@@ -304,7 +315,7 @@ async function collectRecords(homeRoot, sink, archiveParent) {
       await consistentDatabaseCopy(homeRoot, temporaryDatabase);
       const size = lstatSync(temporaryDatabase).size;
       sink.write(recordHeader(relative, 'file', size));
-      const digest = streamFile(sink, temporaryDatabase, size);
+      const digest = streamFile(sink, temporaryDatabase, size, lock);
       files.push({ path: relative, sha256: digest, bytes: size, type: 'file' });
       seen.add(relative);
       return;
@@ -330,11 +341,12 @@ function durableWrite(file, data, mode) {
   finally { closeSync(fd); }
 }
 
-function copyStream(source, destination) {
+function copyStream(source, destination, lock) {
   const input = openSync(source, 'r');
   const buffer = Buffer.alloc(CHUNK);
   try {
     while (true) {
+      lock?.noteActivity();
       const count = readSync(input, buffer, 0, CHUNK, null);
       if (count <= 0) break;
       writeSync(destination, buffer, 0, count);
@@ -353,6 +365,27 @@ function credentialReconnect() {
   return { kind: 'provider-credentials', required: false, transferred: true, message: 'Provider credentials were inside the encrypted archive. They still need a reachable provider endpoint.' };
 }
 
+function plainSink(file) {
+  const fd = openSync(file, 'wx', 0o600);
+  return {
+    write(chunk) { if (chunk?.length) writeSync(fd, chunk); },
+    close() { fsyncSync(fd); closeSync(fd); },
+  };
+}
+
+function encryptFile(source, sink, lock) {
+  const input = openSync(source, 'r');
+  const buffer = Buffer.alloc(CHUNK);
+  try {
+    while (true) {
+      lock?.noteActivity();
+      const count = readSync(input, buffer, 0, CHUNK, null);
+      if (count <= 0) break;
+      sink.write(buffer.subarray(0, count));
+    }
+  } finally { closeSync(input); }
+}
+
 export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, dependencies = {}) {
   const root = absoluteRoot(homeRoot, 'home directory');
   if (typeof archivePath !== 'string' || typeof keyPath !== 'string' || !isAbsolute(archivePath) || !isAbsolute(keyPath)) throw new Error('Archive and key paths must be absolute.');
@@ -365,38 +398,49 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
   assertAbsentPath(archive, 'Archive');
   assertAbsentPath(keyFile, 'Key');
   readHostState(root);
-  const release = acquireHostLock(root);
-  if (!release) fail('backup_lifecycle_busy', 'Another lifecycle operation holds this home. Backup did not start.');
+  const lock = acquireHostLock(root, { staleMs: dependencies.staleMs });
+  if (!lock) fail('backup_lifecycle_busy', 'Another lifecycle operation holds this home. Backup did not start.');
+  lock.hooks = { beforeChunk: dependencies.beforeChunk, onLockRefresh: dependencies.onLockRefresh, refreshMs: dependencies.lockRefreshMs };
+  const recordsPath = join(dirname(archive), `.home23-backup-${randomUUID()}.records`);
   const ciphertext = join(dirname(archive), `.home23-backup-${randomUUID()}.ciphertext`);
+  let records = null;
   let sink = null;
   try {
     const list = dependencies.listProcesses || listInstalledWriters;
     assertWritersStopped(root, await list(root));
     if (dependencies.afterLock) await dependencies.afterLock(root);
     assertWritersStopped(root, await list(root));
-    sink = cipherSink(ciphertext);
-    const files = await collectRecords(root, sink, dirname(archive));
+    records = plainSink(recordsPath);
+    const files = await collectRecords(root, records, dirname(archive), lock);
+    records.close();
+    records = null;
     assertWritersStopped(root, await list(root));
+    const identity = installIdentity(root);
+    const authenticated = Buffer.from(JSON.stringify({
+      schema: BACKUP_SCHEMA, version: 2, homeRoot: root, packageId: identity.packageId, sourceCommit: identity.sourceCommit,
+      recipeId: null, createdAt: new Date().toISOString(),
+      coordinationSchema: exists(join(root, COORDINATION_DATABASE)) ? SUPPORTED_COORDINATION_SCHEMA : null,
+      writersQuiesced: true, checkpoint: 'vacuum-and-stable-files', files,
+    }));
+    sink = cipherSink(ciphertext);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(authenticated.length, 0);
+    sink.write(length);
+    sink.write(authenticated);
+    encryptFile(recordsPath, sink, lock);
     const key = sink.key;
     const iv = sink.iv;
     const tag = sink.end();
     sink = null;
-    const identity = installIdentity(root);
-    const headerBytes = Buffer.from(JSON.stringify({
-      schema: BACKUP_SCHEMA, homeRoot: root, packageId: identity.packageId, sourceCommit: identity.sourceCommit,
-      recipeId: null, createdAt: new Date().toISOString(),
-      coordinationSchema: exists(join(root, COORDINATION_DATABASE)) ? SUPPORTED_COORDINATION_SCHEMA : null,
-      writersQuiesced: true, checkpoint: 'vacuum-and-stable-files', files,
-      encrypted: { algorithm: 'aes-256-gcm', iv: iv.toString('base64'), tag: tag.toString('base64') },
-    }));
-    const length = Buffer.alloc(4);
-    length.writeUInt32BE(headerBytes.length, 0);
+    const outer = Buffer.from(JSON.stringify({ schema: BACKUP_SCHEMA, version: 2, encrypted: { algorithm: 'aes-256-gcm', iv: iv.toString('base64'), tag: tag.toString('base64') } }));
+    const outerLength = Buffer.alloc(4);
+    outerLength.writeUInt32BE(outer.length, 0);
     const archiveFd = openSync(archive, 'wx', 0o600);
     try {
       writeSync(archiveFd, MAGIC);
-      writeSync(archiveFd, length);
-      writeSync(archiveFd, headerBytes);
-      copyStream(ciphertext, archiveFd);
+      writeSync(archiveFd, outerLength);
+      writeSync(archiveFd, outer);
+      copyStream(ciphertext, archiveFd, lock);
       fsyncSync(archiveFd);
     } finally { closeSync(archiveFd); }
     durableWrite(keyFile, `${JSON.stringify({ schema: KEY_SCHEMA, algorithm: 'aes-256-gcm', key: key.toString('base64') }, null, 2)}\n`, 0o600);
@@ -406,13 +450,47 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
     if (exists(keyFile)) unlinkSync(keyFile);
     throw error;
   } finally {
-    release();
+    lock.release();
+    if (records) { try { records.close(); } catch { /* The records file is partial. */ } }
     if (sink) { try { sink.end(); } catch { /* The backup is already failing. */ } }
-    if (exists(ciphertext)) { try { unlinkSync(ciphertext); } catch { /* Partial ciphertext is not an archive. */ } }
+    for (const file of [recordsPath, ciphertext]) if (exists(file)) { try { unlinkSync(file); } catch { /* Temporary backup material is not an archive. */ } }
   }
 }
 
-function createExtractor(root, expectedFiles) {
+function assertRealParents(root, relativePath) {
+  const parts = relativePath.split('/');
+  let current = root;
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    current = join(current, parts[index]);
+    if (!exists(current)) {
+      mkdirSync(current, { mode: 0o700 });
+      continue;
+    }
+    const stat = lstatSync(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Backup path escapes inspection root: ${relativePath}`);
+  }
+}
+
+function openNewFile(destination) {
+  return openSync(destination, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+}
+
+function restoredLink(sourceHome, inspectionRoot, linkRelative, target) {
+  if (typeof target !== 'string' || !target || target.includes('\0')) throw new Error(`Unsafe symlink: ${linkRelative}`);
+  const linkDirectory = dirname(join(inspectionRoot, linkRelative));
+  const absolute = isAbsolute(target) ? target : resolve(linkDirectory, target);
+  const source = resolve(sourceHome);
+  if (isAbsolute(target)) {
+    if (!inside(source, absolute)) throw new Error(`Backup symlink escapes its home: ${linkRelative}`);
+    const rebased = join(inspectionRoot, relative(source, absolute));
+    if (!inside(inspectionRoot, rebased)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
+    return relative(linkDirectory, rebased);
+  }
+  if (!inside(inspectionRoot, absolute)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
+  return target;
+}
+
+function createExtractor(root, expectedFiles, sourceHome) {
   const byPath = new Map(expectedFiles.map(entry => [entry.path, entry]));
   let buffer = Buffer.alloc(0);
   let record = null;
@@ -422,7 +500,10 @@ function createExtractor(root, expectedFiles) {
     const digest = record.hash.digest('hex');
     const expected = byPath.get(record.path);
     if (digest !== expected.sha256) throw new Error(`Backup digest mismatch: ${record.path}`);
-    if (record.type === 'symlink') symlinkSync(record.symlink.toString('utf8'), record.destination);
+    if (record.type === 'symlink') {
+      const link = restoredLink(sourceHome, root, record.path, record.symlink.toString('utf8'));
+      symlinkSync(link, record.destination);
+    }
     seen.push(record.path);
     record = null;
   }
@@ -446,10 +527,10 @@ function createExtractor(root, expectedFiles) {
         if (type === 'symlink' && size > 4096) throw new Error(`Backup symlink is too long: ${pathText}`);
         const destination = join(root, pathText);
         if (!inside(root, destination)) throw new Error(`Backup path escapes inspection root: ${pathText}`);
-        mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+        assertRealParents(root, pathText);
         record = {
           path: pathText, type, remaining: size, hash: createHash('sha256'), destination,
-          fd: type === 'file' ? openSync(destination, 'wx', 0o600) : null, symlink: Buffer.alloc(0),
+          fd: type === 'file' ? openNewFile(destination) : null, symlink: Buffer.alloc(0),
         };
       }
       if (record.remaining === 0) { finishRecord(); continue; }
@@ -483,6 +564,7 @@ export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot }
   if (readdirSync(root).length !== 0) throw new Error('Inspection directory must be empty.');
   let wrote = false;
   let archiveFd = null;
+  let plainPath = null;
   try {
     const keyDocument = JSON.parse(readFileSync(keyFile, 'utf8'));
     if (keyDocument?.schema !== KEY_SCHEMA || keyDocument.algorithm !== 'aes-256-gcm' || typeof keyDocument.key !== 'string') throw new Error('Backup key is invalid.');
@@ -495,33 +577,119 @@ export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot }
     if (headerLength < 2 || headerLength > 32 * 1024 * 1024) throw new Error('Backup header is invalid.');
     const headerBytes = Buffer.alloc(headerLength);
     if (readSync(archiveFd, headerBytes, 0, headerLength, 8) !== headerLength) throw new Error('Truncated backup archive.');
-    const header = JSON.parse(headerBytes.toString('utf8'));
-    if (header?.schema !== BACKUP_SCHEMA || header.encrypted?.algorithm !== 'aes-256-gcm' || !Array.isArray(header.files)) throw new Error('Backup header is invalid.');
-    if (resolve(header.homeRoot || '') === root) throw new Error('Inspection directory must not be the backed-up home.');
-    const iv = Buffer.from(header.encrypted.iv, 'base64');
-    const tag = Buffer.from(header.encrypted.tag, 'base64');
+    const outer = JSON.parse(headerBytes.toString('utf8'));
+    if (outer?.schema !== BACKUP_SCHEMA || outer.version !== 2 || outer.encrypted?.algorithm !== 'aes-256-gcm' || outer.files) throw new Error('Backup header is invalid.');
+    const iv = Buffer.from(outer.encrypted.iv, 'base64');
+    const tag = Buffer.from(outer.encrypted.tag, 'base64');
     const decipher = createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAuthTag(tag);
-    const extractor = createExtractor(root, header.files);
+    plainPath = join(dirname(root), `.home23-backup-auth-${randomUUID()}`);
+    const plainFd = openSync(plainPath, 'wx', 0o600);
     const buffer = Buffer.alloc(CHUNK);
     let position = 8 + headerLength;
-    while (true) {
-      const count = readSync(archiveFd, buffer, 0, CHUNK, position);
-      if (count <= 0) break;
-      position += count;
-      const plain = decipher.update(buffer.subarray(0, count));
-      if (plain.length) { wrote = true; extractor.push(plain); }
-    }
-    const tail = decipher.final();
-    if (tail.length) { wrote = true; extractor.push(tail); }
+    try {
+      while (true) {
+        const count = readSync(archiveFd, buffer, 0, CHUNK, position);
+        if (count <= 0) break;
+        position += count;
+        const plain = decipher.update(buffer.subarray(0, count));
+        if (plain.length) writeSync(plainFd, plain);
+      }
+      const tail = decipher.final();
+      if (tail.length) writeSync(plainFd, tail);
+      fsyncSync(plainFd);
+    } finally { closeSync(plainFd); }
+    const authenticated = readAuthenticatedHeader(plainPath);
+    if (!authenticated?.header || authenticated.header.schema !== BACKUP_SCHEMA || !Array.isArray(authenticated.header.files)) throw new Error('Backup header is invalid.');
+    const header = authenticated.header;
+    if (!header.homeRoot || resolve(header.homeRoot) === root) throw new Error('Inspection directory must not be the backed-up home.');
+    const extractor = createExtractor(root, header.files, header.homeRoot);
+    wrote = true;
+    pushPlainRecords(plainPath, authenticated.recordsOffset, extractor);
     extractor.end();
     const reconnects = [machineReconnect()];
     if (header.files.some(entry => entry.path === 'app/config/secrets.yaml')) reconnects.push(credentialReconnect());
-    return { ok: true, schema: BACKUP_SCHEMA, packageId: header.packageId ?? null, fileCount: header.files.length, writersStarted: false, reconnects };
+    return { ok: true, schema: BACKUP_SCHEMA, packageId: header.packageId ?? null, fileCount: header.files.length, writersStarted: false, reconnects, sourceHome: header.homeRoot };
   } catch (error) {
     if (wrote || readdirSync(root).length) emptyDirectory(root);
     throw error;
   } finally {
     if (archiveFd !== null) closeSync(archiveFd);
+    if (plainPath && exists(plainPath)) unlinkSync(plainPath);
   }
+}
+
+function readAuthenticatedHeader(plainPath) {
+  const fd = openSync(plainPath, 'r');
+  try {
+    const lengthBytes = Buffer.alloc(4);
+    if (readSync(fd, lengthBytes, 0, 4, 0) !== 4) throw new Error('Truncated backup payload.');
+    const headerLength = lengthBytes.readUInt32BE(0);
+    if (headerLength < 2 || headerLength > 32 * 1024 * 1024) throw new Error('Backup header is invalid.');
+    const headerBytes = Buffer.alloc(headerLength);
+    if (readSync(fd, headerBytes, 0, headerLength, 4) !== headerLength) throw new Error('Truncated backup payload.');
+    return { header: JSON.parse(headerBytes.toString('utf8')), recordsOffset: 4 + headerLength };
+  } finally { closeSync(fd); }
+}
+
+function pushPlainRecords(plainPath, offset, extractor) {
+  const fd = openSync(plainPath, 'r');
+  const buffer = Buffer.alloc(CHUNK);
+  try {
+    let position = offset;
+    while (true) {
+      const count = readSync(fd, buffer, 0, CHUNK, position);
+      if (count <= 0) break;
+      position += count;
+      extractor.push(Buffer.from(buffer.subarray(0, count)));
+    }
+  } finally { closeSync(fd); }
+}
+
+export function readMoveFence(homeRoot) {
+  const file = join(homeRoot, 'runtime', 'home23-move-fence.json');
+  if (!exists(file)) return null;
+  try {
+    const value = JSON.parse(readFileSync(file, 'utf8'));
+    if (value?.schema !== MOVE_FENCE_SCHEMA) return { schema: 'invalid' };
+    return value;
+  } catch {
+    return { schema: 'invalid' };
+  }
+}
+
+export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPath } = {}, dependencies = {}) {
+  const source = absoluteRoot(sourceHome, 'home directory');
+  const destination = absoluteRoot(destinationRoot, 'destination directory');
+  if (source === destination || inside(source, destination) || inside(destination, source)) throw new Error('Move source and destination must be separate real directories.');
+  if (readdirSync(destination).length !== 0) throw new Error('Move destination must be empty.');
+  const created = await createHomeBackup({ homeRoot: source, archivePath, keyPath }, dependencies);
+  const inspected = await inspectHomeBackup({ archivePath, keyPath, inspectionRoot: destination });
+  const birth = 'app/instances/milo/substrate/seed-01/birth-receipt.json';
+  const ledger = 'app/instances/milo/substrate/seed-01/seed-ledger.jsonl';
+  const identity = {};
+  for (const relativePath of [birth, ledger, 'app/instances/milo/workspace/safe-update-fixture.txt', '.home23-host.json']) {
+    const from = join(source, relativePath);
+    if (!exists(from)) continue;
+    const copy = join(destination, relativePath);
+    if (!exists(copy) || streamHash(from) !== streamHash(copy)) fail('backup_identity_mismatch', `Restored identity does not match the source: ${relativePath}`);
+    identity[relativePath] = streamHash(from);
+  }
+  const host = readHostState(destination);
+  host.homeRoot = destination;
+  host.desiredRunning = false;
+  host.phase = 'stopped';
+  writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
+  const sourceHost = readHostState(source);
+  sourceHost.desiredRunning = false;
+  sourceHost.phase = 'stopped';
+  writeFileSync(join(source, '.home23-host.json'), `${JSON.stringify(sourceHost, null, 2)}\n`, { mode: 0o600 });
+  mkdirSync(join(source, 'runtime'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(source, 'runtime', 'home23-move-fence.json'), `${JSON.stringify({
+    schema: MOVE_FENCE_SCHEMA, sourceHome: source, destinationRoot: destination, movedAt: new Date().toISOString(), writersStarted: false,
+  }, null, 2)}\n`, { mode: 0o600 });
+  return {
+    ok: true, schema: MOVE_FENCE_SCHEMA, packageId: created.packageId, fileCount: inspected.fileCount,
+    writersStarted: false, fenced: true, destinationStarted: false, identity,
+  };
 }
