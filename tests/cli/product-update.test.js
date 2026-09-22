@@ -534,6 +534,20 @@ test('listSourceWriters inventories PATH pm2 with product PM2 sockets stripped',
   assert.equal(calls[0].env.HOME23_AGENT, undefined);
 });
 
+test('listSourceWriters ignores processes that belong to another home', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: {} } });
+  const rows = await listSourceWriters(source.home, {
+    executeFile: async () => ({
+      stdout: JSON.stringify([
+        { name: 'home23-jerry', pm2_env: { status: 'online', pm_cwd: '/Users/jtr/_JTR23_/release/home23/engine' } },
+        { name: 'home23-ada', pm2_env: { status: 'online', pm_cwd: source.home } },
+      ]),
+    }),
+  });
+  assert.deepEqual(rows, [{ name: 'home23-ada', status: 'online' }]);
+});
+
 test('adoption refuses when the managed supervisor inventory is unavailable', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root);

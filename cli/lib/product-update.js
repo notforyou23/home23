@@ -540,6 +540,12 @@ function copyPreservedState(source, destination, paths) {
   }
 }
 
+function sourceProcessBelongsToHome(row, home) {
+  const env = row?.pm2_env || {};
+  const paths = [env.pm_cwd, env.cwd, env.HOME23_ROOT, env.HOME23_INSTANCE_DIR];
+  return paths.some(value => typeof value === 'string' && (value === home || value.startsWith(`${home}${sep}`)));
+}
+
 /** Live process inventory for a managed/source home. Unavailable inventory refuses adoption. */
 export async function listSourceWriters(home, dependencies = {}) {
   // Inventory the same supervisor the managed dashboard uses (PATH pm2 + clean env).
@@ -561,7 +567,11 @@ export async function listSourceWriters(home, dependencies = {}) {
     if (!Array.isArray(rows)) {
       throw Object.assign(new Error('Home process inventory is unavailable.'), { code: 'process_inventory_unavailable' });
     }
-    return rows.map(row => ({ name: row.name, status: row.pm2_env?.status || 'unknown' }));
+    // The global daemon also runs other homes. Only paths inside this source count.
+    return rows.filter(row => sourceProcessBelongsToHome(row, home)).map(row => ({
+      name: row.name,
+      status: row.pm2_env?.status || 'unknown',
+    }));
   } catch (error) {
     if (error.code === 'process_inventory_unavailable') throw error;
     throw Object.assign(new Error('Home process inventory is unavailable.'), { code: 'process_inventory_unavailable' });
