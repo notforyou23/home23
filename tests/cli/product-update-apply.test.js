@@ -101,7 +101,8 @@ test('reviewed schema constants and writer names stay aligned with source', () =
   const source = fs.readFileSync(path.join(rootDir, 'cli/lib/product-host.js'), 'utf8');
   assert.match(migrations, new RegExp(SUPPORTED_COORDINATION_SCHEMA_CHECKSUM));
   assert.match(migrations, new RegExp(SUPPORTED_COORDINATION_MIGRATION_CHECKSUM));
-  assert.match(source, /const names = \['home23-coordination', `home23-\$\{name\}`, `home23-\$\{name\}-dash`, `home23-\$\{name\}-harness`, `home23-\$\{name\}-seed`, `home23-\$\{name\}-shipper`, 'home23-seed-observatory', 'home23-evobrew'\];/);
+  assert.match(source, /agentProcessNames/);
+  assert.match(source, /home23-seed-observatory/);
   assert.deepEqual(ownedWriterNames('milo', { encoderRequired: true }), ['home23-coordination', 'home23-milo', 'home23-milo-dash', 'home23-milo-harness', 'home23-milo-seed', 'home23-milo-shipper', 'home23-seed-observatory', 'home23-evobrew', 'home23-embedder']);
   assert.equal(updateBlocksStart({ phase: 'applying', ownerToken: 'token' }, 'token'), true);
   assert.equal(updateBlocksStart({ phase: 'selected', ownerToken: 'token' }, 'token'), false);

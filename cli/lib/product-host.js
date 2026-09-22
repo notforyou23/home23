@@ -13,12 +13,21 @@ import {
   beginSemanticPrepare, encoderRequiredFor, ensureOwnedEncoderStopped, probeOwnedReady, semanticStatusView,
 } from './product-embedder.js';
 
+const require = createRequire(import.meta.url);
+const { agentProcessNames } = require('../../shared/agent-process-names.cjs');
+
 const executeFile = promisify(execFile);
 const PROVIDERS = new Set(['anthropic', 'openai', 'minimax', 'xai', 'ollama-cloud', 'ollama-local']);
 const statePath = root => join(root, '.home23-host.json');
 const receiptPath = root => join(root, '.home23-install.json');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/** Host install root → app root where instances/<name>/config.yaml lives. */
+function appRootFor(homeRoot) {
+  if (!homeRoot) return undefined;
+  const nested = join(homeRoot, 'app');
+  return existsSync(join(nested, 'instances')) || existsSync(join(nested, 'cli')) ? nested : homeRoot;
+}
 async function validateInstallation(root, { full = false } = {}) {
   const { readProductManifest, verifyProductPayload } = await import('./product-payload.js');
   const receipt = readPrivateJSON(receiptPath(root));
@@ -53,9 +62,22 @@ export function hostResidentNames(state) {
   throw new Error('Invalid resident name.');
 }
 
-export function ownedProcessNames(name, { encoderRequired = false } = {}) {
+/**
+ * Host-owned PM2 names for one resident. Agent processes come from
+ * agentProcessNames (same substrate/mcp conditions as generate-ecosystem).
+ * coordination and evobrew are always required; seed observatory only when
+ * this resident's agent list includes a seed runner.
+ */
+export function ownedProcessNames(name, { encoderRequired = false, home23Root, config } = {}) {
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(name || '')) throw new Error('Invalid resident name.');
-  const names = ['home23-coordination', `home23-${name}`, `home23-${name}-dash`, `home23-${name}-harness`, `home23-${name}-seed`, `home23-${name}-shipper`, 'home23-seed-observatory', 'home23-evobrew'];
+  const agentNames = agentProcessNames({
+    home23Root: home23Root ? appRootFor(home23Root) : undefined,
+    agentName: name,
+    ...(config !== undefined ? { config } : {}),
+  });
+  const names = ['home23-coordination', ...agentNames];
+  if (agentNames.some(processName => processName.endsWith('-seed'))) names.push('home23-seed-observatory');
+  names.push('home23-evobrew');
   if (encoderRequired) names.push(OWNED_EMBEDDER_PROCESS);
   return names;
 }
@@ -63,10 +85,11 @@ export function ownedProcessNames(name, { encoderRequired = false } = {}) {
 /** Every owned process for the Host record — all residentMap residents, or profile.name alone. */
 export function ownedProcessNamesForState(state) {
   const encoderRequired = encoderRequiredFor(state);
+  const home23Root = state?.homeRoot;
   const seen = new Set();
   const names = [];
   for (const resident of hostResidentNames(state)) {
-    for (const name of ownedProcessNames(resident, { encoderRequired })) {
+    for (const name of ownedProcessNames(resident, { encoderRequired, home23Root })) {
       if (seen.has(name)) continue;
       seen.add(name);
       names.push(name);
@@ -102,7 +125,7 @@ export function productDefinitions(apps, homeRoot, nameOrNames, { encoderRequire
   const allowed = [];
   const seen = new Set();
   for (const resident of residents) {
-    for (const processName of ownedProcessNames(resident, { encoderRequired })) {
+    for (const processName of ownedProcessNames(resident, { encoderRequired, home23Root: homeRoot })) {
       if (seen.has(processName)) continue;
       seen.add(processName);
       allowed.push(processName);
@@ -295,7 +318,8 @@ export function residentPortsFor(state, residentName) {
 export async function probeReadiness(homeRoot, state, processes, { createSession = false, request = requestJSON } = {}) {
   const residents = hostResidentNames(state);
   const primary = state.profile?.name && residents.includes(state.profile.name) ? state.profile.name : residents[0];
-  const missing = ownedProcessNamesForState(state).filter(name => !processes.some(row => row.name === name && row.status === 'online' && row.owned));
+  const owned = ownedProcessNamesForState(state);
+  const missing = owned.filter(name => !processes.some(row => row.name === name && row.status === 'online' && row.owned));
   if (missing.length) return { ready: false, issues: missing.map(name => `${name} is not running from this installation.`) };
   if (encoderRequiredFor(state)) {
     const ready = await probeOwnedReady(state.ports.embedder);
@@ -330,10 +354,10 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
     checks.push([`Resident engine (${name})`, `http://127.0.0.1:${ports.engine}/health`, 'json', name, 'engine']);
     checks.push([`Resident dashboard (${name})`, `http://127.0.0.1:${ports.dashboard}/home23/process.json`, 'json', name, 'dashboard']);
   }
-  checks.push(
-    ['Seed observatory', `http://127.0.0.1:${state.ports.observatory}/healthz`, 'text'],
-    ['Evobrew', `http://127.0.0.1:${state.ports.evobrew}/api/health`, 'json'],
-  );
+  if (owned.includes('home23-seed-observatory')) {
+    checks.push(['Seed observatory', `http://127.0.0.1:${state.ports.observatory}/healthz`, 'text']);
+  }
+  checks.push(['Evobrew', `http://127.0.0.1:${state.ports.evobrew}/api/health`, 'json']);
   await Promise.all(checks.map(async ([label, url, responseType = 'json', residentName, kind]) => {
     try {
       const value = await request(url, { responseType });

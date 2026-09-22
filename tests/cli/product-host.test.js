@@ -432,6 +432,8 @@ test('original generated harness profiling options become a valid real Node invo
 test('real HTTP readiness accepts exact observatory plaintext while Core remains strict JSON', async t => {
   const { homeRoot, state } = await prepared(t);
   productEnvironment(homeRoot, { prepare: true });
+  fs.mkdirSync(path.join(homeRoot, 'app/instances/milo'), { recursive: true });
+  fs.writeFileSync(path.join(homeRoot, 'app/instances/milo/config.yaml'), 'name: milo\nsubstrate:\n  enabled: true\n');
   privateJSON(path.join(homeRoot, 'runtime/host-session.json'), { accessToken: 'http-fixture-token', refreshToken: 'http-fixture-refresh', accessExpiresAt: new Date(Date.now() + 3600000).toISOString() });
   let observatoryBody = 'ok\n';
   let plainCore = false;
@@ -447,7 +449,9 @@ test('real HTTP readiness accepts exact observatory plaintext while Core remains
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   const port = server.address().port;
   const probeState = { ...state, ports: Object.fromEntries(Object.keys(state.ports).map(key => [key, port])) };
-  const processes = safeProcesses(ownedProcessNames('milo').map(name => row(homeRoot, name)), homeRoot, ownedProcessNames('milo'));
+  const names = ownedProcessNames('milo', { home23Root: homeRoot });
+  assert.ok(names.includes('home23-seed-observatory'));
+  const processes = safeProcesses(names.map(name => row(homeRoot, name)), homeRoot, names);
   assert.equal((await probeReadiness(homeRoot, probeState, processes)).ready, true);
   observatoryBody = 'ok but still starting\n';
   const wrongLiveness = await probeReadiness(homeRoot, probeState, processes);
@@ -459,9 +463,17 @@ test('real HTTP readiness accepts exact observatory plaintext while Core remains
   assert.ok(!wrongCore.issues.some(issue => issue.includes('Seed observatory')));
 });
 
+test('owned process list follows substrate.enabled from agentProcessNames', () => {
+  assert.equal(ownedProcessNames('zed', { config: {} }).includes('home23-zed-seed'), false);
+  assert.equal(ownedProcessNames('zed', { config: {} }).includes('home23-seed-observatory'), false);
+  assert.ok(ownedProcessNames('zed', { config: { substrate: { enabled: true } } }).includes('home23-zed-seed'));
+  assert.ok(ownedProcessNames('zed', { config: { substrate: { enabled: true } } }).includes('home23-seed-observatory'));
+});
+
 test('old Host homes do not admit the embedder process or require an embedder port', async () => {
   assert.equal(ownedProcessNames('milo').includes('home23-embedder'), false);
-  assert.equal(ownedProcessNames('milo').length, 8);
+  // coordination + engine + dash + mcp + harness + evobrew (substrate off)
+  assert.equal(ownedProcessNames('milo').length, 6);
   assert.ok(ownedProcessNames('milo', { encoderRequired: true }).includes('home23-embedder'));
   const v1 = await choosePortPlan();
   assert.equal(Object.hasOwn(v1, 'embedder'), false);
