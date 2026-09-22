@@ -1,105 +1,88 @@
-# Consumer distribution signing checklist
+# Mac release assembly and consumer signing
 
-Checklist only. Do **not** run `codesign`, `notarytool`, `productbuild`,
-`node scripts/product/package.mjs`, `home23-apple/scripts/build-home23-host.mjs`,
-or any upload/publish command from this document. Completing a developer build
-or an ad-hoc signature does not satisfy this list.
+Home23 Host and the Mac conversation client are separate applications, delivered
+in one folder. Local assembly is engineering work; publication, Apple submission,
+and changes to an owner's installed apps are separate actions. This document does
+not introduce an additional approval gate for already-authorized local builds.
 
-Host and the Mac conversation client are separate applications. Keep their
-signing identities, entitlements, and package membership distinct even when
-they ship in one download experience.
+## Build a local download
 
-## Assembly pointers (do not run here)
+Use a complete verified Darwin runtime payload from `scripts/product/package.mjs`
+and a clean, isolated Apple checkout at the explicit full commit. From the backend:
 
-When the owner authorizes a release build, assemble from maintained source:
+```sh
+node scripts/product/assemble-mac-release.mjs \
+  --payload /absolute/Home23Runtime \
+  --apple-source /absolute/home23-apple-checkout \
+  --apple-commit FULL_APPLE_COMMIT \
+  --developer-dir /absolute/Xcode.app/Contents/Developer \
+  --output /absolute/new-release-directory
+```
 
-1. Product runtime payload: `node scripts/product/package.mjs` (Home23 backend).
-2. Host app against that payload: `home23-apple/scripts/build-home23-host.mjs`.
+The command builds Host with the payload and builds `Home23Mac` in Release from
+the same Apple checkout. It verifies runtime integrity, app identities and
+architecture, then produces:
 
-Those commands produce local engineering artifacts. They are not a public
-download, not Developer ID acceptance, and not notarization.
+- `Home23/Home23 Host.app` and `Home23/Home23.app`;
+- `Home23/Start Here.txt` with the actual OS/architecture requirements;
+- `Home23/release.json` with backend and Apple revisions, runtime package ID,
+  app versions, executable digests and explicit local-only status;
+- a combined ZIP, basename checksum and `assembly-receipt.json`.
 
-## Manifest and signature order
+Build intermediates remain outside the download in `build/`. Existing outputs
+are refused. The command does not install, start a home, access signing identities,
+notarize, upload or publish. Host and client are only ad-hoc signed for local work. The client retains its
+sandbox and file/network/media permissions; profile-backed APNs and time-sensitive
+notification entitlements are omitted from this local artifact and remain unverified.
+Do not present this ZIP as Gatekeeper-approved consumer distribution.
 
-Freeze and sign in this order. Do not skip ahead.
+The combined download requires the stricter minimum OS of its two apps. A Host
+build for macOS 14 does not mean a Mac client built for macOS 27 works on macOS 14.
+Each app's own requirement is retained in the descriptor. Assembly proves the
+artifact pairing, not provider setup, update/recovery or clean-machine acceptance;
+those require their separately recorded journeys on that exact release set.
 
-1. **Package files** — Lock the exact payload file inventory (paths, modes,
-   sizes, content hashes) that will ship in the product manifest’s `files`
-   list. Any content change requires a new inventory.
-2. **`packageId`** — Derive and record the package id from that frozen
-   manifest body (the digest of the manifest without `packageId`). The id must
-   match the inventory; a changed tree needs a new id.
-3. **Development or production signature** — Sign that `packageId` (Ed25519
-   over the id bytes for the chosen publisher-trust claim). Development
-   trust-key verification is for local feeds only. Production publisher trust
-   requires the owner-held production key and a published feed—neither exists
-   as a public download today.
+## Production signing and integrity order
 
-Do not claim production trust on a development signature. Do not notarize
-before the files and `packageId` are frozen.
+The local command above is **not** the Developer ID signing pipeline. Consumer
+signing must be prepared separately against an agreed release, without silently
+changing any already-tested artifact:
 
-## Owner approval sequence (exact; do not perform)
+1. Build the runtime and apps from frozen source. Complete signing of runtime
+   executables, native modules and nested code first. Code signing can change
+   file bytes and add files.
+2. Inventory the **final signed runtime bytes**, write a new runtime manifest and
+   derive its `packageId`. Verify it. A manifest frozen before runtime signing
+   would describe different bytes and must not be reused.
+3. Embed that runtime in Host. Sign remaining nested app code and the enclosing
+   Host and Mac apps from inside out. Signing the outer app must not mutate the
+   frozen embedded runtime. Re-verify the runtime inventory after signing; do
+   not use recursive re-signing to conceal a mismatch.
+4. Submit the signed apps/container for notarization and staple as appropriate.
+   Verify the resulting apps and test Gatekeeper on a clean supported Mac. Any
+   runtime mutation requires repeating the runtime manifest/signing dependency.
+5. Assemble the final download. Hash the **final** downloadable bytes, including
+   any notarization/stapling changes. Generate release descriptors from those
+   exact artifacts. Sign the existing release-feed envelope according to its
+   schema; the runtime package digest and the download digest are different.
+6. Publish the approved archive, descriptor/signature, checksum and release notes
+   together. A subsequent artifact change requires new hashes and signatures.
 
-These steps require explicit owner authorization. They are listed in the order
-they must be approved and completed for consumer distribution. This document
-does not authorize or execute them.
+A development trust key is only for an isolated development feed. It is never
+production publisher trust. Do not invent a new signature schema or substitute
+an archive checksum for publisher authentication.
 
-1. **Approve Developer ID Application signing**
-   - Owner confirms the frozen package (files + `packageId`) and the Host/Mac
-     client builds that embed or ship with that payload.
-   - Owner authorizes signing Host and the Mac client
-     (`com.regina6.home23.mac`) with Apple **Developer ID Application**
-     identities appropriate for external distribution—not Apple Development,
-     not ad-hoc.
-   - Host and Mac client identities stay separate. Re-verify the frozen
-     `packageId` still matches the signed bits.
+## Remaining external actions
 
-2. **Approve notarization**
-   - Owner authorizes submission of those Developer ID–signed artifacts to
-     Apple notarization (and stapling / container attachment as required for
-     the chosen Mac download form).
-   - Gatekeeper acceptance must be confirmed on a clean supported Mac that is
-     not the development build machine.
-   - Notarization of an ad-hoc or Development-signed build does not count.
+Prepare exact artifacts and request only authority that is still missing:
 
-3. **Approve a public release feed**
-   - Owner selects and publishes the public download channel and authenticated
-     release feed (domain, artifact hosting, and feed URL are unset until this
-     approval).
-   - Owner authorizes the **production** release-feed signing key material
-     (distinct from local development trust-key JSON) and publication of
-     versioned Host (+ Mac client) artifacts that match the frozen
-     `packageId`.
-   - Until this step is done, public downloads remain unavailable. A local
-     development feed with `--trust-key` is not a public feed.
+- Developer ID identities and the agreed signing operation for Host and client;
+- notarization submission and clean-Mac Gatekeeper acceptance;
+- the public domain/feed/artifact destination and production feed signing key;
+- iPhone build upload and TestFlight distribution, separately from Mac release.
 
-4. **Approve iPhone TestFlight**
-   - Owner authorizes the Apple account actions, build upload, and TestFlight
-     (internal/external) invite path for the iPhone app.
-   - A public App Store link appears only after a later release approval.
-   - TestFlight readiness is independent of Mac Developer ID + notarization;
-     do not advertise an iPhone beta from this preview until the owner
-     completes this step.
-
-## What does not count as consumer acceptance
-
-- Ad-hoc signatures or Apple Development signatures
-- “It launched on my machine” after a developer or ad-hoc sign
-- The September 22 06:44 stub package (fixture Node candidate)—not a release
-- Signing Host while leaving the Mac client unsigned (or the reverse)
-- Notarizing or publishing before package files and `packageId` are frozen
-- A development `--trust-key` Check result (contract at
-  `app/scripts/product/host-command-contract.json`, Apple `243147d`, backend
-  `8903df6c`) presented as public publisher trust
-- Managed/source adoption without a held supervisor fence
-- Claiming a price, release version, or live download URL from this checklist
-
-## Out of scope for this checklist
-
-- Creating another website repository
-- Running packaging, signing, notarization, upload, or TestFlight from an agent
-- Changing an existing owner’s home or touching an in-progress install trial
-- Measuring or advertising update wall time for a trial that is still running
-
-When distribution work proceeds, follow this order against the frozen package
-for that release—not against a live checkout that is still changing.
+Keep existing bundle and Keychain identities. The Mac client is
+`com.regina6.home23.mac`; Host is `com.home23.host`. iPhone TestFlight does not
+become available because a Mac build exists. Public downloads remain unavailable
+until publication actually succeeds. Do not bypass macOS security prompts as a
+substitute for distribution acceptance.
