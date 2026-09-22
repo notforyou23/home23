@@ -23,7 +23,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { choosePortPlan, productEnvironment } from './product-environment.js';
+import { choosePortPlan, productEnvironment, socketRootFor } from './product-environment.js';
 import { PRODUCT_STATE_PATHS } from './product-payload.js';
 import { isProductStatePath, isRebuildableStatePath, ownedWriterNames, SUPPORTED_COORDINATION_SCHEMA } from './product-update-inventory.js';
 import { readProductManifest } from './product-payload.js';
@@ -718,13 +718,125 @@ function writeMoveJournal(source, journal) {
   renameSync(temporary, file);
 }
 
+function replaceHomePath(value, source, destination) {
+  if (value === source || value.startsWith(`${source}${sep}`)) return `${destination}${value.slice(source.length)}`;
+  return value;
+}
+
+function rewriteMachineStrings(value, source, destination, oldPorts, newPorts) {
+  if (typeof value === 'string') {
+    let next = replaceHomePath(value, source, destination);
+    if (oldPorts && newPorts) {
+      for (const key of Object.keys(newPorts)) {
+        const previous = oldPorts[key];
+        const assigned = newPorts[key];
+        if (!Number.isInteger(previous) || !Number.isInteger(assigned) || previous === assigned) continue;
+        next = next.split(`127.0.0.1:${previous}`).join(`127.0.0.1:${assigned}`);
+      }
+    }
+    return next;
+  }
+  if (Array.isArray(value)) return value.map(item => rewriteMachineStrings(item, source, destination, oldPorts, newPorts));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, rewriteMachineStrings(child, source, destination, oldPorts, newPorts)]));
+  }
+  return value;
+}
+
+function treeContains(value, needle) {
+  if (typeof value === 'string') return value.includes(needle);
+  if (Array.isArray(value)) return value.some(item => treeContains(item, needle));
+  if (value && typeof value === 'object') return Object.values(value).some(item => treeContains(item, needle));
+  return false;
+}
+
+function assignHomePorts(home, destination, ports) {
+  if (!home || typeof home !== 'object' || !ports) return;
+  if (home.coordination && typeof home.coordination === 'object') {
+    home.coordination.socketDirectory = socketRootFor(destination);
+    if (home.coordination.publicApi && typeof home.coordination.publicApi === 'object' && Number.isInteger(ports.coordination)) {
+      home.coordination.publicApi.port = ports.coordination;
+    }
+  }
+  if (home.evobrew && typeof home.evobrew === 'object' && Number.isInteger(ports.evobrew)) home.evobrew.port = ports.evobrew;
+  if (home.substrate && typeof home.substrate === 'object') {
+    if (home.substrate.observatory && typeof home.substrate.observatory === 'object' && Number.isInteger(ports.observatory)) {
+      home.substrate.observatory.port = ports.observatory;
+    }
+    if (home.substrate.embedding && typeof home.substrate.embedding === 'object' && Number.isInteger(ports.embedder)) {
+      home.substrate.embedding.endpoint = `http://127.0.0.1:${ports.embedder}/api/embeddings`;
+    }
+  }
+  if (home.embedder && typeof home.embedder === 'object' && Number.isInteger(ports.embedder)) home.embedder.port = ports.embedder;
+  if (Array.isArray(home.embeddings?.providers) && Number.isInteger(ports.embedder)) {
+    for (const provider of home.embeddings.providers) {
+      if (provider && typeof provider === 'object' && typeof provider.endpoint === 'string' && provider.endpoint.includes('/api/embeddings')) {
+        provider.endpoint = `http://127.0.0.1:${ports.embedder}/api/embeddings`;
+      }
+    }
+  }
+}
+
+function assignInstancePorts(config, ports) {
+  if (!config?.ports || typeof config.ports !== 'object' || !ports) return;
+  for (const key of ['engine', 'dashboard', 'mcp', 'bridge']) {
+    if (Number.isInteger(ports[key])) config.ports[key] = ports[key];
+  }
+}
+
+function writePrivateYaml(file, value, yaml) {
+  const mode = exists(file) ? (lstatSync(file).mode & 0o777) : 0o600;
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, yaml.dump(value, { lineWidth: 120, noRefs: true }), { mode });
+  renameSync(temporary, file);
+}
+
+async function rebindMachineConfiguration(source, destination, oldPorts, newPorts) {
+  const { default: yaml } = await import('js-yaml');
+  const files = [];
+  const homeYaml = join(destination, 'app/config/home.yaml');
+  if (exists(homeYaml)) files.push({ file: homeYaml, kind: 'home' });
+  const instances = join(destination, 'app/instances');
+  if (exists(instances)) {
+    for (const name of readdirSync(instances)) {
+      if (name.startsWith('.')) continue;
+      for (const [leaf, kind] of [['config.yaml', 'instance'], ['engine.yaml', 'engine']]) {
+        const file = join(instances, name, leaf);
+        if (exists(file)) files.push({ file, kind });
+      }
+    }
+  }
+  for (const entry of files) {
+    let document;
+    try { document = yaml.load(readFileSync(entry.file, 'utf8')) || {}; }
+    catch { fail('move_rebind_incomplete', `Destination configuration could not be read: ${relative(destination, entry.file)}`); }
+    document = rewriteMachineStrings(document, source, destination, oldPorts, newPorts);
+    if (entry.kind === 'home') assignHomePorts(document, destination, newPorts);
+    if (entry.kind === 'instance') assignInstancePorts(document, newPorts);
+    if (treeContains(document, source)) fail('move_rebind_incomplete', `Destination configuration still names the source home: ${relative(destination, entry.file)}`);
+    writePrivateYaml(entry.file, document, yaml);
+  }
+  const ecosystem = join(destination, 'app/ecosystem.config.cjs');
+  if (exists(ecosystem)) {
+    const text = readFileSync(ecosystem, 'utf8').split(source).join(destination);
+    if (text.includes(source)) fail('move_rebind_incomplete', 'Destination process registration still names the source home.');
+    const temporary = `${ecosystem}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, text, { mode: lstatSync(ecosystem).mode & 0o777 });
+    renameSync(temporary, ecosystem);
+  }
+}
+
 async function rebindDestination(source, destination) {
+  const sourceHost = readHostState(source);
   const host = readHostState(destination);
+  const oldPorts = sourceHost.ports && typeof sourceHost.ports === 'object' ? sourceHost.ports : null;
   host.homeRoot = destination;
   host.desiredRunning = false;
   host.phase = 'stopped';
-  if (host.ports) host.ports = await choosePortPlan({ encoderRequired: host.encoderRequired === true });
+  const disjoint = Boolean(oldPorts && host.ports && Number.isInteger(host.ports.coordination) && host.ports.coordination !== oldPorts.coordination);
+  if (!disjoint) host.ports = await choosePortPlan({ encoderRequired: host.encoderRequired === true });
   writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
+  await rebindMachineConfiguration(source, destination, oldPorts, host.ports);
   const receiptPath = join(source, '.home23-install.json');
   if (!exists(receiptPath)) return null;
   const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));

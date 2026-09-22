@@ -313,3 +313,103 @@ test('an interrupted move resumes the fence without rewriting the source host re
   assert.equal(fs.readFileSync(hostPath).equals(before), true);
   assert.equal(fs.readFileSync(path.join(destination, 'app/instances/milo/substrate/seed-01/birth-receipt.json'), 'utf8'), '{"seedId":"resume"}\n');
 });
+
+test('move rebinds destination ports and source paths without changing identity or the source', async t => {
+  const fixture = stoppedHome(t);
+  const seed = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(seed, { recursive: true });
+  fs.writeFileSync(path.join(seed, 'birth-receipt.json'), '{"seedId":"rebinding"}\n');
+  const hostPath = path.join(fixture.home, '.home23-host.json');
+  const host = JSON.parse(fs.readFileSync(hostPath, 'utf8'));
+  host.encoderRequired = true;
+  host.profile.model = 'fixture-local';
+  host.ports = {
+    coordination: 21089, engine: 21090, dashboard: 21091, mcp: 21092, bridge: 21093,
+    evobrew: 21094, observatory: 21095, embedder: 21096,
+  };
+  fs.writeFileSync(hostPath, JSON.stringify(host));
+  const sourceBefore = fs.readFileSync(hostPath);
+  const recipe = '12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9';
+  const homeYaml = [
+    'home:',
+    '  primaryAgent: milo',
+    'coordination:',
+    '  publicApi:',
+    '    port: 21089',
+    '  socketDirectory: /tmp/old-socket',
+    'providers:',
+    '  ollama-local:',
+    '    baseUrl: http://127.0.0.1:45911/v1',
+    'embeddings:',
+    '  providers:',
+    '    - provider: home23-owned',
+    `      endpoint: http://127.0.0.1:21096/api/embeddings`,
+    `      recipeId: ${recipe}`,
+    'substrate:',
+    '  observatory:',
+    '    port: 21095',
+    '  embedding:',
+    '    endpoint: http://127.0.0.1:21096/api/embeddings',
+    `    recipeId: ${recipe}`,
+    'embedder:',
+    '  port: 21096',
+    'shell:',
+    '  roots:',
+    `    - ${fixture.home}/app/instances/milo`,
+    '',
+  ].join('\n');
+  fs.writeFileSync(path.join(fixture.home, 'app/config/home.yaml'), homeYaml, { mode: 0o600 });
+  const sourceYaml = fs.readFileSync(path.join(fixture.home, 'app/config/home.yaml'));
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/config.yaml'), [
+    'agent:',
+    '  name: milo',
+    'ports:',
+    '  engine: 21090',
+    '  dashboard: 21091',
+    '  mcp: 21092',
+    '  bridge: 21093',
+    'chat:',
+    '  provider: ollama-local',
+    '  model: fixture-local',
+    'feeder:',
+    '  additionalWatchPaths:',
+    `    - path: ${fixture.home}/app/instances/milo/workspace/sessions`,
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/engine.yaml'), `model: fixture-local\nfeeder:\n  path: ${fixture.home}/app/instances/milo/workspace\n`);
+  const destination = path.join(fixture.root, 'rebind-dest');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  const moved = await moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, quiet);
+  assert.equal(moved.fenced, true);
+  assert.equal(moved.destinationStarted, false);
+  assert.equal(fs.readFileSync(hostPath).equals(sourceBefore), true);
+  assert.equal(fs.readFileSync(path.join(fixture.home, 'app/config/home.yaml')).equals(sourceYaml), true);
+  assert.equal(fs.readFileSync(path.join(destination, 'app/instances/milo/substrate/seed-01/birth-receipt.json'), 'utf8'), '{"seedId":"rebinding"}\n');
+  const destHost = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
+  assert.equal(destHost.desiredRunning, false);
+  assert.equal(destHost.profile.model, 'fixture-local');
+  assert.notEqual(destHost.ports.coordination, 21089);
+  const { default: yaml } = await import('js-yaml');
+  const rebound = yaml.load(fs.readFileSync(path.join(destination, 'app/config/home.yaml'), 'utf8'));
+  assert.equal(rebound.home.primaryAgent, 'milo');
+  assert.equal(rebound.coordination.publicApi.port, destHost.ports.coordination);
+  assert.equal(rebound.coordination.socketDirectory.includes('/tmp/old-socket'), false);
+  assert.equal(rebound.embedder.port, destHost.ports.embedder);
+  assert.equal(rebound.substrate.observatory.port, destHost.ports.observatory);
+  assert.equal(rebound.substrate.embedding.endpoint, `http://127.0.0.1:${destHost.ports.embedder}/api/embeddings`);
+  assert.equal(rebound.substrate.embedding.recipeId, recipe);
+  assert.equal(rebound.providers['ollama-local'].baseUrl, 'http://127.0.0.1:45911/v1');
+  assert.equal(rebound.shell.roots[0], `${destination}/app/instances/milo`);
+  assert.equal(JSON.stringify(rebound).includes(fixture.home), false);
+  const instance = yaml.load(fs.readFileSync(path.join(destination, 'app/instances/milo/config.yaml'), 'utf8'));
+  assert.equal(instance.chat.provider, 'ollama-local');
+  assert.equal(instance.chat.model, 'fixture-local');
+  assert.equal(instance.ports.engine, destHost.ports.engine);
+  assert.equal(instance.ports.dashboard, destHost.ports.dashboard);
+  assert.equal(instance.feeder.additionalWatchPaths[0].path, `${destination}/app/instances/milo/workspace/sessions`);
+  const engine = yaml.load(fs.readFileSync(path.join(destination, 'app/instances/milo/engine.yaml'), 'utf8'));
+  assert.equal(engine.model, 'fixture-local');
+  assert.equal(engine.feeder.path, `${destination}/app/instances/milo/workspace`);
+});
