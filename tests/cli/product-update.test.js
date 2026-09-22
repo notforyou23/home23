@@ -320,6 +320,26 @@ function interruptedJournal(sourceHome, destination, payloadPath) {
   return journal;
 }
 
+test('a pre-existing completed adoption journal is not success', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const destination = path.join(pack.root, 'destination');
+  const journal = interruptedJournal(source.home, destination, pack.payload);
+  journal.phase = 'completed';
+  fs.writeFileSync(
+    path.join(pack.root, '.destination.home23-adoption.json'),
+    `${JSON.stringify(journal, null, 2)}\n`,
+  );
+  const refused = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  });
+  assert.equal(refused.ok, false);
+  assert.notEqual(refused.status, 'adopted');
+  assert.equal(refused.status, 'refused');
+  assert.ok(refused.reasons.some(item => item.code === 'supervisor_fence_unavailable'));
+  assert.equal(fs.existsSync(destination), false);
+});
+
 test('resume refuses candidate byte substitution without packageId change', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root);
