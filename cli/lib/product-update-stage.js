@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, sep } from 'node:path';
 import { privateDirectory, privateJSON, readPrivateJSON } from './product-environment.js';
 import { inspectProductInstallation, previewProductUpdate, previewRoot } from './product-update.js';
-import { acquireInstallLock, inventoryProductPayload, verifyProductPayload } from './product-payload.js';
+import { acquireInstallLock, inventoryProductPayload, verifyProductPayload as verifyProductPayloadDefault } from './product-payload.js';
 
 const SCHEMA = 'home23.product-stage.v1';
 const inside = (root, target) => target === root || target.startsWith(root + sep);
@@ -32,7 +32,7 @@ function inspectPartial(payload, manifest) {
   }
 }
 
-export function stageProductPayload({ homeRoot, candidatePayload, staging }) {
+export function stageProductPayload({ homeRoot, candidatePayload, staging, verifyProductPayload = verifyProductPayloadDefault }) {
   const home = previewRoot(homeRoot), candidate = previewRoot(candidatePayload), destination = previewRoot(staging);
   const roots = [home, candidate, destination];
   if (roots.some((root, i) => roots.some((other, j) => i !== j && inside(root, other)))) {
@@ -120,7 +120,7 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging }) {
     // Retain the verified in-memory manifest rather than rereading mutable source metadata.
     fs.writeFileSync(temporary, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o644 });
     fs.renameSync(temporary, join(payload, 'manifest.json'));
-    verifyProductPayload(payload);
+    verifyProductPayload(payload, { fresh: true });
     const current = inspectProductInstallation(home);
     if (current.reasons.length || current.identity?.packageId !== binding.currentPackageId) throw new Error('Home baseline changed during staging.');
     receipt = { ...receipt, status: 'staged' }; privateJSON(claimPath, receipt);

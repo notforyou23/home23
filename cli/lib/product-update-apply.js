@@ -23,6 +23,30 @@ const exists = file => { try { lstatSync(file); return true; } catch (error) { i
 const inside = (parent, child) => child === parent || child.startsWith(parent + sep);
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
+/** Reuse a verify result only until the next fresh check. Fresh checks run after mutation. */
+function createPayloadVerifySession(verifyImpl, { enabled = true } = {}) {
+  const cache = new Map();
+  return function verifyCached(payloadPath, options = {}) {
+    const allowRuntimeState = options.allowRuntimeState === true;
+    const rest = { allowRuntimeState };
+    if (!enabled || options.fresh === true) {
+      const manifest = verifyImpl(payloadPath, rest);
+      if (enabled) cache.set(`${resolve(payloadPath)}\0${allowRuntimeState ? '1' : '0'}`, manifest);
+      return manifest;
+    }
+    const cacheKey = `${resolve(payloadPath)}\0${allowRuntimeState ? '1' : '0'}`;
+    if (cache.has(cacheKey)) return cache.get(cacheKey);
+    const manifest = verifyImpl(payloadPath, rest);
+    cache.set(cacheKey, manifest);
+    return manifest;
+  };
+}
+function payloadVerifyFrom(dependencies = {}) {
+  return createPayloadVerifySession(dependencies.verifyProductPayload || verifyProductPayload, {
+    enabled: dependencies.reusePayloadVerify !== false,
+  });
+}
+
 export function updateDirectoryFor(homeRoot) {
   const root = absoluteHome(homeRoot);
   return join(dirname(root), `.${basename(root)}.home23-update`);
@@ -299,8 +323,8 @@ function retainPrevious(home, updateDirectory, manifest) {
   if (!payloadMatches(previous, manifest)) throw new Error('Retained previous software does not match the installed manifest.');
   fsyncDirectory(previous);
 }
-function applyPackage(home, staged, previousManifest) {
-  const manifest = verifyProductPayload(staged);
+function applyPackage(home, staged, previousManifest, verify) {
+  const manifest = verify(staged, { fresh: true });
   const nextPaths = new Set(manifest.files.map(entry => entry.path));
   for (const entry of manifest.files.filter(item => item.type === 'directory').sort((left, right) => left.path.split('/').length - right.path.split('/').length)) {
     if (isProductStatePath(entry.path)) continue;
@@ -334,10 +358,10 @@ function applyPackage(home, staged, previousManifest) {
     nodePath: join(home, 'bin', 'node'), pm2Path: join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'),
     packageId: manifest.packageId, sourceCommit: manifest.sourceCommit, replayed: false });
   fsyncDirectory(home);
-  if (verifyProductPayload(home, { allowRuntimeState: true }).packageId !== manifest.packageId) throw new Error('Selected package does not match the staged candidate.');
+  if (verify(home, { allowRuntimeState: true, fresh: true }).packageId !== manifest.packageId) throw new Error('Selected package does not match the staged candidate.');
   return manifest;
 }
-function restorePrevious(home, updateDirectory, previousManifest, candidateManifest) {
+function restorePrevious(home, updateDirectory, previousManifest, candidateManifest, verify) {
   const previous = join(updateDirectory, 'previous');
   if (!payloadMatches(previous, previousManifest)) throw Object.assign(new Error('Retained previous software no longer matches its manifest.'), { code: 'rollback_unverified' });
   const previousPaths = new Set(previousManifest.files.map(entry => entry.path));
@@ -360,7 +384,7 @@ function restorePrevious(home, updateDirectory, previousManifest, candidateManif
   durableCopy(join(previous, 'manifest.json'), join(home, 'manifest.json'), 0o644);
   durableCopy(join(previous, '.home23-install.json'), join(home, '.home23-install.json'), 0o600);
   fsyncDirectory(home);
-  if (verifyProductPayload(home, { allowRuntimeState: true }).packageId !== previousManifest.packageId) throw new Error('Rollback did not restore the previous package.');
+  if (verify(home, { allowRuntimeState: true, fresh: true }).packageId !== previousManifest.packageId) throw new Error('Rollback did not restore the previous package.');
 }
 function classifyProcesses(processes, names) {
   const known = new Set(names);
@@ -373,10 +397,10 @@ function previousManifest(home) {
 function refuse(home, reasons) {
   return { ok: false, status: 'refused', homeRoot: home, canInstall: false, publisherTrust: 'unverified', networkInstall: false, distribution: 'local-untrusted', stateMigration: 'schema_preserving_only', reasons };
 }
-function defaultBehavior({ home, journal, identityPreserved }) {
+function defaultBehavior({ home, journal, identityPreserved, verify }) {
   const issues = [];
   try {
-    if (verifyProductPayload(home, { allowRuntimeState: true }).packageId !== journal.toPackageId) issues.push('The running tree is not the selected package.');
+    if (verify(home, { allowRuntimeState: true, fresh: true }).packageId !== journal.toPackageId) issues.push('The running tree is not the selected package.');
     const receipt = readPrivateJSON(join(home, '.home23-install.json'));
     if (receipt?.packageId !== journal.toPackageId || receipt?.nodePath !== join(home, 'bin', 'node')) issues.push('The installation receipt does not name the selected package.');
   } catch { issues.push('The selected installation no longer verifies.'); }
@@ -387,7 +411,7 @@ function defaultBehavior({ home, journal, identityPreserved }) {
   return { ok: issues.length === 0, issues };
 }
 
-async function mutate(journal, dependencies) {
+async function mutate(journal, dependencies, verify) {
   const file = journalPath(journal.homeRoot), home = journal.homeRoot;
   const rank = () => RANK[journal.phase];
   const names = journal.writerNames || [];
@@ -424,12 +448,12 @@ async function mutate(journal, dependencies) {
   }
   if (rank() < RANK.applying) journal = await commitPhase(file, { ...journal, phase: 'applying' }, dependencies);
   if (rank() < RANK.selected) {
-    applyPackage(home, journal.stagedPayload, previousManifest(home));
+    applyPackage(home, journal.stagedPayload, previousManifest(home), verify);
     journal = await commitPhase(file, { ...journal, phase: 'selected', acceptedWork: false }, dependencies);
   }
   return { journal };
 }
-async function finish(journal, dependencies) {
+async function finish(journal, dependencies, verify) {
   const file = journalPath(journal.homeRoot), home = journal.homeRoot;
   if (['committed', 'rolled_back', 'aborted'].includes(journal.phase)) return publicResult(journal, { replayed: true });
   if (journal.phase === 'recovery_required' && !journal.writersAdmitted) return publicResult(journal, { replayed: true });
@@ -445,7 +469,10 @@ async function finish(journal, dependencies) {
       journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'recovery_required', message: 'Software was not restored because writers were admitted or could not be fenced. The data snapshot was not restored.' }] }, dependencies);
       return publicResult(journal);
     }
-    try { (dependencies.restorePrevious || restorePrevious)(home, updateDirectoryFor(home), previousManifest(home), readProductManifest(journal.stagedPayload)); }
+    try {
+      if (dependencies.restorePrevious) dependencies.restorePrevious(home, updateDirectoryFor(home), previousManifest(home), readProductManifest(journal.stagedPayload));
+      else restorePrevious(home, updateDirectoryFor(home), previousManifest(home), readProductManifest(journal.stagedPayload), verify);
+    }
     catch (error) {
       journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'recovery_required', message: `No safe automatic rollback is available (${error.message}). Home state was not replaced from the checkpoint.` }] }, dependencies);
       return publicResult(journal);
@@ -477,7 +504,7 @@ async function finish(journal, dependencies) {
         return publicResult(journal);
       }
       let packageOk = true;
-      try { if (verifyProductPayload(home, { allowRuntimeState: true }).packageId !== journal.toPackageId) packageOk = false; }
+      try { if (verify(home, { allowRuntimeState: true, fresh: true }).packageId !== journal.toPackageId) packageOk = false; }
       catch { packageOk = false; }
       if (!packageOk) rollbackReason = 'The selected package did not verify while writers were still fenced.';
       else if (journal.desiredRunning) journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies);
@@ -504,7 +531,7 @@ async function finish(journal, dependencies) {
       journal = await commitPhase(file, { ...journal, candidateStarted: true, startOk: journal.startOk, phase: 'writers_admitted' }, dependencies);
     }
   }
-  const behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved });
+  const behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved, verify });
   if (!behavior.ok || !identityPreserved) {
     if (journal.writersAdmitted || journal.acceptedWork) {
       const fenced = await fence();
@@ -517,7 +544,7 @@ async function finish(journal, dependencies) {
   journal = await commitPhase(file, { ...journal, phase: 'committed', acceptedWork: true, writersAdmitted: journal.writersAdmitted === true, identityPreserved }, dependencies);
   return publicResult(journal);
 }
-async function runTransaction(journal, dependencies) {
+async function runTransaction(journal, dependencies, verify) {
   if (['committed', 'rolled_back', 'aborted'].includes(journal.phase)) return publicResult(journal, { replayed: true });
   if (journal.phase === 'recovery_required' && !journal.writersAdmitted) return publicResult(journal, { replayed: true });
   let releaseHost = async () => {};
@@ -526,28 +553,28 @@ async function runTransaction(journal, dependencies) {
     if (acquired === null) return deferred(journal.homeRoot, 'busy', 'Another lifecycle operation holds this home.', journal);
     releaseHost = acquired;
     try {
-      const mutated = await mutate(journal, dependencies);
+      const mutated = await mutate(journal, dependencies, verify);
       if (mutated.done) return mutated.done;
       journal = mutated.journal;
     } finally { await releaseHost(); }
   } else journal = readUpdateJournal(journal.homeRoot);
   if (['aborted', 'rolled_back'].includes(journal.phase) || (journal.phase === 'recovery_required' && !journal.writersAdmitted)) return publicResult(journal);
-  return finish(journal, dependencies);
+  return finish(journal, dependencies, verify);
 }
 
-async function openTransaction({ home, candidate, staging, admit }, dependencies) {
+async function openTransaction({ home, candidate, staging, admit }, dependencies, verify) {
   const installation = inspectProductInstallation(home);
   if (installation.layout !== 'product') return refuse(home, installation.reasons.length ? installation.reasons : [{ code: 'unsupported_layout', message: 'The current home is not an owned product installation.' }]);
   if (installation.reasons.some(item => item.code !== 'modified_installation')) return refuse(home, installation.reasons);
   let candidateManifest;
-  try { candidateManifest = verifyProductPayload(candidate); }
+  try { candidateManifest = verify(candidate); }
   catch { return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]); }
   const installed = readProductManifest(home);
   if (installed.packageId === candidateManifest.packageId) return refuse(home, [{ code: 'same_package', message: 'The candidate is the package already installed.' }]);
   const inventory = await inspectUpdateInventory(home, { installed, candidate: candidateManifest });
   const blocking = inventory.reasons.filter(item => item.code !== 'database_busy');
   if (blocking.length) return refuse(home, blocking);
-  try { verifyProductPayload(home, { allowRuntimeState: true }); }
+  try { verify(home, { allowRuntimeState: true }); }
   catch { return refuse(home, [{ code: 'modified_installation', message: 'A declared installed file, mode, link, or layout has changed.' }]); }
   let processes;
   try { processes = await (dependencies.listProcesses || defaultListProcesses)(home); }
@@ -561,8 +588,8 @@ async function openTransaction({ home, candidate, staging, admit }, dependencies
     return deferred(home, 'database_busy', 'The coordination database is busy and no owned writer explains it. Wait, then retry. Nothing was changed.');
   }
   if (!spaceFor(home, installed, dependencies)) return refuse(home, [{ code: 'insufficient_space', message: 'Not enough free space for the previous software, the verified checkpoint, and 64 MiB of headroom.' }]);
-  const staged = stageProductPayload({ homeRoot: home, candidatePayload: candidate, staging });
-  if (verifyProductPayload(staged.payloadPath).packageId !== candidateManifest.packageId) return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);
+  const staged = stageProductPayload({ homeRoot: home, candidatePayload: candidate, staging, verifyProductPayload: verify });
+  if (verify(staged.payloadPath).packageId !== candidateManifest.packageId) return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);
   const updateDirectory = updateDirectoryFor(home);
   mkdirSync(updateDirectory, { recursive: true, mode: 0o700 });
   installController(updateDirectory);
@@ -571,7 +598,7 @@ async function openTransaction({ home, candidate, staging, admit }, dependencies
     toSourceCommit: candidateManifest.sourceCommit, desiredRunning: inventory.desiredRunning, admit: admit === true,
     writerNames: inventory.writers, ownerToken: randomUUID(), phase: 'claimed', acceptedWork: false, candidateStarted: false,
     networkInstall: false, createdAt: new Date().toISOString() }, dependencies);
-  return runTransaction(journal, dependencies);
+  return runTransaction(journal, dependencies, verify);
 }
 
 async function locked(home, dependencies, body) {
@@ -581,10 +608,11 @@ async function locked(home, dependencies, body) {
 }
 export async function resumeProductUpdate({ homeRoot } = {}, dependencies = {}) {
   const home = absoluteHome(homeRoot);
+  const verify = payloadVerifyFrom(dependencies);
   return locked(home, dependencies, async () => {
     const journal = readUpdateJournal(home);
     if (!journal) return refuse(home, [{ code: 'update_not_found', message: 'This home has no update journal to resume.' }]);
-    return runTransaction(journal, dependencies);
+    return runTransaction(journal, dependencies, verify);
   });
 }
 export async function applyProductUpdate({ homeRoot, candidatePayload, staging, admit = false } = {}, dependencies = {}) {
@@ -594,17 +622,18 @@ export async function applyProductUpdate({ homeRoot, candidatePayload, staging, 
   for (const [left, right] of [[home, candidate], [home, stageRoot], [candidate, stageRoot], [home, updateDirectory]]) {
     if (inside(left, right) || inside(right, left)) throw new Error('Home, candidate, staging, and the update journal must be separate directories.');
   }
+  const verify = payloadVerifyFrom(dependencies);
   return locked(home, dependencies, async () => {
     const existing = exists(journalPath(home)) ? readUpdateJournal(home) : null;
     let candidateId = null;
-    try { candidateId = verifyProductPayload(candidate).packageId; }
+    try { candidateId = verify(candidate).packageId; }
     catch { return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]); }
     if (existing && !['committed', 'rolled_back', 'aborted'].includes(existing.phase)) {
       if (existing.toPackageId !== candidateId) return refuse(home, [{ code: 'update_in_progress', message: 'An unfinished update belongs to another candidate. Resume that journal before starting a different one.' }]);
-      return runTransaction(existing, dependencies);
+      return runTransaction(existing, dependencies, verify);
     }
     if (existing?.phase === 'committed' && existing.toPackageId === candidateId) return publicResult(existing, { replayed: true });
     if (existing) archiveJournal(journalPath(home), existing);
-    return openTransaction({ home, candidate, staging: stageRoot, admit }, dependencies);
+    return openTransaction({ home, candidate, staging: stageRoot, admit }, dependencies, verify);
   });
 }

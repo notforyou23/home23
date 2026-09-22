@@ -386,3 +386,51 @@ test('a forced health failure in the real controller restores the previous packa
     else process.env.HOME23_UPDATE_VERIFY_RESULT = previous;
   }
 });
+
+test('unchanged trees reuse payload verification and tampering still fails', async t => {
+  const { verifyProductPayload: realVerify } = await import('../../cli/lib/product-payload.js');
+  const countVerify = counter => (payloadPath, options) => {
+    counter.value += 1;
+    return realVerify(payloadPath, options);
+  };
+
+  const uncached = homeFixture(t);
+  const uncachedCalls = { value: 0 };
+  const uncachedResult = await applyProductUpdate(
+    { homeRoot: uncached.home, candidatePayload: uncached.candidate, staging: uncached.staging },
+    { ...quiet, reusePayloadVerify: false, verifyProductPayload: countVerify(uncachedCalls) },
+  );
+  assert.equal(uncachedResult.status, 'committed');
+  assert.equal(packageId(uncached.home), uncached.next.packageId);
+
+  const cached = homeFixture(t);
+  const cachedCalls = { value: 0 };
+  const cachedResult = await applyProductUpdate(
+    { homeRoot: cached.home, candidatePayload: cached.candidate, staging: cached.staging },
+    { ...quiet, verifyProductPayload: countVerify(cachedCalls) },
+  );
+  assert.equal(cachedResult.status, 'committed');
+  assert.equal(packageId(cached.home), cached.next.packageId);
+  assert.ok(
+    cachedCalls.value < uncachedCalls.value,
+    `expected fewer verifies with reuse (${cachedCalls.value} < ${uncachedCalls.value})`,
+  );
+
+  const tampered = homeFixture(t);
+  await assert.rejects(
+    () => applyProductUpdate(
+      { homeRoot: tampered.home, candidatePayload: tampered.candidate, staging: tampered.staging },
+      {
+        ...quiet,
+        afterPhase: async journal => {
+          if (journal.phase === 'claimed') {
+            fs.appendFileSync(path.join(journal.stagedPayload, 'bin/node'), '#tampered\n');
+          }
+        },
+      },
+    ),
+    /Product file changed|Staged package|Selected package does not match/,
+  );
+  assert.equal(packageId(tampered.home), tampered.installed.packageId);
+  assert.equal(preserved(tampered.home).conversation, 'hello-milo');
+});
