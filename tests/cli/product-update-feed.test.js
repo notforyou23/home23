@@ -286,6 +286,34 @@ test('inspecting the feed does not change home bytes', t => {
   assert.deepEqual(snapshotHome(home), before);
 });
 
+test('verified development inspection is available and a forged signature is not public trust', t => {
+  const root = tempRoot(t);
+  const artifact = path.join(root, 'artifact');
+  const manifest = payload(artifact, { sourceCommit: 'b'.repeat(40) });
+  const { publicKey, privateKey } = developmentKeyPair();
+  const trustKeyPath = path.join(root, 'trust.json');
+  writeTrustKey(trustKeyPath, publicKey);
+  const feedPath = path.join(root, 'feed.json');
+  const home = path.join(root, 'absent-home');
+  writeFeed(feedPath, feedBody([releaseFor(artifact, manifest, {
+    trust: { algorithm: 'ed25519', signature: signPackageId(manifest.packageId, privateKey) },
+  })], { publisherTrust: 'development' }));
+  const ok = inspectReleaseFeed({ homeRoot: home, feedPath, trustKeyPath });
+  assert.equal(ok.status, 'available');
+  assert.equal(ok.publisherTrust, 'development');
+  assert.equal(ok.developmentSignatureVerified, true);
+  assert.equal(ok.canInstall, false);
+  assert.equal(ok.reasons.some(item => item.code === 'untrusted_feed_claim'), false);
+
+  writeFeed(feedPath, feedBody([releaseFor(artifact, manifest, {
+    trust: { algorithm: 'ed25519', signature: signPackageId(manifest.packageId, developmentKeyPair().privateKey) },
+  })], { publisherTrust: 'development' }));
+  const forged = inspectReleaseFeed({ homeRoot: home, feedPath, trustKeyPath });
+  assert.equal(forged.status, 'damaged');
+  assert.equal(forged.reasons.some(item => item.code === 'signature_invalid'), true);
+  assert.equal(forged.reasons.some(item => item.code === 'untrusted_feed_claim'), false);
+});
+
 test('development signature stages a fixture payload without mutating the home', t => {
   const { root, home } = installedHome(t);
   const artifact = path.join(root, 'artifact');

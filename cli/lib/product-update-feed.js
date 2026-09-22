@@ -129,7 +129,7 @@ function artifactDirectoryPresent(artifactPath) {
 }
 
 /** Inspect one local release feed against an optional installed home. Read-only. */
-export function inspectReleaseFeed({ homeRoot, feedPath } = {}) {
+export function inspectReleaseFeed({ homeRoot, feedPath, trustKeyPath } = {}) {
   const installedPackageId = readInstalledPackageId(homeRoot);
   const loaded = readFeed(feedPath);
   if (loaded.error) return unavailable([loaded.error], installedPackageId);
@@ -143,7 +143,22 @@ export function inspectReleaseFeed({ homeRoot, feedPath } = {}) {
   const result = baseResult({ installedPackageId, status: 'available', reasons: [] });
   withRelease(result, release);
 
-  if (feed.publisherTrust !== 'unverified') {
+  if (feed.publisherTrust === 'production') {
+    result.status = 'damaged';
+    result.reasons.push(reason('untrusted_feed_claim', 'This milestone only accepts unverified local release feeds.'));
+    return result;
+  }
+  if (feed.publisherTrust === 'development') {
+    try {
+      verifyDevelopmentReleaseSignature(release, trustKeyPath);
+    } catch (error) {
+      result.status = 'damaged';
+      result.reasons.push(reason(error.code || 'signature_invalid', error.message));
+      return result;
+    }
+    result.publisherTrust = 'development';
+    result.developmentSignatureVerified = true;
+  } else if (feed.publisherTrust !== 'unverified') {
     result.status = 'damaged';
     result.reasons.push(reason('untrusted_feed_claim', 'This milestone only accepts unverified local release feeds.'));
     return result;
