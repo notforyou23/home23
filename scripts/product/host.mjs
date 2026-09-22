@@ -9,7 +9,7 @@ const args = process.argv.slice(2);
 const action = args.shift();
 let homeRoot;
 const sensitive = [];
-const USAGE = 'Usage: host.mjs preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]';
+const USAGE = 'Usage: host.mjs preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|backup-recover|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]';
 
 /** Owner-facing wrappers: these replies are host.mjs command results, not installed-UI proof or public trust. */
 function portabilityReply(kind, result) {
@@ -42,6 +42,18 @@ function portabilityReply(kind, result) {
         : 'Inspect/restore command completed into the inspection root. Reconnect is required for ports and machine paths. The restored tree is not already running. This is a command result, not an installed-UI proof. Local trust is not public trust.',
     };
   }
+  if (kind === 'backup-recover') {
+    return {
+      ...commandResult,
+      status: result.ok === false ? 'failed' : 'recovered',
+      restoredRunning: false,
+      writersStarted: false,
+      birthInvoked: false,
+      ownerMessage: result.ok === false
+        ? undefined
+        : 'Recovery rebound ports, supervisor registration, and absolute machine paths in the inspected folder. Writers were not started and birth was not run. This is a command result, not an installed-UI proof. Local trust is not public trust.',
+    };
+  }
   return {
     ...commandResult,
     status: result.ok === false ? 'failed' : 'moved',
@@ -63,7 +75,7 @@ try {
     if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection', '--destination'].includes(key) || !args.length || options[key]) throw new Error(USAGE);
     options[key] = args.shift();
   }
-  if (action !== 'backup-inspect') homeRoot = absoluteHome(options['--home']);
+  if (action !== 'backup-inspect' && action !== 'backup-recover') homeRoot = absoluteHome(options['--home']);
   if (options['--staging'] && !['stage', 'update', 'stage-release', 'download-release', 'install-staged'].includes(action)) throw new Error('--staging is only supported by stage, update, stage-release, download-release, and install-staged.');
   if (options['--feed'] && !['check-update', 'stage-release', 'download-release'].includes(action)) throw new Error('--feed is only supported by check-update, stage-release, and download-release.');
   if (options['--trust-key'] && !['check-update', 'stage-release', 'download-release', 'install-staged'].includes(action)) throw new Error('--trust-key is only supported by check-update, stage-release, download-release, and install-staged.');
@@ -79,6 +91,12 @@ try {
       archivePath: options['--archive'],
       keyPath: options['--key'],
     }));
+    originalStdout(JSON.stringify(result) + '\n');
+    if (result.ok === false) process.exitCode = 1;
+  } else if (action === 'backup-recover') {
+    if (!options['--inspection']) throw new Error('backup-recover requires --inspection.');
+    const { recoverInspectedHome } = await import('../../cli/lib/product-backup.js');
+    const result = portabilityReply('backup-recover', await recoverInspectedHome({ inspectionRoot: options['--inspection'] }));
     originalStdout(JSON.stringify(result) + '\n');
     if (result.ok === false) process.exitCode = 1;
   } else if (action === 'backup' || action === 'backup-inspect') {
