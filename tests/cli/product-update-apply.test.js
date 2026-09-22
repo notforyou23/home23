@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { installProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
-import { applyProductUpdate, readUpdateJournal, resumeProductUpdate, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
+import { applyProductUpdate, readUpdateJournal, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
 import { inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
@@ -496,6 +497,158 @@ test('interrupted retention resumes by rebuilding previous without a second home
   assert.equal(JSON.parse(fs.readFileSync(path.join(previous, 'manifest.json'), 'utf8')).packageId, fixture.installed.packageId);
   assert.equal(fs.readFileSync(path.join(previous, 'bin/node'), 'utf8'), fs.readFileSync(path.join(fixture.current, 'bin/node'), 'utf8'));
   assert.equal(fs.readdirSync(fixture.root).filter(name => name === 'home').length, 1);
+});
+
+function bulkFixture(t, count) {
+  // Many unchanged files inside one software unit, as in app/node_modules.
+  const bulk = Object.fromEntries(Array.from({ length: count }, (_, index) => [`app/node_modules/pkg-${index % 7}/file-${index}.js`, `export const value = ${index};\n`]));
+  const root = tempRoot(t);
+  const current = path.join(root, 'current'), candidate = path.join(root, 'candidate'), home = path.join(root, 'home'), staging = path.join(root, 'staging');
+  const installed = payload(current, { sourceCommit: 'a'.repeat(40), extra: bulk });
+  const next = payload(candidate, { sourceCommit: 'b'.repeat(40), extra: { ...bulk, 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n' } });
+  installProductPayload({ payloadPath: current, homeRoot: home });
+  populate(home);
+  return { root, current, candidate, home, staging, installed, next };
+}
+async function countedUpdate(fixture, dependencies = quiet) {
+  // Staging (download) copies the candidate once beforehand; count only the install.
+  stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging });
+  const counts = { copyFileSync: 0, fsyncSync: 0, renameSync: 0 };
+  const originals = Object.fromEntries(Object.keys(counts).map(name => [name, fs[name]]));
+  for (const name of Object.keys(counts)) fs[name] = (...args) => { counts[name] += 1; return originals[name](...args); };
+  syncBuiltinESMExports();
+  try {
+    const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: path.join(fixture.staging, 'payload'), staging: fixture.staging, reuseVerifiedStage: true }, dependencies);
+    return { result, counts };
+  } finally {
+    Object.assign(fs, originals);
+    syncBuiltinESMExports();
+  }
+}
+function sameBytesAndModes(root, manifest) {
+  for (const entry of manifest.files.filter(item => item.type === 'file' && softwareUnits({ files: [item] }).length)) {
+    const file = path.join(root, entry.path);
+    assert.equal(fs.lstatSync(file).mode & 0o777, entry.mode, entry.path);
+    assert.equal(fs.readFileSync(file).length, entry.size, entry.path);
+  }
+}
+
+test('the version switch moves whole software units, so its work does not grow with file count', async t => {
+  const small = bulkFixture(t, 20), large = bulkFixture(t, 400);
+  const smallRun = await countedUpdate(small), largeRun = await countedUpdate(large);
+  assert.equal(smallRun.result.status, 'committed');
+  assert.equal(largeRun.result.status, 'committed');
+  // Twenty times the unchanged files, the same copies, fsyncs and renames.
+  assert.deepEqual(largeRun.counts, smallRun.counts);
+  assert.ok(largeRun.counts.copyFileSync < 40, JSON.stringify(largeRun.counts));
+  assert.equal(packageId(large.home), large.next.packageId);
+  const previous = path.join(updateDirectoryFor(large.home), 'previous');
+  sameBytesAndModes(large.home, large.next);
+  sameBytesAndModes(previous, large.installed);
+  // The retained version is its own tree: other inodes, unaffected by live writes.
+  const live = path.join(large.home, 'app/node_modules/pkg-3/file-3.js'), kept = path.join(previous, 'app/node_modules/pkg-3/file-3.js');
+  assert.notEqual(fs.lstatSync(live).ino, fs.lstatSync(kept).ino);
+  fs.writeFileSync(live, 'changed after update\n');
+  assert.equal(fs.readFileSync(kept, 'utf8'), 'export const value = 3;\n');
+  assert.equal(preserved(large.home).conversation, 'hello-milo');
+});
+
+test('a later update sets the earlier previous version aside whole and releases it after commit', async t => {
+  const fixture = homeFixture(t);
+  assert.equal((await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet)).status, 'committed');
+  const third = path.join(fixture.root, 'third');
+  const final = payload(third, { sourceCommit: 'c'.repeat(40), extra: { 'app/cli/lib/update-marker.txt': 'third\n' } });
+  const released = [];
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: third, staging: path.join(fixture.root, 'staging-third') }, { ...quiet, removeDiscarded: paths => released.push(...paths) });
+  assert.equal(result.status, 'committed');
+  assert.equal(packageId(fixture.home), final.packageId);
+  const update = updateDirectoryFor(fixture.home);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(update, 'previous/manifest.json'), 'utf8')).packageId, fixture.next.packageId);
+  assert.equal(fs.readFileSync(path.join(update, 'previous/app/cli/lib/update-marker.txt'), 'utf8'), 'schema-preserving-apply\n');
+  assert.equal(released.length, 1);
+  assert.match(path.basename(released[0]), /^discarded-previous-/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(released[0], 'manifest.json'), 'utf8')).packageId, fixture.installed.packageId);
+});
+
+async function interruptAt(fixture, phase, extra = {}) {
+  await assert.rejects(
+    () => applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, {
+      ...quiet, ...extra,
+      afterPhase: async journal => { if (journal.phase === phase) throw new Error(`stop-at-${phase}`); },
+    }),
+    new RegExp(`stop-at-${phase}`),
+  );
+  assert.equal(readUpdateJournal(fixture.home).phase, phase);
+}
+
+test('an interrupted switch resumes from partial move-out and partial move-in', async t => {
+  for (const moveIn of [false, true]) {
+    const fixture = homeFixture(t);
+    const before = preserved(fixture.home);
+    await interruptAt(fixture, 'applying');
+    const staged = readUpdateJournal(fixture.home).stagedPayload;
+    const previous = path.join(updateDirectoryFor(fixture.home), 'previous');
+    const units = softwareUnits(fixture.installed);
+    // A crash after some renames: move-out partly done, or complete with move-in begun.
+    for (const unit of moveIn ? units : units.slice(0, 2)) fs.renameSync(path.join(fixture.home, unit), path.join(previous, unit));
+    if (moveIn) fs.renameSync(path.join(staged, units[0]), path.join(fixture.home, units[0]));
+    const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+    assert.equal(resumed.status, 'committed', JSON.stringify(resumed));
+    assert.equal(packageId(fixture.home), fixture.next.packageId);
+    assert.deepEqual(preserved(fixture.home), before);
+    for (const entry of fixture.installed.files.filter(item => item.type === 'file' && softwareUnits({ files: [item] }).length)) {
+      assert.deepEqual(fs.readFileSync(path.join(previous, entry.path)), fs.readFileSync(path.join(fixture.current, entry.path)), entry.path);
+    }
+  }
+});
+
+test('a controller killed as the switch begins resumes through the recovery entry', async t => {
+  const fixture = homeFixture(t);
+  const before = preserved(fixture.home);
+  const killed = await run(process.execPath, ['scripts/product/host.mjs', 'update', '--home', fixture.home, '--payload', fixture.candidate, '--staging', fixture.staging], { ...process.env, HOME23_UPDATE_INTERRUPT_AFTER: 'applying' });
+  assert.equal(killed.signal, 'SIGKILL', killed.stderr);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'applying');
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  const resumed = await run(process.execPath, ['cli/lib/product-update-recover.mjs', '--home', fixture.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: fixture.root, TMPDIR: fixture.root, LANG: 'en_US.UTF-8' });
+  assert.equal(resumed.code, 0, resumed.stderr + resumed.stdout);
+  assert.equal(JSON.parse(resumed.stdout.trim()).status, 'committed');
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+});
+
+test('an interrupted rollback resumes and restores the previous version', async t => {
+  const fixture = homeFixture(t, { extra: { 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/extra-tool/run.js': 'added\n' } });
+  const before = preserved(fixture.home);
+  await interruptAt(fixture, 'selected');
+  const journal = readUpdateJournal(fixture.home);
+  const update = updateDirectoryFor(fixture.home), previous = path.join(update, 'previous'), aside = path.join(update, `discarded-candidate-${journal.id}`);
+  // A crash mid-restore: one unit already back, one candidate unit set aside.
+  fs.mkdirSync(aside, { recursive: true });
+  fs.renameSync(path.join(fixture.home, 'bin'), path.join(aside, 'bin'));
+  fs.renameSync(path.join(previous, 'bin'), path.join(fixture.home, 'bin'));
+  fs.mkdirSync(path.join(aside, 'app'), { recursive: true });
+  fs.renameSync(path.join(fixture.home, 'app/extra-tool'), path.join(aside, 'app/extra-tool'));
+  const released = [];
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, { ...quiet, removeDiscarded: paths => released.push(...paths) });
+  assert.equal(resumed.status, 'rolled_back', JSON.stringify(resumed));
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(fs.existsSync(path.join(fixture.home, 'app/extra-tool')), false);
+  assert.equal(fs.existsSync(path.join(fixture.home, 'app/cli/lib/update-marker.txt')), false);
+  assert.deepEqual(preserved(fixture.home), before);
+  assert.deepEqual(released, [aside]);
+});
+
+test('an update journal from the earlier copy updater is not switched by this one', async t => {
+  const fixture = homeFixture(t);
+  await interruptAt(fixture, 'retained');
+  const file = path.join(updateDirectoryFor(fixture.home), 'journal.json');
+  const { retention, ...older } = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(retention, 'switch');
+  fs.writeFileSync(file, JSON.stringify(older), { mode: 0o600 });
+  await assert.rejects(() => resumeProductUpdate({ homeRoot: fixture.home }, quiet), /earlier updater/);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'retained');
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'previous/bin')), false);
 });
 
 test('reuseVerifiedStage applies without a second payload copy into staging', async t => {
