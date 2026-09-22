@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHomeBackup, inspectHomeBackup } from '../../cli/lib/product-backup.js';
+import { createHomeBackup, inspectHomeBackup, moveHome, readMoveFence } from '../../cli/lib/product-backup.js';
+import { runHostAction } from '../../cli/lib/product-host.js';
+
+const quiet = { listProcesses: async () => [] };
 
 function tempRoot(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-backup-')));
@@ -44,7 +47,7 @@ test('round-trips a stopped fixture home with workspace and home.yaml', async t 
     homeRoot: fixture.home,
     archivePath: fixture.archivePath,
     keyPath: fixture.keyPath,
-  });
+  }, quiet);
   assert.equal(created.ok, true);
   assert.equal(created.schema, 'home23.backup.v1');
   assert.equal(created.writersStarted, false);
@@ -113,7 +116,7 @@ test('a multi-chunk file round-trips without retaining the source', async t => {
   const payload = Buffer.alloc(256 * 1024, 7);
   fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/workspace/note.txt'), payload);
   fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
-  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
   await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
   assert.equal(fs.readFileSync(path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/note.txt')).equals(payload), true);
 });
@@ -121,7 +124,7 @@ test('a multi-chunk file round-trips without retaining the source', async t => {
 test('wrong key throws and leaves inspection empty', async t => {
   const fixture = stoppedHome(t);
   fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
-  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
   const wrongKey = path.join(fixture.root, 'out', 'wrong-key.json');
   fs.writeFileSync(wrongKey, `${JSON.stringify({
     schema: 'home23.backup-key.v1',
@@ -130,7 +133,7 @@ test('wrong key throws and leaves inspection empty', async t => {
   }, null, 2)}\n`, { mode: 0o600 });
   await assert.rejects(
     () => inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: wrongKey, inspectionRoot: fixture.inspectionRoot }),
-    /decrypt|Backup/i,
+    /authenticate|decrypt|Backup|invalid/i,
   );
   assert.deepEqual(fs.readdirSync(fixture.inspectionRoot), []);
 });
@@ -138,7 +141,7 @@ test('wrong key throws and leaves inspection empty', async t => {
 test('truncated archive throws', async t => {
   const fixture = stoppedHome(t);
   fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
-  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
   const bytes = fs.readFileSync(fixture.archivePath);
   fs.writeFileSync(fixture.archivePath, bytes.subarray(0, Math.max(8, Math.floor(bytes.length / 2))));
   await assert.rejects(
@@ -150,11 +153,96 @@ test('truncated archive throws', async t => {
 test('writersStarted is false after inspection', async t => {
   const fixture = stoppedHome(t);
   fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
-  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
   const inspected = await inspectHomeBackup({
     archivePath: fixture.archivePath,
     keyPath: fixture.keyPath,
     inspectionRoot: fixture.inspectionRoot,
   });
   assert.equal(inspected.writersStarted, false);
+});
+
+test('a missing supervisor is not proof that writers are stopped', async t => {
+  const fixture = stoppedHome(t);
+  fs.writeFileSync(path.join(fixture.home, '.home23-install.json'), '{"schema":"home23.product-install.v1","status":"installed"}\n');
+  await assert.rejects(
+    () => createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }),
+    error => error.code === 'process_inventory_unavailable',
+  );
+  assert.equal(fs.existsSync(fixture.archivePath), false);
+});
+
+test('a blocking copy refreshes the host lock inside the copy loop', async t => {
+  const fixture = stoppedHome(t);
+  const payload = Buffer.alloc(128 * 1024, 9);
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/workspace/note.txt'), payload);
+  let refreshedAfterStale = false;
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, {
+    ...quiet,
+    lockRefreshMs: 0,
+    beforeChunk: lockPath => {
+      const stale = new Date(Date.now() - 200000);
+      fs.utimesSync(lockPath, stale, stale);
+    },
+    onLockRefresh: lockPath => {
+      refreshedAfterStale = Date.now() - fs.lstatSync(lockPath).mtimeMs < 2000;
+    },
+  });
+  assert.equal(refreshedAfterStale, true);
+});
+
+test('a tampered archive does not write outside the inspection directory', async t => {
+  const fixture = stoppedHome(t);
+  fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  const sentinel = path.join(fixture.root, 'sentinel.txt');
+  fs.writeFileSync(sentinel, 'untouched\n');
+  const bytes = fs.readFileSync(fixture.archivePath);
+  bytes[bytes.length - 20] ^= 0xff;
+  fs.writeFileSync(fixture.archivePath, bytes);
+  await assert.rejects(() => inspectHomeBackup({
+    archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot,
+  }));
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'untouched\n');
+  assert.deepEqual(fs.readdirSync(fixture.inspectionRoot), []);
+});
+
+test('restoring rebases an in-home symlink onto the new root', async t => {
+  const fixture = stoppedHome(t);
+  const note = path.join(fixture.home, 'app/instances/milo/workspace/note.txt');
+  fs.symlinkSync(note, path.join(fixture.home, 'app/instances/milo/workspace/link.txt'));
+  fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  const restored = path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/link.txt');
+  assert.equal(fs.lstatSync(restored).isSymbolicLink(), true);
+  const target = fs.realpathSync(restored);
+  assert.equal(target.startsWith(fixture.inspectionRoot), true);
+  assert.equal(target.startsWith(fixture.home), false);
+  assert.equal(fs.readFileSync(restored, 'utf8'), 'remember this\n');
+});
+
+test('move fences the source and leaves the destination stopped', async t => {
+  const fixture = stoppedHome(t);
+  const birth = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(birth, { recursive: true });
+  fs.writeFileSync(path.join(birth, 'birth-receipt.json'), '{"seedId":"milo-seed"}\n');
+  fs.writeFileSync(path.join(birth, 'seed-ledger.jsonl'), '{"event":"birth"}\n');
+  fs.writeFileSync(path.join(fixture.home, '.home23-install.json'), '{"schema":"home23.product-install.v1","status":"installed","packageId":"abc","sourceCommit":"123"}\n');
+  const destination = path.join(fixture.root, 'destination');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  const moved = await moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, quiet);
+  assert.equal(moved.fenced, true);
+  assert.equal(moved.destinationStarted, false);
+  assert.equal(moved.writersStarted, false);
+  assert.equal(fs.readFileSync(path.join(destination, 'app/instances/milo/substrate/seed-01/birth-receipt.json'), 'utf8'), '{"seedId":"milo-seed"}\n');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8')).homeRoot, destination);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8')).desiredRunning, false);
+  const fence = readMoveFence(fixture.home);
+  assert.equal(fence.schema, 'home23.move-fence.v1');
+  const started = await runHostAction('start', { homeRoot: fixture.home });
+  assert.equal(started.ok, false);
+  assert.equal(started.error.code, 'move_source_fenced');
 });

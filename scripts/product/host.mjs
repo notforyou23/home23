@@ -13,11 +13,11 @@ try {
   while (args.length) {
     const key = args.shift();
     if (key === '--admit') {
-      if (action !== 'update' || options.admit) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|backup|backup-inspect|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--admit]');
+      if (action !== 'update' || options.admit) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]');
       options.admit = true;
       continue;
     }
-    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|backup|backup-inspect|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--admit]');
+    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection', '--destination'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]');
     options[key] = args.shift();
   }
   if (action !== 'backup-inspect') homeRoot = absoluteHome(options['--home']);
@@ -27,7 +27,13 @@ try {
   let input = {};
   if (action === 'stage' || action === 'update') input.staging = options['--staging'];
   if (options.admit) input.admit = true;
-  if (action === 'backup' || action === 'backup-inspect') {
+  if (action === 'move') {
+    if (!options['--destination'] || !options['--archive'] || !options['--key']) throw new Error('move requires --destination, --archive, and --key.');
+    const { moveHome } = await import('../../cli/lib/product-backup.js');
+    const result = await moveHome({ sourceHome: homeRoot, destinationRoot: options['--destination'], archivePath: options['--archive'], keyPath: options['--key'] });
+    originalStdout(JSON.stringify(result) + '\n');
+    if (result.ok === false) process.exitCode = 1;
+  } else if (action === 'backup' || action === 'backup-inspect') {
     const { createHomeBackup, inspectHomeBackup } = await import('../../cli/lib/product-backup.js');
     const result = action === 'backup'
       ? await createHomeBackup({ homeRoot, archivePath: options['--archive'], keyPath: options['--key'] })

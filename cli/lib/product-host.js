@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, resolve } from 'node:path';
+import { readMoveFence } from './product-backup.js';
 import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { inspectProductMemory } from './product-memory.js';
 import {
@@ -413,6 +414,9 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     return { ok: true, status: 'installed', homeRoot, packageId: receipt.packageId };
   }
   if (!existsSync(receiptPath(homeRoot))) throw new Error('Install the Home23 runtime before creating or starting a home.');
+  if (action === 'start' && readMoveFence(homeRoot)) {
+    return { ok: false, status: 'move_fenced', homeRoot, error: { code: 'move_source_fenced', message: 'This home was moved. Start stays fenced and the destination was not started.' } };
+  }
   await validateInstallation(homeRoot, { full: action === 'create' || action === 'start' });
   productEnvironment(homeRoot, { prepare: true });
   const { default: lockfile } = await import('proper-lockfile');
