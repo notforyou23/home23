@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
-import { stageProductPayload } from '../../cli/lib/product-update-stage.js';
+import { adoptVerifiedStage, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 
 function fixture(t, commit = 'a'.repeat(40)) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-stage-')));
@@ -124,4 +124,32 @@ test('capacity preflight leaves an owned retryable claim without copying package
   assert.equal(JSON.parse(fs.readFileSync(`${staging}.home23-stage.json`, 'utf8')).status, 'copying');
   assert.equal(stageProductPayload(args).status, 'staged');
   assert.deepEqual(tree(f.home), before);
+});
+
+test('adoptVerifiedStage reuses a staged claim without copying and refuses claim mismatches', t => {
+  const f = fixture(t), candidate = fixture(t, 'b'.repeat(40)), staging = path.join(f.root, 'staging');
+  const staged = stageProductPayload({ homeRoot: f.home, candidatePayload: candidate.payload, staging });
+  assert.equal(staged.status, 'staged');
+  const beforePayload = tree(path.join(staging, 'payload'));
+  let copies = 0;
+  const original = fs.copyFileSync;
+  fs.copyFileSync = (...args) => { copies += 1; return original(...args); };
+  let adopted;
+  try { adopted = adoptVerifiedStage({ homeRoot: f.home, staging }); }
+  finally { fs.copyFileSync = original; }
+  assert.equal(adopted.status, 'staged');
+  assert.equal(adopted.replayed, true);
+  assert.equal(adopted.receipt.id, staged.receipt.id);
+  assert.equal(copies, 0);
+  assert.deepEqual(tree(path.join(staging, 'payload')), beforePayload);
+
+  const other = fixture(t, 'c'.repeat(40));
+  assert.throws(() => adoptVerifiedStage({ homeRoot: other.home, staging }), /claim|eligible|baseline/);
+  const claimPath = `${staging}.home23-stage.json`;
+  const claim = JSON.parse(fs.readFileSync(claimPath, 'utf8'));
+  fs.writeFileSync(claimPath, JSON.stringify({ ...claim, status: 'copying' }));
+  assert.throws(() => adoptVerifiedStage({ homeRoot: f.home, staging }), /claim/);
+  fs.writeFileSync(claimPath, JSON.stringify(claim));
+  fs.appendFileSync(path.join(staging, 'payload/bin/node'), 'x');
+  assert.throws(() => adoptVerifiedStage({ homeRoot: f.home, staging }), /changed|integrity|Product file/);
 });

@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { absoluteHome, privateDirectory, productEnvironment, readPrivateJSON } from './product-environment.js';
 import { acquireInstallLock, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation } from './product-update.js';
-import { stageProductPayload } from './product-update-stage.js';
+import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
 import { hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath, SUPPORTED_COORDINATION_SCHEMA } from './product-update-inventory.js';
 
 const executeFile = promisify(execFile);
@@ -562,7 +562,7 @@ async function runTransaction(journal, dependencies, verify) {
   return finish(journal, dependencies, verify);
 }
 
-async function openTransaction({ home, candidate, staging, admit }, dependencies, verify) {
+async function openTransaction({ home, candidate, staging, admit, reuseVerifiedStage = false }, dependencies, verify) {
   const installation = inspectProductInstallation(home);
   if (installation.layout !== 'product') return refuse(home, installation.reasons.length ? installation.reasons : [{ code: 'unsupported_layout', message: 'The current home is not an owned product installation.' }]);
   if (installation.reasons.some(item => item.code !== 'modified_installation')) return refuse(home, installation.reasons);
@@ -588,17 +588,29 @@ async function openTransaction({ home, candidate, staging, admit }, dependencies
     return deferred(home, 'database_busy', 'The coordination database is busy and no owned writer explains it. Wait, then retry. Nothing was changed.');
   }
   if (!spaceFor(home, installed, dependencies)) return refuse(home, [{ code: 'insufficient_space', message: 'Not enough free space for the previous software, the verified checkpoint, and 64 MiB of headroom.' }]);
-  const staged = stageProductPayload({ homeRoot: home, candidatePayload: candidate, staging, verifyProductPayload: verify });
-  if (verify(staged.payloadPath).packageId !== candidateManifest.packageId) return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);
-  const updateDirectory = updateDirectoryFor(home);
-  mkdirSync(updateDirectory, { recursive: true, mode: 0o700 });
-  installController(updateDirectory);
-  const journal = await commitPhase(journalPath(home), { schema: SCHEMA, id: randomUUID(), homeRoot: home, staging, stagedPayload: staged.payloadPath,
-    fromPackageId: installed.packageId, toPackageId: candidateManifest.packageId, fromSourceCommit: installed.sourceCommit,
-    toSourceCommit: candidateManifest.sourceCommit, desiredRunning: inventory.desiredRunning, admit: admit === true,
-    writerNames: inventory.writers, ownerToken: randomUUID(), phase: 'claimed', acceptedWork: false, candidateStarted: false,
-    networkInstall: false, createdAt: new Date().toISOString() }, dependencies);
-  return runTransaction(journal, dependencies, verify);
+  let releaseStage = null;
+  try {
+    let staged;
+    if (reuseVerifiedStage) {
+      // Hold the existing stage lock for the whole apply so download/retry cannot rewrite it.
+      releaseStage = acquireInstallLock(stageLockPath(staging));
+      staged = adoptVerifiedStage({ homeRoot: home, staging, verifyProductPayload: verify });
+    } else {
+      staged = stageProductPayload({ homeRoot: home, candidatePayload: candidate, staging, verifyProductPayload: verify });
+    }
+    if (verify(staged.payloadPath).packageId !== candidateManifest.packageId) return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);
+    const updateDirectory = updateDirectoryFor(home);
+    mkdirSync(updateDirectory, { recursive: true, mode: 0o700 });
+    installController(updateDirectory);
+    const journal = await commitPhase(journalPath(home), { schema: SCHEMA, id: randomUUID(), homeRoot: home, staging, stagedPayload: staged.payloadPath,
+      fromPackageId: installed.packageId, toPackageId: candidateManifest.packageId, fromSourceCommit: installed.sourceCommit,
+      toSourceCommit: candidateManifest.sourceCommit, desiredRunning: inventory.desiredRunning, admit: admit === true,
+      writerNames: inventory.writers, ownerToken: randomUUID(), phase: 'claimed', acceptedWork: false, candidateStarted: false,
+      networkInstall: false, reuseVerifiedStage: reuseVerifiedStage === true, createdAt: new Date().toISOString() }, dependencies);
+    return await runTransaction(journal, dependencies, verify);
+  } finally {
+    if (releaseStage) releaseStage();
+  }
 }
 
 async function locked(home, dependencies, body) {
@@ -606,21 +618,44 @@ async function locked(home, dependencies, body) {
   try { return await body(); }
   finally { releaseUpdate(); }
 }
+async function withReusedStageLock(journal, verify, body) {
+  let releaseStage = null;
+  try {
+    if (journal?.reuseVerifiedStage === true && typeof journal.staging === 'string') {
+      releaseStage = acquireInstallLock(stageLockPath(journal.staging));
+      if (verify(journal.stagedPayload).packageId !== journal.toPackageId) {
+        return refuse(journal.homeRoot, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);
+      }
+    }
+    return await body();
+  } finally {
+    if (releaseStage) releaseStage();
+  }
+}
 export async function resumeProductUpdate({ homeRoot } = {}, dependencies = {}) {
   const home = absoluteHome(homeRoot);
   const verify = payloadVerifyFrom(dependencies);
   return locked(home, dependencies, async () => {
     const journal = readUpdateJournal(home);
     if (!journal) return refuse(home, [{ code: 'update_not_found', message: 'This home has no update journal to resume.' }]);
-    return runTransaction(journal, dependencies, verify);
+    return withReusedStageLock(journal, verify, () => runTransaction(journal, dependencies, verify));
   });
 }
-export async function applyProductUpdate({ homeRoot, candidatePayload, staging, admit = false } = {}, dependencies = {}) {
+export async function applyProductUpdate({ homeRoot, candidatePayload, staging, admit = false, reuseVerifiedStage = false } = {}, dependencies = {}) {
   const home = absoluteHome(homeRoot);
   if (typeof candidatePayload !== 'string' || typeof staging !== 'string') throw new Error('Choose absolute candidate and staging directories.');
   const candidate = absoluteHome(candidatePayload), stageRoot = absoluteHome(staging), updateDirectory = updateDirectoryFor(home);
-  for (const [left, right] of [[home, candidate], [home, stageRoot], [candidate, stageRoot], [home, updateDirectory]]) {
-    if (inside(left, right) || inside(right, left)) throw new Error('Home, candidate, staging, and the update journal must be separate directories.');
+  if (reuseVerifiedStage) {
+    if (candidate !== join(stageRoot, 'payload')) {
+      throw new Error('reuseVerifiedStage requires the candidate to be the staging payload directory.');
+    }
+    for (const [left, right] of [[home, stageRoot], [home, updateDirectory], [stageRoot, updateDirectory]]) {
+      if (inside(left, right) || inside(right, left)) throw new Error('Home, staging, and the update journal must be separate directories.');
+    }
+  } else {
+    for (const [left, right] of [[home, candidate], [home, stageRoot], [candidate, stageRoot], [home, updateDirectory]]) {
+      if (inside(left, right) || inside(right, left)) throw new Error('Home, candidate, staging, and the update journal must be separate directories.');
+    }
   }
   const verify = payloadVerifyFrom(dependencies);
   return locked(home, dependencies, async () => {
@@ -630,10 +665,10 @@ export async function applyProductUpdate({ homeRoot, candidatePayload, staging, 
     catch { return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]); }
     if (existing && !['committed', 'rolled_back', 'aborted'].includes(existing.phase)) {
       if (existing.toPackageId !== candidateId) return refuse(home, [{ code: 'update_in_progress', message: 'An unfinished update belongs to another candidate. Resume that journal before starting a different one.' }]);
-      return runTransaction(existing, dependencies, verify);
+      return withReusedStageLock(existing, verify, () => runTransaction(existing, dependencies, verify));
     }
     if (existing?.phase === 'committed' && existing.toPackageId === candidateId) return publicResult(existing, { replayed: true });
     if (existing) archiveJournal(journalPath(home), existing);
-    return openTransaction({ home, candidate, staging: stageRoot, admit }, dependencies, verify);
+    return openTransaction({ home, candidate, staging: stageRoot, admit, reuseVerifiedStage: reuseVerifiedStage === true }, dependencies, verify);
   });
 }

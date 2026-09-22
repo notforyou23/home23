@@ -99,6 +99,71 @@ test('install-staged refuses absent staging and selects staged payload path', as
   assert.equal(damaged.candidatePayload, null);
 });
 
+test('install-staged reuses the verified stage path instead of a sibling -apply tree', async t => {
+  const { writeProductManifest, installProductPayload } = await import('../../cli/lib/product-payload.js');
+  const { stageProductPayload } = await import('../../cli/lib/product-update-stage.js');
+  const { SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM } = await import('../../cli/lib/product-update-inventory.js');
+  const { DatabaseSync } = await import('node:sqlite');
+  const root = tempRoot(t);
+  function payload(dir, sourceCommit, extra = {}) {
+    const files = {
+      'bin/node': '#!/bin/sh\n', 'app/cli/home23.js': 'export {};\n', 'app/cli/lib/product-payload.js': 'export {};\n',
+      'app/scripts/product/host.mjs': 'export {};\n', 'tools/node_modules/pm2/bin/pm2': 'pm2\n',
+      'app/dist/coordination/migrations/index.js': 'migration-index\n',
+      'app/dist/coordination/migrations/0001-coordination-spine.js': 'migration-one\n',
+      'app/dist/coordination/contracts/v1/pack-manifest.json': '{}\n',
+      'app/dist/coordination/contracts/v1/schema.json': '{}\n',
+      'app/engine/data/images/.gitkeep': '', ...extra,
+    };
+    for (const [relative, contents] of Object.entries(files)) {
+      const file = path.join(dir, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
+      fs.writeFileSync(file, contents, { mode: relative === 'bin/node' ? 0o755 : 0o644 });
+    }
+    fs.mkdirSync(path.join(dir, 'app/config'), { recursive: true, mode: 0o755 });
+    return writeProductManifest(dir, { sourceCommit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+  }
+  const current = path.join(root, 'current');
+  const candidate = path.join(root, 'candidate');
+  const home = path.join(root, 'home');
+  const staging = path.join(root, 'staging');
+  const installed = payload(current, 'a'.repeat(40));
+  const next = payload(candidate, 'b'.repeat(40), { 'app/cli/lib/update-marker.txt': 'reuse-stage\n' });
+  installProductPayload({ payloadPath: current, homeRoot: home });
+  fs.mkdirSync(path.join(home, 'app/config'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'app/config/home.yaml'), 'name: milo\n', { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/config/secrets.yaml'), 'providers: {}\n', { mode: 0o600 });
+  fs.mkdirSync(path.join(home, 'app/instances/milo/conversations'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'app/instances/milo/brain'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'app/instances/milo/conversations/session.txt'), 'hello');
+  fs.writeFileSync(path.join(home, 'app/instances/milo/brain/event-ledger.jsonl'), '{"id":"seed-1"}\n');
+  const dbFile = path.join(home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+  fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+  const db = new DatabaseSync(dbFile);
+  db.exec(`PRAGMA user_version = ${SUPPORTED_COORDINATION_SCHEMA};
+    CREATE TABLE schema_migrations (version INTEGER, name TEXT, checksum TEXT, applied_at TEXT, application_version TEXT);
+    INSERT INTO schema_migrations VALUES (${SUPPORTED_COORDINATION_SCHEMA}, 'chess-engines', '${SUPPORTED_COORDINATION_MIGRATION_CHECKSUM}', 't', 'test');
+    CREATE TABLE kernel_meta (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
+    INSERT INTO kernel_meta VALUES ('schema.checksum', '${SUPPORTED_COORDINATION_SCHEMA_CHECKSUM}', 't');
+    INSERT INTO kernel_meta VALUES ('schema.version', '${SUPPORTED_COORDINATION_SCHEMA}', 't');`);
+  db.close();
+  fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({
+    schema: 'home23.host.v2', homeRoot: home, profile: { name: 'milo', provider: 'ollama-local', model: 'fixture' },
+    desiredRunning: false, encoderRequired: true, phase: 'prepared',
+  }), { mode: 0o600 });
+  stageProductPayload({ homeRoot: home, candidatePayload: candidate, staging });
+  assert.equal(installed.packageId !== next.packageId, true);
+
+  const result = await runHost(['install-staged', '--home', home, '--staging', staging]);
+  const body = JSON.parse(result.stdout);
+  assert.equal(result.code, 0, result.stderr + result.stdout);
+  assert.equal(body.status, 'committed');
+  assert.equal(body.installed, true);
+  assert.equal(body.selectedCandidatePayload, path.join(staging, 'payload'));
+  assert.equal(fs.existsSync(`${staging}-apply`), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.home23-install.json'), 'utf8')).packageId, next.packageId);
+});
+
 test('update-recovery reports absent when no journal exists', async t => {
   const root = tempRoot(t);
   const home = path.join(root, 'home');

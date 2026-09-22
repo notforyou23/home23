@@ -152,12 +152,13 @@ try {
       process.exitCode = 1;
     } else {
       const { applyProductUpdate } = await import('../../cli/lib/product-update-apply.js');
-      // The verified payload lives inside the download stage. Apply needs a
-      // separate staging directory; those two trees must not contain each other.
+      // The verified download stage is already owned and claimed for this home.
+      // Reuse it in place; do not copy the payload into a second staging tree.
       const result = await applyProductUpdate({
         homeRoot,
         candidatePayload: selection.candidatePayload,
-        staging: `${resolve(options['--staging'])}-apply`,
+        staging: resolve(options['--staging']),
+        reuseVerifiedStage: true,
         admit: options.admit === true,
       });
       originalStdout(JSON.stringify({

@@ -127,3 +127,51 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
     return stageResult(destination, receipt, false);
   } finally { unlock(); }
 }
+
+/**
+ * Reuse an already-staged payload in place. Caller must hold the stage lock so a
+ * download/retry cannot mutate the tree while apply or resume owns it.
+ * Revalidates the claim binding and payload bytes; never copies.
+ */
+export function adoptVerifiedStage({ homeRoot, staging, verifyProductPayload = verifyProductPayloadDefault }) {
+  const home = previewRoot(homeRoot), destination = previewRoot(staging);
+  if (inside(home, destination) || inside(destination, home)) {
+    throw new Error('Home and staging directories must be separate.');
+  }
+  const payload = join(destination, 'payload');
+  const claimPath = `${destination}.home23-stage.json`;
+  if (!present(claimPath)) throw new Error('Staging claim is missing; cannot reuse an unclaimed stage.');
+  let receipt;
+  try { receipt = readPrivateJSON(claimPath); }
+  catch { throw new Error('Staging claim is unreadable or invalid.'); }
+  if (!receipt || receipt.schema !== SCHEMA || !/^[a-f0-9-]{36}$/.test(receipt.id || '') ||
+      !['copying', 'staged'].includes(receipt.status)) {
+    throw new Error('Staging claim belongs to another home, baseline, or candidate.');
+  }
+  if (receipt.status !== 'staged') {
+    throw new Error('Staging claim belongs to another home, baseline, or candidate.');
+  }
+  privateDirectory(destination);
+  if (fs.readdirSync(destination).some(name => name !== 'payload')) throw new Error('Unexpected staging contents.');
+  // Revalidate staged bytes before trust or baseline checks so tampering fails closed.
+  const manifest = verifyProductPayload(payload);
+  const preview = previewProductUpdate({ homeRoot: home, candidatePayload: payload });
+  if (preview.reasons.length !== 1 || !['same_package', 'different_package'].includes(preview.reasons[0].code)) {
+    throw new Error('The home or candidate is not eligible for local staging.');
+  }
+  if (manifest.packageId !== preview.candidate.identity.packageId) throw new Error('Candidate changed during staging inspection.');
+  const binding = { schema: SCHEMA, homeRoot: home, staging: destination,
+    currentPackageId: preview.current.identity.packageId, candidatePackageId: manifest.packageId,
+    candidateSourceCommit: manifest.sourceCommit };
+  if (!Object.entries(binding).every(([key, value]) => receipt[key] === value)) {
+    throw new Error('Staging claim belongs to another home, baseline, or candidate.');
+  }
+  if (verifyProductPayload(payload).packageId !== manifest.packageId) throw new Error('Staged package identity changed.');
+  const current = inspectProductInstallation(home);
+  if (current.reasons.length || current.identity?.packageId !== binding.currentPackageId) throw new Error('Home baseline changed during staging.');
+  return stageResult(destination, receipt, true);
+}
+
+export function stageLockPath(staging) {
+  return `${previewRoot(staging)}.home23-stage.lock`;
+}

@@ -10,6 +10,8 @@ import { installProductPayload, writeProductManifest } from '../../cli/lib/produ
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
 import { applyProductUpdate, readUpdateJournal, resumeProductUpdate, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
 import { inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
+import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
+import { acquireInstallLock } from '../../cli/lib/product-payload.js';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const quiet = { listProcesses: async () => [], acquireHostLock: async () => async () => {} };
@@ -494,4 +496,110 @@ test('interrupted retention resumes by rebuilding previous without a second home
   assert.equal(JSON.parse(fs.readFileSync(path.join(previous, 'manifest.json'), 'utf8')).packageId, fixture.installed.packageId);
   assert.equal(fs.readFileSync(path.join(previous, 'bin/node'), 'utf8'), fs.readFileSync(path.join(fixture.current, 'bin/node'), 'utf8'));
   assert.equal(fs.readdirSync(fixture.root).filter(name => name === 'home').length, 1);
+});
+
+test('reuseVerifiedStage applies without a second payload copy into staging', async t => {
+  const fixture = homeFixture(t);
+  const staging = fixture.staging;
+  stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging });
+  const payloadFiles = JSON.parse(fs.readFileSync(path.join(staging, 'payload/manifest.json'), 'utf8'))
+    .files.filter(entry => entry.type === 'file').length;
+  let copiesIntoStaging = 0;
+  const original = fs.copyFileSync;
+  fs.copyFileSync = (source, destination, flags) => {
+    const dest = String(destination);
+    if (dest === staging || dest.startsWith(staging + path.sep)) copiesIntoStaging += 1;
+    return original(source, destination, flags);
+  };
+  try {
+    const result = await applyProductUpdate({
+      homeRoot: fixture.home,
+      candidatePayload: path.join(staging, 'payload'),
+      staging,
+      reuseVerifiedStage: true,
+    }, quiet);
+    assert.equal(result.status, 'committed');
+    assert.equal(packageId(fixture.home), fixture.next.packageId);
+    assert.equal(copiesIntoStaging, 0);
+    assert.equal(readUpdateJournal(fixture.home).reuseVerifiedStage, true);
+    assert.equal(readUpdateJournal(fixture.home).stagedPayload, path.join(staging, 'payload'));
+    assert.equal(fs.existsSync(`${staging}-apply`), false);
+  } finally {
+    fs.copyFileSync = original;
+  }
+  assert.ok(payloadFiles > 0);
+});
+
+test('reuseVerifiedStage refuses wrong home baseline candidate tampering and concurrent ownership', async t => {
+  const fixture = homeFixture(t);
+  const staging = fixture.staging;
+  stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging });
+
+  const other = homeFixture(t);
+  assert.throws(
+    () => adoptVerifiedStage({ homeRoot: other.home, staging }),
+    /claim|eligible|baseline/,
+  );
+
+  const claimPath = `${staging}.home23-stage.json`;
+  const claim = JSON.parse(fs.readFileSync(claimPath, 'utf8'));
+  fs.writeFileSync(claimPath, JSON.stringify({ ...claim, currentPackageId: '0'.repeat(64) }));
+  assert.throws(() => adoptVerifiedStage({ homeRoot: fixture.home, staging }), /claim/);
+  fs.writeFileSync(claimPath, JSON.stringify(claim));
+
+  fs.writeFileSync(claimPath, JSON.stringify({ ...claim, candidatePackageId: '1'.repeat(64) }));
+  assert.throws(() => adoptVerifiedStage({ homeRoot: fixture.home, staging }), /claim/);
+  fs.writeFileSync(claimPath, JSON.stringify(claim));
+
+  fs.appendFileSync(path.join(staging, 'payload/bin/node'), '#tampered\n');
+  assert.throws(() => adoptVerifiedStage({ homeRoot: fixture.home, staging }), /changed|integrity|Product file/);
+  // Restore bytes from the original candidate so later checks stay meaningful.
+  fs.copyFileSync(path.join(fixture.candidate, 'bin/node'), path.join(staging, 'payload/bin/node'));
+  fs.chmodSync(path.join(staging, 'payload/bin/node'), 0o755);
+
+  const release = acquireInstallLock(stageLockPath(staging));
+  try {
+    await assert.rejects(
+      () => applyProductUpdate({
+        homeRoot: fixture.home,
+        candidatePayload: path.join(staging, 'payload'),
+        staging,
+        reuseVerifiedStage: true,
+      }, quiet),
+      /already in progress/,
+    );
+  } finally {
+    release();
+  }
+});
+
+test('interrupted reuseVerifiedStage resumes against the same valid stage', async t => {
+  const fixture = homeFixture(t);
+  const staging = fixture.staging;
+  stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging });
+  const before = preserved(fixture.home);
+  await assert.rejects(
+    () => applyProductUpdate({
+      homeRoot: fixture.home,
+      candidatePayload: path.join(staging, 'payload'),
+      staging,
+      reuseVerifiedStage: true,
+    }, {
+      ...quiet,
+      afterPhase: async journal => {
+        if (journal.phase === 'retained') throw new Error('injected reuse interrupt');
+      },
+    }),
+    /injected reuse interrupt/,
+  );
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.phase, 'retained');
+  assert.equal(journal.reuseVerifiedStage, true);
+  assert.equal(journal.stagedPayload, path.join(staging, 'payload'));
+  assert.equal(journal.staging, staging);
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+  assert.equal(resumed.status, 'committed');
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+  assert.equal(fs.existsSync(`${staging}-apply`), false);
 });
