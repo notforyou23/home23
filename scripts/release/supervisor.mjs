@@ -5,6 +5,7 @@ import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { status } from './status.mjs';
 import { inspect, restartCommands, assertIndependent } from './rebind.mjs';
@@ -75,9 +76,53 @@ async function readiness(root, release) {
   if (![200, 401].includes(response.status)) throw new Error('Coordinator HTTP readiness failed');
   return { signedResidents: residents, httpListening: true };
 }
+function loadSupervisorDatabase(root) {
+  try {
+    const Better = createRequire(path.join(root, 'package.json'))('better-sqlite3');
+    const probe = new Better(':memory:');
+    probe.close();
+    return Better;
+  } catch {
+    try {
+      const Better = createRequire(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../package.json'))('better-sqlite3');
+      const probe = new Better(':memory:');
+      probe.close();
+      return Better;
+    } catch {
+      return DatabaseSync;
+    }
+  }
+}
+
+function openSupervisorLockDb(file, Database) {
+  if (!Database || Database === DatabaseSync) return new DatabaseSync(file);
+  try {
+    return new Database(file, { timeout: 0 });
+  } catch (error) {
+    if (!/NODE_MODULE_VERSION|ERR_DLOPEN_FAILED|Could not locate the bindings/.test(String(error))) throw error;
+    return new DatabaseSync(file);
+  }
+}
+
 // An operator may select a verified new package before calling this operation.
 // The resident queue deliberately only restarts the already selected release.
-export async function restartManaged(root, receiptFile) {
+// When called outside serve(), takes the exclusive supervisor lock so adoption
+// holding that lock refuses managed start/restart.
+export async function restartManaged(root, receiptFile, options = {}) {
+  let releaseLock = options.releaseLock;
+  let ownLock = false;
+  if (!releaseLock) {
+    releaseLock = acquireSupervisorLock(directory(root), loadSupervisorDatabase(root), { purpose: 'restart-managed' });
+    ownLock = true;
+  }
+  try {
+    return await restartManagedLocked(root, receiptFile);
+  } finally {
+    if (ownLock) releaseLock();
+  }
+}
+
+async function restartManagedLocked(root, receiptFile) {
   const initial = status(root);
   if (!initial.ok) throw new Error('Managed release is not aligned and online');
   const inspection = inspect({ root, releaseId: initial.releaseId, expectedRunning: initial.processes.map(p => ({ name: p.name, ...p.running[0] })) });
@@ -152,20 +197,32 @@ export async function restartManaged(root, receiptFile) {
 }
 // A separate tiny SQLite file supplies an OS-released exclusive lock. It is
 // unrelated to the coordinator database and survives reboot without stale PID locks.
-export function acquireSupervisorLock(dir, Database) {
-  const db = new Database(path.join(dir, 'supervisor-lock.sqlite3'), {timeout:0});
+// Adoption holds this same lock (purpose: adoption, writers: agentProcessNames per
+// resident) so managed start/restart cannot run through the copy window.
+export function acquireSupervisorLock(dir, Database, options = {}) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const db = openSupervisorLockDb(path.join(dir, 'supervisor-lock.sqlite3'), Database);
   try {
     db.exec('CREATE TABLE IF NOT EXISTS ownership (id INTEGER PRIMARY KEY)');
+    db.exec('CREATE TABLE IF NOT EXISTS lock_meta (id INTEGER PRIMARY KEY CHECK (id = 1), purpose TEXT NOT NULL, writers TEXT NOT NULL)');
     db.exec('BEGIN EXCLUSIVE');
-  } catch (e) { db.close(); throw new Error('Another maintenance supervisor owns the service lock: ' + e.message); }
-  return () => { db.exec('ROLLBACK'); db.close(); };
+    if (options.purpose || options.writers) {
+      db.prepare('INSERT OR REPLACE INTO lock_meta (id, purpose, writers) VALUES (1, ?, ?)').run(
+        options.purpose || 'maintenance',
+        JSON.stringify(Array.isArray(options.writers) ? options.writers : []),
+      );
+    }
+  } catch (e) {
+    db.close();
+    throw new Error('Another maintenance supervisor owns the service lock: ' + e.message);
+  }
+  return () => { try { db.exec('ROLLBACK'); } finally { db.close(); } };
 }
 export async function serve(root) {
   const dir = directory(root), queue = path.join(dir, 'requests');
   fs.mkdirSync(queue, { recursive: true, mode: 0o700 });
   const lock = path.join(dir, 'supervisor.lock');
-  const require = createRequire(path.join(root, 'package.json'));
-  const releaseLock = acquireSupervisorLock(dir, require('better-sqlite3'));
+  const releaseLock = acquireSupervisorLock(dir, loadSupervisorDatabase(root), { purpose: 'serve' });
   fs.writeFileSync(lock, String(process.pid), {mode:0o600});
   let stopping = false;
   process.on('SIGINT', () => { stopping = true; });
@@ -187,7 +244,7 @@ export async function serve(root) {
         if (check.blockers.length) { request.state = 'waiting'; request.waitingFor = check.blockers; write(file, request); continue; }
         request.state = 'running'; delete request.waitingFor;
         request.receipt = path.join(dir, request.id + '-receipt.json'); write(file, request); write(last, { at: Date.now(), id: request.id });
-        try { await restartManaged(root, request.receipt); request.state = 'succeeded'; }
+        try { await restartManaged(root, request.receipt, { releaseLock }); request.state = 'succeeded'; }
         catch (e) { request.state = 'failed'; request.error = e.message; }
         request.finishedAt = new Date().toISOString(); write(file, request);
       }
