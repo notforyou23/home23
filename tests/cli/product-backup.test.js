@@ -797,6 +797,186 @@ test('recoverInspectedHome retry keeps the same archive binding', async t => {
   assert.equal(JSON.parse(fs.readFileSync(journalPath, 'utf8')).filesDigest, first.filesDigest);
 });
 
+test('recoverInspectedHome refuses claimed retry after Seed changes', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const { payload, manifest } = fixturePayload(root);
+  const { resident } = seedRecoverableHome(home, {
+    packageId: manifest.packageId, sourceCommit: manifest.sourceCommit,
+  });
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const archivePath = path.join(out, 'home.h23b');
+  const keyPath = path.join(out, 'home.backup-key.json');
+  const inspectionRoot = path.join(root, 'inspect');
+  fs.mkdirSync(inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  fs.rmSync(home, { recursive: true, force: true });
+
+  const badPayload = path.join(root, 'bad-payload');
+  fs.mkdirSync(badPayload, { mode: 0o755 });
+  await assert.rejects(
+    () => recoverInspectedHome({
+      inspectionRoot, payloadPath: badPayload, archivePath, keyPath,
+    }, quiet),
+    error => error.code === 'backup_recover_payload_invalid',
+  );
+  assert.equal(fs.existsSync(path.join(root, `.inspect.home23-recover`, 'journal.json')), false);
+
+  await assert.rejects(
+    () => recoverInspectedHome({
+      inspectionRoot, payloadPath: payload, archivePath, keyPath,
+    }, {
+      ...quiet,
+      afterClaim: destination => {
+        fs.writeFileSync(
+          path.join(destination, `app/instances/${resident}/substrate/seed-01/birth-receipt.json`),
+          '{"seedId":"tampered"}\n',
+        );
+        throw Object.assign(new Error('interrupted after claim'), { code: 'recover_interrupted' });
+      },
+    }),
+    error => error.code === 'recover_interrupted',
+  );
+  const journalPath = path.join(root, `.inspect.home23-recover`, 'journal.json');
+  assert.equal(JSON.parse(fs.readFileSync(journalPath, 'utf8')).phase, 'claimed');
+
+  await assert.rejects(
+    () => recoverInspectedHome({
+      inspectionRoot, payloadPath: payload, archivePath, keyPath,
+    }, quiet),
+    error => error.code === 'backup_recover_archive_mismatch',
+  );
+  assert.equal(JSON.parse(fs.readFileSync(journalPath, 'utf8')).phase, 'claimed');
+  assert.equal(fs.existsSync(path.join(inspectionRoot, 'bin/node')), false);
+});
+
+test('recoverInspectedHome resumes a legitimate interrupted recovery after rebind', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const { payload, manifest, nodeMarker } = fixturePayload(root);
+  const { birthBytes, resident } = seedRecoverableHome(home, {
+    packageId: manifest.packageId, sourceCommit: manifest.sourceCommit,
+  });
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const archivePath = path.join(out, 'home.h23b');
+  const keyPath = path.join(out, 'home.backup-key.json');
+  const inspectionRoot = path.join(root, 'inspect');
+  fs.mkdirSync(inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  fs.rmSync(home, { recursive: true, force: true });
+
+  await assert.rejects(
+    () => recoverInspectedHome({
+      inspectionRoot, payloadPath: payload, archivePath, keyPath,
+    }, {
+      ...quiet,
+      afterRebound: () => {
+        throw Object.assign(new Error('interrupted after rebind'), { code: 'recover_interrupted' });
+      },
+    }),
+    error => error.code === 'recover_interrupted',
+  );
+  const journalPath = path.join(root, `.inspect.home23-recover`, 'journal.json');
+  const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+  assert.equal(journal.phase, 'rebound');
+  const hostAfterInterrupt = JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-host.json'), 'utf8'));
+  assert.equal(hostAfterInterrupt.homeRoot, inspectionRoot);
+  assert.equal(hostAfterInterrupt.phase, 'stopped');
+  assert.notEqual(hostAfterInterrupt.ports.coordination, 21089);
+  assert.equal(
+    fs.readFileSync(path.join(inspectionRoot, `app/instances/${resident}/substrate/seed-01/birth-receipt.json`), 'utf8'),
+    birthBytes,
+  );
+
+  const resumed = await recoverInspectedHome({
+    inspectionRoot, payloadPath: payload, archivePath, keyPath,
+  }, quiet);
+  assert.equal(resumed.ok, true);
+  assert.equal(JSON.parse(fs.readFileSync(journalPath, 'utf8')).phase, 'committed');
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-host.json'), 'utf8')).ports,
+    hostAfterInterrupt.ports,
+  );
+  assert.equal(fs.readFileSync(path.join(inspectionRoot, 'bin/node'), 'utf8'), nodeMarker);
+});
+
+test('recoverInspectedHome refuses an unsafe bin symlink and leaves an outside sentinel unchanged', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const { payload, manifest } = fixturePayload(root);
+  seedRecoverableHome(home, {
+    packageId: manifest.packageId, sourceCommit: manifest.sourceCommit,
+  });
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const archivePath = path.join(out, 'home.h23b');
+  const keyPath = path.join(out, 'home.backup-key.json');
+  const inspectionRoot = path.join(root, 'inspect');
+  fs.mkdirSync(inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  fs.rmSync(home, { recursive: true, force: true });
+
+  const outside = path.join(root, 'outside');
+  fs.mkdirSync(outside, { mode: 0o755 });
+  const sentinel = path.join(outside, 'sentinel.txt');
+  fs.writeFileSync(sentinel, 'untouched\n');
+  fs.symlinkSync(outside, path.join(inspectionRoot, 'bin'));
+
+  await assert.rejects(
+    () => recoverInspectedHome({
+      inspectionRoot, payloadPath: payload, archivePath, keyPath,
+    }, quiet),
+    error => error.code === 'backup_recover_unsafe_path',
+  );
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'untouched\n');
+  assert.equal(fs.readdirSync(outside).join(','), 'sentinel.txt');
+  assert.equal(fs.lstatSync(path.join(inspectionRoot, 'bin')).isSymbolicLink(), true);
+});
+
+test('recoverInspectedHome accepts an absolute internal symlink rebased by inspect', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const { payload, manifest, nodeMarker } = fixturePayload(root);
+  const { resident } = seedRecoverableHome(home, {
+    packageId: manifest.packageId, sourceCommit: manifest.sourceCommit,
+    note: 'linked-note\n',
+  });
+  const note = path.join(home, `app/instances/${resident}/workspace/note.txt`);
+  const link = path.join(home, `app/instances/${resident}/workspace/note-link`);
+  fs.symlinkSync(note, link);
+
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const archivePath = path.join(out, 'home.h23b');
+  const keyPath = path.join(out, 'home.backup-key.json');
+  const inspectionRoot = path.join(root, 'inspect');
+  fs.mkdirSync(inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  const restored = fs.readlinkSync(path.join(inspectionRoot, `app/instances/${resident}/workspace/note-link`));
+  assert.equal(path.isAbsolute(restored), false);
+  assert.equal(
+    fs.readFileSync(path.join(inspectionRoot, `app/instances/${resident}/workspace/note-link`), 'utf8'),
+    'linked-note\n',
+  );
+  fs.rmSync(home, { recursive: true, force: true });
+
+  const recovered = await recoverInspectedHome({
+    inspectionRoot, payloadPath: payload, archivePath, keyPath,
+  }, quiet);
+  assert.equal(recovered.ok, true);
+  assert.equal(fs.readFileSync(path.join(inspectionRoot, 'bin/node'), 'utf8'), nodeMarker);
+  assert.equal(
+    fs.readFileSync(path.join(inspectionRoot, `app/instances/${resident}/workspace/note-link`), 'utf8'),
+    'linked-note\n',
+  );
+});
+
 test('rebindAdoptedHome rewrites from destination hostRoot when the source directory is gone', async t => {
   const root = tempRoot(t);
   const gone = path.join(root, 'original-home');

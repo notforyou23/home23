@@ -806,19 +806,57 @@ function hasRecoverableIdentity(host) {
   return typeof host.profile?.name === 'string' && /^[a-z][a-z0-9-]{0,62}$/.test(host.profile.name);
 }
 
-function assertExtractMatchesArchive(destination, header) {
+/** Host/config paths rewrite during rebind; identity bytes must still match the archive. */
+function isRebindMutablePath(relative) {
+  if (isLifecycleLockPath(relative)) return true;
+  if (relative === '.home23-host.json' || relative === '.home23-install.json') return true;
+  if (relative === 'app/config/home.yaml' || relative === 'app/config/agents.json') return true;
+  if (relative === 'app/ecosystem.config.cjs' || relative === 'runtime/semantic-prep.json') return true;
+  if (relative === 'runtime/ecosystem.config.json') return true;
+  if (/^app\/instances\/[^/]+\/(config|engine)\.yaml$/.test(relative)) return true;
+  return false;
+}
+
+/**
+ * Compare an inspected symlink to the archive digest using the same rebase
+ * inspect applies via restoredLink (absolute internal targets become relative).
+ */
+function symlinkMatchesArchivedTarget(destination, sourceHome, linkRelative, entrySha256) {
+  const absoluteLink = join(destination, linkRelative);
+  let actual;
+  try { actual = assertSymlinkInside(destination, linkRelative); }
+  catch (error) {
+    fail('backup_recover_archive_mismatch', error?.message || `Unsafe symlink: ${linkRelative}`);
+  }
+  if (sha256(Buffer.from(actual, 'utf8')) === entrySha256) return true;
+  const linkDirectory = dirname(absoluteLink);
+  const resolvedActual = isAbsolute(actual) ? resolve(actual) : resolve(linkDirectory, actual);
+  if (!inside(resolve(destination), resolvedActual)) {
+    fail('backup_recover_archive_mismatch', `Inspected home does not match the authenticated archive: ${linkRelative}`);
+  }
+  const originalAbsolute = join(resolve(sourceHome), relative(resolve(destination), resolvedActual));
+  if (sha256(Buffer.from(originalAbsolute, 'utf8')) !== entrySha256) return false;
+  try {
+    return restoredLink(sourceHome, destination, linkRelative, originalAbsolute) === actual;
+  } catch {
+    return false;
+  }
+}
+
+function assertExtractMatchesArchive(destination, header, { allowRebindMutation = false } = {}) {
+  const sourceHome = resolve(header.homeRoot);
   for (const entry of header.files) {
     if (!entry || typeof entry.path !== 'string' || !safeRelative(entry.path)) {
       fail('backup_recover_archive_mismatch', 'Authenticated archive inventory is invalid.');
     }
     if (isLifecycleLockPath(entry.path)) continue;
+    if (allowRebindMutation && isRebindMutablePath(entry.path)) continue;
     const absolute = join(destination, entry.path);
     if (!exists(absolute)) {
       fail('backup_recover_archive_mismatch', `Inspected home is missing archived path: ${entry.path}`);
     }
     if (entry.type === 'symlink') {
-      const target = readlinkSync(absolute);
-      if (sha256(Buffer.from(target, 'utf8')) !== entry.sha256) {
+      if (!symlinkMatchesArchivedTarget(destination, sourceHome, entry.path, entry.sha256)) {
         fail('backup_recover_archive_mismatch', `Inspected home does not match the authenticated archive: ${entry.path}`);
       }
       continue;
@@ -828,6 +866,60 @@ function assertExtractMatchesArchive(destination, header) {
       fail('backup_recover_archive_mismatch', `Inspected home does not match the authenticated archive: ${entry.path}`);
     }
   }
+}
+
+/** Refuse symlink ancestors that would let installMovedRuntime write outside the destination. */
+function assertNoSymlinkAncestors(root, relativePath) {
+  if (!safeRelative(relativePath)) {
+    fail('backup_recover_unsafe_path', `Recovery path is invalid: ${relativePath}`);
+  }
+  const parts = relativePath.split('/');
+  let current = resolve(root);
+  for (let index = 0; index < parts.length; index += 1) {
+    current = join(current, parts[index]);
+    if (!exists(current)) return;
+    const stat = lstatSync(current);
+    if (stat.isSymbolicLink()) {
+      fail('backup_recover_unsafe_path', `Recovery destination has an unsafe symlink at ${parts.slice(0, index + 1).join('/')}.`);
+    }
+    if (index < parts.length - 1 && !stat.isDirectory()) {
+      fail('backup_recover_unsafe_path', `Recovery destination blocks path ${relativePath}.`);
+    }
+  }
+}
+
+function assertSafeRuntimeDestination(destination, files) {
+  for (const entry of files) {
+    if (!entry || typeof entry.path !== 'string') continue;
+    if (isProductStatePath(entry.path)) continue;
+    assertNoSymlinkAncestors(destination, entry.path);
+  }
+  assertNoSymlinkAncestors(destination, 'manifest.json');
+}
+
+function revalidateRecoveryDestination(destination, header, binding, phase) {
+  const host = readHostState(destination);
+  if (!hasRecoverableIdentity(host)) {
+    fail('backup_recover_invalid', 'Inspected home has no resident identity to recover.');
+  }
+  if (phase === 'claimed' || phase === 'runtime_installed') {
+    if (resolve(host.homeRoot) === destination) {
+      fail('backup_recover_destination_refused', 'This home is already installed here. Choose the inspected restore folder for this archive.');
+    }
+    if (resolve(host.homeRoot) !== binding.sourceHome) {
+      fail('backup_recover_archive_mismatch', 'Inspected home does not match the authenticated archive home.');
+    }
+    assertExtractMatchesArchive(destination, header, { allowRebindMutation: false });
+    return;
+  }
+  if (phase === 'rebound' || phase === 'committed') {
+    if (resolve(host.homeRoot) !== destination) {
+      fail('backup_recover_archive_mismatch', 'Interrupted recovery no longer points at this destination.');
+    }
+    assertExtractMatchesArchive(destination, header, { allowRebindMutation: true });
+    return;
+  }
+  fail('backup_recover_journal_invalid', 'Recovery journal has an unknown phase.');
 }
 
 async function inventoryDestinationWriters(destination, dependencies = {}) {
@@ -1174,30 +1266,9 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
       if (!bindingsMatch(journal, binding)) {
         fail('backup_recover_archive_mismatch', 'This inspected home is already bound to a different archive.');
       }
+      revalidateRecoveryDestination(destination, header, binding, journal.phase);
     } else {
-      const host = readHostState(destination);
-      if (resolve(host.homeRoot) === destination) {
-        fail('backup_recover_destination_refused', 'This home is already installed here. Choose the inspected restore folder for this archive.');
-      }
-      if (resolve(host.homeRoot) !== binding.sourceHome) {
-        fail('backup_recover_archive_mismatch', 'Inspected home does not match the authenticated archive home.');
-      }
-      if (!hasRecoverableIdentity(host)) {
-        fail('backup_recover_invalid', 'Inspected home has no resident identity to recover.');
-      }
-      assertExtractMatchesArchive(destination, header);
-      journal = {
-        schema: RECOVER_JOURNAL_SCHEMA,
-        inspectionRoot: destination,
-        archivePath: archive,
-        keyPath: keyFile,
-        sourceHome: binding.sourceHome,
-        packageId: binding.packageId,
-        sourceCommit: binding.sourceCommit,
-        filesDigest: binding.filesDigest,
-        phase: 'claimed',
-      };
-      writeRecoverJournal(destination, journal);
+      revalidateRecoveryDestination(destination, header, binding, 'claimed');
     }
 
     let manifest;
@@ -1212,19 +1283,38 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
       fail('backup_recover_package_mismatch', 'Payload sourceCommit does not match the authenticated archive.');
     }
 
+    if (!journal) {
+      journal = {
+        schema: RECOVER_JOURNAL_SCHEMA,
+        inspectionRoot: destination,
+        archivePath: archive,
+        keyPath: keyFile,
+        sourceHome: binding.sourceHome,
+        packageId: binding.packageId,
+        sourceCommit: binding.sourceCommit,
+        filesDigest: binding.filesDigest,
+        phase: 'claimed',
+      };
+      writeRecoverJournal(destination, journal);
+      if (dependencies.afterClaim) await dependencies.afterClaim(destination, journal);
+    }
+
     const sourceHome = binding.sourceHome;
     if (journal.phase === 'claimed') {
+      assertSafeRuntimeDestination(destination, manifest.files);
       const installedId = installMovedRuntime(payload, destination, lock);
       if (!installedId || installedId !== manifest.packageId) {
         fail('backup_recover_payload_invalid', 'Compatible runtime was not installed into the inspected home.');
       }
       journal = { ...journal, phase: 'runtime_installed', payloadPath: payload };
       writeRecoverJournal(destination, journal);
+      if (dependencies.afterRuntimeInstalled) await dependencies.afterRuntimeInstalled(destination, journal);
     }
     if (journal.phase === 'runtime_installed') {
       await rebindDestination(sourceHome, destination);
       journal = { ...journal, phase: 'rebound' };
       writeRecoverJournal(destination, journal);
+      if (dependencies.afterRebound) await dependencies.afterRebound(destination, journal);
     }
     writeRecoveredInstallReceipt(destination, manifest);
     if (journal.phase !== 'committed') {
@@ -1281,11 +1371,13 @@ function installMovedRuntime(source, destination, lock) {
   let manifest;
   try { manifest = readProductManifest(source); }
   catch { return null; }
+  assertSafeRuntimeDestination(destination, manifest.files);
   for (const entry of manifest.files) {
     if (isProductStatePath(entry.path)) continue;
     const from = join(source, entry.path);
     const to = join(destination, entry.path);
     if (!exists(from)) continue;
+    assertNoSymlinkAncestors(destination, entry.path);
     if (entry.type === 'directory') {
       mkdirSync(to, { recursive: true, mode: entry.mode });
       if (exists(to)) {
@@ -1306,6 +1398,7 @@ function installMovedRuntime(source, destination, lock) {
     }
     copyInstalledFile(from, to, entry.mode, lock);
   }
+  assertNoSymlinkAncestors(destination, 'manifest.json');
   copyInstalledFile(join(source, 'manifest.json'), join(destination, 'manifest.json'), 0o644, lock);
   return manifest.packageId;
 }
