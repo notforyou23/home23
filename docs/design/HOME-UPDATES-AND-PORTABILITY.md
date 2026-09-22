@@ -141,10 +141,13 @@ holds no home state is a unit: `bin`, `tools`, `app/node_modules`, `app/dist`,
 and files such as `app/package.json`. The installed unit moves into `previous/`
 with one rename, and the staged unit moves in with another. A current package is
 79 units, so a switch is about 160 renames and a few directory fsyncs regardless
-of its 43,000 files. The retained version is the installed tree itself, verified
-before it moves, and it shares no inode with the new software. The staged
-candidate is hashed once before anything moves, and the selected home is verified
-again before any writer is admitted. A mismatch reverses the switch. The stage
+of its 43,000 files. The retained version is the installed tree itself and
+shares no inode with the new software. A completed download stage was hashed
+before Install and remains locked during the switch. Install checks its claim,
+baseline and manifest, then verifies every selected file once before any writer
+is admitted. A mismatch reverses the switch and verifies the previous version
+before restoring it. A direct, unstaged `update` still checks both inputs before
+switching. The stage
 must be on the home's volume, and the switch consumes it. `app/`, `app/config`,
 `app/engine`, and `app/evobrew` hold state and never move. Brains are not
 replaced with links, and birth is not called. An earlier previous version is set

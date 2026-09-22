@@ -266,11 +266,13 @@ async function defaultAcquireHostLock(home, owner) {
   timer.unref();
   return () => { clearInterval(timer); rmSync(lockPath, { recursive: true, force: true }); rmSync(markerPath, { force: true }); };
 }
-function spaceFor(home, manifest, dependencies) {
-  const software = manifest.files.filter(entry => entry.type === 'file').reduce((sum, entry) => sum + BigInt(entry.size), 0n);
+function spaceFor(home, dependencies) {
+  // Both software versions already occupy this volume: the current home and
+  // the completed stage. Selection renames their units; it does not duplicate
+  // the installed tree. Only the state checkpoint needs new capacity here.
   const checkpoint = identityFiles(home).reduce((sum, relative) => sum + BigInt(lstatSync(join(home, relative)).size), 0n);
   const space = (dependencies.statfs || statfsSync)(dirname(home), dependencies.statfs ? undefined : { bigint: true });
-  return space.bavail * space.bsize >= software + checkpoint + 64n * 1024n * 1024n;
+  return space.bavail * space.bsize >= checkpoint + 64n * 1024n * 1024n;
 }
 function durableCopy(source, destination, mode) {
   mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
@@ -463,8 +465,10 @@ function refuse(home, reasons) {
 function defaultBehavior({ home, journal, identityPreserved, verify }) {
   const issues = [];
   try {
-    // Without a start since the fenced check just above, that verification still holds.
-    if (verify(home, { allowRuntimeState: true, fresh: journal.candidateStarted === true }).packageId !== journal.toPackageId) issues.push('The running tree is not the selected package.');
+    // The selected tree was fully verified before Start. A resumed controller has
+    // no cached result and checks it again; a normal Start need not re-read every
+    // package file while its writers are already using the verified version.
+    if (verify(home, { allowRuntimeState: true }).packageId !== journal.toPackageId) issues.push('The running tree is not the selected package.');
     const receipt = readPrivateJSON(join(home, '.home23-install.json'));
     if (receipt?.packageId !== journal.toPackageId || receipt?.nodePath !== join(home, 'bin', 'node')) issues.push('The installation receipt does not name the selected package.');
   } catch { issues.push('The selected installation no longer verifies.'); }
@@ -507,9 +511,11 @@ async function mutate(journal, dependencies, verify) {
       journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'baseline_changed', message: 'The installed package changed before selection. Automatic recovery stopped.' }] }, dependencies);
       return { done: publicResult(journal) };
     }
-    // The installed tree itself becomes the previous version, so verify it where it
-    // stands. Recheck when writers ran during the preflight verification.
-    if (verify(home, { allowRuntimeState: true, fresh: journal.stoppedForUpdate === true }).packageId !== installed.packageId) {
+    // A normal Host install already has a verified stage and a bound installed
+    // receipt. The old software itself is retained, and rollback verifies it
+    // before use. Unstaged installs still check every installed byte here.
+    if (!journal.reuseVerifiedStage &&
+        verify(home, { allowRuntimeState: true, fresh: journal.stoppedForUpdate === true }).packageId !== installed.packageId) {
       throw new Error('Installed software does not match its manifest. Nothing was moved.');
     }
     await (dependencies.retainPrevious || retainPrevious)(home, updateDirectoryFor(home), installed);
@@ -520,8 +526,12 @@ async function mutate(journal, dependencies, verify) {
     throw Object.assign(new Error('This update was started by an earlier updater. Resume it with the controller retained beside its journal.'), { code: 'update_controller_mismatch' });
   }
   if (rank() < RANK.applying) {
-    // Last check of the candidate while nothing has moved. The switch then consumes the stage in place.
-    if (verify(journal.stagedPayload, { fresh: true }).packageId !== journal.toPackageId) throw new Error('The staged candidate changed identity.');
+    // A Host stage was fully checked before its receipt became staged and has
+    // stayed under its lock. The selected home is fully checked before Start;
+    // a non-cooperating edit to the stage causes rollback while writers are fenced.
+    if (!journal.reuseVerifiedStage && verify(journal.stagedPayload, { fresh: true }).packageId !== journal.toPackageId) {
+      throw new Error('The staged candidate changed identity.');
+    }
     journal = await commitPhase(file, { ...journal, phase: 'applying', stagedManifestSha256: hashFile(join(journal.stagedPayload, 'manifest.json')) }, dependencies);
   }
   if (rank() < RANK.selected) {
@@ -642,19 +652,21 @@ async function runTransaction(journal, dependencies, verify) {
 }
 
 async function openTransaction({ home, candidate, staging, admit, reuseVerifiedStage = false }, dependencies, verify) {
-  const installation = inspectProductInstallation(home);
+  const installation = inspectProductInstallation(home, { verifyFiles: !reuseVerifiedStage });
   if (installation.layout !== 'product') return refuse(home, installation.reasons.length ? installation.reasons : [{ code: 'unsupported_layout', message: 'The current home is not an owned product installation.' }]);
   if (installation.reasons.some(item => item.code !== 'modified_installation')) return refuse(home, installation.reasons);
   let candidateManifest;
-  try { candidateManifest = verify(candidate); }
+  try { candidateManifest = reuseVerifiedStage ? readProductManifest(candidate) : verify(candidate); }
   catch { return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]); }
   const installed = readProductManifest(home);
   if (installed.packageId === candidateManifest.packageId) return refuse(home, [{ code: 'same_package', message: 'The candidate is the package already installed.' }]);
   const inventory = await inspectUpdateInventory(home, { installed, candidate: candidateManifest });
   const blocking = inventory.reasons.filter(item => item.code !== 'database_busy');
   if (blocking.length) return refuse(home, blocking);
-  try { verify(home, { allowRuntimeState: true }); }
-  catch { return refuse(home, [{ code: 'modified_installation', message: 'A declared installed file, mode, link, or layout has changed.' }]); }
+  if (!reuseVerifiedStage) {
+    try { verify(home, { allowRuntimeState: true }); }
+    catch { return refuse(home, [{ code: 'modified_installation', message: 'A declared installed file, mode, link, or layout has changed.' }]); }
+  }
   let processes;
   try { processes = await (dependencies.listProcesses || defaultListProcesses)(home); }
   catch (error) { return refuse(home, [{ code: error.code || 'process_inventory_unavailable', message: error.message }]); }
@@ -666,18 +678,20 @@ async function openTransaction({ home, candidate, staging, admit, reuseVerifiedS
   if (inventory.reasons.some(item => item.code === 'database_busy') && !classified.busy.length) {
     return deferred(home, 'database_busy', 'The coordination database is busy and no owned writer explains it. Wait, then retry. Nothing was changed.');
   }
-  if (!spaceFor(home, installed, dependencies)) return refuse(home, [{ code: 'insufficient_space', message: 'Not enough free space for the previous software, the verified checkpoint, and 64 MiB of headroom.' }]);
+  if (!spaceFor(home, dependencies)) return refuse(home, [{ code: 'insufficient_space', message: 'Not enough free space for the verified checkpoint and 64 MiB of headroom.' }]);
   let releaseStage = null;
   try {
     let staged;
     if (reuseVerifiedStage) {
       // Hold the existing stage lock for the whole apply so download/retry cannot rewrite it.
       releaseStage = acquireInstallLock(stageLockPath(staging));
-      staged = adoptVerifiedStage({ homeRoot: home, staging, verifyProductPayload: verify });
+      staged = adoptVerifiedStage({ homeRoot: home, staging, verifyProductPayload: verify, trustStagedReceipt: true });
     } else {
       staged = stageProductPayload({ homeRoot: home, candidatePayload: candidate, staging, verifyProductPayload: verify });
     }
-    if (verify(staged.payloadPath).packageId !== candidateManifest.packageId) return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);
+    if ((reuseVerifiedStage ? readProductManifest(staged.payloadPath) : verify(staged.payloadPath)).packageId !== candidateManifest.packageId) {
+      return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);
+    }
     if (new Set([home, dirname(home), staged.payloadPath].map(path => lstatSync(path).dev)).size !== 1) {
       return refuse(home, [{ code: 'staging_other_volume', message: 'The staged candidate must be on the same volume as the home so software can switch in place. Nothing was changed.' }]);
     }
@@ -715,7 +729,7 @@ async function withReusedStageLock(journal, verify, body) {
       // so the stage is partial by design and selection verifies the home instead.
       if (RANK[journal.phase] < RANK.applying) {
         try {
-          if (verify(journal.stagedPayload).packageId !== journal.toPackageId) {
+          if ((journal.reuseVerifiedStage ? readProductManifest(journal.stagedPayload) : verify(journal.stagedPayload)).packageId !== journal.toPackageId) {
             return refuse(journal.homeRoot, [{ code: 'candidate_integrity_failed', message: 'The staged candidate changed identity.' }]);
           }
         } catch {
@@ -757,7 +771,7 @@ export async function applyProductUpdate({ homeRoot, candidatePayload, staging, 
   return locked(home, dependencies, async () => {
     const existing = exists(journalPath(home)) ? readUpdateJournal(home) : null;
     let candidateId = null;
-    try { candidateId = verify(candidate).packageId; }
+    try { candidateId = (reuseVerifiedStage ? readProductManifest(candidate) : verify(candidate)).packageId; }
     catch { return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]); }
     if (existing && !['committed', 'rolled_back', 'aborted'].includes(existing.phase)) {
       if (existing.toPackageId !== candidateId) return refuse(home, [{ code: 'update_in_progress', message: 'An unfinished update belongs to another candidate. Resume that journal before starting a different one.' }]);

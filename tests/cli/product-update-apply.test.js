@@ -655,6 +655,8 @@ test('reuseVerifiedStage applies without a second payload copy into staging', as
   const fixture = homeFixture(t);
   const staging = fixture.staging;
   stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging });
+  const { verifyProductPayload: realVerify } = await import('../../cli/lib/product-payload.js');
+  let fullChecksDuringInstall = 0;
   const payloadFiles = JSON.parse(fs.readFileSync(path.join(staging, 'payload/manifest.json'), 'utf8'))
     .files.filter(entry => entry.type === 'file').length;
   let copiesIntoStaging = 0;
@@ -670,10 +672,14 @@ test('reuseVerifiedStage applies without a second payload copy into staging', as
       candidatePayload: path.join(staging, 'payload'),
       staging,
       reuseVerifiedStage: true,
-    }, quiet);
+    }, { ...quiet, verifyProductPayload(payloadPath, options) {
+      fullChecksDuringInstall += 1;
+      return realVerify(payloadPath, options);
+    } });
     assert.equal(result.status, 'committed');
     assert.equal(packageId(fixture.home), fixture.next.packageId);
     assert.equal(copiesIntoStaging, 0);
+    assert.equal(fullChecksDuringInstall, 1, 'Install checks the selected tree once before writer admission');
     assert.equal(readUpdateJournal(fixture.home).reuseVerifiedStage, true);
     assert.equal(readUpdateJournal(fixture.home).stagedPayload, path.join(staging, 'payload'));
     assert.equal(fs.existsSync(`${staging}-apply`), false);
@@ -776,7 +782,7 @@ test('committed reuseVerifiedStage replay succeeds when the reused stage is gone
   assert.equal(packageId(fixture.home), fixture.next.packageId);
 });
 
-test('early reuseVerifiedStage resume refuses a missing or damaged stage', async t => {
+test('early reuseVerifiedStage resume refuses a missing stage and rolls back damaged bytes', async t => {
   async function interruptAtRetained(fixture, staging) {
     stageProductPayload({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging });
     await assert.rejects(
@@ -811,9 +817,14 @@ test('early reuseVerifiedStage resume refuses a missing or damaged stage', async
   fs.appendFileSync(path.join(damagedFixture.staging, 'payload/bin/node'), '#damaged-early\n');
   const damaged = await resumeProductUpdate({ homeRoot: damagedFixture.home }, quiet);
   assert.equal(damaged.ok, false);
-  assert.equal(damaged.status, 'refused');
-  assert.equal(damaged.reasons[0].code, 'candidate_integrity_failed');
-  assert.equal(readUpdateJournal(damagedFixture.home).phase, 'retained');
+  assert.equal(damaged.status, 'rolled_back');
+  assert.equal(damaged.reasons[0].code, 'candidate_unhealthy');
+  assert.equal(readUpdateJournal(damagedFixture.home).phase, 'rolled_back');
+  assert.equal(packageId(damagedFixture.home), damagedFixture.installed.packageId);
+  assert.equal(damaged.identityPreserved, true);
+  assert.deepEqual(preserved(damagedFixture.home), {
+    conversation: 'hello-milo', seed: '{"id":"seed-1"}\n', config: 'name: milo\n', value: 'same-home', version: SUPPORTED_COORDINATION_SCHEMA,
+  });
 });
 
 test('post-selection reuseVerifiedStage resume does not require the download stage', async t => {

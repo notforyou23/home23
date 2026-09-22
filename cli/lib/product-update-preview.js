@@ -39,14 +39,14 @@ function classifyUninstalled(root) {
   return 'unknown';
 }
 
-/** Inspect only the installation receipt, manifest, and declared package files. */
-export function inspectProductInstallation(homeRoot) {
+/** Inspect an installation; callers may defer declared-file verification until selection. */
+export function inspectProductInstallation(homeRoot, { verifyFiles = true } = {}) {
   const root = previewRoot(homeRoot);
-  try { return inspectRoot(root); }
+  try { return inspectRoot(root, verifyFiles); }
   catch { return { root, layout: 'unknown', identity: null, reasons: [reason('layout_unreadable', 'The installation layout could not be inspected.')] }; }
 }
 
-function inspectRoot(root) {
+function inspectRoot(root, verifyFiles) {
   let stat;
   try { stat = lstatSync(root); } catch (error) {
     if (error.code === 'ENOENT') return { root, layout: 'absent', identity: null, reasons: [] };
@@ -71,15 +71,17 @@ function inspectRoot(root) {
   const receiptMatches = receipt?.schema === INSTALL_SCHEMA && receipt.status === 'installed' && receipt.homeRoot === root &&
     receipt.appRoot === join(root, 'app') && receipt.nodePath === join(root, 'bin', 'node') && receipt.pm2Path === join(root, 'tools', 'node_modules', 'pm2', 'bin', 'pm2') && receipt.packageId === manifest.packageId && receipt.sourceCommit === manifest.sourceCommit;
   if (!receiptMatches) return { root, layout: 'product', identity, reasons: [reason('receipt_mismatch', 'The installation receipt does not match its product manifest and paths.')] };
-  try { verifyProductPayload(root, { allowRuntimeState: true }); }
-  catch { return { root, layout: 'product', identity, reasons: [reason('modified_installation', 'A declared installed file, mode, link, or layout has changed.')] }; }
+  if (verifyFiles) {
+    try { verifyProductPayload(root, { allowRuntimeState: true }); }
+    catch { return { root, layout: 'product', identity, reasons: [reason('modified_installation', 'A declared installed file, mode, link, or layout has changed.')] }; }
+  }
   if (marker(root, 'app/instances/.house/coordination/active-release.json')) return { root, layout: 'product', identity, reasons: [reason('mixed_managed_layout', 'A managed release marker is present inside this product installation.')] };
   return { root, layout: 'product', identity, reasons: [] };
 }
 
 /** Compare an owned installation with one explicit candidate package, without claiming readiness. */
-export function previewProductUpdate({ homeRoot, candidatePayload }) {
-  const current = inspectProductInstallation(homeRoot);
+export function previewProductUpdate({ homeRoot, candidatePayload }, { verifyFiles = true } = {}) {
+  const current = inspectProductInstallation(homeRoot, { verifyFiles });
   const candidateRoot = candidatePayload ? previewRoot(candidatePayload) : null;
   const result = { ok: true, status: 'preview', homeRoot: current.root, current, candidate: null,
     canInstall: false, publisherTrust: 'unverified', stateMigrationCompatibility: 'unverified', reasons: [] };
@@ -92,10 +94,12 @@ export function previewProductUpdate({ homeRoot, candidatePayload }) {
     result.reasons.push(reason('candidate_platform_unsupported', 'The candidate targets another platform or architecture.'));
     return result;
   }
-  try { verifyProductPayload(candidateRoot); }
-  catch {
-    result.reasons.push(reason('candidate_integrity_failed', 'The candidate package failed its integrity checks.'));
-    return result;
+  if (verifyFiles) {
+    try { verifyProductPayload(candidateRoot); }
+    catch {
+      result.reasons.push(reason('candidate_integrity_failed', 'The candidate package failed its integrity checks.'));
+      return result;
+    }
   }
   if (current.layout !== 'product' || current.reasons.length) {
     result.reasons.push(...current.reasons);

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, sep } from 'node:path';
 import { privateDirectory, privateJSON, readPrivateJSON } from './product-environment.js';
 import { inspectProductInstallation, previewProductUpdate, previewRoot } from './product-update-preview.js';
-import { acquireInstallLock, inventoryProductPayload, verifyProductPayload as verifyProductPayloadDefault } from './product-payload.js';
+import { acquireInstallLock, inventoryProductPayload, readProductManifest, verifyProductPayload as verifyProductPayloadDefault } from './product-payload.js';
 
 const SCHEMA = 'home23.product-stage.v1';
 const inside = (root, target) => target === root || target.startsWith(root + sep);
@@ -131,9 +131,10 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
 /**
  * Reuse an already-staged payload in place. Caller must hold the stage lock so a
  * download/retry cannot mutate the tree while apply or resume owns it.
- * Revalidates the claim binding and payload bytes; never copies.
+ * Revalidates the claim binding; the default also rechecks payload bytes.
+ * Install can defer that byte check until selection, before writer admission.
  */
-export function adoptVerifiedStage({ homeRoot, staging, verifyProductPayload = verifyProductPayloadDefault }) {
+export function adoptVerifiedStage({ homeRoot, staging, verifyProductPayload = verifyProductPayloadDefault, trustStagedReceipt = false }) {
   const home = previewRoot(homeRoot), destination = previewRoot(staging);
   if (inside(home, destination) || inside(destination, home)) {
     throw new Error('Home and staging directories must be separate.');
@@ -153,9 +154,11 @@ export function adoptVerifiedStage({ homeRoot, staging, verifyProductPayload = v
   }
   privateDirectory(destination);
   if (fs.readdirSync(destination).some(name => name !== 'payload')) throw new Error('Unexpected staging contents.');
-  // Revalidate staged bytes before trust or baseline checks so tampering fails closed.
-  const manifest = verifyProductPayload(payload);
-  const preview = previewProductUpdate({ homeRoot: home, candidatePayload: payload });
+  // Install may rely on a completed stage while holding its exclusive lock.
+  // The selected home is checked byte-for-byte before any writer is admitted;
+  // if the stage changed outside that lock, selection rolls back under the fence.
+  const manifest = trustStagedReceipt ? readProductManifest(payload) : verifyProductPayload(payload);
+  const preview = previewProductUpdate({ homeRoot: home, candidatePayload: payload }, { verifyFiles: !trustStagedReceipt });
   if (preview.reasons.length !== 1 || !['same_package', 'different_package'].includes(preview.reasons[0].code)) {
     throw new Error('The home or candidate is not eligible for local staging.');
   }
@@ -166,8 +169,8 @@ export function adoptVerifiedStage({ homeRoot, staging, verifyProductPayload = v
   if (!Object.entries(binding).every(([key, value]) => receipt[key] === value)) {
     throw new Error('Staging claim belongs to another home, baseline, or candidate.');
   }
-  if (verifyProductPayload(payload).packageId !== manifest.packageId) throw new Error('Staged package identity changed.');
-  const current = inspectProductInstallation(home);
+  if (!trustStagedReceipt && verifyProductPayload(payload).packageId !== manifest.packageId) throw new Error('Staged package identity changed.');
+  const current = inspectProductInstallation(home, { verifyFiles: !trustStagedReceipt });
   if (current.reasons.length || current.identity?.packageId !== binding.currentPackageId) throw new Error('Home baseline changed during staging.');
   return stageResult(destination, receipt, true);
 }
