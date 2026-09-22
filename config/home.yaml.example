@@ -118,7 +118,7 @@ providers:
       - llama3.2
   anthropic:
     defaultModels:
-      - claude-sonnet-4-7
+      - claude-sonnet-5
       - claude-opus-4-8
       - claude-haiku-4-5
   openai:
@@ -350,7 +350,7 @@ models:
       model: llama3.2
     sonnet:
       provider: anthropic
-      model: claude-sonnet-4-7
+      model: claude-sonnet-5
     opus:
       provider: anthropic
       model: claude-opus-4-8

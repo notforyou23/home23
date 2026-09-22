@@ -969,7 +969,7 @@ function formatToolResultContent(result, isClaudeFormat = false) {
  */
 async function handleFunctionCalling(openai, anthropic, xai, indexer, params, eventEmitter, options = {}) {
   const {
-    message, currentFolder, model = 'claude-sonnet-4-7', context = [],
+    message, currentFolder, model = 'claude-sonnet-5', context = [],
     documentContent, selectedText, fileName, language,
     fileTreeContext, conversationHistory, conversationSummary,
     allowedRoot, brainEnabled = false,
@@ -1707,7 +1707,7 @@ Execute the pending steps now. Start with the first step that has status "pendin
         }
         
         // Use the selected model as-is (supports switching mid-conversation).
-        // If the model is provider-prefixed (e.g. "anthropic/claude-sonnet-4-7"), strip the prefix.
+        // If the model is provider-prefixed (e.g. "anthropic/claude-sonnet-5"), strip the prefix.
         const claudeModel = effectiveModel;
 
         console.log(`[AI] Anthropic model selected="${requestedModelSelection}" effective="${claudeModel}"`);

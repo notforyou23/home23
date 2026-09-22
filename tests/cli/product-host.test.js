@@ -789,7 +789,9 @@ test('catalog includes openai-codex beside API-key providers', t => {
     encoding: 'utf8',
   }));
   assert.ok(result.providers.some(provider => provider.id === 'openai-codex' && provider.models.length));
-  assert.ok(result.providers.some(provider => provider.id === 'anthropic' && provider.models.length));
+  const anthropic = result.providers.find(provider => provider.id === 'anthropic');
+  assert.ok(anthropic?.models.some(model => model.id === 'claude-sonnet-5'));
+  assert.equal(anthropic.models.some(model => model.id === 'claude-sonnet-4-7'), false);
   assert.ok(result.providers.some(provider => provider.id === 'openai' && provider.models.length));
 });
 
@@ -900,7 +902,7 @@ test('create admits a fixture oauth account and refuses a missing account withou
     runHostAction('create', {
       homeRoot: replaceRoot,
       input: {
-        profile: { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-4-7', timezone: 'UTC' },
+        profile: { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-5', timezone: 'UTC' },
         credential: { provider: 'anthropic', apiKey: 'sk-should-not-replace-oauth' },
       },
     }, {
@@ -913,7 +915,7 @@ test('create admits a fixture oauth account and refuses a missing account withou
 });
 
 test('create retry reuses the selected provider saved API key and ignores another provider key', async t => {
-  const profile = { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-4-7', timezone: 'UTC' };
+  const profile = { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-5', timezone: 'UTC' };
   const homeRoot = home(t, { birth: true });
   await assert.rejects(
     runHostAction('create', {
@@ -975,7 +977,7 @@ test('create refuses oauth that is configured but neither valid nor refreshable'
     runHostAction('create', {
       homeRoot,
       input: {
-        profile: { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-4-7', timezone: 'UTC' },
+        profile: { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-5', timezone: 'UTC' },
         credential: { provider: 'anthropic' },
       },
     }, {
@@ -1003,7 +1005,7 @@ test('create refuses oauth that is configured but neither valid nor refreshable'
   const admitted = await runHostAction('create', {
     homeRoot,
     input: {
-      profile: { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-4-7', timezone: 'UTC' },
+      profile: { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-5', timezone: 'UTC' },
       credential: { provider: 'anthropic' },
     },
   }, {

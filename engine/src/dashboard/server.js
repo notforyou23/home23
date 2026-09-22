@@ -9499,7 +9499,7 @@ You are empowered to explore and understand. The user trusts you to discover the
         const { 
           runDir, 
           queryTimestamps = [], 
-          model = 'claude-sonnet-4-7',
+          model = 'claude-sonnet-5',
           reviewType = 'enterprise',
           customPrompt = null
         } = req.body;
@@ -9570,7 +9570,7 @@ You are empowered to explore and understand. The user trusts you to discover the
         proc.unref();  // Allow parent to exit independently
         
         const timeEstimate = queryTimestamps.length * 
-          (model === 'claude-opus-4-8' ? 25 : model === 'claude-sonnet-4-7' ? 15 : 20);
+          (model === 'claude-opus-4-8' ? 25 : model === 'claude-sonnet-5' ? 15 : 20);
         
         res.json({
           success: true,

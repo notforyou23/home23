@@ -15,11 +15,11 @@
  * const registry = await createRegistry();
  * 
  * // Get provider for a model
- * const provider = registry.getProvider('claude-sonnet-4-7');
+ * const provider = registry.getProvider('claude-sonnet-5');
  * 
  * // Use the provider
  * const response = await provider.createMessage({
- *   model: 'claude-sonnet-4-7',
+ *   model: 'claude-sonnet-5',
  *   messages: [{ role: 'user', content: 'Hello!' }]
  * });
  * ```
