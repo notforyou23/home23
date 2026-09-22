@@ -1,15 +1,135 @@
 /** Read-only product installation and candidate preview. No network or writes. */
-import { lstatSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { lstatSync, readdirSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { absoluteHome, readPrivateJSON } from './product-environment.js';
 import { readProductManifest, verifyProductPayload } from './product-payload.js';
 import { compareUpdateContracts, inspectStatePreservation } from './product-update-plan.js';
 
 const INSTALL_SCHEMA = 'home23.product-install.v1';
-const reason = (code, message) => ({ code, message });
+const ADOPTION_SCHEMA = 'home23.managed-source-adoption.v1';
+const reason = (code, message, extra = {}) => ({ code, message, ...extra });
+
+const ADOPTION_REBIND = new Set([
+  'ecosystem.config.cjs',
+  'instances/.house/coordination/active-release.json',
+  'instances/.house/source-authority.json',
+]);
+const ADOPTION_PRESERVE_FILES = new Set([
+  'config/home.yaml', 'config/targets.yaml', 'config/secrets.yaml',
+  'config/agents.json', 'config/cron-jobs.json',
+]);
+const ADOPTION_REBUILDABLE = new Set([
+  'package.json', 'package-lock.json', 'npm-shrinkwrap.json',
+  'node_modules', 'dist', 'logs', '.git',
+]);
+const ADOPTION_REBUILDABLE_PREFIXES = [
+  'node_modules/', 'dist/', 'logs/', '.git/',
+  'engine/logs/',
+];
 
 function marker(root, relative) {
   try { lstatSync(join(root, relative)); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+
+function sensitivePresenceOnly(relative) {
+  const name = basename(relative);
+  return name === 'secrets.yaml' || /token/i.test(name);
+}
+
+/** Classify one relative path for managed/source adoption. Presence only; never opens files. */
+export function classifyAdoptionPath(relative) {
+  if (ADOPTION_REBIND.has(relative)) return 'rebind';
+  if (relative === 'birth-receipt.json' || relative.endsWith('/birth-receipt.json')) return 'preserve';
+  if (relative === 'seed-ledger.jsonl' || relative.endsWith('/seed-ledger.jsonl')) return 'preserve';
+  if (ADOPTION_PRESERVE_FILES.has(relative)) return 'preserve';
+  if (relative === 'config' || relative.startsWith('config/')) return 'preserve';
+  if (relative === 'instances' || relative.startsWith('instances/')) return 'preserve';
+  if (ADOPTION_REBUILDABLE.has(relative)) return 'rebuildable';
+  if (ADOPTION_REBUILDABLE_PREFIXES.some(prefix => relative.startsWith(prefix))) return 'rebuildable';
+  return 'unknown';
+}
+
+function walkAdoptionPaths(root) {
+  const paths = [];
+  const visit = relative => {
+    const absolute = relative ? join(root, relative) : root;
+    const stat = lstatSync(absolute);
+    if (relative) {
+      const type = stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : 'other';
+      const role = type === 'other' ? 'unknown' : classifyAdoptionPath(relative);
+      const entry = { path: relative, type, role };
+      if (sensitivePresenceOnly(relative)) entry.contents = 'unopened';
+      paths.push(entry);
+      if (type === 'symlink' || type === 'other' || type !== 'directory') return;
+    } else if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      return;
+    }
+    for (const name of readdirSync(absolute).sort()) visit(relative ? `${relative}/${name}` : name);
+  };
+  visit('');
+  return paths;
+}
+
+function adoptionHasHomeState(paths) {
+  return paths.some(entry => {
+    if (entry.role !== 'preserve' || entry.type === 'directory') return false;
+    if (ADOPTION_PRESERVE_FILES.has(entry.path)) return true;
+    if (entry.path === 'birth-receipt.json' || entry.path.endsWith('/birth-receipt.json')) return true;
+    if (entry.path === 'seed-ledger.jsonl' || entry.path.endsWith('/seed-ledger.jsonl')) return true;
+    return entry.path.startsWith('instances/') && !entry.path.includes('/.house/');
+  });
+}
+
+/**
+ * Read-only managed/source adoption plan. Never writes, never opens secrets or
+ * token files, never runs home birth, and never claims product install adoption.
+ */
+export function planManagedSourceAdoption(homeRoot) {
+  const current = inspectProductInstallation(homeRoot);
+  const root = current.root;
+  const plan = {
+    homeBirth: 'not_run',
+    seedLedgers: 'preserve',
+    encoderRecipe: 'unchanged',
+  };
+  const result = {
+    schema: ADOPTION_SCHEMA,
+    root,
+    layout: current.layout,
+    canAdopt: false,
+    reasons: [],
+    inventory: { complete: false, paths: [] },
+    plan,
+  };
+  if (current.layout === 'absent') {
+    result.reasons.push(reason('layout_absent', 'No home directory is present to adopt.'));
+    return result;
+  }
+  if (current.layout === 'product') {
+    result.reasons.push(reason('product_layout', 'Owned product installations are not adopted through the managed/source adapter.'));
+    return result;
+  }
+  if (current.layout !== 'managed' && current.layout !== 'source') {
+    result.reasons.push(reason('unsupported_layout', 'Only managed or source layouts produce an adoption plan.'));
+    return result;
+  }
+  let paths;
+  try { paths = walkAdoptionPaths(root); }
+  catch {
+    result.reasons.push(reason('inventory_unreadable', 'The adoption inventory could not be walked.'));
+    return result;
+  }
+  result.inventory.paths = paths;
+  const unknown = paths.filter(entry => entry.role === 'unknown');
+  for (const entry of unknown) {
+    result.reasons.push(reason('unknown_state', `Unclassified path ${entry.path} blocks adoption until it is preserve, rebind, or rebuildable.`, { path: entry.path }));
+  }
+  if (!adoptionHasHomeState(paths)) {
+    result.reasons.push(reason('inventory_incomplete', 'Managed/source adoption requires classified home state beyond release or source markers.'));
+  }
+  result.inventory.complete = result.reasons.length === 0;
+  result.canAdopt = result.inventory.complete;
+  return result;
 }
 
 export function previewRoot(value) {
