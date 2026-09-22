@@ -868,8 +868,9 @@ function assertExtractMatchesArchive(destination, header, { allowRebindMutation 
   }
 }
 
-/** Refuse symlink ancestors that would let installMovedRuntime write outside the destination. */
-function assertNoSymlinkAncestors(root, relativePath) {
+/** Refuse symlink ancestors that would let installMovedRuntime write outside the destination.
+ * An expected product-manifest symlink may already exist at the leaf after a partial install. */
+function assertNoSymlinkAncestors(root, relativePath, { expectedLeafSymlinkTarget = null } = {}) {
   if (!safeRelative(relativePath)) {
     fail('backup_recover_unsafe_path', `Recovery path is invalid: ${relativePath}`);
   }
@@ -880,6 +881,12 @@ function assertNoSymlinkAncestors(root, relativePath) {
     if (!exists(current)) return;
     const stat = lstatSync(current);
     if (stat.isSymbolicLink()) {
+      const isLeaf = index === parts.length - 1;
+      if (isLeaf && typeof expectedLeafSymlinkTarget === 'string') {
+        const actual = readlinkSync(current);
+        if (actual === expectedLeafSymlinkTarget) return;
+        fail('backup_recover_unsafe_path', `Recovery destination symlink target differs at ${relativePath}.`);
+      }
       fail('backup_recover_unsafe_path', `Recovery destination has an unsafe symlink at ${parts.slice(0, index + 1).join('/')}.`);
     }
     if (index < parts.length - 1 && !stat.isDirectory()) {
@@ -888,21 +895,36 @@ function assertNoSymlinkAncestors(root, relativePath) {
   }
 }
 
-function assertSafeRuntimeDestination(destination, files) {
+function expectedPayloadSymlinkTarget(payloadRoot, entry) {
+  if (!entry || entry.type !== 'symlink' || typeof entry.path !== 'string') return null;
+  if (typeof entry.target === 'string') return entry.target;
+  if (typeof payloadRoot !== 'string') return null;
+  const from = join(payloadRoot, entry.path);
+  if (!exists(from) || !lstatSync(from).isSymbolicLink()) return null;
+  return readlinkSync(from);
+}
+
+function assertSafeRuntimeDestination(destination, files, { payloadRoot = null } = {}) {
   for (const entry of files) {
     if (!entry || typeof entry.path !== 'string') continue;
     if (isProductStatePath(entry.path)) continue;
-    assertNoSymlinkAncestors(destination, entry.path);
+    assertNoSymlinkAncestors(destination, entry.path, {
+      expectedLeafSymlinkTarget: expectedPayloadSymlinkTarget(payloadRoot, entry),
+    });
   }
   assertNoSymlinkAncestors(destination, 'manifest.json');
 }
 
-function revalidateRecoveryDestination(destination, header, binding, phase) {
+function revalidateRecoveryDestination(destination, header, binding, phase, journal = null) {
   const host = readHostState(destination);
   if (!hasRecoverableIdentity(host)) {
     fail('backup_recover_invalid', 'Inspected home has no resident identity to recover.');
   }
-  if (phase === 'claimed' || phase === 'runtime_installed') {
+  const midRebind = phase === 'runtime_installed'
+    && journal?.rebindPlan
+    && typeof journal.rebindPlan === 'object'
+    && resolve(host.homeRoot) === destination;
+  if (phase === 'claimed' || (phase === 'runtime_installed' && !midRebind)) {
     if (resolve(host.homeRoot) === destination) {
       fail('backup_recover_destination_refused', 'This home is already installed here. Choose the inspected restore folder for this archive.');
     }
@@ -912,7 +934,7 @@ function revalidateRecoveryDestination(destination, header, binding, phase) {
     assertExtractMatchesArchive(destination, header, { allowRebindMutation: false });
     return;
   }
-  if (phase === 'rebound' || phase === 'committed') {
+  if (midRebind || phase === 'rebound' || phase === 'committed') {
     if (resolve(host.homeRoot) !== destination) {
       fail('backup_recover_archive_mismatch', 'Interrupted recovery no longer points at this destination.');
     }
@@ -1174,15 +1196,12 @@ function sourceHomePresent(source) {
   }
 }
 
-async function rebindDestination(source, destination) {
+async function prepareRebindPlan(source, destination) {
   const host = readHostState(destination);
   const recordedHomeRoot = (typeof host.homeRoot === 'string' && isAbsolute(host.homeRoot) && !host.homeRoot.includes('\0'))
     ? resolve(host.homeRoot)
     : null;
   const sourcePresent = sourceHomePresent(source);
-
-  // When the original machine directory is gone, rewrite from the destination Host
-  // record's homeRoot string. Do not touch source install receipts or invent a payload.
   let rewriteFrom;
   let oldPorts = null;
   if (sourcePresent) {
@@ -1198,23 +1217,63 @@ async function rebindDestination(source, destination) {
     }
     rewriteFrom = recordedHomeRoot;
   }
+  let ports = host.ports && typeof host.ports === 'object' ? { ...host.ports } : null;
+  const disjoint = Boolean(oldPorts && ports && Number.isInteger(ports.coordination) && ports.coordination !== oldPorts.coordination);
+  if (!disjoint) ports = await choosePortPlan({ encoderRequired: host.encoderRequired === true });
+  let residentPorts = null;
+  if (host.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap)) {
+    const residents = Object.keys(host.residentMap).filter(name => /^[a-z][a-z0-9-]{0,62}$/.test(name));
+    if (residents.length > 1) residentPorts = residentInstancePortSets(ports, residents);
+  }
+  return {
+    rewriteFrom,
+    oldPorts,
+    ports,
+    residentPorts,
+    recordedHomeRoot,
+    sourcePresent,
+    encoderRequired: host.encoderRequired === true,
+  };
+}
+
+async function rebindDestination(source, destination, options = {}) {
+  const plan = options.plan && typeof options.plan === 'object' ? options.plan : null;
+  const host = readHostState(destination);
+  let rewriteFrom;
+  let oldPorts = null;
+  let ports;
+  let residentPorts = null;
+  let sourcePresent;
+
+  if (plan) {
+    rewriteFrom = plan.rewriteFrom;
+    oldPorts = plan.oldPorts && typeof plan.oldPorts === 'object' ? plan.oldPorts : null;
+    ports = plan.ports && typeof plan.ports === 'object' ? { ...plan.ports } : null;
+    residentPorts = plan.residentPorts && typeof plan.residentPorts === 'object' ? plan.residentPorts : null;
+    sourcePresent = plan.sourcePresent === true;
+    if (typeof rewriteFrom !== 'string' || !isAbsolute(rewriteFrom) || !ports) {
+      fail('move_rebind_incomplete', 'Recovery rebind plan is incomplete.');
+    }
+  } else {
+    const prepared = await prepareRebindPlan(source, destination);
+    rewriteFrom = prepared.rewriteFrom;
+    oldPorts = prepared.oldPorts;
+    ports = prepared.ports;
+    residentPorts = prepared.residentPorts;
+    sourcePresent = prepared.sourcePresent;
+  }
 
   host.homeRoot = destination;
   host.desiredRunning = false;
   host.phase = 'stopped';
-  const disjoint = Boolean(oldPorts && host.ports && Number.isInteger(host.ports.coordination) && host.ports.coordination !== oldPorts.coordination);
-  if (!disjoint) host.ports = await choosePortPlan({ encoderRequired: host.encoderRequired === true });
-  let residentPorts = null;
-  if (host.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap)) {
-    const residents = Object.keys(host.residentMap).filter(name => /^[a-z][a-z0-9-]{0,62}$/.test(name));
-    if (residents.length > 1) {
-      residentPorts = residentInstancePortSets(host.ports, residents);
-      for (const name of residents) {
-        host.residentMap[name] = { ...(host.residentMap[name] || {}), ports: residentPorts[name] };
-      }
+  host.ports = ports;
+  if (residentPorts && host.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap)) {
+    for (const name of Object.keys(residentPorts)) {
+      host.residentMap[name] = { ...(host.residentMap[name] || {}), ports: residentPorts[name] };
     }
   }
   writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
+  if (options.afterHostWrite) await options.afterHostWrite(destination, host);
   await rebindMachineConfiguration(rewriteFrom, destination, oldPorts, host.ports, { residentPorts });
   if (!sourcePresent) return null;
   const receiptPath = join(rewriteFrom, '.home23-install.json');
@@ -1266,9 +1325,9 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
       if (!bindingsMatch(journal, binding)) {
         fail('backup_recover_archive_mismatch', 'This inspected home is already bound to a different archive.');
       }
-      revalidateRecoveryDestination(destination, header, binding, journal.phase);
+      revalidateRecoveryDestination(destination, header, binding, journal.phase, journal);
     } else {
-      revalidateRecoveryDestination(destination, header, binding, 'claimed');
+      revalidateRecoveryDestination(destination, header, binding, 'claimed', null);
     }
 
     let manifest;
@@ -1301,8 +1360,8 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
 
     const sourceHome = binding.sourceHome;
     if (journal.phase === 'claimed') {
-      assertSafeRuntimeDestination(destination, manifest.files);
-      const installedId = installMovedRuntime(payload, destination, lock);
+      assertSafeRuntimeDestination(destination, manifest.files, { payloadRoot: payload });
+      const installedId = installMovedRuntime(payload, destination, lock, dependencies);
       if (!installedId || installedId !== manifest.packageId) {
         fail('backup_recover_payload_invalid', 'Compatible runtime was not installed into the inspected home.');
       }
@@ -1311,7 +1370,14 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
       if (dependencies.afterRuntimeInstalled) await dependencies.afterRuntimeInstalled(destination, journal);
     }
     if (journal.phase === 'runtime_installed') {
-      await rebindDestination(sourceHome, destination);
+      if (!journal.rebindPlan || typeof journal.rebindPlan !== 'object') {
+        journal = { ...journal, rebindPlan: await prepareRebindPlan(sourceHome, destination) };
+        writeRecoverJournal(destination, journal);
+      }
+      await rebindDestination(sourceHome, destination, {
+        plan: journal.rebindPlan,
+        afterHostWrite: dependencies.afterHostRebindWrite,
+      });
       journal = { ...journal, phase: 'rebound' };
       writeRecoverJournal(destination, journal);
       if (dependencies.afterRebound) await dependencies.afterRebound(destination, journal);
@@ -1367,17 +1433,20 @@ function copyInstalledFile(from, to, mode, lock) {
   renameSync(temporary, to);
 }
 
-function installMovedRuntime(source, destination, lock) {
+function installMovedRuntime(source, destination, lock, dependencies = {}) {
   let manifest;
   try { manifest = readProductManifest(source); }
   catch { return null; }
-  assertSafeRuntimeDestination(destination, manifest.files);
+  assertSafeRuntimeDestination(destination, manifest.files, { payloadRoot: source });
   for (const entry of manifest.files) {
     if (isProductStatePath(entry.path)) continue;
     const from = join(source, entry.path);
     const to = join(destination, entry.path);
     if (!exists(from)) continue;
-    assertNoSymlinkAncestors(destination, entry.path);
+    const expectedLeaf = entry.type === 'symlink' && lstatSync(from).isSymbolicLink()
+      ? readlinkSync(from)
+      : expectedPayloadSymlinkTarget(source, entry);
+    assertNoSymlinkAncestors(destination, entry.path, { expectedLeafSymlinkTarget: expectedLeaf });
     if (entry.type === 'directory') {
       mkdirSync(to, { recursive: true, mode: entry.mode });
       if (exists(to)) {
@@ -1389,7 +1458,11 @@ function installMovedRuntime(source, destination, lock) {
     if (entry.type === 'symlink') {
       mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
       if (exists(to)) unlinkSync(to);
-      symlinkSync(readlinkSync(from), to);
+      const target = readlinkSync(from);
+      symlinkSync(target, to);
+      if (dependencies.afterInstalledSymlink) {
+        dependencies.afterInstalledSymlink(destination, entry.path, target);
+      }
       continue;
     }
     if (exists(to) && lstatSync(to).isFile() && streamHash(from, lock) === streamHash(to, lock)) {
