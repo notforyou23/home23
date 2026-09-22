@@ -477,6 +477,40 @@ export function recoverDownload({ staging } = {}) {
 }
 
 /**
+ * Select a verified staged download for install via the existing update controller.
+ * Does not apply. Absent/copying/damaged stay canInstall false with no candidate path.
+ */
+export function selectStagedInstall({ staging } = {}) {
+  const recovery = recoverDownload({ staging });
+  if (recovery.status !== 'staged') {
+    return {
+      ok: false,
+      status: recovery.status,
+      packageId: recovery.packageId,
+      resumed: recovery.resumed === true,
+      canInstall: false,
+      networkInstall: false,
+      selected: false,
+      candidatePayload: null,
+      usesUpdateController: true,
+    };
+  }
+  const destination = resolve(staging);
+  return {
+    ok: true,
+    status: 'staged',
+    packageId: recovery.packageId,
+    resumed: false,
+    canInstall: false,
+    networkInstall: false,
+    selected: true,
+    candidatePayload: join(destination, 'payload'),
+    staging: destination,
+    usesUpdateController: true,
+  };
+}
+
+/**
  * Accept only explicit loopback HTTP URLs with a port. No HTTPS, no public hosts.
  */
 function assertLoopbackHttpArchiveUrl(url) {

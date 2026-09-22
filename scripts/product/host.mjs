@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** Native Host bridge: one JSON result on stdout; credentials enter stdin only. */
+import { resolve } from 'node:path';
 import { absoluteHome, productEnvironment } from '../../cli/lib/product-environment.js';
 const originalStdout = process.stdout.write.bind(process.stdout);
 // Third-party preparation modules use console.log. Keep protocol stdout clean.
@@ -8,20 +9,21 @@ const args = process.argv.slice(2);
 const action = args.shift();
 let homeRoot;
 const sensitive = [];
+const USAGE = 'Usage: host.mjs preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]';
 try {
   const options = {};
   while (args.length) {
     const key = args.shift();
     if (key === '--admit') {
-      if (action !== 'update' || options.admit) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|download-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]');
+      if (action !== 'update' || options.admit) throw new Error(USAGE);
       options.admit = true;
       continue;
     }
-    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection', '--destination'].includes(key) || !args.length || options[key]) throw new Error('Usage: host.mjs preview|stage|update|update-resume|check-update|stage-release|download-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]');
+    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection', '--destination'].includes(key) || !args.length || options[key]) throw new Error(USAGE);
     options[key] = args.shift();
   }
   if (action !== 'backup-inspect') homeRoot = absoluteHome(options['--home']);
-  if (options['--staging'] && !['stage', 'update', 'stage-release', 'download-release'].includes(action)) throw new Error('--staging is only supported by stage, update, stage-release, and download-release.');
+  if (options['--staging'] && !['stage', 'update', 'stage-release', 'download-release', 'install-staged'].includes(action)) throw new Error('--staging is only supported by stage, update, stage-release, download-release, and install-staged.');
   if (options['--feed'] && !['check-update', 'stage-release', 'download-release'].includes(action)) throw new Error('--feed is only supported by check-update, stage-release, and download-release.');
   if (options['--trust-key'] && !['stage-release', 'download-release'].includes(action)) throw new Error('--trust-key is only supported by stage-release and download-release.');
   let input = {};
@@ -61,6 +63,59 @@ try {
     const result = inspectReleaseFeed({ homeRoot, feedPath: options['--feed'] });
     originalStdout(JSON.stringify(result) + '\n');
     if (result.status === 'unavailable' || result.status === 'damaged' || result.status === 'incompatible') process.exitCode = 1;
+  } else if (action === 'install-staged') {
+    if (!options['--staging']) throw new Error('install-staged requires --staging ABS.');
+    const { selectStagedInstall } = await import('../../cli/lib/product-update-feed.js');
+    const selection = selectStagedInstall({ staging: options['--staging'] });
+    if (!selection.selected) {
+      originalStdout(JSON.stringify(selection) + '\n');
+      process.exitCode = 1;
+    } else {
+      const { applyProductUpdate } = await import('../../cli/lib/product-update-apply.js');
+      // The verified payload lives inside the download stage. Apply needs a
+      // separate staging directory; those two trees must not contain each other.
+      const result = await applyProductUpdate({
+        homeRoot,
+        candidatePayload: selection.candidatePayload,
+        staging: `${resolve(options['--staging'])}-apply`,
+      });
+      originalStdout(JSON.stringify({
+        ...result,
+        usesUpdateController: true,
+        selectedCandidatePayload: selection.candidatePayload,
+        packageId: result.toPackageId || selection.packageId,
+        // Not installed until the update controller returns committed.
+        installed: result.status === 'committed',
+      }) + '\n');
+      if (result.ok === false) process.exitCode = 1;
+    }
+  } else if (action === 'update-recovery') {
+    const { readUpdateJournal } = await import('../../cli/lib/product-update-apply.js');
+    const journal = readUpdateJournal(homeRoot);
+    if (!journal) {
+      originalStdout(JSON.stringify({
+        ok: true,
+        status: 'absent',
+        phase: 'absent',
+        homeRoot,
+        canInstall: false,
+        networkInstall: false,
+        current: false,
+      }) + '\n');
+    } else {
+      originalStdout(JSON.stringify({
+        ok: true,
+        status: journal.phase,
+        phase: journal.phase,
+        homeRoot: journal.homeRoot,
+        fromPackageId: journal.fromPackageId,
+        toPackageId: journal.toPackageId,
+        canInstall: false,
+        networkInstall: false,
+        current: journal.phase === 'committed',
+        recoveryRequired: journal.phase === 'recovery_required',
+      }) + '\n');
+    }
   } else if (action === 'update' || action === 'update-resume') {
     const { applyProductUpdate, resumeProductUpdate } = await import('../../cli/lib/product-update-apply.js');
     const result = action === 'update-resume'

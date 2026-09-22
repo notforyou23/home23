@@ -11,8 +11,11 @@ import {
   downloadReleaseArchive,
   inspectReleaseFeed,
   recoverDownload,
+  selectStagedInstall,
   stageAuthenticatedRelease,
 } from '../../cli/lib/product-update-feed.js';
+import { privateJSON } from '../../cli/lib/product-environment.js';
+import { readUpdateJournal } from '../../cli/lib/product-update-apply.js';
 
 function tempRoot(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feed-')));
@@ -620,4 +623,66 @@ test('loopback manifest download then recoverDownload reports copying or staged'
   assert.equal(recovered.resumed, false);
   assert.equal(staged.homeMutated, false);
   assert.equal(staged.canInstall, false);
+});
+
+test('selectStagedInstall selects a staged payload path and refuses copying claims', t => {
+  const f = signedDevelopmentFixture(t);
+  assert.deepEqual(selectStagedInstall({ staging: path.join(f.root, 'missing') }), {
+    ok: false,
+    status: 'absent',
+    packageId: null,
+    resumed: false,
+    canInstall: false,
+    networkInstall: false,
+    selected: false,
+    candidatePayload: null,
+    usesUpdateController: true,
+  });
+
+  const copyingStaging = path.join(f.root, 'copying-stage');
+  fs.mkdirSync(copyingStaging, { recursive: true, mode: 0o700 });
+  privateJSON(`${copyingStaging}.home23-stage.json`, {
+    schema: 'home23.product-stage.v1',
+    homeRoot: f.home,
+    staging: copyingStaging,
+    currentPackageId: 'c'.repeat(64),
+    candidatePackageId: 'd'.repeat(64),
+    candidateSourceCommit: 'e'.repeat(40),
+    id: crypto.randomUUID(),
+    status: 'copying',
+  });
+  const copying = selectStagedInstall({ staging: copyingStaging });
+  assert.equal(copying.selected, false);
+  assert.equal(copying.status, 'copying');
+  assert.equal(copying.canInstall, false);
+  assert.equal(copying.candidatePayload, null);
+  assert.equal(copying.usesUpdateController, true);
+  assert.equal(copying.resumed, true);
+
+  const staged = downloadDevelopmentRelease({
+    homeRoot: f.home,
+    feedPath: f.feedPath,
+    trustKeyPath: f.trustKeyPath,
+    staging: f.staging,
+  });
+  assert.equal(staged.status, 'staged');
+  const selected = selectStagedInstall({ staging: f.staging });
+  assert.equal(selected.ok, true);
+  assert.equal(selected.selected, true);
+  assert.equal(selected.status, 'staged');
+  assert.equal(selected.canInstall, false);
+  assert.equal(selected.usesUpdateController, true);
+  assert.equal(selected.packageId, f.manifest.packageId);
+  assert.equal(selected.candidatePayload, path.join(f.staging, 'payload'));
+  assert.ok(fs.existsSync(path.join(selected.candidatePayload, 'manifest.json')));
+});
+
+test('missing update journal is absent, not current', t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+  assert.equal(readUpdateJournal(home), null);
+  const recovery = { status: 'absent', phase: 'absent', current: false };
+  assert.notEqual(recovery.status, 'current');
+  assert.equal(recovery.current, false);
 });
