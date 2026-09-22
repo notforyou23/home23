@@ -93,7 +93,17 @@ async function runHostOAuthAction(action, homeRoot, input = {}, dependencies = {
 async function providerHasConnectedOAuth(appRoot, provider, dependencies = {}) {
   if (!OAUTH_PROVIDERS.has(provider)) return false;
   const status = await hostOAuthBroker(appRoot, dependencies).status(provider);
-  return status?.configured === true;
+  return status?.valid === true || status?.refreshable === true;
+}
+async function savedSelectedProviderApiKey(appRoot, provider) {
+  const { readHome23Secrets } = require('../../shared/home23-secrets.cjs');
+  try {
+    const entry = (await readHome23Secrets(appRoot))?.providers?.[provider];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || entry.oauthManaged === true) return '';
+    return typeof entry.apiKey === 'string' ? entry.apiKey.trim() : '';
+  } catch {
+    return '';
+  }
 }
 async function validateInstallation(root, { full = false } = {}) {
   const { readProductManifest, verifyProductPayload } = await import('./product-payload.js');
@@ -482,7 +492,8 @@ async function seedAndCreate(homeRoot, input, state, dependencies) {
   if (state && state.fingerprint !== fingerprint(profile)) throw new Error('This home already has a saved profile. Resume it with the same profile.');
   if (state?.phase !== 'creating' && state) return status(homeRoot, dependencies);
   const oauthConnected = await providerHasConnectedOAuth(appRoot, profile.provider, dependencies);
-  if (!apiKey && profile.provider !== 'ollama-local' && !oauthConnected) {
+  const savedApiKey = apiKey ? '' : await savedSelectedProviderApiKey(appRoot, profile.provider);
+  if (!apiKey && !savedApiKey && profile.provider !== 'ollama-local' && !oauthConnected) {
     throw new Error('Enter your selected provider API key or finish account sign-in.');
   }
   if (!state) {

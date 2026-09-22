@@ -911,3 +911,105 @@ test('create admits a fixture oauth account and refuses a missing account withou
   );
   assert.equal(readHostSecrets(replaceRoot).providers.anthropic.oauthManaged, true);
 });
+
+test('create retry reuses the selected provider saved API key and ignores another provider key', async t => {
+  const profile = { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-4-7', timezone: 'UTC' };
+  const homeRoot = home(t, { birth: true });
+  await assert.rejects(
+    runHostAction('create', {
+      homeRoot,
+      input: { profile, credential: { provider: 'anthropic', apiKey: 'sk-saved-anthropic' } },
+    }, { createHome: async () => { throw new Error('interrupt before birth'); } }),
+    /interrupt before birth/,
+  );
+  assert.equal(readHostSecrets(homeRoot).providers.anthropic.apiKey, 'sk-saved-anthropic');
+
+  const retried = await runHostAction('create', {
+    homeRoot,
+    input: { profile, credential: { provider: 'anthropic' } },
+  }, {
+    createHome: async () => ({ home: { id: 'home-retry' }, coordination: { botId: 'bot-retry' } }),
+  });
+  assert.equal(retried.status, 'prepared');
+  assert.equal(readHostSecrets(homeRoot).providers.anthropic.apiKey, 'sk-saved-anthropic');
+
+  const other = home(t, { birth: true });
+  const yaml = createRequire(import.meta.url)('js-yaml');
+  fs.mkdirSync(path.join(other, 'app/config'), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(other, 'app/config/secrets.yaml'), yaml.dump({
+    providers: { openai: { apiKey: 'sk-other-provider' } },
+  }), { mode: 0o600 });
+  await assert.rejects(
+    runHostAction('create', {
+      homeRoot: other,
+      input: { profile, credential: { provider: 'anthropic' } },
+    }, { createHome: async () => { throw new Error('must not create with another provider key'); } }),
+    /API key or finish account sign-in/,
+  );
+});
+
+test('create refuses oauth that is configured but neither valid nor refreshable', async t => {
+  const homeRoot = home(t, { birth: true });
+  const yaml = createRequire(import.meta.url)('js-yaml');
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ exp: 1_000_000_000, sub: 'acct-stale' })).toString('base64url');
+  const accessToken = `${header}.${body}.signature`;
+  fs.mkdirSync(path.join(homeRoot, 'app/config'), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(homeRoot, 'app/config/secrets.yaml'), yaml.dump({
+    providers: {
+      anthropic: {
+        apiKey: accessToken,
+        oauthManaged: true,
+        oauth: { expiresAt: '2001-01-01T00:00:00.000Z' },
+      },
+    },
+  }), { mode: 0o600 });
+  const status = await runHostAction('oauth-status', {
+    homeRoot,
+    input: { provider: 'anthropic' },
+  }, { oauthFetch: async () => { throw new Error('must not network'); } });
+  assert.equal(status.configured, true);
+  assert.equal(status.valid, false);
+  assert.equal(status.refreshable, false);
+  await assert.rejects(
+    runHostAction('create', {
+      homeRoot,
+      input: {
+        profile: { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-4-7', timezone: 'UTC' },
+        credential: { provider: 'anthropic' },
+      },
+    }, {
+      oauthFetch: async () => { throw new Error('must not network'); },
+      createHome: async () => { throw new Error('must not create with stale oauth'); },
+    }),
+    /API key or finish account sign-in/,
+  );
+
+  fs.writeFileSync(path.join(homeRoot, 'app/config/secrets.yaml'), yaml.dump({
+    providers: {
+      anthropic: {
+        apiKey: accessToken,
+        oauthManaged: true,
+        oauth: { refreshToken: 'refresh-stale-access', expiresAt: '2001-01-01T00:00:00.000Z' },
+      },
+    },
+  }), { mode: 0o600 });
+  const refreshable = await runHostAction('oauth-status', {
+    homeRoot,
+    input: { provider: 'anthropic' },
+  }, { oauthFetch: async () => { throw new Error('must not network'); } });
+  assert.equal(refreshable.valid, false);
+  assert.equal(refreshable.refreshable, true);
+  const admitted = await runHostAction('create', {
+    homeRoot,
+    input: {
+      profile: { name: 'milo', ownerName: 'Alex', provider: 'anthropic', model: 'claude-sonnet-4-7', timezone: 'UTC' },
+      credential: { provider: 'anthropic' },
+    },
+  }, {
+    oauthFetch: async () => { throw new Error('must not network'); },
+    createHome: async () => ({ home: { id: 'home-refreshable' }, coordination: { botId: 'bot-refreshable' } }),
+  });
+  assert.equal(admitted.status, 'prepared');
+  assert.equal(readHostSecrets(homeRoot).providers.anthropic.oauth.refreshToken, 'refresh-stale-access');
+});
