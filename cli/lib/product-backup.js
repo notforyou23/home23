@@ -13,6 +13,7 @@ import {
   readlinkSync,
   readSync,
   realpathSync,
+  renameSync,
   rmSync,
   unlinkSync,
   utimesSync,
@@ -20,11 +21,12 @@ import {
   writeSync,
   symlinkSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { productEnvironment } from './product-environment.js';
+import { choosePortPlan, productEnvironment } from './product-environment.js';
 import { PRODUCT_STATE_PATHS } from './product-payload.js';
-import { isRebuildableStatePath, ownedWriterNames, SUPPORTED_COORDINATION_SCHEMA } from './product-update-inventory.js';
+import { isProductStatePath, isRebuildableStatePath, ownedWriterNames, SUPPORTED_COORDINATION_SCHEMA } from './product-update-inventory.js';
+import { readProductManifest } from './product-payload.js';
 
 const executeFile = promisify(execFile);
 const BACKUP_SCHEMA = 'home23.backup.v1';
@@ -161,7 +163,7 @@ function assertWritersStopped(home, rows) {
 }
 
 /** Holds runtime/.host.lock, the same path Start uses. Refresh from the copy loop: a blocked event loop never runs setInterval, and Start treats a lock older than 180s as stale. */
-function acquireHostLock(home, { staleMs = HOST_LOCK_STALE_MS } = {}) {
+export function acquireHostLock(home, { staleMs = HOST_LOCK_STALE_MS } = {}) {
   const runtime = join(home, 'runtime');
   mkdirSync(runtime, { recursive: true, mode: 0o700 });
   const lockPath = join(runtime, '.host.lock');
@@ -175,8 +177,10 @@ function acquireHostLock(home, { staleMs = HOST_LOCK_STALE_MS } = {}) {
     if (error.code !== 'EEXIST') throw error;
     let marker = null;
     try { marker = JSON.parse(readFileSync(markerPath, 'utf8')); } catch { marker = null; }
+    const ownerAlive = Boolean(marker && alive(marker.pid));
     const fresh = Date.now() - lstatSync(lockPath).mtimeMs < staleMs;
-    if ((marker && alive(marker.pid) && marker.pid !== process.pid) || (!marker && fresh) || (marker?.purpose === 'backup' && fresh)) return null;
+    // A live owner is the lock, including this process. Stale mtime must not let Start steal it.
+    if (ownerAlive || (!marker && fresh)) return null;
     rmSync(lockPath, { recursive: true, force: true });
     if (exists(markerPath)) unlinkSync(markerPath);
     claim();
@@ -398,7 +402,8 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
   assertAbsentPath(archive, 'Archive');
   assertAbsentPath(keyFile, 'Key');
   readHostState(root);
-  const lock = acquireHostLock(root, { staleMs: dependencies.staleMs });
+  const ownsLock = !dependencies.existingLock;
+  const lock = dependencies.existingLock || acquireHostLock(root, { staleMs: dependencies.staleMs });
   if (!lock) fail('backup_lifecycle_busy', 'Another lifecycle operation holds this home. Backup did not start.');
   lock.hooks = { beforeChunk: dependencies.beforeChunk, onLockRefresh: dependencies.onLockRefresh, refreshMs: dependencies.lockRefreshMs };
   const recordsPath = join(dirname(archive), `.home23-backup-${randomUUID()}.records`);
@@ -450,7 +455,7 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
     if (exists(keyFile)) unlinkSync(keyFile);
     throw error;
   } finally {
-    lock.release();
+    if (ownsLock && !dependencies.retainLock) lock.release();
     if (records) { try { records.close(); } catch { /* The records file is partial. */ } }
     if (sink) { try { sink.end(); } catch { /* The backup is already failing. */ } }
     for (const file of [recordsPath, ciphertext]) if (exists(file)) { try { unlinkSync(file); } catch { /* Temporary backup material is not an archive. */ } }
@@ -658,38 +663,182 @@ export function readMoveFence(homeRoot) {
   }
 }
 
-export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPath } = {}, dependencies = {}) {
-  const source = absoluteRoot(sourceHome, 'home directory');
-  const destination = absoluteRoot(destinationRoot, 'destination directory');
-  if (source === destination || inside(source, destination) || inside(destination, source)) throw new Error('Move source and destination must be separate real directories.');
-  if (readdirSync(destination).length !== 0) throw new Error('Move destination must be empty.');
-  const created = await createHomeBackup({ homeRoot: source, archivePath, keyPath }, dependencies);
-  const inspected = await inspectHomeBackup({ archivePath, keyPath, inspectionRoot: destination });
-  const birth = 'app/instances/milo/substrate/seed-01/birth-receipt.json';
-  const ledger = 'app/instances/milo/substrate/seed-01/seed-ledger.jsonl';
+function residentName(home) {
+  const host = readHostState(home);
+  const name = host.profile?.name;
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(name || '')) fail('backup_identity_missing', 'The home has no resident identity to preserve.');
+  return name;
+}
+
+export function residentIdentityPaths(home) {
+  const name = residentName(home);
+  const substrate = join(home, 'app/instances', name, 'substrate');
+  if (!exists(substrate)) fail('backup_identity_missing', `Resident ${name} has no Seed substrate.`);
+  const seeds = readdirSync(substrate).filter(entry => entry.startsWith('seed-') && lstatSync(join(substrate, entry)).isDirectory()).sort();
+  if (!seeds.length) fail('backup_identity_missing', `Resident ${name} has no Seed.`);
+  const paths = [];
+  for (const seed of seeds) {
+    const birth = `app/instances/${name}/substrate/${seed}/birth-receipt.json`;
+    if (!exists(join(home, birth))) fail('backup_identity_missing', `Resident ${name} is missing ${birth}.`);
+    paths.push(birth);
+    const ledger = `app/instances/${name}/substrate/${seed}/seed-ledger.jsonl`;
+    if (exists(join(home, ledger))) paths.push(ledger);
+  }
+  return paths;
+}
+
+function compareIdentity(source, destination) {
   const identity = {};
-  for (const relativePath of [birth, ledger, 'app/instances/milo/workspace/safe-update-fixture.txt', '.home23-host.json']) {
+  for (const relativePath of residentIdentityPaths(source)) {
     const from = join(source, relativePath);
-    if (!exists(from)) continue;
     const copy = join(destination, relativePath);
     if (!exists(copy) || streamHash(from) !== streamHash(copy)) fail('backup_identity_mismatch', `Restored identity does not match the source: ${relativePath}`);
     identity[relativePath] = streamHash(from);
   }
+  return identity;
+}
+
+function moveJournalPath(source) {
+  return join(dirname(source), `.${basename(source)}.home23-move`, 'journal.json');
+}
+
+function readMoveJournal(source) {
+  const file = moveJournalPath(source);
+  if (!exists(file)) return null;
+  const journal = JSON.parse(readFileSync(file, 'utf8'));
+  if (journal?.schema !== 'home23.move-journal.v1' || journal.sourceHome !== source) fail('move_journal_invalid', 'The move journal belongs to another home.');
+  return journal;
+}
+
+function writeMoveJournal(source, journal) {
+  const file = moveJournalPath(source);
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, file);
+}
+
+async function rebindDestination(source, destination) {
   const host = readHostState(destination);
   host.homeRoot = destination;
   host.desiredRunning = false;
   host.phase = 'stopped';
+  if (host.ports) host.ports = await choosePortPlan({ encoderRequired: host.encoderRequired === true });
   writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
-  const sourceHost = readHostState(source);
-  sourceHost.desiredRunning = false;
-  sourceHost.phase = 'stopped';
-  writeFileSync(join(source, '.home23-host.json'), `${JSON.stringify(sourceHost, null, 2)}\n`, { mode: 0o600 });
+  const receiptPath = join(source, '.home23-install.json');
+  if (!exists(receiptPath)) return null;
+  const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+  const rebound = {
+    ...receipt, homeRoot: destination, appRoot: join(destination, 'app'),
+    nodePath: join(destination, 'bin', 'node'), pm2Path: join(destination, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'), replayed: false,
+  };
+  writeFileSync(join(destination, '.home23-install.json'), `${JSON.stringify(rebound)}\n`, { mode: 0o600 });
+  return rebound.packageId || null;
+}
+
+function copyInstalledFile(from, to, mode, lock) {
+  mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
+  const temporary = `${to}.${randomUUID()}.next`;
+  const input = openSync(from, 'r');
+  const output = openSync(temporary, 'wx', mode);
+  const buffer = Buffer.alloc(CHUNK);
+  try {
+    while (true) {
+      lock?.noteActivity();
+      const count = readSync(input, buffer, 0, CHUNK, null);
+      if (count <= 0) break;
+      writeSync(output, buffer, 0, count);
+    }
+    fsyncSync(output);
+  } finally {
+    closeSync(input);
+    closeSync(output);
+  }
+  renameSync(temporary, to);
+}
+
+function installMovedRuntime(source, destination, lock) {
+  let manifest;
+  try { manifest = readProductManifest(source); }
+  catch { return null; }
+  for (const entry of manifest.files) {
+    if (isProductStatePath(entry.path)) continue;
+    const from = join(source, entry.path);
+    const to = join(destination, entry.path);
+    if (!exists(from)) continue;
+    if (entry.type === 'directory') {
+      mkdirSync(to, { recursive: true, mode: entry.mode });
+      continue;
+    }
+    if (entry.type === 'symlink') {
+      mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
+      if (exists(to)) unlinkSync(to);
+      symlinkSync(readlinkSync(from), to);
+      continue;
+    }
+    if (exists(to) && lstatSync(to).isFile() && streamHash(from, lock) === streamHash(to, lock)) continue;
+    copyInstalledFile(from, to, entry.mode, lock);
+  }
+  copyInstalledFile(join(source, 'manifest.json'), join(destination, 'manifest.json'), 0o644, lock);
+  return manifest.packageId;
+}
+
+function publishFence(source, destination) {
   mkdirSync(join(source, 'runtime'), { recursive: true, mode: 0o700 });
-  writeFileSync(join(source, 'runtime', 'home23-move-fence.json'), `${JSON.stringify({
+  const file = join(source, 'runtime', 'home23-move-fence.json');
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({
     schema: MOVE_FENCE_SCHEMA, sourceHome: source, destinationRoot: destination, movedAt: new Date().toISOString(), writersStarted: false,
   }, null, 2)}\n`, { mode: 0o600 });
-  return {
-    ok: true, schema: MOVE_FENCE_SCHEMA, packageId: created.packageId, fileCount: inspected.fileCount,
-    writersStarted: false, fenced: true, destinationStarted: false, identity,
-  };
+  renameSync(temporary, file);
+}
+
+export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPath } = {}, dependencies = {}) {
+  const source = absoluteRoot(sourceHome, 'home directory');
+  const destination = absoluteRoot(destinationRoot, 'destination directory');
+  if (source === destination || inside(source, destination) || inside(destination, source)) throw new Error('Move source and destination must be separate real directories.');
+  const sourceHostBefore = readFileSync(join(source, '.home23-host.json'));
+  const lock = acquireHostLock(source, { staleMs: dependencies.staleMs });
+  if (!lock) fail('backup_lifecycle_busy', 'Another lifecycle operation holds this home. Move did not start.');
+  lock.hooks = { beforeChunk: dependencies.beforeChunk, onLockRefresh: dependencies.onLockRefresh, refreshMs: dependencies.lockRefreshMs };
+  try {
+    const list = dependencies.listProcesses || listInstalledWriters;
+    assertWritersStopped(source, await list(source));
+    if (readMoveFence(source)) {
+      if (readdirSync(destination).length === 0) fail('move_journal_invalid', 'The fenced move has no destination to finish.');
+      installMovedRuntime(source, destination, lock);
+      const packageId = await rebindDestination(source, destination);
+      const identity = compareIdentity(source, destination);
+      if (!readFileSync(join(source, '.home23-host.json')).equals(sourceHostBefore)) fail('backup_identity_mismatch', 'Move changed the source host record.');
+      return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed: true };
+    }
+    let journal = readMoveJournal(source) || { schema: 'home23.move-journal.v1', sourceHome: source, destinationRoot: destination, phase: 'claimed' };
+    const resumed = journal.phase !== 'claimed';
+    if (journal.destinationRoot !== destination) fail('move_journal_invalid', 'An unfinished move belongs to another destination.');
+    const held = { ...dependencies, existingLock: lock, retainLock: true };
+    if (!['backed_up', 'restored', 'fenced', 'committed'].includes(journal.phase)) {
+      if (readdirSync(destination).length !== 0) throw new Error('Move destination must be empty.');
+      await createHomeBackup({ homeRoot: source, archivePath, keyPath }, held);
+      journal = { ...journal, phase: 'backed_up', archivePath, keyPath };
+      writeMoveJournal(source, journal);
+    }
+    if (!['restored', 'fenced', 'committed'].includes(journal.phase)) {
+      if (readdirSync(destination).length !== 0 && journal.phase !== 'backed_up') throw new Error('Move destination must be empty.');
+      if (readdirSync(destination).length === 0) await inspectHomeBackup({ archivePath, keyPath, inspectionRoot: destination });
+      journal = { ...journal, phase: 'restored' };
+      writeMoveJournal(source, journal);
+      if (dependencies.afterRestore) await dependencies.afterRestore(source);
+    }
+    const identity = compareIdentity(source, destination);
+    installMovedRuntime(source, destination, lock);
+    const packageId = await rebindDestination(source, destination);
+    publishFence(source, destination);
+    if (!readFileSync(join(source, '.home23-host.json')).equals(sourceHostBefore)) fail('backup_identity_mismatch', 'Move changed the source host record.');
+    journal = { ...journal, phase: 'fenced' };
+    writeMoveJournal(source, journal);
+    assertWritersStopped(source, await list(source));
+    return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed };
+  } finally {
+    lock.release();
+  }
 }
