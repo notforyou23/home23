@@ -4,7 +4,7 @@
   "defaultProvider": "openai-codex",
   "defaultMode": "dive",
   "enablePGSByDefault": false,
-  "pgsSweepModel": "claude-sonnet-4-7",
+  "pgsSweepModel": "claude-sonnet-5",
   "pgsSweepProvider": "anthropic",
   "pgsSynthModel": "claude-opus-4-8",
   "pgsSynthProvider": "anthropic",
