@@ -108,6 +108,19 @@ function filterNamesByEcosystem(names, ecosystemPath) {
   return names.filter((name) => source.includes(`name: '${name}'`));
 }
 
+/**
+ * Process names for every resident key in an active-release `residents` object.
+ * Preserves resident key order; does not sort alphabetically or drop names.
+ */
+function managedResidentWriters(home23Root, residents) {
+  if (!residents || typeof residents !== 'object' || Array.isArray(residents)) return [];
+  const writers = [];
+  for (const agentName of Object.keys(residents)) {
+    writers.push(...agentProcessNames({ home23Root, agentName }));
+  }
+  return writers;
+}
+
 module.exports = {
   AGENT_PROCESS_SUFFIXES,
   agentProcessNames,
@@ -115,5 +128,6 @@ module.exports = {
   filterNamesByEcosystem,
   hasInstanceConfig,
   loadAgentInstanceConfig,
+  managedResidentWriters,
   siblingCollisionSuffixes,
 };
