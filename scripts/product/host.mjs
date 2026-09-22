@@ -10,6 +10,47 @@ const action = args.shift();
 let homeRoot;
 const sensitive = [];
 const USAGE = 'Usage: host.mjs preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|move|install|catalog|status|create|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--admit]';
+
+/** Owner-facing wrappers: these replies are host.mjs command results, not installed-UI proof or public trust. */
+function portabilityReply(kind, result) {
+  const commandResult = {
+    ...result,
+    resultKind: 'command',
+    installedUiProof: false,
+    // Local owner portability is not a public distribution trust signal.
+    publisherTrust: 'local',
+    publicTrust: false,
+  };
+  if (kind === 'backup') {
+    return {
+      ...commandResult,
+      status: result.ok === false ? 'failed' : 'backed-up',
+      keyIsRecoveryMaterial: true,
+      keyOutsideArchive: true,
+      ownerMessage: result.ok === false
+        ? undefined
+        : 'Backup command completed. The separate key file is recovery material kept outside the archive. Writers were not started. This is a command result, not an installed-UI proof. Local trust is not public trust.',
+    };
+  }
+  if (kind === 'backup-inspect') {
+    return {
+      ...commandResult,
+      status: result.ok === false ? 'failed' : 'inspected',
+      restoredRunning: false,
+      ownerMessage: result.ok === false
+        ? undefined
+        : 'Inspect/restore command completed into the inspection root. Reconnect is required for ports and machine paths. The restored tree is not already running. This is a command result, not an installed-UI proof. Local trust is not public trust.',
+    };
+  }
+  return {
+    ...commandResult,
+    status: result.ok === false ? 'failed' : 'moved',
+    ownerMessage: result.ok === false
+      ? undefined
+      : 'Move command completed. Destination desired-running remains false and writers were not started. The source stays fenced. This is a command result, not an installed-UI proof. Local trust is not public trust.',
+  };
+}
+
 try {
   const options = {};
   while (args.length) {
@@ -32,14 +73,26 @@ try {
   if (action === 'move') {
     if (!options['--destination'] || !options['--archive'] || !options['--key']) throw new Error('move requires --destination, --archive, and --key.');
     const { moveHome } = await import('../../cli/lib/product-backup.js');
-    const result = await moveHome({ sourceHome: homeRoot, destinationRoot: options['--destination'], archivePath: options['--archive'], keyPath: options['--key'] });
+    const result = portabilityReply('move', await moveHome({
+      sourceHome: homeRoot,
+      destinationRoot: options['--destination'],
+      archivePath: options['--archive'],
+      keyPath: options['--key'],
+    }));
     originalStdout(JSON.stringify(result) + '\n');
     if (result.ok === false) process.exitCode = 1;
   } else if (action === 'backup' || action === 'backup-inspect') {
+    if (action === 'backup' && (!options['--archive'] || !options['--key'])) throw new Error('backup requires --archive and --key.');
+    if (action === 'backup-inspect' && (!options['--archive'] || !options['--key'] || !options['--inspection'])) {
+      throw new Error('backup-inspect requires --archive, --key, and --inspection.');
+    }
     const { createHomeBackup, inspectHomeBackup } = await import('../../cli/lib/product-backup.js');
-    const result = action === 'backup'
-      ? await createHomeBackup({ homeRoot, archivePath: options['--archive'], keyPath: options['--key'] })
-      : await inspectHomeBackup({ archivePath: options['--archive'], keyPath: options['--key'], inspectionRoot: options['--inspection'] });
+    const result = portabilityReply(
+      action,
+      action === 'backup'
+        ? await createHomeBackup({ homeRoot, archivePath: options['--archive'], keyPath: options['--key'] })
+        : await inspectHomeBackup({ archivePath: options['--archive'], keyPath: options['--key'], inspectionRoot: options['--inspection'] }),
+    );
     originalStdout(JSON.stringify(result) + '\n');
     if (result.ok === false) process.exitCode = 1;
   } else if (action === 'download-release') {
