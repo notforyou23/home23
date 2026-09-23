@@ -118,7 +118,7 @@ function decodeProfile(file) {
     return format === 'json' ? JSON.parse(result.stdout) : result.stdout.trim();
   };
   return { teamIdentifiers: extract('TeamIdentifier'), platform: extract('Platform'),
-    allDevices: extract('ProvisionsAllDevices'), entitlements: extract('Entitlements'),
+    allDevices: extract('ProvisionsAllDevices', 'raw') === 'true', entitlements: extract('Entitlements'),
     expiration: extract('ExpirationDate', 'raw') };
 }
 
