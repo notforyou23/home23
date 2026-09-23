@@ -11,13 +11,17 @@
  */
 
 import {
+  closeSync,
+  constants,
+  fstatSync,
   mkdirSync,
   existsSync,
+  lstatSync,
+  openSync,
   writeFileSync,
   readFileSync,
   renameSync,
   readdirSync,
-  statSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -116,13 +120,17 @@ export class CheckpointManager {
    * Returns the CheckpointManifest or throws if no valid checkpoint exists.
    */
   restore(checkpointId?: string): CheckpointManifest {
+    if (checkpointId !== undefined && !this.validCheckpointId(checkpointId)) {
+      throw new Error('Invalid checkpoint ID');
+    }
     const index = this.readIndex();
     const indexEntries = checkpointId
       ? index.checkpoints.filter((c) => c.checkpointId === checkpointId)
       : [...index.checkpoints].reverse(); // newest-first
-    const candidates: Array<{ checkpointId: string; path: string }> = indexEntries.map(
-      (c) => ({ checkpointId: c.checkpointId, path: this.resolveEntryPath(c.path, c.checkpointId) }),
-    );
+    const candidates: Array<{ checkpointId: string; path: string }> = indexEntries.flatMap((c) => {
+      const path = this.resolveEntryPath(c.path, c.checkpointId);
+      return path === null ? [] : [{ checkpointId: c.checkpointId, path }];
+    });
 
     // Fallback: a lost or corrupt index must not orphan valid checkpoints on
     // disk. Manifests the index does not know about are tried after the index
@@ -166,15 +174,16 @@ export class CheckpointManager {
 
   // ─── Internal ─────────────────────────────────────────────────────────────
 
-  /** Re-root an index entry's path against THIS machine's checkpoints dir.
-   * Legacy indexes stored absolute paths; if such a path does not exist here
-   * (the stateDir traveled), fall back to the basename beside the index. */
-  private resolveEntryPath(entryPath: string, checkpointId: string): string {
-    if (entryPath.startsWith('/') || /^[A-Za-z]:\\/.test(entryPath)) {
-      if (existsSync(entryPath)) return entryPath;
-      return join(this.checkpointsDir, `${checkpointId}.json`);
-    }
-    return join(this.checkpointsDir, entryPath);
+  private validCheckpointId(checkpointId: unknown): checkpointId is string {
+    return typeof checkpointId === 'string' && /^ckpt_[A-Za-z0-9_-]+$/.test(checkpointId);
+  }
+
+  /** Index paths are historical hints, never read locations. Both current
+   * relative and legacy absolute entries must name the same local manifest. */
+  private resolveEntryPath(entryPath: unknown, checkpointId: unknown): string | null {
+    if (!this.validCheckpointId(checkpointId) || typeof entryPath !== 'string') return null;
+    if (entryPath.split(/[\\/]/).at(-1) !== `${checkpointId}.json`) return null;
+    return join(this.checkpointsDir, `${checkpointId}.json`);
   }
 
   /** Checkpoint manifests present on disk, newest-first by the base36
@@ -189,11 +198,11 @@ export class CheckpointManager {
       return [];
     }
     return names
-      .filter((n) => n.startsWith('ckpt_') && n.endsWith('.json'))
+      .filter((n) => n.endsWith('.json') && this.validCheckpointId(n.slice(0, -'.json'.length)))
       .map((n) => {
         const path = join(this.checkpointsDir, n);
         let mtimeMs = 0;
-        try { mtimeMs = statSync(path).mtimeMs; } catch { /* vanished mid-scan */ }
+        try { mtimeMs = lstatSync(path).mtimeMs; } catch { /* vanished mid-scan */ }
         return { checkpointId: n.slice(0, -'.json'.length), path, mtimeMs };
       })
       .sort((a, b) => b.checkpointId.localeCompare(a.checkpointId) || (b.mtimeMs - a.mtimeMs))
@@ -215,14 +224,19 @@ export class CheckpointManager {
     filePath: string,
     checkpointId: string,
   ): { ok: true; manifest: CheckpointManifest } | { ok: false; manifest?: undefined; reason: string } {
-    if (!existsSync(filePath)) {
-      return { ok: false, reason: 'file missing' };
-    }
     let raw: string;
+    let fd: number | undefined;
     try {
-      raw = readFileSync(filePath, 'utf-8');
+      // O_NOFOLLOW closes the lstat/read race: a relocated checkpoint may not
+      // resolve through a destination symlink back into the old source home.
+      fd = openSync(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      if (!fstatSync(fd).isFile()) return { ok: false, reason: 'not a regular file' };
+      raw = readFileSync(fd, 'utf-8');
     } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ok: false, reason: 'file missing' };
       return { ok: false, reason: `read error: ${String(err)}` };
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
     let manifest: CheckpointManifest;
     try {
@@ -253,11 +267,15 @@ export class CheckpointManager {
   }
 
   private quarantine(filePath: string, checkpointId: string, reason: string): void {
+    if (!this.validCheckpointId(checkpointId)
+      || filePath !== join(this.checkpointsDir, `${checkpointId}.json`)) return;
     const destName = `${checkpointId}_${Date.now()}.json`;
     const destPath = join(this.quarantineDir, destName);
     const reasonPath = join(this.quarantineDir, `${checkpointId}_${Date.now()}.reason`);
     try {
-      if (existsSync(filePath)) renameSync(filePath, destPath);
+      // Never follow or move a symlink that points at the original home.
+      if (!lstatSync(filePath).isFile()) return;
+      renameSync(filePath, destPath);
       writeFileSync(reasonPath, reason, 'utf-8');
     } catch {
       // Best-effort quarantine; the important thing is it's not used for restore
