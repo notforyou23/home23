@@ -23,10 +23,13 @@ function containsState(relative) {
 export function isRebuildableStatePath(relative) {
   return REBUILDABLE_PREFIXES.some(prefix => relative === prefix.slice(0, -1) || relative.startsWith(prefix));
 }
-/** Keep this list aligned with product-host ownedProcessNames. */
+/** Reserved Host writer names, including optional agent roles. Never trust
+ * arbitrary processNames from a saved Host record as stop authority. */
 export function ownedWriterNames(name, { encoderRequired = false } = {}) {
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(name || '')) return null;
-  const names = ['home23-coordination', `home23-${name}`, `home23-${name}-dash`, `home23-${name}-harness`, `home23-${name}-seed`, `home23-${name}-shipper`, 'home23-seed-observatory', 'home23-evobrew'];
+  const base = `home23-${name}`;
+  const names = ['home23-coordination', base, `${base}-dash`, `${base}-mcp`, `${base}-harness`,
+    `${base}-seed`, `${base}-shipper`, `${base}-house-sense`, 'home23-seed-observatory', 'home23-evobrew'];
   if (encoderRequired) names.push('home23-embedder');
   return names;
 }

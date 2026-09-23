@@ -106,7 +106,7 @@ test('reviewed schema constants and writer names stay aligned with source', () =
   assert.match(migrations, new RegExp(SUPPORTED_COORDINATION_MIGRATION_CHECKSUM));
   assert.match(source, /agentProcessNames/);
   assert.match(source, /home23-seed-observatory/);
-  assert.deepEqual(ownedWriterNames('milo', { encoderRequired: true }), ['home23-coordination', 'home23-milo', 'home23-milo-dash', 'home23-milo-harness', 'home23-milo-seed', 'home23-milo-shipper', 'home23-seed-observatory', 'home23-evobrew', 'home23-embedder']);
+  assert.deepEqual(ownedWriterNames('milo', { encoderRequired: true }), ['home23-coordination', 'home23-milo', 'home23-milo-dash', 'home23-milo-mcp', 'home23-milo-harness', 'home23-milo-seed', 'home23-milo-shipper', 'home23-milo-house-sense', 'home23-seed-observatory', 'home23-evobrew', 'home23-embedder']);
   assert.equal(updateBlocksStart({ phase: 'applying', ownerToken: 'token' }, 'token'), true);
   assert.equal(updateBlocksStart({ phase: 'selected', ownerToken: 'token' }, 'token'), false);
   assert.equal(updateBlocksStart({ phase: 'committed' }), false);

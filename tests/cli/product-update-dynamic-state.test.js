@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createServer } from 'node:net';
-import { inspectUpdateInventory } from '../../cli/lib/product-update-inventory.js';
+import { inspectUpdateInventory, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
 
 function home(t) {
   // Keep the Unix-domain socket fixture below macOS's sockaddr_un limit.
@@ -14,6 +14,23 @@ function home(t) {
 function relevant(result, target) {
   return result.reasons.filter(item => item.path === target).map(item => item.code);
 }
+
+test('writer inventory includes optional Host roles without accepting saved arbitrary names', async t => {
+  const root = home(t);
+  const statePath = path.join(root, '.home23-host.json');
+  const state = { schema: 'home23.host.v2', homeRoot: root, profile: { name: 'milo' }, desiredRunning: false };
+  fs.writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
+  const fresh = await inspectUpdateInventory(root);
+  assert(fresh.writers.includes('home23-milo-mcp'));
+  assert(fresh.writers.includes('home23-milo-house-sense'));
+  assert.equal(ownedWriterNames('milo/other'), null);
+  fs.writeFileSync(statePath, JSON.stringify({ ...state,
+    residentMap: { milo: { processNames: ['home23-milo', 'unrelated-writer'] } },
+  }), { mode: 0o600 });
+  const adopted = await inspectUpdateInventory(root);
+  assert(adopted.writers.includes('home23-milo-mcp'));
+  assert(!adopted.writers.includes('unrelated-writer'));
+});
 
 test('only the exact live coordination socket is accepted as ephemeral state', async t => {
   const root = home(t);
