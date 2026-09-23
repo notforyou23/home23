@@ -70,9 +70,9 @@ export function productEnvironment(homeRoot, { prepare = false, encoderRequired 
   }
   return env;
 }
-export function validatePortPlan(plan, { encoderRequired = false } = {}) {
+export function validatePortPlan(plan, { encoderRequired = false, continuingBindings = false } = {}) {
   const keys = portKeysFor({ encoderRequired });
-  if (!plan || !keys.every(key => Number.isInteger(plan[key]) && plan[key] >= 20000 && plan[key] <= 60999)
+  if (!plan || !keys.every(key => Number.isInteger(plan[key]) && plan[key] >= (continuingBindings ? 1024 : 20000) && plan[key] <= 60999)
     || new Set(keys.map(key => plan[key])).size !== keys.length) throw new Error('The saved Home23 port plan is invalid.');
   if (encoderRequired && plan.embedder === OWNED_EMBEDDER_FORBIDDEN_PORT) throw new Error('port 11435 is not the Host embedder port');
   return plan;
@@ -86,7 +86,7 @@ async function reserve(port) {
 }
 export async function withReservedPorts(plan, callback, options = {}) {
   const encoderRequired = options.encoderRequired === true || (options.encoderRequired !== false && Number.isInteger(plan?.embedder));
-  validatePortPlan(plan, { encoderRequired });
+  validatePortPlan(plan, { encoderRequired, continuingBindings: options.continuingBindings === true });
   const servers = [];
   try {
     for (const key of portKeysFor({ encoderRequired })) servers.push(await reserve(plan[key]));
