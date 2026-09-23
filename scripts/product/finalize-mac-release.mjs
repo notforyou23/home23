@@ -109,6 +109,36 @@ export function assertAssemblyDescriptor(receipt, host, client, manifest) {
   }
 }
 
+/** Host build receipts record absolute paths from the build checkout. Compare
+ * those paths by their Apple-source-relative names with the frozen checkout;
+ * the original checkout may have advanced after assembly. */
+export function assertHostBuildSourceHashes(sources, appleSource) {
+  if (!Array.isArray(sources) || sources.length === 0 || !path.isAbsolute(sources[0]?.path || '')) {
+    throw new Error('Host build source receipt is missing');
+  }
+  const first = path.resolve(sources[0].path);
+  const rootEnd = Math.max(first.lastIndexOf('/Home23Host/'), first.lastIndexOf('/Home23Shared/'));
+  if (rootEnd <= 0) throw new Error('Host build source root is invalid');
+  const recordedRoot = first.slice(0, rootEnd);
+  const seen = new Set();
+  for (const source of sources) {
+    if (!path.isAbsolute(source?.path || '') || !/^[a-f0-9]{64}$/.test(source.sha256 || '')) {
+      throw new Error('Host build source entry is invalid');
+    }
+    const original = path.resolve(source.path);
+    const relative = path.relative(recordedRoot, original);
+    if (!within(recordedRoot, original) ||
+        !['Home23Host/', 'Home23Shared/'].some(prefix => relative.startsWith(prefix)) ||
+        seen.has(relative)) throw new Error('Host build source path escaped its recorded Apple checkout');
+    seen.add(relative);
+    const pinned = path.join(appleSource, relative);
+    if (!within(appleSource, pinned) || !fs.statSync(pinned).isFile() ||
+        createHash('sha256').update(fs.readFileSync(pinned)).digest('hex') !== source.sha256) {
+      throw new Error(`Host build source hash differs at ${relative}`);
+    }
+  }
+}
+
 function decodeProfile(file) {
   const decoded = run('/usr/bin/security', ['cms', '-D', '-i', file]);
   const extract = (key, format = 'json') => {
@@ -322,12 +352,10 @@ async function inspectAssembly(options) {
   }
   const hostBuild = json(path.join(assembly, 'build/host/build-receipt.json'));
   if (hostBuild.status !== 'built' || hostBuild.sourceCommit !== receipt.appleCommit ||
-      hostBuild.runtime?.packageId !== manifest.packageId ||
-      !Array.isArray(hostBuild.sources) || hostBuild.sources.length === 0 ||
-      hostBuild.sources.some(source => !within(appleSource, source.path) ||
-        createHash('sha256').update(fs.readFileSync(source.path)).digest('hex') !== source.sha256)) {
+      hostBuild.runtime?.packageId !== manifest.packageId) {
     throw new Error('Host build source receipt differs from maintained Apple source');
   }
+  assertHostBuildSourceHashes(hostBuild.sources, appleSource);
   const prebuilt = await verifyPrebuiltMacClient({ receiptPath: prebuiltReceipt, app: prebuiltClient,
     appleSource, appleCommit: receipt.appleCommit, arch: manifest.arch });
   if (receipt.prebuiltClientSourceSHA256 !== prebuilt.source.sha256 ||

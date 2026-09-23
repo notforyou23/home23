@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { assertAssemblyDescriptor, assertDeveloperIdProfile, assertProductionEntitlements,
-  assertProductionNodeEntitlements, nestedSigningOrder,
+  assertHostBuildSourceHashes, assertProductionNodeEntitlements, nestedSigningOrder,
   planMacFinalization } from '../../scripts/product/finalize-mac-release.mjs';
 
 test('signs all framework-contained native leaves before containing bundles', () => {
@@ -17,6 +18,22 @@ test('signs all framework-contained native leaves before containing bundles', ()
   assert.ok(order.indexOf('Contents/Frameworks/Foo.framework/Versions/A/Helpers/libextra.dylib') <
     order.indexOf('Contents/Frameworks/Foo.framework'));
   assert.equal(new Set(order).size, 4);
+});
+
+test('Host receipt hashes resolve against the exact frozen Apple checkout', () => {
+  const apple = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-host-source-'));
+  try {
+    const relative = 'Home23Host/HostCommand.swift';
+    const pinned = path.join(apple, relative);
+    fs.mkdirSync(path.dirname(pinned), { recursive: true });
+    fs.writeFileSync(pinned, 'frozen source\n');
+    const source = { path: `/different/build-checkout/${relative}`,
+      sha256: createHash('sha256').update('frozen source\n').digest('hex') };
+    assert.doesNotThrow(() => assertHostBuildSourceHashes([source], apple));
+    assert.throws(() => assertHostBuildSourceHashes([{ ...source, sha256: '0'.repeat(64) }], apple), /hash differs/);
+    assert.throws(() => assertHostBuildSourceHashes([source,
+      { ...source, path: '/different/build-checkout/other/file.swift' }], apple), /escaped/);
+  } finally { fs.rmSync(apple, { recursive: true, force: true }); }
 });
 
 test('Developer ID profile must cover all Macs and the exact app identity', () => {
