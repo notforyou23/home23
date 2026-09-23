@@ -27,7 +27,7 @@ const require = createRequire(import.meta.url);
 const TEST_NODE_MODULES = dirname(dirname(require.resolve('js-yaml/package.json')));
 
 /** @param {{ home?: object, substrate?: object|null }} opts */
-function makeInstall(opts = {}) {
+function makeInstall(opts = {}, { generate = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'home23-substrate-services-'));
   mkdirSync(join(root, 'config'), { recursive: true });
   mkdirSync(join(root, 'instances', 'jerry'), { recursive: true });
@@ -48,7 +48,7 @@ function makeInstall(opts = {}) {
     ports: { engine: 5001, dashboard: 5002, mcp: 5003 },
     ...(opts.substrate === null ? {} : { substrate: opts.substrate ?? { enabled: true } }),
   }), 'utf8');
-  generateEcosystem(root);
+  if (generate) generateEcosystem(root);
   return root;
 }
 
@@ -184,7 +184,7 @@ test('a declared resident seed is supervised — the six-day hole (2026-08-21)',
   assert.equal(app.autorestart, true, 'the whole point: he comes back');
   // The lock is mechanical: a stopping runner must release before its
   // replacement asks, and SIGINT must have time to close the checkpoint.
-  assert.equal(app.kill_timeout, 30000);
+  assert.equal(app.kill_timeout, 90000);
   assert.ok(app.restart_delay >= 15000);
   assert.match(app.out_file, /logs\/clay-seed-out\.log$/);
   // Paths resolve against the install; the repo carries no machine paths.
@@ -192,6 +192,35 @@ test('a declared resident seed is supervised — the six-day hole (2026-08-21)',
   assert.equal(app.env.SEED_SOURCE, join(root, 'instances', 'forrest', 'brain', 'event-ledger.jsonl'));
   assert.equal(app.env.SEED_POLL_MS, '5000');
   assert.equal(app.env.NOT_A_SEED_VAR, undefined, 'only SEED_* travels — env is not a grab bag');
+});
+
+test('Seed stop grace exceeds the effective lobe timeout and preserves a larger configured grace', (t) => {
+  const model = makeInstall({ substrate: { enabled: true, lobe: 'model' } });
+  const customModel = makeInstall({ substrate: { enabled: true, lobe: 'model', lobeTimeoutMs: 120000 } });
+  const file = makeInstall({ home: { substrate: { seeds: [{
+    name: 'clay', stateDir: 'instances/clay/seed-01',
+    env: { SEED_LOBE: 'file', SEED_LOBE_TIMEOUT_MS: '190000' },
+  }] } } });
+  const larger = makeInstall({ home: { substrate: { seeds: [{
+    name: 'clay', stateDir: 'instances/clay/seed-01', killTimeoutMs: 300000,
+    env: { SEED_LOBE: 'model', SEED_LOBE_TIMEOUT_MS: '120000' },
+  }] } } });
+  t.after(() => [model, customModel, file, larger].forEach(root => rmSync(root, { recursive: true, force: true })));
+  const seed = (root, name) => loadApps(root).find(app => app.name === `home23-${name}-seed`);
+  assert.equal(seed(model, 'jerry').kill_timeout, 90000);
+  assert.equal(seed(customModel, 'jerry').env.SEED_LOBE_TIMEOUT_MS, '120000');
+  assert.equal(seed(customModel, 'jerry').kill_timeout, 150000);
+  assert.equal(seed(file, 'clay').kill_timeout, 220000);
+  assert.equal(seed(larger, 'clay').kill_timeout, 300000);
+});
+
+test('Seed generator rejects invalid configured lobe timeout', (t) => {
+  const root = makeInstall({ home: { substrate: { seeds: [{
+    name: 'clay', stateDir: 'instances/clay/seed-01',
+    env: { SEED_LOBE: 'file', SEED_LOBE_TIMEOUT_MS: 'Infinity' },
+  }] } } }, { generate: false });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.throws(() => generateEcosystem(root), /SEED_LOBE_TIMEOUT_MS must be a positive safe integer/);
 });
 
 test('no resident seeds declared, none emitted', (t) => {

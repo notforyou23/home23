@@ -45,6 +45,26 @@ function resolvePrimaryAgent(agents, homeConfig) {
   return ranked[0]?.name || null;
 }
 
+function seedLobeTimeout(lobeKind, configuredLobeTimeout) {
+  // seed-runner.ts uses this same fallback. Once stop is requested it finishes
+  // at most the recruitment already in flight, then checkpoints and exits.
+  const lobeTimeout = configuredLobeTimeout === undefined
+    ? (lobeKind === 'file' ? 190_000 : 60_000)
+    : Number(configuredLobeTimeout);
+  if (!Number.isSafeInteger(lobeTimeout) || lobeTimeout <= 0 || lobeTimeout > Number.MAX_SAFE_INTEGER - 30_000) {
+    throw new Error('SEED_LOBE_TIMEOUT_MS must be a positive safe integer');
+  }
+  return lobeTimeout;
+}
+
+function seedKillTimeout(lobeTimeout, configuredGrace) {
+  const grace = configuredGrace === undefined ? 0 : Number(configuredGrace);
+  if (!Number.isSafeInteger(grace) || grace < 0) {
+    throw new Error('Seed killTimeoutMs must be a nonnegative safe integer');
+  }
+  return Math.max(lobeTimeout + 30_000, grace);
+}
+
 export function generateEcosystem(home23Root, options = {}) {
   const agents = discoverAgents(home23Root);
 
@@ -424,12 +444,16 @@ export function generateEcosystem(home23Root, options = {}) {
       const lobeModel = String(agent.config.substrate?.lobeModel || 'claude-haiku-4-5');
       const lobeMinIntervalMs = Number(agent.config.substrate?.lobeMinIntervalMs) > 0
         ? Number(agent.config.substrate.lobeMinIntervalMs) : 600000;
+      const configuredLobeTimeout = agent.config.substrate?.lobeTimeoutMs;
+      const lobeTimeout = seedLobeTimeout(lobeKind, configuredLobeTimeout);
+      const killTimeout = seedKillTimeout(lobeTimeout, agent.config.substrate?.killTimeoutMs);
       const seedStateDir = JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'seed-01'));
       const birthEnv = {};
       for (const [key, field] of [['SEED_NAME', 'name'], ['SEED_ANATOMY', 'anatomy'], ['SEED_SELF_FORMATION', 'selfFormation'], ['SEED_LOBE_PROVIDER', 'lobeProvider']]) {
         const value = agent.config.substrate[field];
         if (value !== undefined) birthEnv[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
       }
+      birthEnv.SEED_LOBE_TIMEOUT_MS = String(lobeTimeout);
       lines.push(`    {`);
       lines.push(`      name: 'home23-${agent.name}-seed',`);
       lines.push(`      script: 'substrate/bin/seed-runner.ts',`);
@@ -443,7 +467,7 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      max_memory_restart: '1G',`);
       lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
       lines.push(`      restart_delay: 15000,`);
-      lines.push(`      kill_timeout: 30000,`);
+      lines.push(`      kill_timeout: ${killTimeout},`);
       lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'seed-out.log'))},`);
       lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'seed-err.log'))},`);
       lines.push(`      env: { ...commonEnv, ...${JSON.stringify(engineEnv)}, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'event-ledger.jsonl'))}, SEED_RELATIONSHIP_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'relationship-ledger.events.jsonl'))}, SEED_WORKER_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'worker-runs.jsonl'))}, SEED_CONVERSATION_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'conversation-stream.jsonl'))}, SEED_HOUSE_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'house-stream.jsonl'))}, SEED_MEMORY_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'memory-objects.events.jsonl'))}, SEED_DREAM_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'dream-events.jsonl'))}, SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: ${JSON.stringify(lobeModel)}, SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}', ...${JSON.stringify(birthEnv)} },`);
@@ -586,6 +610,11 @@ export function generateEcosystem(home23Root, options = {}) {
   // under an hour.
   for (const seed of Array.isArray(substrateConfig.seeds) ? substrateConfig.seeds : []) {
     if (!seed || !seed.name || !seed.stateDir) continue;
+    const seedEnv = { SEED_STATE_DIR: seed.stateDir, ...(seed.env && typeof seed.env === 'object' ? seed.env : {}) };
+    seedEnv.SEED_LOBE = seedEnv.SEED_LOBE ?? '';
+    const lobeTimeout = seedLobeTimeout(seedEnv.SEED_LOBE, seedEnv.SEED_LOBE_TIMEOUT_MS);
+    seedEnv.SEED_LOBE_TIMEOUT_MS = String(lobeTimeout);
+    const killTimeout = seedKillTimeout(lobeTimeout, seed.killTimeoutMs);
     lines.push(``);
     lines.push(`    // ── resident seed: ${seed.name} (an individual, not an agent) ──`);
     lines.push(`    {`);
@@ -603,14 +632,13 @@ export function generateEcosystem(home23Root, options = {}) {
     // replacement asks for it; kill_timeout lets SIGINT finish the closing
     // checkpoint. Never two live instances, and never a torn stop.
     lines.push(`      restart_delay: 15000,`);
-    lines.push(`      kill_timeout: 30000,`);
+    lines.push(`      kill_timeout: ${killTimeout},`);
     lines.push(`      out_file: path.join(HOME23, 'logs', '${seed.name}-seed-out.log'),`);
     lines.push(`      error_file: path.join(HOME23, 'logs', '${seed.name}-seed-err.log'),`);
     lines.push(`      env: {`);
     // Everything the runner reads is declared in config as a path relative to
     // the install, resolved here — the repo learns no absolute machine paths,
     // and the same expression serves any future non-agent individual.
-    const seedEnv = { SEED_STATE_DIR: seed.stateDir, ...(seed.env && typeof seed.env === 'object' ? seed.env : {}) };
     for (const [key, value] of Object.entries(seedEnv)) {
       if (!/^SEED_[A-Z0-9_]*$/.test(key) || value === undefined || value === null) continue;
       lines.push(/_(DIR|SOURCE|PATH)$/.test(key)

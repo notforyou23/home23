@@ -94,6 +94,7 @@ export class SeedRunner {
   private transitionsSinceCheckpoint = 0;
   private totalTransitions = 0;
   private running = false;
+  private stopRequested = false;
   private timer: NodeJS.Timeout | null = null;
   private wake: (() => void) | null = null;
   private lastLobeAtMs = 0;
@@ -146,6 +147,7 @@ export class SeedRunner {
 
   start(): void {
     if (this.seed !== null) return;
+    this.stopRequested = false;
     this.acquireRunnerLock();
     try {
       if (SeedLedger.exists(this.opts.stateDir)) {
@@ -301,6 +303,7 @@ export class SeedRunner {
     const processed = new Set<string>();
 
     for (const { event } of merged) {
+      if (this.stopRequested) break;
       if (this.opts.maxEvents !== undefined && this.totalTransitions >= this.opts.maxEvents) break;
       const result = this.seed.transition(event);
       processed.add(event.eventId);
@@ -316,7 +319,7 @@ export class SeedRunner {
       // guard. v1 requires at least one admissible cell; a silence outcome
       // dissolves the dream honestly (sub-threshold deep-sleep dreaming is
       // future work, and the silence receipt already explains itself).
-      if (this.opts.lobe !== undefined && this.seed.hasPendingDream()) {
+      if (!this.stopRequested && this.opts.lobe !== undefined && this.seed.hasPendingDream()) {
         const minInterval = this.opts.lobeMinIntervalMs ?? 0;
         const sinceLast = Date.now() - this.lastLobeAtMs;
         if (sinceLast >= minInterval) {
@@ -362,7 +365,7 @@ export class SeedRunner {
         const outcome = this.seed.workspaceCycle(event.producedAt);
         report.workspaceOutcomes.push(outcome.kind);
         this.log(`workspace: ${outcome.kind}${outcome.kind === 'workspace' ? ` [${outcome.packet.activeCellIds.join(', ')}]` : ''}`);
-        if (outcome.kind === 'workspace' && this.opts.lobe !== undefined) {
+        if (outcome.kind === 'workspace' && this.opts.lobe !== undefined && !this.stopRequested) {
           const minInterval = this.opts.lobeMinIntervalMs ?? 0;
           const sinceLast = Date.now() - this.lastLobeAtMs;
           if (sinceLast >= minInterval) {
@@ -394,7 +397,7 @@ export class SeedRunner {
     // individual's own dynamics can produce the next occasion; the world
     // knocking is no longer required. The runner does not invent occasions;
     // it materializes the ones the mathematics already solved.
-    await this.solveObligations(report);
+    if (!this.stopRequested) await this.solveObligations(report);
 
     // Commit each adapter's cursor to its contiguous processed prefix.
     for (const { adapter, events } of perAdapter) {
@@ -498,6 +501,7 @@ export class SeedRunner {
 
   /** Poll until stop() (or until maxEvents is reached). */
   async run(): Promise<void> {
+    this.stopRequested = false;
     this.start();
     this.running = true;
     while (this.running) {
@@ -506,7 +510,7 @@ export class SeedRunner {
         this.log(`maxEvents ${this.opts.maxEvents} reached`);
         break;
       }
-      if (report.pulled === 0) {
+      if (report.pulled === 0 && this.running) {
         // The wake handle lets requestStop() resolve this sleep immediately —
         // clearing the timer alone would leave the promise pending forever and
         // turn a graceful SIGINT into a SIGKILL past the final checkpoint.
@@ -544,6 +548,7 @@ export class SeedRunner {
   }
 
   requestStop(): void {
+    this.stopRequested = true;
     this.running = false;
     if (this.timer !== null) clearTimeout(this.timer);
     this.wake?.();
