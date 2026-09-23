@@ -1,3 +1,5 @@
+> Historical implementation record. Current owner direction: [Home23 continuity, updates and portability](../../design/HOME-UPDATES-AND-PORTABILITY.md). Preserve this evidence, but do not execute old next steps or reopen completed milestones from this document.
+
 # Built-in semantic memory for Home23
 
 Date: September 10, 2026

@@ -4,6 +4,11 @@ Agreed direction: September 9, 2026. This document owns the product's entry
 points, distribution plan and remaining delivery work. Planned downloads,
 browser access and hosted services are not claims of public availability.
 
+For current owner work, [Home23 continuity, updates and portability](HOME-UPDATES-AND-PORTABILITY.md)
+is the current direction. Software updates, Host adoption and encoder changes
+are separate choices within one product. This distribution backlog does not
+require a whole-home move or repeated pilot trials before useful owner upgrades.
+
 ## The same product, each person's own home
 
 Home23 is shared software. Each home has its own owner context, residents,
@@ -98,7 +103,7 @@ session boundary across dashboard pages, APIs, streams and files; merely exposin
 operator ports or adding TLS does not establish that boundary. Reconnect,
 revocation, wrong-home selection and host-offline states need clear behavior.
 
-## Developer milestones and current candidate
+## Historical developer milestones
 
 The September 12 integrated Mac candidate joins the owned embedder with the
 current backend, native Host, and Mac conversation client. It includes automatic
@@ -125,14 +130,15 @@ artifact paths and operational receipts stay outside this public document.
 
 ## Delivery work to address
 
-The delivery goal is a small Mac-hosted private beta. Before that broader beta,
-the immediate priority is to bring the current owner's Jerry and Forrest home
-into the supported Host lifecycle without rebirth, lost history or an encoder
-switch. Existing isolated update and portability evidence should be reused;
-public website, notarization and first-owner release work do not gate this
-private daily-home transition. The
-[home updates and portability plan](HOME-UPDATES-AND-PORTABILITY.md) defines
-Check for Updates, recovery, backup/transfer and the ordered D08 implementation.
+The delivery goal is a small Mac-hosted private beta. The immediate priority is
+the existing owner's continuing home on the maintained software line, with
+convenient Host updates and portability. Keep the existing encoder unless a
+separate transition is chosen. A whole-home copy is one available adapter path,
+not a prerequisite imposed by the embedding work. Reuse existing update and
+portability evidence. Public website, notarization and first-owner distribution
+do not gate the private daily-home upgrade. The
+[continuity direction](HOME-UPDATES-AND-PORTABILITY.md) owns the current choices
+and next work; the table below describes delivery capabilities, not rerun orders.
 These are implementation and delivery items with observable completion criteria,
 not a list of tests alone.
 
@@ -159,12 +165,11 @@ complete chat-provider authorization. Subscription sign-in for OpenAI and
 Anthropic is part of D05 completion beside API keys and local models. Host
 first-home creation and reconnect must use the existing Home23 broker
 (`shared/home23-oauth.cjs` and the dashboard oauth routes) for those flows—not
-a second credential system. Archive package
-`72a996151605ab2580eb6060a62abdf762d3246f5502cff1c19cce73bfaa01a5`
-(Apple `c4fdd5a`, backend `98aa10a0`) is API-key and local-provider setup only;
-it is not a consumer release and does not prove subscription-capable Host birth.
-Completing the embedder plan does not by itself complete D05's remaining
-provider-authorization work or the other delivery items.
+a second credential system. Current source integrates both sign-in flows into
+Host creation; a recorded isolated Anthropic subscription turn succeeded.
+Older API/local-only candidate descriptions are historical. Reuse the applicable
+provider receipts rather than reopening sign-in engineering from those snapshots.
+Completing the embedder does not make public delivery complete.
 
 D01's structure/content can proceed alongside release engineering. Download
 publication depends on D02–D04. Advertising Windows/remote access depends on

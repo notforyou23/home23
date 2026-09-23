@@ -1,3 +1,5 @@
+> Historical implementation record. Current owner direction: [Home23 continuity, updates and portability](../../design/HOME-UPDATES-AND-PORTABILITY.md). Preserve this evidence, but do not execute old next steps or reopen completed milestones from this document.
+
 # Owned embedder — work record
 
 Date: 2026-09-10  

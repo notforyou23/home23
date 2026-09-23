@@ -6,6 +6,11 @@ Library, and channels. The client keeps its current sandbox and app identity.
 The Host is intended for direct distribution with its own identity. Its current
 developer artifact is not a signed/notarized public release.
 
+Current owner-upgrade decisions follow [Home23 continuity, updates and portability](HOME-UPDATES-AND-PORTABILITY.md).
+Host and client are parts of one product. Host ownership, software version and
+embedding provider are separate choices; Host does not require replacing an
+established resident or its configured Ollama space.
+
 The [product delivery agreement](PRODUCT-DELIVERY.md) owns the public website,
 downloads, user journeys and delivery backlog. The website will present Host
 and the Mac client together, link to iPhone TestFlight during beta and the App
@@ -51,46 +56,23 @@ updates to a package without Evobrew, its Evobrew conversations, workspaces and
 configuration remain as local state; the old process is stopped and not
 restarted. Removing those saved files is a separate owner decision.
 
-[Home updates and portability](HOME-UPDATES-AND-PORTABILITY.md) defines the
-replacement lifecycle: Check for Updates, compatible staged releases, consistent
-checkpoints, durable activation/recovery and state-preserving home transfer.
-It covers existing Host installations and adoption of managed/source homes.
-The backend supports a read-only `preview --home ABS --payload ABS` and local
-`stage --home ABS --payload ABS --staging ABS` for an explicit candidate.
-Staging prepares a separate verified payload with an owned resumable claim.
-Both commands still report `canInstall: false`; publisher trust stays
-unverified. Preview's preservation plan and contract hashes do not by
-themselves make an update safe.
+[Home updates and portability](HOME-UPDATES-AND-PORTABILITY.md) owns the current
+continuity direction. The implemented lifecycle includes preview and staging,
+explicit local installation, interruption recovery, encrypted backup and
+restore/move. Preview, a staged payload and an installed release are distinct
+states; none by itself establishes public publisher trust or a successful start.
 
-`update --home ABS --payload ABS --staging ABS` is a separate local opt-in for
-a schema-preserving Host v1 package replacement. It keeps the v1 path contract,
-checks the stored coordination schema, and resumes from a journal outside
-`app/`. It does not download a release, migrate data, or provide the native
-Check for Updates screen. `check-update --home ABS --feed ABS` reads one local
-unverified feed and reports unavailable, damaged, incompatible, current, or
-available. A missing feed is not up to date. It does not download or install,
-and `canInstall` stays false. `stage-release --home ABS --feed ABS --staging ABS --trust-key ABS`
-copies a development-signed local release into a stage directory after Ed25519
-and package-id checks. An unverified or production trust claim is refused.
-The home is not modified, and `canInstall` stays false.
-`download-release` uses the same development signature and stages the release,
-writing progress JSON to stderr (`checking`, `copying` or `resuming`, then
-`staged` or `failed`). It does not install. `backup --home ABS --archive ABS --key ABS`
-streams an encrypted archive only after the owned-writer inventory is quiet
-and while it holds the host lifecycle lock. `backup-inspect` restores that
-archive into an empty directory only after the archive authenticates, and does
-not start writers. `move --home ABS --destination ABS --archive ABS --key ABS`
-restores into an empty directory, rebinds that copy's home path, and writes a
-source fence. Start on the fenced source returns `move_source_fenced` and does
-not start the destination. A missing supervisor is not treated as proof that
-writers are stopped. The copy loop refreshes the host lock itself so a long
-backup cannot go stale while the event loop is blocked.
-See [Home updates and portability](HOME-UPDATES-AND-PORTABILITY.md).
+Backup requires quiet owned writers and a held lifecycle lock. Move restores
+and rebinds a destination and fences the source against duplicate startup.
+Managed/source adoption is a separate adapter; it does not mean an arbitrary
+existing directory can be overwritten or controlled in place by Host.
 
 The companion invokes the bundled Node with `app/scripts/product/host.mjs`.
-The protocol accepts one action and an absolute `--home` path; `install`,
-`preview` and `stage` also accept `--payload`. Only `stage` and `update` accept
-`--staging`. Only `check-update` accepts `--feed`.
+The protocol accepts one action and absolute operation paths. Its current action
+and flag matrix is in `scripts/product/host.mjs`; the native caller is Apple
+`Home23Host/HostCommand.swift`. Do not use early command snapshots as the current
+dispatch contract. Native Host now supports bundled-package Check/preparation,
+staged Install and recovery as well as local development feed workflows.
 Creation data arrives over stdin, including any credential,
 so keys never appear in arguments, preferences, or returned receipts. Stdout is
 one JSON result. Diagnostic progress goes to stderr.
@@ -137,19 +119,17 @@ The September 9 developer milestone passed this installed conversation/restart
 proof with a local model fixture. It did not exercise embedding inference or
 establish clean-Mac, real-provider, Windows-browser or remote-device acceptance.
 
-Distribution signing/notarization, a clean-Mac owner trial, automatic upgrades,
-secure remote phone connection, hosted homes, and account connectors remain
-delivery work. No package or test receipt should be described as proving those
-steps. The initial Host form today supports API-key and local-provider setup.
-Subscription sign-in for OpenAI and Anthropic is required delivery work for
-Host first-home creation and reconnect (product delivery D05), beside those
-paths and owned embeddings. Host must carry those existing flows through the
-Home23 broker (`shared/home23-oauth.cjs` and the dashboard oauth routes)—not a
-second credential system—and must authorize accounts before the resident is
-running. Archive package
-`72a996151605ab2580eb6060a62abdf762d3246f5502cff1c19cce73bfaa01a5`
-(Apple `c4fdd5a`, backend `98aa10a0`) remains API/local Host setup only; do not
-treat an ad-hoc archive ZIP as a consumer release.
+Current source supports OpenAI and Anthropic subscription sign-in through the
+existing Home23 broker (`shared/home23-oauth.cjs` and dashboard oauth routes),
+alongside API-key and local-model setup. The recorded isolated Anthropic trial
+completed native consent and a persisted provider turn. Preserve those flows;
+the early API/local-only package description is historical.
+
+Native bundled-package Check/preparation and local install/recovery are now
+implemented. Public publisher-hosted updates, consumer signing/notarization,
+broader distribution, hosted homes and account connectors remain separate work.
+Reuse existing evidence for its scope rather than interpreting this older
+developer milestone as a mandate to repeat the first-owner journey.
 Track those items and public website/download work in
 [the delivery backlog](PRODUCT-DELIVERY.md#delivery-work-to-address).
 
@@ -170,5 +150,6 @@ The [owned embedder integration plan](../superpowers/plans/2026-09-10-owned-embe
 records the implementation and separates new-home delivery from existing
 residents' encoder transitions. The [candidate record](../superpowers/plans/2026-09-11-owned-embedder-candidate-status.md)
 identifies integrated revisions and the distinct source, packaged-install and
-independent Linux evidence. Developer verification does not establish public
-signing, clean-machine acceptance, provider authorization, or remote transport.
+independent Linux evidence. Those historical receipts do not establish public
+signing, clean-machine acceptance or remote transport. Provider authorization
+evidence is scoped to the recorded provider and installed trial above.

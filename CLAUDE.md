@@ -2,6 +2,8 @@
 
 Read `AGENTS.md` and `docs/reference/DEVELOPMENT-WORKFLOW.md` before work. They establish source ownership, concurrent-work handling and release boundaries. The developer reference below does not supersede them.
 
+Upgrade/Host/embedding work follows `docs/design/HOME-UPDATES-AND-PORTABILITY.md`. Its continuity reset supersedes the old product-completion and embedder handoff sequences. Do not treat lifecycle adoption, software delivery and changing an existing encoder as one mandatory migration.
+
 The lead owns review, relevant verification, local commits and integration. Worker restrictions do not remove those responsibilities or create new owner approval requirements. Follow the shared agreement's task record and completion rules, preserving the owner's explicit scope and authorization.
 
 # Home23 Developer Guide
@@ -41,7 +43,7 @@ node cli/home23.js start <name>
 - `engine/src/substrate/` - engine-side Seed readers (cognition grounding, dream day-residue).
 - `cli/` - installer, PM2 management, agent creation, updates, and templates.
 - Cosmo is a standalone research application reached through its configured API; it is no longer a vendored `cosmo23/` source tree. Read `docs/reference/COSMO-SEPARATION.md` for ownership and cross-product test prerequisites.
-- `evobrew/` - bundled Evobrew integration.
+- `evobrew/` - optional standalone application retained in source. Consumer Host packages omit it; Home23's chat/device/agency bridge remains in `src/routes/evobrew-bridge.ts`, and saved home state is preserved.
 - `config/*.example` - public config seeds.
 - `instances/` - generated per-agent runtime state. Ignored by Git.
 

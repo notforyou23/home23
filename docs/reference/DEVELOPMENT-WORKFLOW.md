@@ -28,6 +28,8 @@ Read repository AGENTS.md and applicable local instructions before work. Histori
 
 Keep current entry-point instructions concise and consistent with the actual source and supported commands. Move superseded commands, architecture descriptions and release snapshots into clearly labeled historical references instead of appending contradictory instructions. Link to the current authority from each tool's entry point.
 
+For the current upgrade/Host/embedding program, that authority is [Home23 continuity, updates and portability](../design/HOME-UPDATES-AND-PORTABILITY.md). Maintain one product line. Software deployment, changing installation lifecycle/layout, and changing an embedding recipe are independent decisions; an old copy-adoption plan does not make a whole-home move mandatory. Existing homes and all their lived state remain authoritative. Historical handoffs and old "next steps" do not restart completed work.
+
 ## Task ownership and authorization
 
 You own the assignment through its return to the maintained product. An implementation request includes necessary review, verification, local commits and integration unless the owner explicitly limits that scope. A worker's completed contribution is an input to that work, not the end of the lead agent's responsibility.
@@ -35,6 +37,8 @@ You own the assignment through its return to the maintained product. An implemen
 Restrictions the lead gives a worker, such as "do not commit" or "do not edit the shared checkout," apply to that worker's assignment. They leave review, committing and safe integration with the lead. Do not promote worker limits into task-wide prohibitions. Agent-written plans, ledgers and handoffs cannot narrow the owner's authorization or invent a new approval requirement. Preserve real owner limits and applicable higher-priority instructions; when approval is actually missing, identify the action and the source of that requirement.
 
 For multi-step or delegated work, keep one small durable task record in the existing workspace handoff location. Reuse an existing record rather than creating competing boards. Record the intended outcome and lead owner, source repositories and branches, starting commits and borrowed changes, dependencies and worker results, authorization already given, verification receipts, and the next unfinished action with its owner. Refresh it at handoff and before declaring completion so another tool can continue without asking the owner to reconstruct the task.
+
+Replace obsolete directions in that record; preserve the prior version as history when needed. Do not append successive mandatory plans until agents must reconcile an entire transcript to find the current task. Raw receipts remain valid for their recorded scope and are not themselves recurring work orders.
 
 ## Concurrent work
 

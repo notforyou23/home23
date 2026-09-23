@@ -4,6 +4,8 @@
 
 Read [the shared development working agreement](docs/reference/DEVELOPMENT-WORKFLOW.md) before cross-tool or release work. Repository-specific instructions below still apply. Preserve concurrent work and check the actual branch; current product development may be ahead of GitHub main.
 
+For Home23 upgrade, Host and embedding work, [Home23 continuity, updates and portability](docs/design/HOME-UPDATES-AND-PORTABILITY.md) is the current direction. There is one product/source line. A newer release, Host adoption and an encoder change are separate choices. Preserve the established home and its configured encoder; do not make a whole-home move mandatory because the current copy adapter expects one. Historical embedder/Cursor/Claude plans are evidence, not work orders. Reuse accepted checks; do not restart completed lanes or repeat installed trials merely to satisfy an old checklist.
+
 ## What This Is
 
 Home23 is an installable AI operating system. The public repo must stay portable: source, examples, docs, tests, and templates belong in Git; local runtime state does not.
