@@ -1,6 +1,6 @@
 /** Classifies a Host v1 home for a schema-preserving update. No package writes. */
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { absoluteHome, readPrivateJSON, socketRootFor } from './product-environment.js';
 import { PRODUCT_STATE_PATHS, isProductStatePath } from './product-payload.js';
@@ -11,6 +11,7 @@ export const SUPPORTED_COORDINATION_SCHEMA_CHECKSUM = 'cb80ab7b2c52920dab0ef5434
 export const SUPPORTED_COORDINATION_MIGRATION_CHECKSUM = 'c5d7aad734c6516b629b0879a815f51bdb32ea1c33d2001209fc7c008c60a436';
 const RECIPE_ASSET = 'app/scripts/embedder/schema/recipes.json';
 const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
+const COORDINATION_SOCKET = 'app/instances/.house/coordination/coord.sock';
 const SCAN_FILES = ['.home23-host.json', 'app/.home23-state.json', 'app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml'];
 const ADOPTED_LINK_RECEIPT = 'runtime/adoption-preservation.json';
 const REBUILDABLE_PREFIXES = ['app/logs/', 'app/engine/logs/', 'app/engine/runtime/', 'runtime/pm2/', 'runtime/embedder-cache/', 'runtime/user/', 'runtime/.host.lock/'];
@@ -57,6 +58,23 @@ function refersToHome(text, home, token) {
 function recipeIds(file) {
   const parsed = JSON.parse(readFileSync(file, 'utf8'));
   return Object.values(parsed.profiles || {}).map(profile => profile.recipeId).filter(Boolean);
+}
+/** The coordinator replaces this particular internal pointer after each curation. */
+function reviewedRotatingInsight(root, relative, target, approved) {
+  if (approved.kind !== 'retain-link' ||
+      !/^app\/instances\/[a-z][a-z0-9-]{0,62}\/brain\/coordinator\/insights_curated_LATEST\.md$/.test(relative) ||
+      !/^insights_curated_cycle_\d+_\d{4}-\d{2}-\d{2}\.md$/.test(target)) return false;
+  const parent = dirname(join(root, relative));
+  const file = resolve(parent, target);
+  // Do not let an authority originally reviewed outside this directory turn
+  // into a freely rotating internal pointer.
+  if (dirname(file) !== parent || dirname(resolve(parent, approved.target)) !== parent) return false;
+  try {
+    const realRoot = realpathSync(root), realParent = realpathSync(parent);
+    if (!realParent.startsWith(`${realRoot}${sep}`)) return false;
+    const stat = lstatSync(file);
+    return stat.isFile() && !stat.isSymbolicLink() && dirname(realpathSync(file)) === realParent;
+  } catch { return false; }
 }
 
 export async function inspectCoordinationDatabase(file) {
@@ -133,6 +151,12 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
     const absolute = join(root, relative);
     const stat = lstatSync(absolute);
     const declared = manifestEntries.get(relative);
+    if (relative === COORDINATION_SOCKET) {
+      // A live UDS is a rebuildable coordinator endpoint, never a backup file.
+      // Other types at this exact path and sockets anywhere else still refuse.
+      if (!stat.isSocket() || declared) reasons.push(reason('unknown_state', `Coordination endpoint ${relative} is not an owned runtime socket.`, { path: relative }));
+      return;
+    }
     if (!scanSoftware && declared && (
       (stat.isDirectory() && declared.type !== 'directory') ||
       (stat.isFile() && declared.type !== 'file') ||
@@ -147,7 +171,8 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
         const insideHome = resolved === root || resolved.startsWith(root + sep);
         const approved = adoptedLinks.get(relative);
         if (approved) {
-          if (approved.target !== target) reasons.push(reason('linked_state_changed', `Reviewed state link ${relative} changed.`, { path: relative }));
+          if (approved.target !== target && !reviewedRotatingInsight(root, relative, target, approved))
+            reasons.push(reason('linked_state_changed', `Reviewed state link ${relative} changed.`, { path: relative }));
           else if (approved.kind === 'retain-authority' && !exists(resolved)) reasons.push(reason('retained_authority_missing', `External authority for ${relative} is unavailable. Restore or reconnect it before updating.`, { path: relative }));
           else adoptedLinks.delete(relative);
         } else if (!insideHome) reasons.push(reason('linked_state_path', `State path ${relative} points outside this home. Keep the real directory in place before updating.`, { path: relative }));
