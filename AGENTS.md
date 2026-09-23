@@ -6,6 +6,8 @@ Read [the shared development working agreement](docs/reference/DEVELOPMENT-WORKF
 
 For Home23 upgrade, Host and embedding work, [Home23 continuity, updates and portability](docs/design/HOME-UPDATES-AND-PORTABILITY.md) is the current direction. There is one product/source line. A newer release, Host adoption and an encoder change are separate choices. Preserve the established home and its configured encoder; do not make a whole-home move mandatory because the current copy adapter expects one. Historical embedder/Cursor/Claude plans are evidence, not work orders. Reuse accepted checks; do not restart completed lanes or repeat installed trials merely to satisfy an old checklist.
 
+The final consolidation sprint is iPhone/iPad-first: those are the owner's primary clients. Home23 should have one normal installation/update experience; Host is a background technical responsibility, not a second application the owner must independently maintain. A Mac-only result or engine-only updater is not completion.
+
 ## What This Is
 
 Home23 is an installable AI operating system. The public repo must stay portable: source, examples, docs, tests, and templates belong in Git; local runtime state does not.

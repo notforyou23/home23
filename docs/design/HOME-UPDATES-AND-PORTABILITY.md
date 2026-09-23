@@ -12,12 +12,16 @@ are built from the maintained source. These are releases and installation format
 of the same product, not two feature branches to maintain indefinitely.
 
 Home23 is the conversation/client app. Home23 Host is its Mac companion for
-running and managing a home. They are deliberately separate applications within
-one product. Test homes are independent fixtures, never replacements for the
-owner's residents or additional supported product editions.
+running and managing a home. These may remain separate technical components,
+but the owner wants one installation, one obvious Home23 entry point and one
+coordinated update experience. Users must not assemble or independently maintain
+them. Preserve the client sandbox and identities rather than merging executables
+merely to get one product name. Test homes are fixtures, not product editions.
 
 The goal is the owner's existing home using current Home23 software with convenient,
-safe updates and portability. Preserve residents, Seed history, brain, conversations,
+safe updates and portability. iPhone and iPad are the owner's primary clients;
+Mac hosts the home and also has a client. Mobile/iPad daily use and ordinary home
+update controls are central, not downstream or optional acceptance. Preserve residents, Seed history, brain, conversations,
 channels/helpers, Work, Library, files, projects, credentials, integrations and
 app identities. Family distribution follows. Website, public feed, notarization
 and store release do not gate a private software upgrade.
@@ -96,26 +100,64 @@ open. Unknown-path and symlink counts are inventory findings, not counts of
 migration defects. Never discard files or follow external links blindly to make
 that inventory pass. Keep original state and recovery material.
 
-## Next work
+## Final consolidation sprint
 
-1. Produce one concise comparison for the actual running home: selected software,
-   state paths that stay or move, active external references, process ownership,
-   auth continuity and client endpoints. Reuse the existing inventory; investigate
-   only unresolved active dependencies. Identify the smallest route to Host updates.
-2. Resolve the lifecycle route from that comparison, then close only its concrete
-   compatibility/adapter gaps. Keep one release line and the existing encoder.
-   Do not create another product fork or a third migration framework.
-3. Prepare one candidate and one cutover/recovery procedure with affected services,
-   downtime, writer stop/admission, retained software/state, and the boundary after
-   which new writes require forward recovery. Prepare before seeking live authority.
-4. Execute the authorized operation and check the same residents, history, ordinary
-   chat, memory, Work/Library and existing client connections. Stop when the changed
-   behavior and relevant lifecycle controls work.
+The owner requests a fresh Codex session with a durable goal, a capable lead and
+parallel implementation. Its finish line is one ordinary-user Home23 installation
+and update experience, with iPhone/iPad as primary clients and a supported Mac
+running the home behind the scenes. Carry the owner's existing home forward and
+make the same product easy for a new person to install and pair. A separately
+managed Host application is not an acceptable required daily user journey.
+Supporting both Ollama and owned ONNX is configuration in that same release line, not separate editions.
 
-This reconciliation is guidance work, not production activation. Existing user
-authority persists; archived checklists cannot invent approval requirements.
-The current source-to-product copy method remains available, but this document
-does not choose or authorize a whole-home move or an encoder migration.
+The current ZIP contains Host and client but is not a coordinated app updater.
+The current native Check compares the installed engine with the package inside
+Host. Delivering compatible new Host and client executables, release discovery,
+and an ordinary update interface across iPhone, iPad and Mac are still concrete
+work. Do not call the goal complete by improving only that bundled-engine comparison.
+
+1. Reconcile the current source and evidence once. Claude's Mac connection UI and
+   later offline/window fixes are already integrated; extend them. Choose the
+   smallest lifecycle route for the existing home from its actual paths and
+   ownership contracts. A managed software-only upgrade is an interim step, not
+   completion of the unified lifecycle goal.
+2. Work in parallel on (a) existing-home continuity, (b) coherent install/release
+   and app-plus-runtime updates, and (c) normal-user setup/update/connection UI
+   with iPhone/iPad first. Use existing authenticated control paths and shared
+   contracts; do not invent a second remote administration service.
+   Assign exclusive file ownership and agree shared interfaces first. Keep heavy
+   package copies/builds coordinated; do not serialize independent engineering.
+3. Deliver one coherent installation route with compatible internal components,
+   normal Check/Update/Resume controls reachable from the primary clients, a usable
+   release channel and reconnection. iOS/iPadOS app delivery must use the supported
+   Apple installation/update mechanism; a home update is not a way to replace an
+   iOS binary. Coordinate the experience without claiming those are one executable.
+   No developer feed/key pickers, package hashes or Terminal commands
+   in the normal flow. Keep diagnostics available under Details. A private release
+   channel suffices; a public website and store launch are separate later work.
+4. Integrate and verify changed behavior using accepted receipts plus one bounded
+   walkthrough of the newly connected delivery/UI path. Prepare one existing-home
+   cutover/recovery operation. Preserve state, credentials, external references,
+   client identities and the configured encoder; never run duplicate Seed writers.
+5. Perform the concrete authorized cutover and owner-app installation. Confirm
+   everyday chat, memory, Work/Library, and the shared home/update controls from
+   iPhone and iPad, plus Mac connections. Mac-only success does not close the goal.
+   A new owner must be able to install that same product on a supported Mac and
+   pair the phone/tablet apps without a source checkout or developer tooling.
+   Produce a concise release and recovery record, then close the goal when these outcomes are established.
+
+Use the available goal tool once in the new session, without an invented token
+budget. Keep the original objective across compaction; query goal state and the
+short task record before resuming. Update one current record with lane owners,
+completed evidence, concrete blockers and next actions. Do not create an endless
+append-only progress transcript or a new recurring automation.
+
+This document prepares the sprint; it is not live activation authority. Build and
+integrate the concrete result before seeking any genuinely missing permission for
+production changes, owner apps, publication/uploads or credentials. Do independent
+work while waiting. Do not declare a private channel operational if only a
+loopback development fixture exists. Do not make public marketing, hosted homes,
+new platform ports or an encoder migration prerequisites for this sprint.
 
 ## Verification and agent rules
 

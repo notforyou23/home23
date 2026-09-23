@@ -91,9 +91,9 @@ replaced by the public website or reduced to a download page. Apps and dashboard
 access the same home and residents; their current feature parity must be checked
 rather than assumed. The Mac conversation client is optional for browser use.
 
-The intended Host action is **Open Dashboard**, using that home's actual
-dashboard address. **Open Home23** remains the native-client action. The current
-Host implements the latter; the browser action and handoff still need work.
+Host implements **Open Dashboard**, using that home's actual dashboard address,
+and **Open Home23** for the native client. Opening a URL is not itself proof
+of remote browser connectivity.
 The public site can explain how to open an existing home without knowing its
 private address or storing credentials in a public link.
 
@@ -149,7 +149,7 @@ not a list of tests alone.
 | D03 | Apple release: prepare iPhone TestFlight, then App Store submission and real website links; settle distribution identities without disrupting existing installs | Beta invite installs and connects; public store link appears only after release approval; existing identity/data are preserved through any deliberate migration |
 | D04 | Apple + website: reconcile minimum OS versions, supported architectures, download selection and compatibility | Host and client requirements are individually stated and tested; a source target or successful build is not marketed as a shipped platform |
 | D05 | Backend + Host onboarding: complete real-provider setup including OpenAI and Anthropic subscription sign-in beside API keys and local models, optional dependency guidance, owned embeddings and document ingestion; remove feature-specific provider assumptions | A new owner can authorize a supported chat provider via the existing Home23 OAuth broker (Anthropic and OpenAI subscription sign-in), an API key, or a local model; bring in documents; retrieve useful memory; and understand costs/readiness without inheriting developer accounts; subscription, API-key and local setup remain distinct billing paths |
-| D06 | Host + web: add Open Dashboard, actual per-home URL handoff and missing-Mac-client guidance; check dashboard parity and browser behavior | A browser-only owner can enter and use the same home; Windows Edge/Chrome acceptance covers chat/streaming, reports, files and reconnect through the supported connection path |
+| D06 | Host + web: preserve delivered Open Dashboard/per-home URL handoff; finish missing-client installation guidance and scoped browser/remote behavior | A browser-only owner can enter and use the same home; Windows Edge/Chrome acceptance covers chat/streaming, reports, files and reconnect through the supported connection path |
 | D07 | Backend + web + Apple: deliver secure discovery/pairing and authenticated cross-device/remote transport | Phone and Windows can connect to the intended home, recover from interruptions, revoke access and handle an offline host; private operator routes remain protected |
 | D08 | Backend + Apple delivery: [Check for Updates, safe activation, backup/restore and portability](HOME-UPDATES-AND-PORTABILITY.md), including existing-home adoption | An upgrade or interrupted upgrade preserves the resident and history with a recovery receipt; a move preserves identity and enforces its declared cross-host ownership policy |
 | D09 | Website + release: finish first-run progress, permissions/data explanations, troubleshooting, support and a documented end-to-end beta journey | A new owner can install, configure, converse, import, reconnect and recover using the released apps and docs; local fixtures and developer signatures are not the acceptance evidence |

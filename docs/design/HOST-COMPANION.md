@@ -21,8 +21,9 @@ The private web dashboard stays part of each home and can be used without the
 Mac conversation app. It is the intended Windows client surface once secure
 cross-device access and browser compatibility are delivered. Host currently
 binds services to loopback; it does not yet provide a Windows host or a public
-remote dashboard service. Open Dashboard and the home-specific browser handoff
-are tracked alongside the existing Open Home23 native-client action.
+remote dashboard service. Open Dashboard already hands off the home-specific
+URL; Open Home23 opens the native client. Broader remote/browser acceptance
+is a separate delivery concern.
 
 ## One home, the same substrate
 
