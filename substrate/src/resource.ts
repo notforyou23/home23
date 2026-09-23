@@ -9,6 +9,14 @@
 import type { ResourceBudget, ResourceSnapshot } from './types.js';
 import { ResourceBudgetExceededError, DEFAULT_RESOURCE_BUDGET } from './types.js';
 
+/** Resident Seed lifetime counters are telemetry, not a session/proof-run cap.
+ * Existing configured ledger/cell byte ceilings are unchanged. */
+export const RESIDENT_RESOURCE_BUDGET: Partial<ResourceBudget> = Object.freeze({
+  maxEventCount: Number.MAX_SAFE_INTEGER,
+  maxTransitionCount: Number.MAX_SAFE_INTEGER,
+  maxCheckpointCount: Number.MAX_SAFE_INTEGER,
+});
+
 export class ResourceAccounting {
   private readonly budget: ResourceBudget;
   private stateBytesPerCell: Record<string, number> = {};
@@ -56,9 +64,24 @@ export class ResourceAccounting {
 
   // ─── Accumulators ─────────────────────────────────────────────────────────
 
-  recordEvent(): void { this._eventCount++; }
-  recordTransition(): void { this._transitionCount++; }
-  recordCheckpoint(): void { this._checkpointCount++; }
+  recordEvent(): void {
+    if (this._eventCount >= Number.MAX_SAFE_INTEGER) {
+      throw new ResourceBudgetExceededError('eventCount', this._eventCount, Number.MAX_SAFE_INTEGER);
+    }
+    this._eventCount++;
+  }
+  recordTransition(): void {
+    if (this._transitionCount >= Number.MAX_SAFE_INTEGER) {
+      throw new ResourceBudgetExceededError('transitionCount', this._transitionCount, Number.MAX_SAFE_INTEGER);
+    }
+    this._transitionCount++;
+  }
+  recordCheckpoint(): void {
+    if (this._checkpointCount >= Number.MAX_SAFE_INTEGER) {
+      throw new ResourceBudgetExceededError('checkpointCount', this._checkpointCount, Number.MAX_SAFE_INTEGER);
+    }
+    this._checkpointCount++;
+  }
   setLedgerBytes(bytes: number): void { this._ledgerBytes = bytes; }
   setCellStateBytes(cellId: string, bytes: number): void { this.stateBytesPerCell[cellId] = bytes; }
 

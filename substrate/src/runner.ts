@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import type { SeedProcess } from './seed.js';
 import { SeedProcess as Seed } from './seed.js';
 import { SeedLedger } from './ledger.js';
+import { RESIDENT_RESOURCE_BUDGET } from './resource.js';
 import { EventLedgerTailAdapter } from './adapters/event-ledger-tail.js';
 import type { TailedSourceEvent, TailSourceType } from './adapters/event-ledger-tail.js';
 import type { LobeAdapter } from './lobe.js';
@@ -147,10 +148,10 @@ export class SeedRunner {
     if (this.seed !== null) return;
     this.acquireRunnerLock();
     if (SeedLedger.exists(this.opts.stateDir)) {
-      this.seed = Seed.restore(this.opts.stateDir);
+      this.seed = Seed.restore(this.opts.stateDir, undefined, RESIDENT_RESOURCE_BUDGET);
       this.log(`restored seed ${this.seed.getState().seedId} at ledgerSeq ${this.seed.getState().ledgerSeq}`);
     } else {
-      this.seed = Seed.initialize(this.opts.stateDir, undefined, {
+      this.seed = Seed.initialize(this.opts.stateDir, RESIDENT_RESOURCE_BUDGET, {
         anatomy: this.opts.anatomy,
         name: this.opts.name,
         selfFormation: this.opts.selfFormation,

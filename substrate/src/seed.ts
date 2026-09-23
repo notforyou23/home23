@@ -3,7 +3,7 @@
  *
  * API:
  *   SeedProcess.initialize(stateDir, budget?) — fresh seed with five cells
- *   SeedProcess.restore(stateDir, checkpointId?) — resume from checkpoint
+ *   SeedProcess.restore(stateDir, checkpointId?, budget?) — resume from checkpoint
  *   seed.ingest(event)      — write source event to ledger (membrane-gated)
  *   seed.transition(event)  — ingest + deterministic cell state update
  *   seed.checkpoint()       — write checkpoint, return checkpointId
@@ -243,7 +243,7 @@ export class SeedProcess {
     });
   }
 
-  static restore(stateDir: string, checkpointId?: string): SeedProcess {
+  static restore(stateDir: string, checkpointId?: string, budget?: Partial<ResourceBudget>): SeedProcess {
     const membrane = new CapabilityMembrane();
     membrane.assert('local.checkpoint.read');
 
@@ -281,7 +281,7 @@ export class SeedProcess {
       );
     }
 
-    const accounting = new ResourceAccounting();
+    const accounting = new ResourceAccounting(budget);
     accounting.restoreFromSnapshot(manifest.resourceSnapshot);
 
     // The frozen reservoir is regenerated from the seed recorded at birth —
