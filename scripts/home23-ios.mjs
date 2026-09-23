@@ -45,7 +45,7 @@ export function buildArguments({ source, output, buildNumber, port }) {
     '-destination', 'generic/platform=iOS', '-disableAutomaticPackageResolution',
     'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'CODE_SIGN_ENTITLEMENTS=',
     'ENABLE_DEBUG_DYLIB=NO', `CURRENT_PROJECT_VERSION=${buildNumber}`,
-    'MARKETING_VERSION=1.10', `HOME23_CONNECTED_AGENTS_PORT=${port}`, 'build',
+    `HOME23_CONNECTED_AGENTS_PORT=${port}`, 'build',
   ];
 }
 

@@ -24,6 +24,7 @@ import { REASONING_EFFORTS, type ReasoningEffort } from "../../agent/reasoning-e
 import { mountConsoleRoutes } from "../console/routes.js";
 import { mountLiveVoiceRoutes } from "./live-voice-routes.js";
 import { mountChessRoutes } from "../chess/routes.js";
+import { mountHomeUpdateRoutes } from "../home-update/routes.js";
 
 type CapabilityName = keyof CoordinationAdvertisedCapabilities;
 
@@ -129,6 +130,7 @@ export function createCoordinationRouter(input: {
 
   mountConsoleRoutes(router, application, lifecycle);
   mountChessRoutes(router, application, lifecycle);
+  mountHomeUpdateRoutes(router, application);
 
   const productRead = requireCoordinationAuth(application, ["product:read"]);
   const messageSend = requireCoordinationAuth(application, ["message:send"]);

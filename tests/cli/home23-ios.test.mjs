@@ -17,6 +17,7 @@ test('promotion retains the installed identity and refuses old labels, builds an
 
 test('the build preserves target identities while sharing version, port and executable layout', () => {
   const args = buildArguments({ source: '/source with spaces', output: '/build output', buildNumber: '153', port: '18443' });
+  assert.equal(args.some(value => value.startsWith('MARKETING_VERSION=')), false, 'Use the maintained target release version');
   assert.equal(args[args.indexOf('-project') + 1], '/source with spaces/Home23.xcodeproj');
   assert.equal(args[args.indexOf('-derivedDataPath') + 1], '/build output/DerivedData');
   const settings = Object.fromEntries(args.filter(value => /^[A-Za-z_][A-Za-z0-9_]*=/.test(value)).map(value => {

@@ -189,6 +189,7 @@ export interface CoordinationAttachmentPort {
 
 export interface CoordinationServices {
   auth: CoordinationAuthPort;
+  homeUpdate?: import("../home-update/service.js").HomeUpdateService;
   chess?: import('../chess/service.js').NativeChessService;
   console?: import("../console/service.js").ConsoleService;
   bootstrap?: BootstrapService;
