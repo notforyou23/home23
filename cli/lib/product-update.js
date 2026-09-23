@@ -9,7 +9,7 @@ import { basename, dirname, join, relative as relativePath, resolve, sep } from 
 import { fileURLToPath } from 'node:url';
 import { choosePortPlan, privateJSON, readPrivateJSON, validatePortPlan } from './product-environment.js';
 import { assertWritersIdle, rebindAdoptedHome, residentInstancePortSets } from './product-backup.js';
-import { installProductPayload, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
+import { installProductPayload, isProductStatePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation, previewRoot } from './product-update-preview.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 import { DatabaseSync } from 'node:sqlite';
@@ -1195,10 +1195,21 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
   // A preserved source file may share a path with immutable package software.
   // Require an explicit reviewed shadow destination when its bytes or mode
   // differ, before installation or any preserve copy can mutate that path.
-  const productFiles = new Map(manifest.files.filter(entry => entry.type === 'file').map(entry => [entry.path, entry]));
+  const productEntries = new Map(manifest.files.map(entry => [entry.path, entry]));
   for (const entry of copyableEntries(plan.inventory.paths)) {
-    const product = productFiles.get(entry.mapping.destination);
+    const mapped = entry.mapping.destination;
+    const product = productEntries.get(mapped);
+    if (!product && !isProductStatePath(mapped)) {
+      return refuseAdoption(plan, [reason('preservation_payload_collision',
+        `Preserved ${entry.path} maps to ${mapped}, which is neither package-owned nor permitted installation state; review a separate state destination.`,
+        { path: entry.path, destination: mapped })], destination);
+    }
     if (!product) continue;
+    if (product.type !== 'file') {
+      return refuseAdoption(plan, [reason('preservation_payload_collision',
+        `Preserved ${entry.path} maps onto non-file package entry ${mapped}; review a separate state destination.`,
+        { path: entry.path, destination: mapped })], destination);
+    }
     const sourceFile = join(source, entry.path);
     const stat = lstatSync(sourceFile);
     if (!stat.isFile() || stat.isSymbolicLink()) {

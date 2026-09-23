@@ -472,6 +472,29 @@ test('adoption refuses differing package-owned examples before install and accep
   assert.ok(verifyProductPayload(destination, { allowRuntimeState: true }));
 });
 
+test('adoption refuses unlisted config backups before install and accepts a reviewed state path', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const backup = 'config/agents.json.bak-grokbot-2026-08-17T13-49-02-483Z';
+  fs.writeFileSync(path.join(source.home, backup), 'old owner backup\n');
+  const destination = path.join(pack.root, 'destination');
+  const input = { sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload };
+  const refused = await adoptManagedSourceHome(input, adoptionDeps());
+  assert.equal(refused.ok, false);
+  assert.ok(refused.reasons.some(item => item.code === 'preservation_payload_collision'
+    && item.path === backup && item.destination === `app/${backup}`));
+  assert.equal(fs.existsSync(destination), false);
+
+  const shadow = `app/instances/.house/preserved-source/${backup}`;
+  const preservationPlan = { schema: 'home23.adoption-preservation.v1', sourceRoot: source.home,
+    entries: [{ path: backup, action: 'preserve', destination: shadow }] };
+  const adopted = await adoptManagedSourceHome({ ...input, preservationPlan }, adoptionDeps());
+  assert.equal(adopted.ok, true, JSON.stringify(adopted.reasons));
+  assert.equal(fs.readFileSync(path.join(destination, shadow), 'utf8'), 'old owner backup\n');
+  assert.equal(fs.existsSync(path.join(destination, 'app', backup)), false);
+  assert.ok(verifyProductPayload(destination, { allowRuntimeState: true }));
+});
+
 test('retained legacy authority stays one external directory through adoption', async t => {
   const pack = fixture(t, { omitEvobrew: true });
   const source = managedHome(pack.root, { writers: 'idle' });
