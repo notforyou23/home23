@@ -132,7 +132,9 @@ function validateContinuingNetworkBindings(source, bindings) {
   for (const name of names) {
     const sourcePorts = yaml.load(readFileSync(join(source, `instances/${name}/config.yaml`), 'utf8'))?.ports;
     const selected = bindings.residents[name];
-    if (!sourcePorts || !selected || ['engine', 'dashboard', 'mcp', 'bridge'].some(key => selected[key] !== sourcePorts[key]
+    const values = ['engine', 'dashboard', 'mcp', 'bridge'].map(key => selected?.[key]);
+    if (!sourcePorts || !selected || new Set(values).size !== values.length
+      || ['engine', 'dashboard', 'mcp', 'bridge'].some(key => selected[key] !== sourcePorts[key]
       || !Number.isInteger(selected[key]) || selected[key] < 1024 || selected[key] > 60999 || used.has(selected[key]))) {
       throw new Error(`Continuing-home resident network binding changed: ${name}`);
     }

@@ -87,9 +87,20 @@ async function reserve(port) {
 export async function withReservedPorts(plan, callback, options = {}) {
   const encoderRequired = options.encoderRequired === true || (options.encoderRequired !== false && Number.isInteger(plan?.embedder));
   validatePortPlan(plan, { encoderRequired, continuingBindings: options.continuingBindings === true });
+  const values = portKeysFor({ encoderRequired }).map(key => plan[key]);
+  if (options.residentPorts) {
+    if (!options.continuingBindings || typeof options.residentPorts !== 'object' || Array.isArray(options.residentPorts))
+      throw new Error('The saved Home23 resident port plan is invalid.');
+    for (const resident of Object.values(options.residentPorts)) {
+      const ports = ['engine', 'dashboard', 'mcp', 'bridge'].map(key => resident?.[key]);
+      if (ports.some(port => !Number.isInteger(port) || port < 1024 || port > 60999)
+        || new Set(ports).size !== ports.length) throw new Error('The saved Home23 resident port plan is invalid.');
+      values.push(...ports);
+    }
+  }
   const servers = [];
   try {
-    for (const key of portKeysFor({ encoderRequired })) servers.push(await reserve(plan[key]));
+    for (const port of new Set(values)) servers.push(await reserve(port));
     return await callback();
   } finally { await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve)))); }
 }

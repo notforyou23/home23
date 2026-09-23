@@ -776,6 +776,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     const allRunning = names.every(name => processes.some(row => row.name === name && row.status === 'online'));
     if (!processes.some(row => row.status === 'online')) await withReservedPorts(state.ports, async () => {}, {
       encoderRequired: encoderRequiredFor(state), continuingBindings: Boolean(state.networkBindings),
+      residentPorts: state.networkBindings?.residents,
     });
     state = { ...state, desiredRunning: true, phase: 'starting', startedAt: new Date().toISOString() };
     privateJSON(statePath(homeRoot), state);

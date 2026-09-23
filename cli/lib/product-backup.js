@@ -1360,7 +1360,8 @@ async function prepareRebindPlan(source, destination, { adopting = false } = {})
       fail('move_rebind_incomplete', 'Continuing-home network bindings changed.');
     }
     validatePortPlan(ports, { encoderRequired: host.encoderRequired === true, continuingBindings: true });
-    await withReservedPorts(ports, async () => {}, { encoderRequired: host.encoderRequired === true, continuingBindings: true });
+    await withReservedPorts(ports, async () => {}, { encoderRequired: host.encoderRequired === true,
+      continuingBindings: true, residentPorts: host.networkBindings.residents });
   } else {
     const disjoint = Boolean(oldPorts && ports && Number.isInteger(ports.coordination) && ports.coordination !== oldPorts.coordination);
     if (!disjoint) ports = await choosePortPlan({ encoderRequired: host.encoderRequired === true });
