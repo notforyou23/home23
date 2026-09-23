@@ -810,10 +810,12 @@ function semanticObservationBucket(obs) {
 
     const pressureFreePct = Number(payload.pressureFreePct ?? payload.memoryPressure?.freePct);
     if (Number.isFinite(pressureFreePct)) {
-      if (pressureFreePct <= 10) return 'memory:critical';
-      if (pressureFreePct <= 20) return 'memory:severe';
-      if (pressureFreePct <= 35) return 'memory:low';
-      if (pressureFreePct <= 50) return 'memory:tight';
+      // Availability includes reclaimable capacity, so pressure bands belong
+      // near exhaustion rather than around half of system memory.
+      if (pressureFreePct <= 5) return 'memory:critical';
+      if (pressureFreePct <= 10) return 'memory:severe';
+      if (pressureFreePct <= 15) return 'memory:low';
+      if (pressureFreePct <= 20) return 'memory:tight';
       return 'memory:normal';
     }
 
