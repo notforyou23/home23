@@ -47,7 +47,30 @@ node scripts/product/assemble-mac-release.mjs \
 The command builds `Home23Mac` in Release, then builds Host with the same version,
 build and minimum macOS and embeds it at
 `Home23.app/Contents/Library/LoginItems/Home23Host.app`. It verifies runtime integrity, app identities and
-architecture, then produces:
+architecture.
+
+For a separately compiled unsigned Mac client, first bind its exact app bytes to
+the clean Apple source and Xcode toolchain:
+
+```sh
+node scripts/product/prebuilt-mac-client.mjs \
+  --apple-source /absolute/home23-apple-checkout \
+  --apple-commit FULL_APPLE_COMMIT \
+  --app /absolute/DerivedData/Build/Products/Release/Home23Mac.app \
+  --developer-dir /absolute/Xcode.app/Contents/Developer \
+  --output /absolute/new-prebuilt-client-receipt.json
+```
+
+Pass `--prebuilt-client /absolute/Home23Mac.app` and
+`--prebuilt-client-receipt /absolute/new-prebuilt-client-receipt.json` to assembly.
+It verifies the unchanged app tree, bundle ID, 2.0 build 180, architecture,
+sandbox source entitlement and the clean Apple executable-source footprint before
+copying the client. A later Apple documentation-only commit is accepted only when
+that footprint is identical and the original build commit is its ancestor; source
+changes require a new client build. The receipt records the original build commit
+separately from the Apple commit used to build Host. This path still builds Host.
+
+Assembly then produces:
 
 - one visible `Home23/Home23.app` containing Host and runtime;
 - `Home23/Start Here.txt` with the actual OS/architecture requirements;

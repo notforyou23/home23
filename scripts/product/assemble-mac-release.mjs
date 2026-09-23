@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyProductPayload } from '../../cli/lib/product-payload.js';
 import { readProductChannel } from '../../cli/lib/product-release-channel.js';
+import { appTreeDigest, verifyPrebuiltMacClient } from './prebuilt-mac-client.mjs';
 
 const run = (file, args, options = {}) => execFileSync(file, args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, ...options });
 const json = file => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -64,7 +65,8 @@ export function newestMacOS(versions) {
     return 0;
   })[0];
 }
-export async function assembleMacRelease({ payload, appleSource, appleCommit, output, developerDir, channelConfig }) {
+export async function assembleMacRelease({ payload, appleSource, appleCommit, output, developerDir, channelConfig,
+  prebuiltClient, prebuiltClientReceipt }) {
   if (process.platform !== 'darwin') throw new Error('Mac release assembly requires macOS');
   payload = fs.realpathSync(payload); appleSource = fs.realpathSync(appleSource); output = path.resolve(output);
   if (!fs.statSync(path.dirname(output)).isDirectory()) throw new Error('Output parent must exist');
@@ -82,20 +84,34 @@ export async function assembleMacRelease({ payload, appleSource, appleCommit, ou
   if (manifest.platform !== 'darwin') throw new Error('Mac assembly requires a Darwin payload');
   const env = { ...process.env, DEVELOPER_DIR: developerDir };
   run('/usr/bin/xcrun', ['--sdk', 'macosx', '--show-sdk-path'], { env });
+  if (Boolean(prebuiltClient) !== Boolean(prebuiltClientReceipt)) throw new Error('Prebuilt client and receipt must be supplied together');
+  let prebuilt = null;
+  if (prebuiltClient) {
+    prebuiltClient = fs.realpathSync(prebuiltClient); prebuiltClientReceipt = fs.realpathSync(prebuiltClientReceipt);
+    for (const input of [prebuiltClient, prebuiltClientReceipt]) {
+      if (inside(input, output) || inside(output, input)) throw new Error('Output must be separate from prebuilt inputs');
+    }
+    prebuilt = await verifyPrebuiltMacClient({ receiptPath: prebuiltClientReceipt, app: prebuiltClient,
+      appleSource, appleCommit, arch: manifest.arch === 'x64' ? 'x86_64' : manifest.arch });
+  }
   fs.mkdirSync(output);
   const started = Date.now(), build = path.join(output, 'build'), release = path.join(output, 'Home23');
   fs.mkdirSync(build); fs.mkdirSync(release);
   const phase = message => process.stderr.write(`${message}\n`);
-  phase('Building the Mac client');
+  phase(prebuilt ? 'Reusing verified Mac client' : 'Building the Mac client');
   const derived = path.join(build, 'mac');
-  run('/usr/bin/xcodebuild', ['-project', path.join(appleSource, 'Home23.xcodeproj'), '-scheme', 'Home23Mac',
+  if (!prebuilt) run('/usr/bin/xcodebuild', ['-project', path.join(appleSource, 'Home23.xcodeproj'), '-scheme', 'Home23Mac',
     '-onlyUsePackageVersionsFromResolvedFile', '-configuration', 'Release', '-destination', 'generic/platform=macOS', '-derivedDataPath', derived,
     `ARCHS=${manifest.arch === 'x64' ? 'x86_64' : manifest.arch}`, 'ONLY_ACTIVE_ARCH=NO',
     'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'build'], { env, stdio: 'inherit' });
   if (sourceRevision(appleSource) !== revision) throw new Error('Apple source changed during assembly');
   const hostBuild = path.join(build, 'host');
   const clientApp = path.join(release, 'Home23.app');
-  fs.renameSync(path.join(derived, 'Build/Products/Release/Home23Mac.app'), clientApp);
+  if (prebuilt) run('/usr/bin/ditto', [prebuiltClient, clientApp]);
+  else fs.renameSync(path.join(derived, 'Build/Products/Release/Home23Mac.app'), clientApp);
+  if (prebuilt && (await appTreeDigest(clientApp)).sha256 !== prebuilt.appTree.sha256) {
+    throw new Error('Copied prebuilt Mac client differs from verified artifact');
+  }
   const client = appInfo(clientApp);
   phase('Building the embedded Host with the verified runtime');
   run(process.execPath, [path.join(appleSource, 'scripts/build-home23-host.mjs'), '--output', hostBuild, '--payload', payload,
@@ -137,6 +153,9 @@ export async function assembleMacRelease({ payload, appleSource, appleCommit, ou
   const publicAppInfo = async info => { const { executable, ...rest } = info; return { ...rest, executableSHA256: await sha256(executable) }; };
   const descriptor = { schema: 'home23.mac-release-set.v1', status: 'local-engineering-candidate',
     backendCommit: manifest.sourceCommit, appleCommit: revision, packageId: manifest.packageId,
+    prebuiltClientSourceCommit: prebuilt?.source.commit || null,
+    prebuiltClientSourceSHA256: prebuilt?.source.sha256 || null,
+    prebuiltClientArtifactSHA256: prebuilt?.appTree.sha256 || null,
     platform: 'darwin', arch: manifest.arch, minimumMacOS,
     host: await publicAppInfo(host), client: await publicAppInfo(client),
     appLayout: 'Home23.app/Contents/Library/LoginItems/Home23Host.app',
@@ -156,7 +175,7 @@ export async function assembleMacRelease({ payload, appleSource, appleCommit, ou
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
-    const names = { '--payload': 'payload', '--apple-source': 'appleSource', '--apple-commit': 'appleCommit', '--output': 'output', '--developer-dir': 'developerDir', '--channel-config': 'channelConfig' };
+    const names = { '--payload': 'payload', '--apple-source': 'appleSource', '--apple-commit': 'appleCommit', '--output': 'output', '--developer-dir': 'developerDir', '--channel-config': 'channelConfig', '--prebuilt-client': 'prebuiltClient', '--prebuilt-client-receipt': 'prebuiltClientReceipt' };
     const options = {};
     for (let i = 2; i < process.argv.length; i += 2) {
       const key = names[process.argv[i]], value = process.argv[i + 1];
