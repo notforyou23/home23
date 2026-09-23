@@ -33,6 +33,7 @@ function fixture(t, { sourceCommit = 'a'.repeat(40), platform = process.platform
     'app/dist/coordination/migrations/0001-spine.js': 'throw new Error("Do not import migrations");\n',
     'app/dist/coordination/contracts/v1/pack-manifest.json': '{}\n',
     'app/dist/coordination/contracts/v1/schema.json': '{}\n',
+    'app/engine/.gitkeep': '', 'app/evobrew/.gitkeep': '',
   })) {
     const file = path.join(payload, relative); fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
     fs.writeFileSync(file, contents, { mode: relative === 'bin/node' ? 0o755 : 0o644 });
@@ -248,6 +249,10 @@ test('managed and source adoption plans stay fail-closed and never write', t => 
   const withUnknownRoot = planManagedSourceAdoption(managed);
   assert.ok(withUnknownRoot.reasons.some(item => item.code === 'unknown_state' && item.path === 'unclassified'));
   assert.ok(!withUnknownRoot.inventory.paths.some(item => item.path.startsWith('unclassified/')));
+  fs.mkdirSync(path.join(managed, 'engine'));
+  fs.writeFileSync(path.join(managed, 'engine/.env'), 'private engine setting');
+  const withUnmappedEngineState = planManagedSourceAdoption(managed);
+  assert.ok(withUnmappedEngineState.reasons.some(item => item.code === 'unknown_state' && item.path === 'engine/.env'));
 
   const ready = path.join(root, 'ready');
   fs.mkdirSync(path.join(ready, 'instances/.house/coordination'), { recursive: true });
@@ -724,9 +729,15 @@ test('resume refuses when host or release identity inputs change', async t => {
 test('single-resident Host record stays valid; multi-resident plans keep every name', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: { release: true } } });
+  fs.mkdirSync(path.join(source.home, 'engine/data'), { recursive: true });
+  fs.writeFileSync(path.join(source.home, 'engine/data/memory.json'), '{"keep":true}\n');
+  fs.mkdirSync(path.join(source.home, 'evobrew'), { recursive: true });
+  fs.writeFileSync(path.join(source.home, 'evobrew/config.json'), '{"owner":"ada"}\n');
   assert.equal(fs.existsSync(path.join(source.home, '.home23-host.json')), false);
   const plan = planManagedSourceAdoption(source.home);
   assert.equal(plan.canAdopt, true);
+  assert.ok(plan.inventory.paths.some(item => item.path === 'engine/data/memory.json' && item.mapping?.destination === 'app/engine/data/memory.json'));
+  assert.ok(plan.inventory.paths.some(item => item.path === 'evobrew/config.json' && item.mapping?.destination === 'app/evobrew/config.json'));
   assert.equal(plan.identity.profile.name, 'ada');
   assert.equal(plan.identity.residentMap, null);
   const destination = path.join(pack.root, 'destination');
@@ -740,6 +751,8 @@ test('single-resident Host record stays valid; multi-resident plans keep every n
   const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
   assert.equal(host.profile.name, 'ada');
   assert.equal(host.residentMap, undefined);
+  assert.equal(fs.readFileSync(path.join(destination, 'app/engine/data/memory.json'), 'utf8'), '{"keep":true}\n');
+  assert.equal(fs.readFileSync(path.join(destination, 'app/evobrew/config.json'), 'utf8'), '{"owner":"ada"}\n');
 
   const multi = managedHome(path.join(pack.root, 'multi'), {
     hostRecord: false, name: 'ada', residents: { ada: {}, forrest: {} },

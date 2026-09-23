@@ -102,7 +102,11 @@ const ADOPTION_PRESERVE_FILES = new Set([
   'config/home.yaml', 'config/targets.yaml', 'config/secrets.yaml',
   'config/agents.json', 'config/cron-jobs.json',
   'runtime/semantic-prep.json',
+  'evobrew/.evobrew-config.json', 'evobrew/config.json',
+  'evobrew/runtime-state.json', 'evobrew/model-catalog-cache.json',
 ]);
+const ADOPTION_ENGINE_STATE_DIRS = ['runtime', 'logs', 'runs', 'data', 'artifacts', 'outputs', 'backups', '.backups'];
+const ADOPTION_EVOBREW_STATE_DIRS = ['.evobrew-workspaces', 'conversations', 'snapshots'];
 const ADOPTION_REBUILDABLE = new Set([
   'package.json', 'package-lock.json', 'npm-shrinkwrap.json',
   'node_modules', 'dist', 'logs', '.git', 'bin', 'tools', 'app',
@@ -111,7 +115,6 @@ const ADOPTION_REBUILDABLE = new Set([
 const ADOPTION_REBUILDABLE_PREFIXES = [
   'node_modules/', 'dist/', 'logs/', '.git/',
   'bin/', 'tools/', 'app/',
-  'engine/logs/',
   'instances/.house/maintenance/',
 ];
 
@@ -131,6 +134,9 @@ export function classifyAdoptionPath(relative) {
   if (relative === 'seed-ledger.jsonl' || relative.endsWith('/seed-ledger.jsonl')) return 'preserve';
   if (ADOPTION_PRESERVE_FILES.has(relative)) return 'preserve';
   if (relative === 'config' || relative.startsWith('config/')) return 'preserve';
+  if (relative === 'engine' || relative === 'evobrew') return 'container';
+  if (ADOPTION_ENGINE_STATE_DIRS.some(name => relative === `engine/${name}` || relative.startsWith(`engine/${name}/`))) return 'preserve';
+  if (ADOPTION_EVOBREW_STATE_DIRS.some(name => relative === `evobrew/${name}` || relative.startsWith(`evobrew/${name}/`))) return 'preserve';
   // Supervisor lock artifacts are created under the fence and must not alter the preserve snapshot.
   if (relative === 'instances/.house/maintenance' || relative.startsWith('instances/.house/maintenance/')) return 'rebuildable';
   // The selected product package replaces old managed release caches.
@@ -353,6 +359,9 @@ export function mapAdoptionEntry(entry, residentName) {
       return { ok: true, action: 'copy', destination: `app/${entry.path}` };
     }
     if (entry.path.startsWith('instances/')) {
+      return { ok: true, action: 'copy', destination: `app/${entry.path}` };
+    }
+    if (entry.path.startsWith('engine/') || entry.path.startsWith('evobrew/')) {
       return { ok: true, action: 'copy', destination: `app/${entry.path}` };
     }
     if (entry.path === 'birth-receipt.json') {
