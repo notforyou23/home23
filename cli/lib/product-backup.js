@@ -870,6 +870,116 @@ function isRebindMutablePath(relative) {
   return false;
 }
 
+const CURSOR_PATH = /^app\/instances\/[^/]+\/substrate\/[^/]+\/adapter-cursor\.([a-zA-Z0-9_-]+)\.json$/;
+
+function cursorId(sourcePath) {
+  return `tail_${sha256(Buffer.from(sourcePath, 'utf8')).slice(0, 8)}`;
+}
+
+function cursorRebindShape(relativePath, original, source, destination, adopted) {
+  const match = CURSOR_PATH.exec(relativePath);
+  if (!match || !safeRelative(relativePath)) fail('move_rebind_incomplete', `Invalid Seed cursor path: ${relativePath}`);
+  let cursor;
+  try { cursor = JSON.parse(original); }
+  catch { fail('move_rebind_incomplete', `Seed cursor is not JSON: ${relativePath}`); }
+  if (!cursor || Array.isArray(cursor) || typeof cursor !== 'object'
+    || cursor.schema !== 'home23.seed.adapter-cursor.v1'
+    || typeof cursor.sourcePath !== 'string' || !isAbsolute(cursor.sourcePath) || cursor.sourcePath.includes('\0')
+    || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) {
+    fail('move_rebind_incomplete', `Seed cursor is malformed: ${relativePath}`);
+  }
+  const mapped = replaceHomePath(cursor.sourcePath, source, destination, adopted);
+  const nextId = match[1] === cursorId(cursor.sourcePath) ? cursorId(mapped) : match[1];
+  const nextPath = `${relativePath.slice(0, relativePath.lastIndexOf('/') + 1)}adapter-cursor.${nextId}.json`;
+  const after = mapped === cursor.sourcePath ? original : `${JSON.stringify({ ...cursor, sourcePath: mapped })}\n`;
+  return { nextPath, after };
+}
+
+function cursorFiles(destination) {
+  const found = [];
+  const instances = 'app/instances';
+  if (!exists(join(destination, instances))) return found;
+  assertNoSymlinkAncestors(destination, instances);
+  for (const resident of readdirSync(join(destination, instances))) {
+    if (!/^[a-z][a-z0-9-]{0,62}$/.test(resident)) continue;
+    const substrate = `${instances}/${resident}/substrate`;
+    if (!exists(join(destination, substrate))) continue;
+    assertNoSymlinkAncestors(destination, substrate);
+    if (!lstatSync(join(destination, substrate)).isDirectory()) fail('move_rebind_incomplete', `Invalid Seed state directory: ${substrate}`);
+    for (const seed of readdirSync(join(destination, substrate))) {
+      if (!/^[^/.][^/]*$/.test(seed)) continue;
+      const state = `${substrate}/${seed}`;
+      assertNoSymlinkAncestors(destination, state);
+      if (!lstatSync(join(destination, state)).isDirectory()) continue;
+      for (const leaf of readdirSync(join(destination, state))) {
+        if (!leaf.startsWith('adapter-cursor.')) continue;
+        const path = `${state}/${leaf}`;
+        if (!CURSOR_PATH.test(path)) fail('move_rebind_incomplete', `Invalid Seed cursor filename: ${path}`);
+        assertNoSymlinkAncestors(destination, path);
+        if (!lstatSync(join(destination, path)).isFile()) fail('move_rebind_incomplete', `Invalid Seed cursor file: ${path}`);
+        found.push(path);
+      }
+    }
+  }
+  return found;
+}
+
+function prepareCursorBindings(destination, source, adopted) {
+  const bindings = cursorFiles(destination).map(path => {
+    const original = readFileSync(join(destination, path), 'utf8');
+    const shape = cursorRebindShape(path, original, source, destination, adopted);
+    return { path, original, nextPath: shape.nextPath };
+  });
+  const targets = new Set();
+  for (const binding of bindings) {
+    if (targets.has(binding.nextPath) || (binding.nextPath !== binding.path && bindings.some(other => other.path === binding.nextPath))) {
+      fail('move_rebind_incomplete', `Seed cursor target is ambiguous: ${binding.nextPath}`);
+    }
+    targets.add(binding.nextPath);
+  }
+  return bindings;
+}
+
+function checkedCursorBinding(destination, source, adopted, binding, archiveEntry = null) {
+  if (!binding || typeof binding.path !== 'string' || typeof binding.original !== 'string'
+    || !CURSOR_PATH.test(binding.path) || !safeRelative(binding.path)
+    || (archiveEntry && (archiveEntry.path !== binding.path || archiveEntry.sha256 !== sha256(Buffer.from(binding.original))))) {
+    fail('backup_recover_archive_mismatch', 'Seed cursor rebind is not bound to the authenticated archive.');
+  }
+  const shape = cursorRebindShape(binding.path, binding.original, source, destination, adopted);
+  if (shape.nextPath !== binding.nextPath) fail('backup_recover_archive_mismatch', 'Seed cursor rebind target changed.');
+  for (const path of new Set([binding.path, shape.nextPath])) assertNoSymlinkAncestors(destination, path);
+  const oldFile = join(destination, binding.path);
+  const newFile = join(destination, shape.nextPath);
+  const originalHash = sha256(Buffer.from(binding.original));
+  const afterHash = sha256(Buffer.from(shape.after));
+  const oldExists = exists(oldFile);
+  const newExists = exists(newFile);
+  if (binding.path !== shape.nextPath && oldExists && newExists) {
+    if (lstatSync(oldFile).isFile() && lstatSync(newFile).isFile()
+      && streamHash(oldFile) === originalHash && streamHash(newFile) === afterHash) return { state: 'cleanup', shape };
+    fail('backup_recover_archive_mismatch', `Seed cursor target collides: ${shape.nextPath}`);
+  }
+  if (oldExists && lstatSync(oldFile).isFile() && streamHash(oldFile) === originalHash) return { state: 'before', shape };
+  if (newExists && lstatSync(newFile).isFile() && streamHash(newFile) === afterHash) return { state: 'after', shape };
+  fail('backup_recover_archive_mismatch', `Seed cursor differs from authenticated rebind: ${binding.path}`);
+}
+
+function applyCursorBindings(destination, source, adopted, bindings) {
+  for (const binding of bindings) checkedCursorBinding(destination, source, adopted, binding);
+  for (const binding of bindings) {
+    const { state, shape } = checkedCursorBinding(destination, source, adopted, binding);
+    if (state === 'after') continue;
+    const next = join(destination, shape.nextPath);
+    const old = join(destination, binding.path);
+    if (state === 'cleanup') { unlinkSync(old); continue; }
+    const temporary = `${next}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, shape.after, { mode: lstatSync(old).mode & 0o777 });
+    renameSync(temporary, next);
+    if (next !== old) unlinkSync(old);
+  }
+}
+
 /**
  * Compare an inspected symlink to the archive digest using the same rebase
  * inspect applies via restoredLink (absolute internal targets become relative).
@@ -896,14 +1006,45 @@ function symlinkMatchesArchivedTarget(destination, sourceHome, linkRelative, ent
   }
 }
 
-function assertExtractMatchesArchive(destination, header, { allowRebindMutation = false, adoptionReceiptHashes = [] } = {}) {
+function assertExtractMatchesArchive(destination, header, { allowRebindMutation = false, adoptionReceiptHashes = [], cursorBindings = null } = {}) {
   const sourceHome = resolve(header.homeRoot);
+  const archivedCursors = header.files.filter(entry => CURSOR_PATH.test(entry?.path || ''));
+  if (!allowRebindMutation) {
+    const archivedPaths = new Set(archivedCursors.map(entry => entry.path));
+    for (const path of cursorFiles(destination)) {
+      if (!archivedPaths.has(path)) fail('backup_recover_archive_mismatch', `Seed cursor was not in the authenticated archive: ${path}`);
+    }
+  }
+  if (allowRebindMutation) {
+    const allowed = new Set((cursorBindings || []).flatMap(binding => [binding?.path, binding?.nextPath]));
+    for (const path of cursorFiles(destination)) {
+      if (!allowed.has(path)) fail('backup_recover_archive_mismatch', `Seed cursor was not in the authenticated rebind: ${path}`);
+    }
+  }
+  if (allowRebindMutation && archivedCursors.length) {
+    if (!Array.isArray(cursorBindings) || cursorBindings.length !== archivedCursors.length) {
+      fail('backup_recover_archive_mismatch', 'Authenticated Seed cursor rebind plan is missing.');
+    }
+    const seen = new Set();
+    const targets = new Set();
+    for (const binding of cursorBindings) {
+      const entry = archivedCursors.find(candidate => candidate.path === binding?.path);
+      if (!entry || entry.type !== 'file' || seen.has(binding.path)) fail('backup_recover_archive_mismatch', 'Seed cursor rebind plan is ambiguous.');
+      seen.add(binding.path);
+      const { shape } = checkedCursorBinding(destination, sourceHome, false, binding, entry);
+      if (targets.has(shape.nextPath) || (shape.nextPath !== binding.path && archivedCursors.some(candidate => candidate.path === shape.nextPath))) {
+        fail('backup_recover_archive_mismatch', `Seed cursor target is ambiguous: ${shape.nextPath}`);
+      }
+      targets.add(shape.nextPath);
+    }
+  }
   for (const entry of header.files) {
     if (!entry || typeof entry.path !== 'string' || !safeRelative(entry.path)) {
       fail('backup_recover_archive_mismatch', 'Authenticated archive inventory is invalid.');
     }
     if (isLifecycleLockPath(entry.path)) continue;
     if (allowRebindMutation && isRebindMutablePath(entry.path)) continue;
+    if (allowRebindMutation && CURSOR_PATH.test(entry.path)) continue;
     const absolute = join(destination, entry.path);
     if (!exists(absolute)) {
       fail('backup_recover_archive_mismatch', `Inspected home is missing archived path: ${entry.path}`);
@@ -998,7 +1139,8 @@ function revalidateRecoveryDestination(destination, header, binding, phase, jour
     }
     const adoption = journal?.rebindPlan?.adoptionBindings;
     assertExtractMatchesArchive(destination, header, { allowRebindMutation: true,
-      adoptionReceiptHashes: adoption ? [adoption.beforeHash, adoption.afterHash] : [] });
+      adoptionReceiptHashes: adoption ? [adoption.beforeHash, adoption.afterHash] : [],
+      cursorBindings: journal?.rebindPlan?.cursorBindings });
     return;
   }
   fail('backup_recover_journal_invalid', 'Recovery journal has an unknown phase.');
@@ -1385,6 +1527,7 @@ async function prepareRebindPlan(source, destination, { adopting = false } = {})
     sourcePresent,
     encoderRequired: host.encoderRequired === true,
     adoptionBindings: prepareAdoptionBindings(destination, host, rewriteFrom, oldPorts, ports, { adopting }),
+    cursorBindings: prepareCursorBindings(destination, rewriteFrom, adopting),
   };
 }
 
@@ -1397,6 +1540,7 @@ async function rebindDestination(source, destination, options = {}) {
   let residentPorts = null;
   let sourcePresent;
   let adoptionBindings = null;
+  let cursorBindings = null;
 
   if (plan) {
     rewriteFrom = plan.rewriteFrom;
@@ -1405,6 +1549,7 @@ async function rebindDestination(source, destination, options = {}) {
     residentPorts = plan.residentPorts && typeof plan.residentPorts === 'object' ? plan.residentPorts : null;
     sourcePresent = plan.sourcePresent === true;
     adoptionBindings = plan.adoptionBindings || null;
+    cursorBindings = plan.cursorBindings;
     if (typeof rewriteFrom !== 'string' || !isAbsolute(rewriteFrom) || !ports) {
       fail('move_rebind_incomplete', 'Recovery rebind plan is incomplete.');
     }
@@ -1416,7 +1561,12 @@ async function rebindDestination(source, destination, options = {}) {
     residentPorts = prepared.residentPorts;
     sourcePresent = prepared.sourcePresent;
     adoptionBindings = prepared.adoptionBindings;
+    cursorBindings = prepared.cursorBindings;
   }
+
+  if (!Array.isArray(cursorBindings)) fail('move_rebind_incomplete', 'Recovery rebind plan has no Seed cursor bindings.');
+  // Refuse a malformed/colliding cursor before changing the host record.
+  for (const binding of cursorBindings) checkedCursorBinding(destination, rewriteFrom, options.adoptManagedSource === true, binding);
 
   if (adoptionBindings) {
     const file = join(destination, 'runtime/adoption-preservation.json');
@@ -1440,6 +1590,7 @@ async function rebindDestination(source, destination, options = {}) {
   await rebindMachineConfiguration(rewriteFrom, destination, oldPorts, host.ports, {
     residentPorts, adopted: options.adoptManagedSource === true,
   });
+  applyCursorBindings(destination, rewriteFrom, options.adoptManagedSource === true, cursorBindings);
   if (!sourcePresent) return null;
   const receiptPath = join(rewriteFrom, '.home23-install.json');
   if (!exists(receiptPath)) return null;
