@@ -42,7 +42,7 @@ function deps(serve, { probe = true, failure } = {}) {
       current = matching;
       return { stdout: 'configured' };
     },
-    request: async () => probe ? { ok: true, json: async () => ({ pairingAvailable: true, capabilities: { bootstrap: true } }) }
+    request: async () => probe ? { ok: true, json: async () => ({ pairingAvailable: true, capabilities: { bootstrap: true, messageSubmission: true } }) }
       : { ok: false },
   };
 }
@@ -75,7 +75,8 @@ test('refuses occupied and public routes without changing Tailscale', async t =>
   const homeRoot = fixture(t);
   for (const serve of [
     { TCP: { 31000: { HTTPS: true } }, Web: { [`${domain}:31000`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } } } },
-    { ...matching, AllowFunnel: { 31000: true } },
+    { ...matching, AllowFunnel: { [`${domain}:31000`]: true } },
+    { Foreground: { otherSession: { TCP: { 31000: { HTTPS: true } }, Web: { [`${domain}:31000`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } } } } } },
     { TCP: { 31000: { HTTP: true } } },
   ]) {
     const d = deps(serve);
@@ -84,6 +85,15 @@ test('refuses occupied and public routes without changing Tailscale', async t =>
     assert.equal('address' in output, false);
     assert.equal(d.calls.length, 2);
   }
+});
+
+test('an unrelated JSON response never becomes a shareable Home23 address', async t => {
+  const homeRoot = fixture(t);
+  const d = deps(matching);
+  d.request = async () => ({ ok: true, json: async () => ({ status: 'ok' }) });
+  const output = await getDeviceConnectionStatus({ homeRoot }, d);
+  assert.equal(output.state, 'unavailable');
+  assert.equal('address' in output, false);
 });
 
 test('uninstalled or stopped home cannot mutate a Serve route', async t => {
