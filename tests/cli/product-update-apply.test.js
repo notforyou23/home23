@@ -72,7 +72,7 @@ function populate(home, { desiredRunning = false, version = SUPPORTED_COORDINATI
 function homeFixture(t, options = {}) {
   const root = tempRoot(t);
   const current = path.join(root, 'current'), candidate = path.join(root, 'candidate'), home = path.join(root, 'home'), staging = path.join(root, 'staging');
-  const installed = payload(current, { sourceCommit: 'a'.repeat(40) });
+  const installed = payload(current, { sourceCommit: 'a'.repeat(40), extra: options.currentExtra || {} });
   const next = payload(candidate, { sourceCommit: 'b'.repeat(40), extra: options.extra || { 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n' } });
   installProductPayload({ payloadPath: current, homeRoot: home });
   populate(home, options);
@@ -224,6 +224,25 @@ test('a stopped home updates in place and a running home waits until admission',
   assert.equal(packageId(running.home), running.next.packageId);
   assert.equal(preserved(running.home).conversation, 'hello-milo');
   assert.equal(preserved(running.home).version, SUPPORTED_COORDINATION_SCHEMA);
+});
+
+test('mixed roots switch packaged software and retain operator siblings', async t => {
+  const software = ['app/workspace/skills/index.js', 'app/configs/base-engine.yaml',
+    'app/agency/charter.yaml', 'app/engine/config/image.json'];
+  const currentExtra = Object.fromEntries(software.map(file => [file, 'version one\n']));
+  const extra = Object.fromEntries(software.map(file => [file, 'version two\n']));
+  const fixture = homeFixture(t, { currentExtra, extra });
+  const operator = ['app/workspace/operator-note.md', 'app/configs/local.yaml',
+    'app/agency/local.json', 'app/engine/config/local.json'];
+  for (const file of operator) {
+    fs.mkdirSync(path.dirname(path.join(fixture.home, file)), { recursive: true });
+    fs.writeFileSync(path.join(fixture.home, file), 'kept operator state\n');
+  }
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging }, quiet);
+  assert.equal(result.status, 'committed');
+  for (const file of software) assert.equal(fs.readFileSync(path.join(fixture.home, file), 'utf8'), 'version two\n');
+  for (const file of operator) assert.equal(fs.readFileSync(path.join(fixture.home, file), 'utf8'), 'kept operator state\n');
 });
 
 test('an adopted external state link survives one software update by its exact receipt', async t => {
