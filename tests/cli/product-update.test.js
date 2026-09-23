@@ -228,6 +228,21 @@ test('managed and source adoption plans stay fail-closed and never write', t => 
   assert.equal(blocked.canAdopt, false);
   assert.ok(blocked.reasons.some(item => item.code === 'unknown_state' && item.path === 'stray.bin'));
 
+  // Software trees need one inventory entry, not a walk through their contents.
+  const modules = path.join(managed, 'node_modules', 'example');
+  fs.mkdirSync(modules, { recursive: true });
+  fs.symlinkSync('/tmp/home23-external-software', path.join(modules, 'optional'));
+  const withSoftware = planManagedSourceAdoption(managed);
+  assert.ok(withSoftware.inventory.paths.some(item => item.path === 'node_modules' && item.role === 'rebuildable'));
+  assert.ok(!withSoftware.inventory.paths.some(item => item.path.startsWith('node_modules/')));
+  assert.ok(!withSoftware.reasons.some(item => item.code === 'external_state' && item.path?.startsWith('node_modules/')));
+  const unclassified = path.join(managed, 'unclassified');
+  fs.mkdirSync(unclassified);
+  fs.writeFileSync(path.join(unclassified, 'nested.txt'), 'not classified');
+  const withUnknownRoot = planManagedSourceAdoption(managed);
+  assert.ok(withUnknownRoot.reasons.some(item => item.code === 'unknown_state' && item.path === 'unclassified'));
+  assert.ok(!withUnknownRoot.inventory.paths.some(item => item.path.startsWith('unclassified/')));
+
   const ready = path.join(root, 'ready');
   fs.mkdirSync(path.join(ready, 'instances/.house/coordination'), { recursive: true });
   fs.mkdirSync(path.join(ready, 'instances/ada/substrate/seed-01'), { recursive: true });

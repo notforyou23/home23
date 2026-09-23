@@ -176,7 +176,11 @@ function walkAdoptionPaths(root, reasons) {
         }
       }
       paths.push(entry);
-      if (type === 'symlink' || type === 'other' || type !== 'directory') return;
+      if (type !== 'directory') return;
+      // Neither subtree can be copied. Unknown roots already block adoption;
+      // rebuildable roots are replaced by the package. Avoid walking source
+      // checkouts and dependency trees when planning an existing home.
+      if (role === 'unknown' || role === 'rebuildable') return;
     } else if (!stat.isDirectory() || stat.isSymbolicLink()) {
       return;
     }
