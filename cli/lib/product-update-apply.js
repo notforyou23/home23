@@ -279,7 +279,9 @@ function durableCopy(source, destination, mode) {
   const temporary = `${destination}.${randomUUID()}.next`;
   copyFileSync(source, temporary, constants.COPYFILE_FICLONE);
   chmodSync(temporary, mode);
-  const fd = openSync(temporary, 'r+');
+  // The checkpoint retains source modes, including read-only 0400 files.
+  // fsync accepts a read descriptor; reopening for write would fail here.
+  const fd = openSync(temporary, 'r');
   try { fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temporary, destination);
 }

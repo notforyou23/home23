@@ -226,6 +226,29 @@ test('a stopped home updates in place and a running home waits until admission',
   assert.equal(preserved(running.home).version, SUPPORTED_COORDINATION_SCHEMA);
 });
 
+test('checkpoint and resume preserve a read-only state attachment and its mode', async t => {
+  const fixture = homeFixture(t);
+  const relative = 'app/instances/milo/conversations/readonly-attachment.txt';
+  const original = path.join(fixture.home, relative);
+  fs.writeFileSync(original, 'owner attachment\n');
+  fs.chmodSync(original, 0o400);
+  await assert.rejects(() => applyProductUpdate({ homeRoot: fixture.home,
+    candidatePayload: fixture.candidate, staging: fixture.staging }, {
+    ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase === 'checkpointed') throw new Error('read-only-checkpoint-interrupt');
+    },
+  }), /read-only-checkpoint-interrupt/);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'checkpointed');
+  const checkpoint = path.join(updateDirectoryFor(fixture.home), 'checkpoint/state', relative);
+  assert.equal(fs.readFileSync(checkpoint, 'utf8'), 'owner attachment\n');
+  assert.equal(fs.statSync(checkpoint).mode & 0o777, 0o400);
+  const result = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+  assert.equal(result.status, 'committed');
+  assert.equal(fs.readFileSync(original, 'utf8'), 'owner attachment\n');
+  assert.equal(fs.statSync(original).mode & 0o777, 0o400);
+});
+
 test('mixed roots switch packaged software and retain operator siblings', async t => {
   const software = ['app/workspace/skills/index.js', 'app/configs/base-engine.yaml',
     'app/agency/charter.yaml', 'app/engine/config/image.json'];
