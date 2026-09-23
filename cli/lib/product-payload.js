@@ -121,6 +121,7 @@ export const PRODUCT_STATE_PATHS = Object.freeze([
   ...['.home23-install.json', '.home23-host.json',
     ...['home.yaml', 'targets.yaml', 'secrets.yaml', 'agents.json', 'cron-jobs.json'].map(name => `app/config/${name}`),
     'app/ecosystem.config.cjs', 'app/.home23-state.json',
+    'app/engine/.env',
     ...['.evobrew-config.json', 'config.json', 'runtime-state.json', 'model-catalog-cache.json'].map(name => `app/evobrew/${name}`),
   ].map(path => Object.freeze({ path, type: 'file', role: ['.home23-install.json', 'app/ecosystem.config.cjs'].includes(path) ? 'rebind' : 'preserve',
     // Preserve the pre-existing Evobrew prefix allowance. Inspection still

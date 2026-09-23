@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { execFileSync } from 'node:child_process';
-import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
+import { writeProductManifest, installProductPayload, verifyProductPayload } from '../../cli/lib/product-payload.js';
 import {
   adoptManagedSourceHome, holdAdoptionSupervisorLock, inspectProductInstallation,
   listSourceWriters, managedSupervisorEnvironment, planManagedSourceAdoption,
@@ -33,6 +33,7 @@ function fixture(t, { sourceCommit = 'a'.repeat(40), platform = process.platform
     'app/dist/coordination/migrations/0001-spine.js': 'throw new Error("Do not import migrations");\n',
     'app/dist/coordination/contracts/v1/pack-manifest.json': '{}\n',
     'app/dist/coordination/contracts/v1/schema.json': '{}\n',
+    'app/config/.gitkeep': '', 'app/instances/.gitkeep': '',
     'app/engine/.gitkeep': '', 'app/evobrew/.gitkeep': '',
   })) {
     const file = path.join(payload, relative); fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
@@ -250,9 +251,9 @@ test('managed and source adoption plans stay fail-closed and never write', t => 
   assert.ok(withUnknownRoot.reasons.some(item => item.code === 'unknown_state' && item.path === 'unclassified'));
   assert.ok(!withUnknownRoot.inventory.paths.some(item => item.path.startsWith('unclassified/')));
   fs.mkdirSync(path.join(managed, 'engine'));
-  fs.writeFileSync(path.join(managed, 'engine/.env'), 'private engine setting');
+  fs.writeFileSync(path.join(managed, 'engine/unmapped.txt'), 'unclassified engine file');
   const withUnmappedEngineState = planManagedSourceAdoption(managed);
-  assert.ok(withUnmappedEngineState.reasons.some(item => item.code === 'unknown_state' && item.path === 'engine/.env'));
+  assert.ok(withUnmappedEngineState.reasons.some(item => item.code === 'unknown_state' && item.path === 'engine/unmapped.txt'));
 
   const ready = path.join(root, 'ready');
   fs.mkdirSync(path.join(ready, 'instances/.house/coordination'), { recursive: true });
@@ -731,12 +732,14 @@ test('single-resident Host record stays valid; multi-resident plans keep every n
   const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: { release: true } } });
   fs.mkdirSync(path.join(source.home, 'engine/data'), { recursive: true });
   fs.writeFileSync(path.join(source.home, 'engine/data/memory.json'), '{"keep":true}\n');
+  fs.writeFileSync(path.join(source.home, 'engine/.env'), 'BRAVE_API_KEY=test-only\n', { mode: 0o644 });
   fs.mkdirSync(path.join(source.home, 'evobrew'), { recursive: true });
   fs.writeFileSync(path.join(source.home, 'evobrew/config.json'), '{"owner":"ada"}\n');
   assert.equal(fs.existsSync(path.join(source.home, '.home23-host.json')), false);
   const plan = planManagedSourceAdoption(source.home);
   assert.equal(plan.canAdopt, true);
   assert.ok(plan.inventory.paths.some(item => item.path === 'engine/data/memory.json' && item.mapping?.destination === 'app/engine/data/memory.json'));
+  assert.ok(plan.inventory.paths.some(item => item.path === 'engine/.env' && item.mapping?.destination === 'app/engine/.env' && item.contents === 'unopened'));
   assert.ok(plan.inventory.paths.some(item => item.path === 'evobrew/config.json' && item.mapping?.destination === 'app/evobrew/config.json'));
   assert.equal(plan.identity.profile.name, 'ada');
   assert.equal(plan.identity.residentMap, null);
@@ -752,7 +755,10 @@ test('single-resident Host record stays valid; multi-resident plans keep every n
   assert.equal(host.profile.name, 'ada');
   assert.equal(host.residentMap, undefined);
   assert.equal(fs.readFileSync(path.join(destination, 'app/engine/data/memory.json'), 'utf8'), '{"keep":true}\n');
+  assert.equal(fs.readFileSync(path.join(destination, 'app/engine/.env'), 'utf8'), 'BRAVE_API_KEY=test-only\n');
+  assert.equal(fs.statSync(path.join(destination, 'app/engine/.env')).mode & 0o777, 0o600);
   assert.equal(fs.readFileSync(path.join(destination, 'app/evobrew/config.json'), 'utf8'), '{"owner":"ada"}\n');
+  assert.ok(verifyProductPayload(destination, { allowRuntimeState: true }));
 
   const multi = managedHome(path.join(pack.root, 'multi'), {
     hostRecord: false, name: 'ada', residents: { ada: {}, forrest: {} },

@@ -102,6 +102,7 @@ const ADOPTION_PRESERVE_FILES = new Set([
   'config/home.yaml', 'config/targets.yaml', 'config/secrets.yaml',
   'config/agents.json', 'config/cron-jobs.json',
   'runtime/semantic-prep.json',
+  'engine/.env',
   'evobrew/.evobrew-config.json', 'evobrew/config.json',
   'evobrew/runtime-state.json', 'evobrew/model-catalog-cache.json',
 ]);
@@ -124,7 +125,7 @@ function marker(root, relative) {
 
 function sensitivePresenceOnly(relative) {
   const name = basename(relative);
-  return name === 'secrets.yaml' || /token/i.test(name);
+  return name === '.env' || name === 'secrets.yaml' || /token/i.test(name);
 }
 
 /** Classify one relative path for managed/source adoption. Presence only; never opens files. */
@@ -552,6 +553,7 @@ function copyPreservedState(source, destination, paths) {
       try { chmodSync(join(destination, 'runtime'), 0o700); } catch { /* created mode may already be private */ }
     }
     copyFileSync(from, to);
+    if (entry.path === 'engine/.env') chmodSync(to, 0o600);
   }
 }
 
