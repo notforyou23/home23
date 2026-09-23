@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { execFileSync } from 'node:child_process';
 import { writeProductManifest, installProductPayload, verifyProductPayload } from '../../cli/lib/product-payload.js';
@@ -15,15 +16,16 @@ import {
 import { assertWritersIdle, rebindAdoptedHome } from '../../cli/lib/product-backup.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 import { acquireManagedStartLocks } from '../../cli/lib/pm2-commands.js';
+import { inspectUpdateInventory } from '../../cli/lib/product-update-inventory.js';
 import {
-  runHostAction, hostResidentNames, ownedProcessNamesForState, probeReadiness, residentPortsFor,
+  runHostAction, hostResidentNames, ownedProcessNamesForState, probeReadiness, residentPortsFor, safeProcesses,
 } from '../../cli/lib/product-host.js';
 
 const require = createRequire(import.meta.url);
 const Database = DatabaseSync;
 const { agentProcessNames } = require('../../shared/agent-process-names.cjs');
 
-function fixture(t, { sourceCommit = 'a'.repeat(40), platform = process.platform } = {}) {
+function fixture(t, { sourceCommit = 'a'.repeat(40), platform = process.platform, omitEvobrew = false } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-preview-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const payload = path.join(root, 'payload'), home = path.join(root, 'home');
@@ -34,7 +36,7 @@ function fixture(t, { sourceCommit = 'a'.repeat(40), platform = process.platform
     'app/dist/coordination/contracts/v1/pack-manifest.json': '{}\n',
     'app/dist/coordination/contracts/v1/schema.json': '{}\n',
     'app/config/.gitkeep': '', 'app/instances/.gitkeep': '',
-    'app/engine/.gitkeep': '', 'app/evobrew/.gitkeep': '',
+    'app/engine/.gitkeep': '', ...(omitEvobrew ? {} : { 'app/evobrew/.gitkeep': '' }),
   })) {
     const file = path.join(payload, relative); fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
     fs.writeFileSync(file, contents, { mode: relative === 'bin/node' ? 0o755 : 0o644 });
@@ -339,6 +341,144 @@ test('adoption refuses external preserve links and does not create the destinati
   assert.equal(refused.status, 'refused');
   assert.equal(refused.destinationCreated, false);
   assert.equal(fs.existsSync(destination), false);
+});
+
+test('reviewed adoption retains operator bytes and exact external, internal, and historical links', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const external = path.join(pack.root, 'external-jobs');
+  fs.mkdirSync(external);
+  const projects = path.join(source.home, 'projects');
+  fs.mkdirSync(projects);
+  fs.writeFileSync(path.join(projects, 'keep.txt'), 'operator material\n');
+  const destination = path.join(pack.root, 'destination');
+  const beforeScript = `export const root = '${source.home}';\n`;
+  const afterScript = `export const root = '${path.join(destination, 'app')}';\n`;
+  fs.writeFileSync(path.join(projects, 'paths.js'), beforeScript);
+  const sha = value => createHash('sha256').update(value).digest('hex');
+  fs.symlinkSync(external, path.join(source.home, 'instances/ada/coding-jobs'));
+  fs.symlinkSync('../../config', path.join(source.home, 'instances/ada/config-link'));
+  fs.symlinkSync('/missing/historical-target', path.join(source.home, 'instances/ada/old-link'));
+  const preservationPlan = {
+    schema: 'home23.adoption-preservation.v1', sourceRoot: source.home,
+    entries: [
+      { path: 'projects', action: 'preserve', destination: 'app/projects' },
+      { path: 'instances/ada/coding-jobs', action: 'retain-link', destination: 'app/instances/ada/coding-jobs', target: external },
+      { path: 'instances/ada/config-link', action: 'retain-link', destination: 'app/instances/ada/config-link', target: '../../config' },
+      { path: 'instances/ada/old-link', action: 'historical-link', inertHistorical: true, destination: 'app/instances/ada/old-link', target: '/missing/historical-target' },
+    ], references: [], rewrites: [{ path: 'projects/paths.js', beforeSha256: sha(beforeScript),
+      afterSha256: sha(afterScript), replacements: [{ from: source.home, to: path.join(destination, 'app') }] }],
+  };
+  const plan = planManagedSourceAdoption(source.home, { preservationPlan });
+  assert.equal(plan.canAdopt, true, JSON.stringify(plan.reasons));
+  const adopted = await adoptManagedSourceHome({ sourceHome: source.home, destinationRoot: destination,
+    payloadPath: pack.payload, preservationPlan }, adoptionDeps());
+  assert.equal(adopted.ok, true);
+  assert.equal(fs.readFileSync(path.join(destination, 'app/projects/keep.txt'), 'utf8'), 'operator material\n');
+  assert.equal(fs.readFileSync(path.join(destination, 'app/projects/paths.js'), 'utf8'), afterScript);
+  assert.equal(fs.readFileSync(path.join(projects, 'paths.js'), 'utf8'), beforeScript);
+  assert.equal(fs.realpathSync(path.join(destination, 'app/instances/ada/coding-jobs')), external);
+  assert.equal(fs.realpathSync(path.join(destination, 'app/instances/ada/config-link')), path.join(destination, 'app/config'));
+  assert.equal(fs.readlinkSync(path.join(destination, 'app/instances/ada/old-link')), '/missing/historical-target');
+  assert.throws(() => acquireManagedStartLocks(source.home, { Database, writers: ['home23-coordination'] }), /adopted|fenced/i);
+  assert.ok(verifyProductPayload(destination, { allowRuntimeState: true }));
+  const inventory = await inspectUpdateInventory(destination, { installed: pack.manifest, candidate: pack.manifest });
+  assert.equal(inventory.reasons.some(item => item.code === 'linked_state_path' || item.code === 'linked_state_changed'), false);
+  fs.rmSync(path.join(destination, 'app/instances/ada/coding-jobs'));
+  fs.symlinkSync('/different/jobs', path.join(destination, 'app/instances/ada/coding-jobs'));
+  const changed = await inspectUpdateInventory(destination, { installed: pack.manifest, candidate: pack.manifest });
+  assert.ok(changed.reasons.some(item => item.code === 'linked_state_changed'));
+});
+
+test('retained legacy authority stays one external directory through adoption', async t => {
+  const pack = fixture(t, { omitEvobrew: true });
+  const source = managedHome(pack.root, { writers: 'idle' });
+  fs.mkdirSync(path.join(source.home, 'evobrew'), { recursive: true });
+  fs.writeFileSync(path.join(source.home, 'evobrew/live.json'), '{"owner":"source"}\n');
+  const sourceConfig = JSON.stringify({ homeRoot: source.home });
+  fs.writeFileSync(path.join(source.home, 'evobrew/config.json'), sourceConfig);
+  const preservationPlan = { schema: 'home23.adoption-preservation.v1', sourceRoot: source.home,
+    entries: [{ path: 'evobrew', action: 'retain-authority', destination: 'app/evobrew',
+      target: path.join(source.home, 'evobrew') }] };
+  const destination = path.join(pack.root, 'destination');
+  const adopted = await adoptManagedSourceHome({ sourceHome: source.home, destinationRoot: destination,
+    payloadPath: pack.payload, preservationPlan }, adoptionDeps({ rebindAdoptedHome }));
+  assert.equal(adopted.ok, true, JSON.stringify(adopted.reasons));
+  assert.equal(fs.readlinkSync(path.join(destination, 'app/evobrew')), path.join(source.home, 'evobrew'));
+  fs.writeFileSync(path.join(destination, 'app/evobrew/live.json'), '{"owner":"one"}\n');
+  assert.equal(fs.readFileSync(path.join(source.home, 'evobrew/live.json'), 'utf8'), '{"owner":"one"}\n');
+  assert.equal(fs.readFileSync(path.join(source.home, 'evobrew/config.json'), 'utf8'), sourceConfig);
+  const inventory = await inspectUpdateInventory(destination, { installed: pack.manifest, candidate: pack.manifest });
+  assert.equal(inventory.reasons.some(item => item.code === 'linked_state_path'), false);
+  fs.rmSync(path.join(source.home, 'evobrew'), { recursive: true });
+  const missing = await inspectUpdateInventory(destination, { installed: pack.manifest, candidate: pack.manifest });
+  assert.ok(missing.reasons.some(item => item.code === 'retained_authority_missing'));
+});
+
+test('legacy managed birth identity is checked against its saved launcher and canonical bot', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const homeId = 'home_00000000-0000-7000-8000-000000000000';
+  const botId = 'bot_continuing_fixture';
+  const databasePath = path.join(source.home, 'instances/.house/coordination/home23-coordination.sqlite3');
+  const database = new DatabaseSync(databasePath);
+  database.exec('CREATE TABLE bots (id TEXT, resident_binding TEXT, lifecycle TEXT)');
+  database.prepare('INSERT INTO bots VALUES (?, ?, ?)').run(botId, 'ada', 'active');
+  database.close();
+  const withoutIdentity = planManagedSourceAdoption(source.home);
+  assert.ok(withoutIdentity.reasons.some(item => item.code === 'birth_identity_unresolved'));
+  const preservationPlan = { schema: 'home23.adoption-preservation.v1', sourceRoot: source.home,
+    entries: [], references: [], identity: { homeId, homeName: 'Home23', botId } };
+  assert.equal(planManagedSourceAdoption(source.home, { preservationPlan }).canAdopt, true);
+  const destination = path.join(pack.root, 'destination');
+  const adopted = await adoptManagedSourceHome({ sourceHome: source.home, destinationRoot: destination,
+    payloadPath: pack.payload, preservationPlan }, adoptionDeps());
+  assert.equal(adopted.ok, true);
+  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json')));
+  assert.equal(host.birth.home.id, homeId);
+  assert.equal(host.birth.coordination.botId, botId);
+});
+
+test('reviewed continuation service binds exact stopped source and joins Host ownership', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root, { writers: 'idle' });
+  const destination = path.join(pack.root, 'destination');
+  const service = { name: 'home23-extra',
+    source: { executable: process.execPath, cwd: source.home, args: ['worker.js'],
+      interpreter: 'none', env: { HOME23_EXTRA_TOKEN: 'fixture-token' } },
+    run: { executable: path.join(destination, 'bin/node'), cwd: path.join(destination, 'app'),
+      args: [path.join(destination, 'app/worker.js')],
+      env: { HOME23_EXTRA_STATE: path.join(destination, 'app/instances/extra') },
+      stateRoots: [path.join(destination, 'app/instances/extra')], startOnHomeStart: true } };
+  const preservationPlan = { schema: 'home23.adoption-preservation.v1', sourceRoot: source.home, entries: [], services: [service] };
+  const stopped = () => [{ name: service.name, pm2_env: { pm_exec_path: service.source.executable,
+    pm_cwd: service.source.cwd, args: service.source.args, exec_interpreter: 'none',
+    HOME23_EXTRA_TOKEN: 'fixture-token', status: 'stopped' } }];
+  const changed = { ...service, source: { ...service.source, args: ['changed.js'] } };
+  const refused = await adoptManagedSourceHome({ sourceHome: source.home,
+    destinationRoot: path.join(pack.root, 'second'), payloadPath: pack.payload,
+    preservationPlan: { ...preservationPlan, services: [changed] } }, adoptionDeps({ listSourceServiceBindings: stopped }));
+  assert.equal(refused.ok, false);
+  assert.ok(refused.reasons.some(item => item.code === 'continuation_binding_changed'));
+  const changedEnv = { ...service, source: { ...service.source, env: { HOME23_EXTRA_TOKEN: 'stale-token' } } };
+  const refusedEnv = await adoptManagedSourceHome({ sourceHome: source.home,
+    destinationRoot: path.join(pack.root, 'third'), payloadPath: pack.payload,
+    preservationPlan: { ...preservationPlan, services: [changedEnv] } }, adoptionDeps({ listSourceServiceBindings: stopped }));
+  assert.equal(refusedEnv.ok, false);
+  assert.ok(refusedEnv.reasons.some(item => item.code === 'continuation_binding_changed'));
+  const adopted = await adoptManagedSourceHome({ sourceHome: source.home, destinationRoot: destination,
+    payloadPath: pack.payload, preservationPlan }, adoptionDeps({ listSourceServiceBindings: stopped }));
+  assert.equal(adopted.ok, true, JSON.stringify(adopted.reasons));
+  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json')));
+  assert.equal(host.continuationServices[0].name, service.name);
+  assert.ok(ownedProcessNamesForState(host).includes(service.name));
+  const row = { name: service.name, pid: 41, pm2_env: { pm_exec_path: service.run.executable,
+    pm_cwd: service.run.cwd, args: service.run.args, ...service.run.env, status: 'online' } };
+  assert.equal(safeProcesses([row], destination, [service.name], host.continuationServices)[0].owned, true);
+  assert.equal(safeProcesses([{ ...row, pm2_env: { ...row.pm2_env, args: [path.join(destination, 'app/different.js')] } }],
+    destination, [service.name], host.continuationServices)[0].owned, false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(source.home, 'instances/.house/maintenance/adopted-source.json')))
+    .transferredWriters.includes(service.name), true);
 });
 
 test('adoption refuses when the managed supervisor lock is already held', async t => {

@@ -206,6 +206,18 @@ export function acquireSupervisorLock(dir, Database, options = {}) {
     db.exec('CREATE TABLE IF NOT EXISTS ownership (id INTEGER PRIMARY KEY)');
     db.exec('CREATE TABLE IF NOT EXISTS lock_meta (id INTEGER PRIMARY KEY CHECK (id = 1), purpose TEXT NOT NULL, writers TEXT NOT NULL)');
     db.exec('BEGIN EXCLUSIVE');
+    const adopted = path.join(dir, 'adopted-source.json');
+    if (options.purpose !== 'adoption' && fs.existsSync(adopted)) {
+      const fence = JSON.parse(fs.readFileSync(adopted, 'utf8'));
+      if (fence.schema !== 'home23.adopted-source-fence.v1' || !Array.isArray(fence.transferredWriters)) {
+        throw new Error('The adopted-source fence is unreadable.');
+      }
+      const requested = Array.isArray(options.writers) ? options.writers : [];
+      if (['serve', 'restart-managed'].includes(options.purpose)
+        || requested.some(name => fence.transferredWriters.includes(name))) {
+        throw new Error('Transferred Home23 writers stay fenced until explicit recovery.');
+      }
+    }
     if (options.purpose || options.writers) {
       db.prepare('INSERT OR REPLACE INTO lock_meta (id, purpose, writers) VALUES (1, ?, ?)').run(
         options.purpose || 'maintenance',

@@ -2,14 +2,14 @@
 import { createHash } from 'node:crypto';
 import {
   copyFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync,
-  realpathSync, writeFileSync,
+  realpathSync, renameSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative as relativePath, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { choosePortPlan, privateJSON, readPrivateJSON } from './product-environment.js';
 import { assertWritersIdle, rebindAdoptedHome, residentInstancePortSets } from './product-backup.js';
-import { installProductPayload, readProductManifest, verifyProductPayload } from './product-payload.js';
+import { installProductPayload, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation, previewRoot } from './product-update-preview.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 import { DatabaseSync } from 'node:sqlite';
@@ -91,6 +91,87 @@ const ADOPTION_SCHEMA = 'home23.managed-source-adoption.v1';
 const ADOPTION_JOURNAL_SCHEMA = 'home23.managed-source-adoption-journal.v1';
 const reason = (code, message, extra = {}) => ({ code, message, ...extra });
 const RESIDENT_NAME = /^[a-z][a-z0-9-]{0,62}$/;
+const PRESERVATION_SCHEMA = 'home23.adoption-preservation.v1';
+
+function safeRelativePath(value) {
+  return typeof value === 'string' && value && !value.startsWith('/') && !value.split('/').some(part => !part || part === '.' || part === '..');
+}
+function allowedPreserveDestination(path) {
+  return PRODUCT_STATE_PATHS.some(entry => path === entry.path ||
+    ((entry.type === 'directory' || entry.allowDescendants) && path.startsWith(`${entry.path}/`)));
+}
+
+/** A reviewed plan pins every exception, including link targets, before copying. */
+export function validateAdoptionPreservationPlan(source, plan, expectedHash) {
+  if (!plan) return null;
+  const bytes = JSON.stringify(plan);
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  if (expectedHash && hash !== expectedHash) throw new Error('Adoption preservation plan hash changed.');
+  if (plan.schema !== PRESERVATION_SCHEMA || plan.sourceRoot !== source || !Array.isArray(plan.entries)) throw new Error('Invalid adoption preservation plan.');
+  const entries = new Map();
+  for (const item of plan.entries) {
+    if (!safeRelativePath(item.path) || entries.has(item.path) || !['replace', 'preserve', 'retain-link', 'historical-link', 'retain-authority'].includes(item.action)) throw new Error('Invalid adoption preservation entry.');
+    if (item.action === 'preserve' || item.action.endsWith('-link') || item.action === 'retain-authority') {
+      if (!safeRelativePath(item.destination) || !allowedPreserveDestination(item.destination)) throw new Error('Preserved state needs an explicit installed-state destination.');
+    }
+    if (item.action.endsWith('-link') && typeof item.target !== 'string') throw new Error('Preserved link needs its exact target.');
+    if (item.action === 'retain-authority' && item.target !== join(source, item.path)) throw new Error('Retained authority must name the exact source directory.');
+    if (item.action === 'historical-link' && item.inertHistorical !== true) throw new Error('Historical link needs an explicit inert declaration.');
+    entries.set(item.path, item);
+  }
+  const references = Array.isArray(plan.references) ? plan.references : [];
+  const seenReferences = new Set();
+  for (const reference of references) {
+    if (!['app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml', 'app/.home23-state.json'].includes(reference.path)
+      || typeof reference.target !== 'string' || !reference.target.startsWith('/')
+      || reference.target === source || reference.target.startsWith(`${source}${sep}`)
+      || seenReferences.has(`${reference.path}\0${reference.target}`)) {
+      throw new Error('Invalid reviewed external reference.');
+    }
+    seenReferences.add(`${reference.path}\0${reference.target}`);
+  }
+  const identity = plan.identity || null;
+  if (identity && (!/^home_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(identity.homeId || '')
+    || typeof identity.botId !== 'string' || !identity.botId.startsWith('bot_')
+    || typeof identity.homeName !== 'string' || !identity.homeName.trim())) throw new Error('Invalid reviewed continuing-home identity.');
+  const services = plan.services || [];
+  if (!Array.isArray(services)) throw new Error('Invalid continuing-service map.');
+  const seenServices = new Set();
+  const validCommand = command => command && typeof command === 'object'
+    && typeof command.executable === 'string' && command.executable.startsWith('/')
+    && typeof command.cwd === 'string' && command.cwd.startsWith('/')
+    && Array.isArray(command.args) && command.args.every(arg => typeof arg === 'string' && !arg.includes('\0'));
+  for (const service of services) {
+    if (!RESIDENT_NAME.test(service?.name || '') || seenServices.has(service.name)
+      || !validCommand(service.source) || !validCommand(service.run)
+      || typeof service.source.interpreter !== 'string' || !service.source.interpreter
+      || (service.source.sha256 !== undefined && !/^[a-f0-9]{64}$/.test(service.source.sha256))
+      || !service.source.env || typeof service.source.env !== 'object' || Array.isArray(service.source.env)
+      || Object.entries(service.source.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0'))
+      || !service.run.env || typeof service.run.env !== 'object' || Array.isArray(service.run.env)
+      || Object.entries(service.run.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0'))
+      || !Array.isArray(service.run.stateRoots) || service.run.stateRoots.some(path => typeof path !== 'string' || !path.startsWith('/'))
+      || typeof service.run.startOnHomeStart !== 'boolean') {
+      throw new Error('Invalid continuing-service definition.');
+    }
+    seenServices.add(service.name);
+  }
+  const rewrites = plan.rewrites || [];
+  if (!Array.isArray(rewrites)) throw new Error('Invalid reviewed path rewrites.');
+  const seenRewrites = new Set();
+  for (const rewrite of rewrites) {
+    if (!safeRelativePath(rewrite.path) || seenRewrites.has(rewrite.path)
+      || !/^[a-f0-9]{64}$/.test(rewrite.beforeSha256 || '')
+      || !/^[a-f0-9]{64}$/.test(rewrite.afterSha256 || '')
+      || !Array.isArray(rewrite.replacements) || !rewrite.replacements.length
+      || rewrite.replacements.some(item => typeof item.from !== 'string' || !item.from
+        || typeof item.to !== 'string' || !item.to || item.from === item.to)) {
+      throw new Error('Invalid reviewed path rewrite.');
+    }
+    seenRewrites.add(rewrite.path);
+  }
+  return { hash, entries, references, identity, services, rewrites };
+}
 
 const ADOPTION_REBIND = new Set([
   '.home23-host.json',
@@ -165,22 +246,45 @@ function symlinkTargetInfo(root, relative) {
   return { target, resolved, dangling, outside };
 }
 
-function walkAdoptionPaths(root, reasons) {
+function walkAdoptionPaths(root, reasons, reviewed = null) {
   const paths = [];
-  const visit = relative => {
+  const visited = new Set();
+  const visit = (relative, inherited = null) => {
     const absolute = relative ? join(root, relative) : root;
     const stat = lstatSync(absolute);
     if (relative) {
       const type = stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : 'other';
-      const role = type === 'other' ? 'unknown' : classifyAdoptionPath(relative);
+      let role = type === 'other' ? 'unknown' : classifyAdoptionPath(relative);
+      const decision = reviewed?.entries.get(relative);
+      if (decision) {
+        visited.add(relative);
+        if (decision.action === 'replace') {
+          if (role !== 'unknown' || type === 'symlink') reasons.push(reason('invalid_preservation_choice', `Path ${relative} cannot be replaced.`, { path: relative }));
+          else role = 'rebuildable';
+        } else if (decision.action === 'retain-authority') {
+          if (type !== 'directory') reasons.push(reason('invalid_preservation_choice', `Retained authority ${relative} is not a directory.`, { path: relative }));
+          role = 'preserve';
+        } else if (decision.action === 'preserve') {
+          if (type === 'symlink') reasons.push(reason('invalid_preservation_choice', `Link ${relative} needs an exact link choice.`, { path: relative }));
+          if (role !== 'unknown' && role !== 'preserve') reasons.push(reason('invalid_preservation_choice', `Path ${relative} cannot use this preserve choice.`, { path: relative }));
+          role = 'preserve';
+        } else if (type !== 'symlink') reasons.push(reason('invalid_preservation_choice', `Path ${relative} is not a link.`, { path: relative }));
+        else if (role === 'unknown') role = 'preserve';
+      } else if (inherited && role === 'unknown') role = 'preserve';
       const entry = { path: relative, type, role };
+      if (decision?.action === 'retain-authority') { entry.reviewedAuthority = true; entry.target = decision.target; }
+      if (decision?.destination) entry.reviewedDestination = decision.destination;
+      else if (inherited && role === 'preserve') entry.reviewedDestination = `${inherited.destination}/${relativePath(inherited.path, relative).split(sep).join('/')}`;
       if (sensitivePresenceOnly(relative)) entry.contents = 'unopened';
       if (type === 'symlink') {
         const info = symlinkTargetInfo(root, relative);
         entry.external = true;
         entry.target = info.target;
         // Broad instances/config preserve must not swallow linked external state.
-        if (role !== 'rebuildable' && (info.dangling || info.outside || role === 'preserve' || role === 'rebind')) {
+        if (decision?.action === 'retain-link' || decision?.action === 'historical-link') {
+          if (decision.target !== info.target || (decision.action === 'retain-link' && info.dangling)) reasons.push(reason('link_target_changed', `Reviewed link ${relative} changed.`, { path: relative }));
+          else entry.reviewedLink = decision.action;
+        } else if (role !== 'rebuildable' && (info.dangling || info.outside || role === 'preserve' || role === 'rebind')) {
           reasons.push(reason('external_state', `Linked path ${relative} is not a captured file inside this home.`, { path: relative }));
         }
       }
@@ -189,13 +293,15 @@ function walkAdoptionPaths(root, reasons) {
       // Neither subtree can be copied. Unknown roots already block adoption;
       // rebuildable roots are replaced by the package. Avoid walking source
       // checkouts and dependency trees when planning an existing home.
-      if (role === 'unknown' || role === 'rebuildable') return;
+      if (role === 'unknown' || role === 'rebuildable' || entry.reviewedAuthority) return;
+      inherited = decision?.action === 'preserve' ? { path: relative, destination: decision.destination } : inherited;
     } else if (!stat.isDirectory() || stat.isSymbolicLink()) {
       return;
     }
-    for (const name of readdirSync(absolute).sort()) visit(relative ? `${relative}/${name}` : name);
+    for (const name of readdirSync(absolute).sort()) visit(relative ? `${relative}/${name}` : name, inherited);
   };
   visit('');
+  for (const path of reviewed?.entries.keys() || []) if (!visited.has(path)) reasons.push(reason('preservation_entry_missing', `Reviewed path ${path} is no longer present.`, { path }));
   return paths;
 }
 
@@ -336,8 +442,16 @@ export function mapAdoptionEntry(entry, residentName) {
   if (entry.role === 'unknown' || entry.type === 'other') {
     return { ok: false, code: 'unknown_state' };
   }
+  if (entry.reviewedDestination) {
+    if (entry.type === 'symlink' && !entry.reviewedLink) return { ok: false, code: 'external_state' };
+    return { ok: true, action: entry.type === 'symlink' ? 'copy_link' : 'copy', destination: entry.reviewedDestination };
+  }
   if (entry.type === 'symlink') {
-    return { ok: true, action: 'external' };
+    // A link needs an exact reviewed target even when its ordinary state path
+    // already has a known destination.
+    if (!entry.reviewedLink) return { ok: false, code: 'external_state' };
+    const mapped = mapAdoptionEntry({ ...entry, type: 'file' }, residentName);
+    return mapped.ok ? { ...mapped, action: 'copy_link' } : mapped;
   }
   if (entry.role === 'rebind') {
     if (entry.path === 'ecosystem.config.cjs') {
@@ -385,13 +499,23 @@ export function mapAdoptionEntry(entry, residentName) {
 
 function annotateMappings(paths, identity, reasons) {
   const rootResident = identity.residents?.length === 1 ? identity.residents[0] : null;
+  const destinations = new Map();
   for (const entry of paths) {
     if (entry.role !== 'preserve' && entry.role !== 'rebind') continue;
-    if (entry.type === 'directory' || entry.type === 'symlink') continue;
+    if (entry.reviewedAuthority) {
+      entry.mapping = { ok: true, action: 'copy_link', destination: entry.reviewedDestination };
+      destinations.set(entry.reviewedDestination, entry.path);
+      continue;
+    }
+    if (entry.type === 'directory') continue;
     const mapped = mapAdoptionEntry(entry, rootResident);
     entry.mapping = mapped;
     if (!mapped.ok) {
       reasons.push(reason(mapped.code || 'unmapped_preserve', mapped.message || `Path ${entry.path} is not mapped for adoption.`, { path: entry.path }));
+    } else if (mapped.destination) {
+      const existing = destinations.get(mapped.destination);
+      if (existing && existing !== entry.path) reasons.push(reason('destination_collision', `Preserved paths ${existing} and ${entry.path} share one destination.`, { path: entry.path }));
+      else destinations.set(mapped.destination, entry.path);
     }
   }
 }
@@ -400,9 +524,10 @@ function annotateMappings(paths, identity, reasons) {
  * Read-only managed/source adoption plan. Never writes, never opens secrets or
  * token files, never runs home birth, and never claims product install adoption.
  */
-export function planManagedSourceAdoption(homeRoot) {
+export function planManagedSourceAdoption(homeRoot, { preservationPlan = null, planHash } = {}) {
   const current = inspectProductInstallation(homeRoot);
   const root = current.root;
+  const reviewed = validateAdoptionPreservationPlan(root, preservationPlan, planHash);
   const plan = {
     homeBirth: 'not_run',
     seedLedgers: 'preserve',
@@ -441,13 +566,17 @@ export function planManagedSourceAdoption(homeRoot) {
     residents: identity.residents,
     residentMap: identity.residentMap || null,
   };
+  if (!identity.birth && marker(root, 'instances/.house/coordination/home23-coordination.sqlite3') && !reviewed?.identity) {
+    result.reasons.push(reason('birth_identity_unresolved', 'The continuing home and primary bot IDs need a reviewed plan bound to canonical state.'));
+  }
   let paths;
-  try { paths = walkAdoptionPaths(root, result.reasons); }
+  try { paths = walkAdoptionPaths(root, result.reasons, reviewed); }
   catch {
     result.reasons.push(reason('inventory_unreadable', 'The adoption inventory could not be walked.'));
     return result;
   }
   result.inventory.paths = paths;
+  if (reviewed) result.preservationPlanHash = reviewed.hash;
   const unknown = paths.filter(entry => entry.role === 'unknown');
   for (const entry of unknown) {
     result.reasons.push(reason('unknown_state', `Unclassified path ${entry.path} blocks adoption until it is preserve, rebind, or rebuildable.`, { path: entry.path }));
@@ -462,6 +591,17 @@ export function planManagedSourceAdoption(homeRoot) {
     }
   }
   annotateMappings(paths, identity, result.reasons);
+  for (const rewrite of reviewed?.rewrites || []) {
+    const entry = paths.find(item => item.path === rewrite.path);
+    if (!entry || entry.type !== 'file' || entry.mapping?.action !== 'copy') {
+      result.reasons.push(reason('rewrite_source_missing', `Reviewed rewrite source ${rewrite.path} is not preserved.`, { path: rewrite.path }));
+      continue;
+    }
+    const before = readFileSync(join(root, rewrite.path));
+    if (createHash('sha256').update(before).digest('hex') !== rewrite.beforeSha256) {
+      result.reasons.push(reason('rewrite_source_changed', `Reviewed rewrite source ${rewrite.path} changed.`, { path: rewrite.path }));
+    }
+  }
   result.inventory.complete = result.reasons.length === 0;
   result.canAdopt = result.inventory.complete;
   return result;
@@ -498,6 +638,44 @@ function disjointRoots(...roots) {
 
 function copyableEntries(paths) {
   return paths.filter(entry => entry.mapping?.action === 'copy' && entry.type === 'file' && !entry.external);
+}
+
+function preservedDirectories(paths) {
+  return paths.filter(entry => entry.type === 'directory' && !entry.reviewedAuthority && (entry.reviewedDestination || entry.role === 'preserve'));
+}
+function retainedAuthorities(paths) {
+  return paths.filter(entry => entry.type === 'directory' && entry.reviewedAuthority && entry.reviewedDestination);
+}
+function preservedDirectoryDestination(entry) {
+  if (entry.reviewedDestination) return entry.reviewedDestination;
+  if (entry.path === 'runtime' || entry.path.startsWith('runtime/')) return entry.path;
+  if (['instances', 'config', 'engine', 'evobrew'].some(root => entry.path === root || entry.path.startsWith(`${root}/`))) return `app/${entry.path}`;
+  return null;
+}
+
+function linkedEntries(paths) {
+  return paths.filter(entry => entry.mapping?.action === 'copy_link' && entry.type === 'symlink' && entry.reviewedLink);
+}
+function writeAdoptedLinks(destination, paths, source, reviewed = null) {
+  const links = [...linkedEntries(paths), ...retainedAuthorities(paths)].map(entry => {
+    const mapped = entry.mapping?.destination || entry.reviewedDestination;
+    const file = join(destination, mapped);
+    if (!lstatSync(file).isSymbolicLink()) throw new Error(`Preserved link is missing: ${mapped}`);
+    return { path: mapped, target: readlinkSync(file), sourcePath: entry.path,
+      sourceTarget: entry.target, kind: entry.reviewedAuthority ? 'retain-authority' : entry.reviewedLink };
+  }).sort((left, right) => left.path.localeCompare(right.path));
+  for (const reference of reviewed?.references || []) {
+    const file = join(destination, reference.path);
+    if (!existsSync(file) || !lstatSync(file).isFile() || !readFileSync(file, 'utf8').includes(reference.target)) {
+      throw new Error(`Reviewed external reference changed: ${reference.path}`);
+    }
+  }
+  privateJSON(join(destination, 'runtime/adoption-preservation.json'), {
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: source,
+    links,
+    externalReferences: reviewed?.references || [],
+    continuationServices: reviewed?.services || [],
+  });
 }
 
 const ADOPTION_IDENTITY_FILES = [
@@ -537,10 +715,31 @@ export function sourceAdoptionSnapshot(source, paths, identity) {
     hash.update(readFileSync(join(source, entry.path)));
     hash.update('\0');
   }
+  for (const entry of linkedEntries(paths).sort((a, b) => a.path.localeCompare(b.path))) {
+    hash.update(JSON.stringify({ path: entry.path, destination: entry.mapping.destination, target: entry.target, reviewedLink: entry.reviewedLink }));
+    hash.update('\0');
+  }
+  for (const entry of preservedDirectories(paths).sort((a, b) => a.path.localeCompare(b.path))) {
+    hash.update(JSON.stringify({ path: entry.path, destination: preservedDirectoryDestination(entry), mode: lstatSync(join(source, entry.path)).mode & 0o777 }));
+    hash.update('\0');
+  }
+  for (const entry of retainedAuthorities(paths).sort((a, b) => a.path.localeCompare(b.path))) {
+    hash.update(JSON.stringify({ path: entry.path, destination: entry.reviewedDestination, target: entry.target,
+      mode: lstatSync(join(source, entry.path)).mode & 0o777 }));
+    hash.update('\0');
+  }
   return hash.digest('hex');
 }
 
 function copyPreservedState(source, destination, paths) {
+  for (const entry of preservedDirectories(paths)) {
+    const mapped = preservedDirectoryDestination(entry);
+    if (!mapped) throw new Error(`Preserved directory has no destination: ${entry.path}`);
+    const to = join(destination, mapped);
+    mkdirSync(to, { recursive: true, mode: mapped.startsWith('runtime/') ? 0o700 : 0o755 });
+    const mode = lstatSync(join(source, entry.path)).mode & 0o777;
+    chmodSync(to, mode & (sensitivePresenceOnly(entry.path) ? 0o700 : 0o777));
+  }
   for (const entry of copyableEntries(paths)) {
     const mapped = entry.mapping.destination;
     const from = join(source, entry.path);
@@ -553,7 +752,68 @@ function copyPreservedState(source, destination, paths) {
       try { chmodSync(join(destination, 'runtime'), 0o700); } catch { /* created mode may already be private */ }
     }
     copyFileSync(from, to);
-    if (entry.path === 'engine/.env' || entry.path === 'evobrew/config.json') chmodSync(to, 0o600);
+    chmodSync(to, (stat.mode & 0o777) & (sensitivePresenceOnly(entry.path) || entry.path.endsWith('.key') || entry.path === 'evobrew/config.json' ? 0o600 : 0o777));
+  }
+  const destinationForSourcePath = absolute => {
+    const relative = relativePath(source, absolute).split(sep).join('/');
+    const candidates = paths.filter(item => item.path === relative || relative.startsWith(`${item.path}/`))
+      .filter(item => item.mapping?.destination || item.reviewedDestination)
+      .sort((left, right) => right.path.length - left.path.length);
+    const anchor = candidates[0];
+    if (anchor) {
+      const mapped = anchor.mapping?.destination || anchor.reviewedDestination;
+      return join(destination, mapped, relative.slice(anchor.path.length).replace(/^\//, ''));
+    }
+    if (['instances', 'config', 'engine', 'evobrew'].some(root => relative === root || relative.startsWith(`${root}/`))) return join(destination, 'app', relative);
+    throw new Error(`Internal preserved link target has no reviewed destination: ${relative}`);
+  };
+  for (const entry of linkedEntries(paths)) {
+    const to = join(destination, entry.mapping.destination);
+    mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
+    // Resolve source-internal links against their mapped destination, while
+    // external links continue to name the exact existing target.
+    const sourceTarget = resolve(dirname(join(source, entry.path)), entry.target);
+    const target = entry.reviewedLink !== 'historical-link' && (sourceTarget === source || sourceTarget.startsWith(`${source}${sep}`))
+      ? destinationForSourcePath(sourceTarget) : sourceTarget;
+    if (existsSync(to) || marker(destination, entry.mapping.destination)) {
+      if (lstatSync(to).isSymbolicLink() && readlinkSync(to) === target) continue;
+      throw new Error(`Preserved link destination already differs: ${entry.mapping.destination}`);
+    }
+    symlinkSync(target, to);
+  }
+  for (const entry of retainedAuthorities(paths)) {
+    const to = join(destination, entry.reviewedDestination);
+    mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
+    if (marker(destination, entry.reviewedDestination)) {
+      if (lstatSync(to).isSymbolicLink() && readlinkSync(to) === entry.target) continue;
+      throw new Error(`Retained authority destination already differs: ${entry.reviewedDestination}`);
+    }
+    symlinkSync(entry.target, to);
+  }
+}
+
+function applyReviewedPathRewrites(destination, paths, rewrites = []) {
+  for (const rewrite of rewrites) {
+    const entry = paths.find(item => item.path === rewrite.path);
+    if (entry?.mapping?.action !== 'copy' || entry.type !== 'file') throw new Error(`Reviewed rewrite source is not preserved: ${rewrite.path}`);
+    const file = join(destination, entry.mapping.destination);
+    const stat = lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Reviewed rewrite destination is not a file: ${rewrite.path}`);
+    const before = readFileSync(file);
+    const currentHash = createHash('sha256').update(before).digest('hex');
+    if (currentHash === rewrite.afterSha256) continue;
+    if (currentHash !== rewrite.beforeSha256) throw new Error(`Reviewed rewrite source changed: ${rewrite.path}`);
+    let text = before.toString('utf8');
+    if (!Buffer.from(text, 'utf8').equals(before)) throw new Error(`Reviewed rewrite source is not UTF-8: ${rewrite.path}`);
+    for (const item of rewrite.replacements) {
+      if (!text.includes(item.from)) throw new Error(`Reviewed path is absent from ${rewrite.path}`);
+      text = text.split(item.from).join(item.to);
+    }
+    const after = Buffer.from(text, 'utf8');
+    if (createHash('sha256').update(after).digest('hex') !== rewrite.afterSha256) throw new Error(`Reviewed rewrite result differs: ${rewrite.path}`);
+    const temporary = `${file}.adoption-rewrite-next`;
+    writeFileSync(temporary, after, { mode: stat.mode & 0o777 });
+    renameSync(temporary, file);
   }
 }
 
@@ -640,6 +900,35 @@ async function assertAdoptionWritersStopped(source, dependencies = {}, expectedW
   }
 }
 
+async function verifySourceServiceBindings(source, services, dependencies = {}) {
+  if (!services.length) return;
+  let rows;
+  try {
+    if (dependencies.listSourceServiceBindings) rows = await dependencies.listSourceServiceBindings(source);
+    else {
+      const { stdout } = await (dependencies.executeFile || executeFile)(dependencies.pm2Command || 'pm2', ['jlist', '--silent'], {
+        cwd: source, env: dependencies.env || managedSupervisorEnvironment(), timeout: 20000, maxBuffer: 8 * 1024 * 1024,
+      });
+      rows = JSON.parse(stdout);
+    }
+  } catch {
+    throw Object.assign(new Error('Continuing-service process inventory is unavailable.'), { code: 'process_inventory_unavailable' });
+  }
+  if (!Array.isArray(rows)) throw Object.assign(new Error('Continuing-service process inventory is invalid.'), { code: 'process_inventory_unavailable' });
+  for (const service of services) {
+    const matches = rows.filter(row => row.name === service.name);
+    const env = matches[0]?.pm2_env || {};
+    if (matches.length !== 1 || env.pm_exec_path !== service.source.executable || env.pm_cwd !== service.source.cwd
+      || JSON.stringify(env.args || []) !== JSON.stringify(service.source.args)
+      || env.exec_interpreter !== service.source.interpreter
+      || Object.entries(service.source.env).some(([key, value]) => env[key] !== value)
+      || env.status !== 'stopped'
+      || (service.source.sha256 && createHash('sha256').update(readFileSync(service.source.executable)).digest('hex') !== service.source.sha256)) {
+      throw Object.assign(new Error(`Reviewed service binding changed or remains active: ${service.name}`), { code: 'continuation_binding_changed' });
+    }
+  }
+}
+
 function loadBetterSqlite3(sourceRoot) {
   for (const candidate of [
     join(sourceRoot, 'package.json'),
@@ -672,6 +961,40 @@ export function holdAdoptionSupervisorLock(source, identity, dependencies = {}) 
       { code: 'supervisor_lock_unavailable' },
     );
   }
+}
+
+function verifyContinuingBirth(source, identity, reviewed) {
+  if (identity.birth) {
+    if (reviewed?.identity && (reviewed.identity.homeId !== identity.birth.home.id || reviewed.identity.botId !== identity.birth.coordination.botId)) {
+      throw Object.assign(new Error('Reviewed identity differs from the source birth receipt.'), { code: 'birth_identity_changed' });
+    }
+    return identity;
+  }
+  const requested = reviewed?.identity;
+  const databasePath = join(source, 'instances/.house/coordination/home23-coordination.sqlite3');
+  // Fixture/source homes without a canonical DB retain the older adapter
+  // behavior. A lived managed home with canonical state must bind its IDs.
+  if (!existsSync(databasePath)) return identity;
+  if (!requested) throw Object.assign(new Error('Canonical continuing-home identity is unavailable.'), { code: 'birth_identity_unresolved' });
+  const savedLauncher = join(source, 'instances/.house/coordination/ecosystem.config.cjs');
+  let savedHomeId = 'home_00000000-0000-7000-8000-000000000000';
+  let savedHomeName = 'Home23';
+  if (existsSync(savedLauncher)) {
+    const apps = require(savedLauncher)?.apps;
+    const coordination = apps?.find(app => app.name === 'home23-coordination');
+    if (!coordination) throw Object.assign(new Error('Saved coordination launcher is missing.'), { code: 'birth_identity_unresolved' });
+    savedHomeId = coordination.env?.HOME23_COORDINATION_HOME_ID || savedHomeId;
+    savedHomeName = coordination.env?.HOME23_COORDINATION_HOME_NAME || savedHomeName;
+  }
+  if (requested.homeId !== savedHomeId || requested.homeName !== savedHomeName) {
+    throw Object.assign(new Error('Reviewed home identity differs from the saved coordination launcher.'), { code: 'birth_identity_changed' });
+  }
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    const bot = database.prepare('SELECT id FROM bots WHERE id = ? AND resident_binding = ? AND lifecycle = ?').get(requested.botId, identity.profile?.name, 'active');
+    if (!bot) throw Object.assign(new Error('Reviewed primary bot is not active in canonical coordination state.'), { code: 'birth_identity_changed' });
+  } finally { database.close(); }
+  return { ...identity, birth: { home: { id: requested.homeId, name: requested.homeName }, coordination: { botId: requested.botId } } };
 }
 
 async function writeStoppedHost(destination, identity, dependencies = {}) {
@@ -747,16 +1070,16 @@ function verifyAdoptionPackages(payload, destination, destinationPresent) {
  * snapshot matches. Never installs over the source, never runs home birth,
  * never starts writers.
  */
-export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payloadPath } = {}, dependencies = {}) {
+export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payloadPath, preservationPlan = null, planHash } = {}, dependencies = {}) {
   const source = previewRoot(sourceHome);
   const destination = previewRoot(destinationRoot);
   const payload = previewRoot(payloadPath);
   disjointRoots(source, destination, payload);
 
-  const plan = planManagedSourceAdoption(source);
+  const plan = planManagedSourceAdoption(source, { preservationPlan, planHash });
   if (!plan.canAdopt) return refuseAdoption(plan, plan.reasons, destination);
 
-  const identity = resolveAdoptionIdentity(source);
+  let identity = resolveAdoptionIdentity(source);
   if (!identity.ok) {
     return refuseAdoption(plan, [reason(identity.code, identity.message)], destination);
   }
@@ -765,6 +1088,12 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
   try { manifest = readProductManifest(payload); }
   catch {
     return refuseAdoption(plan, [reason('candidate_manifest_invalid', 'The candidate manifest is missing or invalid.')], destination);
+  }
+  for (const authority of retainedAuthorities(plan.inventory.paths)) {
+    const path = authority.reviewedDestination;
+    if (manifest.files.some(entry => entry.path === path || entry.path.startsWith(`${path}/`))) {
+      return refuseAdoption(plan, [reason('authority_payload_collision', `The candidate package owns retained authority path ${path}.`, { path })], destination);
+    }
   }
   const packageId = manifest.packageId;
   const sourceSnapshot = sourceAdoptionSnapshot(source, plan.inventory.paths, identity);
@@ -778,6 +1107,8 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
 
   if (journal) {
     if (journal.sourceHome !== source) throw new Error('Adoption journal belongs to another source.');
+    if ((journal.preservationPlanHash || null) !== (plan.preservationPlanHash || null)) throw new Error('Adoption preservation plan changed since adoption started.');
+    if (JSON.stringify(journal.preservationPlan || null) !== JSON.stringify(preservationPlan || null)) throw new Error('Adoption preservation choices changed since adoption started.');
     if (journal.payloadPath !== payload) throw new Error('Adoption journal belongs to another payload.');
     try { verifyAdoptionPackages(payload, destination, destinationPresent); }
     catch (error) {
@@ -814,6 +1145,9 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
   try {
     // Inventory the managed supervisor before any destination mutation or preserve copy.
     await assertAdoptionWritersStopped(source, dependencies, identity.writers);
+    const reviewed = validateAdoptionPreservationPlan(source, preservationPlan, planHash);
+    await verifySourceServiceBindings(source, reviewed?.services || [], dependencies);
+    identity = verifyContinuingBirth(source, identity, reviewed);
   } catch (error) {
     try { releaseLock(); } catch { /* unlock best-effort */ }
     return refuseAdoption(plan, [reason(error.code || 'process_inventory_unavailable', error.message)], destination);
@@ -831,8 +1165,10 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
         destinationRoot: destination,
         payloadPath: payload,
         packageId,
+        preservationPlanHash: plan.preservationPlanHash || null,
         sourceSnapshot,
         phase: 'installing',
+        preservationPlan: preservationPlan || null,
         homeBirth: 'not_run',
         residents: identity.residents,
         residentMap: identity.residentMap || null,
@@ -881,7 +1217,7 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       // Re-walk after copy so files created during the window change the snapshot.
       const liveReasons = [];
       let livePaths;
-      try { livePaths = walkAdoptionPaths(source, liveReasons); }
+      try { livePaths = walkAdoptionPaths(source, liveReasons, validateAdoptionPreservationPlan(source, preservationPlan, planHash)); }
       catch {
         return refuseAdoption(plan, [reason('inventory_unreadable', 'The adoption inventory could not be re-walked after preservation.')], destination);
       }
@@ -911,6 +1247,9 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
         return refuseAdoption(plan, [reason('package_integrity_failed', error.message)], destination);
       }
       await rebind(source, destination);
+      applyReviewedPathRewrites(destination, plan.inventory.paths,
+        validateAdoptionPreservationPlan(source, preservationPlan, planHash)?.rewrites || []);
+      writeAdoptedLinks(destination, plan.inventory.paths, source, validateAdoptionPreservationPlan(source, preservationPlan, planHash));
       const host = JSON.parse(readFileSync(join(destination, '.home23-host.json'), 'utf8'));
       host.desiredRunning = false;
       host.phase = 'stopped';
@@ -933,7 +1272,18 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
         delete host.residentMap;
       }
       if (typeof identity.fingerprint === 'string') host.fingerprint = identity.fingerprint;
+      host.continuationServices = (validateAdoptionPreservationPlan(source, preservationPlan, planHash)?.services || []).map(service => ({
+        name: service.name, ...service.run,
+      }));
       writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
+      // The source remains intact for recovery, but its managed start paths
+      // must not admit a second authoritative writer after this point.
+      privateJSON(join(source, 'instances/.house/maintenance/adopted-source.json'), {
+        schema: 'home23.adopted-source-fence.v1', sourceRoot: source, destinationRoot: destination,
+        packageId, sourceSnapshot, preservationPlanHash: plan.preservationPlanHash || null,
+        transferredWriters: [...new Set(['home23-coordination', 'home23-seed-observatory', ...identity.writers,
+          ...(validateAdoptionPreservationPlan(source, preservationPlan, planHash)?.services || []).map(service => service.name)])].sort(),
+      });
       journal = { ...journal, phase: 'completed', homeBirth: 'not_run' };
       writeAdoptionJournal(destination, journal);
     }

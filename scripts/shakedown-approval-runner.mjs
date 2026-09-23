@@ -39,7 +39,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "
 import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 
-const H23 = "/Users/jtr/_JTR23_/release/home23";
+const H23 = process.env.HOME23_ROOT || "/Users/jtr/_JTR23_/release/home23";
 const PROJECT = join(H23, "instances/jerry/workspace/projects/shakedownshuffle");
 const QUEUE = join(PROJECT, "content/article-editorial-queue.md");
 const LEDGER_DIR = join(H23, "instances/workers/shakedown-jerry/workspace/state");

@@ -21,10 +21,11 @@ import {
   writeFileSync,
   writeSync,
   symlinkSync,
+  statSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { choosePortPlan, productEnvironment, socketRootFor } from './product-environment.js';
+import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor } from './product-environment.js';
 import { PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { isProductStatePath, isRebuildableStatePath, ownedWriterNames, SUPPORTED_COORDINATION_SCHEMA } from './product-update-inventory.js';
 
@@ -118,6 +119,32 @@ function safeRelative(relative) {
     && !isAbsolute(relative) && relative.split('/').every(part => part && part !== '.' && part !== '..');
 }
 
+function reviewedAdoptedLinkKind(root, relative, target) {
+  try {
+    const receipt = readPrivateJSON(join(root, 'runtime/adoption-preservation.json'));
+    if (receipt?.schema !== 'home23.adoption-preservation-receipt.v1') return null;
+    return Array.isArray(receipt.links)
+      ? receipt.links.find(link => link.path === relative && link.target === target
+        && ['retain-link', 'historical-link', 'retain-authority'].includes(link.kind))?.kind || null : null;
+  } catch { return null; }
+}
+const reviewedAdoptedLink = (root, relative, target) => Boolean(reviewedAdoptedLinkKind(root, relative, target));
+
+function retainedAuthorityDependencies(root) {
+  const receiptPath = join(root, 'runtime/adoption-preservation.json');
+  if (!exists(receiptPath)) return [];
+  const receipt = readPrivateJSON(receiptPath);
+  if (receipt?.schema !== 'home23.adoption-preservation-receipt.v1' || !Array.isArray(receipt.links)) throw new Error('Adopted authority receipt is invalid.');
+  return receipt.links.filter(link => link.kind === 'retain-authority').map(link => {
+    const file = join(root, link.path);
+    const exact = safeRelative(link.path) && isAbsolute(link.target) && exists(file)
+      && lstatSync(file).isSymbolicLink() && readlinkSync(file) === link.target;
+    let present = false;
+    try { present = exact && statSync(link.target).isDirectory(); } catch { /* external target unavailable */ }
+    return { kind: 'retained-authority', path: link.path, target: link.target, present, required: true };
+  });
+}
+
 function assertSymlinkInside(homeRoot, relative) {
   const file = join(homeRoot, relative);
   const target = readlinkSync(file);
@@ -126,10 +153,11 @@ function assertSymlinkInside(homeRoot, relative) {
   try { resolved = realpathSync(file); }
   catch {
     const linked = resolve(dirname(file), target);
-    if (!inside(homeRoot, linked)) throw new Error(`Backup symlink escapes its home: ${relative}`);
+    if (reviewedAdoptedLinkKind(homeRoot, relative, target) === 'retain-authority') throw new Error(`Retained external authority is unavailable: ${relative}`);
+    if (!inside(homeRoot, linked) && !reviewedAdoptedLink(homeRoot, relative, target)) throw new Error(`Backup symlink escapes its home: ${relative}`);
     return target;
   }
-  if (!inside(homeRoot, resolved)) throw new Error(`Backup symlink escapes its home: ${relative}`);
+  if (!inside(homeRoot, resolved) && !reviewedAdoptedLink(homeRoot, relative, target)) throw new Error(`Backup symlink escapes its home: ${relative}`);
   return target;
 }
 
@@ -157,7 +185,10 @@ export async function listInstalledWriters(home) {
 function assertWritersStopped(home, rows) {
   if (!Array.isArray(rows)) fail('process_inventory_unavailable', 'Home process inventory is unavailable.');
   const host = readHostState(home);
-  const names = ownedWriterNames(host.profile?.name || '', { encoderRequired: host.encoderRequired === true }) || [];
+  const residents = host.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap)
+    ? Object.keys(host.residentMap) : [host.profile?.name];
+  const names = [...new Set([...residents.flatMap(name => ownedWriterNames(name || '', { encoderRequired: host.encoderRequired === true }) || []),
+    ...(Array.isArray(host.continuationServices) ? host.continuationServices.map(service => service.name) : [])])];
   const busy = rows.filter(row => BUSY.has(row.status));
   if (busy.some(row => !names.includes(row.name))) fail('backup_unknown_writer', 'An unexpected process is using this home.');
   if (busy.length) fail('backup_writers_active', 'Owned writers are still running. Stop them before backup. The desired-running flag is not proof they are stopped.');
@@ -499,12 +530,16 @@ function restoredLink(sourceHome, inspectionRoot, linkRelative, target) {
   const absolute = isAbsolute(target) ? target : resolve(linkDirectory, target);
   const source = resolve(sourceHome);
   if (isAbsolute(target)) {
-    if (!inside(source, absolute)) throw new Error(`Backup symlink escapes its home: ${linkRelative}`);
+    if (reviewedAdoptedLinkKind(inspectionRoot, linkRelative, target) === 'retain-authority') return target;
+    if (!inside(source, absolute)) {
+      if (!reviewedAdoptedLink(inspectionRoot, linkRelative, target)) throw new Error(`Backup symlink escapes its home: ${linkRelative}`);
+      return target;
+    }
     const rebased = join(inspectionRoot, relative(source, absolute));
     if (!inside(inspectionRoot, rebased)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
     return relative(linkDirectory, rebased);
   }
-  if (!inside(inspectionRoot, absolute)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
+  if (!inside(inspectionRoot, absolute) && !reviewedAdoptedLink(inspectionRoot, linkRelative, target)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
   return target;
 }
 
@@ -513,14 +548,16 @@ function createExtractor(root, expectedFiles, sourceHome) {
   let buffer = Buffer.alloc(0);
   let record = null;
   const seen = [];
+  const pendingLinks = [];
   function finishRecord() {
     if (record.fd !== null) { fsyncSync(record.fd); closeSync(record.fd); }
     const digest = record.hash.digest('hex');
     const expected = byPath.get(record.path);
     if (digest !== expected.sha256) throw new Error(`Backup digest mismatch: ${record.path}`);
     if (record.type === 'symlink') {
-      const link = restoredLink(sourceHome, root, record.path, record.symlink.toString('utf8'));
-      symlinkSync(link, record.destination);
+      // Receipt files may appear later in the authenticated record stream.
+      // Resolve reviewed links only after all file records are present.
+      pendingLinks.push({ path: record.path, destination: record.destination, target: record.symlink.toString('utf8') });
     }
     seen.push(record.path);
     record = null;
@@ -568,6 +605,10 @@ function createExtractor(root, expectedFiles, sourceHome) {
     end() {
       if (record || buffer.length) throw new Error('Truncated backup payload.');
       if (seen.length !== expectedFiles.length) throw new Error('Backup file inventory mismatch.');
+      for (const entry of pendingLinks) {
+        assertRealParents(root, entry.path);
+        symlinkSync(restoredLink(sourceHome, root, entry.path, entry.target), entry.destination);
+      }
     },
   };
 }
@@ -662,7 +703,12 @@ export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot }
     extractor.end();
     const reconnects = [machineReconnect()];
     if (header.files.some(entry => entry.path === 'app/config/secrets.yaml')) reconnects.push(credentialReconnect());
-    return { ok: true, schema: BACKUP_SCHEMA, packageId: header.packageId ?? null, fileCount: header.files.length, writersStarted: false, reconnects, sourceHome: header.homeRoot };
+    const externalDependencies = retainedAuthorityDependencies(root);
+    if (externalDependencies.length) reconnects.push({ kind: 'retained-authority', required: true,
+      message: 'This archive contains links to authoritative external state. Reconnect those exact paths before recovery.' });
+    return { ok: externalDependencies.every(item => item.present), schema: BACKUP_SCHEMA, packageId: header.packageId ?? null,
+      fileCount: header.files.length, writersStarted: false, reconnects, externalDependencies,
+      sourceAbsentReady: externalDependencies.length === 0, sourceHome: header.homeRoot };
   } catch (error) {
     if (wrote || readdirSync(root).length) emptyDirectory(root);
     throw error;
@@ -1144,6 +1190,10 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
   for (const relative of ['app/config/cron-jobs.json', 'app/evobrew/config.json']) {
     const file = join(destination, relative);
     if (!exists(file)) continue;
+    // A reviewed adoption may leave legacy Evobrew as one external authority.
+    // Rebinding its config through the adopted link would mutate live source
+    // material, so only destination-owned files are rewritten.
+    if (adopted && !inside(destination, realpathSync(file))) continue;
     let config;
     try { config = JSON.parse(readFileSync(file, 'utf8')); }
     catch { fail('move_rebind_incomplete', `Destination ${relative} could not be read.`); }
@@ -1356,6 +1406,9 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
   lock.hooks = { beforeChunk: dependencies.beforeChunk, onLockRefresh: dependencies.onLockRefresh, refreshMs: dependencies.lockRefreshMs };
   try {
     assertWritersIdle(await inventoryDestinationWriters(destination, dependencies));
+    if (retainedAuthorityDependencies(destination).some(item => !item.present)) {
+      fail('backup_recover_external_authority_missing', 'A retained external authority is unavailable. Reconnect its exact path before recovery.');
+    }
 
     let journal = readRecoverJournal(destination);
     if (journal) {

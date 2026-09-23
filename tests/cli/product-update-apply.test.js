@@ -226,6 +226,68 @@ test('a stopped home updates in place and a running home waits until admission',
   assert.equal(preserved(running.home).version, SUPPORTED_COORDINATION_SCHEMA);
 });
 
+test('an adopted external state link survives one software update by its exact receipt', async t => {
+  const fixture = homeFixture(t);
+  const external = path.join(fixture.root, 'retained-coding-state');
+  fs.mkdirSync(external);
+  fs.writeFileSync(path.join(external, 'work.txt'), 'authoritative\n');
+  const relative = 'app/instances/milo/coding-state';
+  fs.symlinkSync(external, path.join(fixture.home, relative));
+  fs.mkdirSync(path.join(fixture.home, 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(fixture.home, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: path.join(fixture.root, 'source'),
+    links: [{ path: relative, target: external, sourcePath: 'instances/milo/coding-state', sourceTarget: external, kind: 'retain-link' }],
+    externalReferences: [], continuationServices: [],
+  }), { mode: 0o600 });
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging }, quiet);
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  assert.equal(fs.readlinkSync(path.join(fixture.home, relative)), external);
+  assert.equal(fs.readFileSync(path.join(external, 'work.txt'), 'utf8'), 'authoritative\n');
+});
+
+test('continued services join the software update writer fence', async t => {
+  const fixture = homeFixture(t);
+  const file = path.join(fixture.home, '.home23-host.json');
+  const host = JSON.parse(fs.readFileSync(file, 'utf8'));
+  host.continuationServices = [{ name: 'home23-legacy-edge' }];
+  fs.writeFileSync(file, JSON.stringify(host));
+  fs.mkdirSync(path.join(fixture.home, 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(fixture.home, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: '/Users/jtr/retained-source',
+    links: [], externalReferences: [], continuationServices: [{ name: 'home23-legacy-edge', run: { name: 'home23-legacy-edge' } }],
+  }), { mode: 0o600 });
+  const inventory = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate: fixture.next });
+  assert.ok(inventory.writers.includes('home23-legacy-edge'));
+  const deferred = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging }, { ...quiet, listProcesses: async () => [{ name: 'home23-legacy-edge', status: 'online' }] });
+  assert.equal(deferred.status, 'deferred');
+  assert.equal(deferred.admission, 'wait');
+  assert.equal(fs.existsSync(updateDirectoryFor(fixture.home)), false);
+});
+
+test('a sealed external continuation binding does not block the next update inventory', async t => {
+  const fixture = homeFixture(t);
+  const service = { name: 'home23-coordination-edge', executable: '/opt/homebrew/bin/caddy',
+    cwd: '/Users/jtr/external-caddy-state', args: ['run', '--config', '/Users/jtr/external-caddy-state/Caddyfile'],
+    env: { HOME: '/Users/jtr' }, stateRoots: ['/Users/jtr/external-caddy-state'], startOnHomeStart: true };
+  const hostPath = path.join(fixture.home, '.home23-host.json');
+  const host = JSON.parse(fs.readFileSync(hostPath, 'utf8'));
+  host.continuationServices = [service];
+  fs.writeFileSync(hostPath, JSON.stringify(host), { mode: 0o600 });
+  fs.mkdirSync(path.join(fixture.home, 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(fixture.home, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: '/Users/jtr/retained-source',
+    links: [], externalReferences: [], continuationServices: [{ name: service.name, run: service }],
+  }), { mode: 0o600 });
+  const allowed = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate: fixture.next });
+  assert.equal(allowed.reasons.some(item => item.code === 'external_reference' || item.code === 'continuation_receipt_mismatch'), false);
+  host.continuationServices[0].cwd = '/Users/jtr/changed-caddy-state';
+  fs.writeFileSync(hostPath, JSON.stringify(host));
+  const changed = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate: fixture.next });
+  assert.ok(changed.reasons.some(item => item.code === 'continuation_receipt_mismatch'));
+});
+
 test('failed candidate health restores previous software and leaves state in place', async t => {
   const fixture = homeFixture(t);
   const before = preserved(fixture.home);

@@ -87,6 +87,73 @@ test('round-trips a stopped fixture home with workspace and home.yaml', async t 
   assert.equal(inspected.reconnects.some(item => item.kind === 'provider-credentials' && item.transferred === true), true);
 });
 
+test('authenticated backup retains only a reviewed external adoption link', async t => {
+  const fixture = stoppedHome(t);
+  const external = path.join(fixture.root, 'external-history');
+  fs.mkdirSync(external);
+  const relative = 'app/instances/milo/workspace/history';
+  fs.symlinkSync(external, path.join(fixture.home, relative));
+  fs.mkdirSync(path.join(fixture.home, 'runtime'), { mode: 0o700 });
+  fs.writeFileSync(path.join(fixture.home, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: fixture.root,
+    links: [{ path: relative, target: external, sourcePath: 'instances/milo/workspace/history',
+      sourceTarget: external, kind: 'retain-link' }], externalReferences: [],
+  }), { mode: 0o600 });
+  fs.mkdirSync(fixture.inspectionRoot);
+  const created = await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath,
+    keyPath: fixture.keyPath }, quiet);
+  assert.equal(created.ok, true);
+  const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath,
+    keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  assert.equal(inspected.ok, true);
+  assert.equal(fs.readlinkSync(path.join(fixture.inspectionRoot, relative)), external);
+});
+
+test('inspection resolves a reviewed file link after its later receipt record', async t => {
+  const fixture = stoppedHome(t);
+  const external = path.join(fixture.root, 'external-config.json');
+  fs.writeFileSync(external, '{}\n');
+  const relative = 'app/evobrew/config.json';
+  fs.mkdirSync(path.join(fixture.home, 'app/evobrew'));
+  fs.symlinkSync(external, path.join(fixture.home, relative));
+  fs.mkdirSync(path.join(fixture.home, 'runtime'));
+  fs.writeFileSync(path.join(fixture.home, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: fixture.root,
+    links: [{ path: relative, target: external, sourcePath: 'evobrew/config.json', sourceTarget: external,
+      kind: 'retain-link' }], externalReferences: [],
+  }), { mode: 0o600 });
+  fs.mkdirSync(fixture.inspectionRoot);
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath,
+    keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  assert.equal(inspected.ok, true);
+  assert.equal(fs.readlinkSync(path.join(fixture.inspectionRoot, relative)), external);
+});
+
+test('retained external authority is reported as a source-absent recovery dependency', async t => {
+  const fixture = stoppedHome(t);
+  const authority = path.join(fixture.home, 'retained-authority');
+  fs.mkdirSync(authority);
+  const relative = 'app/evobrew';
+  fs.symlinkSync(authority, path.join(fixture.home, relative));
+  fs.mkdirSync(path.join(fixture.home, 'runtime'));
+  fs.writeFileSync(path.join(fixture.home, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: fixture.root,
+    links: [{ path: relative, target: authority, sourcePath: 'evobrew', sourceTarget: authority,
+      kind: 'retain-authority' }], externalReferences: [],
+  }), { mode: 0o600 });
+  fs.mkdirSync(fixture.inspectionRoot);
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  fs.rmSync(authority, { recursive: true });
+  const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath,
+    keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  assert.equal(inspected.ok, false);
+  assert.equal(inspected.sourceAbsentReady, false);
+  assert.deepEqual(inspected.externalDependencies.map(item => ({ path: item.path, present: item.present })),
+    [{ path: relative, present: false }]);
+  assert.equal(fs.readlinkSync(path.join(fixture.inspectionRoot, relative)), authority);
+});
+
 test('a busy writer blocks backup even when desiredRunning is false', async t => {
   const fixture = stoppedHome(t, { desiredRunning: false });
   await assert.rejects(
