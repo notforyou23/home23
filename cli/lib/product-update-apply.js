@@ -20,7 +20,7 @@ const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-upda
 const DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 // Home state and every directory above it stay in place during a version switch.
 // Everything else in a package is software and moves as whole subtrees.
-const MIXED_DIRECTORIES = new Set(['', ...PRODUCT_STATE_PATHS.flatMap(({ path }) => path.split('/').slice(0, -1)
+const MIXED_DIRECTORIES = new Set(['', ...PRODUCT_STATE_PATHS.flatMap(({ path, type }) => path.split('/').slice(0, type === 'directory' ? undefined : -1)
   .map((_, index, parts) => parts.slice(0, index + 1).join('/')))]);
 const libDirectory = dirname(fileURLToPath(import.meta.url));
 const exists = file => { try { lstatSync(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
