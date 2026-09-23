@@ -118,7 +118,7 @@ function decodeProfile(file) {
     return format === 'json' ? JSON.parse(result.stdout) : result.stdout.trim();
   };
   return { teamIdentifiers: extract('TeamIdentifier'), platform: extract('Platform'),
-    entitlements: extract('Entitlements'),
+    allDevices: extract('ProvisionsAllDevices'), entitlements: extract('Entitlements'),
     expiration: extract('ExpirationDate', 'raw') };
 }
 
@@ -137,6 +137,15 @@ function availableDeveloperId(sha1) {
   const listing = run('/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning']);
   return listing.split('\n').some(line => line.includes(sha1.toUpperCase()) &&
     line.includes('"Developer ID Application: ') && line.includes('(H7RZ65BN25)'));
+}
+
+export function assertDeveloperIdProfile(profile) {
+  if (!profile?.platform?.includes('OSX') || profile.allDevices !== true ||
+      !profile.teamIdentifiers?.includes('H7RZ65BN25') ||
+      profile.entitlements?.['com.apple.application-identifier'] !== 'H7RZ65BN25.com.regina6.home23.mac' ||
+      !Number.isFinite(Date.parse(profile.expiration)) || Date.parse(profile.expiration) <= Date.now()) {
+    throw new Error('Mac Developer ID provisioning profile has wrong identity, scope or expiration');
+  }
 }
 
 function productionInputs(options, sourceEntitlements, sourceNodeEntitlements) {
@@ -161,13 +170,9 @@ function productionInputs(options, sourceEntitlements, sourceNodeEntitlements) {
   }
   if (options.macProfile) profile = decodeProfile(real(options.macProfile));
   if (options.channelConfig) channel = readProductChannel(real(options.channelConfig));
+  if (profile) assertDeveloperIdProfile(profile);
   if (entitlements && profile) {
     assertProductionEntitlements(sourceEntitlements, entitlements, profile.entitlements);
-    if (!profile.platform.includes('OSX') || !profile.teamIdentifiers.includes('H7RZ65BN25') ||
-        profile.entitlements['com.apple.application-identifier'] !== 'H7RZ65BN25.com.regina6.home23.mac' ||
-        !Number.isFinite(Date.parse(profile.expiration)) || Date.parse(profile.expiration) <= Date.now()) {
-      throw new Error('Mac provisioning profile has wrong identity or has expired');
-    }
   }
   if (options.identity && !identityAvailable) missing.push('specified Developer ID Application identity is not installed');
   return { missing, identityAvailable, profile, entitlements, nodeEntitlements, channel };
