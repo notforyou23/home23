@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   createHomeBackup, inspectHomeBackup, moveHome, readAuthenticatedBackupHeader, readMoveFence, recoverInspectedHome, rebindAdoptedHome,
+  rewriteAdoptedCronPromptPaths,
 } from '../../cli/lib/product-backup.js';
 import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
@@ -1357,6 +1358,22 @@ test('recoverInspectedHome resumes after interrupt on first rebind homeRoot writ
   assert.equal(fs.readFileSync(path.join(inspectionRoot, 'bin/node'), 'utf8'), nodeMarker);
 });
 
+test('adopted cron prose rewrites only bounded instance paths in agent turns', () => {
+  const source = '/old/home';
+  const destination = '/new/Continuing Home';
+  const jobs = [
+    { enabled: false, payload: { kind: 'agentTurn', cwd: `${source}/instances/jerry`,
+      message: `Read ${source}/instances/jerry/status.json and write ${source}/instances/workers/run/<ISO-timestamp>.md. Keep /other/home/instances/jerry and X${source}/instances/jerry literal.` } },
+    { payload: { kind: 'shell', message: `echo ${source}/instances/jerry` } },
+  ];
+  rewriteAdoptedCronPromptPaths(jobs, source, destination);
+  assert.equal(jobs[0].enabled, false);
+  assert.equal(jobs[0].payload.cwd, `${source}/instances/jerry`);
+  assert.equal(jobs[0].payload.message,
+    `Read ${destination}/app/instances/jerry/status.json and write ${destination}/app/instances/workers/run/<ISO-timestamp>.md. Keep /other/home/instances/jerry and X${source}/instances/jerry literal.`);
+  assert.equal(jobs[1].payload.message, `echo ${source}/instances/jerry`);
+});
+
 test('rebindAdoptedHome rewrites from destination hostRoot when the source directory is gone', async t => {
   const root = tempRoot(t);
   const gone = path.join(root, 'original-home');
@@ -1387,6 +1404,11 @@ test('rebindAdoptedHome rewrites from destination hostRoot when the source direc
     `    - ${gone}/app/instances/ada`,
     '',
   ].join('\n'), { mode: 0o600 });
+  fs.writeFileSync(path.join(destination, 'app/config/cron-jobs.json'), JSON.stringify([{
+    id: 'future-agent-turn', enabled: false,
+    payload: { kind: 'agentTurn', cwd: `${gone}/instances/ada`,
+      message: `Read ${gone}/instances/ada/workspace/status.json and stop.` },
+  }]), { mode: 0o600 });
   for (const name of ['ada', 'zed']) {
     fs.writeFileSync(path.join(destination, `app/instances/${name}/config.yaml`), [
       'agent:',
@@ -1435,6 +1457,11 @@ test('rebindAdoptedHome rewrites from destination hostRoot when the source direc
   const homeYaml = yaml.load(fs.readFileSync(path.join(destination, 'app/config/home.yaml'), 'utf8'));
   assert.equal(homeYaml.shell.roots[0], `${destination}/app/instances/ada`);
   assert.equal(JSON.stringify(homeYaml).includes(gone), false);
+  const cronJobs = JSON.parse(fs.readFileSync(path.join(destination, 'app/config/cron-jobs.json'), 'utf8'));
+  assert.equal(cronJobs[0].enabled, false);
+  assert.equal(cronJobs[0].payload.cwd, `${destination}/app/instances/ada`);
+  assert.equal(cronJobs[0].payload.message,
+    `Read ${destination}/app/instances/ada/workspace/status.json and stop.`);
   const ada = yaml.load(fs.readFileSync(path.join(destination, 'app/instances/ada/config.yaml'), 'utf8'));
   const zed = yaml.load(fs.readFileSync(path.join(destination, 'app/instances/zed/config.yaml'), 'utf8'));
   assert.equal(ada.ports.engine, host.residentMap.ada.ports.engine);

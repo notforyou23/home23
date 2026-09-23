@@ -1229,6 +1229,29 @@ function rewriteMachineStrings(value, source, destination, oldPorts, newPorts, a
   return value;
 }
 
+/** Only agent-turn prose in adopted cron jobs may contain embedded instance paths. */
+export function rewriteAdoptedCronPromptPaths(jobs, source, destination) {
+  if (!Array.isArray(jobs)) return jobs;
+  const oldPrefix = `${source}${sep}instances${sep}`;
+  const newPrefix = `${join(destination, 'app/instances')}${sep}`;
+  for (const job of jobs) {
+    const payload = job?.payload;
+    if (payload?.kind !== 'agentTurn' || typeof payload.message !== 'string') continue;
+    const message = payload.message;
+    let cursor = 0, result = '';
+    while (cursor < message.length) {
+      const index = message.indexOf(oldPrefix, cursor);
+      if (index < 0) { result += message.slice(cursor); break; }
+      const previous = index === 0 ? '' : message[index - 1];
+      const bounded = index === 0 || /\s/.test(previous) || ['"', "'", '`', '(', '['].includes(previous);
+      result += message.slice(cursor, index) + (bounded ? newPrefix : oldPrefix);
+      cursor = index + oldPrefix.length;
+    }
+    payload.message = result;
+  }
+  return jobs;
+}
+
 function treeContains(value, needle) {
   if (typeof value === 'string') return value.includes(needle);
   if (Array.isArray(value)) return value.some(item => treeContains(item, needle));
@@ -1374,6 +1397,9 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     try { config = JSON.parse(readFileSync(file, 'utf8')); }
     catch { fail('move_rebind_incomplete', `Destination ${relative} could not be read.`); }
     config = rewriteMachineStrings(config, source, destination, oldPorts, newPorts, adopted);
+    if (relative === 'app/config/cron-jobs.json' && adopted) {
+      config = rewriteAdoptedCronPromptPaths(config, source, destination);
+    }
     if (treeContains(config, source)) fail('move_rebind_incomplete', `Destination ${relative} still names the source home.`);
     writePrivateJSON(file, config);
   }
