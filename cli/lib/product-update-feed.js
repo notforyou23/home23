@@ -751,6 +751,7 @@ export function extractProductArchive({ archivePath, destinationDirectory } = {}
   let offset = 0;
   let entries = 0;
   let paxPath = null;
+  let paxLink = null;
   try { while (offset + 512 <= archiveSize) {
     const header = Buffer.alloc(512);
     if (readSync(descriptor, header, 0, 512, offset) !== 512) throw codedError('archive_unsafe', 'The release archive is truncated.');
@@ -775,13 +776,17 @@ export function extractProductArchive({ archivePath, destinationDirectory } = {}
       if (readSync(descriptor, data, 0, size, dataOffset) !== size) throw codedError('archive_unsafe', 'The release archive is truncated.');
       const fields = data.toString('utf8').matchAll(/(?:^|\n)\d+ path=([^\n]+)\n/g);
       paxPath = [...fields].at(-1)?.[1] || null;
+      const links = data.toString('utf8').matchAll(/(?:^|\n)\d+ linkpath=([^\n]+)\n/g);
+      paxLink = [...links].at(-1)?.[1] || null;
       continue;
     }
     if (typeFlag === 'g' || typeFlag === 'X') {
       continue;
     }
     const relative = assertSafeArchiveEntryPath(paxPath || rawPath);
+    const effectiveLink = paxLink || linkname;
     paxPath = null;
+    paxLink = null;
     if (relative === null) continue;
     const target = join(destination, relative);
     if (!target.startsWith(destination + sep) && target !== destination) {
@@ -791,7 +796,7 @@ export function extractProductArchive({ archivePath, destinationDirectory } = {}
     if (typeFlag === '5' || typeFlag === 'D') {
       mkdirSync(target, { recursive: true, mode: (mode & 0o7777) || 0o755 });
     } else if (typeFlag === '2') {
-      const linkTarget = linkname;
+      const linkTarget = effectiveLink;
       if (!linkTarget || isAbsolute(linkTarget) || linkTarget.split(/[/\\]/).includes('..')) {
         throw codedError('archive_unsafe', 'The release archive contains an unsafe symlink.');
       }
