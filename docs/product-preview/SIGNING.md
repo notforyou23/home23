@@ -114,7 +114,8 @@ file, network, media, APNs, and time-sensitive capabilities, use production
 APNs, and bind the exact app and Team IDs authorized by the profile. The Node
 plist must preserve its JIT/native-loader runtime exceptions and omit
 `get-task-allow`. Neither a development profile nor an Apple Distribution
-identity substitutes for Developer ID Application signing.
+identity substitutes for Developer ID Application signing. The Mac profile
+must be a Developer ID distribution profile that covers all devices.
 
 Execution copies the exact verified assembly, signs all bundled Mach-O leaves
 and nested frameworks from inside out, rebuilds the signed runtime manifest,

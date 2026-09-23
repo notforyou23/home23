@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertAssemblyDescriptor, assertProductionEntitlements,
+import { assertAssemblyDescriptor, assertDeveloperIdProfile, assertProductionEntitlements,
   assertProductionNodeEntitlements, nestedSigningOrder,
   planMacFinalization } from '../../scripts/product/finalize-mac-release.mjs';
 
@@ -17,6 +17,17 @@ test('signs all framework-contained native leaves before containing bundles', ()
   assert.ok(order.indexOf('Contents/Frameworks/Foo.framework/Versions/A/Helpers/libextra.dylib') <
     order.indexOf('Contents/Frameworks/Foo.framework'));
   assert.equal(new Set(order).size, 4);
+});
+
+test('Developer ID profile must cover all Macs and the exact app identity', () => {
+  const profile = { platform: ['OSX'], allDevices: true, teamIdentifiers: ['H7RZ65BN25'],
+    entitlements: { 'com.apple.application-identifier': 'H7RZ65BN25.com.regina6.home23.mac' },
+    expiration: '2040-01-01T00:00:00Z' };
+  assert.doesNotThrow(() => assertDeveloperIdProfile(profile));
+  assert.throws(() => assertDeveloperIdProfile({ ...profile, allDevices: false }), /scope/);
+  assert.throws(() => assertDeveloperIdProfile({ ...profile, expiration: 'not-a-date' }), /expiration/);
+  assert.throws(() => assertDeveloperIdProfile({ ...profile,
+    entitlements: { 'com.apple.application-identifier': 'H7RZ65BN25.other' } }), /identity/);
 });
 
 test('production signing refuses loss of app and Node capabilities or debugger entitlement', () => {
