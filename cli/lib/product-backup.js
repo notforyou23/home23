@@ -987,14 +987,21 @@ function secureOwnedDestinationRoot(directory) {
   chmodSync(directory, 0o700);
 }
 
-function replaceHomePath(value, source, destination) {
-  if (value === source || value.startsWith(`${source}${sep}`)) return `${destination}${value.slice(source.length)}`;
-  return value;
+function replaceHomePath(value, source, destination, adopted = false) {
+  if (value !== source && !value.startsWith(`${source}${sep}`)) return value;
+  if (adopted) {
+    const suffix = value.slice(source.length);
+    if (['app', 'runtime', 'bin', 'tools'].some(name => suffix === `${sep}${name}` || suffix.startsWith(`${sep}${name}${sep}`))) {
+      return `${destination}${suffix}`;
+    }
+    return `${join(destination, 'app')}${suffix}`;
+  }
+  return `${destination}${value.slice(source.length)}`;
 }
 
-function rewriteMachineStrings(value, source, destination, oldPorts, newPorts) {
+function rewriteMachineStrings(value, source, destination, oldPorts, newPorts, adopted = false) {
   if (typeof value === 'string') {
-    let next = replaceHomePath(value, source, destination);
+    let next = replaceHomePath(value, source, destination, adopted);
     if (oldPorts && newPorts) {
       for (const key of Object.keys(newPorts)) {
         const previous = oldPorts[key];
@@ -1005,9 +1012,9 @@ function rewriteMachineStrings(value, source, destination, oldPorts, newPorts) {
     }
     return next;
   }
-  if (Array.isArray(value)) return value.map(item => rewriteMachineStrings(item, source, destination, oldPorts, newPorts));
+  if (Array.isArray(value)) return value.map(item => rewriteMachineStrings(item, source, destination, oldPorts, newPorts, adopted));
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, rewriteMachineStrings(child, source, destination, oldPorts, newPorts)]));
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, rewriteMachineStrings(child, source, destination, oldPorts, newPorts, adopted)]));
   }
   return value;
 }
@@ -1080,11 +1087,13 @@ function writePrivateYaml(file, value, yaml) {
   renameSync(temporary, file);
 }
 
-async function rebindMachineConfiguration(source, destination, oldPorts, newPorts, { residentPorts = null } = {}) {
+async function rebindMachineConfiguration(source, destination, oldPorts, newPorts, { residentPorts = null, adopted = false } = {}) {
   const { default: yaml } = await import('js-yaml');
   const files = [];
   const homeYaml = join(destination, 'app/config/home.yaml');
   if (exists(homeYaml)) files.push({ file: homeYaml, kind: 'home', resident: null });
+  const targetsYaml = join(destination, 'app/config/targets.yaml');
+  if (exists(targetsYaml)) files.push({ file: targetsYaml, kind: 'targets', resident: null });
   const instances = join(destination, 'app/instances');
   if (exists(instances)) {
     for (const name of readdirSync(instances)) {
@@ -1099,7 +1108,7 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     let document;
     try { document = yaml.load(readFileSync(entry.file, 'utf8')) || {}; }
     catch { fail('move_rebind_incomplete', `Destination configuration could not be read: ${relative(destination, entry.file)}`); }
-    document = rewriteMachineStrings(document, source, destination, oldPorts, newPorts);
+    document = rewriteMachineStrings(document, source, destination, oldPorts, newPorts, adopted);
     if (entry.kind === 'home') assignHomePorts(document, destination, newPorts);
     if (entry.kind === 'instance') {
       const portsForResident = (residentPorts && entry.resident && residentPorts[entry.resident])
@@ -1112,7 +1121,15 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
   }
   const ecosystem = join(destination, 'app/ecosystem.config.cjs');
   if (exists(ecosystem)) {
-    let text = readFileSync(ecosystem, 'utf8').split(source).join(destination);
+    let text = readFileSync(ecosystem, 'utf8');
+    if (adopted) {
+      for (const name of ['app', 'runtime', 'bin', 'tools']) {
+        text = text.split(`${source}${sep}${name}`).join(`${destination}${sep}${name}`);
+      }
+      text = text.split(source).join(join(destination, 'app'));
+    } else {
+      text = text.split(source).join(destination);
+    }
     text = replaceAssignedPorts(text, oldPorts, newPorts);
     if (residentPorts) {
       for (const ports of Object.values(residentPorts)) {
@@ -1124,8 +1141,18 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     writeFileSync(temporary, text, { mode: lstatSync(ecosystem).mode & 0o777 });
     renameSync(temporary, ecosystem);
   }
-  rebindSemanticPrep(source, destination, newPorts);
-  rebindAgentsManifest(source, destination);
+  for (const relative of ['app/config/cron-jobs.json', 'app/evobrew/config.json']) {
+    const file = join(destination, relative);
+    if (!exists(file)) continue;
+    let config;
+    try { config = JSON.parse(readFileSync(file, 'utf8')); }
+    catch { fail('move_rebind_incomplete', `Destination ${relative} could not be read.`); }
+    config = rewriteMachineStrings(config, source, destination, oldPorts, newPorts, adopted);
+    if (treeContains(config, source)) fail('move_rebind_incomplete', `Destination ${relative} still names the source home.`);
+    writePrivateJSON(file, config);
+  }
+  rebindSemanticPrep(source, destination, newPorts, adopted);
+  rebindAgentsManifest(source, destination, adopted);
   const savedProcesses = join(destination, 'runtime/ecosystem.config.json');
   if (exists(savedProcesses)) unlinkSync(savedProcesses);
 }
@@ -1150,7 +1177,7 @@ function writePrivateJSON(file, value) {
   renameSync(temporary, file);
 }
 
-function rebindSemanticPrep(source, destination, newPorts) {
+function rebindSemanticPrep(source, destination, newPorts, adopted = false) {
   const file = join(destination, 'runtime/semantic-prep.json');
   if (!exists(file)) return;
   let prep;
@@ -1161,9 +1188,9 @@ function rebindSemanticPrep(source, destination, newPorts) {
   prep.homeRoot = destination;
   prep.workerPid = 0;
   if (Number.isInteger(newPorts?.embedder)) prep.port = newPorts.embedder;
-  if (typeof prep.cacheDir === 'string') prep.cacheDir = replaceHomePath(prep.cacheDir, source, destination);
+  if (typeof prep.cacheDir === 'string') prep.cacheDir = replaceHomePath(prep.cacheDir, source, destination, adopted);
   if (Array.isArray(prep.workerArgv)) {
-    prep.workerArgv = prep.workerArgv.map(part => (typeof part === 'string' ? replaceHomePath(part, source, destination) : part));
+    prep.workerArgv = prep.workerArgv.map(part => (typeof part === 'string' ? replaceHomePath(part, source, destination, adopted) : part));
     const node = join(destination, 'bin/node');
     const worker = join(destination, 'app/scripts/product/semantic-prepare-worker.mjs');
     if (typeof prep.workerArgv[0] === 'string' && !prep.workerArgv[0].startsWith(`${destination}${sep}`)) prep.workerArgv[0] = node;
@@ -1175,7 +1202,7 @@ function rebindSemanticPrep(source, destination, newPorts) {
   writePrivateJSON(file, prep);
 }
 
-function rebindAgentsManifest(source, destination) {
+function rebindAgentsManifest(source, destination, adopted = false) {
   const file = join(destination, 'app/config/agents.json');
   if (!exists(file)) return;
   let agents;
@@ -1186,7 +1213,7 @@ function rebindAgentsManifest(source, destination) {
   for (const agent of agents) {
     if (!agent || typeof agent !== 'object') continue;
     for (const key of keys) {
-      if (typeof agent[key] === 'string') agent[key] = replaceHomePath(agent[key], source, destination);
+      if (typeof agent[key] === 'string') agent[key] = replaceHomePath(agent[key], source, destination, adopted);
     }
   }
   if (treeContains(agents, source)) fail('move_rebind_incomplete', 'Destination agent registry still names the source home.');
@@ -1282,7 +1309,9 @@ async function rebindDestination(source, destination, options = {}) {
   }
   writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
   if (options.afterHostWrite) await options.afterHostWrite(destination, host);
-  await rebindMachineConfiguration(rewriteFrom, destination, oldPorts, host.ports, { residentPorts });
+  await rebindMachineConfiguration(rewriteFrom, destination, oldPorts, host.ports, {
+    residentPorts, adopted: options.adoptManagedSource === true,
+  });
   if (!sourcePresent) return null;
   const receiptPath = join(rewriteFrom, '.home23-install.json');
   if (!exists(receiptPath)) return null;
@@ -1297,7 +1326,7 @@ async function rebindDestination(source, destination, options = {}) {
 
 /** Port/path rebind for an adopted destination. Does not copy state or start writers. */
 export async function rebindAdoptedHome(source, destination) {
-  return rebindDestination(source, destination);
+  return rebindDestination(source, destination, { adoptManagedSource: true });
 }
 
 /**

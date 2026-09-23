@@ -553,7 +553,7 @@ function copyPreservedState(source, destination, paths) {
       try { chmodSync(join(destination, 'runtime'), 0o700); } catch { /* created mode may already be private */ }
     }
     copyFileSync(from, to);
-    if (entry.path === 'engine/.env') chmodSync(to, 0o600);
+    if (entry.path === 'engine/.env' || entry.path === 'evobrew/config.json') chmodSync(to, 0o600);
   }
 }
 

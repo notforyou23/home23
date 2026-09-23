@@ -12,7 +12,7 @@ import {
   listSourceWriters, managedSupervisorEnvironment, planManagedSourceAdoption,
   previewProductUpdate, resolveAdoptionIdentity, sourceAdoptionSnapshot,
 } from '../../cli/lib/product-update.js';
-import { assertWritersIdle } from '../../cli/lib/product-backup.js';
+import { assertWritersIdle, rebindAdoptedHome } from '../../cli/lib/product-backup.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 import { acquireManagedStartLocks } from '../../cli/lib/pm2-commands.js';
 import {
@@ -734,7 +734,17 @@ test('single-resident Host record stays valid; multi-resident plans keep every n
   fs.writeFileSync(path.join(source.home, 'engine/data/memory.json'), '{"keep":true}\n');
   fs.writeFileSync(path.join(source.home, 'engine/.env'), 'BRAVE_API_KEY=test-only\n', { mode: 0o644 });
   fs.mkdirSync(path.join(source.home, 'evobrew'), { recursive: true });
-  fs.writeFileSync(path.join(source.home, 'evobrew/config.json'), '{"owner":"ada"}\n');
+  fs.writeFileSync(path.join(source.home, 'evobrew/config.json'), JSON.stringify({
+    owner: 'ada', brain: { defaultPath: path.join(source.home, 'instances/ada/brain') },
+  }) + '\n');
+  fs.writeFileSync(path.join(source.home, 'config/agents.json'), JSON.stringify([{
+    name: 'ada', brainPath: path.join(source.home, 'instances/ada/brain'),
+  }]) + '\n');
+  fs.writeFileSync(path.join(source.home, 'config/targets.yaml'), `paths:\n  - ${source.home}/instances/ada/workspace\n`);
+  fs.writeFileSync(path.join(source.home, 'config/cron-jobs.json'), JSON.stringify({
+    jobs: [{ cwd: path.join(source.home, 'instances/ada/workspace') }],
+  }) + '\n');
+  fs.writeFileSync(path.join(source.home, 'ecosystem.config.cjs'), `module.exports = { apps: [{ cwd: ${JSON.stringify(source.home)} }] };\n`);
   assert.equal(fs.existsSync(path.join(source.home, '.home23-host.json')), false);
   const plan = planManagedSourceAdoption(source.home);
   assert.equal(plan.canAdopt, true);
@@ -746,7 +756,7 @@ test('single-resident Host record stays valid; multi-resident plans keep every n
   const destination = path.join(pack.root, 'destination');
   const adopted = await adoptManagedSourceHome({
     sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
-  }, adoptionDeps());
+  }, adoptionDeps({ rebindAdoptedHome }));
   assert.equal(adopted.ok, true);
   assert.equal(adopted.status, 'adopted');
   assert.equal(adopted.profile.name, 'ada');
@@ -757,7 +767,22 @@ test('single-resident Host record stays valid; multi-resident plans keep every n
   assert.equal(fs.readFileSync(path.join(destination, 'app/engine/data/memory.json'), 'utf8'), '{"keep":true}\n');
   assert.equal(fs.readFileSync(path.join(destination, 'app/engine/.env'), 'utf8'), 'BRAVE_API_KEY=test-only\n');
   assert.equal(fs.statSync(path.join(destination, 'app/engine/.env')).mode & 0o777, 0o600);
-  assert.equal(fs.readFileSync(path.join(destination, 'app/evobrew/config.json'), 'utf8'), '{"owner":"ada"}\n');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(destination, 'app/evobrew/config.json'), 'utf8')), {
+    owner: 'ada', brain: { defaultPath: path.join(destination, 'app/instances/ada/brain') },
+  });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(destination, 'app/config/agents.json'), 'utf8'))[0].brainPath,
+    path.join(destination, 'app/instances/ada/brain'));
+  assert.ok(fs.readFileSync(path.join(destination, 'app/config/targets.yaml'), 'utf8')
+    .includes(`${destination}/app/instances/ada/workspace`));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(destination, 'app/config/cron-jobs.json'), 'utf8')).jobs[0].cwd,
+    path.join(destination, 'app/instances/ada/workspace'));
+  const semanticPrep = JSON.parse(fs.readFileSync(path.join(destination, 'runtime/semantic-prep.json'), 'utf8'));
+  assert.equal(semanticPrep.homeRoot, destination);
+  assert.equal(semanticPrep.cacheDir, path.join(destination, 'runtime/embedder-cache'));
+  const ecosystem = fs.readFileSync(path.join(destination, 'app/ecosystem.config.cjs'), 'utf8');
+  assert.ok(ecosystem.includes(path.join(destination, 'app')));
+  assert.equal(ecosystem.includes(source.home), false);
+  assert.equal(fs.statSync(path.join(destination, 'app/evobrew/config.json')).mode & 0o777, 0o600);
   assert.ok(verifyProductPayload(destination, { allowRuntimeState: true }));
 
   const multi = managedHome(path.join(pack.root, 'multi'), {
