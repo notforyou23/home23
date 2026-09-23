@@ -1308,8 +1308,10 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
   if (exists(instances)) {
     for (const name of readdirSync(instances)) {
       if (name.startsWith('.')) continue;
+      const residentPath = join(instances, name);
+      if (!lstatSync(residentPath).isDirectory()) continue;
       for (const [leaf, kind] of [['config.yaml', 'instance'], ['engine.yaml', 'engine']]) {
-        const file = join(instances, name, leaf);
+        const file = join(residentPath, leaf);
         if (exists(file)) files.push({ file, kind, resident: name });
       }
     }

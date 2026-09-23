@@ -1365,6 +1365,8 @@ test('rebindAdoptedHome rewrites from destination hostRoot when the source direc
   fs.mkdirSync(path.join(destination, 'app/config'), { recursive: true, mode: 0o755 });
   fs.mkdirSync(path.join(destination, 'app/instances/ada'), { recursive: true, mode: 0o755 });
   fs.mkdirSync(path.join(destination, 'app/instances/zed'), { recursive: true, mode: 0o755 });
+  const directInstanceFile = path.join(destination, 'app/instances/observatory-deadman.log');
+  fs.writeFileSync(directInstanceFile, 'preserved direct instance file\n');
   fs.writeFileSync(path.join(destination, '.home23-host.json'), JSON.stringify({
     schema: 'home23.host.v2',
     homeRoot: gone,
@@ -1409,6 +1411,7 @@ test('rebindAdoptedHome rewrites from destination hostRoot when the source direc
 
   const packageId = await rebindAdoptedHome(gone, destination);
   assert.equal(packageId, null);
+  assert.equal(fs.readFileSync(directInstanceFile, 'utf8'), 'preserved direct instance file\n');
   assert.equal(fs.existsSync(gone), false);
   assert.equal(fs.existsSync(path.join(destination, '.home23-install.json')), false);
   assert.equal(fs.existsSync(path.join(gone, '.home23-install.json')), false);
