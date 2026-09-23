@@ -5,8 +5,8 @@ const pair = () => ({
   manifest: { platform: 'darwin', arch: 'arm64', packageId: 'runtime-a', sourceCommit: 'backend-a' },
   appleCommit: 'apple-a',
   hostReceipt: { status: 'built', runtimeIncluded: true, sourceCommit: 'apple-a', runtime: { packageId: 'runtime-a', sourceCommit: 'backend-a' } },
-  host: { bundleIdentifier: 'com.home23.host', architectures: ['arm64'], minimumMacOS: '14.0' },
-  client: { bundleIdentifier: 'com.regina6.home23.mac', architectures: ['arm64'], minimumMacOS: '27.0' },
+  host: { bundleIdentifier: 'com.home23.host', architectures: ['arm64'], minimumMacOS: '27.0', version: '2.0', build: '140' },
+  client: { bundleIdentifier: 'com.regina6.home23.mac', architectures: ['arm64'], minimumMacOS: '27.0', version: '2.0', build: '140' },
 });
 test('combined download advertises the stricter client OS, not just Host requirements', () => {
   assert.doesNotThrow(() => assertReleasePair(pair()));
@@ -28,6 +28,7 @@ test('refuses wrong app identities and unsupported architecture', () => {
     p => { p.client.architectures = ['x86_64']; },
     p => { p.manifest.platform = 'linux'; },
     p => { delete p.client.minimumMacOS; },
+    p => { p.host.build = '1'; },
   ]) { const p = pair(); mutate(p); assert.throws(() => assertReleasePair(p)); }
 });
 

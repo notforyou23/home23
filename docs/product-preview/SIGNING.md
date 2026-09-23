@@ -1,12 +1,12 @@
 # Mac release assembly and consumer signing
 
-Home23 Host and the Mac conversation client are separate applications, delivered
-in one folder. Local assembly is engineering work; publication, Apple submission,
+The visible Home23 Mac app embeds its Host helper and runtime. Local assembly is
+engineering work; publication, Apple submission,
 and changes to an owner's installed apps are separate actions. This document does
 not introduce an additional approval gate for already-authorized local builds.
 An ad-hoc or development signature is not consumer distribution.
 
-## Current local engineering candidate (not published)
+## Historical local engineering candidate (not published)
 
 Verified against `assembly-receipt.json` only; do not rebuild from this note.
 
@@ -44,11 +44,12 @@ node scripts/product/assemble-mac-release.mjs \
   --output /absolute/new-release-directory
 ```
 
-The command builds Host with the payload and builds `Home23Mac` in Release from
-the same Apple checkout. It verifies runtime integrity, app identities and
+The command builds `Home23Mac` in Release, then builds Host with the same version,
+build and minimum macOS and embeds it at
+`Home23.app/Contents/Library/LoginItems/Home23Host.app`. It verifies runtime integrity, app identities and
 architecture, then produces:
 
-- `Home23/Home23 Host.app` and `Home23/Home23.app`;
+- one visible `Home23/Home23.app` containing Host and runtime;
 - `Home23/Start Here.txt` with the actual OS/architecture requirements;
 - `Home23/release.json` with backend and Apple revisions, runtime package ID,
   app versions, executable digests and explicit local-only status;
@@ -56,14 +57,14 @@ architecture, then produces:
 
 Build intermediates remain outside the download in `build/`. Existing outputs
 are refused. The command does not install, start a home, access signing identities,
-notarize, upload or publish. Host and client are only ad-hoc signed for local work. The client retains its
+notarize, upload or publish. The helper and client are only ad-hoc signed for local work. The client retains its
 sandbox and file/network/media permissions; profile-backed APNs and time-sensitive
 notification entitlements are omitted from this local artifact and remain unverified.
 Do not present this ZIP as Gatekeeper-approved consumer distribution.
 
 The combined download requires the stricter minimum OS of its two apps. A Host
 build for macOS 14 does not mean a Mac client built for macOS 27 works on macOS 14.
-Each app's own requirement is retained in the descriptor. Assembly proves the
+Each component's own requirement is retained in the descriptor. Assembly proves the
 artifact pairing, not provider setup, update/recovery or clean-machine acceptance;
 those require their separately recorded journeys on that exact release set.
 
@@ -86,15 +87,16 @@ changing any already-tested artifact:
 4. Submit the signed apps/container for notarization and staple as appropriate.
    Verify the resulting apps and test Gatekeeper on a clean supported Mac. Any
    runtime mutation requires repeating the runtime manifest/signing dependency.
-5. Assemble the final download. Hash the **final** downloadable bytes, including
-   any notarization/stapling changes. Generate release descriptors from those
-   exact artifacts. Sign the existing release-feed envelope according to its
-   schema; the runtime package digest and the download digest are different.
+5. Assemble the final single-app download and runtime tar. Hash the **final**
+   downloadable bytes, including any notarization/stapling changes. Generate
+   release descriptors from those exact artifacts. Sign the private-channel
+   envelope described in [PRIVATE-CHANNEL.md](PRIVATE-CHANNEL.md); the runtime
+   package digest and download digest are different.
 6. Publish the approved archive, descriptor/signature, checksum and release notes
    together. A subsequent artifact change requires new hashes and signatures.
 
 A development trust key is only for an isolated development feed. It is never
-production publisher trust. Do not invent a new signature schema or substitute
+production publisher trust. Do not substitute
 an archive checksum for publisher authentication.
 
 ## Remaining owner actions to publish (stop here)
@@ -107,15 +109,15 @@ These require the owner. Do not run them from this documentation lane:
    ad-hoc, not Apple Development.
 2. Authorize **notarization** (and stapling / container attachment) and confirm
    Gatekeeper on a clean supported Mac.
-3. Choose and publish the **public domain, download URL, and authenticated
-   release feed**, including the production feed signing key (distinct from any
-   local development trust-key). Publish the approved archive, checksum,
+3. Choose and publish a **private HTTPS release origin and authenticated
+   release feed**, including the publisher signing key (distinct from any
+   local development trust-key). Publish the approved archives, checksums,
    descriptors, and notes together.
 4. Authorize **iPhone TestFlight** (build upload and invites) separately; a Mac
    ZIP does not create TestFlight availability.
 5. Authorize any **install or replacement** of apps on an owner machine; this
    candidate’s `installed: false` must stay false until that happens.
 
-Keep existing bundle and Keychain identities. Public downloads remain unavailable
+Keep existing bundle and Keychain identities. Consumer downloads remain unavailable
 until steps 1–3 actually succeed. Do not bypass macOS security prompts as a
 substitute for distribution acceptance.

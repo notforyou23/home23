@@ -1,8 +1,8 @@
 /** Local release-feed inspection and authenticated development staging. */
 import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 import {
-  chmodSync, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync,
-  readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync,
+  chmodSync, closeSync, createWriteStream, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync,
+  readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import http from 'node:http';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
@@ -721,6 +721,17 @@ function readTarString(buffer, start, length) {
   return slice.subarray(0, end === -1 ? slice.length : end).toString('utf8').trim();
 }
 
+function assertNoSymlinkAncestors(destination, target) {
+  const parts = target.slice(destination.length + 1).split(sep);
+  let ancestor = destination;
+  for (const part of parts.slice(0, -1)) {
+    ancestor = join(ancestor, part);
+    if (existsSync(ancestor) && lstatSync(ancestor).isSymbolicLink()) {
+      throw codedError('archive_unsafe', 'The release archive would write through a symlink.');
+    }
+  }
+}
+
 /**
  * Extract a ustar payload.bin into destinationDirectory.
  * Relative paths only; rejects `..`, absolute paths, and symlink escape.
@@ -735,11 +746,14 @@ export function extractProductArchive({ archivePath, destinationDirectory } = {}
     throw codedError('download_incomplete', 'The release archive is missing.');
   }
   mkdirSync(destination, { recursive: true, mode: 0o700 });
-  const bytes = readFileSync(archive);
+  const archiveSize = lstatSync(archive).size;
+  const descriptor = openSync(archive, 'r');
   let offset = 0;
   let entries = 0;
-  while (offset + 512 <= bytes.length) {
-    const header = bytes.subarray(offset, offset + 512);
+  let paxPath = null;
+  try { while (offset + 512 <= archiveSize) {
+    const header = Buffer.alloc(512);
+    if (readSync(descriptor, header, 0, 512, offset) !== 512) throw codedError('archive_unsafe', 'The release archive is truncated.');
     offset += 512;
     if (header.every(value => value === 0)) break;
     const name = readTarString(header, 0, 100);
@@ -750,20 +764,30 @@ export function extractProductArchive({ archivePath, destinationDirectory } = {}
     const mode = Number.parseInt(readTarString(header, 100, 8), 8) || 0o644;
     const linkname = readTarString(header, 157, 100);
     const dataEnd = offset + size;
-    if (dataEnd > bytes.length) {
+    if (dataEnd > archiveSize) {
       throw codedError('archive_unsafe', 'The release archive is truncated.');
     }
-    const data = bytes.subarray(offset, dataEnd);
+    const dataOffset = offset;
     offset += Math.ceil(size / 512) * 512;
-    if (typeFlag === 'x' || typeFlag === 'g' || typeFlag === 'X') {
+    if (typeFlag === 'x') {
+      if (size > 1024 * 1024) throw codedError('archive_unsafe', 'The release archive extended header is too large.');
+      const data = Buffer.alloc(size);
+      if (readSync(descriptor, data, 0, size, dataOffset) !== size) throw codedError('archive_unsafe', 'The release archive is truncated.');
+      const fields = data.toString('utf8').matchAll(/(?:^|\n)\d+ path=([^\n]+)\n/g);
+      paxPath = [...fields].at(-1)?.[1] || null;
       continue;
     }
-    const relative = assertSafeArchiveEntryPath(rawPath);
+    if (typeFlag === 'g' || typeFlag === 'X') {
+      continue;
+    }
+    const relative = assertSafeArchiveEntryPath(paxPath || rawPath);
+    paxPath = null;
     if (relative === null) continue;
     const target = join(destination, relative);
     if (!target.startsWith(destination + sep) && target !== destination) {
       throw codedError('archive_unsafe', 'The release archive would escape its destination.');
     }
+    assertNoSymlinkAncestors(destination, target);
     if (typeFlag === '5' || typeFlag === 'D') {
       mkdirSync(target, { recursive: true, mode: (mode & 0o7777) || 0o755 });
     } else if (typeFlag === '2') {
@@ -780,13 +804,23 @@ export function extractProductArchive({ archivePath, destinationDirectory } = {}
       }
     } else if (typeFlag === '0' || typeFlag === '\0' || typeFlag === '') {
       mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
-      writeFileSync(target, data, { mode: (mode & 0o7777) || 0o644, flag: 'wx' });
+      const out = openSync(target, 'wx', (mode & 0o7777) || 0o644);
+      try {
+        const chunk = Buffer.alloc(1024 * 1024);
+        let remaining = size, position = dataOffset;
+        while (remaining > 0) {
+          const count = Math.min(chunk.length, remaining);
+          if (readSync(descriptor, chunk, 0, count, position) !== count) throw codedError('archive_unsafe', 'The release archive is truncated.');
+          writeSync(out, chunk, 0, count);
+          position += count; remaining -= count;
+        }
+      } finally { closeSync(out); }
       chmodSync(target, (mode & 0o7777) || 0o644);
     } else {
       throw codedError('archive_unsafe', 'The release archive contains an unsupported entry type.');
     }
     entries += 1;
-  }
+  }} finally { closeSync(descriptor); }
   if (entries === 0) {
     throw codedError('archive_unsafe', 'The release archive is empty.');
   }
