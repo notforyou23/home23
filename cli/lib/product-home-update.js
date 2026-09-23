@@ -52,7 +52,7 @@ function publicOperation(operation) {
   return { id: operation.id, action: operation.action, phase: interrupted ? 'interrupted' : operation.phase,
     progress: operation.progress ?? null, message: interrupted ? 'The update was interrupted. Resume to continue safely.' : operation.message,
     startedAt: operation.startedAt, updatedAt: operation.updatedAt,
-    canResume: interrupted || ['failed', 'interrupted'].includes(operation.phase) };
+    canResume: !operation.requiresLocalRecovery && (interrupted || ['failed', 'interrupted'].includes(operation.phase)) };
 }
 function releaseView(release) {
   return release ? { version: release.version ?? 'Home23', build: release.appBuild ?? release.build ?? null, packageId: release.packageId ?? null } : null;
@@ -68,7 +68,8 @@ function projectStatus(home, operation, clientBuild) {
   let allowedActions = ['check'];
   if (!registered) { state = 'unavailable'; message = 'Open Home23 on the Mac running your home to finish connecting updates.'; allowedActions = []; }
   else if (visible && !TERMINAL.has(visible.phase)) { state = 'running'; allowedActions = []; message = visible.message; }
-  else if (visible?.canResume) { state = 'failed'; allowedActions = ['resume', 'recover']; message = visible.message; }
+  else if (operation?.requiresLocalRecovery) { state = 'failed'; allowedActions = []; message = visible.message; }
+  else if (visible?.canResume) { state = 'failed'; allowedActions = ['resume']; message = visible.message; }
   else if (state === 'available' && compatible) allowedActions.push('update');
   if (appUpdateRequired && state !== 'running') { state = 'incompatible'; allowedActions = allowedActions.filter(action => action === 'check'); message = 'Update Home23 on this device before updating your home.'; }
   if (operation?.phase === 'completed' && operation.action !== 'check' && operation.runtimeCompleted && operation.applicationCompleted) {
@@ -239,7 +240,14 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
           ? { ok: true, status: 'committed' }
           : await updater.applyProductUpdate({ homeRoot: home.root, candidatePayload: prepared.candidatePayload, staging: prepared.staging,
             reuseVerifiedStage: true, admit: true });
-      if (!result.ok || result.status !== 'committed') throw fail('update_incomplete', 'The home update needs recovery before it can finish.');
+      if (!result.ok || result.status !== 'committed') {
+        const recovery = updater.readUpdateJournal(home.root);
+        if (recovery?.phase === 'recovery_required' && !recovery.writersAdmitted) {
+          persist({ requiresLocalRecovery: true });
+          throw fail('local_recovery_required', 'Automatic recovery stopped to preserve your home. Open Home23 on the Mac running your home for recovery.');
+        }
+        throw fail('update_incomplete', 'The home update needs recovery before it can finish.');
+      }
       persist({ runtimeCompleted: true });
     }
     if (!operation.applicationCompleted) {
@@ -256,7 +264,7 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     persist({ phase: 'completed', progress: 1, message: readiness?.running === false
       ? 'Home23 is updated. Your home remains stopped.' : 'Home23 is updated and your home is ready.' });
   } catch (error) {
-    persist({ phase: 'failed', errorCode: error.code ?? 'update_failed', message: operation.runtimeCompleted
+    persist({ phase: 'failed', errorCode: error.code ?? 'update_failed', message: operation.requiresLocalRecovery ? error.message : operation.runtimeCompleted
       ? 'Your home software is updated. Resume to finish the Mac application and reconnect.'
       : 'The update could not finish. Resume or recover to return your home to service.' });
   }

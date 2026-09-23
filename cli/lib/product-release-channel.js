@@ -1,5 +1,5 @@
 /** Bundled private release channel. This module never modifies a running home. */
-import { createHash, createPublicKey, verify } from 'node:crypto';
+import { createHash, createPublicKey, randomUUID, verify } from 'node:crypto';
 import { closeSync, createReadStream, createWriteStream, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import https from 'node:https';
 import { join, resolve } from 'node:path';
@@ -162,8 +162,10 @@ export async function selectConfiguredRelease({ homeRoot, installedAppPath, chan
   claim = { schema: 'home23.signed-release-claim.v1', homeRoot: home, installedAppPath: app,
     channelConfigPath: config, channelPublicKey: channel.publicKey, manifestURL: channel.manifestURL,
     signedEnvelope: checked.signedEnvelope };
-  const fd = openSync(claimPath, 'wx', 0o600);
+  const temporary = `${claimPath}.${randomUUID()}.tmp`;
+  const fd = openSync(temporary, 'wx', 0o600);
   try { writeSync(fd, JSON.stringify(claim) + '\n'); fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(temporary, claimPath);
   const dir = openSync(directory, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
   return release;
 }
@@ -189,6 +191,13 @@ export async function downloadChannelArtifact({ artifact, destinationDirectory, 
   }
   let offset = existsSync(partial) ? statSync(partial).size : 0;
   if (offset > artifact.bytes) { unlinkSync(partial); offset = 0; }
+  if (offset === artifact.bytes) {
+    if (await hashFile(partial) === artifact.sha256) {
+      renameSync(partial, finalPath);
+      return finalPath;
+    }
+    unlinkSync(partial); offset = 0;
+  }
   const response = await request(artifact.url, offset ? { Range: `bytes=${offset}-` } : {});
   if (response.statusCode !== (offset ? 206 : 200)) {
     response.resume();
@@ -215,6 +224,9 @@ export async function downloadChannelArtifact({ artifact, destinationDirectory, 
     await new Promise((resolveEnd, rejectEnd) => { out.end(resolveEnd); out.once('error', rejectEnd); });
   } catch (error) { out.destroy(); throw error; }
   if (copied !== artifact.bytes || await hashFile(partial) !== artifact.sha256) {
+    // A complete corrupt download cannot be resumed. Keep truncated bytes for
+    // Range retry, but discard a full invalid file before the next attempt.
+    if (copied === artifact.bytes) unlinkSync(partial);
     throw failure('digest_mismatch', 'Release artifact is incomplete or has the wrong SHA-256');
   }
   renameSync(partial, finalPath);

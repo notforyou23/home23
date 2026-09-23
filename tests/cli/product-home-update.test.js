@@ -151,3 +151,22 @@ test('failed readiness remains incomplete even after software and app replacemen
   assert.equal(homeUpdateStatus({ homeRoot: f.home }).operation.phase, 'failed');
   assert.equal(homeUpdateStatus({ homeRoot: f.home }).state, 'failed');
 });
+
+test('a refused automatic recovery does not advertise an ineffective retry', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  let journal = null;
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: { prepareConfiguredRelease: async () => ({ release, packageId: release.packageId }) },
+    updater: { readUpdateJournal: () => journal, applyProductUpdate: async () => {
+      journal = { phase: 'recovery_required', writersAdmitted: false };
+      return { ok: false, status: 'recovery_required' };
+    } },
+    appUpdater: unusedAppUpdater,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.equal(status.state, 'failed');
+  assert.equal(status.operation.canResume, false);
+  assert.deepEqual(status.allowedActions, []);
+  assert.match(status.message, /preserve your home/);
+});
