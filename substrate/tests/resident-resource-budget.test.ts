@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SeedProcess } from '../src/seed.js';
@@ -82,4 +82,50 @@ test('resident restores lifetime counters past old ceilings without rebirth; def
   for (const record of [() => accounting.recordEvent(), () => accounting.recordTransition(), () => accounting.recordCheckpoint()]) {
     assert.throws(record, (error) => error instanceof ResourceBudgetExceededError);
   }
+});
+
+test('resident startup refuses a state-changing ledger tail without writing or retaining its lock', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'resident-tail-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateDir = join(dir, 'seed');
+  const sourcePath = join(dir, 'events.jsonl');
+  writeFileSync(sourcePath, '');
+  const seed = SeedProcess.initialize(stateDir);
+  const checkpointId = seed.checkpoint();
+  const checkpointPath = join(stateDir, 'checkpoints', `${checkpointId}.json`);
+  seed.transition(event('after-checkpoint'));
+  const ledgerPath = new SeedLedger(stateDir).path;
+  const ledgerBefore = readFileSync(ledgerPath);
+  const checkpointBefore = readFileSync(checkpointPath);
+  const indexPath = join(stateDir, 'checkpoints', 'CHECKPOINT_INDEX.json');
+  const indexBefore = readFileSync(indexPath);
+  const rootEntries = readdirSync(stateDir);
+  const history = SeedProcess.restore(stateDir); // Historical direct restore remains available.
+  assert.equal(history.getState().seedId, seed.getState().seedId);
+
+  const runner = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
+  assert.throws(() => runner.start(), /Uncheckpointed state-changing receipts need recovery/);
+  assert.equal(existsSync(join(stateDir, '.runner.lock')), false);
+  assert.deepEqual(readdirSync(stateDir), rootEntries);
+  assert.deepEqual(readFileSync(ledgerPath), ledgerBefore);
+  assert.deepEqual(readFileSync(checkpointPath), checkpointBefore);
+  assert.deepEqual(readFileSync(indexPath), indexBefore);
+});
+
+test('resident startup accepts a checkpoint followed only by checkpoint and stop metadata', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'resident-clean-tail-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateDir = join(dir, 'seed');
+  const sourcePath = join(dir, 'events.jsonl');
+  writeFileSync(sourcePath, '');
+  const seed = SeedProcess.initialize(stateDir);
+  seed.transition(event('before-stop'));
+  const checkpointId = seed.stop();
+  const checkpoint = JSON.parse(readFileSync(join(stateDir, 'checkpoints', `${checkpointId}.json`), 'utf8')) as CheckpointManifest;
+  const records = new SeedLedger(stateDir).readFrom(checkpoint.ledgerSeq + 1);
+  assert.deepEqual(records.map((record) => record.category), ['checkpoint', 'stop']);
+  const runner = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
+  runner.start();
+  assert.equal(runner.seedProcess.getState().seedId, seed.getState().seedId);
+  runner.stop();
 });

@@ -147,50 +147,65 @@ export class SeedRunner {
   start(): void {
     if (this.seed !== null) return;
     this.acquireRunnerLock();
-    if (SeedLedger.exists(this.opts.stateDir)) {
-      this.seed = Seed.restore(this.opts.stateDir, undefined, RESIDENT_RESOURCE_BUDGET);
-      this.log(`restored seed ${this.seed.getState().seedId} at ledgerSeq ${this.seed.getState().ledgerSeq}`);
-    } else {
-      this.seed = Seed.initialize(this.opts.stateDir, RESIDENT_RESOURCE_BUDGET, {
-        anatomy: this.opts.anatomy,
-        name: this.opts.name,
-        selfFormation: this.opts.selfFormation,
-      });
-      // Immediate checkpoint: restore() must always have a floor, even if the
-      // process dies before the first cadence checkpoint.
-      this.seed.checkpoint();
-      this.log(`initialized seed ${this.seed.getState().seedId}`);
-    }
-    this.adapters = [
-      new EventLedgerTailAdapter({
-        sourcePath: this.opts.sourcePath,
-        cursorDir: this.opts.stateDir,
-        fromEnd: this.opts.fromEnd,
-        backfillBytes: this.opts.backfillBytes,
-        log: this.log,
-      }),
-      ...(this.opts.extraSources ?? []).map((src) =>
+    try {
+      if (SeedLedger.exists(this.opts.stateDir)) {
+        this.seed = Seed.restore(this.opts.stateDir, undefined, {
+          budget: RESIDENT_RESOURCE_BUDGET,
+          requireCheckpointCoversTail: true,
+        });
+        this.log(`restored seed ${this.seed.getState().seedId} at ledgerSeq ${this.seed.getState().ledgerSeq}`);
+      } else {
+        this.seed = Seed.initialize(this.opts.stateDir, RESIDENT_RESOURCE_BUDGET, {
+          anatomy: this.opts.anatomy,
+          name: this.opts.name,
+          selfFormation: this.opts.selfFormation,
+        });
+        // Immediate checkpoint: restore() must always have a floor, even if the
+        // process dies before the first cadence checkpoint.
+        this.seed.checkpoint();
+        this.log(`initialized seed ${this.seed.getState().seedId}`);
+      }
+      this.adapters = [
         new EventLedgerTailAdapter({
-          sourcePath: src.sourcePath,
-          sourceType: src.sourceType,
-          id: src.id,
+          sourcePath: this.opts.sourcePath,
           cursorDir: this.opts.stateDir,
           fromEnd: this.opts.fromEnd,
-          backfillBytes: src.backfillBytes,
+          backfillBytes: this.opts.backfillBytes,
           log: this.log,
         }),
-      ),
-    ];
-    for (const adapter of this.adapters) {
-      this.log(`tailing [${adapter.id}] ${'sourcePath' in this.opts ? '' : ''}from offset ${adapter.currentOffset}`);
-    }
+        ...(this.opts.extraSources ?? []).map((src) =>
+          new EventLedgerTailAdapter({
+            sourcePath: src.sourcePath,
+            sourceType: src.sourceType,
+            id: src.id,
+            cursorDir: this.opts.stateDir,
+            fromEnd: this.opts.fromEnd,
+            backfillBytes: src.backfillBytes,
+            log: this.log,
+          }),
+        ),
+      ];
+      for (const adapter of this.adapters) {
+        this.log(`tailing [${adapter.id}] ${'sourcePath' in this.opts ? '' : ''}from offset ${adapter.currentOffset}`);
+      }
 
-    // Cut 6 boot reconcile (transactional motor): authorized reaches whose
-    // dispatch receipt is missing — the crash window between authorization
-    // and outbox write — are re-driven idempotently by key.
-    for (const pending of this.seed.pendingMotorDispatches()) {
-      this.dispatchMotor(pending);
-      this.log(`motor: reconciled pending dispatch for ${pending.commitmentId} (act seq ${pending.actSeq})`);
+      // Cut 6 boot reconcile (transactional motor): authorized reaches whose
+      // dispatch receipt is missing — the crash window between authorization
+      // and outbox write — are re-driven idempotently by key.
+      for (const pending of this.seed.pendingMotorDispatches()) {
+        this.dispatchMotor(pending);
+        this.log(`motor: reconciled pending dispatch for ${pending.commitmentId} (act seq ${pending.actSeq})`);
+      }
+    } catch (error) {
+      // Never call stop() here: a failed startup must not add a checkpoint or
+      // stop receipt. Release only the lock acquired for this attempt.
+      this.seed = null;
+      this.adapters = [];
+      if (this.lockPath !== null) {
+        try { unlinkSync(this.lockPath); } catch { /* already gone */ }
+        this.lockPath = null;
+      }
+      throw error;
     }
   }
 

@@ -3,7 +3,7 @@
  *
  * API:
  *   SeedProcess.initialize(stateDir, budget?) — fresh seed with five cells
- *   SeedProcess.restore(stateDir, checkpointId?, budget?) — resume from checkpoint
+ *   SeedProcess.restore(stateDir, checkpointId?, options?) — resume from checkpoint
  *   seed.ingest(event)      — write source event to ledger (membrane-gated)
  *   seed.transition(event)  — ingest + deterministic cell state update
  *   seed.checkpoint()       — write checkpoint, return checkpointId
@@ -243,7 +243,11 @@ export class SeedProcess {
     });
   }
 
-  static restore(stateDir: string, checkpointId?: string, budget?: Partial<ResourceBudget>): SeedProcess {
+  static restore(
+    stateDir: string,
+    checkpointId?: string,
+    options: { budget?: Partial<ResourceBudget>; requireCheckpointCoversTail?: boolean } = {},
+  ): SeedProcess {
     const membrane = new CapabilityMembrane();
     membrane.assert('local.checkpoint.read');
 
@@ -281,7 +285,24 @@ export class SeedProcess {
       );
     }
 
-    const accounting = new ResourceAccounting(budget);
+    // The runner cannot resume a checkpoint behind a receipted state change:
+    // otherwise the next source event would advance old cells against a newer
+    // ledger, and pending motor work could run from that silently rewound state.
+    // Ordinary/explicit checkpoint restores retain their historical behavior.
+    const verifiedRecords = ledger.readAll();
+    if (options.requireCheckpointCoversTail) {
+      let latestReceiptedHash: string | undefined;
+      for (const record of verifiedRecords) {
+        if (record.seq > manifest.ledgerSeq && record.stateHashAfter !== undefined) {
+          latestReceiptedHash = record.stateHashAfter;
+        }
+      }
+      if (latestReceiptedHash !== undefined && latestReceiptedHash !== manifest.stateHash) {
+        throw new Error('Uncheckpointed state-changing receipts need recovery before the resident Seed can start.');
+      }
+    }
+
+    const accounting = new ResourceAccounting(options.budget);
     accounting.restoreFromSnapshot(manifest.resourceSnapshot);
 
     // The frozen reservoir is regenerated from the seed recorded at birth —
@@ -298,7 +319,7 @@ export class SeedProcess {
     // receipted growth applications are the body's biography, and the last
     // one's resulting anatomy is the current shape.
     let anatomy: readonly AnatomyCellSpec[] = genesis.anatomy ?? DEFAULT_ANATOMY;
-    for (const record of ledger.readAll()) {
+    for (const record of verifiedRecords) {
       if (record.category !== 'act') continue;
       const isBodyChange = record.payload?.['growthApplication'] === true || record.payload?.['organExcision'] === true;
       if (!isBodyChange) continue;
