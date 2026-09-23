@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import https from 'node:https';
+import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readProductChannel, signedReleaseBytes, verifyProductChannelManifest,
-  inspectProductChannel, selectConfiguredRelease } from '../../cli/lib/product-release-channel.js';
+  downloadChannelArtifact, inspectProductChannel, selectConfiguredRelease } from '../../cli/lib/product-release-channel.js';
 import { extractProductArchive } from '../../cli/lib/product-update-feed.js';
 
 const release = () => ({
@@ -88,4 +91,26 @@ test('interrupted staging resumes its claimed signed release after feed rotation
   await assert.rejects(selectConfiguredRelease({ ...options, installedAppPath: join(directory, 'Other.app') }),
     { code: 'claim_invalid' });
   assert.equal(readFileSync(join(options.downloadDirectory, 'stage-already-copied'), 'utf8'), 'old release');
+});
+
+test('a corrupt full-length partial restarts instead of requesting an impossible range', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'home23-corrupt-partial-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const bytes = Buffer.from('verified artifact');
+  writeFileSync(join(directory, 'runtime.tar.partial'), Buffer.alloc(bytes.length));
+  let requests = 0;
+  t.mock.method(https, 'get', (_url, options, callback) => {
+    requests++;
+    assert.deepEqual(options.headers, {});
+    const response = Readable.from([bytes]);
+    response.statusCode = 200;
+    response.headers = { 'content-length': String(bytes.length) };
+    queueMicrotask(() => callback(response));
+    return new EventEmitter();
+  });
+  const artifact = { kind: 'https-tar', url: 'https://example.test/runtime.tar',
+    bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+  const file = await downloadChannelArtifact({ artifact, destinationDirectory: directory, name: 'runtime' });
+  assert.deepEqual(readFileSync(file), bytes);
+  assert.equal(requests, 1);
 });
