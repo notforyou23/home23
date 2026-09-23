@@ -1,6 +1,6 @@
 /** Bundled private release channel. This module never modifies a running home. */
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, createReadStream, createWriteStream, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import https from 'node:https';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -107,19 +107,65 @@ function compareVersion(left, right) {
 export async function inspectProductChannel({ channelConfigPath, installedPackageId, installedAppBuild, platform = process.platform, arch = process.arch, osVersion } = {}) {
   try {
     const channel = readProductChannel(channelConfigPath);
-    const release = verifyProductChannelManifest(channel, await fetchManifest(channel.manifestURL));
+    const signedEnvelope = await fetchManifest(channel.manifestURL);
+    const release = verifyProductChannelManifest(channel, signedEnvelope);
     if (release.platform !== platform || release.arch !== arch || !osVersion || compareVersion(osVersion, release.minimumOs) < 0) {
       return { status: 'incompatible', release, reason: 'This Mac cannot run the offered release' };
     }
     const appCurrent = Number(installedAppBuild) >= release.appBuild;
     const runtimeCurrent = installedPackageId === release.packageId;
-    return { status: appCurrent && runtimeCurrent ? 'current' : 'available', release,
+    return { status: appCurrent && runtimeCurrent ? 'current' : 'available', release, signedEnvelope,
       version: release.version, appBuild: release.appBuild, packageId: release.packageId,
       minimumClientBuild: release.compatibility.minimumClientBuild, appDeliveryURL: release.appDeliveryURL,
       components: { app: appCurrent ? 'current' : 'available', runtime: runtimeCurrent ? 'current' : 'available' } };
   } catch (error) {
     return { status: 'unavailable', reason: error.message, code: error.code || 'channel_unavailable' };
   }
+}
+
+/** Pin one signed release before any artifact bytes are written. A resumed
+ * attempt must finish that release even if the live channel has rotated. */
+export async function selectConfiguredRelease({ homeRoot, installedAppPath, channelConfigPath, downloadDirectory,
+  osVersion } = {}, lookup = checkConfiguredRelease) {
+  const home = resolve(homeRoot), app = resolve(installedAppPath), directory = resolve(downloadDirectory);
+  const config = resolve(channelConfigPath || join(app, 'Contents/Resources/release-channel.json'));
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const claimPath = join(directory, 'signed-release-claim.json');
+  const channel = readProductChannel(config);
+  let claim;
+  if (existsSync(claimPath)) {
+    const stat = lstatSync(claimPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || (process.getuid && stat.uid !== process.getuid()) || (stat.mode & 0o077)) {
+      throw failure('claim_invalid', 'Release claim is not a private regular file');
+    }
+    try { claim = JSON.parse(readFileSync(claimPath, 'utf8')); }
+    catch { throw failure('claim_invalid', 'Release claim cannot be read'); }
+    if (claim.schema !== 'home23.signed-release-claim.v1' || claim.homeRoot !== home ||
+        claim.installedAppPath !== app || claim.channelConfigPath !== config ||
+        claim.channelPublicKey !== channel.publicKey || claim.manifestURL !== channel.manifestURL) {
+      throw failure('claim_invalid', 'Release claim belongs to another home, app, or channel');
+    }
+    const release = verifyProductChannelManifest(channel, claim.signedEnvelope);
+    if (release.platform !== process.platform || release.arch !== process.arch ||
+        compareVersion(osVersion || (process.platform === 'darwin'
+          ? execFileSync('/usr/bin/sw_vers', ['-productVersion'], { encoding: 'utf8' }).trim() : '0'), release.minimumOs) < 0) {
+      throw failure('release_incompatible', 'The claimed release is not compatible with this Mac');
+    }
+    return release;
+  }
+  const checked = await lookup({ homeRoot: home, installedAppPath: app, channelConfigPath: config, osVersion });
+  if (checked.status !== 'available') throw failure(checked.code || 'release_unavailable', checked.reason || 'No compatible update is available');
+  const release = verifyProductChannelManifest(channel, checked.signedEnvelope);
+  if (signedReleaseBytes(release).compare(signedReleaseBytes(checked.release)) !== 0) {
+    throw failure('claim_invalid', 'Checked release changed before it could be claimed');
+  }
+  claim = { schema: 'home23.signed-release-claim.v1', homeRoot: home, installedAppPath: app,
+    channelConfigPath: config, channelPublicKey: channel.publicKey, manifestURL: channel.manifestURL,
+    signedEnvelope: checked.signedEnvelope };
+  const fd = openSync(claimPath, 'wx', 0o600);
+  try { writeSync(fd, JSON.stringify(claim) + '\n'); fsyncSync(fd); } finally { closeSync(fd); }
+  const dir = openSync(directory, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
+  return release;
 }
 
 async function hashFile(file) {
@@ -204,9 +250,7 @@ export async function checkConfiguredRelease({ homeRoot, installedAppPath, chann
 
 export async function prepareConfiguredRelease({ homeRoot, installedAppPath, channelConfigPath, staging,
   downloadDirectory, osVersion, onProgress } = {}) {
-  const checked = await checkConfiguredRelease({ homeRoot, installedAppPath, channelConfigPath, osVersion });
-  if (checked.status !== 'available') throw failure(checked.code || 'release_unavailable', checked.reason || 'No compatible update is available');
-  const release = checked.release;
+  const release = await selectConfiguredRelease({ homeRoot, installedAppPath, channelConfigPath, downloadDirectory, osVersion });
   const files = await downloadProductRelease({ release, destinationDirectory: downloadDirectory, onProgress });
   const extracted = join(resolve(downloadDirectory), `runtime-${release.packageId}.extracted`);
   let usableExtraction = false;
