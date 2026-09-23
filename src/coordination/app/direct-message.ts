@@ -1,4 +1,5 @@
 import { residentOutcomeInstruction, type createResidentOutcomeStore } from './resident-outcomes.js';
+import type { ResidentOutcomeCursor } from './resident-outcomes.js';
 import { boundHistoricalContext } from '../../agent/historical-context.js';
 import { createHash } from "node:crypto";
 import type { AgentResponse, CoordinationTurnOrigin } from "../../agent/types.js";
@@ -252,6 +253,8 @@ export function createDirectMessageSubmissionService(options: {
 }) {
   const inFlight = new Map<string, Promise<MessageProjection>>();
   let outcomeTickRunning = false;
+  let outcomeCursor: ResidentOutcomeCursor | null = null;
+  const outcomeRetryAfter = new Map<string, number>();
   const recordMessage = createCanonicalMessageRecorder(
     options.communications,
     options.notifications,
@@ -521,7 +524,19 @@ export function createDirectMessageSubmissionService(options: {
       try {
         assertAuthority();
         store.discover();
-        for (const row of store.pending()) {
+        const now = Date.now();
+        for (const [key, retryAt] of outcomeRetryAfter) if (retryAt <= now) outcomeRetryAfter.delete(key);
+        // One small page per tick bounds synchronous recovery work. An empty
+        // suffix wraps immediately, so a single admitted review can settle
+        // on the next tick without an artificial extra interval.
+        let page = store.pendingPage(outcomeCursor, 25);
+        if (page.length === 0 && outcomeCursor !== null) {
+          outcomeCursor = null;
+          page = store.pendingPage(null, 25);
+        }
+        for (const row of page) {
+          outcomeCursor = { createdAt: row.createdAt, key: row.key };
+          if ((outcomeRetryAfter.get(row.key) ?? 0) > now) continue;
           try {
             const source = options.work.get(row.sourceWorkId);
             if (!source || !source.originMessageId) continue;
@@ -613,6 +628,12 @@ export function createDirectMessageSubmissionService(options: {
                 console.warn('[resident-outcomes] review dispatch failed:', review!.id, error instanceof Error ? error.message : String(error));
               });
           } catch (error) {
+            // Pending evidence and any admitted review remain authoritative.
+            // Identity failures require a fresh eligibility change; retry less
+            // often without starving outcomes after this page.
+            outcomeRetryAfter.set(row.key, Date.now() +
+              (error instanceof Error && error.message === 'direct-message Bot is not an active processless identity'
+                ? 5 * 60_000 : 30_000));
             console.warn('[resident-outcomes] pending follow-through:', row.key, error instanceof Error ? error.message : String(error));
           }
         }

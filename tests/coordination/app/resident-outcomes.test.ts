@@ -91,6 +91,57 @@ for (const scenario of ['succeeded','failed','cancelled','delivery_recovery','re
  });
 }
 
+test('pending outcome pages advance past one hundred blocked rows without changing their evidence',t=>{
+ const f=setup();t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+ const store=createResidentOutcomeStore(f.database);const source=f.request.parentOrigin.workId;
+ for(let n=0;n<126;n++)store.enqueue(`blocked-${String(n).padStart(3,'0')}`,source,{number:n});
+ const seen:string[]=[];let cursor:null|{createdAt:string;key:string}=null;
+ for(let n=0;n<6;n++){
+  const page=store.pendingPage(cursor,25);
+  seen.push(...page.map(row=>row.key));
+  if(page.length)cursor={createdAt:page.at(-1)!.createdAt,key:page.at(-1)!.key};
+ }
+ assert.equal(seen.length,126);assert.equal(new Set(seen).size,126);
+ assert.ok(seen.includes('blocked-125'));
+ assert.deepEqual(JSON.parse(store.pending().find(row=>row.key==='blocked-000')!.evidence),{number:0});
+ const first=store.pending()[0]!;store.update(first,'settled_at',new Date().toISOString());
+ assert.notEqual(store.pendingPage(null,1)[0]!.key,first.key);
+});
+
+test('failed historical Bot outcomes cool down while a newer outcome reaches review',async t=>{
+ const originalWarn=console.warn;console.warn=()=>{};t.after(()=>{console.warn=originalWarn;});
+ const rows=Array.from({length:101},(_,n)=>({
+  key:`blocked-${String(n).padStart(3,'0')}`,createdAt:AT,sourceWorkId:'source-work',
+  evidence:'{}',reviewWorkId:null,prepared:JSON.stringify({
+   channelId:CHANNEL_ID,conversationId:fixtureId('conversation',1),targetBotId:BOT_ID,
+   targetBotDisplayName:'Jerry',targetPrincipalId:BOT_ID,
+   residentBinding:n===100?'jerry':'bot-stale',instruction:'Review',historyBackfill:[],attachments:[],
+   manifest:manifestInput(),
+  }),
+ }));
+ let oldAttempts=0,newAttempts=0;
+ const store={discover(){},busy(){return false;},pendingPage(after:{createdAt:string;key:string}|null,limit:number){
+  return rows.filter(row=>after===null||row.createdAt>after.createdAt||
+   (row.createdAt===after.createdAt&&row.key>after.key)).slice(0,limit);
+ }};
+ const service=createDirectMessageSubmissionService({
+  outcomes:store as any,work:{get:()=>({originMessageId:MESSAGE_ID,kind:'channel.bot_turn',channelId:CHANNEL_ID,targetPrincipalId:BOT_ID})} as any,
+  leases:{} as any,messages:{} as any,context:{} as any,
+  resolveResident:()=>undefined,resolveExecutionTarget:descriptor=>{
+   if(descriptor.residentBinding==='bot-stale'){
+    oldAttempts++;throw new Error('direct-message Bot is not an active processless identity');
+   }
+   newAttempts++;throw new Error('newer outcome reached review');
+  },authority:{current:()=>({capability:'messages',epoch:3,mode:'canonical',writer:'home23-coordination',effectiveAtEventSequence:41,rollbackEpoch:1}) as any},
+  beginWork:()=>()=>{},recoveryIdentity:()=>({requestId:fixtureId('request',901),correlationId:fixtureId('correlation',901)}),
+ } as any);
+ for(let n=0;n<5;n++)await service.processResidentOutcomes();
+ assert.equal(oldAttempts,100);assert.equal(newAttempts,1);
+ await service.processResidentOutcomes();
+ assert.equal(oldAttempts,100,'cooled old outcomes must not retry on immediate wrap');
+ assert.equal(rows.length,101,'the authoritative pending rows are untouched');
+});
+
 test('scheduled terminal Work enters the durable Jerry inbox once after restart',t=>{
   const f=setup('channel.bot_turn');t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
   f.database.raw.prepare('UPDATE resident_outcome_policy SET enabled_at=?').run(AT);

@@ -12,6 +12,15 @@ export interface ResidentOutcome {
   prepared: string | null;
 }
 
+export interface ResidentOutcomePageRow extends ResidentOutcome {
+  createdAt: string;
+}
+
+export interface ResidentOutcomeCursor {
+  createdAt: string;
+  key: string;
+}
+
 // A missed assessment may be retried; the original execution is never replayed.
 // The budget belongs to one explicit blocked conclusion and survives restart.
 const REVISIT_ASSESSMENT_BACKOFF_MS = [60_000, 5 * 60_000] as const;
@@ -53,6 +62,15 @@ export function createResidentOutcomeStore(database: M11Database) {
   return {
     enqueue,
     pending: () => database.readAll<ResidentOutcome>(`SELECT ${columns} FROM resident_outcomes WHERE settled_at IS NULL ORDER BY created_at, outcome_key LIMIT 100`),
+    /** Advance through the durable inbox without letting old blocked rows hide new work. */
+    pendingPage: (after: ResidentOutcomeCursor | null, limit: number) => {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid outcome page limit');
+      return database.readAll<ResidentOutcomePageRow>(`SELECT ${columns}, created_at AS createdAt
+        FROM resident_outcomes WHERE settled_at IS NULL
+          AND (? IS NULL OR created_at > ? OR (created_at = ? AND outcome_key > ?))
+        ORDER BY created_at, outcome_key LIMIT ?`,
+      after?.createdAt ?? null, after?.createdAt ?? null, after?.createdAt ?? null, after?.key ?? null, limit);
+    },
     forReview: (id: string) => database.readOne<ResidentOutcome>(`SELECT ${columns} FROM resident_outcomes WHERE review_work_id = ?`, id),
     update(row: ResidentOutcome, field: 'prepared_json' | 'review_work_id' | 'settled_at', value: string) {
       change(row.key, row.sourceWorkId, tx => { tx.run(`UPDATE resident_outcomes SET ${field} = ? WHERE outcome_key = ?`, value, row.key); });
