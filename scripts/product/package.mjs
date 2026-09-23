@@ -145,10 +145,9 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
   run('git', ['archive', '--format=tar', '--output', archive, sourceCommit], { cwd: sourceRoot });
   run('/usr/bin/tar', ['-xf', archive, '-C', app]); fs.unlinkSync(archive);
   // The standalone Evobrew app is not part of the consumer Host runtime.
-  // Retain its directory as a parent for lived Evobrew state in older homes.
+  // A continuing home may bind this whole path to its single existing
+  // Evobrew authority; do not ship an empty placeholder that collides with it.
   fs.rmSync(path.join(app, 'evobrew'), { recursive: true, force: true });
-  fs.mkdirSync(path.join(app, 'evobrew'));
-  fs.writeFileSync(path.join(app, 'evobrew', '.gitkeep'), '');
   fs.writeFileSync(path.join(app, '.home23-product-no-evobrew'), '');
   normalizeModes(app); inventoryProductPayload(app);
   const bin = path.join(outputPath, 'bin'); fs.mkdirSync(bin, { mode: 0o755 });

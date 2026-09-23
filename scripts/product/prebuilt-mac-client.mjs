@@ -64,13 +64,23 @@ export function macClientInfo(app) {
     architectures: run('/usr/bin/lipo', ['-archs', executable]).trim().split(/\s+/) };
 }
 
+export function assertMacClientMetadata(client) {
+  if (client?.bundleIdentifier !== 'com.regina6.home23.mac' ||
+      !/^\d+(?:\.\d+)*$/.test(client.version || '') ||
+      !/^[1-9]\d*$/.test(client.build || '') ||
+      !/^\d+(?:\.\d+)*$/.test(client.minimumMacOS || '') ||
+      !Array.isArray(client.architectures) || !client.architectures.length ||
+      client.architectures.some(arch => !['arm64', 'x86_64'].includes(arch))) {
+    throw new Error('Prebuilt Mac client identity/version/architecture mismatch');
+  }
+}
+
 export async function makePrebuiltMacClientReceipt({ appleSource, appleCommit, app, output, developerDir }) {
   appleSource = fs.realpathSync(appleSource); app = fs.realpathSync(app);
   const source = sourceFootprint(appleSource);
   if (source.commit !== appleCommit || !/^[a-f0-9]{40}$/.test(appleCommit)) throw new Error('Explicit Apple commit does not match clean checkout');
   const client = macClientInfo(app);
-  if (client.bundleIdentifier !== 'com.regina6.home23.mac' || client.version !== '2.0' || client.build !== '180' ||
-      !client.architectures.includes('arm64')) throw new Error('Prebuilt Mac client identity/version/architecture mismatch');
+  assertMacClientMetadata(client);
   const entitlement = JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(appleSource, 'Home23Desktop/Home23Mac.entitlements')]));
   if (entitlement['com.apple.security.app-sandbox'] !== true) throw new Error('Mac client source does not require sandbox');
   if (spawnSync('/usr/bin/codesign', ['--verify', app], { encoding: 'utf8' }).status === 0) throw new Error('Expected unsigned Mac client');
@@ -100,7 +110,8 @@ export async function verifyPrebuiltMacClient({ receiptPath, app, appleSource, a
       { cwd: appleSource, encoding: 'utf8' }).status !== 0) throw new Error('Prebuilt source commit is not an ancestor');
   if (fs.realpathSync(app) !== fs.realpathSync(receipt.app)) throw new Error('Prebuilt app path differs from receipt');
   const actual = macClientInfo(app);
-  if (JSON.stringify(actual) !== JSON.stringify(receipt.client) || actual.bundleIdentifier !== 'com.regina6.home23.mac' ||
+  assertMacClientMetadata(actual);
+  if (JSON.stringify(actual) !== JSON.stringify(receipt.client) ||
       !actual.architectures.includes(arch)) throw new Error('Prebuilt Mac client identity differs');
   const digest = await appTreeDigest(app);
   if (digest.sha256 !== receipt.appTree?.sha256 || digest.fileCount !== receipt.appTree?.fileCount) throw new Error('Prebuilt Mac client artifact changed');

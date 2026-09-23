@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { appTreeDigest, sourceFootprint } from '../../scripts/product/prebuilt-mac-client.mjs';
+import { appTreeDigest, assertMacClientMetadata, sourceFootprint } from '../../scripts/product/prebuilt-mac-client.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 test('source footprint accepts committed documentation changes but detects executable input drift', () => {
@@ -46,4 +46,13 @@ test('artifact digest covers file contents, permissions, and symlink targets', a
     fs.symlinkSync('other', path.join(root, 'current'));
     assert.notEqual((await appTreeDigest(root)).sha256, first.sha256);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('prebuilt receipt accepts later release numbers while preserving Mac identity', () => {
+  const client = { bundleIdentifier: 'com.regina6.home23.mac', version: '2.1', build: '181',
+    minimumMacOS: '27.0', architectures: ['arm64'] };
+  assert.doesNotThrow(() => assertMacClientMetadata(client));
+  assert.throws(() => assertMacClientMetadata({ ...client, build: '0' }));
+  assert.throws(() => assertMacClientMetadata({ ...client, bundleIdentifier: 'com.home23.host' }));
+  assert.throws(() => assertMacClientMetadata({ ...client, architectures: ['i386'] }));
 });

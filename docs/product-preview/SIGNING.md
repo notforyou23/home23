@@ -63,7 +63,7 @@ node scripts/product/prebuilt-mac-client.mjs \
 
 Pass `--prebuilt-client /absolute/Home23Mac.app` and
 `--prebuilt-client-receipt /absolute/new-prebuilt-client-receipt.json` to assembly.
-It verifies the unchanged app tree, bundle ID, 2.0 build 180, architecture,
+It verifies the unchanged app tree, bundle ID, recorded version/build, architecture,
 sandbox source entitlement and the clean Apple executable-source footprint before
 copying the client. A later Apple documentation-only commit is accepted only when
 that footprint is identical and the original build commit is its ancestor; source

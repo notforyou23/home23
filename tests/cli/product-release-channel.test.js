@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readProductChannel, signedReleaseBytes, verifyProductChannelManifest,
-  inspectProductChannel } from '../../cli/lib/product-release-channel.js';
+  inspectProductChannel, selectConfiguredRelease } from '../../cli/lib/product-release-channel.js';
 import { extractProductArchive } from '../../cli/lib/product-update-feed.js';
 
 const release = () => ({
@@ -59,4 +59,33 @@ test('missing bundled channel is unavailable rather than current', async t => {
   writeFileSync(config, JSON.stringify({ schema: 'home23.product-channel.v1', channel: 'private',
     manifestURL: 'http://example.test/manifest.json', publicKey: 'a'.repeat(44) }));
   assert.throws(() => readProductChannel(config));
+});
+
+test('interrupted staging resumes its claimed signed release after feed rotation', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'home23-release-rotation-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const channelConfigPath = join(directory, 'channel.json');
+  writeFileSync(channelConfigPath, JSON.stringify({ schema: 'home23.product-channel.v1', channel: 'private',
+    manifestURL: 'https://example.test/manifest.json',
+    publicKey: Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url').toString('base64') }));
+  const first = release(), second = { ...release(), packageId: 'e'.repeat(64), appBuild: 141 };
+  const signed = offered => ({ schema: 'home23.signed-release.v1', release: offered,
+    signature: sign(null, signedReleaseBytes(offered), privateKey).toString('base64') });
+  const options = { homeRoot: join(directory, 'home'), installedAppPath: join(directory, 'Home23.app'),
+    channelConfigPath, downloadDirectory: join(directory, 'download'), osVersion: '27.0' };
+  let lookups = 0;
+  assert.deepEqual(await selectConfiguredRelease(options, async () => {
+    lookups++; return { status: 'available', release: first, signedEnvelope: signed(first) };
+  }), first);
+  // The stage may already contain the old release. Its claim, not a refreshed
+  // channel response, governs a resumed attempt.
+  writeFileSync(join(options.downloadDirectory, 'stage-already-copied'), 'old release');
+  assert.deepEqual(await selectConfiguredRelease(options, async () => {
+    lookups++; return { status: 'available', release: second, signedEnvelope: signed(second) };
+  }), first);
+  assert.equal(lookups, 1);
+  await assert.rejects(selectConfiguredRelease({ ...options, installedAppPath: join(directory, 'Other.app') }),
+    { code: 'claim_invalid' });
+  assert.equal(readFileSync(join(options.downloadDirectory, 'stage-already-copied'), 'utf8'), 'old release');
 });
