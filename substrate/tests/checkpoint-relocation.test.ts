@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CheckpointManager, computeStateHash } from '../src/checkpoint.js';
@@ -129,4 +129,67 @@ test('malformed index path and traversal ID cannot escape destination; local str
 
   assert.equal(new CheckpointManager(destination).restore().checkpointId, id);
   assert.throws(() => new CheckpointManager(destination).restore('ckpt_../../source'), /Invalid checkpoint ID/);
+});
+
+test('checkpoint directory symlink is rejected before constructor touches source', (t) => {
+  const { source, destination, manager } = fixture(t);
+  const id = checkpoint(manager, 50);
+  mkdirSync(destination);
+  const sourceIndex = join(source, 'checkpoints', 'CHECKPOINT_INDEX.json');
+  const before = readFileSync(sourceIndex);
+  const names = readdirSync(join(source, 'checkpoints'));
+  symlinkSync(join(source, 'checkpoints'), join(destination, 'checkpoints'));
+
+  assert.throws(() => new CheckpointManager(destination), /Unsafe checkpoint storage path/);
+  assert.deepEqual(readFileSync(sourceIndex), before);
+  assert.deepEqual(readdirSync(join(source, 'checkpoints')), names);
+  assert.ok(existsSync(manifestPath(source, id)));
+});
+
+test('quarantine directory symlink added after construction blocks restore without touching source', (t) => {
+  const { source, destination, manager } = fixture(t);
+  const id = checkpoint(manager, 60);
+  relocate(source, destination);
+  const restoredManager = new CheckpointManager(destination);
+  const sourceIndex = join(source, 'checkpoints', 'CHECKPOINT_INDEX.json');
+  const before = readFileSync(sourceIndex);
+  const sourceNames = readdirSync(join(source, 'checkpoints', 'quarantine'));
+  const localQuarantine = join(destination, 'checkpoints', 'quarantine');
+  rmSync(localQuarantine, { recursive: true });
+  symlinkSync(join(source, 'checkpoints', 'quarantine'), localQuarantine);
+  writeFileSync(manifestPath(destination, id), '{bad JSON');
+
+  assert.throws(() => new CheckpointManager(destination), /Unsafe checkpoint storage path/);
+  assert.throws(() => restoredManager.restore(id), /Unsafe checkpoint storage path/);
+  assert.deepEqual(readFileSync(sourceIndex), before);
+  assert.deepEqual(readdirSync(join(source, 'checkpoints', 'quarantine')), sourceNames);
+  assert.ok(existsSync(manifestPath(source, id)));
+});
+
+test('index symlink is rejected before checkpoint write or restore can read source', (t) => {
+  const { source, destination, manager } = fixture(t);
+  const id = checkpoint(manager, 70);
+  relocate(source, destination);
+  const restoredManager = new CheckpointManager(destination);
+  const sourceIndex = join(source, 'checkpoints', 'CHECKPOINT_INDEX.json');
+  const localIndex = join(destination, 'checkpoints', 'CHECKPOINT_INDEX.json');
+  const before = readFileSync(sourceIndex);
+  const localNames = readdirSync(join(destination, 'checkpoints'));
+  rmSync(localIndex);
+  symlinkSync(sourceIndex, localIndex);
+
+  assert.throws(() => restoredManager.restore(id), /Unsafe checkpoint storage path/);
+  assert.throws(() => checkpoint(restoredManager, 71), /Unsafe checkpoint storage path/);
+  assert.throws(() => new CheckpointManager(destination), /Unsafe checkpoint storage path/);
+  assert.deepEqual(readFileSync(sourceIndex), before);
+  assert.deepEqual(readdirSync(join(destination, 'checkpoints')), localNames);
+});
+
+test('canonical state directory alias remains supported', (t) => {
+  const { root, source, destination, manager } = fixture(t);
+  const id = checkpoint(manager, 80);
+  relocate(source, destination);
+  const alias = join(root, 'destination-alias');
+  symlinkSync(destination, alias);
+  assert.equal(new CheckpointManager(alias).restore(id).checkpointId, id);
 });

@@ -15,9 +15,9 @@ import {
   constants,
   fstatSync,
   mkdirSync,
-  existsSync,
   lstatSync,
   openSync,
+  realpathSync,
   writeFileSync,
   readFileSync,
   renameSync,
@@ -50,11 +50,17 @@ export class CheckpointManager {
   private readonly indexPath: string;
 
   constructor(stateDir: string) {
-    this.checkpointsDir = join(stateDir, CHECKPOINTS_DIR);
-    this.quarantineDir = join(stateDir, CHECKPOINTS_DIR, QUARANTINE_DIR);
+    // The state root itself may be an intentional alias. Resolve it once, but
+    // never follow aliases within the checkpoint tree into another home.
+    mkdirSync(stateDir, { recursive: true });
+    const root = realpathSync(stateDir);
+    this.checkpointsDir = join(root, CHECKPOINTS_DIR);
+    this.quarantineDir = join(root, CHECKPOINTS_DIR, QUARANTINE_DIR);
     this.indexPath = join(this.checkpointsDir, INDEX_FILE);
+    this.assertStorageLayout();
     mkdirSync(this.checkpointsDir, { recursive: true });
     mkdirSync(this.quarantineDir, { recursive: true });
+    this.assertStorageLayout();
   }
 
   /**
@@ -75,6 +81,7 @@ export class CheckpointManager {
      * seeds' hashes and bytes are untouched. */
     concern?: Record<string, unknown>;
   }): string {
+    this.assertStorageLayout();
     const checkpointId = `ckpt_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
     const hasConcern = opts.concern !== undefined && Object.keys(opts.concern).length > 0;
     const manifest: CheckpointManifest = {
@@ -120,6 +127,7 @@ export class CheckpointManager {
    * Returns the CheckpointManifest or throws if no valid checkpoint exists.
    */
   restore(checkpointId?: string): CheckpointManifest {
+    this.assertStorageLayout();
     if (checkpointId !== undefined && !this.validCheckpointId(checkpointId)) {
       throw new Error('Invalid checkpoint ID');
     }
@@ -152,6 +160,7 @@ export class CheckpointManager {
       // Remove from index
       const idx = index.checkpoints.findIndex((c) => c.checkpointId === entry.checkpointId);
       if (idx >= 0) index.checkpoints.splice(idx, 1);
+      this.assertStorageLayout();
       atomicWriteJson(this.indexPath, index);
     }
 
@@ -173,6 +182,22 @@ export class CheckpointManager {
   }
 
   // ─── Internal ─────────────────────────────────────────────────────────────
+
+  private assertStorageLayout(): void {
+    for (const path of [this.checkpointsDir, this.quarantineDir, this.indexPath]) {
+      let kind: ReturnType<typeof lstatSync>;
+      try {
+        kind = lstatSync(path);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw err;
+      }
+      const shouldBeFile = path === this.indexPath;
+      if (kind.isSymbolicLink() || !(shouldBeFile ? kind.isFile() : kind.isDirectory())) {
+        throw new Error(`Unsafe checkpoint storage path: ${path}`);
+      }
+    }
+  }
 
   private validCheckpointId(checkpointId: unknown): checkpointId is string {
     return typeof checkpointId === 'string' && /^ckpt_[A-Za-z0-9_-]+$/.test(checkpointId);
@@ -210,13 +235,24 @@ export class CheckpointManager {
   }
 
   private readIndex(): CheckpointIndex {
-    if (!existsSync(this.indexPath)) {
-      return { schema: 'home23.seed.checkpoint-index.v1', checkpoints: [] };
+    this.assertStorageLayout();
+    const empty: CheckpointIndex = { schema: 'home23.seed.checkpoint-index.v1', checkpoints: [] };
+    let fd: number;
+    try {
+      fd = openSync(this.indexPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return empty;
+      throw err;
     }
     try {
-      return JSON.parse(readFileSync(this.indexPath, 'utf-8')) as CheckpointIndex;
-    } catch {
-      return { schema: 'home23.seed.checkpoint-index.v1', checkpoints: [] };
+      if (!fstatSync(fd).isFile()) throw new Error(`Unsafe checkpoint index: ${this.indexPath}`);
+      try {
+        return JSON.parse(readFileSync(fd, 'utf-8')) as CheckpointIndex;
+      } catch {
+        return empty;
+      }
+    } finally {
+      closeSync(fd);
     }
   }
 
@@ -267,6 +303,7 @@ export class CheckpointManager {
   }
 
   private quarantine(filePath: string, checkpointId: string, reason: string): void {
+    this.assertStorageLayout();
     if (!this.validCheckpointId(checkpointId)
       || filePath !== join(this.checkpointsDir, `${checkpointId}.json`)) return;
     const destName = `${checkpointId}_${Date.now()}.json`;
