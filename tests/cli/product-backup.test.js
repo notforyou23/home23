@@ -11,6 +11,15 @@ import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
 
 const quiet = { listProcesses: async () => [] };
+const cursorId = sourcePath => `tail_${createHash('sha256').update(sourcePath).digest('hex').slice(0, 8)}`;
+
+function seedCursor(home, sourcePath, offset, id = cursorId(sourcePath), extra = {}, resident = 'milo') {
+  const directory = path.join(home, `app/instances/${resident}/substrate/seed-01`);
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `adapter-cursor.${id}.json`);
+  fs.writeFileSync(file, `${JSON.stringify({ schema: 'home23.seed.adapter-cursor.v1', sourcePath, offset, ...extra })}\n`, { mode: 0o600 });
+  return file;
+}
 
 function tempRoot(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-backup-')));
@@ -387,6 +396,11 @@ test('an interrupted move resumes the fence without rewriting the source host re
 
 test('move rebinds destination ports and source paths without changing identity or the source', async t => {
   const fixture = stoppedHome(t);
+  const cursorSource = path.join(fixture.home, 'app/instances/milo/workspace/events.jsonl');
+  const originalCursor = seedCursor(fixture.home, cursorSource, 12345, undefined, { lastEvent: 'preserved' });
+  seedCursor(fixture.home, path.join(fixture.home, 'app/instances/milo/workspace/conversations.jsonl'),
+    456, 'conversation-stream', { explicit: true });
+  seedCursor(fixture.home, path.join(fixture.root, 'external-events.jsonl'), 87, 'relationship-ledger');
   const seed = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
   fs.mkdirSync(seed, { recursive: true });
   fs.writeFileSync(path.join(seed, 'birth-receipt.json'), '{"seedId":"rebinding"}\n');
@@ -481,6 +495,18 @@ test('move rebinds destination ports and source paths without changing identity 
   assert.equal(fs.readFileSync(hostPath).equals(sourceBefore), true);
   assert.equal(fs.readFileSync(path.join(fixture.home, 'app/config/home.yaml')).equals(sourceYaml), true);
   assert.equal(fs.readFileSync(path.join(destination, 'app/instances/milo/substrate/seed-01/birth-receipt.json'), 'utf8'), '{"seedId":"rebinding"}\n');
+  assert.equal(fs.readFileSync(originalCursor, 'utf8').includes(cursorSource), true);
+  const reboundSource = path.join(destination, 'app/instances/milo/workspace/events.jsonl');
+  const reboundCursor = path.join(destination, `app/instances/milo/substrate/seed-01/adapter-cursor.${cursorId(reboundSource)}.json`);
+  assert.equal(fs.existsSync(path.join(destination, `app/instances/milo/substrate/seed-01/adapter-cursor.${cursorId(cursorSource)}.json`)), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(reboundCursor, 'utf8')), {
+    schema: 'home23.seed.adapter-cursor.v1', sourcePath: reboundSource, offset: 12345, lastEvent: 'preserved',
+  });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(destination, 'app/instances/milo/substrate/seed-01/adapter-cursor.relationship-ledger.json'), 'utf8')).offset, 87);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(destination,
+    'app/instances/milo/substrate/seed-01/adapter-cursor.conversation-stream.json'), 'utf8')),
+  { schema: 'home23.seed.adapter-cursor.v1',
+    sourcePath: path.join(destination, 'app/instances/milo/workspace/conversations.jsonl'), offset: 456, explicit: true });
   const destHost = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
   assert.equal(destHost.desiredRunning, false);
   assert.equal(destHost.profile.model, 'fixture-local');
@@ -1063,6 +1089,8 @@ test('recoverInspectedHome resumes a legitimate interrupted recovery after rebin
   const { birthBytes, resident } = seedRecoverableHome(home, {
     packageId: manifest.packageId, sourceCommit: manifest.sourceCommit,
   });
+  const originalSource = path.join(home, `app/instances/${resident}/workspace/events.jsonl`);
+  seedCursor(home, originalSource, 981, undefined, { marker: 'archive-bound' }, resident);
   const out = path.join(root, 'out');
   fs.mkdirSync(out, { mode: 0o755 });
   const archivePath = path.join(out, 'home.h23b');
@@ -1090,6 +1118,12 @@ test('recoverInspectedHome resumes a legitimate interrupted recovery after rebin
   const hostAfterInterrupt = JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-host.json'), 'utf8'));
   assert.equal(hostAfterInterrupt.homeRoot, inspectionRoot);
   assert.equal(hostAfterInterrupt.phase, 'stopped');
+  const mappedSource = path.join(inspectionRoot, `app/instances/${resident}/workspace/events.jsonl`);
+  const mappedCursor = path.join(inspectionRoot, `app/instances/${resident}/substrate/seed-01/adapter-cursor.${cursorId(mappedSource)}.json`);
+  assert.equal(fs.existsSync(mappedCursor), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(mappedCursor, 'utf8')), {
+    schema: 'home23.seed.adapter-cursor.v1', sourcePath: mappedSource, offset: 981, marker: 'archive-bound',
+  });
   assert.notEqual(hostAfterInterrupt.ports.coordination, 21089);
   assert.equal(
     fs.readFileSync(path.join(inspectionRoot, `app/instances/${resident}/substrate/seed-01/birth-receipt.json`), 'utf8'),
@@ -1100,6 +1134,9 @@ test('recoverInspectedHome resumes a legitimate interrupted recovery after rebin
     inspectionRoot, payloadPath: payload, archivePath, keyPath,
   }, quiet);
   assert.equal(resumed.ok, true);
+  fs.writeFileSync(mappedCursor, JSON.stringify({ schema: 'home23.seed.adapter-cursor.v1', sourcePath: mappedSource, offset: 0 }));
+  await assert.rejects(() => recoverInspectedHome({ inspectionRoot, payloadPath: payload, archivePath, keyPath }, quiet),
+    error => error.code === 'backup_recover_archive_mismatch');
   assert.equal(JSON.parse(fs.readFileSync(journalPath, 'utf8')).phase, 'committed');
   assert.deepEqual(
     JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-host.json'), 'utf8')).ports,
@@ -1249,6 +1286,8 @@ test('recoverInspectedHome resumes after interrupt on first rebind homeRoot writ
   const { birthBytes, resident } = seedRecoverableHome(home, {
     packageId: manifest.packageId, sourceCommit: manifest.sourceCommit,
   });
+  const sourceCursorPath = path.join(home, `app/instances/${resident}/workspace/events.jsonl`);
+  seedCursor(home, sourceCursorPath, 4321, undefined, { retry: true }, resident);
   const out = path.join(root, 'out');
   fs.mkdirSync(out, { mode: 0o755 });
   const archivePath = path.join(out, 'home.h23b');
@@ -1279,6 +1318,14 @@ test('recoverInspectedHome resumes after interrupt on first rebind homeRoot writ
   const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
   assert.equal(journal.phase, 'runtime_installed');
   assert.ok(journal.rebindPlan);
+  // Emulate interruption after new cursor content is atomically placed but
+  // before the old hashed filename is removed.
+  const cursorBinding = journal.rebindPlan.cursorBindings[0];
+  const mappedCursorSource = path.join(inspectionRoot, `app/instances/${resident}/workspace/events.jsonl`);
+  const partialTarget = path.join(inspectionRoot, cursorBinding.nextPath);
+  fs.writeFileSync(partialTarget, `${JSON.stringify({ ...JSON.parse(cursorBinding.original), sourcePath: mappedCursorSource })}\n`);
+  const staleCursor = path.join(inspectionRoot, cursorBinding.path);
+  assert.equal(fs.existsSync(staleCursor), true);
   const hostAfterInterrupt = JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-host.json'), 'utf8'));
   assert.equal(hostAfterInterrupt.homeRoot, inspectionRoot);
   assert.equal(hostAfterInterrupt.ports.coordination, journal.rebindPlan.ports.coordination);
@@ -1291,6 +1338,11 @@ test('recoverInspectedHome resumes after interrupt on first rebind homeRoot writ
     inspectionRoot, payloadPath: payload, archivePath, keyPath,
   }, quiet);
   assert.equal(resumed.ok, true);
+  assert.equal(fs.existsSync(staleCursor), false);
+  const mapped = path.join(inspectionRoot, `app/instances/${resident}/workspace/events.jsonl`);
+  const cursor = path.join(inspectionRoot, `app/instances/${resident}/substrate/seed-01/adapter-cursor.${cursorId(mapped)}.json`);
+  assert.deepEqual(JSON.parse(fs.readFileSync(cursor, 'utf8')),
+    { schema: 'home23.seed.adapter-cursor.v1', sourcePath: mapped, offset: 4321, retry: true });
   assert.equal(JSON.parse(fs.readFileSync(journalPath, 'utf8')).phase, 'committed');
   assert.deepEqual(
     JSON.parse(fs.readFileSync(path.join(inspectionRoot, '.home23-host.json'), 'utf8')).ports,
@@ -1342,11 +1394,23 @@ test('rebindAdoptedHome rewrites from destination hostRoot when the source direc
     ].join('\n'), { mode: 0o600 });
   }
 
+  const adoptedSource = path.join(gone, 'instances/ada/harness-events.jsonl');
+  const oldCursor = seedCursor(destination, adoptedSource, 645, undefined, { phase: 'durable' }, 'ada');
+  const externalAuthority = path.join(root, 'retained-external.jsonl');
+  const externalCursor = seedCursor(destination, externalAuthority, 99, 'relationship-ledger', { retained: true }, 'ada');
+  const externalBytes = fs.readFileSync(externalCursor);
+
   const packageId = await rebindAdoptedHome(gone, destination);
   assert.equal(packageId, null);
   assert.equal(fs.existsSync(gone), false);
   assert.equal(fs.existsSync(path.join(destination, '.home23-install.json')), false);
   assert.equal(fs.existsSync(path.join(gone, '.home23-install.json')), false);
+  const adoptedPath = path.join(destination, 'app/instances/ada/harness-events.jsonl');
+  assert.equal(fs.existsSync(oldCursor), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(destination,
+    `app/instances/ada/substrate/seed-01/adapter-cursor.${cursorId(adoptedPath)}.json`), 'utf8')),
+  { schema: 'home23.seed.adapter-cursor.v1', sourcePath: adoptedPath, offset: 645, phase: 'durable' });
+  assert.equal(fs.readFileSync(externalCursor).equals(externalBytes), true);
 
   const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
   assert.equal(host.homeRoot, destination);
@@ -1363,4 +1427,29 @@ test('rebindAdoptedHome rewrites from destination hostRoot when the source direc
   assert.equal(zed.ports.engine, host.residentMap.zed.ports.engine);
   assert.equal(ada.paths.root, `${destination}/app/instances/ada`);
   assert.equal(zed.paths.root, `${destination}/app/instances/zed`);
+});
+
+test('cursor rebind refuses colliding, malformed, or symlinked state before changing host binding', async t => {
+  for (const kind of ['collision', 'malformed', 'symlink']) {
+    await t.test(kind, async subtest => {
+      const fixture = stoppedHome(subtest);
+      const gone = path.join(fixture.root, 'old-home');
+      const hostPath = path.join(fixture.home, '.home23-host.json');
+      const host = JSON.parse(fs.readFileSync(hostPath, 'utf8'));
+      host.homeRoot = gone;
+      fs.writeFileSync(hostPath, JSON.stringify(host));
+      const before = fs.readFileSync(hostPath);
+      const first = seedCursor(fixture.home, path.join(gone, 'app/instances/milo/harness.jsonl'), 80);
+      if (kind === 'collision') seedCursor(fixture.home, path.join(gone, 'instances/milo/harness.jsonl'), 90);
+      if (kind === 'malformed') fs.writeFileSync(first, '{"sourcePath":"bad","offset":0}');
+      if (kind === 'symlink') {
+        const outside = path.join(fixture.root, 'outside-cursor');
+        fs.writeFileSync(outside, fs.readFileSync(first));
+        fs.unlinkSync(first);
+        fs.symlinkSync(outside, first);
+      }
+      await assert.rejects(() => rebindAdoptedHome(gone, fixture.home));
+      assert.equal(fs.readFileSync(hostPath).equals(before), true);
+    });
+  }
 });
