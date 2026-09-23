@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy — Home23 release preview</title>
+  <style>
+    :root { --ink: #1c1917; --muted: #57534e; --line: #d6d3d1; --paper: #fafaf9; --accent: #0f766e; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; color: var(--ink); background: var(--paper);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+      line-height: 1.55; font-size: 1.05rem;
+    }
+    main { max-width: 42rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+    header { margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--line); }
+    .brand, h1, h2, footer { font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif; }
+    .brand { margin: 0 0 0.75rem; color: var(--accent); font-size: 0.8rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+    h1 { margin: 0 0 0.75rem; font-size: clamp(1.6rem, 4vw, 2rem); line-height: 1.2; letter-spacing: -0.02em; }
+    h2 { margin: 0 0 0.6rem; font-size: 1.2rem; }
+    .lede, footer { color: var(--muted); }
+    section { margin: 2.25rem 0; }
+    section p { margin: 0 0 0.85rem; }
+    footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line); font-size: 0.9rem; }
+    a { color: var(--accent); text-underline-offset: 0.15em; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="brand">Home23</p>
+      <h1>Privacy in the Home23 beta</h1>
+      <p class="lede">Home23 on iPhone and iPad connects to a home you choose. This release preview explains where information goes when you use it.</p>
+    </header>
+
+    <section>
+      <h2>Your device and your home</h2>
+      <p>The app keeps its saved home connection and pending messages on your device so you can reconnect and retry a send. Your home keeps its own residents, conversations, documents, attachments and settings on the computer running that home. Installing the app does not create a second home or copy another person's history into yours.</p>
+      <p>When you send a message or choose a file or photo to attach, the app sends it to the home you connected to. The home stores conversation and attachment records and makes them available to authorized people and agents in that home. Choose the home and the material you share with it carefully.</p>
+    </section>
+
+    <section>
+      <h2>Model providers</h2>
+      <p>Your home uses the model provider selected for a request. A local model can run with the home. If you choose an external provider, the home sends the material needed for that request to that provider. This can include conversation text and images or files you attached when they are used to answer you. The provider's own terms and data practices apply to its service.</p>
+    </section>
+
+    <section>
+      <h2>Optional Family Home connection</h2>
+      <p>Family Home can connect directly to a separately configured household service to show information such as photos, calendar events and home readings. If you use its photo tools, photos you choose may be sent to that service. That connection is set for the home you selected; the app does not use your conversation access token for the household service.</p>
+    </section>
+
+    <section>
+      <h2>TestFlight feedback</h2>
+      <p>During the beta, Apple distributes Home23 through TestFlight. If you send feedback through TestFlight, Apple makes your comments and any screenshot you include available to the developer. Crash feedback and details about the app build and device can also be available there. Check a screenshot before you send it if your home shows private information.</p>
+    </section>
+
+    <section>
+      <h2>Questions</h2>
+      <p>During this private beta, use <strong>Send Beta Feedback</strong> in TestFlight or reply to your invitation email. See <a href="support.html">Support</a> for connection and update help.</p>
+    </section>
+
+    <footer>
+      <p><a href="index.html">Home23 guide</a> · <a href="support.html">Support</a></p>
+      <p>Release preview. This page is not a published privacy-policy URL.</p>
+    </footer>
+  </main>
+</body>
+</html>
