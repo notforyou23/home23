@@ -236,6 +236,12 @@ test('managed and source adoption plans stay fail-closed and never write', t => 
   assert.ok(withSoftware.inventory.paths.some(item => item.path === 'node_modules' && item.role === 'rebuildable'));
   assert.ok(!withSoftware.inventory.paths.some(item => item.path.startsWith('node_modules/')));
   assert.ok(!withSoftware.reasons.some(item => item.code === 'external_state' && item.path?.startsWith('node_modules/')));
+  // An old managed release cache is replaced by the product package, even
+  // when the previous installation relocated it to another volume.
+  fs.symlinkSync('/tmp/home23-old-release-cache', path.join(managed, 'instances/.house/coordination/releases'));
+  const withReleaseCache = planManagedSourceAdoption(managed);
+  assert.ok(withReleaseCache.inventory.paths.some(item => item.path === 'instances/.house/coordination/releases' && item.role === 'rebuildable'));
+  assert.ok(!withReleaseCache.reasons.some(item => item.code === 'external_state' && item.path === 'instances/.house/coordination/releases'));
   const unclassified = path.join(managed, 'unclassified');
   fs.mkdirSync(unclassified);
   fs.writeFileSync(path.join(unclassified, 'nested.txt'), 'not classified');

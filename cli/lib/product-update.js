@@ -133,6 +133,8 @@ export function classifyAdoptionPath(relative) {
   if (relative === 'config' || relative.startsWith('config/')) return 'preserve';
   // Supervisor lock artifacts are created under the fence and must not alter the preserve snapshot.
   if (relative === 'instances/.house/maintenance' || relative.startsWith('instances/.house/maintenance/')) return 'rebuildable';
+  // The selected product package replaces old managed release caches.
+  if (relative === 'instances/.house/coordination/releases' || relative.startsWith('instances/.house/coordination/releases/')) return 'rebuildable';
   if (relative === 'instances' || relative.startsWith('instances/')) return 'preserve';
   if (relative === 'runtime') return 'preserve';
   if (ADOPTION_REBUILDABLE.has(relative)) return 'rebuildable';
@@ -171,7 +173,7 @@ function walkAdoptionPaths(root, reasons) {
         entry.external = true;
         entry.target = info.target;
         // Broad instances/config preserve must not swallow linked external state.
-        if (info.dangling || info.outside || role === 'preserve' || role === 'rebind') {
+        if (role !== 'rebuildable' && (info.dangling || info.outside || role === 'preserve' || role === 'rebind')) {
           reasons.push(reason('external_state', `Linked path ${relative} is not a captured file inside this home.`, { path: relative }));
         }
       }
