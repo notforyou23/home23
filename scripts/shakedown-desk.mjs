@@ -18,7 +18,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { join, resolve, relative, basename } from "node:path";
 import { classify } from "./shakedown-approval-runner.mjs";
 
-const H23 = "/Users/jtr/_JTR23_/release/home23";
+const H23 = process.env.HOME23_ROOT || "/Users/jtr/_JTR23_/release/home23";
 const PROJECT = join(H23, "instances/jerry/workspace/projects/shakedownshuffle");
 const QUEUE = join(PROJECT, "content/article-editorial-queue.md");
 const STATUS = join(PROJECT, "status/latest.json");

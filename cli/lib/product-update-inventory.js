@@ -12,6 +12,7 @@ export const SUPPORTED_COORDINATION_MIGRATION_CHECKSUM = 'c5d7aad734c6516b629b08
 const RECIPE_ASSET = 'app/scripts/embedder/schema/recipes.json';
 const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const SCAN_FILES = ['.home23-host.json', 'app/.home23-state.json', 'app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml'];
+const ADOPTED_LINK_RECEIPT = 'runtime/adoption-preservation.json';
 const REBUILDABLE_PREFIXES = ['app/logs/', 'app/engine/logs/', 'app/engine/runtime/', 'runtime/pm2/', 'runtime/embedder-cache/', 'runtime/user/', 'runtime/.host.lock/'];
 
 export function isProductStatePath(relative) {
@@ -97,6 +98,36 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   const root = absoluteHome(homeRoot);
   const reasons = [];
   const unknown = [];
+  let adoptedLinks = new Map();
+  let adoptedReferences = new Set();
+  let adoptedContinuation = null;
+  const adoptedReceipt = join(root, ADOPTED_LINK_RECEIPT);
+  if (exists(adoptedReceipt)) {
+    try {
+      const receipt = readPrivateJSON(adoptedReceipt);
+      if (receipt?.schema !== 'home23.adoption-preservation-receipt.v1' || !Array.isArray(receipt.links)) throw new Error();
+      adoptedLinks = new Map(receipt.links.map(link => {
+        if (!isProductStatePath(link.path) || typeof link.target !== 'string' || !link.target ||
+          !['retain-link', 'historical-link', 'retain-authority'].includes(link.kind)) throw new Error();
+        return [link.path, link];
+      }));
+      if (adoptedLinks.size !== receipt.links.length) throw new Error();
+      if (receipt.continuationServices !== undefined) {
+        if (!Array.isArray(receipt.continuationServices)) throw new Error();
+        adoptedContinuation = receipt.continuationServices.map(service => ({ name: service.name, ...service.run }));
+      }
+      if (receipt.externalReferences !== undefined) {
+        if (!Array.isArray(receipt.externalReferences)) throw new Error();
+        adoptedReferences = new Set(receipt.externalReferences.map(reference => {
+          if (!SCAN_FILES.includes(reference.path) || typeof reference.target !== 'string' || !reference.target.startsWith('/')) throw new Error();
+          return `${reference.path}\0${reference.target}`;
+        }));
+        if (adoptedReferences.size !== receipt.externalReferences.length) throw new Error();
+      }
+    } catch {
+      reasons.push(reason('adoption_receipt_invalid', 'The adopted state-link receipt is unreadable.'));
+    }
+  }
   const manifestEntries = new Map((installed?.files || []).map(entry => [entry.path, entry]));
   const manifestPaths = new Set(manifestEntries.keys());
   function visit(relative) {
@@ -115,7 +146,12 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
         catch { reasons.push(reason('state_path_unreadable', `State link ${relative} could not be read.`, { path: relative })); return; }
         const resolved = resolve(dirname(absolute), target);
         const insideHome = resolved === root || resolved.startsWith(root + sep);
-        if (!insideHome) reasons.push(reason('linked_state_path', `State path ${relative} points outside this home. Keep the real directory in place before updating.`, { path: relative }));
+        const approved = adoptedLinks.get(relative);
+        if (approved) {
+          if (approved.target !== target) reasons.push(reason('linked_state_changed', `Reviewed state link ${relative} changed.`, { path: relative }));
+          else if (approved.kind === 'retain-authority' && !exists(resolved)) reasons.push(reason('retained_authority_missing', `External authority for ${relative} is unavailable. Restore or reconnect it before updating.`, { path: relative }));
+          else adoptedLinks.delete(relative);
+        } else if (!insideHome) reasons.push(reason('linked_state_path', `State path ${relative} points outside this home. Keep the real directory in place before updating.`, { path: relative }));
       } else if (!manifestPaths.has(relative)) {
         reasons.push(reason('unknown_state', `Unclassified path ${relative} is a link.`, { path: relative }));
       }
@@ -137,10 +173,23 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
     if (relative !== 'manifest.json' && !manifestPaths.has(relative) && !isProductStatePath(relative)) unknown.push(relative);
   }
   if (exists(root)) for (const name of readdirSync(root).sort()) visit(name);
+  for (const path of adoptedLinks.keys()) reasons.push(reason('linked_state_missing', `Reviewed state link ${path} is missing.`, { path }));
   for (const path of unknown) reasons.push(reason('unknown_state', `Unclassified path ${path} is not package software or a known home-state root. Classify it before updating.`, { path }));
   const state = exists(join(root, '.home23-host.json')) ? readPrivateJSON(join(root, '.home23-host.json')) : null;
+  const continuing = state?.continuationServices || [];
+  if (continuing.length && (!adoptedContinuation || JSON.stringify(continuing) !== JSON.stringify(adoptedContinuation))) {
+    reasons.push(reason('continuation_receipt_mismatch', 'Continuing service bindings differ from the sealed adoption receipt.'));
+  }
   const created = Boolean(state);
-  const writerNames = created ? ownedWriterNames(state.profile?.name, { encoderRequired: state.encoderRequired === true }) : [];
+  const residentNames = created && state.residentMap && typeof state.residentMap === 'object' && !Array.isArray(state.residentMap)
+    ? Object.keys(state.residentMap) : created ? [state.profile?.name] : [];
+  const writerSets = residentNames.map(name => ownedWriterNames(name, { encoderRequired: state.encoderRequired === true }));
+  const continuation = state?.continuationServices || [];
+  const validContinuation = Array.isArray(continuation) && continuation.every(service =>
+    service && /^[a-z][a-z0-9-]{0,62}$/.test(service.name || ''))
+    && new Set(continuation.map(service => service.name)).size === continuation.length;
+  const writerNames = writerSets.some(names => !names) || !residentNames.length || !validContinuation
+    ? null : [...new Set([...writerSets.flat(), ...continuation.map(service => service.name)])];
   if (created && !writerNames) reasons.push(reason('invalid_resident', 'The saved resident name cannot be mapped to owned writers.'));
   const external = [];
   for (const relative of SCAN_FILES) {
@@ -152,9 +201,13 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
       reasons.push(reason('state_uninspected', `Config file ${relative} is too large to classify external paths.`, { path: relative }));
       continue;
     }
-    const text = readFileSync(file, 'utf8');
+    const text = relative === '.home23-host.json' && continuing.length && adoptedContinuation
+      && JSON.stringify(continuing) === JSON.stringify(adoptedContinuation)
+      ? JSON.stringify({ ...state, continuationServices: undefined })
+      : readFileSync(file, 'utf8');
     for (const token of absoluteTokens(text)) {
-      if (!allowedExternal(root, token) && !refersToHome(text, root, token)) external.push({ path: relative, target: relative.endsWith('secrets.yaml') ? '[redacted]' : token });
+      if (!allowedExternal(root, token) && !refersToHome(text, root, token)
+        && !adoptedReferences.has(`${relative}\0${token}`)) external.push({ path: relative, target: relative.endsWith('secrets.yaml') ? '[redacted]' : token });
     }
   }
   for (const item of external) reasons.push(reason('external_reference', `External path in ${item.path} is not part of this home. Reconnect or remove it before a software update.`, { path: item.path }));

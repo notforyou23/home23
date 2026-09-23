@@ -128,7 +128,12 @@ export const PRODUCT_STATE_PATHS = Object.freeze([
     // reports a directory at one of these file paths as a type mismatch.
     ...(path.startsWith('app/evobrew/') ? { allowDescendants: true } : {}),
   })),
-  ...['runtime', 'app/instances', 'app/logs', 'app/runtime',
+  // A reviewed managed-home adoption may retain operator material at its
+  // source-relative app paths. The adoption plan pins the exact entries; this
+  // allowance lets later product updates preserve them as state.
+  ...['runtime', 'app/instances', 'app/logs', 'app/runtime', 'app/evobrew',
+    'app/projects', 'app/workspace', 'app/archive', 'app/reports', 'app/output',
+    'app/keep-export', 'app/published', 'app/configs', 'app/agency',
     ...['.evobrew-workspaces', 'conversations', 'snapshots'].map(name => `app/evobrew/${name}`),
     ...['runtime', 'logs', 'runs', 'data', 'artifacts', 'outputs', 'backups', '.backups'].map(name => `app/engine/${name}`),
   ].map(path => Object.freeze({ path, type: 'directory', role: 'preserve' })),

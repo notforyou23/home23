@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /** Native Host bridge: one JSON result on stdout; credentials enter stdin only. */
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { absoluteHome, productEnvironment } from '../../cli/lib/product-environment.js';
 const originalStdout = process.stdout.write.bind(process.stdout);
 // Third-party preparation modules use console.log. Keep protocol stdout clean.
@@ -9,7 +11,27 @@ const args = process.argv.slice(2);
 const action = args.shift();
 let homeRoot;
 const sensitive = [];
-const USAGE = 'Usage: host.mjs preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|backup-recover|move|install|catalog|status|create|oauth-start|oauth-complete|oauth-status|oauth-cancel|oauth-logout|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--provider ABS] [--admit]';
+const USAGE = 'Usage: host.mjs device-connect-status|device-connect|home-update-status|home-update-action|register-application|adoption-plan|adopt|preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|backup-recover|move|install|catalog|status|create|oauth-start|oauth-complete|oauth-status|oauth-cancel|oauth-logout|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--provider ABS] [--preservation-plan ABS --plan-sha256 HEX] [--application ABS] [--client-build INT] [--admit]';
+
+function adoptionReply(result) {
+  const { plan, inventory, ...rest } = result;
+  const source = plan || result;
+  return {
+    ...rest,
+    // The full path inventory can be hundreds of thousands of entries. Keep
+    // the command reply bounded while retaining every blocking path/reason.
+    inventoryEntryCount: source.inventory?.paths?.length || 0,
+    inventoryExceptions: source.inventory?.paths?.filter(entry => entry.role === 'unknown' || entry.type === 'symlink')
+      .map(({ path, type, role, target, mapping }) => ({ path, type, role, ...(target !== undefined ? { target } : {}),
+        ...(mapping?.destination ? { destination: mapping.destination } : {}) })) || [],
+    ...(plan ? { plan: { schema: plan.schema, root: plan.root, layout: plan.layout,
+      canAdopt: plan.canAdopt, reasons: plan.reasons, identity: plan.identity,
+      inventoryEntryCount: plan.inventory?.paths?.length || 0 } } : {}),
+    homeBirth: result.homeBirth || source.plan?.homeBirth || 'not_run',
+    encoderRecipe: source.plan?.encoderRecipe || 'unchanged',
+    writersStarted: false,
+  };
+}
 
 /** Owner-facing wrappers: these replies are host.mjs command results, not installed-UI proof or public trust. */
 function portabilityReply(kind, result) {
@@ -72,7 +94,7 @@ try {
       options.admit = true;
       continue;
     }
-    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection', '--destination', '--provider'].includes(key) || !args.length || options[key]) throw new Error(USAGE);
+    if (!['--home', '--payload', '--staging', '--feed', '--trust-key', '--archive', '--key', '--inspection', '--destination', '--provider', '--preservation-plan', '--plan-sha256', '--application', '--client-build'].includes(key) || !args.length || options[key]) throw new Error(USAGE);
     options[key] = args.shift();
   }
   if (action !== 'backup-inspect' && action !== 'backup-recover') homeRoot = absoluteHome(options['--home']);
@@ -81,10 +103,62 @@ try {
   if (options['--trust-key'] && !['check-update', 'stage-release', 'download-release', 'install-staged'].includes(action)) throw new Error('--trust-key is only supported by check-update, stage-release, download-release, and install-staged.');
   const oauthActions = ['oauth-start', 'oauth-complete', 'oauth-status', 'oauth-cancel', 'oauth-logout'];
   if (options['--provider'] && !oauthActions.includes(action)) throw new Error('--provider is only supported by oauth-start, oauth-complete, oauth-status, oauth-cancel, and oauth-logout.');
+  if (options['--application'] && action !== 'register-application') throw new Error('--application is only supported by register-application.');
+  if (options['--client-build'] && action !== 'home-update-status') throw new Error('--client-build is only supported by home-update-status.');
+  if ((options['--preservation-plan'] || options['--plan-sha256']) && !['adoption-plan', 'adopt'].includes(action)) throw new Error('The preservation plan is only supported by adoption commands.');
   let input = {};
   if (action === 'stage' || action === 'update') input.staging = options['--staging'];
   if (options.admit) input.admit = true;
-  if (action === 'move') {
+  if (action === 'device-connect-status' || action === 'device-connect') {
+    const { getDeviceConnectionStatus, enableDeviceConnection } = await import('../../cli/lib/product-device-connection.js');
+    const result = action === 'device-connect-status'
+      ? await getDeviceConnectionStatus({ homeRoot })
+      : await enableDeviceConnection({ homeRoot });
+    originalStdout(JSON.stringify(result) + '\n');
+    if (result.ok === false) process.exitCode = 1;
+  } else if (action === 'home-update-status' || action === 'home-update-action' || action === 'register-application') {
+    const { homeUpdateStatus, requestHomeUpdate, registerProductApplication } = await import('../../cli/lib/product-home-update.js');
+    let result;
+    if (action === 'register-application') {
+      if (!options['--application'] || !isAbsolute(options['--application'])) throw new Error('register-application requires --application ABS.');
+      result = await registerProductApplication({ homeRoot, applicationPath: resolve(options['--application']) });
+    } else if (action === 'home-update-status') {
+      const build = options['--client-build'];
+      if (build && (!/^\d+$/.test(build) || !Number.isSafeInteger(Number(build)))) throw new Error('Invalid client build.');
+      result = await homeUpdateStatus({ homeRoot, clientBuild: build ? Number(build) : undefined });
+    } else {
+      let raw = '';
+      for await (const part of process.stdin) { raw += part; if (Buffer.byteLength(raw) > 65536) throw new Error('Home update action input is too large.'); }
+      let request;
+      try { request = JSON.parse(raw || '{}'); } catch { throw new Error('Home update action requires valid JSON input.'); }
+      if (!['check', 'update', 'resume', 'recover'].includes(request.action)
+        || typeof request.idempotencyKey !== 'string' || !request.idempotencyKey.trim()
+        || (request.clientBuild !== undefined && (!Number.isSafeInteger(request.clientBuild) || request.clientBuild < 0))) {
+        throw new Error('Invalid Home23 update action request.');
+      }
+      result = await requestHomeUpdate({ homeRoot, action: request.action, idempotencyKey: request.idempotencyKey,
+        principalId: 'local-owner', clientBuild: request.clientBuild });
+    }
+    originalStdout(JSON.stringify(result) + '\n');
+    if (result.ok === false) process.exitCode = 1;
+  } else if (action === 'adoption-plan' || action === 'adopt') {
+    if (action === 'adopt' && (!options['--destination'] || !options['--payload'])) throw new Error('adopt requires --destination and --payload.');
+    if (action === 'adoption-plan' && (options['--destination'] || options['--payload'])) throw new Error('adoption-plan only accepts --home.');
+    if (Boolean(options['--preservation-plan']) !== Boolean(options['--plan-sha256'])) throw new Error('Adoption preservation requires a plan file and its SHA-256.');
+    if (options['--plan-sha256'] && !/^[a-f0-9]{64}$/.test(options['--plan-sha256'])) throw new Error('Invalid adoption plan SHA-256.');
+    let preservationPlan = null;
+    if (options['--preservation-plan']) {
+      const bytes = readFileSync(resolve(options['--preservation-plan']));
+      if (createHash('sha256').update(bytes).digest('hex') !== options['--plan-sha256']) throw new Error('Adoption plan file changed.');
+      preservationPlan = JSON.parse(bytes.toString('utf8'));
+    }
+    const { planManagedSourceAdoption, adoptManagedSourceHome } = await import('../../cli/lib/product-update.js');
+    const result = action === 'adoption-plan'
+      ? planManagedSourceAdoption(homeRoot, { preservationPlan })
+      : await adoptManagedSourceHome({ sourceHome: homeRoot, destinationRoot: options['--destination'], payloadPath: options['--payload'], preservationPlan });
+    originalStdout(JSON.stringify(adoptionReply(result)) + '\n');
+    if (result.ok === false || result.canAdopt === false) process.exitCode = 1;
+  } else if (action === 'move') {
     if (!options['--destination'] || !options['--archive'] || !options['--key']) throw new Error('move requires --destination, --archive, and --key.');
     const { moveHome } = await import('../../cli/lib/product-backup.js');
     const result = portabilityReply('move', await moveHome({

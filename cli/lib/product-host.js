@@ -175,17 +175,45 @@ export function ownedProcessNamesForState(state) {
       names.push(name);
     }
   }
+  for (const service of continuationServicesForState(state).filter(service => service.startOnHomeStart)) {
+    if (seen.has(service.name)) throw new Error(`Continuation service collides with a Home23 process: ${service.name}`);
+    seen.add(service.name);
+    names.push(service.name);
+  }
   return names;
 }
-export function safeProcesses(rows, homeRoot, names) {
+function continuationServicesForState(state) {
+  const services = state?.continuationServices || [];
+  if (!Array.isArray(services)) throw new Error('Invalid continuing service map.');
+  const seen = new Set();
+  for (const service of services) {
+    if (!/^[a-z][a-z0-9-]{0,62}$/.test(service?.name || '') || seen.has(service.name)
+      || !isAbsolute(service.executable || '') || !isAbsolute(service.cwd || '')
+      || !Array.isArray(service.args) || service.args.some(arg => typeof arg !== 'string' || arg.includes('\0'))
+      || !service.env || typeof service.env !== 'object' || Array.isArray(service.env)
+      || Object.entries(service.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0'))
+      || !Array.isArray(service.stateRoots) || service.stateRoots.some(path => !isAbsolute(path || ''))
+      || typeof service.startOnHomeStart !== 'boolean') {
+      throw new Error('Invalid continuing service map.');
+    }
+    seen.add(service.name);
+  }
+  return services;
+}
+export function safeProcesses(rows, homeRoot, names, continuationServices = []) {
   const appRoot = join(homeRoot, 'app');
   return rows.filter(row => names.includes(row.name)).map(row => {
     const env = row.pm2_env || {};
     const script = env.pm_exec_path || '';
     const args = Array.isArray(env.args) ? env.args : [];
     const ownScript = script === join(homeRoot, 'bin', 'node') && args.some(arg => typeof arg === 'string' && arg.startsWith(appRoot + '/'));
+    const continuation = continuationServices.find(service => service.name === row.name);
+    const matchingContinuation = continuation && script === continuation.executable && env.pm_cwd === continuation.cwd
+      && JSON.stringify(args) === JSON.stringify(continuation.args)
+      && Object.entries(continuation.env).every(([key, value]) => env[key] === value);
     return { name: row.name, status: env.status || 'unknown', pid: row.pid || 0, restarts: env.restart_time || 0,
-      owned: ownScript && typeof env.pm_cwd === 'string' && (env.pm_cwd === appRoot || env.pm_cwd.startsWith(appRoot + '/')) };
+      owned: continuation ? Boolean(matchingContinuation)
+        : ownScript && typeof env.pm_cwd === 'string' && (env.pm_cwd === appRoot || env.pm_cwd.startsWith(appRoot + '/')) };
   });
 }
 function failedProcess(row) {
@@ -269,7 +297,16 @@ function driver(homeRoot, dependencies, state) {
       generateEcosystem(join(homeRoot, 'app'), { quiet: true });
       const config = join(homeRoot, 'app', 'ecosystem.config.cjs');
       const { stdout } = await execute(nodePath, ['-e', 'process.stdout.write(JSON.stringify(require(process.argv[1]).apps))', config], { cwd: join(homeRoot, 'app'), env, timeout: 15000, maxBuffer: 8 * 1024 * 1024 });
-      return productDefinitions(JSON.parse(stdout), homeRoot, nameOrNames, { encoderRequired, embedderPort: state?.ports?.embedder });
+      const standard = productDefinitions(JSON.parse(stdout), homeRoot, nameOrNames, { encoderRequired, embedderPort: state?.ports?.embedder });
+      const continuation = continuationServicesForState(state).filter(service => service.startOnHomeStart).map(service => {
+        if (!existsSync(service.executable) || !existsSync(service.cwd)) throw new Error(`Continuing service binding is missing: ${service.name}`);
+        const executable = relative(service.cwd, service.executable);
+        if (!executable || /\s/.test(executable) || resolve(service.cwd, executable) !== service.executable) throw new Error(`Continuing executable cannot be safely launched: ${service.name}`);
+        return { name: service.name, script: executable, interpreter: 'none', args: service.args,
+          cwd: service.cwd, env: { ...env, ...service.env }, autostart: true, autorestart: true,
+          min_uptime: 10000, max_restarts: 5, restart_delay: 2000 };
+      });
+      return [...standard, ...continuation];
     },
   };
 }
@@ -474,7 +511,7 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
       access: 'loopback; use a trusted HTTPS or VPN transport for other devices',
     } };
   const rows = await driver(homeRoot, dependencies, state).list();
-  const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state));
+  const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state), continuationServicesForState(state));
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
   const readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
@@ -678,7 +715,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     const residents = hostResidentNames(state);
     const names = ownedProcessNamesForState(state);
     const rows = await processDriver.list();
-    const processes = safeProcesses(rows, homeRoot, names);
+    const processes = safeProcesses(rows, homeRoot, names, continuationServicesForState(state));
     // An update from an older package leaves Evobrew's stopped PM2 record so
     // rollback can still restart it. It is never admitted in the new package.
     const legacyEvobrew = packagedWithoutEvobrew(homeRoot)
