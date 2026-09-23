@@ -1,12 +1,12 @@
 # Home updates and portability
 
-Status: engineering plan with backend preview, declared-state preservation
-checks, contract comparison, local candidate staging, one schema-preserving
-local apply/recovery path, a local unverified release-feed check, and an
-encrypted backup that streams state, refuses while owned writers are running,
-and can be inspected before any writer starts, September 21, 2026. Network
-installation, publisher trust, native Check for Updates, Move Home, and
-existing-owner adoption remain unimplemented.
+Status, September 22, 2026: local source now includes staged update/recovery,
+native bundled-package Check and preparation, encrypted backup, Move Home, and
+a managed/source adoption adapter. Isolated update and move evidence exists;
+the current owner's managed home has **not** been adopted. Publisher-hosted
+updates and consumer distribution remain later work. The September 21
+implementation snapshots below are historical; do not use them to require
+another isolated install before preparing the current owner's daily-home cutover.
 
 Home23 must remain usable, recoverable and movable for its current owner even
 if it is never distributed to anyone else. The same lifecycle must support a
@@ -36,7 +36,7 @@ resident. Restore verifies the archive and required runtime before permitting
 writers to start. Missing external folders, services and credentials are
 presented as reconnection work rather than silently omitted.
 
-## Existing implementation to build on
+## Original implementation baseline (historical)
 
 | Surface | Current contract | Required extension |
 |---|---|---|
@@ -52,6 +52,9 @@ managed/source installation whose services can execute from different roots.
 Both need coverage. A new empty Host home alone cannot prove the current
 owner's portability. The [September candidate](../superpowers/plans/2026-09-11-owned-embedder-candidate-status.md)
 remains historical installed evidence, not update acceptance.
+
+The following preview and staging increments describe the original September 21
+baseline. Their old "not yet implemented" statements are not current status.
 
 ### Implemented preview
 
@@ -292,14 +295,13 @@ Contributions must return to that lead; the owner is not a message relay.
 | U5 — Adopt the existing owner home | Lead: inventory all mixed-runtime services and external dependencies, rehearse the adapter on protected copied state, then prepare exact cutover and recovery | Rehearsal uses disabled integrations and fenced writers; no external side effects or new Seed; actual owner-home transition requires its scoped activation authorization |
 | U6 — Deliver | Apple + release: sign/notarize compatible artifacts, publish authenticated feed and finish first-owner instructions | A supported Mac installs and subsequently checks for and applies a release through the UI; private-beta and public-release evidence stay distinct |
 
-The implemented preview and local staging are bounded parts of **U1/U2**.
-Declared-state paths and coordination contract changes are now visible.
-`update` adds the schema-preserving slice of **U3** for one owned Host v1
-home: inventory, stored-schema refusal, a journal outside `app/`, and local
-apply/recovery. Publisher trust, downloads, native Check for Updates,
-backup/move, and adoption of an existing owner home are still unimplemented.
-Preview and stage do not replace packages. `update` does not export private
-state or claim a trusted release.
+The original preview and staging increments were bounded parts of **U1/U2**.
+Later local source added the update controller, native Host controls, encrypted
+backup, move/rebind, and a managed/source adoption adapter. The adapter has a
+synthetic two-resident proof, not acceptance of the current owner's live home.
+The next engineering step is that real home's layout, external references,
+runtime binding and writer-fence reconciliation. Public publisher trust and
+distribution do not gate the owner's private daily-home cutover.
 
 Verification follows these boundaries rather than accumulating unrelated suite
 runs. Reuse the known home and receipts when valid; publish one result for each

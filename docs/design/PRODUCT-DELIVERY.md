@@ -125,9 +125,12 @@ artifact paths and operational receipts stay outside this public document.
 
 ## Delivery work to address
 
-The delivery goal is a small Mac-hosted private beta. The immediate engineering
-priority is safe updates and portability for the existing owner as well as new
-homes, even if public distribution never follows. The
+The delivery goal is a small Mac-hosted private beta. Before that broader beta,
+the immediate priority is to bring the current owner's Jerry and Forrest home
+into the supported Host lifecycle without rebirth, lost history or an encoder
+switch. Existing isolated update and portability evidence should be reused;
+public website, notarization and first-owner release work do not gate this
+private daily-home transition. The
 [home updates and portability plan](HOME-UPDATES-AND-PORTABILITY.md) defines
 Check for Updates, recovery, backup/transfer and the ordered D08 implementation.
 These are implementation and delivery items with observable completion criteria,
