@@ -141,17 +141,35 @@ test('signed-runtime manifest must retain original source inventory and a new pi
 });
 
 test('signed-runtime resume rejects unknown or later output stages', () => {
-  const output = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-resume-stage-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-resume-stage-'));
   try {
+    const output = path.join(root, 'output'), assembly = path.join(root, 'assembly');
     const app = path.join(output, 'Home23/Home23.app');
     fs.mkdirSync(app, { recursive: true });
-    assert.deepEqual(assertResumeStage(output), { release: path.join(output, 'Home23'), app });
+    fs.mkdirSync(path.join(assembly, 'Home23/Home23.app'), { recursive: true });
+    for (const name of ['Start Here.txt', 'release.json']) {
+      fs.writeFileSync(path.join(assembly, 'Home23', name), `original ${name}`);
+      fs.writeFileSync(path.join(output, 'Home23', name), `original ${name}`);
+    }
+    assert.deepEqual(assertResumeStage(output, assembly), { release: path.join(output, 'Home23'), app });
     fs.writeFileSync(path.join(output, 'notary-submission.zip'), 'later');
-    assert.throws(() => assertResumeStage(output), /later or unknown stage/);
+    assert.throws(() => assertResumeStage(output, assembly), /later or unknown stage/);
     fs.rmSync(path.join(output, 'notary-submission.zip'));
     fs.writeFileSync(path.join(output, 'production-release-receipt.json'), 'later');
-    assert.throws(() => assertResumeStage(output), /later or unknown stage/);
-  } finally { fs.rmSync(output, { recursive: true, force: true }); }
+    assert.throws(() => assertResumeStage(output, assembly), /later or unknown stage/);
+    fs.rmSync(path.join(output, 'production-release-receipt.json'));
+    fs.writeFileSync(path.join(output, '__MACOSX'), 'transient metadata');
+    assert.throws(() => assertResumeStage(output, assembly), /later or unknown stage/);
+    fs.rmSync(path.join(output, '__MACOSX'));
+    fs.writeFileSync(path.join(output, 'Home23/release.json'), 'modified release');
+    assert.throws(() => assertResumeStage(output, assembly), /companion differs/);
+    fs.writeFileSync(path.join(output, 'Home23/release.json'), 'original release.json');
+    fs.chmodSync(path.join(output, 'Home23/Start Here.txt'), 0o600);
+    assert.throws(() => assertResumeStage(output, assembly), /companion differs/);
+    fs.chmodSync(path.join(output, 'Home23/Start Here.txt'), 0o644);
+    fs.writeFileSync(path.join(output, 'Home23/extra.txt'), 'unknown');
+    assert.throws(() => assertResumeStage(output, assembly), /later or unknown stage/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('signed-runtime partial tree accepts only signed native bytes, manifest and two exact production files', async () => {

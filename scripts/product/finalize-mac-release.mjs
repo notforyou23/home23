@@ -405,12 +405,26 @@ export async function assertSignedRuntimePartial({ originalApp, partialApp, runt
   return (await appTreeDigest(partialApp)).sha256;
 }
 
-export function assertResumeStage(output) {
+export function assertResumeStage(output, assembly) {
   const release = path.join(output, 'Home23');
-  for (const [directory, names] of [[output, ['Home23']], [release, ['Home23.app']]]) {
+  const originalRelease = path.join(assembly, 'Home23');
+  for (const [directory, names] of [[output, ['Home23']],
+    [release, ['Home23.app', 'Start Here.txt', 'release.json']],
+    [originalRelease, ['Home23.app', 'Start Here.txt', 'release.json']]]) {
     if (!fs.lstatSync(directory).isDirectory() || fs.lstatSync(directory).isSymbolicLink() ||
         JSON.stringify(fs.readdirSync(directory).sort()) !== JSON.stringify(names)) {
       throw new Error('Partial finalization contains a later or unknown stage');
+    }
+  }
+  for (const name of ['Start Here.txt', 'release.json']) {
+    const original = path.join(originalRelease, name), copied = path.join(release, name);
+    const originalStat = fs.lstatSync(original), copiedStat = fs.lstatSync(copied);
+    if (!originalStat.isFile() || originalStat.isSymbolicLink() ||
+        !copiedStat.isFile() || copiedStat.isSymbolicLink() ||
+        (originalStat.mode & 0o777) !== (copiedStat.mode & 0o777) ||
+        originalStat.size !== copiedStat.size ||
+        !fs.readFileSync(original).equals(fs.readFileSync(copied))) {
+      throw new Error(`Partial assembly companion differs: ${name}`);
     }
   }
   const app = path.join(release, 'Home23.app');
@@ -433,7 +447,7 @@ async function inspectSignedRuntimePartial(options, input) {
     throw new Error('Partial output must be a real directory');
   }
   const output = real(options.output);
-  const { release, app } = assertResumeStage(output);
+  const { release, app } = assertResumeStage(output, input.assembly);
   const helper = path.join(app, 'Contents/Library/LoginItems/Home23Host.app');
   const runtime = path.join(helper, 'Contents/Resources/Home23Runtime');
   const originalCode = discoverCode(input.runtime);
