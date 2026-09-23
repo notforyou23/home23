@@ -69,14 +69,16 @@ test('MemoryChannel.poll retains legacy fields and adds Darwin pressure plus raw
   assert.equal(sample.memoryPressure.available, true);
 });
 
-test('MemoryChannel uses pressure capacity instead of raw free for low-memory crystallization', () => {
+test('MemoryChannel uses healthy Darwin pressure capacity instead of low raw free', () => {
   const ch = new MemoryChannel({ lowFreePctThreshold: 10, platform: 'darwin' });
-  const healthy = ch.verify({
-    payload: { freePct: 1.8, rawFreePct: 1.8, pressureFreePct: 42 },
-    sourceRef: 'm:pressure',
-    producedAt: '2026-08-22T20:00:00Z',
-  });
-  assert.equal(ch.crystallize(healthy), null);
+  for (const [rawFreePct, pressureFreePct] of [[0.7, 48], [6.7, 53]]) {
+    const healthy = ch.verify({
+      payload: { freePct: rawFreePct, rawFreePct, pressureFreePct },
+      sourceRef: `m:pressure:${pressureFreePct}`,
+      producedAt: '2026-09-23T12:00:00Z',
+    });
+    assert.equal(ch.crystallize(healthy), null);
+  }
 });
 
 test('MemoryChannel never crystallizes Darwin raw free when pressure is absent', () => {

@@ -131,11 +131,13 @@ test('DiscoveryEngine allows repeated machine observation bucket after dedupe wi
 
 test('DiscoveryEngine prefers Darwin pressure capacity buckets over raw free percent', () => {
   const cases = [
-    [10, 'critical'],
-    [20, 'severe'],
-    [35, 'low'],
-    [50, 'tight'],
-    [50.1, 'normal'],
+    [5, 'critical'],
+    [10, 'severe'],
+    [15, 'low'],
+    [20, 'tight'],
+    [20.1, 'normal'],
+    [48, 'normal'],
+    [53, 'normal'],
   ];
 
   for (const [pressureFreePct, bucket] of cases) {
@@ -151,6 +153,41 @@ test('DiscoveryEngine prefers Darwin pressure capacity buckets over raw free per
     }), true);
     assert.equal(d.pop(1)[0].key, `observation:machine.memory:memory:${bucket}`);
   }
+});
+
+test('DiscoveryEngine keeps healthy Darwin pressure variation in one normal bucket', () => {
+  const d = engine();
+  const base = {
+    channelId: 'machine.memory',
+    flag: 'COLLECTED',
+    confidence: 0.95,
+    payload: {
+      freePct: 0.7,
+      rawFreePct: 0.7,
+      memoryPressure: {
+        source: 'memory_pressure -Q',
+        available: true,
+      },
+    },
+  };
+
+  assert.equal(d.injectObservation({
+    ...base,
+    sourceRef: 'mem:48',
+    producedAt: '2026-05-01T12:00:00.000Z',
+    payload: { ...base.payload, pressureFreePct: 48 },
+  }), true);
+  assert.equal(d.pop(1)[0].key, 'observation:machine.memory:memory:normal');
+
+  for (const [pressureFreePct, minute] of [[53, 10], [49, 20]]) {
+    assert.equal(d.injectObservation({
+      ...base,
+      sourceRef: `mem:${pressureFreePct}`,
+      producedAt: `2026-05-01T12:${minute}:00.000Z`,
+      payload: { ...base.payload, pressureFreePct },
+    }), false);
+  }
+  assert.equal(d.peek(1).length, 0);
 });
 
 test('DiscoveryEngine retains legacy raw-free memory buckets without pressure capacity', () => {
