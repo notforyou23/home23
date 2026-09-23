@@ -792,14 +792,36 @@ export function sourceAdoptionSnapshot(source, paths, identity) {
   return hash.digest('hex');
 }
 
-function copyPreservedState(source, destination, paths) {
+function copyPreservedState(source, destination, paths, manifest) {
+  const sourceBuffer = Buffer.allocUnsafe(1024 * 1024);
+  const destinationBuffer = Buffer.allocUnsafe(sourceBuffer.length);
+  const copiedBytesEqual = (from, to, size) => {
+    const targetStat = lstatSync(to);
+    if (!targetStat.isFile() || targetStat.isSymbolicLink()) throw new Error(`Preserved file destination is not regular: ${to}`);
+    if (targetStat.size !== size) return false;
+    const sourceFd = openSync(from, 'r');
+    let targetFd;
+    try {
+      targetFd = openSync(to, 'r');
+      while (true) {
+        const count = readSync(sourceFd, sourceBuffer, 0, sourceBuffer.length, null);
+        const targetCount = readSync(targetFd, destinationBuffer, 0, count || 1, null);
+        if (count !== targetCount || !sourceBuffer.subarray(0, count).equals(destinationBuffer.subarray(0, targetCount))) return false;
+        if (count === 0) return true;
+      }
+    } finally {
+      if (targetFd !== undefined) closeSync(targetFd);
+      closeSync(sourceFd);
+    }
+  };
   for (const entry of preservedDirectories(paths)) {
     const mapped = preservedDirectoryDestination(entry);
     if (!mapped) throw new Error(`Preserved directory has no destination: ${entry.path}`);
     const to = join(destination, mapped);
     mkdirSync(to, { recursive: true, mode: mapped.startsWith('runtime/') ? 0o700 : 0o755 });
     const mode = lstatSync(join(source, entry.path)).mode & 0o777;
-    chmodSync(to, mode & (sensitivePresenceOnly(entry.path) ? 0o700 : 0o777));
+    const desiredMode = mode & (sensitivePresenceOnly(entry.path) ? 0o700 : 0o777);
+    if ((lstatSync(to).mode & 0o777) !== desiredMode) chmodSync(to, desiredMode);
   }
   for (const entry of copyableEntries(paths)) {
     const mapped = entry.mapping.destination;
@@ -810,10 +832,14 @@ function copyPreservedState(source, destination, paths) {
     const mode = mapped === 'runtime' || mapped.startsWith('runtime/') ? 0o700 : 0o755;
     mkdirSync(dirname(to), { recursive: true, mode });
     if (mapped.startsWith('runtime/')) {
-      try { chmodSync(join(destination, 'runtime'), 0o700); } catch { /* created mode may already be private */ }
+      try {
+        const runtime = join(destination, 'runtime');
+        if ((lstatSync(runtime).mode & 0o777) !== 0o700) chmodSync(runtime, 0o700);
+      } catch { /* created mode may already be private */ }
     }
-    copyFileSync(from, to);
-    chmodSync(to, (stat.mode & 0o777) & (sensitivePresenceOnly(entry.path) || entry.path.endsWith('.key') || entry.path === 'evobrew/config.json' ? 0o600 : 0o777));
+    if (!marker(destination, mapped) || !copiedBytesEqual(from, to, stat.size)) copyFileSync(from, to);
+    const desiredMode = (stat.mode & 0o777) & (sensitivePresenceOnly(entry.path) || entry.path.endsWith('.key') || entry.path === 'evobrew/config.json' ? 0o600 : 0o777);
+    if ((lstatSync(to).mode & 0o777) !== desiredMode) chmodSync(to, desiredMode);
   }
   const destinationForSourcePath = absolute => {
     const relative = relativePath(source, absolute).split(sep).join('/');
@@ -826,6 +852,15 @@ function copyPreservedState(source, destination, paths) {
       return join(destination, mapped, relative.slice(anchor.path.length).replace(/^\//, ''));
     }
     if (['instances', 'config', 'engine', 'evobrew'].some(root => relative === root || relative.startsWith(`${root}/`))) return join(destination, 'app', relative);
+    // These exact source software roots are replaced by the verified package.
+    // A reviewed internal link to one may follow its installed counterpart.
+    if (['cli', 'scripts', 'shared'].includes(relative)
+      && paths.some(item => item.path === relative && item.type === 'directory' && item.role === 'rebuildable')
+      && manifest.files.some(item => item.path.startsWith(`app/${relative}/`))) {
+      const installed = join(destination, 'app', relative);
+      const stat = lstatSync(installed);
+      if (stat.isDirectory() && !stat.isSymbolicLink()) return installed;
+    }
     throw new Error(`Internal preserved link target has no reviewed destination: ${relative}`);
   };
   for (const entry of linkedEntries(paths)) {
@@ -1274,7 +1309,7 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
         return refuseAdoption(plan, [reason(error.code || 'process_inventory_unavailable', error.message)], destination);
       }
       if (dependencies.beforePreserveCopy) await dependencies.beforePreserveCopy({ source, destination, journal, releaseLock });
-      copyPreservedState(source, destination, plan.inventory.paths);
+      copyPreservedState(source, destination, plan.inventory.paths, manifest);
       if (dependencies.afterPreserveCopy) await dependencies.afterPreserveCopy({ source, destination, journal, releaseLock });
       // Re-walk after copy so files created during the window change the snapshot.
       const liveReasons = [];

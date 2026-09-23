@@ -32,7 +32,8 @@ function fixture(t, { sourceCommit = 'a'.repeat(40), platform = process.platform
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const payload = path.join(root, 'payload'), home = path.join(root, 'home');
   for (const [relative, contents] of Object.entries({ 'bin/node': '#!/bin/sh\n', 'app/cli/home23.js': 'export {};\n',
-    'app/cli/lib/product-payload.js': 'export {};\n', 'app/scripts/product/host.mjs': 'export {};\n', 'tools/node_modules/pm2/bin/pm2': 'pm2\n',
+    'app/cli/lib/product-payload.js': 'export {};\n', 'app/scripts/product/host.mjs': 'export {};\n',
+    'app/shared/agent-process-names.cjs': 'module.exports = {};\n', 'tools/node_modules/pm2/bin/pm2': 'pm2\n',
     'app/dist/coordination/migrations/index.js': 'throw new Error("Candidate code must never execute in a preview");\n',
     'app/dist/coordination/migrations/0001-spine.js': 'throw new Error("Do not import migrations");\n',
     'app/dist/coordination/contracts/v1/pack-manifest.json': '{}\n',
@@ -390,6 +391,51 @@ test('reviewed adoption retains operator bytes and exact external, internal, and
   fs.symlinkSync('/different/jobs', path.join(destination, 'app/instances/ada/coding-jobs'));
   const changed = await inspectUpdateInventory(destination, { installed: pack.manifest, candidate: pack.manifest });
   assert.ok(changed.reasons.some(item => item.code === 'linked_state_changed'));
+});
+
+test('reviewed internal links to replaced software roots use installed package directories', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const entries = [];
+  for (const root of ['cli', 'scripts', 'shared']) {
+    fs.mkdirSync(path.join(source.home, root));
+    entries.push({ path: root, action: 'replace' });
+    const link = `instances/ada/${root}-link`;
+    fs.symlinkSync(`../../${root}`, path.join(source.home, link));
+    entries.push({ path: link, action: 'retain-link', destination: `app/${link}`, target: `../../${root}` });
+  }
+  const preservationPlan = { schema: 'home23.adoption-preservation.v1', sourceRoot: source.home, entries };
+  const plan = planManagedSourceAdoption(source.home, { preservationPlan });
+  assert.equal(plan.canAdopt, true, JSON.stringify(plan.reasons));
+  const destination = path.join(pack.root, 'destination');
+  const adopted = await adoptManagedSourceHome({ sourceHome: source.home, destinationRoot: destination,
+    payloadPath: pack.payload, preservationPlan }, adoptionDeps());
+  assert.equal(adopted.ok, true, JSON.stringify(adopted.reasons));
+  for (const root of ['cli', 'scripts', 'shared']) {
+    assert.equal(fs.readlinkSync(path.join(destination, `app/instances/ada/${root}-link`)), path.join(destination, 'app', root));
+  }
+});
+
+test('adoption replay verifies equal copied bytes before skipping and recopies differences', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const sourceInstance = path.join(source.home, 'instances/ada');
+  fs.writeFileSync(path.join(sourceInstance, 'same.txt'), 'same source bytes\n');
+  fs.writeFileSync(path.join(sourceInstance, 'different.txt'), 'original source bytes\n');
+  const destination = path.join(pack.root, 'destination');
+  const input = { sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload };
+  await assert.rejects(adoptManagedSourceHome(input, adoptionDeps({
+    afterPreserveCopy: async () => { throw new Error('interrupted after copy'); },
+  })), /interrupted after copy/);
+  const same = path.join(destination, 'app/instances/ada/same.txt');
+  const different = path.join(destination, 'app/instances/ada/different.txt');
+  const preservedTime = new Date('2001-01-01T00:00:00Z');
+  fs.utimesSync(same, preservedTime, preservedTime);
+  fs.writeFileSync(different, 'changed destination bytes\n');
+  const resumed = await adoptManagedSourceHome(input, adoptionDeps());
+  assert.equal(resumed.ok, true, JSON.stringify(resumed.reasons));
+  assert.equal(fs.statSync(same).mtimeMs, preservedTime.getTime());
+  assert.equal(fs.readFileSync(different, 'utf8'), 'original source bytes\n');
 });
 
 test('retained legacy authority stays one external directory through adoption', async t => {
