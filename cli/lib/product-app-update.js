@@ -1,6 +1,7 @@
 /** Mac application preparation and swap. Invoke apply from a detached survivor. */
 import { execFileSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { verifyProductPayload } from './product-payload.js';
 
@@ -10,6 +11,28 @@ function appInfo(app) {
   const plist = join(app, 'Contents/Info.plist');
   if (!existsSync(plist)) throw fail('app_invalid', 'Application metadata is missing');
   return JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist]));
+}
+const CLAIM_SCHEMA = 'home23.prepared-app.v1';
+function saveClaim(path, claim) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  const fd = openSync(temporary, 'wx', 0o600);
+  try { writeSync(fd, JSON.stringify(claim) + '\n'); fsyncSync(fd); }
+  finally { closeSync(fd); }
+  renameSync(temporary, path);
+  const directory = openSync(dirname(path), 'r');
+  try { fsyncSync(directory); } finally { closeSync(directory); }
+}
+function readClaim(path, expected) {
+  if (!existsSync(path) || !lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) {
+    throw fail('app_invalid', 'Prepared application claim is missing');
+  }
+  let claim;
+  try { claim = JSON.parse(readFileSync(path, 'utf8')); }
+  catch { throw fail('app_invalid', 'Prepared application claim is unreadable'); }
+  if (claim.schema !== CLAIM_SCHEMA || !Object.entries(expected).every(([key, value]) => claim[key] === value)) {
+    throw fail('app_busy', 'Prepared application claim belongs to another release or location');
+  }
+  return claim;
 }
 export function verifyPreparedMacApplication({ appPath, release, full = true }) {
   const app = resolve(appPath);
@@ -54,24 +77,25 @@ export function prepareMacApplication({ archivePath, installedAppPath, release }
   const prepared = join(parent, `.home23-next-${suffix}.app`);
   const claim = `${prepared}.json`;
   const lifecycle = join(parent, `.home23-lifecycle-${suffix}`);
+  const previous = join(parent, `.home23-previous-${release.appBuild}.app`);
+  const expected = { packageId: release.packageId, appBuild: release.appBuild, version: release.version,
+    installedAppPath: installed, preparedAppPath: prepared, previousAppPath: previous, lifecyclePath: lifecycle };
   if (!existsSync(prepared) && existsSync(claim)) {
-    const recorded = JSON.parse(readFileSync(claim, 'utf8'));
-    if (recorded.packageId !== release.packageId || recorded.appBuild !== release.appBuild) {
-      throw fail('app_busy', 'A different prepared application claim occupies this update path');
+    const recorded = readClaim(claim, expected);
+    if (existsSync(previous) && existsSync(installed)) {
+      verifyPreparedMacApplication({ appPath: installed, release, full: false });
+      return { ...expected, resumed: true };
     }
+    if (recorded.phase !== 'prepared') throw fail('app_busy', 'An application swap is in progress; resume it before preparing again');
     rmSync(claim, { force: true });
     rmSync(lifecycle, { force: true });
   }
   if (existsSync(prepared)) {
-    const recorded = existsSync(claim) ? JSON.parse(readFileSync(claim, 'utf8')) : null;
-    if (recorded?.packageId !== release.packageId || recorded?.appBuild !== release.appBuild) {
-      throw fail('app_busy', 'A different prepared application occupies this update path');
-    }
+    readClaim(claim, expected);
     try {
       verifyPreparedMacApplication({ appPath: prepared, release });
       if (!existsSync(lifecycle)) throw fail('app_invalid', 'Prepared lifecycle tool is missing');
-      return { installedAppPath: installed, preparedAppPath: prepared, lifecyclePath: lifecycle,
-        appBuild: release.appBuild, packageId: release.packageId, resumed: true };
+      return { ...expected, resumed: true };
     } catch {
       rmSync(prepared, { recursive: true, force: true });
       rmSync(claim, { force: true });
@@ -89,8 +113,7 @@ export function prepareMacApplication({ archivePath, installedAppPath, release }
     if (!existsSync(sourceTool)) throw fail('app_invalid', 'Application lifecycle tool is missing');
     copyFileSync(sourceTool, lifecycle);
     chmodSync(lifecycle, 0o700);
-    writeFileSync(claim, JSON.stringify({ schema: 'home23.prepared-app.v1', packageId: release.packageId,
-      appBuild: release.appBuild }) + '\n', { flag: 'wx', mode: 0o600 });
+    saveClaim(claim, { schema: CLAIM_SCHEMA, ...expected, phase: 'prepared' });
   } catch (error) {
     rmSync(prepared, { recursive: true, force: true });
     rmSync(lifecycle, { force: true });
@@ -99,12 +122,13 @@ export function prepareMacApplication({ archivePath, installedAppPath, release }
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
-  return { installedAppPath: installed, preparedAppPath: prepared, lifecyclePath: lifecycle,
-    appBuild: release.appBuild, packageId: release.packageId, resumed: false };
+  return { ...expected, resumed: false };
 }
 
 /** No database rollback: only the Mac bundle is restored if the new one cannot open. */
-export function applyPreparedMacApplication({ installedAppPath, preparedAppPath, lifecyclePath, release, relaunch = true }) {
+export function applyPreparedMacApplication({ installedAppPath, preparedAppPath, lifecyclePath, release, relaunch = true }, dependencies = {}) {
+  const inspect = dependencies.verifyPreparedMacApplication || verifyPreparedMacApplication;
+  const execute = dependencies.run || run;
   const installed = resolve(installedAppPath), prepared = resolve(preparedAppPath);
   if (basename(installed) !== 'Home23.app' || dirname(installed) !== dirname(prepared)) {
     throw fail('app_invalid', 'Application swap must use an adjacent Home23.app');
@@ -112,27 +136,52 @@ export function applyPreparedMacApplication({ installedAppPath, preparedAppPath,
   const suffix = `${release.appBuild}-${release.packageId.slice(0, 12)}`;
   const expectedLifecycle = join(dirname(installed), `.home23-lifecycle-${suffix}`);
   const claim = `${prepared}.json`;
-  if (resolve(lifecyclePath) !== expectedLifecycle || !existsSync(lifecyclePath)
-      || !existsSync(claim) || JSON.parse(readFileSync(claim, 'utf8')).packageId !== release.packageId) {
-    throw fail('app_invalid', 'Prepared application claim is missing or changed');
-  }
-  verifyPreparedMacApplication({ appPath: prepared, release, full: false });
   const previous = join(dirname(installed), `.home23-previous-${release.appBuild}.app`);
-  if (existsSync(previous)) throw fail('app_busy', 'Previous application recovery copy already exists');
-  run(lifecyclePath, ['terminate', installed, String(release.appBuild)]);
-  renameSync(installed, previous);
+  if (resolve(lifecyclePath) !== expectedLifecycle) throw fail('app_invalid', 'Application lifecycle path changed');
+  const expected = { packageId: release.packageId, appBuild: release.appBuild, version: release.version,
+    installedAppPath: installed, preparedAppPath: prepared, previousAppPath: previous, lifecyclePath: expectedLifecycle };
+  let state = readClaim(claim, expected);
+  const worker = existsSync(lifecyclePath) ? lifecyclePath : join(installed, 'Contents/Resources/home23-app-lifecycle');
+  if (!existsSync(worker)) throw fail('app_invalid', 'Application lifecycle tool is missing');
+  const previousPresent = existsSync(previous), installedPresent = existsSync(installed), preparedPresent = existsSync(prepared);
+  if (!previousPresent) {
+    if (!installedPresent || !preparedPresent) throw fail('app_invalid', 'Application swap inputs are incomplete');
+    inspect({ appPath: prepared, release, full: false });
+    state = { ...state, phase: 'terminating' }; saveClaim(claim, state);
+    execute(worker, ['terminate', installed, String(release.appBuild)]);
+    renameSync(installed, previous);
+    state = { ...state, phase: 'previousMoved' }; saveClaim(claim, state);
+  } else if (installedPresent && preparedPresent) {
+    throw fail('app_busy', 'Application swap has conflicting installed and prepared bundles');
+  }
   let launchEvidence = null;
   try {
-    renameSync(prepared, installed);
-    if (relaunch) launchEvidence = run(lifecyclePath, ['launch', installed, String(release.appBuild)]).trim();
+    if (!existsSync(installed)) {
+      if (!existsSync(prepared)) throw fail('app_invalid', 'Both installed and prepared applications are missing');
+      inspect({ appPath: prepared, release, full: false });
+      renameSync(prepared, installed);
+      state = { ...state, phase: 'installedReplaced' }; saveClaim(claim, state);
+    } else {
+      inspect({ appPath: installed, release, full: false });
+    }
+    if (relaunch) {
+      launchEvidence = execute(worker, ['launch', installed, String(release.appBuild)]).trim();
+      state = { ...state, phase: 'reopened', launchEvidence }; saveClaim(claim, state);
+    }
   } catch (error) {
-    if (existsSync(installed)) renameSync(installed, prepared);
-    renameSync(previous, installed);
-    try { run(lifecyclePath, ['launch', installed, String(appInfo(installed).CFBundleVersion)]); } catch { /* Preserve original failure. */ }
+    if (existsSync(previous)) {
+      try {
+        if (existsSync(installed)) {
+          execute(worker, ['terminate', installed, String(release.appBuild)]);
+          if (!existsSync(prepared)) renameSync(installed, prepared);
+        }
+        if (!existsSync(installed)) renameSync(previous, installed);
+        state = { ...state, phase: 'prepared', launchEvidence: null }; saveClaim(claim, state);
+        execute(worker, ['launch', installed, String(appInfo(installed).CFBundleVersion)]);
+      } catch { /* Preserve original failure and recovery files. */ }
+    }
     throw error;
   }
-  rmSync(claim, { force: true });
-  rmSync(lifecyclePath, { force: true });
   return { status: relaunch ? 'reopened' : 'replaced', appPath: installed, previousAppPath: previous,
     appBuild: release.appBuild, launchEvidence };
 }
