@@ -1,8 +1,8 @@
 /** Product installation preview and managed/source adoption. Preview stays read-only. */
 import { createHash } from 'node:crypto';
 import {
-  copyFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync,
-  realpathSync, renameSync, symlinkSync, writeFileSync,
+  closeSync, copyFileSync, chmodSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync,
+  readlinkSync, readSync, realpathSync, renameSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, relative as relativePath, resolve, sep } from 'node:path';
@@ -732,6 +732,19 @@ const ADOPTION_IDENTITY_FILES = [
   'instances/.house/source-authority.json',
 ];
 
+function hashFileBytes(hash, file) {
+  const descriptor = openSync(file, 'r');
+  const chunk = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead;
+    while ((bytesRead = readSync(descriptor, chunk, 0, chunk.length, null)) !== 0) {
+      hash.update(chunk.subarray(0, bytesRead));
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 /** Snapshot of preserved bytes, identity inputs, and mapping destinations. */
 export function sourceAdoptionSnapshot(source, paths, identity) {
   const hash = createHash('sha256');
@@ -752,7 +765,7 @@ export function sourceAdoptionSnapshot(source, paths, identity) {
     if (!stat.isFile() || stat.isSymbolicLink()) continue;
     hash.update(relative);
     hash.update('\0');
-    hash.update(readFileSync(absolute));
+    hashFileBytes(hash, absolute);
     hash.update('\0');
   }
   for (const entry of copyableEntries(paths).sort((a, b) => a.path.localeCompare(b.path))) {
@@ -760,7 +773,7 @@ export function sourceAdoptionSnapshot(source, paths, identity) {
     hash.update('\0');
     hash.update(entry.mapping.destination);
     hash.update('\0');
-    hash.update(readFileSync(join(source, entry.path)));
+    hashFileBytes(hash, join(source, entry.path));
     hash.update('\0');
   }
   for (const entry of linkedEntries(paths).sort((a, b) => a.path.localeCompare(b.path))) {

@@ -876,6 +876,38 @@ function interruptedJournal(sourceHome, destination, payloadPath) {
   return journal;
 }
 
+test('adoption snapshot streams file bytes without changing the legacy digest', t => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-snapshot-'));
+  t.after(() => fs.rmSync(source, { recursive: true, force: true }));
+  const relative = 'preserved.bin';
+  const contents = Buffer.alloc(1024 * 1024 + 7, 0x5a);
+  fs.writeFileSync(path.join(source, relative), contents);
+  const identity = { profile: { name: 'jerry' }, residents: ['jerry'] };
+  const paths = [{ path: relative, type: 'file', mapping: { action: 'copy', destination: 'app/preserved.bin' } }];
+  const legacy = createHash('sha256');
+  legacy.update(JSON.stringify({ profileName: 'jerry', encoderRequired: false, fingerprint: null,
+    identitySource: null, residents: ['jerry'], residentMap: null, writers: null }));
+  legacy.update('\0');
+  legacy.update(relative);
+  legacy.update('\0');
+  legacy.update('app/preserved.bin');
+  legacy.update('\0');
+  legacy.update(contents);
+  legacy.update('\0');
+  assert.equal(sourceAdoptionSnapshot(source, paths, identity), legacy.digest('hex'));
+});
+
+test('adoption snapshot accepts a sparse file beyond the Node buffer limit', t => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-large-snapshot-'));
+  t.after(() => fs.rmSync(source, { recursive: true, force: true }));
+  const descriptor = fs.openSync(path.join(source, 'large.bin'), 'w');
+  try { fs.ftruncateSync(descriptor, 2 * 1024 * 1024 * 1024 + 1); }
+  finally { fs.closeSync(descriptor); }
+  const snapshot = sourceAdoptionSnapshot(source, [{ path: 'large.bin', type: 'file',
+    mapping: { action: 'copy', destination: 'app/large.bin' } }], { profile: { name: 'jerry' } });
+  assert.match(snapshot, /^[a-f0-9]{64}$/);
+});
+
 test('a pre-existing completed adoption journal is not success', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root);
