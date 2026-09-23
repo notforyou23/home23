@@ -93,9 +93,44 @@ those require their separately recorded journeys on that exact release set.
 
 ## Production signing and integrity order
 
-The local command above is **not** the Developer ID signing pipeline. Consumer
-signing must be prepared separately against an agreed release, without silently
-changing any already-tested artifact:
+`scripts/product/finalize-mac-release.mjs` implements this order from a verified
+local assembly. Run `--plan` first with its `--assembly`, `--payload`,
+`--backend-source`, `--apple-source`, `--prebuilt-client`,
+`--prebuilt-client-receipt`, `--developer-dir`, and a **new** `--output` directory.
+The plan reads the input archive, app tree, clean source commits, embedded
+runtime, Host source receipt, and prebuilt client receipt. It reports missing
+production inputs without opening signing private keys, contacting Apple, or
+creating the output. The input archive SHA-256 and source/build receipts must
+all match; a manually edited local receipt cannot designate an arbitrary app
+as a production release.
+
+`--execute` additionally requires `--identity` (the installed Developer ID
+Application SHA-1), `--entitlements` (production Mac plist),
+`--node-entitlements` (Node hardened-runtime plist), `--mac-profile` (matching
+Developer ID provisioning profile), `--channel-config` (approved private HTTPS
+manifest URL and publisher public key), and `--notary-profile` (existing
+notarytool Keychain profile). The Mac plist must preserve the source sandbox,
+file, network, media, APNs, and time-sensitive capabilities, use production
+APNs, and bind the exact app and Team IDs authorized by the profile. The Node
+plist must preserve its JIT/native-loader runtime exceptions and omit
+`get-task-allow`. Neither a development profile nor an Apple Distribution
+identity substitutes for Developer ID Application signing.
+
+Execution copies the exact verified assembly, signs all bundled Mach-O leaves
+and nested frameworks from inside out, rebuilds the signed runtime manifest,
+then signs Host and the visible app. It verifies signed Node entitlements and
+runs a small local Node/native-module smoke without loading a model or home.
+Only after signature and capability readback does it submit through notarytool,
+staple, assess, and generate final runtime/app archives and
+`production-release-receipt.json`. The existing `sign-channel-release.mjs`
+accepts that receipt to sign the manifest from **those final archive bytes**;
+it does not upload anything. An interrupted or rejected finalization leaves no
+publisher-ready receipt. Do not use `--execute`, provide Keychain access, or
+submit to Apple until the owner authorizes that exact release and credentials.
+
+The earlier `assemble-mac-release.mjs` command is **not** the Developer ID
+signing pipeline. Consumer finalization follows these boundaries against an
+agreed release, without silently changing an already-tested input:
 
 1. Build the runtime and apps from frozen source. Complete signing of runtime
    executables, native modules and nested code first. Code signing can change
