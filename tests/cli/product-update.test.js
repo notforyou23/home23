@@ -673,6 +673,57 @@ test('real rebind and host status keep distinct resident ports; Start refuses un
   assert.equal(locked.error?.code, 'supervisor_lock_unavailable');
 });
 
+test('reviewed managed network bindings keep exact legacy ports through adoption', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root, { hostRecord: false, name: 'jerry', residents: { jerry: {}, forrest: {} } });
+  const shared = { coordination: 15000, engine: 15001, dashboard: 15002, mcp: 15003,
+    bridge: 15004, evobrew: 15005, observatory: 15006 };
+  const residents = { jerry: { engine: 15001, dashboard: 15002, mcp: 15003, bridge: 15004 },
+    forrest: { engine: 15011, dashboard: 15012, mcp: 15013, bridge: 15014 } };
+  fs.writeFileSync(path.join(source.home, 'config/home.yaml'), 'home:\n  primaryAgent: jerry\nsubstrate:\n  observatory:\n    port: 15006\n');
+  fs.writeFileSync(path.join(source.home, 'instances/.house/coordination/ecosystem.config.cjs'),
+    'module.exports = { apps: [{ name: "home23-coordination", env: { HOME23_COORDINATION_PORT: "15000" } }] };\n');
+  for (const [name, ports] of Object.entries(residents)) {
+    fs.writeFileSync(path.join(source.home, `instances/${name}/config.yaml`),
+      `name: ${name}\nports:\n${Object.entries(ports).map(([key, value]) => `  ${key}: ${value}`).join('\n')}\n`);
+  }
+  fs.mkdirSync(path.join(source.home, 'evobrew'), { recursive: true });
+  fs.writeFileSync(path.join(source.home, 'evobrew/config.json'), '{"server":{"port":15005}}\n');
+  const evidencePaths = ['config/home.yaml', 'evobrew/config.json',
+    'instances/.house/coordination/active-release.json', 'instances/.house/coordination/ecosystem.config.cjs',
+    'instances/jerry/config.yaml', 'instances/forrest/config.yaml'];
+  const evidence = Object.fromEntries(evidencePaths.map(file => [file,
+    createHash('sha256').update(fs.readFileSync(path.join(source.home, file))).digest('hex')]));
+  const preservationPlan = { schema: 'home23.adoption-preservation.v1', sourceRoot: source.home, entries: [],
+    networkBindings: { schema: 'home23.adoption-network-bindings.v1', shared, residents, evidence } };
+  assert.equal(planManagedSourceAdoption(source.home, { preservationPlan }).canAdopt, true);
+  const destination = path.join(pack.root, 'destination');
+  const adopted = await adoptManagedSourceHome({ sourceHome: source.home, destinationRoot: destination,
+    payloadPath: pack.payload, preservationPlan }, { Database, listWriters: async () => [] });
+  assert.equal(adopted.ok, true);
+  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8'));
+  assert.deepEqual(host.ports, shared);
+  assert.deepEqual(host.residentMap.jerry.ports, residents.jerry);
+  assert.deepEqual(host.residentMap.forrest.ports, residents.forrest);
+  assert.equal((await runHostAction('status', { homeRoot: destination })).ok, true);
+  const moved = path.join(pack.root, 'moved');
+  fs.cpSync(destination, moved, { recursive: true });
+  for (const subpath of ['runtime', 'runtime/user', 'runtime/pm2']) {
+    if (fs.existsSync(path.join(moved, subpath))) fs.chmodSync(path.join(moved, subpath), 0o700);
+  }
+  await rebindAdoptedHome(destination, moved);
+  const movedHost = JSON.parse(fs.readFileSync(path.join(moved, '.home23-host.json'), 'utf8'));
+  assert.deepEqual(movedHost.ports, shared);
+  assert.deepEqual(movedHost.residentMap.forrest.ports, residents.forrest);
+  assert.equal((await runHostAction('status', { homeRoot: moved })).ok, true);
+  movedHost.residentMap.forrest.ports.engine = 15021;
+  fs.writeFileSync(path.join(moved, '.home23-host.json'), JSON.stringify(movedHost), { mode: 0o600 });
+  await assert.rejects(runHostAction('status', { homeRoot: moved }), /network bindings differ/);
+  const changed = { ...preservationPlan, networkBindings: { ...preservationPlan.networkBindings,
+    shared: { ...shared, coordination: 15020 } } };
+  assert.throws(() => planManagedSourceAdoption(source.home, { preservationPlan: changed }), /differs from source/);
+});
+
 test('listSourceWriters inventories PATH pm2 with product PM2 sockets stripped', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: {} } });

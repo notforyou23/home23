@@ -123,7 +123,19 @@ function stateFor(root) {
   if (state.homeRoot !== root) throw new Error('This Home23 state belongs to another installation.');
   if (state.schema === 'home23.host.v2') {
     // Adoption may write v2 with encoderRequired false and residentMap.
-    validatePortPlan(state.ports, { encoderRequired: state.encoderRequired === true });
+    if (state.networkBindings) {
+      const receipt = readPrivateJSON(join(root, 'runtime/adoption-preservation.json'));
+      if (state.networkBindings.schema !== 'home23.adoption-network-bindings.v1'
+        || JSON.stringify(receipt?.networkBindings || null) !== JSON.stringify(state.networkBindings)
+        || JSON.stringify(state.ports) !== JSON.stringify(state.networkBindings.shared)
+        || Object.keys(state.residentMap || {}).sort().join('|') !== Object.keys(state.networkBindings.residents || {}).sort().join('|')
+        || Object.entries(state.networkBindings.residents || {}).some(([name, ports]) =>
+          JSON.stringify(state.residentMap?.[name]?.ports || null) !== JSON.stringify(ports))) {
+        throw new Error('Continuing-home network bindings differ from their sealed adoption receipt.');
+      }
+    }
+    validatePortPlan(state.ports, { encoderRequired: state.encoderRequired === true,
+      continuingBindings: Boolean(state.networkBindings) });
     return state;
   }
   if (state.schema !== 'home23.host.v1' || state.encoderRequired === true) throw new Error('This Home23 state belongs to another installation.');
@@ -762,7 +774,9 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
         error: { code: 'host_semantic_prepare_required', message: 'Semantic memory is still preparing. Resume preparation before starting this home. Your saved home stays in place.' } };
     }
     const allRunning = names.every(name => processes.some(row => row.name === name && row.status === 'online'));
-    if (!processes.some(row => row.status === 'online')) await withReservedPorts(state.ports, async () => {}, { encoderRequired: encoderRequiredFor(state) });
+    if (!processes.some(row => row.status === 'online')) await withReservedPorts(state.ports, async () => {}, {
+      encoderRequired: encoderRequiredFor(state), continuingBindings: Boolean(state.networkBindings),
+    });
     state = { ...state, desiredRunning: true, phase: 'starting', startedAt: new Date().toISOString() };
     privateJSON(statePath(homeRoot), state);
     await authorizeInitialHostPairing(homeRoot, true);

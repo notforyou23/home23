@@ -25,7 +25,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor } from './product-environment.js';
+import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { isProductStatePath, isRebuildableStatePath, ownedWriterNames, SUPPORTED_COORDINATION_SCHEMA } from './product-update-inventory.js';
 
@@ -1305,14 +1305,19 @@ function sourceHomePresent(source) {
   }
 }
 
-function prepareAdoptionBindings(destination, host, source, oldPorts, newPorts) {
-  if (!host.continuationServices?.length) return null;
+function prepareAdoptionBindings(destination, host, source, oldPorts, newPorts, { adopting = false } = {}) {
+  // Initial managed adoption already sealed these exact run bindings in the
+  // source plan; rebasing against the retained source would corrupt deliberate
+  // external authorities such as Evobrew and Caddy.
+  if (adopting) return null;
+  if (!host.continuationServices?.length && !host.networkBindings) return null;
   const file = join(destination, 'runtime/adoption-preservation.json');
   const before = readFileSync(file);
   const receipt = readPrivateJSON(file);
   if (receipt?.schema !== 'home23.adoption-preservation-receipt.v1'
     || !Array.isArray(receipt.continuationServices)
-    || JSON.stringify(host.continuationServices) !== JSON.stringify(
+    || JSON.stringify(receipt.networkBindings || null) !== JSON.stringify(host.networkBindings || null)
+    || JSON.stringify(host.continuationServices || []) !== JSON.stringify(
       receipt.continuationServices.map(service => ({ name: service.name, ...service.run })))) {
     fail('move_rebind_incomplete', 'Continuing services do not match their sealed adoption receipt.');
   }
@@ -1326,7 +1331,7 @@ function prepareAdoptionBindings(destination, host, source, oldPorts, newPorts) 
     receipt: rebound };
 }
 
-async function prepareRebindPlan(source, destination) {
+async function prepareRebindPlan(source, destination, { adopting = false } = {}) {
   const host = readHostState(destination);
   const recordedHomeRoot = (typeof host.homeRoot === 'string' && isAbsolute(host.homeRoot) && !host.homeRoot.includes('\0'))
     ? resolve(host.homeRoot)
@@ -1349,12 +1354,26 @@ async function prepareRebindPlan(source, destination) {
     oldPorts = host.ports && typeof host.ports === 'object' ? host.ports : null;
   }
   let ports = host.ports && typeof host.ports === 'object' ? { ...host.ports } : null;
-  const disjoint = Boolean(oldPorts && ports && Number.isInteger(ports.coordination) && ports.coordination !== oldPorts.coordination);
-  if (!disjoint) ports = await choosePortPlan({ encoderRequired: host.encoderRequired === true });
+  if (host.networkBindings) {
+    if (host.networkBindings.schema !== 'home23.adoption-network-bindings.v1'
+      || JSON.stringify(ports) !== JSON.stringify(host.networkBindings.shared)) {
+      fail('move_rebind_incomplete', 'Continuing-home network bindings changed.');
+    }
+    validatePortPlan(ports, { encoderRequired: host.encoderRequired === true, continuingBindings: true });
+    await withReservedPorts(ports, async () => {}, { encoderRequired: host.encoderRequired === true, continuingBindings: true });
+  } else {
+    const disjoint = Boolean(oldPorts && ports && Number.isInteger(ports.coordination) && ports.coordination !== oldPorts.coordination);
+    if (!disjoint) ports = await choosePortPlan({ encoderRequired: host.encoderRequired === true });
+  }
   let residentPorts = null;
   if (host.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap)) {
     const residents = Object.keys(host.residentMap).filter(name => /^[a-z][a-z0-9-]{0,62}$/.test(name));
-    if (residents.length > 1) residentPorts = residentInstancePortSets(ports, residents);
+    if (host.networkBindings) {
+      residentPorts = host.networkBindings.residents;
+      if (Object.keys(residentPorts || {}).sort().join('|') !== residents.sort().join('|')) {
+        fail('move_rebind_incomplete', 'Continuing-home resident network bindings changed.');
+      }
+    } else if (residents.length > 1) residentPorts = residentInstancePortSets(ports, residents);
   }
   return {
     rewriteFrom,
@@ -1364,7 +1383,7 @@ async function prepareRebindPlan(source, destination) {
     recordedHomeRoot,
     sourcePresent,
     encoderRequired: host.encoderRequired === true,
-    adoptionBindings: prepareAdoptionBindings(destination, host, rewriteFrom, oldPorts, ports),
+    adoptionBindings: prepareAdoptionBindings(destination, host, rewriteFrom, oldPorts, ports, { adopting }),
   };
 }
 
@@ -1389,7 +1408,7 @@ async function rebindDestination(source, destination, options = {}) {
       fail('move_rebind_incomplete', 'Recovery rebind plan is incomplete.');
     }
   } else {
-    const prepared = await prepareRebindPlan(source, destination);
+    const prepared = await prepareRebindPlan(source, destination, { adopting: options.adoptManagedSource === true });
     rewriteFrom = prepared.rewriteFrom;
     oldPorts = prepared.oldPorts;
     ports = prepared.ports;
