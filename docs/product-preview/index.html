@@ -154,204 +154,98 @@
   <main>
     <header>
       <p class="brand">Home23</p>
-      <h1>Release preview</h1>
-      <p class="lede">
-        Local outline of the Mac-hosted owner path: install Host, create your
-        own home, talk and import documents, open the dashboard, check for
-        updates, recover, and back up or move. This file is documentation for
-        review—not a live product site and not a download page.
-      </p>
-      <p class="notice">
-        Public downloads are unavailable. There is no published download URL,
-        store listing, or public update feed on this page. A local engineering
-        candidate exists only on disk (ad-hoc signed, not notarized, not
-        published, not installed): package
-        <code>72a996151605ab2580eb6060a62abdf762d3246f5502cff1c19cce73bfaa01a5</code>,
-        archive
-        <code>Home23-arm64-72a996151605-c4fdd5a4bbf6.zip</code>
-        (sha256
-        <code>e4fd3a2da590123db4049a61422b4ba366594ac78c8d9f4dec9698e863d0c148</code>,
-        448010070 bytes), backend
-        <code>98aa10a0</code>, Apple
-        <code>c4fdd5a4</code>. Host
-        <code>com.home23.host</code> 0.1 (14+); Mac client
-        <code>com.regina6.home23.mac</code> 2.0 build 140 (27+); combined
-        minimum macOS 27.0 arm64. An ad-hoc signature is not consumer
-        distribution. Do not treat this preview as Developer&nbsp;ID,
-        notarization, TestFlight, or owner-home readiness.
-      </p>
+      <h1>Your home, on iPhone and iPad</h1>
+      <p class="lede">Talk, work and return to your shared history from Home23.
+        Your Mac keeps the home running in the background.</p>
+      <p class="notice">Release preview. Downloads and family invitation links
+        are not available yet. This guide describes the prepared experience;
+        signed delivery, continuing-home cutover and physical-device acceptance
+        are still pending.</p>
     </header>
 
-    <nav class="toc" aria-label="Journeys on this page">
-      <h2>Journeys</h2>
+    <nav class="toc" aria-label="Using Home23">
+      <h2>Getting started</h2>
       <ol>
-        <li><a href="#install">Install a Mac-hosted home</a></li>
-        <li><a href="#create">Create the home and connect your provider</a></li>
-        <li><a href="#talk">Talk and import documents</a></li>
-        <li><a href="#dashboard">Open the dashboard</a></li>
-        <li><a href="#updates">Check for updates</a></li>
-        <li><a href="#recovery">Recovery and adoption</a></li>
-        <li><a href="#backup">Back up and move</a></li>
+        <li><a href="#install">Install Home23</a></li>
+        <li><a href="#connect">Connect iPhone and iPad</a></li>
+        <li><a href="#daily">Use your home</a></li>
+        <li><a href="#updates">Update Home23</a></li>
+        <li><a href="#recovery">Recover and back up</a></li>
       </ol>
     </nav>
 
     <section id="install">
-      <h2>1. Install a Mac-hosted home</h2>
-      <p>
-        The consumer path starts on a Mac with <strong>Home23 Host</strong>—the
-        companion that runs and keeps your home. The Mac conversation client is a
-        separate app; installing a client does not create another home. Closing a
-        conversation app does not stop the home; availability still depends on
-        Host being running, awake, and reachable.
-      </p>
-      <p>
-        Local assembly of Host + Mac client (not performed from this page) uses
-        <code>node scripts/product/assemble-mac-release.mjs</code> against a
-        verified Darwin payload and a pinned Apple checkout. See
-        <code>SIGNING.md</code> for that command, the current local candidate
-        path, and the owner actions still required before any public download.
-      </p>
-      <p class="boundary">
-        Intended delivery is a signed, notarized Host download from a public
-        website. That website and download are not selected or published here.
-        Source/operator setup (Git, npm, Terminal) remains a separate developer
-        path.
-      </p>
+      <h2>1. Install Home23</h2>
+      <p>Install the Home23 app on your Mac. It includes the background home
+        manager and the software your home needs; they update together.</p>
+      <p>For a new home, choose <strong>Set up or open a home</strong>, enter your
+        home and resident details, and connect your model provider. Anthropic
+        and OpenAI account sign-in, supported API providers and local models
+        are available choices. Follow the preparation status, then create and
+        start your home.</p>
+      <p>If you already have a home, open or connect to it. Keep its residents,
+        conversations, files and existing model settings. Bringing an older
+        installation onto this release is a separate prepared transfer; creating
+        a new home does not transfer your history.</p>
+      <p>In Home23 Settings, turn on <strong>Run my home at login</strong> and
+        approve it in macOS Login Items if asked. The home manager then starts
+        behind the scenes. A home you explicitly stopped stays stopped.</p>
+      <p class="boundary">This release targets Apple silicon Macs with macOS 27
+        and iPhone/iPad with iOS/iPadOS 27. Keep the Mac awake and connected when
+        you want your home available.</p>
     </section>
 
-    <section id="create">
-      <h2>2. Create the home and connect your provider</h2>
-      <p>
-        Creating a home is a shared birth operation: your own owner context,
-        residents, purpose, credentials, and Seed lineage. It does not copy
-        another person’s resident or lived memory. After birth, connect a model
-        provider you control so the home talks with your account—not a shared
-        developer fixture.
-      </p>
-      <ul>
-        <li>Choose or confirm the resident and home purpose during first-run.</li>
-        <li>Connect your own provider; understand readiness and costs before relying on it.</li>
-        <li>If you already have a home, connect a client or dashboard to that home—do not run birth again.</li>
-      </ul>
-      <p class="boundary">
-        Hosted homes for people without a Mac are later work, not an available
-        setup button on this preview.
-      </p>
+    <section id="connect">
+      <h2>2. Connect iPhone and iPad</h2>
+      <p>On the Mac, open <strong>Connect a device</strong> in the home manager.
+        Follow the private connection setup, then copy or share the verified
+        home address. Open Home23 on each iPhone or iPad, enter that address and
+        finish pairing.</p>
+      <p>Each device connects to the same home. Existing paired devices keep
+        their saved identity when the app is updated. Your model-provider
+        credentials remain with the home.</p>
     </section>
 
-    <section id="talk">
-      <h2>3. Talk and import documents</h2>
-      <p>
-        Once the home is running and a provider is connected, converse with your
-        resident and bring in documents so memory belongs to that home. Apps and
-        the private dashboard access the same home; feature parity should be
-        checked, not assumed.
-      </p>
-      <ul>
-        <li>Talk through the Mac client or the home’s private dashboard when those surfaces are available for your install.</li>
-        <li>Import starter folders or documents as part of first-run or later ingestion—not as a copy of someone else’s private library.</li>
-        <li>Embeddings and retrieval readiness are part of setup; an interrupted or degraded path should be explained honestly.</li>
-      </ul>
-    </section>
-
-    <section id="dashboard">
-      <h2>4. Open the dashboard</h2>
-      <p>
-        Each home serves a <strong>private web dashboard</strong> in a browser.
-        The intended Host action is <strong>Open Dashboard</strong>, using that
-        home’s actual address. <strong>Open Home23</strong> remains the native
-        client action. The dashboard is a full way to use the home; it is not
-        replaced by a public marketing site.
-      </p>
-      <p class="boundary">
-        Current packaged services often bind to loopback. A browser on another
-        machine cannot use a Mac’s <code>localhost</code> until a secure
-        home-specific address and access flow exist. Cross-device and Windows
-        browser access are delivery work—not advertised as ready from this page.
-      </p>
+    <section id="daily">
+      <h2>3. Use your home</h2>
+      <p>Use Talk for conversations, Work for ongoing tasks, and Library for
+        your home’s material. Your Mac can stay in the background while you use
+        iPhone or iPad. You can also use the Mac client.</p>
+      <p>On the Mac, <strong>Manage this home and backups…</strong> in Settings
+        opens setup, account and backup controls when you need them.
+        <strong>Open Dashboard</strong> opens the home’s private web dashboard.</p>
     </section>
 
     <section id="updates">
-      <h2>5. Check for updates</h2>
-      <p>
-        Host is meant to offer <strong>Check for Updates</strong>: show the
-        installed version, any available version, release notes, and
-        compatibility. Checking alone must not stop a home, migrate data, or
-        download a runtime. An unavailable or unconfigured feed must not be
-        reported as “up to date.”
-      </p>
-      <p>
-        Development Check can pass a local <code>--trust-key</code> only when the
-        dispatched runtime’s
-        <code>app/scripts/product/host-command-contract.json</code> lists
-        <code>check-update</code> in <code>trustKeyActions</code>. A missing or
-        older contract omits the flag. That verifies a development Ed25519
-        signature over the release <code>packageId</code>; it is not public
-        publisher trust and is not the same as this ad-hoc Mac ZIP. Production
-        trust claims and bad signatures are refused.
-        <code>canInstall</code> stays false on Check.
-      </p>
-      <p>
-        <strong>Download and Install</strong> (when delivered) verifies and stages
-        a release while the current home keeps working, with a chance to defer
-        before a disruptive step and clear recovery if something interrupts.
-        Download and install-staged still require a development trust key on
-        controllers that accept those actions.
-      </p>
-      <p class="boundary">
-        There is no public update feed. Package
-        <code>72a996151605…</code> is a local engineering candidate only; it is
-        not published for Check/Download as a consumer release.
-      </p>
+      <h2>4. Update Home23</h2>
+      <p>On iPhone, iPad or Mac, open Settings → Home →
+        <strong>Check for updates</strong>. Review the available version and
+        choose <strong>Update Home23</strong>. Progress remains attached to the
+        same update if your app disconnects or closes.</p>
+      <p>If Home23 says it is reconnecting, wait for the home’s status to return.
+        Use <strong>Refresh status</strong> to check again. If an interrupted
+        update offers <strong>Resume update</strong>, use it to continue.</p>
+      <p>When this device needs a newer app, <strong>Get Home23 app update</strong>
+        opens its supported installation route. Other compatible family devices
+        can update later. A missing release connection is shown as unavailable;
+        it does not mean your software is current.</p>
     </section>
 
     <section id="recovery">
-      <h2>6. Recovery and adoption</h2>
-      <p>
-        Interrupted update recovery resumes from durable journal evidence for
-        that home. A stopped home must remain stopped; desired-running choice is
-        preserved across a successful cutover. Recovery after a failed or
-        interrupted update is not the same as adopting a managed or source
-        installation into a product home.
-      </p>
-      <p class="boundary">
-        Managed and source adoption stay unavailable until a held supervisor
-        fence exists that keeps every resident’s writers quiet for the copy
-        window. A completed adoption journal alone is not success
-        (<code>supervisor_fence_unavailable</code>). Product writer lists and
-        release maintenance locks are not that fence. Multi-resident managed
-        homes are unsupported until each resident’s process set and Seed
-        identity are preserved under the fence.
-      </p>
-    </section>
-
-    <section id="backup">
-      <h2>7. Back up and move</h2>
-      <p>
-        <strong>Back Up Home</strong> and <strong>Move Home</strong> preserve the
-        existing home rather than create a new resident. Backup streams an
-        encrypted archive only when owned writers are quiet and the host
-        lifecycle lock is held. Inspect/restore authenticates the archive before
-        writers start. Move restores into an empty destination, rebinds that
-        copy’s home path, and fences the source so Start there refuses rather
-        than running two lives of one individual.
-      </p>
-      <p class="boundary">
-        Missing external folders, services, or credentials should appear as
-        reconnection work—not as silent omissions. Native Host UI for these
-        operations is delivery work; operator host commands are not a substitute
-        for a finished owner journey.
-      </p>
+      <h2>5. Recover and back up</h2>
+      <p>Follow the update’s recovery message if it needs attention. If local
+        recovery is required, open <strong>Manage this home and backups…</strong>
+        on the Mac. Backups retain your existing home and can be inspected before
+        recovery starts it. Keep the backup and its recovery key safe.</p>
+      <p>Some continuing homes depend on external folders or integrations.
+        Recovery identifies those connections so missing material is handled
+        before the home resumes.</p>
     </section>
 
     <footer>
-      <p>
-        Open this file locally from
-        <code>docs/product-preview/index.html</code>.
-        Owner approval steps for Developer&nbsp;ID signing, notarization, a
-        public feed, and TestFlight are listed in <code>SIGNING.md</code>
-        (checklist only—do not run signing or packaging from that file).
-      </p>
+      <p>Local preview only. Release preparation:
+        <a href="SIGNING.md">signing and platform delivery</a> ·
+        <a href="PRIVATE-CHANNEL.md">private release channel</a>.</p>
     </footer>
   </main>
 </body>
