@@ -870,7 +870,7 @@ function isRebindMutablePath(relative) {
   return false;
 }
 
-const CURSOR_PATH = /^app\/instances\/[^/]+\/substrate\/[^/]+\/adapter-cursor\.([a-zA-Z0-9_-]+)\.json$/;
+const CURSOR_PATH = /^app\/instances\/[^/]+\/(?:substrate\/[^/]+|seed-[^/]+)\/adapter-cursor\.([a-zA-Z0-9_-]+)\.json$/;
 
 function cursorId(sourcePath) {
   return `tail_${sha256(Buffer.from(sourcePath, 'utf8')).slice(0, 8)}`;
@@ -902,13 +902,21 @@ function cursorFiles(destination) {
   assertNoSymlinkAncestors(destination, instances);
   for (const resident of readdirSync(join(destination, instances))) {
     if (!/^[a-z][a-z0-9-]{0,62}$/.test(resident)) continue;
-    const substrate = `${instances}/${resident}/substrate`;
-    if (!exists(join(destination, substrate))) continue;
-    assertNoSymlinkAncestors(destination, substrate);
-    if (!lstatSync(join(destination, substrate)).isDirectory()) fail('move_rebind_incomplete', `Invalid Seed state directory: ${substrate}`);
-    for (const seed of readdirSync(join(destination, substrate))) {
-      if (!/^[^/.][^/]*$/.test(seed)) continue;
-      const state = `${substrate}/${seed}`;
+    const residentPath = `${instances}/${resident}`;
+    assertNoSymlinkAncestors(destination, residentPath);
+    if (!lstatSync(join(destination, residentPath)).isDirectory()) continue;
+    // Older continuing residents keep seed-01 directly below the resident
+    // (Clay), while current homes use substrate/seed-01. Both are state.
+    const states = readdirSync(join(destination, residentPath))
+      .filter(name => /^seed-[^/]+$/.test(name)).map(name => `${residentPath}/${name}`);
+    const substrate = `${residentPath}/substrate`;
+    if (exists(join(destination, substrate))) {
+      assertNoSymlinkAncestors(destination, substrate);
+      if (!lstatSync(join(destination, substrate)).isDirectory()) fail('move_rebind_incomplete', `Invalid Seed state directory: ${substrate}`);
+      states.push(...readdirSync(join(destination, substrate))
+        .filter(name => /^[^/.][^/]*$/.test(name)).map(name => `${substrate}/${name}`));
+    }
+    for (const state of states) {
       assertNoSymlinkAncestors(destination, state);
       if (!lstatSync(join(destination, state)).isDirectory()) continue;
       for (const leaf of readdirSync(join(destination, state))) {
