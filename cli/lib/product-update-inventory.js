@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { absoluteHome, readPrivateJSON, socketRootFor } from './product-environment.js';
-import { PRODUCT_STATE_PATHS } from './product-payload.js';
+import { PRODUCT_STATE_PATHS, isProductStatePath } from './product-payload.js';
 import { compareUpdateContracts } from './product-update-plan.js';
 
 export const SUPPORTED_COORDINATION_SCHEMA = 20;
@@ -15,10 +15,7 @@ const SCAN_FILES = ['.home23-host.json', 'app/.home23-state.json', 'app/config/h
 const ADOPTED_LINK_RECEIPT = 'runtime/adoption-preservation.json';
 const REBUILDABLE_PREFIXES = ['app/logs/', 'app/engine/logs/', 'app/engine/runtime/', 'runtime/pm2/', 'runtime/embedder-cache/', 'runtime/user/', 'runtime/.host.lock/'];
 
-export function isProductStatePath(relative) {
-  return PRODUCT_STATE_PATHS.some(entry => relative === entry.path ||
-    ((entry.type === 'directory' || entry.allowDescendants) && relative.startsWith(`${entry.path}/`)));
-}
+export { isProductStatePath };
 function containsState(relative) {
   return isProductStatePath(relative) || PRODUCT_STATE_PATHS.some(entry => entry.path.startsWith(`${relative}/`));
 }

@@ -269,7 +269,7 @@ function walkAdoptionPaths(root, reasons, reviewed = null) {
           if (role !== 'unknown' && role !== 'preserve') reasons.push(reason('invalid_preservation_choice', `Path ${relative} cannot use this preserve choice.`, { path: relative }));
           role = 'preserve';
         } else if (type !== 'symlink') reasons.push(reason('invalid_preservation_choice', `Path ${relative} is not a link.`, { path: relative }));
-        else if (role === 'unknown') role = 'preserve';
+        else if (role !== 'rebind') role = 'preserve';
       } else if (inherited && role === 'unknown') role = 'preserve';
       const entry = { path: relative, type, role };
       if (decision?.action === 'retain-authority') { entry.reviewedAuthority = true; entry.target = decision.target; }
