@@ -135,10 +135,16 @@ export const PRODUCT_STATE_PATHS = Object.freeze([
     'app/projects', 'app/workspace', 'app/archive', 'app/reports', 'app/output',
     'app/keep-export', 'app/published', 'app/configs', 'app/agency',
     ...['.evobrew-workspaces', 'conversations', 'snapshots'].map(name => `app/evobrew/${name}`),
-    ...['runtime', 'logs', 'runs', 'data', 'artifacts', 'outputs', 'backups', '.backups'].map(name => `app/engine/${name}`),
+    ...['runtime', 'logs', 'runs', 'data', 'artifacts', 'outputs', 'backups', '.backups', 'config', '.venv-markitdown'].map(name => `app/engine/${name}`),
   ].map(path => Object.freeze({ path, type: 'directory', role: 'preserve' })),
 ]);
-function isLocalState(relative) {
+// These maintained files share parent directories with adopted operator state.
+// Keep the software namespace in the package and archive source variants under
+// the reviewed preservation root during adoption.
+export function isProductStatePath(relative) {
+  if (relative === 'app/workspace/skills' || relative.startsWith('app/workspace/skills/')
+    || ['app/configs/action-allowlist.yaml', 'app/configs/base-engine.yaml', 'app/agency/charter.yaml',
+      'app/engine/config/image.json'].includes(relative)) return false;
   return PRODUCT_STATE_PATHS.some(entry => relative === entry.path ||
     ((entry.type === 'directory' || entry.allowDescendants) && relative.startsWith(entry.path + '/')));
 }
@@ -159,14 +165,14 @@ export function verifyProductPayload(payloadPath, { allowRuntimeState = false } 
       const relative = prefix ? `${prefix}/${name}` : name;
       if (relative === 'manifest.json') continue;
       if (!expectedPaths.has(relative)) {
-        if (allowRuntimeState && isLocalState(relative)) continue;
+        if (allowRuntimeState && isProductStatePath(relative)) continue;
         throw new Error(`Unexpected product file: ${relative}`);
       }
       if (fs.lstatSync(path.join(root, relative)).isDirectory()) checkExtra(path.join(root, relative), relative);
     }
   }
   checkExtra(root);
-  if (!allowRuntimeState && manifest.files.some(entry => entry.type !== 'directory' && !entry.path.endsWith('/.gitkeep') && isLocalState(entry.path))) throw new Error('A product payload cannot contain installation state');
+  if (!allowRuntimeState && manifest.files.some(entry => entry.type !== 'directory' && !entry.path.endsWith('/.gitkeep') && isProductStatePath(entry.path))) throw new Error('A product payload cannot contain installation state');
   return manifest;
 }
 function installationReceipt(homeRoot, manifest, replayed) {

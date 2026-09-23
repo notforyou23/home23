@@ -4,7 +4,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { writeProductManifest, verifyProductPayload, installProductPayload } from '../../cli/lib/product-payload.js';
+import { writeProductManifest, verifyProductPayload, installProductPayload, isProductStatePath } from '../../cli/lib/product-payload.js';
+
+test('mixed operator roots retain state without absorbing maintained software', () => {
+  for (const path of ['app/workspace/skills/index.js', 'app/configs/base-engine.yaml',
+    'app/configs/action-allowlist.yaml', 'app/agency/charter.yaml', 'app/engine/config/image.json']) {
+    assert.equal(isProductStatePath(path), false, path);
+  }
+  for (const path of ['app/workspace/operator-note.md', 'app/configs/local.yaml',
+    'app/agency/local.json', 'app/engine/config/local.json']) {
+    assert.equal(isProductStatePath(path), true, path);
+  }
+});
 
 function fixture(t) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-product-')));
