@@ -55,11 +55,17 @@ function dnsName(status) {
 
 function routeAt(serve, domain, port) {
   // Funnel on this port would make the route public; never adopt or replace it.
-  if (serve?.AllowFunnel?.[String(port)]) return 'conflict';
+  const usesPort = key => key.endsWith(`:${port}`);
+  if (Object.entries(serve?.AllowFunnel || {}).some(([key, enabled]) => enabled === true && usesPort(key))) return 'conflict';
+  // A foreground Serve session is ephemeral and belongs to another CLI. Even
+  // an apparently matching route must not be replaced by our --bg --yes call.
+  if (Object.values(serve?.Foreground || {}).some(config =>
+    config?.TCP?.[String(port)] || Object.keys(config?.Web || {}).some(usesPort)
+      || Object.entries(config?.AllowFunnel || {}).some(([key, enabled]) => enabled === true && usesPort(key)))) return 'conflict';
   const tcp = serve?.TCP?.[String(port)];
   const web = serve?.Web || {};
   const expectedKey = `${domain}:${port}`;
-  const otherWeb = Object.keys(web).filter(key => key.endsWith(`:${port}`) && key !== expectedKey);
+  const otherWeb = Object.keys(web).filter(key => usesPort(key) && key !== expectedKey);
   if (otherWeb.length || (tcp && tcp.HTTPS !== true)) return 'conflict';
   const handlers = web[expectedKey]?.Handlers;
   if (!tcp && !handlers) return 'missing';
@@ -86,7 +92,8 @@ async function probe(address, request = fetch) {
     });
     if (!response.ok) return false;
     const body = await response.json();
-    return body !== null && typeof body === 'object' && !Array.isArray(body);
+    return body?.pairingAvailable === true && body?.capabilities?.bootstrap === true
+      && body?.capabilities?.messageSubmission === true;
   } catch { return false; }
 }
 
