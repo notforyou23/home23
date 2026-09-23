@@ -341,6 +341,7 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
   };
   const visit = async relative => {
     if (!relative || seen.has(relative) || isRebuildableStatePath(relative) || omitSidecar(relative)) return;
+    if (!isProductStatePath(relative)) return;
     const absolute = join(homeRoot, relative);
     if (!exists(absolute)) return;
     const stat = lstatSync(absolute);
@@ -371,7 +372,13 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
     add(relative, 'file', absolute, stat.size);
   };
   try {
-    for (const entry of PRODUCT_STATE_PATHS) {
+    // Walk each state tree once, starting at its highest declared root. A
+    // separately listed child must not follow a retained authority symlink
+    // and copy its files before the link itself is archived.
+    const roots = PRODUCT_STATE_PATHS.filter(entry => !PRODUCT_STATE_PATHS.some(parent =>
+      parent !== entry && (parent.type === 'directory' || parent.allowDescendants)
+      && entry.path.startsWith(`${parent.path}/`)));
+    for (const entry of roots) {
       if (!exists(join(homeRoot, entry.path))) continue;
       await visit(entry.path);
     }
@@ -889,7 +896,7 @@ function symlinkMatchesArchivedTarget(destination, sourceHome, linkRelative, ent
   }
 }
 
-function assertExtractMatchesArchive(destination, header, { allowRebindMutation = false } = {}) {
+function assertExtractMatchesArchive(destination, header, { allowRebindMutation = false, adoptionReceiptHashes = [] } = {}) {
   const sourceHome = resolve(header.homeRoot);
   for (const entry of header.files) {
     if (!entry || typeof entry.path !== 'string' || !safeRelative(entry.path)) {
@@ -901,6 +908,11 @@ function assertExtractMatchesArchive(destination, header, { allowRebindMutation 
     if (!exists(absolute)) {
       fail('backup_recover_archive_mismatch', `Inspected home is missing archived path: ${entry.path}`);
     }
+    // Rebinding service paths updates this receipt, but never grants a blanket
+    // exemption to its sealed authority links or original source bindings.
+    if (allowRebindMutation && entry.path === 'runtime/adoption-preservation.json'
+      && entry.type === 'file' && lstatSync(absolute).isFile()
+      && adoptionReceiptHashes.includes(streamHash(absolute))) continue;
     if (entry.type === 'symlink') {
       if (!symlinkMatchesArchivedTarget(destination, sourceHome, entry.path, entry.sha256)) {
         fail('backup_recover_archive_mismatch', `Inspected home does not match the authenticated archive: ${entry.path}`);
@@ -984,7 +996,9 @@ function revalidateRecoveryDestination(destination, header, binding, phase, jour
     if (resolve(host.homeRoot) !== destination) {
       fail('backup_recover_archive_mismatch', 'Interrupted recovery no longer points at this destination.');
     }
-    assertExtractMatchesArchive(destination, header, { allowRebindMutation: true });
+    const adoption = journal?.rebindPlan?.adoptionBindings;
+    assertExtractMatchesArchive(destination, header, { allowRebindMutation: true,
+      adoptionReceiptHashes: adoption ? [adoption.beforeHash, adoption.afterHash] : [] });
     return;
   }
   fail('backup_recover_journal_invalid', 'Recovery journal has an unknown phase.');
@@ -1193,7 +1207,17 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     // A reviewed adoption may leave legacy Evobrew as one external authority.
     // Rebinding its config through the adopted link would mutate live source
     // material, so only destination-owned files are rewritten.
-    if (adopted && !inside(destination, realpathSync(file))) continue;
+    if (!inside(destination, realpathSync(file))) {
+      const parts = relative.split('/');
+      const reviewed = parts.some((_, index) => {
+        const prefix = parts.slice(0, index + 1).join('/');
+        const ancestor = join(destination, prefix);
+        return lstatSync(ancestor).isSymbolicLink()
+          && reviewedAdoptedLink(destination, prefix, readlinkSync(ancestor));
+      });
+      if (reviewed) continue;
+      fail('move_rebind_incomplete', `Destination ${relative} has an unreviewed external authority.`);
+    }
     let config;
     try { config = JSON.parse(readFileSync(file, 'utf8')); }
     catch { fail('move_rebind_incomplete', `Destination ${relative} could not be read.`); }
@@ -1281,6 +1305,27 @@ function sourceHomePresent(source) {
   }
 }
 
+function prepareAdoptionBindings(destination, host, source, oldPorts, newPorts) {
+  if (!host.continuationServices?.length) return null;
+  const file = join(destination, 'runtime/adoption-preservation.json');
+  const before = readFileSync(file);
+  const receipt = readPrivateJSON(file);
+  if (receipt?.schema !== 'home23.adoption-preservation-receipt.v1'
+    || !Array.isArray(receipt.continuationServices)
+    || JSON.stringify(host.continuationServices) !== JSON.stringify(
+      receipt.continuationServices.map(service => ({ name: service.name, ...service.run })))) {
+    fail('move_rebind_incomplete', 'Continuing services do not match their sealed adoption receipt.');
+  }
+  const rebound = { ...receipt, continuationServices: receipt.continuationServices.map(service => ({
+    ...service,
+    // The original source binding remains historical evidence. Only the
+    // current run binding moves; external authorities keep their exact paths.
+    run: rewriteMachineStrings(service.run, source, destination, oldPorts, newPorts),
+  })) };
+  return { beforeHash: sha256(before), afterHash: sha256(Buffer.from(`${JSON.stringify(rebound, null, 2)}\n`)),
+    receipt: rebound };
+}
+
 async function prepareRebindPlan(source, destination) {
   const host = readHostState(destination);
   const recordedHomeRoot = (typeof host.homeRoot === 'string' && isAbsolute(host.homeRoot) && !host.homeRoot.includes('\0'))
@@ -1301,6 +1346,7 @@ async function prepareRebindPlan(source, destination) {
       fail('move_rebind_incomplete', 'Destination host has no recorded home path to rewrite from.');
     }
     rewriteFrom = recordedHomeRoot;
+    oldPorts = host.ports && typeof host.ports === 'object' ? host.ports : null;
   }
   let ports = host.ports && typeof host.ports === 'object' ? { ...host.ports } : null;
   const disjoint = Boolean(oldPorts && ports && Number.isInteger(ports.coordination) && ports.coordination !== oldPorts.coordination);
@@ -1318,6 +1364,7 @@ async function prepareRebindPlan(source, destination) {
     recordedHomeRoot,
     sourcePresent,
     encoderRequired: host.encoderRequired === true,
+    adoptionBindings: prepareAdoptionBindings(destination, host, rewriteFrom, oldPorts, ports),
   };
 }
 
@@ -1329,6 +1376,7 @@ async function rebindDestination(source, destination, options = {}) {
   let ports;
   let residentPorts = null;
   let sourcePresent;
+  let adoptionBindings = null;
 
   if (plan) {
     rewriteFrom = plan.rewriteFrom;
@@ -1336,6 +1384,7 @@ async function rebindDestination(source, destination, options = {}) {
     ports = plan.ports && typeof plan.ports === 'object' ? { ...plan.ports } : null;
     residentPorts = plan.residentPorts && typeof plan.residentPorts === 'object' ? plan.residentPorts : null;
     sourcePresent = plan.sourcePresent === true;
+    adoptionBindings = plan.adoptionBindings || null;
     if (typeof rewriteFrom !== 'string' || !isAbsolute(rewriteFrom) || !ports) {
       fail('move_rebind_incomplete', 'Recovery rebind plan is incomplete.');
     }
@@ -1346,8 +1395,16 @@ async function rebindDestination(source, destination, options = {}) {
     ports = prepared.ports;
     residentPorts = prepared.residentPorts;
     sourcePresent = prepared.sourcePresent;
+    adoptionBindings = prepared.adoptionBindings;
   }
 
+  if (adoptionBindings) {
+    const file = join(destination, 'runtime/adoption-preservation.json');
+    if (![adoptionBindings.beforeHash, adoptionBindings.afterHash].includes(streamHash(file))) {
+      fail('move_rebind_incomplete', 'The sealed adoption receipt changed during recovery.');
+    }
+    host.continuationServices = adoptionBindings.receipt.continuationServices.map(service => ({ name: service.name, ...service.run }));
+  }
   host.homeRoot = destination;
   host.desiredRunning = false;
   host.phase = 'stopped';
@@ -1359,6 +1416,7 @@ async function rebindDestination(source, destination, options = {}) {
   }
   writeFileSync(join(destination, '.home23-host.json'), `${JSON.stringify(host, null, 2)}\n`, { mode: 0o600 });
   if (options.afterHostWrite) await options.afterHostWrite(destination, host);
+  if (adoptionBindings) writePrivateJSON(join(destination, 'runtime/adoption-preservation.json'), adoptionBindings.receipt);
   await rebindMachineConfiguration(rewriteFrom, destination, oldPorts, host.ports, {
     residentPorts, adopted: options.adoptManagedSource === true,
   });
