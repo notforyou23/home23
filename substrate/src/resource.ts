@@ -31,21 +31,24 @@ export class ResourceAccounting {
 
   // ─── Ceiling checks ────────────────────────────────────────────────────────
 
-  assertEventBudget(): void {
-    if (this._eventCount >= this.budget.maxEventCount) {
-      throw new ResourceBudgetExceededError('eventCount', this._eventCount, this.budget.maxEventCount);
+  assertEventBudget(requiredEvents = 1): void {
+    const limit = Math.min(this.budget.maxEventCount, Number.MAX_SAFE_INTEGER);
+    if (this._eventCount > limit - requiredEvents) {
+      throw new ResourceBudgetExceededError('eventCount', this._eventCount, limit);
     }
   }
 
   assertTransitionBudget(): void {
-    if (this._transitionCount >= this.budget.maxTransitionCount) {
-      throw new ResourceBudgetExceededError('transitionCount', this._transitionCount, this.budget.maxTransitionCount);
+    const limit = Math.min(this.budget.maxTransitionCount, Number.MAX_SAFE_INTEGER);
+    if (this._transitionCount >= limit) {
+      throw new ResourceBudgetExceededError('transitionCount', this._transitionCount, limit);
     }
   }
 
   assertCheckpointBudget(): void {
-    if (this._checkpointCount >= this.budget.maxCheckpointCount) {
-      throw new ResourceBudgetExceededError('checkpointCount', this._checkpointCount, this.budget.maxCheckpointCount);
+    const limit = Math.min(this.budget.maxCheckpointCount, Number.MAX_SAFE_INTEGER);
+    if (this._checkpointCount >= limit) {
+      throw new ResourceBudgetExceededError('checkpointCount', this._checkpointCount, limit);
     }
   }
 

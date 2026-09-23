@@ -528,15 +528,18 @@ export class SeedRunner {
   stop(): void {
     this.running = false;
     if (this.timer !== null) clearTimeout(this.timer);
-    if (this.seed !== null) {
-      const checkpointId = this.seed.stop();
-      this.log(`stopped at checkpoint ${checkpointId}, ledgerSeq ${this.seed.getState().ledgerSeq}`);
+    try {
+      if (this.seed !== null) {
+        const checkpointId = this.seed.stop();
+        this.log(`stopped at checkpoint ${checkpointId}, ledgerSeq ${this.seed.getState().ledgerSeq}`);
+      }
+    } finally {
       this.seed = null;
       this.adapters = [];
-    }
-    if (this.lockPath !== null) {
-      try { unlinkSync(this.lockPath); } catch { /* already gone */ }
-      this.lockPath = null;
+      if (this.lockPath !== null) {
+        try { unlinkSync(this.lockPath); } catch { /* already gone */ }
+        this.lockPath = null;
+      }
     }
   }
 

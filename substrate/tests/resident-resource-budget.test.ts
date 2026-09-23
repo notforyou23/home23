@@ -53,7 +53,9 @@ test('resident restores lifetime counters past old ceilings without rebirth; def
   const before = runner.seedProcess.getState();
   assert.equal(before.seedId, identity);
   assert.equal(before.transitionCount, 50_000);
-  assert.equal(before.eventCount, 100_000);
+  assert.equal(before.eventCount, 100_001, 'the accepted checkpoint receipt counts after the snapshot');
+  assert.equal(runner.seedProcess.resourceSnapshot().checkpointCount, 100_001);
+  assert.equal(runner.seedProcess.resourceSnapshot().ledgerBytes, ledgerPrefix.length);
   assert.equal(before.ledgerCursor, ledgerCursorBefore);
   const report = await runner.tick();
   assert.equal(report.transitioned, 1);
@@ -104,7 +106,7 @@ test('resident startup refuses a state-changing ledger tail without writing or r
   assert.equal(history.getState().seedId, seed.getState().seedId);
 
   const runner = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
-  assert.throws(() => runner.start(), /Uncheckpointed state-changing receipts need recovery/);
+  assert.throws(() => runner.start(), /Uncheckpointed Seed receipts need recovery/);
   assert.equal(existsSync(join(stateDir, '.runner.lock')), false);
   assert.deepEqual(readdirSync(stateDir), rootEntries);
   assert.deepEqual(readFileSync(ledgerPath), ledgerBefore);
@@ -127,5 +129,79 @@ test('resident startup accepts a checkpoint followed only by checkpoint and stop
   const runner = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
   runner.start();
   assert.equal(runner.seedProcess.getState().seedId, seed.getState().seedId);
+  assert.equal(runner.seedProcess.getState().eventCount, checkpoint.resourceSnapshot.eventCount + 2);
+  assert.equal(runner.seedProcess.resourceSnapshot().checkpointCount, checkpoint.resourceSnapshot.checkpointCount + 1);
+  assert.equal(runner.seedProcess.resourceSnapshot().ledgerBytes, readFileSync(new SeedLedger(stateDir).path).length);
   runner.stop();
+});
+
+test('resident startup rejects postcheckpoint ingest and hashed no-op receipts', (t) => {
+  for (const kind of ['ingest', 'hashed-noop'] as const) {
+    const dir = mkdtempSync(join(tmpdir(), `resident-${kind}-`));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const stateDir = join(dir, 'seed');
+    const sourcePath = join(dir, 'events.jsonl');
+    writeFileSync(sourcePath, '');
+    const seed = SeedProcess.initialize(stateDir);
+    seed.checkpoint();
+    if (kind === 'ingest') {
+      seed.ingest(event('uncheckpointed-ingest'));
+    } else {
+      const stateHash = seed.getState().stateHash;
+      new SeedLedger(stateDir).append({
+        category: 'silence', sourceAuthority: 'seed.internal', sourceRef: seed.getState().seedId,
+        payload: { test: true }, stateHashBefore: stateHash, stateHashAfter: stateHash,
+      });
+    }
+    const ledgerPath = new SeedLedger(stateDir).path;
+    const before = readFileSync(ledgerPath);
+    const runner = new SeedRunner({ stateDir, sourcePath });
+    assert.throws(() => runner.start(), /Uncheckpointed Seed receipts need recovery/, kind);
+    assert.deepEqual(readFileSync(ledgerPath), before);
+    assert.equal(existsSync(join(stateDir, '.runner.lock')), false);
+  }
+});
+
+test('saturated resident checkpoint and stop preflight before writing; runner stop releases lock', (t) => {
+  for (const caseName of ['checkpoint-event', 'checkpoint-count', 'runner-restore', 'runner-stop'] as const) {
+    const dir = mkdtempSync(join(tmpdir(), `resident-${caseName}-`));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const stateDir = join(dir, 'seed');
+    const sourcePath = join(dir, 'events.jsonl');
+    writeFileSync(sourcePath, '');
+    const born = SeedProcess.initialize(stateDir);
+    const checkpointId = born.checkpoint();
+    const checkpointPath = join(stateDir, 'checkpoints', `${checkpointId}.json`);
+    const manifest = JSON.parse(readFileSync(checkpointPath, 'utf8')) as CheckpointManifest;
+    if (caseName === 'checkpoint-count') manifest.resourceSnapshot.checkpointCount = Number.MAX_SAFE_INTEGER;
+    else manifest.resourceSnapshot.eventCount = caseName === 'runner-stop'
+      ? Number.MAX_SAFE_INTEGER - 1 : Number.MAX_SAFE_INTEGER;
+    writeFileSync(checkpointPath, JSON.stringify(manifest));
+    const ledgerPath = new SeedLedger(stateDir).path;
+    const indexPath = join(stateDir, 'checkpoints', 'CHECKPOINT_INDEX.json');
+    const ledgerBefore = readFileSync(ledgerPath);
+    const indexBefore = readFileSync(indexPath);
+    const checkpointBefore = readFileSync(checkpointPath);
+    const checkpointNames = readdirSync(join(stateDir, 'checkpoints'));
+    if (caseName === 'runner-restore') {
+      const runner = new SeedRunner({ stateDir, sourcePath });
+      assert.throws(() => runner.start(),
+        (error) => error instanceof ResourceBudgetExceededError && error.resource === 'eventCount');
+      assert.equal(existsSync(join(stateDir, '.runner.lock')), false);
+    } else if (caseName === 'runner-stop') {
+      const runner = new SeedRunner({ stateDir, sourcePath });
+      runner.start();
+      assert.throws(() => runner.stop(), (error) => error instanceof ResourceBudgetExceededError && error.resource === 'eventCount');
+      assert.equal(existsSync(join(stateDir, '.runner.lock')), false);
+    } else {
+      const restored = SeedProcess.restore(stateDir, checkpointId, { budget: RESIDENT_RESOURCE_BUDGET });
+      assert.throws(() => restored.checkpoint(),
+        (error) => error instanceof ResourceBudgetExceededError
+          && error.resource === (caseName === 'checkpoint-count' ? 'checkpointCount' : 'eventCount'));
+    }
+    assert.deepEqual(readFileSync(ledgerPath), ledgerBefore);
+    assert.deepEqual(readFileSync(indexPath), indexBefore);
+    assert.deepEqual(readFileSync(checkpointPath), checkpointBefore);
+    assert.deepEqual(readdirSync(join(stateDir, 'checkpoints')), checkpointNames);
+  }
 });

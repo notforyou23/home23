@@ -285,25 +285,61 @@ export class SeedProcess {
       );
     }
 
-    // The runner cannot resume a checkpoint behind a receipted state change:
-    // otherwise the next source event would advance old cells against a newer
-    // ledger, and pending motor work could run from that silently rewound state.
+    // A resident may start only from an exact checkpoint boundary. Any other
+    // tail can hide uncheckpointed counters, source events, or motor intent,
+    // even when a receipted state hash happens to equal the checkpoint hash.
     // Ordinary/explicit checkpoint restores retain their historical behavior.
     const verifiedRecords = ledger.readAll();
+    let administrativeTail: LedgerRecord[] = [];
     if (options.requireCheckpointCoversTail) {
-      let latestReceiptedHash: string | undefined;
-      for (const record of verifiedRecords) {
-        if (record.seq > manifest.ledgerSeq && record.stateHashAfter !== undefined) {
-          latestReceiptedHash = record.stateHashAfter;
-        }
+      const tail = verifiedRecords.filter((record) => record.seq > manifest.ledgerSeq);
+      const seedId = verifiedRecords.find((record) => record.category === 'genesis')?.payload?.['seedId'];
+      const receipt = tail[0];
+      const stopped = tail[1];
+      const checkpointReceipt = receipt !== undefined
+        && receipt.seq === manifest.ledgerSeq + 1
+        && receipt.category === 'checkpoint'
+        && receipt.sourceAuthority === 'seed.internal'
+        && receipt.sourceRef === seedId
+        && receipt.stateHashBefore === undefined && receipt.stateHashAfter === undefined
+        && receipt.payload !== null && typeof receipt.payload === 'object'
+        && Object.keys(receipt.payload).sort().join(',') === 'checkpointId,ledgerSeq,stateHash'
+        && receipt.payload['checkpointId'] === manifest.checkpointId
+        && receipt.payload['stateHash'] === manifest.stateHash
+        && receipt.payload['ledgerSeq'] === manifest.ledgerSeq;
+      const stopReceipt = stopped !== undefined
+        && stopped.seq === manifest.ledgerSeq + 2
+        && stopped.category === 'stop'
+        && stopped.sourceAuthority === 'seed.internal'
+        && stopped.sourceRef === seedId
+        && stopped.stateHashBefore === undefined && stopped.stateHashAfter === undefined
+        && stopped.payload !== null && typeof stopped.payload === 'object'
+        && Object.keys(stopped.payload).sort().join(',') === 'checkpointId,stoppedAt'
+        && stopped.payload['checkpointId'] === manifest.checkpointId
+        && typeof stopped.payload['stoppedAt'] === 'string';
+      if ((tail.length === 1 && !checkpointReceipt)
+        || (tail.length === 2 && (!checkpointReceipt || !stopReceipt))
+        || tail.length > 2) {
+        throw new Error('Uncheckpointed Seed receipts need recovery before the resident Seed can start.');
       }
-      if (latestReceiptedHash !== undefined && latestReceiptedHash !== manifest.stateHash) {
-        throw new Error('Uncheckpointed state-changing receipts need recovery before the resident Seed can start.');
-      }
+      administrativeTail = tail;
     }
 
     const accounting = new ResourceAccounting(options.budget);
     accounting.restoreFromSnapshot(manifest.resourceSnapshot);
+    if (options.requireCheckpointCoversTail) {
+      // The manifest predates its own checkpoint receipt and optional stop.
+      // Admit only those exact records, then account for them in memory; no
+      // checkpoint, ledger, or cursor file is rewritten during restore.
+      if (administrativeTail.length > 0) {
+        accounting.assertCheckpointBudget();
+        accounting.assertEventBudget(administrativeTail.length);
+        accounting.recordCheckpoint();
+        for (const _record of administrativeTail) accounting.recordEvent();
+      }
+      accounting.setLedgerBytes(ledger.bytes);
+    }
+    const restoredResources = accounting.snapshot();
 
     // The frozen reservoir is regenerated from the seed recorded at birth —
     // identity continues through the same transition machinery, not a new one.
@@ -360,8 +396,8 @@ export class SeedProcess {
       checkpoints,
       membrane,
       accounting,
-      eventCount: manifest.resourceSnapshot.eventCount,
-      transitionCount: manifest.resourceSnapshot.transitionCount,
+      eventCount: restoredResources.eventCount,
+      transitionCount: restoredResources.transitionCount,
       lastTransitionAt: manifest.seedLastTransitionAt,
       selfFormation: genesis.selfFormation === true,
     });
@@ -1482,6 +1518,7 @@ export class SeedProcess {
   checkpoint(): string {
     this.membrane.assert('local.checkpoint.write');
     this.accounting.assertCheckpointBudget();
+    this.accounting.assertEventBudget();
 
     const serializedCells = Array.from(this.cells.values()).map(serializeCell);
     const stateHash = this.computeCurrentStateHash();
@@ -1519,6 +1556,8 @@ export class SeedProcess {
    * Returns the checkpointId. Safe to call multiple times (idempotent stop).
    */
   stop(): string {
+    this.accounting.assertCheckpointBudget();
+    this.accounting.assertEventBudget(2);
     const checkpointId = this.checkpoint();
 
     this.ledger.append({
@@ -1634,6 +1673,7 @@ export class SeedProcess {
     stagedDevelopment?: DevelopmentalState,
     stagedConcern?: ConcernState,
   ): { record: LedgerRecord; stateHashBefore: string; stateHashAfter: string } {
+    this.accounting.assertEventBudget();
     const stateHashBefore = this.computeCurrentStateHash();
     const stateHashAfter = this.computeStateHashWithMany(staged, stagedDevelopment, stagedConcern);
     const rec = this.ledger.append({
