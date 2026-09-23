@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { assertAssemblyDescriptor, assertDeveloperIdProfile, assertProductionEntitlements,
   assertHostBuildSourceHashes, assertProductionNodeEntitlements, nestedSigningOrder,
+  assertResumePins, assertResumeStage, assertResumedRuntimeManifest, assertSignedRuntimePartial,
   planMacFinalization } from '../../scripts/product/finalize-mac-release.mjs';
 
 test('signs all framework-contained native leaves before containing bundles', () => {
@@ -112,5 +113,91 @@ test('finalization plan refuses output inside any input before copying or signin
       output: path.join(root, 'assembly', 'final') };
     await assert.rejects(planMacFinalization(options), /separate from every input/);
     assert.equal(fs.existsSync(options.output), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('signed-runtime resume pins exact package ID and partial app tree before writes', () => {
+  const packageId = 'a'.repeat(64), tree = 'b'.repeat(64);
+  const plan = { expectedSignedPackageId: packageId, partialAppTreeSHA256: tree };
+  const options = { expectedSignedPackageId: packageId, expectedPartialAppTreeSHA256: tree };
+  assert.doesNotThrow(() => assertResumePins(options, plan));
+  assert.throws(() => assertResumePins({ ...options, expectedSignedPackageId: 'c'.repeat(64) }, plan), /pin differs/);
+  assert.throws(() => assertResumePins({ ...options, expectedPartialAppTreeSHA256: 'd'.repeat(64) }, plan), /pin differs/);
+  assert.throws(() => assertResumePins({ ...options, expectedPartialAppTreeSHA256: 'not-a-hash' }, plan), /pin differs/);
+});
+
+test('signed-runtime manifest must retain original source inventory and a new pinned package ID', () => {
+  const original = { schema: 'home23.product-payload.v1', packageId: 'a'.repeat(64),
+    sourceCommit: 'b'.repeat(40), platform: 'darwin', arch: 'arm64', nodeVersion: 'v22.0.0',
+    files: [{ path: 'bin/node', type: 'file' }] };
+  const signed = { ...original, packageId: 'c'.repeat(64) };
+  assert.doesNotThrow(() => assertResumedRuntimeManifest(original, signed, signed.packageId));
+  assert.throws(() => assertResumedRuntimeManifest(original, original, original.packageId), /not bound/);
+  assert.throws(() => assertResumedRuntimeManifest(original, signed, 'd'.repeat(64)), /not bound/);
+  assert.throws(() => assertResumedRuntimeManifest(original,
+    { ...signed, sourceCommit: 'e'.repeat(40) }, signed.packageId), /not bound/);
+  assert.throws(() => assertResumedRuntimeManifest(original,
+    { ...signed, files: [{ path: 'other', type: 'file' }] }, signed.packageId), /not bound/);
+});
+
+test('signed-runtime resume rejects unknown or later output stages', () => {
+  const output = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-resume-stage-'));
+  try {
+    const app = path.join(output, 'Home23/Home23.app');
+    fs.mkdirSync(app, { recursive: true });
+    assert.deepEqual(assertResumeStage(output), { release: path.join(output, 'Home23'), app });
+    fs.writeFileSync(path.join(output, 'notary-submission.zip'), 'later');
+    assert.throws(() => assertResumeStage(output), /later or unknown stage/);
+    fs.rmSync(path.join(output, 'notary-submission.zip'));
+    fs.writeFileSync(path.join(output, 'production-release-receipt.json'), 'later');
+    assert.throws(() => assertResumeStage(output), /later or unknown stage/);
+  } finally { fs.rmSync(output, { recursive: true, force: true }); }
+});
+
+test('signed-runtime partial tree accepts only signed native bytes, manifest and two exact production files', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-resume-tree-'));
+  try {
+    const originalApp = path.join(root, 'original'), partialApp = path.join(root, 'partial');
+    const runtime = 'Contents/Library/LoginItems/Home23Host.app/Contents/Resources/Home23Runtime';
+    const put = (base, relative, value, mode = 0o644) => {
+      const target = path.join(base, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, value, { mode });
+    };
+    put(originalApp, 'Contents/MacOS/Home23Mac', 'client', 0o755);
+    put(originalApp, 'Contents/Resources/Home23.icns', 'icon');
+    fs.symlinkSync('Home23.icns', path.join(originalApp, 'Contents/Resources/icon-link'));
+    put(originalApp, 'Contents/Library/LoginItems/Home23Host.app/Contents/MacOS/Home23Host', 'host', 0o755);
+    put(originalApp, `${runtime}/bin/node`, 'unsigned node', 0o755);
+    put(originalApp, `${runtime}/manifest.json`, 'unsigned manifest');
+    fs.cpSync(originalApp, partialApp, { recursive: true, verbatimSymlinks: true });
+    put(partialApp, `${runtime}/bin/node`, 'signed node', 0o755);
+    put(partialApp, `${runtime}/manifest.json`, 'signed manifest');
+    const channelConfig = path.join(root, 'channel.json'), macProfile = path.join(root, 'profile');
+    fs.writeFileSync(channelConfig, 'pinned channel'); fs.writeFileSync(macProfile, 'pinned profile');
+    put(partialApp, 'Contents/Resources/release-channel.json', 'pinned channel');
+    put(partialApp, 'Contents/embedded.provisionprofile', 'pinned profile');
+    const verify = () => assertSignedRuntimePartial({ originalApp, partialApp,
+      runtimeMachO: ['bin/node'], channelConfig, macProfile });
+    assert.match(await verify(), /^[a-f0-9]{64}$/);
+    put(partialApp, 'Contents/MacOS/Home23Mac', 'changed client', 0o755);
+    await assert.rejects(verify(), /bytes differ from assembly/);
+    put(partialApp, 'Contents/MacOS/Home23Mac', 'client', 0o755);
+    fs.chmodSync(path.join(partialApp, 'Contents/MacOS/Home23Mac'), 0o700);
+    await assert.rejects(verify(), /entry differs from assembly/);
+    fs.chmodSync(path.join(partialApp, 'Contents/MacOS/Home23Mac'), 0o755);
+    fs.rmSync(path.join(partialApp, 'Contents/Resources/icon-link'));
+    fs.symlinkSync('wrong-target', path.join(partialApp, 'Contents/Resources/icon-link'));
+    await assert.rejects(verify(), /entry differs from assembly/);
+    fs.rmSync(path.join(partialApp, 'Contents/Resources/icon-link'));
+    fs.symlinkSync('Home23.icns', path.join(partialApp, 'Contents/Resources/icon-link'));
+    put(partialApp, 'Contents/Resources/release-channel.json', 'wrong channel');
+    await assert.rejects(verify(), /Unexpected partial app addition/);
+    put(partialApp, 'Contents/Resources/release-channel.json', 'pinned channel');
+    put(partialApp, `${runtime}/unexpected.txt`, 'unexpected');
+    await assert.rejects(verify(), /Unexpected partial app addition/);
+    fs.rmSync(path.join(partialApp, `${runtime}/unexpected.txt`));
+    fs.rmSync(path.join(partialApp, 'Contents/embedded.provisionprofile'));
+    await assert.rejects(verify(), /Missing new production app file/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

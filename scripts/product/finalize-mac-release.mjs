@@ -8,7 +8,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { readProductManifest, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
+import { verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { readProductChannel } from '../../cli/lib/product-release-channel.js';
 import { appTreeDigest, verifyPrebuiltMacClient } from './prebuilt-mac-client.mjs';
 
@@ -291,6 +291,14 @@ const signedTeam = file => {
   const output = result.stderr;
   return /^TeamIdentifier=(.+)$/m.exec(output)?.[1];
 };
+function assertSignedDeveloperIdLeaf(file, relative) {
+  verifySignature(file);
+  const result = spawnSync('/usr/bin/codesign', ['-dv', '--verbose=4', file], { encoding: 'utf8' });
+  if (result.status !== 0 || !/^TeamIdentifier=H7RZ65BN25$/m.test(result.stderr) ||
+      !/^Authority=Developer ID Application: .+ \(H7RZ65BN25\)$/m.test(result.stderr)) {
+    throw new Error(`Partial runtime leaf lacks Developer ID team identity: ${relative}`);
+  }
+}
 function signCodeTree(root, identity, exclusions = [], entitlementsByRelative = {}) {
   const { machO, bundles } = discoverCode(root, { ignored: exclusions });
   for (const relative of nestedSigningOrder(machO, bundles)) {
@@ -321,8 +329,126 @@ function smokeSignedRuntime(runtime) {
       .then(bytes => { if (!bytes.length) throw Error('sharp output empty'); })
       .catch(error => { console.error(error); process.exitCode = 1; });
   `;
-  run(path.join(runtime, 'bin/node'), ['--input-type=commonjs', '-e', source],
-    { cwd: app, stdio: 'inherit', timeout: 30_000 });
+  const started = Date.now();
+  console.error('Signed runtime native smoke started');
+  try {
+    run(path.join(runtime, 'bin/node'), ['--input-type=commonjs', '-e', source],
+      { cwd: app, stdio: 'inherit', timeout: 90_000 });
+    console.error(`Signed runtime native smoke passed in ${Date.now() - started} ms`);
+  } catch (error) {
+    console.error(`Signed runtime native smoke failed after ${Date.now() - started} ms`);
+    throw error;
+  }
+}
+
+const resumeChannel = 'Contents/Resources/release-channel.json';
+const resumeProfile = 'Contents/embedded.provisionprofile';
+const hex64 = /^[a-f0-9]{64}$/;
+export function assertResumePins(options, plan) {
+  if (!hex64.test(options.expectedSignedPackageId || '') ||
+      !hex64.test(options.expectedPartialAppTreeSHA256 || '') ||
+      options.expectedPartialAppTreeSHA256 !== plan.partialAppTreeSHA256 ||
+      options.expectedSignedPackageId !== plan.expectedSignedPackageId) {
+    throw new Error('Signed-runtime resume package or partial tree SHA-256 pin differs');
+  }
+}
+function treeEntries(root) {
+  const entries = new Map();
+  function walk(directory, prefix = '') {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const relative = prefix ? `${prefix}/${name}` : name;
+      const file = path.join(directory, name), stat = fs.lstatSync(file);
+      const entry = { type: stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' :
+        stat.isSymbolicLink() ? 'symlink' : 'unknown', mode: stat.mode & 0o777 };
+      if (entry.type === 'unknown') throw new Error(`Unsupported partial app entry: ${relative}`);
+      if (entry.type === 'symlink') entry.target = fs.readlinkSync(file);
+      entries.set(relative, entry);
+      if (entry.type === 'directory') walk(file, relative);
+    }
+  }
+  walk(root);
+  return entries;
+}
+
+/** Before any resumed write, reject every tree change beyond the completed
+ * leaf-signing boundary. Signatures on leaves change their Mach-O bytes; all
+ * other original files, link targets, modes and entry types must match. */
+export async function assertSignedRuntimePartial({ originalApp, partialApp, runtimeMachO,
+  channelConfig, macProfile }) {
+  const prefix = 'Contents/Library/LoginItems/Home23Host.app/Contents/Resources/Home23Runtime/';
+  const mutable = new Set(runtimeMachO.map(relative => prefix + relative));
+  mutable.add(prefix + 'manifest.json');
+  const added = new Map([[resumeChannel, channelConfig], [resumeProfile, macProfile]]);
+  const original = treeEntries(originalApp), partial = treeEntries(partialApp);
+  for (const [relative, entry] of original) {
+    const changed = partial.get(relative);
+    if (!changed || changed.type !== entry.type || changed.mode !== entry.mode ||
+        (entry.type === 'symlink' && changed.target !== entry.target)) {
+      throw new Error(`Partial app entry differs from assembly: ${relative}`);
+    }
+    if (entry.type === 'file' && !mutable.has(relative) &&
+        await sha256(path.join(originalApp, relative)) !== await sha256(path.join(partialApp, relative))) {
+      throw new Error(`Partial app bytes differ from assembly: ${relative}`);
+    }
+  }
+  for (const [relative, entry] of partial) {
+    if (original.has(relative)) continue;
+    if (!added.has(relative) || entry.type !== 'file' ||
+        entry.mode !== (fs.lstatSync(added.get(relative)).mode & 0o777) ||
+        await sha256(path.join(partialApp, relative)) !== await sha256(added.get(relative))) {
+      throw new Error(`Unexpected partial app addition: ${relative}`);
+    }
+  }
+  for (const relative of added.keys()) {
+    if (original.has(relative) || !partial.has(relative)) throw new Error(`Missing new production app file: ${relative}`);
+  }
+  return (await appTreeDigest(partialApp)).sha256;
+}
+
+export function assertResumeStage(output) {
+  const release = path.join(output, 'Home23');
+  for (const [directory, names] of [[output, ['Home23']], [release, ['Home23.app']]]) {
+    if (!fs.lstatSync(directory).isDirectory() || fs.lstatSync(directory).isSymbolicLink() ||
+        JSON.stringify(fs.readdirSync(directory).sort()) !== JSON.stringify(names)) {
+      throw new Error('Partial finalization contains a later or unknown stage');
+    }
+  }
+  const app = path.join(release, 'Home23.app');
+  if (!fs.lstatSync(app).isDirectory() || fs.lstatSync(app).isSymbolicLink()) throw new Error('Partial app is not a real directory');
+  return { release, app };
+}
+
+export function assertResumedRuntimeManifest(original, signed, expectedPackageId) {
+  if (signed.packageId !== expectedPackageId || signed.packageId === original.packageId ||
+      ['schema', 'sourceCommit', 'platform', 'arch', 'nodeVersion'].some(key => signed[key] !== original[key]) ||
+      JSON.stringify(signed.files.map(entry => [entry.path, entry.type])) !==
+        JSON.stringify(original.files.map(entry => [entry.path, entry.type]))) {
+    throw new Error('Signed runtime manifest is not bound to the original assembly');
+  }
+}
+
+async function inspectSignedRuntimePartial(options, input) {
+  if (!hex64.test(options.expectedSignedPackageId || '')) throw new Error('Exact signed package ID is required for resume');
+  if (!fs.lstatSync(options.output).isDirectory() || fs.lstatSync(options.output).isSymbolicLink()) {
+    throw new Error('Partial output must be a real directory');
+  }
+  const output = real(options.output);
+  const { release, app } = assertResumeStage(output);
+  const helper = path.join(app, 'Contents/Library/LoginItems/Home23Host.app');
+  const runtime = path.join(helper, 'Contents/Resources/Home23Runtime');
+  const originalCode = discoverCode(input.runtime);
+  if (originalCode.bundles.length) throw new Error('Framework bundle signing cannot be resumed at the leaf-only boundary');
+  const partialTreeSHA256 = await assertSignedRuntimePartial({ originalApp: input.app, partialApp: app,
+    runtimeMachO: originalCode.machO, channelConfig: real(options.channelConfig), macProfile: real(options.macProfile) });
+  const signedManifest = verifyProductPayload(runtime);
+  assertResumedRuntimeManifest(input.manifest, signedManifest, options.expectedSignedPackageId);
+  for (const relative of originalCode.machO) {
+    const file = path.join(runtime, relative);
+    assertSignedDeveloperIdLeaf(file, relative);
+  }
+  assertProductionNodeEntitlements(input.originalNodeEntitlements, signedEntitlements(path.join(runtime, 'bin/node')));
+  return { output, release, app, helper, runtime, signedManifest, originalCode,
+    partialTreeSHA256 };
 }
 
 async function inspectAssembly(options) {
@@ -375,10 +501,16 @@ async function inspectAssembly(options) {
 }
 
 export async function planMacFinalization(options) {
-  if (!options.output || !path.isAbsolute(options.output) || fs.existsSync(options.output)) {
-    throw new Error('Final output must be a new absolute directory');
+  if (!options.output || !path.isAbsolute(options.output) ||
+      fs.existsSync(options.output) !== Boolean(options.resumeSignedRuntime)) {
+    throw new Error(options.resumeSignedRuntime ? 'Resume requires an existing absolute final output' :
+      'Final output must be a new absolute directory');
   }
-  const output = path.join(real(path.dirname(options.output)), path.basename(options.output));
+  if (options.resumeSignedRuntime && fs.lstatSync(options.output).isSymbolicLink()) {
+    throw new Error('Partial output must not be a symlink');
+  }
+  const output = options.resumeSignedRuntime ? real(options.output) :
+    path.join(real(path.dirname(options.output)), path.basename(options.output));
   for (const input of [options.assembly, options.payload, options.backendSource, options.appleSource,
     options.prebuiltClient, options.prebuiltClientReceipt]) {
     const root = real(input);
@@ -386,10 +518,13 @@ export async function planMacFinalization(options) {
   }
   const input = await inspectAssembly(options);
   const production = productionInputs(options, input.originalEntitlements, input.originalNodeEntitlements);
+  const partial = options.resumeSignedRuntime ? await inspectSignedRuntimePartial(options, input) : null;
   const runtimeCode = discoverCode(input.runtime);
   const hostCode = discoverCode(input.helper, { ignored: ['Contents/Resources/Home23Runtime'] });
   const appCode = discoverCode(input.app, { ignored: ['Contents/Library/LoginItems/Home23Host.app'] });
   return { schema: 'home23.mac-finalization-plan.v1', status: production.missing.length ? 'missing-inputs' : 'ready-for-authorized-execution',
+    resumeSignedRuntime: Boolean(partial), expectedSignedPackageId: partial?.signedManifest.packageId || null,
+    partialAppTreeSHA256: partial?.partialTreeSHA256 || null,
     input: { assemblyArchiveSHA256: input.receipt.archiveSHA256, appTreeSHA256: input.appTree.sha256,
       backendCommit: input.receipt.backendCommit, appleCommit: input.receipt.appleCommit,
       packageIdBeforeSigning: input.manifest.packageId, version: input.client.version, build: input.client.build,
@@ -398,8 +533,9 @@ export async function planMacFinalization(options) {
     code: { runtimeMachO: runtimeCode.machO.length, runtimeBundles: runtimeCode.bundles.length,
       hostMachO: hostCode.machO.length, hostBundles: hostCode.bundles.length,
       appMachO: appCode.machO.length, appBundles: appCode.bundles.length },
-    sequence: ['copy and bind input archive/app tree', 'embed channel and production profile',
-      'sign all runtime native code', 'regenerate and verify runtime manifest/package ID',
+    sequence: [...(partial ? ['verify exact signed-runtime partial stage and tree SHA-256'] :
+      ['copy and bind input archive/app tree', 'embed channel and production profile',
+        'sign all runtime native code', 'regenerate and verify runtime manifest/package ID']),
       'sign nested framework/native code and lifecycle tool', 'sign Host, then Mac with full production entitlements',
       'verify Team IDs, sandbox, APNs capabilities and signatures', 'notarize and staple the app',
       'reverify unchanged runtime; archive and hash final runtime/app bytes; write publication-ready receipt'] };
@@ -412,24 +548,40 @@ async function executeMacFinalization(options, plan) {
       input.receipt.archiveSHA256 !== plan.input.assemblyArchiveSHA256) throw new Error('Input assembly changed after plan');
   const production = productionInputs(options, input.originalEntitlements, input.originalNodeEntitlements);
   const output = plan.output, release = path.join(output, 'Home23');
-  fs.mkdirSync(output, { recursive: false, mode: 0o700 });
-  fs.mkdirSync(release);
-  run('/usr/bin/ditto', ['-x', '-k', input.archive, output]);
-  const app = path.join(release, 'Home23.app');
-  if ((await appTreeDigest(app)).sha256 !== input.appTree.sha256) throw new Error('Extracted app differs from verified assembly');
-  const helper = path.join(app, 'Contents/Library/LoginItems/Home23Host.app');
-  const runtime = path.join(helper, 'Contents/Resources/Home23Runtime');
-  fs.copyFileSync(real(options.channelConfig), path.join(app, 'Contents/Resources/release-channel.json'));
-  fs.copyFileSync(real(options.macProfile), path.join(app, 'Contents/embedded.provisionprofile'));
-  if (await sha256(path.join(app, 'Contents/embedded.provisionprofile')) !== await sha256(options.macProfile)) {
-    throw new Error('Embedded production profile changed');
+  let app, helper, runtime, runtimeCode, signedManifest;
+  const oldManifest = input.manifest;
+  let resumeProvenance = null;
+  if (options.resumeSignedRuntime) {
+    assertResumePins(options, plan);
+    const partial = await inspectSignedRuntimePartial(options, input);
+    if (partial.partialTreeSHA256 !== options.expectedPartialAppTreeSHA256 ||
+        partial.signedManifest.packageId !== options.expectedSignedPackageId) {
+      throw new Error('Signed-runtime partial tree changed before execution');
+    }
+    ({ app, helper, runtime, signedManifest } = partial);
+    runtimeCode = { machO: partial.originalCode.machO.length, bundles: partial.originalCode.bundles.length };
+    resumeProvenance = { stage: 'runtime-leaves-and-manifest-signed',
+      partialAppTreeSHA256: partial.partialTreeSHA256, signedPackageId: signedManifest.packageId,
+      sourceAssemblyAppTreeSHA256: input.appTree.sha256 };
+  } else {
+    fs.mkdirSync(output, { recursive: false, mode: 0o700 });
+    fs.mkdirSync(release);
+    run('/usr/bin/ditto', ['-x', '-k', input.archive, output]);
+    app = path.join(release, 'Home23.app');
+    if ((await appTreeDigest(app)).sha256 !== input.appTree.sha256) throw new Error('Extracted app differs from verified assembly');
+    helper = path.join(app, 'Contents/Library/LoginItems/Home23Host.app');
+    runtime = path.join(helper, 'Contents/Resources/Home23Runtime');
+    fs.copyFileSync(real(options.channelConfig), path.join(app, resumeChannel));
+    fs.copyFileSync(real(options.macProfile), path.join(app, resumeProfile));
+    if (await sha256(path.join(app, resumeProfile)) !== await sha256(options.macProfile)) {
+      throw new Error('Embedded production profile changed');
+    }
+    runtimeCode = signCodeTree(runtime, options.identity, [], { 'bin/node': real(options.nodeEntitlements) });
+    assertProductionNodeEntitlements(input.originalNodeEntitlements, signedEntitlements(path.join(runtime, 'bin/node')));
+    fs.unlinkSync(path.join(runtime, 'manifest.json'));
+    signedManifest = writeProductManifest(runtime, oldManifest);
+    if (verifyProductPayload(runtime).packageId !== signedManifest.packageId) throw new Error('Signed runtime inventory is invalid');
   }
-  const runtimeCode = signCodeTree(runtime, options.identity, [], { 'bin/node': real(options.nodeEntitlements) });
-  assertProductionNodeEntitlements(input.originalNodeEntitlements, signedEntitlements(path.join(runtime, 'bin/node')));
-  const oldManifest = readProductManifest(runtime);
-  fs.unlinkSync(path.join(runtime, 'manifest.json'));
-  const signedManifest = writeProductManifest(runtime, oldManifest);
-  if (verifyProductPayload(runtime).packageId !== signedManifest.packageId) throw new Error('Signed runtime inventory is invalid');
   smokeSignedRuntime(runtime);
   const outsideHost = 'Contents/Library/LoginItems/Home23Host.app';
   const hostCode = signCodeTree(helper, options.identity,
@@ -466,6 +618,7 @@ async function executeMacFinalization(options, plan) {
     acceptance: 'Developer ID signature, notarization, stapling and local Gatekeeper assessment; owner install still pending',
     packageId: signedManifest.packageId, unsignedPackageId: oldManifest.packageId,
     runtimeCode, hostCode, clientCode, developerIdTeam: 'H7RZ65BN25', notarizationId: submission.id,
+    ...(resumeProvenance ? { resumeProvenance } : {}),
     channelManifestURL: production.channel.manifestURL,
     productionProfileSHA256: await sha256(options.macProfile),
     productionEntitlementsSHA256: await sha256(options.entitlements),
@@ -490,18 +643,32 @@ function parseCLI(argv) {
     '--prebuilt-client-receipt': 'prebuiltClientReceipt', '--output': 'output',
     '--developer-dir': 'developerDir', '--identity': 'identity', '--entitlements': 'entitlements',
     '--node-entitlements': 'nodeEntitlements',
-    '--mac-profile': 'macProfile', '--channel-config': 'channelConfig', '--notary-profile': 'notaryProfile' };
+    '--mac-profile': 'macProfile', '--channel-config': 'channelConfig', '--notary-profile': 'notaryProfile',
+    '--expected-signed-package-id': 'expectedSignedPackageId',
+    '--expected-partial-app-tree-sha256': 'expectedPartialAppTreeSHA256' };
   const options = {}; let mode = null;
   for (let i = 0; i < argv.length; i++) {
     if (['--plan', '--execute'].includes(argv[i])) {
       if (mode) throw new Error('Choose one mode');
       mode = argv[i]; continue;
     }
+    if (argv[i] === '--resume-signed-runtime') {
+      if (options.resumeSignedRuntime) throw new Error('Duplicate signed-runtime resume option');
+      options.resumeSignedRuntime = true; continue;
+    }
     const key = names[argv[i]], value = argv[++i];
     if (!key || !value || value.startsWith('--') || options[key]) throw new Error('Invalid or duplicate argument');
     options[key] = value;
   }
   if (!mode) throw new Error('Specify --plan or --execute');
+  if (options.resumeSignedRuntime) {
+    if (!hex64.test(options.expectedSignedPackageId || '')) throw new Error('Resume requires exact signed package ID');
+    if (mode === '--execute' && !hex64.test(options.expectedPartialAppTreeSHA256 || '')) {
+      throw new Error('Resume execute requires exact partial app tree SHA-256');
+    }
+  } else if (options.expectedSignedPackageId || options.expectedPartialAppTreeSHA256) {
+    throw new Error('Signed-runtime pins require --resume-signed-runtime');
+  }
   for (const key of ['assembly', 'payload', 'backendSource', 'appleSource', 'prebuiltClient',
     'prebuiltClientReceipt', 'output', 'developerDir']) if (!options[key]) throw new Error(`Missing ${key}`);
   return { options, mode };
