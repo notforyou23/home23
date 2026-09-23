@@ -658,6 +658,89 @@ function seedRecoverableHome(home, {
   return { birthBytes, resident };
 }
 
+function continuingServiceFixture(home, root) {
+  const authority = path.join(root, 'external-authority');
+  fs.mkdirSync(authority);
+  const authorityConfig = path.join(authority, 'config.json');
+  const authorityBytes = JSON.stringify({ legacyRoot: home, port: 21089 });
+  fs.writeFileSync(authorityConfig, authorityBytes);
+  fs.symlinkSync(authority, path.join(home, 'app/evobrew'));
+  const service = { name: 'home23-project', executable: path.join(home, 'bin/node'),
+    cwd: path.join(home, 'app/instances'), args: [path.join(home, 'app/instances/project.mjs')],
+    env: { HOME23_ROOT: path.join(home, 'app'), API_URL: 'http://127.0.0.1:21089', EXTERNAL_ROOT: authority },
+    stateRoots: [path.join(home, 'app/instances'), authority], startOnHomeStart: true };
+  const hostPath = path.join(home, '.home23-host.json');
+  const host = JSON.parse(fs.readFileSync(hostPath));
+  host.continuationServices = [service];
+  fs.writeFileSync(hostPath, JSON.stringify(host));
+  fs.mkdirSync(path.join(home, 'runtime'), { recursive: true });
+  const { name, ...run } = service;
+  const receipt = { schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: '/historical-source',
+    links: [{ path: 'app/evobrew', target: authority, kind: 'retain-authority' }], externalReferences: [],
+    continuationServices: [{ name, source: { script: '/historical-source/project.mjs' }, run }] };
+  fs.writeFileSync(path.join(home, 'runtime/adoption-preservation.json'), JSON.stringify(receipt), { mode: 0o600 });
+  return { authority, authorityConfig, authorityBytes, receipt, service };
+}
+
+function assertContinuingServiceDestination(destination, fixture) {
+  const host = JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json')));
+  const receipt = JSON.parse(fs.readFileSync(path.join(destination, 'runtime/adoption-preservation.json')));
+  const service = host.continuationServices[0];
+  assert.equal(service.executable, path.join(destination, 'bin/node'));
+  assert.equal(service.cwd, path.join(destination, 'app/instances'));
+  assert.deepEqual(service.args, [path.join(destination, 'app/instances/project.mjs')]);
+  assert.equal(service.env.HOME23_ROOT, path.join(destination, 'app'));
+  assert.equal(service.env.API_URL, `http://127.0.0.1:${host.ports.coordination}`);
+  assert.equal(service.env.EXTERNAL_ROOT, fixture.authority);
+  assert.deepEqual(service.stateRoots, [path.join(destination, 'app/instances'), fixture.authority]);
+  assert.deepEqual(host.continuationServices, receipt.continuationServices.map(item => ({ name: item.name, ...item.run })));
+  assert.deepEqual(receipt.links, fixture.receipt.links);
+  assert.deepEqual(receipt.continuationServices[0].source, fixture.receipt.continuationServices[0].source);
+  assert.equal(fs.readFileSync(fixture.authorityConfig, 'utf8'), fixture.authorityBytes);
+}
+
+test('move rebinds continuing services while retaining external authority unchanged', async t => {
+  const root = tempRoot(t), home = path.join(root, 'home'), destination = path.join(root, 'destination');
+  seedRecoverableHome(home);
+  const fixture = continuingServiceFixture(home, root);
+  const sourceHost = fs.readFileSync(path.join(home, '.home23-host.json'));
+  fs.mkdirSync(destination);
+  const moved = await moveHome({ sourceHome: home, destinationRoot: destination,
+    archivePath: path.join(root, 'backup.h23b'), keyPath: path.join(root, 'backup.key') }, quiet);
+  assert.equal(moved.fenced, true);
+  assertContinuingServiceDestination(destination, fixture);
+  assert.deepEqual(fs.readFileSync(path.join(home, '.home23-host.json')), sourceHost);
+});
+
+test('source-absent continuing-service recovery resumes across both binding writes and refuses receipt changes', async t => {
+  const root = tempRoot(t), home = path.join(root, 'home'), inspectionRoot = path.join(root, 'inspect');
+  const { payload, manifest } = fixturePayload(root);
+  seedRecoverableHome(home, { packageId: manifest.packageId, sourceCommit: manifest.sourceCommit });
+  const fixture = continuingServiceFixture(home, root);
+  const archivePath = path.join(root, 'backup.h23b'), keyPath = path.join(root, 'backup.key');
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  fs.mkdirSync(inspectionRoot);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  fs.rmSync(home, { recursive: true });
+  const input = { inspectionRoot, payloadPath: payload, archivePath, keyPath };
+  await assert.rejects(() => recoverInspectedHome(input, { ...quiet,
+    afterHostRebindWrite: () => { throw new Error('interrupt after host'); } }), /interrupt after host/);
+  await assert.rejects(() => recoverInspectedHome(input, { ...quiet,
+    afterRebound: () => { throw new Error('interrupt after receipt'); } }), /interrupt after receipt/);
+  assertContinuingServiceDestination(inspectionRoot, fixture);
+  const receiptPath = path.join(inspectionRoot, 'runtime/adoption-preservation.json');
+  const boundBytes = fs.readFileSync(receiptPath);
+  const changed = JSON.parse(boundBytes);
+  changed.continuationServices[0].run.args = ['/unreviewed/script.mjs'];
+  fs.writeFileSync(receiptPath, JSON.stringify(changed));
+  await assert.rejects(() => recoverInspectedHome(input, quiet), error => error.code === 'backup_recover_archive_mismatch');
+  fs.writeFileSync(receiptPath, boundBytes);
+  const recovered = await recoverInspectedHome(input, quiet);
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.writersStarted, false);
+  assertContinuingServiceDestination(inspectionRoot, fixture);
+});
+
 test('moveHome and recoverInspectedHome leave only the destination root mode 0700', async t => {
   const moveFixture = stoppedHome(t);
   const birth = path.join(moveFixture.home, 'app/instances/milo/substrate/seed-01');
