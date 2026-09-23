@@ -1192,6 +1192,29 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       return refuseAdoption(plan, [reason('authority_payload_collision', `The candidate package owns retained authority path ${path}.`, { path })], destination);
     }
   }
+  // A preserved source file may share a path with immutable package software.
+  // Require an explicit reviewed shadow destination when its bytes or mode
+  // differ, before installation or any preserve copy can mutate that path.
+  const productFiles = new Map(manifest.files.filter(entry => entry.type === 'file').map(entry => [entry.path, entry]));
+  for (const entry of copyableEntries(plan.inventory.paths)) {
+    const product = productFiles.get(entry.mapping.destination);
+    if (!product) continue;
+    const sourceFile = join(source, entry.path);
+    const stat = lstatSync(sourceFile);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      return refuseAdoption(plan, [reason('preservation_payload_collision',
+        `Preserved ${entry.path} is not a regular file at package-owned ${entry.mapping.destination}.`,
+        { path: entry.path, destination: entry.mapping.destination })], destination);
+    }
+    const mode = (stat.mode & 0o777) & (sensitivePresenceOnly(entry.path) || entry.path.endsWith('.key') || entry.path === 'evobrew/config.json' ? 0o600 : 0o777);
+    const digest = stat.size === product.size ? createHash('sha256') : null;
+    if (digest) hashFileBytes(digest, sourceFile);
+    if (mode !== product.mode || stat.size !== product.size || digest.digest('hex') !== product.sha256) {
+      return refuseAdoption(plan, [reason('preservation_payload_collision',
+        `Preserved ${entry.path} differs from package-owned ${entry.mapping.destination}; review a separate shadow destination.`,
+        { path: entry.path, destination: entry.mapping.destination })], destination);
+    }
+  }
   const packageId = manifest.packageId;
   const sourceSnapshot = sourceAdoptionSnapshot(source, plan.inventory.paths, identity);
 
@@ -1311,6 +1334,10 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       if (dependencies.beforePreserveCopy) await dependencies.beforePreserveCopy({ source, destination, journal, releaseLock });
       copyPreservedState(source, destination, plan.inventory.paths, manifest);
       if (dependencies.afterPreserveCopy) await dependencies.afterPreserveCopy({ source, destination, journal, releaseLock });
+      try { verifyProductPayload(destination, { allowRuntimeState: true }); }
+      catch (error) {
+        return refuseAdoption(plan, [reason('package_integrity_failed', error.message)], destination);
+      }
       // Re-walk after copy so files created during the window change the snapshot.
       const liveReasons = [];
       let livePaths;

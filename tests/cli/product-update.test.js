@@ -438,6 +438,40 @@ test('adoption replay verifies equal copied bytes before skipping and recopies d
   assert.equal(fs.readFileSync(different, 'utf8'), 'original source bytes\n');
 });
 
+test('adoption refuses differing package-owned examples before install and accepts a reviewed shadow', async t => {
+  const pack = fixture(t);
+  const example = 'app/config/home.yaml.example';
+  fs.writeFileSync(path.join(pack.payload, example), 'signed example\n');
+  fs.rmSync(path.join(pack.payload, 'manifest.json'));
+  writeProductManifest(pack.payload, { sourceCommit: 'a'.repeat(40), platform: process.platform,
+    arch: process.arch, nodeVersion: 'v22.19.0' });
+  const source = managedHome(pack.root);
+  fs.writeFileSync(path.join(source.home, 'config/home.yaml.example'), 'old source example\n');
+  const destination = path.join(pack.root, 'destination');
+  const input = { sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload };
+  const refused = await adoptManagedSourceHome(input, adoptionDeps());
+  assert.equal(refused.ok, false);
+  assert.ok(refused.reasons.some(item => item.code === 'preservation_payload_collision'
+    && item.path === 'config/home.yaml.example'));
+  assert.equal(fs.existsSync(destination), false);
+
+  fs.writeFileSync(path.join(source.home, 'config/home.yaml.example'), 'signed example\n');
+  fs.chmodSync(path.join(source.home, 'config/home.yaml.example'), 0o600);
+  const modeRefused = await adoptManagedSourceHome(input, adoptionDeps());
+  assert.ok(modeRefused.reasons.some(item => item.code === 'preservation_payload_collision'));
+  assert.equal(fs.existsSync(destination), false);
+  fs.writeFileSync(path.join(source.home, 'config/home.yaml.example'), 'old source example\n');
+
+  const shadow = 'app/instances/.house/preserved-source/overlapped-software/config/home.yaml.example';
+  const preservationPlan = { schema: 'home23.adoption-preservation.v1', sourceRoot: source.home,
+    entries: [{ path: 'config/home.yaml.example', action: 'preserve', destination: shadow }] };
+  const adopted = await adoptManagedSourceHome({ ...input, preservationPlan }, adoptionDeps());
+  assert.equal(adopted.ok, true, JSON.stringify(adopted.reasons));
+  assert.equal(fs.readFileSync(path.join(destination, example), 'utf8'), 'signed example\n');
+  assert.equal(fs.readFileSync(path.join(destination, shadow), 'utf8'), 'old source example\n');
+  assert.ok(verifyProductPayload(destination, { allowRuntimeState: true }));
+});
+
 test('retained legacy authority stays one external directory through adoption', async t => {
   const pack = fixture(t, { omitEvobrew: true });
   const source = managedHome(pack.root, { writers: 'idle' });
