@@ -1,10 +1,12 @@
 # Home23 Host
 
-Home23 Host is a separate native Mac companion. It installs and supervises a
-home; the existing Home23 app connects to that home for conversation, Work,
-Library, and channels. The client keeps its current sandbox and app identity.
-The Host is intended for direct distribution with its own identity. Its current
-developer artifact is not a signed/notarized public release.
+Home23 Host is the background home manager embedded in the visible Home23 Mac
+app. It installs and supervises a home while the same product's iPhone, iPad,
+and Mac clients provide conversation, Work, Library, and channels. The Mac
+client keeps its sandbox and app identity; the embedded helper keeps its own
+technical bundle identity. Owners install and update one Mac app, not two
+independently maintained apps. A source build is not a signed/notarized public
+release.
 
 Current owner-upgrade decisions follow [Home23 continuity, updates and portability](HOME-UPDATES-AND-PORTABILITY.md).
 Host and client are parts of one product. Host ownership, software version and
@@ -12,10 +14,10 @@ embedding provider are separate choices; Host does not require replacing an
 established resident or its configured Ollama space.
 
 The [product delivery agreement](PRODUCT-DELIVERY.md) owns the public website,
-downloads, user journeys and delivery backlog. The website will present Host
-and the Mac client together, link to iPhone TestFlight during beta and the App
-Store after release, and provide documentation, examples and support. End users
-should not need GitHub or Terminal.
+downloads, user journeys and delivery backlog. A private beta needs a verified
+Mac app artifact and supported iPhone/iPad delivery; a TestFlight or App Store
+link appears only after its channel is actually available. End users should not
+need GitHub or Terminal.
 
 The private web dashboard stays part of each home and can be used without the
 Mac conversation app. It is the intended Windows client surface once secure
@@ -68,7 +70,8 @@ and rebinds a destination and fences the source against duplicate startup.
 Managed/source adoption is a separate adapter; it does not mean an arbitrary
 existing directory can be overwritten or controlled in place by Host.
 
-The companion invokes the bundled Node with `app/scripts/product/host.mjs`.
+The embedded helper in `Home23.app/Contents/Library/LoginItems/Home23Host.app`
+invokes the bundled Node with `app/scripts/product/host.mjs`.
 The protocol accepts one action and absolute operation paths. Its current action
 and flag matrix is in `scripts/product/host.mjs`; the native caller is Apple
 `Home23Host/HostCommand.swift`. Do not use early command snapshots as the current
@@ -87,7 +90,14 @@ Preparation, process admission, and functional readiness are separate states.
 `ready` requires the actual local API and signed resident availability. It does
 not assert that a provider has answered or an owner has accepted the interface.
 The Host retains recovery information if installation or startup is interrupted.
-Connecting the client reuses its existing pairing flow.
+Connecting the client reuses its existing pairing flow. On an installed home,
+**Connect a device** can set up a dedicated Tailscale Serve HTTPS route to the
+home's loopback coordination port after an explicit local click. Host reads
+Tailscale's current routes first and shares the address only after route
+readback and a certificate-checked Home23 probe. The iPhone or iPad joins the
+same tailnet and pairs in Home23; no pairing secret is placed in the shared
+address. An existing owner's Caddy origin is retained, not replaced by this
+new-home setup. A source build of this flow is not remote-device acceptance.
 
 ## Monitoring belongs to the installed home
 
@@ -126,9 +136,11 @@ alongside API-key and local-model setup. The recorded isolated Anthropic trial
 completed native consent and a persisted provider turn. Preserve those flows;
 the early API/local-only package description is historical.
 
-Native bundled-package Check/preparation and local install/recovery are now
-implemented. Public publisher-hosted updates, consumer signing/notarization,
-broader distribution, hosted homes and account connectors remain separate work.
+The one-product home update status/action flow and native Check, Update,
+Resume, and recovery presentation are implemented in source. Public release
+channel readiness, consumer signing/notarization, physical iPhone/iPad
+installation and acceptance, broader distribution, hosted homes and account
+connectors remain separate work.
 Reuse existing evidence for its scope rather than interpreting this older
 developer milestone as a mandate to repeat the first-owner journey.
 Track those items and public website/download work in
