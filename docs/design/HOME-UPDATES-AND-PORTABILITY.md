@@ -102,8 +102,9 @@ that inventory pass. Keep original state and recovery material.
 
 ## Final consolidation sprint
 
-The owner requests a fresh Codex session with a durable goal, a capable lead and
-parallel implementation. Its finish line is one ordinary-user Home23 installation
+The owner requests a fresh Codex session with a durable goal, **GPT-6 Astra
+leading GPT-6 Sol implementation agents**, and maximum useful parallelism.
+Its finish line is one ordinary-user Home23 installation
 and update experience, with iPhone/iPad as primary clients and a supported Mac
 running the home behind the scenes. Carry the owner's existing home forward and
 make the same product easy for a new person to install and pair. A separately
@@ -147,10 +148,30 @@ work. Do not call the goal complete by improving only that bundled-engine compar
    Produce a concise release and recovery record, then close the goal when these outcomes are established.
 
 Use the available goal tool once in the new session, without an invented token
-budget. Keep the original objective across compaction; query goal state and the
-short task record before resuming. Update one current record with lane owners,
-completed evidence, concrete blockers and next actions. Do not create an endless
-append-only progress transcript or a new recurring automation.
+budget: query existing goal state, create the full goal if absent, and reuse a
+matching active goal. Do not replace an unrelated unfinished goal. Start concrete
+work immediately. Keep the original objective across compaction; query goal state
+and the short task record before resuming. Mark complete only when the stated
+user outcome is achieved, not when a worker finishes or a candidate compiles.
+
+Explicitly select Sol when spawning implementation agents; inheriting the lead
+model is not the requested division. Give each worker sufficient scoped context,
+exclusive file ownership and integration contracts. Astra owns consequential
+continuity/recovery decisions, active review, integration and final closure.
+Report model unavailability instead of silently changing the arrangement.
+
+Keep available capacity working on independent tasks that advance the goal.
+Integrate results as they become ready, then assign the next unfinished task;
+do not wait for every lane. Parallelize independent implementation and targeted
+builds. Serialize only shared mutable state, file ownership conflicts, genuine
+dependencies and constrained build/copy resources. Do not invent work to fill
+slots or repeat other agents' investigations.
+
+Update one current record with goal, lane owners/branches, completed evidence,
+current action, concrete blockers, authority pending and next actions. Refresh
+it at meaningful milestones and context handoff, replacing obsolete status.
+Progress updates say what finished, what runs in parallel and what determines
+completion time. Do not create an endless transcript or a new recurring automation.
 
 This document prepares the sprint; it is not live activation authority. Build and
 integrate the concrete result before seeking any genuinely missing permission for
