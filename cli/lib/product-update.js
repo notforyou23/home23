@@ -7,7 +7,7 @@ import {
 import { createRequire } from 'node:module';
 import { basename, dirname, join, relative as relativePath, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { choosePortPlan, privateJSON, readPrivateJSON } from './product-environment.js';
+import { choosePortPlan, privateJSON, readPrivateJSON, validatePortPlan } from './product-environment.js';
 import { assertWritersIdle, rebindAdoptedHome, residentInstancePortSets } from './product-backup.js';
 import { installProductPayload, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation, previewRoot } from './product-update-preview.js';
@@ -19,6 +19,7 @@ import { promisify } from 'node:util';
 const executeFile = promisify(execFile);
 const require = createRequire(import.meta.url);
 const { agentProcessNames, managedResidentWriters } = require('../../shared/agent-process-names.cjs');
+const yaml = require('js-yaml');
 
 const CREATION_JOURNAL = 'instances/.house/creation.json';
 
@@ -101,6 +102,49 @@ function allowedPreserveDestination(path) {
     ((entry.type === 'directory' || entry.allowDescendants) && path.startsWith(`${entry.path}/`)));
 }
 
+function validateContinuingNetworkBindings(source, bindings) {
+  if (!bindings) return null;
+  const evidencePaths = ['config/home.yaml', 'evobrew/config.json',
+    'instances/.house/coordination/active-release.json', 'instances/.house/coordination/ecosystem.config.cjs',
+    'instances/jerry/config.yaml', 'instances/forrest/config.yaml'];
+  if (bindings.schema !== 'home23.adoption-network-bindings.v1'
+    || !bindings.shared || !bindings.residents || !bindings.evidence
+    || Object.keys(bindings.evidence).sort().join('|') !== evidencePaths.sort().join('|')) throw new Error('Invalid continuing-home network bindings.');
+  for (const relative of evidencePaths) {
+    const file = join(source, relative);
+    if (!existsSync(file) || !lstatSync(file).isFile() || lstatSync(file).isSymbolicLink()
+      || createHash('sha256').update(readFileSync(file)).digest('hex') !== bindings.evidence[relative]) {
+      throw new Error(`Continuing-home network source changed: ${relative}`);
+    }
+  }
+  validatePortPlan(bindings.shared, { continuingBindings: true });
+  const home = yaml.load(readFileSync(join(source, 'config/home.yaml'), 'utf8'));
+  const release = JSON.parse(readFileSync(join(source, 'instances/.house/coordination/active-release.json'), 'utf8'));
+  const saved = readFileSync(join(source, 'instances/.house/coordination/ecosystem.config.cjs'), 'utf8');
+  const coordination = Number(saved.match(/HOME23_COORDINATION_PORT:\s*["']?(\d+)/)?.[1]);
+  const evobrew = JSON.parse(readFileSync(join(source, 'evobrew/config.json'), 'utf8'));
+  const names = Object.keys(release.residents || {}).sort();
+  if (Object.keys(bindings.residents).sort().join('|') !== names.join('|')
+    || bindings.shared.coordination !== coordination
+    || bindings.shared.observatory !== home?.substrate?.observatory?.port
+    || bindings.shared.evobrew !== evobrew?.server?.port) throw new Error('Continuing-home network binding differs from source services.');
+  const used = new Set([coordination, bindings.shared.observatory, bindings.shared.evobrew]);
+  for (const name of names) {
+    const sourcePorts = yaml.load(readFileSync(join(source, `instances/${name}/config.yaml`), 'utf8'))?.ports;
+    const selected = bindings.residents[name];
+    if (!sourcePorts || !selected || ['engine', 'dashboard', 'mcp', 'bridge'].some(key => selected[key] !== sourcePorts[key]
+      || !Number.isInteger(selected[key]) || selected[key] < 1024 || selected[key] > 60999 || used.has(selected[key]))) {
+      throw new Error(`Continuing-home resident network binding changed: ${name}`);
+    }
+    for (const key of ['engine', 'dashboard', 'mcp', 'bridge']) used.add(selected[key]);
+  }
+  const primary = home?.home?.primaryAgent;
+  if (!names.includes(primary) || ['engine', 'dashboard', 'mcp', 'bridge'].some(key => bindings.shared[key] !== bindings.residents[primary][key])) {
+    throw new Error('Continuing-home primary network binding changed.');
+  }
+  return bindings;
+}
+
 /** A reviewed plan pins every exception, including link targets, before copying. */
 export function validateAdoptionPreservationPlan(source, plan, expectedHash) {
   if (!plan) return null;
@@ -170,7 +214,8 @@ export function validateAdoptionPreservationPlan(source, plan, expectedHash) {
     }
     seenRewrites.add(rewrite.path);
   }
-  return { hash, entries, references, identity, services, rewrites };
+  const networkBindings = validateContinuingNetworkBindings(source, plan.networkBindings || null);
+  return { hash, entries, references, identity, services, rewrites, networkBindings };
 }
 
 const ADOPTION_REBIND = new Set([
@@ -675,6 +720,7 @@ function writeAdoptedLinks(destination, paths, source, reviewed = null) {
     links,
     externalReferences: reviewed?.references || [],
     continuationServices: reviewed?.services || [],
+    ...(reviewed?.networkBindings ? { networkBindings: reviewed.networkBindings } : {}),
   });
 }
 
@@ -997,11 +1043,11 @@ function verifyContinuingBirth(source, identity, reviewed) {
   return { ...identity, birth: { home: { id: requested.homeId, name: requested.homeName }, coordination: { botId: requested.botId } } };
 }
 
-async function writeStoppedHost(destination, identity, dependencies = {}) {
+async function writeStoppedHost(destination, identity, dependencies = {}, reviewed = null) {
   const choose = dependencies.choosePortPlan || choosePortPlan;
-  const ports = identity.ports && typeof identity.ports === 'object'
+  const ports = reviewed?.networkBindings?.shared || (identity.ports && typeof identity.ports === 'object'
     ? identity.ports
-    : await choose({ encoderRequired: identity.encoderRequired === true });
+    : await choose({ encoderRequired: identity.encoderRequired === true }));
   const state = {
     schema: 'home23.host.v2',
     homeRoot: destination,
@@ -1010,6 +1056,7 @@ async function writeStoppedHost(destination, identity, dependencies = {}) {
     desiredRunning: false,
     // Preserve the source encoder contract. Do not invent encoderRequired:true.
     encoderRequired: identity.encoderRequired === true,
+    ...(reviewed?.networkBindings ? { networkBindings: reviewed.networkBindings } : {}),
   };
   if (identity.profile?.name) state.profile = { ...identity.profile };
   if (typeof identity.fingerprint === 'string') state.fingerprint = identity.fingerprint;
@@ -1026,7 +1073,7 @@ async function writeStoppedHost(destination, identity, dependencies = {}) {
   }
   if (identity.residentMap) {
     const residents = Object.keys(identity.residentMap);
-    const portSets = residents.length > 1 ? residentInstancePortSets(ports, residents) : null;
+    const portSets = reviewed?.networkBindings?.residents || (residents.length > 1 ? residentInstancePortSets(ports, residents) : null);
     state.residentMap = Object.fromEntries(residents.map(name => [
       name,
       {
@@ -1235,7 +1282,7 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       if (sourceAdoptionSnapshot(source, livePaths, afterIdentity) !== journal.sourceSnapshot) {
         return refuseAdoption(plan, [reason('source_identity_changed', 'Preserved source changed during the copy window; newly created files cannot finish as adopted.')], destination);
       }
-      await writeStoppedHost(destination, identity, dependencies);
+      await writeStoppedHost(destination, identity, dependencies, validateAdoptionPreservationPlan(source, preservationPlan, planHash));
       journal = { ...journal, phase: 'rebind', residents: identity.residents, residentMap: identity.residentMap || null };
       writeAdoptionJournal(destination, journal);
       if (dependencies.afterPreserve) await dependencies.afterPreserve({ source, destination, journal, releaseLock });
@@ -1246,10 +1293,12 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       catch (error) {
         return refuseAdoption(plan, [reason('package_integrity_failed', error.message)], destination);
       }
+      // Make reviewed external authorities visible to the rebind before it
+      // examines config files beneath retained directory links.
+      writeAdoptedLinks(destination, plan.inventory.paths, source, validateAdoptionPreservationPlan(source, preservationPlan, planHash));
       await rebind(source, destination);
       applyReviewedPathRewrites(destination, plan.inventory.paths,
         validateAdoptionPreservationPlan(source, preservationPlan, planHash)?.rewrites || []);
-      writeAdoptedLinks(destination, plan.inventory.paths, source, validateAdoptionPreservationPlan(source, preservationPlan, planHash));
       const host = JSON.parse(readFileSync(join(destination, '.home23-host.json'), 'utf8'));
       host.desiredRunning = false;
       host.phase = 'stopped';

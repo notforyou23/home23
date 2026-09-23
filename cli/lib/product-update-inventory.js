@@ -98,6 +98,7 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   let adoptedLinks = new Map();
   let adoptedReferences = new Set();
   let adoptedContinuation = null;
+  let adoptedNetwork = null;
   const adoptedReceipt = join(root, ADOPTED_LINK_RECEIPT);
   if (exists(adoptedReceipt)) {
     try {
@@ -113,6 +114,7 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
         if (!Array.isArray(receipt.continuationServices)) throw new Error();
         adoptedContinuation = receipt.continuationServices.map(service => ({ name: service.name, ...service.run }));
       }
+      adoptedNetwork = receipt.networkBindings || null;
       if (receipt.externalReferences !== undefined) {
         if (!Array.isArray(receipt.externalReferences)) throw new Error();
         adoptedReferences = new Set(receipt.externalReferences.map(reference => {
@@ -176,6 +178,13 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   const continuing = state?.continuationServices || [];
   if (continuing.length && (!adoptedContinuation || JSON.stringify(continuing) !== JSON.stringify(adoptedContinuation))) {
     reasons.push(reason('continuation_receipt_mismatch', 'Continuing service bindings differ from the sealed adoption receipt.'));
+  }
+  if (JSON.stringify(state?.networkBindings || null) !== JSON.stringify(adoptedNetwork)
+    || (adoptedNetwork && (JSON.stringify(state?.ports) !== JSON.stringify(adoptedNetwork.shared)
+      || Object.keys(state?.residentMap || {}).sort().join('|') !== Object.keys(adoptedNetwork.residents || {}).sort().join('|')
+      || Object.entries(adoptedNetwork.residents || {}).some(([name, ports]) =>
+        JSON.stringify(state?.residentMap?.[name]?.ports || null) !== JSON.stringify(ports))))) {
+    reasons.push(reason('network_binding_receipt_mismatch', 'Continuing-home ports differ from their sealed adoption receipt.'));
   }
   const created = Boolean(state);
   const residentNames = created && state.residentMap && typeof state.residentMap === 'object' && !Array.isArray(state.residentMap)
