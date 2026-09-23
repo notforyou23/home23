@@ -9,6 +9,7 @@ import { basename, dirname, join, relative as relativePath, resolve, sep } from 
 import { fileURLToPath } from 'node:url';
 import { choosePortPlan, privateJSON, readPrivateJSON, validatePortPlan } from './product-environment.js';
 import { assertWritersIdle, rebindAdoptedHome, residentInstancePortSets } from './product-backup.js';
+import { projectFencedCoordination, readFencedCoordination } from './product-adoption.js';
 import { installProductPayload, isProductStatePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation, previewRoot } from './product-update-preview.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
@@ -1180,6 +1181,14 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
   if (!identity.ok) {
     return refuseAdoption(plan, [reason(identity.code, identity.message)], destination);
   }
+  // A fenced legacy launcher cannot be evaluated with the new Node runtime.
+  // Its preserved, snapshot-bound metadata carries the effective settings.
+  let fencedCoordination;
+  try { fencedCoordination = readFencedCoordination(source); }
+  catch {
+    return refuseAdoption(plan, [reason('coordination_metadata_invalid',
+      'Fenced coordination settings are incomplete or changed; adoption did not proceed.')], destination);
+  }
 
   let manifest;
   try { manifest = readProductManifest(payload); }
@@ -1387,6 +1396,7 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
       await rebind(source, destination);
       applyReviewedPathRewrites(destination, plan.inventory.paths,
         validateAdoptionPreservationPlan(source, preservationPlan, planHash)?.rewrites || []);
+      await projectFencedCoordination(destination, fencedCoordination);
       const host = JSON.parse(readFileSync(join(destination, '.home23-host.json'), 'utf8'));
       host.desiredRunning = false;
       host.phase = 'stopped';

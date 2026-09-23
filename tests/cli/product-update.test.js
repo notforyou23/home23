@@ -326,6 +326,19 @@ test('managed and source adoption plans stay fail-closed and never write', t => 
   assert.deepEqual(fs.readFileSync(ledgerPath), beforeLedger);
 });
 
+test('adoption refuses malformed fenced coordination before installing a destination', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const destination = path.join(pack.root, 'destination');
+  fs.writeFileSync(path.join(source.home, 'instances/.house/coordination/ecosystem.fenced-metadata.json'),
+    JSON.stringify({ schema: 'unexpected', apps: [] }), { mode: 0o600 });
+  const refused = await adoptManagedSourceHome({ sourceHome: source.home, destinationRoot: destination,
+    payloadPath: pack.payload }, adoptionDeps());
+  assert.equal(refused.ok, false);
+  assert.ok(refused.reasons.some(item => item.code === 'coordination_metadata_invalid'));
+  assert.equal(fs.existsSync(destination), false);
+});
+
 test('adoption refuses external preserve links and does not create the destination', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root);
