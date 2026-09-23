@@ -28,6 +28,10 @@ func launch(_ url: URL, id: String) {
     var launched: NSRunningApplication?
     var launchError: Error?
     let config = NSWorkspace.OpenConfiguration()
+    if id == "com.home23.host" {
+        config.arguments = ["--home23-background"]
+        config.activates = false
+    }
     NSWorkspace.shared.openApplication(at: url, configuration: config) { app, error in
         launched = app
         launchError = error
