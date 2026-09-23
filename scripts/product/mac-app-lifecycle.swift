@@ -20,7 +20,7 @@ func waitForExit(_ processes: [NSRunningApplication]) {
     let deadline = Date().addingTimeInterval(15)
     while Date() < deadline {
         if processes.allSatisfy({ $0.isTerminated }) { return }
-        Thread.sleep(forTimeInterval: 0.1)
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
     }
     fail("A previous Home23 process did not exit; app was not replaced")
 }
