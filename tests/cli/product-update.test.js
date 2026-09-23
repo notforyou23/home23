@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
 import { execFileSync } from 'node:child_process';
 import { writeProductManifest, installProductPayload, verifyProductPayload } from '../../cli/lib/product-payload.js';
@@ -17,6 +18,7 @@ import { assertWritersIdle, rebindAdoptedHome } from '../../cli/lib/product-back
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 import { acquireManagedStartLocks } from '../../cli/lib/pm2-commands.js';
 import { inspectUpdateInventory } from '../../cli/lib/product-update-inventory.js';
+import { withReservedPorts } from '../../cli/lib/product-environment.js';
 import {
   runHostAction, hostResidentNames, ownedProcessNamesForState, probeReadiness, residentPortsFor, safeProcesses,
 } from '../../cli/lib/product-host.js';
@@ -705,6 +707,14 @@ test('reviewed managed network bindings keep exact legacy ports through adoption
   assert.deepEqual(host.ports, shared);
   assert.deepEqual(host.residentMap.jerry.ports, residents.jerry);
   assert.deepEqual(host.residentMap.forrest.ports, residents.forrest);
+  const occupied = createServer();
+  await new Promise((resolve, reject) => occupied.once('error', reject).listen(15011, '127.0.0.1', resolve));
+  try {
+    await assert.rejects(withReservedPorts(shared, async () => {},
+      { continuingBindings: true, residentPorts: residents }), { code: 'EADDRINUSE' });
+  } finally {
+    await new Promise(resolve => occupied.close(resolve));
+  }
   assert.equal((await runHostAction('status', { homeRoot: destination })).ok, true);
   const moved = path.join(pack.root, 'moved');
   fs.cpSync(destination, moved, { recursive: true });
