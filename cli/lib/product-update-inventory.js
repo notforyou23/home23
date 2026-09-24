@@ -208,9 +208,14 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   }
   const manifestEntries = new Map((installed?.files || []).map(entry => [entry.path, entry]));
   const manifestPaths = new Set(manifestEntries.keys());
-  function visit(relative) {
+  function visit(relative, dirent) {
     const absolute = join(root, relative);
-    const stat = lstatSync(absolute);
+    // Directory entries carry their file type on APFS. Reusing it avoids one
+    // metadata round trip for every conversation, browser cache and Seed file
+    // in a lived home. Fall back to lstat where the filesystem cannot say.
+    const knownType = dirent && (dirent.isFile() || dirent.isDirectory() || dirent.isSymbolicLink()
+      || dirent.isSocket() || dirent.isFIFO() || dirent.isBlockDevice() || dirent.isCharacterDevice());
+    const stat = knownType ? dirent : lstatSync(absolute);
     const declared = manifestEntries.get(relative);
     if (relative === COORDINATION_SOCKET || PM2_SOCKETS.has(relative)) {
       // A live UDS is a rebuildable coordinator endpoint, never a backup file.
@@ -256,7 +261,8 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
       // Visit state-bearing paths and unknown top-level paths, but do not walk
       // thousands of dependency files that will be replaced by that switch.
       if (!scanSoftware && !containsState(relative)) return;
-      for (const name of readdirSync(absolute).sort()) visit(relative ? `${relative}/${name}` : name);
+      for (const entry of readdirSync(absolute, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+        visit(relative ? `${relative}/${entry.name}` : entry.name, entry);
       return;
     }
     if (!stat.isFile()) {
@@ -265,7 +271,8 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
     }
     if (relative !== 'manifest.json' && !manifestPaths.has(relative) && !isProductStatePath(relative)) unknown.push(relative);
   }
-  if (exists(root)) for (const name of readdirSync(root).sort()) visit(name);
+  if (exists(root)) for (const entry of readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    visit(entry.name, entry);
   for (const path of adoptedLinks.keys()) reasons.push(reason('linked_state_missing', `Reviewed state link ${path} is missing.`, { path }));
   for (const path of unknown) reasons.push(reason('unknown_state', `Unclassified path ${path} is not package software or a known home-state root. Classify it before updating.`, { path }));
   const state = exists(join(root, '.home23-host.json')) ? readPrivateJSON(join(root, '.home23-host.json')) : null;
