@@ -130,15 +130,15 @@ test('reconciliation pages active invocations and wraps to revisit them', async 
     payload: JSON.stringify({ origin: { workId: `work-${index}`, channelId: CHANNEL_ID },
       invocationId: `call-${index}`, botId: BOT_ID, prompt: 'Help', channelId: CHANNEL_ID,
       messageId: `message-${index}` }) }));
-  const pages: Array<{ after: number; limit: number }> = [];
+  const pages: Array<{ after: number; through: number; limit: number }> = [];
   const options = {
     database: {
-      readAll(sql: string, after?: number, limit?: number) {
+      readAll(sql: string, after?: number, through?: number, limit?: number) {
         if (!sql.includes('SELECT e.sequence AS sequence')) return [];
-        pages.push({ after: after!, limit: limit! });
-        return admissions.filter(row => row.sequence > after!).slice(0, limit);
+        pages.push({ after: after!, through: through!, limit: limit! });
+        return admissions.filter(row => row.sequence > after! && row.sequence <= through!).slice(0, limit);
       },
-      readOne: () => undefined,
+      readOne(sql: string) { return sql.includes('max(sequence)') ? { sequence: 70 } : undefined; },
     },
     work: { get: () => ({ state: 'running' }) },
     leases: {}, channels: {}, submit: { submitMessage: async () => ({}) },
@@ -148,7 +148,23 @@ test('reconciliation pages active invocations and wraps to revisit them', async 
   const service = createBotInvocationService(options);
   await service.reconcile(); await service.reconcile(); await service.reconcile(); await service.reconcile();
   assert.deepEqual(pages, [
-    { after: 0, limit: 32 }, { after: 32, limit: 32 },
-    { after: 64, limit: 32 }, { after: 0, limit: 32 },
+    { after: 0, through: 70, limit: 32 }, { after: 32, through: 70, limit: 32 },
+    { after: 64, through: 70, limit: 32 }, { after: 0, through: 70, limit: 32 },
   ]);
+});
+
+test('reconciliation advances through sparse history in bounded sequence windows', async () => {
+  const queries: Array<[number, number, number]> = [];
+  const service = createBotInvocationService({
+    database: {
+      readOne(sql: string) { return sql.includes('max(sequence)') ? { sequence: 9000 } : undefined; },
+      readAll(sql: string, after: number, through: number, limit: number) {
+        if (!sql.includes('SELECT e.sequence AS sequence')) return [];
+        queries.push([after, through, limit]); return [];
+      },
+    }, work: {}, leases: {}, channels: {}, submit: {}, authorize: () => undefined,
+    currentCredential: () => true, context: () => ({}), stopChild: async () => undefined,
+  } as any);
+  for (let index = 0; index < 4; index++) await service.reconcile();
+  assert.deepEqual(queries, [[0, 4096, 32], [4096, 8192, 32], [8192, 9000, 32], [0, 4096, 32]]);
 });

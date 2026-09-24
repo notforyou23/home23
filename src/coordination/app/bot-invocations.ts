@@ -57,6 +57,7 @@ export function createBotInvocationService(options: {
   // each full pass revisits still-active invocations as parent/child state changes.
   let reconcileAfterSequence = 0;
   const RECONCILE_BATCH_SIZE = 32;
+  const RECONCILE_SEQUENCE_WINDOW = 4096;
   const journal = (messageId: string) => db.readOne<{ payload: string }>(
     "SELECT payload_json AS payload FROM events WHERE aggregate_kind = 'bot_invocation' AND aggregate_id = ? AND aggregate_version = 1", messageId);
   function record(invocation: Invocation, version: number, extra: Record<string, unknown> = {}) {
@@ -196,13 +197,15 @@ export function createBotInvocationService(options: {
       if (reconciling) return;
       reconciling = true;
       try {
-      const active = db.readAll<{ sequence: number; payload: string }>(`SELECT e.sequence AS sequence, e.payload_json AS payload FROM events e
+      const journalEnd = db.readOne<{ sequence: number }>('SELECT coalesce(max(sequence), 0) AS sequence FROM events')!.sequence;
+      const windowEnd = Math.min(reconcileAfterSequence + RECONCILE_SEQUENCE_WINDOW, journalEnd);
+      const active = db.readAll<{ sequence: number; payload: string }>(`SELECT e.sequence AS sequence, e.payload_json AS payload FROM events e NOT INDEXED
         JOIN works w ON w.id = json_extract(e.payload_json, '$.origin.workId')
         WHERE e.aggregate_kind = 'bot_invocation' AND e.aggregate_version = 1
-          AND e.sequence > ?
+          AND e.sequence > ? AND e.sequence <= ?
           AND (w.state IN ('running','cancelling') OR (w.state IN ('succeeded','failed','cancelled') AND EXISTS
             (SELECT 1 FROM works child WHERE child.origin_message_id = e.aggregate_id AND child.state NOT IN ('succeeded','failed','cancelled'))))
-        ORDER BY e.sequence LIMIT ?`, reconcileAfterSequence, RECONCILE_BATCH_SIZE);
+        ORDER BY e.sequence LIMIT ?`, reconcileAfterSequence, windowEnd, RECONCILE_BATCH_SIZE);
       for (const row of active) {
         const invocation = JSON.parse(row.payload) as Invocation;
         if (TERMINAL.has(status(invocation).state)) continue;
@@ -210,7 +213,8 @@ export function createBotInvocationService(options: {
         if (parent?.state === 'running') dispatch(invocation);
         else await stop(invocation);
       }
-      reconcileAfterSequence = active.length === RECONCILE_BATCH_SIZE ? active.at(-1)!.sequence : 0;
+      const through = active.length === RECONCILE_BATCH_SIZE ? active.at(-1)!.sequence : windowEnd;
+      reconcileAfterSequence = through >= journalEnd ? 0 : through;
       } finally { reconciling = false; }
     },
   };
