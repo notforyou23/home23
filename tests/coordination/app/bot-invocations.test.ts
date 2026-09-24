@@ -127,6 +127,7 @@ test('busy helper admission retains one durable request and retries when availab
 
 test('reconciliation pages active invocations and wraps to revisit them', async () => {
   const admissions = Array.from({ length: 70 }, (_, index) => ({ sequence: index + 1,
+    active: 1,
     payload: JSON.stringify({ origin: { workId: `work-${index}`, channelId: CHANNEL_ID },
       invocationId: `call-${index}`, botId: BOT_ID, prompt: 'Help', channelId: CHANNEL_ID,
       messageId: `message-${index}` }) }));
@@ -134,7 +135,7 @@ test('reconciliation pages active invocations and wraps to revisit them', async 
   const options = {
     database: {
       readAll(sql: string, after?: number, through?: number, limit?: number) {
-        if (!sql.includes('SELECT e.sequence AS sequence')) return [];
+        if (!sql.includes('WITH candidates AS MATERIALIZED')) return [];
         pages.push({ after: after!, through: through!, limit: limit! });
         return admissions.filter(row => row.sequence > after! && row.sequence <= through!).slice(0, limit);
       },
@@ -159,7 +160,7 @@ test('reconciliation advances through sparse history in bounded sequence windows
     database: {
       readOne(sql: string) { return sql.includes('max(sequence)') ? { sequence: 9000 } : undefined; },
       readAll(sql: string, after: number, through: number, limit: number) {
-        if (!sql.includes('SELECT e.sequence AS sequence')) return [];
+        if (!sql.includes('WITH candidates AS MATERIALIZED')) return [];
         queries.push([after, through, limit]); return [];
       },
     }, work: {}, leases: {}, channels: {}, submit: {}, authorize: () => undefined,
@@ -169,6 +170,30 @@ test('reconciliation advances through sparse history in bounded sequence windows
   assert.deepEqual(queries, [[0, 4096, 32], [4096, 8192, 32], [8192, 9000, 32], [0, 4096, 32]]);
 });
 
+test('irrelevant activity advances the raw page without requiring an active invocation', async () => {
+  const irrelevant = Array.from({ length: 100 }, (_, index) => ({ sequence: index + 1, active: 0, payload: '{}' }));
+  const pages: Array<{ after: number; returned: number }> = [];
+  const service = createBotInvocationService({
+    database: {
+      readOne(sql: string) { return sql.includes('max(sequence)') ? { sequence: 100 } : undefined; },
+      readAll(sql: string, after: number, through: number, limit: number) {
+        if (!sql.includes('WITH candidates AS MATERIALIZED')) return [];
+        const page = irrelevant.filter(row => row.sequence > after && row.sequence <= through).slice(0, limit);
+        pages.push({ after, returned: page.length });
+        return page;
+      },
+    }, work: { get: () => { throw new Error('irrelevant activity was dispatched'); } },
+    leases: {}, channels: {}, submit: {}, authorize: () => undefined,
+    currentCredential: () => true, context: () => ({}), stopChild: async () => undefined,
+  } as any);
+  for (let index = 0; index < 5; index++) await service.reconcile();
+  assert.deepEqual(pages, [
+    { after: 0, returned: 32 }, { after: 32, returned: 32 },
+    { after: 64, returned: 32 }, { after: 96, returned: 4 },
+    { after: 0, returned: 32 },
+  ]);
+});
+
 test('reconciliation searches the activity journal by type and bounded sequence', async t => {
   const database = M11TestDatabase.temporary(); t.after(() => database.close());
   let query = '';
@@ -176,7 +201,7 @@ test('reconciliation searches the activity journal by type and bounded sequence'
     database: {
       readOne: (sql: string) => database.readOne(sql),
       readAll: (sql: string, ...parameters: any[]) => {
-        if (sql.includes('SELECT e.sequence AS sequence')) query = sql;
+        if (sql.includes('WITH candidates AS MATERIALIZED')) query = sql;
         return database.readAll(sql, ...parameters);
       },
     }, work: {}, leases: {}, channels: {}, submit: {}, authorize: () => undefined,
@@ -184,7 +209,9 @@ test('reconciliation searches the activity journal by type and bounded sequence'
   } as any);
   await service.reconcile();
   assert.match(query, /e\.type = 'activity\.updated'/);
+  assert.match(query, /WITH candidates AS MATERIALIZED/);
   const plan = database.raw.prepare(`EXPLAIN QUERY PLAN ${query}`).all(0, 4096, 32) as Array<{ detail: string }>;
+  assert.ok(plan.some(row => /MATERIALIZE candidates/.test(row.detail)), JSON.stringify(plan));
   assert.ok(plan.some(row => /SEARCH e USING INDEX events_type_sequence \(type=\? AND sequence>\? AND sequence<\?\)/.test(row.detail)),
     JSON.stringify(plan));
 });

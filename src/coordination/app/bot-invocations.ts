@@ -199,23 +199,31 @@ export function createBotInvocationService(options: {
       try {
       const journalEnd = db.readOne<{ sequence: number }>('SELECT coalesce(max(sequence), 0) AS sequence FROM events')!.sequence;
       const windowEnd = Math.min(reconcileAfterSequence + RECONCILE_SEQUENCE_WINDOW, journalEnd);
-      // Admission records use activity.updated. The type/sequence index bounds
-      // recovery to this journal window without reading every event data page.
-      const active = db.readAll<{ sequence: number; payload: string }>(`SELECT e.sequence AS sequence, e.payload_json AS payload FROM events e INDEXED BY events_type_sequence
-        JOIN works w ON w.id = json_extract(e.payload_json, '$.origin.workId')
-        WHERE e.type = 'activity.updated' AND e.aggregate_kind = 'bot_invocation' AND e.aggregate_version = 1
-          AND e.sequence > ? AND e.sequence <= ?
+      // Page raw activity events before inspecting their payloads or joining
+      // Works. Filtering first can scan the entire window when admissions are rare.
+      const candidates = db.readAll<{ sequence: number; payload: string; active: number }>(`WITH candidates AS MATERIALIZED (
+        SELECT e.sequence, e.aggregate_kind, e.aggregate_version, e.aggregate_id, e.payload_json
+        FROM events e INDEXED BY events_type_sequence
+        WHERE e.type = 'activity.updated' AND e.sequence > ? AND e.sequence <= ?
+        ORDER BY e.sequence LIMIT ?
+      )
+      SELECT e.sequence AS sequence, e.payload_json AS payload,
+        CASE WHEN e.aggregate_kind = 'bot_invocation' AND e.aggregate_version = 1
           AND (w.state IN ('running','cancelling') OR (w.state IN ('succeeded','failed','cancelled') AND EXISTS
             (SELECT 1 FROM works child WHERE child.origin_message_id = e.aggregate_id AND child.state NOT IN ('succeeded','failed','cancelled'))))
-        ORDER BY e.sequence LIMIT ?`, reconcileAfterSequence, windowEnd, RECONCILE_BATCH_SIZE);
-      for (const row of active) {
+          THEN 1 ELSE 0 END AS active
+      FROM candidates e LEFT JOIN works w ON e.aggregate_kind = 'bot_invocation'
+        AND w.id = json_extract(e.payload_json, '$.origin.workId')
+      ORDER BY e.sequence`, reconcileAfterSequence, windowEnd, RECONCILE_BATCH_SIZE);
+      for (const row of candidates) {
+        if (!row.active) continue;
         const invocation = JSON.parse(row.payload) as Invocation;
         if (TERMINAL.has(status(invocation).state)) continue;
         const parent = options.work.get(invocation.origin.workId);
         if (parent?.state === 'running') dispatch(invocation);
         else await stop(invocation);
       }
-      const through = active.length === RECONCILE_BATCH_SIZE ? active.at(-1)!.sequence : windowEnd;
+      const through = candidates.length === RECONCILE_BATCH_SIZE ? candidates.at(-1)!.sequence : windowEnd;
       reconcileAfterSequence = through >= journalEnd ? 0 : through;
       } finally { reconciling = false; }
     },
