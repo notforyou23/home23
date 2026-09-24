@@ -1,10 +1,93 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryManager } from '../../src/agent/memory.js';
 import { DefaultCompactionHooks } from '../../src/agent/compaction-hooks.js';
+import lockfile from 'proper-lockfile';
+
+test('memory extraction retries a brief engine lock and saves the object', async () => {
+  const root = join(tmpdir(), `home23-memory-locked-extract-${Date.now()}`);
+  const workspace = join(root, 'workspace');
+  const brain = join(root, 'brain');
+  mkdirSync(workspace, { recursive: true });
+  mkdirSync(brain, { recursive: true });
+  const file = join(brain, 'memory-objects.json');
+  writeFileSync(file, '{"objects":[]}');
+  const release = lockfile.lockSync(file);
+  const unlockTimer = setTimeout(release, 80);
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.OLLAMA_CLOUD_API_KEY;
+  process.env.OLLAMA_CLOUD_API_KEY = 'test-ollama-key';
+  globalThis.fetch = (async () => new Response(JSON.stringify({ message: { content: JSON.stringify({
+    type: 'procedure', title: 'Preserve this memory', statement: 'The engine and harness share memory.',
+    domain: 'ops', before: '', after: 'Both writers retain updates.', why: 'Shared writer lock.',
+    trigger_keywords: 'memory', applies_to: 'home23', priority: 'high',
+  }) } }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+  try {
+    const manager = new MemoryManager({ client: {} as never, model: 'kimi-k2.6',
+      provider: 'ollama-cloud', workspacePath: workspace });
+    await manager.extractAndSave('chat-locked', [
+      { role: 'user', content: 'Remember the shared writer.' },
+      { role: 'assistant', content: 'I will.' },
+      { role: 'user', content: 'Preserve this memory.' },
+      { role: 'assistant', content: 'Saved.' },
+    ], 'kimi-k2.6', 'ollama-cloud');
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).objects[0].title, 'Preserve this memory');
+  } finally {
+    clearTimeout(unlockTimer);
+    try { release(); } catch { /* The timer may have released it already. */ }
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.OLLAMA_CLOUD_API_KEY;
+    else process.env.OLLAMA_CLOUD_API_KEY = previousKey;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('memory extraction reports an unsaved object when engine lock persists', async () => {
+  const root = join(tmpdir(), `home23-memory-busy-extract-${Date.now()}`);
+  const workspace = join(root, 'workspace');
+  const brain = join(root, 'brain');
+  mkdirSync(workspace, { recursive: true });
+  mkdirSync(brain, { recursive: true });
+  const file = join(brain, 'memory-objects.json');
+  writeFileSync(file, '{"objects":[]}');
+  const release = lockfile.lockSync(file);
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.OLLAMA_CLOUD_API_KEY;
+  const previousLog = console.log;
+  const previousWarn = console.warn;
+  const logs: string[] = [];
+  const warnings: string[] = [];
+  console.log = (...args) => { logs.push(args.map(String).join(' ')); };
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')); };
+  process.env.OLLAMA_CLOUD_API_KEY = 'test-ollama-key';
+  globalThis.fetch = (async () => new Response(JSON.stringify({ message: { content: JSON.stringify({
+    type: 'procedure', title: 'Busy memory', statement: 'Must not claim saved.', domain: 'ops',
+    before: '', after: 'Save when possible.', why: 'Engine lock.', trigger_keywords: 'busy',
+    applies_to: 'home23', priority: 'high',
+  }) } }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+  try {
+    const manager = new MemoryManager({ client: {} as never, model: 'kimi-k2.6',
+      provider: 'ollama-cloud', workspacePath: workspace });
+    await manager.extractAndSave('chat-busy', [
+      { role: 'user', content: 'Remember this.' }, { role: 'assistant', content: 'Okay.' },
+      { role: 'user', content: 'Did you save it?' }, { role: 'assistant', content: 'Checking.' },
+    ], 'kimi-k2.6', 'ollama-cloud');
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).objects.length, 0);
+    assert.ok(warnings.some(line => line.includes('were not saved for chat-busy')));
+    assert.ok(!logs.some(line => line.includes('Extracted and saved')));
+  } finally {
+    release();
+    globalThis.fetch = previousFetch;
+    console.log = previousLog;
+    console.warn = previousWarn;
+    if (previousKey === undefined) delete process.env.OLLAMA_CLOUD_API_KEY;
+    else process.env.OLLAMA_CLOUD_API_KEY = previousKey;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('conversation memory extraction uses non-Claude agent defaults', async () => {
   const root = join(tmpdir(), `home23-memory-extract-${Date.now()}`);

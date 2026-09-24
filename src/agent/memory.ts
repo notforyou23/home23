@@ -17,6 +17,7 @@ import {
   statSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { StoredMessage } from './history.js';
 import { generateText, inferTextGenerationProvider } from './text-generation.js';
 
@@ -136,6 +137,8 @@ Output ONLY the JSON objects, one per line. No prose.`,
       }
 
       // Create MemoryObjects from parsed lines
+      let savedCount = 0;
+      let failedCount = 0;
       try {
         const { MemoryObjectStore } = await import('./memory-objects.js');
         const brainDir = join(this.workspacePath, '..', 'brain');
@@ -161,7 +164,6 @@ Output ONLY the JSON objects, one per line. No prose.`,
               console.log(`[memory] Skipping duplicate extraction: "${parsed.title}"`);
               continue;
             }
-            existingTitles.add(parsed.title.toLowerCase());
 
             // Find or create thread
             const threads = store.getOpenThreads();
@@ -196,7 +198,7 @@ Output ONLY the JSON objects, one per line. No prose.`,
               : parsed.type === 'procedure' ? 'action_change'
               : 'belief_change';
 
-            store.createObject({
+            const object: Parameters<typeof store.createObject>[0] = {
               type: parsed.type as any,
               thread_id: thread.thread_id,
               session_id: chatId,
@@ -237,19 +239,32 @@ Output ONLY the JSON objects, one per line. No prose.`,
               staleness_policy: {
                 review_after_days: 30,
               },
-            });
+            };
+            for (let attempt = 0; ; attempt++) {
+              try {
+                store.createObject(object);
+                break;
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ELOCKED' || attempt >= 2) throw error;
+                await delay(40 * (attempt + 1));
+              }
+            }
 
+            existingTitles.add(parsed.title.toLowerCase());
+            savedCount++;
             console.log(`[memory] Extracted MemoryObject: "${parsed.title}" (${parsed.type})`);
-          } catch (parseErr) {
-            // Skip malformed lines
-            console.warn('[memory] Failed to parse extraction line:', line.slice(0, 80));
+          } catch (lineErr) {
+            failedCount++;
+            console.warn('[memory] Failed to save extraction line:', line.slice(0, 80), lineErr);
           }
         }
       } catch (storeErr) {
         console.warn('[memory] Failed to create MemoryObjects from extraction:', storeErr);
+        return;
       }
 
-      console.log(`[memory] Extracted and saved session memory for ${chatId}`);
+      if (failedCount) console.warn(`[memory] ${failedCount} extracted memory line(s) were not saved for ${chatId}`);
+      if (savedCount) console.log(`[memory] Extracted and saved ${savedCount} memory object(s) for ${chatId}`);
     } catch (err) {
       // Never crash — memory extraction is best-effort
       console.warn('[memory] extractAndSave failed:', err instanceof Error ? err.message : err);
