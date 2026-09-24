@@ -29,3 +29,15 @@ test('long Unicode notifications retain all content and only retry unfinished ch
   assert.equal((await adapter.send({ text, channel: 'home23', chatId: 'owner', deliveryId: 'long' })).status, 'queued');
   offline = false; await adapter.flush(); assert.equal(committed.join(''), text);
 });
+
+test('concurrent sends with one delivery ID persist and deliver one message', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-outbox-')); t.after(() => rmSync(root, { recursive: true }));
+  const seen: string[] = [];
+  const adapter = new Home23Adapter(root, async input => { seen.push(input.messageId); });
+  const input = { text: 'One notice', channel: 'home23', chatId: 'owner', deliveryId: 'same-run' };
+  const [first, second] = await Promise.all([adapter.send(input), adapter.send(input)]);
+  assert.equal(first.status, 'delivered');
+  assert.equal(second.status, 'delivered');
+  assert.equal(seen.length, 1);
+  assert.equal(readdirSync(root).filter(name => name.endsWith('.json')).length, 1);
+});
