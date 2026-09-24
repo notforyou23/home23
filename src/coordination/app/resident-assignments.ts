@@ -192,7 +192,10 @@ export function createResidentAssignments(database: M11Database) {
    * yields between pages so this derived snapshot cannot block Core's API. */
   function listForProjectionPage(principalId: string, after: { createdAt: string; id: string } | null = null,
     remaining = 1000) {
-    const seek = after ? 'AND (w.created_at<? OR (w.created_at=? AND w.id<?))' : '';
+    // A row-value range lets SQLite seek both ordered columns in
+    // works_target_created. The OR form only constrained principal_id and
+    // rescanned the resident's newer history on every subsequent page.
+    const seek = after ? 'AND (w.created_at,w.id) < (?,?)' : '';
     // LIMIT must apply before the eligibility filter. A selective LIMIT over
     // all resident Work can still scan years of rows in one blocking call.
     const batch = database.readAll<{ id: string; createdAt: string; kind: string; state: string;
@@ -203,7 +206,7 @@ export function createResidentAssignments(database: M11Database) {
       ) SELECT batch.*,p.work_id AS presentedWorkId,
         (SELECT enabled_at FROM resident_outcome_policy WHERE id=1) AS enabledAt
       FROM batch LEFT JOIN work_thread_presentations p ON p.work_id=batch.id`, principalId,
-      ...(after ? [after.createdAt, after.createdAt, after.id] : []));
+      ...(after ? [after.createdAt, after.id] : []));
     batch.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
     const cursor = batch.length ? { createdAt: batch.at(-1)!.createdAt, id: batch.at(-1)!.id } : null;
     const candidates = batch.filter(row => (row.kind === 'resident_work_thread' || row.presentedWorkId !== null)

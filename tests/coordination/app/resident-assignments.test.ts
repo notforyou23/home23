@@ -4,6 +4,7 @@ import fs, { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileS
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { createResidentAssignments } from '../../../src/coordination/app/resident-assignments.js';
 import { createResidentOutcomeStore } from '../../../src/coordination/app/resident-outcomes.js';
 import { projectResidentWork, projectResidentWorkIncrementally } from '../../../src/coordination/app/resident-work-projection.js';
@@ -567,9 +568,24 @@ test('incremental resident projection yields between pages and publishes only th
   assert.ok(candidatePages >= 4, 'sparse eligible Work must advance through raw history pages');
   assert.ok(candidatePlans.some(detail => detail.includes('SEARCH w USING INDEX works_target_created')),
     `candidate pages must seek the resident creation index: ${candidatePlans.join('; ')}`);
+  assert.ok(candidatePlans.some(detail => detail.includes('(created_at,id)<(?,?)')),
+    `later pages must seek the creation/id range, not rescan newer Work: ${candidatePlans.join('; ')}`);
   const snapshot = JSON.parse(readFileSync(path, 'utf8'));
   assert.equal(snapshot.assignments.length, 17);
   assert.deepEqual(snapshot.assignments, f.assignments.listForProjection(BOT_ID));
+});
+
+test('Work projection pages run on the exclusive WAL writer connection', t => {
+  const f = fixture(t);
+  f.database.raw.exec(INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL);
+  const id = f.admit('exclusive-projection');
+  assert.equal(f.database.raw.pragma('journal_mode = WAL', { simple: true }), 'wal');
+  assert.equal(f.database.raw.pragma('locking_mode = EXCLUSIVE', { simple: true }), 'exclusive');
+  f.database.raw.exec('BEGIN EXCLUSIVE; COMMIT;');
+  const other = new Database(f.database.path, { readonly: true, fileMustExist: true, timeout: 0 });
+  t.after(() => other.close());
+  assert.throws(() => other.prepare('SELECT count(*) FROM works').get(), /database is locked/);
+  assert.equal(f.assignments.listForProjectionPage(BOT_ID).assignments[0]?.id, id);
 });
 
 test('canonical execution termination remains an open agency obligation while assignment state is not closed', async t => {
