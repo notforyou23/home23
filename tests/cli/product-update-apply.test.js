@@ -249,6 +249,67 @@ test('checkpoint and resume preserve a read-only state attachment and its mode',
   assert.equal(fs.statSync(original).mode & 0o777, 0o400);
 });
 
+test('an interrupted checkpoint reuses verified copies and replaces changed source bytes', async t => {
+  const fixture = homeFixture(t);
+  const directory = path.join(fixture.home, 'app/instances/milo/conversations');
+  for (const name of ['a-copy.txt', 'b-copy.txt', 'c-copy.txt', 'd-copy.txt', 'z-interrupt.txt']) {
+    fs.writeFileSync(path.join(directory, name), name);
+  }
+  await assert.rejects(() => applyProductUpdate({ homeRoot: fixture.home,
+    candidatePayload: fixture.candidate, staging: fixture.staging }, {
+    ...quiet,
+    checkpointBeforeCopy: async relative => {
+      if (relative.endsWith('/z-interrupt.txt')) throw new Error('checkpoint-copy-interrupted');
+    },
+  }), /checkpoint-copy-interrupted/);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'quiesced');
+  const checkpoint = path.join(updateDirectoryFor(fixture.home), 'checkpoint/state/app/instances/milo/conversations');
+  assert.equal(fs.readFileSync(path.join(checkpoint, 'b-copy.txt'), 'utf8'), 'b-copy.txt');
+  const incomplete = path.join(checkpoint, 'z-interrupt.txt.00000000-0000-0000-0000-000000000000.next');
+  fs.writeFileSync(incomplete, 'incomplete');
+  fs.writeFileSync(path.join(directory, 'a-copy.txt'), 'changed after partial checkpoint');
+  const copied = [];
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, {
+    ...quiet, checkpointBeforeCopy: async relative => { copied.push(relative); },
+  });
+  assert.equal(resumed.status, 'committed');
+  assert.ok(copied.some(relative => relative.endsWith('/a-copy.txt')));
+  assert.ok(copied.some(relative => relative.endsWith('/z-interrupt.txt')));
+  assert.equal(copied.some(relative => relative.endsWith('/b-copy.txt')), false);
+  assert.equal(fs.readFileSync(path.join(checkpoint, 'a-copy.txt'), 'utf8'), 'changed after partial checkpoint');
+  assert.equal(fs.existsSync(incomplete), false);
+});
+
+test('checkpoint refuses a hardlinked source file', async t => {
+  const fixture = homeFixture(t);
+  const source = path.join(fixture.home, 'app/instances/milo/conversations/session.txt');
+  fs.linkSync(source, path.join(fixture.root, 'other-link.txt'));
+  await assert.rejects(() => applyProductUpdate({ homeRoot: fixture.home,
+    candidatePayload: fixture.candidate, staging: fixture.staging }, quiet), /Unsafe checkpoint file/);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'quiesced');
+});
+
+test('checkpoint file copies are bounded at four concurrent operations', async t => {
+  const fixture = homeFixture(t);
+  const directory = path.join(fixture.home, 'app/instances/milo/conversations');
+  for (let index = 0; index < 8; index += 1) fs.writeFileSync(path.join(directory, `parallel-${index}.txt`), String(index));
+  let active = 0, maximum = 0, release;
+  const firstFour = new Promise(resolve => { release = resolve; });
+  const result = await applyProductUpdate({ homeRoot: fixture.home,
+    candidatePayload: fixture.candidate, staging: fixture.staging }, {
+    ...quiet,
+    checkpointBeforeCopy: async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      if (active === 4) release();
+      await firstFour;
+      active -= 1;
+    },
+  });
+  assert.equal(result.status, 'committed');
+  assert.equal(maximum, 4);
+});
+
 test('mixed roots switch packaged software and retain operator siblings', async t => {
   const software = ['app/workspace/skills/index.js', 'app/configs/base-engine.yaml',
     'app/agency/charter.yaml', 'app/engine/config/image.json'];

@@ -1,7 +1,8 @@
 /** One home-scoped schema-preserving update. The journal and recovery Node live outside app/. */
 import { execFile, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, constants, copyFileSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, unlinkSync, utimesSync, writeSync } from 'node:fs';
+import { chmod, copyFile, open, rename, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -18,6 +19,7 @@ const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
 const RANK = { claimed: 0, quiesced: 1, checkpointed: 2, retained: 3, applying: 4, selected: 5, verifying: 6, writers_admitted: 7, accepted: 8, committed: 9, aborted: 9, rolled_back: 9, recovery_required: 9 };
 const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update-preview.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs'];
 const DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
+const CHECKPOINT_COPIES = 4;
 // Home state and every directory above it stay in place during a version switch.
 // Everything else in a package is software and moves as whole subtrees.
 const MIXED_DIRECTORIES = new Set(['', ...PRODUCT_STATE_PATHS.flatMap(({ path, type }) => path.split('/').slice(0, type === 'directory' ? undefined : -1)
@@ -285,6 +287,109 @@ function durableCopy(source, destination, mode) {
   try { fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temporary, destination);
 }
+function regularCheckpointFile(file) {
+  const stat = lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error(`Unsafe checkpoint file: ${file}`);
+  return stat;
+}
+function safeCheckpointDirectory(root, relative = '', create = false) {
+  let directory = root;
+  if (!lstatSync(directory).isDirectory()) throw new Error(`Unsafe checkpoint directory: ${directory}`);
+  for (const part of relative.split('/').filter(Boolean)) {
+    directory = join(directory, part);
+    if (!exists(directory) && create) mkdirSync(directory, { mode: 0o700 });
+    if (!lstatSync(directory).isDirectory()) throw new Error(`Unsafe checkpoint directory: ${directory}`);
+  }
+  return directory;
+}
+async function checkpointHash(file) {
+  const descriptor = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await descriptor.stat();
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error(`Unsafe checkpoint file: ${file}`);
+    const digest = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    for (let position = 0; position < stat.size;) {
+      const { bytesRead } = await descriptor.read(buffer, 0, Math.min(buffer.length, stat.size - position), position);
+      if (!bytesRead) throw new Error(`Checkpoint file changed while hashing: ${file}`);
+      digest.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    if ((await descriptor.stat()).size !== stat.size) throw new Error(`Checkpoint file changed while hashing: ${file}`);
+    return digest.digest('hex');
+  } finally { await descriptor.close(); }
+}
+async function checkpointStateFile(home, checkpoint, relative, beforeCopy) {
+  const source = join(home, relative);
+  const destination = join(checkpoint, 'state', relative);
+  safeCheckpointDirectory(home, dirname(relative));
+  const sourceStat = regularCheckpointFile(source);
+  const mode = sourceStat.mode & 0o777;
+  const before = await checkpointHash(source);
+  safeCheckpointDirectory(checkpoint, join('state', dirname(relative)), true);
+  let reusable = false;
+  if (exists(destination)) {
+    const destinationStat = regularCheckpointFile(destination);
+    reusable = (destinationStat.mode & 0o777) === mode && await checkpointHash(destination) === before;
+  }
+  if (!reusable) {
+    if (beforeCopy) await beforeCopy(relative);
+    const temporary = `${destination}.${randomUUID()}.next`;
+    try {
+      await copyFile(source, temporary, constants.COPYFILE_FICLONE);
+      await chmod(temporary, mode);
+      const descriptor = await open(temporary, 'r');
+      try { await descriptor.sync(); } finally { await descriptor.close(); }
+      if (await checkpointHash(source) !== before) {
+        throw new Error(`State changed while checkpointing ${relative}.`);
+      }
+      await rename(temporary, destination);
+    } finally { await rm(temporary, { force: true }); }
+  }
+  if ((regularCheckpointFile(source).mode & 0o777) !== mode ||
+      (regularCheckpointFile(destination).mode & 0o777) !== mode ||
+      (reusable && await checkpointHash(source) !== before) || await checkpointHash(destination) !== before) {
+    throw new Error(`State changed while checkpointing ${relative}.`);
+  }
+  return before;
+}
+async function checkpointPool(items, operation) {
+  let next = 0;
+  const results = new Array(items.length);
+  const workers = Array.from({ length: Math.min(CHECKPOINT_COPIES, items.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await operation(items[index]);
+    }
+  });
+  const settled = await Promise.allSettled(workers);
+  const failed = settled.find(result => result.status === 'rejected');
+  if (failed) throw failed.reason;
+  return results;
+}
+function checkpointStateInventory(directory, prefix = '') {
+  const files = [];
+  for (const name of readdirSync(directory)) {
+    const relative = prefix ? `${prefix}/${name}` : name;
+    const file = join(directory, name);
+    const stat = lstatSync(file);
+    if (stat.isDirectory()) files.push(...checkpointStateInventory(file, relative));
+    else { regularCheckpointFile(file); files.push(relative); }
+  }
+  return files.sort();
+}
+function removeIncompleteCheckpointCopies(directory) {
+  for (const name of readdirSync(directory)) {
+    const file = join(directory, name);
+    const stat = lstatSync(file);
+    if (stat.isDirectory()) removeIncompleteCheckpointCopies(file);
+    else if (/\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.next$/i.test(name)) {
+      regularCheckpointFile(file);
+      unlinkSync(file);
+    }
+  }
+}
 function payloadMatchesAt(entries, rootOf) {
   for (const entry of entries) {
     const file = join(rootOf(entry), entry.path);
@@ -298,21 +403,37 @@ function payloadMatchesAt(entries, rootOf) {
   }
   return true;
 }
-async function writeCheckpoint(home, updateDirectory) {
+async function writeCheckpoint(home, updateDirectory, journalId, { beforeCopy } = {}) {
+  safeCheckpointDirectory(updateDirectory);
   const checkpoint = join(updateDirectory, 'checkpoint');
-  rmSync(checkpoint, { recursive: true, force: true });
-  mkdirSync(checkpoint, { recursive: true, mode: 0o700 });
-  const hashes = {};
-  for (const relative of identityFiles(home)) {
-    if (relative === DATABASE) continue;
-    const source = join(home, relative), before = hashFile(source), destination = join(checkpoint, 'state', relative);
-    durableCopy(source, destination, lstatSync(source).mode & 0o777);
-    if (hashFile(source) !== before || hashFile(destination) !== before) throw new Error(`State changed while checkpointing ${relative}.`);
-    hashes[relative] = before;
+  const marker = join(checkpoint, 'owner.json');
+  let owned = false;
+  if (exists(checkpoint)) {
+    safeCheckpointDirectory(checkpoint);
+    if (exists(marker)) {
+      regularCheckpointFile(marker);
+      const recorded = readPrivateJSON(marker);
+      owned = recorded?.schema === 'home23.checkpoint-owner.v1' && recorded.journalId === journalId && recorded.homeRoot === home;
+    }
   }
+  if (!owned) {
+    rmSync(checkpoint, { recursive: true, force: true });
+    mkdirSync(checkpoint, { mode: 0o700 });
+    durableJSON(marker, { schema: 'home23.checkpoint-owner.v1', journalId, homeRoot: home });
+  }
+  safeCheckpointDirectory(checkpoint, 'state', true);
+  if (owned) removeIncompleteCheckpointCopies(join(checkpoint, 'state'));
+  const files = identityFiles(home).filter(relative => relative !== DATABASE);
+  const digests = await checkpointPool(files, relative => checkpointStateFile(home, checkpoint, relative, beforeCopy));
+  if (JSON.stringify(identityFiles(home).filter(relative => relative !== DATABASE)) !== JSON.stringify(files) ||
+      JSON.stringify(checkpointStateInventory(join(checkpoint, 'state'))) !== JSON.stringify(files)) {
+    throw new Error('Checkpoint state inventory changed during copying.');
+  }
+  const hashes = Object.fromEntries(files.map((relative, index) => [relative, digests[index]]));
   let database = { present: false };
+  const destination = join(checkpoint, 'coordination.sqlite3');
+  if (exists(destination)) { regularCheckpointFile(destination); rmSync(destination); }
   if (exists(join(home, DATABASE))) {
-    const destination = join(checkpoint, 'coordination.sqlite3');
     const { DatabaseSync } = await import('node:sqlite');
     const source = new DatabaseSync(join(home, DATABASE));
     try { source.exec(`VACUUM INTO '${destination.replaceAll("'", "''")}'`); }
@@ -504,7 +625,8 @@ async function mutate(journal, dependencies, verify) {
       journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons: [{ code: 'unsupported_data_version', message: 'The stored schema changed after the preflight. Package files were not replaced.' }] }, dependencies);
       return { done: publicResult(journal) };
     }
-    const checkpoint = await (dependencies.writeCheckpoint || writeCheckpoint)(home, updateDirectoryFor(home));
+    const checkpoint = await (dependencies.writeCheckpoint || writeCheckpoint)(home, updateDirectoryFor(home), journal.id,
+      { beforeCopy: dependencies.checkpointBeforeCopy });
     journal = await commitPhase(file, { ...journal, phase: 'checkpointed', identity: checkpoint.hashes, canonical: canonicalFrom(checkpoint.hashes), hostIdentity: hostIdentity(home), checkpointDatabase: checkpoint.database }, dependencies);
   }
   if (rank() < RANK.retained) {
