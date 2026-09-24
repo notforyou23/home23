@@ -381,6 +381,27 @@ test('one terminal dependency wakes more than thirty-two blocked assignments acr
  assert.equal(blocked.length,40);
 });
 
+test('revisit cursor catches a blocked conclusion behind unrelated idle events',t=>{
+ const f=fixture(t);
+ const dependency=f.admit('idle-cursor-dependency');
+ f.cancel(dependency);
+ const store=createResidentOutcomeStore(f.database);
+ store.discover({startup:true});
+ for(let n=0;n<20;n++)store.discover();
+ for(let n=0;n<40;n++)f.database.mutateWithEvent(()=>({value:undefined,event:{
+  type:'activity.updated',aggregateKind:'idle_noise',aggregateId:`idle-noise-${n}`,aggregateVersion:1,
+  channelId:null,actorPrincipalId:null,requestId:fixtureId('request',1500+n),correlationId:fixtureId('correlation',1500+n),
+  payload:{n},createdAt:AT,
+ }}));
+ const root=f.admit('idle-cursor-root');
+ f.cancel(root);
+ f.assignments.report(f.context,f.origin,{work_id:root,state:'blocked',summary:'Dependency already finished',
+  wait_for:[dependency]},'idle-cursor-block');
+ for(let n=0;n<15;n++)store.discover();
+ const rows=f.database.readAll<{key:string}>("SELECT outcome_key AS key FROM resident_outcomes WHERE outcome_key LIKE 'assignment-revisit:%'");
+ assert.equal(rows.length,1,'the single assignment event must be reached after idle noise');
+});
+
 test('revisit recovery pages historical assignments through the aggregate index', t => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse(AT) });
   const f = fixture(t);

@@ -117,7 +117,7 @@ export function createResidentOutcomeStore(database: M11Database) {
         (changedWorkIds.size > 0 && assignments.hasBlockedRevisits()) ||
         now >= nextAssessmentRetryAt ||
         (now - lastRevisitSweepAt >= 30_000 && assignments.timedRevisitDue(now));
-      const revisitDue = revisitTrigger || assignments.revisitSweepPending();
+      const revisitDue = revisitTrigger || assignments.revisitSweepPending() || assignments.revisitEventCatchupPending();
       if (revisitDue) { lastRevisitSweepAt = now; nextAssessmentRetryAt = Number.POSITIVE_INFINITY; }
       for (const value of revisitDue ? assignments.revisits(revisitTrigger) : []) {
         const key = `assignment-revisit:${value.workId}:${value.eventSequence}`;

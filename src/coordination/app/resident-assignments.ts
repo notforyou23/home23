@@ -324,6 +324,7 @@ export function createResidentAssignments(database: M11Database) {
   let bootstrapComplete = false;
   let revisitEvaluationCursor = 0;
   let revisitSweepRemaining = 0;
+  let revisitCatchupPending = false;
   function timedRevisitDue(now: number): boolean {
     if (!bootstrapComplete) return true;
     for (const value of blockedRevisits.values()) {
@@ -334,6 +335,7 @@ export function createResidentAssignments(database: M11Database) {
   function hasBlockedRevisits(): boolean { return !bootstrapComplete || blockedRevisits.size > 0; }
   function revisitBootstrapIncomplete(): boolean { return !bootstrapComplete; }
   function revisitSweepPending(): boolean { return revisitSweepRemaining > 0; }
+  function revisitEventCatchupPending(): boolean { return revisitCatchupPending; }
   function observeRevisitEvent(row: { id: string; sequence: number; payload: string }) {
     if ((revisitVersions.get(row.id) ?? 0) >= row.sequence) return;
     revisitVersions.set(row.id, row.sequence);
@@ -351,6 +353,7 @@ export function createResidentAssignments(database: M11Database) {
       bootstrapComplete = false;
       revisitEvaluationCursor = 0;
       revisitSweepRemaining = 0;
+      revisitCatchupPending = false;
     }
     if (!bootstrapComplete) {
       // The aggregate index orders each assignment's latest version first.
@@ -374,6 +377,7 @@ export function createResidentAssignments(database: M11Database) {
     const changes = database.readAll<{ id: string; sequence: number; payload: string | null }>(`SELECT aggregate_id AS id,sequence,
       CASE WHEN aggregate_kind='resident_assignment' THEN payload_json END AS payload
       FROM events WHERE sequence>? ORDER BY sequence LIMIT 16`, revisitCursor);
+    revisitCatchupPending = changes.length === 16;
     for (const change of changes) {
       if (change.payload !== null) observeRevisitEvent({ ...change, payload: change.payload });
       revisitCursor = change.sequence;
@@ -395,5 +399,5 @@ export function createResidentAssignments(database: M11Database) {
       (value.revisitAt !== null && Date.parse(value.revisitAt) <= now) ||
       (value.waitFor.length > 0 && value.waitFor.every(id => terminal.has(id))));
   }
-  return { root, latest, presentationState, report, list, listForProjection, listForProjectionPage, revisits, timedRevisitDue, hasBlockedRevisits, revisitBootstrapIncomplete, revisitSweepPending, assertOpen, direction };
+  return { root, latest, presentationState, report, list, listForProjection, listForProjectionPage, revisits, timedRevisitDue, hasBlockedRevisits, revisitBootstrapIncomplete, revisitSweepPending, revisitEventCatchupPending, assertOpen, direction };
 }
