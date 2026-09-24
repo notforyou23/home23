@@ -99,9 +99,11 @@ function releaseView(release) {
 function projectStatus(home, operation, clientBuild) {
   const visible = publicOperation(operation), registered = registration(home);
   const offered = operation?.release ?? null;
+  const refusedOffer = operation?.action === 'check' && operation.phase === 'completed'
+    && typeof offered?.packageId === 'string' && offered.packageId === operation.blockedPackageId;
   const minimumClientBuild = offered?.compatibility?.minimumClientBuild ?? operation?.check?.minimumClientBuild ?? 1;
   const appUpdateRequired = Number.isInteger(clientBuild) && clientBuild < minimumClientBuild;
-  const compatible = operation?.check?.status !== 'incompatible' && !appUpdateRequired;
+  const compatible = operation?.check?.status !== 'incompatible' && !appUpdateRequired && !refusedOffer;
   let state = operation?.check?.status === 'current' ? 'upToDate' : operation?.check?.status ?? 'idle';
   let message = operation?.message ?? 'Check for a Home23 update.';
   let allowedActions = ['check'];
@@ -110,8 +112,9 @@ function projectStatus(home, operation, clientBuild) {
   else if (operation?.requiresLocalRecovery) { state = 'failed'; allowedActions = []; message = visible.message; }
   else if (operation?.requiresNewRelease) { state = 'failed'; allowedActions = ['check']; message = visible.message; }
   else if (visible?.canResume) { state = 'failed'; allowedActions = ['resume']; message = visible.message; }
+  else if (refusedOffer) { state = 'incompatible'; allowedActions = ['check']; message = 'This release was already refused for this home. Check again when a newer Home23 release is available.'; }
   else if (state === 'available' && compatible) allowedActions.push('update');
-  if (appUpdateRequired && state !== 'running') { state = 'incompatible'; allowedActions = allowedActions.filter(action => action === 'check'); message = 'Update Home23 on this device before updating your home.'; }
+  if (appUpdateRequired && state !== 'running' && !refusedOffer) { state = 'incompatible'; allowedActions = allowedActions.filter(action => action === 'check'); message = 'Update Home23 on this device before updating your home.'; }
   if (operation?.phase === 'completed' && operation.action !== 'check' && operation.runtimeCompleted && operation.applicationCompleted) {
     state = 'upToDate'; message = operation.message; allowedActions = ['check'];
   }
@@ -239,6 +242,7 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
       operation = { schema: SCHEMA, id: randomUUID(), homeRoot: home.root, action, runAction: action, attempt: 1,
         clientBuild: clientBuild ?? null, phase: 'queued', progress: null, pid: null, startedAt: now(), updatedAt: now(),
         message: action === 'check' ? 'Checking for updates…' : 'Preparing your Home23 update…',
+        blockedPackageId: operation?.blockedPackageId ?? null,
         release: action === 'update' ? operation?.release : null };
     }
     save(join(home.directory, `${operation.id}.json`), operation);
@@ -285,6 +289,7 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
       persist({ phase: 'checking', message: 'Checking for updates…' });
       const checked = await channel.checkConfiguredRelease(options);
       persist({ phase: 'completed', check: checked, release: checked.release ?? null, checkedAt: now(),
+        blockedPackageId: checked.release?.packageId && checked.release.packageId !== operation.blockedPackageId ? null : operation.blockedPackageId ?? null,
         message: checked.status === 'current' ? 'Home23 is up to date.' : checked.status === 'available' ? 'A Home23 update is available.'
           : checked.status === 'incompatible' ? 'This release is not compatible with this home yet.' : 'Updates could not be checked. Try again later.' });
       return;
@@ -322,7 +327,7 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
         }
         const refusal = preflightFailure(result);
         if (refusal?.reasonCodes.some(code => FRESH_RELEASE_REQUIRED.has(code)) && ['refused', 'aborted'].includes(result.status)) {
-          persist({ requiresNewRelease: true });
+          persist({ requiresNewRelease: true, blockedPackageId: prepared.packageId });
         }
         throw refusal ?? fail('update_incomplete', 'The home update needs recovery before it can finish.');
       }

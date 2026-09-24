@@ -212,6 +212,26 @@ test('a restored data-version refusal requires a fresh release check, not anothe
   await assert.rejects(requestHomeUpdate(input(f.home, 'resume', 'same-release'), noLaunch), { code: 'home_update_busy' });
   const fresh = await requestHomeUpdate(input(f.home, 'check', 'fresh-release'), noLaunch);
   assert.notEqual(fresh.operation.id, accepted.operation.id);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: fresh.operation.id },
+    { channel: checkedChannel, updater: unusedUpdater, appUpdater: unusedAppUpdater });
+  const sameOffer = homeUpdateStatus({ homeRoot: f.home });
+  assert.equal(sameOffer.state, 'incompatible');
+  assert.equal(sameOffer.compatibility.isCompatible, false);
+  assert.deepEqual(sameOffer.allowedActions, ['check']);
+  assert.equal(sameOffer.availableRelease.packageId, release.packageId);
+  await assert.rejects(requestHomeUpdate(input(f.home, 'update', 'retry-refused-package'), noLaunch), { code: 'home_update_busy' });
+  assert.equal(installs, 1);
+
+  const newer = await requestHomeUpdate(input(f.home, 'check', 'newer-release'), noLaunch);
+  const nextRelease = { ...release, packageId: 'different-package' };
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: newer.operation.id }, {
+    channel: { checkConfiguredRelease: async () => ({ status: 'available', release: nextRelease }) },
+    updater: unusedUpdater, appUpdater: unusedAppUpdater,
+  });
+  const newOffer = homeUpdateStatus({ homeRoot: f.home });
+  assert.equal(newOffer.state, 'available');
+  assert.deepEqual(newOffer.allowedActions, ['check', 'update']);
+  assert.equal(f.operation(newer.operation.id).blockedPackageId, null);
 });
 
 test('newer phone can resume a compatibility refusal with its new build', async t => {
