@@ -2044,7 +2044,9 @@ class Orchestrator {
         }
         
         // Run consolidation ONCE at start of sleep session
+        let attemptedConsolidation = false;
         if (!this.sleepSession.consolidationRun) {
+          attemptedConsolidation = true;
           enterCyclePhase('deep_sleep_consolidation');
           this.logger.info(`🛌 Sleep Cycle ${cyclesAsleep + 1}: Running deep consolidation...`);
           const sleepConsolidationTimeout = Number(this.config.timeouts?.sleepConsolidationTimeoutMs)
@@ -2076,20 +2078,6 @@ class Orchestrator {
             await this.performFastSleepMaintenance();
           }
 
-          // NOTICE PASS: runs after both full and deferred consolidation
-          if (!this.sleepSession.noticePassRun) {
-            try {
-              const noticePass = new NoticePass(this.memory, this.config, this.logger);
-              const noticings = await noticePass.run();
-              if (noticings.length > 0) {
-                await this.processNoticings(noticings);
-              }
-              this.sleepSession.noticePassRun = true;
-            } catch (e) {
-              // Non-fatal: never interrupt sleep cycle
-              this.logger?.warn?.('[NoticePass] failed (non-fatal)', { error: e.message });
-            }
-          }
         } else {
           // Subsequent sleep cycles - just rest
           this.logger.info(`💤 Sleep Cycle ${cyclesAsleep + 1}: Resting...`, {
@@ -2097,6 +2085,23 @@ class Orchestrator {
             cyclesAsleep: cyclesAsleep + 1,
             minimumCyclesRemaining: minCyclesRemaining
           });
+        }
+
+        // A restart can occur after consolidation was saved but before the
+        // notice pass. Resume that unfinished pass without repeating the LLM.
+        if ((attemptedConsolidation || this.sleepSession.consolidationRun) &&
+            !this.sleepSession.noticePassRun) {
+          try {
+            const noticePass = new NoticePass(this.memory, this.config, this.logger);
+            const noticings = await noticePass.run();
+            if (noticings.length > 0) {
+              await this.processNoticings(noticings);
+            }
+            this.sleepSession.noticePassRun = true;
+          } catch (e) {
+            // Non-fatal: never interrupt sleep cycle
+            this.logger?.warn?.('[NoticePass] failed (non-fatal)', { error: e.message });
+          }
         }
         
         // CRITICAL: Update cognitive state during sleep for gradual energy recovery
@@ -4252,9 +4257,6 @@ class Orchestrator {
       }
     }
     
-    // Mark consolidation start time
-    this.temporal.lastConsolidationTime = Date.now();
-    
     this.logger.info('');
     this.logger.info('╔═══════════════════════════════════════════════════╗');
     this.logger.info('║     DEEP SLEEP CONSOLIDATION (GPT-5.5)          ║');
@@ -4517,8 +4519,25 @@ class Orchestrator {
     this.logger.info('✓ State adjusted');
     cosmoEvents.emitEvent('dream_phase', { phase: 'state_reset', status: 'complete' });
 
+    // Commit the completed-work marker with the brain. A timestamp recorded
+    // before this point could rate-limit an interrupted consolidation on boot.
+    const previousConsolidationTime = this.temporal.lastConsolidationTime;
+    const previousSessionComplete = this.sleepSession?.consolidationRun;
+    this.temporal.lastConsolidationTime = Date.now();
+    if (this.sleepSession?.active && !this.config.execution?.dreamMode) {
+      this.sleepSession.consolidationRun = true;
+    }
     cosmoEvents.emitEvent('dream_phase', { phase: 'save_state', status: 'started' });
-    await this.saveState();
+    try {
+      const saveResult = await this.saveState();
+      if (saveResult?.saved === false) {
+        throw new Error(`deep_sleep_state_save_failed: ${saveResult.reason || 'unknown'}`);
+      }
+    } catch (error) {
+      this.temporal.lastConsolidationTime = previousConsolidationTime;
+      if (this.sleepSession) this.sleepSession.consolidationRun = previousSessionComplete;
+      throw error;
+    }
     cosmoEvents.emitEvent('dream_phase', { phase: 'save_state', status: 'complete' });
 
     this.logger.info('');
@@ -7386,6 +7405,12 @@ class Orchestrator {
       oscillator: this.oscillator.getStats(),
       cognitiveState: this.stateModulator.getState(), // FIX: Save cognitive state to prevent NaN interval bug
       temporal: this.temporal ? this.temporal.getStats() : null, // FIX: Save temporal state so sleep/wake cycles persist
+      sleepSession: {
+        active: this.sleepSession.active,
+        startCycle: this.sleepSession.startCycle,
+        consolidationRun: this.sleepSession.consolidationRun,
+        noticePassRun: this.sleepSession.noticePassRun,
+      },
       coordinator: this.coordinator ? this.coordinator.export() : null,
       agentExecutor: this.agentExecutor ? this.agentExecutor.exportState() : null,
       forkSystem: this.forkSystem ? this.forkSystem.export() : null,
@@ -8099,6 +8124,10 @@ class Orchestrator {
         if (state.temporal.lastWakeTime) {
           this.temporal.lastWakeTime = new Date(state.temporal.lastWakeTime);
         }
+        const completedAt = Number(state.temporal.lastConsolidationTime);
+        if (Number.isFinite(completedAt) && completedAt > 0 && completedAt <= Date.now()) {
+          this.temporal.lastConsolidationTime = completedAt;
+        }
         this.logger.info('Temporal state restored', {
           state: this.temporal.state,
           sleepCycles: this.temporal.sleepCycles,
@@ -8118,6 +8147,19 @@ class Orchestrator {
           this.stateModulator.state.mode = 'active';  // Force mode transition
           this.stateModulator.state.lastModeChange = new Date();
         }
+      }
+
+      // A saved sleeping session may already have finished consolidation.
+      // Restore only a valid active session; old state files start a new one.
+      const savedSleep = state.sleepSession;
+      const startCycle = Number(savedSleep?.startCycle);
+      if (savedSleep?.active === true &&
+          (this.temporal?.state === 'sleeping' || this.stateModulator?.state?.mode === 'sleeping') &&
+          Number.isInteger(startCycle) && startCycle >= 0 && startCycle <= this.cycleCount) {
+        this.sleepSession.active = true;
+        this.sleepSession.startCycle = startCycle;
+        this.sleepSession.consolidationRun = savedSleep.consolidationRun === true;
+        this.sleepSession.noticePassRun = savedSleep.noticePassRun === true;
       }
       
       if (state.goals) {

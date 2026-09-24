@@ -321,7 +321,8 @@ class TemporalRhythms {
       totalSleepCycles: this.sleepCycles,
       lastSleepStart: this.lastSleepStart,
       lastWakeTime: this.lastWakeTime,
-      lastSleepCycle: this.lastSleepCycle  // For cycle-based sleep tracking
+      lastSleepCycle: this.lastSleepCycle,  // For cycle-based sleep tracking
+      lastConsolidationTime: this.lastConsolidationTime
     };
   }
 
@@ -359,4 +360,3 @@ class TemporalRhythms {
 }
 
 module.exports = { TemporalRhythms };
-
