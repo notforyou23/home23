@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url);
 const {
   buildGoodLifeSnapshot,
   findLatestJsonl,
+  readCurrentPm2List,
   tailJsonl,
 } = require('../../../engine/src/good-life/snapshot.js');
 
@@ -79,7 +80,7 @@ test('findLatestJsonl scans backward within its physical-line budget', () => {
   }
 });
 
-test('Good Life snapshot excludes agenda handoff workflows from operational viability counts', () => {
+test('Good Life snapshot excludes agenda handoff workflows from operational viability counts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-snapshot-'));
   try {
     writeFileSync(join(dir, 'live-problems.json'), JSON.stringify({
@@ -107,7 +108,7 @@ test('Good Life snapshot excludes agenda handoff workflows from operational viab
       ],
     }));
 
-    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: dir });
     assert.equal(snapshot.liveProblems.open, 0);
     assert.equal(snapshot.liveProblems.chronic, 0);
     assert.equal(snapshot.liveProblems.total, 0);
@@ -124,7 +125,7 @@ test('Good Life snapshot excludes agenda handoff workflows from operational viab
   }
 });
 
-test('Good Life snapshot preserves non-agenda live-problem counts', () => {
+test('Good Life snapshot preserves non-agenda live-problem counts', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-operational-'));
   try {
     writeFileSync(join(dir, 'live-problems.json'), JSON.stringify({
@@ -136,7 +137,7 @@ test('Good Life snapshot preserves non-agenda live-problem counts', () => {
       ],
     }));
 
-    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: dir });
     assert.deepEqual(snapshot.liveProblems, {
       open: 1,
       chronic: 1,
@@ -157,7 +158,7 @@ test('Good Life snapshot preserves non-agenda live-problem counts', () => {
   }
 });
 
-test('Good Life agenda summary counts latest item status, not raw JSONL events', () => {
+test('Good Life agenda summary counts latest item status, not raw JSONL events', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-agenda-'));
   try {
     const rows = [
@@ -171,7 +172,7 @@ test('Good Life agenda summary counts latest item status, not raw JSONL events',
     ];
     writeFileSync(join(dir, 'agenda.jsonl'), `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
 
-    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: dir });
     assert.equal(snapshot.agenda.pending, 2);
     assert.equal(snapshot.agenda.candidate, 1);
     assert.equal(snapshot.agenda.surfaced, 1);
@@ -183,7 +184,7 @@ test('Good Life agenda summary counts latest item status, not raw JSONL events',
   }
 });
 
-test('Good Life useful-output freshness counts verified agency consequences', () => {
+test('Good Life useful-output freshness counts verified agency consequences', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-useful-'));
   try {
     mkdirSync(join(dir, 'agency'), { recursive: true });
@@ -200,7 +201,7 @@ test('Good Life useful-output freshness counts verified agency consequences', ()
       evidence: [{ type: 'file', ref: 'instances/forrest/workspace/RECENT.md' }],
     })}\n`);
 
-    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: dir });
     assert.equal(snapshot.publish.lastUsefulOutputAt, '2026-06-07T14:45:00.000Z');
     assert.equal(snapshot.publish.lastUsefulOutputSource, 'agency_consequence');
     assert.equal(snapshot.publish.lastAgencyUsefulOutputAt, '2026-06-07T14:45:00.000Z');
@@ -209,7 +210,7 @@ test('Good Life useful-output freshness counts verified agency consequences', ()
   }
 });
 
-test('Good Life useful-output freshness looks past noisy no-change consequence tails', () => {
+test('Good Life useful-output freshness looks past noisy no-change consequence tails', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-useful-tail-'));
   try {
     mkdirSync(join(dir, 'agency'), { recursive: true });
@@ -234,7 +235,7 @@ test('Good Life useful-output freshness looks past noisy no-change consequence t
     }));
     writeFileSync(join(dir, 'agency', 'consequences.jsonl'), `${[useful, ...noise].map(row => JSON.stringify(row)).join('\n')}\n`);
 
-    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: dir });
     assert.equal(snapshot.publish.lastUsefulOutputAt, '2026-06-07T14:45:00.000Z');
     assert.equal(snapshot.publish.lastUsefulOutputSource, 'agency_consequence');
   } finally {
@@ -242,7 +243,7 @@ test('Good Life useful-output freshness looks past noisy no-change consequence t
   }
 });
 
-test('Good Life useful-output freshness counts closed pursuit transition consequences', () => {
+test('Good Life useful-output freshness counts closed pursuit transition consequences', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-useful-pursuit-'));
   try {
     mkdirSync(join(dir, 'agency'), { recursive: true });
@@ -276,7 +277,7 @@ test('Good Life useful-output freshness counts closed pursuit transition consequ
       },
     })}\n`);
 
-    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: dir });
     assert.equal(snapshot.publish.lastUsefulOutputAt, '2026-06-07T14:45:00.000Z');
     assert.equal(snapshot.publish.lastUsefulOutputSource, 'agency_consequence');
   } finally {
@@ -284,7 +285,7 @@ test('Good Life useful-output freshness counts closed pursuit transition consequ
   }
 });
 
-test('Good Life goal summary does not count completed goals still present in active storage as open', () => {
+test('Good Life goal summary does not count completed goals still present in active storage as open', async () => {
   const goals = {
     getGoals() {
       return [
@@ -298,7 +299,7 @@ test('Good Life goal summary does not count completed goals still present in act
     },
   };
 
-  const snapshot = buildGoodLifeSnapshot({ runtimeRoot: '', goals });
+  const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: '', goals });
 
   assert.deepEqual(snapshot.goals, {
     open: 1,
@@ -307,7 +308,7 @@ test('Good Life goal summary does not count completed goals still present in act
   });
 });
 
-test('Good Life goal summary includes active goal obligations from brain snapshot', () => {
+test('Good Life goal summary includes active goal obligations from brain snapshot', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-snapshot-'));
   try {
     writeFileSync(join(dir, 'brain-snapshot.json'), JSON.stringify({
@@ -327,7 +328,7 @@ test('Good Life goal summary includes active goal obligations from brain snapsho
       },
     };
 
-    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir, goals });
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: dir, goals });
 
     assert.deepEqual(snapshot.goals, {
       open: 3,
@@ -339,7 +340,7 @@ test('Good Life goal summary includes active goal obligations from brain snapsho
   }
 });
 
-test('Good Life snapshot summarizes memory topology openness', () => {
+test('Good Life snapshot summarizes memory topology openness', async () => {
   const memory = {
     nodes: new Map([
       ['n1', { cluster: 1 }],
@@ -360,7 +361,7 @@ test('Good Life snapshot summarizes memory topology openness', () => {
     ]),
   };
 
-  const snapshot = buildGoodLifeSnapshot({ memory });
+  const snapshot = await buildGoodLifeSnapshot({ memory });
 
   assert.equal(snapshot.memory.nodes, 5);
   assert.equal(snapshot.memory.edges, 3);
@@ -381,7 +382,7 @@ test('Good Life snapshot summarizes memory topology openness', () => {
   });
 });
 
-test('Good Life snapshot caps stale cluster membership before topology share math', () => {
+test('Good Life snapshot caps stale cluster membership before topology share math', async () => {
   const memory = {
     nodes: new Map(Array.from({ length: 20 }, (_, index) => [`n${index}`, { cluster: 1 }])),
     edges: new Map([
@@ -392,14 +393,14 @@ test('Good Life snapshot caps stale cluster membership before topology share mat
     ]),
   };
 
-  const snapshot = buildGoodLifeSnapshot({ memory });
+  const snapshot = await buildGoodLifeSnapshot({ memory });
 
   assert.equal(snapshot.memory.topology.largestClusterSize, 20);
   assert.equal(snapshot.memory.topology.largestClusterShare, 1);
   assert.match(snapshot.memory.topology.reasons.join(' '), /cluster membership count exceeds current node count/);
 });
 
-test('Good Life snapshot includes latest machine host pressure evidence', () => {
+test('Good Life snapshot includes latest machine host pressure evidence', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-snapshot-'));
   try {
     const channelsDir = join(dir, 'channels');
@@ -443,7 +444,7 @@ test('Good Life snapshot includes latest machine host pressure evidence', () => 
       payload: { at: '2026-05-10T08:52:09.784Z', mount: '/', usagePct: 32 },
     })}\n`);
 
-    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: dir });
 
     assert.equal(snapshot.host.cpu.loadRatio, 1.03);
     assert.equal(snapshot.host.memory.freePct, 2.2);
@@ -459,7 +460,7 @@ test('Good Life snapshot includes latest machine host pressure evidence', () => 
   }
 });
 
-test('Good Life snapshot summarizes recent PM2 restart observations', () => {
+test('Good Life snapshot summarizes recent PM2 restart observations', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-snapshot-'));
   try {
     const channelsDir = join(dir, 'channels');
@@ -508,7 +509,7 @@ test('Good Life snapshot summarizes recent PM2 restart observations', () => {
     ];
     writeFileSync(join(channelsDir, 'os.pm2.jsonl'), `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
 
-    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: dir });
 
     assert.equal(snapshot.pm2.recentHome23Changes, 3);
     assert.equal(snapshot.pm2.invalidRestartCounters, 1);
@@ -522,8 +523,8 @@ test('Good Life snapshot summarizes recent PM2 restart observations', () => {
   }
 });
 
-test('Good Life snapshot includes current Home23 PM2 offline counts', () => {
-  const snapshot = buildGoodLifeSnapshot({
+test('Good Life snapshot includes current Home23 PM2 offline counts', async () => {
+  const snapshot = await buildGoodLifeSnapshot({
     runtimeRoot: '',
     currentPm2List: [
       {
@@ -564,7 +565,35 @@ test('Good Life snapshot includes current Home23 PM2 offline counts', () => {
   assert.equal(snapshot.pm2.current.find((p) => p.name === 'home23-forrest-dash').restartCount, null);
 });
 
-test('Good Life snapshot summarizes harness scheduler job state from sibling conversations folder', () => {
+test('current PM2 sampling leaves the event loop free and treats invalid output as unknown', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-pm2-'));
+  const oldPath = process.env.PATH;
+  const executable = join(dir, 'pm2');
+  try {
+    writeFileSync(executable, '#!/bin/sh\nsleep 0.1\nprintf "[]"\n');
+    chmodSync(executable, 0o755);
+    process.env.PATH = `${dir}:${oldPath}`;
+
+    let timerFired = false;
+    const pending = readCurrentPm2List();
+    setTimeout(() => { timerFired = true; }, 0);
+    assert.deepEqual(await pending, []);
+    assert.equal(timerFired, true);
+
+    writeFileSync(executable, '#!/bin/sh\nprintf "not-json"\n');
+    assert.equal(await readCurrentPm2List(), null);
+
+    writeFileSync(executable, '#!/bin/sh\nexit 1\n');
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: '', includeCurrentPm2: true });
+    assert.equal(snapshot.pm2.currentTotal, null);
+    assert.equal(snapshot.pm2.offline, null);
+  } finally {
+    process.env.PATH = oldPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Good Life snapshot summarizes harness scheduler job state from sibling conversations folder', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-scheduler-'));
   try {
     const brainDir = join(dir, 'brain');
@@ -605,7 +634,7 @@ test('Good Life snapshot summarizes harness scheduler job state from sibling con
       ],
     }));
 
-    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: brainDir });
+    const snapshot = await buildGoodLifeSnapshot({ runtimeRoot: brainDir });
 
     assert.equal(snapshot.scheduler.totalJobs, 3);
     assert.equal(snapshot.scheduler.enabledJobs, 2);
@@ -619,8 +648,8 @@ test('Good Life snapshot summarizes harness scheduler job state from sibling con
   }
 });
 
-test('Good Life action summary prefers structured recent failure counter over prose mentions', () => {
-  const snapshot = buildGoodLifeSnapshot({
+test('Good Life action summary prefers structured recent failure counter over prose mentions', async () => {
+  const snapshot = await buildGoodLifeSnapshot({
     runtimeRoot: '',
     orchestrator: {
       journal: [
@@ -639,8 +668,8 @@ test('Good Life action summary prefers structured recent failure counter over pr
   assert.equal(snapshot.actions.recentFailures, 0);
 });
 
-test('Good Life action summary treats structured recent failures as a window delta', () => {
-  const snapshot = buildGoodLifeSnapshot({
+test('Good Life action summary treats structured recent failures as a window delta', async () => {
+  const snapshot = await buildGoodLifeSnapshot({
     runtimeRoot: '',
     orchestrator: {
       journal: [
@@ -653,8 +682,8 @@ test('Good Life action summary treats structured recent failures as a window del
   assert.equal(snapshot.actions.recentFailures, 1);
 });
 
-test('Good Life action summary fallback ignores resolved failure mentions', () => {
-  const snapshot = buildGoodLifeSnapshot({
+test('Good Life action summary fallback ignores resolved failure mentions', async () => {
+  const snapshot = await buildGoodLifeSnapshot({
     runtimeRoot: '',
     orchestrator: {
       journal: [

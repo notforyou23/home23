@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 const topology = require('../system/home23-process-topology.js');
 const { isAgendaHandoffProblem } = require('../live-problems/store.js');
 
@@ -10,7 +10,7 @@ const { classifyHome23Process } = topology;
 
 const JSONL_READ_CHUNK_BYTES = 64 * 1024;
 
-function buildGoodLifeSnapshot({
+async function buildGoodLifeSnapshot({
   runtimeRoot,
   workspacePath,
   orchestrator,
@@ -20,6 +20,7 @@ function buildGoodLifeSnapshot({
   currentPm2List,
 } = {}) {
   const now = new Date().toISOString();
+  const pm2List = includeCurrentPm2 ? await readCurrentPm2List() : currentPm2List;
   return {
     now,
     memory: summarizeMemory(memory),
@@ -33,7 +34,7 @@ function buildGoodLifeSnapshot({
     scheduler: summarizeScheduler(runtimeRoot),
     publish: summarizePublish(runtimeRoot),
     goodLife: summarizeGoodLife(runtimeRoot),
-    pm2: summarizePm2(runtimeRoot, includeCurrentPm2 ? readCurrentPm2List() : currentPm2List),
+    pm2: summarizePm2(runtimeRoot, pm2List),
     surfaces: summarizeSurfaces(workspacePath),
     sleep: {
       active: Boolean(orchestrator?.sleepSession?.active),
@@ -318,17 +319,21 @@ function summarizeCurrentPm2(list) {
   };
 }
 
-function readCurrentPm2List() {
-  try {
-    const stdout = execFileSync('pm2', ['jlist'], {
+async function readCurrentPm2List() {
+  return new Promise((resolve) => {
+    execFile('pm2', ['jlist'], {
       encoding: 'utf8',
       timeout: 10_000,
       maxBuffer: 10 * 1024 * 1024,
+    }, (error, stdout) => {
+      if (error) return resolve(null);
+      try {
+        resolve(JSON.parse(stdout));
+      } catch {
+        resolve(null);
+      }
     });
-    return JSON.parse(stdout);
-  } catch {
-    return null;
-  }
+  });
 }
 
 function normalizePm2RestartCount(value) {
