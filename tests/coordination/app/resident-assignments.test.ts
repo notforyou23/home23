@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import fs, { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createResidentAssignments } from '../../../src/coordination/app/resident-assignments.js';
@@ -419,4 +420,49 @@ test('canonical execution termination remains an open agency obligation while as
   assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 1, 'authority normalization must bypass the unchanged-digest fast path');
   assert.equal(kernel.store.getTask('coordination:wrk_state_unknown').authorityLevel, 'unknown');
   assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 0);
+});
+
+test('canonical work skips unchanged file reads and rechecks changed files or agency tasks', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'canonical-work-cache-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  // @ts-expect-error existing engine module is JavaScript
+  const { reconcileCanonicalWork } = await import('../../../engine/src/agency/canonical-work.js');
+  const source = join(directory, 'jerry.work.json');
+  const tasks = new Map<string, { handoff: { canonicalDigest: string }; authorityLevel: string }>();
+  const kernel = {
+    store: { getTask: (id: string) => tasks.get(id),
+      updateTask: (id: string, patch: Partial<{ handoff: { canonicalDigest: string }; authorityLevel: string }>) =>
+        tasks.set(id, { ...tasks.get(id)!, ...patch }) },
+    recordTask: (task: { id: string; handoff: { canonicalDigest: string }; authorityLevel: string }) => tasks.set(task.id, task),
+    ensureState: () => {},
+  };
+  const projection = (title: string) => JSON.stringify({ schema: 'home23.resident.work.v1', resident: 'jerry',
+    assignments: [{ id: 'wrk_cached', title, state: 'running', assignmentState: 'active' }] });
+  writeFileSync(source, projection('First'));
+  assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 1);
+
+  const originalRead = fs.readFileSync;
+  let sourceReads = 0;
+  const spy = t.mock.method(fs, 'readFileSync', (...args: Parameters<typeof fs.readFileSync>) => {
+    if (args[0] === source) sourceReads += 1;
+    return (originalRead as (...values: unknown[]) => ReturnType<typeof fs.readFileSync>)(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 0);
+    assert.equal(sourceReads, 0, 'unchanged tick must not reread the projection');
+
+    const replacement = `${source}.next`;
+    writeFileSync(replacement, projection('Second'));
+    renameSync(replacement, source);
+    assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 1);
+    assert.equal(sourceReads, 1, 'atomic replacement must be read');
+
+    tasks.get('coordination:wrk_cached')!.authorityLevel = 'L2';
+    assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 1);
+    assert.equal(sourceReads, 2, 'agency task drift must be reconciled even when the file is unchanged');
+  } finally {
+    spy.mock.restore();
+    syncBuiltinESMExports();
+  }
 });

@@ -1,13 +1,34 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+
+const reconciledFiles = new WeakMap();
+
+function fileStamp(stat) {
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+}
 
 /** Reconcile shared observations through this resident's existing agency store.
  * Nothing here launches work, changes Seed law, or invents an owner promise. */
 export function reconcileCanonicalWork(kernel, sourcePath, resident) {
-  if (!existsSync(sourcePath)) return { available: false, changed: 0 };
+  let stat;
+  try { stat = statSync(sourcePath, { bigint: true }); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    reconciledFiles.get(kernel)?.delete(`${resident}\0${sourcePath}`);
+    return { available: false, changed: 0 };
+  }
+  if (!stat.isFile()) throw new Error('Invalid canonical resident work projection');
+  const key = `${resident}\0${sourcePath}`;
+  const stamp = fileStamp(stat);
+  const cached = reconciledFiles.get(kernel)?.get(key);
+  if (cached?.stamp === stamp && cached.assignments.every(({ id, digest, authorityLevel }) => {
+    const existing = kernel.store.getTask(id);
+    return existing?.handoff?.canonicalDigest === digest && existing.authorityLevel === authorityLevel;
+  })) return { available: true, changed: 0 };
   const snapshot = JSON.parse(readFileSync(sourcePath, 'utf8'));
   if (snapshot.schema !== 'home23.resident.work.v1' || snapshot.resident !== resident || !Array.isArray(snapshot.assignments)) throw new Error('Invalid canonical resident work snapshot');
   let changed = 0;
+  const assignments = [];
   for (const assignment of snapshot.assignments) {
     if (typeof assignment.id !== 'string' || !assignment.id.startsWith('wrk_') || typeof assignment.title !== 'string'
         || !['active','needs_review','blocked','complete','failed','returned','cancelled'].includes(assignment.assignmentState)) throw new Error('Invalid canonical assignment');
@@ -15,6 +36,7 @@ export function reconcileCanonicalWork(kernel, sourcePath, resident) {
     const digest = createHash('sha256').update(JSON.stringify(assignment)).digest('hex');
     const existing = kernel.store.getTask(id);
     const authorityLevel = assignment.authorityLevel || 'unknown';
+    assignments.push({ id, digest, authorityLevel });
     if (existing?.handoff?.canonicalDigest === digest && existing.authorityLevel === authorityLevel) continue;
     const closed = ['complete','cancelled'].includes(assignment.assignmentState);
     const evidence = [{ type: 'reference', ref: id }, ...(assignment.conclusion?.evidence ?? []).map(ref => ({ type: 'reference', ref }))];
@@ -32,5 +54,13 @@ export function reconcileCanonicalWork(kernel, sourcePath, resident) {
     changed++;
   }
   if (changed) kernel.ensureState();
+  // Do not cache a read raced by a writer. The next tick will read again.
+  try {
+    if (fileStamp(statSync(sourcePath, { bigint: true })) === stamp) {
+      let byPath = reconciledFiles.get(kernel);
+      if (!byPath) { byPath = new Map(); reconciledFiles.set(kernel, byPath); }
+      byPath.set(key, { stamp, assignments });
+    }
+  } catch { /* a removed projection is observed on the next tick */ }
   return { available: true, changed };
 }
