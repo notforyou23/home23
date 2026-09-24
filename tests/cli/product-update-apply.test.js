@@ -280,12 +280,53 @@ test('an interrupted checkpoint reuses verified copies and replaces changed sour
   assert.equal(fs.existsSync(incomplete), false);
 });
 
-test('checkpoint refuses a hardlinked source file', async t => {
+test('checkpoint copies a source hardlink independently and refuses a linked checkpoint', async t => {
   const fixture = homeFixture(t);
   const source = path.join(fixture.home, 'app/instances/milo/conversations/session.txt');
   fs.linkSync(source, path.join(fixture.root, 'other-link.txt'));
+  const result = await applyProductUpdate({ homeRoot: fixture.home,
+    candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+  assert.equal(result.status, 'committed');
+  const copied = path.join(updateDirectoryFor(fixture.home), 'checkpoint/state/app/instances/milo/conversations/session.txt');
+  assert.equal(fs.statSync(source).nlink, 2);
+  assert.equal(fs.statSync(copied).nlink, 1);
+  assert.notEqual(fs.statSync(source).ino, fs.statSync(copied).ino);
+
+  const linked = homeFixture(t);
+  fs.writeFileSync(path.join(linked.home, 'app/instances/milo/conversations/z-interrupt.txt'), 'last');
+  await assert.rejects(() => applyProductUpdate({ homeRoot: linked.home,
+    candidatePayload: linked.candidate, staging: linked.staging }, {
+    ...quiet, checkpointBeforeCopy: async relative => {
+      if (relative.endsWith('/z-interrupt.txt')) throw new Error('stop-before-last-copy');
+    },
+  }), /stop-before-last-copy/);
+  const linkedSource = path.join(linked.home, 'app/instances/milo/conversations/session.txt');
+  const linkedCopy = path.join(updateDirectoryFor(linked.home), 'checkpoint/state/app/instances/milo/conversations/session.txt');
+  fs.unlinkSync(linkedCopy);
+  fs.linkSync(linkedSource, linkedCopy);
+  await assert.rejects(() => resumeProductUpdate({ homeRoot: linked.home }, quiet), /Unsafe checkpoint file/);
+  assert.equal(readUpdateJournal(linked.home).phase, 'quiesced');
+});
+
+test('checkpoint stops admitting work after the first failed copy', async t => {
+  const fixture = homeFixture(t);
+  const directory = path.join(fixture.home, 'app/instances/milo/conversations');
+  for (let index = 0; index < 8; index += 1) fs.writeFileSync(path.join(directory, `later-${index}.txt`), String(index));
+  let entered = 0, release;
+  const firstFour = new Promise(resolve => { release = resolve; });
   await assert.rejects(() => applyProductUpdate({ homeRoot: fixture.home,
-    candidatePayload: fixture.candidate, staging: fixture.staging }, quiet), /Unsafe checkpoint file/);
+    candidatePayload: fixture.candidate, staging: fixture.staging }, {
+    ...quiet,
+    checkpointBeforeCopy: async () => {
+      entered += 1;
+      const position = entered;
+      if (entered === 4) release();
+      await firstFour;
+      if (position === 1) throw new Error('first-copy-failed');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    },
+  }), /first-copy-failed/);
+  assert.equal(entered, 4);
   assert.equal(readUpdateJournal(fixture.home).phase, 'quiesced');
 });
 

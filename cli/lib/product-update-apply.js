@@ -287,9 +287,9 @@ function durableCopy(source, destination, mode) {
   try { fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temporary, destination);
 }
-function regularCheckpointFile(file) {
+function regularCheckpointFile(file, { source = false } = {}) {
   const stat = lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error(`Unsafe checkpoint file: ${file}`);
+  if (!stat.isFile() || stat.isSymbolicLink() || (!source && stat.nlink !== 1)) throw new Error(`Unsafe checkpoint file: ${file}`);
   return stat;
 }
 function safeCheckpointDirectory(root, relative = '', create = false) {
@@ -302,11 +302,11 @@ function safeCheckpointDirectory(root, relative = '', create = false) {
   }
   return directory;
 }
-async function checkpointHash(file) {
+async function checkpointHash(file, { source = false } = {}) {
   const descriptor = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await descriptor.stat();
-    if (!stat.isFile() || stat.nlink !== 1) throw new Error(`Unsafe checkpoint file: ${file}`);
+    if (!stat.isFile() || (!source && stat.nlink !== 1)) throw new Error(`Unsafe checkpoint file: ${file}`);
     const digest = createHash('sha256');
     const buffer = Buffer.allocUnsafe(1024 * 1024);
     for (let position = 0; position < stat.size;) {
@@ -323,13 +323,16 @@ async function checkpointStateFile(home, checkpoint, relative, beforeCopy) {
   const source = join(home, relative);
   const destination = join(checkpoint, 'state', relative);
   safeCheckpointDirectory(home, dirname(relative));
-  const sourceStat = regularCheckpointFile(source);
+  const sourceStat = regularCheckpointFile(source, { source: true });
   const mode = sourceStat.mode & 0o777;
-  const before = await checkpointHash(source);
+  const before = await checkpointHash(source, { source: true });
   safeCheckpointDirectory(checkpoint, join('state', dirname(relative)), true);
   let reusable = false;
   if (exists(destination)) {
     const destinationStat = regularCheckpointFile(destination);
+    if (destinationStat.dev === sourceStat.dev && destinationStat.ino === sourceStat.ino) {
+      throw new Error(`Checkpoint copy is linked to its source: ${relative}`);
+    }
     reusable = (destinationStat.mode & 0o777) === mode && await checkpointHash(destination) === before;
   }
   if (!reusable) {
@@ -340,32 +343,37 @@ async function checkpointStateFile(home, checkpoint, relative, beforeCopy) {
       await chmod(temporary, mode);
       const descriptor = await open(temporary, 'r');
       try { await descriptor.sync(); } finally { await descriptor.close(); }
-      if (await checkpointHash(source) !== before) {
+      if (await checkpointHash(source, { source: true }) !== before) {
         throw new Error(`State changed while checkpointing ${relative}.`);
       }
       await rename(temporary, destination);
     } finally { await rm(temporary, { force: true }); }
   }
-  if ((regularCheckpointFile(source).mode & 0o777) !== mode ||
-      (regularCheckpointFile(destination).mode & 0o777) !== mode ||
-      (reusable && await checkpointHash(source) !== before) || await checkpointHash(destination) !== before) {
+  const finalSource = regularCheckpointFile(source, { source: true });
+  const finalDestination = regularCheckpointFile(destination);
+  if ((finalSource.mode & 0o777) !== mode ||
+      (finalDestination.mode & 0o777) !== mode ||
+      (finalSource.dev === finalDestination.dev && finalSource.ino === finalDestination.ino) ||
+      (reusable && await checkpointHash(source, { source: true }) !== before) || await checkpointHash(destination) !== before) {
     throw new Error(`State changed while checkpointing ${relative}.`);
   }
   return before;
 }
 async function checkpointPool(items, operation) {
   let next = 0;
+  let failure = null;
   const results = new Array(items.length);
   const workers = Array.from({ length: Math.min(CHECKPOINT_COPIES, items.length) }, async () => {
     for (;;) {
+      if (failure) return;
       const index = next++;
       if (index >= items.length) return;
-      results[index] = await operation(items[index]);
+      try { results[index] = await operation(items[index]); }
+      catch (error) { failure ||= error; return; }
     }
   });
-  const settled = await Promise.allSettled(workers);
-  const failed = settled.find(result => result.status === 'rejected');
-  if (failed) throw failed.reason;
+  await Promise.all(workers);
+  if (failure) throw failure;
   return results;
 }
 function checkpointStateInventory(directory, prefix = '') {
