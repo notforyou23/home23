@@ -380,6 +380,65 @@ test('checkpoint and resume fingerprint a read-only attachment without copying i
   assert.equal(fs.statSync(original).mode & 0o777, 0o400);
 });
 
+test('checkpoint reads each quiesced state file once', async t => {
+  const fixture = homeFixture(t);
+  const target = path.join(fixture.home, 'app/instances/milo/conversations/session.txt');
+  const originalOpen = fs.promises.open;
+  let opens = 0;
+  fs.promises.open = async (...args) => {
+    if (args[0] === target) opens += 1;
+    return originalOpen(...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(() => applyProductUpdate({ homeRoot: fixture.home,
+      candidatePayload: fixture.candidate, staging: fixture.staging }, {
+      ...quiet,
+      afterPhase: async journal => {
+        if (journal.phase === 'checkpointed') throw new Error('stop-after-checkpoint');
+      },
+    }), /stop-after-checkpoint/);
+    assert.equal(opens, 1);
+    assert.equal(readUpdateJournal(fixture.home).phase, 'checkpointed');
+  } finally {
+    fs.promises.open = originalOpen;
+    syncBuiltinESMExports();
+  }
+});
+
+test('checkpoint refuses a same-size write during its single fingerprint read', async t => {
+  const fixture = homeFixture(t);
+  const target = path.join(fixture.home, 'app/instances/milo/conversations/session.txt');
+  const originalOpen = fs.promises.open;
+  let changed = false;
+  fs.promises.open = async (...args) => {
+    const descriptor = await originalOpen(...args);
+    if (args[0] === target) {
+      const originalRead = descriptor.read.bind(descriptor);
+      descriptor.read = async (...readArgs) => {
+        const result = await originalRead(...readArgs);
+        if (!changed) {
+          changed = true;
+          fs.writeFileSync(target, 'changed123'); // same ten-byte length as hello-milo
+        }
+        return result;
+      };
+    }
+    return descriptor;
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(() => applyProductUpdate({ homeRoot: fixture.home,
+      candidatePayload: fixture.candidate, staging: fixture.staging }, quiet), /Checkpoint file changed while hashing/);
+    assert.equal(changed, true);
+    assert.equal(readUpdateJournal(fixture.home).phase, 'quiesced');
+    assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  } finally {
+    fs.promises.open = originalOpen;
+    syncBuiltinESMExports();
+  }
+});
+
 test('an interrupted old checkpoint resumes in place without touching partial copies', async t => {
   const fixture = homeFixture(t);
   const directory = path.join(fixture.home, 'app/instances/milo/conversations');

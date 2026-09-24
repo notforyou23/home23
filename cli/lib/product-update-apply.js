@@ -348,10 +348,10 @@ function safeCheckpointDirectory(root, relative = '', create = false) {
 async function checkpointFingerprint(file, { source = false, bytes = null } = {}) {
   const descriptor = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const stat = await descriptor.stat();
-    if (!stat.isFile() || (!source && stat.nlink !== 1)) throw new Error(`Unsafe checkpoint file: ${file}`);
-    const length = bytes ?? stat.size;
-    if (!Number.isSafeInteger(length) || length < 0 || stat.size < length) throw new Error(`Checkpoint prefix is unavailable: ${file}`);
+    const stat = await descriptor.stat({ bigint: true });
+    if (!stat.isFile() || (!source && stat.nlink !== 1n)) throw new Error(`Unsafe checkpoint file: ${file}`);
+    const length = bytes ?? Number(stat.size);
+    if (!Number.isSafeInteger(length) || length < 0 || stat.size < BigInt(length)) throw new Error(`Checkpoint prefix is unavailable: ${file}`);
     const digest = createHash('sha256');
     const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, length)));
     for (let position = 0; position < length;) {
@@ -360,25 +360,23 @@ async function checkpointFingerprint(file, { source = false, bytes = null } = {}
       digest.update(buffer.subarray(0, bytesRead));
       position += bytesRead;
     }
-    const after = await descriptor.stat();
-    if (after.dev !== stat.dev || after.ino !== stat.ino || (after.mode & 0o777) !== (stat.mode & 0o777) ||
-        (bytes === null ? after.size !== stat.size : after.size < length)) {
+    const after = await descriptor.stat({ bigint: true });
+    if (after.dev !== stat.dev || after.ino !== stat.ino || (after.mode & 0o777n) !== (stat.mode & 0o777n) ||
+        (bytes === null && (after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs)) ||
+        (bytes === null ? after.size !== stat.size : after.size < BigInt(length))) {
       throw new Error(`Checkpoint file changed while hashing: ${file}`);
     }
-    return { sha256: digest.digest('hex'), bytes: length, mode: stat.mode & 0o777, dev: stat.dev, ino: stat.ino };
+    return { sha256: digest.digest('hex'), bytes: length };
   } finally { await descriptor.close(); }
 }
 async function checkpointStateFile(home, relative, beforeCopy) {
   const source = join(home, relative);
   // Inventory authenticates approved source parent links. The source leaf is
-  // regular and read twice; no lived state is copied or modified.
+  // regular; a pinned descriptor and nanosecond stat before/after one read
+  // detect in-flight changes. No lived state is copied or modified.
   regularCheckpointFile(source, { source: true });
   if (beforeCopy) await beforeCopy(relative);
-  const before = await checkpointFingerprint(source, { source: true });
-  const after = await checkpointFingerprint(source, { source: true });
-  if (before.sha256 !== after.sha256 || before.bytes !== after.bytes || before.mode !== after.mode ||
-      before.dev !== after.dev || before.ino !== after.ino) throw new Error(`State changed while checkpointing ${relative}.`);
-  return { sha256: before.sha256, bytes: before.bytes };
+  return checkpointFingerprint(source, { source: true });
 }
 async function checkpointPool(items, operation) {
   let next = 0;
