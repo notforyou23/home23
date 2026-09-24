@@ -56,9 +56,49 @@ function makeTrigger(brainDir) {
   const { runs, agent } = recordingAgent();
   return {
     runs,
-    trigger: new SynthesisTrigger({ brainDir, synthesisAgent: agent }),
+    trigger: new SynthesisTrigger({
+      brainDir,
+      synthesisAgent: agent,
+      startedAt: BASE_NOW - 15 * MINUTE,
+    }),
   };
 }
+
+test('a cold home does not start expensive synthesis before its API warms up', async () => {
+  const now = BASE_NOW;
+  const { runs, agent } = recordingAgent();
+  const brainDir = makeBrain(7 * HOUR, now);
+  const scheduled = new SynthesisTrigger({
+    brainDir,
+    synthesisAgent: agent,
+    startedAt: now,
+  });
+
+  assert.equal(await scheduled.tick(now), null);
+  assert.deepEqual(runs, []);
+  assert.equal((await scheduled.tick(now + 15 * MINUTE))?.triggered, true);
+  assert.deepEqual(runs, ['auto_scheduled']);
+});
+
+test('a cancelled automatic attempt stays rate limited even without brain-state.json', async () => {
+  const now = BASE_NOW;
+  const brainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'synthesis-trigger-'));
+  const runs = [];
+  const trigger = new SynthesisTrigger({
+    brainDir,
+    startedAt: now - 15 * MINUTE,
+    synthesisAgent: {
+      async run(mode) {
+        runs.push(mode);
+        throw new Error('operation cancelled');
+      },
+    },
+  });
+
+  assert.equal((await trigger.tick(now))?.triggered, false);
+  assert.equal(await trigger.tick(now + CHECK_INTERVAL_MS), null);
+  assert.deepEqual(runs, ['auto_scheduled']);
+});
 
 test('state just over five hours old triggers synthesis', async () => {
   const now = BASE_NOW;

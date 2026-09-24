@@ -7,17 +7,18 @@
  * every 3-4 review cycles). That's not reliable enough. The brain went 28K
  * cycles without auto-synthesis.
  *
- * This module guarantees: if brain-state.json hasn't been regenerated in
- * the last 5 hours, trigger synthesis on the next cognitive cycle.
+ * Once the home has had time to become responsive after startup, this module
+ * triggers synthesis when brain-state.json has not been regenerated in the
+ * last 5 hours.
  *
  * The five-hour proactive trigger sits deliberately below the freshness
  * verifier, which fails brain-state.json older than 360 minutes (6 hours).
  * The threshold alone is not the guarantee — the sampling cadence is. A state
  * can cross the threshold immediately after a check, so the worst-case trigger
  * time is threshold + CHECK_INTERVAL_MS. With a 30-minute check interval, a
- * five-hour threshold guarantees the synthesis request STARTS by 5h30m, which
- * leaves at least 30 minutes for the durable run to commit a fresh
- * brain-state.json before the six-hour verifier looks.
+ * five-hour threshold starts a request by 5h30m during continuous uptime.
+ * Startup grace intentionally takes precedence over that freshness target:
+ * loading a large brain during home recovery must not delay its API.
  *
  * Rate limited: maximum 1 synthesis per 4 hours.
  */
@@ -28,12 +29,14 @@ const path = require('path');
 const CHECK_INTERVAL_MS = 30 * 60 * 1000; // Check every 30 min: bounds the worst-case trigger to 5h30m
 const STALE_THRESHOLD_MS = 5 * 60 * 60 * 1000; // 5 hours: with the 30-min check, synthesis starts by 5h30m
 const RATE_LIMIT_MS = 4 * 60 * 60 * 1000; // Min 4 hours between triggers
+const STARTUP_GRACE_MS = 15 * 60 * 1000; // Let the home serve clients before expensive synthesis
 
 class SynthesisTrigger {
   constructor(config = {}) {
     this.brainDir = config.brainDir;
     this.logger = config.logger;
     this.synthesisAgent = config.synthesisAgent; // injected
+    this.startedAt = config.startedAt ?? Date.now();
     this.lastCheckAt = 0;
     this.lastTriggerAt = 0;
     this.triggerCount = 0;
@@ -44,10 +47,12 @@ class SynthesisTrigger {
    * Called from orchestrator cognitive cycle.
    */
   async tick(now = Date.now()) {
+    if (now - this.startedAt < STARTUP_GRACE_MS) return null;
     if (now - this.lastCheckAt < CHECK_INTERVAL_MS) return null;
     this.lastCheckAt = now;
 
     if (!this.brainDir) return null;
+    if (now - this.lastTriggerAt < RATE_LIMIT_MS) return null;
 
     // Read brain-state.json timestamp
     const statePath = path.join(this.brainDir, 'brain-state.json');
@@ -64,11 +69,6 @@ class SynthesisTrigger {
     }
 
     const ageMs = now - stateStat.mtimeMs;
-
-    // Check rate limit
-    if (now - this.lastTriggerAt < RATE_LIMIT_MS) {
-      return null;
-    }
 
     // Check staleness against the five-hour proactive threshold, not the
     // six-hour verifier limit. Paired with the 30-minute check interval this
