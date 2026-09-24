@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { installProductPayload, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
 import { applyProductUpdate, readUpdateJournal, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
-import { inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
+import { inspectCoordinationDatabase, inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, SUPPORTED_COORDINATION_SCHEMAS, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
 
@@ -44,20 +44,20 @@ function payload(dir, { sourceCommit, extra = {} } = {}) {
   fs.mkdirSync(path.join(dir, 'app/config'), { recursive: true, mode: 0o755 });
   return writeProductManifest(dir, { sourceCommit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
 }
-function database(file, version = SUPPORTED_COORDINATION_SCHEMA) {
+function database(file, version = 20) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(`PRAGMA user_version = ${version};
     CREATE TABLE schema_migrations (version INTEGER, name TEXT, checksum TEXT, applied_at TEXT, application_version TEXT);
-    INSERT INTO schema_migrations VALUES (${version}, 'chess-engines', '${SUPPORTED_COORDINATION_MIGRATION_CHECKSUM}', 't', 'test');
+    INSERT INTO schema_migrations VALUES (${version}, 'reviewed', '${SUPPORTED_COORDINATION_SCHEMAS[version]?.migrationChecksum || SUPPORTED_COORDINATION_MIGRATION_CHECKSUM}', 't', 'test');
     CREATE TABLE kernel_meta (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
-    INSERT INTO kernel_meta VALUES ('schema.checksum', '${SUPPORTED_COORDINATION_SCHEMA_CHECKSUM}', 't');
+    INSERT INTO kernel_meta VALUES ('schema.checksum', '${SUPPORTED_COORDINATION_SCHEMAS[version]?.schemaChecksum || SUPPORTED_COORDINATION_SCHEMA_CHECKSUM}', 't');
     INSERT INTO kernel_meta VALUES ('schema.version', '${version}', 't');
     CREATE TABLE kept (value TEXT);
     INSERT INTO kept VALUES ('same-home');`);
   db.close();
 }
-function populate(home, { desiredRunning = false, version = SUPPORTED_COORDINATION_SCHEMA } = {}) {
+function populate(home, { desiredRunning = false, version = 20 } = {}) {
   const profile = { name: 'milo', provider: 'ollama-local', model: 'fixture' };
   fs.mkdirSync(path.join(home, 'app/config'), { recursive: true });
   fs.writeFileSync(path.join(home, 'app/config/home.yaml'), 'name: milo\n', { mode: 0o600 });
@@ -111,6 +111,40 @@ test('reviewed schema constants and writer names stay aligned with source', () =
   assert.equal(updateBlocksStart({ phase: 'selected', ownerToken: 'token' }, 'token'), false);
   assert.equal(updateBlocksStart({ phase: 'committed' }), false);
   assert.equal(updateBlocksStart({ phase: 'rolled_back' }), false);
+});
+
+test('the reviewed v21 migration is the only accepted schema asset transition', async t => {
+  const fixture = homeFixture(t);
+  const databaseFile = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+  assert.equal((await inspectCoordinationDatabase(databaseFile)).compatible, true);
+  const candidate = structuredClone(fixture.next);
+  const index = candidate.files.find(entry => entry.path === 'app/dist/coordination/migrations/index.js');
+  index.sha256 = '8672239b024987edd84d02f6f2ed8104276d6d0209f7597de4870ec148f09b8a';
+  candidate.files.push({ path: 'app/dist/coordination/migrations/0021-notification-recovery-order.js',
+    type: 'file', mode: 0o644, size: 338,
+    sha256: '1f4679dcb1fa9ccfab8e9884f2e2243cee9010061d24346b9cdf4c9a50e2cc9b' });
+  const allowed = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate });
+  assert.equal(allowed.reasons.some(item => item.code === 'schema_assets_changed'), false);
+  candidate.files.find(entry => entry.path === 'app/dist/coordination/migrations/0001-coordination-spine.js').sha256 = '0'.repeat(64);
+  const changedHistory = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate });
+  assert.equal(changedHistory.reasons.some(item => item.code === 'schema_assets_changed'), true);
+  candidate.files.find(entry => entry.path === 'app/dist/coordination/migrations/0001-coordination-spine.js').sha256 = fixture.next.files.find(entry => entry.path === 'app/dist/coordination/migrations/0001-coordination-spine.js').sha256;
+  index.sha256 = '0'.repeat(64);
+  const unreviewedIndex = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate });
+  assert.equal(unreviewedIndex.reasons.some(item => item.code === 'schema_assets_changed'), true);
+
+  fs.rmSync(databaseFile);
+  database(databaseFile, 21);
+  assert.equal((await inspectCoordinationDatabase(databaseFile)).compatible, true);
+  index.sha256 = '8672239b024987edd84d02f6f2ed8104276d6d0209f7597de4870ec148f09b8a';
+  const nextV21 = await inspectUpdateInventory(fixture.home, { installed: candidate, candidate });
+  assert.equal(nextV21.reasons.some(item => item.code === 'schema_assets_changed'), false);
+  const downgrade = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate: fixture.next });
+  assert.equal(downgrade.reasons.some(item => item.code === 'schema_assets_changed'), true);
+  const db = new DatabaseSync(databaseFile);
+  db.exec("UPDATE kernel_meta SET value = 'wrong' WHERE key = 'schema.checksum'");
+  db.close();
+  assert.equal((await inspectCoordinationDatabase(databaseFile)).compatible, false);
 });
 
 test('an in-home relative state link is preserved and an outside link is refused', async t => {
@@ -239,7 +273,7 @@ test('a stopped home updates in place and a running home waits until admission',
   assert.equal(admitted.resumedRunning, true);
   assert.equal(packageId(running.home), running.next.packageId);
   assert.equal(preserved(running.home).conversation, 'hello-milo');
-  assert.equal(preserved(running.home).version, SUPPORTED_COORDINATION_SCHEMA);
+  assert.equal(preserved(running.home).version, 20);
 });
 
 test('checkpoint and resume fingerprint a read-only attachment without copying it', async t => {
@@ -1285,7 +1319,7 @@ test('early reuseVerifiedStage resume refuses a missing stage and rolls back dam
   assert.equal(packageId(damagedFixture.home), damagedFixture.installed.packageId);
   assert.equal(damaged.identityPreserved, true);
   assert.deepEqual(preserved(damagedFixture.home), {
-    conversation: 'hello-milo', seed: '{"id":"seed-1"}\n', config: 'name: milo\n', value: 'same-home', version: SUPPORTED_COORDINATION_SCHEMA,
+    conversation: 'hello-milo', seed: '{"id":"seed-1"}\n', config: 'name: milo\n', value: 'same-home', version: 20,
   });
 });
 

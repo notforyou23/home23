@@ -6,9 +6,40 @@ import { absoluteHome, readPrivateJSON, socketRootFor } from './product-environm
 import { PRODUCT_STATE_PATHS, isProductStatePath } from './product-payload.js';
 import { compareUpdateContracts } from './product-update-plan.js';
 
-export const SUPPORTED_COORDINATION_SCHEMA = 20;
-export const SUPPORTED_COORDINATION_SCHEMA_CHECKSUM = 'cb80ab7b2c52920dab0ef5434dd9c62fad2e3a6efacabde76e6934b84e5006ec';
-export const SUPPORTED_COORDINATION_MIGRATION_CHECKSUM = 'c5d7aad734c6516b629b0879a815f51bdb32ea1c33d2001209fc7c008c60a436';
+export const SUPPORTED_COORDINATION_SCHEMA = 21;
+export const SUPPORTED_COORDINATION_SCHEMA_CHECKSUM = '56eea1f8c3ca8b44b026e9ddf6d3dac44552ab72442c33ccb3c7e446d5b35d27';
+export const SUPPORTED_COORDINATION_MIGRATION_CHECKSUM = 'a4799fb82863c9631c07141b781dac4decdd95e28192d8f874e4bb7f27d016b1';
+export const SUPPORTED_COORDINATION_SCHEMAS = Object.freeze({
+  20: Object.freeze({ schemaChecksum: 'cb80ab7b2c52920dab0ef5434dd9c62fad2e3a6efacabde76e6934b84e5006ec',
+    migrationChecksum: 'c5d7aad734c6516b629b0879a815f51bdb32ea1c33d2001209fc7c008c60a436' }),
+  21: Object.freeze({ schemaChecksum: SUPPORTED_COORDINATION_SCHEMA_CHECKSUM,
+    migrationChecksum: SUPPORTED_COORDINATION_MIGRATION_CHECKSUM }),
+});
+const MIGRATIONS_PREFIX = 'app/dist/coordination/migrations/';
+const V21_MIGRATION = `${MIGRATIONS_PREFIX}0021-notification-recovery-order.js`;
+const V21_INDEX = `${MIGRATIONS_PREFIX}index.js`;
+// Reviewed compiled assets from the immutable v21 migration source. The rest of
+// the migration tree must still match the installed package byte for byte.
+const V21_ASSET_SHA256 = Object.freeze({
+  [V21_MIGRATION]: '1f4679dcb1fa9ccfab8e9884f2e2243cee9010061d24346b9cdf4c9a50e2cc9b',
+  [V21_INDEX]: '8672239b024987edd84d02f6f2ed8104276d6d0209f7597de4870ec148f09b8a',
+});
+function reviewedV21Migration(installed, candidate, group) {
+  if (group.status !== 'changed' ||
+      group.changedPaths.length !== 2 ||
+      group.changedPaths.some(path => !Object.hasOwn(V21_ASSET_SHA256, path))) return false;
+  const before = new Map(installed.files.map(entry => [entry.path, entry]));
+  const after = new Map(candidate.files.map(entry => [entry.path, entry]));
+  if (before.has(V21_MIGRATION) || !before.has(V21_INDEX)) return false;
+  return Object.entries(V21_ASSET_SHA256).every(([path, sha256]) =>
+    after.get(path)?.type === 'file' && after.get(path)?.mode === 0o644 && after.get(path)?.sha256 === sha256);
+}
+function candidateSchema(candidate) {
+  const files = new Map(candidate.files.map(entry => [entry.path, entry]));
+  if (!files.has(V21_MIGRATION)) return 20;
+  return Object.entries(V21_ASSET_SHA256).every(([path, sha256]) =>
+    files.get(path)?.type === 'file' && files.get(path)?.mode === 0o644 && files.get(path)?.sha256 === sha256) ? 21 : null;
+}
 const RECIPE_ASSET = 'app/scripts/embedder/schema/recipes.json';
 const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const COORDINATION_SOCKET = 'app/instances/.house/coordination/coord.sock';
@@ -99,8 +130,9 @@ export async function inspectCoordinationDatabase(file) {
     const row = database.prepare('SELECT version, checksum FROM schema_migrations ORDER BY version DESC LIMIT 1').get();
     const meta = database.prepare("SELECT value FROM kernel_meta WHERE key = 'schema.checksum'").get();
     const recorded = Number(row?.version ?? 0);
-    const compatible = integrity === 'ok' && version === SUPPORTED_COORDINATION_SCHEMA && recorded === version &&
-      row?.checksum === SUPPORTED_COORDINATION_MIGRATION_CHECKSUM && meta?.value === SUPPORTED_COORDINATION_SCHEMA_CHECKSUM;
+    const expected = SUPPORTED_COORDINATION_SCHEMAS[version];
+    const compatible = integrity === 'ok' && expected !== undefined && recorded === version &&
+      row?.checksum === expected.migrationChecksum && meta?.value === expected.schemaChecksum;
     return { present: true, version, recorded, checksum: meta?.value || null, integrity, compatible };
   } catch (error) {
     const busy = /busy|locked/i.test(String(error.message));
@@ -250,11 +282,17 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   else if (created) reasons.push(reason('database_missing', 'This created home has no coordination database. A schema-preserving update cannot invent one.'));
   if (database.busy) reasons.push(reason('database_busy', 'The coordination database is busy. Wait until writers finish, then retry.'));
   else if (database.unreadable) reasons.push(reason('database_unreadable', 'The coordination database could not be inspected. No files were changed.'));
-  else if (database.present && !database.compatible) reasons.push(reason('unsupported_data_version', `Stored coordination schema ${database.version ?? 'unknown'} is outside the supported schema-preserving version ${SUPPORTED_COORDINATION_SCHEMA}. This update does not migrate data.`));
+  else if (database.present && !database.compatible) reasons.push(reason('unsupported_data_version', `Stored coordination schema ${database.version ?? 'unknown'} does not match a reviewed v20 or v21 schema fingerprint.`));
   if (installed && candidate) {
     const contracts = compareUpdateContracts(installed, candidate);
-    if (contracts.groups.coordinationMigrations.status !== 'unchanged' || contracts.groups.coordinationContracts.status !== 'unchanged') {
-      reasons.push(reason('schema_assets_changed', 'Packaged coordination migrations or contracts differ. Refusing rather than migrating stored data.'));
+    const targetSchema = candidateSchema(candidate);
+    if (targetSchema === null || (database.present && database.compatible && database.version > targetSchema)) {
+      reasons.push(reason('schema_assets_changed', 'The candidate package cannot run the stored coordination schema.'));
+    }
+    if ((contracts.groups.coordinationMigrations.status !== 'unchanged' &&
+         !reviewedV21Migration(installed, candidate, contracts.groups.coordinationMigrations)) ||
+        contracts.groups.coordinationContracts.status !== 'unchanged') {
+      reasons.push(reason('schema_assets_changed', 'Packaged coordination migrations or contracts differ from the reviewed v20 to v21 transition.'));
     }
     const left = installed.files.find(entry => entry.path === RECIPE_ASSET);
     const right = candidate.files.find(entry => entry.path === RECIPE_ASSET);

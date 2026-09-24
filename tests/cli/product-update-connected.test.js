@@ -142,7 +142,8 @@ test('install-staged accepts --admit argv and rejects admit on other actions', a
 
 test('busy inventory without admit does not apply', async t => {
   const { DatabaseSync } = await import('node:sqlite');
-  const { SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM } = await import('../../cli/lib/product-update-inventory.js');
+  const { SUPPORTED_COORDINATION_SCHEMAS } = await import('../../cli/lib/product-update-inventory.js');
+  const supported = SUPPORTED_COORDINATION_SCHEMAS[20];
   const root = tempRoot(t);
   const current = path.join(root, 'current');
   const candidate = path.join(root, 'candidate');
@@ -188,12 +189,12 @@ test('busy inventory without admit does not apply', async t => {
   const dbFile = path.join(home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
   fs.mkdirSync(path.dirname(dbFile), { recursive: true });
   const db = new DatabaseSync(dbFile);
-  db.exec(`PRAGMA user_version = ${SUPPORTED_COORDINATION_SCHEMA};
+  db.exec(`PRAGMA user_version = 20;
     CREATE TABLE schema_migrations (version INTEGER, name TEXT, checksum TEXT, applied_at TEXT, application_version TEXT);
-    INSERT INTO schema_migrations VALUES (${SUPPORTED_COORDINATION_SCHEMA}, 'chess-engines', '${SUPPORTED_COORDINATION_MIGRATION_CHECKSUM}', 't', 'test');
+    INSERT INTO schema_migrations VALUES (20, 'chess-engines', '${supported.migrationChecksum}', 't', 'test');
     CREATE TABLE kernel_meta (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
-    INSERT INTO kernel_meta VALUES ('schema.checksum', '${SUPPORTED_COORDINATION_SCHEMA_CHECKSUM}', 't');
-    INSERT INTO kernel_meta VALUES ('schema.version', '${SUPPORTED_COORDINATION_SCHEMA}', 't');
+    INSERT INTO kernel_meta VALUES ('schema.checksum', '${supported.schemaChecksum}', 't');
+    INSERT INTO kernel_meta VALUES ('schema.version', '20', 't');
     CREATE TABLE kept (value TEXT);
     INSERT INTO kept VALUES ('same-home');`);
   db.close();

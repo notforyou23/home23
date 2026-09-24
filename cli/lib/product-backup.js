@@ -27,7 +27,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { promisify } from 'node:util';
 import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
-import { isProductStatePath, isRebuildableStatePath, ownedWriterNames, SUPPORTED_COORDINATION_SCHEMA } from './product-update-inventory.js';
+import { inspectCoordinationDatabase, isProductStatePath, isRebuildableStatePath, ownedWriterNames } from './product-update-inventory.js';
 
 const executeFile = promisify(execFile);
 const BACKUP_SCHEMA = 'home23.backup.v1';
@@ -328,6 +328,7 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
   const files = [];
   const seen = new Set();
   let temporaryDatabase = null;
+  let coordinationSchema = null;
   const add = (relative, type, absolute, size) => {
     if (seen.has(relative) || isRebuildableStatePath(relative) || omitSidecar(relative)) return;
     seen.add(relative);
@@ -362,6 +363,9 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
     if (relative === COORDINATION_DATABASE) {
       temporaryDatabase = join(archiveParent, `.home23-backup-${randomUUID()}.sqlite3`);
       await consistentDatabaseCopy(homeRoot, temporaryDatabase);
+      const inspected = await inspectCoordinationDatabase(temporaryDatabase);
+      if (!inspected.compatible) fail('backup_database_unsupported', 'The coordination checkpoint does not match a reviewed schema fingerprint.');
+      coordinationSchema = inspected.version;
       const size = lstatSync(temporaryDatabase).size;
       sink.write(recordHeader(relative, 'file', size));
       const digest = streamFile(sink, temporaryDatabase, size, lock);
@@ -382,7 +386,7 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
       if (!exists(join(homeRoot, entry.path))) continue;
       await visit(entry.path);
     }
-    return files;
+    return { files, coordinationSchema };
   } finally {
     if (temporaryDatabase && exists(temporaryDatabase)) {
       try { unlinkSync(temporaryDatabase); } catch { /* The copy is only an intermediate checkpoint. */ }
@@ -467,7 +471,7 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
     if (dependencies.afterLock) await dependencies.afterLock(root);
     assertWritersStopped(root, await list(root));
     records = plainSink(recordsPath);
-    const files = await collectRecords(root, records, dirname(archive), lock);
+    const { files, coordinationSchema } = await collectRecords(root, records, dirname(archive), lock);
     records.close();
     records = null;
     assertWritersStopped(root, await list(root));
@@ -475,7 +479,7 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
     const authenticated = Buffer.from(JSON.stringify({
       schema: BACKUP_SCHEMA, version: 2, homeRoot: root, packageId: identity.packageId, sourceCommit: identity.sourceCommit,
       recipeId: null, createdAt: new Date().toISOString(),
-      coordinationSchema: exists(join(root, COORDINATION_DATABASE)) ? SUPPORTED_COORDINATION_SCHEMA : null,
+      coordinationSchema,
       writersQuiesced: true, checkpoint: 'vacuum-and-stable-files', files,
     }));
     sink = cipherSink(ciphertext);

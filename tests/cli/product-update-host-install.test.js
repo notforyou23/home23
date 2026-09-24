@@ -102,7 +102,8 @@ test('install-staged refuses absent staging and selects staged payload path', as
 test('install-staged reuses the verified stage path instead of a sibling -apply tree', async t => {
   const { writeProductManifest, installProductPayload } = await import('../../cli/lib/product-payload.js');
   const { stageProductPayload } = await import('../../cli/lib/product-update-stage.js');
-  const { SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM } = await import('../../cli/lib/product-update-inventory.js');
+  const { SUPPORTED_COORDINATION_SCHEMAS } = await import('../../cli/lib/product-update-inventory.js');
+  const supported = SUPPORTED_COORDINATION_SCHEMAS[20];
   const { DatabaseSync } = await import('node:sqlite');
   const root = tempRoot(t);
   function payload(dir, sourceCommit, extra = {}) {
@@ -140,12 +141,12 @@ test('install-staged reuses the verified stage path instead of a sibling -apply 
   const dbFile = path.join(home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
   fs.mkdirSync(path.dirname(dbFile), { recursive: true });
   const db = new DatabaseSync(dbFile);
-  db.exec(`PRAGMA user_version = ${SUPPORTED_COORDINATION_SCHEMA};
+  db.exec(`PRAGMA user_version = 20;
     CREATE TABLE schema_migrations (version INTEGER, name TEXT, checksum TEXT, applied_at TEXT, application_version TEXT);
-    INSERT INTO schema_migrations VALUES (${SUPPORTED_COORDINATION_SCHEMA}, 'chess-engines', '${SUPPORTED_COORDINATION_MIGRATION_CHECKSUM}', 't', 'test');
+    INSERT INTO schema_migrations VALUES (20, 'chess-engines', '${supported.migrationChecksum}', 't', 'test');
     CREATE TABLE kernel_meta (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
-    INSERT INTO kernel_meta VALUES ('schema.checksum', '${SUPPORTED_COORDINATION_SCHEMA_CHECKSUM}', 't');
-    INSERT INTO kernel_meta VALUES ('schema.version', '${SUPPORTED_COORDINATION_SCHEMA}', 't');`);
+    INSERT INTO kernel_meta VALUES ('schema.checksum', '${supported.schemaChecksum}', 't');
+    INSERT INTO kernel_meta VALUES ('schema.version', '20', 't');`);
   db.close();
   fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({
     schema: 'home23.host.v2', homeRoot: home, profile: { name: 'milo', provider: 'ollama-local', model: 'fixture' },

@@ -4,12 +4,14 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import {
   createHomeBackup, inspectHomeBackup, moveHome, readAuthenticatedBackupHeader, readMoveFence, recoverInspectedHome, rebindAdoptedHome,
   rewriteAdoptedCronPromptPaths,
 } from '../../cli/lib/product-backup.js';
 import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
+import { SUPPORTED_COORDINATION_SCHEMAS } from '../../cli/lib/product-update-inventory.js';
 
 const quiet = { listProcesses: async () => [] };
 const cursorId = sourcePath => `tail_${createHash('sha256').update(sourcePath).digest('hex').slice(0, 8)}`;
@@ -53,6 +55,25 @@ function stoppedHome(t, { desiredRunning = false, secrets = false } = {}) {
     inspectionRoot: path.join(root, 'inspect'),
   };
 }
+
+test('backup receipt records the copied database schema for v20 and v21', async t => {
+  for (const version of [20, 21]) {
+    await t.test(`v${version}`, async subtest => {
+      const fixture = stoppedHome(subtest);
+      const file = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const db = new DatabaseSync(file);
+      db.exec(`PRAGMA user_version = ${version};
+        CREATE TABLE schema_migrations (version INTEGER, checksum TEXT);
+        INSERT INTO schema_migrations VALUES (${version}, '${SUPPORTED_COORDINATION_SCHEMAS[version].migrationChecksum}');
+        CREATE TABLE kernel_meta (key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO kernel_meta VALUES ('schema.checksum', '${SUPPORTED_COORDINATION_SCHEMAS[version].schemaChecksum}');`);
+      db.close();
+      await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+      assert.equal(readAuthenticatedBackupHeader({ archivePath: fixture.archivePath, keyPath: fixture.keyPath }).coordinationSchema, version);
+    });
+  }
+});
 
 test('round-trips a stopped fixture home with workspace and home.yaml', async t => {
   const fixture = stoppedHome(t, { secrets: true });

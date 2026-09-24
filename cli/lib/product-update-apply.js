@@ -10,7 +10,7 @@ import { absoluteHome, privateDirectory, productEnvironment, readPrivateJSON } f
 import { acquireInstallLock, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
-import { hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath, SUPPORTED_COORDINATION_SCHEMA } from './product-update-inventory.js';
+import { hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath } from './product-update-inventory.js';
 
 const executeFile = promisify(execFile);
 const SCHEMA = 'home23.product-update.v1';
@@ -410,7 +410,7 @@ function payloadMatchesAt(entries, rootOf) {
   }
   return true;
 }
-async function writeCheckpoint(home, updateDirectory, _journalId, { beforeCopy } = {}) {
+async function writeCheckpoint(home, updateDirectory, _journalId, { beforeCopy, expectedSchemaVersion } = {}) {
   safeCheckpointDirectory(updateDirectory);
   const checkpoint = join(updateDirectory, 'checkpoint');
   // A quiesced journal may contain a partial copied checkpoint from the old
@@ -437,7 +437,7 @@ async function writeCheckpoint(home, updateDirectory, _journalId, { beforeCopy }
     try {
       const integrity = copy.prepare('PRAGMA integrity_check').get().integrity_check;
       const version = Number(copy.prepare('PRAGMA user_version').get().user_version);
-      if (integrity !== 'ok' || version !== SUPPORTED_COORDINATION_SCHEMA) throw new Error('Coordination checkpoint failed integrity or version verification.');
+      if (integrity !== 'ok' || version !== expectedSchemaVersion) throw new Error('Coordination checkpoint failed integrity or version verification.');
       database = { present: true, version, integrity, sha256: hashFile(destination) };
     } finally { copy.close(); }
     hashes[DATABASE] = hashFile(join(home, DATABASE));
@@ -623,12 +623,13 @@ async function mutate(journal, dependencies, verify) {
   }
   if (rank() < RANK.checkpointed) {
     const database = exists(join(home, DATABASE)) ? await inspectCoordinationDatabase(join(home, DATABASE)) : { present: false, compatible: true };
-    if (database.present && !database.compatible) {
+    const expectedSchemaVersion = journal.coordinationSchemaVersion ?? 20; // v20 journals predate the pinned version field.
+    if (database.present && (!database.compatible || database.version !== expectedSchemaVersion)) {
       journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons: [{ code: 'unsupported_data_version', message: 'The stored schema changed after the preflight. Package files were not replaced.' }] }, dependencies);
       return { done: publicResult(journal) };
     }
     const checkpoint = await (dependencies.writeCheckpoint || writeCheckpoint)(home, updateDirectoryFor(home), journal.id,
-      { beforeCopy: dependencies.checkpointBeforeCopy });
+      { beforeCopy: dependencies.checkpointBeforeCopy, expectedSchemaVersion });
     journal = await commitPhase(file, { ...journal, phase: 'checkpointed', identity: checkpoint.hashes, canonical: canonicalFrom(checkpoint.hashes), hostIdentity: hostIdentity(home), checkpointDatabase: checkpoint.database,
       stateRetention: checkpoint.stateRetention || 'copied', substratePrefixes: checkpoint.substratePrefixes || {} }, dependencies);
   }
@@ -858,7 +859,8 @@ async function openTransaction({ home, candidate, staging, admit, reuseVerifiedS
     const journal = await commitPhase(journalPath(home), { schema: SCHEMA, id: randomUUID(), homeRoot: home, staging, stagedPayload: staged.payloadPath,
       fromPackageId: installed.packageId, toPackageId: candidateManifest.packageId, fromSourceCommit: installed.sourceCommit,
       toSourceCommit: candidateManifest.sourceCommit, desiredRunning: inventory.desiredRunning, admit: admit === true,
-      writerNames: inventory.writers, ownerToken: randomUUID(), phase: 'claimed', acceptedWork: false, candidateStarted: false,
+      writerNames: inventory.writers, coordinationSchemaVersion: inventory.databaseInspection.version,
+      ownerToken: randomUUID(), phase: 'claimed', acceptedWork: false, candidateStarted: false,
       networkInstall: false, reuseVerifiedStage: reuseVerifiedStage === true, createdAt: new Date().toISOString() }, dependencies);
     return await runTransaction(journal, dependencies, verify);
   } finally {
