@@ -6,6 +6,9 @@ import { InboxRouter } from './inbox-router.js';
 import { PursuitStore } from './pursuit-store.js';
 import { AgencySelector } from './selector.js';
 import { SourceTruthHierarchy } from './source-truth.js';
+import { statSync } from 'node:fs';
+
+const TICK_STATE_REFRESH_MS = 5 * 60_000;
 
 function nowIso() {
   return new Date().toISOString();
@@ -273,6 +276,26 @@ export class AgencyKernel {
     this.ensureState();
   }
 
+  stateLedgerStamp() {
+    return [
+      this.store.inboxPath,
+      this.store.pursuitsPath,
+      this.store.receiptsPath,
+      this.store.consequencesPath,
+      this.store.truthPath,
+      this.store.tasksPath,
+      this.store.memoryCandidatesPath,
+    ].map(path => {
+      try {
+        const stat = statSync(path, { bigint: true });
+        return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+      } catch (error) {
+        if (error.code === 'ENOENT') return 'missing';
+        throw error;
+      }
+    }).join('|');
+  }
+
   ensureState() {
     this.reconcileResolvedLiveProblemAttention();
     this.reconcileCronBootcampStopConditions();
@@ -373,6 +396,8 @@ export class AgencyKernel {
       nextAction: normalizeNextActionForMode(existing.nextAction, this.config.mode),
     };
     this.store.writeState(state);
+    this.lastStateLedgerStamp = this.stateLedgerStamp();
+    this.lastStateRefreshAt = Date.now();
     return state;
   }
 
@@ -2640,7 +2665,7 @@ export class AgencyKernel {
         kind: 'rest',
         reason: 'no_active_or_watch_pursuits',
         at: now,
-      });
+      }, { reuseState: killReview.killed.length === 0 });
       return { selected: null, editor: null, killReview, nextAction: state.nextAction, state };
     }
 
@@ -2736,7 +2761,9 @@ export class AgencyKernel {
         evidence: selected.latestEvidence || selected.evidence || [],
       });
     }
-    const state = this.writeNextAction(nextAction);
+    const state = this.writeNextAction(nextAction, {
+      reuseState: editor.action === 'advance_one_step' && killReview.killed.length === 0,
+    });
     return { selected: { pursuitId: selected.id, status: selected.status }, editor, killReview, nextAction, state };
   }
 
@@ -2793,14 +2820,17 @@ export class AgencyKernel {
     return watch[0] || null;
   }
 
-  writeNextAction(nextAction) {
+  writeNextAction(nextAction, { reuseState = false } = {}) {
     const existing = this.store.readState() || {};
     const recent = [
       ...(existing.lastMeaningfulActions || []),
       { ...nextAction, recordedAt: nowIso() },
     ].slice(-20);
     const state = {
-      ...this.ensureState(),
+      ...(reuseState && existing.schema === 'home23.agency.state.v1'
+        && this.lastStateLedgerStamp === this.stateLedgerStamp()
+        && Date.now() - this.lastStateRefreshAt < TICK_STATE_REFRESH_MS
+        ? existing : this.ensureState()),
       nextAction,
       lastMeaningfulActions: recent,
     };

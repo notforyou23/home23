@@ -108,6 +108,38 @@ test('a tick that takes no action writes no scratch and no receipt', async () =>
   assert.equal(tick.state.nextAction.kind, 'advance_one_step');
 });
 
+test('unchanged resident ticks reuse state, but ledger changes refresh it', async () => {
+  const kernel = makeKernel(brainDir());
+  const intake = await kernel.intake({
+    source: 'chat',
+    kind: 'operator_request',
+    summary: 'Follow a benign recurring pursuit without an editor block.',
+    evidence: [{ type: 'chat', ref: 'tick-cache' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Verify one concrete outcome.',
+  });
+  assert.equal(intake.decision.route, 'pursue');
+
+  const ensureState = kernel.ensureState.bind(kernel);
+  let refreshes = 0;
+  kernel.ensureState = () => { refreshes++; return ensureState(); };
+  const first = await kernel.tick();
+  const second = await kernel.tick();
+  assert.equal(first.editor.action, 'advance_one_step');
+  assert.equal(second.editor.action, 'advance_one_step');
+  assert.equal(refreshes, 0, 'no-op ticks should not rescan unchanged agency ledgers');
+  assert.equal(second.state.nextAction.pursuitId, intake.pursuit.id);
+
+  kernel.store.appendMemoryCandidate({ id: 'new-candidate', summary: 'New memory', createdAt: new Date().toISOString() });
+  const afterChange = await kernel.tick();
+  assert.equal(refreshes, 1, 'new agency data must invalidate the state snapshot');
+  assert.equal(afterChange.state.recentMemoryCandidates[0].id, 'new-candidate');
+
+  kernel.lastStateRefreshAt = Date.now() - 6 * 60_000;
+  await kernel.tick();
+  assert.equal(refreshes, 2, 'periodic refresh must still run time-based reconciliation');
+});
+
 test('a tick that does act (editor vetoes and requires consequence) still records scratch and receipt', async () => {
   const dir = brainDir();
   const kernel = makeKernel(dir);
