@@ -262,6 +262,28 @@ async function defaultStart(home, journal) {
   const { runHostAction } = await import(pathToFileURL(join(home, 'app/cli/lib/product-host.js')).href);
   return runHostAction('start', { homeRoot: home, input: { updateOwnerToken: journal.ownerToken } });
 }
+async function defaultStatus(home) {
+  const { runHostAction } = await import(pathToFileURL(join(home, 'app/cli/lib/product-host.js')).href);
+  return runHostAction('status', { homeRoot: home });
+}
+function startObservation(result, error) {
+  const status = typeof result?.status === 'string' && /^[a-z_]{1,40}$/.test(result.status) ? result.status : null;
+  const code = result?.error?.code || error?.code;
+  const errorCode = typeof code === 'string' && /^[A-Za-z0-9_]{1,80}$/.test(code) ? code : null;
+  const maskedReady = status === 'recovery_required' && errorCode === 'update_recovery_required' && result?.readiness?.ready === true;
+  const startOk = !error && (result?.ok !== false || maskedReady) &&
+    (result?.readiness?.ready === true || status === 'ready' || status === null);
+  return { startOk, startStatus: startOk ? 'ready' : status, startErrorCode: startOk ? null : errorCode };
+}
+function candidateStatusKind(result) {
+  const processes = Array.isArray(result?.processes) ? result.processes : [];
+  const failed = processes.some(row => row?.owned === false || row?.status === 'errored' || row?.status === 'waiting restart');
+  const maskedReady = result?.status === 'recovery_required' && result?.error?.code === 'update_recovery_required' && result?.readiness?.ready === true;
+  if (!failed && (result?.ok !== false || maskedReady) && (result?.readiness?.ready === true || result?.status === 'ready')) return 'ready';
+  if (!failed && result?.ok !== false && result?.readiness?.recoveryRequired !== true &&
+      (result?.status === 'starting' || (result?.readiness?.ready === false && processes.some(row => row.status === 'online' || row.status === 'launching')))) return 'starting';
+  return 'failed';
+}
 async function defaultAcquireHostLock(home, owner) {
   const runtime = privateDirectory(join(home, 'runtime'));
   const lockPath = join(runtime, '.host.lock'), markerPath = join(runtime, '.home23-update-lock.json');
@@ -696,22 +718,43 @@ async function finish(journal, dependencies, verify) {
     // The installed Host allows this owner token only for an admitted phase.
     // Persist that phase before Start so the gate and the journal agree.
     journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies);
-    let startOk = false;
-    try { startOk = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
-    catch { startOk = false; }
-    journal = await commitPhase(file, { ...journal, candidateStarted: true, startOk, phase: 'writers_admitted' }, dependencies);
+    let started = null, startError = null;
+    try { started = await (dependencies.start || defaultStart)(home, journal); }
+    catch (error) { startError = error; }
+    journal = await commitPhase(file, { ...journal, candidateStarted: true,
+      ...startObservation(started, startError), phase: 'writers_admitted' }, dependencies);
   }
   let identityPreserved = journal.writersAdmitted ? await sameCanonical(home, journal) : sameIdentity(home, journal.identity);
   if (journal.writersAdmitted && !identityPreserved) {
     await fence();
     identityPreserved = await sameCanonical(home, journal);
     if (identityPreserved && journal.desiredRunning && !(await busy())) {
-      try { journal.startOk = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
-      catch { journal.startOk = false; }
-      journal = await commitPhase(file, { ...journal, candidateStarted: true, startOk: journal.startOk, phase: 'writers_admitted' }, dependencies);
+      let started = null, startError = null;
+      try { started = await (dependencies.start || defaultStart)(home, journal); }
+      catch (error) { startError = error; }
+      journal = await commitPhase(file, { ...journal, candidateStarted: true,
+        ...startObservation(started, startError), phase: 'writers_admitted' }, dependencies);
     }
   }
-  const behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved, verify });
+  let behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved, verify });
+  if (journal.desiredRunning && journal.writersAdmitted && journal.startOk === false && identityPreserved) {
+    // A cold home can outlive Start's readiness wait. Check its current status
+    // without restarting or fencing healthy, still-warming writers.
+    const withoutStartFailure = dependencies.verifyBehavior ? behavior :
+      defaultBehavior({ home, journal: { ...journal, startOk: true }, identityPreserved, verify });
+    if (withoutStartFailure.ok) {
+      let current = null;
+      try { current = await (dependencies.status || defaultStatus)(home, journal); }
+      catch { /* An unavailable status is not evidence of readiness. */ }
+      const kind = candidateStatusKind(current);
+      if (kind === 'ready') {
+        journal = await commitPhase(file, { ...journal, startOk: true, startStatus: 'ready', startErrorCode: null }, dependencies);
+        behavior = withoutStartFailure;
+      } else if (kind === 'starting' && await busy()) {
+        return deferred(home, 'candidate_starting', 'This home is still starting. Its services remain running; resume the update after it becomes ready.', journal);
+      }
+    }
+  }
   if (!behavior.ok || !identityPreserved) {
     if (journal.writersAdmitted || journal.acceptedWork) {
       const fenced = await fence();
