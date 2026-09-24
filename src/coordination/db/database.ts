@@ -51,6 +51,7 @@ export interface CoordinationPragmaEvidence {
   synchronous: number;
   foreignKeys: number;
   busyTimeoutMs: number;
+  cacheSizeKiB: number;
   trustedSchema: number;
   walAutoCheckpointPages: number;
   lockingMode: string;
@@ -81,6 +82,11 @@ function configureAndAcquireWriter(database: Database.Database): void {
   database.pragma("synchronous = FULL");
   database.pragma("foreign_keys = ON");
   database.pragma("busy_timeout = 5000");
+  // SQLite's default page cache is about 2 MiB. Keep a modest working set
+  // across repeated Core reads without mapping the whole database or changing
+  // the WAL/durability contract. Negative cache_size is a KiB limit and is
+  // connection-local, so it must be restored on every open.
+  database.pragma("cache_size = -16384");
   database.pragma("trusted_schema = OFF");
   database.pragma("wal_autocheckpoint = 1000");
 }
@@ -161,6 +167,7 @@ export class CoordinationDatabase {
       synchronous: pragmaNumber(this.database, "synchronous"),
       foreignKeys: pragmaNumber(this.database, "foreign_keys"),
       busyTimeoutMs: pragmaNumber(this.database, "busy_timeout"),
+      cacheSizeKiB: -pragmaNumber(this.database, "cache_size"),
       trustedSchema: pragmaNumber(this.database, "trusted_schema"),
       walAutoCheckpointPages: pragmaNumber(this.database, "wal_autocheckpoint"),
       lockingMode: String(this.database.pragma("locking_mode", { simple: true })),

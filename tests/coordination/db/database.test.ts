@@ -104,6 +104,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
     synchronous: 2,
     foreignKeys: 1,
     busyTimeoutMs: 5_000,
+    cacheSizeKiB: 16_384,
     trustedSchema: 0,
     walAutoCheckpointPages: 1_000,
     lockingMode: "exclusive",
@@ -179,6 +180,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
 
   const reopened = openCoordinationDatabase({ path, applicationVersion: "m04-test" });
   assert.equal(reopened.openReceipt.startupCheck, "schema_only");
+  assert.equal(reopened.pragmaEvidence().cacheSizeKiB, 16_384);
   assert.equal(reopened.openReceipt.migratedFrom, COORDINATION_SCHEMA_VERSION);
   assert.deepEqual(
     reopened.readAll<{ version: number; checksum: string }>(
