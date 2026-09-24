@@ -66,6 +66,42 @@ test('startup recovery advances through irrelevant event history in bounded page
  assert.equal(store.pending().length,0);
 });
 
+test('a short Work recovery page is not complete until every candidate is visited', t => {
+ const f=setup();t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+ f.database.raw.prepare('UPDATE resident_outcome_policy SET enabled_at=?').run(AT);
+ for(let n=0;n<5;n++){
+  const {workId}=f.consumer.admit({credential:f.credential,request:{...f.request,
+   invocationId:`short-page-${n}`,canonicalArgs:{task:`Historical ${n}`}}});
+  f.work.cancelQueued({workId,actorPrincipalId:OWNER_ID,reasonCode:'operator_stop',sourceReference:'owner:stop',timestamp:AT,
+   requestId:fixtureId('request',6000+n),correlationId:fixtureId('correlation',6000+n)});
+ }
+ f.database.raw.prepare('UPDATE resident_outcome_policy SET event_cursor=(SELECT max(sequence) FROM events)').run();
+ const store=createResidentOutcomeStore(f.database);
+ store.discover();assert.equal(store.pending().length,4);
+ store.discover();assert.equal(store.pending().length,5,'the fifth candidate remains recoverable');
+});
+
+test('a short scheduled recovery page resumes after the fourth admission', t => {
+ const f=setup();t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+ for(let n=0;n<5;n++){
+  f.database.mutateWithEvent(()=>({value:undefined,event:{
+   type:'activity.updated',aggregateKind:'scheduled_channel_run',aggregateId:`short-schedule-${n}`,aggregateVersion:1,
+   channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,requestId:fixtureId('request',7000+n),
+   correlationId:fixtureId('correlation',7000+n),payload:{messageId:fixtureId('message',7000+n)},createdAt:AT,
+  }}));
+ }
+ const fourth=f.database.readOne<{sequence:number}>('SELECT sequence FROM events WHERE aggregate_id=?','short-schedule-3')!.sequence;
+ f.database.raw.prepare('UPDATE resident_outcome_policy SET event_cursor=(SELECT max(sequence) FROM events)').run();
+ const original=f.database.readAll.bind(f.database);const starts:number[]=[];
+ f.database.readAll=((sql:string,...params:unknown[])=>{
+  if(sql.includes('FROM events WHERE sequence > ? AND sequence <= ?'))starts.push(params[0] as number);
+  return original(sql,...params);
+ }) as typeof f.database.readAll;
+ const store=createResidentOutcomeStore(f.database);
+ store.discover();store.discover();
+ assert.deepEqual(starts,[0,fourth],'the fifth scheduled admission is visited on the next tick');
+});
+
 test('terminal Work created after startup enters the durable outcome inbox',t=>{
  const f=setup();t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
  f.database.raw.prepare('UPDATE resident_outcome_policy SET enabled_at=?').run(AT);

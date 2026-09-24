@@ -179,7 +179,8 @@ export function createResidentOutcomeStore(database: M11Database) {
               terminalEvidence: details.map(x => JSON.parse(x.payload)) });
             if (++processed >= recoveryPageSize) break;
           }
-          residentRecoveryComplete = candidates.length < 64 || residentRecoveryRowid >= recoveryMaxRowid;
+          const visitedWholePage = candidates.length === 0 || residentRecoveryRowid === candidates.at(-1)!.rowid;
+          residentRecoveryComplete = visitedWholePage && (candidates.length < 64 || residentRecoveryRowid >= recoveryMaxRowid);
         }
         // Scheduled channel runs also require Jerry's accountable follow-through.
         if (!scheduledRecoveryComplete) {
@@ -210,7 +211,8 @@ export function createResidentOutcomeStore(database: M11Database) {
             });
             if (++processed >= recoveryPageSize) break;
           }
-          scheduledRecoveryComplete = candidates.length < 64 || scheduledRecoverySequence >= scheduledRecoveryMaxSequence;
+          const visitedWholePage = candidates.length === 0 || scheduledRecoverySequence === candidates.at(-1)!.sequence;
+          scheduledRecoveryComplete = visitedWholePage && (candidates.length < 64 || scheduledRecoverySequence >= scheduledRecoveryMaxSequence);
         }
         initialTerminalDiscovery = !(residentRecoveryComplete && scheduledRecoveryComplete);
       }
