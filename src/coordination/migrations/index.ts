@@ -1,4 +1,5 @@
 import { CHESS_ENGINES_MIGRATION_SQL } from './0020-chess-engines.js';
+import { NOTIFICATION_RECOVERY_ORDER_MIGRATION_SQL } from './0021-notification-recovery-order.js';
 import { ARTIFACT_GENERAL_FILES_MIGRATION_SQL } from "./0016-artifact-general-files.js";
 import { NATIVE_CHESS_MIGRATION_SQL } from "./0017-native-chess.js";
 import { WORK_OUTCOME_INDEXES_MIGRATION_SQL } from "./0018-work-outcome-indexes.js";
@@ -182,6 +183,7 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(18, 'work-outcome-indexes', WORK_OUTCOME_INDEXES_MIGRATION_SQL, 'bb32ab88f8aea9728cd96a0e091560358a0579d888c2c9c1a88823ee7dddb2e9', 'd6d6e15d61b86093e7b993e2de76dd7d99dff47f49d0644cb51c3b72020a12a8'),
   defineMigration(19, 'inbox-and-reconciliation-indexes', INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL, 'df58e0a3beedf3a7aec735f0e9a5d9f1c2caa2b1c027a00bea4071411ca64275', 'bd0798cf6439403133937130f2efc2eabc586552ebc0cfd545c742fc057d02d1'),
   defineMigration(20, 'chess-engines', CHESS_ENGINES_MIGRATION_SQL, 'c5d7aad734c6516b629b0879a815f51bdb32ea1c33d2001209fc7c008c60a436', 'cb80ab7b2c52920dab0ef5434dd9c62fad2e3a6efacabde76e6934b84e5006ec'),
+  defineMigration(21, 'notification-recovery-order', NOTIFICATION_RECOVERY_ORDER_MIGRATION_SQL, 'a4799fb82863c9631c07141b781dac4decdd95e28192d8f874e4bb7f27d016b1', '56eea1f8c3ca8b44b026e9ddf6d3dac44552ab72442c33ccb3c7e446d5b35d27'),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -201,7 +203,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "aa6a01f853cb5972877b5d792b7befe61c55271f095e348622dc28d9ea78c2fe";
+  "cb0b054b0a9ac9104be02a1b0666e609f6a0ad82adcf8ddecce10d6db6366623";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

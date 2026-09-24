@@ -84,6 +84,38 @@ test("inbox and recurring reconciliation lookups use their indexes", (t) => {
     ORDER BY r.created_at,r.id`), /events_admission_origin_message/);
 });
 
+test("bot result notification recovery reads the creation-order partial index", (t) => {
+  const database = openCoordinationDatabase({ path: temporaryDatabase(t), applicationVersion: "notification-index-test" });
+  t.after(() => database.close());
+  const rows = database.readAll<{ detail: string }>(`EXPLAIN QUERY PLAN
+    SELECT m.id FROM messages m
+    WHERE m.author_kind = 'bot' AND m.kind = 'result'
+      AND (m.created_at > '2026-09-23T00:00:00.000Z'
+        OR (m.created_at = '2026-09-23T00:00:00.000Z' AND m.id > 'msg_0'))
+    ORDER BY m.created_at, m.id LIMIT 128`);
+  assert.ok(rows.some((row) => row.detail.includes("messages_notification_recovery_order")));
+});
+
+test("an existing schema v20 database upgrades to the notification index", (t) => {
+  const path = temporaryDatabase(t);
+  openCoordinationDatabase({ path, applicationVersion: "notification-upgrade-test" }).close();
+  const prior = COORDINATION_MIGRATIONS[19]!;
+  const v20 = new Database(path);
+  v20.exec("DROP INDEX messages_notification_recovery_order");
+  v20.prepare("DELETE FROM schema_migrations WHERE version = 21").run();
+  v20.prepare("UPDATE kernel_meta SET value = ? WHERE key = 'schema.checksum'").run(prior.schemaChecksum);
+  v20.prepare("UPDATE kernel_meta SET value = '20' WHERE key = 'schema.version'").run();
+  v20.pragma("user_version = 20");
+  v20.close();
+
+  const upgraded = openCoordinationDatabase({ path, applicationVersion: "notification-upgrade-test" });
+  t.after(() => upgraded.close());
+  assert.equal(upgraded.openReceipt.migratedFrom, 20);
+  assert.equal(upgraded.openReceipt.schemaVersion, 21);
+  assert.equal(upgraded.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
+  assert.ok(upgraded.readOne("SELECT 1 AS present FROM sqlite_schema WHERE name = 'messages_notification_recovery_order'"));
+});
+
 test("a zero-byte database migrates to the current checksummed schema and reopens", (t) => {
   const path = temporaryDatabase(t);
   writeFileSync(path, "");
@@ -96,7 +128,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   );
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 20);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 21);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -207,6 +239,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 18, checksum: COORDINATION_MIGRATIONS[17]!.checksum },
       { version: 19, checksum: COORDINATION_MIGRATIONS[18]!.checksum },
       { version: 20, checksum: COORDINATION_MIGRATIONS[19]!.checksum },
+      { version: 21, checksum: COORDINATION_MIGRATIONS[20]!.checksum },
     ],
   );
   assert.deepEqual(
