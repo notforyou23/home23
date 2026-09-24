@@ -209,7 +209,7 @@ export class ConnectedAgentsDeliveryStore {
     }
   }
 
-  private receipts(): ConnectedAgentsDeliveryReceipt[] {
+  private receiptNames(): string[] {
     if (!this.verifyDirectory(false)) return [];
     try {
       const names = readdirSync(this.directory);
@@ -230,7 +230,19 @@ export class ConnectedAgentsDeliveryStore {
         }
         unlinkSync(temporary);
       }
-      return names.filter(name => RECEIPT_FILE_PATTERN.test(name)).map((name) => {
+      return names.filter(name => RECEIPT_FILE_PATTERN.test(name));
+    } catch (cause) {
+      if ((cause as { code?: string }).code === 'connected_agents_delivery_store_corrupt') {
+        throw cause;
+      }
+      throw storageError('connected_agents_delivery_store_corrupt', cause);
+    }
+  }
+
+  private receipts(): ConnectedAgentsDeliveryReceipt[] {
+    const names = this.receiptNames();
+    try {
+      return names.map((name) => {
         const filePath = join(this.directory, name);
         const stat = lstatSync(filePath);
         if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAXIMUM_RECEIPT_BYTES) {
@@ -334,8 +346,10 @@ export class ConnectedAgentsDeliveryStore {
   }
 
   private makeRoom(): void {
+    // A directory listing is enough to enforce the cap below capacity. Reading
+    // every receipt here blocks the Core request thread for each new delivery.
+    if (this.receiptNames().length < this.maximumReceipts) return;
     const receipts = this.receipts();
-    if (receipts.length < this.maximumReceipts) return;
     const removable = receipts
       .filter(receipt => receipt.state === 'delivered'
         || receipt.state === 'invalid' || receipt.state === 'failed')

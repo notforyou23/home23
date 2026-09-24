@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,42 @@ import { DeviceRegistry } from "../../../src/push/device-registry.js";
 import type { PushPayload } from "../../../src/push/types.js";
 
 const suffix = "0198d95f-6c00-7000-8000-000000000911";
+
+test("delivery receipts enforce capacity and recover after a process reopen", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-connected-agents-capacity-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const directory = join(root, "deliveries");
+  const store = new ConnectedAgentsDeliveryStore(directory, {
+    maximumReceipts: 2,
+    now: () => "2026-09-02T12:00:00.000Z",
+  });
+  const input = (number: number) => ({
+    messageId: `msg_${String(number).padStart(16, "0")}`,
+    deviceId: `dev_${suffix}`,
+    bundleId: "com.regina6.home23.canary",
+    maximumAttempts: 3,
+  });
+  store.begin(input(1));
+  store.begin(input(2));
+  assert.throws(() => store.begin(input(3)), {
+    code: "connected_agents_delivery_store_capacity_exceeded",
+  });
+  store.finish({ ...input(1), state: "delivered" });
+  store.begin(input(3));
+  assert.equal(store.snapshot().length, 2);
+  assert.equal(readdirSync(directory).filter(name => name.endsWith(".json")).length, 2);
+
+  const reopened = new ConnectedAgentsDeliveryStore(directory, { maximumReceipts: 2 });
+  assert.equal(reopened.begin(input(3)).attempts, 2);
+  assert.equal(reopened.snapshot().length, 2);
+
+  const receiptName = readdirSync(directory).find(name => name.endsWith(".json"));
+  assert.ok(receiptName);
+  writeFileSync(join(directory, receiptName), "not-json");
+  assert.throws(() => reopened.snapshot(), {
+    code: "connected_agents_delivery_store_corrupt",
+  });
+});
 
 test("canonical push registers the authenticated device and wakes on the durable assistant Message only", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-connected-agents-push-"));
