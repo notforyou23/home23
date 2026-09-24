@@ -554,6 +554,64 @@ test('real startup may rewrite lifecycle fields without losing canonical identit
   assert.equal(host.desiredRunning, true);
 });
 
+test('normal startup may change conversations, Work, settings, and credentials after admission', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const conversations = path.join(fixture.home, 'app/instances/milo/conversations');
+  const work = path.join(fixture.home, 'app/instances/milo/async-work');
+  fs.writeFileSync(path.join(conversations, 'cron-jobs.json'), '[{"id":"before"}]\n');
+  fs.mkdirSync(path.join(conversations, 'cron-scheduler.lock'), { recursive: true });
+  fs.writeFileSync(path.join(conversations, 'cron-scheduler.lock/owner.json'), '{"ownerId":"old"}\n');
+  fs.mkdirSync(work, { recursive: true });
+  fs.writeFileSync(path.join(work, 'aw_before.json'), '{"status":"queued"}\n');
+  let fences = 0;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    start: async () => {
+      fs.writeFileSync(path.join(conversations, 'cron-jobs.json'), '[{"id":"rescheduled"}]\n');
+      fs.writeFileSync(path.join(conversations, 'cron-scheduler.lock/owner.json'), '{"ownerId":"new"}\n');
+      fs.writeFileSync(path.join(conversations, 'session.txt'), 'new conversation');
+      fs.writeFileSync(path.join(work, 'aw_before.json'), '{"status":"interrupted"}\n');
+      fs.writeFileSync(path.join(fixture.home, 'app/config/home.yaml'), 'name: milo\nupdated: true\n');
+      fs.writeFileSync(path.join(fixture.home, 'app/config/secrets.yaml'), 'providers: {rotated: true}\n');
+      return { ok: true, status: 'ready', readiness: { ready: true } };
+    },
+    quiesce: async () => { fences += 1; return []; },
+  });
+  assert.equal(result.status, 'committed');
+  assert.equal(result.identityPreserved, true);
+  assert.equal(fences, 0);
+  assert.equal(fs.readFileSync(path.join(conversations, 'session.txt'), 'utf8'), 'new conversation');
+});
+
+test('immutable Seed birth receipt and saved Host profile still fail post-start identity verification', async t => {
+  for (const damage of ['birth', 'profile']) {
+    const fixture = homeFixture(t, { desiredRunning: true });
+    const birth = path.join(fixture.home, 'app/instances/milo/substrate/seed-01/birth-receipt.json');
+    fs.mkdirSync(path.dirname(birth), { recursive: true });
+    fs.writeFileSync(birth, '{"seedId":"original"}\n');
+    let fences = 0, online = false;
+    const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+      staging: fixture.staging, admit: true }, { ...quiet,
+      listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+      start: async () => {
+        online = true;
+        if (damage === 'birth') fs.writeFileSync(birth, '{"seedId":"different"}\n');
+        else {
+          const file = path.join(fixture.home, '.home23-host.json');
+          const host = JSON.parse(fs.readFileSync(file, 'utf8'));
+          host.profile = { ...host.profile, name: 'different' };
+          fs.writeFileSync(file, JSON.stringify(host));
+        }
+        return { ok: true, status: 'ready', readiness: { ready: true } };
+      },
+      quiesce: async () => { fences += 1; online = false; return []; },
+    });
+    assert.equal(result.status, 'recovery_required', damage);
+    assert.equal(result.identityPreserved, false, damage);
+    assert.equal(fences, 1, damage);
+  }
+});
+
 test('resident writes after startup keep seed lineage and do not restore software', async t => {
   const fixture = homeFixture(t, { desiredRunning: true });
   const ledger = path.join(fixture.home, 'app/instances/milo/substrate/seed-01/seed-ledger.jsonl');
