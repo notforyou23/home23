@@ -1072,6 +1072,15 @@ export function createCoordinationProcess(
         },
         work,
         leases,
+        outcomeTargetCanRecover: source => {
+          const target = database.readOne<{ residentBinding: string; currentConversationId: string | null; sourceConversationId: string | null }>(
+            `SELECT b.resident_binding AS residentBinding, b.conversation_id AS currentConversationId,
+                    h.id AS sourceConversationId
+             FROM bots b LEFT JOIN conversation_handles h ON h.channel_id = ?
+             WHERE b.principal_id = ?`, source.channelId, source.targetPrincipalId);
+          return !target?.residentBinding.startsWith('bot-') ||
+            (target.sourceConversationId !== null && target.currentConversationId === target.sourceConversationId);
+        },
         resolveResident,
         resolveExecutionTarget: onDemandBots.resolve,
         authority: { current: () => currentAuthority("messages") },

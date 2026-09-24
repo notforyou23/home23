@@ -237,6 +237,9 @@ export function createDirectMessageSubmissionService(options: {
   work: CoordinationWorkPort;
   leases: CoordinationLeasePort;
   outcomes?: ReturnType<typeof createResidentOutcomeStore>;
+  /** A historical Bot channel may no longer be its current conversation. Keep
+   * its outcome durable without rebuilding an unroutable context every tick. */
+  outcomeTargetCanRecover?(work: WorkRecord): boolean;
   recoverWorkingContext?(work: WorkRecord): ReturnType<DirectMessageContextPort["recover"]>;
   resolveResident(residentBinding: string): DirectMessageResidentTarget | undefined;
   resolveExecutionTarget?(target: DirectMessageTargetDescriptor):
@@ -544,6 +547,10 @@ export function createDirectMessageSubmissionService(options: {
           try {
             const source = options.work.get(row.sourceWorkId);
             if (!source || !source.originMessageId) continue;
+            if (options.outcomeTargetCanRecover && !options.outcomeTargetCanRecover(source)) {
+              outcomeRetryAfter.set(row.key, now + 5 * 60_000);
+              continue;
+            }
             let review = row.reviewWorkId ? options.work.get(row.reviewWorkId) : null;
             // Older versions could enqueue a review of a scheduled review. Retire
             // only work that never started; preserve running execution for recovery.
