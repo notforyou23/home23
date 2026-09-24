@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createResidentContactProjection } from '../../../src/coordination/app/resident-contact.js';
+import type { M11Database } from '../../../src/coordination/work/types.js';
 import { createWorkService } from '../../../src/coordination/work/service.js';
 import { createConversationShipper } from '../../../substrate/src/conversation-shipper.js';
 import { SeedRunner } from '../../../substrate/src/runner.js';
@@ -82,6 +83,28 @@ test('scheduled instructions are not exported as owner contact', t => {
     correlationId: fixtureId('correlation', 30), payload: { messageId: MESSAGE_ID }, createdAt: AT } }));
   f.admit(); f.project().pump();
   assert.equal(existsSync(f.coordinationSource), false);
+});
+
+test('the timer-sized default persists progress and eventually drains a contact backlog', t => {
+  const root = mkdtempSync(join(tmpdir(), 'resident-contact-batch-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const events = Array.from({ length: 17 }, (_, index) => ({ sequence: index + 1, kind: 'work', id: `missing-${index}` }));
+  const database = {
+    readAll(_sql: string, after: number, limit: number) {
+      return events.filter(event => event.sequence > after).slice(0, limit);
+    },
+    readOne(sql: string, arg: number | string) {
+      return sql.startsWith('SELECT sequence') ? events.find(event => event.sequence > Number(arg)) : null;
+    },
+  } as unknown as M11Database;
+  const projection = createResidentContactProjection(database, root, ['jerry']);
+  assert.deepEqual(projection.pump(), { eventSequence: 8, scanned: 8 });
+  let cursor = JSON.parse(readFileSync(join(root, 'cursor.json'), 'utf8'));
+  assert.equal(cursor.caughtUp, false);
+  assert.deepEqual(createResidentContactProjection(database, root, ['jerry']).pump(), { eventSequence: 16, scanned: 8 });
+  assert.deepEqual(createResidentContactProjection(database, root, ['jerry']).pump(), { eventSequence: 17, scanned: 1 });
+  cursor = JSON.parse(readFileSync(join(root, 'cursor.json'), 'utf8'));
+  assert.equal(cursor.caughtUp, true);
 });
 
 test('the current app cannot be hidden behind healthy older conversation files', t => {

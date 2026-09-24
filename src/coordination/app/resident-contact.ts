@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, openSync, closeSync, fsyncSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import type { M11Database } from '../work/types.js';
 
 interface MessageRow {
@@ -75,9 +76,15 @@ export function createResidentContactProjection(database: M11Database, directory
     /** Replayed events are deduplicated by canonical message identity. An input
      * is delivered only to a resident with an actual Work receiving it; an
      * output only to its author. No cross-resident transcript broadcast. */
-    pump(limit = 500) {
+    // This runs on Core's two-second timer. Each delivered contact can do a
+    // synchronous SQLite lookup and a durable JSONL append, so keep one turn
+    // small enough that backlog replay does not hold the HTTP event loop for
+    // hundreds of disk operations. The persisted cursor resumes next turn.
+    pump(limit = 8) {
+      const startedAt = performance.now();
       const rows = database.readAll<{ sequence: number; kind: string; id: string }>(
         "SELECT sequence, aggregate_kind AS kind, aggregate_id AS id FROM events WHERE sequence>? AND aggregate_kind IN ('work','message') AND aggregate_version=1 ORDER BY sequence LIMIT ?", cursor, limit);
+      let scanned = 0;
       for (const row of rows) {
         if (row.kind === 'work') {
           const work = database.readOne<{ messageId: string; slug: string; principalId: string }>(`SELECT w.origin_message_id AS messageId,
@@ -89,8 +96,12 @@ export function createResidentContactProjection(database: M11Database, directory
           if (author && seen.has(author.slug)) project(row.id, author.slug, author.principalId);
         }
         cursor = row.sequence;
+        scanned++;
+        // Finish the current durable contact, then yield the event loop. The
+        // budget is soft because an individual SQLite/fsync call is synchronous.
+        if (performance.now() - startedAt >= 100) break;
       }
-      if (rows.length || Date.now() - lastCheckAt >= 30_000) {
+      if (scanned || Date.now() - lastCheckAt >= 30_000) {
         const temp = `${cursorPath}.next`;
         const pending = !!database.readOne("SELECT sequence FROM events WHERE sequence>? AND aggregate_kind IN ('work','message') AND aggregate_version=1 LIMIT 1", cursor);
         writeFileSync(temp, JSON.stringify({ eventSequence: cursor, checkedAt: new Date().toISOString(), caughtUp: !pending,
@@ -102,7 +113,7 @@ export function createResidentContactProjection(database: M11Database, directory
         try { fsyncSync(parent); } finally { closeSync(parent); }
         lastCheckAt = Date.now();
       }
-      return { eventSequence: cursor, scanned: rows.length };
+      return { eventSequence: cursor, scanned };
     },
   };
 }
