@@ -124,3 +124,31 @@ test('busy helper admission retains one durable request and retries when availab
  await service.call({} as any,f.input());await new Promise(r=>setImmediate(r));assert.equal(f.counts().submissions,1);assert.equal(new Set(ids).size,1);
  assert.equal(f.database.readAll("SELECT sequence FROM events WHERE aggregate_kind='bot_invocation' AND aggregate_version=2").length,0);
 });
+
+test('reconciliation pages active invocations and wraps to revisit them', async () => {
+  const admissions = Array.from({ length: 70 }, (_, index) => ({ sequence: index + 1,
+    payload: JSON.stringify({ origin: { workId: `work-${index}`, channelId: CHANNEL_ID },
+      invocationId: `call-${index}`, botId: BOT_ID, prompt: 'Help', channelId: CHANNEL_ID,
+      messageId: `message-${index}` }) }));
+  const pages: Array<{ after: number; limit: number }> = [];
+  const options = {
+    database: {
+      readAll(sql: string, after?: number, limit?: number) {
+        if (!sql.includes('SELECT e.sequence AS sequence')) return [];
+        pages.push({ after: after!, limit: limit! });
+        return admissions.filter(row => row.sequence > after!).slice(0, limit);
+      },
+      readOne: () => undefined,
+    },
+    work: { get: () => ({ state: 'running' }) },
+    leases: {}, channels: {}, submit: { submitMessage: async () => ({}) },
+    authorize: () => undefined, currentCredential: () => true, context: () => ({}),
+    stopChild: async () => undefined,
+  } as any;
+  const service = createBotInvocationService(options);
+  await service.reconcile(); await service.reconcile(); await service.reconcile(); await service.reconcile();
+  assert.deepEqual(pages, [
+    { after: 0, limit: 32 }, { after: 32, limit: 32 },
+    { after: 64, limit: 32 }, { after: 0, limit: 32 },
+  ]);
+});
