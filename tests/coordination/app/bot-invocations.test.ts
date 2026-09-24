@@ -168,3 +168,23 @@ test('reconciliation advances through sparse history in bounded sequence windows
   for (let index = 0; index < 4; index++) await service.reconcile();
   assert.deepEqual(queries, [[0, 4096, 32], [4096, 8192, 32], [8192, 9000, 32], [0, 4096, 32]]);
 });
+
+test('reconciliation searches the activity journal by type and bounded sequence', async t => {
+  const database = M11TestDatabase.temporary(); t.after(() => database.close());
+  let query = '';
+  const service = createBotInvocationService({
+    database: {
+      readOne: (sql: string) => database.readOne(sql),
+      readAll: (sql: string, ...parameters: any[]) => {
+        if (sql.includes('SELECT e.sequence AS sequence')) query = sql;
+        return database.readAll(sql, ...parameters);
+      },
+    }, work: {}, leases: {}, channels: {}, submit: {}, authorize: () => undefined,
+    currentCredential: () => true, context: () => ({}), stopChild: async () => undefined,
+  } as any);
+  await service.reconcile();
+  assert.match(query, /e\.type = 'activity\.updated'/);
+  const plan = database.raw.prepare(`EXPLAIN QUERY PLAN ${query}`).all(0, 4096, 32) as Array<{ detail: string }>;
+  assert.ok(plan.some(row => /SEARCH e USING INDEX events_type_sequence \(type=\? AND sequence>\? AND sequence<\?\)/.test(row.detail)),
+    JSON.stringify(plan));
+});

@@ -199,9 +199,11 @@ export function createBotInvocationService(options: {
       try {
       const journalEnd = db.readOne<{ sequence: number }>('SELECT coalesce(max(sequence), 0) AS sequence FROM events')!.sequence;
       const windowEnd = Math.min(reconcileAfterSequence + RECONCILE_SEQUENCE_WINDOW, journalEnd);
-      const active = db.readAll<{ sequence: number; payload: string }>(`SELECT e.sequence AS sequence, e.payload_json AS payload FROM events e NOT INDEXED
+      // Admission records use activity.updated. The type/sequence index bounds
+      // recovery to this journal window without reading every event data page.
+      const active = db.readAll<{ sequence: number; payload: string }>(`SELECT e.sequence AS sequence, e.payload_json AS payload FROM events e INDEXED BY events_type_sequence
         JOIN works w ON w.id = json_extract(e.payload_json, '$.origin.workId')
-        WHERE e.aggregate_kind = 'bot_invocation' AND e.aggregate_version = 1
+        WHERE e.type = 'activity.updated' AND e.aggregate_kind = 'bot_invocation' AND e.aggregate_version = 1
           AND e.sequence > ? AND e.sequence <= ?
           AND (w.state IN ('running','cancelling') OR (w.state IN ('succeeded','failed','cancelled') AND EXISTS
             (SELECT 1 FROM works child WHERE child.origin_message_id = e.aggregate_id AND child.state NOT IN ('succeeded','failed','cancelled'))))
