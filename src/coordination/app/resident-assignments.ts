@@ -314,16 +314,24 @@ export function createResidentAssignments(database: M11Database) {
     }
     return assignments;
   }
-  // The resident outcome timer calls revisits every two seconds. Assignment
-  // conclusions are append-only events, so retain only the latest blocked
-  // conclusions and advance through new events instead of scanning every
-  // historical assignment and resolving each root on every timer tick.
+  // Outcome discovery asks for revisits on relevant Work or assignment events
+  // and when a blocked deadline is due. Retain only latest blocked conclusions
+  // instead of resolving every historical assignment on each timer tick.
   const blockedRevisits = new Map<string, AssignmentConclusion & { eventSequence: number }>();
   const revisitVersions = new Map<string, number>();
   let revisitCursor: number | null = null;
   let bootstrapAfter = '';
   let bootstrapComplete = false;
   let revisitEvaluationCursor = 0;
+  function timedRevisitDue(now: number): boolean {
+    if (!bootstrapComplete) return true;
+    for (const value of blockedRevisits.values()) {
+      if (value.revisitAt !== null && Date.parse(value.revisitAt) <= now) return true;
+    }
+    return false;
+  }
+  function hasBlockedRevisits(): boolean { return !bootstrapComplete || blockedRevisits.size > 0; }
+  function revisitBootstrapIncomplete(): boolean { return !bootstrapComplete; }
   function observeRevisitEvent(row: { id: string; sequence: number; payload: string }) {
     if ((revisitVersions.get(row.id) ?? 0) >= row.sequence) return;
     revisitVersions.set(row.id, row.sequence);
@@ -381,5 +389,5 @@ export function createResidentAssignments(database: M11Database) {
       (value.revisitAt !== null && Date.parse(value.revisitAt) <= now) ||
       (value.waitFor.length > 0 && value.waitFor.every(id => terminal.has(id))));
   }
-  return { root, latest, presentationState, report, list, listForProjection, listForProjectionPage, revisits, assertOpen, direction };
+  return { root, latest, presentationState, report, list, listForProjection, listForProjectionPage, revisits, timedRevisitDue, hasBlockedRevisits, revisitBootstrapIncomplete, assertOpen, direction };
 }

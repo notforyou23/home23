@@ -46,6 +46,8 @@ export function createResidentOutcomeStore(database: M11Database) {
   let observedCursor = database.readOne<{ cursor: number }>('SELECT event_cursor AS cursor FROM resident_outcome_policy WHERE id = 1')!.cursor;
   let savedCursor = observedCursor;
   let initialTerminalDiscovery = true;
+  let lastRevisitSweepAt = 0;
+  let nextAssessmentRetryAt = Number.POSITIVE_INFINITY;
   const columns = 'outcome_key AS key, source_work_id AS sourceWorkId, evidence_json AS evidence, review_work_id AS reviewWorkId, prepared_json AS prepared';
   function change(key: string, source: string, mutate: (tx: CoordinationTransaction) => void) {
     database.mutateWithEvent(tx => {
@@ -75,6 +77,11 @@ export function createResidentOutcomeStore(database: M11Database) {
     forReview: (id: string) => database.readOne<ResidentOutcome>(`SELECT ${columns} FROM resident_outcomes WHERE review_work_id = ?`, id),
     update(row: ResidentOutcome, field: 'prepared_json' | 'review_work_id' | 'settled_at', value: string) {
       change(row.key, row.sourceWorkId, tx => { tx.run(`UPDATE resident_outcomes SET ${field} = ? WHERE outcome_key = ?`, value, row.key); });
+      if (field === 'settled_at' && row.key.startsWith('assignment-revisit:')) {
+        const retry = row.key.endsWith(':assessment-retry:1') ? REVISIT_ASSESSMENT_BACKOFF_MS[1]
+          : row.key.includes(':assessment-retry:') ? undefined : REVISIT_ASSESSMENT_BACKOFF_MS[0];
+        if (retry !== undefined) nextAssessmentRetryAt = Math.min(nextAssessmentRetryAt, Date.parse(value) + retry);
+      }
     },
     /** Existing terminal Work is the durable trigger, even if the producer crashed before delivery. */
     discover() {
@@ -82,13 +89,33 @@ export function createResidentOutcomeStore(database: M11Database) {
       // Work changes, delivered result messages, or scheduled admissions can
       // produce a new terminal outcome. Reuse the durable event cursor rather
       // than rescanning all historical Work and scheduled runs on every tick.
-      const events = database.readAll<{ sequence: number; kind: string; payload: string | null }>(
-        `SELECT sequence, aggregate_kind AS kind,
-          CASE WHEN aggregate_kind='communication' THEN payload_json END AS payload
+      const events = database.readAll<{ sequence: number; kind: string; id: string; payload: string | null }>(
+        `SELECT sequence, aggregate_kind AS kind, aggregate_id AS id,
+          CASE WHEN aggregate_kind IN ('communication','scheduled_channel_run') THEN payload_json END AS payload
          FROM events WHERE sequence > ? ORDER BY sequence LIMIT 16`, observedCursor);
-      const discoverTerminals = initialTerminalDiscovery || events.some(row =>
-        row.kind === 'work' || row.kind === 'message' || row.kind === 'scheduled_channel_run');
-      for (const value of assignments.revisits()) {
+      const changedWorkIds = new Set<string>();
+      for (const event of events) {
+        if (event.kind === 'work') changedWorkIds.add(event.id);
+        if (event.kind === 'message') {
+          const work = database.readOne<{ id: string }>('SELECT work_id AS id FROM messages WHERE id=?', event.id);
+          if (work?.id) changedWorkIds.add(work.id);
+        }
+        if (event.kind === 'scheduled_channel_run' && event.payload) {
+          const messageId = (JSON.parse(event.payload) as { messageId?: unknown }).messageId;
+          if (typeof messageId === 'string') {
+            const work = database.readOne<{ id: string }>('SELECT id FROM works WHERE origin_message_id=? AND kind=\'channel.bot_turn\' LIMIT 1', messageId);
+            if (work) changedWorkIds.add(work.id);
+          }
+        }
+      }
+      const now = Date.now();
+      const revisitDue = initialTerminalDiscovery || assignments.revisitBootstrapIncomplete() ||
+        events.some(row => row.kind === 'resident_assignment') ||
+        (changedWorkIds.size > 0 && assignments.hasBlockedRevisits()) ||
+        now >= nextAssessmentRetryAt ||
+        (now - lastRevisitSweepAt >= 30_000 && assignments.timedRevisitDue(now));
+      if (revisitDue) { lastRevisitSweepAt = now; nextAssessmentRetryAt = Number.POSITIVE_INFINITY; }
+      for (const value of revisitDue ? assignments.revisits() : []) {
         const key = `assignment-revisit:${value.workId}:${value.eventSequence}`;
         enqueue(key, value.workId, { reason: 'A recorded dependency finished or the resident-requested revisit time arrived.', assignment: value });
         const keys = [key, ...REVISIT_ASSESSMENT_BACKOFF_MS.map((_, index) => `${key}:assessment-retry:${index + 1}`)];
@@ -99,6 +126,9 @@ export function createResidentOutcomeStore(database: M11Database) {
         });
         const previous = attempts.at(-1)!;
         const delay = REVISIT_ASSESSMENT_BACKOFF_MS[attempts.length - 1];
+        if (delay !== undefined && previous.settledAt !== null) {
+          nextAssessmentRetryAt = Math.min(nextAssessmentRetryAt, Date.parse(previous.settledAt) + delay);
+        }
         if (delay === undefined || previous.settledAt === null || previous.reviewState === null
             || !['succeeded','failed'].includes(previous.reviewState)
             || Date.now() - Date.parse(previous.settledAt) < delay) continue;
@@ -109,7 +139,7 @@ export function createResidentOutcomeStore(database: M11Database) {
           assignment: value, assessmentRetry: attempts.length, maximumAssessmentRetries: REVISIT_ASSESSMENT_BACKOFF_MS.length,
         });
       }
-      if (discoverTerminals) {
+      if (initialTerminalDiscovery) {
         const rows = database.readAll<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`
           SELECT w.id, w.state, w.terminal_reason AS reason, p.assignment_json AS assignment,
             m.body_text AS text FROM works w JOIN work_planned_invocations p ON p.work_id = w.id
@@ -143,7 +173,41 @@ export function createResidentOutcomeStore(database: M11Database) {
           status: row.state, reason: row.reason, assignment: JSON.parse(row.assignment), result: row.text,
           terminalEvidence: workTerminalEvidence(database, row.id),
         });
-      initialTerminalDiscovery = false;
+        initialTerminalDiscovery = false;
+      } else for (const id of changedWorkIds) {
+        const candidate = database.readOne<{ kind: string; state: string }>('SELECT kind,state FROM works WHERE id=?', id);
+        if (!candidate || !['succeeded','failed','cancelled'].includes(candidate.state)) continue;
+        const row = candidate.kind === 'resident_work_thread' ? database.readOne<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`
+          SELECT w.id,w.state,w.terminal_reason AS reason,p.assignment_json AS assignment,m.body_text AS text
+          FROM works w JOIN work_planned_invocations p ON p.work_id=w.id
+          LEFT JOIN messages m ON m.id='msg_'||substr(w.id,5)
+          WHERE w.id=? AND w.kind='resident_work_thread' AND w.state IN ('succeeded','failed','cancelled')
+            AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1)
+            AND (w.state<>'succeeded' OR m.id IS NOT NULL)
+            AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.outcome_key='work:'||w.id)`, id) : undefined;
+        if (row) {
+          const details = database.readAll<{ payload: string }>(`SELECT payload_json AS payload FROM events
+            WHERE sequence >= (SELECT min(sequence) FROM events WHERE aggregate_id=?)
+              AND type='communication.recorded' AND json_extract(payload_json,'$.communication.workId')=?
+              AND json_extract(payload_json,'$.communication.terminal')=1 ORDER BY sequence DESC LIMIT 3`, id, id);
+          enqueue(`work:${id}`, id, { status: row.state, reason: row.reason,
+            assignment: JSON.parse(row.assignment), result: row.text,
+            helperDeliveries: botDeliveryEvidence(database, id),
+            terminalEvidence: details.map(value => JSON.parse(value.payload)) });
+        }
+        const scheduled = candidate.kind === 'channel.bot_turn' ? database.readOne<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`
+          SELECT w.id,w.state,w.terminal_reason AS reason,e.payload_json AS assignment,m.body_text AS text
+          FROM works w JOIN events e ON e.aggregate_kind='scheduled_channel_run' AND e.aggregate_version=1
+            AND json_extract(e.payload_json,'$.messageId')=w.origin_message_id
+          LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
+          WHERE w.id=? AND w.kind='channel.bot_turn' AND w.state IN ('succeeded','failed','cancelled')
+            AND (w.state<>'succeeded' OR m.id IS NOT NULL)
+            AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1)
+            AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.outcome_key='scheduled:'||w.id)`, id) : undefined;
+        if (scheduled) enqueue(`scheduled:${id}`, id, {
+          status: scheduled.state, reason: scheduled.reason, assignment: JSON.parse(scheduled.assignment), result: scheduled.text,
+          terminalEvidence: workTerminalEvidence(database, id),
+        });
       }
       // Authenticated detached-specialist evidence is already durable before its message commit.
       let found = false;

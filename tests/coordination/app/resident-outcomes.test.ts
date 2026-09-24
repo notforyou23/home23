@@ -42,7 +42,22 @@ test('idle outcome discovery does not rescan terminal Work and scheduled runs', 
   aggregateId:'sched-outcome-cursor',aggregateVersion:1,channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,
   requestId:fixtureId('request',999),correlationId:fixtureId('correlation',999),
   payload:{messageId:fixtureId('message',999)},createdAt:AT}}));
- store.discover();assert.equal(terminalScans,4,'new scheduled admissions trigger recovery discovery');
+ store.discover();assert.equal(terminalScans,2,'new scheduled admission resolves its exact Work without a global rescan');
+});
+
+test('terminal Work created after startup enters the durable outcome inbox',t=>{
+ const f=setup();t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+ f.database.raw.prepare('UPDATE resident_outcome_policy SET enabled_at=?').run(AT);
+ const store=createResidentOutcomeStore(f.database);
+ store.discover();
+ const {workId}=f.consumer.admit({credential:f.credential,request:f.request});
+ f.work.cancelQueued({workId,actorPrincipalId:OWNER_ID,reasonCode:'operator_stop',sourceReference:'owner:stop',timestamp:AT,
+  requestId:fixtureId('request',800),correlationId:fixtureId('correlation',800)});
+ store.discover();
+ assert.equal(store.pending().length,1);
+ assert.equal(store.pending()[0]!.key,`work:${workId}`);
+ store.discover();
+ assert.equal(store.pending().length,1,'incremental event replay stays idempotent');
 });
 
 for (const scenario of ['succeeded','failed','cancelled','delivery_recovery','review_failure'] as const) {
@@ -167,6 +182,7 @@ test('failed historical Bot outcomes cool down while a newer outcome reaches rev
 test('scheduled terminal Work enters the durable Jerry inbox once after restart',t=>{
   const f=setup('channel.bot_turn');t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
   f.database.raw.prepare('UPDATE resident_outcome_policy SET enabled_at=?').run(AT);
+  let store=createResidentOutcomeStore(f.database);store.discover();
   const origin=f.request.parentOrigin;
   f.database.mutateWithEvent(()=>({value:undefined,event:{type:'activity.updated',aggregateKind:'scheduled_channel_run',aggregateId:'sched-run-fixture',aggregateVersion:1,
     channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,requestId:fixtureId('request',991),correlationId:fixtureId('correlation',991),
@@ -193,7 +209,7 @@ test('scheduled terminal Work enters the durable Jerry inbox once after restart'
   assert.match(JSON.stringify(expected), /provider_error/);
   assert.doesNotMatch(JSON.stringify(expected), /unrelated tool error|stale attempt error/);
   assert.deepEqual(workTerminalEvidence(f.database, 'unknown-work'), []);
-  let store=createResidentOutcomeStore(f.database);store.discover();assert.equal(store.pending().length,1);
+  store.discover();assert.equal(store.pending().length,1);
   const evidence = JSON.parse(store.pending()[0]!.evidence);
   assert.equal(evidence.reason, 'receipt_failed');
   assert.equal(evidence.result, null);

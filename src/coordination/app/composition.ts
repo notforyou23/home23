@@ -1049,8 +1049,12 @@ export function createCoordinationProcess(
         messages,
         materializeAttachments,
       );
+      const outcomeStore = createResidentOutcomeStore(database);
+      // Recover missed terminal Work before accepting HTTP requests. A full
+      // historical query must never run on the connected Core timer thread.
+      outcomeStore.discover();
       const directSubmission = createDirectMessageSubmissionService({
-        outcomes: createResidentOutcomeStore(database),
+        outcomes: outcomeStore,
         messages,
         communications,
         ...(deviceNotifications === undefined ? {} : { notifications: deviceNotifications }),
