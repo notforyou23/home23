@@ -50,6 +50,28 @@ test('durable legal game, replay, stale writes, access, and bot intent',t=>{
   const next=service.move(game.id,{expectedVersion:2,from:'e7',to:'e5'},{...bot,turnId:intent.id},'bot-1');assert.equal(next.version,3);assert.equal(service.dueTurns().length,0);
   service.settleTurn(intent.id,{status:'failed',error:'late result'});assert.equal(service.get(game.id,owner).version,3);reopened.close();
 });
+test('due turns page past superseded intents using the status and time index',t=>{
+  const f=fixture(t);
+  const game=f.service.create({channelId:CHANNEL,players:{white:BOT,black:'user_owner'}},owner,'paged-turn');
+  const current=f.service.dueTurns()[0]!;
+  f.database.mutateWithEvent(tx=>{
+    for(let n=0;n<45;n++) tx.run(`INSERT INTO chess_turn_intents
+      (id,game_id,game_version,channel_id,target_bot_id,run_id,prompt,status,work_ids_json,error,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,'queued',NULL,NULL,?,?)`,
+      `chessturn_stale_${String(n).padStart(3,'0')}`,game.id,n+100,CHANNEL,BOT,`stale-${n}`,'old turn',
+      '2020-01-01T00:00:00.000Z','2020-01-01T00:00:00.000Z');
+    return {value:undefined,event:{type:'test.seed',aggregateKind:'test',aggregateId:'chess-old-turns',aggregateVersion:1,channelId:CHANNEL,actorPrincipalId:'user_owner',requestId:'req_0198d95f-6c00-7000-8000-000000000371',correlationId:'cor_0198d95f-6c00-7000-8000-000000000372',payload:{},createdAt:NOW}};
+  });
+  const plan=f.database.readAll<{detail:string}>(`EXPLAIN QUERY PLAN SELECT * FROM chess_turn_intents INDEXED BY chess_turn_intents_due
+    WHERE status=? AND (created_at,id) > (?,?) ORDER BY created_at,id LIMIT ?`,'queued','','',20);
+  assert.ok(plan.some(row=>row.detail.includes('chess_turn_intents_due')));
+  assert.ok(plan.every(row=>!row.detail.includes('USE TEMP B-TREE')));
+  let found=false;
+  for(let n=0;n<3;n++) if(f.service.dueTurns().some(turn=>turn.id===current.id)) found=true;
+  assert.equal(found,true,'the valid intent follows bounded pages of stale history');
+  assert.ok(f.service.dueTurns().every(turn=>turn.id===current.id));
+  f.database.close();
+});
 test('saved position is independent of later game moves',t=>{
   const f=fixture(t);const game=f.service.create({channelId:CHANNEL,players:{white:'user_owner',black:BOT}},owner,'create');
   const position=f.service.savePosition({channelId:CHANNEL,title:'Start',fen:game.fen,sourceGameId:game.id,sourcePly:0,annotations:{arrows:[{from:'e2',to:'e4'}],highlights:[{square:'e4'}]}},owner,'position');

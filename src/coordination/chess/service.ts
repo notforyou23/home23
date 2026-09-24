@@ -14,7 +14,7 @@ export class ChessError extends Error {
 
 type GameRow = { id:string; channel_id:string; white_principal_id:string; black_principal_id:string; title:string; initial_fen:string; fen:string; pgn:string; moves_json:string; status:ChessGame['status']; result:ChessGame['result']; turn:'w'|'b'; ply:number; version:number; created_at:string; updated_at:string; automatic_max_plies:number; automatic_remaining:number; pause_reason:string|null };
 type PositionRow = { id:string; channel_id:string; title:string; fen:string; annotations_json:string; source_game_id:string|null; source_ply:number|null; created_by:string; created_at:string };
-type IntentRow = { id:string; game_id:string; game_version:number; channel_id:string; target_bot_id:string; run_id:string; prompt:string; status:ChessTurnIntent['status']|'cancelled'; work_ids_json:string|null; error:string|null };
+type IntentRow = { id:string; game_id:string; game_version:number; channel_id:string; target_bot_id:string; run_id:string; prompt:string; status:ChessTurnIntent['status']|'cancelled'; work_ids_json:string|null; error:string|null; created_at:string };
 type ReplayRow = { request_digest:string; operation:string; response_json:string };
 export const engineSkill = (id: string): number | undefined => {
   const match = /^engine_stockfish_([0-9]|1[0-9]|20)$/.exec(id);
@@ -36,6 +36,7 @@ const version = (value:unknown) => { if (!Number.isSafeInteger(value) || (value 
 const hashRequest = (operation:string, data:unknown) => digest(JSON.stringify([operation,data]));
 
 export class NativeChessService {
+  private readonly dueTurnCursors: Record<'queued' | 'dispatched', {createdAt:string;id:string}|undefined> = {queued:undefined,dispatched:undefined};
   constructor(private readonly options: { database: M11Database; engine?: Pick<StockfishEngine, 'available' | 'analyze'> }) {}
   engineOptions() {
     const available = this.options.engine?.available() ?? false;
@@ -265,7 +266,29 @@ export class NativeChessService {
     const items=rows.slice(0,limit).map(row=>this.position(row));
     return {items,...(rows.length>limit?{nextCursor:items.at(-1)!.id}:{})};
   }
-  dueTurns(limit=20):ChessTurnIntent[] {const rows=this.db.readAll<IntentRow>("SELECT i.* FROM chess_turn_intents i JOIN chess_games g ON g.id=i.game_id AND g.version=i.game_version AND g.status='active' WHERE i.status IN ('queued','dispatched') ORDER BY i.created_at,i.id LIMIT ?",Math.min(Math.max(limit,1),100));return rows.map(r=>({id:r.id,gameId:r.game_id,gameVersion:r.game_version,channelId:r.channel_id,targetBotId:r.target_bot_id,runId:r.run_id,prompt:r.prompt,status:r.status as 'queued'|'dispatched',workIds:JSON.parse(r.work_ids_json??'[]'),error:r.error}));}
+  dueTurns(limit=20):ChessTurnIntent[] {
+    const pageSize=Math.min(Math.max(limit,1),100);
+    const candidates:IntentRow[]=[];
+    for(const status of ['queued','dispatched'] as const) {
+      // The status/created_at/id index permits a fixed-size page even when years of
+      // superseded intents remain. Joining before LIMIT would walk them all.
+      const page=(cursor:typeof this.dueTurnCursors[typeof status])=>this.db.readAll<IntentRow>(
+        `SELECT * FROM chess_turn_intents INDEXED BY chess_turn_intents_due
+         WHERE status=? AND (created_at,id) > (?,?) ORDER BY created_at,id LIMIT ?`,
+        status,cursor?.createdAt??'',cursor?.id??'',pageSize);
+      let rows=page(this.dueTurnCursors[status]);
+      if(rows.length===0 && this.dueTurnCursors[status]) rows=page(undefined);
+      this.dueTurnCursors[status]=rows.length===pageSize ? {createdAt:rows.at(-1)!.created_at,id:rows.at(-1)!.id} : undefined;
+      candidates.push(...rows);
+    }
+    const games=new Map<string,{version:number;status:string}|undefined>();
+    const due=candidates.filter(row=>{
+      if(!games.has(row.game_id)) games.set(row.game_id,this.db.readOne<{version:number;status:string}>('SELECT version,status FROM chess_games WHERE id=?',row.game_id));
+      const game=games.get(row.game_id);
+      return game?.version===row.game_version && game.status==='active';
+    }).sort((a,b)=>a.created_at.localeCompare(b.created_at)||a.id.localeCompare(b.id)).slice(0,pageSize);
+    return due.map(r=>({id:r.id,gameId:r.game_id,gameVersion:r.game_version,channelId:r.channel_id,targetBotId:r.target_bot_id,runId:r.run_id,prompt:r.prompt,status:r.status as 'queued'|'dispatched',workIds:JSON.parse(r.work_ids_json??'[]'),error:r.error}));
+  }
   settleTurn(intentId:string,input:{status:'dispatched'|'failed';workIds?:string[];error?:string}):void {
     if(!['dispatched','failed'].includes(input.status)||input.workIds?.some(v=>typeof v!=='string'||v.length>120)||(input.error?.length??0)>1000)throw new ChessError('invalid_request','invalid turn receipt');
     const before=this.db.readOne<IntentRow>('SELECT * FROM chess_turn_intents WHERE id = ?',intentId);
