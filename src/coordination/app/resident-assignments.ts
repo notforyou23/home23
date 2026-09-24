@@ -378,13 +378,17 @@ export function createResidentAssignments(database: M11Database) {
       CASE WHEN aggregate_kind='resident_assignment' THEN payload_json END AS payload
       FROM events WHERE sequence>? ORDER BY sequence LIMIT 16`, revisitCursor);
     revisitCatchupPending = changes.length === 16;
+    let observedAssignment = false;
     for (const change of changes) {
-      if (change.payload !== null) observeRevisitEvent({ ...change, payload: change.payload });
+      if (change.payload !== null) {
+        observeRevisitEvent({ ...change, payload: change.payload });
+        observedAssignment = true;
+      }
       revisitCursor = change.sequence;
     }
     const now = Date.now();
     const values = [...blockedRevisits.values()];
-    if (startSweep) revisitSweepRemaining = Math.max(revisitSweepRemaining, values.length);
+    if (startSweep || observedAssignment) revisitSweepRemaining = Math.max(revisitSweepRemaining, values.length);
     revisitSweepRemaining = Math.min(revisitSweepRemaining, values.length);
     const count = Math.min(32, values.length, revisitSweepRemaining || 32);
     const evaluation = Array.from({ length: count }, (_, index) => values[(revisitEvaluationCursor + index) % values.length]!);
