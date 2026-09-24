@@ -7,6 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { readProductManifest, verifyProductPayload } from './product-payload.js';
 import { extractProductArchive } from './product-update-feed.js';
 import { stageProductPayload } from './product-update-stage.js';
+import { previewRoot } from './product-update-preview.js';
+import { privateDirectory } from './product-environment.js';
 
 const hex64 = /^[a-f0-9]{64}$/;
 const hex40 = /^[a-f0-9]{40}$/;
@@ -261,10 +263,14 @@ export async function checkConfiguredRelease({ homeRoot, installedAppPath, chann
 }
 
 export async function prepareConfiguredRelease({ homeRoot, installedAppPath, channelConfigPath, staging,
-  downloadDirectory, osVersion, onProgress } = {}) {
+  downloadDirectory, extractionDirectory, osVersion, onProgress } = {}) {
   const release = await selectConfiguredRelease({ homeRoot, installedAppPath, channelConfigPath, downloadDirectory, osVersion });
   const files = await downloadProductRelease({ release, destinationDirectory: downloadDirectory, onProgress });
-  const extracted = join(resolve(downloadDirectory), `runtime-${release.packageId}.extracted`);
+  // The signed archive and release claim remain in downloadDirectory for
+  // source-absent resume. Only its large expansion may use a separate volume.
+  const extractionRoot = extractionDirectory ? previewRoot(extractionDirectory) : previewRoot(downloadDirectory);
+  if (extractionDirectory) privateDirectory(extractionRoot);
+  const extracted = previewRoot(join(extractionRoot, `runtime-${release.packageId}.extracted`));
   let usableExtraction = false;
   if (existsSync(extracted)) {
     try { usableExtraction = verifyProductPayload(extracted).packageId === release.packageId; }
@@ -283,6 +289,10 @@ export async function prepareConfiguredRelease({ homeRoot, installedAppPath, cha
   if (staged.receipt.candidatePackageId !== release.packageId) throw failure('digest_mismatch', 'Staged runtime changed');
   const { prepareMacApplication } = await import('./product-app-update.js');
   const app = prepareMacApplication({ archivePath: files.appArchive, installedAppPath, release });
+  // The verified staged payload is now independent of the extraction. Free
+  // local cache space before the home is stopped; a crash can re-extract from
+  // the signed archive on resume without changing the claimed release.
+  if (extractionDirectory) rmSync(extracted, { recursive: true, force: true });
   return { status: 'prepared', release, candidatePayload: join(resolve(staging), 'payload'),
     staging: resolve(staging), preparedAppPath: app.preparedAppPath, installedAppPath: app.installedAppPath,
     lifecyclePath: app.lifecyclePath,

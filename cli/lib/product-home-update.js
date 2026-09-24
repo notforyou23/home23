@@ -1,7 +1,8 @@
 /** Durable, owner-requested whole-product updates. HTTP only passes actions, never paths. */
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile, execFileSync } from 'node:child_process';
-import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { absoluteHome, privateDirectory, readPrivateJSON, productEnvironment } from './product-environment.js';
@@ -149,6 +150,32 @@ function retainExecutor(home, operation) {
   chmodSync(join(directory, 'node'), 0o700);
   return directory;
 }
+
+/** Keep the signed download claim and final stage beside the home, but expand
+ * a runtime archive on the Mac's local volume when the home is external. */
+export function updateDeliveryPaths(homeRoot, operationId, { cacheRoot = join(homedir(), 'Library/Caches/Home23'), deviceFor = path => lstatSync(path).dev, release } = {}) {
+  if (typeof operationId !== 'string' || !/^[a-f0-9-]{36}$/.test(operationId)) throw fail('update_state_invalid', 'Update delivery identity is invalid.');
+  const home = absoluteHome(homeRoot);
+  const delivery = privateDirectory(join(dirname(home), `.${basename(home)}.home23-delivery`));
+  const staging = join(delivery, `stage-${operationId}`);
+  const downloadDirectory = join(delivery, `download-${operationId}`);
+  const userHome = absoluteHome(homedir());
+  if (deviceFor(home) === deviceFor(userHome)) return { staging, downloadDirectory };
+
+  // Validate every existing ancestor before creating the owned cache. A
+  // relocated/symlinked cache must never redirect an updater into a home.
+  const cache = privateDirectory(absoluteHome(cacheRoot));
+  if (deviceFor(cache) === deviceFor(home)) throw fail('update_storage_unavailable', 'The Mac has no separate local cache volume for this home update.');
+  const extractionDirectory = privateDirectory(join(cache, `extraction-${operationId}`));
+  const runtimeBytes = release?.runtime?.bytes;
+  if (Number.isSafeInteger(runtimeBytes)) {
+    // A plain TAR's expanded file bytes cannot exceed its archive size.
+    const needed = BigInt(runtimeBytes) + 64n * 1024n * 1024n;
+    const space = statfsSync(extractionDirectory, { bigint: true });
+    if (space.bavail * space.bsize < needed) throw fail('insufficient_space', 'The Mac needs more free local space to download and prepare this Home23 update.');
+  }
+  return { staging, downloadDirectory, extractionDirectory };
+}
 export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, principalId, clientBuild } = {}, dependencies = {}) {
   if (!ACTIONS.has(action) || typeof idempotencyKey !== 'string' || idempotencyKey.length < 8 || idempotencyKey.length > 200
       || typeof principalId !== 'string' || !principalId || !Number.isSafeInteger(clientBuild) || clientBuild < 1) {
@@ -223,9 +250,9 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     let prepared = operation.prepared;
     if (!prepared) {
       persist({ phase: 'downloading', message: 'Downloading Home23. Your home is still available.' });
-      const delivery = privateDirectory(join(dirname(home.root), `.${basename(home.root)}.home23-delivery`));
+      const delivery = updateDeliveryPaths(home.root, operation.id, { release: operation.release });
       prepared = await channel.prepareConfiguredRelease({ ...options,
-        staging: join(delivery, `stage-${operation.id}`), downloadDirectory: join(delivery, `download-${operation.id}`),
+        staging: delivery.staging, downloadDirectory: delivery.downloadDirectory, extractionDirectory: delivery.extractionDirectory,
         onProgress: progress => persist({ progress: progress.bytesTotal > 0 ? Math.min(1, progress.bytesCopied / progress.bytesTotal) : null }) });
       persist({ prepared, release: prepared.release, progress: null, phase: 'preparing', message: 'The download is ready. Preparing your home update.' });
     }

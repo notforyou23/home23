@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { homeUpdateStatus, requestHomeUpdate, runHomeUpdateOperation } from '../../cli/lib/product-home-update.js';
+import { homeUpdateStatus, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
 
 function fixture(t) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'home23-update-contract-'))), home = join(parent, 'home');
@@ -33,6 +33,22 @@ async function check(f) {
   await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id },
     { channel: checkedChannel, updater: unusedUpdater, appUpdater: unusedAppUpdater });
 }
+
+test('external homes expand runtime in a private local cache and resume the same signed download', t => {
+  const f = fixture(t), id = '12345678-1234-1234-1234-123456789abc';
+  const cacheRoot = join(f.parent, 'cache');
+  const deviceFor = path => path === f.home ? 2 : path === homedir() || path === cacheRoot ? 1 : 2;
+  const options = { cacheRoot, deviceFor, release: { runtime: { bytes: 1024 } } };
+  const first = updateDeliveryPaths(f.home, id, options);
+  assert.equal(first.staging, join(f.parent, '.home.home23-delivery', `stage-${id}`));
+  assert.equal(first.downloadDirectory, join(f.parent, '.home.home23-delivery', `download-${id}`));
+  assert.equal(first.extractionDirectory, join(cacheRoot, `extraction-${id}`));
+  assert.deepEqual(updateDeliveryPaths(f.home, id, options), first);
+
+  const linkedCache = join(f.parent, 'linked-cache');
+  symlinkSync(cacheRoot, linkedCache);
+  assert.throws(() => updateDeliveryPaths(f.home, id, { ...options, cacheRoot: linkedCache }), /real home directory ancestors|symbolic links/);
+});
 
 test('parallel duplicate owner request launches once and preserves operation across status reads', async t => {
   const f = fixture(t); let launches = 0;
