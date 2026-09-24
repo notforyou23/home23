@@ -117,6 +117,22 @@ test('clusterSimilarMemories lets a timer run during a full candidate pass', asy
   }
 });
 
+test('clusterSimilarMemories rejects a cluster marked consolidated during a yield', async () => {
+  const summarizer = new MemorySummarizer({}, makeLogger(), {});
+  const nodes = Array.from({ length: 512 }, (_, index) => makeCandidateNode(index, {
+    embedding: [1, 0],
+  }));
+  const marker = setImmediate(() => { nodes[0].consolidatedAt = '2026-09-24T00:00:00.000Z'; });
+
+  try {
+    const clusters = await summarizer.clusterSimilarMemories(nodes, 1);
+    assert.equal(nodes[0].consolidatedAt, '2026-09-24T00:00:00.000Z');
+    assert.deepEqual(clusters, []);
+  } finally {
+    clearImmediate(marker);
+  }
+});
+
 test('clusterSimilarMemories preserves the prior pairwise grouping order', async () => {
   const summarizer = new MemorySummarizer({}, makeLogger(), {});
   const nodes = Array.from({ length: 300 }, (_, index) => makeCandidateNode(index, {
@@ -462,6 +478,42 @@ test('consolidateMemories discards provider output when a source identity change
   assert.ok(cluster.every((node) => !node.consolidatedAt));
   assert.equal(summarizer.consolidationHistory.at(-1).consolidations, 0);
   assert.ok(logger.entries.some((entry) => entry.message === 'Memory consolidation discarded after source changed'));
+});
+
+test('consolidateMemories discards provider output when a source is consolidated in place', async () => {
+  const summarizer = new MemorySummarizer({}, makeLogger(), {});
+  const nodes = Array.from({ length: 10 }, (_, index) => ({ id: `source-${index}` }));
+  const cluster = nodes.slice(0, 3);
+  const memoryNetwork = attachMutationApi({ nodes: new Map(nodes.map(node => [node.id, node])) });
+  summarizer.clusterSimilarMemories = async () => [cluster];
+  summarizer.createConsolidatedMemoryGPT5 = async () => {
+    cluster[0].consolidatedAt = '2026-09-24T00:00:00.000Z';
+    return { content: 'stale summary', reasoning: null, model: 'test-model' };
+  };
+
+  assert.deepEqual(await summarizer.consolidateMemories(memoryNetwork), []);
+  assert.equal(memoryNetwork.mutationCalls.patchNodes, 0);
+});
+
+test('commitConsolidationSources rejects a source consolidated after candidate preparation', async () => {
+  const summarizer = new MemorySummarizer({}, makeLogger(), {});
+  const nodes = Array.from({ length: 10 }, (_, index) => ({ id: `source-${index}` }));
+  const cluster = nodes.slice(0, 3);
+  const memoryNetwork = attachMutationApi({ nodes: new Map(nodes.map(node => [node.id, node])) });
+  summarizer.clusterSimilarMemories = async () => [cluster];
+  summarizer.createConsolidatedMemoryGPT5 = async () => ({
+    content: 'new summary', reasoning: null, model: 'test-model',
+  });
+  const [candidate] = await summarizer.consolidateMemories(memoryNetwork);
+  const summaryNode = { id: 'summary-1' };
+  memoryNetwork.nodes.set(summaryNode.id, summaryNode);
+  cluster[0].consolidatedAt = '2026-09-24T00:00:00.000Z';
+
+  const result = summarizer.commitConsolidationSources(memoryNetwork, candidate, summaryNode);
+  assert.equal(result.committed, false);
+  assert.equal(result.reason, 'source_already_consolidated');
+  assert.equal(memoryNetwork.mutationCalls.patchNodes, 0);
+  assert.equal(summaryNode.consolidatedAt, undefined);
 });
 
 test('consolidation lineage markers atomically stamp the stored summary and exact sources', async () => {

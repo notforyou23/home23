@@ -140,11 +140,15 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
     const compostMode = this.resolveCompostMode(options);
     const compostDryRun = { wouldRemoveSourceNodes: 0, clusters: 0 };
     let attemptedClusters = 0;
+    const sourcesStillEligible = (cluster) => cluster.every((node) => (
+      memoryNetwork.nodes.get(node.id) === node && !node.consolidatedAt
+    ));
 
     for (const cluster of clusters) {
       if (attemptedClusters >= maxClustersPerRun) break;
 
       if (cluster.length >= 3) {
+        if (!sourcesStillEligible(cluster)) continue;
         attemptedClusters++;
         const consolidated = await this.createConsolidatedMemoryGPT5(cluster);
         
@@ -152,7 +156,7 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
           // Provider work yields. Require the exact source identities to remain
           // current before publishing a candidate, but defer consolidatedAt
           // markers until the summary node has actually been stored.
-          const sourceStillCurrent = cluster.every((node) => memoryNetwork.nodes.get(node.id) === node);
+          const sourceStillCurrent = sourcesStillEligible(cluster);
           if (!sourceStillCurrent) {
             this.logger?.warn?.('Memory consolidation discarded after source changed', {
               sourceCount: cluster.length,
@@ -316,6 +320,19 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
         updatedSourceNodes: 0,
         skippedSourceNodes: sourceNodes.length,
         identityChangedSourceNodes,
+      };
+    }
+    const alreadyConsolidatedSourceNodes = sourceNodes.filter((sourceNodeId) => (
+      sourceIdentityTokens.get(sourceNodeId).consolidatedAt
+    ));
+    if (alreadyConsolidatedSourceNodes.length > 0) {
+      return {
+        committed: false,
+        mode: 'partial',
+        reason: 'source_already_consolidated',
+        updatedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length,
+        alreadyConsolidatedSourceNodes,
       };
     }
     if (typeof memoryNetwork.patchNodes !== 'function') {
@@ -691,7 +708,8 @@ the specific instances.`,
       }
     }
 
-    return clusters;
+    // Earlier clusters can become ineligible during a later cooperative yield.
+    return clusters.filter(cluster => cluster.every(node => !node.consolidatedAt));
   }
 
   selectConsolidationCandidates(nodes) {
