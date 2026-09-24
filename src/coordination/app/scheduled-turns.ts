@@ -26,6 +26,14 @@ export function createScheduledChannelTurns(options: {
 }) {
   const db = options.database;
   const pending = new Map<string,Promise<void>>();
+  // The aggregate-id index gives recovery a bounded walk over scheduled runs.
+  // A fresh process must revisit journaled admissions, including ones that
+  // never created Work before it exited. Live admissions are tracked directly.
+  const tracked = new Map<string, Admission>();
+  const observedWork = new Set<string>();
+  let recoveryCursor = 'sched-run-';
+  let recoveryComplete = false;
+  const recoveryPageSize = 128;
   const admitted = (runId: string) => db.readOne<{ payload: string }>(
     "SELECT payload_json AS payload FROM events WHERE aggregate_kind = 'scheduled_channel_run' AND aggregate_id = ? AND aggregate_version = 1",runId);
   const failure = (runId: string) => db.readOne<{payload:string}>(
@@ -58,8 +66,22 @@ export function createScheduledChannelTurns(options: {
   }
   function dispatch(value: Admission) {
     enforceDeadline(value);
-    if (pending.has(value.runId)||children(value).length||failure(value.runId)) return;
-    if (options.canDispatch && !options.canDispatch(value)) { record(value, 2, 'Scheduled turn superseded'); return; }
+    const rows = children(value);
+    if (rows.length) {
+      if (value.deadlineAtMs !== undefined && rows.some(row => !terminal.has(row.state))) {
+        tracked.set(value.runId, value);
+        observedWork.add(value.runId);
+      } else {
+        tracked.delete(value.runId);
+        observedWork.delete(value.runId);
+      }
+      return;
+    }
+    observedWork.delete(value.runId);
+    if (failure(value.runId)) { tracked.delete(value.runId); return; }
+    tracked.set(value.runId, value);
+    if (pending.has(value.runId)) return;
+    if (options.canDispatch && !options.canDispatch(value)) { record(value, 2, 'Scheduled turn superseded'); tracked.delete(value.runId); return; }
     const done = options.beginWork();
     const promise = options.submit.submitMessage({context:options.context(value.botId),channelId:value.channelId,idempotencyKey:`scheduled:${value.runId}`,
       body:{messageId:value.messageId,clientMessageId:value.messageId,text:value.prompt,attachmentIds:[],mentions:[value.targetBotId ?? value.botId],replyToMessageId:null,
@@ -69,6 +91,7 @@ export function createScheduledChannelTurns(options: {
         // Busy admission and lost observations retain the exact journaled request for retry.
         if (['turn_in_progress','server_busy','deadline_exceeded','connection_lost','request_rate_limited'].includes(String(error?.code))) return;
         if(!failure(value.runId)) record(value,2,error instanceof Error?error.message:String(error));
+        tracked.delete(value.runId);
       })
       .finally(()=>{pending.delete(value.runId);done();});
     pending.set(value.runId,promise);
@@ -108,15 +131,35 @@ export function createScheduledChannelTurns(options: {
       dispatch(value!); return status(value!);
     },
     reconcile() {
-      for (const row of db.readAll<{payload:string}>(`SELECT e.payload_json AS payload FROM events e
-        WHERE e.aggregate_kind='scheduled_channel_run' AND e.aggregate_version=1
-          AND EXISTS(SELECT 1 FROM works w WHERE w.kind IN ('channel.bot_turn','bot_turn') AND w.origin_message_id=json_extract(e.payload_json,'$.messageId') AND w.state NOT IN ('succeeded','failed','cancelled'))`))
-        enforceDeadline(JSON.parse(row.payload));
-      for(const row of db.readAll<{payload:string}>(`SELECT e.payload_json AS payload FROM events e
-        WHERE e.aggregate_kind='scheduled_channel_run' AND e.aggregate_version=1
-          AND NOT EXISTS(SELECT 1 FROM works w WHERE w.kind IN ('channel.bot_turn','bot_turn') AND w.origin_message_id=json_extract(e.payload_json,'$.messageId'))
-          AND NOT EXISTS(SELECT 1 FROM events f WHERE f.aggregate_kind=e.aggregate_kind AND f.aggregate_id=e.aggregate_id AND f.aggregate_version=2)`))
-        dispatch(JSON.parse(row.payload));
+      const now = options.now?.() ?? Date.now();
+      const due: Admission[] = [];
+      const retries: Admission[] = [];
+      for (const value of tracked.values()) {
+        if (value.deadlineAtMs !== undefined && now >= value.deadlineAtMs) due.push(value);
+        else if (!observedWork.has(value.runId) && retries.length < 64) retries.push(value);
+      }
+      // Deadlines are checked on the first due tick. Busy admissions without
+      // Work are retried in bounded, rotating batches so they cannot monopolize
+      // the event loop; their journaled message ID remains stable.
+      for (const value of due) dispatch(value);
+      for (const value of retries) {
+        dispatch(value);
+        if (tracked.has(value.runId)) {
+          tracked.delete(value.runId);
+          tracked.set(value.runId, value);
+        }
+      }
+      if (!recoveryComplete) {
+        const page = db.readAll<{id:string;payload:string}>(`SELECT aggregate_id AS id,payload_json AS payload FROM events INDEXED BY events_aggregate_sequence
+          WHERE aggregate_id > ? AND aggregate_id < 'sched-run.'
+            AND aggregate_kind='scheduled_channel_run' AND aggregate_version=1
+          ORDER BY aggregate_id LIMIT ?`, recoveryCursor, recoveryPageSize);
+        for (const row of page) {
+          recoveryCursor = row.id;
+          dispatch(JSON.parse(row.payload));
+        }
+        if (page.length < recoveryPageSize) recoveryComplete = true;
+      }
     },
   };
 }

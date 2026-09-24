@@ -100,3 +100,31 @@ test('superseded native game turns do not dispatch after a busy admission and re
  active=false;database.reopen();service=createScheduledChannelTurns(options);service.reconcile();await new Promise(r=>setImmediate(r));
  assert.equal(submissions,1);assert.equal((await service.run(input)).state,'failed');service.reconcile();assert.equal(submissions,1);
 });
+
+test('restart recovery pages scheduled admissions through the aggregate index', async t => {
+ const database=M11TestDatabase.temporary();t.after(()=>database.close());
+ const runIds:string[]=[];
+ for(let n=0;n<130;n++) {
+  const runId=`sched-run-0198d95f-6c00-7000-8000-${String(n).padStart(12,'0')}`;
+  runIds.push(runId);
+  const value={runId,jobId:'recovery',channelId:CHANNEL_ID,prompt:'Resume',messageId:fixtureId('message',1000+n),botId:BOT_ID};
+  database.mutateWithEvent(()=>({value:undefined,event:{type:'activity.updated',aggregateKind:'scheduled_channel_run',aggregateId:runId,
+   aggregateVersion:1,channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,requestId:fixtureId('request',1000+n),
+   correlationId:fixtureId('correlation',1000+n),payload:value,createdAt:AT}}));
+  if(n<129) database.mutateWithEvent(()=>({value:undefined,event:{type:'activity.updated',aggregateKind:'scheduled_channel_run',aggregateId:runId,
+   aggregateVersion:2,channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,requestId:fixtureId('request',2000+n),
+   correlationId:fixtureId('correlation',2000+n),payload:{...value,error:'Already failed'},createdAt:AT}}));
+ }
+ const plan=database.readAll<{detail:string}>(`EXPLAIN QUERY PLAN SELECT aggregate_id,payload_json FROM events INDEXED BY events_aggregate_sequence
+   WHERE aggregate_id > 'sched-run-' AND aggregate_id < 'sched-run.' AND aggregate_kind='scheduled_channel_run'
+     AND aggregate_version=1 ORDER BY aggregate_id LIMIT 128`).map(row=>row.detail).join('\n');
+ assert.match(plan,/events_aggregate_sequence/);
+ const submissions:string[]=[];
+ const service=createScheduledChannelTurns({database,channels:{getChannel:async()=>{throw new Error('unexpected');}} as any,
+  context:()=>({principalId:BOT_ID}) as any,beginWork:()=>()=>{},submit:{submitMessage:async(input:any)=>{
+   submissions.push(input.body.messageId);throw Object.assign(new Error('Busy'),{code:'turn_in_progress'});
+  }}});
+ service.reconcile();await new Promise(r=>setImmediate(r));assert.equal(submissions.length,0);
+ service.reconcile();await new Promise(r=>setImmediate(r));assert.deepEqual(submissions,[fixtureId('message',1129)]);
+ assert.equal(runIds.length,130);
+});
