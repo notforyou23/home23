@@ -1656,6 +1656,43 @@ test('a warming admitted candidate defers and later commits without restarting o
   assert.equal(fences, 0);
 });
 
+test('interrupted Start resumes through actual readiness without restarting admitted writers', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let starts = 0, fences = 0, ready = false;
+  await assert.rejects(() => applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase === 'writers_admitted' && journal.startOk === undefined) {
+        throw new Error('controller-interrupted-before-Start-result');
+      }
+    },
+    start: async () => { starts += 1; return { ok: true, readiness: { ready: true } }; },
+  }), /controller-interrupted-before-Start-result/);
+  assert.equal(readUpdateJournal(fixture.home).startOk, undefined);
+
+  const dependencies = { ...quiet,
+    readinessWaitMs: 0,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    start: async () => { starts += 1; throw new Error('must not restart admitted writers'); },
+    status: async () => ({ ok: true, status: 'recovery_required',
+      processes: [{ name: 'home23-milo', status: 'online', owned: true }], readiness: { ready } }),
+    quiesce: async () => { fences += 1; return []; },
+  };
+  const waiting = await resumeProductUpdate({ homeRoot: fixture.home }, dependencies);
+  assert.equal(waiting.status, 'deferred');
+  assert.equal(waiting.reasons[0].code, 'candidate_starting');
+  assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
+  assert.equal(starts, 0);
+  assert.equal(fences, 0);
+
+  ready = true;
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, dependencies);
+  assert.equal(resumed.status, 'committed');
+  assert.equal(readUpdateJournal(fixture.home).startOk, true);
+  assert.equal(starts, 0);
+  assert.equal(fences, 0);
+});
+
 test('a failed Host status probe defers healthy admitted writers without fencing', async t => {
   const fixture = homeFixture(t, { desiredRunning: true });
   let online = false, fences = 0;

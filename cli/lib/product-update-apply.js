@@ -754,7 +754,7 @@ function defaultBehavior({ home, journal, identityPreserved, verify }) {
     }
   } catch { issues.push('The selected installation no longer verifies.'); }
   if (!identityPreserved) issues.push(journal.writersAdmitted ? 'Canonical home identity changed after the candidate started.' : 'Home identity files changed during the update.');
-  if (journal.desiredRunning && journal.startOk === false) issues.push('Candidate start failed.');
+  if (journal.desiredRunning && journal.startOk !== true) issues.push('Candidate readiness has not been verified.');
   if (process.env.HOME23_UPDATE_VERIFY_RESULT === 'fail') issues.push('Candidate health was forced to fail.');
   if (!journal.writersAdmitted && journal.identity?.[DATABASE] && exists(join(home, DATABASE)) && hashFile(join(home, DATABASE)) !== journal.identity[DATABASE]) issues.push('The coordination database changed after the checkpoint.');
   return { ok: issues.length === 0, issues };
@@ -960,7 +960,7 @@ async function finish(journal, dependencies, verify) {
     }
   }
   let behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved, verify });
-  if (journal.desiredRunning && journal.writersAdmitted && journal.startOk === false && identityPreserved) {
+  if (journal.desiredRunning && journal.writersAdmitted && journal.startOk !== true && identityPreserved) {
     // A cold home can outlive Start's readiness wait. Keep checking its current
     // status without restarting or fencing healthy, still-warming writers. A
     // deferral here leaves the journal at writers_admitted, so the next resume
@@ -978,6 +978,9 @@ async function finish(journal, dependencies, verify) {
         return deferred(home, 'candidate_starting', 'This home is running but readiness could not be checked yet. Resume the update after it becomes ready.', journal);
       }
     }
+  }
+  if (journal.desiredRunning && journal.startOk !== true) {
+    behavior = { ...behavior, ok: false, issues: [...(behavior.issues || []), 'Candidate readiness has not been verified.'] };
   }
   if (!behavior.ok || !identityPreserved) {
     if (journal.writersAdmitted || journal.acceptedWork) {
