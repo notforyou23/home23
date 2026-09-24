@@ -185,6 +185,35 @@ test('a preflight refusal publishes only safe reason codes and a path-free expla
   assert.doesNotMatch(JSON.stringify(f.operation(accepted.operation.id)), /secret|credential XYZ/);
 });
 
+test('a restored data-version refusal requires a fresh release check, not another stop and retry', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  let installs = 0;
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => ({ phase: 'aborted' }), applyProductUpdate: async () => {
+      installs++;
+      return { ok: false, status: 'aborted', runningRestored: true, reasons: [
+        { code: 'unsupported_data_version', message: 'Stored schema private-secret changed' },
+      ] };
+    } },
+    appUpdater: unusedAppUpdater,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home });
+  assert.equal(installs, 1);
+  assert.equal(status.state, 'failed');
+  assert.equal(status.operation.canResume, false);
+  assert.equal(status.operation.errorCode, 'unsupported_data_version');
+  assert.deepEqual(status.allowedActions, ['check']);
+  assert.match(status.message, /Check for a newer Home23 release/);
+  assert.doesNotMatch(JSON.stringify(status), /private-secret/);
+  await assert.rejects(requestHomeUpdate(input(f.home, 'resume', 'same-release'), noLaunch), { code: 'home_update_busy' });
+  const fresh = await requestHomeUpdate(input(f.home, 'check', 'fresh-release'), noLaunch);
+  assert.notEqual(fresh.operation.id, accepted.operation.id);
+});
+
 test('newer phone can resume a compatibility refusal with its new build', async t => {
   const f = fixture(t); await check(f);
   const accepted = await requestHomeUpdate(input(f.home, 'update', 'update', 165), noLaunch);

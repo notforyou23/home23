@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 const SCHEMA = 'home23.home-update.v1';
 const ACTIONS = new Set(['check', 'update', 'resume', 'recover']);
 const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
+const FRESH_RELEASE_REQUIRED = new Set(['unsupported_data_version', 'schema_assets_changed', 'encoder_mismatch', 'encoder_recipe_changed']);
 const library = dirname(fileURLToPath(import.meta.url));
 const now = () => new Date().toISOString();
 const executeFile = promisify(execFile);
@@ -28,6 +29,10 @@ const PREFLIGHT_MESSAGES = Object.freeze({
   insufficient_space: 'The Mac needs more free space to finish this update.',
   modified_installation: 'The installed Home23 software changed unexpectedly. Open Home23 on this Mac for recovery.',
   candidate_integrity_failed: 'The downloaded Home23 release failed verification. Resume to download it again.',
+  unsupported_data_version: 'This release cannot safely update the home\'s current data version. Check for a newer Home23 release.',
+  schema_assets_changed: 'This release cannot run the home\'s current data schema. Check for a newer Home23 release.',
+  encoder_mismatch: 'This release does not support the home\'s current encoder. Check for a newer Home23 release.',
+  encoder_recipe_changed: 'The home encoder recipe changed since this release was prepared. Check for a newer Home23 release.',
 });
 function preflightFailure(result) {
   // Apply may include local paths in its reason messages. Persist and publish
@@ -86,7 +91,7 @@ function publicOperation(operation) {
     errorCode: operation.phase === 'failed' ? operation.errorCode ?? null : null,
     reasonCodes: operation.phase === 'failed' ? operation.reasonCodes ?? [] : [],
     startedAt: operation.startedAt, updatedAt: operation.updatedAt,
-    canResume: !operation.requiresLocalRecovery && (interrupted || ['failed', 'interrupted'].includes(operation.phase)) };
+    canResume: !operation.requiresLocalRecovery && !operation.requiresNewRelease && (interrupted || ['failed', 'interrupted'].includes(operation.phase)) };
 }
 function releaseView(release) {
   return release ? { version: release.version ?? 'Home23', build: release.appBuild ?? release.build ?? null, packageId: release.packageId ?? null } : null;
@@ -103,6 +108,7 @@ function projectStatus(home, operation, clientBuild) {
   if (!registered) { state = 'unavailable'; message = 'Open Home23 on the Mac running your home to finish connecting updates.'; allowedActions = []; }
   else if (visible && !TERMINAL.has(visible.phase)) { state = 'running'; allowedActions = []; message = visible.message; }
   else if (operation?.requiresLocalRecovery) { state = 'failed'; allowedActions = []; message = visible.message; }
+  else if (operation?.requiresNewRelease) { state = 'failed'; allowedActions = ['check']; message = visible.message; }
   else if (visible?.canResume) { state = 'failed'; allowedActions = ['resume']; message = visible.message; }
   else if (state === 'available' && compatible) allowedActions.push('update');
   if (appUpdateRequired && state !== 'running') { state = 'incompatible'; allowedActions = allowedActions.filter(action => action === 'check'); message = 'Update Home23 on this device before updating your home.'; }
@@ -314,7 +320,11 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
           persist({ requiresLocalRecovery: true });
           throw fail('local_recovery_required', 'Automatic recovery stopped to preserve your home. Open Home23 on the Mac running your home for recovery.');
         }
-        throw preflightFailure(result) ?? fail('update_incomplete', 'The home update needs recovery before it can finish.');
+        const refusal = preflightFailure(result);
+        if (refusal?.reasonCodes.some(code => FRESH_RELEASE_REQUIRED.has(code)) && ['refused', 'aborted'].includes(result.status)) {
+          persist({ requiresNewRelease: true });
+        }
+        throw refusal ?? fail('update_incomplete', 'The home update needs recovery before it can finish.');
       }
       persist({ runtimeCompleted: true });
     }
