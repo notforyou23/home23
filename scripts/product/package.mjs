@@ -165,7 +165,12 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
   const headerAliasRoot = fs.mkdtempSync(path.join(headerAliasParent(), 'home23-node-headers-'));
   const headerAlias = path.join(headerAliasRoot, 'node');
   fs.symlinkSync(nodeDistribution, headerAlias, 'dir');
-  const env = { PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: process.env.HOME, USER: process.env.USER,
+  // Keep the selected local Apple toolchain when invoking npm/node-gyp. The
+  // package builder otherwise falls back to xcode-select's global path, which
+  // may be on a different (and much slower) volume from the build output.
+  const compilerEnv = Object.fromEntries(['DEVELOPER_DIR', 'CC', 'CXX']
+    .filter(key => process.env[key]).map(key => [key, process.env[key]]));
+  const env = { ...compilerEnv, PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: process.env.HOME, USER: process.env.USER,
     TMPDIR: path.join(cachePath, 'tmp'), npm_config_cache: cachePath, npm_config_devdir: path.join(cachePath, 'node-gyp'),
     npm_config_nodedir: headerAlias, npm_config_userconfig: '/dev/null', npm_config_audit: 'false', npm_config_fund: 'false' };
   fs.mkdirSync(env.TMPDIR, { recursive: true });
