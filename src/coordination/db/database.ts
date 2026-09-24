@@ -53,6 +53,10 @@ export interface CoordinationDatabaseOpenReceipt {
 const REVIEWED_SCHEMA_ONLY_V21_CHECKSUM =
   "b231fa7def776d8c69c2ff2d601ad29d2bf4643ed8ea33140a474359ef88c0e8";
 
+// Distinct read SQL texts in Core are static and number well under this;
+// the bound only matters for a caller that builds SQL dynamically.
+const READ_STATEMENT_CACHE_LIMIT = 256;
+
 function isReviewedSchemaOnlyV21Upgrade(fromVersion: number): boolean {
   const migration = COORDINATION_MIGRATIONS[20];
   return fromVersion === 20 &&
@@ -132,6 +136,7 @@ export class CoordinationDatabase {
   readonly path: string;
   readonly openReceipt: CoordinationDatabaseOpenReceipt;
   private readonly database: Database.Database;
+  private readonly readStatements = new Map<string, Database.Statement<SqliteValue[], unknown>>();
   private backupInProgress = false;
 
   constructor(options: OpenCoordinationDatabaseOptions) {
@@ -198,21 +203,34 @@ export class CoordinationDatabase {
   }
 
   readOne<T>(sql: string, ...parameters: SqliteValue[]): T | undefined {
-    this.assertOpen();
-    const statement = this.database.prepare<SqliteValue[], T>(sql);
-    if (!statement.readonly) {
-      throw new Error("coordination read helper refused a mutating statement");
-    }
-    return statement.get(...parameters);
+    return this.readStatement<T>(sql).get(...parameters);
   }
 
   readAll<T = Record<string, unknown>>(sql: string, ...parameters: SqliteValue[]): T[] {
+    return this.readStatement<T>(sql).all(...parameters);
+  }
+
+  /** Core serves every client from one thread, so re-parsing the same read on
+   * each call is measurable latency. Reads fully consume their statement with
+   * get/all, which makes reuse safe; Map order doubles as recency so dynamic
+   * SQL cannot grow the cache without bound. */
+  private readStatement<T>(sql: string): Database.Statement<SqliteValue[], T> {
     this.assertOpen();
+    const cached = this.readStatements.get(sql);
+    if (cached) {
+      this.readStatements.delete(sql);
+      this.readStatements.set(sql, cached);
+      return cached as Database.Statement<SqliteValue[], T>;
+    }
     const statement = this.database.prepare<SqliteValue[], T>(sql);
     if (!statement.readonly) {
       throw new Error("coordination read helper refused a mutating statement");
     }
-    return statement.all(...parameters);
+    this.readStatements.set(sql, statement as Database.Statement<SqliteValue[], unknown>);
+    if (this.readStatements.size > READ_STATEMENT_CACHE_LIMIT) {
+      this.readStatements.delete(this.readStatements.keys().next().value as string);
+    }
+    return statement;
   }
 
   mutateWithEvent<T>(
@@ -252,6 +270,7 @@ export class CoordinationDatabase {
     if (this.backupInProgress) {
       throw new Error("coordination database cannot close while backup is in progress");
     }
+    this.readStatements.clear();
     if (this.database.open) this.database.close();
   }
 

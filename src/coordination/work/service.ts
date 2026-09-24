@@ -943,6 +943,19 @@ export function createWorkService(options: CreateWorkServiceOptions) {
       return row ? freezeWork(row) : null;
     },
 
+    /** One read for a page of Work; absent ids are simply missing from the map. */
+    getMany(workIds: readonly string[]): ReadonlyMap<string, WorkRecord> {
+      for (const workId of workIds) assertCoordinationId("work", workId);
+      const records = new Map<string, WorkRecord>();
+      if (workIds.length === 0) return records;
+      const rows = options.database.readAll<WorkRow>(
+        `${WORK_SELECT} WHERE id IN (SELECT value FROM json_each(?))`,
+        JSON.stringify(workIds),
+      );
+      for (const row of rows) records.set(row.id, freezeWork(row));
+      return records;
+    },
+
     getPlannedInvocation(workId: string): ForegroundDetachmentRequest | null {
       assertId('work', workId, 'invalid_request');
       return readPlannedInvocation(options.database, workId);

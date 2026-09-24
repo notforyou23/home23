@@ -95,9 +95,13 @@ function safeWorkText(value: string | null, maximum: number): string {
   return `${collapsed.slice(0, Math.max(1, maximum - 1)).trimEnd()}…`;
 }
 
-function presentation(database: M11Database, work: WorkRecord): WorkPresentationRow {
-  const row = database.readOne<WorkPresentationRow>(
-    `SELECT h.id AS conversationId,
+interface PagePresentationRow extends WorkPresentationRow {
+  workId: string;
+  presentationWorkId: string | null;
+}
+
+// Single and page projections share this text so their semantics cannot drift.
+const PRESENTATION_SELECT = `SELECT h.id AS conversationId,
             CASE WHEN origin.author_principal_id = w.principal_id
                        AND origin.author_kind = 'owner'
                        AND origin.stored_visibility = 'visible'
@@ -119,16 +123,21 @@ function presentation(database: M11Database, work: WorkRecord): WorkPresentation
                    WHERE tombstone.tombstones_message_id = result.id
                 )
               ORDER BY result.channel_sequence ASC, result.id ASC LIMIT 1
-            ) AS finalResultMessageId
+            ) AS finalResultMessageId,
+            w.id AS workId,
+            product.work_id AS presentationWorkId
        FROM works w
        JOIN conversation_handles h ON h.channel_id = w.channel_id
        JOIN bots bot ON bot.principal_id = w.target_principal_id
        LEFT JOIN work_thread_presentations product ON product.work_id = w.id
-       LEFT JOIN messages origin ON origin.id = w.origin_message_id
-      WHERE w.id = ?`,
-    work.id,
-  );
-  if (!row) throw new Error("durable Work is missing its conversation or accountable resident");
+       LEFT JOIN messages origin ON origin.id = w.origin_message_id`;
+
+const MISSING_PRESENTATION = "durable Work is missing its conversation or accountable resident";
+
+function presentation(database: M11Database, work: WorkRecord): WorkPresentationRow {
+  const row = database.readOne<WorkPresentationRow>(`${PRESENTATION_SELECT}
+      WHERE w.id = ?`, work.id);
+  if (!row) throw new Error(MISSING_PRESENTATION);
   return row;
 }
 
@@ -159,6 +168,13 @@ function assertAccess(database: M11Database, work: WorkRecord, context: Messagin
   if (member?.count !== 1) throw new WorkError("ineligible", "Work is outside the authenticated Channel scope");
 }
 
+type ResidentAssignments = ReturnType<typeof createResidentAssignments>;
+
+/** A queued Work without a current Attempt may have just expired its last one. */
+function needsExpiryCheck(work: WorkRecord): boolean {
+  return work.state === "queued" && work.currentAttemptId === null;
+}
+
 function projection(database: M11Database, work: WorkRecord): ProductWorkProjection {
   const shown = presentation(database, work);
   const retry = database.readOne<{ sourceWorkId: string }>(
@@ -169,15 +185,72 @@ function projection(database: M11Database, work: WorkRecord): ProductWorkProject
     "SELECT retry_work_id AS retryWorkId FROM work_retry_provenance WHERE source_work_id = ? ORDER BY created_at, retry_work_id",
     work.id,
   ).map((row) => row.retryWorkId);
-  const state = work.state === "leased" ? "queued" : work.state === "running" ? "running"
-    : work.state === "cancelling" ? "stopping" : work.state;
-  const expired = work.state === "queued" && work.currentAttemptId === null && database.readOne<{ state: string }>(
+  const expired = needsExpiryCheck(work) && database.readOne<{ state: string }>(
     "SELECT state FROM attempts WHERE work_id = ? ORDER BY ordinal DESC LIMIT 1", work.id,
   )?.state === "expired";
+  const workingThread = isWorkingThread(database,work);
+  return buildProjection(work, shown, retry?.sourceWorkId ?? null, retriedByWorkIds, expired,
+    workingThread ? createResidentAssignments(database) : null);
+}
+
+/** Projects a list page with a constant number of reads for Work, presentation,
+ * retry and expiry facts. Resident assignment lineage stays per working thread,
+ * but shares one reader for the page. Output is identical to `projection`. */
+function projectPage(database: M11Database, works: readonly WorkRecord[]): ProductWorkProjection[] {
+  if (works.length === 0) return [];
+  const ids = JSON.stringify(works.map((work) => work.id));
+  const shownById = new Map(database.readAll<PagePresentationRow>(`${PRESENTATION_SELECT}
+      WHERE w.id IN (SELECT value FROM json_each(?))`, ids).map((row) => [row.workId, row]));
+  const retryOf = new Map(database.readAll<{ retryWorkId: string; sourceWorkId: string }>(
+    `SELECT retry_work_id AS retryWorkId, source_work_id AS sourceWorkId FROM work_retry_provenance
+      WHERE retry_work_id IN (SELECT value FROM json_each(?))`,
+    ids,
+  ).map((row) => [row.retryWorkId, row.sourceWorkId]));
+  const retriedBy = new Map<string, string[]>();
+  for (const row of database.readAll<{ sourceWorkId: string; retryWorkId: string }>(
+    `SELECT source_work_id AS sourceWorkId, retry_work_id AS retryWorkId FROM work_retry_provenance
+      WHERE source_work_id IN (SELECT value FROM json_each(?))
+      ORDER BY source_work_id, created_at, retry_work_id`,
+    ids,
+  )) {
+    const list = retriedBy.get(row.sourceWorkId);
+    if (list) list.push(row.retryWorkId);
+    else retriedBy.set(row.sourceWorkId, [row.retryWorkId]);
+  }
+  const expiryIds = works.filter(needsExpiryCheck).map((work) => work.id);
+  // (work_id, ordinal) is unique, so the maximum ordinal is the latest Attempt.
+  const expired = new Set(expiryIds.length === 0 ? [] : database.readAll<{ workId: string }>(
+    `SELECT a.work_id AS workId FROM attempts a
+      WHERE a.work_id IN (SELECT value FROM json_each(?))
+        AND a.ordinal = (SELECT max(latest.ordinal) FROM attempts latest WHERE latest.work_id = a.work_id)
+        AND a.state = 'expired'`,
+    JSON.stringify(expiryIds),
+  ).map((row) => row.workId));
+  let assignments: ResidentAssignments | null = null;
+  return works.map((work) => {
+    const shown = shownById.get(work.id);
+    if (!shown) throw new Error(MISSING_PRESENTATION);
+    const workingThread = work.kind === PRODUCT_WORK_THREAD_KIND || shown.presentationWorkId !== null;
+    if (workingThread) assignments ??= createResidentAssignments(database);
+    return buildProjection(work, shown, retryOf.get(work.id) ?? null, retriedBy.get(work.id) ?? [],
+      expired.has(work.id), workingThread ? assignments : null);
+  });
+}
+
+function buildProjection(
+  work: WorkRecord,
+  shown: WorkPresentationRow,
+  retryOfWorkId: string | null,
+  retriedByWorkIds: string[],
+  expired: boolean,
+  assignments: ResidentAssignments | null,
+): ProductWorkProjection {
+  const state = work.state === "leased" ? "queued" : work.state === "running" ? "running"
+    : work.state === "cancelling" ? "stopping" : work.state;
   const summary = safeWorkText(shown.durableSummary ?? shown.originText, 280);
   const title = safeWorkText(shown.durableTitle ?? shown.originText, 88) || `${shown.displayName} work`;
-  const workingThread = isWorkingThread(database,work);
-  const assessment = workingThread ? createResidentAssignments(database).latest(work.id) : null;
+  const workingThread = assignments !== null;
+  const assessment = assignments ? assignments.latest(work.id) : null;
   return Object.freeze({
     id: work.id,
     channelId: work.channelId,
@@ -194,14 +267,14 @@ function projection(database: M11Database, work: WorkRecord): ProductWorkProject
     title,
     summary: summary || title,
     state,
-    ...(workingThread ? {
-      assignmentState: createResidentAssignments(database).presentationState(work.id, work.state, assessment),
+    ...(assignments ? {
+      assignmentState: assignments.presentationState(work.id, work.state, assessment),
       assignmentSummary: assessment?.summary ?? null,
     } : {}),
     cancelAvailable: work.state === "queued" || work.state === "running" || (workingThread && work.state === "leased"),
     retryAvailable: !workingThread && (work.state === "failed" || work.state === "cancelled" || expired),
     createdAt: work.createdAt, updatedAt: work.updatedAt, terminalAt: work.terminalAt,
-    retryOfWorkId: retry?.sourceWorkId ?? null,
+    retryOfWorkId,
     retriedByWorkIds: Object.freeze(retriedByWorkIds),
     finalResultMessageId: shown.finalResultMessageId,
   });
@@ -280,11 +353,13 @@ export function createProductWorkControl(options: {
         limit + 1,
         offset,
       );
-      const works = rows.slice(0, limit).map(({ id }) => {
-        const work = options.work.get(id);
+      const pageIds = rows.slice(0, limit).map(({ id }) => id);
+      const records = options.work.getMany(pageIds);
+      const works = projectPage(options.database, pageIds.map((id) => {
+        const work = records.get(id);
         if (!work) throw new Error("listed Work disappeared during projection");
-        return projection(options.database, work);
-      });
+        return work;
+      }));
       return Object.freeze({ works: Object.freeze(works), nextCursor: rows.length > limit ? `work-offset:${offset + limit}` : null });
     },
     recoverCancellations(identity) {

@@ -251,3 +251,77 @@ test('the channel owner can see and stop Jerry-initiated joined Work without a f
   s.control.recoverCancellations({requestId:fixtureId('request',88006),correlationId:fixtureId('correlation',88006)});
   assert.equal(s.work.get(child.id)!.state,'cancelling','generic recovery must not manufacture a stopped receipt for joined execution');
 });
+
+test("Working Thread list projects a whole page with constant base queries and matches single-item projection", (t) => {
+  const s = setup(15000); t.after(() => s.database.close());
+  const threads = Array.from({ length: 7 }, (_, index) => s.work.create({
+    principalId: OWNER_ID,
+    targetPrincipalId: BOT_ID,
+    channelId: CHANNEL_ID,
+    originMessageId: MESSAGE_ID,
+    roundId: null,
+    kind: PRODUCT_WORK_THREAD_KIND,
+    idempotencyKey: `batched-working-thread-${index}`,
+    manifest: manifestInput(),
+    maxAutomaticOffers: 2,
+    requestId: fixtureId("request", 150 + index),
+    correlationId: fixtureId("correlation", 150 + index),
+    presentation: { title: `Batched ${index}`, summary: `Batched assignment ${index}` },
+  }).work);
+  const later = new Date(Date.parse(AT) + 60_000).toISOString();
+  const insertRetry = s.database.raw.prepare(
+    "INSERT INTO work_retry_provenance (source_work_id, retry_work_id, created_at) VALUES (?, ?, ?)",
+  );
+  insertRetry.run(threads[0].id, threads[2].id, later);
+  insertRetry.run(threads[0].id, threads[1].id, AT);
+  insertRetry.run(threads[3].id, threads[4].id, AT);
+  s.control.cancel({ context: context(160), workId: threads[5].id, idempotencyKey: "batched-cancel" });
+
+  const statements: string[] = [];
+  const readOne = s.database.readOne.bind(s.database);
+  const readAll = s.database.readAll.bind(s.database);
+  s.database.readOne = ((sql: string, ...parameters: never[]) => { statements.push(sql); return readOne(sql, ...parameters); }) as typeof s.database.readOne;
+  s.database.readAll = ((sql: string, ...parameters: never[]) => { statements.push(sql); return readAll(sql, ...parameters); }) as typeof s.database.readAll;
+  const count = (pattern: RegExp) => statements.filter((sql) => pattern.test(sql)).length;
+  const baseQueries = (limit: number) => {
+    statements.length = 0;
+    const page = s.control.list({ context: context(161), limit });
+    return {
+      page,
+      presentations: count(/JOIN conversation_handles h ON h\.channel_id = w\.channel_id\s+JOIN bots bot/),
+      workRows: count(/FROM works\s+WHERE id (=|IN)/),
+      retries: count(/FROM work_retry_provenance/),
+      outcomeStoreProbes: count(/sqlite_master/),
+    };
+  };
+
+  const small = baseQueries(2);
+  const large = baseQueries(100);
+  assert.equal(small.page.works.length, 2);
+  assert.equal(large.page.works.length, 7);
+  for (const run of [small, large]) {
+    assert.equal(run.presentations, 1, "one presentation query per page");
+    assert.equal(run.workRows, 1, "one Work row query per page");
+    assert.equal(run.retries, 2, "one retry-source and one retried-by query per page");
+    assert.equal(run.outcomeStoreProbes, 1, "one resident assignment reader per page");
+  }
+
+  s.database.readOne = readOne;
+  s.database.readAll = readAll;
+  const single = large.page.works.map((work) => s.control.get({ context: context(162), workId: work.id }));
+  assert.equal(JSON.stringify(large.page.works), JSON.stringify(single), "batched list is byte-identical to single projection");
+  assert.ok(large.page.works.every((work) => Object.isFrozen(work) && Object.isFrozen(work.accountableResident) && Object.isFrozen(work.retriedByWorkIds)));
+  const byId = new Map(large.page.works.map((work) => [work.id, work]));
+  assert.deepEqual(byId.get(threads[0].id)?.retriedByWorkIds, [threads[1].id, threads[2].id]);
+  assert.equal(byId.get(threads[4].id)?.retryOfWorkId, threads[3].id);
+  assert.equal(byId.get(threads[5].id)?.state, "cancelled");
+
+  const paged: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = s.control.list({ context: context(163), limit: 3, ...(cursor ? { cursor } : {}) });
+    paged.push(...page.works.map((work) => JSON.stringify(work)));
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  assert.deepEqual(paged, large.page.works.map((work) => JSON.stringify(work)));
+});

@@ -774,3 +774,39 @@ test("migration checksum drift and newer schema versions fail closed", (t) => {
       error instanceof SchemaCompatibilityError && /catalog checksum mismatch/.test(error.message),
   );
 });
+
+test("read helpers reuse prepared statements, keep the read-only guard, and bound the cache", (t) => {
+  const database = openCoordinationDatabase({ path: temporaryDatabase(t), applicationVersion: "statement-cache-test" });
+  t.after(() => database.close());
+  const raw = (database as unknown as { database: Database.Database }).database;
+  const prepare = raw.prepare.bind(raw);
+  let prepared = 0;
+  (raw as unknown as { prepare: typeof raw.prepare }).prepare = ((sql: string) => {
+    prepared += 1;
+    return prepare(sql);
+  }) as typeof raw.prepare;
+
+  for (let index = 0; index < 3; index += 1) {
+    assert.equal(database.readOne<{ value: number }>("SELECT ? AS value", index)?.value, index);
+    assert.deepEqual(database.readAll<{ value: number }>("SELECT ? AS value", index), [{ value: index }]);
+  }
+  assert.equal(prepared, 1, "one SQL text is prepared once and reused by readOne and readAll");
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    assert.throws(
+      () => database.readOne("DELETE FROM aliases"),
+      /coordination read helper refused a mutating statement/,
+    );
+    assert.throws(
+      () => database.readAll("DELETE FROM aliases"),
+      /coordination read helper refused a mutating statement/,
+    );
+  }
+
+  for (let index = 0; index < 1_000; index += 1) {
+    database.readOne(`SELECT ${index} AS value`);
+  }
+  const cache = (database as unknown as { readStatements: Map<string, unknown> }).readStatements;
+  assert.ok(cache.size > 0 && cache.size <= 256, `statement cache stays bounded (size ${cache.size})`);
+  assert.equal(database.readOne<{ value: number }>("SELECT 1 AS value")?.value, 1);
+});
