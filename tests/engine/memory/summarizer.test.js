@@ -102,6 +102,52 @@ test('clusterSimilarMemories bounds the default candidate set before pairwise cl
   assert.deepEqual(clusters, []);
 });
 
+test('clusterSimilarMemories lets a timer run during a full candidate pass', async () => {
+  const summarizer = new MemorySummarizer({}, makeLogger(), {});
+  const nodes = Array.from({ length: 512 }, (_, index) => makeCandidateNode(index));
+  let timerRan = false;
+  const timer = setTimeout(() => { timerRan = true; }, 0);
+
+  try {
+    const clusters = await summarizer.clusterSimilarMemories(nodes, 2);
+    assert.equal(timerRan, true, 'the timer should run before clustering finishes');
+    assert.deepEqual(clusters, []);
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+test('clusterSimilarMemories preserves the prior pairwise grouping order', async () => {
+  const summarizer = new MemorySummarizer({}, makeLogger(), {});
+  const nodes = Array.from({ length: 300 }, (_, index) => makeCandidateNode(index, {
+    embedding: index < 3 ? [1, 0] : index < 6 ? [0, 1] : [index + 1, 1],
+  }));
+  const used = new Set();
+  const expected = [];
+
+  // The original synchronous loop is the reference for order and membership.
+  for (let i = 0; i < nodes.length; i++) {
+    if (used.has(i)) continue;
+    const cluster = [nodes[i]];
+    used.add(i);
+    for (let j = i + 1; j < nodes.length; j++) {
+      if (used.has(j)) continue;
+      if (!nodes[i].embedding || !nodes[j].embedding) continue;
+      if (summarizer.cosineSimilarity(nodes[i].embedding, nodes[j].embedding) >= 1) {
+        cluster.push(nodes[j]);
+        used.add(j);
+      }
+    }
+    if (cluster.length >= 3) expected.push(cluster);
+  }
+
+  const actual = await summarizer.clusterSimilarMemories(nodes, 1);
+  assert.deepEqual(actual.map(cluster => cluster.map(node => node.id)),
+    expected.map(cluster => cluster.map(node => node.id)));
+  assert.deepEqual(actual[0].slice(0, 3).map(node => node.id),
+    ['candidate-0', 'candidate-1', 'candidate-2']);
+});
+
 test('clusterSimilarMemories honors configured maxCandidateNodes override', async () => {
   const logger = makeLogger();
   const summarizer = new MemorySummarizer({}, logger, {

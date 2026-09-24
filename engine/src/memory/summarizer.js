@@ -5,6 +5,7 @@ const DEFAULT_CONSOLIDATION_MAX_CHARS = 50000;
 const DEFAULT_CONSOLIDATION_MAX_CONCEPT_CHARS = 600;
 const DEFAULT_CONSOLIDATION_MAX_CLUSTERS_PER_RUN = 4;
 const DEFAULT_CONSOLIDATION_MAX_CANDIDATE_NODES = 512;
+const CLUSTER_YIELD_INTERVAL_PAIRS = 256;
 const COMPOST_MODES = new Set(['off', 'dry-run', 'apply']);
 
 /**
@@ -647,6 +648,7 @@ the specific instances.`,
     
     const clusters = [];
     const used = new Set();
+    let examinedPairs = 0;
 
     for (let i = 0; i < candidateNodes.length; i++) {
       if (used.has(i)) continue;
@@ -656,6 +658,11 @@ the specific instances.`,
 
       for (let j = i + 1; j < candidateNodes.length; j++) {
         if (used.has(j)) continue;
+
+        // Keep long clustering passes from monopolizing the event loop.
+        if (++examinedPairs % CLUSTER_YIELD_INTERVAL_PAIRS === 0) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
 
         // Skip nodes with null embeddings
         if (!candidateNodes[i].embedding || !candidateNodes[j].embedding) {
