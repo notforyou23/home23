@@ -27,6 +27,24 @@ import type { ResidentRun } from '../../../src/coordination-adapter/index.js';
 import { RESIDENT_OUTCOMES_MIGRATION_SQL } from '../../../src/coordination/migrations/0014-resident-outcomes.js';
 import { createResidentOutcomeStore, workTerminalEvidence, residentOutcomeInstruction } from '../../../src/coordination/app/resident-outcomes.js';
 
+test('idle outcome discovery does not rescan terminal Work and scheduled runs', t => {
+ const f=setup();t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+ const original=f.database.readAll.bind(f.database);
+ let terminalScans=0;
+ f.database.readAll=((sql:string,...params:unknown[])=>{
+  if(sql.includes('FROM works w JOIN work_planned_invocations') || sql.includes('FROM events e JOIN works w ON w.origin_message_id')) terminalScans++;
+  return original(sql,...params);
+ }) as typeof f.database.readAll;
+ const store=createResidentOutcomeStore(f.database);
+ store.discover();assert.equal(terminalScans,2,'startup recovers existing terminal work');
+ store.discover();assert.equal(terminalScans,2,'idle tick reads only the event cursor');
+ f.database.mutateWithEvent(()=>({value:undefined,event:{type:'activity.updated',aggregateKind:'scheduled_channel_run',
+  aggregateId:'sched-outcome-cursor',aggregateVersion:1,channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,
+  requestId:fixtureId('request',999),correlationId:fixtureId('correlation',999),
+  payload:{messageId:fixtureId('message',999)},createdAt:AT}}));
+ store.discover();assert.equal(terminalScans,4,'new scheduled admissions trigger recovery discovery');
+});
+
 for (const scenario of ['succeeded','failed','cancelled','delivery_recovery','review_failure'] as const) {
  const outcome=scenario==='delivery_recovery'||scenario==='review_failure'?'failed':scenario;
  test(`durable ${scenario} outcome wakes accountable resident once with latest corrections`,async t=>{

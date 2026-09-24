@@ -45,6 +45,7 @@ export function createResidentOutcomeStore(database: M11Database) {
   const assignments = createResidentAssignments(database);
   let observedCursor = database.readOne<{ cursor: number }>('SELECT event_cursor AS cursor FROM resident_outcome_policy WHERE id = 1')!.cursor;
   let savedCursor = observedCursor;
+  let initialTerminalDiscovery = true;
   const columns = 'outcome_key AS key, source_work_id AS sourceWorkId, evidence_json AS evidence, review_work_id AS reviewWorkId, prepared_json AS prepared';
   function change(key: string, source: string, mutate: (tx: CoordinationTransaction) => void) {
     database.mutateWithEvent(tx => {
@@ -77,6 +78,14 @@ export function createResidentOutcomeStore(database: M11Database) {
     },
     /** Existing terminal Work is the durable trigger, even if the producer crashed before delivery. */
     discover() {
+      // The initial scan recovers terminal Work after a crash. Thereafter only
+      // Work changes, delivered result messages, or scheduled admissions can
+      // produce a new terminal outcome. Reuse the durable event cursor rather
+      // than rescanning all historical Work and scheduled runs on every tick.
+      const events = database.readAll<{ sequence: number; kind: string; payload: string }>(
+        'SELECT sequence, aggregate_kind AS kind, payload_json AS payload FROM events WHERE sequence > ? ORDER BY sequence LIMIT 100', observedCursor);
+      const discoverTerminals = initialTerminalDiscovery || events.some(row =>
+        row.kind === 'work' || row.kind === 'message' || row.kind === 'scheduled_channel_run');
       for (const value of assignments.revisits()) {
         const key = `assignment-revisit:${value.workId}:${value.eventSequence}`;
         enqueue(key, value.workId, { reason: 'A recorded dependency finished or the resident-requested revisit time arrived.', assignment: value });
@@ -98,42 +107,43 @@ export function createResidentOutcomeStore(database: M11Database) {
           assignment: value, assessmentRetry: attempts.length, maximumAssessmentRetries: REVISIT_ASSESSMENT_BACKOFF_MS.length,
         });
       }
-      const rows = database.readAll<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`
-        SELECT w.id, w.state, w.terminal_reason AS reason, p.assignment_json AS assignment,
-          m.body_text AS text FROM works w JOIN work_planned_invocations p ON p.work_id = w.id
-          LEFT JOIN messages m ON m.id = 'msg_' || substr(w.id, 5)
-        WHERE w.kind = 'resident_work_thread' AND w.state IN ('succeeded','failed','cancelled')
-          AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id = 1)
-          AND (w.state <> 'succeeded' OR m.id IS NOT NULL)
-          AND NOT EXISTS (SELECT 1 FROM resident_outcomes o WHERE o.outcome_key = 'work:' || w.id)
-        ORDER BY w.terminal_at LIMIT 100`);
-      for (const row of rows) {
-        const details = database.readAll<{ payload: string }>(`SELECT payload_json AS payload FROM events
-          WHERE sequence >= (SELECT min(sequence) FROM events WHERE aggregate_id = ?)
-          AND type = 'communication.recorded' AND json_extract(payload_json, '$.communication.workId') = ?
-          AND json_extract(payload_json, '$.communication.terminal') = 1 ORDER BY sequence DESC LIMIT 3`, row.id, row.id);
-        enqueue(`work:${row.id}`, row.id, { status: row.state, reason: row.reason,
-          assignment: JSON.parse(row.assignment), result: row.text,
-          helperDeliveries: botDeliveryEvidence(database, row.id),
-          terminalEvidence: details.map(x => JSON.parse(x.payload)) });
+      if (discoverTerminals) {
+        const rows = database.readAll<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`
+          SELECT w.id, w.state, w.terminal_reason AS reason, p.assignment_json AS assignment,
+            m.body_text AS text FROM works w JOIN work_planned_invocations p ON p.work_id = w.id
+            LEFT JOIN messages m ON m.id = 'msg_' || substr(w.id, 5)
+          WHERE w.kind = 'resident_work_thread' AND w.state IN ('succeeded','failed','cancelled')
+            AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id = 1)
+            AND (w.state <> 'succeeded' OR m.id IS NOT NULL)
+            AND NOT EXISTS (SELECT 1 FROM resident_outcomes o WHERE o.outcome_key = 'work:' || w.id)
+          ORDER BY w.terminal_at LIMIT 100`);
+        for (const row of rows) {
+          const details = database.readAll<{ payload: string }>(`SELECT payload_json AS payload FROM events
+            WHERE sequence >= (SELECT min(sequence) FROM events WHERE aggregate_id = ?)
+            AND type = 'communication.recorded' AND json_extract(payload_json, '$.communication.workId') = ?
+            AND json_extract(payload_json, '$.communication.terminal') = 1 ORDER BY sequence DESC LIMIT 3`, row.id, row.id);
+          enqueue(`work:${row.id}`, row.id, { status: row.state, reason: row.reason,
+            assignment: JSON.parse(row.assignment), result: row.text,
+            helperDeliveries: botDeliveryEvidence(database, row.id),
+            terminalEvidence: details.map(x => JSON.parse(x.payload)) });
+        }
+        // Scheduled channel runs also require Jerry's accountable follow-through.
+        const scheduled = database.readAll<{id:string;state:string;reason:string|null;assignment:string;text:string|null}>(`
+          SELECT w.id,w.state,w.terminal_reason AS reason,e.payload_json AS assignment,m.body_text AS text
+          FROM events e JOIN works w ON w.origin_message_id=json_extract(e.payload_json,'$.messageId')
+          LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
+          WHERE e.aggregate_kind='scheduled_channel_run' AND e.aggregate_version=1 AND w.kind='channel.bot_turn'
+            AND w.state IN ('succeeded','failed','cancelled')
+            AND (w.state<>'succeeded' OR m.id IS NOT NULL)
+            AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1)
+            AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.outcome_key='scheduled:'||w.id) LIMIT 100`);
+        for (const row of scheduled) enqueue(`scheduled:${row.id}`, row.id, {
+          status: row.state, reason: row.reason, assignment: JSON.parse(row.assignment), result: row.text,
+          terminalEvidence: workTerminalEvidence(database, row.id),
+        });
+      initialTerminalDiscovery = false;
       }
-      // Scheduled channel runs also require Jerry's accountable follow-through.
-      const scheduled = database.readAll<{id:string;state:string;reason:string|null;assignment:string;text:string|null}>(`
-        SELECT w.id,w.state,w.terminal_reason AS reason,e.payload_json AS assignment,m.body_text AS text
-        FROM events e JOIN works w ON w.origin_message_id=json_extract(e.payload_json,'$.messageId')
-        LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
-        WHERE e.aggregate_kind='scheduled_channel_run' AND e.aggregate_version=1 AND w.kind='channel.bot_turn'
-          AND w.state IN ('succeeded','failed','cancelled')
-          AND (w.state<>'succeeded' OR m.id IS NOT NULL)
-          AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1)
-          AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.outcome_key='scheduled:'||w.id) LIMIT 100`);
-      for (const row of scheduled) enqueue(`scheduled:${row.id}`, row.id, {
-        status: row.state, reason: row.reason, assignment: JSON.parse(row.assignment), result: row.text,
-        terminalEvidence: workTerminalEvidence(database, row.id),
-      });
       // Authenticated detached-specialist evidence is already durable before its message commit.
-      const events = database.readAll<{ sequence: number; kind: string; payload: string }>(
-        'SELECT sequence, aggregate_kind AS kind, payload_json AS payload FROM events WHERE sequence > ? ORDER BY sequence LIMIT 100', observedCursor);
       let found = false;
       for (const row of events) {
         if (row.kind !== 'communication') continue;
