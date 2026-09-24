@@ -551,10 +551,29 @@ export function createCoordinationProcess(
         },
       })
     : undefined;
-  const deviceNotifications = notificationPusher && notificationRegistry
+  let finishNotificationRecovery!: () => void;
+  let failNotificationRecovery!: (error: unknown) => void;
+  const notificationRecoveryGate = new Promise<void>((resolve, reject) => {
+    finishNotificationRecovery = resolve;
+    failNotificationRecovery = reject;
+  });
+  // A failed replay must not let a new Message advance the checkpoint past a
+  // gap. The recorder observes individual failures; this handles no listeners.
+  void notificationRecoveryGate.catch(() => undefined);
+  const gatedNotificationPusher: Pick<ApnsPusher,
+    'notifyConnectedAgentsMessage' | 'notifyConnectedAgentsWork'> | undefined = notificationPusher
+    ? {
+        notifyConnectedAgentsMessage: async (input) => {
+          await notificationRecoveryGate;
+          return notificationPusher.notifyConnectedAgentsMessage(input);
+        },
+        notifyConnectedAgentsWork: (input) => notificationPusher.notifyConnectedAgentsWork(input),
+      }
+    : undefined;
+  const deviceNotifications = gatedNotificationPusher && notificationRegistry
     ? new ConnectedAgentsNotificationService(
         notificationRegistry,
-        notificationPusher,
+        gatedNotificationPusher,
         notificationConfiguration!.apns.bundle_id,
         {
           conversationTitle: (channelId) =>
@@ -566,9 +585,8 @@ export function createCoordinationProcess(
         },
       )
     : undefined;
-  const prepareConnectedAgentsNotificationRecovery = ():
-  readonly ConnectedAgentsMessageNotification[] => {
-    if (!connectedAgentsDeliveryStore || !notificationPusher) return Object.freeze([]);
+  const prepareConnectedAgentsNotificationRecovery = () => {
+    if (!connectedAgentsDeliveryStore || !notificationPusher) return undefined;
     let checkpoint = connectedAgentsDeliveryStore.checkpoint();
     if (checkpoint === undefined) {
       const latest = database.readOne<{
@@ -614,7 +632,12 @@ export function createCoordinationProcess(
       }
       checkpoint = connectedAgentsDeliveryStore.initializeCheckpoint(baseline);
     }
-    const parameters: Array<string> = [];
+    return checkpoint;
+  };
+  const connectedAgentsNotificationRecoveryPage = (
+    checkpoint: { created_at: string; message_id: string } | null,
+  ): readonly ConnectedAgentsMessageNotification[] => {
+    const parameters: Array<string | number> = [];
     const afterCheckpoint = checkpoint === null
       ? ""
       : ` AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?))`;
@@ -648,8 +671,8 @@ export function createCoordinationProcess(
            SELECT 1 FROM messages tombstone
            WHERE tombstone.tombstones_message_id = m.id
          )${afterCheckpoint}
-       ORDER BY m.created_at ASC, m.id ASC`,
-      ...parameters,
+       ORDER BY m.created_at ASC, m.id ASC LIMIT ?`,
+      ...parameters, 32,
     );
     return Object.freeze(rows.map(row => Object.freeze({
       conversationId: row.conversationId,
@@ -735,6 +758,8 @@ export function createCoordinationProcess(
   let residentAttestationTimer: NodeJS.Timeout | undefined;
   let residentWorkProjectionTimer: NodeJS.Timeout | undefined;
   let residentAttestationRun: Promise<void> | undefined;
+  let notificationRecoveryRun: Promise<void> | undefined;
+  let notificationRecoveryStopped = false;
   const refreshResidentAttestations = (): Promise<void> => {
     if (residentAttestationRun) return residentAttestationRun;
     const run = Promise.all(residentInitializers.map(async ([residentSlug, initialize]) => {
@@ -789,9 +814,13 @@ export function createCoordinationProcess(
   }, ...(notificationClient === undefined ? [] : [{
     name: "connected-agents-apns",
     drain: async () => {
+      notificationRecoveryStopped = true;
+      await notificationRecoveryRun;
       await notificationPusher?.drainConnectedAgentsDeliveries();
     },
     close: async () => {
+      notificationRecoveryStopped = true;
+      await notificationRecoveryRun;
       await notificationPusher?.drainConnectedAgentsDeliveries();
       notificationClient.close();
     },
@@ -1506,7 +1535,7 @@ export function createCoordinationProcess(
   return Object.freeze({
     start: async () => {
       let address: Awaited<ReturnType<typeof server.start>>;
-      let notificationRecovery: readonly ConnectedAgentsMessageNotification[] = [];
+      let notificationRecoveryCheckpoint: { created_at: string; message_id: string } | null | undefined;
       try {
         workControl.recoverCancellations({
           requestId: generateCoordinationId("request"),
@@ -1514,7 +1543,9 @@ export function createCoordinationProcess(
         });
         await initializeAttachments();
         await completionIngress?.start();
-        notificationRecovery = prepareConnectedAgentsNotificationRecovery();
+        // Establish the old-history boundary before accepting live Messages.
+        // The potentially large replay happens only after the listener opens.
+        notificationRecoveryCheckpoint = prepareConnectedAgentsNotificationRecovery();
         address = await server.start();
         if (helperRuntime) {
           const helpers=database.readAll<{targetBotId:string; targetPrincipalId:string; residentBinding:string; conversationId:string; channelId:string; targetBotDisplayName:string}>(
@@ -1557,14 +1588,34 @@ export function createCoordinationProcess(
         );
         residentAttestationTimer.unref?.();
       }
-      if (notificationPusher && notificationRecovery.length > 0) {
-        void notificationPusher.reconcileConnectedAgentsMessages(notificationRecovery)
-          .catch((error: unknown) => {
-            console.error(
-              "[home23-coordination] Connected Agents notification recovery failed:",
-              error instanceof Error ? error.message : error,
-            );
-          });
+      if (notificationPusher && notificationRecoveryCheckpoint !== undefined) {
+        const recoveryPusher = notificationPusher;
+        let cursor = notificationRecoveryCheckpoint;
+        // Yield after every small, ordered page. Live push waits behind this
+        // replay so it cannot advance the durable checkpoint past older work.
+        setImmediate(() => {
+          if (notificationRecoveryStopped) return;
+          notificationRecoveryRun = (async () => {
+            try {
+              for (;;) {
+                if (notificationRecoveryStopped) break;
+                const page = connectedAgentsNotificationRecoveryPage(cursor);
+                if (page.length === 0) break;
+                await recoveryPusher.reconcileConnectedAgentsMessages(page);
+                const last = page[page.length - 1]!;
+                cursor = { created_at: last.createdAt, message_id: last.messageId };
+                await new Promise<void>(resolve => setImmediate(resolve));
+              }
+              finishNotificationRecovery();
+            } catch (error) {
+              failNotificationRecovery(error);
+              console.error(
+                "[home23-coordination] Connected Agents notification recovery failed:",
+                error instanceof Error ? error.message : error,
+              );
+            }
+          })();
+        });
       }
       for (const pending of database.readAll<{id:string}>("SELECT w.id FROM works w WHERE w.state='cancelling' AND (w.kind='resident_work_thread' OR EXISTS(SELECT 1 FROM work_thread_presentations p WHERE p.work_id=w.id))")) {
         pendingJoinedStops.add(pending.id);
