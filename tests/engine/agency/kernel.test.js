@@ -56,6 +56,36 @@ test('AgencyKernel dry-run intake selects actionable observations into pursuits 
   assert.equal(state.attention.currentPursuitId, result.pursuit.id);
 });
 
+test('AgencyKernel serializes concurrent intake decisions before creating a pursuit', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const observation = {
+    source: 'work.worker-runs',
+    kind: 'worker_receipt',
+    summary: 'Systems worker found stale dashboard publish loop and recommends a bounded verifier.',
+    evidence: [{ type: 'worker_receipt', ref: 'wr_concurrent' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Dashboard publish loop has a current verifier receipt.',
+    verifier: { type: 'worker_receipt', ref: 'wr_concurrent' },
+    tags: ['dashboard', 'worker'],
+  };
+
+  const [first, second] = await Promise.all([
+    kernel.intake(observation),
+    kernel.intake(observation),
+  ]);
+  const pursuits = readJsonl(join(dir, 'agency', 'pursuits.jsonl'));
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(first.pursuit.id, second.pursuit.id);
+  assert.equal(pursuits.filter(row => row.type === 'created').length, 1);
+  assert.equal(receipts.filter(row => row.event === 'selected').length, 1);
+});
+
 test('AgencyKernel suppresses repeated Good Life usefulness drift when an active pursuit already covers it', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

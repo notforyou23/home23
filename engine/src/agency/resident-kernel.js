@@ -262,6 +262,9 @@ export class AgencyKernel {
     };
     this.logger = logger;
     this.store = new PursuitStore({ brainDir, agentName });
+    // Keep pursuit selection, inbox durability, and the resulting state change
+    // in one ordered intake transaction across both public intake paths.
+    this.intakeQueue = Promise.resolve();
     // Before any appends: drop superseded ledger history (regrows ~4-5MB/day).
     const ledgerCompaction = this.store.compactLedgerIfBloated();
     if (ledgerCompaction.compacted) {
@@ -835,7 +838,17 @@ export class AgencyKernel {
     }
   }
 
-  async intake(input = {}) {
+  serializeIntake(task) {
+    const result = this.intakeQueue.then(task, task);
+    this.intakeQueue = result.catch(() => {});
+    return result;
+  }
+
+  intake(input = {}) {
+    return this.serializeIntake(() => this.intakeSerial(input));
+  }
+
+  async intakeSerial(input = {}) {
     const candidate = this.router.normalize(input);
     const existing = this.store.findSimilar(candidate);
     if (isRedundantGoodLifePolicyPulse(candidate, existing)) {
@@ -927,7 +940,11 @@ export class AgencyKernel {
     };
   }
 
-  async intakeWorldStream(input = {}) {
+  intakeWorldStream(input = {}) {
+    return this.serializeIntake(() => this.intakeWorldStreamSerial(input));
+  }
+
+  async intakeWorldStreamSerial(input = {}) {
     const candidateInput = {
       ...input,
       kind: input.kind || 'world_stream',
