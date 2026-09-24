@@ -24,17 +24,39 @@ const V21_ASSET_SHA256 = Object.freeze({
   [V21_MIGRATION]: '71239e12d1d0164cc5e3b0f395664fc56da906b04627f9c743b8240bbf3004ff',
   [V21_INDEX]: 'd436d6b3cbea64c10127e59f27babc1a6783e62ae386bf4dc8990d84c71e6f90',
 });
+// TypeScript emits these declarations and maps alongside the two reviewed JS
+// files. They are not executable migrations, but pin their exact signed v21
+// bytes so another generated change cannot be mistaken for this transition.
+const V21_GENERATED_SHA256 = Object.freeze({
+  [`${MIGRATIONS_PREFIX}index.d.ts`]: '753b762758943371621b43542a137664e4e111cc75eb311927da2183297a9f81',
+  [`${MIGRATIONS_PREFIX}index.d.ts.map`]: '2396ec75a0f10b47cbbebec1aeff7bad20b8fa13bc8ed1fa9309f7c5f7d1f67b',
+  [`${MIGRATIONS_PREFIX}index.js.map`]: '3772dfcd06076ea0961c80dbfcdf433abe60b23c2612c4250efb2d4d59474383',
+  [`${MIGRATIONS_PREFIX}0021-notification-recovery-order.d.ts`]: '743c3e0e0a76767dc23533fd63b18d3c51eddac768a8bf7a8deeb5cf39ae4156',
+  [`${MIGRATIONS_PREFIX}0021-notification-recovery-order.d.ts.map`]: 'd8f85d2a1faffa962260fba6adf1de6e77f62a64a4a556ba3e9eadecde0f015e',
+  [`${MIGRATIONS_PREFIX}0021-notification-recovery-order.js.map`]: 'c062d5d7137f0c92c1917b8f6931ea5adb872c9f8f83ef368b504ad32b8d80c0',
+});
+const V20_GENERATED_SHA256 = Object.freeze({
+  [`${MIGRATIONS_PREFIX}index.d.ts`]: 'c8e332800f31c42b786e5b6425fca534eaa413fa3ffea76e057aa599a05c2cbc',
+  [`${MIGRATIONS_PREFIX}index.d.ts.map`]: '17337d0decf4ede4a160ebbf85504535c4c123453aa10b895048c9d7491301ca',
+  [`${MIGRATIONS_PREFIX}index.js.map`]: 'c521b789c6d991a9ce3bcf540735aabff0f9b80641a5033ec159f32262deea35',
+});
 function reviewedV21Migration(installed, candidate, group) {
-  if (group.status !== 'changed' ||
-      group.changedPaths.length !== 2 ||
-      group.changedPaths.some(path => !Object.hasOwn(V21_ASSET_SHA256, path))) return false;
+  if (group.status !== 'changed') return false;
   const before = new Map(installed.files.map(entry => [entry.path, entry]));
   const after = new Map(candidate.files.map(entry => [entry.path, entry]));
+  const generated = Object.keys(V21_GENERATED_SHA256).filter(path => before.has(path) || after.has(path));
+  if (generated.length !== 0 && generated.length !== Object.keys(V21_GENERATED_SHA256).length) return false;
+  const expectedPaths = [...Object.keys(V21_ASSET_SHA256), ...generated];
+  if (group.changedPaths.length !== expectedPaths.length ||
+      group.changedPaths.some(path => !expectedPaths.includes(path))) return false;
   if (before.has(V21_MIGRATION) || !before.has(V21_INDEX)) return false;
-  return Object.entries(V21_ASSET_SHA256).every(([path, sha256]) =>
-    after.get(path)?.type === 'file' && after.get(path)?.mode === 0o644 && after.get(path)?.sha256 === sha256);
+  return Object.entries({ ...V21_ASSET_SHA256, ...generated.length ? V21_GENERATED_SHA256 : {} }).every(([path, sha256]) =>
+    after.get(path)?.type === 'file' && after.get(path)?.mode === 0o644 && after.get(path)?.sha256 === sha256) &&
+    Object.entries(generated.length ? V20_GENERATED_SHA256 : {}).every(([path, sha256]) =>
+      before.get(path)?.type === 'file' && before.get(path)?.mode === 0o644 && before.get(path)?.sha256 === sha256) &&
+    generated.filter(path => path.includes('/0021-')).every(path => !before.has(path));
 }
-function candidateSchema(candidate) {
+export function candidateCoordinationSchema(candidate) {
   const files = new Map(candidate.files.map(entry => [entry.path, entry]));
   if (!files.has(V21_MIGRATION)) return 20;
   return Object.entries(V21_ASSET_SHA256).every(([path, sha256]) =>
@@ -43,6 +65,9 @@ function candidateSchema(candidate) {
 const RECIPE_ASSET = 'app/scripts/embedder/schema/recipes.json';
 const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const COORDINATION_SOCKET = 'app/instances/.house/coordination/coord.sock';
+const PM2_SOCKETS = new Set(['runtime/pm2/pub.sock', 'runtime/pm2/rpc.sock']);
+const CHROME_SINGLETON_SOCKET = 'runtime/user/.home23/chrome-cdp/SingletonSocket';
+const CHROME_SOCKET_TARGET = /^\/var\/folders\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/T\/com\.google\.Chrome\.[A-Za-z0-9_-]+\/SingletonSocket$/;
 const SCAN_FILES = ['.home23-host.json', 'app/.home23-state.json', 'app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml'];
 const ADOPTED_LINK_RECEIPT = 'runtime/adoption-preservation.json';
 const REBUILDABLE_PREFIXES = ['app/logs/', 'app/engine/logs/', 'app/engine/runtime/', 'runtime/pm2/', 'runtime/embedder-cache/', 'runtime/user/', 'runtime/.host.lock/'];
@@ -186,10 +211,18 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
     const absolute = join(root, relative);
     const stat = lstatSync(absolute);
     const declared = manifestEntries.get(relative);
-    if (relative === COORDINATION_SOCKET) {
+    if (relative === COORDINATION_SOCKET || PM2_SOCKETS.has(relative)) {
       // A live UDS is a rebuildable coordinator endpoint, never a backup file.
       // Other types at this exact path and sockets anywhere else still refuse.
       if (!stat.isSocket() || declared) reasons.push(reason('unknown_state', `Coordination endpoint ${relative} is not an owned runtime socket.`, { path: relative }));
+      return;
+    }
+    if (relative === CHROME_SINGLETON_SOCKET) {
+      // Chrome owns this live pointer into macOS's per-user temporary socket.
+      // Never follow it or accept another kind of external state link here.
+      const target = stat.isSymbolicLink() ? readlinkSync(absolute) : '';
+      if (declared || !CHROME_SOCKET_TARGET.test(target))
+        reasons.push(reason('linked_state_path', `Chrome endpoint ${relative} is not an owned temporary socket link.`, { path: relative }));
       return;
     }
     if (!scanSoftware && declared && (
@@ -285,7 +318,7 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   else if (database.present && !database.compatible) reasons.push(reason('unsupported_data_version', `Stored coordination schema ${database.version ?? 'unknown'} does not match a reviewed v20 or v21 schema fingerprint.`));
   if (installed && candidate) {
     const contracts = compareUpdateContracts(installed, candidate);
-    const targetSchema = candidateSchema(candidate);
+    const targetSchema = candidateCoordinationSchema(candidate);
     if (targetSchema === null || (database.present && database.compatible && database.version > targetSchema)) {
       reasons.push(reason('schema_assets_changed', 'The candidate package cannot run the stored coordination schema.'));
     }

@@ -52,6 +52,34 @@ test('only the exact live coordination socket is accepted as ephemeral state', a
   assert.deepEqual(relevant(await inspectUpdateInventory(root), 'app/instances/.house/coordination/coord.sock'), ['unknown_state']);
 });
 
+test('only owned PM2 sockets and the Chrome temporary singleton link are ephemeral', async t => {
+  const root = home(t);
+  const pm2 = path.join(root, 'runtime/pm2');
+  fs.mkdirSync(pm2, { recursive: true });
+  const servers = [];
+  for (const name of ['pub.sock', 'rpc.sock', 'unrelated.sock']) {
+    const server = createServer();
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(path.join(pm2, name), resolve); });
+    servers.push(server);
+  }
+  t.after(() => Promise.all(servers.map(server => new Promise(resolve => server.close(resolve)))));
+  for (const name of ['pub.sock', 'rpc.sock'])
+    assert.deepEqual(relevant(await inspectUpdateInventory(root), `runtime/pm2/${name}`), []);
+  assert.deepEqual(relevant(await inspectUpdateInventory(root), 'runtime/pm2/unrelated.sock'), ['unknown_state']);
+
+  const relative = 'runtime/user/.home23/chrome-cdp/SingletonSocket';
+  const singleton = path.join(root, relative);
+  fs.mkdirSync(path.dirname(singleton), { recursive: true });
+  fs.symlinkSync('/var/folders/aa/bb/T/com.google.Chrome.Test123/SingletonSocket', singleton);
+  assert.deepEqual(relevant(await inspectUpdateInventory(root), relative), []);
+  fs.unlinkSync(singleton);
+  fs.symlinkSync('/var/folders/aa/bb/T/com.google.Chrome.Test123/other.sock', singleton);
+  assert.deepEqual(relevant(await inspectUpdateInventory(root), relative), ['linked_state_path']);
+  fs.unlinkSync(singleton);
+  fs.writeFileSync(singleton, 'not a link');
+  assert.deepEqual(relevant(await inspectUpdateInventory(root), relative), ['linked_state_path']);
+});
+
 test('reviewed internal insight pointer may rotate only to a real same-directory report', async t => {
   const root = home(t);
   const relative = 'app/instances/milo/brain/coordinator/insights_curated_LATEST.md';

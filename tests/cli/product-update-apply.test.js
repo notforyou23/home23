@@ -125,6 +125,26 @@ test('the reviewed v21 migration is the only accepted schema asset transition', 
     sha256: '71239e12d1d0164cc5e3b0f395664fc56da906b04627f9c743b8240bbf3004ff' });
   const allowed = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate });
   assert.equal(allowed.reasons.some(item => item.code === 'schema_assets_changed'), false);
+  const emitted = structuredClone(candidate);
+  const previous = structuredClone(fixture.installed);
+  const generated = {
+    'index.d.ts': ['c8e332800f31c42b786e5b6425fca534eaa413fa3ffea76e057aa599a05c2cbc', '753b762758943371621b43542a137664e4e111cc75eb311927da2183297a9f81'],
+    'index.d.ts.map': ['17337d0decf4ede4a160ebbf85504535c4c123453aa10b895048c9d7491301ca', '2396ec75a0f10b47cbbebec1aeff7bad20b8fa13bc8ed1fa9309f7c5f7d1f67b'],
+    'index.js.map': ['c521b789c6d991a9ce3bcf540735aabff0f9b80641a5033ec159f32262deea35', '3772dfcd06076ea0961c80dbfcdf433abe60b23c2612c4250efb2d4d59474383'],
+    '0021-notification-recovery-order.d.ts': [null, '743c3e0e0a76767dc23533fd63b18d3c51eddac768a8bf7a8deeb5cf39ae4156'],
+    '0021-notification-recovery-order.d.ts.map': [null, 'd8f85d2a1faffa962260fba6adf1de6e77f62a64a4a556ba3e9eadecde0f015e'],
+    '0021-notification-recovery-order.js.map': [null, 'c062d5d7137f0c92c1917b8f6931ea5adb872c9f8f83ef368b504ad32b8d80c0'],
+  };
+  for (const [name, [oldHash, newHash]] of Object.entries(generated)) {
+    const path = `app/dist/coordination/migrations/${name}`;
+    if (oldHash) previous.files.push({ path, type: 'file', mode: 0o644, sha256: oldHash });
+    emitted.files.push({ path, type: 'file', mode: 0o644, sha256: newHash });
+  }
+  assert.equal((await inspectUpdateInventory(fixture.home, { installed: previous, candidate: emitted }))
+    .reasons.some(item => item.code === 'schema_assets_changed'), false);
+  emitted.files.find(entry => entry.path.endsWith('/0021-notification-recovery-order.js.map')).sha256 = '0'.repeat(64);
+  assert.equal((await inspectUpdateInventory(fixture.home, { installed: previous, candidate: emitted }))
+    .reasons.some(item => item.code === 'schema_assets_changed'), true);
   candidate.files.find(entry => entry.path === 'app/dist/coordination/migrations/0001-coordination-spine.js').sha256 = '0'.repeat(64);
   const changedHistory = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate });
   assert.equal(changedHistory.reasons.some(item => item.code === 'schema_assets_changed'), true);
