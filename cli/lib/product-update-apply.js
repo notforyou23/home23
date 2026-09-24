@@ -583,12 +583,19 @@ function refuse(home, reasons) {
 function defaultBehavior({ home, journal, identityPreserved, verify }) {
   const issues = [];
   try {
-    // The selected tree was fully verified before Start. A resumed controller has
-    // no cached result and checks it again; a normal Start need not re-read every
-    // package file while its writers are already using the verified version.
-    if (verify(home, { allowRuntimeState: true }).packageId !== journal.toPackageId) issues.push('The running tree is not the selected package.');
+    // The selected tree was fully verified before these writers were admitted.
+    // On a reviewed reused stage, read its self-validating manifest instead of
+    // rescanning every package byte while the live home is answering requests.
+    const admittedReuse = journal.reuseVerifiedStage === true && journal.writersAdmitted === true
+      && journal.acceptedWork === true;
+    const manifest = admittedReuse ? readProductManifest(home) : verify(home, { allowRuntimeState: true });
+    if (manifest.packageId !== journal.toPackageId) issues.push('The running tree is not the selected package.');
     const receipt = readPrivateJSON(join(home, '.home23-install.json'));
-    if (receipt?.packageId !== journal.toPackageId || receipt?.nodePath !== join(home, 'bin', 'node')) issues.push('The installation receipt does not name the selected package.');
+    if (receipt?.packageId !== journal.toPackageId || receipt?.nodePath !== join(home, 'bin', 'node')
+      || (admittedReuse && (receipt?.status !== 'installed' || receipt?.homeRoot !== home
+        || receipt?.appRoot !== join(home, 'app') || receipt?.pm2Path !== join(home, 'tools/node_modules/pm2/bin/pm2')))) {
+      issues.push('The installation receipt does not name the selected package.');
+    }
   } catch { issues.push('The selected installation no longer verifies.'); }
   if (!identityPreserved) issues.push(journal.writersAdmitted ? 'Canonical home identity changed after the candidate started.' : 'Home identity files changed during the update.');
   if (journal.desiredRunning && journal.startOk === false) issues.push('Candidate start failed.');

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { installProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
+import { installProductPayload, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
 import { applyProductUpdate, readUpdateJournal, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
 import { inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
@@ -1316,6 +1316,10 @@ test('post-selection reuseVerifiedStage resume does not require the download sta
   const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, {
     ...quiet,
     start: async () => ({ ok: true, status: 'ready' }),
+    verifyProductPayload: (root, options) => {
+      assert.notEqual(root, fixture.home, 'admitted resume must not rehash the live selected tree');
+      return verifyProductPayload(root, options);
+    },
   });
   assert.equal(resumed.status, 'committed');
   assert.equal(packageId(fixture.home), fixture.next.packageId);
