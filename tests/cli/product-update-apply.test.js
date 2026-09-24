@@ -119,10 +119,10 @@ test('the reviewed v21 migration is the only accepted schema asset transition', 
   assert.equal((await inspectCoordinationDatabase(databaseFile)).compatible, true);
   const candidate = structuredClone(fixture.next);
   const index = candidate.files.find(entry => entry.path === 'app/dist/coordination/migrations/index.js');
-  index.sha256 = '8672239b024987edd84d02f6f2ed8104276d6d0209f7597de4870ec148f09b8a';
+  index.sha256 = 'd436d6b3cbea64c10127e59f27babc1a6783e62ae386bf4dc8990d84c71e6f90';
   candidate.files.push({ path: 'app/dist/coordination/migrations/0021-notification-recovery-order.js',
-    type: 'file', mode: 0o644, size: 338,
-    sha256: '1f4679dcb1fa9ccfab8e9884f2e2243cee9010061d24346b9cdf4c9a50e2cc9b' });
+    type: 'file', mode: 0o644, size: 4266,
+    sha256: '71239e12d1d0164cc5e3b0f395664fc56da906b04627f9c743b8240bbf3004ff' });
   const allowed = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate });
   assert.equal(allowed.reasons.some(item => item.code === 'schema_assets_changed'), false);
   candidate.files.find(entry => entry.path === 'app/dist/coordination/migrations/0001-coordination-spine.js').sha256 = '0'.repeat(64);
@@ -136,7 +136,7 @@ test('the reviewed v21 migration is the only accepted schema asset transition', 
   fs.rmSync(databaseFile);
   database(databaseFile, 21);
   assert.equal((await inspectCoordinationDatabase(databaseFile)).compatible, true);
-  index.sha256 = '8672239b024987edd84d02f6f2ed8104276d6d0209f7597de4870ec148f09b8a';
+  index.sha256 = 'd436d6b3cbea64c10127e59f27babc1a6783e62ae386bf4dc8990d84c71e6f90';
   const nextV21 = await inspectUpdateInventory(fixture.home, { installed: candidate, candidate });
   assert.equal(nextV21.reasons.some(item => item.code === 'schema_assets_changed'), false);
   const downgrade = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate: fixture.next });

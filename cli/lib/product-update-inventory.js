@@ -7,8 +7,8 @@ import { PRODUCT_STATE_PATHS, isProductStatePath } from './product-payload.js';
 import { compareUpdateContracts } from './product-update-plan.js';
 
 export const SUPPORTED_COORDINATION_SCHEMA = 21;
-export const SUPPORTED_COORDINATION_SCHEMA_CHECKSUM = '56eea1f8c3ca8b44b026e9ddf6d3dac44552ab72442c33ccb3c7e446d5b35d27';
-export const SUPPORTED_COORDINATION_MIGRATION_CHECKSUM = 'a4799fb82863c9631c07141b781dac4decdd95e28192d8f874e4bb7f27d016b1';
+export const SUPPORTED_COORDINATION_SCHEMA_CHECKSUM = 'ed59b3cd5a64230ee04d6adb92abe713dc2cdabe8af5721d67c167485a7ba5af';
+export const SUPPORTED_COORDINATION_MIGRATION_CHECKSUM = 'b231fa7def776d8c69c2ff2d601ad29d2bf4643ed8ea33140a474359ef88c0e8';
 export const SUPPORTED_COORDINATION_SCHEMAS = Object.freeze({
   20: Object.freeze({ schemaChecksum: 'cb80ab7b2c52920dab0ef5434dd9c62fad2e3a6efacabde76e6934b84e5006ec',
     migrationChecksum: 'c5d7aad734c6516b629b0879a815f51bdb32ea1c33d2001209fc7c008c60a436' }),
@@ -21,8 +21,8 @@ const V21_INDEX = `${MIGRATIONS_PREFIX}index.js`;
 // Reviewed compiled assets from the immutable v21 migration source. The rest of
 // the migration tree must still match the installed package byte for byte.
 const V21_ASSET_SHA256 = Object.freeze({
-  [V21_MIGRATION]: '1f4679dcb1fa9ccfab8e9884f2e2243cee9010061d24346b9cdf4c9a50e2cc9b',
-  [V21_INDEX]: '8672239b024987edd84d02f6f2ed8104276d6d0209f7597de4870ec148f09b8a',
+  [V21_MIGRATION]: '71239e12d1d0164cc5e3b0f395664fc56da906b04627f9c743b8240bbf3004ff',
+  [V21_INDEX]: 'd436d6b3cbea64c10127e59f27babc1a6783e62ae386bf4dc8990d84c71e6f90',
 });
 function reviewedV21Migration(installed, candidate, group) {
   if (group.status !== 'changed' ||
