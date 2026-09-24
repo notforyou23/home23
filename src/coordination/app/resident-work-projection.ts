@@ -14,7 +14,7 @@ export function projectResidentWork(database: M11Database, directory: string, re
     if (!bot) continue;
     const path = join(directory, `${resident}.work.json`);
     const value = JSON.stringify({ schema: 'home23.resident.work.v1', resident,
-      assignments: assignments.list(bot.id, true, 1000) });
+      assignments: assignments.listForProjection(bot.id) });
     if (existsSync(path) && readFileSync(path, 'utf8') === value) continue;
     const temp = `${path}.next`;
     writeFileSync(temp, value, { mode: 0o600 });

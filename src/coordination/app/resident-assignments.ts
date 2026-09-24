@@ -188,6 +188,95 @@ export function createResidentAssignments(database: M11Database) {
     }
     return result;
   }
+  /** The agency snapshot is refreshed on Core's HTTP event loop. Resolve its
+   * bounded candidate set in batches instead of doing several SQLite reads
+   * for every historical Work row on every refresh. */
+  function listForProjection(principalId: string) {
+    const candidates = database.readAll<{ id: string }>(`SELECT w.id FROM works w
+      LEFT JOIN work_thread_presentations p ON p.work_id=w.id
+      WHERE w.target_principal_id=? AND (w.kind='resident_work_thread' OR p.work_id IS NOT NULL)
+        AND (w.state IN ('queued','leased','running','cancelling') OR w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1))
+      ORDER BY w.created_at DESC LIMIT 1000`, principalId);
+    if (!candidates.length) return [];
+    const ids = JSON.stringify(candidates.map(row => row.id));
+    // Follow exactly the same review/planned lineage as root(), but in one
+    // recursive query. The depth and cycle guards retain root()'s limits.
+    const reviewJoin = hasOutcomeStore
+      ? `LEFT JOIN resident_outcomes review ON review.review_work_id=l.id
+         LEFT JOIN resident_outcomes parent_review ON parent_review.review_work_id=plan.parent_work_id`
+      : '';
+    const next = hasOutcomeStore
+      ? `coalesce(review.source_work_id,parent_review.source_work_id,
+           CASE WHEN upstream.work_id IS NOT NULL THEN plan.parent_work_id END)`
+      : `CASE WHEN upstream.work_id IS NOT NULL THEN plan.parent_work_id END`;
+    const lineage = database.readAll<{ seed: string; id: string; depth: number; path: string; next: string | null }>(`WITH RECURSIVE
+      lineage(seed,id,depth,path) AS (
+        SELECT value,value,0,'|' || value || '|' FROM json_each(?)
+        UNION ALL
+        SELECT l.seed,${next},l.depth+1,l.path || ${next} || '|'
+        FROM lineage l
+        LEFT JOIN work_planned_invocations plan ON plan.work_id=l.id
+        ${reviewJoin}
+        LEFT JOIN work_planned_invocations upstream ON upstream.work_id=plan.parent_work_id
+        WHERE l.depth<64 AND ${next} IS NOT NULL
+          AND instr(l.path,'|' || ${next} || '|')=0
+      ) SELECT l.seed,l.id,l.depth,l.path,${next} AS next FROM lineage l
+        LEFT JOIN work_planned_invocations plan ON plan.work_id=l.id
+        ${reviewJoin}
+        LEFT JOIN work_planned_invocations upstream ON upstream.work_id=plan.parent_work_id`, ids);
+    const final = new Map<string, typeof lineage[number]>();
+    for (const row of lineage) if (!final.has(row.seed) || row.depth > final.get(row.seed)!.depth) final.set(row.seed, row);
+    for (const row of final.values()) {
+      if (row.next !== null) throw new Error(row.depth >= 64 ? 'Assignment lineage exceeds supported depth' : 'Assignment lineage cycle');
+    }
+    const roots = [...new Set(candidates.map(row => final.get(row.id)!.id))];
+    const rootIds = JSON.stringify(roots);
+    const workRows = database.readAll<Record<string, unknown>>(`SELECT w.id,w.channel_id AS channelId,w.state,
+      w.origin_message_id AS originMessageId,coalesce(p.title,substr(m.body_text,1,160),'Assignment') AS title,
+      coalesce(p.summary,m.body_text) AS summary,m.body_text AS originalRequest,w.created_at AS createdAt,
+      w.terminal_reason AS terminalReason FROM works w LEFT JOIN work_thread_presentations p ON p.work_id=w.id
+      LEFT JOIN messages m ON m.id=w.origin_message_id WHERE w.id IN (SELECT value FROM json_each(?))`, rootIds);
+    const works = new Map(workRows.map(row => [String(row.id), row]));
+    const conclusionRows = database.readAll<{ id: string; payload: string; sequence: number }>(`SELECT e.aggregate_id AS id,e.payload_json AS payload,e.sequence
+      FROM events e WHERE e.aggregate_kind='resident_assignment' AND e.aggregate_id IN (SELECT value FROM json_each(?))
+      AND e.aggregate_version=(SELECT max(last.aggregate_version) FROM events last
+        WHERE last.aggregate_kind='resident_assignment' AND last.aggregate_id=e.aggregate_id)`, rootIds);
+    const conclusions = new Map(conclusionRows.map(row => [row.id,
+      { ...JSON.parse(row.payload) as AssignmentConclusion, eventSequence: row.sequence }]));
+    const outcomeRows = hasOutcomeStore ? database.readAll<{ id: string; key: string; reviewState: string | null; settledAt: string | null }>(`SELECT roots.value AS id,o.outcome_key AS key,
+      review.state AS reviewState,o.settled_at AS settledAt FROM json_each(?) roots
+      JOIN resident_outcomes o ON o.outcome_key=(SELECT latest.outcome_key FROM resident_outcomes latest
+        LEFT JOIN works current_review ON current_review.id=latest.review_work_id
+        WHERE latest.source_work_id=roots.value
+        ORDER BY CASE WHEN latest.settled_at IS NULL AND current_review.state IN ('queued','leased','running','cancelling') THEN 0 ELSE 1 END,
+          latest.created_at DESC,latest.outcome_key DESC LIMIT 1)
+      LEFT JOIN works review ON review.id=o.review_work_id`, rootIds) : [];
+    const outcomes = new Map(outcomeRows.map(row => [row.id, row]));
+    const deliveredRows = database.readAll<{ id: string }>(`SELECT DISTINCT m.work_id AS id FROM messages m JOIN works w ON w.id=m.work_id
+      WHERE m.work_id IN (SELECT value FROM json_each(?)) AND m.channel_id=w.channel_id
+        AND m.author_principal_id=w.target_principal_id AND m.kind='result' AND m.stored_visibility='visible'
+        AND NOT EXISTS(SELECT 1 FROM messages tombstone WHERE tombstone.tombstones_message_id=m.id)`, rootIds);
+    const delivered = new Set(deliveredRows.map(row => row.id));
+    return roots.flatMap(id => {
+      const work = works.get(id);
+      if (!work) return [];
+      const conclusion = conclusions.get(id) ?? null;
+      const outcome = outcomes.get(id);
+      const reviewing = outcome && outcome.settledAt === null && outcome.reviewState !== null
+        && ['queued','leased','running','cancelling'].includes(outcome.reviewState);
+      let assignmentState: string;
+      if (conclusion && conclusion.state !== 'blocked') assignmentState = conclusion.state;
+      else if (conclusion) {
+        const revisitKey = `assignment-revisit:${conclusion.workId}:${conclusion.eventSequence}`;
+        assignmentState = reviewing && (outcome!.key === revisitKey || outcome!.key.startsWith(`${revisitKey}:assessment-retry:`))
+          ? 'active' : conclusion.state;
+      } else if (work.state === 'cancelled' || work.state === 'failed') assignmentState = String(work.state);
+      else if (work.state !== 'succeeded' || reviewing) assignmentState = 'active';
+      else if (outcome && (delivered.has(id) || (outcome.settledAt !== null && outcome.reviewState === 'succeeded'))) assignmentState = 'returned';
+      else assignmentState = outcome ? 'needs_review' : 'complete';
+      return [{ ...work, assignmentState, conclusion }];
+    });
+  }
   function revisits() {
     const records = database.readAll<{ id: string }>("SELECT DISTINCT aggregate_id AS id FROM events WHERE aggregate_kind='resident_assignment'");
     return records.flatMap(({ id }) => {
@@ -201,5 +290,5 @@ export function createResidentAssignments(database: M11Database) {
       return due || dependenciesReady ? [value] : [];
     });
   }
-  return { root, latest, presentationState, report, list, revisits, assertOpen, direction };
+  return { root, latest, presentationState, report, list, listForProjection, revisits, assertOpen, direction };
 }

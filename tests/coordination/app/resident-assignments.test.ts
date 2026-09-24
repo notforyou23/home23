@@ -390,6 +390,21 @@ test('canonical observations reach the existing agency and preserve private task
   assert.equal(JSON.parse(readFileSync(source, 'utf8')).assignments[0].id, id);
 });
 
+test('batched resident projection retains assignment lineage and presentation states', t => {
+  const f = fixture(t);
+  const active = f.admit('projection-active');
+  const blocked = f.admit('projection-blocked');
+  f.cancel(blocked);
+  f.assignments.report(f.context, f.origin, {
+    work_id: blocked, state: 'blocked', summary: 'Waiting for owner direction',
+  }, 'projection-blocked-report');
+  const expected = f.assignments.list(BOT_ID, true, 1000);
+  const actual = f.assignments.listForProjection(BOT_ID);
+  assert.deepEqual(actual, expected);
+  assert.equal(actual.find(row => row.id === active)?.assignmentState, 'active');
+  assert.equal(actual.find(row => row.id === blocked)?.assignmentState, 'blocked');
+});
+
 test('canonical execution termination remains an open agency obligation while assignment state is not closed', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'canonical-obligation-filter-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
