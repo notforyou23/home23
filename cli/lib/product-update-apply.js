@@ -278,11 +278,16 @@ function startObservation(result, error) {
 function candidateStatusKind(result) {
   const processes = Array.isArray(result?.processes) ? result.processes : [];
   const failed = processes.some(row => row?.owned === false || row?.status === 'errored' || row?.status === 'waiting restart');
-  const maskedReady = result?.status === 'recovery_required' && result?.error?.code === 'update_recovery_required' && result?.readiness?.ready === true;
-  if (!failed && (result?.ok !== false || maskedReady) && (result?.readiness?.ready === true || result?.status === 'ready')) return 'ready';
-  if (!failed && result?.ok !== false && result?.readiness?.recoveryRequired !== true &&
+  const masked = result?.status === 'recovery_required' && result?.error?.code === 'update_recovery_required';
+  if (!failed && (result?.ok !== false || masked) && (result?.readiness?.ready === true || result?.status === 'ready')) return 'ready';
+  if (!failed && (result?.ok !== false || masked) && result?.readiness?.recoveryRequired !== true &&
       (result?.status === 'starting' || (result?.readiness?.ready === false && processes.some(row => row.status === 'online' || row.status === 'launching')))) return 'starting';
   return 'failed';
+}
+function healthyAdmittedWriters(rows, writerNames) {
+  const known = new Set(writerNames || []);
+  return Array.isArray(rows) && rows.some(row => known.has(row.name) && (row.status === 'online' || row.status === 'launching')) &&
+    !rows.some(row => row.status === 'errored' || row.status === 'waiting restart' || (BUSY.has(row.status) && !known.has(row.name)));
 }
 async function defaultAcquireHostLock(home, owner) {
   const runtime = privateDirectory(join(home, 'runtime'));
@@ -743,15 +748,19 @@ async function finish(journal, dependencies, verify) {
     const withoutStartFailure = dependencies.verifyBehavior ? behavior :
       defaultBehavior({ home, journal: { ...journal, startOk: true }, identityPreserved, verify });
     if (withoutStartFailure.ok) {
-      let current = null;
+      let current = null, statusUnavailable = false;
       try { current = await (dependencies.status || defaultStatus)(home, journal); }
-      catch { /* An unavailable status is not evidence of readiness. */ }
-      const kind = candidateStatusKind(current);
+      catch { statusUnavailable = true; }
+      const maskedStatusFailure = current?.ok === false && current?.status === 'recovery_required' &&
+        current?.error?.code === 'update_recovery_required' && !current?.readiness && !current?.processes;
+      const kind = statusUnavailable || !current || maskedStatusFailure ? 'unavailable' : candidateStatusKind(current);
       if (kind === 'ready') {
         journal = await commitPhase(file, { ...journal, startOk: true, startStatus: 'ready', startErrorCode: null }, dependencies);
         behavior = withoutStartFailure;
       } else if (kind === 'starting' && await busy()) {
         return deferred(home, 'candidate_starting', 'This home is still starting. Its services remain running; resume the update after it becomes ready.', journal);
+      } else if (kind === 'unavailable' && healthyAdmittedWriters(await list(home), journal.writerNames)) {
+        return deferred(home, 'candidate_starting', 'This home is running but readiness could not be checked yet. Resume the update after it becomes ready.', journal);
       }
     }
   }
