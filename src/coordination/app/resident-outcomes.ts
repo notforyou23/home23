@@ -47,6 +47,9 @@ export function createResidentOutcomeStore(database: M11Database) {
   let savedCursor = observedCursor;
   let initialTerminalDiscovery = true;
   let recoveryMaxRowid: number | null = null;
+  let residentRecoveryRowid = 0;
+  let scheduledRecoverySequence = 0;
+  let scheduledRecoveryMaxSequence: number | null = null;
   let residentRecoveryComplete = false;
   let scheduledRecoveryComplete = false;
   let lastRevisitSweepAt = 0;
@@ -149,16 +152,23 @@ export function createResidentOutcomeStore(database: M11Database) {
         recoveryMaxRowid ??= database.readOne<{ id: number }>('SELECT coalesce(max(rowid),0) AS id FROM works')!.id;
         const recoveryPageSize = options?.startup ? 16 : 4;
         if (!residentRecoveryComplete) {
-          const rows = database.readAll<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`
-          SELECT w.id, w.state, w.terminal_reason AS reason, p.assignment_json AS assignment,
-            m.body_text AS text FROM works w JOIN work_planned_invocations p ON p.work_id = w.id
-            LEFT JOIN messages m ON m.id = 'msg_' || substr(w.id, 5)
-          WHERE w.rowid <= ? AND w.kind = 'resident_work_thread' AND w.state IN ('succeeded','failed','cancelled')
-            AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id = 1)
-            AND (w.state <> 'succeeded' OR m.id IS NOT NULL)
-            AND NOT EXISTS (SELECT 1 FROM resident_outcomes o WHERE o.outcome_key = 'work:' || w.id)
-          ORDER BY w.terminal_at, w.id LIMIT ?`, recoveryMaxRowid, recoveryPageSize);
-          for (const row of rows) {
+          // Advance through the frozen Work set by rowid. A filtered NOT EXISTS
+          // page starts at the beginning on every tick and rescans old history.
+          const candidates = database.readAll<{ rowid: number; id: string; kind: string; state: string }>(`
+            SELECT rowid, id, kind, state FROM works WHERE rowid > ? AND rowid <= ?
+            ORDER BY rowid LIMIT 64`, residentRecoveryRowid, recoveryMaxRowid);
+          let processed = 0;
+          for (const candidate of candidates) {
+            residentRecoveryRowid = candidate.rowid;
+            if (candidate.kind !== 'resident_work_thread' || !['succeeded', 'failed', 'cancelled'].includes(candidate.state)) continue;
+            const row = database.readOne<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`
+              SELECT w.id, w.state, w.terminal_reason AS reason, p.assignment_json AS assignment,
+                m.body_text AS text FROM works w JOIN work_planned_invocations p ON p.work_id = w.id
+              LEFT JOIN messages m ON m.id = 'msg_' || substr(w.id, 5)
+              WHERE w.id = ? AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id = 1)
+                AND (w.state <> 'succeeded' OR m.id IS NOT NULL)
+                AND NOT EXISTS (SELECT 1 FROM resident_outcomes o WHERE o.outcome_key = 'work:' || w.id)`, candidate.id);
+            if (!row) continue;
             const details = database.readAll<{ payload: string }>(`SELECT payload_json AS payload FROM events
               WHERE sequence >= (SELECT min(sequence) FROM events WHERE aggregate_id = ?)
               AND type = 'communication.recorded' AND json_extract(payload_json, '$.communication.workId') = ?
@@ -167,26 +177,40 @@ export function createResidentOutcomeStore(database: M11Database) {
               assignment: JSON.parse(row.assignment), result: row.text,
               helperDeliveries: botDeliveryEvidence(database, row.id),
               terminalEvidence: details.map(x => JSON.parse(x.payload)) });
+            if (++processed >= recoveryPageSize) break;
           }
-          residentRecoveryComplete = rows.length < recoveryPageSize;
+          residentRecoveryComplete = candidates.length < 64 || residentRecoveryRowid >= recoveryMaxRowid;
         }
         // Scheduled channel runs also require Jerry's accountable follow-through.
         if (!scheduledRecoveryComplete) {
-          const scheduled = database.readAll<{id:string;state:string;reason:string|null;assignment:string;text:string|null}>(`
-          SELECT w.id,w.state,w.terminal_reason AS reason,e.payload_json AS assignment,m.body_text AS text
-          FROM events e JOIN works w ON w.origin_message_id=json_extract(e.payload_json,'$.messageId')
-          LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
-          WHERE w.rowid <= ? AND e.aggregate_kind='scheduled_channel_run' AND e.aggregate_version=1 AND w.kind='channel.bot_turn'
-            AND w.state IN ('succeeded','failed','cancelled')
-            AND (w.state<>'succeeded' OR m.id IS NOT NULL)
-            AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1)
-            AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.outcome_key='scheduled:'||w.id)
-          ORDER BY w.terminal_at,w.id LIMIT ?`, recoveryMaxRowid, recoveryPageSize);
-          for (const row of scheduled) enqueue(`scheduled:${row.id}`, row.id, {
-            status: row.state, reason: row.reason, assignment: JSON.parse(row.assignment), result: row.text,
-            terminalEvidence: workTerminalEvidence(database, row.id),
-          });
-          scheduledRecoveryComplete = scheduled.length < recoveryPageSize;
+          scheduledRecoveryMaxSequence ??= database.readOne<{ sequence: number }>('SELECT coalesce(max(sequence),0) AS sequence FROM events')!.sequence;
+          const candidates = database.readAll<{ sequence: number; kind: string; version: number; payload: string | null }>(`
+            SELECT sequence, aggregate_kind AS kind, aggregate_version AS version,
+              CASE WHEN aggregate_kind = 'scheduled_channel_run' THEN payload_json END AS payload
+            FROM events WHERE sequence > ? AND sequence <= ? ORDER BY sequence LIMIT 64`,
+            scheduledRecoverySequence, scheduledRecoveryMaxSequence);
+          let processed = 0;
+          for (const candidate of candidates) {
+            scheduledRecoverySequence = candidate.sequence;
+            if (candidate.kind !== 'scheduled_channel_run' || candidate.version !== 1 || candidate.payload === null) continue;
+            const messageId = (JSON.parse(candidate.payload) as { messageId?: unknown }).messageId;
+            if (typeof messageId !== 'string') continue;
+            const rows = database.readAll<{id:string;state:string;reason:string|null;assignment:string;text:string|null}>(`
+              SELECT w.id,w.state,w.terminal_reason AS reason,m.body_text AS text
+              FROM works w LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
+              WHERE w.origin_message_id=? AND w.rowid <= ? AND w.kind='channel.bot_turn'
+                AND w.state IN ('succeeded','failed','cancelled')
+                AND (w.state<>'succeeded' OR m.id IS NOT NULL)
+                AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1)
+                AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.outcome_key='scheduled:'||w.id)`,
+              messageId, recoveryMaxRowid);
+            for (const row of rows) enqueue(`scheduled:${row.id}`, row.id, {
+              status: row.state, reason: row.reason, assignment: JSON.parse(candidate.payload), result: row.text,
+              terminalEvidence: workTerminalEvidence(database, row.id),
+            });
+            if (++processed >= recoveryPageSize) break;
+          }
+          scheduledRecoveryComplete = candidates.length < 64 || scheduledRecoverySequence >= scheduledRecoveryMaxSequence;
         }
         initialTerminalDiscovery = !(residentRecoveryComplete && scheduledRecoveryComplete);
       }

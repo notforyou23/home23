@@ -32,7 +32,7 @@ test('idle outcome discovery does not rescan terminal Work and scheduled runs', 
  const original=f.database.readAll.bind(f.database);
  let terminalScans=0;
  f.database.readAll=((sql:string,...params:unknown[])=>{
-  if(sql.includes('FROM works w JOIN work_planned_invocations') || sql.includes('FROM events e JOIN works w ON w.origin_message_id')) terminalScans++;
+  if(sql.includes('FROM works WHERE rowid > ?') || sql.includes('FROM events WHERE sequence > ? AND sequence <= ?')) terminalScans++;
   return original(sql,...params);
  }) as typeof f.database.readAll;
  const store=createResidentOutcomeStore(f.database);
@@ -43,6 +43,27 @@ test('idle outcome discovery does not rescan terminal Work and scheduled runs', 
   requestId:fixtureId('request',999),correlationId:fixtureId('correlation',999),
   payload:{messageId:fixtureId('message',999)},createdAt:AT}}));
  store.discover();assert.equal(terminalScans,2,'new scheduled admission resolves its exact Work without a global rescan');
+});
+
+test('startup recovery advances through irrelevant event history in bounded pages', t => {
+ const f=setup();t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+ for(let n=0;n<130;n++)f.database.mutateWithEvent(()=>({value:undefined,event:{
+  type:'activity.updated',aggregateKind:'irrelevant_history',aggregateId:`history-${n}`,aggregateVersion:1,
+  channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,requestId:fixtureId('request',5000+n),
+  correlationId:fixtureId('correlation',5000+n),payload:{large:'x'.repeat(1000)},createdAt:AT,
+ }}));
+ const original=f.database.readAll.bind(f.database);
+ const pageStarts:number[]=[];
+ f.database.readAll=((sql:string,...params:unknown[])=>{
+  if(sql.includes('FROM events WHERE sequence > ? AND sequence <= ?')) pageStarts.push(params[0] as number);
+  return original(sql,...params);
+ }) as typeof f.database.readAll;
+ const store=createResidentOutcomeStore(f.database);
+ for(let n=0;n<4;n++)store.discover();
+ assert.ok(pageStarts.length >= 3,'history is drained across calls rather than one broad scan');
+ assert.equal(pageStarts[0],0);
+ assert.ok(pageStarts[1]! > pageStarts[0]! && pageStarts[2]! > pageStarts[1]!);
+ assert.equal(store.pending().length,0);
 });
 
 test('terminal Work created after startup enters the durable outcome inbox',t=>{
