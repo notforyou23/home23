@@ -17,6 +17,47 @@ function readJsonl(file) {
     .filter(Boolean);
 }
 
+function fileStamp(file) {
+  const stat = statSync(file, { bigint: true });
+  return {
+    dev: stat.dev, ino: stat.ino, size: stat.size,
+    mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs,
+  };
+}
+
+function sameStamp(a, b) {
+  return Boolean(a && b && a.dev === b.dev && a.ino === b.ino &&
+    a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs);
+}
+
+function appendedSince(previous, current) {
+  return Boolean(previous && current && previous.dev === current.dev &&
+    previous.ino === current.ino && current.size > previous.size);
+}
+
+function readBytes(file, start, end) {
+  const length = Number(end - start);
+  const buffer = Buffer.alloc(length);
+  const fd = openSync(file, 'r');
+  try {
+    let offset = 0;
+    while (offset < length) {
+      const read = readSync(fd, buffer, offset, length - offset, Number(start) + offset);
+      if (read === 0) throw new Error(`Short agency ledger read: ${file}`);
+      offset += read;
+    }
+    return buffer;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function countNewlines(buffer) {
+  let count = 0;
+  for (const byte of buffer) if (byte === 0x0a) count += 1;
+  return count;
+}
+
 function parseJsonlLines(text) {
   return String(text || '')
     .split('\n')
@@ -108,6 +149,8 @@ export class PursuitStore {
     this.tasksPath = join(this.dir, 'tasks.jsonl');
     this.memoryCandidatesPath = join(this.dir, 'memory-candidates.jsonl');
     this.pursuitIndex = null;
+    this.inboxCountCache = null;
+    this.taskIndexCache = null;
     mkdirSync(this.dir, { recursive: true });
     for (const file of [this.inboxPath, this.pursuitsPath, this.receiptsPath, this.consequencesPath, this.scratchPath, this.truthPath, this.tasksPath, this.memoryCandidatesPath]) {
       if (!existsSync(file)) closeSync(openSync(file, 'a'));
@@ -155,10 +198,28 @@ export class PursuitStore {
 
   countInboxLines() {
     try {
+      const stamp = fileStamp(this.inboxPath);
+      const cached = this.inboxCountCache;
+      if (sameStamp(cached?.stamp, stamp)) return cached.count;
+      if (appendedSince(cached?.stamp, stamp) && stamp.size - cached.stamp.size <= 8n * 1024n * 1024n) {
+        const delta = readBytes(this.inboxPath, cached.stamp.size, stamp.size);
+        const stillCurrent = fileStamp(this.inboxPath);
+        const count = cached.count + countNewlines(delta) +
+          (delta.at(-1) === 0x0a ? 0 : 1) - (cached.endsWithNewline ? 0 : 1);
+        if (sameStamp(stamp, stillCurrent)) {
+          this.inboxCountCache = { stamp, count, endsWithNewline: delta.at(-1) === 0x0a };
+        } else {
+          this.inboxCountCache = null;
+        }
+        return count;
+      }
       const fd = openSync(this.inboxPath, 'r');
       try {
-        const size = statSync(this.inboxPath).size;
-        if (size === 0) return 0;
+        const size = Number(stamp.size);
+        if (size === 0) {
+          this.inboxCountCache = { stamp, count: 0, endsWithNewline: true };
+          return 0;
+        }
         // Count newlines by scanning the file in chunks — no JSON parsing
         let count = 0;
         const chunkSize = 64 * 1024;
@@ -166,23 +227,26 @@ export class PursuitStore {
         let pos = 0;
         while (pos < size) {
           const toRead = Math.min(chunkSize, size - pos);
-          readSync(fd, buf, 0, toRead, pos);
-          for (let i = 0; i < toRead; i++) {
+          const bytesRead = readSync(fd, buf, 0, toRead, pos);
+          if (bytesRead === 0) throw new Error('Short agency inbox read');
+          for (let i = 0; i < bytesRead; i++) {
             if (buf[i] === 0x0a) count++;
           }
-          pos += toRead;
+          pos += bytesRead;
         }
         // Count last line if file doesn't end with newline
-        if (size > 0) {
-          const last = Buffer.alloc(1);
-          readSync(fd, last, 0, 1, size - 1);
-          if (last[0] !== 0x0a) count++;
-        }
+        const last = Buffer.alloc(1);
+        readSync(fd, last, 0, 1, size - 1);
+        const endsWithNewline = last[0] === 0x0a;
+        if (!endsWithNewline) count++;
+        this.inboxCountCache = sameStamp(stamp, fileStamp(this.inboxPath))
+          ? { stamp, count, endsWithNewline } : null;
         return count;
       } finally {
         closeSync(fd);
       }
     } catch {
+      this.inboxCountCache = null;
       return 0;
     }
   }
@@ -204,12 +268,7 @@ export class PursuitStore {
   }
 
   listTasks({ status = null, limit = 100 } = {}) {
-    const latest = new Map();
-    for (const row of readJsonl(this.tasksPath)) {
-      const task = row.task || row;
-      if (!task?.id) continue;
-      latest.set(task.id, task);
-    }
+    const latest = this.loadTaskIndex();
     let rows = Array.from(latest.values());
     if (status) {
       const statuses = Array.isArray(status) ? new Set(status) : new Set([status]);
@@ -233,12 +292,7 @@ export class PursuitStore {
 
   getTask(id) {
     if (!id) return null;
-    const rows = readJsonl(this.tasksPath);
-    for (let i = rows.length - 1; i >= 0; i -= 1) {
-      const task = rows[i]?.task || rows[i];
-      if (task?.id === id) return task;
-    }
-    return null;
+    return this.loadTaskIndex().get(id) || null;
   }
 
   /** Resolve a fixed set of task identities with one ledger read. */
@@ -246,12 +300,49 @@ export class PursuitStore {
     const wanted = new Set(ids);
     const found = new Map();
     if (!wanted.size) return found;
-    const rows = readJsonl(this.tasksPath);
-    for (let i = rows.length - 1; i >= 0 && found.size < wanted.size; i -= 1) {
-      const task = rows[i]?.task || rows[i];
-      if (wanted.has(task?.id) && !found.has(task.id)) found.set(task.id, task);
+    const latest = this.loadTaskIndex();
+    for (const [id, task] of Array.from(latest).reverse()) {
+      if (wanted.has(id)) found.set(id, task);
     }
     return found;
+  }
+
+  loadTaskIndex() {
+    let stamp;
+    try {
+      stamp = fileStamp(this.tasksPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      this.taskIndexCache = null;
+      return new Map();
+    }
+    const cached = this.taskIndexCache;
+    if (sameStamp(cached?.stamp, stamp)) return cached.latest;
+    let latest;
+    if (appendedSince(cached?.stamp, stamp) && cached.endsWithNewline &&
+        stamp.size - cached.stamp.size <= 8n * 1024n * 1024n) {
+      latest = new Map(cached.latest);
+      for (const row of parseJsonlLines(readBytes(this.tasksPath, cached.stamp.size, stamp.size).toString('utf8'))) {
+        const task = row.task || row;
+        if (task?.id) {
+          latest.delete(task.id);
+          latest.set(task.id, task);
+        }
+      }
+    } else {
+      latest = new Map();
+      for (const row of readJsonl(this.tasksPath)) {
+        const task = row.task || row;
+        if (task?.id) {
+          latest.delete(task.id);
+          latest.set(task.id, task);
+        }
+      }
+    }
+    const last = stamp.size ? readBytes(this.tasksPath, stamp.size - 1n, stamp.size)[0] : 0x0a;
+    this.taskIndexCache = sameStamp(stamp, fileStamp(this.tasksPath))
+      ? { stamp, latest, endsWithNewline: last === 0x0a } : null;
+    return latest;
   }
 
   updateTask(id, patch = {}, event = {}) {

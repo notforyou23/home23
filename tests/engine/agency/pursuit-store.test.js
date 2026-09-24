@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PursuitStore } from '../../../engine/src/agency/pursuit-store.js';
@@ -15,6 +15,45 @@ test('PursuitStore lists recent inbox rows without loading the whole ledger', ()
   const rows = store.listInbox({ limit: 5 });
 
   assert.deepEqual(rows.map((row) => row.id), ['inbox-39', 'inbox-38', 'inbox-37', 'inbox-36', 'inbox-35']);
+});
+
+test('inbox count tracks own and external appends, replacement, and truncation', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-inbox-count-'));
+  const store = new PursuitStore({ brainDir: dir });
+  assert.equal(store.countInboxLines(), 0);
+  store.appendInbox({ id: 'a' });
+  assert.equal(store.countInboxLines(), 1);
+  appendFileSync(store.inboxPath, '{"id":"b"}\n');
+  assert.equal(store.countInboxLines(), 2);
+  appendFileSync(store.inboxPath, '{"id":"c"}');
+  assert.equal(store.countInboxLines(), 3);
+  appendFileSync(store.inboxPath, '\n{"id":"d"}\n');
+  assert.equal(store.countInboxLines(), 4);
+  writeFileSync(`${store.inboxPath}.next`, 'replacement\n');
+  renameSync(`${store.inboxPath}.next`, store.inboxPath);
+  assert.equal(store.countInboxLines(), 1);
+  writeFileSync(store.inboxPath, '');
+  assert.equal(store.countInboxLines(), 0);
+});
+
+test('task projection follows appended rows and rebuilt files without stale tasks', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-task-index-'));
+  const store = new PursuitStore({ brainDir: dir });
+  store.appendTask({ task: { id: 'a', status: 'open', updatedAt: '2026-01-01' } });
+  store.appendTask({ task: { id: 'b', status: 'open', updatedAt: '2026-01-02' } });
+  assert.deepEqual(store.listTasks({ status: 'open' }).map(({ id }) => id), ['b', 'a']);
+  assert.equal(store.getTask('a').status, 'open');
+  store.appendTask({ task: { id: 'a', status: 'done', updatedAt: '2026-01-03' } });
+  assert.deepEqual(store.listTasks({ status: 'open' }).map(({ id }) => id), ['b']);
+  assert.deepEqual([...store.getTasks(['a', 'b']).keys()], ['a', 'b']);
+  appendFileSync(store.tasksPath, `${JSON.stringify({ task: { id: 'b', status: 'done' } })}\n`);
+  assert.deepEqual(store.listTasks({ status: 'open' }), []);
+  writeFileSync(`${store.tasksPath}.next`, `${JSON.stringify({ task: { id: 'c', status: 'open' } })}\n`);
+  renameSync(`${store.tasksPath}.next`, store.tasksPath);
+  assert.equal(store.getTask('a'), null);
+  assert.deepEqual(store.listTasks().map(({ id }) => id), ['c']);
+  writeFileSync(store.tasksPath, '');
+  assert.deepEqual(store.listTasks(), []);
 });
 
 // ── pursuits ledger disease (2026-07-17): diet + door ─────────────────
