@@ -387,6 +387,32 @@ test('extractProductArchive rejects path escape and accepts relative payload fil
   );
 });
 
+test('extractProductArchive accepts contained parent-relative npm links and rejects escapes', t => {
+  const root = tempRoot(t);
+  const artifact = path.join(root, 'artifact');
+  fs.mkdirSync(path.join(artifact, 'node_modules', '.bin'), { recursive: true });
+  fs.mkdirSync(path.join(artifact, 'node_modules', 'tool'));
+  fs.writeFileSync(path.join(artifact, 'node_modules', 'tool', 'cli.js'), 'ok\n');
+  fs.symlinkSync('../tool/cli.js', path.join(artifact, 'node_modules', '.bin', 'tool'));
+  const archive = path.join(root, 'contained.tar');
+  packPayloadArchive(artifact, archive);
+  const destination = path.join(root, 'contained');
+  extractProductArchive({ archivePath: archive, destinationDirectory: destination });
+  assert.equal(fs.readlinkSync(path.join(destination, 'node_modules', '.bin', 'tool')), '../tool/cli.js');
+  assert.equal(fs.readFileSync(path.join(destination, 'node_modules', '.bin', 'tool'), 'utf8'), 'ok\n');
+
+  fs.unlinkSync(path.join(artifact, 'node_modules', '.bin', 'tool'));
+  fs.symlinkSync('../../../escape', path.join(artifact, 'node_modules', '.bin', 'tool'));
+  const unsafeArchive = path.join(root, 'escape.tar');
+  packPayloadArchive(artifact, unsafeArchive);
+  const unsafeDestination = path.join(root, 'unsafe');
+  assert.throws(
+    () => extractProductArchive({ archivePath: unsafeArchive, destinationDirectory: unsafeDestination }),
+    error => error.code === 'archive_unsafe',
+  );
+  assert.equal(fs.existsSync(path.join(unsafeDestination, 'node_modules', '.bin', 'tool')), false);
+});
+
 test('retainedUpdateController exposes journal and recover entry beside the home', t => {
   const root = tempRoot(t);
   const home = path.join(root, 'home');

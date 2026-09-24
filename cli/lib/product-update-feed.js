@@ -797,16 +797,19 @@ export function extractProductArchive({ archivePath, destinationDirectory } = {}
       mkdirSync(target, { recursive: true, mode: (mode & 0o7777) || 0o755 });
     } else if (typeFlag === '2') {
       const linkTarget = effectiveLink;
-      if (!linkTarget || isAbsolute(linkTarget) || linkTarget.split(/[/\\]/).includes('..')) {
+      if (!linkTarget || linkTarget.includes('\0') || isAbsolute(linkTarget)) {
         throw codedError('archive_unsafe', 'The release archive contains an unsafe symlink.');
       }
-      mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
-      symlinkSync(linkTarget, target);
       const resolved = resolve(dirname(target), linkTarget);
       if (!resolved.startsWith(destination + sep) && resolved !== destination) {
-        unlinkSync(target);
         throw codedError('archive_unsafe', 'The release archive symlink escapes its destination.');
       }
+      // npm package bins commonly use ../package/bin links. Allow them only
+      // when their resolved target stays in the extraction root, and never
+      // follow an existing symlink on the way to that target.
+      assertNoSymlinkAncestors(destination, resolved);
+      mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
+      symlinkSync(linkTarget, target);
     } else if (typeFlag === '0' || typeFlag === '\0' || typeFlag === '') {
       mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
       const out = openSync(target, 'wx', (mode & 0o7777) || 0o644);
