@@ -76,6 +76,7 @@ const EXPECTED_TABLES = [
   "message_fts_data",
   "message_fts_docsize",
   "message_fts_idx",
+  "message_journal_pending",
   "messages",
   "outbox",
   "pairing_sessions",
@@ -214,6 +215,8 @@ const EXPECTED_TRIGGERS = [
   "message_artifacts_require_ready_owner",
   "message_fts_after_insert_nonsearchable",
   "message_fts_after_insert_searchable",
+  "message_journal_pending_after_event",
+  "message_journal_pending_after_insert",
   "messages_immutable_delete",
   "messages_immutable_update",
   "messages_require_active_author",
@@ -308,7 +311,7 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
   assert.equal(COORDINATION_SCHEMA_VERSION, 21);
   assert.equal(
     COORDINATION_SCHEMA_CHECKSUM,
-    "56eea1f8c3ca8b44b026e9ddf6d3dac44552ab72442c33ccb3c7e446d5b35d27",
+    "ed59b3cd5a64230ee04d6adb92abe713dc2cdabe8af5721d67c167485a7ba5af",
   );
   assert.equal(
     COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
@@ -316,7 +319,7 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
   );
   assert.equal(
     COORDINATION_MIGRATION_PLAN_CHECKSUM,
-    "cb0b054b0a9ac9104be02a1b0666e609f6a0ad82adcf8ddecce10d6db6366623",
+    "1645d515a1394573b24defb84bccdcb50aca8f972a5b2eca6b57b8a286fd1f69",
   );
   assert.equal(
     COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
@@ -423,7 +426,7 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
       {version:18,name:"work-outcome-indexes",checksum:"bb32ab88f8aea9728cd96a0e091560358a0579d888c2c9c1a88823ee7dddb2e9",checksumLength:64},
       {version:19,name:"inbox-and-reconciliation-indexes",checksum:"df58e0a3beedf3a7aec735f0e9a5d9f1c2caa2b1c027a00bea4071411ca64275",checksumLength:64},
       {version:20,name:"chess-engines",checksum:"c5d7aad734c6516b629b0879a815f51bdb32ea1c33d2001209fc7c008c60a436",checksumLength:64},
-      {version:21,name:"notification-recovery-order",checksum:"a4799fb82863c9631c07141b781dac4decdd95e28192d8f874e4bb7f27d016b1",checksumLength:64},
+      {version:21,name:"notification-recovery-order",checksum:"b231fa7def776d8c69c2ff2d601ad29d2bf4643ed8ea33140a474359ef88c0e8",checksumLength:64},
     ],
   );
   assert.deepEqual(

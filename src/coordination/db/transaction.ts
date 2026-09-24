@@ -360,6 +360,13 @@ export function runMutationWithEvent<T>(
     const inputs = orderedEventInputs(outcome);
     assertEventSetIdentity(inputs);
     const events = Object.freeze(inputs.map((input) => appendEvent(database, input)));
+    // The event trigger checks each Message locally. This final indexed lookup
+    // also rejects a transaction that inserts several Messages but omits one
+    // canonical event, without rescanning the historical Message table.
+    if (Number(database.pragma("user_version", { simple: true })) >= 21 &&
+        database.prepare("SELECT 1 FROM message_journal_pending LIMIT 1").get()) {
+      throw new Error("every Message requires one exact canonical journal event");
+    }
     return {
       value: outcome.value,
       event: events[events.length - 1]!,
