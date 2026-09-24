@@ -14,6 +14,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const fsp = fs.promises;
 const crypto = require('node:crypto');
 const path = require('node:path');
 const lockfile = require('proper-lockfile');
@@ -150,10 +151,9 @@ class MemoryIngest {
     try { fs.mkdirSync(brainDir, { recursive: true }); } catch {}
   }
 
-  _loadSafe() {
-    if (!fs.existsSync(this.objectsPath)) return { objects: [] };
+  async _loadSafe() {
     try {
-      const raw = fs.readFileSync(this.objectsPath, 'utf8');
+      const raw = await fsp.readFile(this.objectsPath, 'utf8');
       if (!raw.trim()) return { objects: [] };
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed.objects)) return { objects: [] };
@@ -239,14 +239,14 @@ class MemoryIngest {
     return { ...store, objects: kept };
   }
 
-  _archiveObjects(objects = []) {
+  async _archiveObjects(objects = []) {
     if (!objects.length) return;
     try {
       const lines = objects.map((object) => JSON.stringify({
         archived_at: new Date().toISOString(),
         object,
       })).join('\n') + '\n';
-      fs.appendFileSync(this.archivePath, lines);
+      await fsp.appendFile(this.archivePath, lines);
     } catch (err) {
       this.logger.warn?.('[memory-ingest] archive append failed:', err?.message || err);
     }
@@ -259,7 +259,7 @@ class MemoryIngest {
     await lockfile.lock(this.objectsPath, this._lockOptions)
       .then(async (release) => {
         try {
-          const store = this._loadSafe();
+          const store = await this._loadSafe();
           const archived = [];
           const compacted = this.compactActiveStoreForWrite(store, (object) => archived.push(object));
           if (!archived.length) {
@@ -269,8 +269,8 @@ class MemoryIngest {
             };
             return;
           }
-          this._archiveObjects(archived);
-          fs.writeFileSync(this.objectsPath, JSON.stringify(compacted));
+          await this._archiveObjects(archived);
+          await fsp.writeFile(this.objectsPath, JSON.stringify(compacted));
           result = { archived: archived.length, active: compacted.objects.length };
           this.logger.info?.('[memory-ingest] compacted active memory object store', {
             archived: result.archived,
@@ -308,7 +308,7 @@ class MemoryIngest {
       await lockfile.lock(this.objectsPath, this._lockOptions)
         .then(async (release) => {
           try {
-            const store = this._loadSafe();
+            const store = await this._loadSafe();
             for (const mo of store.objects) {
               const tags = Array.isArray(mo.scope?.applies_to) ? mo.scope.applies_to : [];
               let matchedRule = null;
@@ -338,8 +338,8 @@ class MemoryIngest {
               }
             }
             if (updated.length) {
-              fs.writeFileSync(this.objectsPath, JSON.stringify(store));
-              appendSubstrateDecayReceipts(this.receiptsPath, updated);
+              await fsp.writeFile(this.objectsPath, JSON.stringify(store));
+              await appendSubstrateDecayReceipts(this.receiptsPath, updated);
             }
           } finally {
             await release();
@@ -362,14 +362,14 @@ class MemoryIngest {
   async _writeFromObservationLocked(obs, draft) {
     // Ensure the file exists before acquiring a lock
     if (!fs.existsSync(this.objectsPath)) {
-      fs.writeFileSync(this.objectsPath, JSON.stringify({ objects: [] }));
+      await fsp.writeFile(this.objectsPath, JSON.stringify({ objects: [] }));
     }
 
     let written = null;
     await lockfile.lock(this.objectsPath, this._lockOptions)
       .then(async (release) => {
         try {
-          const store = this._loadSafe();
+          const store = await this._loadSafe();
           const existing = store.objects.find(
             (o) => Array.isArray(o.provenance?.source_refs)
               && o.provenance.source_refs.includes(obs.sourceRef)
@@ -384,7 +384,7 @@ class MemoryIngest {
           }
           const archived = [];
           const compacted = this.compactActiveStoreForWrite(store, (object) => archived.push(object));
-          this._archiveObjects(archived);
+          await this._archiveObjects(archived);
           if (archived.length > 1) {
             this.logger.info?.('[memory-ingest] compacted active memory object store', {
               archived: archived.length,
@@ -392,7 +392,7 @@ class MemoryIngest {
               maxObjects: this.maxObjects,
             });
           }
-          fs.writeFileSync(this.objectsPath, JSON.stringify(compacted));
+          await fsp.writeFile(this.objectsPath, JSON.stringify(compacted));
           written = mo;
         } finally {
           await release();
@@ -419,7 +419,7 @@ class MemoryIngest {
         substrate: written.provenance?.substrate || null,
         nodeProvenance: written.provenance?.node_profile || null,
       };
-      try { fs.appendFileSync(this.receiptsPath, JSON.stringify(receipt) + '\n'); }
+      try { await fsp.appendFile(this.receiptsPath, JSON.stringify(receipt) + '\n'); }
       catch (err) { this.logger.warn?.('[memory-ingest] receipt append failed:', err?.message || err); }
     }
 
@@ -525,7 +525,7 @@ function substrateFromMemoryObject(mo = {}) {
   };
 }
 
-function appendSubstrateDecayReceipts(receiptsPath, objects = []) {
+async function appendSubstrateDecayReceipts(receiptsPath, objects = []) {
   if (!objects.length) return;
   const lines = objects.map((mo) => JSON.stringify({
     at: mo.last_decayed_at || new Date().toISOString(),
@@ -545,7 +545,7 @@ function appendSubstrateDecayReceipts(receiptsPath, objects = []) {
     },
     substrate: mo.provenance?.substrate || null,
   })).join('\n') + '\n';
-  fs.appendFileSync(receiptsPath, lines);
+  await fsp.appendFile(receiptsPath, lines);
 }
 
 function buildObservationStateDelta(existing, obs, { confidence, draft } = {}) {
