@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { statSync } from "node:fs";
 
 import {
+  COORDINATION_MIGRATIONS,
   COORDINATION_SCHEMA_CHECKSUM,
   COORDINATION_SCHEMA_VERSION,
 } from "../migrations/index.js";
@@ -43,7 +44,22 @@ export interface CoordinationDatabaseOpenReceipt {
   schemaVersion: number;
   schemaChecksum: string;
   migratedFrom: number;
-  startupCheck: IntegrityCheck | "schema_only";
+  startupCheck: IntegrityCheck | "schema_only" | "schema_migration_only";
+}
+
+// Pin the one migration whose DDL changes indexes/triggers without rewriting
+// existing application rows. A changed v21 migration returns to full data
+// checks until its new bytes receive a separate review.
+const REVIEWED_SCHEMA_ONLY_V21_CHECKSUM =
+  "b231fa7def776d8c69c2ff2d601ad29d2bf4643ed8ea33140a474359ef88c0e8";
+
+function isReviewedSchemaOnlyV21Upgrade(fromVersion: number): boolean {
+  const migration = COORDINATION_MIGRATIONS[20];
+  return fromVersion === 20 &&
+    COORDINATION_SCHEMA_VERSION === 21 &&
+    migration?.version === 21 &&
+    migration.name === "notification-recovery-order" &&
+    migration.checksum === REVIEWED_SCHEMA_ONLY_V21_CHECKSUM;
 }
 
 export interface CoordinationPragmaEvidence {
@@ -132,10 +148,17 @@ export class CoordinationDatabase {
       // A current-schema restart already verifies the migration history, schema
       // catalog and contract metadata above. Scanning every data page here can
       // block the single Core thread for minutes on an established home.
-      // Install and migration remain full integrity boundaries; verified
-      // backup/restore perform their own data checks.
-      const startupCheck = initial.needsMigration ? "integrity_check" : "schema_only";
-      if (initial.needsMigration) assertDatabaseIntegrity(database, "integrity_check");
+      // A reviewed schema-only v20→v21 DDL change has the same catalog checks
+      // before and after its transaction, but does not claim data-page integrity.
+      // Other migrations and verified backup/restore retain full data checks.
+      const schemaOnlyUpgrade = initial.needsMigration &&
+        isReviewedSchemaOnlyV21Upgrade(initial.version);
+      const startupCheck = initial.needsMigration
+        ? (schemaOnlyUpgrade ? "schema_migration_only" : "integrity_check")
+        : "schema_only";
+      if (initial.needsMigration && !schemaOnlyUpgrade) {
+        assertDatabaseIntegrity(database, "integrity_check");
+      }
       if (initial.needsMigration) {
         migrateCoordinationSchema(
           database,
@@ -143,9 +166,9 @@ export class CoordinationDatabase {
           options.applicationVersion ?? "home23-coordination-m04",
           options.now ?? (() => new Date()),
         );
-        assertDatabaseIntegrity(database, "integrity_check");
+        if (!schemaOnlyUpgrade) assertDatabaseIntegrity(database, "integrity_check");
       }
-      if (initial.needsMigration) assertForeignKeys(database);
+      if (initial.needsMigration && !schemaOnlyUpgrade) assertForeignKeys(database);
       this.database = database;
       this.openReceipt = Object.freeze({
         schemaVersion: COORDINATION_SCHEMA_VERSION,

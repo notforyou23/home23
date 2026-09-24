@@ -34,6 +34,7 @@ import {
   type CoordinationTransaction,
 } from "../../../src/coordination/db/index.js";
 import { generateCoordinationId } from "../../../src/coordination/ids/index.js";
+import { CONNECTED_AGENTS_CONTRACT_VERSION } from "../../../src/coordination/schema/contract-registry.js";
 
 function temporaryDatabase(t: test.TestContext): string {
   const directory = mkdtempSync(join(tmpdir(), "home23-coordination-db-"));
@@ -98,19 +99,29 @@ test("bot result notification recovery reads the creation-order partial index", 
 
 test("an existing schema v20 database upgrades to the notification index", (t) => {
   const path = temporaryDatabase(t);
-  openCoordinationDatabase({ path, applicationVersion: "notification-upgrade-test" }).close();
-  const prior = COORDINATION_MIGRATIONS[19]!;
   const v20 = new Database(path);
-  v20.exec("DROP INDEX messages_notification_recovery_order");
-  v20.prepare("DELETE FROM schema_migrations WHERE version = 21").run();
-  v20.prepare("UPDATE kernel_meta SET value = ? WHERE key = 'schema.checksum'").run(prior.schemaChecksum);
-  v20.prepare("UPDATE kernel_meta SET value = '20' WHERE key = 'schema.version'").run();
+  for (const migration of COORDINATION_MIGRATIONS.slice(0, 20)) {
+    v20.exec(migration.sql);
+    v20.prepare("INSERT INTO schema_migrations (version, name, checksum, applied_at, application_version) VALUES (?, ?, ?, ?, ?)")
+      .run(migration.version, migration.name, migration.checksum, "2026-09-23T00:00:00.000Z", "notification-upgrade-test");
+  }
+  const prior = COORDINATION_MIGRATIONS[19]!;
+  for (const [key, value] of [
+    ["schema.version", "20"],
+    ["schema.checksum", prior.schemaChecksum],
+    ["contract.version", String(CONNECTED_AGENTS_CONTRACT_VERSION)],
+    ["contract.pack_sha256", COORDINATION_CONTRACT_PACK_SHA256],
+  ]) {
+    v20.prepare("INSERT INTO kernel_meta (key, value, updated_at) VALUES (?, ?, ?)")
+      .run(key, value, "2026-09-23T00:00:00.000Z");
+  }
   v20.pragma("user_version = 20");
   v20.close();
 
   const upgraded = openCoordinationDatabase({ path, applicationVersion: "notification-upgrade-test" });
   t.after(() => upgraded.close());
   assert.equal(upgraded.openReceipt.migratedFrom, 20);
+  assert.equal(upgraded.openReceipt.startupCheck, "schema_migration_only");
   assert.equal(upgraded.openReceipt.schemaVersion, 21);
   assert.equal(upgraded.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.ok(upgraded.readOne("SELECT 1 AS present FROM sqlite_schema WHERE name = 'messages_notification_recovery_order'"));
@@ -187,6 +198,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       "message_fts_data",
       "message_fts_docsize",
       "message_fts_idx",
+      "message_journal_pending",
       "messages",
       "outbox",
       "pairing_sessions",
