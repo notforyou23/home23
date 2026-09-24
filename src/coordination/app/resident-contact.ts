@@ -82,28 +82,34 @@ export function createResidentContactProjection(database: M11Database, directory
     // hundreds of disk operations. The persisted cursor resumes next turn.
     pump(limit = 8) {
       const startedAt = performance.now();
-      const rows = database.readAll<{ sequence: number; kind: string; id: string }>(
-        "SELECT sequence, aggregate_kind AS kind, aggregate_id AS id FROM events WHERE sequence>? AND aggregate_kind IN ('work','message') AND aggregate_version=1 ORDER BY sequence LIMIT ?", cursor, limit);
+      // Advance through a bounded rowid page, including irrelevant events.
+      // Filtering in SQL made SQLite choose a broad scan on large homes even
+      // with LIMIT 8. The primary-key seek keeps each timer turn finite while
+      // retaining one replay cursor across every historical event type.
+      const rows = database.readAll<{ sequence: number; kind: string; id: string; version: number }>(
+        "SELECT sequence, aggregate_kind AS kind, aggregate_id AS id, aggregate_version AS version FROM events NOT INDEXED WHERE sequence>? ORDER BY sequence LIMIT ?",
+        cursor, Math.max(limit, 256));
+      const previousCursor = cursor;
       let scanned = 0;
       for (const row of rows) {
-        if (row.kind === 'work') {
+        cursor = row.sequence;
+        if (row.kind === 'work' && row.version === 1) {
           const work = database.readOne<{ messageId: string; slug: string; principalId: string }>(`SELECT w.origin_message_id AS messageId,
             b.resident_binding AS slug, b.principal_id AS principalId FROM works w JOIN bots b ON b.principal_id=w.target_principal_id WHERE w.id=?`, row.id);
           if (work?.messageId && seen.has(work.slug)) project(work.messageId, work.slug, work.principalId);
-        } else if (row.kind === 'message') {
+        } else if (row.kind === 'message' && row.version === 1) {
           const author = database.readOne<{ slug: string; principalId: string }>(`SELECT b.resident_binding AS slug,
             b.principal_id AS principalId FROM messages m JOIN bots b ON b.principal_id=m.author_principal_id WHERE m.id=?`, row.id);
           if (author && seen.has(author.slug)) project(row.id, author.slug, author.principalId);
         }
-        cursor = row.sequence;
-        scanned++;
+        if ((row.kind === 'work' || row.kind === 'message') && row.version === 1) scanned++;
         // Finish the current durable contact, then yield the event loop. The
         // budget is soft because an individual SQLite/fsync call is synchronous.
-        if (performance.now() - startedAt >= 100) break;
+        if (scanned >= limit || performance.now() - startedAt >= 100) break;
       }
-      if (scanned || Date.now() - lastCheckAt >= 30_000) {
+      if (cursor !== previousCursor || Date.now() - lastCheckAt >= 30_000) {
         const temp = `${cursorPath}.next`;
-        const pending = !!database.readOne("SELECT sequence FROM events WHERE sequence>? AND aggregate_kind IN ('work','message') AND aggregate_version=1 LIMIT 1", cursor);
+        const pending = !!database.readOne("SELECT sequence FROM events NOT INDEXED WHERE sequence>? LIMIT 1", cursor);
         writeFileSync(temp, JSON.stringify({ eventSequence: cursor, checkedAt: new Date().toISOString(), caughtUp: !pending,
           contactCounts: Object.fromEntries([...seen].map(([slug, ids]) => [slug, ids.size])) }), { mode: 0o600 });
         const fd = openSync(temp, 'r');

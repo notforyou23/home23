@@ -88,7 +88,7 @@ test('scheduled instructions are not exported as owner contact', t => {
 test('the timer-sized default persists progress and eventually drains a contact backlog', t => {
   const root = mkdtempSync(join(tmpdir(), 'resident-contact-batch-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const events = Array.from({ length: 17 }, (_, index) => ({ sequence: index + 1, kind: 'work', id: `missing-${index}` }));
+  const events = Array.from({ length: 17 }, (_, index) => ({ sequence: index + 1, kind: 'work', id: `missing-${index}`, version: 1 }));
   const database = {
     readAll(_sql: string, after: number, limit: number) {
       return events.filter(event => event.sequence > after).slice(0, limit);
@@ -105,6 +105,39 @@ test('the timer-sized default persists progress and eventually drains a contact 
   assert.deepEqual(createResidentContactProjection(database, root, ['jerry']).pump(), { eventSequence: 17, scanned: 1 });
   cursor = JSON.parse(readFileSync(join(root, 'cursor.json'), 'utf8'));
   assert.equal(cursor.caughtUp, true);
+});
+
+test('contact cursor seeks by event rowid and advances past unrelated events', t => {
+  const f = fixture(t);
+  const sql = "SELECT sequence, aggregate_kind AS kind, aggregate_id AS id, aggregate_version AS version FROM events NOT INDEXED WHERE sequence>? ORDER BY sequence LIMIT ?";
+  const plan = f.database.readAll<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, 0, 256)
+    .map(row => row.detail).join('\n');
+  assert.match(plan, /SEARCH events USING INTEGER PRIMARY KEY \(rowid>\?\)/);
+  const pendingPlan = f.database.readAll<{ detail: string }>(
+    "EXPLAIN QUERY PLAN SELECT sequence FROM events NOT INDEXED WHERE sequence>? LIMIT 1", 0)
+    .map(row => row.detail).join('\n');
+  assert.match(pendingPlan, /SEARCH events USING INTEGER PRIMARY KEY \(rowid>\?\)/);
+
+  const directory = join(f.root, 'cursor-range');
+  const unrelated = Array.from({ length: 300 }, (_, index) => ({ sequence: index + 1,
+    kind: 'bot', id: `bot-${index}`, version: 1 }));
+  const work = { sequence: 301, kind: 'work', id: 'missing-work', version: 1 };
+  const events = [...unrelated, work];
+  const database = {
+    readAll(query: string, after: number, limit: number) {
+      assert.equal(query, sql);
+      return events.filter(event => event.sequence > after).slice(0, limit);
+    },
+    readOne(query: string, arg: number | string) {
+      if (query.startsWith('SELECT sequence')) return events.find(event => event.sequence > Number(arg));
+      return null;
+    },
+  } as unknown as M11Database;
+  const projection = createResidentContactProjection(database, directory, ['jerry']);
+  assert.deepEqual(projection.pump(), { eventSequence: 256, scanned: 0 });
+  assert.equal(JSON.parse(readFileSync(join(directory, 'cursor.json'), 'utf8')).caughtUp, false);
+  assert.deepEqual(createResidentContactProjection(database, directory, ['jerry']).pump(), { eventSequence: 301, scanned: 1 });
+  assert.equal(JSON.parse(readFileSync(join(directory, 'cursor.json'), 'utf8')).caughtUp, true);
 });
 
 test('the current app cannot be hidden behind healthy older conversation files', t => {
