@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createResidentAssignments } from '../../../src/coordination/app/resident-assignments.js';
 import { createResidentOutcomeStore } from '../../../src/coordination/app/resident-outcomes.js';
-import { projectResidentWork } from '../../../src/coordination/app/resident-work-projection.js';
+import { projectResidentWork, projectResidentWorkIncrementally } from '../../../src/coordination/app/resident-work-projection.js';
 import { createForegroundDetachmentConsumer } from '../../../src/coordination/app/foreground-detachments.js';
 import { createWorkService } from '../../../src/coordination/work/service.js';
 import { createLeaseService } from '../../../src/coordination/leases/index.js';
@@ -425,7 +425,8 @@ test('batched resident projection retains assignment lineage and presentation st
   }, 'projection-blocked-report');
   const expected = f.assignments.list(BOT_ID, true, 1000);
   const actual = f.assignments.listForProjection(BOT_ID);
-  assert.deepEqual(actual, expected);
+  assert.deepEqual(actual.sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    expected.sort((a, b) => String(a.id).localeCompare(String(b.id))));
   assert.equal(actual.find(row => row.id === active)?.assignmentState, 'active');
   assert.equal(actual.find(row => row.id === blocked)?.assignmentState, 'blocked');
 });
@@ -448,6 +449,38 @@ test('resident projection seeks current roots without scanning message or event 
     'visible result must use the Work message index');
   assert.equal(plans.some(detail => /SCAN (?:e|latest|m)(?:\s|$)/.test(detail)), false,
     `projection scanned event or message history: ${plans.join('; ')}`);
+});
+
+test('incremental resident projection yields between pages and publishes only the complete snapshot', async t => {
+  const f = fixture(t);
+  f.database.raw.exec(INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL);
+  for (let index = 0; index < 17; index++) f.admit(`paged-projection-${index}`);
+  const directory = mkdtempSync(join(tmpdir(), 'resident-projection-pages-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'jerry.work.json');
+  writeFileSync(path, 'previous-complete-snapshot');
+  const original = f.database.readAll.bind(f.database);
+  let candidatePages = 0;
+  const candidatePlans: string[] = [];
+  f.database.readAll = <T>(sql: string, ...parameters: Array<string | number | bigint | Buffer | null>): T[] => {
+    if (sql.includes('SELECT w.id,w.created_at AS createdAt FROM works w')) {
+      candidatePages++;
+      candidatePlans.push(...f.database.raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters)
+        .map(row => String((row as { detail: string }).detail)));
+      if (candidatePages === 2) assert.equal(readFileSync(path, 'utf8'), 'previous-complete-snapshot');
+    }
+    return original<T>(sql, ...parameters);
+  };
+  let yielded = false;
+  setImmediate(() => { yielded = true; });
+  await projectResidentWorkIncrementally(f.database, directory, ['jerry']);
+  assert.equal(yielded, true);
+  assert.ok(candidatePages >= 2);
+  assert.ok(candidatePlans.some(detail => detail.includes('SEARCH w USING INDEX works_target_created')),
+    `candidate pages must seek the resident creation index: ${candidatePlans.join('; ')}`);
+  const snapshot = JSON.parse(readFileSync(path, 'utf8'));
+  assert.equal(snapshot.assignments.length, 17);
+  assert.deepEqual(snapshot.assignments, f.assignments.listForProjection(BOT_ID));
 });
 
 test('canonical execution termination remains an open agency obligation while assignment state is not closed', async t => {

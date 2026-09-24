@@ -188,16 +188,20 @@ export function createResidentAssignments(database: M11Database) {
     }
     return result;
   }
-  /** The agency snapshot is refreshed on Core's HTTP event loop. Resolve its
-   * bounded candidate set in batches instead of doing several SQLite reads
-   * for every historical Work row on every refresh. */
-  function listForProjection(principalId: string) {
-    const candidates = database.readAll<{ id: string }>(`SELECT w.id FROM works w
+  /** Page candidates on the indexed resident/creation order. The projector
+   * yields between pages so this derived snapshot cannot block Core's API. */
+  function listForProjectionPage(principalId: string, after: { createdAt: string; id: string } | null = null,
+    remaining = 1000) {
+    const seek = after ? 'AND (w.created_at<? OR (w.created_at=? AND w.id<?))' : '';
+    const candidates = database.readAll<{ id: string; createdAt: string }>(`SELECT w.id,w.created_at AS createdAt FROM works w
       LEFT JOIN work_thread_presentations p ON p.work_id=w.id
       WHERE w.target_principal_id=? AND (w.kind='resident_work_thread' OR p.work_id IS NOT NULL)
         AND (w.state IN ('queued','leased','running','cancelling') OR w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1))
-      ORDER BY w.created_at DESC LIMIT 1000`, principalId);
-    if (!candidates.length) return [];
+        ${seek}
+      ORDER BY w.created_at DESC,w.id DESC LIMIT ?`, principalId,
+      ...(after ? [after.createdAt, after.createdAt, after.id] : []), Math.min(16, remaining));
+    const cursor = candidates.length ? { createdAt: candidates.at(-1)!.createdAt, id: candidates.at(-1)!.id } : null;
+    if (!candidates.length) return { assignments: [] as Array<Record<string, unknown>>, cursor, candidateCount: 0 };
     const ids = JSON.stringify(candidates.map(row => row.id));
     // Follow exactly the same review/planned lineage as root(), but in one
     // recursive query. The depth and cycle guards retain root()'s limits.
@@ -263,7 +267,7 @@ export function createResidentAssignments(database: M11Database) {
           AND NOT EXISTS(SELECT 1 FROM messages tombstone WHERE tombstone.tombstones_message_id=m.id)
         LIMIT 1)`, rootIds);
     const delivered = new Set(deliveredRows.map(row => row.id));
-    return roots.flatMap(id => {
+    const assignments = roots.flatMap<Record<string, unknown>>(id => {
       const work = works.get(id);
       if (!work) return [];
       const conclusion = conclusions.get(id) ?? null;
@@ -282,6 +286,24 @@ export function createResidentAssignments(database: M11Database) {
       else assignmentState = outcome ? 'needs_review' : 'complete';
       return [{ ...work, assignmentState, conclusion }];
     });
+    return { assignments, cursor, candidateCount: candidates.length };
+  }
+  function listForProjection(principalId: string) {
+    const assignments: Array<Record<string, unknown>> = [];
+    const seen = new Set<string>();
+    let cursor: { createdAt: string; id: string } | null = null;
+    let remaining = 1000;
+    while (remaining > 0) {
+      const page = listForProjectionPage(principalId, cursor, remaining);
+      for (const assignment of page.assignments) {
+        const id = String(assignment.id);
+        if (!seen.has(id)) { seen.add(id); assignments.push(assignment); }
+      }
+      remaining -= page.candidateCount;
+      if (page.candidateCount < Math.min(16, remaining + page.candidateCount)) break;
+      cursor = page.cursor;
+    }
+    return assignments;
   }
   // The resident outcome timer calls revisits every two seconds. Assignment
   // conclusions are append-only events, so retain only the latest blocked
@@ -328,5 +350,5 @@ export function createResidentAssignments(database: M11Database) {
       (value.revisitAt !== null && Date.parse(value.revisitAt) <= now) ||
       (value.waitFor.length > 0 && value.waitFor.every(id => terminal.has(id))));
   }
-  return { root, latest, presentationState, report, list, listForProjection, revisits, assertOpen, direction };
+  return { root, latest, presentationState, report, list, listForProjection, listForProjectionPage, revisits, assertOpen, direction };
 }

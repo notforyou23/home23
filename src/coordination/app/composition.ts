@@ -15,7 +15,7 @@ import { ProjectContinuityStore } from '../projects/continuity.js';
 import { boundHistoricalContext } from '../../agent/historical-context.js';
 import { createResidentNotifications } from './resident-notifications.js';
 import { createResidentContactProjection } from './resident-contact.js';
-import { projectResidentWork } from './resident-work-projection.js';
+import { projectResidentWorkIncrementally } from './resident-work-projection.js';
 import { createResidentAssignments } from './resident-assignments.js';
 import { dirname, join, resolve } from 'node:path';
 import { createScheduledChannelTurns } from './scheduled-turns.js';
@@ -1556,8 +1556,14 @@ export function createCoordinationProcess(
         await server.drain().catch(() => undefined);
         throw error;
       }
+      let residentProjectionRunning = false;
       const projectResidentWorkSnapshot = () => {
-        try { projectResidentWork(database, join(dirname(config.databasePath), 'resident-contact'), Object.entries(config.residents).filter(([, value]) => value.enabled).map(([slug]) => slug)); } catch (error) { console.error('[resident-work]', error); }
+        if (residentProjectionRunning) return;
+        residentProjectionRunning = true;
+        void projectResidentWorkIncrementally(database, join(dirname(config.databasePath), 'resident-contact'),
+          Object.entries(config.residents).filter(([, value]) => value.enabled).map(([slug]) => slug))
+          .catch(error => console.error('[resident-work]', error))
+          .finally(() => { residentProjectionRunning = false; });
       };
       projectResidentWorkSnapshot();
       residentWorkProjectionTimer = setInterval(projectResidentWorkSnapshot, 30_000);
