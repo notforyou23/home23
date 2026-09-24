@@ -539,6 +539,78 @@ test('checkpoint refuses a same-size write during its single fingerprint read', 
   }
 });
 
+test('unchanged state and database use checkpoint metadata through final acceptance', async t => {
+  const fixture = homeFixture(t);
+  const state = path.join(fixture.home, 'app/instances/milo/conversations/session.txt');
+  const databaseFile = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+  const originalOpen = fs.promises.open;
+  const opens = new Map([[state, 0], [databaseFile, 0]]);
+  fs.promises.open = async (...args) => {
+    if (opens.has(args[0])) opens.set(args[0], opens.get(args[0]) + 1);
+    return originalOpen(...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    const result = await applyProductUpdate({ homeRoot: fixture.home,
+      candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+    assert.equal(result.status, 'committed');
+    assert.equal(opens.get(state), 1);
+    assert.equal(opens.get(databaseFile), 1);
+    const journal = readUpdateJournal(fixture.home);
+    assert.match(journal.identityMetadata['app/instances/milo/conversations/session.txt'].ctimeNs, /^\d+$/);
+    assert.match(journal.identityMetadata['app/instances/.house/coordination/home23-coordination.sqlite3'].ino, /^\d+$/);
+  } finally {
+    fs.promises.open = originalOpen;
+    syncBuiltinESMExports();
+  }
+});
+
+test('a same-size state edit after checkpoint forces a fresh hash and refuses admission', async t => {
+  const fixture = homeFixture(t);
+  const state = path.join(fixture.home, 'app/instances/milo/conversations/session.txt');
+  const result = await applyProductUpdate({ homeRoot: fixture.home,
+    candidatePayload: fixture.candidate, staging: fixture.staging }, {
+    ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase === 'checkpointed') fs.writeFileSync(state, 'changed123');
+    },
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(readUpdateJournal(fixture.home).identityPreserved, false);
+  assert.equal(fs.readFileSync(state, 'utf8'), 'changed123');
+});
+
+test('an older checkpoint journal without metadata still hashes saved identity', async t => {
+  const fixture = homeFixture(t);
+  const state = path.join(fixture.home, 'app/instances/milo/conversations/session.txt');
+  await assert.rejects(() => applyProductUpdate({ homeRoot: fixture.home,
+    candidatePayload: fixture.candidate, staging: fixture.staging }, {
+    ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase === 'checkpointed') throw new Error('stop-after-checkpoint');
+    },
+  }), /stop-after-checkpoint/);
+  const journalPath = path.join(updateDirectoryFor(fixture.home), 'journal.json');
+  const legacyJournal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+  delete legacyJournal.identityMetadata;
+  fs.writeFileSync(journalPath, JSON.stringify(legacyJournal));
+  const originalOpen = fs.promises.open;
+  let opens = 0;
+  fs.promises.open = async (...args) => {
+    if (args[0] === state) opens += 1;
+    return originalOpen(...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    const result = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+    assert.equal(result.status, 'committed');
+    assert.ok(opens >= 1);
+  } finally {
+    fs.promises.open = originalOpen;
+    syncBuiltinESMExports();
+  }
+});
+
 test('an interrupted old checkpoint resumes in place without touching partial copies', async t => {
   const fixture = homeFixture(t);
   const directory = path.join(fixture.home, 'app/instances/milo/conversations');

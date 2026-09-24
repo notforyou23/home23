@@ -172,13 +172,31 @@ function identityFiles(home) {
   for (const entry of PRODUCT_STATE_PATHS) visit(entry.path);
   return [...files].sort();
 }
-function identityMap(home) {
-  return Object.fromEntries(identityFiles(home).map(relative => [relative, hashFile(join(home, relative))]));
+function fileMetadata(stat) {
+  return Object.fromEntries(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].map(key => [key, String(stat[key])])
+    .concat([['mode', String(stat.mode & 0o777n)]]));
 }
-function sameIdentity(home, expected) {
-  const current = identityMap(home);
+function sameMetadata(stat, expected) {
+  if (!expected || !stat.isFile() || stat.isSymbolicLink()) return false;
+  const current = fileMetadata(stat);
+  return Object.keys(current).every(key => /^\d+$/.test(expected[key]) && expected[key] === current[key]);
+}
+async function sameIdentity(home, expected, metadata) {
+  const current = identityFiles(home);
   const keys = Object.keys(expected || {});
-  return keys.length === Object.keys(current).length && keys.every(key => current[key] === expected[key]);
+  if (keys.length !== current.length || current.some(relative => !Object.hasOwn(expected, relative))) return false;
+  for (const relative of current) {
+    const file = join(home, relative);
+    let stat;
+    try { stat = lstatSync(file, { bigint: true }); } catch { return false; }
+    // The quiesced checkpoint hashed through this exact inode and pinned its
+    // size, mode, and nanosecond change times. A matching tuple avoids another
+    // full read; changed files and older journals still require a fresh hash.
+    if (sameMetadata(stat, metadata?.[relative])) continue;
+    try { if ((await checkpointFingerprint(file, { source: true })).sha256 !== expected[relative]) return false; }
+    catch { return false; }
+  }
+  return true;
 }
 function isCanonicalState(relative) {
   return relative !== '.home23-host.json' && relative !== 'app/ecosystem.config.cjs' && relative !== DATABASE
@@ -366,7 +384,7 @@ async function checkpointFingerprint(file, { source = false, bytes = null } = {}
         (bytes === null ? after.size !== stat.size : after.size < BigInt(length))) {
       throw new Error(`Checkpoint file changed while hashing: ${file}`);
     }
-    return { sha256: digest.digest('hex'), bytes: length };
+    return { sha256: digest.digest('hex'), bytes: length, metadata: fileMetadata(after) };
   } finally { await descriptor.close(); }
 }
 async function checkpointStateFile(home, relative, beforeCopy) {
@@ -421,6 +439,7 @@ async function writeCheckpoint(home, updateDirectory, _journalId, { beforeCopy, 
     throw new Error('Checkpoint state inventory changed during fingerprinting.');
   }
   const hashes = Object.fromEntries(files.map((relative, index) => [relative, fingerprints[index].sha256]));
+  const identityMetadata = Object.fromEntries(files.map((relative, index) => [relative, fingerprints[index].metadata]));
   const substratePrefixes = Object.fromEntries(files.flatMap((relative, index) => relative.includes('/substrate/') && relative.endsWith('.jsonl')
     ? [[relative, { bytes: fingerprints[index].bytes, sha256: fingerprints[index].sha256 }]] : []));
   let database = { present: false };
@@ -438,10 +457,12 @@ async function writeCheckpoint(home, updateDirectory, _journalId, { beforeCopy, 
       if (integrity !== 'ok' || version !== expectedSchemaVersion) throw new Error('Coordination checkpoint failed integrity or version verification.');
       database = { present: true, version, integrity, sha256: hashFile(destination) };
     } finally { copy.close(); }
-    hashes[DATABASE] = hashFile(join(home, DATABASE));
+    const liveDatabase = await checkpointFingerprint(join(home, DATABASE), { source: true });
+    hashes[DATABASE] = liveDatabase.sha256;
+    identityMetadata[DATABASE] = liveDatabase.metadata;
   }
   fsyncDirectory(checkpoint);
-  return { hashes, database, stateRetention: 'in_place', substratePrefixes };
+  return { hashes, identityMetadata, database, stateRetention: 'in_place', substratePrefixes };
 }
 /** Maximal software subtrees and loose files of a package. Each switches with one rename. */
 export function softwareUnits(manifest) {
@@ -657,7 +678,7 @@ async function mutate(journal, dependencies, verify) {
     }
     const checkpoint = await (dependencies.writeCheckpoint || writeCheckpoint)(home, updateDirectoryFor(home), journal.id,
       { beforeCopy: dependencies.checkpointBeforeCopy, expectedSchemaVersion });
-    journal = await commitPhase(file, { ...journal, phase: 'checkpointed', identity: checkpoint.hashes, canonical: canonicalFrom(checkpoint.hashes), hostIdentity: hostIdentity(home), checkpointDatabase: checkpoint.database,
+    journal = await commitPhase(file, { ...journal, phase: 'checkpointed', identity: checkpoint.hashes, identityMetadata: checkpoint.identityMetadata, canonical: canonicalFrom(checkpoint.hashes), hostIdentity: hostIdentity(home), checkpointDatabase: checkpoint.database,
       stateRetention: checkpoint.stateRetention || 'copied', substratePrefixes: checkpoint.substratePrefixes || {} }, dependencies);
   }
   if (rank() < RANK.retained) {
@@ -734,7 +755,7 @@ async function finish(journal, dependencies, verify) {
       journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'recovery_required', message: `No safe automatic rollback is available (${error.message}). Home state was not replaced from the checkpoint.` }] }, dependencies);
       return publicResult(journal);
     }
-    const preserved = sameIdentity(home, journal.identity);
+    const preserved = await sameIdentity(home, journal.identity, journal.identityMetadata);
     let restoredRunning = false;
     if (journal.desiredRunning) {
       try { restoredRunning = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
@@ -757,7 +778,7 @@ async function finish(journal, dependencies, verify) {
         journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'recovery_required', message: 'Writers are active before the candidate was admitted. They were not replaced or force-killed.' }] }, dependencies);
         return publicResult(journal);
       }
-      if (!sameIdentity(home, journal.identity)) {
+      if (!(await sameIdentity(home, journal.identity, journal.identityMetadata))) {
         journal = await commitPhase(file, { ...journal, phase: 'recovery_required', identityPreserved: false, reasons: [{ code: 'recovery_required', message: 'Quiesced home identity changed before writers were admitted. Software and the data snapshot were not restored.' }] }, dependencies);
         return publicResult(journal);
       }
@@ -780,7 +801,7 @@ async function finish(journal, dependencies, verify) {
     journal = await commitPhase(file, { ...journal, candidateStarted: true,
       ...startObservation(started, startError), phase: 'writers_admitted' }, dependencies);
   }
-  let identityPreserved = journal.writersAdmitted ? await sameCanonical(home, journal) : sameIdentity(home, journal.identity);
+  let identityPreserved = journal.writersAdmitted ? await sameCanonical(home, journal) : await sameIdentity(home, journal.identity, journal.identityMetadata);
   if (journal.writersAdmitted && !identityPreserved) {
     await fence();
     identityPreserved = await sameCanonical(home, journal);
