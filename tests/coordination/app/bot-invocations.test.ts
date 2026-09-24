@@ -125,17 +125,21 @@ test('busy helper admission retains one durable request and retries when availab
  assert.equal(f.database.readAll("SELECT sequence FROM events WHERE aggregate_kind='bot_invocation' AND aggregate_version=2").length,0);
 });
 
-test('reconciliation pages active invocations and wraps to revisit them', async () => {
+test('reconciliation pages history once and revisits active invocations from memory', async () => {
   const admissions = Array.from({ length: 70 }, (_, index) => ({ sequence: index + 1,
     active: 1,
     payload: JSON.stringify({ origin: { workId: `work-${index}`, channelId: CHANNEL_ID },
       invocationId: `call-${index}`, botId: BOT_ID, prompt: 'Help', channelId: CHANNEL_ID,
       messageId: `message-${index}` }) }));
   const pages: Array<{ after: number; through: number; limit: number }> = [];
+  let activeStatusReads = 0;
   const options = {
     database: {
       readAll(sql: string, after?: number, through?: number, limit?: number) {
-        if (!sql.includes('WITH candidates AS MATERIALIZED')) return [];
+        if (!sql.includes('WITH candidates AS MATERIALIZED')) {
+          if (sql.includes('FROM works w')) activeStatusReads++;
+          return [];
+        }
         pages.push({ after: after!, through: through!, limit: limit! });
         return admissions.filter(row => row.sequence > after! && row.sequence <= through!).slice(0, limit);
       },
@@ -147,11 +151,14 @@ test('reconciliation pages active invocations and wraps to revisit them', async 
     stopChild: async () => undefined,
   } as any;
   const service = createBotInvocationService(options);
-  await service.reconcile(); await service.reconcile(); await service.reconcile(); await service.reconcile();
+  await service.reconcile(); await service.reconcile(); await service.reconcile();
+  const beforeIdleRevisit = activeStatusReads;
+  await service.reconcile();
   assert.deepEqual(pages, [
     { after: 0, through: 70, limit: 32 }, { after: 32, through: 70, limit: 32 },
-    { after: 64, through: 70, limit: 32 }, { after: 0, through: 70, limit: 32 },
+    { after: 64, through: 70, limit: 32 },
   ]);
+  assert.ok(activeStatusReads > beforeIdleRevisit, 'still-active invocations are revisited without journal replay');
 });
 
 test('reconciliation advances through sparse history in bounded sequence windows', async () => {
@@ -167,7 +174,7 @@ test('reconciliation advances through sparse history in bounded sequence windows
     currentCredential: () => true, context: () => ({}), stopChild: async () => undefined,
   } as any);
   for (let index = 0; index < 4; index++) await service.reconcile();
-  assert.deepEqual(queries, [[0, 4096, 32], [4096, 8192, 32], [8192, 9000, 32], [0, 4096, 32]]);
+  assert.deepEqual(queries, [[0, 4096, 32], [4096, 8192, 32], [8192, 9000, 32]]);
 });
 
 test('irrelevant activity advances the raw page without requiring an active invocation', async () => {
@@ -190,7 +197,6 @@ test('irrelevant activity advances the raw page without requiring an active invo
   assert.deepEqual(pages, [
     { after: 0, returned: 32 }, { after: 32, returned: 32 },
     { after: 64, returned: 32 }, { after: 96, returned: 4 },
-    { after: 0, returned: 32 },
   ]);
 });
 

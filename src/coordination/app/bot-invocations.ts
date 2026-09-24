@@ -53,11 +53,15 @@ export function createBotInvocationService(options: {
   const db = options.database;
   const pending = new Map<string, Promise<void>>();
   let reconciling = false;
-  // Walk admission events in small pages. A restart starts at the beginning;
-  // each full pass revisits still-active invocations as parent/child state changes.
+  // A restart walks admission history once. Keep live admissions in memory so
+  // each timer tick revisits their changing Work state without rereading the
+  // full historical event journal.
   let reconcileAfterSequence = 0;
+  const activeInvocations = new Map<string, Invocation>();
+  let activeRevisitOffset = 0;
   const RECONCILE_BATCH_SIZE = 32;
   const RECONCILE_SEQUENCE_WINDOW = 4096;
+  const ACTIVE_REVISIT_BATCH_SIZE = 8;
   const journal = (messageId: string) => db.readOne<{ payload: string }>(
     "SELECT payload_json AS payload FROM events WHERE aggregate_kind = 'bot_invocation' AND aggregate_id = ? AND aggregate_version = 1", messageId);
   function record(invocation: Invocation, version: number, extra: Record<string, unknown> = {}) {
@@ -198,10 +202,16 @@ export function createBotInvocationService(options: {
       reconciling = true;
       try {
       const journalEnd = db.readOne<{ sequence: number }>('SELECT coalesce(max(sequence), 0) AS sequence FROM events')!.sequence;
-      const windowEnd = Math.min(reconcileAfterSequence + RECONCILE_SEQUENCE_WINDOW, journalEnd);
-      // Page raw activity events before inspecting their payloads or joining
-      // Works. Filtering first can scan the entire window when admissions are rare.
-      const candidates = db.readAll<{ sequence: number; payload: string; active: number }>(`WITH candidates AS MATERIALIZED (
+      if (journalEnd < reconcileAfterSequence) {
+        reconcileAfterSequence = 0;
+        activeInvocations.clear();
+        activeRevisitOffset = 0;
+      }
+      if (reconcileAfterSequence < journalEnd) {
+        const windowEnd = Math.min(reconcileAfterSequence + RECONCILE_SEQUENCE_WINDOW, journalEnd);
+        // Page raw activity events before inspecting their payloads or joining
+        // Works. Filtering first can scan the entire window when admissions are rare.
+        const candidates = db.readAll<{ sequence: number; payload: string; active: number }>(`WITH candidates AS MATERIALIZED (
         SELECT e.sequence, e.aggregate_kind, e.aggregate_version, e.aggregate_id, e.payload_json
         FROM events e INDEXED BY events_type_sequence
         WHERE e.type = 'activity.updated' AND e.sequence > ? AND e.sequence <= ?
@@ -215,16 +225,26 @@ export function createBotInvocationService(options: {
       FROM candidates e LEFT JOIN works w ON e.aggregate_kind = 'bot_invocation'
         AND w.id = json_extract(e.payload_json, '$.origin.workId')
       ORDER BY e.sequence`, reconcileAfterSequence, windowEnd, RECONCILE_BATCH_SIZE);
-      for (const row of candidates) {
-        if (!row.active) continue;
-        const invocation = JSON.parse(row.payload) as Invocation;
-        if (TERMINAL.has(status(invocation).state)) continue;
+        for (const row of candidates) {
+          if (!row.active) continue;
+          const invocation = JSON.parse(row.payload) as Invocation;
+          activeInvocations.set(invocation.messageId, invocation);
+        }
+        reconcileAfterSequence = candidates.length === RECONCILE_BATCH_SIZE
+          ? candidates.at(-1)!.sequence : windowEnd;
+      }
+      const keys = [...activeInvocations.keys()];
+      const count = Math.min(ACTIVE_REVISIT_BATCH_SIZE, keys.length);
+      for (let index = 0; index < count; index++) {
+        const key = keys[(activeRevisitOffset + index) % keys.length]!;
+        const invocation = activeInvocations.get(key);
+        if (!invocation) continue;
+        if (TERMINAL.has(status(invocation).state)) { activeInvocations.delete(key); continue; }
         const parent = options.work.get(invocation.origin.workId);
         if (parent?.state === 'running') dispatch(invocation);
         else await stop(invocation);
       }
-      const through = candidates.length === RECONCILE_BATCH_SIZE ? candidates.at(-1)!.sequence : windowEnd;
-      reconcileAfterSequence = through >= journalEnd ? 0 : through;
+      activeRevisitOffset = keys.length ? (activeRevisitOffset + count) % keys.length : 0;
       } finally { reconciling = false; }
     },
   };
