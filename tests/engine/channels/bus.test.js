@@ -75,16 +75,25 @@ test('ChannelBus persists observations to per-channel JSONL', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'bus-persist-'));
   const bus = new ChannelBus({ persistenceDir: dir });
   bus.register(new FakeChan('fake.persist'));
+  const expectedPath = join(dir, 'machine.fake.persist.jsonl');
+  const visibleAtEmit = [];
+  const emittedRefs = [];
+  bus.on('observation', obs => {
+    emittedRefs.push(obs.sourceRef);
+    visibleAtEmit.push(existsSync(expectedPath)
+      && readFileSync(expectedPath, 'utf8').includes(`"sourceRef":"${obs.sourceRef}"`));
+  });
   await bus.start();
   await new Promise((r) => setTimeout(r, 40));
   await bus.stop();
-  const expectedPath = join(dir, 'machine.fake.persist.jsonl');
   assert.ok(existsSync(expectedPath));
   const lines = readFileSync(expectedPath, 'utf8').trim().split('\n');
   assert.ok(lines.length >= 1);
   const first = JSON.parse(lines[0]);
   assert.equal(first.channelId, 'fake.persist');
   assert.equal(first.traceId, makeTraceId('fake.persist', 'n:1'));
+  assert.ok(visibleAtEmit.length > 0 && visibleAtEmit.every(Boolean));
+  assert.deepEqual(lines.map(line => JSON.parse(line).sourceRef), emittedRefs);
 });
 
 test('ChannelBus drops malformed verified observations before persistence and fan-out', async () => {

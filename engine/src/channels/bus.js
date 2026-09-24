@@ -18,7 +18,8 @@
 'use strict';
 
 import { EventEmitter } from 'node:events';
-import { mkdirSync, appendFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
+import { appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureTraceId, makeObservation, validateObservation } from './contract.js';
 
@@ -30,6 +31,7 @@ export class ChannelBus extends EventEmitter {
     this.persistenceDir = persistenceDir || null;
     this.logger = logger || console;
     this._running = false;
+    this._pendingPersist = new Set();
   }
 
   register(channel) {
@@ -59,6 +61,7 @@ export class ChannelBus extends EventEmitter {
     for (const ch of this.channels) {
       try { if (typeof ch.stop === 'function') await ch.stop(); } catch {}
     }
+    await Promise.allSettled(this._pendingPersist);
   }
 
   _pumpChannel(channel) {
@@ -90,13 +93,13 @@ export class ChannelBus extends EventEmitter {
           producedAt,
           verifierId: 'channel:poll-error',
         });
-        this._persist(channel, obs);
+        await this._persist(channel, obs);
         this.emit('observation', obs);
         return;
       }
       const parsed = raw && raw.payload !== undefined ? raw : channel.parse(raw);
       const obs = validateObservation(ensureTraceId(channel.verify(parsed, {})));
-      this._persist(channel, obs);
+      await this._persist(channel, obs);
       this.emit('observation', obs);
       const draft = channel.crystallize(obs);
       if (draft) this.emit('crystallize', { channel, observation: obs, draft });
@@ -105,7 +108,7 @@ export class ChannelBus extends EventEmitter {
     }
   }
 
-  _persist(channel, obs) {
+  async _persist(channel, obs) {
     if (!this.persistenceDir) return;
     // channel.id already namespaces with class prefix (e.g. "work.agenda");
     // avoid double-prefixing in the filename.
@@ -113,8 +116,11 @@ export class ChannelBus extends EventEmitter {
       ? `${channel.id}.jsonl`
       : `${channel.class}.${channel.id}.jsonl`;
     const path = join(this.persistenceDir, fileName);
-    try { appendFileSync(path, JSON.stringify(obs) + '\n'); }
-    catch (err) { this._logWarn(`persist failed for ${channel.id}`, err); }
+    const operation = appendFile(path, JSON.stringify(obs) + '\n')
+      .catch(err => { this._logWarn(`persist failed for ${channel.id}`, err); })
+      .finally(() => { this._pendingPersist.delete(operation); });
+    this._pendingPersist.add(operation);
+    await operation;
   }
 
   _logWarn(msg, err) {
