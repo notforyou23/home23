@@ -7,6 +7,10 @@ function fileStamp(stat) {
   return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 }
 
+function taskStamp(store) {
+  return store.tasksPath ? fileStamp(statSync(store.tasksPath, { bigint: true })) : null;
+}
+
 /** Reconcile shared observations through this resident's existing agency store.
  * Nothing here launches work, changes Seed law, or invents an owner promise. */
 export function reconcileCanonicalWork(kernel, sourcePath, resident) {
@@ -21,10 +25,19 @@ export function reconcileCanonicalWork(kernel, sourcePath, resident) {
   const key = `${resident}\0${sourcePath}`;
   const stamp = fileStamp(stat);
   const cached = reconciledFiles.get(kernel)?.get(key);
-  if (cached?.stamp === stamp && cached.assignments.every(({ id, digest, authorityLevel }) => {
-    const existing = kernel.store.getTask(id);
-    return existing?.handoff?.canonicalDigest === digest && existing.authorityLevel === authorityLevel;
-  })) return { available: true, changed: 0 };
+  if (cached?.stamp === stamp) {
+    const beforeTasks = taskStamp(kernel.store);
+    if (beforeTasks !== null && cached.tasksStamp === beforeTasks) return { available: true, changed: 0 };
+    const tasks = kernel.store.getTasks(cached.assignments.map(({ id }) => id));
+    const intact = cached.assignments.every(({ id, digest, authorityLevel }) => {
+      const existing = tasks.get(id);
+      return existing?.handoff?.canonicalDigest === digest && existing.authorityLevel === authorityLevel;
+    });
+    if (intact && (beforeTasks === null || taskStamp(kernel.store) === beforeTasks)) {
+      cached.tasksStamp = beforeTasks;
+      return { available: true, changed: 0 };
+    }
+  }
   const snapshot = JSON.parse(readFileSync(sourcePath, 'utf8'));
   if (snapshot.schema !== 'home23.resident.work.v1' || snapshot.resident !== resident || !Array.isArray(snapshot.assignments)) throw new Error('Invalid canonical resident work snapshot');
   let changed = 0;
@@ -59,7 +72,7 @@ export function reconcileCanonicalWork(kernel, sourcePath, resident) {
     if (fileStamp(statSync(sourcePath, { bigint: true })) === stamp) {
       let byPath = reconciledFiles.get(kernel);
       if (!byPath) { byPath = new Map(); reconciledFiles.set(kernel, byPath); }
-      byPath.set(key, { stamp, assignments });
+      byPath.set(key, { stamp, tasksStamp: taskStamp(kernel.store), assignments });
     }
   } catch { /* a removed projection is observed on the next tick */ }
   return { available: true, changed };

@@ -241,6 +241,19 @@ export class PursuitStore {
     return null;
   }
 
+  /** Resolve a fixed set of task identities with one ledger read. */
+  getTasks(ids) {
+    const wanted = new Set(ids);
+    const found = new Map();
+    if (!wanted.size) return found;
+    const rows = readJsonl(this.tasksPath);
+    for (let i = rows.length - 1; i >= 0 && found.size < wanted.size; i -= 1) {
+      const task = rows[i]?.task || rows[i];
+      if (wanted.has(task?.id) && !found.has(task.id)) found.set(task.id, task);
+    }
+    return found;
+  }
+
   updateTask(id, patch = {}, event = {}) {
     const existing = this.getTask(id);
     if (!existing) throw new Error(`Agency task not found: ${id}`);

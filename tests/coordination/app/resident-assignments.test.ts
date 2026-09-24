@@ -372,7 +372,15 @@ test('canonical observations reach the existing agency and preserve private task
   const before = statSync(source).mtimeMs;
   projectResidentWork(f.database, directory, ['jerry']);
   assert.equal(statSync(source).mtimeMs, before, 'a timer tick is not progress');
+  const getTask = kernel.store.getTask.bind(kernel.store);
+  const getTasks = kernel.store.getTasks.bind(kernel.store);
+  let taskReads = 0;
+  kernel.store.getTask = (id: string) => { taskReads += 1; return getTask(id); };
+  kernel.store.getTasks = (ids: string[]) => { taskReads += 1; return getTasks(ids); };
   assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 0);
+  assert.equal(taskReads, 0, 'unchanged projection and task ledger require no task-file read');
+  kernel.store.getTask = getTask;
+  kernel.store.getTasks = getTasks;
   f.assignments.report(f.context, f.origin, { work_id: id, state: 'cancelled', summary: 'Owner stopped the assignment' }, 'closed-report');
   projectResidentWork(f.database, directory, ['jerry']);
   reconcileCanonicalWork(kernel, source, 'jerry');
@@ -429,8 +437,10 @@ test('canonical work skips unchanged file reads and rechecks changed files or ag
   const { reconcileCanonicalWork } = await import('../../../engine/src/agency/canonical-work.js');
   const source = join(directory, 'jerry.work.json');
   const tasks = new Map<string, { handoff: { canonicalDigest: string }; authorityLevel: string }>();
+  let batchReads = 0;
   const kernel = {
     store: { getTask: (id: string) => tasks.get(id),
+      getTasks: (ids: string[]) => { batchReads += 1; return new Map(ids.map(id => [id, tasks.get(id)])); },
       updateTask: (id: string, patch: Partial<{ handoff: { canonicalDigest: string }; authorityLevel: string }>) =>
         tasks.set(id, { ...tasks.get(id)!, ...patch }) },
     recordTask: (task: { id: string; handoff: { canonicalDigest: string }; authorityLevel: string }) => tasks.set(task.id, task),
@@ -451,6 +461,7 @@ test('canonical work skips unchanged file reads and rechecks changed files or ag
   try {
     assert.equal(reconcileCanonicalWork(kernel, source, 'jerry').changed, 0);
     assert.equal(sourceReads, 0, 'unchanged tick must not reread the projection');
+    assert.equal(batchReads, 1, 'unchanged tick resolves cached tasks in one batch');
 
     const replacement = `${source}.next`;
     writeFileSync(replacement, projection('Second'));
