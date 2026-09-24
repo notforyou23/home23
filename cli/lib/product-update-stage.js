@@ -8,7 +8,7 @@ import { inspectProductInstallation, previewProductUpdate, previewRoot } from '.
 import { acquireInstallLock, inventoryProductPayload, readProductManifest, verifyProductPayload as verifyProductPayloadDefault } from './product-payload.js';
 
 const SCHEMA = 'home23.product-stage.v1';
-const BULK_CLONE_MIN_ENTRIES = 512;
+const BULK_COPY_MIN_ENTRIES = 512;
 const inside = (root, target) => target === root || target.startsWith(root + sep);
 function present(file) {
   try { fs.lstatSync(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
@@ -34,15 +34,26 @@ function inspectPartial(payload, manifest) {
   }
 }
 
-function tryBulkClone({ candidate, destination, payload, temporary, probe }) {
-  if (process.platform !== 'darwin' || fs.statSync(candidate).dev !== fs.statSync(destination).dev) return false;
-  // Node's FICLONE flag falls back on some macOS volumes; /bin/cp -c uses
-  // clonefile directly. Probe the volume before taking the bulk path.
-  try { execFileSync('/bin/cp', ['-c', join(candidate, 'bin/node'), probe], { stdio: 'ignore', timeout: 30000 }); }
-  catch { if (present(probe)) fs.unlinkSync(probe); return false; }
-  fs.unlinkSync(probe);
+function tryBulkCopy({ candidate, destination, payload, temporary, probe }) {
+  if (process.platform !== 'darwin') return false;
+  const sameVolume = fs.statSync(candidate).dev === fs.statSync(destination).dev;
+  if (sameVolume) {
+    // Node's FICLONE flag falls back on some macOS volumes; /bin/cp -c uses
+    // clonefile directly. Probe the volume before taking the bulk path.
+    try { execFileSync('/bin/cp', ['-c', join(candidate, 'bin/node'), probe], { stdio: 'ignore', timeout: 30000 }); }
+    catch { if (present(probe)) fs.unlinkSync(probe); return false; }
+    fs.unlinkSync(probe);
+  }
   fs.rmdirSync(payload); // Only an empty, newly owned payload can take this path.
-  execFileSync('/bin/cp', ['-Rc', candidate, temporary], { timeout: 180000 });
+  if (sameVolume) execFileSync('/bin/cp', ['-Rc', candidate, temporary], { timeout: 180000 });
+  else {
+    // ditto traverses and copies the tree in one process across volumes. Its
+    // destination remains private until the complete copy is renamed and
+    // verified against the manifest. The manifest does not include metadata
+    // forks, attributes, quarantine, or ACLs, so do not carry them forward.
+    execFileSync('/usr/bin/ditto', ['--norsrc', '--noextattr', '--noacl', '--noqtn', '--nopersistRootless', '--noclone',
+      candidate, temporary], { timeout: 600000 });
+  }
   fs.renameSync(temporary, payload);
   return true;
 }
@@ -88,6 +99,8 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
       privateJSON(claimPath, receipt);
     }
     const payload = join(destination, 'payload'), temporary = join(destination, 'copy.tmp');
+    // Keep the existing temporary names so interrupted stages from an older
+    // version are recognized and cleaned before either bulk copy strategy.
     const cloneTemporary = join(destination, 'payload.clone.tmp'), cloneProbe = join(destination, 'clone-probe.tmp');
     const finish = () => {
       verifyProductPayload(payload, { fresh: true });
@@ -104,9 +117,9 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
     }
     privateDirectory(destination);
     if (fs.readdirSync(destination).some(name => !['payload', 'copy.tmp', 'payload.clone.tmp', 'clone-probe.tmp'].includes(name))) throw new Error('Unexpected staging contents.');
-    const interruptedClone = present(cloneTemporary);
-    if (interruptedClone) {
-      if (!fs.lstatSync(cloneTemporary).isDirectory()) throw new Error('Unsafe interrupted clone.');
+    const interruptedBulkCopy = present(cloneTemporary);
+    if (interruptedBulkCopy) {
+      if (!fs.lstatSync(cloneTemporary).isDirectory()) throw new Error('Unsafe interrupted bulk copy.');
       fs.rmSync(cloneTemporary, { recursive: true });
     }
     if (present(cloneProbe)) {
@@ -131,8 +144,8 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
     if (space.bavail * space.bsize < remaining + 64n * 1024n * 1024n) {
       throw new Error('Insufficient free space to stage the candidate with 64 MiB of headroom.');
     }
-    if (emptyPayload && !interruptedClone && manifest.files.length >= BULK_CLONE_MIN_ENTRIES &&
-        tryBulkClone({ candidate, destination, payload, temporary: cloneTemporary, probe: cloneProbe })) {
+    if (emptyPayload && !interruptedBulkCopy && manifest.files.length >= BULK_COPY_MIN_ENTRIES &&
+        tryBulkCopy({ candidate, destination, payload, temporary: cloneTemporary, probe: cloneProbe })) {
       return finish();
     }
     const directories = manifest.files.filter(entry => entry.type === 'directory').sort((a, b) => a.path.split('/').length - b.path.split('/').length);

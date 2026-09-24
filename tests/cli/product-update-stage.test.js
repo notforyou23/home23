@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 import { adoptVerifiedStage, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 
-function fixture(t, commit = 'a'.repeat(40)) {
+function fixture(t, commit = 'a'.repeat(40), extraFiles = 0) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-stage-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const payload = path.join(root, 'payload'), home = path.join(root, 'home');
@@ -19,6 +19,10 @@ function fixture(t, commit = 'a'.repeat(40)) {
   fs.mkdirSync(path.join(payload, 'tools/node_modules/.bin'), { mode: 0o755 });
   fs.symlinkSync('../pm2/bin/pm2', path.join(payload, 'tools/node_modules/.bin/pm2'));
   fs.symlinkSync('pm2', path.join(payload, 'tools/node_modules/.bin/alias'));
+  if (extraFiles) {
+    fs.mkdirSync(path.join(payload, 'app/bulk'));
+    for (let i = 0; i < extraFiles; i += 1) fs.writeFileSync(path.join(payload, `app/bulk/${i}`), `file ${i}\n`);
+  }
   const manifest = writeProductManifest(payload, { sourceCommit: commit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
   installProductPayload({ payloadPath: payload, homeRoot: home });
   return { root, payload, home, manifest };
@@ -49,6 +53,48 @@ test('stages an exact candidate, retries idempotently, and preserves both inputs
   const reply = JSON.parse(execFileSync(process.execPath, ['scripts/product/host.mjs', 'stage', '--home', f.home, '--payload', candidate.payload, '--staging', cliStage], { encoding: 'utf8' }));
   assert.equal(reply.status, 'staged'); assert.equal(reply.canInstall, false);
   assert.deepEqual(tree(f.home), beforeHome); assert.deepEqual(tree(candidate.payload), beforePayload);
+});
+
+test('bulk copy stages a large cross-volume tree, verifies it, and resumes after an interrupted finish', t => {
+  if (process.platform !== 'darwin') return t.skip('ditto is macOS-only');
+  const f = fixture(t), candidate = fixture(t, 'b'.repeat(40), 512), staging = path.join(f.root, 'bulk-stage');
+  const args = { homeRoot: f.home, candidatePayload: candidate.payload, staging };
+  const beforeHome = tree(f.home), beforeCandidate = tree(candidate.payload);
+  const originalStat = fs.statSync;
+  fs.statSync = (file, ...options) => {
+    const stat = originalStat(file, ...options);
+    // Exercise the cross-volume branch with a private fixture on any Mac.
+    if (file === staging) return { ...stat, dev: stat.dev + 1 };
+    return stat;
+  };
+  let claim;
+  try {
+    assert.throws(() => stageProductPayload({ ...args, verifyProductPayload: () => { throw new Error('Interrupted after rename'); } }), /Interrupted after rename/);
+    claim = JSON.parse(fs.readFileSync(`${staging}.home23-stage.json`, 'utf8'));
+    assert.equal(claim.status, 'copying');
+    assert.equal(fs.existsSync(path.join(staging, 'payload.clone.tmp')), false);
+  } finally { fs.statSync = originalStat; }
+  const resumed = stageProductPayload(args);
+  assert.equal(resumed.receipt.id, claim.id);
+  assert.deepEqual(tree(path.join(staging, 'payload')), beforeCandidate);
+  assert.deepEqual(tree(f.home), beforeHome);
+  assert.deepEqual(tree(candidate.payload), beforeCandidate);
+});
+
+test('bulk copy cannot claim a changed candidate', t => {
+  if (process.platform !== 'darwin') return t.skip('ditto is macOS-only');
+  const f = fixture(t), candidate = fixture(t, 'b'.repeat(40), 512), staging = path.join(f.root, 'changed-bulk-stage');
+  const beforeHome = tree(f.home);
+  fs.appendFileSync(path.join(candidate.payload, 'app/bulk/0'), 'changed');
+  const originalStat = fs.statSync;
+  fs.statSync = (file, ...options) => {
+    const stat = originalStat(file, ...options);
+    return file === staging ? { ...stat, dev: stat.dev + 1 } : stat;
+  };
+  try { assert.throws(() => stageProductPayload({ homeRoot: f.home, candidatePayload: candidate.payload, staging }), /Product file changed/); }
+  finally { fs.statSync = originalStat; }
+  assert.equal(JSON.parse(fs.readFileSync(`${staging}.home23-stage.json`, 'utf8')).status, 'copying');
+  assert.deepEqual(tree(f.home), beforeHome);
 });
 
 function interruptCopy(t, args) {
