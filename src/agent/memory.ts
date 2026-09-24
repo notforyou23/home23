@@ -240,13 +240,17 @@ Output ONLY the JSON objects, one per line. No prose.`,
                 review_after_days: 30,
               },
             };
+            // A large engine write can hold the shared JSON lock for more than
+            // a few hundred milliseconds. Wait asynchronously without tying up
+            // the harness event loop, but keep extraction's deadline bounded.
+            const lockDeadline = Date.now() + 10_000;
             for (let attempt = 0; ; attempt++) {
               try {
                 store.createObject(object);
                 break;
               } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== 'ELOCKED' || attempt >= 2) throw error;
-                await delay(40 * (attempt + 1));
+                if ((error as NodeJS.ErrnoException).code !== 'ELOCKED' || Date.now() >= lockDeadline) throw error;
+                await delay(Math.max(1, Math.min(250, 40 * (attempt + 1), lockDeadline - Date.now())));
               }
             }
 

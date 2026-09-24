@@ -7,7 +7,7 @@ import { MemoryManager } from '../../src/agent/memory.js';
 import { DefaultCompactionHooks } from '../../src/agent/compaction-hooks.js';
 import lockfile from 'proper-lockfile';
 
-test('memory extraction retries a brief engine lock and saves the object', async () => {
+test('memory extraction waits through a long engine write and saves the object', async () => {
   const root = join(tmpdir(), `home23-memory-locked-extract-${Date.now()}`);
   const workspace = join(root, 'workspace');
   const brain = join(root, 'brain');
@@ -16,7 +16,7 @@ test('memory extraction retries a brief engine lock and saves the object', async
   const file = join(brain, 'memory-objects.json');
   writeFileSync(file, '{"objects":[]}');
   const release = lockfile.lockSync(file);
-  const unlockTimer = setTimeout(release, 80);
+  const unlockTimer = setTimeout(release, 700);
   const previousFetch = globalThis.fetch;
   const previousKey = process.env.OLLAMA_CLOUD_API_KEY;
   process.env.OLLAMA_CLOUD_API_KEY = 'test-ollama-key';
