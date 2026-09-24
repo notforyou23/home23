@@ -277,18 +277,50 @@ export function createResidentAssignments(database: M11Database) {
       return [{ ...work, assignmentState, conclusion }];
     });
   }
+  // The resident outcome timer calls revisits every two seconds. Assignment
+  // conclusions are append-only events, so retain only the latest blocked
+  // conclusions and advance through new events instead of scanning every
+  // historical assignment and resolving each root on every timer tick.
+  const blockedRevisits = new Map<string, AssignmentConclusion & { eventSequence: number }>();
+  let revisitCursor: number | null = null;
+  function observeRevisitEvent(row: { id: string; sequence: number; payload: string }) {
+    const value = { ...JSON.parse(row.payload) as AssignmentConclusion, eventSequence: row.sequence };
+    if (value.state === 'blocked') blockedRevisits.set(row.id, value);
+    else blockedRevisits.delete(row.id);
+  }
   function revisits() {
-    const records = database.readAll<{ id: string }>("SELECT DISTINCT aggregate_id AS id FROM events WHERE aggregate_kind='resident_assignment'");
-    return records.flatMap(({ id }) => {
-      const value = latest(id);
-      if (!value || value.state !== 'blocked') return [];
-      const due = value.revisitAt !== null && Date.parse(value.revisitAt) <= Date.now();
-      const dependenciesReady = value.waitFor.length > 0 && value.waitFor.every(workId => {
-        const work = database.readOne<{ state: string }>('SELECT state FROM works WHERE id=?', workId);
-        return work && ['succeeded','failed','cancelled'].includes(work.state);
-      });
-      return due || dependenciesReady ? [value] : [];
-    });
+    const journalEnd = database.readOne<{ sequence: number }>('SELECT coalesce(max(sequence),0) AS sequence FROM events')!.sequence;
+    if (revisitCursor === null || journalEnd < revisitCursor) {
+      blockedRevisits.clear();
+      revisitCursor = journalEnd;
+      // This one-time recovery read retains the same latest-version rule as
+      // latest(). Subsequent ticks use the event cursor, including events
+      // appended by another connection or after a database reopen.
+      const records = database.readAll<{ id: string; sequence: number; payload: string }>(`SELECT e.aggregate_id AS id,e.sequence,e.payload_json AS payload FROM events e
+        WHERE e.aggregate_kind='resident_assignment' AND e.aggregate_version=(
+          SELECT max(last.aggregate_version) FROM events last
+          WHERE last.aggregate_kind='resident_assignment' AND last.aggregate_id=e.aggregate_id)`);
+      for (const record of records) observeRevisitEvent(record);
+    }
+    // Limit each timer turn even if a writer appends a large burst of events.
+    // A cursor advances through unrelated events as well, so it cannot get
+    // stuck behind them. Any remaining records are picked up on the next tick.
+    const changes = database.readAll<{ id: string; sequence: number; payload: string | null }>(`SELECT aggregate_id AS id,sequence,
+      CASE WHEN aggregate_kind='resident_assignment' THEN payload_json END AS payload
+      FROM events WHERE sequence>? ORDER BY sequence LIMIT 512`, revisitCursor);
+    for (const change of changes) {
+      if (change.payload !== null) observeRevisitEvent({ ...change, payload: change.payload });
+      revisitCursor = change.sequence;
+    }
+    const now = Date.now();
+    const waiting = [...blockedRevisits.values()].filter(value => value.revisitAt === null || Date.parse(value.revisitAt) > now);
+    const dependencyIds = [...new Set(waiting.flatMap(value => value.waitFor))];
+    const dependencyRows = dependencyIds.length ? database.readAll<{ id: string; state: string }>(`SELECT id,state FROM works
+      WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(dependencyIds)) : [];
+    const terminal = new Set(dependencyRows.filter(row => ['succeeded','failed','cancelled'].includes(row.state)).map(row => row.id));
+    return [...blockedRevisits.values()].filter(value =>
+      (value.revisitAt !== null && Date.parse(value.revisitAt) <= now) ||
+      (value.waitFor.length > 0 && value.waitFor.every(id => terminal.has(id))));
   }
   return { root, latest, presentationState, report, list, listForProjection, revisits, assertOpen, direction };
 }

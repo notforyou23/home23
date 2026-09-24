@@ -334,6 +334,30 @@ test('a dependency wakes the same unfinished assignment once, with separate resi
     { work_id: id, state: 'active', summary: 'Other resident' }, 'outside-scope'), /resident scope/);
 });
 
+test('revisit polling advances through new conclusions without rescanning historical assignments', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse(AT) });
+  const f = fixture(t), id = f.admit('cached-revisit'), dependency = f.admit('cached-dependency');
+  f.cancel(id);
+  let historicalReads = 0;
+  const readAll = f.database.readAll.bind(f.database);
+  f.database.readAll = ((sql: string, ...parameters: unknown[]) => {
+    if (sql.includes("e.aggregate_kind='resident_assignment'")) historicalReads++;
+    return readAll(sql, ...parameters);
+  }) as typeof f.database.readAll;
+  f.assignments.report(f.context, f.origin, { work_id: id, state: 'blocked', summary: 'Wait for dependency',
+    wait_for: [dependency] }, 'cached-block');
+  assert.deepEqual(f.assignments.revisits(), []);
+  assert.deepEqual(f.assignments.revisits(), []);
+  assert.equal(historicalReads, 1, 'steady polling does not rescan the assignment history');
+  f.cancel(dependency);
+  assert.equal(f.assignments.revisits()[0]?.workId, id, 'a terminal dependency wakes the blocked assignment');
+  f.assignments.report(f.context, f.origin, { work_id: id, state: 'complete', summary: 'Verified',
+    evidence: ['receipt:verified'] }, 'cached-complete');
+  assert.deepEqual(f.assignments.revisits(), [], 'an appended conclusion removes the older revisit');
+  assert.equal(historicalReads, 1);
+  assert.equal(createResidentAssignments(f.database).revisits().length, 0, 'a fresh projection recovers the latest conclusion');
+});
+
 test('changed direction requires explicit assessment; newly admitted children inherit that read without another launch attempt', t => {
   const f = fixture(t);
   f.database.mutateWithEvent(tx => {
