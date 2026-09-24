@@ -322,7 +322,8 @@ async function checkpointHash(file, { source = false } = {}) {
 async function checkpointStateFile(home, checkpoint, relative, beforeCopy) {
   const source = join(home, relative);
   const destination = join(checkpoint, 'state', relative);
-  safeCheckpointDirectory(home, dirname(relative));
+  // Inventory already authenticates approved source links (including retained
+  // parent directories). Only the checkpoint destination must forbid links.
   const sourceStat = regularCheckpointFile(source, { source: true });
   const mode = sourceStat.mode & 0o777;
   const before = await checkpointHash(source, { source: true });
