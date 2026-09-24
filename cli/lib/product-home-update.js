@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 const SCHEMA = 'home23.home-update.v1';
 const ACTIONS = new Set(['check', 'update', 'resume', 'recover']);
 const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
+const PROGRESS_PERSIST_INTERVAL_MS = 2_000;
 const FRESH_RELEASE_REQUIRED = new Set(['unsupported_data_version', 'schema_assets_changed', 'encoder_mismatch', 'encoder_recipe_changed']);
 const library = dirname(fileURLToPath(import.meta.url));
 const now = () => new Date().toISOString();
@@ -298,11 +299,20 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     if (!prepared) {
       workerPriority(true);
       try {
-        persist({ phase: 'downloading', message: 'Downloading and preparing Home23 on your Mac. Your home is still available.' });
+        persist({ phase: 'downloading', progress: null, message: 'Downloading and preparing Home23 on your Mac. Your home is still available.' });
+        const progressNow = dependencies.progressNow ?? Date.now;
+        let lastProgressPersistAt = progressNow();
         const delivery = updateDeliveryPaths(home.root, operation.id, { release: operation.release });
         prepared = await channel.prepareConfiguredRelease({ ...options,
           staging: delivery.staging, downloadDirectory: delivery.downloadDirectory, extractionDirectory: delivery.extractionDirectory,
-          onProgress: progress => persist({ progress: progress.bytesTotal > 0 ? Math.min(1, progress.bytesCopied / progress.bytesTotal) : null }) });
+          onProgress: progress => {
+            operation.progress = progress.bytesTotal > 0 ? Math.min(1, progress.bytesCopied / progress.bytesTotal) : null;
+            const current = progressNow();
+            if (current - lastProgressPersistAt >= PROGRESS_PERSIST_INTERVAL_MS) {
+              persist({});
+              lastProgressPersistAt = current;
+            }
+          } });
         persist({ prepared, release: prepared.release, progress: null, phase: 'preparing', message: 'The download is ready. Preparing your home update.' });
       } finally {
         workerPriority(false);

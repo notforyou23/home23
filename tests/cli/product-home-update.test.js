@@ -149,6 +149,40 @@ test('preparation failure restores worker priority before offering resume', asyn
   assert.equal(homeUpdateStatus({ homeRoot: f.home }).operation.phase, 'failed');
 });
 
+test('download progress is durably sampled and a failure retains the latest progress', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  const id = accepted.operation.id;
+  let clock = 0;
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    progressNow: () => clock,
+    channel: { prepareConfiguredRelease: async ({ onProgress }) => {
+      for (const [elapsed, copied, durable] of [
+        [100, 10, null], [1_000, 20, null], [2_000, 40, 0.4], [2_100, 80, 0.4],
+      ]) {
+        clock = elapsed;
+        onProgress({ bytesCopied: copied, bytesTotal: 100 });
+        assert.equal(f.operation(id).progress, durable);
+      }
+      throw new Error('Download interrupted');
+    } }, updater: unusedUpdater, appUpdater: unusedAppUpdater,
+  });
+  const saved = f.operation(id);
+  assert.equal(saved.phase, 'failed');
+  assert.equal(saved.progress, 0.8);
+  assert.equal(homeUpdateStatus({ homeRoot: f.home }).operation.progress, 0.8);
+  f.setOperation({ ...saved, pid: null });
+  await requestHomeUpdate(input(f.home, 'resume', 'resume'), noLaunch);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    progressNow: () => 0,
+    channel: { prepareConfiguredRelease: async () => {
+      assert.equal(f.operation(id).phase, 'downloading');
+      assert.equal(f.operation(id).progress, null);
+      throw new Error('Download interrupted again');
+    } }, updater: unusedUpdater, appUpdater: unusedAppUpdater,
+  });
+});
+
 test('preparation status remains truthful after signed files are downloaded', async t => {
   const f = fixture(t); await check(f);
   const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
