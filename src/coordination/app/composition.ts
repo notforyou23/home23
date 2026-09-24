@@ -1202,7 +1202,10 @@ export function createCoordinationProcess(
         const context: MessagingActorContext = bot.residentBinding.startsWith('bot-')
           ? {...ids,identity:{kind:'on_demand_bot',bot:{botId:current.targetPrincipalId,residentBinding:bot.residentBinding}}}
           : completionTargets.get(bot.residentBinding)!.context(ids);
-        workControl.cancel({workId,idempotencyKey:`scheduled-deadline:${workId}`,context});
+        const result = workControl.cancel({workId,idempotencyKey:`scheduled-deadline:${workId}`,context});
+        if (result.outcome === 'cancellation_requested' && queueJoinedStop(workId)) {
+          reconcileJoinedStops();
+        }
       },
       context: (botId) => {
         if (botId) {
@@ -1365,16 +1368,28 @@ export function createCoordinationProcess(
     database, work, leases, residentAdapters, residentAgents,
     awaitSettlement: (workId) => awaitWorkingSettlement?.(workId) ?? Promise.resolve(),
   });
+  const pendingJoinedStops = new Set<string>();
   const stopsInFlight = new Set<string>();
+  const queueJoinedStop = (workId: string): boolean => {
+    const joined = database.readOne<{id:string}>("SELECT w.id FROM works w WHERE w.id=? AND w.state='cancelling' AND (w.kind='resident_work_thread' OR EXISTS(SELECT 1 FROM work_thread_presentations p WHERE p.work_id=w.id))", workId);
+    if (!joined) return false;
+    pendingJoinedStops.add(workId);
+    return true;
+  };
   const reconcileJoinedStops = () => {
-    for(const row of database.readAll<{id:string}>("SELECT w.id FROM works w WHERE w.state='cancelling' AND (w.kind='resident_work_thread' OR EXISTS(SELECT 1 FROM work_thread_presentations p WHERE p.work_id=w.id))")) {
-      if(stopsInFlight.has(row.id)) continue;
-      const done=lifecycle.beginWork();stopsInFlight.add(row.id);
+    for (const workId of pendingJoinedStops) {
+      if (stopsInFlight.has(workId)) continue;
+      const done=lifecycle.beginWork();stopsInFlight.add(workId);
       void Promise.resolve().then(async()=>{
-        await stopInvokedBot?.(row.id);
-        await stopRevokedWorkingThread(row.id,{requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')});
+        await stopInvokedBot?.(workId);
+        await stopRevokedWorkingThread(workId,{requestId:generateCoordinationId('request'),correlationId:generateCoordinationId('correlation')});
       }).catch(error=>console.error('[joined-stop] awaiting confirmation',error))
-        .finally(()=>{stopsInFlight.delete(row.id);done();});
+        .finally(()=>{
+          stopsInFlight.delete(workId);
+          try {
+            if (work.get(workId)?.state !== 'cancelling') pendingJoinedStops.delete(workId);
+          } finally { done(); }
+        });
     }
   };
   const stoppedWorkControl = {
@@ -1382,8 +1397,17 @@ export function createCoordinationProcess(
     async cancel(input: Parameters<typeof workControl.cancel>[0]) {
       const result = workControl.cancel(input);
       if (result.outcome !== "cancellation_requested") return result;
-      await stopInvokedBot?.(input.workId);
-      await stopRevokedWorkingThread(input.workId, input.context);
+      queueJoinedStop(input.workId);
+      if (!stopsInFlight.has(input.workId)) {
+        stopsInFlight.add(input.workId);
+        try {
+          await stopInvokedBot?.(input.workId);
+          await stopRevokedWorkingThread(input.workId, input.context);
+        } finally {
+          stopsInFlight.delete(input.workId);
+          if (work.get(input.workId)?.state !== 'cancelling') pendingJoinedStops.delete(input.workId);
+        }
+      }
       const projection = workControl.get(input);
       return { outcome: projection.state === "cancelled" ? "cancelled" as const : "cancellation_requested" as const,
         replayed: result.replayed, work: projection };
@@ -1543,10 +1567,9 @@ export function createCoordinationProcess(
           });
       }
       for (const pending of database.readAll<{id:string}>("SELECT w.id FROM works w WHERE w.state='cancelling' AND (w.kind='resident_work_thread' OR EXISTS(SELECT 1 FROM work_thread_presentations p WHERE p.work_id=w.id))")) {
-        void stopInvokedBot?.(pending.id).catch(error=>console.error('[joined-stop]',error));
-        void stopRevokedWorkingThread(pending.id, { requestId: generateCoordinationId("request"), correlationId: generateCoordinationId("correlation") })
-          .catch((error) => console.error("[home23-coordination] Working Thread stop remains unresolved", error));
+        pendingJoinedStops.add(pending.id);
       }
+      reconcileJoinedStops();
       if (messageSubmission) {
         void messageSubmission.recoverResidentWork().then((receipt) => {
           if (receipt.discovered > 0) {
