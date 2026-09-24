@@ -16,7 +16,7 @@ import { boundHistoricalContext } from '../../agent/historical-context.js';
 import { createResidentNotifications } from './resident-notifications.js';
 import { createResidentContactProjection } from './resident-contact.js';
 import { canRecoverOutcomeTarget } from './outcome-target.js';
-import { projectResidentWorkIncrementally, residentWorkProjectionChangesSince } from './resident-work-projection.js';
+import { projectResidentWorkInWorker, residentWorkProjectionChangesSince } from './resident-work-projection.js';
 import { createResidentAssignments } from './resident-assignments.js';
 import { dirname, join, resolve } from 'node:path';
 import { createScheduledChannelTurns } from './scheduled-turns.js';
@@ -1579,7 +1579,7 @@ export function createCoordinationProcess(
           // projection remains eligible for the next refresh.
           const before = database.readOne<{ sequence: number }>(
             'SELECT coalesce(max(sequence),0) AS sequence FROM events')!.sequence;
-          await projectResidentWorkIncrementally(database, join(dirname(config.databasePath), 'resident-contact'),
+          await projectResidentWorkInWorker(config.databasePath, join(dirname(config.databasePath), 'resident-contact'),
             Object.entries(config.residents).filter(([, value]) => value.enabled).map(([slug]) => slug));
           projectedEventSequence = before;
         })()
