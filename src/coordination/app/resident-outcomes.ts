@@ -82,8 +82,10 @@ export function createResidentOutcomeStore(database: M11Database) {
       // Work changes, delivered result messages, or scheduled admissions can
       // produce a new terminal outcome. Reuse the durable event cursor rather
       // than rescanning all historical Work and scheduled runs on every tick.
-      const events = database.readAll<{ sequence: number; kind: string; payload: string }>(
-        'SELECT sequence, aggregate_kind AS kind, payload_json AS payload FROM events WHERE sequence > ? ORDER BY sequence LIMIT 100', observedCursor);
+      const events = database.readAll<{ sequence: number; kind: string; payload: string | null }>(
+        `SELECT sequence, aggregate_kind AS kind,
+          CASE WHEN aggregate_kind='communication' THEN payload_json END AS payload
+         FROM events WHERE sequence > ? ORDER BY sequence LIMIT 100`, observedCursor);
       const discoverTerminals = initialTerminalDiscovery || events.some(row =>
         row.kind === 'work' || row.kind === 'message' || row.kind === 'scheduled_channel_run');
       for (const value of assignments.revisits()) {
@@ -147,6 +149,7 @@ export function createResidentOutcomeStore(database: M11Database) {
       let found = false;
       for (const row of events) {
         if (row.kind !== 'communication') continue;
+        if (row.payload === null) continue;
         const data = JSON.parse(row.payload).communication;
         if (data?.provenance !== 'resident_authenticated_specialist_terminal') continue;
         enqueue(`specialist:${data.payload.childWorkId}`, data.payload.parentWorkId, data.payload);
