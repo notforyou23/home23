@@ -12,6 +12,7 @@ import { createWorkService } from '../../../src/coordination/work/service.js';
 import { createLeaseService } from '../../../src/coordination/leases/index.js';
 import { WorkError } from '../../../src/coordination/work/errors.js';
 import { RESIDENT_OUTCOMES_MIGRATION_SQL } from '../../../src/coordination/migrations/0014-resident-outcomes.js';
+import { INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL } from '../../../src/coordination/migrations/0019-inbox-and-reconciliation-indexes.js';
 import { AT, BOT_ID, CHANNEL_ID, MESSAGE_ID, OWNER_ID, M11TestDatabase, createFixtureIdGenerator, fixtureId, manifestInput } from '../work/test-fixture.js';
 import type { CoordinationTurnOrigin } from '../../../src/agent/types.js';
 import type { MessagingActorContext } from '../../../src/coordination/channels/types.js';
@@ -427,6 +428,26 @@ test('batched resident projection retains assignment lineage and presentation st
   assert.deepEqual(actual, expected);
   assert.equal(actual.find(row => row.id === active)?.assignmentState, 'active');
   assert.equal(actual.find(row => row.id === blocked)?.assignmentState, 'blocked');
+});
+
+test('resident projection seeks current roots without scanning message or event history', t => {
+  const f = fixture(t);
+  f.database.raw.exec(INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL);
+  f.admit('projection-plan');
+  const original = f.database.readAll.bind(f.database);
+  const plans: string[] = [];
+  f.database.readAll = <T>(sql: string, ...parameters: Array<string | number | bigint | Buffer | null>): T[] => {
+    plans.push(...f.database.raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters)
+      .map(row => String((row as { detail: string }).detail)));
+    return original<T>(sql, ...parameters);
+  };
+  assert.equal(f.assignments.listForProjection(BOT_ID).length, 1);
+  assert.ok(plans.some(detail => detail.includes('SEARCH latest USING COVERING INDEX')),
+    'latest assignment event must use its aggregate index');
+  assert.ok(plans.some(detail => detail.includes('SEARCH m USING INDEX messages_work_channel_kind')),
+    'visible result must use the Work message index');
+  assert.equal(plans.some(detail => /SCAN (?:e|latest|m)(?:\s|$)/.test(detail)), false,
+    `projection scanned event or message history: ${plans.join('; ')}`);
 });
 
 test('canonical execution termination remains an open agency obligation while assignment state is not closed', async t => {

@@ -237,10 +237,13 @@ export function createResidentAssignments(database: M11Database) {
       w.terminal_reason AS terminalReason FROM works w LEFT JOIN work_thread_presentations p ON p.work_id=w.id
       LEFT JOIN messages m ON m.id=w.origin_message_id WHERE w.id IN (SELECT value FROM json_each(?))`, rootIds);
     const works = new Map(workRows.map(row => [String(row.id), row]));
-    const conclusionRows = database.readAll<{ id: string; payload: string; sequence: number }>(`SELECT e.aggregate_id AS id,e.payload_json AS payload,e.sequence
-      FROM events e WHERE e.aggregate_kind='resident_assignment' AND e.aggregate_id IN (SELECT value FROM json_each(?))
-      AND e.aggregate_version=(SELECT max(last.aggregate_version) FROM events last
-        WHERE last.aggregate_kind='resident_assignment' AND last.aggregate_id=e.aggregate_id)`, rootIds);
+    // Drive from the bounded roots. Starting at events can scan every
+    // historical assignment event before filtering the current roots.
+    const conclusionRows = database.readAll<{ id: string; payload: string; sequence: number }>(`SELECT roots.value AS id,e.payload_json AS payload,e.sequence
+      FROM json_each(?) roots JOIN events e ON e.sequence=(
+        SELECT latest.sequence FROM events latest
+        WHERE latest.aggregate_kind='resident_assignment' AND latest.aggregate_id=roots.value
+        ORDER BY latest.aggregate_version DESC LIMIT 1)`, rootIds);
     const conclusions = new Map(conclusionRows.map(row => [row.id,
       { ...JSON.parse(row.payload) as AssignmentConclusion, eventSequence: row.sequence }]));
     const outcomeRows = hasOutcomeStore ? database.readAll<{ id: string; key: string; reviewState: string | null; settledAt: string | null }>(`SELECT roots.value AS id,o.outcome_key AS key,
@@ -252,10 +255,13 @@ export function createResidentAssignments(database: M11Database) {
           latest.created_at DESC,latest.outcome_key DESC LIMIT 1)
       LEFT JOIN works review ON review.id=o.review_work_id`, rootIds) : [];
     const outcomes = new Map(outcomeRows.map(row => [row.id, row]));
-    const deliveredRows = database.readAll<{ id: string }>(`SELECT DISTINCT m.work_id AS id FROM messages m JOIN works w ON w.id=m.work_id
-      WHERE m.work_id IN (SELECT value FROM json_each(?)) AND m.channel_id=w.channel_id
-        AND m.author_principal_id=w.target_principal_id AND m.kind='result' AND m.stored_visibility='visible'
-        AND NOT EXISTS(SELECT 1 FROM messages tombstone WHERE tombstone.tombstones_message_id=m.id)`, rootIds);
+    const deliveredRows = database.readAll<{ id: string }>(`SELECT roots.value AS id FROM json_each(?) roots
+      JOIN works w ON w.id=roots.value WHERE EXISTS(
+        SELECT 1 FROM messages m
+        WHERE m.work_id=w.id AND m.channel_id=w.channel_id
+          AND m.author_principal_id=w.target_principal_id AND m.kind='result' AND m.stored_visibility='visible'
+          AND NOT EXISTS(SELECT 1 FROM messages tombstone WHERE tombstone.tombstones_message_id=m.id)
+        LIMIT 1)`, rootIds);
     const delivered = new Set(deliveredRows.map(row => row.id));
     return roots.flatMap(id => {
       const work = works.get(id);
