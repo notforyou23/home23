@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryIngest, applyChannelCap, CHANNEL_CAPS } from '../../../engine/src/channels/memory-ingest.cjs';
@@ -59,6 +60,33 @@ test('MemoryIngest.writeFromObservation creates a full MemoryObject and a receip
   assert.equal(r.traceId, makeTraceId('build.git', 'git:abc1234'));
   assert.equal(r.channelId, 'build.git');
   assert.equal(r.memoryObjectId, mo.memory_id);
+});
+
+test('MemoryIngest preserves a store created between its existence check and lock', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'mi-create-race-'));
+  const objectsPath = join(dir, 'memory-objects.json');
+  const prior = { memory_id: 'from-other-writer', created_at: '2026-04-21T15:00:00Z' };
+  const originalWrite = fs.promises.writeFile;
+  let injected = false;
+  fs.promises.writeFile = async function (file, data, options) {
+    if (file === objectsPath && options?.flag === 'wx' && !injected) {
+      injected = true;
+      fs.writeFileSync(objectsPath, JSON.stringify({ objects: [prior] }));
+    }
+    return originalWrite.call(this, file, data, options);
+  };
+  t.after(() => { fs.promises.writeFile = originalWrite; });
+
+  const ingest = new MemoryIngest({ brainDir: dir });
+  await ingest.writeFromObservation({
+    channelId: 'build.git', sourceRef: 'git:race',
+    receivedAt: '2026-04-21T15:00:00Z', flag: 'COLLECTED', confidence: 0.9,
+    payload: { subject: 'new observation' },
+  });
+  const saved = JSON.parse(readFileSync(objectsPath, 'utf8'));
+  assert.equal(injected, true);
+  assert.ok(saved.objects.some(object => object.memory_id === prior.memory_id));
+  assert.equal(saved.objects.length, 2);
 });
 
 test('MemoryIngest classifies source role and doctrine posture before reuse', async () => {

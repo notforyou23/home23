@@ -362,7 +362,13 @@ class MemoryIngest {
   async _writeFromObservationLocked(obs, draft) {
     // Ensure the file exists before acquiring a lock
     if (!fs.existsSync(this.objectsPath)) {
-      await fsp.writeFile(this.objectsPath, JSON.stringify({ objects: [] }));
+      try {
+        // Another writer may create the store during this await. Never
+        // truncate that writer's observations before acquiring the lock.
+        await fsp.writeFile(this.objectsPath, JSON.stringify({ objects: [] }), { flag: 'wx' });
+      } catch (error) {
+        if (error?.code !== 'EEXIST') throw error;
+      }
     }
 
     let written = null;
