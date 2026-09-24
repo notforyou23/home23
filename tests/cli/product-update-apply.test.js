@@ -335,7 +335,7 @@ test('an admitted busy v21 database pins its reviewed version after owned writer
 
 test('a busy v21 database refuses a v20 candidate after owned writers stop', async t => {
   const fixture = homeFixture(t, { desiredRunning: true, version: 21 });
-  let online = true;
+  let online = true, starts = 0;
   const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
     staging: fixture.staging, admit: true }, { ...quiet,
     inspectUpdateInventory: async (...args) => {
@@ -346,12 +346,86 @@ test('a busy v21 database refuses a v20 candidate after owned writers stop', asy
     },
     listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
     quiesce: async () => { online = false; return []; },
+    start: async () => { starts += 1; online = true; return { ok: true, status: 'ready' }; },
   });
   assert.equal(result.status, 'aborted');
   assert.equal(result.reasons[0].code, 'unsupported_data_version');
+  assert.equal(result.runningRestored, true);
+  assert.equal(starts, 1);
+  assert.equal(online, true);
   assert.equal(packageId(fixture.home), fixture.installed.packageId);
   assert.equal(kept(fixture.home).version, 21);
   assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'checkpoint')), false);
+});
+
+test('a failed pre-switch restoration stays fenced with a durable recovery result', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true, version: 21 });
+  let online = true;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    inspectUpdateInventory: async (...args) => ({ ...(await inspectUpdateInventory(...args)),
+      databaseInspection: { present: true, version: null, busy: true, compatible: false },
+      reasons: [{ code: 'database_busy', message: 'database is locked' }] }),
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { online = false; return []; },
+    start: async () => ({ ok: false, status: 'failed' }),
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(result.runningRestored, false);
+  assert.equal(result.reasons.some(reason => reason.code === 'running_restore_failed'), true);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'recovery_required');
+  assert.equal(online, false);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(kept(fixture.home).version, 21);
+  assert.equal(updateBlocksStart(readUpdateJournal(fixture.home)), true);
+});
+
+test('a database still busy after quiesce restores the previous running home', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const databaseFile = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+  let online = true, lock, starts = 0;
+  t.after(() => { if (lock?.isOpen) lock.close(); });
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { online = false; return []; },
+    afterPhase: async journal => {
+      if (journal.phase === 'quiesced') {
+        lock = new DatabaseSync(databaseFile);
+        lock.exec('BEGIN EXCLUSIVE');
+      }
+    },
+    start: async () => {
+      starts += 1;
+      lock.exec('ROLLBACK');
+      lock.close();
+      online = true;
+      return { ok: true, status: 'ready' };
+    },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.reasons[0].code, 'database_busy');
+  assert.equal(result.runningRestored, true);
+  assert.equal(starts, 1);
+  assert.equal(online, true);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(preserved(fixture.home).value, 'same-home');
+});
+
+test('an incomplete graceful stop is fenced without starting a second writer', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let starts = 0;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    quiesce: async () => [{ name: 'home23-milo', status: 'online' }],
+    start: async () => { starts += 1; return { ok: true, status: 'ready' }; },
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(result.reasons[0].code, 'writer_stop_incomplete');
+  assert.equal(starts, 0);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(preserved(fixture.home).value, 'same-home');
 });
 
 test('checkpoint and resume fingerprint a read-only attachment without copying it', async t => {

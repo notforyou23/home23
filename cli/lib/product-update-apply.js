@@ -606,6 +606,28 @@ async function mutate(journal, dependencies, verify) {
   const file = journalPath(journal.homeRoot), home = journal.homeRoot;
   const rank = () => RANK[journal.phase];
   const names = journal.writerNames || [];
+  async function abortBeforeSwitch(code, message) {
+    const reasons = [{ code, message }];
+    if (journal.stoppedForUpdate && journal.desiredRunning) {
+      // Start is authorized only by the update owner while the journal is
+      // fenced. Make an interrupted restoration durable before admitting it.
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons }, dependencies);
+      try {
+        const processes = await (dependencies.listProcesses || defaultListProcesses)(home);
+        if (classifyProcesses(processes, names).busy.length) throw new Error('A writer is still active.');
+        if (readProductManifest(home).packageId !== journal.fromPackageId) throw new Error('The previous software changed.');
+        const started = await (dependencies.start || defaultStart)(home, journal);
+        if (!startObservation(started).startOk) throw new Error('The previous home did not become ready.');
+      } catch (error) {
+        journal = await commitPhase(file, { ...journal, reasons: [...reasons, { code: 'running_restore_failed', message: `The previous home could not be restored to its running state (${error.message}).` }] }, dependencies);
+        return { done: publicResult(journal) };
+      }
+      journal = await commitPhase(file, { ...journal, phase: 'aborted', runningRestored: true }, dependencies);
+    } else {
+      journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons }, dependencies);
+    }
+    return { done: publicResult(journal) };
+  }
   if (rank() < RANK.quiesced) {
     let processes = await (dependencies.listProcesses || defaultListProcesses)(home);
     let classified = classifyProcesses(processes, names);
@@ -614,7 +636,10 @@ async function mutate(journal, dependencies, verify) {
       if (!journal.admit) return { done: deferred(home, 'busy', 'This home is still working. Retry when it is quiet, or explicitly admit maintenance. Nothing was forced to stop.', journal) };
       processes = await (dependencies.quiesce || defaultQuiesce)(home, names);
       classified = classifyProcesses(processes, names);
-      if (classified.busy.length) return { done: deferred(home, 'busy', 'Writers are still active after a graceful stop. Wait and resume. They were not force-killed.', journal) };
+      if (classified.busy.length) {
+        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'writer_stop_incomplete', message: 'Owned writers remain active after a graceful stop. The home was not restarted or switched; inspect the partly stopped services before recovery.' }] }, dependencies);
+        return { done: publicResult(journal) };
+      }
       journal.stoppedForUpdate = true;
     }
     journal = await commitPhase(file, { ...journal, phase: 'quiesced' }, dependencies);
@@ -627,14 +652,14 @@ async function mutate(journal, dependencies, verify) {
     let expectedSchemaVersion = Object.hasOwn(journal, 'coordinationSchemaVersion')
       ? journal.coordinationSchemaVersion : 20;
     if (database.busy) {
+      if (journal.stoppedForUpdate) return abortBeforeSwitch('database_busy', 'The coordination database remains busy after owned writers stopped. Package files were not replaced.');
       return { done: deferred(home, 'database_busy', 'The coordination database remains busy after owned writers stopped. Resume when it can be inspected.', journal) };
     }
     const candidateSchema = expectedSchemaVersion === null ? candidateCoordinationSchema(candidateManifest(journal)) : null;
     if ((expectedSchemaVersion === null && (!database.present || !database.compatible || candidateSchema === null
         || database.version > candidateSchema))
       || (database.present && (!database.compatible || (expectedSchemaVersion !== null && database.version !== expectedSchemaVersion)))) {
-      journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons: [{ code: 'unsupported_data_version', message: 'The stored schema changed after the preflight. Package files were not replaced.' }] }, dependencies);
-      return { done: publicResult(journal) };
+      return abortBeforeSwitch('unsupported_data_version', 'The stored schema changed after the preflight. Package files were not replaced.');
     }
     if (expectedSchemaVersion === null) {
       expectedSchemaVersion = database.version;
