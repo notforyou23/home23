@@ -2673,7 +2673,11 @@ export class AgencyKernel {
     };
   }
 
-  async tick({ reason = 'resident_tick', now = nowIso() } = {}) {
+  tick(options = {}) {
+    return this.serializeIntake(() => this.tickSerial(options));
+  }
+
+  async tickSerial({ reason = 'resident_tick', now = nowIso() } = {}) {
     if (!this.config.enabled) return null;
     const selected = this.selectResidentPursuit();
     const killReview = this.runKillReview({ now, excludeId: selected?.id || null });

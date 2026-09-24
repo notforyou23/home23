@@ -1951,6 +1951,52 @@ test('AgencyKernel editor kill verdict demotes stale watch threads with receipts
   assert.equal(consequences.some(row => row.pursuitId === intake.pursuit.id && row.changeType === 'stale_thread_killed'), true);
 });
 
+test('AgencyKernel waits for an in-flight inbox append before a tick kills its pursuit', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const observation = {
+    source: 'research',
+    kind: 'research_summary',
+    summary: 'Repeated research summary with no consequence.',
+    evidence: [{ type: 'research', ref: 'r-tick-race' }],
+    tags: ['research'],
+  };
+  const first = await kernel.intake(observation);
+  kernel.store.updatePursuit(first.pursuit.id, { status: 'watch', seenCount: 21 }, {
+    type: 'test_force_stale_watch',
+    reason: 'simulate repeated watch loop',
+  });
+  const appendInbox = kernel.store.appendInboxAsync.bind(kernel.store);
+  let releaseAppend;
+  let signalAppend;
+  const appendStarted = new Promise(resolve => { signalAppend = resolve; });
+  const appendGate = new Promise(resolve => { releaseAppend = resolve; });
+  kernel.store.appendInboxAsync = async entry => {
+    signalAppend();
+    await appendGate;
+    return appendInbox(entry);
+  };
+
+  const intake = kernel.intake(observation);
+  await appendStarted;
+  let tickSettled = false;
+  const tick = kernel.tick({ reason: 'test-inflight-intake', now: '2026-05-25T16:00:00.000Z' })
+    .then(result => { tickSettled = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  const tickRanBeforeAppend = tickSettled;
+  releaseAppend();
+  const [merged, tickResult] = await Promise.all([intake, tick]);
+
+  assert.equal(tickRanBeforeAppend, false);
+  assert.equal(merged.pursuit.id, first.pursuit.id);
+  assert.equal(tickResult.nextAction.kind, 'kill_stale_thread');
+  assert.equal(kernel.pursuit(first.pursuit.id).status, 'discarded');
+});
+
 test('AgencyKernel editor demotes ornamental dashboard panels without agency clarity', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
