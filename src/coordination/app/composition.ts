@@ -15,6 +15,7 @@ import { ProjectContinuityStore } from '../projects/continuity.js';
 import { boundHistoricalContext } from '../../agent/historical-context.js';
 import { createResidentNotifications } from './resident-notifications.js';
 import { createResidentContactProjection } from './resident-contact.js';
+import { canRecoverOutcomeTarget } from './outcome-target.js';
 import { projectResidentWorkIncrementally } from './resident-work-projection.js';
 import { createResidentAssignments } from './resident-assignments.js';
 import { dirname, join, resolve } from 'node:path';
@@ -1072,15 +1073,7 @@ export function createCoordinationProcess(
         },
         work,
         leases,
-        outcomeTargetCanRecover: source => {
-          const target = database.readOne<{ residentBinding: string; currentConversationId: string | null; sourceConversationId: string | null }>(
-            `SELECT b.resident_binding AS residentBinding, b.conversation_id AS currentConversationId,
-                    h.id AS sourceConversationId
-             FROM bots b LEFT JOIN conversation_handles h ON h.channel_id = ?
-             WHERE b.principal_id = ?`, source.channelId, source.targetPrincipalId);
-          return !target?.residentBinding.startsWith('bot-') ||
-            (target.sourceConversationId !== null && target.currentConversationId === target.sourceConversationId);
-        },
+        outcomeTargetCanRecover: source => canRecoverOutcomeTarget(database, source),
         resolveResident,
         resolveExecutionTarget: onDemandBots.resolve,
         authority: { current: () => currentAuthority("messages") },
