@@ -652,6 +652,22 @@ test('a failed admitted process still fences the candidate', async t => {
   assert.equal(readUpdateJournal(fixture.home).startErrorCode, 'host_process_failed');
 });
 
+test('an explicitly missing owned process is not treated as slow startup', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let online = false, fences = 0;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { online = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+    status: async () => ({ ok: true, status: 'recovery_required',
+      processes: [{ name: 'home23-milo', status: 'online', owned: true }],
+      readiness: { ready: false, issues: ['home23-milo-seed is not running from this installation.'] } }),
+    quiesce: async () => { fences += 1; online = false; return []; },
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(fences, 1);
+});
+
 test('legacy copied checkpoint journal verifies its substrate prefix after resume', async t => {
   const fixture = homeFixture(t, { desiredRunning: true });
   const relative = 'app/instances/milo/substrate/seed-01/seed-ledger.jsonl';

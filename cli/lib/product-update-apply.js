@@ -277,17 +277,20 @@ function startObservation(result, error) {
 }
 function candidateStatusKind(result) {
   const processes = Array.isArray(result?.processes) ? result.processes : [];
-  const failed = processes.some(row => row?.owned === false || row?.status === 'errored' || row?.status === 'waiting restart');
+  const missingOwned = Array.isArray(result?.readiness?.issues) && result.readiness.issues.some(issue =>
+    typeof issue === 'string' && issue.endsWith(' is not running from this installation.'));
+  const failed = missingOwned || processes.some(row => row?.owned === false || !['online', 'launching'].includes(row?.status));
   const masked = result?.status === 'recovery_required' && result?.error?.code === 'update_recovery_required';
-  if (!failed && (result?.ok !== false || masked) && (result?.readiness?.ready === true || result?.status === 'ready')) return 'ready';
-  if (!failed && (result?.ok !== false || masked) && result?.readiness?.recoveryRequired !== true &&
+  if (processes.length && !failed && (result?.ok !== false || masked) && (result?.readiness?.ready === true || result?.status === 'ready')) return 'ready';
+  if (processes.length && !failed && (result?.ok !== false || masked) && result?.readiness?.recoveryRequired !== true &&
       (result?.status === 'starting' || (result?.readiness?.ready === false && processes.some(row => row.status === 'online' || row.status === 'launching')))) return 'starting';
   return 'failed';
 }
 function healthyAdmittedWriters(rows, writerNames) {
   const known = new Set(writerNames || []);
-  return Array.isArray(rows) && rows.some(row => known.has(row.name) && (row.status === 'online' || row.status === 'launching')) &&
-    !rows.some(row => row.status === 'errored' || row.status === 'waiting restart' || (BUSY.has(row.status) && !known.has(row.name)));
+  const owned = Array.isArray(rows) ? rows.filter(row => known.has(row.name)) : [];
+  return owned.length > 0 && owned.every(row => ['online', 'launching'].includes(row.status)) &&
+    !rows.some(row => BUSY.has(row.status) && !known.has(row.name));
 }
 async function defaultAcquireHostLock(home, owner) {
   const runtime = privateDirectory(join(home, 'runtime'));
