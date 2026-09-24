@@ -519,7 +519,9 @@ test('batched resident projection retains assignment lineage and presentation st
 test('resident projection seeks current roots without scanning message or event history', t => {
   const f = fixture(t);
   f.database.raw.exec(INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL);
-  f.admit('projection-plan');
+  const id = f.admit('projection-plan');
+  f.finish(id);
+  createResidentOutcomeStore(f.database).enqueue(`work:${id}`, id, { status: 'succeeded' });
   const original = f.database.readAll.bind(f.database);
   const plans: string[] = [];
   f.database.readAll = <T>(sql: string, ...parameters: Array<string | number | bigint | Buffer | null>): T[] => {
@@ -534,6 +536,34 @@ test('resident projection seeks current roots without scanning message or event 
     'visible result must use the Work message index');
   assert.equal(plans.some(detail => /SCAN (?:e|latest|m)(?:\s|$)/.test(detail)), false,
     `projection scanned event or message history: ${plans.join('; ')}`);
+});
+
+test('projection reads outcomes only for roots whose state depends on them', t => {
+  const f = fixture(t);
+  const assessed = f.admit('projection-assessed');
+  f.finish(assessed);
+  f.assignments.report(f.context, f.origin, {
+    work_id: assessed, state: 'complete', summary: 'Assessment finished', evidence: ['receipt:done'],
+  }, 'projection-assessed-report');
+  const active = f.admit('projection-still-active');
+  const original = f.database.readAll.bind(f.database);
+  const outcomeParameters: string[] = [];
+  let deliveredQueries = 0;
+  f.database.readAll = <T>(sql: string, ...parameters: Array<string | number | bigint | Buffer | null>): T[] => {
+    if (sql.includes('JOIN resident_outcomes o ON o.outcome_key=')) outcomeParameters.push(String(parameters[0]));
+    if (sql.includes('SELECT roots.value AS id FROM json_each(?) roots') && sql.includes('messages m')) deliveredQueries++;
+    return original<T>(sql, ...parameters);
+  };
+  const first = f.assignments.listForProjectionPage(BOT_ID);
+  assert.equal(first.assignments.find(row => row.id === assessed)?.assignmentState, 'complete');
+  assert.equal(first.assignments.find(row => row.id === active)?.assignmentState, 'active');
+  assert.deepEqual(outcomeParameters, []);
+  assert.equal(deliveredQueries, 0);
+  const unassessed = f.admit('projection-unassessed-success');
+  f.finish(unassessed);
+  f.assignments.listForProjectionPage(BOT_ID);
+  assert.deepEqual(JSON.parse(outcomeParameters.at(-1)!), [unassessed]);
+  assert.equal(deliveredQueries, 0, 'no outcome means delivered-message lookup is unnecessary');
 });
 
 test('incremental resident projection yields between pages and publishes only the complete snapshot', async t => {

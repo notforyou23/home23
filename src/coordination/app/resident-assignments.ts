@@ -262,22 +262,31 @@ export function createResidentAssignments(database: M11Database) {
         ORDER BY latest.aggregate_version DESC LIMIT 1)`, rootIds);
     const conclusions = new Map(conclusionRows.map(row => [row.id,
       { ...JSON.parse(row.payload) as AssignmentConclusion, eventSequence: row.sequence }]));
-    const outcomeRows = hasOutcomeStore ? database.readAll<{ id: string; key: string; reviewState: string | null; settledAt: string | null }>(`SELECT roots.value AS id,o.outcome_key AS key,
+    // A completed assessment determines its own presentation. Only blocked
+    // assessments and unassessed successful Work can depend on an outcome.
+    // On an established home most roots are already assessed, so do not run
+    // the sorted outcome lookup (or delivered-message lookup) for every root.
+    const outcomeIds = roots.filter(id => {
+      const work = works.get(id), conclusion = conclusions.get(id);
+      return work && (conclusion?.state === 'blocked' || (!conclusion && work.state === 'succeeded'));
+    });
+    const outcomeRows = hasOutcomeStore && outcomeIds.length ? database.readAll<{ id: string; key: string; reviewState: string | null; settledAt: string | null }>(`SELECT roots.value AS id,o.outcome_key AS key,
       review.state AS reviewState,o.settled_at AS settledAt FROM json_each(?) roots
       JOIN resident_outcomes o ON o.outcome_key=(SELECT latest.outcome_key FROM resident_outcomes latest
         LEFT JOIN works current_review ON current_review.id=latest.review_work_id
         WHERE latest.source_work_id=roots.value
         ORDER BY CASE WHEN latest.settled_at IS NULL AND current_review.state IN ('queued','leased','running','cancelling') THEN 0 ELSE 1 END,
           latest.created_at DESC,latest.outcome_key DESC LIMIT 1)
-      LEFT JOIN works review ON review.id=o.review_work_id`, rootIds) : [];
+      LEFT JOIN works review ON review.id=o.review_work_id`, JSON.stringify(outcomeIds)) : [];
     const outcomes = new Map(outcomeRows.map(row => [row.id, row]));
-    const deliveredRows = database.readAll<{ id: string }>(`SELECT roots.value AS id FROM json_each(?) roots
+    const deliveryIds = outcomeIds.filter(id => !conclusions.has(id) && outcomes.has(id));
+    const deliveredRows = deliveryIds.length ? database.readAll<{ id: string }>(`SELECT roots.value AS id FROM json_each(?) roots
       JOIN works w ON w.id=roots.value WHERE EXISTS(
         SELECT 1 FROM messages m
         WHERE m.work_id=w.id AND m.channel_id=w.channel_id
           AND m.author_principal_id=w.target_principal_id AND m.kind='result' AND m.stored_visibility='visible'
           AND NOT EXISTS(SELECT 1 FROM messages tombstone WHERE tombstone.tombstones_message_id=m.id)
-        LIMIT 1)`, rootIds);
+        LIMIT 1)`, JSON.stringify(deliveryIds)) : [];
     const delivered = new Set(deliveredRows.map(row => row.id));
     const assignments = roots.flatMap<Record<string, unknown>>(id => {
       const work = works.get(id);
