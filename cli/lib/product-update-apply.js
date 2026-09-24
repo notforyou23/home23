@@ -2,7 +2,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, constants, copyFileSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, unlinkSync, utimesSync, writeSync } from 'node:fs';
-import { chmod, copyFile, open, rename, rm } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -204,11 +204,23 @@ async function sameCanonical(home, journal) {
       if (relative.endsWith('/birth-receipt.json')) {
         if (hashFile(currentPath) !== digest) return false;
       } else if (relative.endsWith('.jsonl')) {
-        const previousPath = join(checkpointRoot, relative);
-        if (!exists(previousPath)) return false;
-        const previous = readFileSync(previousPath);
-        const current = readFileSync(currentPath);
-        if (current.length < previous.length || !current.subarray(0, previous.length).equals(previous)) return false;
+        let prefix = journal.substratePrefixes?.[relative];
+        if (journal.stateRetention === 'in_place') {
+          if (!prefix || prefix.sha256 !== digest || !Number.isSafeInteger(prefix.bytes) || prefix.bytes < 0) return false;
+        } else {
+          // Older checkpointed journals recorded the digest but kept the
+          // prefix length only in their copied file. Verify that old copy.
+          const previousPath = join(checkpointRoot, relative);
+          if (!exists(previousPath)) return false;
+          try {
+            safeCheckpointDirectory(checkpointRoot, dirname(relative));
+            prefix = await checkpointFingerprint(previousPath);
+          } catch { return false; }
+          if (prefix.sha256 !== digest) return false;
+        }
+        try {
+          if ((await checkpointFingerprint(currentPath, { source: true, bytes: prefix.bytes })).sha256 !== digest) return false;
+        } catch { return false; }
       }
       continue;
     }
@@ -271,8 +283,8 @@ async function defaultAcquireHostLock(home, owner) {
 function spaceFor(home, dependencies) {
   // Both software versions already occupy this volume: the current home and
   // the completed stage. Selection renames their units; it does not duplicate
-  // the installed tree. Only the state checkpoint needs new capacity here.
-  const checkpoint = identityFiles(home).reduce((sum, relative) => sum + BigInt(lstatSync(join(home, relative)).size), 0n);
+  // the installed tree. Lived state remains in place; only SQLite is copied.
+  const checkpoint = exists(join(home, DATABASE)) ? BigInt(lstatSync(join(home, DATABASE)).size) : 0n;
   const space = (dependencies.statfs || statfsSync)(dirname(home), dependencies.statfs ? undefined : { bigint: true });
   return space.bavail * space.bsize >= checkpoint + 64n * 1024n * 1024n;
 }
@@ -302,63 +314,40 @@ function safeCheckpointDirectory(root, relative = '', create = false) {
   }
   return directory;
 }
-async function checkpointHash(file, { source = false } = {}) {
+async function checkpointFingerprint(file, { source = false, bytes = null } = {}) {
   const descriptor = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await descriptor.stat();
     if (!stat.isFile() || (!source && stat.nlink !== 1)) throw new Error(`Unsafe checkpoint file: ${file}`);
+    const length = bytes ?? stat.size;
+    if (!Number.isSafeInteger(length) || length < 0 || stat.size < length) throw new Error(`Checkpoint prefix is unavailable: ${file}`);
     const digest = createHash('sha256');
-    const buffer = Buffer.allocUnsafe(1024 * 1024);
-    for (let position = 0; position < stat.size;) {
-      const { bytesRead } = await descriptor.read(buffer, 0, Math.min(buffer.length, stat.size - position), position);
+    const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, length)));
+    for (let position = 0; position < length;) {
+      const { bytesRead } = await descriptor.read(buffer, 0, Math.min(buffer.length, length - position), position);
       if (!bytesRead) throw new Error(`Checkpoint file changed while hashing: ${file}`);
       digest.update(buffer.subarray(0, bytesRead));
       position += bytesRead;
     }
-    if ((await descriptor.stat()).size !== stat.size) throw new Error(`Checkpoint file changed while hashing: ${file}`);
-    return digest.digest('hex');
+    const after = await descriptor.stat();
+    if (after.dev !== stat.dev || after.ino !== stat.ino || (after.mode & 0o777) !== (stat.mode & 0o777) ||
+        (bytes === null ? after.size !== stat.size : after.size < length)) {
+      throw new Error(`Checkpoint file changed while hashing: ${file}`);
+    }
+    return { sha256: digest.digest('hex'), bytes: length, mode: stat.mode & 0o777, dev: stat.dev, ino: stat.ino };
   } finally { await descriptor.close(); }
 }
-async function checkpointStateFile(home, checkpoint, relative, beforeCopy) {
+async function checkpointStateFile(home, relative, beforeCopy) {
   const source = join(home, relative);
-  const destination = join(checkpoint, 'state', relative);
-  // Inventory already authenticates approved source links (including retained
-  // parent directories). Only the checkpoint destination must forbid links.
-  const sourceStat = regularCheckpointFile(source, { source: true });
-  const mode = sourceStat.mode & 0o777;
-  const before = await checkpointHash(source, { source: true });
-  safeCheckpointDirectory(checkpoint, join('state', dirname(relative)), true);
-  let reusable = false;
-  if (exists(destination)) {
-    const destinationStat = regularCheckpointFile(destination);
-    if (destinationStat.dev === sourceStat.dev && destinationStat.ino === sourceStat.ino) {
-      throw new Error(`Checkpoint copy is linked to its source: ${relative}`);
-    }
-    reusable = (destinationStat.mode & 0o777) === mode && await checkpointHash(destination) === before;
-  }
-  if (!reusable) {
-    if (beforeCopy) await beforeCopy(relative);
-    const temporary = `${destination}.${randomUUID()}.next`;
-    try {
-      await copyFile(source, temporary, constants.COPYFILE_FICLONE);
-      await chmod(temporary, mode);
-      const descriptor = await open(temporary, 'r');
-      try { await descriptor.sync(); } finally { await descriptor.close(); }
-      if (await checkpointHash(source, { source: true }) !== before) {
-        throw new Error(`State changed while checkpointing ${relative}.`);
-      }
-      await rename(temporary, destination);
-    } finally { await rm(temporary, { force: true }); }
-  }
-  const finalSource = regularCheckpointFile(source, { source: true });
-  const finalDestination = regularCheckpointFile(destination);
-  if ((finalSource.mode & 0o777) !== mode ||
-      (finalDestination.mode & 0o777) !== mode ||
-      (finalSource.dev === finalDestination.dev && finalSource.ino === finalDestination.ino) ||
-      (reusable && await checkpointHash(source, { source: true }) !== before) || await checkpointHash(destination) !== before) {
-    throw new Error(`State changed while checkpointing ${relative}.`);
-  }
-  return before;
+  // Inventory authenticates approved source parent links. The source leaf is
+  // regular and read twice; no lived state is copied or modified.
+  regularCheckpointFile(source, { source: true });
+  if (beforeCopy) await beforeCopy(relative);
+  const before = await checkpointFingerprint(source, { source: true });
+  const after = await checkpointFingerprint(source, { source: true });
+  if (before.sha256 !== after.sha256 || before.bytes !== after.bytes || before.mode !== after.mode ||
+      before.dev !== after.dev || before.ino !== after.ino) throw new Error(`State changed while checkpointing ${relative}.`);
+  return { sha256: before.sha256, bytes: before.bytes };
 }
 async function checkpointPool(items, operation) {
   let next = 0;
@@ -377,28 +366,6 @@ async function checkpointPool(items, operation) {
   if (failure) throw failure;
   return results;
 }
-function checkpointStateInventory(directory, prefix = '') {
-  const files = [];
-  for (const name of readdirSync(directory)) {
-    const relative = prefix ? `${prefix}/${name}` : name;
-    const file = join(directory, name);
-    const stat = lstatSync(file);
-    if (stat.isDirectory()) files.push(...checkpointStateInventory(file, relative));
-    else { regularCheckpointFile(file); files.push(relative); }
-  }
-  return files.sort();
-}
-function removeIncompleteCheckpointCopies(directory) {
-  for (const name of readdirSync(directory)) {
-    const file = join(directory, name);
-    const stat = lstatSync(file);
-    if (stat.isDirectory()) removeIncompleteCheckpointCopies(file);
-    else if (/\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.next$/i.test(name)) {
-      regularCheckpointFile(file);
-      unlinkSync(file);
-    }
-  }
-}
 function payloadMatchesAt(entries, rootOf) {
   for (const entry of entries) {
     const file = join(rootOf(entry), entry.path);
@@ -412,33 +379,21 @@ function payloadMatchesAt(entries, rootOf) {
   }
   return true;
 }
-async function writeCheckpoint(home, updateDirectory, journalId, { beforeCopy } = {}) {
+async function writeCheckpoint(home, updateDirectory, _journalId, { beforeCopy } = {}) {
   safeCheckpointDirectory(updateDirectory);
   const checkpoint = join(updateDirectory, 'checkpoint');
-  const marker = join(checkpoint, 'owner.json');
-  let owned = false;
-  if (exists(checkpoint)) {
-    safeCheckpointDirectory(checkpoint);
-    if (exists(marker)) {
-      regularCheckpointFile(marker);
-      const recorded = readPrivateJSON(marker);
-      owned = recorded?.schema === 'home23.checkpoint-owner.v1' && recorded.journalId === journalId && recorded.homeRoot === home;
-    }
-  }
-  if (!owned) {
-    rmSync(checkpoint, { recursive: true, force: true });
-    mkdirSync(checkpoint, { mode: 0o700 });
-    durableJSON(marker, { schema: 'home23.checkpoint-owner.v1', journalId, homeRoot: home });
-  }
-  safeCheckpointDirectory(checkpoint, 'state', true);
-  if (owned) removeIncompleteCheckpointCopies(join(checkpoint, 'state'));
+  // A quiesced journal may contain a partial copied checkpoint from the old
+  // controller. Leave those files and its marker untouched on resume.
+  if (!exists(checkpoint)) mkdirSync(checkpoint, { mode: 0o700 });
+  safeCheckpointDirectory(checkpoint);
   const files = identityFiles(home).filter(relative => relative !== DATABASE);
-  const digests = await checkpointPool(files, relative => checkpointStateFile(home, checkpoint, relative, beforeCopy));
-  if (JSON.stringify(identityFiles(home).filter(relative => relative !== DATABASE)) !== JSON.stringify(files) ||
-      JSON.stringify(checkpointStateInventory(join(checkpoint, 'state'))) !== JSON.stringify(files)) {
-    throw new Error('Checkpoint state inventory changed during copying.');
+  const fingerprints = await checkpointPool(files, relative => checkpointStateFile(home, relative, beforeCopy));
+  if (JSON.stringify(identityFiles(home).filter(relative => relative !== DATABASE)) !== JSON.stringify(files)) {
+    throw new Error('Checkpoint state inventory changed during fingerprinting.');
   }
-  const hashes = Object.fromEntries(files.map((relative, index) => [relative, digests[index]]));
+  const hashes = Object.fromEntries(files.map((relative, index) => [relative, fingerprints[index].sha256]));
+  const substratePrefixes = Object.fromEntries(files.flatMap((relative, index) => relative.includes('/substrate/') && relative.endsWith('.jsonl')
+    ? [[relative, { bytes: fingerprints[index].bytes, sha256: fingerprints[index].sha256 }]] : []));
   let database = { present: false };
   const destination = join(checkpoint, 'coordination.sqlite3');
   if (exists(destination)) { regularCheckpointFile(destination); rmSync(destination); }
@@ -457,7 +412,7 @@ async function writeCheckpoint(home, updateDirectory, journalId, { beforeCopy } 
     hashes[DATABASE] = hashFile(join(home, DATABASE));
   }
   fsyncDirectory(checkpoint);
-  return { hashes, database };
+  return { hashes, database, stateRetention: 'in_place', substratePrefixes };
 }
 /** Maximal software subtrees and loose files of a package. Each switches with one rename. */
 export function softwareUnits(manifest) {
@@ -636,7 +591,8 @@ async function mutate(journal, dependencies, verify) {
     }
     const checkpoint = await (dependencies.writeCheckpoint || writeCheckpoint)(home, updateDirectoryFor(home), journal.id,
       { beforeCopy: dependencies.checkpointBeforeCopy });
-    journal = await commitPhase(file, { ...journal, phase: 'checkpointed', identity: checkpoint.hashes, canonical: canonicalFrom(checkpoint.hashes), hostIdentity: hostIdentity(home), checkpointDatabase: checkpoint.database }, dependencies);
+    journal = await commitPhase(file, { ...journal, phase: 'checkpointed', identity: checkpoint.hashes, canonical: canonicalFrom(checkpoint.hashes), hostIdentity: hostIdentity(home), checkpointDatabase: checkpoint.database,
+      stateRetention: checkpoint.stateRetention || 'copied', substratePrefixes: checkpoint.substratePrefixes || {} }, dependencies);
   }
   if (rank() < RANK.retained) {
     const installed = readProductManifest(home);

@@ -226,7 +226,7 @@ test('a stopped home updates in place and a running home waits until admission',
   assert.equal(preserved(running.home).version, SUPPORTED_COORDINATION_SCHEMA);
 });
 
-test('checkpoint and resume preserve a read-only state attachment and its mode', async t => {
+test('checkpoint and resume fingerprint a read-only attachment without copying it', async t => {
   const fixture = homeFixture(t);
   const relative = 'app/instances/milo/conversations/readonly-attachment.txt';
   const original = path.join(fixture.home, relative);
@@ -240,16 +240,19 @@ test('checkpoint and resume preserve a read-only state attachment and its mode',
     },
   }), /read-only-checkpoint-interrupt/);
   assert.equal(readUpdateJournal(fixture.home).phase, 'checkpointed');
-  const checkpoint = path.join(updateDirectoryFor(fixture.home), 'checkpoint/state', relative);
-  assert.equal(fs.readFileSync(checkpoint, 'utf8'), 'owner attachment\n');
-  assert.equal(fs.statSync(checkpoint).mode & 0o777, 0o400);
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.stateRetention, 'in_place');
+  assert.match(journal.identity[relative], /^[a-f0-9]{64}$/);
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'checkpoint/state')), false);
+  assert.equal(journal.checkpointDatabase.present, true);
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'checkpoint/coordination.sqlite3')), true);
   const result = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
   assert.equal(result.status, 'committed');
   assert.equal(fs.readFileSync(original, 'utf8'), 'owner attachment\n');
   assert.equal(fs.statSync(original).mode & 0o777, 0o400);
 });
 
-test('an interrupted checkpoint reuses verified copies and replaces changed source bytes', async t => {
+test('an interrupted old checkpoint resumes in place without touching partial copies', async t => {
   const fixture = homeFixture(t);
   const directory = path.join(fixture.home, 'app/instances/milo/conversations');
   for (const name of ['a-copy.txt', 'b-copy.txt', 'c-copy.txt', 'd-copy.txt', 'z-interrupt.txt']) {
@@ -264,48 +267,36 @@ test('an interrupted checkpoint reuses verified copies and replaces changed sour
   }), /checkpoint-copy-interrupted/);
   assert.equal(readUpdateJournal(fixture.home).phase, 'quiesced');
   const checkpoint = path.join(updateDirectoryFor(fixture.home), 'checkpoint/state/app/instances/milo/conversations');
-  assert.equal(fs.readFileSync(path.join(checkpoint, 'b-copy.txt'), 'utf8'), 'b-copy.txt');
-  const incomplete = path.join(checkpoint, 'z-interrupt.txt.00000000-0000-0000-0000-000000000000.next');
-  fs.writeFileSync(incomplete, 'incomplete');
+  fs.mkdirSync(checkpoint, { recursive: true });
+  const partial = path.join(checkpoint, 'b-copy.txt');
+  fs.writeFileSync(partial, 'old partial copy');
+  const marker = path.join(updateDirectoryFor(fixture.home), 'checkpoint/owner.json');
+  fs.writeFileSync(marker, JSON.stringify({ schema: 'home23.checkpoint-owner.v1', journalId: readUpdateJournal(fixture.home).id, homeRoot: fixture.home }));
   fs.writeFileSync(path.join(directory, 'a-copy.txt'), 'changed after partial checkpoint');
-  const copied = [];
+  const fingerprinted = [];
   const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, {
-    ...quiet, checkpointBeforeCopy: async relative => { copied.push(relative); },
+    ...quiet, checkpointBeforeCopy: async relative => { fingerprinted.push(relative); },
   });
   assert.equal(resumed.status, 'committed');
-  assert.ok(copied.some(relative => relative.endsWith('/a-copy.txt')));
-  assert.ok(copied.some(relative => relative.endsWith('/z-interrupt.txt')));
-  assert.equal(copied.some(relative => relative.endsWith('/b-copy.txt')), false);
-  assert.equal(fs.readFileSync(path.join(checkpoint, 'a-copy.txt'), 'utf8'), 'changed after partial checkpoint');
-  assert.equal(fs.existsSync(incomplete), false);
+  assert.ok(fingerprinted.some(relative => relative.endsWith('/a-copy.txt')));
+  assert.ok(fingerprinted.some(relative => relative.endsWith('/z-interrupt.txt')));
+  assert.equal(fs.readFileSync(partial, 'utf8'), 'old partial copy');
+  assert.equal(JSON.parse(fs.readFileSync(marker, 'utf8')).journalId, readUpdateJournal(fixture.home).id);
+  assert.equal(fs.existsSync(path.join(checkpoint, 'a-copy.txt')), false);
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.stateRetention, 'in_place');
 });
 
-test('checkpoint copies a source hardlink independently and refuses a linked checkpoint', async t => {
+test('checkpoint fingerprints a hardlinked source without changing either link', async t => {
   const fixture = homeFixture(t);
   const source = path.join(fixture.home, 'app/instances/milo/conversations/session.txt');
   fs.linkSync(source, path.join(fixture.root, 'other-link.txt'));
   const result = await applyProductUpdate({ homeRoot: fixture.home,
     candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
   assert.equal(result.status, 'committed');
-  const copied = path.join(updateDirectoryFor(fixture.home), 'checkpoint/state/app/instances/milo/conversations/session.txt');
   assert.equal(fs.statSync(source).nlink, 2);
-  assert.equal(fs.statSync(copied).nlink, 1);
-  assert.notEqual(fs.statSync(source).ino, fs.statSync(copied).ino);
-
-  const linked = homeFixture(t);
-  fs.writeFileSync(path.join(linked.home, 'app/instances/milo/conversations/z-interrupt.txt'), 'last');
-  await assert.rejects(() => applyProductUpdate({ homeRoot: linked.home,
-    candidatePayload: linked.candidate, staging: linked.staging }, {
-    ...quiet, checkpointBeforeCopy: async relative => {
-      if (relative.endsWith('/z-interrupt.txt')) throw new Error('stop-before-last-copy');
-    },
-  }), /stop-before-last-copy/);
-  const linkedSource = path.join(linked.home, 'app/instances/milo/conversations/session.txt');
-  const linkedCopy = path.join(updateDirectoryFor(linked.home), 'checkpoint/state/app/instances/milo/conversations/session.txt');
-  fs.unlinkSync(linkedCopy);
-  fs.linkSync(linkedSource, linkedCopy);
-  await assert.rejects(() => resumeProductUpdate({ homeRoot: linked.home }, quiet), /Unsafe checkpoint file/);
-  assert.equal(readUpdateJournal(linked.home).phase, 'quiesced');
+  assert.equal(fs.readFileSync(path.join(fixture.root, 'other-link.txt'), 'utf8'), 'hello-milo');
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'checkpoint/state')), false);
 });
 
 test('checkpoint stops admitting work after the first failed copy', async t => {
@@ -390,7 +381,7 @@ test('an adopted external state link survives one software update by its exact r
   assert.equal(fs.readFileSync(path.join(external, 'work.txt'), 'utf8'), 'authoritative\n');
 });
 
-test('checkpoint follows an approved retained source parent without linking its copy', async t => {
+test('checkpoint fingerprints state under an approved retained source parent', async t => {
   const fixture = homeFixture(t);
   const external = path.join(fixture.root, 'retained-evobrew');
   fs.mkdirSync(external);
@@ -406,11 +397,10 @@ test('checkpoint follows an approved retained source parent without linking its 
   const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
     staging: fixture.staging }, quiet);
   assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
-  const copy = path.join(updateDirectoryFor(fixture.home), 'checkpoint/state/app/evobrew/config.json');
-  assert.equal(fs.readFileSync(copy, 'utf8'), '{"kept":true}\n');
-  assert.equal(fs.statSync(copy).mode & 0o777, 0o400);
-  assert.equal(fs.statSync(copy).nlink, 1);
-  assert.notEqual(fs.statSync(copy).ino, fs.statSync(path.join(external, 'config.json')).ino);
+  assert.equal(fs.readFileSync(path.join(external, 'config.json'), 'utf8'), '{"kept":true}\n');
+  assert.equal(fs.statSync(path.join(external, 'config.json')).mode & 0o777, 0o400);
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'checkpoint/state')), false);
+  assert.match(readUpdateJournal(fixture.home).identity['app/evobrew/config.json'], /^[a-f0-9]{64}$/);
 });
 
 test('continued services join the software update writer fence', async t => {
@@ -564,7 +554,56 @@ test('resident writes after startup keep seed lineage and do not restore softwar
   assert.equal(result.status, 'committed');
   assert.equal(result.identityPreserved, true);
   assert.equal(fs.readFileSync(ledger, 'utf8'), '{"seq":1}\n{"seq":2}\n');
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.stateRetention, 'in_place');
+  assert.deepEqual(journal.substratePrefixes['app/instances/milo/substrate/seed-01/seed-ledger.jsonl'], {
+    bytes: Buffer.byteLength('{"seq":1}\n'), sha256: journal.identity['app/instances/milo/substrate/seed-01/seed-ledger.jsonl'],
+  });
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'checkpoint/state')), false);
   assert.equal(packageId(fixture.home), fixture.next.packageId);
+});
+
+test('legacy copied checkpoint journal verifies its substrate prefix after resume', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const relative = 'app/instances/milo/substrate/seed-01/seed-ledger.jsonl';
+  const ledger = path.join(fixture.home, relative);
+  fs.mkdirSync(path.dirname(ledger), { recursive: true });
+  fs.writeFileSync(ledger, '{"seq":1}\n');
+  await assert.rejects(() => applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    afterPhase: async journal => { if (journal.phase === 'checkpointed') throw new Error('legacy-checkpoint-interrupt'); },
+  }), /legacy-checkpoint-interrupt/);
+  const update = updateDirectoryFor(fixture.home);
+  const previous = path.join(update, 'checkpoint/state', relative);
+  fs.mkdirSync(path.dirname(previous), { recursive: true });
+  fs.copyFileSync(ledger, previous);
+  const journalPath = path.join(update, 'journal.json');
+  const legacy = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+  delete legacy.stateRetention;
+  delete legacy.substratePrefixes;
+  fs.writeFileSync(journalPath, `${JSON.stringify(legacy)}\n`);
+  const result = await resumeProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    start: async () => { fs.appendFileSync(ledger, '{"seq":2}\n'); return { ok: true }; },
+  });
+  assert.equal(result.status, 'committed');
+  assert.equal(result.identityPreserved, true);
+  assert.equal(fs.readFileSync(ledger, 'utf8'), '{"seq":1}\n{"seq":2}\n');
+});
+
+test('substrate prefix edits and truncation fail post-start identity verification', async t => {
+  for (const changed of ['{"seq":9}\n{"seq":2}\n', '{"seq":']) {
+    const fixture = homeFixture(t, { desiredRunning: true });
+    const ledger = path.join(fixture.home, 'app/instances/milo/substrate/seed-01/seed-ledger.jsonl');
+    fs.mkdirSync(path.dirname(ledger), { recursive: true });
+    fs.writeFileSync(ledger, '{"seq":1}\n');
+    const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+      staging: fixture.staging, admit: true }, { ...quiet,
+      start: async () => { fs.writeFileSync(ledger, changed); return { ok: true }; },
+    });
+    assert.equal(result.status, 'recovery_required');
+    assert.equal(result.identityPreserved, false);
+    assert.equal(fs.readFileSync(ledger, 'utf8'), changed);
+  }
 });
 
 test('a failed check after candidate startup fences writers and does not restore software', async t => {
