@@ -159,8 +159,8 @@ test("schema v2 migrates atomically to the checksummed M09 and M10 final catalog
     now: () => new Date("2026-08-25T16:01:00.000Z"),
   });
   assert.equal(database.openReceipt.migratedFrom, 2);
-  assert.equal(database.openReceipt.schemaVersion, 16);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 16);
+  assert.equal(database.openReceipt.schemaVersion, 21);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 21);
   assert.equal(database.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   const tables = database.readAll<{ name: string }>(
     "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -221,13 +221,18 @@ test("schema v2 migrates atomically to the checksummed M09 and M10 final catalog
       { version: 14, name: "resident-outcomes" },
       { version: 15, name: "event-retention-count" },
       { version: 16, name: "artifact-general-files" },
+      { version: 17, name: "native-chess" },
+      { version: 18, name: "work-outcome-indexes" },
+      { version: 19, name: "inbox-and-reconciliation-indexes" },
+      { version: 20, name: "chess-engines" },
+      { version: 21, name: "notification-recovery-order" },
     ],
   );
   assert.deepEqual(database.readAll("PRAGMA foreign_key_check"), []);
   database.close();
 
   const reopened = openCoordinationDatabase({ path });
-  assert.equal(reopened.openReceipt.migratedFrom, 16);
+  assert.equal(reopened.openReceipt.migratedFrom, 21);
   assert.equal(reopened.openReceipt.startupCheck, "schema_only");
   reopened.close();
 });
@@ -296,15 +301,10 @@ test("the M04 rebuild handoff restores exact FTS crossings and rolls back an ind
   injected.close();
 });
 
-test("a canonical Message event cannot advance a watermark across an already-blind FTS route", (t) => {
+test("a canonical Message event cannot advance a watermark across its unindexed FTS route", (t) => {
   const path = temporaryDatabase(t);
   createSchemaV2(path);
   openCoordinationDatabase({ path }).close();
-  const raw = new Database(path);
-  raw.prepare("UPDATE message_fts SET body_text = 'stale crossing' WHERE message_id = ?")
-    .run(MESSAGE_ID);
-  raw.close();
-
   const database = openCoordinationDatabase({ path });
   const nextMessageId = "msg_0198d95f-6c00-7000-8000-000000001009";
   assert.throws(
@@ -320,6 +320,7 @@ test("a canonical Message event cannot advance a watermark across an already-bli
         CHANNEL_ID,
         APPLIED_AT,
       );
+      transaction.run("UPDATE message_fts SET body_text = 'stale crossing' WHERE message_id = ?", nextMessageId);
       return {
         value: undefined,
         event: {
