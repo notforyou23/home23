@@ -10,7 +10,7 @@ import { absoluteHome, privateDirectory, productEnvironment, readPrivateJSON } f
 import { acquireInstallLock, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
-import { hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath } from './product-update-inventory.js';
+import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath } from './product-update-inventory.js';
 
 const executeFile = promisify(execFile);
 const SCHEMA = 'home23.product-update.v1';
@@ -623,10 +623,24 @@ async function mutate(journal, dependencies, verify) {
   }
   if (rank() < RANK.checkpointed) {
     const database = exists(join(home, DATABASE)) ? await inspectCoordinationDatabase(join(home, DATABASE)) : { present: false, compatible: true };
-    const expectedSchemaVersion = journal.coordinationSchemaVersion ?? 20; // v20 journals predate the pinned version field.
-    if (database.present && (!database.compatible || database.version !== expectedSchemaVersion)) {
+    // A busy preflight can admit an owned writer without reading the version.
+    // Once that writer stops, pin the inspected, reviewed version before copying
+    // state. Only older journals with no version field imply v20.
+    let expectedSchemaVersion = Object.hasOwn(journal, 'coordinationSchemaVersion')
+      ? journal.coordinationSchemaVersion : 20;
+    if (database.busy) {
+      return { done: deferred(home, 'database_busy', 'The coordination database remains busy after owned writers stopped. Resume when it can be inspected.', journal) };
+    }
+    const candidateSchema = expectedSchemaVersion === null ? candidateCoordinationSchema(candidateManifest(journal)) : null;
+    if ((expectedSchemaVersion === null && (!database.present || !database.compatible || candidateSchema === null
+        || database.version > candidateSchema))
+      || (database.present && (!database.compatible || (expectedSchemaVersion !== null && database.version !== expectedSchemaVersion)))) {
       journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons: [{ code: 'unsupported_data_version', message: 'The stored schema changed after the preflight. Package files were not replaced.' }] }, dependencies);
       return { done: publicResult(journal) };
+    }
+    if (expectedSchemaVersion === null) {
+      expectedSchemaVersion = database.version;
+      journal = await commitPhase(file, { ...journal, coordinationSchemaVersion: expectedSchemaVersion }, dependencies);
     }
     const checkpoint = await (dependencies.writeCheckpoint || writeCheckpoint)(home, updateDirectoryFor(home), journal.id,
       { beforeCopy: dependencies.checkpointBeforeCopy, expectedSchemaVersion });
@@ -817,8 +831,8 @@ async function openTransaction({ home, candidate, staging, admit, reuseVerifiedS
   catch { return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]); }
   const installed = readProductManifest(home);
   if (installed.packageId === candidateManifest.packageId) return refuse(home, [{ code: 'same_package', message: 'The candidate is the package already installed.' }]);
-  const inventory = await inspectUpdateInventory(home, { installed, candidate: candidateManifest,
-    scanSoftware: !reuseVerifiedStage });
+  const inventory = await (dependencies.inspectUpdateInventory || inspectUpdateInventory)(home, { installed, candidate: candidateManifest,
+    scanSoftware: !reuseVerifiedStage, databaseCheck: 'fingerprint' });
   const blocking = inventory.reasons.filter(item => item.code !== 'database_busy');
   if (blocking.length) return refuse(home, blocking);
   if (!reuseVerifiedStage) {

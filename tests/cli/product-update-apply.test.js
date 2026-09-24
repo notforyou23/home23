@@ -314,11 +314,17 @@ test('an admitted busy v21 database pins its reviewed version after owned writer
     inspectUpdateInventory: async (...args) => {
       const inventory = await inspectUpdateInventory(...args);
       assert.deepEqual(inventory.reasons, []);
-      return { ...inventory, databaseInspection: { present: true, busy: true, compatible: false },
+      return { ...inventory, databaseInspection: { present: true, version: null, busy: true, compatible: false },
         reasons: [{ code: 'database_busy', message: 'database is locked' }] };
     },
     listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
     quiesce: async () => { online = false; return []; },
+    afterPhase: async journal => {
+      if (journal.phase === 'quiesced') {
+        const probe = await inspectCoordinationDatabase(path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3'));
+        assert.equal(probe.compatible, true, JSON.stringify(probe));
+      }
+    },
     start: async () => ({ ok: true, status: 'ready' }),
   });
   assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
@@ -335,7 +341,7 @@ test('a busy v21 database refuses a v20 candidate after owned writers stop', asy
     inspectUpdateInventory: async (...args) => {
       const inventory = await inspectUpdateInventory(...args);
       assert.equal(inventory.reasons.some(reason => reason.code === 'schema_assets_changed'), true);
-      return { ...inventory, databaseInspection: { present: true, busy: true, compatible: false },
+      return { ...inventory, databaseInspection: { present: true, version: null, busy: true, compatible: false },
         reasons: [{ code: 'database_busy', message: 'database is locked' }] };
     },
     listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
