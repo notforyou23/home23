@@ -136,7 +136,7 @@ function reviewedRotatingInsight(root, relative, target, approved) {
   } catch { return false; }
 }
 
-export async function inspectCoordinationDatabase(file) {
+export async function inspectCoordinationDatabase(file, { quickCheck = true } = {}) {
   if (!exists(file)) return { present: false, compatible: false };
   let DatabaseSync;
   try { ({ DatabaseSync } = await import('node:sqlite')); }
@@ -149,16 +149,16 @@ export async function inspectCoordinationDatabase(file) {
   }
   try {
     const version = Number(database.prepare('PRAGMA user_version').get().user_version);
-    const integrity = database.prepare('PRAGMA quick_check').get().quick_check;
+    const integrity = quickCheck ? database.prepare('PRAGMA quick_check').get().quick_check : null;
     const migrations = database.prepare("SELECT 1 AS present FROM sqlite_schema WHERE type = 'table' AND name = 'schema_migrations'").get();
     if (!migrations) return { present: true, version, compatible: false, integrity };
     const row = database.prepare('SELECT version, checksum FROM schema_migrations ORDER BY version DESC LIMIT 1').get();
     const meta = database.prepare("SELECT value FROM kernel_meta WHERE key = 'schema.checksum'").get();
     const recorded = Number(row?.version ?? 0);
     const expected = SUPPORTED_COORDINATION_SCHEMAS[version];
-    const compatible = integrity === 'ok' && expected !== undefined && recorded === version &&
+    const compatible = (!quickCheck || integrity === 'ok') && expected !== undefined && recorded === version &&
       row?.checksum === expected.migrationChecksum && meta?.value === expected.schemaChecksum;
-    return { present: true, version, recorded, checksum: meta?.value || null, integrity, compatible };
+    return { present: true, version, recorded, checksum: meta?.value || null, integrity, integrityChecked: quickCheck, compatible };
   } catch (error) {
     const busy = /busy|locked/i.test(String(error.message));
     return { present: true, compatible: false, busy, unreadable: !busy, message: error.message };
@@ -169,7 +169,8 @@ export async function inspectCoordinationDatabase(file) {
  * Read-only inventory. Unknown files, links, external paths and unsupported
  * schema versions are reasons to refuse before any package byte changes.
  */
-export async function inspectUpdateInventory(homeRoot, { installed, candidate, scanSoftware = true } = {}) {
+export async function inspectUpdateInventory(homeRoot, { installed, candidate, scanSoftware = true, databaseCheck = 'full' } = {}) {
+  if (!['full', 'fingerprint'].includes(databaseCheck)) throw new Error('Invalid database inspection mode.');
   const root = absoluteHome(homeRoot);
   const reasons = [];
   const unknown = [];
@@ -311,7 +312,7 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   }
   for (const item of external) reasons.push(reason('external_reference', `External path in ${item.path} is not part of this home. Reconnect or remove it before a software update.`, { path: item.path }));
   let database = { present: false, compatible: !created };
-  if (exists(join(root, COORDINATION_DATABASE))) database = await inspectCoordinationDatabase(join(root, COORDINATION_DATABASE));
+  if (exists(join(root, COORDINATION_DATABASE))) database = await inspectCoordinationDatabase(join(root, COORDINATION_DATABASE), { quickCheck: databaseCheck === 'full' });
   else if (created) reasons.push(reason('database_missing', 'This created home has no coordination database. A schema-preserving update cannot invent one.'));
   if (database.busy) reasons.push(reason('database_busy', 'The coordination database is busy. Wait until writers finish, then retry.'));
   else if (database.unreadable) reasons.push(reason('database_unreadable', 'The coordination database could not be inspected. No files were changed.'));
@@ -343,7 +344,7 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   }
   return {
     schema: 'home23.product-update-inventory.v1', scope: 'host_v1_schema_preserving', complete: reasons.length === 0,
-    writers: writerNames || [], database: COORDINATION_DATABASE, databaseInspection: { present: database.present, version: database.version ?? null, compatible: database.compatible === true },
+    writers: writerNames || [], database: COORDINATION_DATABASE, databaseInspection: { present: database.present, version: database.version ?? null, compatible: database.compatible === true, integrityChecked: database.integrityChecked === true },
     desiredRunning: state?.desiredRunning === true, created, resident: state?.profile?.name || null, encoderRequired: state?.encoderRequired === true,
     reasons,
   };

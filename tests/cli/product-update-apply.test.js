@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { installProductPayload, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
 import { applyProductUpdate, readUpdateJournal, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
-import { inspectCoordinationDatabase, inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, SUPPORTED_COORDINATION_SCHEMAS, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
+import { candidateCoordinationSchema, inspectCoordinationDatabase, inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, SUPPORTED_COORDINATION_SCHEMAS, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
 
@@ -125,6 +125,9 @@ test('the reviewed v21 migration is the only accepted schema asset transition', 
     sha256: '71239e12d1d0164cc5e3b0f395664fc56da906b04627f9c743b8240bbf3004ff' });
   const allowed = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate });
   assert.equal(allowed.reasons.some(item => item.code === 'schema_assets_changed'), false);
+  const quick = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate, databaseCheck: 'fingerprint' });
+  assert.equal(quick.databaseInspection.compatible, true);
+  assert.equal(quick.databaseInspection.integrityChecked, false);
   const emitted = structuredClone(candidate);
   const previous = structuredClone(fixture.installed);
   const generated = {
@@ -165,6 +168,7 @@ test('the reviewed v21 migration is the only accepted schema asset transition', 
   db.exec("UPDATE kernel_meta SET value = 'wrong' WHERE key = 'schema.checksum'");
   db.close();
   assert.equal((await inspectCoordinationDatabase(databaseFile)).compatible, false);
+  assert.equal((await inspectCoordinationDatabase(databaseFile, { quickCheck: false })).compatible, false);
 });
 
 test('an in-home relative state link is preserved and an outside link is refused', async t => {
@@ -294,6 +298,54 @@ test('a stopped home updates in place and a running home waits until admission',
   assert.equal(packageId(running.home), running.next.packageId);
   assert.equal(preserved(running.home).conversation, 'hello-milo');
   assert.equal(preserved(running.home).version, 20);
+});
+
+test('an admitted busy v21 database pins its reviewed version after owned writers stop', async t => {
+  const v21Assets = Object.fromEntries(['index.js', '0021-notification-recovery-order.js'].map(name => [
+    `app/dist/coordination/migrations/${name}`,
+    fs.readFileSync(path.join(rootDir, 'dist/coordination/migrations', name)),
+  ]));
+  const fixture = homeFixture(t, { desiredRunning: true, version: 21, currentExtra: v21Assets,
+    extra: { ...v21Assets, 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/cli/lib/product-host.js': hostStub } });
+  assert.equal(candidateCoordinationSchema(fixture.next), 21);
+  let online = true;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    inspectUpdateInventory: async (...args) => {
+      const inventory = await inspectUpdateInventory(...args);
+      assert.deepEqual(inventory.reasons, []);
+      return { ...inventory, databaseInspection: { present: true, busy: true, compatible: false },
+        reasons: [{ code: 'database_busy', message: 'database is locked' }] };
+    },
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { online = false; return []; },
+    start: async () => ({ ok: true, status: 'ready' }),
+  });
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  assert.equal(readUpdateJournal(fixture.home).coordinationSchemaVersion, 21);
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.equal(kept(fixture.home).version, 21);
+});
+
+test('a busy v21 database refuses a v20 candidate after owned writers stop', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true, version: 21 });
+  let online = true;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    inspectUpdateInventory: async (...args) => {
+      const inventory = await inspectUpdateInventory(...args);
+      assert.equal(inventory.reasons.some(reason => reason.code === 'schema_assets_changed'), true);
+      return { ...inventory, databaseInspection: { present: true, busy: true, compatible: false },
+        reasons: [{ code: 'database_busy', message: 'database is locked' }] };
+    },
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { online = false; return []; },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.reasons[0].code, 'unsupported_data_version');
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(kept(fixture.home).version, 21);
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'checkpoint')), false);
 });
 
 test('checkpoint and resume fingerprint a read-only attachment without copying it', async t => {
