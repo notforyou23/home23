@@ -390,6 +390,29 @@ test('an adopted external state link survives one software update by its exact r
   assert.equal(fs.readFileSync(path.join(external, 'work.txt'), 'utf8'), 'authoritative\n');
 });
 
+test('checkpoint follows an approved retained source parent without linking its copy', async t => {
+  const fixture = homeFixture(t);
+  const external = path.join(fixture.root, 'retained-evobrew');
+  fs.mkdirSync(external);
+  fs.writeFileSync(path.join(external, 'config.json'), '{"kept":true}\n', { mode: 0o400 });
+  const relative = 'app/evobrew';
+  fs.symlinkSync(external, path.join(fixture.home, relative));
+  fs.mkdirSync(path.join(fixture.home, 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(fixture.home, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: path.join(fixture.root, 'source'),
+    links: [{ path: relative, target: external, sourcePath: 'app/evobrew', sourceTarget: external, kind: 'retain-authority' }],
+    externalReferences: [], continuationServices: [],
+  }), { mode: 0o600 });
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging }, quiet);
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  const copy = path.join(updateDirectoryFor(fixture.home), 'checkpoint/state/app/evobrew/config.json');
+  assert.equal(fs.readFileSync(copy, 'utf8'), '{"kept":true}\n');
+  assert.equal(fs.statSync(copy).mode & 0o777, 0o400);
+  assert.equal(fs.statSync(copy).nlink, 1);
+  assert.notEqual(fs.statSync(copy).ino, fs.statSync(path.join(external, 'config.json')).ino);
+});
+
 test('continued services join the software update writer fence', async t => {
   const fixture = homeFixture(t);
   const file = path.join(fixture.home, '.home23-host.json');
