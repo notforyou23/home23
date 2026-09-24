@@ -11,8 +11,11 @@ for (let index = 2; index < process.argv.length; index += 2) {
   if (!name?.startsWith('--') || !value || value.startsWith('--') || options[name]) throw new Error('Invalid manifest argument');
   options[name] = value;
 }
-for (const name of ['--receipt', '--runtime-archive', '--app-archive', '--runtime-url', '--app-url', '--private-key', '--output']) {
+for (const name of ['--receipt', '--runtime-archive', '--app-archive', '--runtime-url', '--app-url', '--private-key', '--output', '--coordination-schema']) {
   if (!options[name]) throw new Error(`Missing ${name}`);
+}
+if (!['20', '21'].includes(options['--coordination-schema'])) {
+  throw new Error('Coordination schema must be an explicitly reviewed 20 or 21');
 }
 const receipt = JSON.parse(readFileSync(options['--receipt'], 'utf8'));
 if (receipt.schema !== 'home23.mac-release-set.v1' || receipt.signing !== 'developer-id'
@@ -29,7 +32,7 @@ const release = {
   version: receipt.client.version, appBuild: Number(receipt.client.build), packageId: receipt.packageId,
   sourceCommit: receipt.backendCommit, platform: 'darwin', arch: receipt.arch, minimumOs: receipt.minimumMacOS,
   appBundleIdentifier: 'com.regina6.home23.mac', hostBundleIdentifier: 'com.home23.host',
-  compatibility: { installationSchema: 'home23.product-install.v1', coordinationSchema: 20,
+  compatibility: { installationSchema: 'home23.product-install.v1', coordinationSchema: Number(options['--coordination-schema']),
     stateMigration: 'schema_preserving_only', minimumClientBuild: Number(options['--minimum-client-build'] || 0) },
   appDeliveryURL: options['--mobile-app-url'] || null,
   runtime: await artifact('https-tar', options['--runtime-archive'], options['--runtime-url']),

@@ -233,6 +233,21 @@ test('wrong platform is incompatible after a valid local artifact', t => {
   assert.equal(result.canInstall, false);
 });
 
+test('local feed recognizes only reviewed coordination schemas 20 and 21', t => {
+  const root = tempRoot(t);
+  const artifact = path.join(root, 'artifact');
+  const manifest = payload(artifact);
+  const feedPath = path.join(root, 'feed.json');
+  const homeRoot = path.join(root, 'absent-home');
+  for (const schema of [20, 21, 19, 22, '21']) {
+    const offered = releaseFor(artifact, manifest);
+    offered.compatibility.coordinationSchema = schema;
+    writeFeed(feedPath, feedBody([offered]));
+    const result = inspectReleaseFeed({ homeRoot, feedPath });
+    assert.equal(result.status, schema === 20 || schema === 21 ? 'available' : 'incompatible', String(schema));
+  }
+});
+
 test('matching install receipt is current', t => {
   const root = tempRoot(t);
   const home = path.join(root, 'home');

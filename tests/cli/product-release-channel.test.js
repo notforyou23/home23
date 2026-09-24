@@ -52,6 +52,54 @@ test('signature covers every app, runtime, compatibility, and delivery field', (
   }
 });
 
+test('signed channel accepts only reviewed coordination schemas 20 and 21', () => {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const channel = { publicKey: Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url').toString('base64') };
+  const envelopeFor = offered => ({ schema: 'home23.signed-release.v1', release: offered,
+    signature: sign(null, signedReleaseBytes(offered), privateKey).toString('base64') });
+  const next = release();
+  next.compatibility.coordinationSchema = 21;
+  assert.deepEqual(verifyProductChannelManifest(channel, envelopeFor(next)), next);
+  const changed = structuredClone(envelopeFor(next));
+  changed.release.compatibility.coordinationSchema = 20;
+  assert.throws(() => verifyProductChannelManifest(channel, changed), { code: 'signature_invalid' });
+  for (const schema of [19, 22, '21', null]) {
+    const unsupported = release();
+    unsupported.compatibility.coordinationSchema = schema;
+    assert.throws(() => verifyProductChannelManifest(channel, envelopeFor(unsupported)), { code: 'manifest_invalid' });
+  }
+});
+
+test('channel signer requires explicit schema and signs schema 21 metadata', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'home23-channel-signer-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const keyPath = join(directory, 'key.pem');
+  const receiptPath = join(directory, 'receipt.json');
+  const runtimeArchive = join(directory, 'runtime.tar');
+  const appArchive = join(directory, 'app.zip');
+  const output = join(directory, 'signed.json');
+  writeFileSync(keyPath, privateKey.export({ format: 'pem', type: 'pkcs8' }));
+  writeFileSync(receiptPath, JSON.stringify({ schema: 'home23.mac-release-set.v1', signing: 'developer-id',
+    notarized: true, appLayout: 'Home23.app/Contents/Library/LoginItems/Home23Host.app',
+    client: { version: '2.0', build: '183' }, packageId: 'a'.repeat(64),
+    backendCommit: 'b'.repeat(40), arch: 'arm64', minimumMacOS: '27.0' }));
+  writeFileSync(runtimeArchive, 'runtime');
+  writeFileSync(appArchive, 'app');
+  const command = join(process.cwd(), 'scripts/product/sign-channel-release.mjs');
+  const args = [command, '--receipt', receiptPath, '--runtime-archive', runtimeArchive,
+    '--app-archive', appArchive, '--runtime-url', 'https://example.test/runtime.tar',
+    '--app-url', 'https://example.test/app.zip', '--private-key', keyPath, '--output', output];
+  assert.throws(() => execFileSync(process.execPath, args, { stdio: 'pipe' }), /Missing --coordination-schema/);
+  assert.throws(() => execFileSync(process.execPath, [...args, '--coordination-schema', '22'], { stdio: 'pipe' }),
+    /Coordination schema must be an explicitly reviewed 20 or 21/);
+  execFileSync(process.execPath, [...args, '--coordination-schema', '21'], { stdio: 'pipe' });
+  const envelope = JSON.parse(readFileSync(output, 'utf8'));
+  assert.equal(envelope.release.compatibility.coordinationSchema, 21);
+  const channel = { publicKey: Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url').toString('base64') };
+  assert.deepEqual(verifyProductChannelManifest(channel, envelope), envelope.release);
+});
+
 test('missing bundled channel is unavailable rather than current', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'home23-channel-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

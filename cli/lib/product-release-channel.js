@@ -58,7 +58,7 @@ export function verifyProductChannelManifest(channel, envelope) {
       !Number.isSafeInteger(release.appBuild) || release.appBuild <= 0 ||
       !/^\d+(?:\.\d+)*$/.test(release.minimumOs || '') ||
       release.compatibility?.installationSchema !== 'home23.product-install.v1' ||
-      release.compatibility?.coordinationSchema !== 20 ||
+      ![20, 21].includes(release.compatibility?.coordinationSchema) ||
       release.compatibility?.stateMigration !== 'schema_preserving_only' ||
       !Number.isSafeInteger(release.compatibility?.minimumClientBuild) || release.compatibility.minimumClientBuild < 0 ||
       release.appBundleIdentifier !== 'com.regina6.home23.mac' ||
