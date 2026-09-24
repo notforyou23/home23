@@ -11,7 +11,7 @@
  * was applied; the next verify tick decides whether it actually worked.
  */
 
-const { execFileSync, execSync, spawn } = require('child_process');
+const { execFile, execFileSync, execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -168,10 +168,10 @@ const EXEC_CATALOG = {
 const remediators = {
   /**
    * Restart a PM2 process (only home23-* names). Uses --update-env so fresh
-   * secrets/env are loaded. Fire-and-forget — the verifier re-checks next tick.
+   * secrets/env are loaded. The verifier re-checks on the next tick.
    * args: { name }
    */
-  pm2_restart({ name }) {
+  async pm2_restart({ name }) {
     if (!isRestartableProcess(name)) {
       return { outcome: 'rejected', detail: `not restartable: ${name}` };
     }
@@ -184,11 +184,10 @@ const remediators = {
       }
     }
     try {
-      execFileSync('pm2', ['restart', name, '--update-env'], {
+      await new Promise((resolve, reject) => execFile('pm2', ['restart', name, '--update-env'], {
         encoding: 'utf8',
         timeout: 15000,
-        stdio: 'pipe',
-      });
+      }, (err) => err ? reject(err) : resolve()));
       return { outcome: 'success', detail: `restarted ${name}` };
     } catch (err) {
       return { outcome: 'failed', detail: `pm2 restart failed: ${err.message}` };
