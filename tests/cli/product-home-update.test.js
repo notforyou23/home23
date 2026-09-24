@@ -149,6 +149,42 @@ test('preparation failure restores worker priority before offering resume', asyn
   assert.equal(homeUpdateStatus({ homeRoot: f.home }).operation.phase, 'failed');
 });
 
+test('preparation status remains truthful after signed files are downloaded', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: { prepareConfiguredRelease: async () => {
+      const status = homeUpdateStatus({ homeRoot: f.home });
+      assert.equal(status.operation.phase, 'downloading');
+      assert.match(status.message, /downloading and preparing/i);
+      throw new Error('Preparation stopped');
+    } }, updater: unusedUpdater, appUpdater: unusedAppUpdater,
+  });
+});
+
+test('a preflight refusal publishes only safe reason codes and a path-free explanation', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => ({ ok: false, status: 'refused', reasons: [
+      { code: 'unknown_state', message: 'Private path /secret/Jerry/conversations and credential XYZ', path: '/secret/Jerry/conversations' },
+      { code: 'network_binding_receipt_mismatch', message: 'Private port and credential XYZ' },
+    ] }) },
+    appUpdater: unusedAppUpdater,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home });
+  assert.equal(status.state, 'failed');
+  assert.deepEqual(status.allowedActions, ['resume']);
+  assert.equal(status.operation.errorCode, 'unknown_state');
+  assert.deepEqual(status.operation.reasonCodes, ['unknown_state', 'network_binding_receipt_mismatch']);
+  assert.match(status.message, /files the updater cannot classify/);
+  assert.doesNotMatch(JSON.stringify(status), /secret|credential XYZ/);
+  assert.doesNotMatch(JSON.stringify(f.operation(accepted.operation.id)), /secret|credential XYZ/);
+});
+
 test('newer phone can resume a compatibility refusal with its new build', async t => {
   const f = fixture(t); await check(f);
   const accepted = await requestHomeUpdate(input(f.home, 'update', 'update', 165), noLaunch);

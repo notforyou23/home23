@@ -16,6 +16,30 @@ const now = () => new Date().toISOString();
 const executeFile = promisify(execFile);
 const alive = pid => { if (!Number.isInteger(pid) || pid < 1) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
 const fail = (code, message) => Object.assign(new Error(message), { code });
+const PREFLIGHT_MESSAGES = Object.freeze({
+  unknown_state: 'The home contains files the updater cannot classify. Open Home23 on this Mac to review them before resuming.',
+  linked_state_path: 'A home state link points outside its approved location. Open Home23 on this Mac to review it before resuming.',
+  linked_state_changed: 'A preserved home link changed since adoption. Open Home23 on this Mac to review it before resuming.',
+  linked_state_missing: 'A preserved home link is missing. Open Home23 on this Mac to restore it before resuming.',
+  retained_authority_missing: 'A preserved external service is unavailable. Reconnect it on this Mac before resuming.',
+  continuation_receipt_mismatch: 'The home service bindings changed since adoption. Open Home23 on this Mac to review them before resuming.',
+  network_binding_receipt_mismatch: 'The home network bindings changed since adoption. Open Home23 on this Mac to review them before resuming.',
+  database_busy: 'The home database is busy. Wait for current work to finish, then resume the update.',
+  insufficient_space: 'The Mac needs more free space to finish this update.',
+  modified_installation: 'The installed Home23 software changed unexpectedly. Open Home23 on this Mac for recovery.',
+  candidate_integrity_failed: 'The downloaded Home23 release failed verification. Resume to download it again.',
+});
+function preflightFailure(result) {
+  // Apply may include local paths in its reason messages. Persist and publish
+  // only bounded machine codes and a fixed message, never those details.
+  const codes = [...new Set((Array.isArray(result?.reasons) ? result.reasons : [])
+    .map(reason => reason?.code).filter(code => typeof code === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(code)))].slice(0, 16);
+  if (!codes.length) return null;
+  const error = fail(codes[0], PREFLIGHT_MESSAGES[codes[0]]
+    ?? `Home23 paused at an update safety check (${codes[0]}). Open Home23 on this Mac before resuming.`);
+  error.reasonCodes = codes;
+  return error;
+}
 function setWorkerBackground(background) {
   if (process.platform !== 'darwin') return;
   // The retained worker, not Core or the Host, performs the large archive
@@ -59,6 +83,8 @@ function publicOperation(operation) {
     && Date.now() - Date.parse(operation.updatedAt) > 30_000;
   return { id: operation.id, action: operation.action, phase: interrupted ? 'interrupted' : operation.phase,
     progress: operation.progress ?? null, message: interrupted ? 'The update was interrupted. Resume to continue safely.' : operation.message,
+    errorCode: operation.phase === 'failed' ? operation.errorCode ?? null : null,
+    reasonCodes: operation.phase === 'failed' ? operation.reasonCodes ?? [] : [],
     startedAt: operation.startedAt, updatedAt: operation.updatedAt,
     canResume: !operation.requiresLocalRecovery && (interrupted || ['failed', 'interrupted'].includes(operation.phase)) };
 }
@@ -261,7 +287,7 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     if (!prepared) {
       workerPriority(true);
       try {
-        persist({ phase: 'downloading', message: 'Downloading Home23. Your home is still available.' });
+        persist({ phase: 'downloading', message: 'Downloading and preparing Home23 on your Mac. Your home is still available.' });
         const delivery = updateDeliveryPaths(home.root, operation.id, { release: operation.release });
         prepared = await channel.prepareConfiguredRelease({ ...options,
           staging: delivery.staging, downloadDirectory: delivery.downloadDirectory, extractionDirectory: delivery.extractionDirectory,
@@ -288,7 +314,7 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
           persist({ requiresLocalRecovery: true });
           throw fail('local_recovery_required', 'Automatic recovery stopped to preserve your home. Open Home23 on the Mac running your home for recovery.');
         }
-        throw fail('update_incomplete', 'The home update needs recovery before it can finish.');
+        throw preflightFailure(result) ?? fail('update_incomplete', 'The home update needs recovery before it can finish.');
       }
       persist({ runtimeCompleted: true });
     }
@@ -306,7 +332,7 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     persist({ phase: 'completed', progress: 1, message: readiness?.running === false
       ? 'Home23 is updated. Your home remains stopped.' : 'Home23 is updated and your home is ready.' });
   } catch (error) {
-    persist({ phase: 'failed', errorCode: error.code ?? 'update_failed', message: operation.requiresLocalRecovery ? error.message : operation.runtimeCompleted
+    persist({ phase: 'failed', errorCode: error.code ?? 'update_failed', reasonCodes: error.reasonCodes ?? [], message: operation.requiresLocalRecovery ? error.message : error.reasonCodes?.length ? error.message : operation.runtimeCompleted
       ? 'Your home software is updated. Resume to finish the Mac application and reconnect.'
       : 'The update could not finish. Resume or recover to return your home to service.' });
   }
