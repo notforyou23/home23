@@ -859,7 +859,7 @@ export class AgencyKernel {
     // Only append to inbox log if the item has signal (not discarded).
     // Discarded items are already captured in receipts — no need to bloat the inbox.
     if (decision.route !== 'discard') {
-      this.store.appendInbox(inboxEntry);
+      await this.store.appendInboxAsync(inboxEntry);
     }
 
     let pursuit = null;
@@ -949,7 +949,7 @@ export class AgencyKernel {
     const closure = this.applyReceiptClosure(candidate);
     if (closure) {
       const decision = { route: 'close', reason: 'receipt_proved_stop_condition' };
-      this.store.appendInbox({ ...candidate, decision });
+      await this.store.appendInboxAsync({ ...candidate, decision });
       const receipt = this.store.appendReceipt({
         schema: 'home23.agency.receipt.v1',
         at: nowIso(),
@@ -986,7 +986,7 @@ export class AgencyKernel {
       const mechanicalAttach = candidate.explicitNoChange === true
         || isMechanicalCronNoChangePursuit({ ...candidate, kind: candidate.kind || 'cron_report' });
       if (!mechanicalAttach) {
-        this.store.appendInbox({ ...candidate, decision });
+        await this.store.appendInboxAsync({ ...candidate, decision });
       }
       const receipt = this.store.appendReceipt({
         schema: 'home23.agency.receipt.v1',
@@ -1050,7 +1050,7 @@ export class AgencyKernel {
         sourceRef: candidate.claim.sourceRef || candidate.evidence?.[0]?.ref || candidate.source,
       });
       const decision = { route: 'claim', reason: 'world_stream_recorded_durable_claim' };
-      this.store.appendInbox({ ...candidate, decision });
+      await this.store.appendInboxAsync({ ...candidate, decision });
       const receipt = this.store.appendReceipt({
         schema: 'home23.agency.receipt.v1',
         at: nowIso(),
@@ -1121,7 +1121,7 @@ export class AgencyKernel {
       : this.selector.select(candidate, { existing, budget: this.attentionBudget() });
     // Only append to inbox log if the item has signal (not discarded).
     if (decision.route !== 'discard') {
-      this.store.appendInbox({ ...candidate, decision });
+      await this.store.appendInboxAsync({ ...candidate, decision });
     }
 
     let pursuit = null;
@@ -1162,9 +1162,9 @@ export class AgencyKernel {
     return { candidate, decision, pursuit, receipt, state };
   }
 
-  assimilateStructuredReport(input = {}, candidate = this.router.normalize(input)) {
+  async assimilateStructuredReport(input = {}, candidate = this.router.normalize(input)) {
     const decision = { route: 'fanout', reason: 'structured_report_items_assimilated' };
-    this.store.appendInbox({ ...candidate, decision });
+    await this.store.appendInboxAsync({ ...candidate, decision });
     const at = nowIso();
     const receipt = this.store.appendReceipt({
       schema: 'home23.agency.receipt.v1',

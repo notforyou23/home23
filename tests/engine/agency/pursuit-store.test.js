@@ -17,6 +17,17 @@ test('PursuitStore lists recent inbox rows without loading the whole ledger', ()
   assert.deepEqual(rows.map((row) => row.id), ['inbox-39', 'inbox-38', 'inbox-37', 'inbox-36', 'inbox-35']);
 });
 
+test('async inbox appends commit in order before acknowledging callers', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-pursuit-inbox-async-'));
+  const store = new PursuitStore({ brainDir: dir });
+  await Promise.all([
+    store.appendInboxAsync({ id: 'first' }),
+    store.appendInboxAsync({ id: 'second' }),
+  ]);
+  assert.deepEqual(store.listInbox({ limit: 2 }).map(row => row.id), ['second', 'first']);
+  assert.equal(store.countInboxLines(), 2);
+});
+
 test('inbox count tracks own and external appends, replacement, and truncation', () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-inbox-count-'));
   const store = new PursuitStore({ brainDir: dir });

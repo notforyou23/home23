@@ -1,4 +1,5 @@
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -151,6 +152,7 @@ export class PursuitStore {
     this.pursuitIndex = null;
     this.inboxCountCache = null;
     this.taskIndexCache = null;
+    this.inboxWriteChain = Promise.resolve();
     mkdirSync(this.dir, { recursive: true });
     for (const file of [this.inboxPath, this.pursuitsPath, this.receiptsPath, this.consequencesPath, this.scratchPath, this.truthPath, this.tasksPath, this.memoryCandidatesPath]) {
       if (!existsSync(file)) closeSync(openSync(file, 'a'));
@@ -159,6 +161,16 @@ export class PursuitStore {
 
   appendInbox(entry) {
     appendFileSync(this.inboxPath, `${JSON.stringify(entry)}\n`);
+    return entry;
+  }
+
+  async appendInboxAsync(entry) {
+    const line = `${JSON.stringify(entry)}\n`;
+    const committed = this.inboxWriteChain.then(() => appendFile(this.inboxPath, line));
+    // Keep the queue usable after a failed write; the caller still receives
+    // that failure and must not acknowledge this entry.
+    this.inboxWriteChain = committed.catch(() => {});
+    await committed;
     return entry;
   }
 
