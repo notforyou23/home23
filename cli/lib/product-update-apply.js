@@ -284,7 +284,10 @@ function spaceFor(home, dependencies) {
   // Both software versions already occupy this volume: the current home and
   // the completed stage. Selection renames their units; it does not duplicate
   // the installed tree. Lived state remains in place; only SQLite is copied.
-  const checkpoint = exists(join(home, DATABASE)) ? BigInt(lstatSync(join(home, DATABASE)).size) : 0n;
+  // Include uncheckpointed WAL pages, which VACUUM may fold into the backup.
+  const database = join(home, DATABASE);
+  const checkpoint = [database, `${database}-wal`].reduce((bytes, file) =>
+    bytes + (exists(file) ? BigInt(lstatSync(file).size) : 0n), 0n);
   const space = (dependencies.statfs || statfsSync)(dirname(home), dependencies.statfs ? undefined : { bigint: true });
   return space.bavail * space.bsize >= checkpoint + 64n * 1024n * 1024n;
 }

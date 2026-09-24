@@ -187,6 +187,22 @@ test('refusals happen before a journal or package change', async t => {
   assert.equal(packageId(busy.home), busy.installed.packageId);
 });
 
+test('checkpoint headroom accounts for uncheckpointed coordination WAL bytes', async t => {
+  const fixture = homeFixture(t);
+  const file = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+  const database = new DatabaseSync(file);
+  try {
+    database.exec('PRAGMA journal_mode=WAL; INSERT INTO kept VALUES (\'wal-row\');');
+    const wal = `${file}-wal`;
+    assert.ok(fs.statSync(wal).size > 0);
+    const available = fs.statSync(file).size + 64 * 1024 * 1024 + fs.statSync(wal).size - 1;
+    const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+      staging: fixture.staging }, { ...quiet, statfs: () => ({ bavail: BigInt(available), bsize: 1n }) });
+    assert.equal(result.reasons[0].code, 'insufficient_space');
+    assert.equal(fs.existsSync(updateDirectoryFor(fixture.home)), false);
+  } finally { database.close(); }
+});
+
 test('a stopped home updates in place and a running home waits until admission', async t => {
   const stopped = homeFixture(t);
   const before = preserved(stopped.home);
