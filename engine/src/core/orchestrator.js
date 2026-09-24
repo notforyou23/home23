@@ -4519,25 +4519,8 @@ class Orchestrator {
     this.logger.info('✓ State adjusted');
     cosmoEvents.emitEvent('dream_phase', { phase: 'state_reset', status: 'complete' });
 
-    // Commit the completed-work marker with the brain. A timestamp recorded
-    // before this point could rate-limit an interrupted consolidation on boot.
-    const previousConsolidationTime = this.temporal.lastConsolidationTime;
-    const previousSessionComplete = this.sleepSession?.consolidationRun;
-    this.temporal.lastConsolidationTime = Date.now();
-    if (this.sleepSession?.active && !this.config.execution?.dreamMode) {
-      this.sleepSession.consolidationRun = true;
-    }
     cosmoEvents.emitEvent('dream_phase', { phase: 'save_state', status: 'started' });
-    try {
-      const saveResult = await this.saveState();
-      if (saveResult?.saved === false) {
-        throw new Error(`deep_sleep_state_save_failed: ${saveResult.reason || 'unknown'}`);
-      }
-    } catch (error) {
-      this.temporal.lastConsolidationTime = previousConsolidationTime;
-      if (this.sleepSession) this.sleepSession.consolidationRun = previousSessionComplete;
-      throw error;
-    }
+    await this._saveCompletedSleepConsolidation();
     cosmoEvents.emitEvent('dream_phase', { phase: 'save_state', status: 'complete' });
 
     this.logger.info('');
@@ -7375,12 +7358,43 @@ class Orchestrator {
     // A streaming save aborts if memory changes before it finishes; the
     // document feeder checks this flag and defers its flush until we are done.
     if (this.memory) this.memory.persistenceSaveActive = true;
-    this._saveStatePromise = this._saveStateUnlocked();
+    const savePromise = this._saveStateUnlocked();
+    this._saveStatePromise = savePromise;
     try {
-      return await this._saveStatePromise;
+      return await savePromise;
     } finally {
-      this._saveStatePromise = null;
-      if (this.memory) this.memory.persistenceSaveActive = false;
+      if (this._saveStatePromise === savePromise) {
+        this._saveStatePromise = null;
+        if (this.memory) this.memory.persistenceSaveActive = false;
+      }
+    }
+  }
+
+  async _saveCompletedSleepConsolidation() {
+    // A save that started before this marker may already have captured the
+    // old state. Let it finish, then force a fresh save with the marker.
+    const priorSave = this._saveStatePromise;
+    const previousConsolidationTime = this.temporal.lastConsolidationTime;
+    const previousSessionComplete = this.sleepSession?.consolidationRun;
+    this.temporal.lastConsolidationTime = Date.now();
+    if (this.sleepSession?.active && !this.config.execution?.dreamMode) {
+      this.sleepSession.consolidationRun = true;
+    }
+    try {
+      if (priorSave) {
+        try { await priorSave; } catch { /* A fresh save still gets a chance. */ }
+        while (this._saveStatePromise === priorSave) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+      }
+      const saveResult = await this.saveState();
+      if (saveResult?.saved === false) {
+        throw new Error(`deep_sleep_state_save_failed: ${saveResult.reason || 'unknown'}`);
+      }
+    } catch (error) {
+      this.temporal.lastConsolidationTime = previousConsolidationTime;
+      if (this.sleepSession) this.sleepSession.consolidationRun = previousSessionComplete;
+      throw error;
     }
   }
 

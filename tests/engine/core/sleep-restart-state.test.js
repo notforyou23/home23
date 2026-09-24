@@ -82,3 +82,53 @@ test('restart after interrupted consolidation leaves it eligible to retry', asyn
   assert.equal(orchestrator.temporal.lastConsolidationTime, null);
   assert.equal(orchestrator.sleepSession.consolidationRun, false);
 });
+
+test('completed marker gets a fresh save after an overlapping old-state save', async () => {
+  let releaseFirstSave;
+  const firstSaveGate = new Promise(resolve => { releaseFirstSave = resolve; });
+  const snapshots = [];
+  const orchestrator = Object.create(Orchestrator.prototype);
+  Object.assign(orchestrator, {
+    logger,
+    config: { execution: {} },
+    memory: {},
+    temporal: { lastConsolidationTime: null },
+    sleepSession: { active: true, consolidationRun: false },
+    async _saveStateUnlocked() {
+      snapshots.push({
+        consolidationRun: this.sleepSession.consolidationRun,
+        completedAt: this.temporal.lastConsolidationTime,
+      });
+      if (snapshots.length === 1) await firstSaveGate;
+      return { saved: true };
+    },
+  });
+
+  const oldSave = orchestrator.saveState();
+  assert.equal(snapshots.length, 1);
+  const completionSave = orchestrator._saveCompletedSleepConsolidation();
+  assert.equal(orchestrator.sleepSession.consolidationRun, true);
+  releaseFirstSave();
+  await Promise.all([oldSave, completionSave]);
+
+  assert.equal(snapshots.length, 2);
+  assert.deepEqual(snapshots.map(snapshot => snapshot.consolidationRun), [false, true]);
+  assert.equal(snapshots[0].completedAt, null);
+  assert.ok(snapshots[1].completedAt > 0);
+  assert.equal(orchestrator.memory.persistenceSaveActive, false);
+});
+
+test('failed completed-marker save rolls back the in-memory completion flag', async () => {
+  const orchestrator = Object.create(Orchestrator.prototype);
+  Object.assign(orchestrator, {
+    logger,
+    config: { execution: {} },
+    memory: {},
+    temporal: { lastConsolidationTime: null },
+    sleepSession: { active: true, consolidationRun: false },
+    async _saveStateUnlocked() { return { saved: false, reason: 'guarded' }; },
+  });
+  await assert.rejects(orchestrator._saveCompletedSleepConsolidation(), /deep_sleep_state_save_failed: guarded/);
+  assert.equal(orchestrator.temporal.lastConsolidationTime, null);
+  assert.equal(orchestrator.sleepSession.consolidationRun, false);
+});
