@@ -12,7 +12,9 @@ const BOT=`SELECT id,principal_id AS principalId,name,purpose,lifecycle,conversa
 const ALIAS=`SELECT id,namespace,alias_digest AS aliasDigest,target_type AS targetType,target_id AS targetId,active,created_at AS createdAt,updated_at AS updatedAt FROM aliases`;
 const bot=(r:BotRow):BotDirectoryRecord=>Object.freeze({...r,continuingIdentity:r.continuingIdentity===1,durableMailbox:r.durableMailbox===1,requiredCapabilities:Object.freeze(JSON.parse(r.requiredCapabilitiesJson) as string[]),residentCapabilities:Object.freeze(JSON.parse(r.residentCapabilitiesJson) as string[]),requiredCapabilitiesJson:undefined,residentCapabilitiesJson:undefined} as unknown as BotDirectoryRecord);
 const alias=(r:AliasRow):BotAliasRecord=>Object.freeze({...r,active:r.active===1});
-function version(tx:CoordinationTransaction,id:string){return(tx.readOne<{count:number}>("SELECT count(*) AS count FROM events WHERE aggregate_kind='bot' AND aggregate_id=?",id)?.count??0)+1;}
+// The aggregate's unique (kind, id, version) index can find its latest event
+// directly. Counting every historical heartbeat made each new heartbeat slower.
+function version(tx:CoordinationTransaction,id:string){return(tx.readOne<{version:number}>("SELECT aggregate_version AS version FROM events WHERE aggregate_kind='bot' AND aggregate_id=? ORDER BY aggregate_version DESC LIMIT 1",id)?.version??0)+1;}
 function event(tx:CoordinationTransaction,input:{requestId:string;correlationId:string;actorPrincipalId:string},id:string,at:string,outcome:string){return{type:"bot.updated",aggregateKind:"bot",aggregateId:id,aggregateVersion:version(tx,id),channelId:null,actorPrincipalId:input.actorPrincipalId,requestId:input.requestId,correlationId:input.correlationId,payload:{outcome},createdAt:at};}
 
 export class SqliteBotDirectoryRepository implements BotDirectoryRepository {
