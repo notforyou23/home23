@@ -9,6 +9,7 @@ import { promoteToMemoryTool } from '../../src/agent/tools/promote.js';
 import { AgentLoop } from '../../src/agent/loop.js';
 import { ConversationHistory } from '../../src/agent/history.js';
 import authorityAttestation from '../../shared/memory-authority-attestation.cjs';
+import lockfile from 'proper-lockfile';
 
 const AUTHORITY_KEY = '6'.repeat(64);
 const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
@@ -31,6 +32,48 @@ function baseObject(overrides: Record<string, unknown> = {}): any {
     staleness_policy: {}, ...overrides,
   };
 }
+
+test('MemoryObjectStore preserves engine writes made after its cache was loaded', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-memory-object-shared-writer-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'memory-objects.json');
+  const store = new MemoryObjectStore(dir);
+  const harness = store.createObject(baseObject());
+  const release = lockfile.lockSync(file);
+  try {
+    const document = JSON.parse(fs.readFileSync(file, 'utf8'));
+    document.objects.push({ ...document.objects[0], memory_id: 'mo-bus-engine', actor: 'os-engine-bus' });
+    fs.writeFileSync(file, JSON.stringify(document));
+  } finally { release(); }
+
+  store.updateObject(harness.memory_id, { title: 'harness update' });
+  store.incrementReuse('mo-bus-engine');
+  store.markActedOn('mo-bus-engine');
+  store.createObject(baseObject({ title: 'second harness object' }));
+  const objects = JSON.parse(fs.readFileSync(file, 'utf8')).objects;
+  assert.equal(objects.length, 3);
+  assert.equal(objects.find((object: any) => object.memory_id === harness.memory_id).title, 'harness update');
+  assert.equal(objects.find((object: any) => object.memory_id === 'mo-bus-engine').reuse_count, 1);
+  assert.ok(objects.find((object: any) => object.memory_id === 'mo-bus-engine').last_acted_on);
+  const beforeMissingId = fs.statSync(file).mtimeMs;
+  assert.equal(store.updateObject('missing-id', { title: 'no change' }), undefined);
+  store.incrementReuse('missing-id');
+  store.markActedOn('missing-id');
+  assert.equal(fs.statSync(file).mtimeMs, beforeMissingId);
+});
+
+test('MemoryObjectStore refuses a write when the engine owns the file lock', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-memory-object-locked-writer-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = new MemoryObjectStore(dir);
+  store.createObject(baseObject());
+  const file = path.join(dir, 'memory-objects.json');
+  const before = fs.readFileSync(file, 'utf8');
+  const release = lockfile.lockSync(file);
+  try { assert.throws(() => store.createObject(baseObject()), /lock/i); }
+  finally { release(); }
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+});
 
 test('MemoryObjectStore binds jtr correction authority to validated recorded-turn ingress', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-memory-object-correction-'));

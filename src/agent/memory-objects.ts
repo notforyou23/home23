@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import lockfile from 'proper-lockfile';
 import type {
   MemoryObject,
   ProblemThread,
@@ -224,11 +225,36 @@ export class MemoryObjectStore {
     console.log(`[memory-objects] Loaded ${this.objects.length} objects, ${this.threads.length} threads`);
   }
 
-  // Drop pretty-print on hot-path saves: 1.26 MB pretty JSON costs ~50 ms
-  // CPU per stringify, blocking the harness event loop. Compact JSON is
-  // ~30 % smaller and ~5x faster to serialize. Files remain valid JSON.
-  private saveObjects(): void {
-    writeFileSync(this.objectsPath, JSON.stringify({ objects: this.objects }));
+  // Engine MemoryIngest uses the same proper-lockfile path. Reload under that
+  // lock before every mutation: this instance's cache can predate engine writes.
+  // The synchronous harness API cannot use proper-lockfile's async retries.
+  // Bound lock contention to 60 ms, then fail closed for the caller to retry.
+  private mutateObjects<T>(mutation: (objects: MemoryObject[]) => T): T {
+    if (!existsSync(this.objectsPath)) {
+      try { writeFileSync(this.objectsPath, '{"objects":[]}', { flag: 'wx' }); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+    }
+    let release: (() => void) | undefined;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        release = lockfile.lockSync(this.objectsPath, { stale: 30_000, update: 5_000 });
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ELOCKED' || attempt === 3) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+    }
+    if (!release) throw new Error('Could not lock memory-objects.json');
+    try {
+      const document = JSON.parse(readFileSync(this.objectsPath, 'utf8')) as { objects: MemoryObject[] };
+      if (!Array.isArray(document.objects)) throw new Error('Invalid memory-objects.json: objects must be an array');
+      const result = mutation(document.objects);
+      if (result !== undefined) writeFileSync(this.objectsPath, JSON.stringify(document));
+      this.objects = document.objects;
+      return result;
+    } finally { release(); }
   }
 
   private saveThreads(): void {
@@ -239,67 +265,68 @@ export class MemoryObjectStore {
     partial: Omit<MemoryObject, 'memory_id' | 'created_at' | 'updated_at' | 'reuse_count'>,
     ingress?: AuthenticatedUserIngress,
   ): MemoryObject {
-    const now = new Date().toISOString();
-    const generationMethod = boundedProvenanceScalar(partial.provenance.generation_method, 120) || 'unknown';
-    const correctionMessageRef = validatedCorrectionIngress(
-      partial,
-      this.correctionIngressValidator,
-      ingress,
-    );
-    const sourceRefs = boundedProvenanceStrings([
-      ...(correctionMessageRef ? [correctionMessageRef] : []),
-      ...partial.provenance.source_refs,
-    ], 8);
-    const sessionRefs = boundedProvenanceStrings(partial.provenance.session_refs, 8);
-    const evidenceLinks = boundedProvenanceStrings([
-      ...(correctionMessageRef ? [correctionMessageRef] : []),
-      ...partial.evidence.evidence_links,
-    ], 8);
-    const constrainedConfidence = constrainConfidence(
-      partial.confidence.score,
-      generationMethod,
-    );
+    return this.mutateObjects(objects => {
+      const now = new Date().toISOString();
+      const generationMethod = boundedProvenanceScalar(partial.provenance.generation_method, 120) || 'unknown';
+      const correctionMessageRef = validatedCorrectionIngress(
+        partial,
+        this.correctionIngressValidator,
+        ingress,
+      );
+      const sourceRefs = boundedProvenanceStrings([
+        ...(correctionMessageRef ? [correctionMessageRef] : []),
+        ...partial.provenance.source_refs,
+      ], 8);
+      const sessionRefs = boundedProvenanceStrings(partial.provenance.session_refs, 8);
+      const evidenceLinks = boundedProvenanceStrings([
+        ...(correctionMessageRef ? [correctionMessageRef] : []),
+        ...partial.evidence.evidence_links,
+      ], 8);
+      const constrainedConfidence = constrainConfidence(
+        partial.confidence.score,
+        generationMethod,
+      );
 
-    if (partial.type === 'checkpoint') {
-      if (!partial.statement || partial.confidence.score <= 0 || partial.provenance.session_refs.length === 0) {
-        throw new Error('Checkpoint requires non-empty statement, confidence > 0, and at least one session_ref');
+      if (partial.type === 'checkpoint') {
+        if (!partial.statement || partial.confidence.score <= 0 || partial.provenance.session_refs.length === 0) {
+          throw new Error('Checkpoint requires non-empty statement, confidence > 0, and at least one session_ref');
+        }
       }
-    }
 
-    const obj: MemoryObject = {
-      ...partial,
-      memory_id: `mo_${randomUUID().slice(0, 12)}`,
-      created_at: now,
-      updated_at: now,
-      actor: correctionMessageRef && !isGeneratedMemoryMethod(generationMethod)
-        ? 'jtr'
-        : partial.actor === 'jtr' ? 'agent' : partial.actor,
-      confidence: {
-        score: constrainedConfidence,
-        basis: partial.confidence.basis,
-      },
-      provenance: {
-        ...partial.provenance,
-        source_refs: sourceRefs,
-        session_refs: sessionRefs,
-        generation_method: generationMethod,
-        ...(partial.provenance.origin ? { origin: normalizedOrigin(partial.provenance.origin) } : {}),
-        node_profile: normalizeNodeProvenance(partial, correctionMessageRef),
-      },
-      evidence: {
-        ...partial.evidence,
-        evidence_links: evidenceLinks,
-      },
-      reuse_count: 0,
-    };
+      const obj: MemoryObject = {
+        ...partial,
+        memory_id: `mo_${randomUUID().slice(0, 12)}`,
+        created_at: now,
+        updated_at: now,
+        actor: correctionMessageRef && !isGeneratedMemoryMethod(generationMethod)
+          ? 'jtr'
+          : partial.actor === 'jtr' ? 'agent' : partial.actor,
+        confidence: {
+          score: constrainedConfidence,
+          basis: partial.confidence.basis,
+        },
+        provenance: {
+          ...partial.provenance,
+          source_refs: sourceRefs,
+          session_refs: sessionRefs,
+          generation_method: generationMethod,
+          ...(partial.provenance.origin ? { origin: normalizedOrigin(partial.provenance.origin) } : {}),
+          node_profile: normalizeNodeProvenance(partial, correctionMessageRef),
+        },
+        evidence: {
+          ...partial.evidence,
+          evidence_links: evidenceLinks,
+        },
+        reuse_count: 0,
+      };
 
-    // Only the one-use, recorded user-turn correction path is independently
-    // authenticated here. Generic verifier/adoption strings remain unsigned.
-    if (correctionMessageRef) attestMemoryAuthorityIfAvailable(obj);
+      // Only the one-use, recorded user-turn correction path is independently
+      // authenticated here. Generic verifier/adoption strings remain unsigned.
+      if (correctionMessageRef) attestMemoryAuthorityIfAvailable(obj);
 
-    this.objects.push(obj);
-    this.saveObjects();
-    return obj;
+      objects.push(obj);
+      return obj;
+    });
   }
 
   getObject(memoryId: string): MemoryObject | undefined {
@@ -307,43 +334,44 @@ export class MemoryObjectStore {
   }
 
   updateObject(memoryId: string, updates: Partial<MemoryObject>): MemoryObject | undefined {
-    const idx = this.objects.findIndex(o => o.memory_id === memoryId);
-    if (idx === -1) return undefined;
-    const current = this.objects[idx]!;
-    const merged: MemoryObject = {
-      ...current,
-      ...updates,
-      memory_id: current.memory_id,
-      provenance: updates.provenance
-        ? { ...current.provenance, ...updates.provenance }
-        : current.provenance,
-      evidence: updates.evidence ? { ...current.evidence, ...updates.evidence } : current.evidence,
-      scope: updates.scope ? { ...current.scope, ...updates.scope } : current.scope,
-      updated_at: new Date().toISOString(),
-    };
-    const provenanceInputsChanged = Boolean(
-      updates.provenance || updates.evidence || updates.scope
-      || updates.type || updates.session_id || updates.actor,
-    );
-    if (provenanceInputsChanged) {
-      const generationMethod = boundedProvenanceScalar(merged.provenance.generation_method, 120) || 'unknown';
-      merged.provenance = {
-        ...merged.provenance,
-        source_refs: boundedProvenanceStrings(merged.provenance.source_refs, 8),
-        session_refs: boundedProvenanceStrings(merged.provenance.session_refs, 8),
-        generation_method: generationMethod,
-        ...(merged.provenance.origin ? { origin: normalizedOrigin(merged.provenance.origin) } : {}),
-        node_profile: normalizeNodeProvenance(merged),
+    return this.mutateObjects(objects => {
+      const idx = objects.findIndex(o => o.memory_id === memoryId);
+      if (idx === -1) return undefined;
+      const current = objects[idx]!;
+      const merged: MemoryObject = {
+        ...current,
+        ...updates,
+        memory_id: current.memory_id,
+        provenance: updates.provenance
+          ? { ...current.provenance, ...updates.provenance }
+          : current.provenance,
+        evidence: updates.evidence ? { ...current.evidence, ...updates.evidence } : current.evidence,
+        scope: updates.scope ? { ...current.scope, ...updates.scope } : current.scope,
+        updated_at: new Date().toISOString(),
       };
-      merged.evidence = {
-        ...merged.evidence,
-        evidence_links: boundedProvenanceStrings(merged.evidence.evidence_links, 8),
-      };
-      if (updates.actor === 'jtr' && current.actor !== 'jtr') merged.actor = current.actor;
-    }
-    this.objects[idx] = merged;
-    this.saveObjects();
-    return this.objects[idx];
+      const provenanceInputsChanged = Boolean(
+        updates.provenance || updates.evidence || updates.scope
+        || updates.type || updates.session_id || updates.actor,
+      );
+      if (provenanceInputsChanged) {
+        const generationMethod = boundedProvenanceScalar(merged.provenance.generation_method, 120) || 'unknown';
+        merged.provenance = {
+          ...merged.provenance,
+          source_refs: boundedProvenanceStrings(merged.provenance.source_refs, 8),
+          session_refs: boundedProvenanceStrings(merged.provenance.session_refs, 8),
+          generation_method: generationMethod,
+          ...(merged.provenance.origin ? { origin: normalizedOrigin(merged.provenance.origin) } : {}),
+          node_profile: normalizeNodeProvenance(merged),
+        };
+        merged.evidence = {
+          ...merged.evidence,
+          evidence_links: boundedProvenanceStrings(merged.evidence.evidence_links, 8),
+        };
+        if (updates.actor === 'jtr' && current.actor !== 'jtr') merged.actor = current.actor;
+      }
+      objects[idx] = merged;
+      return objects[idx];
+    });
   }
 
   getObjectsByThread(threadId: string): MemoryObject[] {
@@ -359,20 +387,22 @@ export class MemoryObjectStore {
   }
 
   incrementReuse(memoryId: string): void {
-    const obj = this.objects.find(o => o.memory_id === memoryId);
-    if (obj) {
+    this.mutateObjects(objects => {
+      const obj = objects.find(o => o.memory_id === memoryId);
+      if (!obj) return;
       obj.reuse_count++;
       obj.last_reactivated = new Date().toISOString();
-      this.saveObjects();
-    }
+      return true;
+    });
   }
 
   markActedOn(memoryId: string): void {
-    const obj = this.objects.find(o => o.memory_id === memoryId);
-    if (obj) {
+    this.mutateObjects(objects => {
+      const obj = objects.find(o => o.memory_id === memoryId);
+      if (!obj) return;
       obj.last_acted_on = new Date().toISOString();
-      this.saveObjects();
-    }
+      return true;
+    });
   }
 
   createThread(partial: Omit<ProblemThread, 'thread_id' | 'opened_at' | 'version'>): ProblemThread {
