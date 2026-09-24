@@ -606,14 +606,30 @@ test('a warming admitted candidate defers and later commits without restarting o
   assert.equal(fences, 0);
 });
 
-test('masked owner-start readiness is accepted without another status wait', async t => {
+test('a failed Host status probe defers healthy admitted writers without fencing', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let online = false, fences = 0;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { online = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+    status: async () => ({ ok: false, status: 'recovery_required',
+      error: { code: 'update_recovery_required' }, update: { phase: 'writers_admitted' } }),
+    quiesce: async () => { fences += 1; online = false; return []; },
+  });
+  assert.equal(result.status, 'deferred');
+  assert.equal(result.reasons[0].code, 'candidate_starting');
+  assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
+  assert.equal(fences, 0);
+});
+
+test('initial Start readiness wins over a still-starting status label', async t => {
   const fixture = homeFixture(t, { desiredRunning: true });
   let online = false;
   const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
     staging: fixture.staging, admit: true }, { ...quiet,
     listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
-    start: async () => { online = true; return { ok: false, status: 'recovery_required',
-      error: { code: 'update_recovery_required' }, readiness: { ready: true } }; },
+    start: async () => { online = true; return { ok: true, status: 'starting', readiness: { ready: true } }; },
     status: async () => { throw new Error('status should not be needed'); },
   });
   assert.equal(result.status, 'committed');
