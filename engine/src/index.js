@@ -955,12 +955,16 @@ async function main() {
 
     // Phase 2: register build + work channels per osEngine config.
     const repoRoot = path.resolve(__dirname, '..', '..');
+    // A packaged home has no source checkout. Watching its bundled code tree
+    // keeps thousands of files open and makes normal home requests compete
+    // with filesystem events that cannot represent development changes.
+    const hasSourceCheckout = fs.existsSync(path.join(repoRoot, '.git'));
     const conversationsDir = path.resolve(runtimeRoot, '..', 'conversations');
     const buildCfg = config.osEngine?.channels?.build;
     const workCfg  = config.osEngine?.channels?.work;
     const registered = ['notify.cognition'];
 
-    if (buildCfg?.enabled) {
+    if (buildCfg?.enabled && hasSourceCheckout) {
       const { GitChannel }     = await import('./channels/build/git-channel.js');
       const { GhChannel }      = await import('./channels/build/gh-channel.js');
       const { FsWatchChannel } = await import('./channels/build/fswatch-channel.js');
@@ -1015,11 +1019,14 @@ async function main() {
     if (osCfg?.enabled) {
       const { Pm2Channel }            = await import('./channels/os/pm2-channel.js');
       const { CronChannel }           = await import('./channels/os/cron-channel.js');
-      const { FsWatchHome23Channel }  = await import('./channels/os/fswatch-home23-channel.js');
       channelBus.register(new Pm2Channel({ intervalMs: 30 * 1000 }));
       channelBus.register(new CronChannel({ intervalMs: 5 * 60 * 1000 }));
-      channelBus.register(new FsWatchHome23Channel({ repoPath: repoRoot }));
-      registered.push('os.pm2', 'os.cron', 'os.fswatch-home23');
+      registered.push('os.pm2', 'os.cron');
+      if (hasSourceCheckout) {
+        const { FsWatchHome23Channel } = await import('./channels/os/fswatch-home23-channel.js');
+        channelBus.register(new FsWatchHome23Channel({ repoPath: repoRoot }));
+        registered.push('os.fswatch-home23');
+      }
     }
 
     // Phase 8: neighbor channels — poll peer /__state/public.json endpoints.
