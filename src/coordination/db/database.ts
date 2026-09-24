@@ -43,7 +43,7 @@ export interface CoordinationDatabaseOpenReceipt {
   schemaVersion: number;
   schemaChecksum: string;
   migratedFrom: number;
-  startupCheck: IntegrityCheck;
+  startupCheck: IntegrityCheck | "schema_only";
 }
 
 export interface CoordinationPragmaEvidence {
@@ -123,10 +123,13 @@ export class CoordinationDatabase {
       database = new Database(options.path, { timeout: 0 });
       configureAndAcquireWriter(database);
       const initial = inspectCoordinationSchema(database);
-      const startupCheck: IntegrityCheck = initial.needsMigration
-        ? "integrity_check"
-        : "quick_check";
-      assertDatabaseIntegrity(database, startupCheck);
+      // A current-schema restart already verifies the migration history, schema
+      // catalog and contract metadata above. Scanning every data page here can
+      // block the single Core thread for minutes on an established home.
+      // Install and migration remain full integrity boundaries; verified
+      // backup/restore perform their own data checks.
+      const startupCheck = initial.needsMigration ? "integrity_check" : "schema_only";
+      if (initial.needsMigration) assertDatabaseIntegrity(database, "integrity_check");
       if (initial.needsMigration) {
         migrateCoordinationSchema(
           database,
@@ -136,7 +139,7 @@ export class CoordinationDatabase {
         );
         assertDatabaseIntegrity(database, "integrity_check");
       }
-      assertForeignKeys(database);
+      if (initial.needsMigration) assertForeignKeys(database);
       this.database = database;
       this.openReceipt = Object.freeze({
         schemaVersion: COORDINATION_SCHEMA_VERSION,

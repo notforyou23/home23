@@ -228,7 +228,7 @@ test("schema v2 migrates atomically to the checksummed M09 and M10 final catalog
 
   const reopened = openCoordinationDatabase({ path });
   assert.equal(reopened.openReceipt.migratedFrom, 16);
-  assert.equal(reopened.openReceipt.startupCheck, "quick_check");
+  assert.equal(reopened.openReceipt.startupCheck, "schema_only");
   reopened.close();
 });
 

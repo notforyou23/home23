@@ -178,7 +178,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   first.close();
 
   const reopened = openCoordinationDatabase({ path, applicationVersion: "m04-test" });
-  assert.equal(reopened.openReceipt.startupCheck, "quick_check");
+  assert.equal(reopened.openReceipt.startupCheck, "schema_only");
   assert.equal(reopened.openReceipt.migratedFrom, COORDINATION_SCHEMA_VERSION);
   assert.deepEqual(
     reopened.readAll<{ version: number; checksum: string }>(

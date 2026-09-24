@@ -461,7 +461,7 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
 
   const reopened = openCoordinationDatabase({ path });
   assert.equal(reopened.openReceipt.migratedFrom, 20);
-  assert.equal(reopened.openReceipt.startupCheck, "quick_check");
+  assert.equal(reopened.openReceipt.startupCheck, "schema_only");
   assert.deepEqual(catalogNames(reopened, "table"), EXPECTED_TABLES);
   reopened.close();
 });
