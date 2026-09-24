@@ -53,10 +53,12 @@ export function createBotInvocationService(options: {
   const db = options.database;
   const pending = new Map<string, Promise<void>>();
   let reconciling = false;
-  // A restart walks admission history once. Keep live admissions in memory so
-  // each timer tick revisits their changing Work state without rereading the
-  // full historical event journal.
+  // On restart, recover admissions through the aggregate index in small
+  // pages. New journal events begin at the captured high-water mark.
   let reconcileAfterSequence = 0;
+  let capturedInitialHighWater = false;
+  let bootstrapAfterId = '';
+  let bootstrapComplete = false;
   const activeInvocations = new Map<string, Invocation>();
   let activeRevisitOffset = 0;
   const RECONCILE_BATCH_SIZE = 32;
@@ -202,10 +204,33 @@ export function createBotInvocationService(options: {
       reconciling = true;
       try {
       const journalEnd = db.readOne<{ sequence: number }>('SELECT coalesce(max(sequence), 0) AS sequence FROM events')!.sequence;
-      if (journalEnd < reconcileAfterSequence) {
-        reconcileAfterSequence = 0;
+      if (!capturedInitialHighWater || journalEnd < reconcileAfterSequence) {
+        reconcileAfterSequence = journalEnd;
+        capturedInitialHighWater = true;
+        bootstrapAfterId = '';
+        bootstrapComplete = false;
         activeInvocations.clear();
         activeRevisitOffset = 0;
+      }
+      if (!bootstrapComplete) {
+        const admissions = db.readAll<{ id: string; payload: string; active: number }>(`WITH admissions AS MATERIALIZED (
+          SELECT e.aggregate_id AS id,e.payload_json AS payload FROM events e
+          WHERE e.aggregate_kind='bot_invocation' AND e.aggregate_id>? AND e.aggregate_version=1
+          ORDER BY e.aggregate_id LIMIT ?
+        ) SELECT a.id,a.payload,
+          CASE WHEN w.state IN ('running','cancelling') OR (w.state IN ('succeeded','failed','cancelled') AND EXISTS
+            (SELECT 1 FROM works child WHERE child.origin_message_id=a.id AND child.state NOT IN ('succeeded','failed','cancelled')))
+            THEN 1 ELSE 0 END AS active
+        FROM admissions a LEFT JOIN works w ON w.id=json_extract(a.payload,'$.origin.workId')
+        ORDER BY a.id`, bootstrapAfterId, RECONCILE_BATCH_SIZE);
+        for (const row of admissions) {
+          if (row.active) {
+            const invocation = JSON.parse(row.payload) as Invocation;
+            activeInvocations.set(invocation.messageId, invocation);
+          }
+        }
+        if (admissions.length) bootstrapAfterId = admissions.at(-1)!.id;
+        bootstrapComplete = admissions.length < RECONCILE_BATCH_SIZE;
       }
       if (reconcileAfterSequence < journalEnd) {
         const windowEnd = Math.min(reconcileAfterSequence + RECONCILE_SEQUENCE_WINDOW, journalEnd);

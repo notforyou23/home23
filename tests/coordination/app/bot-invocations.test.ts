@@ -126,22 +126,22 @@ test('busy helper admission retains one durable request and retries when availab
 });
 
 test('reconciliation pages history once and revisits active invocations from memory', async () => {
-  const admissions = Array.from({ length: 70 }, (_, index) => ({ sequence: index + 1,
+  const admissions = Array.from({ length: 70 }, (_, index) => ({ id: `message-${String(index).padStart(3, '0')}`,
     active: 1,
     payload: JSON.stringify({ origin: { workId: `work-${index}`, channelId: CHANNEL_ID },
       invocationId: `call-${index}`, botId: BOT_ID, prompt: 'Help', channelId: CHANNEL_ID,
       messageId: `message-${index}` }) }));
-  const pages: Array<{ after: number; through: number; limit: number }> = [];
+  const pages: Array<{ after: string; limit: number }> = [];
   let activeStatusReads = 0;
   const options = {
     database: {
-      readAll(sql: string, after?: number, through?: number, limit?: number) {
-        if (!sql.includes('WITH candidates AS MATERIALIZED')) {
+      readAll(sql: string, after?: string, limit?: number) {
+        if (!sql.includes('WITH admissions AS MATERIALIZED')) {
           if (sql.includes('FROM works w')) activeStatusReads++;
           return [];
         }
-        pages.push({ after: after!, through: through!, limit: limit! });
-        return admissions.filter(row => row.sequence > after! && row.sequence <= through!).slice(0, limit);
+        pages.push({ after: after!, limit: limit! });
+        return admissions.filter(row => row.id > after!).slice(0, limit);
       },
       readOne(sql: string) { return sql.includes('max(sequence)') ? { sequence: 70 } : undefined; },
     },
@@ -155,17 +155,18 @@ test('reconciliation pages history once and revisits active invocations from mem
   const beforeIdleRevisit = activeStatusReads;
   await service.reconcile();
   assert.deepEqual(pages, [
-    { after: 0, through: 70, limit: 32 }, { after: 32, through: 70, limit: 32 },
-    { after: 64, through: 70, limit: 32 },
+    { after: '', limit: 32 }, { after: 'message-031', limit: 32 },
+    { after: 'message-063', limit: 32 },
   ]);
   assert.ok(activeStatusReads > beforeIdleRevisit, 'still-active invocations are revisited without journal replay');
 });
 
 test('reconciliation advances through sparse history in bounded sequence windows', async () => {
   const queries: Array<[number, number, number]> = [];
+  let journalEnd = 0;
   const service = createBotInvocationService({
     database: {
-      readOne(sql: string) { return sql.includes('max(sequence)') ? { sequence: 9000 } : undefined; },
+      readOne(sql: string) { return sql.includes('max(sequence)') ? { sequence: journalEnd } : undefined; },
       readAll(sql: string, after: number, through: number, limit: number) {
         if (!sql.includes('WITH candidates AS MATERIALIZED')) return [];
         queries.push([after, through, limit]); return [];
@@ -173,16 +174,49 @@ test('reconciliation advances through sparse history in bounded sequence windows
     }, work: {}, leases: {}, channels: {}, submit: {}, authorize: () => undefined,
     currentCredential: () => true, context: () => ({}), stopChild: async () => undefined,
   } as any);
+  await service.reconcile();
+  journalEnd = 9000;
   for (let index = 0; index < 4; index++) await service.reconcile();
   assert.deepEqual(queries, [[0, 4096, 32], [4096, 8192, 32], [8192, 9000, 32]]);
+});
+
+test('an admission appended after bootstrap is observed from the captured journal high water', async () => {
+  let journalEnd = 0, liveReads = 0, statusReads = 0;
+  const service = createBotInvocationService({
+    database: {
+      readOne(sql: string) { return sql.includes('max(sequence)') ? { sequence: journalEnd } : undefined; },
+      readAll(sql: string, after: number) {
+        if (sql.includes('WITH admissions AS MATERIALIZED')) return [];
+        if (sql.includes('WITH candidates AS MATERIALIZED')) {
+          liveReads++;
+          return after === 0 ? [{ sequence: 1, active: 1, payload: JSON.stringify({
+            origin: { workId: 'work-new', channelId: CHANNEL_ID }, invocationId: 'new-call',
+            botId: BOT_ID, prompt: 'Help', channelId: CHANNEL_ID, messageId: 'message-new',
+          }) }] : [];
+        }
+        if (sql.includes('FROM works w')) statusReads++;
+        return [];
+      },
+    }, work: { get: () => ({ state: 'running' }) }, leases: {}, channels: {},
+    submit: { submitMessage: async () => ({}) }, authorize: () => undefined,
+    currentCredential: () => true, context: () => ({}), stopChild: async () => undefined,
+  } as any);
+  await service.reconcile();
+  journalEnd = 1;
+  await service.reconcile();
+  const beforeIdle = statusReads;
+  await service.reconcile();
+  assert.equal(liveReads, 1, 'new journal activity is read once');
+  assert.ok(statusReads > beforeIdle, 'the new active admission remains in the revisit set');
 });
 
 test('irrelevant activity advances the raw page without requiring an active invocation', async () => {
   const irrelevant = Array.from({ length: 100 }, (_, index) => ({ sequence: index + 1, active: 0, payload: '{}' }));
   const pages: Array<{ after: number; returned: number }> = [];
+  let journalEnd = 0;
   const service = createBotInvocationService({
     database: {
-      readOne(sql: string) { return sql.includes('max(sequence)') ? { sequence: 100 } : undefined; },
+      readOne(sql: string) { return sql.includes('max(sequence)') ? { sequence: journalEnd } : undefined; },
       readAll(sql: string, after: number, through: number, limit: number) {
         if (!sql.includes('WITH candidates AS MATERIALIZED')) return [];
         const page = irrelevant.filter(row => row.sequence > after && row.sequence <= through).slice(0, limit);
@@ -193,6 +227,8 @@ test('irrelevant activity advances the raw page without requiring an active invo
     leases: {}, channels: {}, submit: {}, authorize: () => undefined,
     currentCredential: () => true, context: () => ({}), stopChild: async () => undefined,
   } as any);
+  await service.reconcile();
+  journalEnd = 100;
   for (let index = 0; index < 5; index++) await service.reconcile();
   assert.deepEqual(pages, [
     { after: 0, returned: 32 }, { after: 32, returned: 32 },
@@ -202,18 +238,27 @@ test('irrelevant activity advances the raw page without requiring an active invo
 
 test('reconciliation searches the activity journal by type and bounded sequence', async t => {
   const database = M11TestDatabase.temporary(); t.after(() => database.close());
-  let query = '';
+  let query = '', bootstrapQuery = '';
   const service = createBotInvocationService({
     database: {
       readOne: (sql: string) => database.readOne(sql),
       readAll: (sql: string, ...parameters: any[]) => {
         if (sql.includes('WITH candidates AS MATERIALIZED')) query = sql;
+        if (sql.includes('WITH admissions AS MATERIALIZED')) bootstrapQuery = sql;
         return database.readAll(sql, ...parameters);
       },
     }, work: {}, leases: {}, channels: {}, submit: {}, authorize: () => undefined,
     currentCredential: () => true, context: () => ({}), stopChild: async () => undefined,
   } as any);
   await service.reconcile();
+  database.raw.prepare(`INSERT INTO events(id,schema_version,type,durability,aggregate_kind,aggregate_id,
+    aggregate_version,request_id,correlation_id,payload_json,payload_digest,created_at)
+    VALUES(?,1,'activity.updated','durable','test','query-plan',1,?,?,?,?,?)`).run(
+    'evt_bot_reconcile_query_plan', fixtureId('request', 10), fixtureId('correlation', 10), '{}', 'a'.repeat(64), AT);
+  await service.reconcile();
+  assert.match(bootstrapQuery, /aggregate_kind='bot_invocation'/);
+  const bootstrapPlan = database.raw.prepare(`EXPLAIN QUERY PLAN ${bootstrapQuery}`).all('', 32) as Array<{ detail: string }>;
+  assert.ok(bootstrapPlan.some(row => /sqlite_autoindex_events_2/.test(row.detail)), JSON.stringify(bootstrapPlan));
   assert.match(query, /e\.type = 'activity\.updated'/);
   assert.match(query, /WITH candidates AS MATERIALIZED/);
   const plan = database.raw.prepare(`EXPLAIN QUERY PLAN ${query}`).all(0, 4096, 32) as Array<{ detail: string }>;
