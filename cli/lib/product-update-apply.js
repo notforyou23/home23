@@ -196,44 +196,42 @@ async function sameCanonical(home, journal) {
   const expected = journal.canonical || {};
   const checkpointRoot = join(updateDirectoryFor(home), 'checkpoint', 'state');
   for (const [relative, digest] of Object.entries(expected)) {
-    if (relative.includes('/brain/') || relative.includes('/logs/') || relative.includes('/cron-runs/')) continue;
-    if (relative.endsWith('/checkpoints/CHECKPOINT_INDEX.json')) continue;
+    // Pre-admission sameIdentity checked every saved state file while writers
+    // were stopped. Once they run, conversations, cron ownership, Work,
+    // settings, credentials, and workspace files may legitimately change.
+    // Keep only immutable Seed birth identity and the receipted ledger prefix.
+    if (!relative.includes('/substrate/') ||
+      !(relative.endsWith('/birth-receipt.json') || relative.endsWith('.jsonl'))) continue;
     const currentPath = join(home, relative);
     if (!exists(currentPath) || lstatSync(currentPath).isSymbolicLink()) return false;
-    if (relative.includes('/substrate/')) {
-      if (relative.endsWith('/birth-receipt.json')) {
-        if (hashFile(currentPath) !== digest) return false;
-      } else if (relative.endsWith('.jsonl')) {
-        let prefix = journal.substratePrefixes?.[relative];
-        if (journal.stateRetention === 'in_place') {
-          if (!prefix || prefix.sha256 !== digest || !Number.isSafeInteger(prefix.bytes) || prefix.bytes < 0) return false;
-        } else {
-          // Older checkpointed journals recorded the digest but kept the
-          // prefix length only in their copied file. Verify that old copy.
-          const previousPath = join(checkpointRoot, relative);
-          if (!exists(previousPath)) return false;
-          try {
-            safeCheckpointDirectory(checkpointRoot, dirname(relative));
-            prefix = await checkpointFingerprint(previousPath);
-          } catch { return false; }
-          if (prefix.sha256 !== digest) return false;
-        }
-        try {
-          if ((await checkpointFingerprint(currentPath, { source: true, bytes: prefix.bytes })).sha256 !== digest) return false;
-        } catch { return false; }
-      }
+    if (relative.endsWith('/birth-receipt.json')) {
+      if (hashFile(currentPath) !== digest) return false;
       continue;
     }
-    if (hashFile(currentPath) !== digest) return false;
+    let prefix = journal.substratePrefixes?.[relative];
+    if (journal.stateRetention === 'in_place') {
+      if (!prefix || prefix.sha256 !== digest || !Number.isSafeInteger(prefix.bytes) || prefix.bytes < 0) return false;
+    } else {
+      // Older checkpointed journals recorded the digest but kept the
+      // prefix length only in their copied file. Verify that old copy.
+      const previousPath = join(checkpointRoot, relative);
+      if (!exists(previousPath)) return false;
+      try {
+        safeCheckpointDirectory(checkpointRoot, dirname(relative));
+        prefix = await checkpointFingerprint(previousPath);
+      } catch { return false; }
+      if (prefix.sha256 !== digest) return false;
+    }
+    try {
+      if ((await checkpointFingerprint(currentPath, { source: true, bytes: prefix.bytes })).sha256 !== digest) return false;
+    } catch { return false; }
   }
   const host = hostIdentity(home), saved = journal.hostIdentity;
   if (!host || !saved || host.homeRoot !== saved.homeRoot || host.encoderRequired !== saved.encoderRequired) return false;
   if (JSON.stringify(host.profile) !== JSON.stringify(saved.profile)) return false;
   if (host.desiredRunning !== (journal.desiredRunning === true)) return false;
-  if (journal.checkpointDatabase?.present) {
-    const database = await inspectCoordinationDatabase(join(home, DATABASE));
-    if (!database.compatible || database.version !== journal.checkpointDatabase.version) return false;
-  }
+  // The admitted Core owns database integrity and readiness. A second external
+  // quick_check can block its live SQLite connection during cold startup.
   return true;
 }
 async function defaultListProcesses(home) {
