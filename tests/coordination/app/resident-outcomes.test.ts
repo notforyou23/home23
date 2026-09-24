@@ -153,7 +153,11 @@ test('failed historical Bot outcomes cool down while a newer outcome reaches rev
   },authority:{current:()=>({capability:'messages',epoch:3,mode:'canonical',writer:'home23-coordination',effectiveAtEventSequence:41,rollbackEpoch:1}) as any},
   beginWork:()=>()=>{},recoveryIdentity:()=>({requestId:fixtureId('request',901),correlationId:fixtureId('correlation',901)}),
  } as any);
- for(let n=0;n<5;n++)await service.processResidentOutcomes();
+ for(let n=0;n<26;n++){
+  const attemptsBeforeTick=oldAttempts+newAttempts;
+  await service.processResidentOutcomes();
+  assert.ok(oldAttempts+newAttempts-attemptsBeforeTick<=4,'one timer turn must bound synchronous recovery');
+ }
  assert.equal(oldAttempts,100);assert.equal(newAttempts,1);
  await service.processResidentOutcomes();
  assert.equal(oldAttempts,100,'cooled old outcomes must not retry on immediate wrap');

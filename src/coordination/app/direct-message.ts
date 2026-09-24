@@ -255,6 +255,10 @@ export function createDirectMessageSubmissionService(options: {
   let outcomeTickRunning = false;
   let outcomeCursor: ResidentOutcomeCursor | null = null;
   const outcomeRetryAfter = new Map<string, number>();
+  // Context recovery and target resolution may synchronously read the home.
+  // Keep each two-second timer turn small while the cursor eventually visits
+  // every pending row, including rows behind an ineligible historical Bot.
+  const outcomePageSize = 4;
   const recordMessage = createCanonicalMessageRecorder(
     options.communications,
     options.notifications,
@@ -529,10 +533,10 @@ export function createDirectMessageSubmissionService(options: {
         // One small page per tick bounds synchronous recovery work. An empty
         // suffix wraps immediately, so a single admitted review can settle
         // on the next tick without an artificial extra interval.
-        let page = store.pendingPage(outcomeCursor, 25);
+        let page = store.pendingPage(outcomeCursor, outcomePageSize);
         if (page.length === 0 && outcomeCursor !== null) {
           outcomeCursor = null;
-          page = store.pendingPage(null, 25);
+          page = store.pendingPage(null, outcomePageSize);
         }
         for (const row of page) {
           outcomeCursor = { createdAt: row.createdAt, key: row.key };
