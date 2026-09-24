@@ -73,6 +73,18 @@ test('explicit configuration is rendered but an unsafe bind remains startup-inva
   assert.equal(dashboard.env.HOME23_COORDINATION_ORIGIN, 'http://127.0.0.1:7446');
 });
 
+test('a home pauses resident outcome replay from its own configuration; replay runs otherwise', (t) => {
+  const coreEnv = (home) => {
+    const root = generate(home, { coordination: { capabilityToken: 'd'.repeat(64) } });
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    return require(join(root, 'ecosystem.config.cjs')).apps
+      .find((candidate) => candidate.name === 'home23-coordination').env;
+  };
+  assert.equal(coreEnv({ coordination: { process: { enabled: true } } }).HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY, 'true');
+  assert.equal(coreEnv({ coordination: { process: { enabled: true }, resident_outcomes: { replay: true } } }).HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY, 'true');
+  assert.equal(coreEnv({ coordination: { process: { enabled: true }, resident_outcomes: { replay: false } } }).HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY, 'false');
+});
+
 test('Jerry and Forrest resident identities and credentials remain distinct and feature-off', (t) => {
   const root = generate({}, { coordination: { capabilityToken: 'd'.repeat(64), residents: { jerry: { keyVersion: 2, key: 'a'.repeat(64) }, forrest: { keyVersion: 3, key: 'b'.repeat(64) } } } });
   t.after(() => rmSync(root, { recursive: true, force: true }));

@@ -1595,7 +1595,11 @@ export function createCoordinationProcess(
         try { reconcileScheduledTurns?.(); } catch (error) { console.error('[scheduled-turns]', error); }
         try { reconcileJoinedStops(); } catch(error) { console.error('[joined-stop]',error); }
         void reconcileBotInvocations?.().catch(error => console.error('[bot-invocations]', error));
-        void processResidentOutcomes?.().catch(error => console.error('[resident-outcomes]', error));
+        // A home may pause replay while a follow-through repair is pending; the
+        // durable outcome rows remain and replay resumes when the pause lifts.
+        if (config.residentOutcomes?.replay !== false) {
+          void processResidentOutcomes?.().catch(error => console.error('[resident-outcomes]', error));
+        }
       }, 2_000);
       outcomeTimer.unref?.();
       if (residentInitializers.length > 0) {

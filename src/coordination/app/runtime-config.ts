@@ -38,6 +38,11 @@ export interface CoordinationRuntimeConfig {
     /** Independent read-surface kill switch; authority remains mandatory. */
     enabled: boolean;
   }>;
+  residentOutcomes?: Readonly<{
+    /** Pause for the 2-second outcome follow-through replay. Durable rows are
+     * still written; only their replay waits. Absent means replay runs. */
+    replay: boolean;
+  }>;
   attachments?: Readonly<{
     /** Independent kill switch; authority remains a separate mandatory gate. */
     enabled: boolean;
@@ -188,6 +193,12 @@ export function loadCoordinationRuntimeConfig(
     "HOME23_COORDINATION_ACTIVITY_ENABLED",
   );
   const activityEnabled = enabled && requestedActivityEnabled;
+  const residentOutcomeReplay = environment.HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY === undefined
+    ? true
+    : exactBoolean(
+      environment.HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY,
+      "HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY",
+    );
   const requestedPushEnabled = exactBoolean(
     environment.HOME23_COORDINATION_PUSH_ENABLED,
     "HOME23_COORDINATION_PUSH_ENABLED",
@@ -270,6 +281,7 @@ export function loadCoordinationRuntimeConfig(
     socketPath,
     capabilityToken,
     activity: Object.freeze({ enabled: activityEnabled }),
+    residentOutcomes: Object.freeze({ replay: residentOutcomeReplay }),
     attachments: Object.freeze({
       enabled: attachmentsEnabled,
       rootDirectory: attachmentRoot,

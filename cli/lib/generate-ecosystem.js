@@ -288,6 +288,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`        HOME23_COORDINATION_BOT_LIFECYCLE_ENABLED: String(coordinationFlags['coordination.bot_lifecycle.enabled'] === true),`);
   lines.push(`        HOME23_COORDINATION_COMPACTION_ENABLED: String(coordinationFlags['coordination.compaction.enabled'] === true),`);
   lines.push(`        HOME23_COORDINATION_ACTIVITY_ENABLED: String(coordinationConfig.activity?.enabled === true),`);
+  lines.push(`        HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY: String(coordinationConfig.resident_outcomes?.replay !== false),`);
   lines.push(`        HOME23_COORDINATION_ATTACHMENTS_ENABLED: String(coordinationConfig.attachments?.enabled === true),`);
   lines.push(`        HOME23_COORDINATION_PUSH_ENABLED: String(coordinationPushEnabled),`);
   lines.push(`        HOME23_COORDINATION_APNS_TEAM_ID: String(coordinationApns.team_id || ''),`);

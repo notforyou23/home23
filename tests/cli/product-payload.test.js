@@ -17,6 +17,16 @@ test('mixed operator roots retain state without absorbing maintained software', 
   }
 });
 
+test('a packaged skill keeps its runtime data beside its code as preserved state', () => {
+  for (const path of ['app/workspace/skills/x-research/data', 'app/workspace/skills/x-research/data/cache/37cd32e1dc4e.json']) {
+    assert.equal(isProductStatePath(path), true, path);
+  }
+  for (const path of ['app/workspace/skills/x-research/index.js', 'app/workspace/skills/x-research/SKILL.md',
+    'app/workspace/skills/x-research/references/api.md', 'app/workspace/skills/data', 'app/workspace/skills/x-research/database.js']) {
+    assert.equal(isProductStatePath(path), false, path);
+  }
+});
+
 function fixture(t) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-product-')));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));

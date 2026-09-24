@@ -38,7 +38,23 @@ test("disabled defaults retain loopback-only paths without requiring runtime sta
   assert.match(config.socketPath, /instances\/.house\/coordination\/coord\.sock$/);
   assert.equal(config.attachments?.enabled, false);
   assert.equal(config.activity?.enabled, false);
+  assert.equal(config.residentOutcomes?.replay, true);
   assert.match(config.attachments?.rootDirectory ?? "", /instances\/.house\/coordination\/attachments$/);
+});
+
+test("resident outcome replay is on unless a home pauses it exactly", (t) => {
+  const input = fixture(true);
+  t.after(() => rmSync(input.root, { recursive: true, force: true }));
+  assert.equal(loadCoordinationRuntimeConfig(input.environment).residentOutcomes?.replay, true);
+  assert.equal(loadCoordinationRuntimeConfig({
+    ...input.environment, HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY: "true",
+  }).residentOutcomes?.replay, true);
+  assert.equal(loadCoordinationRuntimeConfig({
+    ...input.environment, HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY: "false",
+  }).residentOutcomes?.replay, false);
+  assert.throws(() => loadCoordinationRuntimeConfig({
+    ...input.environment, HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY: "paused",
+  }), /must be exactly true or false/);
 });
 
 test("enabled startup fails closed for missing secrets and runtime parents", (t) => {

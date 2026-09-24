@@ -142,6 +142,9 @@ export const PRODUCT_STATE_PATHS = Object.freeze([
 // Keep the software namespace in the package and archive source variants under
 // the reviewed preservation root during adoption.
 export function isProductStatePath(relative) {
+  // A packaged skill writes its runtime cache beside its code. That data is
+  // the home's, not the package's, so updates preserve it and Start allows it.
+  if (/^app\/workspace\/skills\/[^/]+\/data(\/|$)/.test(relative)) return true;
   if (relative === 'app/workspace/skills' || relative.startsWith('app/workspace/skills/')
     || ['app/configs/action-allowlist.yaml', 'app/configs/base-engine.yaml', 'app/agency/charter.yaml',
       'app/engine/config/image.json'].includes(relative)) return false;
