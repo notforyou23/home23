@@ -3,6 +3,26 @@ import { join } from 'node:path';
 import type { M11Database } from '../work/types.js';
 import { createResidentAssignments } from './resident-assignments.js';
 
+const PROJECTION_EVENT_KINDS = new Set([
+  'work', 'message', 'resident_assignment', 'resident_outcome', 'work_thread_presentation',
+]);
+
+/** Read only the event primary key and kind. A quiet house avoids rereading
+ * historical Work and message bodies; a busy journal yields between pages. */
+export async function residentWorkProjectionChangesSince(database: M11Database, after: number) {
+  let cursor = after;
+  while (true) {
+    const rows = database.readAll<{ sequence: number; kind: string }>(
+      'SELECT sequence,aggregate_kind AS kind FROM events NOT INDEXED WHERE sequence>? ORDER BY sequence LIMIT 128', cursor);
+    for (const row of rows) {
+      cursor = row.sequence;
+      if (PROJECTION_EVENT_KINDS.has(row.kind)) return { changed: true, cursor };
+    }
+    if (rows.length < 128) return { changed: false, cursor };
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+}
+
 /** A derived observation for the existing private agency, never a second Work
  * writer. Only real changes rewrite the snapshot; a clock is not progress. */
 export function projectResidentWork(database: M11Database, directory: string, residents: readonly string[]) {
