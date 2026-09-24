@@ -46,6 +46,9 @@ export function createResidentOutcomeStore(database: M11Database) {
   let observedCursor = database.readOne<{ cursor: number }>('SELECT event_cursor AS cursor FROM resident_outcome_policy WHERE id = 1')!.cursor;
   let savedCursor = observedCursor;
   let initialTerminalDiscovery = true;
+  let recoveryMaxRowid: number | null = null;
+  let residentRecoveryComplete = false;
+  let scheduledRecoveryComplete = false;
   let lastRevisitSweepAt = 0;
   let nextAssessmentRetryAt = Number.POSITIVE_INFINITY;
   const columns = 'outcome_key AS key, source_work_id AS sourceWorkId, evidence_json AS evidence, review_work_id AS reviewWorkId, prepared_json AS prepared';
@@ -84,7 +87,7 @@ export function createResidentOutcomeStore(database: M11Database) {
       }
     },
     /** Existing terminal Work is the durable trigger, even if the producer crashed before delivery. */
-    discover() {
+    discover(options?: { startup?: boolean }) {
       // The initial scan recovers terminal Work after a crash. Thereafter only
       // Work changes, delivered result messages, or scheduled admissions can
       // produce a new terminal outcome. Reuse the durable event cursor rather
@@ -109,13 +112,14 @@ export function createResidentOutcomeStore(database: M11Database) {
         }
       }
       const now = Date.now();
-      const revisitDue = initialTerminalDiscovery || assignments.revisitBootstrapIncomplete() ||
+      const revisitTrigger = assignments.revisitBootstrapIncomplete() ||
         events.some(row => row.kind === 'resident_assignment') ||
         (changedWorkIds.size > 0 && assignments.hasBlockedRevisits()) ||
         now >= nextAssessmentRetryAt ||
         (now - lastRevisitSweepAt >= 30_000 && assignments.timedRevisitDue(now));
+      const revisitDue = revisitTrigger || assignments.revisitSweepPending();
       if (revisitDue) { lastRevisitSweepAt = now; nextAssessmentRetryAt = Number.POSITIVE_INFINITY; }
-      for (const value of revisitDue ? assignments.revisits() : []) {
+      for (const value of revisitDue ? assignments.revisits(revisitTrigger) : []) {
         const key = `assignment-revisit:${value.workId}:${value.eventSequence}`;
         enqueue(key, value.workId, { reason: 'A recorded dependency finished or the resident-requested revisit time arrived.', assignment: value });
         const keys = [key, ...REVISIT_ASSESSMENT_BACKOFF_MS.map((_, index) => `${key}:assessment-retry:${index + 1}`)];
@@ -140,41 +144,53 @@ export function createResidentOutcomeStore(database: M11Database) {
         });
       }
       if (initialTerminalDiscovery) {
-        const rows = database.readAll<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`
+        // Freeze the Work set, drain one bounded page per call, and leave new
+        // Work to the event cursor. The first page runs before HTTP binds.
+        recoveryMaxRowid ??= database.readOne<{ id: number }>('SELECT coalesce(max(rowid),0) AS id FROM works')!.id;
+        const recoveryPageSize = options?.startup ? 16 : 4;
+        if (!residentRecoveryComplete) {
+          const rows = database.readAll<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`
           SELECT w.id, w.state, w.terminal_reason AS reason, p.assignment_json AS assignment,
             m.body_text AS text FROM works w JOIN work_planned_invocations p ON p.work_id = w.id
             LEFT JOIN messages m ON m.id = 'msg_' || substr(w.id, 5)
-          WHERE w.kind = 'resident_work_thread' AND w.state IN ('succeeded','failed','cancelled')
+          WHERE w.rowid <= ? AND w.kind = 'resident_work_thread' AND w.state IN ('succeeded','failed','cancelled')
             AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id = 1)
             AND (w.state <> 'succeeded' OR m.id IS NOT NULL)
             AND NOT EXISTS (SELECT 1 FROM resident_outcomes o WHERE o.outcome_key = 'work:' || w.id)
-          ORDER BY w.terminal_at LIMIT 100`);
-        for (const row of rows) {
-          const details = database.readAll<{ payload: string }>(`SELECT payload_json AS payload FROM events
-            WHERE sequence >= (SELECT min(sequence) FROM events WHERE aggregate_id = ?)
-            AND type = 'communication.recorded' AND json_extract(payload_json, '$.communication.workId') = ?
-            AND json_extract(payload_json, '$.communication.terminal') = 1 ORDER BY sequence DESC LIMIT 3`, row.id, row.id);
-          enqueue(`work:${row.id}`, row.id, { status: row.state, reason: row.reason,
-            assignment: JSON.parse(row.assignment), result: row.text,
-            helperDeliveries: botDeliveryEvidence(database, row.id),
-            terminalEvidence: details.map(x => JSON.parse(x.payload)) });
+          ORDER BY w.terminal_at, w.id LIMIT ?`, recoveryMaxRowid, recoveryPageSize);
+          for (const row of rows) {
+            const details = database.readAll<{ payload: string }>(`SELECT payload_json AS payload FROM events
+              WHERE sequence >= (SELECT min(sequence) FROM events WHERE aggregate_id = ?)
+              AND type = 'communication.recorded' AND json_extract(payload_json, '$.communication.workId') = ?
+              AND json_extract(payload_json, '$.communication.terminal') = 1 ORDER BY sequence DESC LIMIT 3`, row.id, row.id);
+            enqueue(`work:${row.id}`, row.id, { status: row.state, reason: row.reason,
+              assignment: JSON.parse(row.assignment), result: row.text,
+              helperDeliveries: botDeliveryEvidence(database, row.id),
+              terminalEvidence: details.map(x => JSON.parse(x.payload)) });
+          }
+          residentRecoveryComplete = rows.length < recoveryPageSize;
         }
         // Scheduled channel runs also require Jerry's accountable follow-through.
-        const scheduled = database.readAll<{id:string;state:string;reason:string|null;assignment:string;text:string|null}>(`
+        if (!scheduledRecoveryComplete) {
+          const scheduled = database.readAll<{id:string;state:string;reason:string|null;assignment:string;text:string|null}>(`
           SELECT w.id,w.state,w.terminal_reason AS reason,e.payload_json AS assignment,m.body_text AS text
           FROM events e JOIN works w ON w.origin_message_id=json_extract(e.payload_json,'$.messageId')
           LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
-          WHERE e.aggregate_kind='scheduled_channel_run' AND e.aggregate_version=1 AND w.kind='channel.bot_turn'
+          WHERE w.rowid <= ? AND e.aggregate_kind='scheduled_channel_run' AND e.aggregate_version=1 AND w.kind='channel.bot_turn'
             AND w.state IN ('succeeded','failed','cancelled')
             AND (w.state<>'succeeded' OR m.id IS NOT NULL)
             AND w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1)
-            AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.outcome_key='scheduled:'||w.id) LIMIT 100`);
-        for (const row of scheduled) enqueue(`scheduled:${row.id}`, row.id, {
-          status: row.state, reason: row.reason, assignment: JSON.parse(row.assignment), result: row.text,
-          terminalEvidence: workTerminalEvidence(database, row.id),
-        });
-        initialTerminalDiscovery = false;
-      } else for (const id of changedWorkIds) {
+            AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.outcome_key='scheduled:'||w.id)
+          ORDER BY w.terminal_at,w.id LIMIT ?`, recoveryMaxRowid, recoveryPageSize);
+          for (const row of scheduled) enqueue(`scheduled:${row.id}`, row.id, {
+            status: row.state, reason: row.reason, assignment: JSON.parse(row.assignment), result: row.text,
+            terminalEvidence: workTerminalEvidence(database, row.id),
+          });
+          scheduledRecoveryComplete = scheduled.length < recoveryPageSize;
+        }
+        initialTerminalDiscovery = !(residentRecoveryComplete && scheduledRecoveryComplete);
+      }
+      for (const id of changedWorkIds) {
         const candidate = database.readOne<{ kind: string; state: string }>('SELECT kind,state FROM works WHERE id=?', id);
         if (!candidate || !['succeeded','failed','cancelled'].includes(candidate.state)) continue;
         const row = candidate.kind === 'resident_work_thread' ? database.readOne<{ id: string; state: string; reason: string | null; assignment: string; text: string | null }>(`

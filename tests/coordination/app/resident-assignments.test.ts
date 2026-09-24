@@ -359,6 +359,28 @@ test('revisit polling advances through new conclusions without rescanning histor
   assert.equal(createResidentAssignments(f.database).revisits().length, 0, 'a fresh projection recovers the latest conclusion');
 });
 
+test('one terminal dependency wakes more than thirty-two blocked assignments across timer turns',t=>{
+ const f=fixture(t);
+ const dependency=f.admit('shared-dependency');
+ const blocked:string[]=[];
+ for(let n=0;n<40;n++){
+  const id=f.admit(`blocked-${n}`);
+  f.cancel(id);
+  f.assignments.report(f.context,f.origin,{work_id:id,state:'blocked',summary:'Waiting for shared dependency',
+   wait_for:[dependency]},`blocked-conclusion-${n}`);
+  blocked.push(id);
+ }
+ const store=createResidentOutcomeStore(f.database);
+ store.discover({startup:true});
+ for(let n=0;n<40;n++)store.discover();
+ f.cancel(dependency);
+ for(let n=0;n<40;n++)store.discover();
+ const keys=f.database.readAll<{key:string}>("SELECT outcome_key AS key FROM resident_outcomes WHERE outcome_key LIKE 'assignment-revisit:%'");
+ assert.equal(keys.length,40,'a single dependency event must reach every blocked conclusion');
+ assert.equal(new Set(keys.map(row=>row.key)).size,40);
+ assert.equal(blocked.length,40);
+});
+
 test('revisit recovery pages historical assignments through the aggregate index', t => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse(AT) });
   const f = fixture(t);

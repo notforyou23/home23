@@ -60,6 +60,25 @@ test('terminal Work created after startup enters the durable outcome inbox',t=>{
  assert.equal(store.pending().length,1,'incremental event replay stays idempotent');
 });
 
+test('startup recovery drains more than one hundred historical terminal Works in bounded pages',t=>{
+ const f=setup();t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+ f.database.raw.prepare('UPDATE resident_outcome_policy SET enabled_at=?').run(AT);
+ for(let n=0;n<105;n++){
+  const {workId}=f.consumer.admit({credential:f.credential,request:{...f.request,
+   invocationId:`historical-${n}`,canonicalArgs:{task:`Historical ${n}`}}});
+  f.work.cancelQueued({workId,actorPrincipalId:OWNER_ID,reasonCode:'operator_stop',sourceReference:'owner:stop',timestamp:AT,
+   requestId:fixtureId('request',1000+n),correlationId:fixtureId('correlation',1000+n)});
+ }
+ const store=createResidentOutcomeStore(f.database);
+ const count=()=>f.database.readOne<{value:number}>('SELECT count(*) AS value FROM resident_outcomes')!.value;
+ store.discover({startup:true});
+ assert.equal(count(),16,'pre-bind work is capped at one small page');
+ for(let n=0;n<30;n++)store.discover();
+ assert.equal(count(),105,'the remaining frozen Work is recovered after bind');
+ store.discover();
+ assert.equal(count(),105,'recovery stays idempotent');
+});
+
 for (const scenario of ['succeeded','failed','cancelled','delivery_recovery','review_failure'] as const) {
  const outcome=scenario==='delivery_recovery'||scenario==='review_failure'?'failed':scenario;
  test(`durable ${scenario} outcome wakes accountable resident once with latest corrections`,async t=>{

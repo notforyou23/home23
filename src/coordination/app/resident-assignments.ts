@@ -323,6 +323,7 @@ export function createResidentAssignments(database: M11Database) {
   let bootstrapAfter = '';
   let bootstrapComplete = false;
   let revisitEvaluationCursor = 0;
+  let revisitSweepRemaining = 0;
   function timedRevisitDue(now: number): boolean {
     if (!bootstrapComplete) return true;
     for (const value of blockedRevisits.values()) {
@@ -332,6 +333,7 @@ export function createResidentAssignments(database: M11Database) {
   }
   function hasBlockedRevisits(): boolean { return !bootstrapComplete || blockedRevisits.size > 0; }
   function revisitBootstrapIncomplete(): boolean { return !bootstrapComplete; }
+  function revisitSweepPending(): boolean { return revisitSweepRemaining > 0; }
   function observeRevisitEvent(row: { id: string; sequence: number; payload: string }) {
     if ((revisitVersions.get(row.id) ?? 0) >= row.sequence) return;
     revisitVersions.set(row.id, row.sequence);
@@ -339,7 +341,7 @@ export function createResidentAssignments(database: M11Database) {
     if (value.state === 'blocked') blockedRevisits.set(row.id, value);
     else blockedRevisits.delete(row.id);
   }
-  function revisits() {
+  function revisits(startSweep = false) {
     const journalEnd = database.readOne<{ sequence: number }>('SELECT coalesce(max(sequence),0) AS sequence FROM events')!.sequence;
     if (revisitCursor === null || journalEnd < revisitCursor) {
       blockedRevisits.clear();
@@ -348,6 +350,7 @@ export function createResidentAssignments(database: M11Database) {
       bootstrapAfter = '';
       bootstrapComplete = false;
       revisitEvaluationCursor = 0;
+      revisitSweepRemaining = 0;
     }
     if (!bootstrapComplete) {
       // The aggregate index orders each assignment's latest version first.
@@ -377,9 +380,12 @@ export function createResidentAssignments(database: M11Database) {
     }
     const now = Date.now();
     const values = [...blockedRevisits.values()];
-    const count = Math.min(32, values.length);
+    if (startSweep) revisitSweepRemaining = Math.max(revisitSweepRemaining, values.length);
+    revisitSweepRemaining = Math.min(revisitSweepRemaining, values.length);
+    const count = Math.min(32, values.length, revisitSweepRemaining || 32);
     const evaluation = Array.from({ length: count }, (_, index) => values[(revisitEvaluationCursor + index) % values.length]!);
     revisitEvaluationCursor = values.length ? (revisitEvaluationCursor + count) % values.length : 0;
+    revisitSweepRemaining = Math.max(0, revisitSweepRemaining - count);
     const waiting = evaluation.filter(value => value.revisitAt === null || Date.parse(value.revisitAt) > now);
     const dependencyIds = [...new Set(waiting.flatMap(value => value.waitFor))];
     const dependencyRows = dependencyIds.length ? database.readAll<{ id: string; state: string }>(`SELECT id,state FROM works
@@ -389,5 +395,5 @@ export function createResidentAssignments(database: M11Database) {
       (value.revisitAt !== null && Date.parse(value.revisitAt) <= now) ||
       (value.waitFor.length > 0 && value.waitFor.every(id => terminal.has(id))));
   }
-  return { root, latest, presentationState, report, list, listForProjection, listForProjectionPage, revisits, timedRevisitDue, hasBlockedRevisits, revisitBootstrapIncomplete, assertOpen, direction };
+  return { root, latest, presentationState, report, list, listForProjection, listForProjectionPage, revisits, timedRevisitDue, hasBlockedRevisits, revisitBootstrapIncomplete, revisitSweepPending, assertOpen, direction };
 }
