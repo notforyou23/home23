@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,40 @@ import {
   disabledCoordinationFeatureFlags,
 } from "../../../src/coordination/app/index.js";
 import { openCoordinationDatabase } from "../../../src/coordination/db/index.js";
+
+test("derived resident Work projection starts once and has its own 30-second cadence", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-resident-work-cadence-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const runtime = join(root, "instances", ".house", "coordination");
+  mkdirSync(runtime, { recursive: true });
+  const callbacks = new Map<number, () => void>();
+  const realSetInterval = globalThis.setInterval;
+  t.mock.method(globalThis, "setInterval", ((callback: () => void, delay: number) => {
+    if (delay === 2_000 || delay === 30_000) callbacks.set(delay, callback);
+    return realSetInterval(callback, delay);
+  }) as typeof setInterval);
+  const process = createCoordinationProcess({
+    enabled: true, host: "127.0.0.1", port: 0,
+    databasePath: join(runtime, "home23-coordination.sqlite3"),
+    socketPath: join(runtime, "coord.sock"),
+    capabilityToken: "c".repeat(64), residents: {},
+    flags: { ...disabledCoordinationFeatureFlags(), "coordination.process.enabled": true },
+  });
+  await process.start();
+  const projectionDirectory = join(runtime, "resident-contact");
+  assert.equal(existsSync(projectionDirectory), true);
+  assert.equal(callbacks.has(2_000), true);
+  assert.equal(callbacks.has(30_000), true);
+  rmSync(projectionDirectory, { recursive: true });
+  // The contact pump reports its missing test directory, but must not run the
+  // separate Work projection or recreate it on the two-second tick.
+  t.mock.method(console, "error", () => {});
+  callbacks.get(2_000)!();
+  assert.equal(existsSync(projectionDirectory), false);
+  callbacks.get(30_000)!();
+  assert.equal(existsSync(projectionDirectory), true);
+  await process.drain();
+});
 
 test("shadow composition advertises no unfinished product capability and closes cleanly", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-coordination-process-"));

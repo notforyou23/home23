@@ -733,6 +733,7 @@ export function createCoordinationProcess(
   const residentInitializers: Array<readonly [string, () => Promise<void>]> = [];
   const residentAttestationFailures = new Set<string>();
   let residentAttestationTimer: NodeJS.Timeout | undefined;
+  let residentWorkProjectionTimer: NodeJS.Timeout | undefined;
   let residentAttestationRun: Promise<void> | undefined;
   const refreshResidentAttestations = (): Promise<void> => {
     if (residentAttestationRun) return residentAttestationRun;
@@ -757,6 +758,7 @@ export function createCoordinationProcess(
   };
   const stopResidentAttestations = async () => {
     if (outcomeTimer) clearInterval(outcomeTimer);
+    if (residentWorkProjectionTimer) clearInterval(residentWorkProjectionTimer);
     if (residentAttestationTimer) clearInterval(residentAttestationTimer);
     residentAttestationTimer = undefined;
     await residentAttestationRun;
@@ -1499,9 +1501,14 @@ export function createCoordinationProcess(
         await server.drain().catch(() => undefined);
         throw error;
       }
+      const projectResidentWorkSnapshot = () => {
+        try { projectResidentWork(database, join(dirname(config.databasePath), 'resident-contact'), Object.entries(config.residents).filter(([, value]) => value.enabled).map(([slug]) => slug)); } catch (error) { console.error('[resident-work]', error); }
+      };
+      projectResidentWorkSnapshot();
+      residentWorkProjectionTimer = setInterval(projectResidentWorkSnapshot, 30_000);
+      residentWorkProjectionTimer.unref?.();
       outcomeTimer = setInterval(() => {
         try { residentContact.pump(); } catch (error) { console.error('[resident-contact]', error); }
-        try { projectResidentWork(database, join(dirname(config.databasePath), 'resident-contact'), Object.entries(config.residents).filter(([, value]) => value.enabled).map(([slug]) => slug)); } catch (error) { console.error('[resident-work]', error); }
         void reconcileChessTurns?.().catch(error => console.error('[native-chess]', error));
         try { reconcileScheduledTurns?.(); } catch (error) { console.error('[scheduled-turns]', error); }
         try { reconcileJoinedStops(); } catch(error) { console.error('[joined-stop]',error); }
