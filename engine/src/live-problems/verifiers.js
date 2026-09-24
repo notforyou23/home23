@@ -14,10 +14,21 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { execFileSync, execSync } = require('child_process');
+const { execFile, execSync } = require('child_process');
+const { promisify } = require('util');
 const http = require('http');
 const https = require('https');
 const yaml = require('js-yaml');
+const execFileAsync = promisify(execFile);
+
+async function pm2Jlist(ctx, timeout) {
+  const options = { encoding: 'utf8', timeout };
+  // Existing verifier fixtures supply a synchronous stub. Production always
+  // uses execFile so a delayed PM2 daemon cannot block the engine event loop.
+  if (ctx.execFileSync) return ctx.execFileSync('pm2', ['jlist'], options);
+  const result = await (ctx.execFileAsync || execFileAsync)('pm2', ['jlist'], options);
+  return typeof result === 'string' ? result : result.stdout;
+}
 
 function normalizePm2RestartCount(value) {
   if (value === null || value === undefined || value === '') return 0;
@@ -313,10 +324,10 @@ const verifiers = {
    * PM2 process is online (or any matching the name glob is online).
    * args: { name }
    */
-  pm2_status({ name }) {
+  async pm2_status({ name }, ctx = {}) {
     if (!name) return { ok: false, detail: 'name required' };
     try {
-      const out = execFileSync('pm2', ['jlist'], { encoding: 'utf8', timeout: 8000 });
+      const out = await pm2Jlist(ctx, 8000);
       const list = JSON.parse(out);
       const matches = list.filter(p => p.name === name);
       if (matches.length === 0) {
@@ -360,7 +371,7 @@ const verifiers = {
    * answer is a failure, not a pass.
    *
    * args: { name, port, host?, path?, timeoutMs? }
-   * ctx: { execFileSync?, httpGetJson? } — injection points for tests.
+   * ctx: { execFileAsync?, execFileSync?, httpGetJson? } — injection points for tests.
    */
   async pm2_port_owner({ name, port, host, path: identityPath, timeoutMs }, ctx = {}) {
     if (!name) return { ok: false, detail: 'name required' };
@@ -376,12 +387,11 @@ const verifiers = {
       : 4000;
     const identityUrl = `http://${hostText}:${portText}${pathText}`;
 
-    const run = ctx.execFileSync || execFileSync;
     let pm2Pid = null;
     let status = null;
 
     try {
-      const out = run('pm2', ['jlist'], { encoding: 'utf8', timeout: 15000 });
+      const out = await pm2Jlist(ctx, 15000);
       const list = JSON.parse(out);
       const matches = list.filter(p => p.name === name);
       if (matches.length === 0) {

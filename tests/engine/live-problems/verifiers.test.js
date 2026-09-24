@@ -157,6 +157,41 @@ function pm2Jlist(pid, name = 'home23-jerry-dash') {
   return JSON.stringify([{ name, pid, pm2_env: { status: 'online' } }]);
 }
 
+test('PM2 verifiers await async jlist without blocking the event loop', async () => {
+  const calls = [];
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const execFileAsync = (command, args, options) => {
+    calls.push({ command, args, options });
+    return pending;
+  };
+  const status = runVerifier({ type: 'pm2_status', args: { name: 'home23-jerry-dash' } }, { execFileAsync });
+  const owner = runVerifier({ type: 'pm2_port_owner', args: { name: 'home23-jerry-dash', port: 5002 } }, {
+    execFileAsync,
+    httpGetJson: async () => ({ status: 200, body: JSON.stringify({ pid: 1234 }) }),
+  });
+  let ticked = false;
+  await new Promise(resolve => setImmediate(() => { ticked = true; resolve(); }));
+  assert.equal(ticked, true);
+  assert.deepEqual(calls.map(call => call.options.timeout), [8000, 15000]);
+  assert.ok(calls.every(call => call.command === 'pm2' && call.args[0] === 'jlist'));
+  release({ stdout: pm2Jlist(1234) });
+  assert.equal((await status).ok, true);
+  assert.equal((await owner).ok, true);
+});
+
+test('PM2 async jlist failures retain verifier failure details', async () => {
+  const execFileAsync = async () => { throw new Error('spawn pm2 ETIMEDOUT'); };
+  for (const [type, args] of [
+    ['pm2_status', { name: 'home23-jerry-dash' }],
+    ['pm2_port_owner', { name: 'home23-jerry-dash', port: 5002 }],
+  ]) {
+    const result = await runVerifier({ type, args }, { execFileAsync });
+    assert.equal(result.ok, false);
+    assert.match(result.detail, /pm2 jlist failed: spawn pm2 ETIMEDOUT/);
+  }
+});
+
 // Every pm2_port_owner test routes child processes through this stub. It throws
 // on anything but `pm2 jlist`, so an lsof call (or any other shell-out) fails
 // the test loudly instead of silently returning to macOS's wedged proc_pidfdinfo.
