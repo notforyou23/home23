@@ -193,15 +193,24 @@ export function createResidentAssignments(database: M11Database) {
   function listForProjectionPage(principalId: string, after: { createdAt: string; id: string } | null = null,
     remaining = 1000) {
     const seek = after ? 'AND (w.created_at<? OR (w.created_at=? AND w.id<?))' : '';
-    const candidates = database.readAll<{ id: string; createdAt: string }>(`SELECT w.id,w.created_at AS createdAt FROM works w
-      LEFT JOIN work_thread_presentations p ON p.work_id=w.id
-      WHERE w.target_principal_id=? AND (w.kind='resident_work_thread' OR p.work_id IS NOT NULL)
-        AND (w.state IN ('queued','leased','running','cancelling') OR w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1))
-        ${seek}
-      ORDER BY w.created_at DESC,w.id DESC LIMIT ?`, principalId,
-      ...(after ? [after.createdAt, after.createdAt, after.id] : []), Math.min(16, remaining));
-    const cursor = candidates.length ? { createdAt: candidates.at(-1)!.createdAt, id: candidates.at(-1)!.id } : null;
-    if (!candidates.length) return { assignments: [] as Array<Record<string, unknown>>, cursor, candidateCount: 0 };
+    // LIMIT must apply before the eligibility filter. A selective LIMIT over
+    // all resident Work can still scan years of rows in one blocking call.
+    const batch = database.readAll<{ id: string; createdAt: string; kind: string; state: string;
+      terminalAt: string | null; presentedWorkId: string | null; enabledAt: string }>(`WITH batch AS MATERIALIZED (
+        SELECT w.id,w.created_at AS createdAt,w.kind,w.state,w.terminal_at AS terminalAt FROM works w
+        WHERE w.target_principal_id=? ${seek}
+        ORDER BY w.created_at DESC,w.id DESC LIMIT 16
+      ) SELECT batch.*,p.work_id AS presentedWorkId,
+        (SELECT enabled_at FROM resident_outcome_policy WHERE id=1) AS enabledAt
+      FROM batch LEFT JOIN work_thread_presentations p ON p.work_id=batch.id`, principalId,
+      ...(after ? [after.createdAt, after.createdAt, after.id] : []));
+    batch.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    const cursor = batch.length ? { createdAt: batch.at(-1)!.createdAt, id: batch.at(-1)!.id } : null;
+    const candidates = batch.filter(row => (row.kind === 'resident_work_thread' || row.presentedWorkId !== null)
+      && (['queued','leased','running','cancelling'].includes(row.state)
+        || (row.terminalAt !== null && row.terminalAt >= row.enabledAt))).slice(0, remaining);
+    if (!candidates.length) return { assignments: [] as Array<Record<string, unknown>>, cursor,
+      candidateCount: 0, scannedCount: batch.length };
     const ids = JSON.stringify(candidates.map(row => row.id));
     // Follow exactly the same review/planned lineage as root(), but in one
     // recursive query. The depth and cycle guards retain root()'s limits.
@@ -286,7 +295,7 @@ export function createResidentAssignments(database: M11Database) {
       else assignmentState = outcome ? 'needs_review' : 'complete';
       return [{ ...work, assignmentState, conclusion }];
     });
-    return { assignments, cursor, candidateCount: candidates.length };
+    return { assignments, cursor, candidateCount: candidates.length, scannedCount: batch.length };
   }
   function listForProjection(principalId: string) {
     const assignments: Array<Record<string, unknown>> = [];
@@ -300,7 +309,7 @@ export function createResidentAssignments(database: M11Database) {
         if (!seen.has(id)) { seen.add(id); assignments.push(assignment); }
       }
       remaining -= page.candidateCount;
-      if (page.candidateCount < Math.min(16, remaining + page.candidateCount)) break;
+      if (page.scannedCount < 16) break;
       cursor = page.cursor;
     }
     return assignments;

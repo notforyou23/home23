@@ -455,6 +455,11 @@ test('incremental resident projection yields between pages and publishes only th
   const f = fixture(t);
   f.database.raw.exec(INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL);
   for (let index = 0; index < 17; index++) f.admit(`paged-projection-${index}`);
+  for (let index = 0; index < 32; index++) f.work.create({ principalId: OWNER_ID,
+    targetPrincipalId: BOT_ID, channelId: CHANNEL_ID, originMessageId: MESSAGE_ID,
+    roundId: null, kind: 'resident_turn', idempotencyKey: `unpresented-history-${index}`,
+    manifest: manifestInput(), maxAutomaticOffers: 1,
+    requestId: fixtureId('request', 10), correlationId: fixtureId('correlation', 10) });
   const directory = mkdtempSync(join(tmpdir(), 'resident-projection-pages-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'jerry.work.json');
@@ -463,7 +468,7 @@ test('incremental resident projection yields between pages and publishes only th
   let candidatePages = 0;
   const candidatePlans: string[] = [];
   f.database.readAll = <T>(sql: string, ...parameters: Array<string | number | bigint | Buffer | null>): T[] => {
-    if (sql.includes('SELECT w.id,w.created_at AS createdAt FROM works w')) {
+    if (sql.includes('WITH batch AS MATERIALIZED')) {
       candidatePages++;
       candidatePlans.push(...f.database.raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters)
         .map(row => String((row as { detail: string }).detail)));
@@ -475,7 +480,7 @@ test('incremental resident projection yields between pages and publishes only th
   setImmediate(() => { yielded = true; });
   await projectResidentWorkIncrementally(f.database, directory, ['jerry']);
   assert.equal(yielded, true);
-  assert.ok(candidatePages >= 2);
+  assert.ok(candidatePages >= 4, 'sparse eligible Work must advance through raw history pages');
   assert.ok(candidatePlans.some(detail => detail.includes('SEARCH w USING INDEX works_target_created')),
     `candidate pages must seek the resident creation index: ${candidatePlans.join('; ')}`);
   const snapshot = JSON.parse(readFileSync(path, 'utf8'));

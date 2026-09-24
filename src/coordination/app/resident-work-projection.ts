@@ -42,7 +42,7 @@ export async function projectResidentWorkIncrementally(database: M11Database, di
         if (!seen.has(id)) { seen.add(id); snapshot.push(assignment); }
       }
       remaining -= page.candidateCount;
-      if (page.candidateCount < Math.min(16, remaining + page.candidateCount)) break;
+      if (page.scannedCount < 16) break;
       cursor = page.cursor;
     }
     const path = join(directory, `${resident}.work.json`);
