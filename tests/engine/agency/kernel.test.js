@@ -549,6 +549,38 @@ test('AgencyKernel tracks live-problem observations by problem id and closes on 
   assert.equal(consequences.some(row => row.pursuitId === opened.pursuit.id && row.changeType === 'pursuit_closed_by_receipt'), true);
 });
 
+test('AgencyKernel closes a live problem when open and resolved observations arrive together', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const observation = state => ({
+    channelId: 'work.live-problems',
+    sourceRef: `live-problem:lp-concurrent:${state}`,
+    verifierId: 'live-problems:poll',
+    payload: {
+      id: 'lp-concurrent',
+      state,
+      claim: 'Backend health needs a verifier-backed closure.',
+      updatedAt: state === 'open' ? '2026-05-25T10:00:00.000Z' : '2026-05-25T10:01:00.000Z',
+    },
+  });
+
+  const [opened, resolved] = await Promise.all([
+    kernel.handleObservation(observation('open')),
+    kernel.handleObservation(observation('resolved')),
+  ]);
+  const closed = kernel.pursuit(opened.pursuit.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(resolved.decision.route, 'close');
+  assert.equal(resolved.pursuit.id, opened.pursuit.id);
+  assert.equal(closed.status, 'closed');
+  assert.equal(receipts.filter(row => row.event === 'closed' && row.pursuitId === opened.pursuit.id).length, 1);
+});
+
 test('AgencyKernel treats resolved live-problem observations without an open pursuit as no-change evidence', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

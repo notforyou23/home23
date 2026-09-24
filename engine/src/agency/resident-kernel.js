@@ -2874,7 +2874,11 @@ export class AgencyKernel {
     });
   }
 
-  async handleLiveProblemObservation(obs) {
+  handleLiveProblemObservation(obs) {
+    return this.serializeIntake(() => this.handleLiveProblemObservationSerial(obs));
+  }
+
+  async handleLiveProblemObservationSerial(obs) {
     const problem = obs.payload || {};
     const problemId = problem.id || obs.sourceRef || 'unknown';
     const summary = problem.claim || problem.issue || problem.summary || `Live problem ${problemId} changed state to ${problem.state || 'unknown'}.`;
@@ -2905,7 +2909,7 @@ export class AgencyKernel {
     if (problem.state === 'resolved') {
       const existing = this.store.findSimilar(candidate);
       if (existing) {
-        return this.intakeWorldStream({
+        return this.intakeWorldStreamSerial({
           source: 'work.live-problems',
           kind: 'live_problem_receipt',
           summary: `Live problem ${problemId} resolved: ${summary}`,
@@ -2919,7 +2923,7 @@ export class AgencyKernel {
           tags: ['work.live-problems', 'live-problem', 'resolved'],
         });
       }
-      return this.intakeWorldStream({
+      return this.intakeWorldStreamSerial({
         source: 'work.live-problems',
         kind: 'live_problem_receipt',
         summary: `Live problem ${problemId} is already resolved with verifier evidence: ${summary}`,
@@ -2932,7 +2936,7 @@ export class AgencyKernel {
         tags: ['work.live-problems', 'live-problem', 'resolved'],
       });
     }
-    return this.intake(candidate);
+    return this.intakeSerial(candidate);
   }
 }
 
