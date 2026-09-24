@@ -1,6 +1,6 @@
 /** Classifies a Host v1 home for a schema-preserving update. No package writes. */
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
+import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { absoluteHome, readPrivateJSON, socketRootFor } from './product-environment.js';
 import { PRODUCT_STATE_PATHS, isProductStatePath } from './product-payload.js';
@@ -279,5 +279,16 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
 }
 
 export function hashFile(file) {
-  return createHash('sha256').update(readFileSync(file)).digest('hex');
+  const digest = createHash('sha256');
+  const descriptor = openSync(file, 'r');
+  try {
+    // Lived state files can exceed Node's whole-file Buffer limit.
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    for (;;) {
+      const bytes = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytes === 0) break;
+      digest.update(buffer.subarray(0, bytes));
+    }
+    return digest.digest('hex');
+  } finally { closeSync(descriptor); }
 }
