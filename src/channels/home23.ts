@@ -62,7 +62,11 @@ export class Home23Adapter implements ChannelAdapter {
         } catch (error) { console.warn('[home23-delivery] Cannot read saved delivery:', name, String(error)); }
       }
     })();
-    this.flushPromise = operation.finally(() => { this.flushPromise = undefined; });
+    // start() and the interval do not await this promise. A temporarily
+    // unavailable outbox must not become an unhandled rejection in Jerry.
+    this.flushPromise = operation
+      .catch(error => { console.warn('[home23-delivery] Cannot scan saved deliveries:', String(error)); })
+      .finally(() => { this.flushPromise = undefined; });
     return this.flushPromise;
   }
   async send(response: OutgoingResponse): Promise<{ status: 'delivered' | 'queued' }> {

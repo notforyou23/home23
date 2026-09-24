@@ -41,3 +41,12 @@ test('concurrent sends with one delivery ID persist and deliver one message', as
   assert.equal(seen.length, 1);
   assert.equal(readdirSync(root).filter(name => name.endsWith('.json')).length, 1);
 });
+
+test('an unavailable outbox does not reject its unattended startup scan', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-outbox-'));
+  const adapter = new Home23Adapter(root, async () => {});
+  rmSync(root, { recursive: true });
+  await adapter.start();
+  await assert.doesNotReject(adapter.flush());
+  await adapter.stop();
+});
