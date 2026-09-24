@@ -16,6 +16,13 @@ const now = () => new Date().toISOString();
 const executeFile = promisify(execFile);
 const alive = pid => { if (!Number.isInteger(pid) || pid < 1) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
 const fail = (code, message) => Object.assign(new Error(message), { code });
+function setWorkerBackground(background) {
+  if (process.platform !== 'darwin') return;
+  // The retained worker, not Core or the Host, performs the large archive
+  // expansion and stage copy. Restore its normal priority before the switch.
+  execFileSync('/usr/sbin/taskpolicy', [background ? '-b' : '-B', '-p', String(process.pid)],
+    { stdio: 'ignore', timeout: 10_000 });
+}
 const homePaths = homeRoot => ({ directory: join(homeRoot, 'runtime/home-update'), registration: join(homeRoot, 'runtime/home-update/application.json') });
 function save(path, value) {
   if (existsSync(path) && (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink())) throw fail('update_state_invalid', 'Update state is not a regular file.');
@@ -231,6 +238,9 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
   await withAdmission(home, async () => {});
   let operation = loadOperation(home, operationId);
   if (TERMINAL.has(operation.phase)) return;
+  // A test or local caller may invoke this function in-process. Only the
+  // durable worker launched for this operation may change its OS priority.
+  const workerPriority = dependencies.workerPriority ?? (operation.pid === process.pid ? setWorkerBackground : () => {});
   const registered = registration(home);
   if (!registered) throw fail('application_unavailable', 'Home23 application registration is missing.');
   const persist = patch => { operation = { ...operation, ...patch, updatedAt: now(), pid: process.pid }; save(join(home.directory, `${operation.id}.json`), operation); };
@@ -249,12 +259,17 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     }
     let prepared = operation.prepared;
     if (!prepared) {
-      persist({ phase: 'downloading', message: 'Downloading Home23. Your home is still available.' });
-      const delivery = updateDeliveryPaths(home.root, operation.id, { release: operation.release });
-      prepared = await channel.prepareConfiguredRelease({ ...options,
-        staging: delivery.staging, downloadDirectory: delivery.downloadDirectory, extractionDirectory: delivery.extractionDirectory,
-        onProgress: progress => persist({ progress: progress.bytesTotal > 0 ? Math.min(1, progress.bytesCopied / progress.bytesTotal) : null }) });
-      persist({ prepared, release: prepared.release, progress: null, phase: 'preparing', message: 'The download is ready. Preparing your home update.' });
+      workerPriority(true);
+      try {
+        persist({ phase: 'downloading', message: 'Downloading Home23. Your home is still available.' });
+        const delivery = updateDeliveryPaths(home.root, operation.id, { release: operation.release });
+        prepared = await channel.prepareConfiguredRelease({ ...options,
+          staging: delivery.staging, downloadDirectory: delivery.downloadDirectory, extractionDirectory: delivery.extractionDirectory,
+          onProgress: progress => persist({ progress: progress.bytesTotal > 0 ? Math.min(1, progress.bytesCopied / progress.bytesTotal) : null }) });
+        persist({ prepared, release: prepared.release, progress: null, phase: 'preparing', message: 'The download is ready. Preparing your home update.' });
+      } finally {
+        workerPriority(false);
+      }
     }
     const minimum = prepared.release?.compatibility?.minimumClientBuild ?? 1;
     if (operation.clientBuild < minimum) throw fail('app_update_required', 'Update Home23 on this device before updating your home.');

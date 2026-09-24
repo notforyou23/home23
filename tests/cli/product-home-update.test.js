@@ -100,14 +100,18 @@ test('prepared update resumes after component failure without downloading or rep
   const f = fixture(t); await check(f);
   const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
   let downloads = 0, installs = 0, appCalls = 0;
+  const priority = [];
   const dependencies = {
+    workerPriority: background => priority.push(background),
     channel: { ...checkedChannel, prepareConfiguredRelease: async options => {
       downloads++; assert.ok(!options.staging.startsWith(f.home + '/'));
+      assert.deepEqual(priority, [true]);
       return { release, packageId: release.packageId, appBuild: 180, candidatePayload: options.staging + '/payload', staging: options.staging,
         installedAppPath: join(f.parent, 'Home23.app'), preparedAppPath: join(f.parent, '.next.app'), lifecyclePath: join(f.parent, 'lifecycle') };
     } },
     updater: { readUpdateJournal: () => null, applyProductUpdate: async options => {
       installs++; assert.equal(options.admit, true); assert.equal(options.reuseVerifiedStage, true);
+      assert.deepEqual(priority, [true, false]);
       f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
       return { ok: true, status: 'committed' };
     } },
@@ -129,6 +133,20 @@ test('prepared update resumes after component failure without downloading or rep
   assert.equal(completed.state, 'upToDate'); assert.equal(completed.availableRelease, null);
   assert.equal(completed.installedRelease.version, '2.0');
   assert.equal(downloads, 1); assert.equal(installs, 1); assert.equal(appCalls, 2);
+  assert.deepEqual(priority, [true, false]);
+});
+
+test('preparation failure restores worker priority before offering resume', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  const priority = [];
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    workerPriority: background => priority.push(background),
+    channel: { prepareConfiguredRelease: async () => { throw new Error('Download interrupted'); } },
+    updater: unusedUpdater, appUpdater: unusedAppUpdater,
+  });
+  assert.deepEqual(priority, [true, false]);
+  assert.equal(homeUpdateStatus({ homeRoot: f.home }).operation.phase, 'failed');
 });
 
 test('newer phone can resume a compatibility refusal with its new build', async t => {
