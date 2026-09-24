@@ -27,6 +27,7 @@ const { MemoryGovernor } = require('../system/memory-governor');
 const { filterEligibleNodes, checkSurfaceFreshness, SURFACE_BUDGETS } = require('./curator-cycle');
 // Compaction + RECENT.md digest — closes the loop on Step 20's append-only curator
 const { compactSurface, generateRecentDigest, buildSurfaceFingerprints, objFingerprint } = require('./curator-llm-tools');
+const { markCuratorObjectsReviewed } = require('./curator-memory-objects');
 const { buildTemporalContext } = require('./temporal-context');
 const { DiscoveryEngine } = require('../cognition/discovery-engine');
 const { ThinkingMachine } = require('../cognition/thinking-machine');
@@ -3319,7 +3320,7 @@ class Orchestrator {
             const objectsPath = path.join(brainDir, 'memory-objects.json');
 
             if (fsSync.existsSync(objectsPath)) {
-              const raw = JSON.parse(fsSync.readFileSync(objectsPath, 'utf-8'));
+              const raw = JSON.parse(await fs.readFile(objectsPath, 'utf-8'));
               const objects = raw.objects || [];
               const working = objects.filter(o => o.lifecycle_layer === 'working' && o.status === 'candidate');
 
@@ -3362,7 +3363,7 @@ class Orchestrator {
                   const surfacePath = path.join(workspacePath, objs);
                   if (!fsSync.existsSync(surfacePath)) continue;
 
-                  let content = fsSync.readFileSync(surfacePath, 'utf-8');
+                  let content = await fs.readFile(surfacePath, 'utf-8');
                   const budget = SURFACE_BUDGETS[objs] || 3000;
 
                   // If the surface is over budget the append branch below will
@@ -3377,7 +3378,7 @@ class Orchestrator {
                         config: this.config,
                         logger: this.logger,
                       });
-                      content = fsSync.readFileSync(surfacePath, 'utf-8');
+                      content = await fs.readFile(surfacePath, 'utf-8');
                     } catch (compactErr) {
                       this.logger?.warn?.(`📋 Surface compact failed for ${objs}`, {
                         error: compactErr.message || String(compactErr),
@@ -3418,7 +3419,7 @@ class Orchestrator {
                   }
 
                   if (added > 0) {
-                    fsSync.writeFileSync(surfacePath, content);
+                    await fs.writeFile(surfacePath, content);
                     totalAdded += added;
                     this.logger.info(`📋 Curator: updated ${objs}`, { newEntries: added, skippedDupes: domainObjs.length - added });
                   }
@@ -3426,17 +3427,13 @@ class Orchestrator {
 
                 // Mark processed objects as 'self_reviewed' so they don't get re-processed
                 if (processedIds.length > 0) {
-                  let modified = false;
-                  for (const obj of objects) {
-                    if (processedIds.includes(obj.memory_id) && obj.status === 'candidate') {
-                      obj.status = 'self_reviewed';
-                      obj.review_state = 'self_reviewed';
-                      modified = true;
-                    }
-                  }
-                  if (modified) {
-                    fsSync.writeFileSync(objectsPath, JSON.stringify({ objects }, null, 2));
-                    this.logger.info('📋 Curator: marked processed objects as self_reviewed', { count: processedIds.length });
+                  const processedSet = new Set(processedIds);
+                  const marked = await markCuratorObjectsReviewed(
+                    objectsPath,
+                    working.filter(object => processedSet.has(object.memory_id)),
+                  );
+                  if (marked > 0) {
+                    this.logger.info('📋 Curator: marked processed objects as self_reviewed', { count: marked });
                   }
                 }
 
