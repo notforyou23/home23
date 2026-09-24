@@ -347,7 +347,7 @@ export function createResidentAssignments(database: M11Database) {
       // ends within one long assignment history.
       const records = database.readAll<{ id: string; sequence: number; payload: string }>(`SELECT aggregate_id AS id,sequence,payload_json AS payload FROM events
         WHERE aggregate_kind='resident_assignment' AND aggregate_id>?
-        ORDER BY aggregate_id,aggregate_version DESC LIMIT 64`, bootstrapAfter);
+        ORDER BY aggregate_id,aggregate_version DESC LIMIT 8`, bootstrapAfter);
       const seen = new Set<string>();
       for (const record of records) {
         if (seen.has(record.id)) continue;
@@ -355,14 +355,14 @@ export function createResidentAssignments(database: M11Database) {
         observeRevisitEvent(record);
       }
       if (records.length) bootstrapAfter = records.at(-1)!.id;
-      bootstrapComplete = records.length < 64;
+      bootstrapComplete = records.length < 8;
     }
     // Limit each timer turn even if a writer appends a large burst of events.
     // A cursor advances through unrelated events as well, so it cannot get
     // stuck behind them. Any remaining records are picked up on the next tick.
     const changes = database.readAll<{ id: string; sequence: number; payload: string | null }>(`SELECT aggregate_id AS id,sequence,
       CASE WHEN aggregate_kind='resident_assignment' THEN payload_json END AS payload
-      FROM events WHERE sequence>? ORDER BY sequence LIMIT 128`, revisitCursor);
+      FROM events WHERE sequence>? ORDER BY sequence LIMIT 16`, revisitCursor);
     for (const change of changes) {
       if (change.payload !== null) observeRevisitEvent({ ...change, payload: change.payload });
       revisitCursor = change.sequence;

@@ -389,8 +389,13 @@ test('revisit recovery pages historical assignments through the aggregate index'
     return rows;
   }) as typeof f.database.readAll;
   assert.deepEqual(f.assignments.revisits(), []);
-  assert.equal(f.assignments.revisits()[0]?.workId, blocked);
-  assert.deepEqual(pageLengths, [64, 7]);
+  let recovered: string | undefined;
+  for (let tick = 0; tick < 16 && !recovered; tick++) {
+    recovered = f.assignments.revisits()[0]?.workId;
+  }
+  assert.equal(recovered, blocked);
+  assert.ok(pageLengths.length > 2 && pageLengths.every(length => length <= 8),
+    `historical recovery must progress through bounded pages: ${pageLengths.join(',')}`);
 });
 
 test('changed direction requires explicit assessment; newly admitted children inherit that read without another launch attempt', t => {

@@ -85,7 +85,7 @@ export function createResidentOutcomeStore(database: M11Database) {
       const events = database.readAll<{ sequence: number; kind: string; payload: string | null }>(
         `SELECT sequence, aggregate_kind AS kind,
           CASE WHEN aggregate_kind='communication' THEN payload_json END AS payload
-         FROM events WHERE sequence > ? ORDER BY sequence LIMIT 100`, observedCursor);
+         FROM events WHERE sequence > ? ORDER BY sequence LIMIT 16`, observedCursor);
       const discoverTerminals = initialTerminalDiscovery || events.some(row =>
         row.kind === 'work' || row.kind === 'message' || row.kind === 'scheduled_channel_run');
       for (const value of assignments.revisits()) {
