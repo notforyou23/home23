@@ -579,6 +579,63 @@ test('resident writes after startup keep seed lineage and do not restore softwar
   assert.equal(packageId(fixture.home), fixture.next.packageId);
 });
 
+test('a warming admitted candidate defers and later commits without restarting or fencing', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let online = false, ready = false, starts = 0, fences = 0;
+  const dependencies = {
+    ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { starts += 1; online = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+    status: async () => ({ ok: true, status: 'recovery_required',
+      processes: [{ name: 'home23-milo', status: 'online', owned: true }], readiness: { ready } }),
+    quiesce: async () => { fences += 1; online = false; return []; },
+  };
+  const first = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, dependencies);
+  assert.equal(first.status, 'deferred');
+  assert.equal(first.reasons[0].code, 'candidate_starting');
+  assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
+  assert.equal(readUpdateJournal(fixture.home).startStatus, 'starting');
+  assert.equal(starts, 1);
+  assert.equal(fences, 0);
+  ready = true;
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, dependencies);
+  assert.equal(resumed.status, 'committed');
+  assert.equal(readUpdateJournal(fixture.home).startOk, true);
+  assert.equal(starts, 1);
+  assert.equal(fences, 0);
+});
+
+test('masked owner-start readiness is accepted without another status wait', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let online = false;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { online = true; return { ok: false, status: 'recovery_required',
+      error: { code: 'update_recovery_required' }, readiness: { ready: true } }; },
+    status: async () => { throw new Error('status should not be needed'); },
+  });
+  assert.equal(result.status, 'committed');
+  assert.equal(readUpdateJournal(fixture.home).startOk, true);
+});
+
+test('a failed admitted process still fences the candidate', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let failed = false, fences = 0;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => failed ? [{ name: 'home23-milo', status: 'errored' }] : [],
+    start: async () => { failed = true; return { ok: false, status: 'degraded', error: { code: 'host_process_failed' } }; },
+    status: async () => ({ ok: true, status: 'degraded',
+      processes: [{ name: 'home23-milo', status: 'errored', owned: true }], readiness: { ready: false } }),
+    quiesce: async () => { fences += 1; failed = false; return []; },
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(fences, 1);
+  assert.equal(readUpdateJournal(fixture.home).startErrorCode, 'host_process_failed');
+});
+
 test('legacy copied checkpoint journal verifies its substrate prefix after resume', async t => {
   const fixture = homeFixture(t, { desiredRunning: true });
   const relative = 'app/instances/milo/substrate/seed-01/seed-ledger.jsonl';
