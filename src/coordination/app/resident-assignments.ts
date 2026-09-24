@@ -319,8 +319,14 @@ export function createResidentAssignments(database: M11Database) {
   // conclusions and advance through new events instead of scanning every
   // historical assignment and resolving each root on every timer tick.
   const blockedRevisits = new Map<string, AssignmentConclusion & { eventSequence: number }>();
+  const revisitVersions = new Map<string, number>();
   let revisitCursor: number | null = null;
+  let bootstrapAfter = '';
+  let bootstrapComplete = false;
+  let revisitEvaluationCursor = 0;
   function observeRevisitEvent(row: { id: string; sequence: number; payload: string }) {
+    if ((revisitVersions.get(row.id) ?? 0) >= row.sequence) return;
+    revisitVersions.set(row.id, row.sequence);
     const value = { ...JSON.parse(row.payload) as AssignmentConclusion, eventSequence: row.sequence };
     if (value.state === 'blocked') blockedRevisits.set(row.id, value);
     else blockedRevisits.delete(row.id);
@@ -329,33 +335,49 @@ export function createResidentAssignments(database: M11Database) {
     const journalEnd = database.readOne<{ sequence: number }>('SELECT coalesce(max(sequence),0) AS sequence FROM events')!.sequence;
     if (revisitCursor === null || journalEnd < revisitCursor) {
       blockedRevisits.clear();
+      revisitVersions.clear();
       revisitCursor = journalEnd;
-      // This one-time recovery read retains the same latest-version rule as
-      // latest(). Subsequent ticks use the event cursor, including events
-      // appended by another connection or after a database reopen.
-      const records = database.readAll<{ id: string; sequence: number; payload: string }>(`SELECT e.aggregate_id AS id,e.sequence,e.payload_json AS payload FROM events e
-        WHERE e.aggregate_kind='resident_assignment' AND e.aggregate_version=(
-          SELECT max(last.aggregate_version) FROM events last
-          WHERE last.aggregate_kind='resident_assignment' AND last.aggregate_id=e.aggregate_id)`);
-      for (const record of records) observeRevisitEvent(record);
+      bootstrapAfter = '';
+      bootstrapComplete = false;
+      revisitEvaluationCursor = 0;
+    }
+    if (!bootstrapComplete) {
+      // The aggregate index orders each assignment's latest version first.
+      // Advance by aggregate ID, skipping older versions even when a page
+      // ends within one long assignment history.
+      const records = database.readAll<{ id: string; sequence: number; payload: string }>(`SELECT aggregate_id AS id,sequence,payload_json AS payload FROM events
+        WHERE aggregate_kind='resident_assignment' AND aggregate_id>?
+        ORDER BY aggregate_id,aggregate_version DESC LIMIT 64`, bootstrapAfter);
+      const seen = new Set<string>();
+      for (const record of records) {
+        if (seen.has(record.id)) continue;
+        seen.add(record.id);
+        observeRevisitEvent(record);
+      }
+      if (records.length) bootstrapAfter = records.at(-1)!.id;
+      bootstrapComplete = records.length < 64;
     }
     // Limit each timer turn even if a writer appends a large burst of events.
     // A cursor advances through unrelated events as well, so it cannot get
     // stuck behind them. Any remaining records are picked up on the next tick.
     const changes = database.readAll<{ id: string; sequence: number; payload: string | null }>(`SELECT aggregate_id AS id,sequence,
       CASE WHEN aggregate_kind='resident_assignment' THEN payload_json END AS payload
-      FROM events WHERE sequence>? ORDER BY sequence LIMIT 512`, revisitCursor);
+      FROM events WHERE sequence>? ORDER BY sequence LIMIT 128`, revisitCursor);
     for (const change of changes) {
       if (change.payload !== null) observeRevisitEvent({ ...change, payload: change.payload });
       revisitCursor = change.sequence;
     }
     const now = Date.now();
-    const waiting = [...blockedRevisits.values()].filter(value => value.revisitAt === null || Date.parse(value.revisitAt) > now);
+    const values = [...blockedRevisits.values()];
+    const count = Math.min(32, values.length);
+    const evaluation = Array.from({ length: count }, (_, index) => values[(revisitEvaluationCursor + index) % values.length]!);
+    revisitEvaluationCursor = values.length ? (revisitEvaluationCursor + count) % values.length : 0;
+    const waiting = evaluation.filter(value => value.revisitAt === null || Date.parse(value.revisitAt) > now);
     const dependencyIds = [...new Set(waiting.flatMap(value => value.waitFor))];
     const dependencyRows = dependencyIds.length ? database.readAll<{ id: string; state: string }>(`SELECT id,state FROM works
       WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(dependencyIds)) : [];
     const terminal = new Set(dependencyRows.filter(row => ['succeeded','failed','cancelled'].includes(row.state)).map(row => row.id));
-    return [...blockedRevisits.values()].filter(value =>
+    return evaluation.filter(value =>
       (value.revisitAt !== null && Date.parse(value.revisitAt) <= now) ||
       (value.waitFor.length > 0 && value.waitFor.every(id => terminal.has(id))));
   }

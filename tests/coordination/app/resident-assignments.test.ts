@@ -342,7 +342,7 @@ test('revisit polling advances through new conclusions without rescanning histor
   let historicalReads = 0;
   const readAll = f.database.readAll.bind(f.database);
   f.database.readAll = ((sql: string, ...parameters: unknown[]) => {
-    if (sql.includes("e.aggregate_kind='resident_assignment'")) historicalReads++;
+    if (sql.includes("aggregate_kind='resident_assignment' AND aggregate_id>?")) historicalReads++;
     return readAll(sql, ...parameters);
   }) as typeof f.database.readAll;
   f.assignments.report(f.context, f.origin, { work_id: id, state: 'blocked', summary: 'Wait for dependency',
@@ -357,6 +357,40 @@ test('revisit polling advances through new conclusions without rescanning histor
   assert.deepEqual(f.assignments.revisits(), [], 'an appended conclusion removes the older revisit');
   assert.equal(historicalReads, 1);
   assert.equal(createResidentAssignments(f.database).revisits().length, 0, 'a fresh projection recovers the latest conclusion');
+});
+
+test('revisit recovery pages historical assignments through the aggregate index', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse(AT) });
+  const f = fixture(t);
+  const blocked = f.admit('paged-revisit-blocked'), dependency = f.admit('paged-revisit-dependency');
+  f.cancel(blocked);
+  f.assignments.report(f.context, f.origin, { work_id: blocked, state: 'blocked',
+    summary: 'Waiting for an earlier dependency', wait_for: [dependency] }, 'paged-revisit-report');
+  f.cancel(dependency);
+  const insert = f.database.raw.prepare(`INSERT INTO events(id,schema_version,type,durability,aggregate_kind,aggregate_id,
+    aggregate_version,request_id,correlation_id,payload_json,payload_digest,created_at)
+    VALUES(?,1,'activity.updated','durable','resident_assignment',?,1,?,?,?, ?,?)`);
+  for (let index = 0; index < 70; index++) {
+    const id = `wrk_00000000-0000-0000-0000-${String(index).padStart(12, '0')}`;
+    insert.run(`evt_revisit_history_${index}`, id, fixtureId('request', 10), fixtureId('correlation', 10),
+      JSON.stringify({ workId: id, state: 'complete' }), 'a'.repeat(64), AT);
+  }
+  const readAll = f.database.readAll.bind(f.database);
+  const pageLengths: number[] = [];
+  f.database.readAll = (<T>(sql: string, ...parameters: Array<string | number | bigint | Buffer | null>): T[] => {
+    const rows = readAll<T>(sql, ...parameters);
+    if (sql.includes("aggregate_kind='resident_assignment' AND aggregate_id>?")) {
+      pageLengths.push(rows.length);
+      const plan = f.database.raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters)
+        .map(row => String((row as { detail: string }).detail));
+      assert.ok(plan.some(detail => detail.includes('sqlite_autoindex_events_2')),
+        `recovery must seek the aggregate index: ${plan.join('; ')}`);
+    }
+    return rows;
+  }) as typeof f.database.readAll;
+  assert.deepEqual(f.assignments.revisits(), []);
+  assert.equal(f.assignments.revisits()[0]?.workId, blocked);
+  assert.deepEqual(pageLengths, [64, 7]);
 });
 
 test('changed direction requires explicit assessment; newly admitted children inherit that read without another launch attempt', t => {
