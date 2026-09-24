@@ -13,6 +13,7 @@ import { applyProductUpdate, readUpdateJournal, resumeProductUpdate, softwareUni
 import { candidateCoordinationSchema, inspectCoordinationDatabase, inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, SUPPORTED_COORDINATION_SCHEMAS, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
+import { acquireHostLock } from '../../cli/lib/product-backup.js';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const quiet = { listProcesses: async () => [], acquireHostLock: async () => async () => {} };
@@ -356,6 +357,31 @@ test('a busy v21 database refuses a v20 candidate after owned writers stop', asy
   assert.equal(packageId(fixture.home), fixture.installed.packageId);
   assert.equal(kept(fixture.home).version, 21);
   assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'checkpoint')), false);
+});
+
+test('pre-switch restoration releases the real Host lock before Start', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true, version: 21 });
+  let online = true, starts = 0;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, {
+    inspectUpdateInventory: async (...args) => ({ ...(await inspectUpdateInventory(...args)),
+      databaseInspection: { present: true, version: null, busy: true, compatible: false },
+      reasons: [{ code: 'database_busy', message: 'database is locked' }] }),
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { online = false; return []; },
+    start: async () => {
+      const lock = acquireHostLock(fixture.home);
+      assert.ok(lock, 'the real Host Start lock must be available after update mutation');
+      try { starts += 1; online = true; return { ok: true, status: 'ready' }; }
+      finally { lock.release(); }
+    },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.runningRestored, true);
+  assert.equal(starts, 1);
+  assert.equal(online, true);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(kept(fixture.home).version, 21);
 });
 
 test('a failed pre-switch restoration stays fenced with a durable recovery result', async t => {

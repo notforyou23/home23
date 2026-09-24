@@ -609,20 +609,10 @@ async function mutate(journal, dependencies, verify) {
   async function abortBeforeSwitch(code, message) {
     const reasons = [{ code, message }];
     if (journal.stoppedForUpdate && journal.desiredRunning) {
-      // Start is authorized only by the update owner while the journal is
-      // fenced. Make an interrupted restoration durable before admitting it.
+      // Start needs the Host lifecycle lock held by runTransaction. Fence the
+      // journal now, then restore after that lock is released.
       journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons }, dependencies);
-      try {
-        const processes = await (dependencies.listProcesses || defaultListProcesses)(home);
-        if (classifyProcesses(processes, names).busy.length) throw new Error('A writer is still active.');
-        if (readProductManifest(home).packageId !== journal.fromPackageId) throw new Error('The previous software changed.');
-        const started = await (dependencies.start || defaultStart)(home, journal);
-        if (!startObservation(started).startOk) throw new Error('The previous home did not become ready.');
-      } catch (error) {
-        journal = await commitPhase(file, { ...journal, reasons: [...reasons, { code: 'running_restore_failed', message: `The previous home could not be restored to its running state (${error.message}).` }] }, dependencies);
-        return { done: publicResult(journal) };
-      }
-      journal = await commitPhase(file, { ...journal, phase: 'aborted', runningRestored: true }, dependencies);
+      return { restore: journal };
     } else {
       journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons }, dependencies);
     }
@@ -704,6 +694,21 @@ async function mutate(journal, dependencies, verify) {
     journal = await commitPhase(file, { ...journal, phase: 'selected', acceptedWork: false }, dependencies);
   }
   return { journal };
+}
+async function restorePreSwitch(journal, dependencies) {
+  const home = journal.homeRoot, file = journalPath(home);
+  try {
+    const processes = await (dependencies.listProcesses || defaultListProcesses)(home);
+    if (classifyProcesses(processes, journal.writerNames || []).busy.length) throw new Error('A writer is still active.');
+    if (readProductManifest(home).packageId !== journal.fromPackageId) throw new Error('The previous software changed.');
+    const started = await (dependencies.start || defaultStart)(home, journal);
+    if (!startObservation(started).startOk) throw new Error('The previous home did not become ready.');
+  } catch (error) {
+    journal = await commitPhase(file, { ...journal, reasons: [...journal.reasons, { code: 'running_restore_failed', message: `The previous home could not be restored to its running state (${error.message}).` }] }, dependencies);
+    return publicResult(journal);
+  }
+  journal = await commitPhase(file, { ...journal, phase: 'aborted', runningRestored: true }, dependencies);
+  return publicResult(journal);
 }
 async function finish(journal, dependencies, verify) {
   const file = journalPath(journal.homeRoot), home = journal.homeRoot;
@@ -831,11 +836,12 @@ async function runTransaction(journal, dependencies, verify) {
     const acquired = await (dependencies.acquireHostLock || defaultAcquireHostLock)(journal.homeRoot, journal);
     if (acquired === null) return deferred(journal.homeRoot, 'busy', 'Another lifecycle operation holds this home.', journal);
     releaseHost = acquired;
-    try {
-      const mutated = await mutate(journal, dependencies, verify);
-      if (mutated.done) return mutated.done;
-      journal = mutated.journal;
-    } finally { await releaseHost(); }
+    let mutated;
+    try { mutated = await mutate(journal, dependencies, verify); }
+    finally { await releaseHost(); }
+    if (mutated.restore) return restorePreSwitch(mutated.restore, dependencies);
+    if (mutated.done) return mutated.done;
+    journal = mutated.journal;
   } else journal = readUpdateJournal(journal.homeRoot);
   if (['aborted', 'rolled_back'].includes(journal.phase) || (journal.phase === 'recovery_required' && !journal.writersAdmitted)) return publicResult(journal);
   return finish(journal, dependencies, verify);
