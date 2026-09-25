@@ -135,6 +135,27 @@ export interface CancelQueuedWorkResult {
   replayed: boolean;
 }
 
+export interface RecordRecoveryRefusalInput {
+  workId: string;
+  /** Bounded identifier naming why recovery refused the Work. */
+  reasonCode: string;
+  /** True when no later start can recover the Work; repeated transient
+   * refusals become permanent at the service's refusal limit. */
+  permanent: boolean;
+  message: string;
+  requestId: string;
+  correlationId: string;
+}
+
+export interface RecoveryRefusalRecord {
+  workId: string;
+  reasonCode: string;
+  permanent: boolean;
+  refusalCount: number;
+  message: string;
+  recordedAt: string;
+}
+
 export type WorkGeneratedIdKind =
   | "contextManifest"
   | "work"
