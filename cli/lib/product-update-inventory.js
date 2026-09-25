@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { absoluteHome, readPrivateJSON, socketRootFor } from './product-environment.js';
-import { PRODUCT_STATE_PATHS, isProductStatePath } from './product-payload.js';
+import { PRODUCT_STATE_PATHS, isOsMetadataPath, isProductStatePath } from './product-payload.js';
 import { compareUpdateContracts } from './product-update-plan.js';
 
 export const SUPPORTED_COORDINATION_SCHEMA = 21;
@@ -71,6 +71,8 @@ const CHROME_SOCKET_TARGET = /^\/var\/folders\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/T
 const SCAN_FILES = ['.home23-host.json', 'app/.home23-state.json', 'app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml'];
 const ADOPTED_LINK_RECEIPT = 'runtime/adoption-preservation.json';
 const REBUILDABLE_PREFIXES = ['app/logs/', 'app/engine/logs/', 'app/engine/runtime/', 'runtime/pm2/', 'runtime/embedder-cache/', 'runtime/user/', 'runtime/.host.lock/'];
+// Enough named paths for the owner to act on; the remainder is counted, not listed.
+const UNKNOWN_PATH_LIMIT = 10;
 
 export { isProductStatePath };
 function containsState(relative) {
@@ -209,6 +211,9 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   const manifestEntries = new Map((installed?.files || []).map(entry => [entry.path, entry]));
   const manifestPaths = new Set(manifestEntries.keys());
   function visit(relative, dirent) {
+    // Finder and other desktop metadata are neither state nor software. Browsing
+    // a home in Finder must never make its update refuse or classify anything.
+    if (isOsMetadataPath(relative)) return;
     const absolute = join(root, relative);
     // Directory entries carry their file type on APFS. Reusing it avoids one
     // metadata round trip for every conversation, browser cache and Seed file
@@ -274,7 +279,8 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   if (exists(root)) for (const entry of readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     visit(entry.name, entry);
   for (const path of adoptedLinks.keys()) reasons.push(reason('linked_state_missing', `Reviewed state link ${path} is missing.`, { path }));
-  for (const path of unknown) reasons.push(reason('unknown_state', `Unclassified path ${path} is not package software or a known home-state root. Classify it before updating.`, { path }));
+  for (const path of unknown.slice(0, UNKNOWN_PATH_LIMIT)) reasons.push(reason('unknown_state', `Unclassified path ${path} is not package software or a known home-state root. Classify it before updating.`, { path }));
+  if (unknown.length > UNKNOWN_PATH_LIMIT) reasons.push(reason('unknown_state', `${unknown.length - UNKNOWN_PATH_LIMIT} more unclassified paths were not listed.`, { omitted: unknown.length - UNKNOWN_PATH_LIMIT }));
   const state = exists(join(root, '.home23-host.json')) ? readPrivateJSON(join(root, '.home23-host.json')) : null;
   const continuing = state?.continuationServices || [];
   if (continuing.length && (!adoptedContinuation || JSON.stringify(continuing) !== JSON.stringify(adoptedContinuation))) {
