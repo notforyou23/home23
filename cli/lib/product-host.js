@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { readMoveFence } from './product-backup.js';
 import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
-import { inspectProductMemory } from './product-memory.js';
+import { inspectMemorySeal, inspectProductMemory } from './product-memory.js';
 import {
   OWNED_EMBEDDER_PROCESS, OWNED_PROFILE_ID, OWNED_RECIPE_HASH,
   beginSemanticPrepare, encoderRequiredFor, ensureOwnedEncoderStopped, probeOwnedReady, semanticStatusView,
@@ -516,6 +516,7 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
     residentMap: state.residentMap || null,
     desiredRunning: state.desiredRunning === true,
     encoderRequired: encoderRequiredFor(state), semantic: semanticStatusView(homeRoot, state),
+    memorySeal: await inspectMemorySeal(homeRoot, residents),
     connection: {
       localURL: `http://127.0.0.1:${state.ports.coordination}`,
       dashboardURL: `http://127.0.0.1:${primaryPorts.dashboard}`,
@@ -526,7 +527,11 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
   const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state), continuationServicesForState(state));
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
-  const readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
+  let readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
+  if (!output.memorySeal.ok) {
+    // Every identity-checked memory read fails on a stale seal; say so instead of reporting ready.
+    readiness = { ...readiness, ready: false, issues: [...(readiness.issues || []), ...output.memorySeal.reasons.map(reason => reason.message)] };
+  }
   const failed = processes.some(failedProcess);
   const starting = state.desiredRunning && !readiness.recoveryRequired && !failed
     && Date.now() - Date.parse(state.startedAt || '') < 120000;

@@ -53,6 +53,35 @@ function portableFileIdentity(stat) {
   });
 }
 
+/** Persisted identity of a committed delta prefix (all fields as decimal strings). */
+function committedFileIdentity(stat) {
+  return Object.freeze({
+    dev: String(stat.dev),
+    ino: String(stat.ino),
+    size: String(stat.size),
+    mtimeNs: String(stat.mtimeNs),
+    ctimeNs: String(stat.ctimeNs),
+  });
+}
+
+function sameCommittedContent(stat, identity) {
+  // dev (st_dev) is intentionally excluded: it is assigned by the OS at
+  // MOUNT time, not tied to the file's content, and APFS reassigns it
+  // across reboots even though the file was never touched. This function
+  // exists to detect content change on an already-confined, already-opened
+  // file (identified by construction via openConfinedRegularFile), not to
+  // (re)identify which file it is -- ino + size + mtimeNs + ctimeNs is
+  // ample for that. Compare against the in-process TOCTOU guards below,
+  // in jsonl.cjs and legacy-projection.cjs, which legitimately keep dev:
+  // those compare a file to itself moments later within the same process
+  // run, where dev cannot change.
+  return Boolean(identity
+    && String(stat.ino) === identity.ino
+    && String(stat.size) === identity.size
+    && String(stat.mtimeNs) === identity.mtimeNs
+    && String(stat.ctimeNs) === identity.ctimeNs);
+}
+
 function samePortableIdentity(stat, expected) {
   return Boolean(stat && expected
     && String(stat.dev) === expected.dev
@@ -307,6 +336,8 @@ module.exports = {
   acceptsWritableOpenCtimeDrift,
   openConfinedRegularFile,
   portableFileIdentity,
+  committedFileIdentity,
+  sameCommittedContent,
   assertStableOpenedFile,
   assertStableOpenedFileContent,
   assertOpenedFilePathIdentity,

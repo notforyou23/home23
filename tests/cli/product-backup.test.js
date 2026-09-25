@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import {
   createHomeBackup, inspectHomeBackup, moveHome, readAuthenticatedBackupHeader, readMoveFence, recoverInspectedHome, rebindAdoptedHome,
   rewriteAdoptedCronPromptPaths,
@@ -13,6 +14,7 @@ import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
 import { SUPPORTED_COORDINATION_SCHEMAS } from '../../cli/lib/product-update-inventory.js';
 
+const memorySource = createRequire(import.meta.url)('../../shared/memory-source');
 const quiet = { listProcesses: async () => [] };
 const cursorId = sourcePath => `tail_${createHash('sha256').update(sourcePath).digest('hex').slice(0, 8)}`;
 
@@ -1514,4 +1516,87 @@ test('cursor rebind refuses colliding, malformed, or symlinked state before chan
       assert.equal(fs.readFileSync(hostPath).equals(before), true);
     });
   }
+});
+
+/** A resident brain whose manifest seals a chain-backed committed delta, as the engine writer leaves it. */
+async function sealedBrain(home, resident, lockRoot) {
+  const brain = path.join(home, `app/instances/${resident}/brain`);
+  fs.mkdirSync(brain, { recursive: true, mode: 0o755 });
+  await memorySource.rewriteMemoryBase(brain, {
+    nodes: [{ id: 'base', concept: 'base canary' }],
+    edges: [],
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  await memorySource.appendMemoryRevision(brain, {
+    nodes: [{ id: 'delta', concept: 'moved delta canary' }],
+  }, { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  return brain;
+}
+
+test('move reseals the restored brain manifest so identity-checked memory reads work at the destination', async t => {
+  const fixture = stoppedHome(t);
+  const birth = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(birth, { recursive: true });
+  fs.writeFileSync(path.join(birth, 'birth-receipt.json'), '{"seedId":"milo-seed"}\n');
+  const brain = await sealedBrain(fixture.home, 'milo', path.join(fixture.root, 'locks'));
+  const sourceManifest = fs.readFileSync(path.join(brain, 'memory-manifest.json'));
+  const destination = path.join(fixture.root, 'destination');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  const moved = await moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, quiet);
+  assert.equal(moved.fenced, true);
+  const restored = path.join(destination, 'app/instances/milo/brain');
+  const seal = await memorySource.inspectMemorySeal(restored);
+  assert.equal(seal.status, 'sealed');
+  assert.notEqual(seal.manifest.activeDelta.fileIdentity.ino, JSON.parse(sourceManifest).activeDelta.fileIdentity.ino);
+  assert.equal(seal.manifest.activeDelta.chainDigest, JSON.parse(sourceManifest).activeDelta.chainDigest);
+  assert.equal(fs.readFileSync(path.join(brain, 'memory-manifest.json')).equals(sourceManifest), true, 'the source manifest is untouched');
+});
+
+test('move refuses a brain whose committed delta no longer matches its sealed manifest and leaves the source unfenced', async t => {
+  const fixture = stoppedHome(t);
+  const birth = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(birth, { recursive: true });
+  fs.writeFileSync(path.join(birth, 'birth-receipt.json'), '{"seedId":"milo-seed"}\n');
+  const brain = await sealedBrain(fixture.home, 'milo', path.join(fixture.root, 'locks'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(brain, 'memory-manifest.json'), 'utf8'));
+  const deltaPath = path.join(brain, manifest.activeDelta.file);
+  const original = fs.readFileSync(deltaPath, 'utf8');
+  const tampered = original.replace('moved delta canary', 'moved DELTA canary');
+  assert.equal(tampered.length, original.length);
+  fs.writeFileSync(deltaPath, tampered);
+  const destination = path.join(fixture.root, 'destination');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  await assert.rejects(moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, quiet), { code: 'memory_seal_content_changed', message: /milo/ });
+  assert.equal(readMoveFence(fixture.home), null);
+});
+
+test('recoverInspectedHome reseals the restored brain manifest and a retry still matches the archive', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const { payload, manifest } = fixturePayload(root);
+  const { resident } = seedRecoverableHome(home, { packageId: manifest.packageId, sourceCommit: manifest.sourceCommit });
+  await sealedBrain(home, resident, path.join(root, 'locks'));
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const archivePath = path.join(out, 'home.h23b');
+  const keyPath = path.join(out, 'home.backup-key.json');
+  const inspectionRoot = path.join(root, 'inspect');
+  fs.mkdirSync(inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  const restored = path.join(inspectionRoot, `app/instances/${resident}/brain`);
+  assert.equal((await memorySource.inspectMemorySeal(restored)).status, 'stale', 'inspection restores the bytes under a new file identity');
+  fs.rmSync(home, { recursive: true, force: true });
+
+  const recovered = await recoverInspectedHome({ inspectionRoot, payloadPath: payload, archivePath, keyPath }, quiet);
+  assert.equal(recovered.ok, true);
+  assert.equal((await memorySource.inspectMemorySeal(restored)).status, 'sealed');
+
+  const again = await recoverInspectedHome({ inspectionRoot, payloadPath: payload, archivePath, keyPath }, quiet);
+  assert.equal(again.ok, true);
+  assert.equal((await memorySource.inspectMemorySeal(restored)).status, 'sealed');
 });

@@ -7,6 +7,7 @@ module.exports = {
   ...require('./confined-file.cjs'),
   ...require('./jsonl.cjs'),
   ...require('./manifest.cjs'),
+  ...require('./reseal.cjs'),
   ...require('./overlay-store.cjs'),
   ...require('./scratch-quota.cjs'),
   ...require('./reader.cjs'),
