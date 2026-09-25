@@ -38,8 +38,9 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
+import { resolveAppRoot, resolveShakedownSiteRoot } from "./lib/app-root.mjs";
 
-const H23 = process.env.HOME23_ROOT || "/Users/jtr/_JTR23_/release/home23";
+const H23 = resolveAppRoot(import.meta.url);
 const PROJECT = join(H23, "instances/jerry/workspace/projects/shakedownshuffle");
 const QUEUE = join(PROJECT, "content/article-editorial-queue.md");
 const LEDGER_DIR = join(H23, "instances/workers/shakedown-jerry/workspace/state");
@@ -58,7 +59,7 @@ const ALLOWLIST = {
   // — no production write, no deploy, no external send, no money. Verified by
   // hand 2026-07-30: exit 0, idempotent, ~90s. Safe to allowlist.
   "run-publish-scan": {
-    cwd: "/Users/jtr/websites/shakedownshuffle.com/shakedown-v2",
+    cwd: join(resolveShakedownSiteRoot(), "shakedown-v2"),
     command: ["npm", "run", "pipeline:scan"],
     timeoutSeconds: 180,
   },

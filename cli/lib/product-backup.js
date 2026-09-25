@@ -4,6 +4,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import {
   chmodSync,
   closeSync,
+  fchmodSync,
   constants as fsConstants,
   fsyncSync,
   lstatSync,
@@ -23,11 +24,12 @@ import {
   symlinkSync,
   statSync,
 } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectCoordinationDatabase, isProductStatePath, isRebuildableStatePath, ownedWriterNames } from './product-update-inventory.js';
+import { detectForeignBindings } from './product-foreign-bindings.js';
 
 const executeFile = promisify(execFile);
 const BACKUP_SCHEMA = 'home23.backup.v1';
@@ -39,6 +41,10 @@ const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordina
 const TYPE_FILE = 1;
 const TYPE_SYMLINK = 2;
 const CHUNK = 64 * 1024;
+// Inner header bound shared by writer and reader: the file inventory lives there, so it must fit every home the
+// writer accepts. 256 MiB keeps the serialized header well under V8's string limit, so the writer's own check runs
+// (a larger bound would let JSON.stringify throw first) and the reader's pre-authentication allocation stays bounded.
+const MAX_HEADER_BYTES = 256 * 1024 * 1024;
 const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
 const HOST_LOCK_STALE_MS = 180000;
 const MOVE_FENCE_SCHEMA = 'home23.move-fence.v1';
@@ -324,9 +330,17 @@ function cipherSink(tempPath) {
   };
 }
 
-async function collectRecords(homeRoot, sink, archiveParent, lock) {
+async function collectRecords(homeRoot, sink, archiveParent, lock, maxHeaderBytes = MAX_HEADER_BYTES) {
   const files = [];
   const seen = new Set();
+  // The inventory is accounted as it grows so an oversized home stops the backup at the first entry that
+  // would not fit the header, instead of after every record was written and encrypted.
+  let inventoryBytes = 2;
+  const inventory = entry => {
+    inventoryBytes += JSON.stringify(entry).length + 1;
+    if (inventoryBytes > maxHeaderBytes) fail('backup_inventory_too_large', 'The file inventory of this home exceeds one backup archive header. Backup stopped before encrypting.');
+    files.push(entry);
+  };
   let temporaryDatabase = null;
   let coordinationSchema = null;
   const add = (relative, type, absolute, size) => {
@@ -338,7 +352,8 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
       const again = streamHash(absolute, lock);
       if (again !== digest) fail('backup_state_changed', `State changed while checkpointing ${relative}.`);
     }
-    files.push({ path: relative, sha256: digest, bytes: size, type });
+    // A file's mode travels with it so a restored state script keeps its executable bit.
+    inventory(type === 'file' ? { path: relative, sha256: digest, bytes: size, type, mode: lstatSync(absolute).mode & 0o777 } : { path: relative, sha256: digest, bytes: size, type });
   };
   const visit = async relative => {
     if (!relative || seen.has(relative) || isRebuildableStatePath(relative) || omitSidecar(relative)) return;
@@ -352,7 +367,7 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
       sink.write(recordHeader(relative, 'symlink', bytes.length));
       sink.write(bytes);
       seen.add(relative);
-      files.push({ path: relative, sha256: sha256(bytes), bytes: bytes.length, type: 'symlink' });
+      inventory({ path: relative, sha256: sha256(bytes), bytes: bytes.length, type: 'symlink' });
       return;
     }
     if (stat.isDirectory()) {
@@ -369,7 +384,7 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
       const size = lstatSync(temporaryDatabase).size;
       sink.write(recordHeader(relative, 'file', size));
       const digest = streamFile(sink, temporaryDatabase, size, lock);
-      files.push({ path: relative, sha256: digest, bytes: size, type: 'file' });
+      inventory({ path: relative, sha256: digest, bytes: size, type: 'file', mode: stat.mode & 0o777 });
       seen.add(relative);
       return;
     }
@@ -471,7 +486,8 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
     if (dependencies.afterLock) await dependencies.afterLock(root);
     assertWritersStopped(root, await list(root));
     records = plainSink(recordsPath);
-    const { files, coordinationSchema } = await collectRecords(root, records, dirname(archive), lock);
+    const headerBound = Number.isInteger(dependencies.maxHeaderBytes) && dependencies.maxHeaderBytes > 0 ? dependencies.maxHeaderBytes : MAX_HEADER_BYTES;
+    const { files, coordinationSchema } = await collectRecords(root, records, dirname(archive), lock, headerBound);
     records.close();
     records = null;
     assertWritersStopped(root, await list(root));
@@ -482,6 +498,7 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
       coordinationSchema,
       writersQuiesced: true, checkpoint: 'vacuum-and-stable-files', files,
     }));
+    if (authenticated.length > headerBound) fail('backup_inventory_too_large', 'The file inventory of this home exceeds one backup archive header.');
     sink = cipherSink(ciphertext);
     const length = Buffer.alloc(4);
     length.writeUInt32BE(authenticated.length, 0);
@@ -531,8 +548,11 @@ function assertRealParents(root, relativePath) {
   }
 }
 
-function openNewFile(destination) {
-  return openSync(destination, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+/** Creates the restored file privately, then applies the inventoried mode (older archives carry none and stay private). */
+function openNewFile(destination, mode) {
+  const fd = openSync(destination, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+  if (Number.isInteger(mode) && (mode & 0o777) !== 0o600) fchmodSync(fd, mode & 0o777);
+  return fd;
 }
 
 function restoredLink(sourceHome, inspectionRoot, linkRelative, target) {
@@ -596,7 +616,7 @@ function createExtractor(root, expectedFiles, sourceHome) {
         assertRealParents(root, pathText);
         record = {
           path: pathText, type, remaining: size, hash: createHash('sha256'), destination,
-          fd: type === 'file' ? openNewFile(destination) : null, symlink: Buffer.alloc(0),
+          fd: type === 'file' ? openNewFile(destination, expected.mode) : null, symlink: Buffer.alloc(0),
         };
       }
       if (record.remaining === 0) { finishRecord(); continue; }
@@ -624,21 +644,47 @@ function createExtractor(root, expectedFiles, sourceHome) {
   };
 }
 
-function readAuthenticatedHeader(plainPath) {
-  const fd = openSync(plainPath, 'r');
-  try {
-    const lengthBytes = Buffer.alloc(4);
-    if (readSync(fd, lengthBytes, 0, 4, 0) !== 4) throw new Error('Truncated backup payload.');
-    const headerLength = lengthBytes.readUInt32BE(0);
-    if (headerLength < 2 || headerLength > 32 * 1024 * 1024) throw new Error('Backup header is invalid.');
-    const headerBytes = Buffer.alloc(headerLength);
-    if (readSync(fd, headerBytes, 0, headerLength, 4) !== headerLength) throw new Error('Truncated backup payload.');
-    return { header: JSON.parse(headerBytes.toString('utf8')), recordsOffset: 4 + headerLength };
-  } finally { closeSync(fd); }
+/** Collects the length-prefixed inner header from the plaintext stream. Bounded, so a tampered length cannot demand memory. */
+function headerCapture() {
+  const prefix = Buffer.alloc(4);
+  let prefixed = 0;
+  let bytes = null;
+  let filled = 0;
+  return {
+    /** Returns null until the header is complete, then the parsed header and the plaintext that followed it. */
+    push(chunk) {
+      let rest = chunk;
+      if (!bytes) {
+        const take = Math.min(4 - prefixed, rest.length);
+        rest.copy(prefix, prefixed, 0, take);
+        prefixed += take;
+        rest = rest.subarray(take);
+        if (prefixed < 4) return null;
+        const headerLength = prefix.readUInt32BE(0);
+        if (headerLength < 2 || headerLength > MAX_HEADER_BYTES) throw new Error('Backup header is invalid or the key does not match this archive.');
+        bytes = Buffer.alloc(headerLength);
+      }
+      const take = Math.min(bytes.length - filled, rest.length);
+      rest.copy(bytes, filled, 0, take);
+      filled += take;
+      if (filled < bytes.length) return null;
+      let header;
+      try { header = JSON.parse(bytes.toString('utf8')); }
+      catch { throw new Error('Backup header is invalid or the key does not match this archive.'); }
+      if (!header || header.schema !== BACKUP_SCHEMA || !Array.isArray(header.files)) throw new Error('Backup header is invalid.');
+      return { header, rest: rest.subarray(take) };
+    },
+  };
 }
 
-/** Decrypt and authenticate a backup; returns the inner header and plaintext path. Caller deletes plainPath. */
-function authenticateBackupArchive(archive, keyFile, plainPath) {
+/**
+ * Decrypt and authenticate a backup in one streaming pass, writing nothing beside the archive.
+ * The bounded inner header is parsed as soon as it arrives; `onHeader(header)` may return a
+ * sink that receives the record bytes that follow. The GCM tag is verified at the end of the
+ * pass and the header is returned only then, so a caller that wrote records must discard
+ * them when this throws.
+ */
+function authenticateBackupArchive(archive, keyFile, onHeader = () => null) {
   const keyDocument = JSON.parse(readFileSync(keyFile, 'utf8'));
   if (keyDocument?.schema !== KEY_SCHEMA || keyDocument.algorithm !== 'aes-256-gcm' || typeof keyDocument.key !== 'string') throw new Error('Backup key is invalid.');
   const key = Buffer.from(keyDocument.key, 'base64');
@@ -657,40 +703,39 @@ function authenticateBackupArchive(archive, keyFile, plainPath) {
     const tag = Buffer.from(outer.encrypted.tag, 'base64');
     const decipher = createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAuthTag(tag);
-    const plainFd = openSync(plainPath, 'wx', 0o600);
+    const capture = headerCapture();
+    let header = null;
+    let sink = null;
+    const consume = plain => {
+      if (!header) {
+        const captured = capture.push(plain);
+        if (!captured) return;
+        header = captured.header;
+        sink = onHeader(header) || null;
+        plain = captured.rest;
+      }
+      if (plain.length && sink) sink(plain);
+    };
     const buffer = Buffer.alloc(CHUNK);
     let position = 8 + headerLength;
-    try {
-      while (true) {
-        const count = readSync(archiveFd, buffer, 0, CHUNK, position);
-        if (count <= 0) break;
-        position += count;
-        const plain = decipher.update(buffer.subarray(0, count));
-        if (plain.length) writeSync(plainFd, plain);
-      }
-      const tail = decipher.final();
-      if (tail.length) writeSync(plainFd, tail);
-      fsyncSync(plainFd);
-    } finally { closeSync(plainFd); }
+    while (true) {
+      const count = readSync(archiveFd, buffer, 0, CHUNK, position);
+      if (count <= 0) break;
+      position += count;
+      consume(decipher.update(buffer.subarray(0, count)));
+    }
+    consume(decipher.final());
+    if (!header) throw new Error('Truncated backup payload.');
+    return header;
   } finally { closeSync(archiveFd); }
-  const authenticated = readAuthenticatedHeader(plainPath);
-  if (!authenticated?.header || authenticated.header.schema !== BACKUP_SCHEMA || !Array.isArray(authenticated.header.files)) throw new Error('Backup header is invalid.');
-  return authenticated;
 }
 
-/** Re-read the authenticated archive header (same authenticator as inspect). Does not extract files. */
+/** Re-read the authenticated archive header (same authenticator as inspect). Does not extract files or write anywhere. */
 export function readAuthenticatedBackupHeader({ archivePath, keyPath } = {}) {
   if (typeof archivePath !== 'string' || typeof keyPath !== 'string' || !isAbsolute(archivePath) || !isAbsolute(keyPath)) {
     throw new Error('Archive and key paths must be absolute.');
   }
-  const archive = resolve(archivePath);
-  const keyFile = resolve(keyPath);
-  const plainPath = join(dirname(archive), `.home23-backup-auth-${randomUUID()}`);
-  try {
-    return authenticateBackupArchive(archive, keyFile, plainPath).header;
-  } finally {
-    if (exists(plainPath)) unlinkSync(plainPath);
-  }
+  return authenticateBackupArchive(resolve(archivePath), resolve(keyPath));
 }
 
 export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot } = {}) {
@@ -701,16 +746,15 @@ export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot }
   const keyFile = resolve(keyPath);
   const root = absoluteRoot(inspectionRoot, 'inspection directory');
   if (readdirSync(root).length !== 0) throw new Error('Inspection directory must be empty.');
-  let wrote = false;
-  let plainPath = null;
+  let extractor = null;
   try {
-    plainPath = join(dirname(root), `.home23-backup-auth-${randomUUID()}`);
-    const authenticated = authenticateBackupArchive(archive, keyFile, plainPath);
-    const header = authenticated.header;
-    if (!header.homeRoot || resolve(header.homeRoot) === root) throw new Error('Inspection directory must not be the backed-up home.');
-    const extractor = createExtractor(root, header.files, header.homeRoot);
-    wrote = true;
-    pushPlainRecords(plainPath, authenticated.recordsOffset, extractor);
+    // One pass over the archive: records stream from the decipher straight into the inspection
+    // root, which is emptied again unless the archive authenticates. No plaintext copy is written.
+    const header = authenticateBackupArchive(archive, keyFile, authenticated => {
+      if (!authenticated.homeRoot || resolve(authenticated.homeRoot) === root) throw new Error('Inspection directory must not be the backed-up home.');
+      extractor = createExtractor(root, authenticated.files, authenticated.homeRoot);
+      return chunk => extractor.push(chunk);
+    });
     extractor.end();
     const reconnects = [machineReconnect()];
     if (header.files.some(entry => entry.path === 'app/config/secrets.yaml')) reconnects.push(credentialReconnect());
@@ -721,25 +765,9 @@ export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot }
       fileCount: header.files.length, writersStarted: false, reconnects, externalDependencies,
       sourceAbsentReady: externalDependencies.length === 0, sourceHome: header.homeRoot };
   } catch (error) {
-    if (wrote || readdirSync(root).length) emptyDirectory(root);
+    if (extractor || readdirSync(root).length) emptyDirectory(root);
     throw error;
-  } finally {
-    if (plainPath && exists(plainPath)) unlinkSync(plainPath);
   }
-}
-
-function pushPlainRecords(plainPath, offset, extractor) {
-  const fd = openSync(plainPath, 'r');
-  const buffer = Buffer.alloc(CHUNK);
-  try {
-    let position = offset;
-    while (true) {
-      const count = readSync(fd, buffer, 0, CHUNK, position);
-      if (count <= 0) break;
-      position += count;
-      extractor.push(Buffer.from(buffer.subarray(0, count)));
-    }
-  } finally { closeSync(fd); }
 }
 
 export function readMoveFence(homeRoot) {
@@ -761,30 +789,81 @@ function residentName(home) {
   return name;
 }
 
-export function residentIdentityPaths(home) {
-  const name = residentName(home);
+function seedDirectories(home, name) {
   const substrate = join(home, 'app/instances', name, 'substrate');
-  if (!exists(substrate)) fail('backup_identity_missing', `Resident ${name} has no Seed substrate.`);
-  const seeds = readdirSync(substrate).filter(entry => entry.startsWith('seed-') && lstatSync(join(substrate, entry)).isDirectory()).sort();
-  if (!seeds.length) fail('backup_identity_missing', `Resident ${name} has no Seed.`);
+  if (!exists(substrate)) return [];
+  return readdirSync(substrate).filter(entry => entry.startsWith('seed-') && lstatSync(join(substrate, entry)).isDirectory()).sort();
+}
+
+function readAdoptionReceipt(home) {
+  const file = join(home, 'runtime/adoption-preservation.json');
+  if (!exists(file)) return null;
+  const receipt = readPrivateJSON(file);
+  return receipt?.schema === 'home23.adoption-preservation-receipt.v1' && Array.isArray(receipt.links) ? receipt : null;
+}
+
+/** What an adopted home is, independent of where it runs: rebind moves continuing-service run bindings and nothing else. */
+function adoptionIdentityDigest(receipt) {
+  const services = Array.isArray(receipt.continuationServices) ? receipt.continuationServices : [];
+  return sha256(JSON.stringify({
+    sourceRoot: receipt.sourceRoot ?? null, links: receipt.links, externalReferences: receipt.externalReferences ?? [],
+    continuationServices: services.map(service => ({ ...service, run: undefined })),
+  }));
+}
+
+function hostResidentDigest(host) {
+  const map = host.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap) ? host.residentMap : null;
+  const residents = map ? Object.keys(map).filter(name => /^[a-z][a-z0-9-]{0,62}$/.test(name)).sort() : [];
+  return residents.length ? sha256(JSON.stringify(residents)) : null;
+}
+
+/**
+ * Identity a move must carry over unchanged. A born home proves it with every Seed's birth
+ * receipt and ledger. A home adopted without a birth proves it with its sealed adoption
+ * receipt, or failing that the host's resident binding; its Seed ledgers still travel too.
+ */
+function residentIdentity(home) {
+  const name = residentName(home);
+  const seeds = seedDirectories(home, name);
   const paths = [];
+  const born = seeds.some(seed => exists(join(home, `app/instances/${name}/substrate/${seed}/birth-receipt.json`)));
   for (const seed of seeds) {
     const birth = `app/instances/${name}/substrate/${seed}/birth-receipt.json`;
-    if (!exists(join(home, birth))) fail('backup_identity_missing', `Resident ${name} is missing ${birth}.`);
-    paths.push(birth);
+    if (exists(join(home, birth))) paths.push(birth);
+    else if (born) fail('backup_identity_missing', `Resident ${name} is missing ${birth}.`);
     const ledger = `app/instances/${name}/substrate/${seed}/seed-ledger.jsonl`;
     if (exists(join(home, ledger))) paths.push(ledger);
   }
-  return paths;
+  if (born) return { paths, adoption: false, hostBinding: false };
+  if (readAdoptionReceipt(home)) return { paths, adoption: true, hostBinding: false };
+  if (hostResidentDigest(readHostState(home))) return { paths, adoption: false, hostBinding: true };
+  fail('backup_identity_missing', `Resident ${name} has no Seed birth receipt, adoption receipt, or host resident binding to preserve.`);
+}
+
+export function residentIdentityPaths(home) {
+  return residentIdentity(home).paths;
+}
+
+function identityDigests(home, evidence) {
+  const digests = {};
+  for (const relativePath of evidence.paths) {
+    const file = join(home, relativePath);
+    digests[relativePath] = exists(file) ? streamHash(file) : null;
+  }
+  if (evidence.adoption) {
+    const receipt = readAdoptionReceipt(home);
+    digests['runtime/adoption-preservation.json'] = receipt ? adoptionIdentityDigest(receipt) : null;
+  }
+  if (evidence.hostBinding) digests['.home23-host.json'] = hostResidentDigest(readHostState(home));
+  return digests;
 }
 
 function compareIdentity(source, destination) {
-  const identity = {};
-  for (const relativePath of residentIdentityPaths(source)) {
-    const from = join(source, relativePath);
-    const copy = join(destination, relativePath);
-    if (!exists(copy) || streamHash(from) !== streamHash(copy)) fail('backup_identity_mismatch', `Restored identity does not match the source: ${relativePath}`);
-    identity[relativePath] = streamHash(from);
+  const evidence = residentIdentity(source);
+  const identity = identityDigests(source, evidence);
+  const restored = identityDigests(destination, evidence);
+  for (const [relativePath, digest] of Object.entries(identity)) {
+    if (!digest || restored[relativePath] !== digest) fail('backup_identity_mismatch', `Restored identity does not match the source: ${relativePath}`);
   }
   return identity;
 }
@@ -863,15 +942,50 @@ function hasRecoverableIdentity(host) {
   return typeof host.profile?.name === 'string' && /^[a-z][a-z0-9-]{0,62}$/.test(host.profile.name);
 }
 
+const BRAIN_MANIFEST_PATH = /^app\/instances\/[^/]+\/brain\/memory-manifest\.json$/;
+
 /** Host/config paths rewrite during rebind; identity bytes must still match the archive. */
-function isRebindMutablePath(relative) {
+function isRebindMutablePath(relative, root = null) {
   if (isLifecycleLockPath(relative)) return true;
   if (relative === '.home23-host.json' || relative === '.home23-install.json') return true;
   if (relative === 'app/config/home.yaml' || relative === 'app/config/agents.json') return true;
   if (relative === 'app/ecosystem.config.cjs' || relative === 'runtime/semantic-prep.json') return true;
   if (relative === 'runtime/ecosystem.config.json') return true;
   if (/^app\/instances\/[^/]+\/(config|engine)\.yaml$/.test(relative)) return true;
+  if (!rebindScanExcluded(relative) && embeddedRebindKind(relative, root ? join(root, relative) : null)) return true;
+  if (BRAIN_MANIFEST_PATH.test(relative)) return true;
   return false;
+}
+
+/**
+ * Restoring, moving or adopting a home copies each resident brain byte for
+ * byte, but the copy has a new inode and ctime (and a new mtime when the
+ * extractor or preserve copy wrote it), so the manifest's sealed delta identity
+ * no longer matches and every identity-checked memory read fails with
+ * source_changed until it is renewed. Reseal each copied brain in place; refuse
+ * the operation when the committed delta content itself differs from what the
+ * manifest sealed.
+ */
+async function resealRestoredBrains(destination) {
+  const instances = join(destination, 'app', 'instances');
+  if (!exists(instances) || lstatSync(instances).isSymbolicLink() || !lstatSync(instances).isDirectory()) return [];
+  const { default: memorySeal } = await import('../../shared/memory-source/reseal.cjs');
+  const resealed = [];
+  for (const name of readdirSync(instances).sort()) {
+    if (!/^[a-z][a-z0-9-]{0,62}$/.test(name)) continue;
+    const brain = join(instances, name, 'brain');
+    if (!exists(join(brain, 'memory-manifest.json'))) continue;
+    // A reviewed adoption link keeps its authority elsewhere; only owned copies are resealed.
+    if (lstatSync(join(instances, name)).isSymbolicLink() || lstatSync(brain).isSymbolicLink()) continue;
+    let result;
+    try { result = await memorySeal.resealMemoryManifest(brain); }
+    catch (error) {
+      const code = error?.code === memorySeal.MEMORY_SEAL_CONTENT_CHANGED ? error.code : 'memory_seal_failed';
+      fail(code, `Resident ${name} memory could not be resealed after the copy: ${error?.message || error}. The restored memory manifest was left as copied; memory reads there fail until it is repaired.`);
+    }
+    resealed.push({ resident: name, status: result.status, file: result.file || null });
+  }
+  return resealed;
 }
 
 const CURSOR_PATH = /^app\/instances\/[^/]+\/(?:substrate\/[^/]+|seed-[^/]+)\/adapter-cursor\.([a-zA-Z0-9_-]+)\.json$/;
@@ -1055,7 +1169,7 @@ function assertExtractMatchesArchive(destination, header, { allowRebindMutation 
       fail('backup_recover_archive_mismatch', 'Authenticated archive inventory is invalid.');
     }
     if (isLifecycleLockPath(entry.path)) continue;
-    if (allowRebindMutation && isRebindMutablePath(entry.path)) continue;
+    if (allowRebindMutation && isRebindMutablePath(entry.path, destination)) continue;
     if (allowRebindMutation && CURSOR_PATH.test(entry.path)) continue;
     const absolute = join(destination, entry.path);
     if (!exists(absolute)) {
@@ -1213,9 +1327,186 @@ function replaceHomePath(value, source, destination, adopted = false) {
   return `${destination}${value.slice(source.length)}`;
 }
 
+/* ── Embedded home paths ───────────────────────────────────────────────
+ * State names the home root inside larger strings: PATH lists, shell
+ * commands, scripts kept as state, prose, file:// URLs. Each occurrence is
+ * rebound in the form it was written: plain, shell-escaped, percent-encoded
+ * and, in raw JSON text, their JSON encodings. */
+const HOME_PATH_CHAR = /[A-Za-z0-9_.~-]/;
+const SHELL_SPECIAL = /[\s'"\\$`!&|;()<>*?[\]{}~#]/;
+const shellEscape = value => value.replace(/[\s'"\\$`!&|;()<>*?[\]{}~#]/g, '\\$&');
+const percentEncodePath = value => value.split('/').map(encodeURIComponent).join('/');
+const jsonBody = value => JSON.stringify(value).slice(1, -1);
+
+function homePathForms(source, { json = false } = {}) {
+  const forms = new Map();
+  const add = (needle, encode, plain = false) => { if (!forms.has(needle)) forms.set(needle, { needle, encode, plain }); };
+  add(source, value => value, true);
+  add(shellEscape(source), shellEscape);
+  add(percentEncodePath(source), percentEncodePath);
+  if (json) {
+    add(jsonBody(source), jsonBody);
+    add(jsonBody(shellEscape(source)), value => jsonBody(shellEscape(value)));
+  }
+  return [...forms.values()].sort((left, right) => right.needle.length - left.needle.length);
+}
+
+/** Occurrences bounded by non-path characters, so `<home>-2` and `X<home>` stay literal. */
+function homePathOccurrences(text, forms) {
+  const bounded = (at, length) => (at === 0 || !HOME_PATH_CHAR.test(text[at - 1]))
+    && (at + length === text.length || !HOME_PATH_CHAR.test(text[at + length]));
+  const found = [];
+  let index = 0;
+  while (index < text.length) {
+    let best = null;
+    for (const form of forms) {
+      let at = text.indexOf(form.needle, index);
+      while (at >= 0 && !bounded(at, form.needle.length)) at = text.indexOf(form.needle, at + 1);
+      if (at >= 0 && (!best || at < best.index)) best = { index: at, form };
+    }
+    if (!best) break;
+    const rest = text.slice(best.index + best.form.needle.length);
+    const segment = rest.startsWith('/') ? /^\/([A-Za-z0-9_.~-]*)/.exec(rest)[1] : '';
+    found.push({ index: best.index, length: best.form.needle.length, form: best.form, segment });
+    index = best.index + best.form.needle.length;
+  }
+  return found;
+}
+
+const hasHomeReference = (text, forms) => homePathOccurrences(text, forms).length > 0;
+
+/** Same mapping as replaceHomePath, decided by the first path segment after the home root. */
+const mappedHomeRoot = (segment, destination, adopted) => (
+  !adopted || ['app', 'runtime', 'bin', 'tools'].includes(segment) ? destination : join(destination, 'app'));
+
+function replaceEmbeddedHomePaths(text, source, destination, { adopted = false, forms = null } = {}) {
+  const occurrences = homePathOccurrences(text, forms || homePathForms(source));
+  if (!occurrences.length) return text;
+  let output = '', cursor = 0;
+  for (const occurrence of occurrences) {
+    output += text.slice(cursor, occurrence.index) + occurrence.form.encode(mappedHomeRoot(occurrence.segment, destination, adopted));
+    cursor = occurrence.index + occurrence.length;
+  }
+  return output + text.slice(cursor);
+}
+
+/** Quote context and word extent per character of shell-like text (POSIX sh; Caddyfile with singleQuotes off). */
+function shellSpans(text, { singleQuotes = true, metachars = true } = {}) {
+  const spans = new Array(text.length);
+  const isBreak = character => /\s/.test(character) || (metachars && ';&|()<>'.includes(character));
+  const mark = (span, from, to) => { for (let at = from; at < to; at += 1) spans[at] = span; };
+  let index = 0;
+  while (index < text.length) {
+    if (isBreak(text[index])) { spans[index] = { kind: 'break' }; index += 1; continue; }
+    if (text[index] === '#') {
+      const newline = text.indexOf('\n', index);
+      const stop = newline < 0 ? text.length : newline;
+      mark({ kind: 'comment' }, index, stop);
+      index = stop;
+      continue;
+    }
+    const word = { start: index, end: index, quoted: false };
+    while (index < text.length && !isBreak(text[index])) {
+      const start = index;
+      if (text[index] === "'" && singleQuotes) {
+        const close = text.indexOf("'", index + 1);
+        index = close < 0 ? text.length : close + 1;
+        word.quoted = true;
+        mark({ kind: 'single', word }, start, index);
+        continue;
+      }
+      if (text[index] === '"') {
+        index += 1;
+        while (index < text.length && text[index] !== '"') index += text[index] === '\\' ? 2 : 1;
+        index = Math.min(index + 1, text.length);
+        word.quoted = true;
+        mark({ kind: 'double', word }, start, index);
+        continue;
+      }
+      let escaped = false;
+      while (index < text.length && !isBreak(text[index]) && text[index] !== '"' && !(singleQuotes && text[index] === "'")) {
+        if (text[index] === '\\') escaped = true;
+        index += text[index] === '\\' ? 2 : 1;
+      }
+      index = Math.min(index, text.length);
+      mark({ kind: 'unquoted', word, escaped }, start, index);
+    }
+    word.end = index;
+  }
+  return spans;
+}
+
+/**
+ * Rebind the home root inside shell text. A plain path in an unquoted word is
+ * double-quoted when the destination needs it (`NAME="…"` for an assignment);
+ * escaped and quoted forms keep their form; comments are prose.
+ */
+function rewriteShellText(text, source, destination, { adopted = false, singleQuotes = true, assignments = true, metachars = true } = {}) {
+  const occurrences = homePathOccurrences(text, homePathForms(source));
+  if (!occurrences.length) return text;
+  const spans = shellSpans(text, { singleQuotes, metachars });
+  const mapped = occurrence => mappedHomeRoot(occurrence.segment, destination, adopted);
+  const ranges = [];
+  for (const occurrence of occurrences) {
+    const first = spans[occurrence.index];
+    const last = spans[occurrence.index + occurrence.length - 1];
+    if (!occurrence.form.plain || !SHELL_SPECIAL.test(mapped(occurrence))) continue;
+    if ([first, last].some(span => span.kind !== 'unquoted' || span.escaped || span.word.quoted)) continue;
+    const previous = ranges[ranges.length - 1];
+    if (previous && first.word.start <= previous.end) previous.end = Math.max(previous.end, last.word.end);
+    else ranges.push({ start: first.word.start, end: last.word.end });
+  }
+  const render = occurrence => {
+    const value = mapped(occurrence);
+    if (!occurrence.form.plain) return occurrence.form.encode(value);
+    const kind = spans[occurrence.index].kind;
+    if (kind === 'double' || ranges.some(range => occurrence.index >= range.start && occurrence.index < range.end)) {
+      return value.replace(/[\\"$`]/g, '\\$&');
+    }
+    if (kind === 'single') return value.replaceAll("'", "'\\''");
+    if (kind === 'unquoted' && SHELL_SPECIAL.test(value)) return shellEscape(value);
+    return value;
+  };
+  let output = '', cursor = 0, next = 0;
+  const emit = to => {
+    while (next < occurrences.length && occurrences[next].index < to) {
+      const occurrence = occurrences[next];
+      output += text.slice(cursor, occurrence.index) + render(occurrence);
+      cursor = occurrence.index + occurrence.length;
+      next += 1;
+    }
+    output += text.slice(cursor, to);
+    cursor = Math.max(cursor, to);
+  };
+  for (const range of ranges) {
+    emit(range.start);
+    const wordStart = output.length;
+    emit(range.end);
+    const word = output.slice(wordStart);
+    const name = assignments ? /^[A-Za-z_][A-Za-z0-9_]*=/.exec(word)?.[0] : null;
+    output = `${output.slice(0, wordStart)}${name ? `${name}"${word.slice(name.length)}"` : `"${word}"`}`;
+  }
+  emit(text.length);
+  return output;
+}
+
+/** Job `command` strings stay shell-safe; cwd, messagePath, file, root and prose take plain paths. */
+function rewriteCronJobs(value, source, destination, adopted, key = null) {
+  if (typeof value === 'string') {
+    return key === 'command'
+      ? rewriteShellText(value, source, destination, { adopted })
+      : replaceEmbeddedHomePaths(value, source, destination, { adopted });
+  }
+  if (Array.isArray(value)) return value.map(item => rewriteCronJobs(item, source, destination, adopted));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([name, child]) => [name, rewriteCronJobs(child, source, destination, adopted, name)]));
+  }
+  return value;
+}
+
 function rewriteMachineStrings(value, source, destination, oldPorts, newPorts, adopted = false) {
   if (typeof value === 'string') {
-    let next = replaceHomePath(value, source, destination, adopted);
+    let next = replaceEmbeddedHomePaths(value, source, destination, { adopted });
     if (oldPorts && newPorts) {
       for (const key of Object.keys(newPorts)) {
         const previous = oldPorts[key];
@@ -1360,19 +1651,31 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
   }
   const ecosystem = join(destination, 'app/ecosystem.config.cjs');
   if (exists(ecosystem)) {
-    let text = readFileSync(ecosystem, 'utf8');
-    if (adopted) {
-      for (const name of ['app', 'runtime', 'bin', 'tools']) {
-        text = text.split(`${source}${sep}${name}`).join(`${destination}${sep}${name}`);
-      }
-      text = text.split(source).join(join(destination, 'app'));
-    } else {
-      text = text.split(source).join(destination);
+    // The product owns its process registration: regenerate it from the
+    // rebound configuration, as Start does. Without a resident to generate
+    // from, rewrite the recorded paths instead.
+    let text = null;
+    if (files.some(entry => entry.kind === 'instance')) {
+      try {
+        const { generateEcosystem } = await import('./generate-ecosystem.js');
+        text = generateEcosystem(join(destination, 'app'), { quiet: true, writeEcosystem: false, writeManifest: false }).ecosystemSource;
+      } catch { text = null; }
     }
-    text = replaceAssignedPorts(text, oldPorts, newPorts);
-    if (residentPorts) {
-      for (const ports of Object.values(residentPorts)) {
-        text = replaceAssignedPorts(text, oldPorts, { ...newPorts, ...ports });
+    if (typeof text !== 'string') {
+      text = readFileSync(ecosystem, 'utf8');
+      if (adopted) {
+        for (const name of ['app', 'runtime', 'bin', 'tools']) {
+          text = text.split(`${source}${sep}${name}`).join(`${destination}${sep}${name}`);
+        }
+        text = text.split(source).join(join(destination, 'app'));
+      } else {
+        text = text.split(source).join(destination);
+      }
+      text = replaceAssignedPorts(text, oldPorts, newPorts);
+      if (residentPorts) {
+        for (const ports of Object.values(residentPorts)) {
+          text = replaceAssignedPorts(text, oldPorts, { ...newPorts, ...ports });
+        }
       }
     }
     if (text.includes(source)) fail('move_rebind_incomplete', 'Destination process registration still names the source home.');
@@ -1400,7 +1703,9 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     let config;
     try { config = JSON.parse(readFileSync(file, 'utf8')); }
     catch { fail('move_rebind_incomplete', `Destination ${relative} could not be read.`); }
-    config = rewriteMachineStrings(config, source, destination, oldPorts, newPorts, adopted);
+    config = relative === 'app/config/cron-jobs.json'
+      ? rewriteCronJobs(config, source, destination, adopted)
+      : rewriteMachineStrings(config, source, destination, oldPorts, newPorts, adopted);
     if (relative === 'app/config/cron-jobs.json' && adopted) {
       config = rewriteAdoptedCronPromptPaths(config, source, destination);
     }
@@ -1411,6 +1716,180 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
   rebindAgentsManifest(source, destination, adopted);
   const savedProcesses = join(destination, 'runtime/ecosystem.config.json');
   if (exists(savedProcesses)) unlinkSync(savedProcesses);
+  // The supervisor dump is derived from the registration; PM2 rebuilds it.
+  const supervisorDump = join(destination, 'runtime/pm2/dump.pm2');
+  if (exists(supervisorDump)) unlinkSync(supervisorDump);
+  rebindEmbeddedState(source, destination, adopted);
+}
+
+/* ── State that embeds the home root ─────────────────────────────────── */
+const SHELL_EXTENSIONS = new Set(['.sh', '.bash', '.zsh', '.command', '.env', '.envrc']);
+const BINARY_EXTENSIONS = new Set(['.sqlite3', '.sqlite', '.db', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.zip',
+  '.gz', '.tar', '.bin', '.wav', '.mp3', '.mp4', '.mov', '.h23b', '.woff', '.woff2', '.ttf', '.node', '.wasm']);
+const CONTENT_ROOTS = ['app/projects', 'app/workspace', 'app/archive', 'app/reports', 'app/output', 'app/keep-export',
+  'app/published', 'app/evobrew/.evobrew-workspaces', 'app/evobrew/conversations', 'app/evobrew/snapshots',
+  'app/engine/data', 'app/engine/runs', 'app/engine/artifacts', 'app/engine/outputs', 'app/engine/backups',
+  'app/engine/.backups', 'app/engine/.venv-markitdown'];
+const RESIDENT_CONTENT = /^app\/instances\/[^/]+\/(workspace|uploads|scratch|cron-runs|brain|conversations)\/(.+)$/;
+
+/**
+ * Operating state and configuration the rebind must leave free of the source
+ * home. Logs, jsonl history, caches, resident and operator content, sealed
+ * Seed evidence and derived files the product regenerates are not its subject.
+ */
+function rebindScanExcluded(relative) {
+  if (isRebuildableStatePath(relative) || isLifecycleLockPath(relative) || omitSidecar(relative)) return true;
+  if (relative === '.home23-install.json') return true;
+  if (CONTENT_ROOTS.some(root => relative === root || relative.startsWith(`${root}/`))) return true;
+  const resident = RESIDENT_CONTENT.exec(relative);
+  if (resident && !(resident[1] === 'conversations' && resident[2] === 'cron-jobs.json')) return true;
+  if (relative.split('/').some(segment => segment === 'logs' || segment === 'log' || /(^|[-_.])caches?([-_.]|$)/i.test(segment))) return true;
+  const name = basename(relative);
+  const extension = extname(name).toLowerCase();
+  if (['.log', '.jsonl', '.pid', '.sock', '.tmp', '.next'].includes(extension) || BINARY_EXTENSIONS.has(extension)) return true;
+  return name === 'birth-receipt.json' || name.startsWith('seed-ledger');
+}
+
+function hasShellShebang(absolute) {
+  try {
+    const fd = openSync(absolute, 'r');
+    try {
+      const head = Buffer.alloc(160);
+      const count = readSync(fd, head, 0, head.length, 0);
+      return /^#![^\n]*\b(?:sh|bash|zsh|dash|ksh)\b/.test(head.subarray(0, count).toString('utf8'));
+    } finally { closeSync(fd); }
+  } catch { return false; }
+}
+
+/** The state kinds the rebind rewrites form-aware; everything else is only scanned. */
+function embeddedRebindKind(relative, absolute = null) {
+  const name = basename(relative);
+  if (name === 'cron-jobs.json') return 'cron-jobs';
+  if (name === 'Caddyfile') return 'caddyfile';
+  const extension = extname(name).toLowerCase();
+  if (SHELL_EXTENSIONS.has(extension) || name === '.env' || name === '.envrc') return 'shell';
+  if (!extension && absolute && hasShellShebang(absolute)) return 'shell';
+  return null;
+}
+
+/** Regular files and symlinks of the home's state and configuration, never following links. */
+function homeStateEntries(destination) {
+  const entries = [];
+  const roots = PRODUCT_STATE_PATHS.filter(entry => !PRODUCT_STATE_PATHS.some(parent =>
+    parent !== entry && (parent.type === 'directory' || parent.allowDescendants) && entry.path.startsWith(`${parent.path}/`)));
+  const visit = relative => {
+    if (rebindScanExcluded(relative)) return;
+    const absolute = join(destination, relative);
+    if (!exists(absolute)) return;
+    const stat = lstatSync(absolute);
+    if (stat.isSymbolicLink()) { entries.push({ relative, absolute, type: 'symlink' }); return; }
+    if (stat.isDirectory()) { for (const name of readdirSync(absolute).sort()) visit(`${relative}/${name}`); return; }
+    if (stat.isFile()) entries.push({ relative, absolute, type: 'file', size: stat.size, mode: stat.mode & 0o777 });
+  };
+  for (const entry of roots) visit(entry.path);
+  return entries;
+}
+
+function readStateText(entry) {
+  if (entry.size > 64 * 1024 * 1024) return null;
+  const bytes = readFileSync(entry.absolute);
+  return bytes.subarray(0, 8192).includes(0) ? null : bytes.toString('utf8');
+}
+
+function rebindEmbeddedState(source, destination, adopted) {
+  for (const entry of homeStateEntries(destination)) {
+    if (entry.type !== 'file') continue;
+    const kind = embeddedRebindKind(entry.relative, entry.absolute);
+    if (!kind) continue;
+    const text = readStateText(entry);
+    if (text === null) continue;
+    if (kind === 'cron-jobs') {
+      let jobs;
+      try { jobs = JSON.parse(text); } catch { continue; }
+      const rebound = rewriteCronJobs(jobs, source, destination, adopted);
+      if (JSON.stringify(rebound) !== JSON.stringify(jobs)) writePrivateJSON(entry.absolute, rebound);
+      continue;
+    }
+    const next = kind === 'caddyfile'
+      ? rewriteShellText(text, source, destination, { adopted, singleQuotes: false, assignments: false, metachars: false })
+      : rewriteShellText(text, source, destination, { adopted });
+    if (next === text) continue;
+    const temporary = `${entry.absolute}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, next, { mode: entry.mode });
+    renameSync(temporary, entry.absolute);
+  }
+}
+
+/** The receipt's original source bindings are historical evidence, not references to rebind. */
+function receiptWithoutHistory(text) {
+  let receipt;
+  try { receipt = JSON.parse(text); } catch { return text; }
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return text;
+  const current = { ...receipt };
+  delete current.sourceRoot;
+  const strip = (items, keys) => (Array.isArray(items) ? items.map(item => {
+    if (!item || typeof item !== 'object') return item;
+    const kept = { ...item };
+    for (const key of keys) delete kept[key];
+    return kept;
+  }) : items);
+  current.links = strip(current.links, ['sourcePath', 'sourceTarget']);
+  current.continuationServices = strip(current.continuationServices, ['source']);
+  return JSON.stringify(current);
+}
+
+/** Reviewed external authorities keep their exact source paths: the adoption receipt's retain-authority
+ * links, their targets, and every binding that runs inside such a target. */
+function retainedAuthorities(destination, source) {
+  const file = join(destination, 'runtime/adoption-preservation.json');
+  const links = new Set(), targets = [];
+  if (!exists(file)) return { links, targets };
+  let receipt = null;
+  try { receipt = JSON.parse(readFileSync(file, 'utf8')); } catch { return { links, targets }; }
+  for (const link of Array.isArray(receipt?.links) ? receipt.links : []) {
+    if (link?.kind !== 'retain-authority' || typeof link.path !== 'string' || typeof link.target !== 'string' || !isAbsolute(link.target)) continue;
+    const target = resolve(link.target);
+    if (target !== source && !target.startsWith(source + sep)) continue;
+    links.add(link.path);
+    targets.push(target);
+  }
+  return { links, targets };
+}
+
+/** Whether an occurrence of the source home names a path inside a retained external authority. */
+function withinRetainedAuthority(text, occurrence, targets) {
+  return targets.some(target => {
+    const needle = occurrence.form.encode(target);
+    if (!text.startsWith(needle, occurrence.index)) return false;
+    const after = text[occurrence.index + needle.length];
+    return after === undefined || after === '/' || !HOME_PATH_CHAR.test(after);
+  });
+}
+
+/** Relative paths of state and configuration that still name the source home, in any written form.
+ * Reviewed external authorities are not references: they are meant to stay where they are. */
+export function scanHomeReferences(destination, source) {
+  const forms = homePathForms(source, { json: true });
+  const authorities = retainedAuthorities(destination, source);
+  const references = text => homePathOccurrences(text, forms).some(occurrence => !withinRetainedAuthority(text, occurrence, authorities.targets));
+  const found = [];
+  for (const entry of homeStateEntries(destination)) {
+    if (entry.type === 'symlink') {
+      if (!authorities.links.has(entry.relative) && references(readlinkSync(entry.absolute))) found.push(entry.relative);
+      continue;
+    }
+    let text = readStateText(entry);
+    if (text === null) continue;
+    if (entry.relative === 'runtime/adoption-preservation.json') text = receiptWithoutHistory(text);
+    if (references(text)) found.push(entry.relative);
+  }
+  return found.sort();
+}
+
+function assertNoHomeReferences(destination, source) {
+  const paths = scanHomeReferences(destination, source);
+  if (!paths.length) return;
+  throw Object.assign(new Error(`Destination still names the source home: ${paths.join(', ')}`), { code: 'move_rebind_incomplete', paths });
 }
 
 function replaceAssignedPorts(text, oldPorts, newPorts) {
@@ -1465,13 +1944,8 @@ function rebindAgentsManifest(source, destination, adopted = false) {
   try { agents = JSON.parse(readFileSync(file, 'utf8')); }
   catch { fail('move_rebind_incomplete', 'Destination agent registry could not be read.'); }
   if (!Array.isArray(agents)) fail('move_rebind_incomplete', 'Destination agent registry is not a list.');
-  const keys = ['configPath', 'instanceRoot', 'brainPath', 'workspacePath', 'conversationsPath', 'logsPath'];
-  for (const agent of agents) {
-    if (!agent || typeof agent !== 'object') continue;
-    for (const key of keys) {
-      if (typeof agent[key] === 'string') agent[key] = replaceHomePath(agent[key], source, destination, adopted);
-    }
-  }
+  // Path fields and prose (notes, descriptions) both name the home.
+  agents = rewriteMachineStrings(agents, source, destination, null, null, adopted);
   if (treeContains(agents, source)) fail('move_rebind_incomplete', 'Destination agent registry still names the source home.');
   writePrivateJSON(file, agents);
 }
@@ -1492,25 +1966,49 @@ function prepareAdoptionBindings(destination, host, source, oldPorts, newPorts, 
   // source plan; rebasing against the retained source would corrupt deliberate
   // external authorities such as Evobrew and Caddy.
   if (adopting) return null;
-  if (!host.continuationServices?.length && !host.networkBindings) return null;
+  const continuing = Boolean(host.continuationServices?.length || host.networkBindings);
   const file = join(destination, 'runtime/adoption-preservation.json');
+  if (!continuing && !exists(file)) return null;
   const before = readFileSync(file);
   const receipt = readPrivateJSON(file);
-  if (receipt?.schema !== 'home23.adoption-preservation-receipt.v1'
+  if (continuing && (receipt?.schema !== 'home23.adoption-preservation-receipt.v1'
     || !Array.isArray(receipt.continuationServices)
     || JSON.stringify(receipt.networkBindings || null) !== JSON.stringify(host.networkBindings || null)
     || JSON.stringify(host.continuationServices || []) !== JSON.stringify(
-      receipt.continuationServices.map(service => ({ name: service.name, ...service.run })))) {
+      receipt.continuationServices.map(service => ({ name: service.name, ...service.run }))))) {
     fail('move_rebind_incomplete', 'Continuing services do not match their sealed adoption receipt.');
   }
-  const rebound = { ...receipt, continuationServices: receipt.continuationServices.map(service => ({
-    ...service,
-    // The original source binding remains historical evidence. Only the
-    // current run binding moves; external authorities keep their exact paths.
-    run: rewriteMachineStrings(service.run, source, destination, oldPorts, newPorts),
-  })) };
+  if (!continuing && receipt?.schema !== 'home23.adoption-preservation-receipt.v1') return null;
+  const rebound = { ...receipt };
+  if (Array.isArray(receipt.links)) rebound.links = rebindReceiptLinks(destination, receipt.links, source);
+  if (continuing) {
+    rebound.continuationServices = receipt.continuationServices.map(service => ({
+      ...service,
+      // The original source binding remains historical evidence. Only the
+      // current run binding moves; external authorities keep their exact paths.
+      run: rewriteMachineStrings(service.run, source, destination, oldPorts, newPorts),
+    }));
+  }
   return { beforeHash: sha256(before), afterHash: sha256(Buffer.from(`${JSON.stringify(rebound, null, 2)}\n`)),
     receipt: rebound };
+}
+
+/**
+ * A preserved link inside the home is restored relative to its new place; the
+ * receipt's recorded target follows it once the link really resolves there.
+ * External authorities keep their exact recorded targets.
+ */
+function rebindReceiptLinks(destination, links, source) {
+  return links.map(link => {
+    if (!link || typeof link !== 'object' || link.kind === 'retain-authority') return link;
+    if (typeof link.path !== 'string' || !safeRelative(link.path) || typeof link.target !== 'string'
+      || !isAbsolute(link.target) || !inside(source, link.target)) return link;
+    const file = join(destination, link.path);
+    if (!exists(file) || !lstatSync(file).isSymbolicLink()) return link;
+    const actual = readlinkSync(file);
+    if (resolve(dirname(file), actual) !== `${destination}${link.target.slice(source.length)}`) return link;
+    return { ...link, target: actual };
+  });
 }
 
 async function prepareRebindPlan(source, destination, { adopting = false } = {}) {
@@ -1613,7 +2111,9 @@ async function rebindDestination(source, destination, options = {}) {
     if (![adoptionBindings.beforeHash, adoptionBindings.afterHash].includes(streamHash(file))) {
       fail('move_rebind_incomplete', 'The sealed adoption receipt changed during recovery.');
     }
-    host.continuationServices = adoptionBindings.receipt.continuationServices.map(service => ({ name: service.name, ...service.run }));
+    if (host.continuationServices?.length || host.networkBindings) {
+      host.continuationServices = adoptionBindings.receipt.continuationServices.map(service => ({ name: service.name, ...service.run }));
+    }
   }
   host.homeRoot = destination;
   host.desiredRunning = false;
@@ -1631,16 +2131,24 @@ async function rebindDestination(source, destination, options = {}) {
     residentPorts, adopted: options.adoptManagedSource === true,
   });
   applyCursorBindings(destination, rewriteFrom, options.adoptManagedSource === true, cursorBindings);
-  if (!sourcePresent) return null;
+  // Move and recovery extracted the brains; adoption's preserve copy copied them.
+  // All three give each delta a new file identity, so the sealed manifest is renewed here.
+  await resealRestoredBrains(destination);
+  let packageId = null;
   const receiptPath = join(rewriteFrom, '.home23-install.json');
-  if (!exists(receiptPath)) return null;
-  const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
-  const rebound = {
-    ...receipt, homeRoot: destination, appRoot: join(destination, 'app'),
-    nodePath: join(destination, 'bin', 'node'), pm2Path: join(destination, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'), replayed: false,
-  };
-  writeFileSync(join(destination, '.home23-install.json'), `${JSON.stringify(rebound)}\n`, { mode: 0o600 });
-  return rebound.packageId || null;
+  if (sourcePresent && exists(receiptPath)) {
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    const rebound = {
+      ...receipt, homeRoot: destination, appRoot: join(destination, 'app'),
+      nodePath: join(destination, 'bin', 'node'), pm2Path: join(destination, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'), replayed: false,
+    };
+    writeFileSync(join(destination, '.home23-install.json'), `${JSON.stringify(rebound)}\n`, { mode: 0o600 });
+    packageId = rebound.packageId || null;
+  }
+  // A rebind that leaves the source home named anywhere in state fails here,
+  // naming every file, instead of finishing silently.
+  assertNoHomeReferences(destination, rewriteFrom);
+  return packageId;
 }
 
 /** Port/path rebind for an adopted destination. Does not copy state or start writers. */
@@ -1752,6 +2260,7 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
     if (rebound.desiredRunning === true) fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
     if (rebound.phase !== 'stopped') fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
     secureOwnedDestinationRoot(destination);
+    const foreignBindings = (dependencies.detectForeignBindings || detectForeignBindings)({ homeRoot: destination, previousRoot: sourceHome });
     return {
       ok: true,
       schema: BACKUP_SCHEMA,
@@ -1766,6 +2275,8 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
       ports: rebound.ports || null,
       archiveBound: true,
       filesDigest: binding.filesDigest,
+      foreignBindings,
+      warnings: foreignBindings.warnings,
     };
   } finally {
     lock.release();
@@ -1856,6 +2367,7 @@ export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPa
   lock.hooks = { beforeChunk: dependencies.beforeChunk, onLockRefresh: dependencies.onLockRefresh, refreshMs: dependencies.lockRefreshMs };
   try {
     const list = dependencies.listProcesses || listInstalledWriters;
+    const scanForeign = dependencies.detectForeignBindings || detectForeignBindings;
     assertWritersStopped(source, await list(source));
     if (readMoveFence(source)) {
       if (readdirSync(destination).length === 0) fail('move_journal_invalid', 'The fenced move has no destination to finish.');
@@ -1864,7 +2376,8 @@ export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPa
       const identity = compareIdentity(source, destination);
       if (!readFileSync(join(source, '.home23-host.json')).equals(sourceHostBefore)) fail('backup_identity_mismatch', 'Move changed the source host record.');
       secureOwnedDestinationRoot(destination);
-      return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed: true };
+      const foreignBindings = scanForeign({ homeRoot: destination, previousRoot: source });
+      return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed: true, foreignBindings, warnings: foreignBindings.warnings };
     }
     let journal = readMoveJournal(source) || { schema: 'home23.move-journal.v1', sourceHome: source, destinationRoot: destination, phase: 'claimed' };
     const resumed = journal.phase !== 'claimed';
@@ -1892,7 +2405,9 @@ export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPa
     writeMoveJournal(source, journal);
     assertWritersStopped(source, await list(source));
     secureOwnedDestinationRoot(destination);
-    return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed };
+    // The source may still be named by the owner's global PM2 daemon or launchd agents; report, never edit.
+    const foreignBindings = scanForeign({ homeRoot: destination, previousRoot: source });
+    return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed, foreignBindings, warnings: foreignBindings.warnings };
   } finally {
     lock.release();
   }

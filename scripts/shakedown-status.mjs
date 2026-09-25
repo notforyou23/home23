@@ -13,10 +13,11 @@
 
 import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { join, basename } from "node:path";
+import { resolveAppRoot, resolveShakedownSiteRoot } from "./lib/app-root.mjs";
 
-const SITE = "/Users/jtr/websites/shakedownshuffle.com";
+const SITE = resolveShakedownSiteRoot();
 const OPS = join(SITE, "ops/jerry-collection");
-const H23 = "/Users/jtr/_JTR23_/release/home23";
+const H23 = resolveAppRoot(import.meta.url);
 const WS = join(H23, "instances/jerry/workspace");
 const OUT_MD = join(WS, "SHAKEDOWN_STATUS.md");
 const OUT_DIR = join(WS, "projects/shakedownshuffle/status");

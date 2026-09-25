@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
@@ -306,7 +307,7 @@ test('codex parseEvents handles thread, items, completion, and failure', () => {
 // (`-p --output-format stream-json --trust --force --model auto`).
 
 test('cursor resolves cursor-agent only, never the cursor editor launcher', () => {
-  assert.deepEqual(cursor.binCandidates, ['cursor-agent', '/Users/jtr/.local/bin/cursor-agent']);
+  assert.deepEqual(cursor.binCandidates, ['cursor-agent', path.join(os.homedir(), '.local', 'bin', 'cursor-agent')]);
   // /usr/local/bin/cursor is the Cursor editor's VS Code GUI launcher and
   // accepts none of the headless flags; it must not be a fallback candidate.
   assert.equal(cursor.binCandidates.includes('cursor'), false);

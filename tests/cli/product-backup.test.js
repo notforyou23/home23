@@ -1,18 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import {
   createHomeBackup, inspectHomeBackup, moveHome, readAuthenticatedBackupHeader, readMoveFence, recoverInspectedHome, rebindAdoptedHome,
-  rewriteAdoptedCronPromptPaths,
+  rewriteAdoptedCronPromptPaths, scanHomeReferences,
 } from '../../cli/lib/product-backup.js';
 import { writeProductManifest } from '../../cli/lib/product-payload.js';
+import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
 import { SUPPORTED_COORDINATION_SCHEMAS } from '../../cli/lib/product-update-inventory.js';
 
+const memorySource = createRequire(import.meta.url)('../../shared/memory-source');
 const quiet = { listProcesses: async () => [] };
 const cursorId = sourcePath => `tail_${createHash('sha256').update(sourcePath).digest('hex').slice(0, 8)}`;
 
@@ -252,6 +255,91 @@ test('truncated archive throws', async t => {
   assert.deepEqual(fs.readdirSync(fixture.inspectionRoot), []);
 });
 
+/** Writes a v2 archive in the product container format from an inner header alone, without a source home. */
+function syntheticArchive(root, header) {
+  const key = randomBytes(32);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const inner = Buffer.from(JSON.stringify(header));
+  const innerLength = Buffer.alloc(4);
+  innerLength.writeUInt32BE(inner.length, 0);
+  const body = Buffer.concat([cipher.update(innerLength), cipher.update(inner), cipher.final()]);
+  const outer = Buffer.from(JSON.stringify({ schema: 'home23.backup.v1', version: 2,
+    encrypted: { algorithm: 'aes-256-gcm', iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64') } }));
+  const outerLength = Buffer.alloc(4);
+  outerLength.writeUInt32BE(outer.length, 0);
+  const archivePath = path.join(root, 'synthetic.h23b');
+  const keyPath = path.join(root, 'synthetic.backup-key.json');
+  fs.writeFileSync(archivePath, Buffer.concat([Buffer.from('H23B', 'ascii'), outerLength, outer, body]));
+  fs.writeFileSync(keyPath, JSON.stringify({ schema: 'home23.backup-key.v1', algorithm: 'aes-256-gcm', key: key.toString('base64') }), { mode: 0o600 });
+  return { archivePath, keyPath, innerLength: inner.length };
+}
+
+test('an authenticated file inventory larger than 32 MiB is read without a scratch file', async t => {
+  const root = tempRoot(t);
+  const empty = createHash('sha256').digest('hex');
+  const files = Array.from({ length: 300000 }, (_, index) => ({
+    path: `app/instances/milo/workspace/memory/${index}.json`, sha256: empty, bytes: 0, type: 'file',
+  }));
+  const { archivePath, keyPath, innerLength } = syntheticArchive(root, {
+    schema: 'home23.backup.v1', version: 2, homeRoot: path.join(root, 'origin'), packageId: null, sourceCommit: null, files,
+  });
+  assert.ok(innerLength > 32 * 1024 * 1024, `inventory header is ${innerLength} bytes`);
+  const header = readAuthenticatedBackupHeader({ archivePath, keyPath });
+  assert.equal(header.files.length, files.length);
+  assert.equal(header.files[files.length - 1].path, files[files.length - 1].path);
+  assert.deepEqual(fs.readdirSync(root).sort(), ['synthetic.backup-key.json', 'synthetic.h23b']);
+});
+
+test('backup refuses an inventory that would not fit the archive header before encrypting', async t => {
+  const fixture = stoppedHome(t);
+  const archiveDirectory = path.dirname(fixture.archivePath);
+  await assert.rejects(() => createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, { ...quiet, maxHeaderBytes: 64 }),
+    error => error.code === 'backup_inventory_too_large');
+  assert.equal(fs.existsSync(fixture.archivePath), false);
+  assert.equal(fs.existsSync(fixture.keyPath), false);
+  assert.deepEqual(fs.readdirSync(archiveDirectory).filter(name => name.startsWith('.home23-backup-')), [], 'no scratch stays beside the archive');
+});
+
+test('a restored state script keeps its executable bit and private files stay private', async t => {
+  const fixture = stoppedHome(t);
+  fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
+  const script = path.join(fixture.home, 'app/instances/milo/workspace/bin/ship.sh');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.writeFileSync(script, '#!/bin/sh\necho ship\n', { mode: 0o755 });
+  const secret = path.join(fixture.home, 'app/instances/milo/workspace/private.txt');
+  fs.writeFileSync(secret, 'keep\n', { mode: 0o600 });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  const header = readAuthenticatedBackupHeader({ archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  assert.equal(header.files.find(entry => entry.path === 'app/instances/milo/workspace/bin/ship.sh').mode, 0o755);
+  const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  assert.equal(inspected.ok, true);
+  assert.equal(fs.statSync(path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/bin/ship.sh')).mode & 0o777, 0o755);
+  assert.equal(fs.statSync(path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/private.txt')).mode & 0o777, 0o600);
+});
+
+test('inspection and header reads write only inside the inspection root', async t => {
+  const fixture = stoppedHome(t);
+  fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  // The archive's folder and the destination's parent are read-only: a scratch decrypt beside either would fail.
+  const archiveDirectory = path.dirname(fixture.archivePath);
+  const parent = path.dirname(fixture.inspectionRoot);
+  fs.chmodSync(archiveDirectory, 0o555);
+  fs.chmodSync(parent, 0o555);
+  try {
+    const header = readAuthenticatedBackupHeader({ archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+    assert.equal(header.homeRoot, fixture.home);
+    const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+    assert.equal(inspected.ok, true);
+  } finally {
+    fs.chmodSync(parent, 0o755);
+    fs.chmodSync(archiveDirectory, 0o755);
+  }
+  assert.equal(fs.readFileSync(path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/note.txt'), 'utf8'), 'remember this\n');
+  assert.deepEqual(fs.readdirSync(archiveDirectory).sort(), ['home.backup-key.json', 'home.h23b']);
+});
+
 test('writersStarted is false after inspection', async t => {
   const fixture = stoppedHome(t);
   fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
@@ -349,7 +437,59 @@ test('move fences the source and leaves the destination stopped', async t => {
   assert.equal(started.error.code, 'move_source_fenced');
 });
 
-test('move requires the resident Seed even when the resident is not Milo', async t => {
+test('move reports foreign supervisors bound to the source or destination as non-fatal warnings', async t => {
+  const fixture = stoppedHome(t);
+  const birth = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(birth, { recursive: true });
+  fs.writeFileSync(path.join(birth, 'birth-receipt.json'), '{"seedId":"milo-seed"}\n');
+  fs.writeFileSync(path.join(birth, 'seed-ledger.jsonl'), '{"event":"birth"}\n');
+  fs.writeFileSync(path.join(fixture.home, '.home23-install.json'), '{"schema":"home23.product-install.v1","status":"installed","packageId":"abc","sourceCommit":"123"}\n');
+  const destination = path.join(fixture.root, 'destination');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  // The owner's global PM2 daemon and a launchd agent, outside both homes.
+  const userHome = path.join(fixture.root, 'user');
+  const dump = path.join(userHome, '.pm2/dump.pm2');
+  fs.mkdirSync(path.dirname(dump), { recursive: true });
+  fs.writeFileSync(dump, JSON.stringify([
+    { name: 'cosmo-engine', pm_cwd: `${fixture.home}/app`, env: { HOME23_ROOT: `${fixture.home}/app` }, pm_out_log_path: `${fixture.home}/app/logs/engine.log` },
+    { name: 'other', pm_cwd: '/opt/other', env: { HOME23_ROOT: `${fixture.home}-archive/app` } },
+  ]));
+  const agents = path.join(userHome, 'Library/LaunchAgents');
+  fs.mkdirSync(agents, { recursive: true });
+  fs.writeFileSync(path.join(agents, 'com.example.watch.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Label</key><string>com.example.watch</string>
+<key>ProgramArguments</key><array><string>${destination}/app/scripts/watch.mjs</string></array></dict></plist>
+`);
+  const dumpBefore = fs.readFileSync(dump);
+  const scan = options => detectForeignBindings({ ...options, homeDirectory: userHome });
+  const moved = await moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, { ...quiet, detectForeignBindings: scan });
+  assert.equal(moved.ok, true);
+  assert.equal(moved.fenced, true);
+  assert.deepEqual(moved.foreignBindings.roots, [destination, fixture.home]);
+  assert.deepEqual(moved.foreignBindings.references.map(reference => [reference.source, reference.name, reference.field, reference.root]), [
+    ['pm2', 'cosmo-engine', 'pm_cwd', fixture.home],
+    ['pm2', 'cosmo-engine', 'env.HOME23_ROOT', fixture.home],
+    ['pm2', 'cosmo-engine', 'pm_out_log_path', fixture.home],
+    ['launchd', 'com.example.watch', 'ProgramArguments[0]', destination],
+  ]);
+  assert.equal(moved.warnings.length, 2);
+  assert.match(moved.warnings[0], /PM2 app "cosmo-engine"/);
+  assert.match(moved.warnings[0], /Home23 did not change it/);
+  assert.match(moved.warnings[1], /launchd agent "com\.example\.watch"/);
+  assert.deepEqual(fs.readFileSync(dump), dumpBefore);
+  assert.equal(readMoveFence(fixture.home).schema, 'home23.move-fence.v1');
+  // Finishing the fenced move on a clean machine reports an empty scan, not stale warnings.
+  const resumed = await moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, { ...quiet, detectForeignBindings: options => detectForeignBindings({ ...options, homeDirectory: path.join(fixture.root, 'nobody') }) });
+  assert.equal(resumed.resumed, true);
+  assert.deepEqual(resumed.warnings, []);
+  assert.deepEqual(resumed.foreignBindings.references, []);
+});
+
+test('move refuses a stopped home whose resident has no Seed substrate, adoption receipt, or resident binding', async t => {
   const fixture = stoppedHome(t);
   const hostPath = path.join(fixture.home, '.home23-host.json');
   const host = JSON.parse(fs.readFileSync(hostPath, 'utf8'));
@@ -760,6 +900,46 @@ test('move rebinds continuing services while retaining external authority unchan
   assert.deepEqual(fs.readFileSync(path.join(home, '.home23-host.json')), sourceHost);
 });
 
+test('move preserves an adopted home by its adoption receipt when no Seed birth receipt exists', async t => {
+  const root = tempRoot(t), home = path.join(root, 'home'), destination = path.join(root, 'destination');
+  seedRecoverableHome(home);
+  const fixture = continuingServiceFixture(home, root);
+  fs.unlinkSync(path.join(home, 'app/instances/ada/substrate/seed-01/birth-receipt.json'));
+  fs.mkdirSync(destination);
+  const input = { sourceHome: home, destinationRoot: destination, archivePath: path.join(root, 'backup.h23b'), keyPath: path.join(root, 'backup.key') };
+  const moved = await moveHome(input, quiet);
+  assert.equal(moved.fenced, true);
+  assert.deepEqual(Object.keys(moved.identity).sort(),
+    ['app/instances/ada/substrate/seed-01/seed-ledger.jsonl', 'runtime/adoption-preservation.json']);
+  assertContinuingServiceDestination(destination, fixture);
+  // Finishing the fenced move compares identity after rebind moved the continuing-service run bindings.
+  const finished = await moveHome(input, quiet);
+  assert.equal(finished.resumed, true);
+  assert.deepEqual(finished.identity, moved.identity);
+});
+
+test('move preserves an adopted home by its host resident binding when no adoption receipt exists', async t => {
+  const root = tempRoot(t), home = path.join(root, 'home'), destination = path.join(root, 'destination');
+  seedRecoverableHome(home);
+  fs.unlinkSync(path.join(home, 'app/instances/ada/substrate/seed-01/birth-receipt.json'));
+  fs.mkdirSync(destination);
+  const moved = await moveHome({ sourceHome: home, destinationRoot: destination,
+    archivePath: path.join(root, 'backup.h23b'), keyPath: path.join(root, 'backup.key') }, quiet);
+  assert.equal(moved.fenced, true);
+  assert.deepEqual(Object.keys(moved.identity).sort(), ['.home23-host.json', 'app/instances/ada/substrate/seed-01/seed-ledger.jsonl']);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8')).residentMap), ['ada']);
+});
+
+test('move refuses a home with neither a Seed birth receipt, an adoption receipt, nor a resident binding', async t => {
+  const root = tempRoot(t), home = path.join(root, 'home'), destination = path.join(root, 'destination');
+  seedRecoverableHome(home, { residentMap: null });
+  fs.unlinkSync(path.join(home, 'app/instances/ada/substrate/seed-01/birth-receipt.json'));
+  fs.mkdirSync(destination);
+  await assert.rejects(() => moveHome({ sourceHome: home, destinationRoot: destination,
+    archivePath: path.join(root, 'backup.h23b'), keyPath: path.join(root, 'backup.key') }, quiet),
+  error => error.code === 'backup_identity_missing');
+});
+
 test('source-absent continuing-service recovery resumes across both binding writes and refuses receipt changes', async t => {
   const root = tempRoot(t), home = path.join(root, 'home'), inspectionRoot = path.join(root, 'inspect');
   const { payload, manifest } = fixturePayload(root);
@@ -857,13 +1037,22 @@ test('recoverInspectedHome installs a matching payload and status works without 
   assert.equal(header.packageId, manifest.packageId);
   fs.rmSync(home, { recursive: true, force: true });
   assert.equal(fs.existsSync(home), false);
+  // The owner's global PM2 daemon still names the gone source home.
+  const userHome = path.join(root, 'user');
+  fs.mkdirSync(path.join(userHome, '.pm2'), { recursive: true });
+  fs.writeFileSync(path.join(userHome, '.pm2/dump.pm2'), JSON.stringify([{ name: 'cosmo-engine', pm_cwd: `${home}/app`, env: { COSMO_CONFIG_PATH: `${home}/app/config/cosmo.yaml` } }]));
 
   const recovered = await recoverInspectedHome({
     inspectionRoot, payloadPath: payload, archivePath, keyPath,
-  }, quiet);
+  }, { ...quiet, detectForeignBindings: options => detectForeignBindings({ ...options, homeDirectory: userHome }) });
   assert.equal(recovered.ok, true);
   assert.equal(recovered.homeRoot, inspectionRoot);
   assert.equal(recovered.sourceHome, home);
+  assert.deepEqual(recovered.foreignBindings.roots, [inspectionRoot, home]);
+  assert.deepEqual(recovered.foreignBindings.references.map(reference => [reference.name, reference.field, reference.root]),
+    [['cosmo-engine', 'pm_cwd', home], ['cosmo-engine', 'env.COSMO_CONFIG_PATH', home]]);
+  assert.equal(recovered.warnings.length, 1);
+  assert.match(recovered.warnings[0], /PM2 app "cosmo-engine"/);
   assert.equal(recovered.packageId, manifest.packageId);
   assert.equal(recovered.archiveBound, true);
   assert.equal(recovered.writersStarted, false);
@@ -1514,4 +1703,295 @@ test('cursor rebind refuses colliding, malformed, or symlinked state before chan
       assert.equal(fs.readFileSync(hostPath).equals(before), true);
     });
   }
+});
+
+const shellEscaped = value => value.replaceAll(' ', '\\ ');
+const percentEncoded = value => value.split('/').map(encodeURIComponent).join('/');
+
+/** A stopped home whose root and destination both contain a space, with the state files a move missed on 2026-09-24. */
+function embeddedPathHome(t) {
+  const root = tempRoot(t);
+  const home = path.join(root, 'old home');
+  const destination = path.join(root, 'new home');
+  const instance = path.join(home, 'app/instances/milo');
+  const coordination = path.join(home, 'app/instances/.house/coordination');
+  for (const directory of ['substrate/seed-01', 'substrate/bin', 'conversations', 'workspace', 'shared-data']) {
+    fs.mkdirSync(path.join(instance, directory), { recursive: true, mode: 0o755 });
+  }
+  fs.mkdirSync(path.join(home, 'app/config'), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.join(home, 'app/instances/.house/bots/helper/state'), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.join(coordination, 'tls'), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.join(home, 'runtime'), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(instance, 'substrate/seed-01/birth-receipt.json'), '{"seedId":"embedded"}\n');
+  fs.symlinkSync(path.join(instance, 'shared-data'), path.join(instance, 'workspace/shared'));
+  const service = { name: 'home23-project', executable: path.join(home, 'bin/node'), cwd: path.join(home, 'app/instances'),
+    args: [path.join(home, 'app/instances/project.mjs')],
+    env: { PATH: `${home}/bin:${home}/tools/node_modules/.bin:/usr/bin:/bin`, HOME23_ROOT: path.join(home, 'app') },
+    stateRoots: [path.join(home, 'app/instances')], startOnHomeStart: true };
+  const { name, ...run } = service;
+  fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({
+    schema: 'home23.host.v2', homeRoot: home, profile: { name: 'milo', provider: 'ollama-local', model: 'fixture' },
+    desiredRunning: false, phase: 'stopped', encoderRequired: false,
+    ports: { coordination: 21089, engine: 21090, dashboard: 21091, mcp: 21092, bridge: 21093, evobrew: 21094, observatory: 21095, embedder: 21096 },
+    continuationServices: [service],
+  }), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: '/historical-source',
+    links: [{ path: 'app/instances/milo/workspace/shared', target: path.join(instance, 'shared-data'),
+      sourcePath: 'instances/milo/workspace/shared', sourceTarget: '/historical-source/instances/milo/shared-data', kind: 'retain-link' }],
+    externalReferences: [],
+    continuationServices: [{ name, source: { script: '/historical-source/project.mjs' }, run }],
+  }), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/config/home.yaml'), 'home:\n  primaryAgent: milo\n', { mode: 0o600 });
+  fs.writeFileSync(path.join(instance, 'config.yaml'),
+    'agent:\n  name: milo\nports:\n  engine: 21090\n  dashboard: 21091\n  mcp: 21092\n  bridge: 21093\n', { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/ecosystem.config.cjs'),
+    `const HOME23 = ${JSON.stringify(path.join(home, 'app'))};\nmodule.exports = { apps: [{ name: 'home23-milo', cwd: HOME23 }] };\n`, { mode: 0o600 });
+  fs.writeFileSync(path.join(instance, 'conversations/cron-jobs.json'), JSON.stringify([
+    { id: 'exec-job', enabled: true, schedule: { kind: 'every', everyMs: 60000 }, payload: { kind: 'exec', cwd: instance,
+      command: `cd ${shellEscaped(instance)} && ${shellEscaped(home)}/bin/node scripts/run.mjs --root=${home}/app` } },
+    { id: 'turn-job', enabled: true, schedule: { kind: 'every', everyMs: 60000 }, payload: { kind: 'agentTurn',
+      messagePath: path.join(instance, 'workspace/prompt.md'),
+      message: `Read ${instance}/status.json and file://${percentEncoded(instance)}/report.md` } },
+  ], null, 2), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/config/cron-jobs.json'), JSON.stringify([
+    { id: 'house-job', payload: { kind: 'exec', cwd: path.join(home, 'app'), command: `${home}/bin/node ${home}/app/scripts/house.mjs` } },
+  ]), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/instances/.house/bots/helper/state/cron-jobs.json'), JSON.stringify([
+    { id: 'bot-job', payload: { kind: 'exec', cwd: path.join(home, 'app/instances/.house/bots/helper'), command: `${home}/bin/node tick.mjs` } },
+  ]), { mode: 0o600 });
+  fs.writeFileSync(path.join(instance, 'substrate/bin/ship.sh'), [
+    '#!/bin/sh',
+    "# shipper for milo's seed (don't edit)",
+    `ROOT=${instance}`,
+    `export LOG_DIR=${home}/app/logs`,
+    `cd ${home}/app && exec ${home}/bin/node substrate/bin/conversation-shipper.ts "$ROOT"`,
+    `echo '${home}/app' "${home}/app"`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  fs.writeFileSync(path.join(coordination, 'Caddyfile'), [
+    '# house entry',
+    'home.local {',
+    `  tls ${coordination}/tls/cert.pem ${coordination}/tls/key.pem`,
+    `  root * ${home}/app/published`,
+    '  log {',
+    `    output file "${home}/app/logs/caddy.log"`,
+    '  }',
+    '}',
+    '',
+  ].join('\n'), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/config/agents.json'), JSON.stringify([{
+    name: 'milo', configPath: path.join(instance, 'config.yaml'), instanceRoot: instance,
+    notes: `Workspace lives at ${instance}/workspace.`,
+  }]), { mode: 0o600 });
+  return { root, home, destination, archivePath: path.join(root, 'backup.h23b'), keyPath: path.join(root, 'backup.key') };
+}
+
+test('the reference scan ignores reviewed external authorities but still names a stray reference', t => {
+  const root = tempRoot(t), source = path.join(root, 'source'), destination = path.join(root, 'destination');
+  fs.mkdirSync(path.join(source, 'evobrew'), { recursive: true });
+  fs.mkdirSync(path.join(destination, 'app/instances/milo/workspace'), { recursive: true });
+  fs.mkdirSync(path.join(destination, 'runtime'), { recursive: true });
+  // A reviewed retain-authority link, its receipt entry, and a continuing service running inside the authority.
+  fs.symlinkSync(path.join(source, 'evobrew'), path.join(destination, 'app/evobrew'));
+  fs.writeFileSync(path.join(destination, 'runtime/adoption-preservation.json'), JSON.stringify({ schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: source,
+    links: [{ path: 'app/evobrew', kind: 'retain-authority', target: path.join(source, 'evobrew'), sourceTarget: path.join(source, 'evobrew') }],
+    continuationServices: [{ name: 'home23-evobrew', source: { cwd: path.join(source, 'evobrew') }, run: { executable: '/opt/homebrew/bin/node', cwd: path.join(source, 'evobrew'), args: [path.join(source, 'evobrew/server.js')], env: {}, stateRoots: [path.join(source, 'evobrew')], startOnHomeStart: true } }] }), { mode: 0o600 });
+  fs.writeFileSync(path.join(destination, '.home23-host.json'), JSON.stringify({ schema: 'home23.host.v2', homeRoot: destination,
+    continuationServices: [{ name: 'home23-evobrew', executable: '/opt/homebrew/bin/node', cwd: path.join(source, 'evobrew'), args: [path.join(source, 'evobrew/server.js')], env: {}, stateRoots: [path.join(source, 'evobrew')], startOnHomeStart: true }] }), { mode: 0o600 });
+  assert.deepEqual(scanHomeReferences(destination, source), []);
+  // A sibling that only shares the authority's prefix, and a plain reference in configuration, are still leftovers.
+  fs.mkdirSync(path.join(destination, 'app/config'), { recursive: true });
+  fs.writeFileSync(path.join(destination, 'app/config/agents.json'), JSON.stringify({ agents: [{ name: 'milo', notes: `see ${source}/evobrew-old/x and ${source}/app/config/home.yaml` }] }));
+  assert.deepEqual(scanHomeReferences(destination, source), ['app/config/agents.json']);
+});
+
+test('move rebinds embedded paths in jobs, scripts, services and the Caddyfile, then scans clean', async t => {
+  const fixture = embeddedPathHome(t);
+  const { home, destination } = fixture;
+  fs.mkdirSync(destination, { mode: 0o755 });
+  const moved = await moveHome({ sourceHome: home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  assert.equal(moved.fenced, true);
+  const instance = path.join(destination, 'app/instances/milo');
+  const coordination = path.join(destination, 'app/instances/.house/coordination');
+  const read = relative => fs.readFileSync(path.join(destination, relative), 'utf8');
+  const clean = text => [home, shellEscaped(home), percentEncoded(home)].every(form => !text.includes(form));
+
+  const agentJobs = JSON.parse(read('app/instances/milo/conversations/cron-jobs.json'));
+  assert.equal(agentJobs[0].payload.cwd, instance);
+  assert.equal(agentJobs[0].payload.command,
+    `cd ${shellEscaped(instance)} && ${shellEscaped(destination)}/bin/node scripts/run.mjs "--root=${destination}/app"`);
+  assert.equal(agentJobs[1].payload.messagePath, path.join(instance, 'workspace/prompt.md'));
+  assert.equal(agentJobs[1].payload.message, `Read ${instance}/status.json and file://${percentEncoded(instance)}/report.md`);
+  const houseJobs = JSON.parse(read('app/config/cron-jobs.json'));
+  assert.equal(houseJobs[0].payload.cwd, path.join(destination, 'app'));
+  assert.equal(houseJobs[0].payload.command, `"${destination}/bin/node" "${destination}/app/scripts/house.mjs"`);
+  const botJobs = JSON.parse(read('app/instances/.house/bots/helper/state/cron-jobs.json'));
+  assert.equal(botJobs[0].payload.cwd, path.join(destination, 'app/instances/.house/bots/helper'));
+  assert.equal(botJobs[0].payload.command, `"${destination}/bin/node" tick.mjs`);
+
+  assert.equal(read('app/instances/milo/substrate/bin/ship.sh'), [
+    '#!/bin/sh',
+    "# shipper for milo's seed (don't edit)",
+    `ROOT="${instance}"`,
+    `export LOG_DIR="${destination}/app/logs"`,
+    `cd "${destination}/app" && exec "${destination}/bin/node" substrate/bin/conversation-shipper.ts "$ROOT"`,
+    `echo '${destination}/app' "${destination}/app"`,
+    '',
+  ].join('\n'));
+  assert.equal(fs.statSync(path.join(instance, 'substrate/bin/ship.sh')).mode & 0o777, 0o755);
+  assert.equal(read('app/instances/.house/coordination/Caddyfile'), [
+    '# house entry',
+    'home.local {',
+    `  tls "${coordination}/tls/cert.pem" "${coordination}/tls/key.pem"`,
+    `  root * "${destination}/app/published"`,
+    '  log {',
+    `    output file "${destination}/app/logs/caddy.log"`,
+    '  }',
+    '}',
+    '',
+  ].join('\n'));
+
+  const agents = JSON.parse(read('app/config/agents.json'));
+  assert.equal(agents[0].configPath, path.join(instance, 'config.yaml'));
+  assert.equal(agents[0].notes, `Workspace lives at ${instance}/workspace.`);
+  const host = JSON.parse(read('.home23-host.json'));
+  assert.equal(host.continuationServices[0].env.PATH, `${destination}/bin:${destination}/tools/node_modules/.bin:/usr/bin:/bin`);
+  assert.equal(host.continuationServices[0].executable, path.join(destination, 'bin/node'));
+  const receipt = JSON.parse(read('runtime/adoption-preservation.json'));
+  assert.equal(receipt.sourceRoot, '/historical-source');
+  assert.equal(receipt.links[0].sourceTarget, '/historical-source/instances/milo/shared-data');
+  assert.equal(receipt.links[0].target, fs.readlinkSync(path.join(instance, 'workspace/shared')));
+  assert.equal(path.resolve(instance, 'workspace', receipt.links[0].target), path.join(instance, 'shared-data'));
+  assert.equal(receipt.continuationServices[0].source.script, '/historical-source/project.mjs');
+  const ecosystem = read('app/ecosystem.config.cjs');
+  assert.ok(ecosystem.includes('auto-generated'), 'the product regenerates its own process registration');
+  assert.ok(ecosystem.includes(`const HOME23 = ${JSON.stringify(path.join(destination, 'app'))};`));
+
+  for (const relative of ['app/instances/milo/conversations/cron-jobs.json', 'app/config/cron-jobs.json',
+    'app/instances/.house/bots/helper/state/cron-jobs.json', 'app/instances/milo/substrate/bin/ship.sh',
+    'app/instances/.house/coordination/Caddyfile', 'app/config/agents.json', '.home23-host.json', 'app/ecosystem.config.cjs']) {
+    assert.equal(clean(read(relative)), true, `${relative} still names the source home`);
+  }
+  assert.deepEqual(scanHomeReferences(destination, home), []);
+});
+
+test('move fails loudly when destination state still names the source home', async t => {
+  const fixture = stoppedHome(t);
+  const seed = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(seed, { recursive: true });
+  fs.writeFileSync(path.join(seed, 'birth-receipt.json'), '{"seedId":"leftover"}\n');
+  const leftover = 'app/instances/milo/substrate/seed-01/sources.json';
+  fs.writeFileSync(path.join(fixture.home, leftover),
+    JSON.stringify({ events: path.join(fixture.home, 'app/instances/milo/workspace/events.jsonl') }), { mode: 0o600 });
+  fs.mkdirSync(path.join(fixture.home, 'app/instances/milo/logs'), { recursive: true });
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/logs/engine.log'), `${fixture.home} started\n`);
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/workspace/events.jsonl'), `{"root":"${fixture.home}"}\n`);
+  const destination = path.join(fixture.root, 'leftover-dest');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  await assert.rejects(() => moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, quiet), error => error.code === 'move_rebind_incomplete' && error.message.includes(leftover)
+    && Array.isArray(error.paths) && error.paths.length === 1 && error.paths[0] === leftover);
+  assert.equal(readMoveFence(fixture.home), null);
+  assert.deepEqual(scanHomeReferences(destination, fixture.home), [leftover]);
+});
+
+test('rebind drops the stale supervisor dump so PM2 rebuilds it from the regenerated registration', async t => {
+  const fixture = stoppedHome(t);
+  const gone = path.join(fixture.root, 'old-home');
+  const hostPath = path.join(fixture.home, '.home23-host.json');
+  const host = JSON.parse(fs.readFileSync(hostPath, 'utf8'));
+  host.homeRoot = gone;
+  fs.writeFileSync(hostPath, JSON.stringify(host));
+  fs.mkdirSync(path.join(fixture.home, 'runtime/pm2'), { recursive: true, mode: 0o700 });
+  const dump = path.join(fixture.home, 'runtime/pm2/dump.pm2');
+  fs.writeFileSync(dump, JSON.stringify([{ name: 'home23-milo', pm_cwd: path.join(gone, 'app') }]));
+  fs.writeFileSync(path.join(fixture.home, 'runtime/pm2/pm2.log'), `${gone} started\n`);
+  await rebindAdoptedHome(gone, fixture.home);
+  assert.equal(fs.existsSync(dump), false);
+  assert.equal(fs.readFileSync(path.join(fixture.home, 'runtime/pm2/pm2.log'), 'utf8'), `${gone} started\n`);
+});
+
+/** A resident brain whose manifest seals a chain-backed committed delta, as the engine writer leaves it. */
+async function sealedBrain(home, resident, lockRoot) {
+  const brain = path.join(home, `app/instances/${resident}/brain`);
+  fs.mkdirSync(brain, { recursive: true, mode: 0o755 });
+  await memorySource.rewriteMemoryBase(brain, {
+    nodes: [{ id: 'base', concept: 'base canary' }],
+    edges: [],
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  await memorySource.appendMemoryRevision(brain, {
+    nodes: [{ id: 'delta', concept: 'moved delta canary' }],
+  }, { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  return brain;
+}
+
+test('move reseals the restored brain manifest so identity-checked memory reads work at the destination', async t => {
+  const fixture = stoppedHome(t);
+  const birth = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(birth, { recursive: true });
+  fs.writeFileSync(path.join(birth, 'birth-receipt.json'), '{"seedId":"milo-seed"}\n');
+  const brain = await sealedBrain(fixture.home, 'milo', path.join(fixture.root, 'locks'));
+  const sourceManifest = fs.readFileSync(path.join(brain, 'memory-manifest.json'));
+  const destination = path.join(fixture.root, 'destination');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  const moved = await moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, quiet);
+  assert.equal(moved.fenced, true);
+  const restored = path.join(destination, 'app/instances/milo/brain');
+  const seal = await memorySource.inspectMemorySeal(restored);
+  assert.equal(seal.status, 'sealed');
+  assert.notEqual(seal.manifest.activeDelta.fileIdentity.ino, JSON.parse(sourceManifest).activeDelta.fileIdentity.ino);
+  assert.equal(seal.manifest.activeDelta.chainDigest, JSON.parse(sourceManifest).activeDelta.chainDigest);
+  assert.equal(fs.readFileSync(path.join(brain, 'memory-manifest.json')).equals(sourceManifest), true, 'the source manifest is untouched');
+});
+
+test('move refuses a brain whose committed delta no longer matches its sealed manifest and leaves the source unfenced', async t => {
+  const fixture = stoppedHome(t);
+  const birth = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(birth, { recursive: true });
+  fs.writeFileSync(path.join(birth, 'birth-receipt.json'), '{"seedId":"milo-seed"}\n');
+  const brain = await sealedBrain(fixture.home, 'milo', path.join(fixture.root, 'locks'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(brain, 'memory-manifest.json'), 'utf8'));
+  const deltaPath = path.join(brain, manifest.activeDelta.file);
+  const original = fs.readFileSync(deltaPath, 'utf8');
+  const tampered = original.replace('moved delta canary', 'moved DELTA canary');
+  assert.equal(tampered.length, original.length);
+  fs.writeFileSync(deltaPath, tampered);
+  const destination = path.join(fixture.root, 'destination');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  await assert.rejects(moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, quiet), { code: 'memory_seal_content_changed', message: /milo/ });
+  assert.equal(readMoveFence(fixture.home), null);
+});
+
+test('recoverInspectedHome reseals the restored brain manifest and a retry still matches the archive', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const { payload, manifest } = fixturePayload(root);
+  const { resident } = seedRecoverableHome(home, { packageId: manifest.packageId, sourceCommit: manifest.sourceCommit });
+  await sealedBrain(home, resident, path.join(root, 'locks'));
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const archivePath = path.join(out, 'home.h23b');
+  const keyPath = path.join(out, 'home.backup-key.json');
+  const inspectionRoot = path.join(root, 'inspect');
+  fs.mkdirSync(inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  const restored = path.join(inspectionRoot, `app/instances/${resident}/brain`);
+  assert.equal((await memorySource.inspectMemorySeal(restored)).status, 'stale', 'inspection restores the bytes under a new file identity');
+  fs.rmSync(home, { recursive: true, force: true });
+
+  const recovered = await recoverInspectedHome({ inspectionRoot, payloadPath: payload, archivePath, keyPath }, quiet);
+  assert.equal(recovered.ok, true);
+  assert.equal((await memorySource.inspectMemorySeal(restored)).status, 'sealed');
+
+  const again = await recoverInspectedHome({ inspectionRoot, payloadPath: payload, archivePath, keyPath }, quiet);
+  assert.equal(again.ok, true);
+  assert.equal((await memorySource.inspectMemorySeal(restored)).status, 'sealed');
 });

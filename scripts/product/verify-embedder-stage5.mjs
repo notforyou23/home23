@@ -258,6 +258,12 @@ export async function verifyEmbedderStage5({
       spawnEmbedder();
       return { stdout: '' };
     }
+    if (args?.[1] === 'delete' && String(args[2] || '').includes('embedder')) {
+      // PM2 delete ends the process and drops its record; Start re-registers a changed definition this way.
+      await stopEmbedder();
+      pm2Stopped.delete('home23-embedder');
+      return { stdout: '' };
+    }
     if (args?.[1] === 'stop' && String(args[2] || '').includes('embedder')) {
       // PM2 stop is a no-op leak. Host must SIGTERM the /ready pid so /ready is not left warm.
       pm2Stopped.add('home23-embedder');

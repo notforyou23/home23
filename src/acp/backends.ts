@@ -95,6 +95,11 @@ function resolveOnPath(name: string): string | null {
   return null;
 }
 
+/** The current user's local CLI install location — never a baked-in machine path. */
+function userLocalBin(name: string): string {
+  return path.join(os.homedir(), '.local', 'bin', name);
+}
+
 function resolveBinFrom(candidates: string[], configBin?: string): string | null {
   const all = configBin ? [configBin, ...candidates] : candidates;
   for (const candidate of all) {
@@ -238,7 +243,7 @@ function parseClaudeEvents(line: string): BridgeEvent[] {
 
 const claudeCodeBackend: CodingBackend = {
   id: 'claude-code',
-  binCandidates: ['claude', '/Users/jtr/.local/bin/claude'],
+  binCandidates: ['claude', userLocalBin('claude')],
   supportsResume: true,
   resolveBin(configBin?: string): string | null {
     return resolveBinFrom(this.binCandidates, configBin);
@@ -330,7 +335,7 @@ function parseGrokEvents(line: string): BridgeEvent[] {
 
 const grokBuildBackend: CodingBackend = {
   id: 'grok-build',
-  binCandidates: ['grok', '/Users/jtr/.local/bin/grok'],
+  binCandidates: ['grok', userLocalBin('grok')],
   supportsResume: true,
   resolveBin(configBin?: string): string | null {
     return resolveBinFrom(this.binCandidates, configBin);
@@ -579,7 +584,7 @@ const cursorBackend: CodingBackend = {
   // is the Cursor editor's VS Code GUI launcher, which accepts none of these
   // flags — resolving to it would spawn a silently broken job. Set
   // acp.backends.cursor.bin to override.
-  binCandidates: ['cursor-agent', '/Users/jtr/.local/bin/cursor-agent'],
+  binCandidates: ['cursor-agent', userLocalBin('cursor-agent')],
   supportsResume: true,
   waitForProcessGroupExit: false,
   resolveBin(configBin?: string): string | null {

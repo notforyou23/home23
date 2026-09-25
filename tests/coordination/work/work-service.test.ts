@@ -178,3 +178,94 @@ test("context manifests reject IDs, counts, privacy, and content-bearing or loca
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 0);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM outbox")?.count, 0);
 });
+
+test("recovery refusals are durable: permanent ones leave the recovery lists, transient ones count toward the limit", async (t) => {
+  const { RECOVERY_REFUSAL_LIMIT, WorkError, createWorkService } = await import("../../../src/coordination/work/index.js");
+  const { createLeaseService } = await import("../../../src/coordination/leases/index.js");
+  const database = M11TestDatabase.temporary();
+  t.after(() => database.close());
+  const generateId = createFixtureIdGenerator();
+  let service = createWorkService({ database, generateId, now: () => new Date(AT) });
+  const leases = createLeaseService({ database, generateId, now: () => new Date(AT), leaseTtlMs: 60_000 });
+  const identity = (suffix: number) => ({
+    requestId: fixtureId("request", suffix), correlationId: fixtureId("correlation", suffix),
+  });
+  const listed = (workId: string) =>
+    service.listResidentRecoverable("resident_turn").some((work) => work.id === workId);
+
+  const transient = service.create({ ...creationInput(), idempotencyKey: "refusal-transient" }).work;
+  assert.equal(listed(transient.id), true);
+  assert.equal(service.getRecoveryRefusal(transient.id), null);
+  for (let count = 1; count < RECOVERY_REFUSAL_LIMIT; count += 1) {
+    const recorded = service.recordRecoveryRefusal({
+      workId: transient.id, reasonCode: "recovery_failed", permanent: false,
+      message: "direct-message target is not enabled", ...identity(100 + count),
+    });
+    assert.deepEqual(recorded, {
+      workId: transient.id, reasonCode: "recovery_failed", permanent: false,
+      refusalCount: count, message: "direct-message target is not enabled", recordedAt: AT,
+    });
+    assert.equal(listed(transient.id), true, "a transient refusal keeps the Work discoverable");
+    assert.deepEqual(service.getRecoveryRefusal(transient.id), recorded);
+  }
+  const limit = service.recordRecoveryRefusal({
+    workId: transient.id, reasonCode: "recovery_failed", permanent: false,
+    message: "direct-message target is not enabled", ...identity(110),
+  });
+  assert.equal(limit.refusalCount, RECOVERY_REFUSAL_LIMIT);
+  assert.equal(limit.permanent, true, "the refusal limit makes a repeated transient refusal permanent");
+  assert.equal(listed(transient.id), false);
+  assert.equal(service.get(transient.id)?.state, "queued", "a refusal records evidence, never a fabricated transition");
+
+  const permanent = service.create({
+    ...creationInput(), idempotencyKey: "refusal-permanent", originMessageId: MESSAGE_ID,
+  }).work;
+  assert.equal(listed(permanent.id), true);
+  const first = service.recordRecoveryRefusal({
+    workId: permanent.id, reasonCode: "context_unrecoverable", permanent: true,
+    message: "invalid_relation", ...identity(120),
+  });
+  assert.equal(first.refusalCount, 1);
+  assert.equal(first.permanent, true);
+  assert.equal(listed(permanent.id), false, "a permanent refusal leaves the recovery list at once");
+
+  const completed = service.create({ ...creationInput(), idempotencyKey: "refusal-completed" }).work;
+  const offered = leases.offer({
+    workId: completed.id, holderPrincipalId: BOT_ID, holderInstanceId: "resident-1",
+    authorityReference: "resident:jerry", automatic: true, ...identity(130),
+  });
+  const binding = {
+    workId: completed.id, attemptId: offered.attempt.id, leaseId: offered.lease.id,
+    holderPrincipalId: BOT_ID, holderInstanceId: "resident-1", fencingToken: offered.fencingToken,
+    ...identity(131),
+  };
+  leases.accept(binding);
+  leases.start(binding);
+  leases.terminalize({ ...binding, receipt: {
+    status: "succeeded", sourceReference: "resident:jerry", resultDigest: "c".repeat(64),
+    artifactIds: [], timestamp: AT,
+  } });
+  assert.equal(service.listSucceededMissingResult("resident_turn").some((work) => work.id === completed.id), true);
+  service.recordRecoveryRefusal({
+    workId: completed.id, reasonCode: "unsupported_attachments", permanent: true,
+    message: "direct-message Work contains unsupported attachments", ...identity(132),
+  });
+  assert.equal(service.listSucceededMissingResult("resident_turn").some((work) => work.id === completed.id), false);
+
+  // The refusal is evidence on the Work, so it survives a Core restart.
+  database.reopen();
+  service = createWorkService({ database, generateId, now: () => new Date(AT) });
+  assert.deepEqual(service.listResidentRecoverable("resident_turn").map((work) => work.id), []);
+  assert.deepEqual(service.listSucceededMissingResult("resident_turn").map((work) => work.id), []);
+  assert.equal(service.getRecoveryRefusal(permanent.id)?.reasonCode, "context_unrecoverable");
+  assert.equal(database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM events WHERE aggregate_kind = 'work_recovery_refusal'",
+  )?.count, RECOVERY_REFUSAL_LIMIT + 2);
+
+  assert.throws(() => service.recordRecoveryRefusal({
+    workId: fixtureId("work", 999), reasonCode: "recovery_failed", permanent: false, message: "", ...identity(140),
+  }), (error: unknown) => error instanceof WorkError && error.code === "not_found");
+  assert.throws(() => service.recordRecoveryRefusal({
+    workId: permanent.id, reasonCode: "Not A Code", permanent: true, message: "", ...identity(141),
+  }), (error: unknown) => error instanceof WorkError && error.code === "invalid_request");
+});

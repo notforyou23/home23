@@ -18,6 +18,19 @@ function safePath(relative) {
   return typeof relative === 'string' && relative.length > 0 && !relative.includes('\\') && !relative.includes('\0') &&
     !path.posix.isAbsolute(relative) && relative.split('/').every(part => part && part !== '.' && part !== '..');
 }
+/** Finder and other desktop metadata are neither state nor software. Every
+ * classification of a home ignores them by name at any depth: a manifest never
+ * lists them, verification and the update inventory skip them, and an update
+ * may discard them with the software directories it replaces. */
+const OS_METADATA_NAMES = new Set(['.ds_store', '.spotlight-v100', '.fseventsd', '.trashes', '.temporaryitems', 'thumbs.db', 'desktop.ini']);
+export function isOsMetadataPath(relative) {
+  return typeof relative === 'string' && relative.split('/').some(part => part.startsWith('._') || OS_METADATA_NAMES.has(part.toLowerCase()));
+}
+const UNEXPECTED_PATH_LIMIT = 10;
+function describePaths(paths) {
+  const shown = paths.slice(0, UNEXPECTED_PATH_LIMIT).join(', ');
+  return paths.length > UNEXPECTED_PATH_LIMIT ? `${shown} (and ${paths.length - UNEXPECTED_PATH_LIMIT} more)` : shown;
+}
 function realDirectory(directory) {
   // Refuse symlink ancestors too: the ownership boundary must remain where the
   // operator selected it, rather than following an existing installation link.
@@ -60,7 +73,7 @@ export function inventoryProductPayload(root) {
   function visit(directory, prefix = '') {
     for (const name of fs.readdirSync(directory).sort()) {
       const relative = prefix ? `${prefix}/${name}` : name;
-      if (relative === 'manifest.json') continue;
+      if (relative === 'manifest.json' || isOsMetadataPath(relative)) continue;
       if (!safePath(relative)) throw new Error(`Invalid payload path: ${relative}`);
       const entry = entryAt(root, relative); files.push(entry);
       if (entry.type === 'directory') visit(path.join(root, relative), relative);
@@ -151,6 +164,11 @@ export function isProductStatePath(relative) {
   return PRODUCT_STATE_PATHS.some(entry => relative === entry.path ||
     ((entry.type === 'directory' || entry.allowDescendants) && relative.startsWith(entry.path + '/')));
 }
+/** Packaged software directories that may hold a home's state below them, such
+ * as a skill's data. An update sets that state aside before it moves the unit. */
+export function isStateBearingSoftwarePath(relative) {
+  return relative === 'app/workspace/skills' || /^app\/workspace\/skills\/[^/]+$/.test(relative);
+}
 export function verifyProductPayload(payloadPath, { allowRuntimeState = false } = {}) {
   const root = path.resolve(payloadPath), manifest = readProductManifest(root);
   if (manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error(`This package requires ${manifest.platform}/${manifest.arch}; this machine is ${process.platform}/${process.arch}`);
@@ -163,18 +181,22 @@ export function verifyProductPayload(payloadPath, { allowRuntimeState = false } 
     if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Product file changed: ${expected.path}`);
   }
   const expectedPaths = new Set(manifest.files.map(entry => entry.path));
+  // Name every undeclared path, bounded, so the owner can act on the refusal.
+  // An undeclared directory is named once; its contents are not walked.
+  const unexpected = [];
   function checkExtra(directory, prefix = '') {
-    for (const name of fs.readdirSync(directory)) {
+    for (const name of fs.readdirSync(directory).sort()) {
       const relative = prefix ? `${prefix}/${name}` : name;
       if (relative === 'manifest.json') continue;
       if (!expectedPaths.has(relative)) {
-        if (allowRuntimeState && isProductStatePath(relative)) continue;
-        throw new Error(`Unexpected product file: ${relative}`);
+        if (!isOsMetadataPath(relative) && !(allowRuntimeState && isProductStatePath(relative))) unexpected.push(relative);
+        continue;
       }
       if (fs.lstatSync(path.join(root, relative)).isDirectory()) checkExtra(path.join(root, relative), relative);
     }
   }
   checkExtra(root);
+  if (unexpected.length) throw new Error(`Unexpected product file${unexpected.length === 1 ? '' : 's'}: ${describePaths(unexpected)}`);
   if (!allowRuntimeState && manifest.files.some(entry => entry.type !== 'directory' && !entry.path.endsWith('/.gitkeep') && isProductStatePath(entry.path))) throw new Error('A product payload cannot contain installation state');
   return manifest;
 }

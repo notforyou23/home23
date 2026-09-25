@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { absoluteHome, privateDirectory, productEnvironment, readPrivateJSON } from './product-environment.js';
-import { acquireInstallLock, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
+import { acquireInstallLock, isStateBearingSoftwarePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
 import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath } from './product-update-inventory.js';
@@ -20,6 +20,12 @@ const RANK = { claimed: 0, quiesced: 1, checkpointed: 2, retained: 3, applying: 
 const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update-preview.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs'];
 const DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const CHECKPOINT_COPIES = 4;
+// A cold candidate can outlive Start's own readiness wait while it catches up.
+// Keep re-probing its Host status this long before deferring the update.
+const READINESS_WAIT_MS = 300000;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+/** Re-probe interval: 5 s, growing by half each probe, capped at 10 s. */
+const readinessInterval = attempt => Math.min(10000, Math.round(5000 * 1.5 ** attempt));
 // Home state and every directory above it stay in place during a version switch.
 // Everything else in a package is software and moves as whole subtrees.
 const MIXED_DIRECTORIES = new Set(['', ...PRODUCT_STATE_PATHS.flatMap(({ path, type }) => path.split('/').slice(0, type === 'directory' ? undefined : -1)
@@ -308,6 +314,29 @@ function healthyAdmittedWriters(rows, writerNames) {
   return owned.length > 0 && owned.every(row => ['online', 'launching'].includes(row.status)) &&
     !rows.some(row => BUSY.has(row.status) && !known.has(row.name));
 }
+/** Classify an admitted candidate after Start's readiness wait gave up.
+ * One timed-out probe against a busy home is not a verdict: while its writers
+ * stay online and no probe reports a hard failure, re-probe with bounded
+ * backoff until it reads ready or the deadline passes. A hard failure (a
+ * process not online, a missing owned service, recovery required) returns at
+ * once. `waiting` says the last probe still described a live, warming home. */
+async function awaitCandidateReadiness(home, journal, dependencies, { busy, list }) {
+  const clock = dependencies.clock || Date.now, wait = dependencies.sleep || sleep;
+  const deadline = clock() + (dependencies.readinessWaitMs ?? READINESS_WAIT_MS);
+  for (let attempt = 0; ; attempt++) {
+    let current = null, statusUnavailable = false;
+    try { current = await (dependencies.status || defaultStatus)(home, journal); }
+    catch { statusUnavailable = true; }
+    const maskedStatusFailure = current?.ok === false && current?.status === 'recovery_required' &&
+      current?.error?.code === 'update_recovery_required' && !current?.readiness && !current?.processes;
+    const kind = statusUnavailable || !current || maskedStatusFailure ? 'unavailable' : candidateStatusKind(current);
+    const waiting = kind === 'starting' ? await busy()
+      : kind === 'unavailable' ? healthyAdmittedWriters(await list(home), journal.writerNames) : false;
+    const remaining = deadline - clock();
+    if (!waiting || remaining <= 0) return { kind, waiting };
+    await wait(Math.min(readinessInterval(attempt), remaining));
+  }
+}
 async function defaultAcquireHostLock(home, owner) {
   const runtime = privateDirectory(join(home, 'runtime'));
   const lockPath = join(runtime, '.host.lock'), markerPath = join(runtime, '.home23-update-lock.json');
@@ -489,6 +518,46 @@ function renameUnit(from, to) {
   mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
   renameSync(from, to);
 }
+/** State paths whose parent is state-bearing software, found where they are
+ * now. Each branch stops at the first such path; a state root such as
+ * app/workspace is walked through, and only directories `descend` admits are. */
+function nestedStateBelow(root, relative, descend) {
+  const absolute = relative ? join(root, relative) : root;
+  if (!exists(absolute) || !lstatSync(absolute).isDirectory()) return [];
+  return readdirSync(absolute).sort().flatMap(name => {
+    const child = relative ? `${relative}/${name}` : name;
+    if (isStateBearingSoftwarePath(relative) && isProductStatePath(child)) return [child];
+    return descend(child) ? nestedStateBelow(root, child, descend) : [];
+  });
+}
+/** Home state kept inside a software unit, such as a packaged skill's data.
+ * A unit moves whole, so that state is set aside under the update directory
+ * first and returns to its own path once the selected software is in place. */
+function nestedStatePaths(root, unit) {
+  return isStateBearingSoftwarePath(unit) ? nestedStateBelow(root, unit, isStateBearingSoftwarePath) : [];
+}
+function setAsideStatePaths(aside) { return nestedStateBelow(aside, '', () => true); }
+function setAsideNestedState(root, unit, aside) {
+  const paths = nestedStatePaths(root, unit);
+  for (const relative of paths) renameUnit(join(root, relative), join(aside, relative));
+  return paths;
+}
+function restoreNestedState(home, aside, expected) {
+  const paths = setAsideStatePaths(aside);
+  for (const relative of paths) {
+    try { renameUnit(join(aside, relative), join(home, relative)); }
+    catch (error) {
+      if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
+      throw new Error(`Home state ${relative} cannot return to the selected software. Nothing more was moved.`);
+    }
+  }
+  fsyncParents(aside, paths);
+  fsyncParents(home, paths);
+  for (const relative of expected || []) {
+    if (!exists(join(home, relative))) throw new Error(`Home state ${relative} did not return to the selected software. Nothing more was moved.`);
+  }
+  if (exists(aside) && !setAsideStatePaths(aside).length) rmSync(aside, { recursive: true, force: true });
+}
 /** Prepares previous/ to receive the installed software whole. An earlier update's
  * previous version is set aside by one rename; nothing is copied per file. */
 function retainPrevious(home, updateDirectory, manifest) {
@@ -505,19 +574,28 @@ function retainPrevious(home, updateDirectory, manifest) {
 /** Switches software by moving whole units: installed units into previous/, then
  * staged units into the home. Each pass is idempotent from any interrupted state
  * and made durable before the next begins. Home state never moves. */
-function applyPackage(home, staged, previousManifest, manifest) {
-  const previous = join(updateDirectoryFor(home), 'previous');
+function applyPackage(home, staged, previousManifest, manifest, nestedState) {
+  const updateDirectory = updateDirectoryFor(home);
+  const previous = join(updateDirectory, 'previous'), aside = join(updateDirectory, 'nested-state');
   const outgoing = softwareUnits(previousManifest), incoming = softwareUnits(manifest);
   const moving = new Set(incoming);
+  const nested = [];
   for (const unit of outgoing) {
     const installed = exists(join(home, unit)), retained = exists(join(previous, unit));
-    if (installed && !retained) renameUnit(join(home, unit), join(previous, unit));
-    else if (!retained || (installed && (!moving.has(unit) || exists(join(staged, unit))))) {
+    if (installed && !retained) {
+      // Nested state leaves before its unit does, so the rename cannot carry it away.
+      nested.push(...setAsideNestedState(home, unit, aside));
+      renameUnit(join(home, unit), join(previous, unit));
+    } else if (!retained || (installed && (!moving.has(unit) || exists(join(staged, unit))))) {
       throw new Error(`The version switch cannot place ${unit}. Nothing more was moved.`);
+    } else {
+      // An earlier controller moved this unit whole. Bring its nested state back out.
+      nested.push(...setAsideNestedState(previous, unit, aside));
     }
   }
   fsyncParents(home, outgoing);
-  fsyncParents(previous, outgoing);
+  fsyncParents(previous, [...outgoing, ...nested]);
+  fsyncParents(aside, nested);
   for (const unit of incoming) {
     const waiting = exists(join(staged, unit)), selected = exists(join(home, unit));
     if (waiting && !selected) renameUnit(join(staged, unit), join(home, unit));
@@ -525,6 +603,7 @@ function applyPackage(home, staged, previousManifest, manifest) {
   }
   fsyncParents(staged, incoming);
   fsyncParents(home, incoming);
+  restoreNestedState(home, aside, nestedState);
   for (const entry of manifest.files.filter(item => item.type === 'directory' && MIXED_DIRECTORIES.has(item.path))) {
     mkdirSync(join(home, entry.path), { recursive: true, mode: entry.mode });
     chmodSync(join(home, entry.path), entry.mode);
@@ -548,7 +627,7 @@ function applyPackage(home, staged, previousManifest, manifest) {
 /** The switch in reverse. Candidate units are set aside whole and the retained
  * previous units move back. Resumes from any interrupted restore. */
 function restorePrevious(home, updateDirectory, previousManifest, candidateManifest, verify, setAside) {
-  const previous = join(updateDirectory, 'previous');
+  const previous = join(updateDirectory, 'previous'), aside = join(updateDirectory, 'nested-state');
   const returning = softwareUnits(previousManifest), leaving = softwareUnits(candidateManifest);
   const retained = new Set(returning.filter(unit => exists(join(previous, unit))));
   // Verify the previous version where it is now: still in previous/, or already back home.
@@ -557,18 +636,25 @@ function restorePrevious(home, updateDirectory, previousManifest, candidateManif
     throw Object.assign(new Error('Retained previous software no longer matches its manifest.'), { code: 'rollback_unverified' });
   }
   const back = new Set(returning);
+  const nested = [];
   for (const unit of leaving) {
     // A unit already restored from previous/ is the previous version, not the candidate.
-    if (exists(join(home, unit)) && (!back.has(unit) || retained.has(unit))) renameUnit(join(home, unit), join(setAside, unit));
+    if (exists(join(home, unit)) && (!back.has(unit) || retained.has(unit))) {
+      // Nested state leaves before its unit does; the set-aside candidate is released after rollback.
+      nested.push(...setAsideNestedState(home, unit, aside));
+      renameUnit(join(home, unit), join(setAside, unit));
+    } else if (exists(join(setAside, unit))) nested.push(...setAsideNestedState(setAside, unit, aside));
   }
   fsyncParents(home, leaving);
-  fsyncParents(setAside, leaving);
+  fsyncParents(setAside, [...leaving, ...nested]);
+  fsyncParents(aside, nested);
   for (const unit of retained) {
     if (exists(join(home, unit))) throw new Error(`Rollback cannot place ${unit}. Nothing more was moved.`);
     renameUnit(join(previous, unit), join(home, unit));
   }
   fsyncParents(previous, [...retained]);
   fsyncParents(home, returning);
+  restoreNestedState(home, aside, null);
   for (const entry of previousManifest.files.filter(item => item.type === 'directory' && MIXED_DIRECTORIES.has(item.path))) {
     mkdirSync(join(home, entry.path), { recursive: true, mode: entry.mode });
     chmodSync(join(home, entry.path), entry.mode);
@@ -708,10 +794,12 @@ async function mutate(journal, dependencies, verify) {
     if (!journal.reuseVerifiedStage && verify(journal.stagedPayload, { fresh: true }).packageId !== journal.toPackageId) {
       throw new Error('The staged candidate changed identity.');
     }
-    journal = await commitPhase(file, { ...journal, phase: 'applying', stagedManifestSha256: hashFile(join(journal.stagedPayload, 'manifest.json')) }, dependencies);
+    // Record state nested in the installed software so resume can confirm it returned.
+    journal = await commitPhase(file, { ...journal, phase: 'applying', stagedManifestSha256: hashFile(join(journal.stagedPayload, 'manifest.json')),
+      nestedState: softwareUnits(previousManifest(home)).flatMap(unit => nestedStatePaths(home, unit)) }, dependencies);
   }
   if (rank() < RANK.selected) {
-    applyPackage(home, journal.stagedPayload, previousManifest(home), candidateManifest(journal));
+    applyPackage(home, journal.stagedPayload, previousManifest(home), candidateManifest(journal), journal.nestedState);
     journal = await commitPhase(file, { ...journal, phase: 'selected', acceptedWork: false }, dependencies);
   }
   return { journal };
@@ -815,23 +903,20 @@ async function finish(journal, dependencies, verify) {
   }
   let behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved, verify });
   if (journal.desiredRunning && journal.writersAdmitted && journal.startOk === false && identityPreserved) {
-    // A cold home can outlive Start's readiness wait. Check its current status
-    // without restarting or fencing healthy, still-warming writers.
+    // A cold home can outlive Start's readiness wait. Keep checking its current
+    // status without restarting or fencing healthy, still-warming writers. A
+    // deferral here leaves the journal at writers_admitted, so the next resume
+    // re-enters this same wait rather than needing anyone to judge readiness.
     const withoutStartFailure = dependencies.verifyBehavior ? behavior :
       defaultBehavior({ home, journal: { ...journal, startOk: true }, identityPreserved, verify });
     if (withoutStartFailure.ok) {
-      let current = null, statusUnavailable = false;
-      try { current = await (dependencies.status || defaultStatus)(home, journal); }
-      catch { statusUnavailable = true; }
-      const maskedStatusFailure = current?.ok === false && current?.status === 'recovery_required' &&
-        current?.error?.code === 'update_recovery_required' && !current?.readiness && !current?.processes;
-      const kind = statusUnavailable || !current || maskedStatusFailure ? 'unavailable' : candidateStatusKind(current);
+      const { kind, waiting } = await awaitCandidateReadiness(home, journal, dependencies, { busy, list });
       if (kind === 'ready') {
         journal = await commitPhase(file, { ...journal, startOk: true, startStatus: 'ready', startErrorCode: null }, dependencies);
         behavior = withoutStartFailure;
-      } else if (kind === 'starting' && await busy()) {
+      } else if (kind === 'starting' && waiting) {
         return deferred(home, 'candidate_starting', 'This home is still starting. Its services remain running; resume the update after it becomes ready.', journal);
-      } else if (kind === 'unavailable' && healthyAdmittedWriters(await list(home), journal.writerNames)) {
+      } else if (kind === 'unavailable' && waiting) {
         return deferred(home, 'candidate_starting', 'This home is running but readiness could not be checked yet. Resume the update after it becomes ready.', journal);
       }
     }

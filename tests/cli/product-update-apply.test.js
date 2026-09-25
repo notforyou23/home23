@@ -990,6 +990,7 @@ test('a warming admitted candidate defers and later commits without restarting o
     status: async () => ({ ok: true, status: 'recovery_required',
       processes: [{ name: 'home23-milo', status: 'online', owned: true }], readiness: { ready } }),
     quiesce: async () => { fences += 1; online = false; return []; },
+    readinessWaitMs: 0,
   };
   const first = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
     staging: fixture.staging, admit: true }, dependencies);
@@ -1017,11 +1018,83 @@ test('a failed Host status probe defers healthy admitted writers without fencing
     status: async () => ({ ok: false, status: 'recovery_required',
       error: { code: 'update_recovery_required' }, update: { phase: 'writers_admitted' } }),
     quiesce: async () => { fences += 1; online = false; return []; },
+    readinessWaitMs: 0,
   });
   assert.equal(result.status, 'deferred');
   assert.equal(result.reasons[0].code, 'candidate_starting');
   assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
   assert.equal(fences, 0);
+});
+
+test('transient readiness probe timeouts re-probe with bounded backoff and commit without deferring', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let online = false, probes = 0, starts = 0, fences = 0;
+  const slept = [];
+  const timedOut = { ok: true, status: 'recovery_required', processes: [{ name: 'home23-milo', status: 'online', owned: true }],
+    readiness: { ready: false, issues: ['Resident engine (milo) is not responding from this installation yet.'] } };
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { starts += 1; online = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+    status: async () => { probes += 1; return probes < 3 ? timedOut : { ...timedOut, readiness: { ready: true, issues: [] } }; },
+    quiesce: async () => { fences += 1; online = false; return []; },
+    sleep: async ms => { slept.push(ms); },
+  });
+  assert.equal(result.status, 'committed');
+  assert.equal(probes, 3);
+  assert.deepEqual(slept, [5000, 7500]);
+  assert.equal(starts, 1);
+  assert.equal(fences, 0);
+  assert.equal(readUpdateJournal(fixture.home).startOk, true);
+});
+
+test('a candidate that never reads ready defers only at the readiness deadline and resumes without intervention', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let online = false, probes = 0, fences = 0, ready = false, clock = 0;
+  const slept = [];
+  const dependencies = { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { online = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+    status: async () => { probes += 1; return { ok: true, status: 'recovery_required',
+      processes: [{ name: 'home23-milo', status: 'online', owned: true }],
+      readiness: { ready, issues: ready ? [] : ['Resident engine (milo) is not responding from this installation yet.'] } }; },
+    quiesce: async () => { fences += 1; online = false; return []; },
+    clock: () => clock, sleep: async ms => { slept.push(ms); clock += ms; }, readinessWaitMs: 30000,
+  };
+  const first = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, dependencies);
+  assert.equal(first.status, 'deferred');
+  assert.equal(first.reasons[0].code, 'candidate_starting');
+  assert.equal(probes, 5);
+  assert.deepEqual(slept, [5000, 7500, 10000, 7500]);
+  assert.equal(fences, 0);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
+  ready = true;
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, dependencies);
+  assert.equal(resumed.status, 'committed');
+  assert.equal(probes, 6);
+  assert.equal(fences, 0);
+  assert.equal(readUpdateJournal(fixture.home).startOk, true);
+});
+
+test('a hard readiness failure classifies the candidate as failed on the first probe', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let failed = false, probes = 0, fences = 0;
+  const slept = [];
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => failed ? [{ name: 'home23-milo', status: 'errored' }] : [],
+    start: async () => { failed = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+    status: async () => { probes += 1; return { ok: true, status: 'degraded',
+      processes: [{ name: 'home23-milo', status: 'errored', owned: true }],
+      readiness: { ready: false, issues: ['Resident engine (milo) is not responding from this installation yet.'] } }; },
+    quiesce: async () => { fences += 1; failed = false; return []; },
+    sleep: async ms => { slept.push(ms); },
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(probes, 1);
+  assert.deepEqual(slept, []);
+  assert.equal(fences, 1);
 });
 
 test('initial Start readiness wins over a still-starting status label', async t => {
@@ -1410,6 +1483,87 @@ test('an interrupted rollback resumes and restores the previous version', async 
   assert.equal(fs.existsSync(path.join(fixture.home, 'app/cli/lib/update-marker.txt')), false);
   assert.deepEqual(preserved(fixture.home), before);
   assert.deepEqual(released, [aside]);
+});
+
+const SKILL = 'app/workspace/skills/x-research';
+function skillFixture(t) {
+  // A packaged skill keeps its runtime cache beside its code, inside the
+  // app/workspace/skills software unit that the switch moves whole.
+  const fixture = homeFixture(t, { currentExtra: { [`${SKILL}/index.js`]: 'version one\n' },
+    extra: { [`${SKILL}/index.js`]: 'version two\n', 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n' } });
+  const data = path.join(fixture.home, SKILL, 'data');
+  fs.mkdirSync(path.join(data, 'cache'), { recursive: true });
+  fs.writeFileSync(path.join(data, 'cache/37cd32e1dc4e.json'), '{"cached":true}\n');
+  fs.writeFileSync(path.join(data, 'index.json'), '{"entries":1}\n');
+  return { ...fixture, data };
+}
+function skillState(home) {
+  return { cache: fs.readFileSync(path.join(home, SKILL, 'data/cache/37cd32e1dc4e.json'), 'utf8'),
+    index: fs.readFileSync(path.join(home, SKILL, 'data/index.json'), 'utf8'), code: fs.readFileSync(path.join(home, SKILL, 'index.js'), 'utf8') };
+}
+
+test('state nested inside a software unit stays in the home when that unit switches', async t => {
+  const fixture = skillFixture(t);
+  const before = preserved(fixture.home);
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.deepEqual(skillState(fixture.home), { cache: '{"cached":true}\n', index: '{"entries":1}\n', code: 'version two\n' });
+  assert.deepEqual(preserved(fixture.home), before);
+  const update = updateDirectoryFor(fixture.home);
+  assert.equal(fs.existsSync(path.join(update, 'previous', SKILL, 'data')), false);
+  assert.equal(fs.readFileSync(path.join(update, 'previous', SKILL, 'index.js'), 'utf8'), 'version one\n');
+  assert.equal(fs.existsSync(path.join(update, 'nested-state')), false);
+  assert.deepEqual(readUpdateJournal(fixture.home).nestedState, [`${SKILL}/data`]);
+});
+
+test('an interrupted switch resumes with set-aside nested state back inside the new unit', async t => {
+  for (const shape of ['aside', 'aside-moved', 'carried']) {
+    const fixture = skillFixture(t);
+    const before = preserved(fixture.home);
+    await interruptAt(fixture, 'applying');
+    const journal = readUpdateJournal(fixture.home);
+    assert.deepEqual(journal.nestedState, [`${SKILL}/data`], shape);
+    const update = updateDirectoryFor(fixture.home), previous = path.join(update, 'previous'), aside = path.join(update, 'nested-state');
+    const units = softwareUnits(fixture.installed);
+    if (shape !== 'carried') {
+      // The crash came after the state was set aside...
+      fs.mkdirSync(path.join(aside, SKILL), { recursive: true });
+      fs.renameSync(fixture.data, path.join(aside, SKILL, 'data'));
+    }
+    if (shape === 'aside-moved') {
+      // ...and after every unit moved out and one moved in.
+      for (const unit of units) fs.renameSync(path.join(fixture.home, unit), path.join(previous, unit));
+      fs.renameSync(path.join(journal.stagedPayload, units[0]), path.join(fixture.home, units[0]));
+    }
+    if (shape === 'carried') {
+      // An earlier controller moved the unit whole, with the state still inside.
+      fs.renameSync(path.join(fixture.home, 'app/workspace/skills'), path.join(previous, 'app/workspace/skills'));
+    }
+    const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+    assert.equal(resumed.status, 'committed', `${shape}: ${JSON.stringify(resumed)}`);
+    assert.equal(packageId(fixture.home), fixture.next.packageId, shape);
+    assert.deepEqual(skillState(fixture.home), { cache: '{"cached":true}\n', index: '{"entries":1}\n', code: 'version two\n' }, shape);
+    assert.deepEqual(preserved(fixture.home), before, shape);
+    assert.equal(fs.existsSync(path.join(previous, SKILL, 'data')), false, shape);
+    assert.equal(fs.existsSync(aside), false, shape);
+  }
+});
+
+test('a rolled-back candidate returns nested state to the previous unit instead of discarding it', async t => {
+  const fixture = skillFixture(t);
+  const before = preserved(fixture.home);
+  const released = [];
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging },
+    { ...quiet, verifyBehavior: async () => ({ ok: false, issues: ['health failed'] }), removeDiscarded: paths => released.push(...paths) });
+  assert.equal(result.status, 'rolled_back', JSON.stringify(result.reasons));
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.deepEqual(skillState(fixture.home), { cache: '{"cached":true}\n', index: '{"entries":1}\n', code: 'version one\n' });
+  assert.deepEqual(preserved(fixture.home), before);
+  assert.equal(released.length, 1);
+  assert.equal(fs.existsSync(path.join(released[0], SKILL, 'data')), false);
+  assert.equal(fs.readFileSync(path.join(released[0], SKILL, 'index.js'), 'utf8'), 'version two\n');
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'nested-state')), false);
 });
 
 test('an update journal from the earlier copy updater is not switched by this one', async t => {

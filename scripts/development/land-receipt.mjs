@@ -7,7 +7,10 @@ import { fileURLToPath } from 'node:url';
 
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const SHA_PREFIX = /^[a-f0-9]{7,40}$/;
+// A deployment names either a managed release (40-hex content hash) or a signed
+// product package (64-hex packageId); one package deploys many commits at once.
 const RELEASE_ID = /^[a-f0-9]{40}$/;
+const PACKAGE_ID = /^[a-f0-9]{64}$/;
 const REPOSITORIES = new Set(['home23', 'home23-apple']);
 const SCRIPT_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const LEDGER_ENV = 'HOME23_LAND_RECEIPT_LEDGER';
@@ -26,6 +29,12 @@ function nonemptyLine(value) {
   return typeof value === 'string' && value.trim() === value && value.length > 0 && !/[\r\n]/.test(value);
 }
 
+function releaseKindOf(releaseId) {
+  if (RELEASE_ID.test(releaseId)) return 'managed-release';
+  if (PACKAGE_ID.test(releaseId)) return 'product-package';
+  return null;
+}
+
 function validateRecord(record, lineNumber) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) lineError(lineNumber, 'expected a JSON object');
   if (record.schemaVersion !== 1) lineError(lineNumber, 'unsupported schemaVersion');
@@ -33,7 +42,12 @@ function validateRecord(record, lineNumber) {
   if (!FULL_SHA.test(record.commit || '')) lineError(lineNumber, 'commit must be a full 40-character SHA');
 
   if (record.recordType === 'deployment') {
-    if (!RELEASE_ID.test(record.releaseId || '')) lineError(lineNumber, 'releaseId must be a 40-character content hash');
+    const kind = releaseKindOf(record.releaseId || '');
+    if (!kind) lineError(lineNumber, 'releaseId must be a 40-character managed releaseId or a 64-character product packageId');
+    // Records written before product packages could be recorded carry no
+    // releaseKind and are always managed releases; every newer record names it.
+    if (record.releaseKind === undefined && kind !== 'managed-release') lineError(lineNumber, 'a product package deployment must name releaseKind');
+    if (record.releaseKind !== undefined && record.releaseKind !== kind) lineError(lineNumber, `releaseKind ${JSON.stringify(record.releaseKind)} does not match releaseId`);
     return 'deployment';
   }
   if (record.recordType !== undefined) lineError(lineNumber, `unsupported recordType ${JSON.stringify(record.recordType)}`);
@@ -74,13 +88,14 @@ export function foldLandReceipts(records) {
     const type = validateRecord(record, lineNumber);
     if (type === 'land') {
       if (byCommit.has(record.commit)) lineError(lineNumber, `commit ${record.commit} already has a land receipt`);
-      byCommit.set(record.commit, { ...record, surfaces: [...record.surfaces] });
+      byCommit.set(record.commit, { ...record, surfaces: [...record.surfaces], deployedReleaseKind: null });
       return;
     }
     const receipt = byCommit.get(record.commit);
     if (!receipt) lineError(lineNumber, `deployment for ${record.commit} has no prior land receipt`);
     receipt.deployed = true;
     receipt.deployedReleaseId = record.releaseId;
+    receipt.deployedReleaseKind = record.releaseKind ?? 'managed-release';
     receipt.deployedAt = record.recordedAt;
   });
   return [...byCommit.values()];
@@ -242,34 +257,67 @@ export function recordLandReceipt({
   });
 }
 
+// Returns the receipted full SHA for a commit or prefix, or null when no receipt
+// exists. A malformed or ambiguous prefix is an input error either way.
 function receiptCommit(receipts, commit) {
   const candidate = String(commit || '').toLowerCase();
-  if (!SHA_PREFIX.test(candidate)) throw new Error('commit must be a 7- to 40-character hexadecimal SHA');
+  if (!SHA_PREFIX.test(candidate)) throw new Error(`commit ${JSON.stringify(commit)} must be a 7- to 40-character hexadecimal SHA`);
   const matches = receipts.filter(receipt => receipt.commit.startsWith(candidate));
-  if (matches.length === 0) throw new Error(`No prior land receipt exists for commit ${candidate}`);
   if (matches.length > 1) throw new Error(`Commit prefix ${candidate} matches multiple land receipts`);
-  return matches[0].commit;
+  return matches.length === 1 ? matches[0].commit : null;
+}
+
+// One deployment (release or package) covers every commit given. Each commit
+// with a land receipt gets its own deployment record, all sharing one
+// timestamp; commits without a receipt are reported in `unrecorded`. With
+// `strict`, or when no commit at all has a receipt, nothing is appended.
+export function recordDeployments({ ledgerPath = defaultLedgerPath(), commits, releaseId, strict = false, now = () => new Date() }) {
+  const releaseKind = releaseKindOf(releaseId || '');
+  if (!releaseKind) throw new Error('release must be a 40-character managed releaseId or a 64-character product packageId, lowercase hexadecimal');
+  if (!Array.isArray(commits) || commits.length === 0) throw new Error('land needs at least one commit');
+  return withLedgerWriteLock(ledgerPath, () => {
+    const receipts = loadLandReceipts(ledgerPath);
+    const receipted = new Set(), unrecorded = new Set();
+    for (const commit of commits) {
+      const resolved = receiptCommit(receipts, commit);
+      if (resolved) receipted.add(resolved);
+      else unrecorded.add(String(commit).toLowerCase());
+    }
+    if (unrecorded.size && (strict || receipted.size === 0)) {
+      throw new Error(`No prior land receipt exists for commit${unrecorded.size === 1 ? '' : 's'} ${[...unrecorded].join(', ')}`);
+    }
+    const timestamp = recordedAt(now);
+    const deployed = [...receipted].map((commit, index) => {
+      const record = { schemaVersion: 1, recordType: 'deployment', recordedAt: timestamp, commit, releaseId, releaseKind };
+      validateRecord(record, receipts.length + index + 1);
+      return appendRecord(ledgerPath, record);
+    });
+    return { releaseId, releaseKind, deployed, unrecorded: [...unrecorded] };
+  });
 }
 
 export function recordDeployment({ ledgerPath = defaultLedgerPath(), commit, releaseId, now = () => new Date() }) {
-  if (!RELEASE_ID.test(releaseId || '')) throw new Error('release must be a 40-character lowercase hexadecimal releaseId');
-  return withLedgerWriteLock(ledgerPath, () => {
-    const receipts = loadLandReceipts(ledgerPath);
-    const record = {
-      schemaVersion: 1,
-      recordType: 'deployment',
-      recordedAt: recordedAt(now),
-      commit: receiptCommit(receipts, commit),
-      releaseId,
-    };
-    validateRecord(record, receipts.length + 1);
-    return appendRecord(ledgerPath, record);
-  });
+  return recordDeployments({ ledgerPath, commits: [commit], releaseId, strict: true, now }).deployed[0];
 }
 
 function gitRoot(cwd) {
   try { return git(cwd, ['rev-parse', '--show-toplevel']); }
   catch { throw new Error(`Cannot find a Git checkout from ${cwd}`); }
+}
+
+// `<shaA>..<shaB>` resolved with git rev-list in the checkout, oldest first.
+function rangeCommits(repoRoot, range) {
+  const text = String(range ?? '');
+  const at = text.indexOf('..');
+  const sides = at > 0 ? [text.slice(0, at), text.slice(at + 2)] : [];
+  if (sides.length !== 2 || sides.some(side => !side || /\s|\.\./.test(side) || /^[-.]/.test(side))) {
+    throw new Error(`--commits must be <shaA>..<shaB>, got ${JSON.stringify(text)}`);
+  }
+  let output;
+  try { output = git(repoRoot, ['rev-list', '--reverse', `${sides[0]}..${sides[1]}`, '--']); }
+  catch { throw new Error(`Cannot resolve commit range ${text} in ${repoRoot}`); }
+  if (!output) throw new Error(`Commit range ${text} contains no commits in ${repoRoot}`);
+  return output.split('\n');
 }
 
 function options(args, required) {
@@ -283,6 +331,46 @@ function options(args, required) {
     parsed[flag] = value;
   }
   for (const flag of required) if (!Object.hasOwn(parsed, flag)) throw new Error(`Missing required option ${flag}`);
+  return parsed;
+}
+
+const USAGE = [
+  'Usage:',
+  '  land-receipt.mjs record --commit <sha> --summary <line> --verification <line> --surfaces <a,b> --recorded-by <name>',
+  '  land-receipt.mjs land --release <releaseId|packageId> (--commit <sha> | --commits <shaA>..<shaB>)... [--strict]',
+  '  land-receipt.mjs list [--undeployed]',
+  '  land-receipt.mjs check',
+  '',
+  "--release takes a managed release's 40-character releaseId or a signed product package's 64-character packageId;",
+  'the deployment record names which kind it is. --commit may repeat; --commits resolves <shaA>..<shaB> with',
+  'git rev-list in the current checkout. land appends one deployment record per commit that has a land receipt',
+  'and reports the others as unrecorded; it fails without appending when no commit has a receipt, or when any',
+  'commit lacks one under --strict.',
+].join('\n');
+
+// Commits stay in argument order: --commit values and --commits ranges are
+// expanded exactly as given, so the deployment records follow the call.
+function landOptions(args) {
+  const parsed = { sources: [], release: undefined, strict: false };
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index];
+    if (flag === '--strict') {
+      if (parsed.strict) throw new Error(`Duplicate option --strict\n${USAGE}`);
+      parsed.strict = true;
+      continue;
+    }
+    const value = args[index + 1];
+    if (!['--commit', '--commits', '--release'].includes(flag) || value === undefined || value.startsWith('--')) {
+      throw new Error(`Invalid option ${flag || '(missing)'}\n${USAGE}`);
+    }
+    if (flag === '--release') {
+      if (parsed.release !== undefined) throw new Error(`Duplicate option --release\n${USAGE}`);
+      parsed.release = value;
+    } else parsed.sources.push({ flag, value });
+    index += 1;
+  }
+  if (parsed.release === undefined) throw new Error(`Missing required option --release\n${USAGE}`);
+  if (!parsed.sources.length) throw new Error(`land needs at least one --commit <sha> or --commits <shaA>..<shaB>\n${USAGE}`);
   return parsed;
 }
 
@@ -318,8 +406,18 @@ export function runLandReceiptCommand(argv, {
       return 0;
     }
     if (command === 'land') {
-      const parsed = options(args, ['--commit', '--release']);
-      printJson(stdout, recordDeployment({ ledgerPath, commit: parsed['--commit'], releaseId: parsed['--release'], now }));
+      const parsed = landOptions(args);
+      let root;
+      const commits = parsed.sources.flatMap(({ flag, value }) => {
+        if (flag === '--commit') return [value];
+        root ??= repoRoot ?? gitRoot(cwd);
+        return rangeCommits(root, value);
+      });
+      const result = recordDeployments({ ledgerPath, commits, releaseId: parsed.release, strict: parsed.strict, now });
+      if (result.unrecorded.length) {
+        stderr(`${result.unrecorded.length} commit${result.unrecorded.length === 1 ? ' has' : 's have'} no land receipt and ${result.unrecorded.length === 1 ? 'was' : 'were'} not recorded as deployed: ${result.unrecorded.join(', ')}\n`);
+      }
+      printJson(stdout, result);
       return 0;
     }
     if (command === 'list') {
@@ -334,7 +432,7 @@ export function runLandReceiptCommand(argv, {
       printJson(stdout, undeployed);
       return undeployed.length ? 3 : 0;
     }
-    throw new Error('Usage: land-receipt.mjs record|land|list|check');
+    throw new Error(USAGE);
   } catch (error) {
     stderr(`${error.message}\n`);
     return 1;

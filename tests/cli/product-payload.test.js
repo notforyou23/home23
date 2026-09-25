@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { writeProductManifest, verifyProductPayload, installProductPayload, isProductStatePath } from '../../cli/lib/product-payload.js';
+import { writeProductManifest, verifyProductPayload, installProductPayload, isProductStatePath, isOsMetadataPath, isStateBearingSoftwarePath } from '../../cli/lib/product-payload.js';
 
 test('mixed operator roots retain state without absorbing maintained software', () => {
   for (const path of ['app/workspace/skills/index.js', 'app/configs/base-engine.yaml',
@@ -24,6 +24,16 @@ test('a packaged skill keeps its runtime data beside its code as preserved state
   for (const path of ['app/workspace/skills/x-research/index.js', 'app/workspace/skills/x-research/SKILL.md',
     'app/workspace/skills/x-research/references/api.md', 'app/workspace/skills/data', 'app/workspace/skills/x-research/database.js']) {
     assert.equal(isProductStatePath(path), false, path);
+  }
+});
+
+test('a packaged skill directory is the software that may hold nested state', () => {
+  for (const path of ['app/workspace/skills', 'app/workspace/skills/x-research']) {
+    assert.equal(isStateBearingSoftwarePath(path), true, path);
+  }
+  for (const path of ['', 'app', 'app/workspace', 'app/cli', 'app/node_modules', 'app/instances',
+    'app/workspace/skills/x-research/data', 'app/workspace/skills/x-research/references']) {
+    assert.equal(isStateBearingSoftwarePath(path), false, path);
   }
 });
 
@@ -132,4 +142,56 @@ test('an installed payload cannot be silently repaired over modified source', t 
   const file = path.join(homeRoot, 'app/cli/home23.js'); fs.appendFileSync(file, '// locally changed');
   assert.throws(() => installProductPayload({ payloadPath: payload, homeRoot }), /Product file changed/);
   assert.match(fs.readFileSync(file, 'utf8'), /locally changed/);
+});
+
+test('Finder and other OS metadata is recognised by name at any depth', () => {
+  for (const path of ['.DS_Store', 'app/config/.DS_Store', 'app/cli/lib/.DS_Store', 'app/cli/._home23.js', '._manifest.json',
+    '.Spotlight-V100/Store-V2/index', '.fseventsd/fseventsd-uuid', '.Trashes/501/old.txt', '.TemporaryItems/folders.501',
+    'tools/node_modules/Thumbs.db', 'app/desktop.ini', 'app/config/thumbs.db']) {
+    assert.equal(isOsMetadataPath(path), true, path);
+  }
+  for (const path of ['app/config/home.yaml.bak', 'app/config/DS_Store', 'app/cli/_home23.js', 'app/cli/home23.js',
+    'app/.gitkeep', 'app/instances/milo/lived.json', 'app/Trashes', 'tools/node_modules/.bin/pm2']) {
+    assert.equal(isOsMetadataPath(path), false, path);
+  }
+});
+
+const OS_METADATA_FILES = ['.DS_Store', 'app/.DS_Store', 'app/config/.DS_Store', 'app/cli/lib/.DS_Store', 'app/cli/._home23.js',
+  'tools/node_modules/Thumbs.db', 'app/desktop.ini', '.Spotlight-V100/Store-V2/index', '.fseventsd/fseventsd-uuid',
+  '.Trashes/501/old.txt', '.TemporaryItems/folders.501'];
+function browseInFinder(root) {
+  for (const relative of OS_METADATA_FILES) {
+    fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+    fs.writeFileSync(path.join(root, relative), 'desktop metadata', { mode: 0o600 });
+  }
+}
+
+test('OS metadata never enters a package and does not stop verification, install or Start', t => {
+  const { payload, homeRoot } = fixture(t);
+  // Finder browsed the extracted package before its manifest was written.
+  fs.unlinkSync(path.join(payload, 'manifest.json'));
+  browseInFinder(payload);
+  const manifest = writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2' });
+  assert.equal(manifest.files.some(entry => isOsMetadataPath(entry.path)), false);
+  assert.equal(verifyProductPayload(payload).packageId, manifest.packageId);
+  assert.equal(installProductPayload({ payloadPath: payload, homeRoot }).status, 'installed');
+  for (const relative of OS_METADATA_FILES) assert.equal(fs.existsSync(path.join(homeRoot, relative)), false, relative);
+  // Browsing the installed home must not make Start or an update refuse it.
+  browseInFinder(homeRoot);
+  fs.writeFileSync(path.join(homeRoot, 'app/config/home.yaml'), 'owner: new owner');
+  assert.equal(verifyProductPayload(homeRoot, { allowRuntimeState: true }).packageId, manifest.packageId);
+  assert.equal(installProductPayload({ payloadPath: payload, homeRoot }).replayed, true);
+});
+
+test('genuinely unknown files stay refused and the error names them, bounded to ten', t => {
+  const { payload, homeRoot } = fixture(t);
+  installProductPayload({ payloadPath: payload, homeRoot });
+  fs.writeFileSync(path.join(homeRoot, 'app/config/.DS_Store'), 'desktop metadata');
+  fs.writeFileSync(path.join(homeRoot, 'app/config/home.yaml.bak'), 'owner: backup');
+  assert.throws(() => verifyProductPayload(homeRoot, { allowRuntimeState: true }),
+    error => error.message === 'Unexpected product file: app/config/home.yaml.bak');
+  for (let index = 0; index < 12; index += 1) fs.writeFileSync(path.join(homeRoot, `stray-${String(index).padStart(2, '0')}.bin`), 'stray');
+  const shown = ['app/config/home.yaml.bak', ...Array.from({ length: 9 }, (_, index) => `stray-${String(index).padStart(2, '0')}.bin`)];
+  assert.throws(() => verifyProductPayload(homeRoot, { allowRuntimeState: true }),
+    error => error.message === `Unexpected product files: ${shown.join(', ')} (and 3 more)`);
 });

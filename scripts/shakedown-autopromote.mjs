@@ -18,11 +18,12 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
+import { resolveAppRoot, resolveShakedownSiteRoot } from "./lib/app-root.mjs";
 
-const OPS = "/Users/jtr/websites/shakedownshuffle.com/ops/jerry-collection";
+const OPS = join(resolveShakedownSiteRoot(), "ops/jerry-collection");
 const STATE = join(OPS, "runtime/state");
 const LEDGER = join(OPS, "runtime/site-updates.jsonl");
-const H23 = "/Users/jtr/_JTR23_/release/home23";
+const H23 = resolveAppRoot(import.meta.url);
 
 const readJson = (p) => JSON.parse(readFileSync(p, "utf-8"));
 const run = (args, label) => {

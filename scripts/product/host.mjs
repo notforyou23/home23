@@ -34,6 +34,12 @@ function adoptionReply(result) {
 }
 
 /** Owner-facing wrappers: these replies are host.mjs command results, not installed-UI proof or public trust. */
+/** Other supervisors on this Mac still bound to the home after a rebind; the detail is in `warnings`. */
+function foreignBindingNote(result) {
+  const count = Array.isArray(result.warnings) ? result.warnings.length : 0;
+  return count ? ` ${count} other supervisor registration${count === 1 ? '' : 's'} on this Mac still name the home; Home23 did not change them. See warnings.` : '';
+}
+
 function portabilityReply(kind, result) {
   const commandResult = {
     ...result,
@@ -73,7 +79,7 @@ function portabilityReply(kind, result) {
       birthInvoked: false,
       ownerMessage: result.ok === false
         ? undefined
-        : 'Recovery installed a verified runtime into the inspected folder and rebound ports, supervisor registration, and absolute machine paths. Writers were not started and birth was not run. This is a command result, not an installed-UI proof. Local trust is not public trust.',
+        : 'Recovery installed a verified runtime into the inspected folder and rebound ports, supervisor registration, and absolute machine paths. Writers were not started and birth was not run. This is a command result, not an installed-UI proof. Local trust is not public trust.' + foreignBindingNote(result),
     };
   }
   return {
@@ -81,7 +87,7 @@ function portabilityReply(kind, result) {
     status: result.ok === false ? 'failed' : 'moved',
     ownerMessage: result.ok === false
       ? undefined
-      : 'Move command completed. Destination desired-running remains false and writers were not started. The source stays fenced. This is a command result, not an installed-UI proof. Local trust is not public trust.',
+      : 'Move command completed. Destination desired-running remains false and writers were not started. The source stays fenced. This is a command result, not an installed-UI proof. Local trust is not public trust.' + foreignBindingNote(result),
   };
 }
 

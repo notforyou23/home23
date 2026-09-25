@@ -17,8 +17,9 @@ import { writeFileSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import { join, resolve, relative, basename } from "node:path";
 import { classify } from "./shakedown-approval-runner.mjs";
+import { resolveAppRoot, resolveShakedownSiteRoot } from "./lib/app-root.mjs";
 
-const H23 = process.env.HOME23_ROOT || "/Users/jtr/_JTR23_/release/home23";
+const H23 = resolveAppRoot(import.meta.url);
 const PROJECT = join(H23, "instances/jerry/workspace/projects/shakedownshuffle");
 const QUEUE = join(PROJECT, "content/article-editorial-queue.md");
 const STATUS = join(PROJECT, "status/latest.json");
@@ -27,7 +28,7 @@ const RUNNER_LEDGER = join(H23, "instances/workers/shakedown-jerry/workspace/sta
 const EDIT_NOTES = join(PROJECT, "content/drafts/editorial/desk-review-notes.json");
 const NEWSLETTER = join(PROJECT, "content/newsletter");
 const EDITORIAL_STATE = join(PROJECT, "content/drafts/editorial/desk-draft-state.json");
-const SITE = "/Users/jtr/websites/shakedownshuffle.com/shakedown-v2";
+const SITE = join(resolveShakedownSiteRoot(), "shakedown-v2");
 const LIVE_BASE = "https://www.shakedownshuffle.com/newsletter/";
 const REVIEW_ROOTS = [
   join(H23, "instances/jerry/workspace/jtr/jerry-garcia-deep-dive"),

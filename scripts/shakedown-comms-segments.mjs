@@ -9,8 +9,9 @@
 // Active subscribers are excluded from every outreach segment.
 
 import { readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { resolveShakedownSiteRoot } from "./lib/app-root.mjs";
 
-const SITE = "/Users/jtr/websites/shakedownshuffle.com";
+const SITE = resolveShakedownSiteRoot();
 const envSrc = readFileSync(`${SITE}/jerry-api/.env`, "utf-8");
 const env = Object.fromEntries(envSrc.split("\n").filter((l) => l.includes("=") && !l.startsWith("#"))
   .map((l) => [l.slice(0, l.indexOf("=")).trim(), l.slice(l.indexOf("=") + 1).trim()]));

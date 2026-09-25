@@ -9,8 +9,11 @@ import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:http';
 import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
 import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses } from '../../cli/lib/product-host.js';
+import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
+
+const memorySource = createRequire(import.meta.url)('../../shared/memory-source');
 
 function home(t, { birth = false, omitEvobrew = false } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'host-unit-')));
@@ -147,6 +150,99 @@ test('Start reports a restarting service as failed instead of starting', async t
   assert.equal(result.status, 'degraded');
   assert.equal(result.error?.code, 'host_process_failed');
   assert.equal((await runHostAction('status', { homeRoot }, dependencies)).status, 'degraded');
+});
+
+test('Start re-registers a known process whose saved PM2 definition differs from the generated one and restarts an unchanged one', async t => {
+  const { homeRoot } = await prepared(t);
+  const config = path.join(homeRoot, 'runtime', 'ecosystem.config.json');
+  const apps = productDefinitions(definitions(homeRoot).map(app => ({ ...app, env: { HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY: 'false' } })), homeRoot, 'milo');
+  // PM2 keeps a started app's script, cwd, args and env flat on pm2_env.
+  const registered = (app, overrides = {}) => ({ name: app.name, pid: 0, pm2_env: { ...app.env, status: 'stopped', pm_cwd: app.cwd, pm_exec_path: path.resolve(app.cwd, app.script), args: [...app.args], ...overrides } });
+  const [unchanged, staleEnv, staleArgs, staleCwd, ...unregistered] = apps;
+  const rows = [
+    registered(unchanged),
+    registered(staleEnv, { HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY: 'true' }),
+    registered(staleArgs, { args: staleArgs.args.filter(arg => arg !== '--expose-gc') }),
+    registered(staleCwd, { pm_cwd: path.join(staleCwd.cwd, 'previous') }),
+  ];
+  const calls = [];
+  const execute = async (_node, args) => {
+    calls.push(args.slice(1));
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'delete') rows.splice(rows.findIndex(item => item.name === args[2]), 1);
+    if (args[1] === 'restart') rows.find(item => item.name === args[2]).pm2_env.status = 'online';
+    if (args[1] === 'start') rows.push(row(homeRoot, args[args.indexOf('--only') + 1]));
+    return { stdout: '' };
+  };
+  const result = await runHostAction('start', { homeRoot }, { execute, definitions: () => apps, readinessWaitMs: 0, probeReadiness: async () => ({ ready: true, issues: [] }) });
+  assert.equal(result.status, 'ready');
+  const stale = [staleEnv, staleArgs, staleCwd].map(app => app.name);
+  assert.deepEqual(result.definitionChanged, stale);
+  const commandsFor = name => calls.filter(args => ['delete', 'restart', 'start'].includes(args[0]) && args.includes(name));
+  assert.deepEqual(commandsFor(unchanged.name), [['restart', unchanged.name, '--update-env', '--silent']]);
+  for (const name of stale) assert.deepEqual(commandsFor(name), [['delete', name, '--silent'], ['start', config, '--only', name, '--update-env', '--silent']]);
+  for (const app of unregistered) assert.deepEqual(commandsFor(app.name), [['start', config, '--only', app.name, '--update-env', '--silent']]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(config, 'utf8')).apps.map(app => app.name), apps.map(app => app.name));
+  assert.equal(rows.length, apps.length);
+});
+
+test('Start re-registers a stopped row it does not own instead of refusing, and still refuses a live one', async t => {
+  const { homeRoot } = await prepared(t);
+  const config = path.join(homeRoot, 'runtime', 'ecosystem.config.json');
+  const apps = productDefinitions(definitions(homeRoot), homeRoot, 'milo');
+  const [first, ...rest] = apps;
+  // The saved record points at a previous home root: not owned, but stopped, so it is only stale.
+  const stale = { name: first.name, pid: 0, pm2_env: { status: 'stopped', pm_cwd: '/Volumes/Old/Home/app', pm_exec_path: '/Volumes/Old/Home/bin/node', args: [...first.args] } };
+  const rows = [stale];
+  const calls = [];
+  const execute = async (_node, args) => {
+    calls.push(args.slice(1));
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'delete') rows.splice(rows.findIndex(item => item.name === args[2]), 1);
+    if (args[1] === 'start') rows.push(row(homeRoot, args[args.indexOf('--only') + 1]));
+    return { stdout: '' };
+  };
+  const result = await runHostAction('start', { homeRoot }, { execute, definitions: () => apps, readinessWaitMs: 0, probeReadiness: async () => ({ ready: true, issues: [] }) });
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(result.definitionChanged, [first.name]);
+  const commandsFor = name => calls.filter(args => ['delete', 'restart', 'start'].includes(args[0]) && args.includes(name));
+  assert.deepEqual(commandsFor(first.name), [['delete', first.name, '--silent'], ['start', config, '--only', first.name, '--update-env', '--silent']]);
+  for (const app of rest) assert.deepEqual(commandsFor(app.name), [['start', config, '--only', app.name, '--update-env', '--silent']]);
+  // The same foreign record while online is a process this home must not touch.
+  const foreign = [{ ...stale, pid: 4242, pm2_env: { ...stale.pm2_env, status: 'online' } }];
+  await assert.rejects(() => runHostAction('start', { homeRoot }, { execute: async (_node, args) => args[1] === 'jlist' ? { stdout: JSON.stringify(foreign) } : { stdout: '' }, definitions: () => apps }),
+    /unexpected process/);
+});
+
+test('status warns about foreign supervisors bound to this home without failing or changing them', async t => {
+  const { homeRoot } = await prepared(t);
+  const userHome = path.join(path.dirname(homeRoot), 'user');
+  const dump = path.join(userHome, '.pm2/dump.pm2');
+  fs.mkdirSync(path.dirname(dump), { recursive: true });
+  fs.writeFileSync(dump, JSON.stringify([{ name: 'cosmo-engine', pm_cwd: path.join(homeRoot, 'app'), env: { HOME23_ROOT: path.join(homeRoot, 'app') } }, { name: 'other', pm_cwd: '/opt/other' }]));
+  const dumpBefore = fs.readFileSync(dump);
+  const dependencies = { execute: async () => ({ stdout: '[]' }), detectForeignBindings: options => detectForeignBindings({ ...options, homeDirectory: userHome }) };
+  const stopped = await runHostAction('status', { homeRoot }, dependencies);
+  assert.equal(stopped.ok, true);
+  assert.equal(stopped.status, 'prepared');
+  assert.deepEqual(stopped.foreignBindings.roots, [homeRoot]);
+  assert.deepEqual(stopped.foreignBindings.references.map(reference => [reference.source, reference.name, reference.field]),
+    [['pm2', 'cosmo-engine', 'pm_cwd'], ['pm2', 'cosmo-engine', 'env.HOME23_ROOT']]);
+  assert.equal(stopped.warnings.length, 1);
+  assert.match(stopped.warnings[0], /PM2 app "cosmo-engine"/);
+  assert.match(stopped.warnings[0], /Home23 did not change it/);
+  assert.deepEqual(fs.readFileSync(dump), dumpBefore);
+  // Readiness carries the same warning beside memory warnings; it stays non-fatal.
+  const rows = ownedProcessNames('milo').map(name => row(homeRoot, name));
+  const online = await runHostAction('status', { homeRoot }, { ...dependencies, execute: async () => ({ stdout: JSON.stringify(rows) }),
+    probeReadiness: async () => ({ ready: true, issues: [], warnings: ['memory warning'] }) });
+  assert.equal(online.status, 'ready');
+  assert.deepEqual(online.readiness.warnings, ['memory warning', stopped.warnings[0]]);
+  assert.deepEqual(online.warnings, stopped.warnings);
+  // A machine with nothing bound to this home reports an empty scan.
+  const clean = await runHostAction('status', { homeRoot }, { ...dependencies, detectForeignBindings: options => detectForeignBindings({ ...options, homeDirectory: path.join(userHome, 'nobody') }) });
+  assert.deepEqual(clean.warnings, []);
+  assert.deepEqual(clean.foreignBindings.references, []);
 });
 
 test('consumer Host skips Evobrew and accepts only its stopped legacy supervisor row', async t => {
@@ -1056,4 +1152,48 @@ test('create refuses oauth that is configured but neither valid nor refreshable'
   });
   assert.equal(admitted.status, 'prepared');
   assert.equal(readHostSecrets(homeRoot).providers.anthropic.oauth.refreshToken, 'refresh-stale-access');
+});
+
+test('status reports a stale memory seal instead of leaving reads to fail silently', async t => {
+  const { homeRoot } = await prepared(t);
+  const brain = path.join(homeRoot, 'app/instances/milo/brain');
+  fs.mkdirSync(brain, { recursive: true, mode: 0o755 });
+  const lockRoot = path.join(homeRoot, 'runtime/brain-source-locks');
+  await memorySource.rewriteMemoryBase(brain, {
+    nodes: [{ id: 'base', concept: 'base canary' }], edges: [], summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  await memorySource.appendMemoryRevision(brain, { nodes: [{ id: 'delta', concept: 'delta canary' }] },
+    { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  const stopped = { execute: async () => ({ stdout: '[]' }) };
+  const sealed = await runHostAction('status', { homeRoot }, stopped);
+  assert.equal(sealed.status, 'prepared');
+  assert.deepEqual(sealed.memorySeal, { ok: true, reasons: [] });
+
+  // A volume copy keeps the bytes and mtime but gives the delta a new inode and ctime.
+  execFileSync('cp', ['-Rp', brain, `${brain}.copy`]);
+  fs.rmSync(brain, { recursive: true });
+  fs.renameSync(`${brain}.copy`, brain);
+  const stale = await runHostAction('status', { homeRoot }, stopped);
+  assert.equal(stale.status, 'prepared');
+  assert.equal(stale.memorySeal.ok, false);
+  assert.equal(stale.memorySeal.reasons.length, 1);
+  assert.equal(stale.memorySeal.reasons[0].code, 'memory_seal_stale');
+  assert.equal(stale.memorySeal.reasons[0].resident, 'milo');
+  assert.match(stale.memorySeal.reasons[0].message, /memory-delta\./);
+
+  const rows = ownedProcessNames('milo').map(name => row(homeRoot, name));
+  const running = { execute: async (_node, args) => ({ stdout: args[1] === 'jlist' ? JSON.stringify(rows) : '' }),
+    probeReadiness: async () => ({ ready: true, issues: [] }) };
+  const degraded = await runHostAction('status', { homeRoot }, running);
+  assert.equal(degraded.status, 'degraded');
+  assert.equal(degraded.readiness.ready, false);
+  assert.equal(degraded.readiness.issues.length, 1);
+  assert.equal(degraded.readiness.issues[0], stale.memorySeal.reasons[0].message);
+
+  // Bytes past the sealed cutoff are an interrupted (or in-progress) append that the
+  // writer truncates and repairs on its next commit; status does not call that a stale seal.
+  const manifest = JSON.parse(fs.readFileSync(path.join(brain, 'memory-manifest.json'), 'utf8'));
+  fs.appendFileSync(path.join(brain, manifest.activeDelta.file), '{"uncommitted":true}\n');
+  const tail = await runHostAction('status', { homeRoot }, stopped);
+  assert.deepEqual(tail.memorySeal, { ok: true, reasons: [] });
 });

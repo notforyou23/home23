@@ -6,8 +6,9 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { readMoveFence } from './product-backup.js';
+import { detectForeignBindings } from './product-foreign-bindings.js';
 import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
-import { inspectProductMemory } from './product-memory.js';
+import { inspectMemorySeal, inspectProductMemory } from './product-memory.js';
 import {
   OWNED_EMBEDDER_PROCESS, OWNED_PROFILE_ID, OWNED_RECIPE_HASH,
   beginSemanticPrepare, encoderRequiredFor, ensureOwnedEncoderStopped, probeOwnedReady, semanticStatusView,
@@ -230,6 +231,20 @@ export function safeProcesses(rows, homeRoot, names, continuationServices = []) 
 }
 function failedProcess(row) {
   return !row.owned || row.status === 'errored' || row.status === 'waiting restart';
+}
+/**
+ * Whether PM2's saved record for a process still equals the generated app.
+ * PM2 resolves `script` against `cwd` into pm_exec_path and keeps every app
+ * env value flat on pm2_env (objects stringified, other types kept), so the
+ * comparison covers executable, cwd, args and each env key the app defines.
+ */
+export function definitionMatchesProcess(app, row) {
+  if (!app || !row) return false;
+  const env = row.pm2_env || {};
+  const executable = isAbsolute(app.script || '') ? app.script : resolve(app.cwd, app.script || '');
+  if (env.pm_exec_path !== executable || env.pm_cwd !== app.cwd) return false;
+  if (JSON.stringify(Array.isArray(env.args) ? env.args : []) !== JSON.stringify(Array.isArray(app.args) ? app.args : [])) return false;
+  return Object.entries(app.env || {}).every(([key, value]) => env[key] !== undefined && String(env[key]) === String(value));
 }
 function withoutStartupProfiling(args) {
   const result = [];
@@ -508,7 +523,10 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
   if (!existsSync(receiptPath(homeRoot))) return { ok: true, status: 'absent', homeRoot, desiredRunning: false, processes: [] };
   await validateInstallation(homeRoot);
   const state = stateFor(homeRoot);
-  if (!state) return { ok: true, status: 'installed', homeRoot, desiredRunning: false, processes: [] };
+  // Other supervisors on this machine that still name this home are reported, never changed.
+  const foreignBindings = (dependencies.detectForeignBindings || detectForeignBindings)({ homeRoot });
+  const warnings = foreignBindings.warnings;
+  if (!state) return { ok: true, status: 'installed', homeRoot, desiredRunning: false, processes: [], foreignBindings, warnings };
   const residents = hostResidentNames(state);
   const primary = state.profile?.name && residents.includes(state.profile.name) ? state.profile.name : residents[0];
   const primaryPorts = residentPortsFor(state, primary) || state.ports;
@@ -516,17 +534,24 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
     residentMap: state.residentMap || null,
     desiredRunning: state.desiredRunning === true,
     encoderRequired: encoderRequiredFor(state), semantic: semanticStatusView(homeRoot, state),
+    memorySeal: await inspectMemorySeal(homeRoot, residents),
     connection: {
       localURL: `http://127.0.0.1:${state.ports.coordination}`,
       dashboardURL: `http://127.0.0.1:${primaryPorts.dashboard}`,
       pairing: 'owner pairing code',
       access: 'loopback; use a trusted HTTPS or VPN transport for other devices',
-    } };
+    },
+    foreignBindings, warnings };
   const rows = await driver(homeRoot, dependencies, state).list();
   const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state), continuationServicesForState(state));
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
-  const readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
+  let readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
+  if (warnings.length) readiness = { ...readiness, warnings: [...(readiness.warnings || []), ...warnings] };
+  if (!output.memorySeal.ok) {
+    // Every identity-checked memory read fails on a stale seal; say so instead of reporting ready.
+    readiness = { ...readiness, ready: false, issues: [...(readiness.issues || []), ...output.memorySeal.reasons.map(reason => reason.message)] };
+  }
   const failed = processes.some(failedProcess);
   const starting = state.desiredRunning && !readiness.recoveryRequired && !failed
     && Date.now() - Date.parse(state.startedAt || '') < 120000;
@@ -733,7 +758,11 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     const legacyEvobrew = packagedWithoutEvobrew(homeRoot)
       ? safeProcesses(rows, homeRoot, ['home23-evobrew']).find(row => row.name === 'home23-evobrew' && row.status === 'stopped' && row.owned)
       : null;
-    if (rows.some(row => !names.includes(row.name) && row.name !== legacyEvobrew?.name) || processes.some(row => !row.owned) || new Set(rows.map(row => row.name)).size !== rows.length) throw new Error('This private supervisor contains an unexpected process; no processes were changed.');
+    // A live row this home does not own is foreign and stops every action. A stopped row whose saved
+    // definition no longer matches (a re-pointed continuing service, a moved home) is only stale:
+    // Start deletes it and registers the generated definition instead of refusing the whole home.
+    const live = row => row.status === 'online' || row.status === 'launching';
+    if (rows.some(row => !names.includes(row.name) && row.name !== legacyEvobrew?.name) || processes.some(row => !row.owned && live(row)) || new Set(rows.map(row => row.name)).size !== rows.length) throw new Error('This private supervisor contains an unexpected process; no processes were changed.');
     if (action === 'stop') {
       state = { ...state, desiredRunning: false, phase: 'stopped' };
       privateJSON(statePath(homeRoot), state);
@@ -781,6 +810,9 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     state = { ...state, desiredRunning: true, phase: 'starting', startedAt: new Date().toISOString() };
     privateJSON(statePath(homeRoot), state);
     await authorizeInitialHostPairing(homeRoot, true);
+    // Names whose saved PM2 record no longer matched the generated app and
+    // were re-registered from the config instead of restarted.
+    const definitionChanged = [];
     if (!allRunning) {
       const definitions = dependencies.definitions ? await dependencies.definitions(residents) : await processDriver.definitions(residents);
       const config = join(homeRoot, 'runtime', 'ecosystem.config.json');
@@ -789,7 +821,18 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       for (const name of startOrder) {
         const current = processes.find(row => row.name === name);
         if (current?.status === 'online') continue;
-        await processDriver.pm2([current ? 'restart' : 'start', current ? name : config, ...(current ? [] : ['--only', name]), '--update-env', '--silent']);
+        // `pm2 restart --update-env` keeps the daemon's saved script, cwd, args
+        // and env and only merges the CLI environment, so a process whose
+        // generated definition changed (home.yaml, a re-pointed continuing
+        // service) must be deleted and started again from the config.
+        const app = definitions.find(item => item.name === name);
+        let registered = Boolean(current);
+        if (registered && app && !definitionMatchesProcess(app, rows.find(row => row.name === name))) {
+          definitionChanged.push(name);
+          await processDriver.pm2(['delete', name, '--silent']);
+          registered = false;
+        }
+        await processDriver.pm2([registered ? 'restart' : 'start', registered ? name : config, ...(registered ? [] : ['--only', name]), '--update-env', '--silent']);
         if (name === OWNED_EMBEDDER_PROCESS) {
           // A cold ONNX launch includes artifact verification and model loading.
           // The integrated Mac trial took 32 seconds on external storage, so a
@@ -801,7 +844,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
             if (warm) break;
             await (dependencies.sleep || sleep)(500);
           }
-          if (!warm) return { ...await status(homeRoot, dependencies), ok: false, status: 'degraded',
+          if (!warm) return { ...await status(homeRoot, dependencies), ok: false, status: 'degraded', definitionChanged,
             error: { code: 'host_encoder_not_ready', message: 'The owned semantic encoder did not become ready. Check status, then retry Start. Your saved home stays in place.' } };
         }
       }
@@ -811,12 +854,12 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     do {
       result = await status(homeRoot, dependencies, true);
       if (result.status === 'ready') break;
-      if (result.processes?.some(failedProcess)) return { ...result, ok: false, status: 'degraded',
+      if (result.processes?.some(failedProcess)) return { ...result, ok: false, status: 'degraded', definitionChanged,
         error: { code: 'host_process_failed', message: 'A Home23 service could not stay running. Check this home\'s process logs, then retry Start.' } };
       if (Date.now() >= deadline) break;
       await (dependencies.sleep || sleep)(1000);
     } while (true);
-    return result;
+    return { ...result, definitionChanged };
     } finally {
       if (releaseSupervisor) releaseSupervisor();
     }

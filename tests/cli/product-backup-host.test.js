@@ -64,9 +64,9 @@ function fixtureHome(t, { withSeed = false } = {}) {
   };
 }
 
-function runHost(args) {
+function runHost(args, env = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(nodeBin, [hostEntry, ...args], { cwd: rootDir });
+    const child = spawn(nodeBin, [hostEntry, ...args], { cwd: rootDir, env: { ...process.env, ...env } });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
@@ -139,17 +139,29 @@ test('host move fences source and leaves destination stopped via command path', 
   const fixture = fixtureHome(t, { withSeed: true });
   const destination = path.join(fixture.root, 'destination');
   fs.mkdirSync(destination, { mode: 0o755 });
+  // A synthetic user home whose global PM2 daemon still names the source; the command runs with HOME pointed there.
+  const userHome = path.join(fixture.root, 'user');
+  const dump = path.join(userHome, '.pm2/dump.pm2');
+  fs.mkdirSync(path.dirname(dump), { recursive: true });
+  fs.writeFileSync(dump, JSON.stringify([{ name: 'cosmo-engine', pm_cwd: `${fixture.home}/app`, env: { HOME23_ROOT: `${fixture.home}/app` } }]));
+  const dumpBefore = fs.readFileSync(dump);
   const result = await runHost([
     'move',
     '--home', fixture.home,
     '--destination', destination,
     '--archive', fixture.archivePath,
     '--key', fixture.keyPath,
-  ]);
+  ], { HOME: userHome, PM2_HOME: undefined });
   const body = JSON.parse(result.stdout);
   assert.equal(result.code, 0, result.stderr || result.stdout);
   assert.equal(body.ok, true);
   assert.equal(body.status, 'moved');
+  assert.deepEqual(body.foreignBindings.roots, [destination, fixture.home]);
+  assert.deepEqual(body.foreignBindings.references.map(reference => [reference.name, reference.field]), [['cosmo-engine', 'pm_cwd'], ['cosmo-engine', 'env.HOME23_ROOT']]);
+  assert.equal(body.warnings.length, 1);
+  assert.match(body.warnings[0], /PM2 app "cosmo-engine"/);
+  assert.match(body.ownerMessage, /1 other supervisor registration on this Mac still name the home; Home23 did not change them/);
+  assert.deepEqual(fs.readFileSync(dump), dumpBefore);
   assert.equal(body.resultKind, 'command');
   assert.equal(body.installedUiProof, false);
   assert.equal(body.fenced, true);
