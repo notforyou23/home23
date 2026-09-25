@@ -164,6 +164,11 @@ export function isProductStatePath(relative) {
   return PRODUCT_STATE_PATHS.some(entry => relative === entry.path ||
     ((entry.type === 'directory' || entry.allowDescendants) && relative.startsWith(entry.path + '/')));
 }
+/** Packaged software directories that may hold a home's state below them, such
+ * as a skill's data. An update sets that state aside before it moves the unit. */
+export function isStateBearingSoftwarePath(relative) {
+  return relative === 'app/workspace/skills' || /^app\/workspace\/skills\/[^/]+$/.test(relative);
+}
 export function verifyProductPayload(payloadPath, { allowRuntimeState = false } = {}) {
   const root = path.resolve(payloadPath), manifest = readProductManifest(root);
   if (manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error(`This package requires ${manifest.platform}/${manifest.arch}; this machine is ${process.platform}/${process.arch}`);

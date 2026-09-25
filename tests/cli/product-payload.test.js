@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { writeProductManifest, verifyProductPayload, installProductPayload, isProductStatePath, isOsMetadataPath } from '../../cli/lib/product-payload.js';
+import { writeProductManifest, verifyProductPayload, installProductPayload, isProductStatePath, isOsMetadataPath, isStateBearingSoftwarePath } from '../../cli/lib/product-payload.js';
 
 test('mixed operator roots retain state without absorbing maintained software', () => {
   for (const path of ['app/workspace/skills/index.js', 'app/configs/base-engine.yaml',
@@ -24,6 +24,16 @@ test('a packaged skill keeps its runtime data beside its code as preserved state
   for (const path of ['app/workspace/skills/x-research/index.js', 'app/workspace/skills/x-research/SKILL.md',
     'app/workspace/skills/x-research/references/api.md', 'app/workspace/skills/data', 'app/workspace/skills/x-research/database.js']) {
     assert.equal(isProductStatePath(path), false, path);
+  }
+});
+
+test('a packaged skill directory is the software that may hold nested state', () => {
+  for (const path of ['app/workspace/skills', 'app/workspace/skills/x-research']) {
+    assert.equal(isStateBearingSoftwarePath(path), true, path);
+  }
+  for (const path of ['', 'app', 'app/workspace', 'app/cli', 'app/node_modules', 'app/instances',
+    'app/workspace/skills/x-research/data', 'app/workspace/skills/x-research/references']) {
+    assert.equal(isStateBearingSoftwarePath(path), false, path);
   }
 });
 
