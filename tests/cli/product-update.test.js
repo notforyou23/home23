@@ -1197,3 +1197,54 @@ test('holdAdoptionSupervisorLock records writers for every resident', t => {
     /Another maintenance supervisor/,
   );
 });
+
+const memorySource = require('../../shared/memory-source');
+
+/** A resident brain whose manifest seals a chain-backed committed delta, as the engine writer leaves it. */
+async function sealedSourceBrain(source, lockRoot) {
+  const brain = path.join(source.home, 'instances', source.name, 'brain');
+  fs.mkdirSync(brain, { recursive: true, mode: 0o755 });
+  await memorySource.rewriteMemoryBase(brain, {
+    nodes: [{ id: 'base', concept: 'base canary' }], edges: [], summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  await memorySource.appendMemoryRevision(brain, { nodes: [{ id: 'delta', concept: 'adopted delta canary' }] },
+    { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  return brain;
+}
+
+test('adoption reseals each copied brain manifest so identity-checked memory reads work at the destination', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const brain = await sealedSourceBrain(source, path.join(pack.root, 'locks'));
+  const sourceManifest = fs.readFileSync(path.join(brain, 'memory-manifest.json'));
+  const destination = path.join(pack.root, 'destination');
+  const adopted = await adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  }, adoptionDeps({ rebindAdoptedHome }));
+  assert.equal(adopted.ok, true);
+  assert.equal(adopted.status, 'adopted');
+  const copied = path.join(destination, 'app/instances', source.name, 'brain');
+  const seal = await memorySource.inspectMemorySeal(copied);
+  assert.equal(seal.status, 'sealed');
+  const sealedBefore = JSON.parse(sourceManifest);
+  assert.notEqual(seal.manifest.activeDelta.fileIdentity.ino, sealedBefore.activeDelta.fileIdentity.ino);
+  assert.equal(seal.manifest.activeDelta.chainDigest, sealedBefore.activeDelta.chainDigest);
+  assert.equal(fs.readFileSync(path.join(brain, 'memory-manifest.json')).equals(sourceManifest), true, 'the source manifest is untouched');
+});
+
+test('adoption refuses a brain whose committed delta no longer matches its sealed manifest and leaves the source unfenced', async t => {
+  const pack = fixture(t);
+  const source = managedHome(pack.root);
+  const brain = await sealedSourceBrain(source, path.join(pack.root, 'locks'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(brain, 'memory-manifest.json'), 'utf8'));
+  const deltaPath = path.join(brain, manifest.activeDelta.file);
+  const original = fs.readFileSync(deltaPath, 'utf8');
+  const tampered = original.replace('adopted delta canary', 'adopted DELTA canary');
+  assert.equal(tampered.length, original.length);
+  fs.writeFileSync(deltaPath, tampered);
+  const destination = path.join(pack.root, 'destination');
+  await assert.rejects(adoptManagedSourceHome({
+    sourceHome: source.home, destinationRoot: destination, payloadPath: pack.payload,
+  }, adoptionDeps({ rebindAdoptedHome })), { code: 'memory_seal_content_changed', message: new RegExp(source.name) });
+  assert.equal(fs.existsSync(path.join(source.home, 'instances/.house/maintenance/adopted-source.json')), false, 'the source is not fenced');
+});

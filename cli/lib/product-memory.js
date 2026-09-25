@@ -15,6 +15,34 @@ async function readModels(url) {
   return JSON.parse(text);
 }
 
+/**
+ * Read-only check that each resident brain manifest still seals the delta file
+ * on disk. A restored, moved or copied brain whose seal was not renewed fails
+ * every identity-checked memory read with source_changed; report that instead.
+ * Only the copied-brain signature (identity changed at the sealed size) is a
+ * reason: a size difference is an interrupted or in-progress append, which the
+ * writer truncates and repairs on its next commit.
+ */
+export async function inspectMemorySeal(homeRoot, residents) {
+  const reasons = [];
+  let memorySeal = null;
+  for (const name of residents) {
+    const brain = join(homeRoot, 'app/instances', name, 'brain');
+    if (!existsSync(join(brain, 'memory-manifest.json'))) continue;
+    memorySeal ??= (await import('../../shared/memory-source/reseal.cjs')).default;
+    try {
+      const seal = await memorySeal.inspectMemorySeal(brain);
+      if (seal.status !== 'stale') continue;
+      reasons.push({ code: memorySeal.MEMORY_SEAL_STALE, resident: name, file: seal.file,
+        message: `Resident ${name} memory manifest no longer seals its delta file ${seal.file}: the file identity changed while its size did not, as after a copy. Memory reads fail until the manifest is resealed; restoring or moving the home renews it.` });
+    } catch (error) {
+      reasons.push({ code: 'memory_seal_unreadable', resident: name, file: null,
+        message: `Resident ${name} memory manifest could not be checked: ${error?.message || error}` });
+    }
+  }
+  return { ok: reasons.length === 0, reasons };
+}
+
 export async function inspectProductMemory(homeRoot, { request = readModels } = {}) {
   const path = join(homeRoot, 'app/config/home.yaml');
   if (!existsSync(path)) return { semanticStatus: 'unconfigured', warnings: [] };

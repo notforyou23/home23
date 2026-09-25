@@ -12,6 +12,8 @@ import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, s
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 
+const memorySource = createRequire(import.meta.url)('../../shared/memory-source');
+
 function home(t, { birth = false, omitEvobrew = false } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'host-unit-')));
   const payload = path.join(base, 'payload'), homeRoot = path.join(base, 'home');
@@ -1118,4 +1120,48 @@ test('create refuses oauth that is configured but neither valid nor refreshable'
   });
   assert.equal(admitted.status, 'prepared');
   assert.equal(readHostSecrets(homeRoot).providers.anthropic.oauth.refreshToken, 'refresh-stale-access');
+});
+
+test('status reports a stale memory seal instead of leaving reads to fail silently', async t => {
+  const { homeRoot } = await prepared(t);
+  const brain = path.join(homeRoot, 'app/instances/milo/brain');
+  fs.mkdirSync(brain, { recursive: true, mode: 0o755 });
+  const lockRoot = path.join(homeRoot, 'runtime/brain-source-locks');
+  await memorySource.rewriteMemoryBase(brain, {
+    nodes: [{ id: 'base', concept: 'base canary' }], edges: [], summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  await memorySource.appendMemoryRevision(brain, { nodes: [{ id: 'delta', concept: 'delta canary' }] },
+    { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  const stopped = { execute: async () => ({ stdout: '[]' }) };
+  const sealed = await runHostAction('status', { homeRoot }, stopped);
+  assert.equal(sealed.status, 'prepared');
+  assert.deepEqual(sealed.memorySeal, { ok: true, reasons: [] });
+
+  // A volume copy keeps the bytes and mtime but gives the delta a new inode and ctime.
+  execFileSync('cp', ['-Rp', brain, `${brain}.copy`]);
+  fs.rmSync(brain, { recursive: true });
+  fs.renameSync(`${brain}.copy`, brain);
+  const stale = await runHostAction('status', { homeRoot }, stopped);
+  assert.equal(stale.status, 'prepared');
+  assert.equal(stale.memorySeal.ok, false);
+  assert.equal(stale.memorySeal.reasons.length, 1);
+  assert.equal(stale.memorySeal.reasons[0].code, 'memory_seal_stale');
+  assert.equal(stale.memorySeal.reasons[0].resident, 'milo');
+  assert.match(stale.memorySeal.reasons[0].message, /memory-delta\./);
+
+  const rows = ownedProcessNames('milo').map(name => row(homeRoot, name));
+  const running = { execute: async (_node, args) => ({ stdout: args[1] === 'jlist' ? JSON.stringify(rows) : '' }),
+    probeReadiness: async () => ({ ready: true, issues: [] }) };
+  const degraded = await runHostAction('status', { homeRoot }, running);
+  assert.equal(degraded.status, 'degraded');
+  assert.equal(degraded.readiness.ready, false);
+  assert.equal(degraded.readiness.issues.length, 1);
+  assert.equal(degraded.readiness.issues[0], stale.memorySeal.reasons[0].message);
+
+  // Bytes past the sealed cutoff are an interrupted (or in-progress) append that the
+  // writer truncates and repairs on its next commit; status does not call that a stale seal.
+  const manifest = JSON.parse(fs.readFileSync(path.join(brain, 'memory-manifest.json'), 'utf8'));
+  fs.appendFileSync(path.join(brain, manifest.activeDelta.file), '{"uncommitted":true}\n');
+  const tail = await runHostAction('status', { homeRoot }, stopped);
+  assert.deepEqual(tail.memorySeal, { ok: true, reasons: [] });
 });
