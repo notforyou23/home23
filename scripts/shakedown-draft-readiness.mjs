@@ -32,8 +32,9 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { resolveAppRoot, resolveShakedownSiteRoot } from "./lib/app-root.mjs";
 
-const H23 = "/Users/jtr/_JTR23_/release/home23";
+const H23 = resolveAppRoot(import.meta.url);
 const PROJECT = join(H23, "instances/jerry/workspace/projects/shakedownshuffle");
 const QUEUE = join(PROJECT, "content/article-editorial-queue.md");
 // Roots a bare `content/...` or `issues/...` or `newsletter/...` path might be
@@ -42,7 +43,7 @@ const SEARCH_ROOTS = [
   PROJECT,
   join(H23, "instances/jerry/workspace"),
   join(H23, "instances/jerry/workspace/jtr/jerry-garcia-deep-dive"),
-  "/Users/jtr/websites/shakedownshuffle.com/shakedown-v2",
+  join(resolveShakedownSiteRoot(), "shakedown-v2"),
 ];
 
 const NON_CONTENT_MARKERS = [

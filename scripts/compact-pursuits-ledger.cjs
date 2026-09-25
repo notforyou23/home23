@@ -18,6 +18,7 @@
  */
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline');
 const zlib = require('node:zlib');
@@ -92,7 +93,7 @@ async function main() {
   }
 
   // Backup: gzip the original before touching anything.
-  const backupDir = path.join(process.env.HOME || '/Users/jtr', 'brain-backups');
+  const backupDir = path.join(os.homedir(), 'brain-backups');
   fs.mkdirSync(backupDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupPath = path.join(backupDir, `pursuits-${agent}-${stamp}.jsonl.gz`);

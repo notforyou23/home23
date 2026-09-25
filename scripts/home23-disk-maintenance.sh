@@ -3,7 +3,9 @@
 # Does nothing while free space is healthy. Never touches live ledgers or queues.
 set -euo pipefail
 
-ROOT="${HOME23_ROOT:-/Users/jtr/_JTR23_/release/home23}"
+# App root: HOME23_ROOT when set, otherwise the parent of this script's directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${HOME23_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 # macOS keeps user data on /System/Volumes/Data; elsewhere default to /.
 # HOME23_DATA_MOUNT overrides both.
 DEFAULT_DATA_MOUNT="/"

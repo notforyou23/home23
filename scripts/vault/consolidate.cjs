@@ -99,7 +99,7 @@ function* walk(root, stats) {
 //
 // The `+ path.sep` is LOAD-BEARING, not defensive garnish. A bare
 // `child.startsWith(parent)` is a substring test, not a path test: it would
-// call /Users/jtr/vault-old a child of /Users/jtr/vault, and reject the real
+// call ~/vault-old a child of ~/vault, and reject the real
 // vault because a similarly-named sibling is a source. The separator is what
 // makes this ask "is it under this directory" instead of "does the text
 // begin with these characters".
@@ -572,7 +572,7 @@ function resolveAbsolute(flagName, rawValue) {
 
 // The blast radius this guards against: a mistyped --vault pointed at a
 // real, populated, unrelated directory (an owner's home directory, a git
-// checkout, /Users/jtr/life/ itself pointed at prematurely) would splatter
+// checkout, the owner's ~/life/ itself pointed at prematurely) would splatter
 // tens of thousands of copied files into it with no warning. An empty or
 // new directory, or one that already has this tool's own manifest in it
 // (a real vault, safe to add to / rerun against), are both fine. Anything
@@ -662,5 +662,5 @@ if (require.main === module) {
 // assertVaultDisjointFromSources is exported so a real, live vault can be
 // checked against a candidate source list WITHOUT calling consolidate() --
 // it only realpaths and stats, never writes. Verifying the guard against
-// /Users/jtr/vault must not require consolidating into /Users/jtr/vault.
+// ~/vault must not require consolidating into ~/vault.
 module.exports = { consolidate, uniqueName, walk, main, assertVaultDisjointFromSources };

@@ -42,20 +42,25 @@ import os from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { resolveAppRoot, resolveShakedownSiteRoot } from "./lib/app-root.mjs";
 
 const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Operational paths (absolute — these are operational, per project doctrine).
+// The app root is HOME23_ROOT or this script's own location and the site
+// checkout is SHAKEDOWN_SITE_ROOT; neither is a baked-in machine path.
 // ---------------------------------------------------------------------------
-export const PROJECT_ROOT =
-  "/Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/projects/shakedownshuffle";
+export const PROJECT_ROOT = path.join(
+  resolveAppRoot(import.meta.url),
+  "instances/jerry/workspace/projects/shakedownshuffle",
+);
 export const CONTENT_DIR = path.join(PROJECT_ROOT, "content");
 export const DOSSIERS_DIR = path.join(CONTENT_DIR, "dossiers");
 export const DRAFTS_DIR = path.join(CONTENT_DIR, "drafts");
 export const NEWSLETTER_DIR = path.join(CONTENT_DIR, "newsletter");
 export const RECEIPTS_DIR = path.join(CONTENT_DIR, "receipts");
-export const SITE_ROOT = "/Users/jtr/websites/shakedownshuffle.com";
+export const SITE_ROOT = resolveShakedownSiteRoot();
 export const SHAKEDOWN_V2 = path.join(SITE_ROOT, "shakedown-v2");
 export const IMAGE_ROOTS = [
   path.join(SHAKEDOWN_V2, "public"), // /images/... resolves under here (tracked source)
