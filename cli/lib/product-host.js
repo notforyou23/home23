@@ -747,7 +747,11 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     const legacyEvobrew = packagedWithoutEvobrew(homeRoot)
       ? safeProcesses(rows, homeRoot, ['home23-evobrew']).find(row => row.name === 'home23-evobrew' && row.status === 'stopped' && row.owned)
       : null;
-    if (rows.some(row => !names.includes(row.name) && row.name !== legacyEvobrew?.name) || processes.some(row => !row.owned) || new Set(rows.map(row => row.name)).size !== rows.length) throw new Error('This private supervisor contains an unexpected process; no processes were changed.');
+    // A live row this home does not own is foreign and stops every action. A stopped row whose saved
+    // definition no longer matches (a re-pointed continuing service, a moved home) is only stale:
+    // Start deletes it and registers the generated definition instead of refusing the whole home.
+    const live = row => row.status === 'online' || row.status === 'launching';
+    if (rows.some(row => !names.includes(row.name) && row.name !== legacyEvobrew?.name) || processes.some(row => !row.owned && live(row)) || new Set(rows.map(row => row.name)).size !== rows.length) throw new Error('This private supervisor contains an unexpected process; no processes were changed.');
     if (action === 'stop') {
       state = { ...state, desiredRunning: false, phase: 'stopped' };
       privateJSON(statePath(homeRoot), state);

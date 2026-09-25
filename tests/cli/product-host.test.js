@@ -183,6 +183,34 @@ test('Start re-registers a known process whose saved PM2 definition differs from
   assert.equal(rows.length, apps.length);
 });
 
+test('Start re-registers a stopped row it does not own instead of refusing, and still refuses a live one', async t => {
+  const { homeRoot } = await prepared(t);
+  const config = path.join(homeRoot, 'runtime', 'ecosystem.config.json');
+  const apps = productDefinitions(definitions(homeRoot), homeRoot, 'milo');
+  const [first, ...rest] = apps;
+  // The saved record points at a previous home root: not owned, but stopped, so it is only stale.
+  const stale = { name: first.name, pid: 0, pm2_env: { status: 'stopped', pm_cwd: '/Volumes/Old/Home/app', pm_exec_path: '/Volumes/Old/Home/bin/node', args: [...first.args] } };
+  const rows = [stale];
+  const calls = [];
+  const execute = async (_node, args) => {
+    calls.push(args.slice(1));
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'delete') rows.splice(rows.findIndex(item => item.name === args[2]), 1);
+    if (args[1] === 'start') rows.push(row(homeRoot, args[args.indexOf('--only') + 1]));
+    return { stdout: '' };
+  };
+  const result = await runHostAction('start', { homeRoot }, { execute, definitions: () => apps, readinessWaitMs: 0, probeReadiness: async () => ({ ready: true, issues: [] }) });
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(result.definitionChanged, [first.name]);
+  const commandsFor = name => calls.filter(args => ['delete', 'restart', 'start'].includes(args[0]) && args.includes(name));
+  assert.deepEqual(commandsFor(first.name), [['delete', first.name, '--silent'], ['start', config, '--only', first.name, '--update-env', '--silent']]);
+  for (const app of rest) assert.deepEqual(commandsFor(app.name), [['start', config, '--only', app.name, '--update-env', '--silent']]);
+  // The same foreign record while online is a process this home must not touch.
+  const foreign = [{ ...stale, pid: 4242, pm2_env: { ...stale.pm2_env, status: 'online' } }];
+  await assert.rejects(() => runHostAction('start', { homeRoot }, { execute: async (_node, args) => args[1] === 'jlist' ? { stdout: JSON.stringify(foreign) } : { stdout: '' }, definitions: () => apps }),
+    /unexpected process/);
+});
+
 test('consumer Host skips Evobrew and accepts only its stopped legacy supervisor row', async t => {
   const { homeRoot } = await prepared(t, { omitEvobrew: true });
   const required = ownedProcessNames('milo', { home23Root: homeRoot });
