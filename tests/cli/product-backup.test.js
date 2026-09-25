@@ -7,7 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   createHomeBackup, inspectHomeBackup, moveHome, readAuthenticatedBackupHeader, readMoveFence, recoverInspectedHome, rebindAdoptedHome,
-  rewriteAdoptedCronPromptPaths,
+  rewriteAdoptedCronPromptPaths, scanHomeReferences,
 } from '../../cli/lib/product-backup.js';
 import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
@@ -1514,4 +1514,193 @@ test('cursor rebind refuses colliding, malformed, or symlinked state before chan
       assert.equal(fs.readFileSync(hostPath).equals(before), true);
     });
   }
+});
+
+const shellEscaped = value => value.replaceAll(' ', '\\ ');
+const percentEncoded = value => value.split('/').map(encodeURIComponent).join('/');
+
+/** A stopped home whose root and destination both contain a space, with the state files a move missed on 2026-09-24. */
+function embeddedPathHome(t) {
+  const root = tempRoot(t);
+  const home = path.join(root, 'old home');
+  const destination = path.join(root, 'new home');
+  const instance = path.join(home, 'app/instances/milo');
+  const coordination = path.join(home, 'app/instances/.house/coordination');
+  for (const directory of ['substrate/seed-01', 'substrate/bin', 'conversations', 'workspace', 'shared-data']) {
+    fs.mkdirSync(path.join(instance, directory), { recursive: true, mode: 0o755 });
+  }
+  fs.mkdirSync(path.join(home, 'app/config'), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.join(home, 'app/instances/.house/bots/helper/state'), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.join(coordination, 'tls'), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.join(home, 'runtime'), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(instance, 'substrate/seed-01/birth-receipt.json'), '{"seedId":"embedded"}\n');
+  fs.symlinkSync(path.join(instance, 'shared-data'), path.join(instance, 'workspace/shared'));
+  const service = { name: 'home23-project', executable: path.join(home, 'bin/node'), cwd: path.join(home, 'app/instances'),
+    args: [path.join(home, 'app/instances/project.mjs')],
+    env: { PATH: `${home}/bin:${home}/tools/node_modules/.bin:/usr/bin:/bin`, HOME23_ROOT: path.join(home, 'app') },
+    stateRoots: [path.join(home, 'app/instances')], startOnHomeStart: true };
+  const { name, ...run } = service;
+  fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({
+    schema: 'home23.host.v2', homeRoot: home, profile: { name: 'milo', provider: 'ollama-local', model: 'fixture' },
+    desiredRunning: false, phase: 'stopped', encoderRequired: false,
+    ports: { coordination: 21089, engine: 21090, dashboard: 21091, mcp: 21092, bridge: 21093, evobrew: 21094, observatory: 21095, embedder: 21096 },
+    continuationServices: [service],
+  }), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: '/historical-source',
+    links: [{ path: 'app/instances/milo/workspace/shared', target: path.join(instance, 'shared-data'),
+      sourcePath: 'instances/milo/workspace/shared', sourceTarget: '/historical-source/instances/milo/shared-data', kind: 'retain-link' }],
+    externalReferences: [],
+    continuationServices: [{ name, source: { script: '/historical-source/project.mjs' }, run }],
+  }), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/config/home.yaml'), 'home:\n  primaryAgent: milo\n', { mode: 0o600 });
+  fs.writeFileSync(path.join(instance, 'config.yaml'),
+    'agent:\n  name: milo\nports:\n  engine: 21090\n  dashboard: 21091\n  mcp: 21092\n  bridge: 21093\n', { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/ecosystem.config.cjs'),
+    `const HOME23 = ${JSON.stringify(path.join(home, 'app'))};\nmodule.exports = { apps: [{ name: 'home23-milo', cwd: HOME23 }] };\n`, { mode: 0o600 });
+  fs.writeFileSync(path.join(instance, 'conversations/cron-jobs.json'), JSON.stringify([
+    { id: 'exec-job', enabled: true, schedule: { kind: 'every', everyMs: 60000 }, payload: { kind: 'exec', cwd: instance,
+      command: `cd ${shellEscaped(instance)} && ${shellEscaped(home)}/bin/node scripts/run.mjs --root=${home}/app` } },
+    { id: 'turn-job', enabled: true, schedule: { kind: 'every', everyMs: 60000 }, payload: { kind: 'agentTurn',
+      messagePath: path.join(instance, 'workspace/prompt.md'),
+      message: `Read ${instance}/status.json and file://${percentEncoded(instance)}/report.md` } },
+  ], null, 2), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/config/cron-jobs.json'), JSON.stringify([
+    { id: 'house-job', payload: { kind: 'exec', cwd: path.join(home, 'app'), command: `${home}/bin/node ${home}/app/scripts/house.mjs` } },
+  ]), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/instances/.house/bots/helper/state/cron-jobs.json'), JSON.stringify([
+    { id: 'bot-job', payload: { kind: 'exec', cwd: path.join(home, 'app/instances/.house/bots/helper'), command: `${home}/bin/node tick.mjs` } },
+  ]), { mode: 0o600 });
+  fs.writeFileSync(path.join(instance, 'substrate/bin/ship.sh'), [
+    '#!/bin/sh',
+    "# shipper for milo's seed (don't edit)",
+    `ROOT=${instance}`,
+    `export LOG_DIR=${home}/app/logs`,
+    `cd ${home}/app && exec ${home}/bin/node substrate/bin/conversation-shipper.ts "$ROOT"`,
+    `echo '${home}/app' "${home}/app"`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  fs.writeFileSync(path.join(coordination, 'Caddyfile'), [
+    '# house entry',
+    'home.local {',
+    `  tls ${coordination}/tls/cert.pem ${coordination}/tls/key.pem`,
+    `  root * ${home}/app/published`,
+    '  log {',
+    `    output file "${home}/app/logs/caddy.log"`,
+    '  }',
+    '}',
+    '',
+  ].join('\n'), { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'app/config/agents.json'), JSON.stringify([{
+    name: 'milo', configPath: path.join(instance, 'config.yaml'), instanceRoot: instance,
+    notes: `Workspace lives at ${instance}/workspace.`,
+  }]), { mode: 0o600 });
+  return { root, home, destination, archivePath: path.join(root, 'backup.h23b'), keyPath: path.join(root, 'backup.key') };
+}
+
+test('move rebinds embedded paths in jobs, scripts, services and the Caddyfile, then scans clean', async t => {
+  const fixture = embeddedPathHome(t);
+  const { home, destination } = fixture;
+  fs.mkdirSync(destination, { mode: 0o755 });
+  const moved = await moveHome({ sourceHome: home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  assert.equal(moved.fenced, true);
+  const instance = path.join(destination, 'app/instances/milo');
+  const coordination = path.join(destination, 'app/instances/.house/coordination');
+  const read = relative => fs.readFileSync(path.join(destination, relative), 'utf8');
+  const clean = text => [home, shellEscaped(home), percentEncoded(home)].every(form => !text.includes(form));
+
+  const agentJobs = JSON.parse(read('app/instances/milo/conversations/cron-jobs.json'));
+  assert.equal(agentJobs[0].payload.cwd, instance);
+  assert.equal(agentJobs[0].payload.command,
+    `cd ${shellEscaped(instance)} && ${shellEscaped(destination)}/bin/node scripts/run.mjs "--root=${destination}/app"`);
+  assert.equal(agentJobs[1].payload.messagePath, path.join(instance, 'workspace/prompt.md'));
+  assert.equal(agentJobs[1].payload.message, `Read ${instance}/status.json and file://${percentEncoded(instance)}/report.md`);
+  const houseJobs = JSON.parse(read('app/config/cron-jobs.json'));
+  assert.equal(houseJobs[0].payload.cwd, path.join(destination, 'app'));
+  assert.equal(houseJobs[0].payload.command, `"${destination}/bin/node" "${destination}/app/scripts/house.mjs"`);
+  const botJobs = JSON.parse(read('app/instances/.house/bots/helper/state/cron-jobs.json'));
+  assert.equal(botJobs[0].payload.cwd, path.join(destination, 'app/instances/.house/bots/helper'));
+  assert.equal(botJobs[0].payload.command, `"${destination}/bin/node" tick.mjs`);
+
+  assert.equal(read('app/instances/milo/substrate/bin/ship.sh'), [
+    '#!/bin/sh',
+    "# shipper for milo's seed (don't edit)",
+    `ROOT="${instance}"`,
+    `export LOG_DIR="${destination}/app/logs"`,
+    `cd "${destination}/app" && exec "${destination}/bin/node" substrate/bin/conversation-shipper.ts "$ROOT"`,
+    `echo '${destination}/app' "${destination}/app"`,
+    '',
+  ].join('\n'));
+  assert.equal(fs.statSync(path.join(instance, 'substrate/bin/ship.sh')).mode & 0o777, 0o755);
+  assert.equal(read('app/instances/.house/coordination/Caddyfile'), [
+    '# house entry',
+    'home.local {',
+    `  tls "${coordination}/tls/cert.pem" "${coordination}/tls/key.pem"`,
+    `  root * "${destination}/app/published"`,
+    '  log {',
+    `    output file "${destination}/app/logs/caddy.log"`,
+    '  }',
+    '}',
+    '',
+  ].join('\n'));
+
+  const agents = JSON.parse(read('app/config/agents.json'));
+  assert.equal(agents[0].configPath, path.join(instance, 'config.yaml'));
+  assert.equal(agents[0].notes, `Workspace lives at ${instance}/workspace.`);
+  const host = JSON.parse(read('.home23-host.json'));
+  assert.equal(host.continuationServices[0].env.PATH, `${destination}/bin:${destination}/tools/node_modules/.bin:/usr/bin:/bin`);
+  assert.equal(host.continuationServices[0].executable, path.join(destination, 'bin/node'));
+  const receipt = JSON.parse(read('runtime/adoption-preservation.json'));
+  assert.equal(receipt.sourceRoot, '/historical-source');
+  assert.equal(receipt.links[0].sourceTarget, '/historical-source/instances/milo/shared-data');
+  assert.equal(receipt.links[0].target, fs.readlinkSync(path.join(instance, 'workspace/shared')));
+  assert.equal(path.resolve(instance, 'workspace', receipt.links[0].target), path.join(instance, 'shared-data'));
+  assert.equal(receipt.continuationServices[0].source.script, '/historical-source/project.mjs');
+  const ecosystem = read('app/ecosystem.config.cjs');
+  assert.ok(ecosystem.includes('auto-generated'), 'the product regenerates its own process registration');
+  assert.ok(ecosystem.includes(`const HOME23 = ${JSON.stringify(path.join(destination, 'app'))};`));
+
+  for (const relative of ['app/instances/milo/conversations/cron-jobs.json', 'app/config/cron-jobs.json',
+    'app/instances/.house/bots/helper/state/cron-jobs.json', 'app/instances/milo/substrate/bin/ship.sh',
+    'app/instances/.house/coordination/Caddyfile', 'app/config/agents.json', '.home23-host.json', 'app/ecosystem.config.cjs']) {
+    assert.equal(clean(read(relative)), true, `${relative} still names the source home`);
+  }
+  assert.deepEqual(scanHomeReferences(destination, home), []);
+});
+
+test('move fails loudly when destination state still names the source home', async t => {
+  const fixture = stoppedHome(t);
+  const seed = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(seed, { recursive: true });
+  fs.writeFileSync(path.join(seed, 'birth-receipt.json'), '{"seedId":"leftover"}\n');
+  const leftover = 'app/instances/milo/substrate/seed-01/sources.json';
+  fs.writeFileSync(path.join(fixture.home, leftover),
+    JSON.stringify({ events: path.join(fixture.home, 'app/instances/milo/workspace/events.jsonl') }), { mode: 0o600 });
+  fs.mkdirSync(path.join(fixture.home, 'app/instances/milo/logs'), { recursive: true });
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/logs/engine.log'), `${fixture.home} started\n`);
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/workspace/events.jsonl'), `{"root":"${fixture.home}"}\n`);
+  const destination = path.join(fixture.root, 'leftover-dest');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  await assert.rejects(() => moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, quiet), error => error.code === 'move_rebind_incomplete' && error.message.includes(leftover)
+    && Array.isArray(error.paths) && error.paths.length === 1 && error.paths[0] === leftover);
+  assert.equal(readMoveFence(fixture.home), null);
+  assert.deepEqual(scanHomeReferences(destination, fixture.home), [leftover]);
+});
+
+test('rebind drops the stale supervisor dump so PM2 rebuilds it from the regenerated registration', async t => {
+  const fixture = stoppedHome(t);
+  const gone = path.join(fixture.root, 'old-home');
+  const hostPath = path.join(fixture.home, '.home23-host.json');
+  const host = JSON.parse(fs.readFileSync(hostPath, 'utf8'));
+  host.homeRoot = gone;
+  fs.writeFileSync(hostPath, JSON.stringify(host));
+  fs.mkdirSync(path.join(fixture.home, 'runtime/pm2'), { recursive: true, mode: 0o700 });
+  const dump = path.join(fixture.home, 'runtime/pm2/dump.pm2');
+  fs.writeFileSync(dump, JSON.stringify([{ name: 'home23-milo', pm_cwd: path.join(gone, 'app') }]));
+  fs.writeFileSync(path.join(fixture.home, 'runtime/pm2/pm2.log'), `${gone} started\n`);
+  await rebindAdoptedHome(gone, fixture.home);
+  assert.equal(fs.existsSync(dump), false);
+  assert.equal(fs.readFileSync(path.join(fixture.home, 'runtime/pm2/pm2.log'), 'utf8'), `${gone} started\n`);
 });
