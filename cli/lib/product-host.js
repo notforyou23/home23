@@ -231,6 +231,20 @@ export function safeProcesses(rows, homeRoot, names, continuationServices = []) 
 function failedProcess(row) {
   return !row.owned || row.status === 'errored' || row.status === 'waiting restart';
 }
+/**
+ * Whether PM2's saved record for a process still equals the generated app.
+ * PM2 resolves `script` against `cwd` into pm_exec_path and keeps every app
+ * env value flat on pm2_env (objects stringified, other types kept), so the
+ * comparison covers executable, cwd, args and each env key the app defines.
+ */
+export function definitionMatchesProcess(app, row) {
+  if (!app || !row) return false;
+  const env = row.pm2_env || {};
+  const executable = isAbsolute(app.script || '') ? app.script : resolve(app.cwd, app.script || '');
+  if (env.pm_exec_path !== executable || env.pm_cwd !== app.cwd) return false;
+  if (JSON.stringify(Array.isArray(env.args) ? env.args : []) !== JSON.stringify(Array.isArray(app.args) ? app.args : [])) return false;
+  return Object.entries(app.env || {}).every(([key, value]) => env[key] !== undefined && String(env[key]) === String(value));
+}
 function withoutStartupProfiling(args) {
   const result = [];
   for (let index = 0; index < args.length; index++) {
@@ -781,6 +795,9 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     state = { ...state, desiredRunning: true, phase: 'starting', startedAt: new Date().toISOString() };
     privateJSON(statePath(homeRoot), state);
     await authorizeInitialHostPairing(homeRoot, true);
+    // Names whose saved PM2 record no longer matched the generated app and
+    // were re-registered from the config instead of restarted.
+    const definitionChanged = [];
     if (!allRunning) {
       const definitions = dependencies.definitions ? await dependencies.definitions(residents) : await processDriver.definitions(residents);
       const config = join(homeRoot, 'runtime', 'ecosystem.config.json');
@@ -789,7 +806,18 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       for (const name of startOrder) {
         const current = processes.find(row => row.name === name);
         if (current?.status === 'online') continue;
-        await processDriver.pm2([current ? 'restart' : 'start', current ? name : config, ...(current ? [] : ['--only', name]), '--update-env', '--silent']);
+        // `pm2 restart --update-env` keeps the daemon's saved script, cwd, args
+        // and env and only merges the CLI environment, so a process whose
+        // generated definition changed (home.yaml, a re-pointed continuing
+        // service) must be deleted and started again from the config.
+        const app = definitions.find(item => item.name === name);
+        let registered = Boolean(current);
+        if (registered && app && !definitionMatchesProcess(app, rows.find(row => row.name === name))) {
+          definitionChanged.push(name);
+          await processDriver.pm2(['delete', name, '--silent']);
+          registered = false;
+        }
+        await processDriver.pm2([registered ? 'restart' : 'start', registered ? name : config, ...(registered ? [] : ['--only', name]), '--update-env', '--silent']);
         if (name === OWNED_EMBEDDER_PROCESS) {
           // A cold ONNX launch includes artifact verification and model loading.
           // The integrated Mac trial took 32 seconds on external storage, so a
@@ -801,7 +829,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
             if (warm) break;
             await (dependencies.sleep || sleep)(500);
           }
-          if (!warm) return { ...await status(homeRoot, dependencies), ok: false, status: 'degraded',
+          if (!warm) return { ...await status(homeRoot, dependencies), ok: false, status: 'degraded', definitionChanged,
             error: { code: 'host_encoder_not_ready', message: 'The owned semantic encoder did not become ready. Check status, then retry Start. Your saved home stays in place.' } };
         }
       }
@@ -811,12 +839,12 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     do {
       result = await status(homeRoot, dependencies, true);
       if (result.status === 'ready') break;
-      if (result.processes?.some(failedProcess)) return { ...result, ok: false, status: 'degraded',
+      if (result.processes?.some(failedProcess)) return { ...result, ok: false, status: 'degraded', definitionChanged,
         error: { code: 'host_process_failed', message: 'A Home23 service could not stay running. Check this home\'s process logs, then retry Start.' } };
       if (Date.now() >= deadline) break;
       await (dependencies.sleep || sleep)(1000);
     } while (true);
-    return result;
+    return { ...result, definitionChanged };
     } finally {
       if (releaseSupervisor) releaseSupervisor();
     }
