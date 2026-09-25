@@ -151,6 +151,13 @@ export function isProductStatePath(relative) {
   return PRODUCT_STATE_PATHS.some(entry => relative === entry.path ||
     ((entry.type === 'directory' || entry.allowDescendants) && relative.startsWith(entry.path + '/')));
 }
+/** Directory paths that hold home state beside packaged software: the skills
+ * tree and each skill directory, whose data stays while its code switches. An
+ * update keeps these in place and moves only their software children. The
+ * caller knows the path is a directory; a loose file in the skills tree is software. */
+export function isProductStateContainer(relative) {
+  return relative === 'app/workspace/skills' || /^app\/workspace\/skills\/[^/]+$/.test(relative);
+}
 export function verifyProductPayload(payloadPath, { allowRuntimeState = false } = {}) {
   const root = path.resolve(payloadPath), manifest = readProductManifest(root);
   if (manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error(`This package requires ${manifest.platform}/${manifest.arch}; this machine is ${process.platform}/${process.arch}`);

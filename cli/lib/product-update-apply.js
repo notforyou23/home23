@@ -1,13 +1,13 @@
 /** One home-scoped schema-preserving update. The journal and recovery Node live outside app/. */
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, constants, copyFileSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, unlinkSync, utimesSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, constants, copyFileSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statfsSync, unlinkSync, utimesSync, writeSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { absoluteHome, privateDirectory, productEnvironment, readPrivateJSON } from './product-environment.js';
-import { acquireInstallLock, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
+import { acquireInstallLock, isProductStateContainer, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
 import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath } from './product-update-inventory.js';
@@ -24,6 +24,12 @@ const CHECKPOINT_COPIES = 4;
 // Everything else in a package is software and moves as whole subtrees.
 const MIXED_DIRECTORIES = new Set(['', ...PRODUCT_STATE_PATHS.flatMap(({ path, type }) => path.split('/').slice(0, type === 'directory' ? undefined : -1)
   .map((_, index, parts) => parts.slice(0, index + 1).join('/')))]);
+/** Directories that never move: state roots, their ancestors, and skill directories
+ * whose runtime data lives beside packaged code. A whole-unit rename of one of
+ * these would carry that data into previous/ and break home identity. */
+function keptInPlace(relative) {
+  return MIXED_DIRECTORIES.has(relative) || isProductStateContainer(relative);
+}
 const libDirectory = dirname(fileURLToPath(import.meta.url));
 const exists = file => { try { lstatSync(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
 const inside = (parent, child) => child === parent || child.startsWith(parent + sep);
@@ -464,23 +470,42 @@ async function writeCheckpoint(home, updateDirectory, _journalId, { beforeCopy, 
   fsyncDirectory(checkpoint);
   return { hashes, identityMetadata, database, stateRetention: 'in_place', substratePrefixes };
 }
+/** A manifest entry that stays where it is: home state, or a directory kept in place. */
+function staysInPlace(entry) {
+  return isProductStatePath(entry.path) || (entry.type === 'directory' && keptInPlace(entry.path));
+}
 /** Maximal software subtrees and loose files of a package. Each switches with one rename. */
 export function softwareUnits(manifest) {
   const units = new Set();
   for (const entry of manifest.files) {
-    if (isProductStatePath(entry.path) || MIXED_DIRECTORIES.has(entry.path)) continue;
-    const parts = entry.path.split('/');
-    let length = 1;
-    while (MIXED_DIRECTORIES.has(parts.slice(0, length).join('/'))) length += 1;
-    units.add(parts.slice(0, length).join('/'));
+    if (staysInPlace(entry)) continue;
+    units.add(unitOf(entry.path));
   }
   return [...units].sort();
 }
 function unitOf(relative) {
   const parts = relative.split('/');
   let length = 1;
-  while (MIXED_DIRECTORIES.has(parts.slice(0, length).join('/'))) length += 1;
+  while (length < parts.length && keptInPlace(parts.slice(0, length).join('/'))) length += 1;
   return parts.slice(0, length).join('/');
+}
+/** A skill directory the arriving version does not declare is removed once its
+ * software children have left. One still holding home data stays where it is;
+ * the following verification reports it rather than moving that data. */
+function removeEmptiedContainers(root, fromManifest, toManifest) {
+  const declared = new Set(toManifest.files.map(entry => entry.path));
+  const emptied = fromManifest.files
+    .filter(entry => entry.type === 'directory' && isProductStateContainer(entry.path) && !declared.has(entry.path))
+    .sort((left, right) => right.path.split('/').length - left.path.split('/').length);
+  const parents = new Set();
+  for (const entry of emptied) {
+    const directory = join(root, entry.path);
+    if (!exists(directory) || !lstatSync(directory).isDirectory()) continue;
+    try { rmdirSync(directory); }
+    catch (error) { if (error.code === 'ENOTEMPTY' || error.code === 'EEXIST') continue; throw error; }
+    parents.add(dirname(directory));
+  }
+  for (const parent of parents) if (exists(parent)) fsyncDirectory(parent);
 }
 function fsyncParents(root, units) {
   for (const directory of new Set(units.map(unit => dirname(join(root, unit))))) if (exists(directory)) fsyncDirectory(directory);
@@ -518,6 +543,7 @@ function applyPackage(home, staged, previousManifest, manifest) {
   }
   fsyncParents(home, outgoing);
   fsyncParents(previous, outgoing);
+  removeEmptiedContainers(home, previousManifest, manifest);
   for (const unit of incoming) {
     const waiting = exists(join(staged, unit)), selected = exists(join(home, unit));
     if (waiting && !selected) renameUnit(join(staged, unit), join(home, unit));
@@ -525,7 +551,7 @@ function applyPackage(home, staged, previousManifest, manifest) {
   }
   fsyncParents(staged, incoming);
   fsyncParents(home, incoming);
-  for (const entry of manifest.files.filter(item => item.type === 'directory' && MIXED_DIRECTORIES.has(item.path))) {
+  for (const entry of manifest.files.filter(item => item.type === 'directory' && keptInPlace(item.path))) {
     mkdirSync(join(home, entry.path), { recursive: true, mode: entry.mode });
     chmodSync(join(home, entry.path), entry.mode);
   }
@@ -552,7 +578,7 @@ function restorePrevious(home, updateDirectory, previousManifest, candidateManif
   const returning = softwareUnits(previousManifest), leaving = softwareUnits(candidateManifest);
   const retained = new Set(returning.filter(unit => exists(join(previous, unit))));
   // Verify the previous version where it is now: still in previous/, or already back home.
-  const units = previousManifest.files.filter(entry => !isProductStatePath(entry.path) && !MIXED_DIRECTORIES.has(entry.path));
+  const units = previousManifest.files.filter(entry => !staysInPlace(entry));
   if (!payloadMatchesAt(units, entry => (retained.has(unitOf(entry.path)) ? previous : home))) {
     throw Object.assign(new Error('Retained previous software no longer matches its manifest.'), { code: 'rollback_unverified' });
   }
@@ -563,13 +589,14 @@ function restorePrevious(home, updateDirectory, previousManifest, candidateManif
   }
   fsyncParents(home, leaving);
   fsyncParents(setAside, leaving);
+  removeEmptiedContainers(home, candidateManifest, previousManifest);
   for (const unit of retained) {
     if (exists(join(home, unit))) throw new Error(`Rollback cannot place ${unit}. Nothing more was moved.`);
     renameUnit(join(previous, unit), join(home, unit));
   }
   fsyncParents(previous, [...retained]);
   fsyncParents(home, returning);
-  for (const entry of previousManifest.files.filter(item => item.type === 'directory' && MIXED_DIRECTORIES.has(item.path))) {
+  for (const entry of previousManifest.files.filter(item => item.type === 'directory' && keptInPlace(item.path))) {
     mkdirSync(join(home, entry.path), { recursive: true, mode: entry.mode });
     chmodSync(join(home, entry.path), entry.mode);
   }

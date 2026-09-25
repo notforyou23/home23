@@ -1376,6 +1376,113 @@ test('an interrupted switch resumes from partial move-out and partial move-in', 
   }
 });
 
+// A skill keeps its runtime data beside its code inside the packaged skills tree.
+const skillSoftware = ['app/workspace/skills/index.js', 'app/workspace/skills/x-research/SKILL.md',
+  'app/workspace/skills/x-research/index.js', 'app/workspace/skills/x-research/references/x-api.md',
+  'app/workspace/skills/contact/SKILL.md'];
+const skillData = ['cache/37cd32e1dc4e.json', 'state.json'];
+function skillState(home) {
+  const data = path.join(home, 'app/workspace/skills/x-research/data');
+  return Object.fromEntries(skillData.map(name => [name, { contents: fs.readFileSync(path.join(data, name), 'utf8'), ino: fs.lstatSync(path.join(data, name)).ino }]));
+}
+function skillFixture(t, { current = skillSoftware, next = skillSoftware } = {}) {
+  const fixture = homeFixture(t, {
+    currentExtra: Object.fromEntries(current.map(file => [file, 'version one\n'])),
+    extra: { ...Object.fromEntries(next.map(file => [file, 'version two\n'])), 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n' },
+  });
+  const data = path.join(fixture.home, 'app/workspace/skills/x-research/data');
+  fs.mkdirSync(path.join(data, 'cache'), { recursive: true });
+  fs.writeFileSync(path.join(data, 'cache/37cd32e1dc4e.json'), '{"cached":true}\n');
+  fs.writeFileSync(path.join(data, 'state.json'), '{"lastRun":1}\n');
+  return { ...fixture, state: skillState(fixture.home) };
+}
+
+test('state nested inside a skill stays in place while its software switches', async t => {
+  const fixture = skillFixture(t);
+  const before = preserved(fixture.home);
+  const units = softwareUnits(fixture.installed);
+  assert.equal(units.includes('app/workspace/skills'), false);
+  assert.ok(units.includes('app/workspace/skills/x-research/SKILL.md'), JSON.stringify(units));
+  assert.ok(units.includes('app/workspace/skills/x-research/references'), JSON.stringify(units));
+  assert.ok(units.includes('app/workspace/skills/index.js'), JSON.stringify(units));
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+  for (const file of skillSoftware) assert.equal(fs.readFileSync(path.join(fixture.home, file), 'utf8'), 'version two\n');
+  // The same inodes: the data never moved, not even aside and back.
+  assert.deepEqual(skillState(fixture.home), fixture.state);
+  const previous = path.join(updateDirectoryFor(fixture.home), 'previous');
+  assert.equal(fs.existsSync(path.join(previous, 'app/workspace/skills/x-research/data')), false);
+  for (const file of skillSoftware) assert.equal(fs.readFileSync(path.join(previous, file), 'utf8'), 'version one\n');
+  assert.match(readUpdateJournal(fixture.home).identity['app/workspace/skills/x-research/data/state.json'], /^[a-f0-9]{64}$/);
+  verifyProductPayload(fixture.home, { allowRuntimeState: true });
+});
+
+test('a switch interrupted inside a state-bearing skill resumes with its data in place', async t => {
+  for (const moveIn of [false, true]) {
+    const fixture = skillFixture(t);
+    const before = preserved(fixture.home);
+    await interruptAt(fixture, 'applying');
+    const staged = readUpdateJournal(fixture.home).stagedPayload;
+    const previous = path.join(updateDirectoryFor(fixture.home), 'previous');
+    const skill = 'app/workspace/skills/x-research/SKILL.md';
+    // A crash after the skill's code left, or after its replacement arrived. Its data was never touched.
+    fs.renameSync(path.join(fixture.home, skill), path.join(previous, skill));
+    if (moveIn) fs.renameSync(path.join(staged, skill), path.join(fixture.home, skill));
+    const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+    assert.equal(resumed.status, 'committed', JSON.stringify(resumed));
+    assert.equal(packageId(fixture.home), fixture.next.packageId);
+    assert.deepEqual(preserved(fixture.home), before);
+    assert.deepEqual(skillState(fixture.home), fixture.state);
+    for (const file of skillSoftware) assert.equal(fs.readFileSync(path.join(fixture.home, file), 'utf8'), 'version two\n');
+    assert.equal(fs.existsSync(path.join(previous, 'app/workspace/skills/x-research/data')), false);
+    assert.equal(fs.readFileSync(path.join(previous, skill), 'utf8'), 'version one\n');
+  }
+});
+
+test('a candidate that adds and drops skills leaves no emptied skill directory behind', async t => {
+  const next = [...skillSoftware.filter(file => !file.startsWith('app/workspace/skills/contact/')), 'app/workspace/skills/buddy/SKILL.md'];
+  const fixture = skillFixture(t, { next });
+  const before = preserved(fixture.home);
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  assert.deepEqual(preserved(fixture.home), before);
+  assert.deepEqual(skillState(fixture.home), fixture.state);
+  assert.equal(fs.existsSync(path.join(fixture.home, 'app/workspace/skills/contact')), false);
+  assert.equal(fs.readFileSync(path.join(fixture.home, 'app/workspace/skills/buddy/SKILL.md'), 'utf8'), 'version two\n');
+  const previous = path.join(updateDirectoryFor(fixture.home), 'previous');
+  assert.equal(fs.readFileSync(path.join(previous, 'app/workspace/skills/contact/SKILL.md'), 'utf8'), 'version one\n');
+  assert.equal(fs.existsSync(path.join(previous, 'app/workspace/skills/x-research/data')), false);
+
+  const rolled = skillFixture(t, { next });
+  const state = preserved(rolled.home);
+  const released = [];
+  const failed = await applyProductUpdate({ homeRoot: rolled.home, candidatePayload: rolled.candidate, staging: rolled.staging },
+    { ...quiet, removeDiscarded: paths => released.push(...paths), verifyBehavior: async () => ({ ok: false, issues: ['health failed'] }) });
+  assert.equal(failed.status, 'rolled_back', JSON.stringify(failed));
+  assert.equal(packageId(rolled.home), rolled.installed.packageId);
+  assert.deepEqual(preserved(rolled.home), state);
+  assert.deepEqual(skillState(rolled.home), rolled.state);
+  for (const file of skillSoftware) assert.equal(fs.readFileSync(path.join(rolled.home, file), 'utf8'), 'version one\n');
+  assert.equal(fs.existsSync(path.join(rolled.home, 'app/workspace/skills/buddy')), false);
+  assert.equal(released.length, 1);
+  assert.equal(fs.existsSync(path.join(released[0], 'app/workspace/skills/x-research/data')), false);
+  assert.equal(fs.readFileSync(path.join(released[0], 'app/workspace/skills/buddy/SKILL.md'), 'utf8'), 'version two\n');
+});
+
+test('a dropped skill that still holds data keeps it and the switch rolls back verified', async t => {
+  const fixture = skillFixture(t, { next: skillSoftware.filter(file => !file.startsWith('app/workspace/skills/x-research/')) });
+  const before = preserved(fixture.home);
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+  assert.equal(result.status, 'rolled_back', JSON.stringify(result));
+  assert.match(result.reasons[0].message, /did not verify/);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+  assert.deepEqual(skillState(fixture.home), fixture.state);
+  for (const file of skillSoftware) assert.equal(fs.readFileSync(path.join(fixture.home, file), 'utf8'), 'version one\n');
+});
+
 test('a controller killed as the switch begins resumes through the recovery entry', async t => {
   const fixture = homeFixture(t);
   const before = preserved(fixture.home);

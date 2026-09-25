@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { writeProductManifest, verifyProductPayload, installProductPayload, isProductStatePath } from '../../cli/lib/product-payload.js';
+import { writeProductManifest, verifyProductPayload, installProductPayload, isProductStateContainer, isProductStatePath } from '../../cli/lib/product-payload.js';
 
 test('mixed operator roots retain state without absorbing maintained software', () => {
   for (const path of ['app/workspace/skills/index.js', 'app/configs/base-engine.yaml',
@@ -24,6 +24,16 @@ test('a packaged skill keeps its runtime data beside its code as preserved state
   for (const path of ['app/workspace/skills/x-research/index.js', 'app/workspace/skills/x-research/SKILL.md',
     'app/workspace/skills/x-research/references/api.md', 'app/workspace/skills/data', 'app/workspace/skills/x-research/database.js']) {
     assert.equal(isProductStatePath(path), false, path);
+  }
+});
+
+test('skill directories are containers that keep home state beside packaged software', () => {
+  for (const path of ['app/workspace/skills', 'app/workspace/skills/x-research', 'app/workspace/skills/data']) {
+    assert.equal(isProductStateContainer(path), true, path);
+  }
+  for (const path of ['app/workspace', 'app/workspace/skills/x-research/data', 'app/workspace/skills/x-research/references',
+    'app/workspace/skills/x-research/data/cache', 'app/cli', 'app/instances', 'workspace/skills/x-research']) {
+    assert.equal(isProductStateContainer(path), false, path);
   }
 });
 
