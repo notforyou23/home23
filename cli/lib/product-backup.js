@@ -863,6 +863,8 @@ function hasRecoverableIdentity(host) {
   return typeof host.profile?.name === 'string' && /^[a-z][a-z0-9-]{0,62}$/.test(host.profile.name);
 }
 
+const BRAIN_MANIFEST_PATH = /^app\/instances\/[^/]+\/brain\/memory-manifest\.json$/;
+
 /** Host/config paths rewrite during rebind; identity bytes must still match the archive. */
 function isRebindMutablePath(relative) {
   if (isLifecycleLockPath(relative)) return true;
@@ -871,7 +873,39 @@ function isRebindMutablePath(relative) {
   if (relative === 'app/ecosystem.config.cjs' || relative === 'runtime/semantic-prep.json') return true;
   if (relative === 'runtime/ecosystem.config.json') return true;
   if (/^app\/instances\/[^/]+\/(config|engine)\.yaml$/.test(relative)) return true;
+  if (BRAIN_MANIFEST_PATH.test(relative)) return true;
   return false;
+}
+
+/**
+ * Restoring, moving or adopting a home copies each resident brain byte for
+ * byte, but the copy has a new inode and ctime (and a new mtime when the
+ * extractor or preserve copy wrote it), so the manifest's sealed delta identity
+ * no longer matches and every identity-checked memory read fails with
+ * source_changed until it is renewed. Reseal each copied brain in place; refuse
+ * the operation when the committed delta content itself differs from what the
+ * manifest sealed.
+ */
+async function resealRestoredBrains(destination) {
+  const instances = join(destination, 'app', 'instances');
+  if (!exists(instances) || lstatSync(instances).isSymbolicLink() || !lstatSync(instances).isDirectory()) return [];
+  const { default: memorySeal } = await import('../../shared/memory-source/reseal.cjs');
+  const resealed = [];
+  for (const name of readdirSync(instances).sort()) {
+    if (!/^[a-z][a-z0-9-]{0,62}$/.test(name)) continue;
+    const brain = join(instances, name, 'brain');
+    if (!exists(join(brain, 'memory-manifest.json'))) continue;
+    // A reviewed adoption link keeps its authority elsewhere; only owned copies are resealed.
+    if (lstatSync(join(instances, name)).isSymbolicLink() || lstatSync(brain).isSymbolicLink()) continue;
+    let result;
+    try { result = await memorySeal.resealMemoryManifest(brain); }
+    catch (error) {
+      const code = error?.code === memorySeal.MEMORY_SEAL_CONTENT_CHANGED ? error.code : 'memory_seal_failed';
+      fail(code, `Resident ${name} memory could not be resealed after the copy: ${error?.message || error}. The restored memory manifest was left as copied; memory reads there fail until it is repaired.`);
+    }
+    resealed.push({ resident: name, status: result.status, file: result.file || null });
+  }
+  return resealed;
 }
 
 const CURSOR_PATH = /^app\/instances\/[^/]+\/(?:substrate\/[^/]+|seed-[^/]+)\/adapter-cursor\.([a-zA-Z0-9_-]+)\.json$/;
@@ -1631,6 +1665,9 @@ async function rebindDestination(source, destination, options = {}) {
     residentPorts, adopted: options.adoptManagedSource === true,
   });
   applyCursorBindings(destination, rewriteFrom, options.adoptManagedSource === true, cursorBindings);
+  // Move and recovery extracted the brains; adoption's preserve copy copied them.
+  // All three give each delta a new file identity, so the sealed manifest is renewed here.
+  await resealRestoredBrains(destination);
   if (!sourcePresent) return null;
   const receiptPath = join(rewriteFrom, '.home23-install.json');
   if (!exists(receiptPath)) return null;
