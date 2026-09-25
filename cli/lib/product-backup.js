@@ -39,6 +39,8 @@ const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordina
 const TYPE_FILE = 1;
 const TYPE_SYMLINK = 2;
 const CHUNK = 64 * 1024;
+// Inner header bound shared by writer and reader: the file inventory lives there, so it must fit every home the writer accepts.
+const MAX_HEADER_BYTES = 512 * 1024 * 1024;
 const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
 const HOST_LOCK_STALE_MS = 180000;
 const MOVE_FENCE_SCHEMA = 'home23.move-fence.v1';
@@ -482,6 +484,7 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
       coordinationSchema,
       writersQuiesced: true, checkpoint: 'vacuum-and-stable-files', files,
     }));
+    if (authenticated.length > MAX_HEADER_BYTES) fail('backup_inventory_too_large', 'The file inventory of this home exceeds one backup archive header.');
     sink = cipherSink(ciphertext);
     const length = Buffer.alloc(4);
     length.writeUInt32BE(authenticated.length, 0);
@@ -624,21 +627,47 @@ function createExtractor(root, expectedFiles, sourceHome) {
   };
 }
 
-function readAuthenticatedHeader(plainPath) {
-  const fd = openSync(plainPath, 'r');
-  try {
-    const lengthBytes = Buffer.alloc(4);
-    if (readSync(fd, lengthBytes, 0, 4, 0) !== 4) throw new Error('Truncated backup payload.');
-    const headerLength = lengthBytes.readUInt32BE(0);
-    if (headerLength < 2 || headerLength > 32 * 1024 * 1024) throw new Error('Backup header is invalid.');
-    const headerBytes = Buffer.alloc(headerLength);
-    if (readSync(fd, headerBytes, 0, headerLength, 4) !== headerLength) throw new Error('Truncated backup payload.');
-    return { header: JSON.parse(headerBytes.toString('utf8')), recordsOffset: 4 + headerLength };
-  } finally { closeSync(fd); }
+/** Collects the length-prefixed inner header from the plaintext stream. Bounded, so a tampered length cannot demand memory. */
+function headerCapture() {
+  const prefix = Buffer.alloc(4);
+  let prefixed = 0;
+  let bytes = null;
+  let filled = 0;
+  return {
+    /** Returns null until the header is complete, then the parsed header and the plaintext that followed it. */
+    push(chunk) {
+      let rest = chunk;
+      if (!bytes) {
+        const take = Math.min(4 - prefixed, rest.length);
+        rest.copy(prefix, prefixed, 0, take);
+        prefixed += take;
+        rest = rest.subarray(take);
+        if (prefixed < 4) return null;
+        const headerLength = prefix.readUInt32BE(0);
+        if (headerLength < 2 || headerLength > MAX_HEADER_BYTES) throw new Error('Backup header is invalid or the key does not match this archive.');
+        bytes = Buffer.alloc(headerLength);
+      }
+      const take = Math.min(bytes.length - filled, rest.length);
+      rest.copy(bytes, filled, 0, take);
+      filled += take;
+      if (filled < bytes.length) return null;
+      let header;
+      try { header = JSON.parse(bytes.toString('utf8')); }
+      catch { throw new Error('Backup header is invalid or the key does not match this archive.'); }
+      if (!header || header.schema !== BACKUP_SCHEMA || !Array.isArray(header.files)) throw new Error('Backup header is invalid.');
+      return { header, rest: rest.subarray(take) };
+    },
+  };
 }
 
-/** Decrypt and authenticate a backup; returns the inner header and plaintext path. Caller deletes plainPath. */
-function authenticateBackupArchive(archive, keyFile, plainPath) {
+/**
+ * Decrypt and authenticate a backup in one streaming pass, writing nothing beside the archive.
+ * The bounded inner header is parsed as soon as it arrives; `onHeader(header)` may return a
+ * sink that receives the record bytes that follow. The GCM tag is verified at the end of the
+ * pass and the header is returned only then, so a caller that wrote records must discard
+ * them when this throws.
+ */
+function authenticateBackupArchive(archive, keyFile, onHeader = () => null) {
   const keyDocument = JSON.parse(readFileSync(keyFile, 'utf8'));
   if (keyDocument?.schema !== KEY_SCHEMA || keyDocument.algorithm !== 'aes-256-gcm' || typeof keyDocument.key !== 'string') throw new Error('Backup key is invalid.');
   const key = Buffer.from(keyDocument.key, 'base64');
@@ -657,40 +686,39 @@ function authenticateBackupArchive(archive, keyFile, plainPath) {
     const tag = Buffer.from(outer.encrypted.tag, 'base64');
     const decipher = createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAuthTag(tag);
-    const plainFd = openSync(plainPath, 'wx', 0o600);
+    const capture = headerCapture();
+    let header = null;
+    let sink = null;
+    const consume = plain => {
+      if (!header) {
+        const captured = capture.push(plain);
+        if (!captured) return;
+        header = captured.header;
+        sink = onHeader(header) || null;
+        plain = captured.rest;
+      }
+      if (plain.length && sink) sink(plain);
+    };
     const buffer = Buffer.alloc(CHUNK);
     let position = 8 + headerLength;
-    try {
-      while (true) {
-        const count = readSync(archiveFd, buffer, 0, CHUNK, position);
-        if (count <= 0) break;
-        position += count;
-        const plain = decipher.update(buffer.subarray(0, count));
-        if (plain.length) writeSync(plainFd, plain);
-      }
-      const tail = decipher.final();
-      if (tail.length) writeSync(plainFd, tail);
-      fsyncSync(plainFd);
-    } finally { closeSync(plainFd); }
+    while (true) {
+      const count = readSync(archiveFd, buffer, 0, CHUNK, position);
+      if (count <= 0) break;
+      position += count;
+      consume(decipher.update(buffer.subarray(0, count)));
+    }
+    consume(decipher.final());
+    if (!header) throw new Error('Truncated backup payload.');
+    return header;
   } finally { closeSync(archiveFd); }
-  const authenticated = readAuthenticatedHeader(plainPath);
-  if (!authenticated?.header || authenticated.header.schema !== BACKUP_SCHEMA || !Array.isArray(authenticated.header.files)) throw new Error('Backup header is invalid.');
-  return authenticated;
 }
 
-/** Re-read the authenticated archive header (same authenticator as inspect). Does not extract files. */
+/** Re-read the authenticated archive header (same authenticator as inspect). Does not extract files or write anywhere. */
 export function readAuthenticatedBackupHeader({ archivePath, keyPath } = {}) {
   if (typeof archivePath !== 'string' || typeof keyPath !== 'string' || !isAbsolute(archivePath) || !isAbsolute(keyPath)) {
     throw new Error('Archive and key paths must be absolute.');
   }
-  const archive = resolve(archivePath);
-  const keyFile = resolve(keyPath);
-  const plainPath = join(dirname(archive), `.home23-backup-auth-${randomUUID()}`);
-  try {
-    return authenticateBackupArchive(archive, keyFile, plainPath).header;
-  } finally {
-    if (exists(plainPath)) unlinkSync(plainPath);
-  }
+  return authenticateBackupArchive(resolve(archivePath), resolve(keyPath));
 }
 
 export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot } = {}) {
@@ -701,16 +729,15 @@ export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot }
   const keyFile = resolve(keyPath);
   const root = absoluteRoot(inspectionRoot, 'inspection directory');
   if (readdirSync(root).length !== 0) throw new Error('Inspection directory must be empty.');
-  let wrote = false;
-  let plainPath = null;
+  let extractor = null;
   try {
-    plainPath = join(dirname(root), `.home23-backup-auth-${randomUUID()}`);
-    const authenticated = authenticateBackupArchive(archive, keyFile, plainPath);
-    const header = authenticated.header;
-    if (!header.homeRoot || resolve(header.homeRoot) === root) throw new Error('Inspection directory must not be the backed-up home.');
-    const extractor = createExtractor(root, header.files, header.homeRoot);
-    wrote = true;
-    pushPlainRecords(plainPath, authenticated.recordsOffset, extractor);
+    // One pass over the archive: records stream from the decipher straight into the inspection
+    // root, which is emptied again unless the archive authenticates. No plaintext copy is written.
+    const header = authenticateBackupArchive(archive, keyFile, authenticated => {
+      if (!authenticated.homeRoot || resolve(authenticated.homeRoot) === root) throw new Error('Inspection directory must not be the backed-up home.');
+      extractor = createExtractor(root, authenticated.files, authenticated.homeRoot);
+      return chunk => extractor.push(chunk);
+    });
     extractor.end();
     const reconnects = [machineReconnect()];
     if (header.files.some(entry => entry.path === 'app/config/secrets.yaml')) reconnects.push(credentialReconnect());
@@ -721,25 +748,9 @@ export async function inspectHomeBackup({ archivePath, keyPath, inspectionRoot }
       fileCount: header.files.length, writersStarted: false, reconnects, externalDependencies,
       sourceAbsentReady: externalDependencies.length === 0, sourceHome: header.homeRoot };
   } catch (error) {
-    if (wrote || readdirSync(root).length) emptyDirectory(root);
+    if (extractor || readdirSync(root).length) emptyDirectory(root);
     throw error;
-  } finally {
-    if (plainPath && exists(plainPath)) unlinkSync(plainPath);
   }
-}
-
-function pushPlainRecords(plainPath, offset, extractor) {
-  const fd = openSync(plainPath, 'r');
-  const buffer = Buffer.alloc(CHUNK);
-  try {
-    let position = offset;
-    while (true) {
-      const count = readSync(fd, buffer, 0, CHUNK, position);
-      if (count <= 0) break;
-      position += count;
-      extractor.push(Buffer.from(buffer.subarray(0, count)));
-    }
-  } finally { closeSync(fd); }
 }
 
 export function readMoveFence(homeRoot) {
@@ -761,30 +772,81 @@ function residentName(home) {
   return name;
 }
 
-export function residentIdentityPaths(home) {
-  const name = residentName(home);
+function seedDirectories(home, name) {
   const substrate = join(home, 'app/instances', name, 'substrate');
-  if (!exists(substrate)) fail('backup_identity_missing', `Resident ${name} has no Seed substrate.`);
-  const seeds = readdirSync(substrate).filter(entry => entry.startsWith('seed-') && lstatSync(join(substrate, entry)).isDirectory()).sort();
-  if (!seeds.length) fail('backup_identity_missing', `Resident ${name} has no Seed.`);
+  if (!exists(substrate)) return [];
+  return readdirSync(substrate).filter(entry => entry.startsWith('seed-') && lstatSync(join(substrate, entry)).isDirectory()).sort();
+}
+
+function readAdoptionReceipt(home) {
+  const file = join(home, 'runtime/adoption-preservation.json');
+  if (!exists(file)) return null;
+  const receipt = readPrivateJSON(file);
+  return receipt?.schema === 'home23.adoption-preservation-receipt.v1' && Array.isArray(receipt.links) ? receipt : null;
+}
+
+/** What an adopted home is, independent of where it runs: rebind moves continuing-service run bindings and nothing else. */
+function adoptionIdentityDigest(receipt) {
+  const services = Array.isArray(receipt.continuationServices) ? receipt.continuationServices : [];
+  return sha256(JSON.stringify({
+    sourceRoot: receipt.sourceRoot ?? null, links: receipt.links, externalReferences: receipt.externalReferences ?? [],
+    continuationServices: services.map(service => ({ ...service, run: undefined })),
+  }));
+}
+
+function hostResidentDigest(host) {
+  const map = host.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap) ? host.residentMap : null;
+  const residents = map ? Object.keys(map).filter(name => /^[a-z][a-z0-9-]{0,62}$/.test(name)).sort() : [];
+  return residents.length ? sha256(JSON.stringify(residents)) : null;
+}
+
+/**
+ * Identity a move must carry over unchanged. A born home proves it with every Seed's birth
+ * receipt and ledger. A home adopted without a birth proves it with its sealed adoption
+ * receipt, or failing that the host's resident binding; its Seed ledgers still travel too.
+ */
+function residentIdentity(home) {
+  const name = residentName(home);
+  const seeds = seedDirectories(home, name);
   const paths = [];
+  const born = seeds.some(seed => exists(join(home, `app/instances/${name}/substrate/${seed}/birth-receipt.json`)));
   for (const seed of seeds) {
     const birth = `app/instances/${name}/substrate/${seed}/birth-receipt.json`;
-    if (!exists(join(home, birth))) fail('backup_identity_missing', `Resident ${name} is missing ${birth}.`);
-    paths.push(birth);
+    if (exists(join(home, birth))) paths.push(birth);
+    else if (born) fail('backup_identity_missing', `Resident ${name} is missing ${birth}.`);
     const ledger = `app/instances/${name}/substrate/${seed}/seed-ledger.jsonl`;
     if (exists(join(home, ledger))) paths.push(ledger);
   }
-  return paths;
+  if (born) return { paths, adoption: false, hostBinding: false };
+  if (readAdoptionReceipt(home)) return { paths, adoption: true, hostBinding: false };
+  if (hostResidentDigest(readHostState(home))) return { paths, adoption: false, hostBinding: true };
+  fail('backup_identity_missing', `Resident ${name} has no Seed birth receipt, adoption receipt, or host resident binding to preserve.`);
+}
+
+export function residentIdentityPaths(home) {
+  return residentIdentity(home).paths;
+}
+
+function identityDigests(home, evidence) {
+  const digests = {};
+  for (const relativePath of evidence.paths) {
+    const file = join(home, relativePath);
+    digests[relativePath] = exists(file) ? streamHash(file) : null;
+  }
+  if (evidence.adoption) {
+    const receipt = readAdoptionReceipt(home);
+    digests['runtime/adoption-preservation.json'] = receipt ? adoptionIdentityDigest(receipt) : null;
+  }
+  if (evidence.hostBinding) digests['.home23-host.json'] = hostResidentDigest(readHostState(home));
+  return digests;
 }
 
 function compareIdentity(source, destination) {
-  const identity = {};
-  for (const relativePath of residentIdentityPaths(source)) {
-    const from = join(source, relativePath);
-    const copy = join(destination, relativePath);
-    if (!exists(copy) || streamHash(from) !== streamHash(copy)) fail('backup_identity_mismatch', `Restored identity does not match the source: ${relativePath}`);
-    identity[relativePath] = streamHash(from);
+  const evidence = residentIdentity(source);
+  const identity = identityDigests(source, evidence);
+  const restored = identityDigests(destination, evidence);
+  for (const [relativePath, digest] of Object.entries(identity)) {
+    if (!digest || restored[relativePath] !== digest) fail('backup_identity_mismatch', `Restored identity does not match the source: ${relativePath}`);
   }
   return identity;
 }
