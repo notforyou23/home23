@@ -1412,6 +1412,87 @@ test('an interrupted rollback resumes and restores the previous version', async 
   assert.deepEqual(released, [aside]);
 });
 
+const SKILL = 'app/workspace/skills/x-research';
+function skillFixture(t) {
+  // A packaged skill keeps its runtime cache beside its code, inside the
+  // app/workspace/skills software unit that the switch moves whole.
+  const fixture = homeFixture(t, { currentExtra: { [`${SKILL}/index.js`]: 'version one\n' },
+    extra: { [`${SKILL}/index.js`]: 'version two\n', 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n' } });
+  const data = path.join(fixture.home, SKILL, 'data');
+  fs.mkdirSync(path.join(data, 'cache'), { recursive: true });
+  fs.writeFileSync(path.join(data, 'cache/37cd32e1dc4e.json'), '{"cached":true}\n');
+  fs.writeFileSync(path.join(data, 'index.json'), '{"entries":1}\n');
+  return { ...fixture, data };
+}
+function skillState(home) {
+  return { cache: fs.readFileSync(path.join(home, SKILL, 'data/cache/37cd32e1dc4e.json'), 'utf8'),
+    index: fs.readFileSync(path.join(home, SKILL, 'data/index.json'), 'utf8'), code: fs.readFileSync(path.join(home, SKILL, 'index.js'), 'utf8') };
+}
+
+test('state nested inside a software unit stays in the home when that unit switches', async t => {
+  const fixture = skillFixture(t);
+  const before = preserved(fixture.home);
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.deepEqual(skillState(fixture.home), { cache: '{"cached":true}\n', index: '{"entries":1}\n', code: 'version two\n' });
+  assert.deepEqual(preserved(fixture.home), before);
+  const update = updateDirectoryFor(fixture.home);
+  assert.equal(fs.existsSync(path.join(update, 'previous', SKILL, 'data')), false);
+  assert.equal(fs.readFileSync(path.join(update, 'previous', SKILL, 'index.js'), 'utf8'), 'version one\n');
+  assert.equal(fs.existsSync(path.join(update, 'nested-state')), false);
+  assert.deepEqual(readUpdateJournal(fixture.home).nestedState, [`${SKILL}/data`]);
+});
+
+test('an interrupted switch resumes with set-aside nested state back inside the new unit', async t => {
+  for (const shape of ['aside', 'aside-moved', 'carried']) {
+    const fixture = skillFixture(t);
+    const before = preserved(fixture.home);
+    await interruptAt(fixture, 'applying');
+    const journal = readUpdateJournal(fixture.home);
+    assert.deepEqual(journal.nestedState, [`${SKILL}/data`], shape);
+    const update = updateDirectoryFor(fixture.home), previous = path.join(update, 'previous'), aside = path.join(update, 'nested-state');
+    const units = softwareUnits(fixture.installed);
+    if (shape !== 'carried') {
+      // The crash came after the state was set aside...
+      fs.mkdirSync(path.join(aside, SKILL), { recursive: true });
+      fs.renameSync(fixture.data, path.join(aside, SKILL, 'data'));
+    }
+    if (shape === 'aside-moved') {
+      // ...and after every unit moved out and one moved in.
+      for (const unit of units) fs.renameSync(path.join(fixture.home, unit), path.join(previous, unit));
+      fs.renameSync(path.join(journal.stagedPayload, units[0]), path.join(fixture.home, units[0]));
+    }
+    if (shape === 'carried') {
+      // An earlier controller moved the unit whole, with the state still inside.
+      fs.renameSync(path.join(fixture.home, 'app/workspace/skills'), path.join(previous, 'app/workspace/skills'));
+    }
+    const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+    assert.equal(resumed.status, 'committed', `${shape}: ${JSON.stringify(resumed)}`);
+    assert.equal(packageId(fixture.home), fixture.next.packageId, shape);
+    assert.deepEqual(skillState(fixture.home), { cache: '{"cached":true}\n', index: '{"entries":1}\n', code: 'version two\n' }, shape);
+    assert.deepEqual(preserved(fixture.home), before, shape);
+    assert.equal(fs.existsSync(path.join(previous, SKILL, 'data')), false, shape);
+    assert.equal(fs.existsSync(aside), false, shape);
+  }
+});
+
+test('a rolled-back candidate returns nested state to the previous unit instead of discarding it', async t => {
+  const fixture = skillFixture(t);
+  const before = preserved(fixture.home);
+  const released = [];
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging },
+    { ...quiet, verifyBehavior: async () => ({ ok: false, issues: ['health failed'] }), removeDiscarded: paths => released.push(...paths) });
+  assert.equal(result.status, 'rolled_back', JSON.stringify(result.reasons));
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.deepEqual(skillState(fixture.home), { cache: '{"cached":true}\n', index: '{"entries":1}\n', code: 'version one\n' });
+  assert.deepEqual(preserved(fixture.home), before);
+  assert.equal(released.length, 1);
+  assert.equal(fs.existsSync(path.join(released[0], SKILL, 'data')), false);
+  assert.equal(fs.readFileSync(path.join(released[0], SKILL, 'index.js'), 'utf8'), 'version two\n');
+  assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'nested-state')), false);
+});
+
 test('an update journal from the earlier copy updater is not switched by this one', async t => {
   const fixture = homeFixture(t);
   await interruptAt(fixture, 'retained');
