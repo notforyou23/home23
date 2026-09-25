@@ -120,3 +120,35 @@ test('reviewed internal insight pointer may rotate only to a real same-directory
     links: [{ path: relative, kind: 'retain-link', target: external }] }), { mode: 0o600 });
   assert(relevant(await inspectUpdateInventory(root), relative).includes('linked_state_changed'));
 });
+
+test('Finder and other OS metadata is ignorable at any depth while real unknown files are named', async t => {
+  const root = home(t);
+  const installed = { files: ['app', 'app/cli', 'app/cli/lib', 'app/config', 'tools', 'tools/node_modules']
+    .map(relative => ({ path: relative, type: 'directory', mode: 0o755 })) };
+  for (const relative of ['.DS_Store', 'app/.DS_Store', 'app/config/.DS_Store', 'app/cli/lib/.DS_Store', 'app/cli/._home23.js',
+    'tools/node_modules/Thumbs.db', 'app/desktop.ini', '.Spotlight-V100/Store-V2/index', '.fseventsd/fseventsd-uuid',
+    '.Trashes/501/old.txt', '.TemporaryItems/folders.501', 'app/instances/milo/.DS_Store']) {
+    fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+    fs.writeFileSync(path.join(root, relative), 'desktop metadata');
+  }
+  fs.writeFileSync(path.join(root, 'app/config/home.yaml'), 'home: {}\n');
+  const clean = await inspectUpdateInventory(root, { installed });
+  assert.deepEqual(clean.reasons, []);
+  assert.equal(clean.complete, true);
+
+  fs.writeFileSync(path.join(root, 'app/config/home.yaml.bak'), 'owner: backup');
+  const refused = await inspectUpdateInventory(root, { installed });
+  assert.deepEqual(refused.reasons.map(item => [item.code, item.path]), [['unknown_state', 'app/config/home.yaml.bak']]);
+  assert.match(refused.reasons[0].message, /app\/config\/home\.yaml\.bak/);
+});
+
+test('unclassified path reasons are bounded to ten named paths plus a remainder count', async t => {
+  const root = home(t);
+  for (let index = 0; index < 12; index += 1) fs.writeFileSync(path.join(root, `stray-${String(index).padStart(2, '0')}.bin`), 'stray');
+  const unknown = (await inspectUpdateInventory(root)).reasons.filter(item => item.code === 'unknown_state');
+  assert.deepEqual(unknown.slice(0, 10).map(item => item.path), Array.from({ length: 10 }, (_, index) => `stray-${String(index).padStart(2, '0')}.bin`));
+  assert.equal(unknown.length, 11);
+  assert.equal(unknown[10].path, undefined);
+  assert.equal(unknown[10].omitted, 2);
+  assert.match(unknown[10].message, /2 more unclassified paths/);
+});
