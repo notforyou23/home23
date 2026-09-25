@@ -29,6 +29,7 @@ import { promisify } from 'node:util';
 import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectCoordinationDatabase, isProductStatePath, isRebuildableStatePath, ownedWriterNames } from './product-update-inventory.js';
+import { detectForeignBindings } from './product-foreign-bindings.js';
 
 const executeFile = promisify(execFile);
 const BACKUP_SCHEMA = 'home23.backup.v1';
@@ -2228,6 +2229,7 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
     if (rebound.desiredRunning === true) fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
     if (rebound.phase !== 'stopped') fail('backup_recover_invalid', 'Recovery must leave the inspected home stopped.');
     secureOwnedDestinationRoot(destination);
+    const foreignBindings = (dependencies.detectForeignBindings || detectForeignBindings)({ homeRoot: destination, previousRoot: sourceHome });
     return {
       ok: true,
       schema: BACKUP_SCHEMA,
@@ -2242,6 +2244,8 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
       ports: rebound.ports || null,
       archiveBound: true,
       filesDigest: binding.filesDigest,
+      foreignBindings,
+      warnings: foreignBindings.warnings,
     };
   } finally {
     lock.release();
@@ -2332,6 +2336,7 @@ export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPa
   lock.hooks = { beforeChunk: dependencies.beforeChunk, onLockRefresh: dependencies.onLockRefresh, refreshMs: dependencies.lockRefreshMs };
   try {
     const list = dependencies.listProcesses || listInstalledWriters;
+    const scanForeign = dependencies.detectForeignBindings || detectForeignBindings;
     assertWritersStopped(source, await list(source));
     if (readMoveFence(source)) {
       if (readdirSync(destination).length === 0) fail('move_journal_invalid', 'The fenced move has no destination to finish.');
@@ -2340,7 +2345,8 @@ export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPa
       const identity = compareIdentity(source, destination);
       if (!readFileSync(join(source, '.home23-host.json')).equals(sourceHostBefore)) fail('backup_identity_mismatch', 'Move changed the source host record.');
       secureOwnedDestinationRoot(destination);
-      return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed: true };
+      const foreignBindings = scanForeign({ homeRoot: destination, previousRoot: source });
+      return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed: true, foreignBindings, warnings: foreignBindings.warnings };
     }
     let journal = readMoveJournal(source) || { schema: 'home23.move-journal.v1', sourceHome: source, destinationRoot: destination, phase: 'claimed' };
     const resumed = journal.phase !== 'claimed';
@@ -2368,7 +2374,9 @@ export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPa
     writeMoveJournal(source, journal);
     assertWritersStopped(source, await list(source));
     secureOwnedDestinationRoot(destination);
-    return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed };
+    // The source may still be named by the owner's global PM2 daemon or launchd agents; report, never edit.
+    const foreignBindings = scanForeign({ homeRoot: destination, previousRoot: source });
+    return { ok: true, schema: MOVE_FENCE_SCHEMA, packageId, fileCount: Object.keys(identity).length, writersStarted: false, fenced: true, destinationStarted: false, identity, resumed, foreignBindings, warnings: foreignBindings.warnings };
   } finally {
     lock.release();
   }

@@ -6,6 +6,7 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { readMoveFence } from './product-backup.js';
+import { detectForeignBindings } from './product-foreign-bindings.js';
 import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { inspectMemorySeal, inspectProductMemory } from './product-memory.js';
 import {
@@ -522,7 +523,10 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
   if (!existsSync(receiptPath(homeRoot))) return { ok: true, status: 'absent', homeRoot, desiredRunning: false, processes: [] };
   await validateInstallation(homeRoot);
   const state = stateFor(homeRoot);
-  if (!state) return { ok: true, status: 'installed', homeRoot, desiredRunning: false, processes: [] };
+  // Other supervisors on this machine that still name this home are reported, never changed.
+  const foreignBindings = (dependencies.detectForeignBindings || detectForeignBindings)({ homeRoot });
+  const warnings = foreignBindings.warnings;
+  if (!state) return { ok: true, status: 'installed', homeRoot, desiredRunning: false, processes: [], foreignBindings, warnings };
   const residents = hostResidentNames(state);
   const primary = state.profile?.name && residents.includes(state.profile.name) ? state.profile.name : residents[0];
   const primaryPorts = residentPortsFor(state, primary) || state.ports;
@@ -536,12 +540,14 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
       dashboardURL: `http://127.0.0.1:${primaryPorts.dashboard}`,
       pairing: 'owner pairing code',
       access: 'loopback; use a trusted HTTPS or VPN transport for other devices',
-    } };
+    },
+    foreignBindings, warnings };
   const rows = await driver(homeRoot, dependencies, state).list();
   const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state), continuationServicesForState(state));
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
   let readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
+  if (warnings.length) readiness = { ...readiness, warnings: [...(readiness.warnings || []), ...warnings] };
   if (!output.memorySeal.ok) {
     // Every identity-checked memory read fails on a stale seal; say so instead of reporting ready.
     readiness = { ...readiness, ready: false, issues: [...(readiness.issues || []), ...output.memorySeal.reasons.map(reason => reason.message)] };
