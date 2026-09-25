@@ -16,7 +16,9 @@
  * read roots — deny overrides allow.
  */
 
+import os from 'node:os';
 import path from 'node:path';
+import { getHome23Root } from '../config.js';
 import { AgentLoop } from './loop.js';
 import { ContextManager } from './context.js';
 import { ConversationHistory } from './history.js';
@@ -25,12 +27,41 @@ import { createRestrictedFileTools } from './tools/restricted-files.js';
 import type { ToolContext } from './types.js';
 import type { BrainOperationsClient } from './brain-operations/client.js';
 
-const SITE = '/Users/jtr/websites/shakedownshuffle.com';
-const H23 = '/Users/jtr/_JTR23_/release/home23';
-const WORKER_WORKSPACE = path.join(H23, 'instances/workers/shakedown-jerry/workspace');
-const CONTENT_DIR = path.join(H23, 'instances/jerry/workspace/projects/shakedownshuffle');
-
 export const PROPOSER_CHAT_PREFIX = 'proposer:shakedown';
+
+export interface ProposerRoots {
+  /** Home23 app root: HOME23_ROOT when set, else the packaged root (src/config.ts). */
+  home23: string;
+  /** Shakedown Shuffle site checkout: SHAKEDOWN_SITE_ROOT, else ~/websites/shakedownshuffle.com. */
+  site: string;
+  /** Jerry collection archive: JERRY_COLLECTION_ROOT, else a sibling two levels above the app root. */
+  jerryCollection: string;
+  workerWorkspace: string;
+  contentDir: string;
+}
+
+/**
+ * Operational roots for the proposer, resolved from the environment or the
+ * app's own location — never a baked-in developer machine path. src/ ships
+ * hash-verified, so an owner cannot edit such a default and on any other
+ * machine it is simply wrong (release 186 defect D10).
+ */
+export function resolveProposerRoots(): ProposerRoots {
+  const home23 = getHome23Root();
+  const site = process.env.SHAKEDOWN_SITE_ROOT
+    ? path.resolve(process.env.SHAKEDOWN_SITE_ROOT)
+    : path.join(os.homedir(), 'websites', 'shakedownshuffle.com');
+  const jerryCollection = process.env.JERRY_COLLECTION_ROOT
+    ? path.resolve(process.env.JERRY_COLLECTION_ROOT)
+    : path.resolve(home23, '..', '..', 'jerry-collection');
+  return {
+    home23,
+    site,
+    jerryCollection,
+    workerWorkspace: path.join(home23, 'instances/workers/shakedown-jerry/workspace'),
+    contentDir: path.join(home23, 'instances/jerry/workspace/projects/shakedownshuffle'),
+  };
+}
 
 export interface ProposerRuntimeDeps {
   apiKey: string;
@@ -45,52 +76,53 @@ export interface ProposerRuntimeDeps {
 }
 
 export function createShakedownProposerAgent(deps: ProposerRuntimeDeps): AgentLoop {
+  const roots = resolveProposerRoots();
   const tools = createRestrictedFileTools({
     readRoots: [
-      path.join(SITE, 'shakedown-v2/outputs/publishing-pipeline'),
-      path.join(SITE, 'operator-reports'),
-      path.join(SITE, 'ops/jerry-collection/runtime'),
-      path.join(SITE, 'jerry-api/show-enrichment/artifacts'),
-      '/Users/jtr/_JTR23_/jerry-collection',
+      path.join(roots.site, 'shakedown-v2/outputs/publishing-pipeline'),
+      path.join(roots.site, 'operator-reports'),
+      path.join(roots.site, 'ops/jerry-collection/runtime'),
+      path.join(roots.site, 'jerry-api/show-enrichment/artifacts'),
+      roots.jerryCollection,
       // The whole project dir (status/, OPERATIONS.md, content/) is readable.
       // Do NOT grant a bare file as a root — compileRoots widens files to
       // their parent directory, which for SHAKEDOWN_STATUS.md would grant all
       // of Jerry's workspace. The proposer reads status/latest.json instead.
-      CONTENT_DIR,
+      roots.contentDir,
     ],
     // Writes: the worker's own workspace, and ONLY content/ (queue + drafts)
     // within the project dir — status/ stays cron-owned and read-only here.
-    writeRoots: [WORKER_WORKSPACE, path.join(CONTENT_DIR, 'content')],
+    writeRoots: [roots.workerWorkspace, path.join(roots.contentDir, 'content')],
     denyPaths: [
-      path.join(SITE, 'jerry-api/.env'),
-      path.join(SITE, 'shakedown-v2/.env'),
-      path.join(SITE, 'private'),
-      path.join(WORKER_WORKSPACE, 'source-clones'),
+      path.join(roots.site, 'jerry-api/.env'),
+      path.join(roots.site, 'shakedown-v2/.env'),
+      path.join(roots.site, 'private'),
+      path.join(roots.workerWorkspace, 'source-clones'),
     ],
     maxWriteBytes: 256_000,
   });
 
   const contextManager = new ContextManager({
-    workspacePath: WORKER_WORKSPACE,
+    workspacePath: roots.workerWorkspace,
     identityFiles: ['IDENTITY.md', 'PLAYBOOK.md', 'NOW.md'],
     heartbeatRefreshMs: 0,
     enginePort: deps.enginePort,
   });
 
   const history = new ConversationHistory(
-    path.join(WORKER_WORKSPACE, 'state', 'history'), 200_000, 'proposer',
+    path.join(roots.workerWorkspace, 'state', 'history'), 200_000, 'proposer',
   );
 
   const toolContext: ToolContext = {
     scheduler: null,
     ttsService: null,
     browser: null,
-    projectRoot: WORKER_WORKSPACE,
+    projectRoot: roots.workerWorkspace,
     enginePort: deps.enginePort,
     agentName: 'jerry',
     cosmo23BaseUrl: deps.cosmo23BaseUrl,
     brainRoute: null,
-    workspacePath: WORKER_WORKSPACE,
+    workspacePath: roots.workerWorkspace,
     tempDir: deps.tempDir,
     contextManager,
     subAgentTracker: { active: 0, maxConcurrent: 0, queue: [] },
@@ -112,6 +144,6 @@ export function createShakedownProposerAgent(deps: ProposerRuntimeDeps): AgentLo
     contextManager,
     history,
     toolContext,
-    workspacePath: WORKER_WORKSPACE,
+    workspacePath: roots.workerWorkspace,
   });
 }

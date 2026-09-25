@@ -3,6 +3,7 @@
 // explicit double confirmation. Proven contract from the 2026-07-26 issue-02 repair.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
@@ -11,24 +12,34 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 
 const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const CHROME_PROFILE_DIR = "/Users/jtr/.codex/browser-profiles/shakedown-publishing-v3";
+const CHROME_PROFILE_DIR = path.join(os.homedir(), ".codex", "browser-profiles", "shakedown-publishing-v3");
 const CDP_HOST = "127.0.0.1";
 const CDP_PORT = 9223;
 const CDP_URL = `http://${CDP_HOST}:${CDP_PORT}`;
 const PUBLICATION_HOST = "https://shakedownshuffle.substack.com";
 const HOME_URL = `${PUBLICATION_HOST}/publish/home`;
-const RECEIPTS_DIR =
-  "/Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/projects/shakedownshuffle/content/newsletter/source-receipts";
+// Source receipts live under the resolved app root (see resolveProjectRoot);
+// this skill ships as hash-verified payload, so it carries no machine path.
+const RECEIPTS_RELATIVE =
+  "instances/jerry/workspace/projects/shakedownshuffle/content/newsletter/source-receipts";
 const LAUNCH_MARKER = "/tmp/substack-skill-chrome-launched.json";
 const EVAL_TIMEOUT_MS = 20_000;
 const LAUNCH_POLL_MS = 1_000;
 const LAUNCH_ATTEMPTS = 30;
 
-function resolveProjectRoot(context = {}) {
-  return (
-    context?.projectRoot ||
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..")
-  );
+// App root: the runtime's projectRoot when it passes one, else HOME23_ROOT,
+// else this skill's own location (workspace/skills/substack -> app root).
+export function resolveProjectRoot(context = {}) {
+  if (context?.projectRoot) return context.projectRoot;
+  const configured = process.env.HOME23_ROOT;
+  if (typeof configured === "string" && configured !== "" && path.isAbsolute(configured)) {
+    return path.resolve(configured);
+  }
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+}
+
+export function resolveReceiptsDir(context = {}) {
+  return path.join(resolveProjectRoot(context), RECEIPTS_RELATIVE);
 }
 
 function loadWebSocket(context = {}) {
@@ -237,10 +248,11 @@ function requirePostId(params) {
   return postId;
 }
 
-function backupDraft(postId, draftJson) {
-  if (!fs.existsSync(RECEIPTS_DIR)) fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
+function backupDraft(postId, draftJson, context = {}) {
+  const receiptsDir = resolveReceiptsDir(context);
+  if (!fs.existsSync(receiptsDir)) fs.mkdirSync(receiptsDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const file = path.join(RECEIPTS_DIR, `substack-${postId}-backup-${stamp}.json`);
+  const file = path.join(receiptsDir, `substack-${postId}-backup-${stamp}.json`);
   fs.writeFileSync(file, JSON.stringify(draftJson, null, 2));
   const written = fs.statSync(file);
   if (!written.size) throw new Error(`FAIL LOUD: backup write produced empty file at ${file}.`);
@@ -339,7 +351,7 @@ async function editDraft(params = {}, context = {}) {
     return { success: true, skipped: true, reason: `idempotencyMarker already present in post ${postId}.` };
   }
 
-  const backupFile = backupDraft(postId, draft);
+  const backupFile = backupDraft(postId, draft, context);
   const doc = JSON.parse(draft.draft_body);
   if (!Array.isArray(doc.content)) {
     throw new Error("FAIL LOUD: draft body is not a ProseMirror doc with content array.");

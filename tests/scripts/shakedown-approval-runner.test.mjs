@@ -9,6 +9,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseQueue, extractContract, classify, ALLOWLIST } from "../../scripts/shakedown-approval-runner.mjs";
 
 test("parseQueue extracts state, title, and body for each marker", () => {
@@ -138,5 +143,24 @@ test("allowlist contains only deliberately reviewed, read-only entries — no pr
     // Guard against ever silently allowlisting a build/deploy/publish/send action.
     const cmdStr = spec.command.join(" ");
     assert.doesNotMatch(cmdStr, /deploy|distribute-substack|send|build-owned|build:newsletter/i);
+  }
+});
+
+// Release 186 defect D10: the run-publish-scan working directory follows
+// SHAKEDOWN_SITE_ROOT rather than a baked-in developer path. ALLOWLIST is fixed
+// at import time, so the probe loads the module in a child process.
+test("run-publish-scan cwd follows SHAKEDOWN_SITE_ROOT", () => {
+  const site = mkdtempSync(path.join(os.tmpdir(), "home23-approval-site-"));
+  try {
+    const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "scripts", "shakedown-approval-runner.mjs");
+    const probe = `import { ALLOWLIST } from ${JSON.stringify(pathToFileURL(script).href)}; console.log(ALLOWLIST["run-publish-scan"].cwd);`;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", probe], {
+      env: { ...process.env, SHAKEDOWN_SITE_ROOT: site },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), path.join(site, "shakedown-v2"));
+  } finally {
+    rmSync(site, { recursive: true, force: true });
   }
 });

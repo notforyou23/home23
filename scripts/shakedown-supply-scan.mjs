@@ -25,8 +25,9 @@
 
 import { readdir, readFile, writeFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { resolveAppRoot } from "./lib/app-root.mjs";
 
-const WORKSPACE = "/Users/jtr/_JTR23_/release/home23/instances/jerry/workspace";
+const WORKSPACE = path.join(resolveAppRoot(import.meta.url), "instances/jerry/workspace");
 const CORPUS = path.join(WORKSPACE, "jtr/jerry-garcia-deep-dive");
 const CONTENT = path.join(WORKSPACE, "projects/shakedownshuffle/content/newsletter");
 

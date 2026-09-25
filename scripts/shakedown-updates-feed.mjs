@@ -7,9 +7,12 @@
 // promotion-owned by doctrine (like the existing data JSONs in the webroot).
 
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { resolveShakedownSiteRoot } from "./lib/app-root.mjs";
 
-const LEDGER = "/Users/jtr/websites/shakedownshuffle.com/ops/jerry-collection/runtime/site-updates.jsonl";
-const OUT = "/Users/jtr/websites/shakedownshuffle.com/html/updates.json";
+const SITE = resolveShakedownSiteRoot();
+const LEDGER = join(SITE, "ops/jerry-collection/runtime/site-updates.jsonl");
+const OUT = join(SITE, "html/updates.json");
 
 const entries = existsSync(LEDGER)
   ? readFileSync(LEDGER, "utf-8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)

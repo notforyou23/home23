@@ -21,7 +21,7 @@
  *
  * HOW TO RUN (full graded pass)
  *   node scripts/companion-conduct-grader.mjs
- *   HOME23_ROOT=/Users/jtr/_JTR23_/release/home23 node scripts/companion-conduct-grader.mjs
+ *   HOME23_ROOT=/path/to/home23 node scripts/companion-conduct-grader.mjs
  *   GRADER_MODEL=claude-opus-4-8 GRADER_PROVIDER=anthropic node scripts/companion-conduct-grader.mjs
  *
  * DRY / INSPECTION (no model, no dist, no credentials)

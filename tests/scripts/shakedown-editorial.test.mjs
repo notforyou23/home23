@@ -10,6 +10,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   validateDraft,
   promoteReadiness,
@@ -360,4 +363,43 @@ test("promoteDraft refuses (no write) when hero is missing", async () => {
 
 test("slugify is stable and strips apostrophes", () => {
   assert.equal(slugify("Garcia's Other Bands"), "garcias-other-bands");
+});
+
+// ---------------------------------------------------------------------------
+// Release 186 defect D10: PROJECT_ROOT and SITE_ROOT follow HOME23_ROOT and
+// SHAKEDOWN_SITE_ROOT (or this script's own location), never a baked-in
+// developer path. The module fixes them at import time, so each case loads it
+// in a child process with a controlled environment.
+// ---------------------------------------------------------------------------
+const EDITORIAL_SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "scripts", "shakedown-editorial.mjs");
+const EDITORIAL_REPO_ROOT = path.resolve(path.dirname(EDITORIAL_SCRIPT), "..");
+
+function loadEditorialRoots(overrides) {
+  const env = { ...process.env };
+  delete env.HOME23_ROOT;
+  delete env.SHAKEDOWN_SITE_ROOT;
+  Object.assign(env, overrides);
+  const probe = `import { PROJECT_ROOT, SITE_ROOT } from ${JSON.stringify(pathToFileURL(EDITORIAL_SCRIPT).href)}; console.log(JSON.stringify({ PROJECT_ROOT, SITE_ROOT }));`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { env, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout.trim());
+}
+
+test("PROJECT_ROOT and SITE_ROOT honour HOME23_ROOT and SHAKEDOWN_SITE_ROOT", () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), "home23-editorial-roots-"));
+  try {
+    const home23 = path.join(base, "home23");
+    const site = path.join(base, "site");
+    const roots = loadEditorialRoots({ HOME23_ROOT: home23, SHAKEDOWN_SITE_ROOT: site });
+    assert.equal(roots.PROJECT_ROOT, path.join(home23, "instances/jerry/workspace/projects/shakedownshuffle"));
+    assert.equal(roots.SITE_ROOT, site);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("without either variable the roots derive from the script's location and the user home", () => {
+  const roots = loadEditorialRoots({});
+  assert.equal(roots.PROJECT_ROOT, path.join(EDITORIAL_REPO_ROOT, "instances/jerry/workspace/projects/shakedownshuffle"));
+  assert.equal(roots.SITE_ROOT, path.join(os.homedir(), "websites", "shakedownshuffle.com"));
 });
