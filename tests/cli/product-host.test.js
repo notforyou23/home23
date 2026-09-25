@@ -149,6 +149,40 @@ test('Start reports a restarting service as failed instead of starting', async t
   assert.equal((await runHostAction('status', { homeRoot }, dependencies)).status, 'degraded');
 });
 
+test('Start re-registers a known process whose saved PM2 definition differs from the generated one and restarts an unchanged one', async t => {
+  const { homeRoot } = await prepared(t);
+  const config = path.join(homeRoot, 'runtime', 'ecosystem.config.json');
+  const apps = productDefinitions(definitions(homeRoot).map(app => ({ ...app, env: { HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY: 'false' } })), homeRoot, 'milo');
+  // PM2 keeps a started app's script, cwd, args and env flat on pm2_env.
+  const registered = (app, overrides = {}) => ({ name: app.name, pid: 0, pm2_env: { ...app.env, status: 'stopped', pm_cwd: app.cwd, pm_exec_path: path.resolve(app.cwd, app.script), args: [...app.args], ...overrides } });
+  const [unchanged, staleEnv, staleArgs, staleCwd, ...unregistered] = apps;
+  const rows = [
+    registered(unchanged),
+    registered(staleEnv, { HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY: 'true' }),
+    registered(staleArgs, { args: staleArgs.args.filter(arg => arg !== '--expose-gc') }),
+    registered(staleCwd, { pm_cwd: path.join(staleCwd.cwd, 'previous') }),
+  ];
+  const calls = [];
+  const execute = async (_node, args) => {
+    calls.push(args.slice(1));
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'delete') rows.splice(rows.findIndex(item => item.name === args[2]), 1);
+    if (args[1] === 'restart') rows.find(item => item.name === args[2]).pm2_env.status = 'online';
+    if (args[1] === 'start') rows.push(row(homeRoot, args[args.indexOf('--only') + 1]));
+    return { stdout: '' };
+  };
+  const result = await runHostAction('start', { homeRoot }, { execute, definitions: () => apps, readinessWaitMs: 0, probeReadiness: async () => ({ ready: true, issues: [] }) });
+  assert.equal(result.status, 'ready');
+  const stale = [staleEnv, staleArgs, staleCwd].map(app => app.name);
+  assert.deepEqual(result.definitionChanged, stale);
+  const commandsFor = name => calls.filter(args => ['delete', 'restart', 'start'].includes(args[0]) && args.includes(name));
+  assert.deepEqual(commandsFor(unchanged.name), [['restart', unchanged.name, '--update-env', '--silent']]);
+  for (const name of stale) assert.deepEqual(commandsFor(name), [['delete', name, '--silent'], ['start', config, '--only', name, '--update-env', '--silent']]);
+  for (const app of unregistered) assert.deepEqual(commandsFor(app.name), [['start', config, '--only', app.name, '--update-env', '--silent']]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(config, 'utf8')).apps.map(app => app.name), apps.map(app => app.name));
+  assert.equal(rows.length, apps.length);
+});
+
 test('consumer Host skips Evobrew and accepts only its stopped legacy supervisor row', async t => {
   const { homeRoot } = await prepared(t, { omitEvobrew: true });
   const required = ownedProcessNames('milo', { home23Root: homeRoot });
