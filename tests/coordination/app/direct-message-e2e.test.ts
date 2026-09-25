@@ -11,7 +11,7 @@ import { SqliteCommunicationEventRepository } from "../../../src/coordination/co
 import { createLeaseService, LeaseError } from "../../../src/coordination/leases/index.js";
 import { createMessageService } from "../../../src/coordination/messages/index.js";
 import { createUnreadService, SqliteUnreadRepository } from "../../../src/coordination/unread/index.js";
-import { createWorkService, M11MessageProvenanceAuthority } from "../../../src/coordination/work/index.js";
+import { createWorkService, M11MessageProvenanceAuthority, RECOVERY_REFUSAL_LIMIT } from "../../../src/coordination/work/index.js";
 import type { ResidentAgentPort } from "../../../src/coordination-adapter/index.js";
 import { AT, BOT_ID, CHANNEL_ID, M11TestDatabase, OWNER_ID, createFixtureIdGenerator, fixtureId } from "../work/test-fixture.js";
 import type { AuthorityEpoch } from "../../../src/coordination/epochs/index.js";
@@ -631,10 +631,55 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   assert.equal(database.readOne<{ count: number }>(
     "SELECT count(*) AS count FROM attempts WHERE work_id = ?", tombstonedWorkId,
   )?.count, 0);
+  // A tombstoned snapshot never recovers. The refusal is recorded on the Work
+  // once, with its reason, and the next start does not rediscover it.
+  assert.deepEqual(work.getRecoveryRefusal(tombstonedWorkId), {
+    workId: tombstonedWorkId, reasonCode: "context_unrecoverable", permanent: true,
+    refusalCount: 1, message: "invalid_relation", recordedAt: AT,
+  });
+  assert.deepEqual(await restartedService.recoverResidentWork(),
+    { discovered: 0, scheduled: 0, refused: 0 });
+
+  // A target that is not enabled yet is transient: the Work stays discoverable
+  // until a start can recover it, or until the refusal limit makes it permanent.
+  const unavailableService = createDirectMessageSubmissionService({
+    messages, context: new SqliteDirectMessageContext(database, messages), work, leases,
+    communications, authority, resolveResident: () => undefined, beginWork,
+    recoveryIdentity: () => {
+      const suffix = recoveryIdentitySuffix++;
+      return { requestId: fixtureId("request", suffix), correlationId: fixtureId("correlation", suffix) };
+    },
+  });
+  const transientWorkId = await seedRecoveryPhase(960, "queued");
+  assert.deepEqual(await unavailableService.recoverResidentWork(),
+    { discovered: 1, scheduled: 0, refused: 1 });
+  assert.equal(work.getRecoveryRefusal(transientWorkId)?.permanent, false);
+  assert.deepEqual(await unavailableService.recoverResidentWork(),
+    { discovered: 1, scheduled: 0, refused: 1 }, "a transient refusal is rediscovered");
+  assert.deepEqual(work.getRecoveryRefusal(transientWorkId), {
+    workId: transientWorkId, reasonCode: "recovery_failed", permanent: false,
+    refusalCount: 2, message: "direct-message target is not enabled", recordedAt: AT,
+  });
+  assert.deepEqual(await restartedService.recoverResidentWork(),
+    { discovered: 1, scheduled: 1, refused: 0 });
+  await waitForTerminal(transientWorkId);
+
+  const exhaustedWorkId = await seedRecoveryPhase(970, "queued");
+  for (let refusal = 1; refusal <= RECOVERY_REFUSAL_LIMIT; refusal += 1) {
+    assert.deepEqual(await unavailableService.recoverResidentWork(),
+      { discovered: 1, scheduled: 0, refused: 1 });
+  }
+  assert.equal(work.getRecoveryRefusal(exhaustedWorkId)?.refusalCount, RECOVERY_REFUSAL_LIMIT);
+  assert.equal(work.getRecoveryRefusal(exhaustedWorkId)?.permanent, true);
+  assert.equal(work.get(exhaustedWorkId)?.state, "queued");
+  assert.deepEqual(await unavailableService.recoverResidentWork(),
+    { discovered: 0, scheduled: 0, refused: 0 });
+  assert.deepEqual(await restartedService.recoverResidentWork(),
+    { discovered: 0, scheduled: 0, refused: 0 }, "the refusal limit is durable for every start");
 
   const mismatchedCompletedWorkId = await seedRecoveryPhase(950, "completed_mismatch");
   assert.deepEqual(await restartedService.recoverResidentWork(),
-    { discovered: 2, scheduled: 1, refused: 1 });
+    { discovered: 1, scheduled: 1, refused: 0 });
   for (let index = 0; index < 40 && activeBackgroundWork !== 0; index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }

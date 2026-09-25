@@ -149,7 +149,7 @@ export type CoordinationWorkPort = Pick<
   ReturnType<typeof createWorkService>,
   "create" | "cancelQueued" | "get" | "getTurnSelection" | "listResidentRecoverable" |
   "listSucceededMissingResult"
-> & Partial<Pick<ReturnType<typeof createWorkService>, "getPlannedInvocation" | "getInvocationExecution" | "getInstructionMessageIds">>;
+> & Partial<Pick<ReturnType<typeof createWorkService>, "getPlannedInvocation" | "getInvocationExecution" | "getInstructionMessageIds" | "recordRecoveryRefusal" | "getRecoveryRefusal">>;
 
 /** Exact M11 fenced execution boundary; no resident process is activated by injection. */
 export type CoordinationLeasePort = ReturnType<typeof createLeaseService>;

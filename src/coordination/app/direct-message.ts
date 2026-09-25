@@ -19,7 +19,7 @@ import {
 } from "../communications/index.js";
 import type { JsonValue } from "../db/index.js";
 import type { MessageProjection, MessageTurnSelection } from "../messages/index.js";
-import type { ContextManifestInput, WorkRecord } from "../work/index.js";
+import { RECOVERY_REFUSAL_LIMIT, type ContextManifestInput, type WorkRecord } from "../work/index.js";
 import { isCanonicalMessagesAuthority, type AuthorityEpoch } from "../epochs/index.js";
 import { workResultIdempotencyKey } from "../contracts/resident-presence.js";
 import type {
@@ -34,6 +34,26 @@ const sha256 = (value: string) => createHash("sha256").update(value, "utf8").dig
 function responseMessageId(workId: string): string {
   if (!workId.startsWith("wrk_")) throw new Error("Work ID cannot derive a Message ID");
   return `msg_${workId.slice(4)}`;
+}
+
+/** A recovery refusal no later start can lift: the durable Work no longer
+ * matches the target it would run on. */
+class PermanentRecoveryRefusal extends Error {
+  constructor(readonly reasonCode: string, message: string) {
+    super(message);
+    this.name = "PermanentRecoveryRefusal";
+  }
+}
+
+/** Context that cannot be rebuilt from durable evidence is refused for good.
+ * Anything else, such as a resident that has not registered yet, stays
+ * discoverable until the durable refusal limit turns it permanent. */
+function classifyRecoveryRefusal(error: unknown): { reasonCode: string; permanent: boolean } {
+  if (error instanceof PermanentRecoveryRefusal) return { reasonCode: error.reasonCode, permanent: true };
+  if (error instanceof MessagingError && error.code === "invalid_relation") {
+    return { reasonCode: "context_unrecoverable", permanent: true };
+  }
+  return { reasonCode: "recovery_failed", permanent: false };
 }
 
 export interface DirectMessageChannelContext {
@@ -516,6 +536,25 @@ export function createDirectMessageSubmissionService(options: {
     return execution;
   }
 
+  // A refusal is durable evidence on the Work, so the same unrecoverable Work
+  // is not rediscovered at every start; one line names each refused Work.
+  const recordRecoveryRefusal = (work: WorkRecord, error: unknown) => {
+    const { reasonCode, permanent } = classifyRecoveryRefusal(error);
+    const message = error instanceof Error ? error.message : String(error);
+    let record: { permanent: boolean; refusalCount: number } | null = null;
+    try {
+      record = options.work.recordRecoveryRefusal?.({
+        workId: work.id, reasonCode, permanent, message, ...options.recoveryIdentity(),
+      }) ?? null;
+    } catch (recordError) {
+      console.warn("[home23-coordination] direct-message recovery refusal was not recorded:", work.id,
+        recordError instanceof Error ? recordError.message : String(recordError));
+    }
+    const outcome = record === null
+      ? "unrecorded"
+      : record.permanent ? "permanent" : `transient ${record.refusalCount}/${RECOVERY_REFUSAL_LIMIT}`;
+    console.warn(`[home23-coordination] direct-message recovery refused work=${work.id} kind=${work.kind} state=${work.state} reason=${reasonCode} (${outcome}): ${message}`);
+  };
   const recoverContext = async (work: WorkRecord) => {
     const outcome = options.outcomes?.forReview(work.id);
     if (outcome?.prepared) return { prepared: JSON.parse(outcome.prepared) as DirectMessageChannelContext,
@@ -705,10 +744,10 @@ export function createDirectMessageSubmissionService(options: {
           const recovered = await recoverContext(work);
           const target = await executionTargetFor(recovered.prepared);
           if (target.workKind !== work.kind && work.kind !== "resident_work_thread") {
-            throw new Error("direct-message Work target kind changed");
+            throw new PermanentRecoveryRefusal("target_kind_changed", "direct-message Work target kind changed");
           }
           if (target.acceptsAttachments?.(recovered.prepared.attachments) === false) {
-            throw new Error("direct-message Work contains unsupported attachments");
+            throw new PermanentRecoveryRefusal("unsupported_attachments", "direct-message Work contains unsupported attachments");
           }
           const identity = options.recoveryIdentity();
           const endWork = once(options.beginWork());
@@ -723,8 +762,9 @@ export function createDirectMessageSubmissionService(options: {
             target,
           });
           scheduled += 1;
-        } catch {
+        } catch (error) {
           refused += 1;
+          recordRecoveryRefusal(work, error);
         }
       }
       return Object.freeze({ discovered: recoverable.length, scheduled, refused });

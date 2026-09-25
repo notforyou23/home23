@@ -23,6 +23,8 @@ import type {
   CreateWorkServiceOptions,
   M11Database,
   QueuedCancellationReceipt,
+  RecordRecoveryRefusalInput,
+  RecoveryRefusalRecord,
   WorkRecord,
   WorkTurnSelection,
 } from "./types.js";
@@ -90,6 +92,21 @@ SELECT id, principal_id AS principalId, target_principal_id AS targetPrincipalId
        terminal_receipt_digest AS terminalReceiptDigest, version,
        created_at AS createdAt, updated_at AS updatedAt, terminal_at AS terminalAt
 FROM works`;
+
+/** A refused recovery is durable evidence on the Work, not a state change: a
+ * recoverable Work may be queued, fenced or already succeeded, and only its
+ * fence could move most of those. The events journal already keeps per-Work
+ * evidence, so a refusal is one gap-free event per Work; a permanent one keeps
+ * the Work out of both recovery lists. */
+const RECOVERY_REFUSAL_AGGREGATE = "work_recovery_refusal";
+/** The same Work refused this many times, for any reason, stays refused. */
+export const RECOVERY_REFUSAL_LIMIT = 3;
+const NOT_PERMANENTLY_REFUSED_SQL = `NOT EXISTS (
+  SELECT 1 FROM events refusal
+  WHERE refusal.aggregate_kind = '${RECOVERY_REFUSAL_AGGREGATE}'
+    AND refusal.aggregate_id = works.id
+    AND json_extract(refusal.payload_json, '$.permanent') = 1
+)`;
 
 const MANIFEST_SELECT = `
 SELECT id, privacy, channel_id AS channelId, message_refs_json AS messageRefsJson,
@@ -1018,6 +1035,7 @@ export function createWorkService(options: CreateWorkServiceOptions) {
            (state = 'queued' AND current_attempt_id IS NULL) OR
            state IN ('leased', 'running', 'cancelling')
          )
+         AND ${NOT_PERMANENTLY_REFUSED_SQL}
          ORDER BY created_at ASC, id ASC LIMIT ?`,
         kind,
         limit,
@@ -1037,10 +1055,75 @@ export function createWorkService(options: CreateWorkServiceOptions) {
            SELECT 1 FROM messages result
            WHERE result.work_id = works.id AND result.kind = 'result'
          )
+         AND ${NOT_PERMANENTLY_REFUSED_SQL}
          ORDER BY created_at ASC, id ASC LIMIT ?`,
         kind,
         limit,
       ).map(freezeWork));
+    },
+
+    recordRecoveryRefusal(input: RecordRecoveryRefusalInput): RecoveryRefusalRecord {
+      assertExactKeys(
+        input,
+        ["workId", "reasonCode", "permanent", "message", "requestId", "correlationId"],
+        "invalid_request",
+        "recovery refusal",
+      );
+      const workId = assertId("work", input.workId, "invalid_request");
+      const requestId = assertId("request", input.requestId, "invalid_request");
+      const correlationId = assertId("correlation", input.correlationId, "invalid_request");
+      if (typeof input.reasonCode !== "string" || !/^[a-z][a-z0-9_.-]{0,63}$/.test(input.reasonCode)) {
+        throw new WorkError("invalid_request", "recovery refusal reason must be a bounded identifier");
+      }
+      if (typeof input.permanent !== "boolean") {
+        throw new WorkError("invalid_request", "recovery refusal permanence must be a boolean");
+      }
+      if (typeof input.message !== "string") {
+        throw new WorkError("invalid_request", "recovery refusal message must be a string");
+      }
+      const workRow = options.database.readOne<WorkRow>(`${WORK_SELECT} WHERE id = ?`, workId);
+      if (!workRow) throw new WorkError("not_found", "Work was not found");
+      const work = freezeWork(workRow);
+      const recordedAt = canonicalTimestamp(now());
+      const message = input.message.slice(0, 500);
+      return options.database.mutateWithEvent((transaction) => {
+        const previous = transaction.readOne<{ version: number | null }>(
+          "SELECT max(aggregate_version) AS version FROM events WHERE aggregate_kind = ? AND aggregate_id = ?",
+          RECOVERY_REFUSAL_AGGREGATE, workId,
+        )?.version ?? 0;
+        const refusalCount = previous + 1;
+        const record: RecoveryRefusalRecord = {
+          workId, reasonCode: input.reasonCode,
+          permanent: input.permanent || refusalCount >= RECOVERY_REFUSAL_LIMIT,
+          refusalCount, message, recordedAt,
+        };
+        return {
+          value: Object.freeze(record),
+          event: {
+            type: "activity.updated",
+            aggregateKind: RECOVERY_REFUSAL_AGGREGATE,
+            aggregateId: workId,
+            aggregateVersion: refusalCount,
+            channelId: work.channelId,
+            actorPrincipalId: null,
+            requestId,
+            correlationId,
+            payload: { ...record },
+            createdAt: recordedAt,
+          },
+        };
+      }).value;
+    },
+
+    getRecoveryRefusal(workId: string): RecoveryRefusalRecord | null {
+      assertId("work", workId, "invalid_request");
+      const row = options.database.readOne<{ payload: string }>(
+        `SELECT payload_json AS payload FROM events
+         WHERE aggregate_kind = ? AND aggregate_id = ?
+         ORDER BY aggregate_version DESC LIMIT 1`,
+        RECOVERY_REFUSAL_AGGREGATE, workId,
+      );
+      return row ? Object.freeze(JSON.parse(row.payload) as RecoveryRefusalRecord) : null;
     },
   });
 }
