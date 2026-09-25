@@ -288,6 +288,33 @@ test('an authenticated file inventory larger than 32 MiB is read without a scrat
   assert.deepEqual(fs.readdirSync(root).sort(), ['synthetic.backup-key.json', 'synthetic.h23b']);
 });
 
+test('backup refuses an inventory that would not fit the archive header before encrypting', async t => {
+  const fixture = stoppedHome(t);
+  const archiveDirectory = path.dirname(fixture.archivePath);
+  await assert.rejects(() => createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, { ...quiet, maxHeaderBytes: 64 }),
+    error => error.code === 'backup_inventory_too_large');
+  assert.equal(fs.existsSync(fixture.archivePath), false);
+  assert.equal(fs.existsSync(fixture.keyPath), false);
+  assert.deepEqual(fs.readdirSync(archiveDirectory).filter(name => name.startsWith('.home23-backup-')), [], 'no scratch stays beside the archive');
+});
+
+test('a restored state script keeps its executable bit and private files stay private', async t => {
+  const fixture = stoppedHome(t);
+  fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
+  const script = path.join(fixture.home, 'app/instances/milo/workspace/bin/ship.sh');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.writeFileSync(script, '#!/bin/sh\necho ship\n', { mode: 0o755 });
+  const secret = path.join(fixture.home, 'app/instances/milo/workspace/private.txt');
+  fs.writeFileSync(secret, 'keep\n', { mode: 0o600 });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  const header = readAuthenticatedBackupHeader({ archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  assert.equal(header.files.find(entry => entry.path === 'app/instances/milo/workspace/bin/ship.sh').mode, 0o755);
+  const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  assert.equal(inspected.ok, true);
+  assert.equal(fs.statSync(path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/bin/ship.sh')).mode & 0o777, 0o755);
+  assert.equal(fs.statSync(path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/private.txt')).mode & 0o777, 0o600);
+});
+
 test('inspection and header reads write only inside the inspection root', async t => {
   const fixture = stoppedHome(t);
   fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
@@ -407,7 +434,7 @@ test('move fences the source and leaves the destination stopped', async t => {
   assert.equal(started.error.code, 'move_source_fenced');
 });
 
-test('move requires the resident Seed even when the resident is not Milo', async t => {
+test('move refuses a stopped home whose resident has no Seed substrate, adoption receipt, or resident binding', async t => {
   const fixture = stoppedHome(t);
   const hostPath = path.join(fixture.home, '.home23-host.json');
   const host = JSON.parse(fs.readFileSync(hostPath, 'utf8'));

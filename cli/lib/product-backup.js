@@ -4,6 +4,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import {
   chmodSync,
   closeSync,
+  fchmodSync,
   constants as fsConstants,
   fsyncSync,
   lstatSync,
@@ -39,8 +40,10 @@ const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordina
 const TYPE_FILE = 1;
 const TYPE_SYMLINK = 2;
 const CHUNK = 64 * 1024;
-// Inner header bound shared by writer and reader: the file inventory lives there, so it must fit every home the writer accepts.
-const MAX_HEADER_BYTES = 512 * 1024 * 1024;
+// Inner header bound shared by writer and reader: the file inventory lives there, so it must fit every home the
+// writer accepts. 256 MiB keeps the serialized header well under V8's string limit, so the writer's own check runs
+// (a larger bound would let JSON.stringify throw first) and the reader's pre-authentication allocation stays bounded.
+const MAX_HEADER_BYTES = 256 * 1024 * 1024;
 const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
 const HOST_LOCK_STALE_MS = 180000;
 const MOVE_FENCE_SCHEMA = 'home23.move-fence.v1';
@@ -326,9 +329,17 @@ function cipherSink(tempPath) {
   };
 }
 
-async function collectRecords(homeRoot, sink, archiveParent, lock) {
+async function collectRecords(homeRoot, sink, archiveParent, lock, maxHeaderBytes = MAX_HEADER_BYTES) {
   const files = [];
   const seen = new Set();
+  // The inventory is accounted as it grows so an oversized home stops the backup at the first entry that
+  // would not fit the header, instead of after every record was written and encrypted.
+  let inventoryBytes = 2;
+  const inventory = entry => {
+    inventoryBytes += JSON.stringify(entry).length + 1;
+    if (inventoryBytes > maxHeaderBytes) fail('backup_inventory_too_large', 'The file inventory of this home exceeds one backup archive header. Backup stopped before encrypting.');
+    files.push(entry);
+  };
   let temporaryDatabase = null;
   let coordinationSchema = null;
   const add = (relative, type, absolute, size) => {
@@ -340,7 +351,8 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
       const again = streamHash(absolute, lock);
       if (again !== digest) fail('backup_state_changed', `State changed while checkpointing ${relative}.`);
     }
-    files.push({ path: relative, sha256: digest, bytes: size, type });
+    // A file's mode travels with it so a restored state script keeps its executable bit.
+    inventory(type === 'file' ? { path: relative, sha256: digest, bytes: size, type, mode: lstatSync(absolute).mode & 0o777 } : { path: relative, sha256: digest, bytes: size, type });
   };
   const visit = async relative => {
     if (!relative || seen.has(relative) || isRebuildableStatePath(relative) || omitSidecar(relative)) return;
@@ -354,7 +366,7 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
       sink.write(recordHeader(relative, 'symlink', bytes.length));
       sink.write(bytes);
       seen.add(relative);
-      files.push({ path: relative, sha256: sha256(bytes), bytes: bytes.length, type: 'symlink' });
+      inventory({ path: relative, sha256: sha256(bytes), bytes: bytes.length, type: 'symlink' });
       return;
     }
     if (stat.isDirectory()) {
@@ -371,7 +383,7 @@ async function collectRecords(homeRoot, sink, archiveParent, lock) {
       const size = lstatSync(temporaryDatabase).size;
       sink.write(recordHeader(relative, 'file', size));
       const digest = streamFile(sink, temporaryDatabase, size, lock);
-      files.push({ path: relative, sha256: digest, bytes: size, type: 'file' });
+      inventory({ path: relative, sha256: digest, bytes: size, type: 'file', mode: stat.mode & 0o777 });
       seen.add(relative);
       return;
     }
@@ -473,7 +485,8 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
     if (dependencies.afterLock) await dependencies.afterLock(root);
     assertWritersStopped(root, await list(root));
     records = plainSink(recordsPath);
-    const { files, coordinationSchema } = await collectRecords(root, records, dirname(archive), lock);
+    const headerBound = Number.isInteger(dependencies.maxHeaderBytes) && dependencies.maxHeaderBytes > 0 ? dependencies.maxHeaderBytes : MAX_HEADER_BYTES;
+    const { files, coordinationSchema } = await collectRecords(root, records, dirname(archive), lock, headerBound);
     records.close();
     records = null;
     assertWritersStopped(root, await list(root));
@@ -484,7 +497,7 @@ export async function createHomeBackup({ homeRoot, archivePath, keyPath } = {}, 
       coordinationSchema,
       writersQuiesced: true, checkpoint: 'vacuum-and-stable-files', files,
     }));
-    if (authenticated.length > MAX_HEADER_BYTES) fail('backup_inventory_too_large', 'The file inventory of this home exceeds one backup archive header.');
+    if (authenticated.length > headerBound) fail('backup_inventory_too_large', 'The file inventory of this home exceeds one backup archive header.');
     sink = cipherSink(ciphertext);
     const length = Buffer.alloc(4);
     length.writeUInt32BE(authenticated.length, 0);
@@ -534,8 +547,11 @@ function assertRealParents(root, relativePath) {
   }
 }
 
-function openNewFile(destination) {
-  return openSync(destination, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+/** Creates the restored file privately, then applies the inventoried mode (older archives carry none and stay private). */
+function openNewFile(destination, mode) {
+  const fd = openSync(destination, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+  if (Number.isInteger(mode) && (mode & 0o777) !== 0o600) fchmodSync(fd, mode & 0o777);
+  return fd;
 }
 
 function restoredLink(sourceHome, inspectionRoot, linkRelative, target) {
@@ -599,7 +615,7 @@ function createExtractor(root, expectedFiles, sourceHome) {
         assertRealParents(root, pathText);
         record = {
           path: pathText, type, remaining: size, hash: createHash('sha256'), destination,
-          fd: type === 'file' ? openNewFile(destination) : null, symlink: Buffer.alloc(0),
+          fd: type === 'file' ? openNewFile(destination, expected.mode) : null, symlink: Buffer.alloc(0),
         };
       }
       if (record.remaining === 0) { finishRecord(); continue; }
