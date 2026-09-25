@@ -24,7 +24,7 @@ import {
   symlinkSync,
   statSync,
 } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
@@ -942,13 +942,14 @@ function hasRecoverableIdentity(host) {
 }
 
 /** Host/config paths rewrite during rebind; identity bytes must still match the archive. */
-function isRebindMutablePath(relative) {
+function isRebindMutablePath(relative, root = null) {
   if (isLifecycleLockPath(relative)) return true;
   if (relative === '.home23-host.json' || relative === '.home23-install.json') return true;
   if (relative === 'app/config/home.yaml' || relative === 'app/config/agents.json') return true;
   if (relative === 'app/ecosystem.config.cjs' || relative === 'runtime/semantic-prep.json') return true;
   if (relative === 'runtime/ecosystem.config.json') return true;
   if (/^app\/instances\/[^/]+\/(config|engine)\.yaml$/.test(relative)) return true;
+  if (!rebindScanExcluded(relative) && embeddedRebindKind(relative, root ? join(root, relative) : null)) return true;
   return false;
 }
 
@@ -1133,7 +1134,7 @@ function assertExtractMatchesArchive(destination, header, { allowRebindMutation 
       fail('backup_recover_archive_mismatch', 'Authenticated archive inventory is invalid.');
     }
     if (isLifecycleLockPath(entry.path)) continue;
-    if (allowRebindMutation && isRebindMutablePath(entry.path)) continue;
+    if (allowRebindMutation && isRebindMutablePath(entry.path, destination)) continue;
     if (allowRebindMutation && CURSOR_PATH.test(entry.path)) continue;
     const absolute = join(destination, entry.path);
     if (!exists(absolute)) {
@@ -1291,9 +1292,186 @@ function replaceHomePath(value, source, destination, adopted = false) {
   return `${destination}${value.slice(source.length)}`;
 }
 
+/* ── Embedded home paths ───────────────────────────────────────────────
+ * State names the home root inside larger strings: PATH lists, shell
+ * commands, scripts kept as state, prose, file:// URLs. Each occurrence is
+ * rebound in the form it was written: plain, shell-escaped, percent-encoded
+ * and, in raw JSON text, their JSON encodings. */
+const HOME_PATH_CHAR = /[A-Za-z0-9_.~-]/;
+const SHELL_SPECIAL = /[\s'"\\$`!&|;()<>*?[\]{}~#]/;
+const shellEscape = value => value.replace(/[\s'"\\$`!&|;()<>*?[\]{}~#]/g, '\\$&');
+const percentEncodePath = value => value.split('/').map(encodeURIComponent).join('/');
+const jsonBody = value => JSON.stringify(value).slice(1, -1);
+
+function homePathForms(source, { json = false } = {}) {
+  const forms = new Map();
+  const add = (needle, encode, plain = false) => { if (!forms.has(needle)) forms.set(needle, { needle, encode, plain }); };
+  add(source, value => value, true);
+  add(shellEscape(source), shellEscape);
+  add(percentEncodePath(source), percentEncodePath);
+  if (json) {
+    add(jsonBody(source), jsonBody);
+    add(jsonBody(shellEscape(source)), value => jsonBody(shellEscape(value)));
+  }
+  return [...forms.values()].sort((left, right) => right.needle.length - left.needle.length);
+}
+
+/** Occurrences bounded by non-path characters, so `<home>-2` and `X<home>` stay literal. */
+function homePathOccurrences(text, forms) {
+  const bounded = (at, length) => (at === 0 || !HOME_PATH_CHAR.test(text[at - 1]))
+    && (at + length === text.length || !HOME_PATH_CHAR.test(text[at + length]));
+  const found = [];
+  let index = 0;
+  while (index < text.length) {
+    let best = null;
+    for (const form of forms) {
+      let at = text.indexOf(form.needle, index);
+      while (at >= 0 && !bounded(at, form.needle.length)) at = text.indexOf(form.needle, at + 1);
+      if (at >= 0 && (!best || at < best.index)) best = { index: at, form };
+    }
+    if (!best) break;
+    const rest = text.slice(best.index + best.form.needle.length);
+    const segment = rest.startsWith('/') ? /^\/([A-Za-z0-9_.~-]*)/.exec(rest)[1] : '';
+    found.push({ index: best.index, length: best.form.needle.length, form: best.form, segment });
+    index = best.index + best.form.needle.length;
+  }
+  return found;
+}
+
+const hasHomeReference = (text, forms) => homePathOccurrences(text, forms).length > 0;
+
+/** Same mapping as replaceHomePath, decided by the first path segment after the home root. */
+const mappedHomeRoot = (segment, destination, adopted) => (
+  !adopted || ['app', 'runtime', 'bin', 'tools'].includes(segment) ? destination : join(destination, 'app'));
+
+function replaceEmbeddedHomePaths(text, source, destination, { adopted = false, forms = null } = {}) {
+  const occurrences = homePathOccurrences(text, forms || homePathForms(source));
+  if (!occurrences.length) return text;
+  let output = '', cursor = 0;
+  for (const occurrence of occurrences) {
+    output += text.slice(cursor, occurrence.index) + occurrence.form.encode(mappedHomeRoot(occurrence.segment, destination, adopted));
+    cursor = occurrence.index + occurrence.length;
+  }
+  return output + text.slice(cursor);
+}
+
+/** Quote context and word extent per character of shell-like text (POSIX sh; Caddyfile with singleQuotes off). */
+function shellSpans(text, { singleQuotes = true, metachars = true } = {}) {
+  const spans = new Array(text.length);
+  const isBreak = character => /\s/.test(character) || (metachars && ';&|()<>'.includes(character));
+  const mark = (span, from, to) => { for (let at = from; at < to; at += 1) spans[at] = span; };
+  let index = 0;
+  while (index < text.length) {
+    if (isBreak(text[index])) { spans[index] = { kind: 'break' }; index += 1; continue; }
+    if (text[index] === '#') {
+      const newline = text.indexOf('\n', index);
+      const stop = newline < 0 ? text.length : newline;
+      mark({ kind: 'comment' }, index, stop);
+      index = stop;
+      continue;
+    }
+    const word = { start: index, end: index, quoted: false };
+    while (index < text.length && !isBreak(text[index])) {
+      const start = index;
+      if (text[index] === "'" && singleQuotes) {
+        const close = text.indexOf("'", index + 1);
+        index = close < 0 ? text.length : close + 1;
+        word.quoted = true;
+        mark({ kind: 'single', word }, start, index);
+        continue;
+      }
+      if (text[index] === '"') {
+        index += 1;
+        while (index < text.length && text[index] !== '"') index += text[index] === '\\' ? 2 : 1;
+        index = Math.min(index + 1, text.length);
+        word.quoted = true;
+        mark({ kind: 'double', word }, start, index);
+        continue;
+      }
+      let escaped = false;
+      while (index < text.length && !isBreak(text[index]) && text[index] !== '"' && !(singleQuotes && text[index] === "'")) {
+        if (text[index] === '\\') escaped = true;
+        index += text[index] === '\\' ? 2 : 1;
+      }
+      index = Math.min(index, text.length);
+      mark({ kind: 'unquoted', word, escaped }, start, index);
+    }
+    word.end = index;
+  }
+  return spans;
+}
+
+/**
+ * Rebind the home root inside shell text. A plain path in an unquoted word is
+ * double-quoted when the destination needs it (`NAME="…"` for an assignment);
+ * escaped and quoted forms keep their form; comments are prose.
+ */
+function rewriteShellText(text, source, destination, { adopted = false, singleQuotes = true, assignments = true, metachars = true } = {}) {
+  const occurrences = homePathOccurrences(text, homePathForms(source));
+  if (!occurrences.length) return text;
+  const spans = shellSpans(text, { singleQuotes, metachars });
+  const mapped = occurrence => mappedHomeRoot(occurrence.segment, destination, adopted);
+  const ranges = [];
+  for (const occurrence of occurrences) {
+    const first = spans[occurrence.index];
+    const last = spans[occurrence.index + occurrence.length - 1];
+    if (!occurrence.form.plain || !SHELL_SPECIAL.test(mapped(occurrence))) continue;
+    if ([first, last].some(span => span.kind !== 'unquoted' || span.escaped || span.word.quoted)) continue;
+    const previous = ranges[ranges.length - 1];
+    if (previous && first.word.start <= previous.end) previous.end = Math.max(previous.end, last.word.end);
+    else ranges.push({ start: first.word.start, end: last.word.end });
+  }
+  const render = occurrence => {
+    const value = mapped(occurrence);
+    if (!occurrence.form.plain) return occurrence.form.encode(value);
+    const kind = spans[occurrence.index].kind;
+    if (kind === 'double' || ranges.some(range => occurrence.index >= range.start && occurrence.index < range.end)) {
+      return value.replace(/[\\"$`]/g, '\\$&');
+    }
+    if (kind === 'single') return value.replaceAll("'", "'\\''");
+    if (kind === 'unquoted' && SHELL_SPECIAL.test(value)) return shellEscape(value);
+    return value;
+  };
+  let output = '', cursor = 0, next = 0;
+  const emit = to => {
+    while (next < occurrences.length && occurrences[next].index < to) {
+      const occurrence = occurrences[next];
+      output += text.slice(cursor, occurrence.index) + render(occurrence);
+      cursor = occurrence.index + occurrence.length;
+      next += 1;
+    }
+    output += text.slice(cursor, to);
+    cursor = Math.max(cursor, to);
+  };
+  for (const range of ranges) {
+    emit(range.start);
+    const wordStart = output.length;
+    emit(range.end);
+    const word = output.slice(wordStart);
+    const name = assignments ? /^[A-Za-z_][A-Za-z0-9_]*=/.exec(word)?.[0] : null;
+    output = `${output.slice(0, wordStart)}${name ? `${name}"${word.slice(name.length)}"` : `"${word}"`}`;
+  }
+  emit(text.length);
+  return output;
+}
+
+/** Job `command` strings stay shell-safe; cwd, messagePath, file, root and prose take plain paths. */
+function rewriteCronJobs(value, source, destination, adopted, key = null) {
+  if (typeof value === 'string') {
+    return key === 'command'
+      ? rewriteShellText(value, source, destination, { adopted })
+      : replaceEmbeddedHomePaths(value, source, destination, { adopted });
+  }
+  if (Array.isArray(value)) return value.map(item => rewriteCronJobs(item, source, destination, adopted));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([name, child]) => [name, rewriteCronJobs(child, source, destination, adopted, name)]));
+  }
+  return value;
+}
+
 function rewriteMachineStrings(value, source, destination, oldPorts, newPorts, adopted = false) {
   if (typeof value === 'string') {
-    let next = replaceHomePath(value, source, destination, adopted);
+    let next = replaceEmbeddedHomePaths(value, source, destination, { adopted });
     if (oldPorts && newPorts) {
       for (const key of Object.keys(newPorts)) {
         const previous = oldPorts[key];
@@ -1438,19 +1616,31 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
   }
   const ecosystem = join(destination, 'app/ecosystem.config.cjs');
   if (exists(ecosystem)) {
-    let text = readFileSync(ecosystem, 'utf8');
-    if (adopted) {
-      for (const name of ['app', 'runtime', 'bin', 'tools']) {
-        text = text.split(`${source}${sep}${name}`).join(`${destination}${sep}${name}`);
-      }
-      text = text.split(source).join(join(destination, 'app'));
-    } else {
-      text = text.split(source).join(destination);
+    // The product owns its process registration: regenerate it from the
+    // rebound configuration, as Start does. Without a resident to generate
+    // from, rewrite the recorded paths instead.
+    let text = null;
+    if (files.some(entry => entry.kind === 'instance')) {
+      try {
+        const { generateEcosystem } = await import('./generate-ecosystem.js');
+        text = generateEcosystem(join(destination, 'app'), { quiet: true, writeEcosystem: false, writeManifest: false }).ecosystemSource;
+      } catch { text = null; }
     }
-    text = replaceAssignedPorts(text, oldPorts, newPorts);
-    if (residentPorts) {
-      for (const ports of Object.values(residentPorts)) {
-        text = replaceAssignedPorts(text, oldPorts, { ...newPorts, ...ports });
+    if (typeof text !== 'string') {
+      text = readFileSync(ecosystem, 'utf8');
+      if (adopted) {
+        for (const name of ['app', 'runtime', 'bin', 'tools']) {
+          text = text.split(`${source}${sep}${name}`).join(`${destination}${sep}${name}`);
+        }
+        text = text.split(source).join(join(destination, 'app'));
+      } else {
+        text = text.split(source).join(destination);
+      }
+      text = replaceAssignedPorts(text, oldPorts, newPorts);
+      if (residentPorts) {
+        for (const ports of Object.values(residentPorts)) {
+          text = replaceAssignedPorts(text, oldPorts, { ...newPorts, ...ports });
+        }
       }
     }
     if (text.includes(source)) fail('move_rebind_incomplete', 'Destination process registration still names the source home.');
@@ -1478,7 +1668,9 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     let config;
     try { config = JSON.parse(readFileSync(file, 'utf8')); }
     catch { fail('move_rebind_incomplete', `Destination ${relative} could not be read.`); }
-    config = rewriteMachineStrings(config, source, destination, oldPorts, newPorts, adopted);
+    config = relative === 'app/config/cron-jobs.json'
+      ? rewriteCronJobs(config, source, destination, adopted)
+      : rewriteMachineStrings(config, source, destination, oldPorts, newPorts, adopted);
     if (relative === 'app/config/cron-jobs.json' && adopted) {
       config = rewriteAdoptedCronPromptPaths(config, source, destination);
     }
@@ -1489,6 +1681,149 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
   rebindAgentsManifest(source, destination, adopted);
   const savedProcesses = join(destination, 'runtime/ecosystem.config.json');
   if (exists(savedProcesses)) unlinkSync(savedProcesses);
+  // The supervisor dump is derived from the registration; PM2 rebuilds it.
+  const supervisorDump = join(destination, 'runtime/pm2/dump.pm2');
+  if (exists(supervisorDump)) unlinkSync(supervisorDump);
+  rebindEmbeddedState(source, destination, adopted);
+}
+
+/* ── State that embeds the home root ─────────────────────────────────── */
+const SHELL_EXTENSIONS = new Set(['.sh', '.bash', '.zsh', '.command', '.env', '.envrc']);
+const BINARY_EXTENSIONS = new Set(['.sqlite3', '.sqlite', '.db', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.zip',
+  '.gz', '.tar', '.bin', '.wav', '.mp3', '.mp4', '.mov', '.h23b', '.woff', '.woff2', '.ttf', '.node', '.wasm']);
+const CONTENT_ROOTS = ['app/projects', 'app/workspace', 'app/archive', 'app/reports', 'app/output', 'app/keep-export',
+  'app/published', 'app/evobrew/.evobrew-workspaces', 'app/evobrew/conversations', 'app/evobrew/snapshots',
+  'app/engine/data', 'app/engine/runs', 'app/engine/artifacts', 'app/engine/outputs', 'app/engine/backups',
+  'app/engine/.backups', 'app/engine/.venv-markitdown'];
+const RESIDENT_CONTENT = /^app\/instances\/[^/]+\/(workspace|uploads|scratch|cron-runs|brain|conversations)\/(.+)$/;
+
+/**
+ * Operating state and configuration the rebind must leave free of the source
+ * home. Logs, jsonl history, caches, resident and operator content, sealed
+ * Seed evidence and derived files the product regenerates are not its subject.
+ */
+function rebindScanExcluded(relative) {
+  if (isRebuildableStatePath(relative) || isLifecycleLockPath(relative) || omitSidecar(relative)) return true;
+  if (relative === '.home23-install.json') return true;
+  if (CONTENT_ROOTS.some(root => relative === root || relative.startsWith(`${root}/`))) return true;
+  const resident = RESIDENT_CONTENT.exec(relative);
+  if (resident && !(resident[1] === 'conversations' && resident[2] === 'cron-jobs.json')) return true;
+  if (relative.split('/').some(segment => segment === 'logs' || segment === 'log' || /(^|[-_.])caches?([-_.]|$)/i.test(segment))) return true;
+  const name = basename(relative);
+  const extension = extname(name).toLowerCase();
+  if (['.log', '.jsonl', '.pid', '.sock', '.tmp', '.next'].includes(extension) || BINARY_EXTENSIONS.has(extension)) return true;
+  return name === 'birth-receipt.json' || name.startsWith('seed-ledger');
+}
+
+function hasShellShebang(absolute) {
+  try {
+    const fd = openSync(absolute, 'r');
+    try {
+      const head = Buffer.alloc(160);
+      const count = readSync(fd, head, 0, head.length, 0);
+      return /^#![^\n]*\b(?:sh|bash|zsh|dash|ksh)\b/.test(head.subarray(0, count).toString('utf8'));
+    } finally { closeSync(fd); }
+  } catch { return false; }
+}
+
+/** The state kinds the rebind rewrites form-aware; everything else is only scanned. */
+function embeddedRebindKind(relative, absolute = null) {
+  const name = basename(relative);
+  if (name === 'cron-jobs.json') return 'cron-jobs';
+  if (name === 'Caddyfile') return 'caddyfile';
+  const extension = extname(name).toLowerCase();
+  if (SHELL_EXTENSIONS.has(extension) || name === '.env' || name === '.envrc') return 'shell';
+  if (!extension && absolute && hasShellShebang(absolute)) return 'shell';
+  return null;
+}
+
+/** Regular files and symlinks of the home's state and configuration, never following links. */
+function homeStateEntries(destination) {
+  const entries = [];
+  const roots = PRODUCT_STATE_PATHS.filter(entry => !PRODUCT_STATE_PATHS.some(parent =>
+    parent !== entry && (parent.type === 'directory' || parent.allowDescendants) && entry.path.startsWith(`${parent.path}/`)));
+  const visit = relative => {
+    if (rebindScanExcluded(relative)) return;
+    const absolute = join(destination, relative);
+    if (!exists(absolute)) return;
+    const stat = lstatSync(absolute);
+    if (stat.isSymbolicLink()) { entries.push({ relative, absolute, type: 'symlink' }); return; }
+    if (stat.isDirectory()) { for (const name of readdirSync(absolute).sort()) visit(`${relative}/${name}`); return; }
+    if (stat.isFile()) entries.push({ relative, absolute, type: 'file', size: stat.size, mode: stat.mode & 0o777 });
+  };
+  for (const entry of roots) visit(entry.path);
+  return entries;
+}
+
+function readStateText(entry) {
+  if (entry.size > 64 * 1024 * 1024) return null;
+  const bytes = readFileSync(entry.absolute);
+  return bytes.subarray(0, 8192).includes(0) ? null : bytes.toString('utf8');
+}
+
+function rebindEmbeddedState(source, destination, adopted) {
+  for (const entry of homeStateEntries(destination)) {
+    if (entry.type !== 'file') continue;
+    const kind = embeddedRebindKind(entry.relative, entry.absolute);
+    if (!kind) continue;
+    const text = readStateText(entry);
+    if (text === null) continue;
+    if (kind === 'cron-jobs') {
+      let jobs;
+      try { jobs = JSON.parse(text); } catch { continue; }
+      const rebound = rewriteCronJobs(jobs, source, destination, adopted);
+      if (JSON.stringify(rebound) !== JSON.stringify(jobs)) writePrivateJSON(entry.absolute, rebound);
+      continue;
+    }
+    const next = kind === 'caddyfile'
+      ? rewriteShellText(text, source, destination, { adopted, singleQuotes: false, assignments: false, metachars: false })
+      : rewriteShellText(text, source, destination, { adopted });
+    if (next === text) continue;
+    const temporary = `${entry.absolute}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, next, { mode: entry.mode });
+    renameSync(temporary, entry.absolute);
+  }
+}
+
+/** The receipt's original source bindings are historical evidence, not references to rebind. */
+function receiptWithoutHistory(text) {
+  let receipt;
+  try { receipt = JSON.parse(text); } catch { return text; }
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return text;
+  const current = { ...receipt };
+  delete current.sourceRoot;
+  const strip = (items, keys) => (Array.isArray(items) ? items.map(item => {
+    if (!item || typeof item !== 'object') return item;
+    const kept = { ...item };
+    for (const key of keys) delete kept[key];
+    return kept;
+  }) : items);
+  current.links = strip(current.links, ['sourcePath', 'sourceTarget']);
+  current.continuationServices = strip(current.continuationServices, ['source']);
+  return JSON.stringify(current);
+}
+
+/** Relative paths of state and configuration that still name the source home, in any written form. */
+export function scanHomeReferences(destination, source) {
+  const forms = homePathForms(source, { json: true });
+  const found = [];
+  for (const entry of homeStateEntries(destination)) {
+    if (entry.type === 'symlink') {
+      if (hasHomeReference(readlinkSync(entry.absolute), forms)) found.push(entry.relative);
+      continue;
+    }
+    let text = readStateText(entry);
+    if (text === null) continue;
+    if (entry.relative === 'runtime/adoption-preservation.json') text = receiptWithoutHistory(text);
+    if (hasHomeReference(text, forms)) found.push(entry.relative);
+  }
+  return found.sort();
+}
+
+function assertNoHomeReferences(destination, source) {
+  const paths = scanHomeReferences(destination, source);
+  if (!paths.length) return;
+  throw Object.assign(new Error(`Destination still names the source home: ${paths.join(', ')}`), { code: 'move_rebind_incomplete', paths });
 }
 
 function replaceAssignedPorts(text, oldPorts, newPorts) {
@@ -1543,13 +1878,8 @@ function rebindAgentsManifest(source, destination, adopted = false) {
   try { agents = JSON.parse(readFileSync(file, 'utf8')); }
   catch { fail('move_rebind_incomplete', 'Destination agent registry could not be read.'); }
   if (!Array.isArray(agents)) fail('move_rebind_incomplete', 'Destination agent registry is not a list.');
-  const keys = ['configPath', 'instanceRoot', 'brainPath', 'workspacePath', 'conversationsPath', 'logsPath'];
-  for (const agent of agents) {
-    if (!agent || typeof agent !== 'object') continue;
-    for (const key of keys) {
-      if (typeof agent[key] === 'string') agent[key] = replaceHomePath(agent[key], source, destination, adopted);
-    }
-  }
+  // Path fields and prose (notes, descriptions) both name the home.
+  agents = rewriteMachineStrings(agents, source, destination, null, null, adopted);
   if (treeContains(agents, source)) fail('move_rebind_incomplete', 'Destination agent registry still names the source home.');
   writePrivateJSON(file, agents);
 }
@@ -1570,25 +1900,49 @@ function prepareAdoptionBindings(destination, host, source, oldPorts, newPorts, 
   // source plan; rebasing against the retained source would corrupt deliberate
   // external authorities such as Evobrew and Caddy.
   if (adopting) return null;
-  if (!host.continuationServices?.length && !host.networkBindings) return null;
+  const continuing = Boolean(host.continuationServices?.length || host.networkBindings);
   const file = join(destination, 'runtime/adoption-preservation.json');
+  if (!continuing && !exists(file)) return null;
   const before = readFileSync(file);
   const receipt = readPrivateJSON(file);
-  if (receipt?.schema !== 'home23.adoption-preservation-receipt.v1'
+  if (continuing && (receipt?.schema !== 'home23.adoption-preservation-receipt.v1'
     || !Array.isArray(receipt.continuationServices)
     || JSON.stringify(receipt.networkBindings || null) !== JSON.stringify(host.networkBindings || null)
     || JSON.stringify(host.continuationServices || []) !== JSON.stringify(
-      receipt.continuationServices.map(service => ({ name: service.name, ...service.run })))) {
+      receipt.continuationServices.map(service => ({ name: service.name, ...service.run }))))) {
     fail('move_rebind_incomplete', 'Continuing services do not match their sealed adoption receipt.');
   }
-  const rebound = { ...receipt, continuationServices: receipt.continuationServices.map(service => ({
-    ...service,
-    // The original source binding remains historical evidence. Only the
-    // current run binding moves; external authorities keep their exact paths.
-    run: rewriteMachineStrings(service.run, source, destination, oldPorts, newPorts),
-  })) };
+  if (!continuing && receipt?.schema !== 'home23.adoption-preservation-receipt.v1') return null;
+  const rebound = { ...receipt };
+  if (Array.isArray(receipt.links)) rebound.links = rebindReceiptLinks(destination, receipt.links, source);
+  if (continuing) {
+    rebound.continuationServices = receipt.continuationServices.map(service => ({
+      ...service,
+      // The original source binding remains historical evidence. Only the
+      // current run binding moves; external authorities keep their exact paths.
+      run: rewriteMachineStrings(service.run, source, destination, oldPorts, newPorts),
+    }));
+  }
   return { beforeHash: sha256(before), afterHash: sha256(Buffer.from(`${JSON.stringify(rebound, null, 2)}\n`)),
     receipt: rebound };
+}
+
+/**
+ * A preserved link inside the home is restored relative to its new place; the
+ * receipt's recorded target follows it once the link really resolves there.
+ * External authorities keep their exact recorded targets.
+ */
+function rebindReceiptLinks(destination, links, source) {
+  return links.map(link => {
+    if (!link || typeof link !== 'object' || link.kind === 'retain-authority') return link;
+    if (typeof link.path !== 'string' || !safeRelative(link.path) || typeof link.target !== 'string'
+      || !isAbsolute(link.target) || !inside(source, link.target)) return link;
+    const file = join(destination, link.path);
+    if (!exists(file) || !lstatSync(file).isSymbolicLink()) return link;
+    const actual = readlinkSync(file);
+    if (resolve(dirname(file), actual) !== `${destination}${link.target.slice(source.length)}`) return link;
+    return { ...link, target: actual };
+  });
 }
 
 async function prepareRebindPlan(source, destination, { adopting = false } = {}) {
@@ -1691,7 +2045,9 @@ async function rebindDestination(source, destination, options = {}) {
     if (![adoptionBindings.beforeHash, adoptionBindings.afterHash].includes(streamHash(file))) {
       fail('move_rebind_incomplete', 'The sealed adoption receipt changed during recovery.');
     }
-    host.continuationServices = adoptionBindings.receipt.continuationServices.map(service => ({ name: service.name, ...service.run }));
+    if (host.continuationServices?.length || host.networkBindings) {
+      host.continuationServices = adoptionBindings.receipt.continuationServices.map(service => ({ name: service.name, ...service.run }));
+    }
   }
   host.homeRoot = destination;
   host.desiredRunning = false;
@@ -1709,16 +2065,21 @@ async function rebindDestination(source, destination, options = {}) {
     residentPorts, adopted: options.adoptManagedSource === true,
   });
   applyCursorBindings(destination, rewriteFrom, options.adoptManagedSource === true, cursorBindings);
-  if (!sourcePresent) return null;
+  let packageId = null;
   const receiptPath = join(rewriteFrom, '.home23-install.json');
-  if (!exists(receiptPath)) return null;
-  const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
-  const rebound = {
-    ...receipt, homeRoot: destination, appRoot: join(destination, 'app'),
-    nodePath: join(destination, 'bin', 'node'), pm2Path: join(destination, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'), replayed: false,
-  };
-  writeFileSync(join(destination, '.home23-install.json'), `${JSON.stringify(rebound)}\n`, { mode: 0o600 });
-  return rebound.packageId || null;
+  if (sourcePresent && exists(receiptPath)) {
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    const rebound = {
+      ...receipt, homeRoot: destination, appRoot: join(destination, 'app'),
+      nodePath: join(destination, 'bin', 'node'), pm2Path: join(destination, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'), replayed: false,
+    };
+    writeFileSync(join(destination, '.home23-install.json'), `${JSON.stringify(rebound)}\n`, { mode: 0o600 });
+    packageId = rebound.packageId || null;
+  }
+  // A rebind that leaves the source home named anywhere in state fails here,
+  // naming every file, instead of finishing silently.
+  assertNoHomeReferences(destination, rewriteFrom);
+  return packageId;
 }
 
 /** Port/path rebind for an adopted destination. Does not copy state or start writers. */
