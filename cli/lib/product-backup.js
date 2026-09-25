@@ -1838,19 +1838,50 @@ function receiptWithoutHistory(text) {
   return JSON.stringify(current);
 }
 
-/** Relative paths of state and configuration that still name the source home, in any written form. */
+/** Reviewed external authorities keep their exact source paths: the adoption receipt's retain-authority
+ * links, their targets, and every binding that runs inside such a target. */
+function retainedAuthorities(destination, source) {
+  const file = join(destination, 'runtime/adoption-preservation.json');
+  const links = new Set(), targets = [];
+  if (!exists(file)) return { links, targets };
+  let receipt = null;
+  try { receipt = JSON.parse(readFileSync(file, 'utf8')); } catch { return { links, targets }; }
+  for (const link of Array.isArray(receipt?.links) ? receipt.links : []) {
+    if (link?.kind !== 'retain-authority' || typeof link.path !== 'string' || typeof link.target !== 'string' || !isAbsolute(link.target)) continue;
+    const target = resolve(link.target);
+    if (target !== source && !target.startsWith(source + sep)) continue;
+    links.add(link.path);
+    targets.push(target);
+  }
+  return { links, targets };
+}
+
+/** Whether an occurrence of the source home names a path inside a retained external authority. */
+function withinRetainedAuthority(text, occurrence, targets) {
+  return targets.some(target => {
+    const needle = occurrence.form.encode(target);
+    if (!text.startsWith(needle, occurrence.index)) return false;
+    const after = text[occurrence.index + needle.length];
+    return after === undefined || after === '/' || !HOME_PATH_CHAR.test(after);
+  });
+}
+
+/** Relative paths of state and configuration that still name the source home, in any written form.
+ * Reviewed external authorities are not references: they are meant to stay where they are. */
 export function scanHomeReferences(destination, source) {
   const forms = homePathForms(source, { json: true });
+  const authorities = retainedAuthorities(destination, source);
+  const references = text => homePathOccurrences(text, forms).some(occurrence => !withinRetainedAuthority(text, occurrence, authorities.targets));
   const found = [];
   for (const entry of homeStateEntries(destination)) {
     if (entry.type === 'symlink') {
-      if (hasHomeReference(readlinkSync(entry.absolute), forms)) found.push(entry.relative);
+      if (!authorities.links.has(entry.relative) && references(readlinkSync(entry.absolute))) found.push(entry.relative);
       continue;
     }
     let text = readStateText(entry);
     if (text === null) continue;
     if (entry.relative === 'runtime/adoption-preservation.json') text = receiptWithoutHistory(text);
-    if (hasHomeReference(text, forms)) found.push(entry.relative);
+    if (references(text)) found.push(entry.relative);
   }
   return found.sort();
 }

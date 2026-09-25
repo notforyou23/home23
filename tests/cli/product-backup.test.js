@@ -1787,6 +1787,25 @@ function embeddedPathHome(t) {
   return { root, home, destination, archivePath: path.join(root, 'backup.h23b'), keyPath: path.join(root, 'backup.key') };
 }
 
+test('the reference scan ignores reviewed external authorities but still names a stray reference', t => {
+  const root = tempRoot(t), source = path.join(root, 'source'), destination = path.join(root, 'destination');
+  fs.mkdirSync(path.join(source, 'evobrew'), { recursive: true });
+  fs.mkdirSync(path.join(destination, 'app/instances/milo/workspace'), { recursive: true });
+  fs.mkdirSync(path.join(destination, 'runtime'), { recursive: true });
+  // A reviewed retain-authority link, its receipt entry, and a continuing service running inside the authority.
+  fs.symlinkSync(path.join(source, 'evobrew'), path.join(destination, 'app/evobrew'));
+  fs.writeFileSync(path.join(destination, 'runtime/adoption-preservation.json'), JSON.stringify({ schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: source,
+    links: [{ path: 'app/evobrew', kind: 'retain-authority', target: path.join(source, 'evobrew'), sourceTarget: path.join(source, 'evobrew') }],
+    continuationServices: [{ name: 'home23-evobrew', source: { cwd: path.join(source, 'evobrew') }, run: { executable: '/opt/homebrew/bin/node', cwd: path.join(source, 'evobrew'), args: [path.join(source, 'evobrew/server.js')], env: {}, stateRoots: [path.join(source, 'evobrew')], startOnHomeStart: true } }] }), { mode: 0o600 });
+  fs.writeFileSync(path.join(destination, '.home23-host.json'), JSON.stringify({ schema: 'home23.host.v2', homeRoot: destination,
+    continuationServices: [{ name: 'home23-evobrew', executable: '/opt/homebrew/bin/node', cwd: path.join(source, 'evobrew'), args: [path.join(source, 'evobrew/server.js')], env: {}, stateRoots: [path.join(source, 'evobrew')], startOnHomeStart: true }] }), { mode: 0o600 });
+  assert.deepEqual(scanHomeReferences(destination, source), []);
+  // A sibling that only shares the authority's prefix, and a plain reference in configuration, are still leftovers.
+  fs.mkdirSync(path.join(destination, 'app/config'), { recursive: true });
+  fs.writeFileSync(path.join(destination, 'app/config/agents.json'), JSON.stringify({ agents: [{ name: 'milo', notes: `see ${source}/evobrew-old/x and ${source}/app/config/home.yaml` }] }));
+  assert.deepEqual(scanHomeReferences(destination, source), ['app/config/agents.json']);
+});
+
 test('move rebinds embedded paths in jobs, scripts, services and the Caddyfile, then scans clean', async t => {
   const fixture = embeddedPathHome(t);
   const { home, destination } = fixture;
