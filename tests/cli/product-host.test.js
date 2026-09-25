@@ -9,6 +9,7 @@ import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:http';
 import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
 import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses } from '../../cli/lib/product-host.js';
+import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 
@@ -147,6 +148,37 @@ test('Start reports a restarting service as failed instead of starting', async t
   assert.equal(result.status, 'degraded');
   assert.equal(result.error?.code, 'host_process_failed');
   assert.equal((await runHostAction('status', { homeRoot }, dependencies)).status, 'degraded');
+});
+
+test('status warns about foreign supervisors bound to this home without failing or changing them', async t => {
+  const { homeRoot } = await prepared(t);
+  const userHome = path.join(path.dirname(homeRoot), 'user');
+  const dump = path.join(userHome, '.pm2/dump.pm2');
+  fs.mkdirSync(path.dirname(dump), { recursive: true });
+  fs.writeFileSync(dump, JSON.stringify([{ name: 'cosmo-engine', pm_cwd: path.join(homeRoot, 'app'), env: { HOME23_ROOT: path.join(homeRoot, 'app') } }, { name: 'other', pm_cwd: '/opt/other' }]));
+  const dumpBefore = fs.readFileSync(dump);
+  const dependencies = { execute: async () => ({ stdout: '[]' }), detectForeignBindings: options => detectForeignBindings({ ...options, homeDirectory: userHome }) };
+  const stopped = await runHostAction('status', { homeRoot }, dependencies);
+  assert.equal(stopped.ok, true);
+  assert.equal(stopped.status, 'prepared');
+  assert.deepEqual(stopped.foreignBindings.roots, [homeRoot]);
+  assert.deepEqual(stopped.foreignBindings.references.map(reference => [reference.source, reference.name, reference.field]),
+    [['pm2', 'cosmo-engine', 'pm_cwd'], ['pm2', 'cosmo-engine', 'env.HOME23_ROOT']]);
+  assert.equal(stopped.warnings.length, 1);
+  assert.match(stopped.warnings[0], /PM2 app "cosmo-engine"/);
+  assert.match(stopped.warnings[0], /Home23 did not change it/);
+  assert.deepEqual(fs.readFileSync(dump), dumpBefore);
+  // Readiness carries the same warning beside memory warnings; it stays non-fatal.
+  const rows = ownedProcessNames('milo').map(name => row(homeRoot, name));
+  const online = await runHostAction('status', { homeRoot }, { ...dependencies, execute: async () => ({ stdout: JSON.stringify(rows) }),
+    probeReadiness: async () => ({ ready: true, issues: [], warnings: ['memory warning'] }) });
+  assert.equal(online.status, 'ready');
+  assert.deepEqual(online.readiness.warnings, ['memory warning', stopped.warnings[0]]);
+  assert.deepEqual(online.warnings, stopped.warnings);
+  // A machine with nothing bound to this home reports an empty scan.
+  const clean = await runHostAction('status', { homeRoot }, { ...dependencies, detectForeignBindings: options => detectForeignBindings({ ...options, homeDirectory: path.join(userHome, 'nobody') }) });
+  assert.deepEqual(clean.warnings, []);
+  assert.deepEqual(clean.foreignBindings.references, []);
 });
 
 test('consumer Host skips Evobrew and accepts only its stopped legacy supervisor row', async t => {

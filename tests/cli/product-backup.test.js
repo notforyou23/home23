@@ -10,6 +10,7 @@ import {
   rewriteAdoptedCronPromptPaths,
 } from '../../cli/lib/product-backup.js';
 import { writeProductManifest } from '../../cli/lib/product-payload.js';
+import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
 import { SUPPORTED_COORDINATION_SCHEMAS } from '../../cli/lib/product-update-inventory.js';
 
@@ -347,6 +348,58 @@ test('move fences the source and leaves the destination stopped', async t => {
   const started = await runHostAction('start', { homeRoot: fixture.home });
   assert.equal(started.ok, false);
   assert.equal(started.error.code, 'move_source_fenced');
+});
+
+test('move reports foreign supervisors bound to the source or destination as non-fatal warnings', async t => {
+  const fixture = stoppedHome(t);
+  const birth = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(birth, { recursive: true });
+  fs.writeFileSync(path.join(birth, 'birth-receipt.json'), '{"seedId":"milo-seed"}\n');
+  fs.writeFileSync(path.join(birth, 'seed-ledger.jsonl'), '{"event":"birth"}\n');
+  fs.writeFileSync(path.join(fixture.home, '.home23-install.json'), '{"schema":"home23.product-install.v1","status":"installed","packageId":"abc","sourceCommit":"123"}\n');
+  const destination = path.join(fixture.root, 'destination');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  // The owner's global PM2 daemon and a launchd agent, outside both homes.
+  const userHome = path.join(fixture.root, 'user');
+  const dump = path.join(userHome, '.pm2/dump.pm2');
+  fs.mkdirSync(path.dirname(dump), { recursive: true });
+  fs.writeFileSync(dump, JSON.stringify([
+    { name: 'cosmo-engine', pm_cwd: `${fixture.home}/app`, env: { HOME23_ROOT: `${fixture.home}/app` }, pm_out_log_path: `${fixture.home}/app/logs/engine.log` },
+    { name: 'other', pm_cwd: '/opt/other', env: { HOME23_ROOT: `${fixture.home}-archive/app` } },
+  ]));
+  const agents = path.join(userHome, 'Library/LaunchAgents');
+  fs.mkdirSync(agents, { recursive: true });
+  fs.writeFileSync(path.join(agents, 'com.example.watch.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Label</key><string>com.example.watch</string>
+<key>ProgramArguments</key><array><string>${destination}/app/scripts/watch.mjs</string></array></dict></plist>
+`);
+  const dumpBefore = fs.readFileSync(dump);
+  const scan = options => detectForeignBindings({ ...options, homeDirectory: userHome });
+  const moved = await moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, { ...quiet, detectForeignBindings: scan });
+  assert.equal(moved.ok, true);
+  assert.equal(moved.fenced, true);
+  assert.deepEqual(moved.foreignBindings.roots, [destination, fixture.home]);
+  assert.deepEqual(moved.foreignBindings.references.map(reference => [reference.source, reference.name, reference.field, reference.root]), [
+    ['pm2', 'cosmo-engine', 'pm_cwd', fixture.home],
+    ['pm2', 'cosmo-engine', 'env.HOME23_ROOT', fixture.home],
+    ['pm2', 'cosmo-engine', 'pm_out_log_path', fixture.home],
+    ['launchd', 'com.example.watch', 'ProgramArguments[0]', destination],
+  ]);
+  assert.equal(moved.warnings.length, 2);
+  assert.match(moved.warnings[0], /PM2 app "cosmo-engine"/);
+  assert.match(moved.warnings[0], /Home23 did not change it/);
+  assert.match(moved.warnings[1], /launchd agent "com\.example\.watch"/);
+  assert.deepEqual(fs.readFileSync(dump), dumpBefore);
+  assert.equal(readMoveFence(fixture.home).schema, 'home23.move-fence.v1');
+  // Finishing the fenced move on a clean machine reports an empty scan, not stale warnings.
+  const resumed = await moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, { ...quiet, detectForeignBindings: options => detectForeignBindings({ ...options, homeDirectory: path.join(fixture.root, 'nobody') }) });
+  assert.equal(resumed.resumed, true);
+  assert.deepEqual(resumed.warnings, []);
+  assert.deepEqual(resumed.foreignBindings.references, []);
 });
 
 test('move requires the resident Seed even when the resident is not Milo', async t => {
@@ -857,13 +910,22 @@ test('recoverInspectedHome installs a matching payload and status works without 
   assert.equal(header.packageId, manifest.packageId);
   fs.rmSync(home, { recursive: true, force: true });
   assert.equal(fs.existsSync(home), false);
+  // The owner's global PM2 daemon still names the gone source home.
+  const userHome = path.join(root, 'user');
+  fs.mkdirSync(path.join(userHome, '.pm2'), { recursive: true });
+  fs.writeFileSync(path.join(userHome, '.pm2/dump.pm2'), JSON.stringify([{ name: 'cosmo-engine', pm_cwd: `${home}/app`, env: { COSMO_CONFIG_PATH: `${home}/app/config/cosmo.yaml` } }]));
 
   const recovered = await recoverInspectedHome({
     inspectionRoot, payloadPath: payload, archivePath, keyPath,
-  }, quiet);
+  }, { ...quiet, detectForeignBindings: options => detectForeignBindings({ ...options, homeDirectory: userHome }) });
   assert.equal(recovered.ok, true);
   assert.equal(recovered.homeRoot, inspectionRoot);
   assert.equal(recovered.sourceHome, home);
+  assert.deepEqual(recovered.foreignBindings.roots, [inspectionRoot, home]);
+  assert.deepEqual(recovered.foreignBindings.references.map(reference => [reference.name, reference.field, reference.root]),
+    [['cosmo-engine', 'pm_cwd', home], ['cosmo-engine', 'env.COSMO_CONFIG_PATH', home]]);
+  assert.equal(recovered.warnings.length, 1);
+  assert.match(recovered.warnings[0], /PM2 app "cosmo-engine"/);
   assert.equal(recovered.packageId, manifest.packageId);
   assert.equal(recovered.archiveBound, true);
   assert.equal(recovered.writersStarted, false);
