@@ -12,9 +12,20 @@ const SCHEMA = 'home23.home-update.v1';
 const ACTIONS = new Set(['check', 'update', 'resume', 'recover']);
 const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
 const PROGRESS_PERSIST_INTERVAL_MS = 2_000;
+// A candidate the updater defers as still starting keeps its services running.
+// The executor resumes that journal itself this long before asking the owner.
+const STARTING_WAIT_MS = 20 * 60_000;
+// One timed-out probe against a busy home is not proof it is unreachable.
+// Re-probe status this long while every owned service stays online.
+const READINESS_WAIT_MS = 5 * 60_000;
 const FRESH_RELEASE_REQUIRED = new Set(['unsupported_data_version', 'schema_assets_changed', 'encoder_mismatch', 'encoder_recipe_changed']);
 const library = dirname(fileURLToPath(import.meta.url));
 const now = () => new Date().toISOString();
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+/** Re-probe interval: 5 s, growing by half each probe, capped at 10 s. */
+const readinessInterval = attempt => Math.min(10_000, Math.round(5_000 * 1.5 ** attempt));
+const stillStarting = result => result?.status === 'deferred'
+  && Array.isArray(result.reasons) && result.reasons.some(reason => reason?.code === 'candidate_starting');
 const executeFile = promisify(execFile);
 const alive = pid => { if (!Number.isInteger(pid) || pid < 1) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -27,6 +38,7 @@ const PREFLIGHT_MESSAGES = Object.freeze({
   continuation_receipt_mismatch: 'The home service bindings changed since adoption. Open Home23 on this Mac to review them before resuming.',
   network_binding_receipt_mismatch: 'The home network bindings changed since adoption. Open Home23 on this Mac to review them before resuming.',
   database_busy: 'The home database is busy. Wait for current work to finish, then resume the update.',
+  candidate_starting: 'Your home is still starting. Its services keep running; resume the update once it is ready.',
   insufficient_space: 'The Mac needs more free space to finish this update.',
   modified_installation: 'The installed Home23 software changed unexpectedly. Open Home23 on this Mac for recovery.',
   candidate_integrity_failed: 'The downloaded Home23 release failed verification. Resume to download it again.',
@@ -323,12 +335,24 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     if (!operation.runtimeCompleted) {
       persist({ phase: 'updating', message: 'Updating your home. Home23 will reconnect automatically.' });
       const journal = updater.readUpdateJournal(home.root);
-      const result = journal && !['committed', 'rolled_back', 'aborted'].includes(journal.phase)
+      let result = journal && !['committed', 'rolled_back', 'aborted'].includes(journal.phase)
         ? await updater.resumeProductUpdate({ homeRoot: home.root })
         : readPrivateJSON(join(home.root, '.home23-install.json'))?.packageId === prepared.packageId
           ? { ok: true, status: 'committed' }
           : await updater.applyProductUpdate({ homeRoot: home.root, candidatePayload: prepared.candidatePayload, staging: prepared.staging,
             reuseVerifiedStage: true, admit: true });
+      // A deferred, still-starting candidate has its new software admitted and
+      // its services running; only readiness is outstanding. Resume that journal
+      // here with bounded backoff instead of failing and waiting for the owner.
+      const clock = dependencies.clock ?? Date.now, wait = dependencies.sleep ?? sleep;
+      const startingDeadline = clock() + (dependencies.startingWaitMs ?? STARTING_WAIT_MS);
+      for (let attempt = 0; stillStarting(result); attempt++) {
+        const remaining = startingDeadline - clock();
+        if (remaining <= 0) break;
+        persist({ message: 'Your home is still starting. The update finishes on its own once it is ready.' });
+        await wait(Math.min(readinessInterval(attempt), remaining));
+        result = await updater.resumeProductUpdate({ homeRoot: home.root });
+      }
       if (!result.ok || result.status !== 'committed') {
         const recovery = updater.readUpdateJournal(home.root);
         if (recovery?.phase === 'recovery_required' && !recovery.writersAdmitted) {
@@ -353,7 +377,7 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     }
     persist({ phase: 'reconnecting', message: 'Reconnecting to your home…' });
     const verify = dependencies.verifyReady ?? verifyHomeReady;
-    const readiness = await verify(home.root, prepared.packageId);
+    const readiness = await verify(home.root, prepared.packageId, dependencies);
     persist({ phase: 'completed', progress: 1, message: readiness?.running === false
       ? 'Home23 is updated. Your home remains stopped.' : 'Home23 is updated and your home is ready.' });
   } catch (error) {
@@ -362,18 +386,39 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
       : 'The update could not finish. Resume or recover to return your home to service.' });
   }
 }
-async function verifyHomeReady(homeRoot, packageId) {
-  const receipt = readPrivateJSON(join(homeRoot, '.home23-install.json'));
-  if (receipt?.packageId !== packageId) throw fail('update_identity_mismatch', 'The running home release needs verification.');
+async function shippedHostStatus(homeRoot) {
   // Shipped status validates executable/cwd ownership for every resident and
   // authenticates bootstrap against the preserved home/bot identity.
   const { stdout } = await executeFile(join(homeRoot, 'bin/node'),
     [join(homeRoot, 'app/scripts/product/host.mjs'), 'status', '--home', homeRoot],
     { env: productEnvironment(homeRoot), timeout: 45_000, maxBuffer: 2 * 1024 * 1024 });
-  const status = JSON.parse(stdout);
-  if (status.desiredRunning === false && ['stopped', 'prepared', 'installed'].includes(status.status)) return { running: false };
-  if (status.status !== 'ready' || !status.processes?.length || status.processes.some(row => !row.owned || row.status !== 'online')) {
-    throw fail('home_unreachable', 'Your home is still reconnecting.');
+  return JSON.parse(stdout);
+}
+/** A home whose owned services are all online but whose readiness probes have
+ * not all answered yet. A process that is not online, a missing owned service
+ * or required recovery is a hard failure, not a warming home. */
+function warmingHome(status) {
+  const processes = Array.isArray(status?.processes) ? status.processes : [];
+  const issues = Array.isArray(status?.readiness?.issues) ? status.readiness.issues : [];
+  return status?.desiredRunning !== false && ['starting', 'degraded'].includes(status?.status)
+    && processes.length > 0 && processes.every(row => row?.owned === true && ['online', 'launching'].includes(row?.status))
+    && status.readiness?.recoveryRequired !== true
+    && !issues.some(issue => typeof issue === 'string' && issue.endsWith(' is not running from this installation.'));
+}
+async function verifyHomeReady(homeRoot, packageId, dependencies = {}) {
+  const receipt = readPrivateJSON(join(homeRoot, '.home23-install.json'));
+  if (receipt?.packageId !== packageId) throw fail('update_identity_mismatch', 'The running home release needs verification.');
+  const probe = dependencies.probeReadiness ?? shippedHostStatus;
+  const clock = dependencies.clock ?? Date.now, wait = dependencies.sleep ?? sleep;
+  const deadline = clock() + (dependencies.readinessWaitMs ?? READINESS_WAIT_MS);
+  for (let attempt = 0; ; attempt++) {
+    const status = await probe(homeRoot);
+    if (status.desiredRunning === false && ['stopped', 'prepared', 'installed'].includes(status.status)) return { running: false };
+    if (status.status === 'ready' && status.processes?.length && status.processes.every(row => row.owned && row.status === 'online')) return { running: true };
+    // A single timed-out probe against a busy home is not proof it is
+    // unreachable. Re-probe with bounded backoff while it is only warming.
+    const remaining = deadline - clock();
+    if (!warmingHome(status) || remaining <= 0) throw fail('home_unreachable', 'Your home is still reconnecting.');
+    await wait(Math.min(readinessInterval(attempt), remaining));
   }
-  return { running: true };
 }

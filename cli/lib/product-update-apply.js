@@ -20,6 +20,12 @@ const RANK = { claimed: 0, quiesced: 1, checkpointed: 2, retained: 3, applying: 
 const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update-preview.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs'];
 const DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const CHECKPOINT_COPIES = 4;
+// A cold candidate can outlive Start's own readiness wait while it catches up.
+// Keep re-probing its Host status this long before deferring the update.
+const READINESS_WAIT_MS = 300000;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+/** Re-probe interval: 5 s, growing by half each probe, capped at 10 s. */
+const readinessInterval = attempt => Math.min(10000, Math.round(5000 * 1.5 ** attempt));
 // Home state and every directory above it stay in place during a version switch.
 // Everything else in a package is software and moves as whole subtrees.
 const MIXED_DIRECTORIES = new Set(['', ...PRODUCT_STATE_PATHS.flatMap(({ path, type }) => path.split('/').slice(0, type === 'directory' ? undefined : -1)
@@ -307,6 +313,29 @@ function healthyAdmittedWriters(rows, writerNames) {
   const owned = Array.isArray(rows) ? rows.filter(row => known.has(row.name)) : [];
   return owned.length > 0 && owned.every(row => ['online', 'launching'].includes(row.status)) &&
     !rows.some(row => BUSY.has(row.status) && !known.has(row.name));
+}
+/** Classify an admitted candidate after Start's readiness wait gave up.
+ * One timed-out probe against a busy home is not a verdict: while its writers
+ * stay online and no probe reports a hard failure, re-probe with bounded
+ * backoff until it reads ready or the deadline passes. A hard failure (a
+ * process not online, a missing owned service, recovery required) returns at
+ * once. `waiting` says the last probe still described a live, warming home. */
+async function awaitCandidateReadiness(home, journal, dependencies, { busy, list }) {
+  const clock = dependencies.clock || Date.now, wait = dependencies.sleep || sleep;
+  const deadline = clock() + (dependencies.readinessWaitMs ?? READINESS_WAIT_MS);
+  for (let attempt = 0; ; attempt++) {
+    let current = null, statusUnavailable = false;
+    try { current = await (dependencies.status || defaultStatus)(home, journal); }
+    catch { statusUnavailable = true; }
+    const maskedStatusFailure = current?.ok === false && current?.status === 'recovery_required' &&
+      current?.error?.code === 'update_recovery_required' && !current?.readiness && !current?.processes;
+    const kind = statusUnavailable || !current || maskedStatusFailure ? 'unavailable' : candidateStatusKind(current);
+    const waiting = kind === 'starting' ? await busy()
+      : kind === 'unavailable' ? healthyAdmittedWriters(await list(home), journal.writerNames) : false;
+    const remaining = deadline - clock();
+    if (!waiting || remaining <= 0) return { kind, waiting };
+    await wait(Math.min(readinessInterval(attempt), remaining));
+  }
 }
 async function defaultAcquireHostLock(home, owner) {
   const runtime = privateDirectory(join(home, 'runtime'));
@@ -815,23 +844,20 @@ async function finish(journal, dependencies, verify) {
   }
   let behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved, verify });
   if (journal.desiredRunning && journal.writersAdmitted && journal.startOk === false && identityPreserved) {
-    // A cold home can outlive Start's readiness wait. Check its current status
-    // without restarting or fencing healthy, still-warming writers.
+    // A cold home can outlive Start's readiness wait. Keep checking its current
+    // status without restarting or fencing healthy, still-warming writers. A
+    // deferral here leaves the journal at writers_admitted, so the next resume
+    // re-enters this same wait rather than needing anyone to judge readiness.
     const withoutStartFailure = dependencies.verifyBehavior ? behavior :
       defaultBehavior({ home, journal: { ...journal, startOk: true }, identityPreserved, verify });
     if (withoutStartFailure.ok) {
-      let current = null, statusUnavailable = false;
-      try { current = await (dependencies.status || defaultStatus)(home, journal); }
-      catch { statusUnavailable = true; }
-      const maskedStatusFailure = current?.ok === false && current?.status === 'recovery_required' &&
-        current?.error?.code === 'update_recovery_required' && !current?.readiness && !current?.processes;
-      const kind = statusUnavailable || !current || maskedStatusFailure ? 'unavailable' : candidateStatusKind(current);
+      const { kind, waiting } = await awaitCandidateReadiness(home, journal, dependencies, { busy, list });
       if (kind === 'ready') {
         journal = await commitPhase(file, { ...journal, startOk: true, startStatus: 'ready', startErrorCode: null }, dependencies);
         behavior = withoutStartFailure;
-      } else if (kind === 'starting' && await busy()) {
+      } else if (kind === 'starting' && waiting) {
         return deferred(home, 'candidate_starting', 'This home is still starting. Its services remain running; resume the update after it becomes ready.', journal);
-      } else if (kind === 'unavailable' && healthyAdmittedWriters(await list(home), journal.writerNames)) {
+      } else if (kind === 'unavailable' && waiting) {
         return deferred(home, 'candidate_starting', 'This home is running but readiness could not be checked yet. Resume the update after it becomes ready.', journal);
       }
     }

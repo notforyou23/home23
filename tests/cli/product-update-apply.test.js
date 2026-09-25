@@ -990,6 +990,7 @@ test('a warming admitted candidate defers and later commits without restarting o
     status: async () => ({ ok: true, status: 'recovery_required',
       processes: [{ name: 'home23-milo', status: 'online', owned: true }], readiness: { ready } }),
     quiesce: async () => { fences += 1; online = false; return []; },
+    readinessWaitMs: 0,
   };
   const first = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
     staging: fixture.staging, admit: true }, dependencies);
@@ -1017,11 +1018,83 @@ test('a failed Host status probe defers healthy admitted writers without fencing
     status: async () => ({ ok: false, status: 'recovery_required',
       error: { code: 'update_recovery_required' }, update: { phase: 'writers_admitted' } }),
     quiesce: async () => { fences += 1; online = false; return []; },
+    readinessWaitMs: 0,
   });
   assert.equal(result.status, 'deferred');
   assert.equal(result.reasons[0].code, 'candidate_starting');
   assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
   assert.equal(fences, 0);
+});
+
+test('transient readiness probe timeouts re-probe with bounded backoff and commit without deferring', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let online = false, probes = 0, starts = 0, fences = 0;
+  const slept = [];
+  const timedOut = { ok: true, status: 'recovery_required', processes: [{ name: 'home23-milo', status: 'online', owned: true }],
+    readiness: { ready: false, issues: ['Resident engine (milo) is not responding from this installation yet.'] } };
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { starts += 1; online = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+    status: async () => { probes += 1; return probes < 3 ? timedOut : { ...timedOut, readiness: { ready: true, issues: [] } }; },
+    quiesce: async () => { fences += 1; online = false; return []; },
+    sleep: async ms => { slept.push(ms); },
+  });
+  assert.equal(result.status, 'committed');
+  assert.equal(probes, 3);
+  assert.deepEqual(slept, [5000, 7500]);
+  assert.equal(starts, 1);
+  assert.equal(fences, 0);
+  assert.equal(readUpdateJournal(fixture.home).startOk, true);
+});
+
+test('a candidate that never reads ready defers only at the readiness deadline and resumes without intervention', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let online = false, probes = 0, fences = 0, ready = false, clock = 0;
+  const slept = [];
+  const dependencies = { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { online = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+    status: async () => { probes += 1; return { ok: true, status: 'recovery_required',
+      processes: [{ name: 'home23-milo', status: 'online', owned: true }],
+      readiness: { ready, issues: ready ? [] : ['Resident engine (milo) is not responding from this installation yet.'] } }; },
+    quiesce: async () => { fences += 1; online = false; return []; },
+    clock: () => clock, sleep: async ms => { slept.push(ms); clock += ms; }, readinessWaitMs: 30000,
+  };
+  const first = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, dependencies);
+  assert.equal(first.status, 'deferred');
+  assert.equal(first.reasons[0].code, 'candidate_starting');
+  assert.equal(probes, 5);
+  assert.deepEqual(slept, [5000, 7500, 10000, 7500]);
+  assert.equal(fences, 0);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
+  ready = true;
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, dependencies);
+  assert.equal(resumed.status, 'committed');
+  assert.equal(probes, 6);
+  assert.equal(fences, 0);
+  assert.equal(readUpdateJournal(fixture.home).startOk, true);
+});
+
+test('a hard readiness failure classifies the candidate as failed on the first probe', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let failed = false, probes = 0, fences = 0;
+  const slept = [];
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => failed ? [{ name: 'home23-milo', status: 'errored' }] : [],
+    start: async () => { failed = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+    status: async () => { probes += 1; return { ok: true, status: 'degraded',
+      processes: [{ name: 'home23-milo', status: 'errored', owned: true }],
+      readiness: { ready: false, issues: ['Resident engine (milo) is not responding from this installation yet.'] } }; },
+    quiesce: async () => { fences += 1; failed = false; return []; },
+    sleep: async ms => { slept.push(ms); },
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(probes, 1);
+  assert.deepEqual(slept, []);
+  assert.equal(fences, 1);
 });
 
 test('initial Start readiness wins over a still-starting status label', async t => {

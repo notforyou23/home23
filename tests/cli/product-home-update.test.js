@@ -305,6 +305,127 @@ test('failed readiness remains incomplete even after software and app replacemen
   assert.equal(homeUpdateStatus({ homeRoot: f.home }).state, 'failed');
 });
 
+const preparedApp = { installedAppPath: join(tmpdir(), 'unused/Home23.app'), preparedAppPath: join(tmpdir(), 'unused/.next.app'), lifecyclePath: join(tmpdir(), 'unused/lifecycle') };
+const stillStarting = { ok: true, status: 'deferred', reasons: [{ code: 'candidate_starting', message: 'This home is still starting.' }] };
+
+test('a still-starting candidate is resumed automatically until it commits', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId, ...preparedApp } });
+  let journal = null, resumes = 0;
+  const slept = [];
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => journal,
+      applyProductUpdate: async () => { journal = { phase: 'writers_admitted', writersAdmitted: true, startStatus: 'starting' }; return stillStarting; },
+      resumeProductUpdate: async () => {
+        resumes += 1;
+        if (resumes < 2) return stillStarting;
+        journal = { phase: 'committed', writersAdmitted: true };
+        f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+        return { ok: true, status: 'committed' };
+      } },
+    appUpdater: { applyPreparedMacApplication: async () => ({ status: 'reopened' }) },
+    verifyReady: async () => ({ running: true }),
+    sleep: async ms => { slept.push(ms); },
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.equal(status.state, 'upToDate');
+  assert.equal(status.operation.phase, 'completed');
+  assert.equal(resumes, 2);
+  assert.deepEqual(slept, [5000, 7500]);
+});
+
+test('a candidate still starting at the deadline fails as resumable with a truthful message', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId, ...preparedApp } });
+  let journal = null, resumes = 0, clock = 0;
+  const slept = [];
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => journal,
+      applyProductUpdate: async () => { journal = { phase: 'writers_admitted', writersAdmitted: true, startStatus: 'starting' }; return stillStarting; },
+      resumeProductUpdate: async () => { resumes += 1; return stillStarting; } },
+    appUpdater: unusedAppUpdater, verifyReady: async () => ({ running: true }),
+    clock: () => clock, sleep: async ms => { slept.push(ms); clock += ms; }, startingWaitMs: 30000,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.equal(status.state, 'failed');
+  assert.equal(status.operation.errorCode, 'candidate_starting');
+  assert.equal(status.operation.canResume, true);
+  assert.deepEqual(status.allowedActions, ['resume']);
+  assert.match(status.message, /still starting/);
+  assert.equal(resumes, 4);
+  assert.deepEqual(slept, [5000, 7500, 10000, 7500]);
+});
+
+test('a transient readiness probe timeout re-probes until the home reads ready', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId }, runtimeCompleted: true, applicationCompleted: true });
+  let probes = 0;
+  const slept = [];
+  const online = [{ name: 'home23-milo', status: 'online', owned: true }];
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel, updater: unusedUpdater, appUpdater: unusedAppUpdater,
+    probeReadiness: async () => {
+      probes += 1;
+      return probes < 3
+        ? { ok: true, status: 'degraded', desiredRunning: true, processes: online, readiness: { ready: false, issues: ['Resident engine (milo) is not responding from this installation yet.'] } }
+        : { ok: true, status: 'ready', desiredRunning: true, processes: online, readiness: { ready: true, issues: [] } };
+    },
+    sleep: async ms => { slept.push(ms); },
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.equal(status.state, 'upToDate');
+  assert.match(status.message, /ready/);
+  assert.equal(probes, 3);
+  assert.deepEqual(slept, [5000, 7500]);
+});
+
+test('a home still reconnecting at the readiness deadline fails as resumable', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId }, runtimeCompleted: true, applicationCompleted: true });
+  let probes = 0, clock = 0;
+  const slept = [];
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel, updater: unusedUpdater, appUpdater: unusedAppUpdater,
+    probeReadiness: async () => { probes += 1; return { ok: true, status: 'starting', desiredRunning: true,
+      processes: [{ name: 'home23-milo', status: 'online', owned: true }], readiness: { ready: false, issues: ['Resident engine (milo) is not responding from this installation yet.'] } }; },
+    clock: () => clock, sleep: async ms => { slept.push(ms); clock += ms; }, readinessWaitMs: 30000,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.equal(status.state, 'failed');
+  assert.equal(status.operation.errorCode, 'home_unreachable');
+  assert.equal(status.operation.canResume, true);
+  assert.equal(probes, 5);
+  assert.deepEqual(slept, [5000, 7500, 10000, 7500]);
+});
+
+test('a failed home service fails the reconnect on the first probe', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId }, runtimeCompleted: true, applicationCompleted: true });
+  let probes = 0;
+  const slept = [];
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel, updater: unusedUpdater, appUpdater: unusedAppUpdater,
+    probeReadiness: async () => { probes += 1; return { ok: true, status: 'degraded', desiredRunning: true,
+      processes: [{ name: 'home23-milo', status: 'errored', owned: true }], readiness: { ready: false, issues: [] } }; },
+    sleep: async ms => { slept.push(ms); },
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.equal(status.state, 'failed');
+  assert.equal(status.operation.errorCode, 'home_unreachable');
+  assert.equal(probes, 1);
+  assert.deepEqual(slept, []);
+});
+
 test('a refused automatic recovery does not advertise an ineffective retry', async t => {
   const f = fixture(t); await check(f);
   const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
