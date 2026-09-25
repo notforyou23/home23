@@ -174,9 +174,11 @@ test('fold projects the latest deployment while preserving original receipt evid
     deployedReleaseId: RELEASE_ID,
     deployedAt: '2026-09-15T13:00:00.000Z',
     recordedBy: details.recordedBy,
+    deployedReleaseKind: 'managed-release',
   });
   assert.equal(folded[1].deployed, false);
   assert.equal(folded[1].deployedReleaseId, null);
+  assert.equal(folded[1].deployedReleaseKind, null);
   assert.equal(folded[1].deployedAt, null);
 });
 
