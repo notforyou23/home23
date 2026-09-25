@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -250,6 +250,64 @@ test('truncated archive throws', async t => {
     () => inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot }),
   );
   assert.deepEqual(fs.readdirSync(fixture.inspectionRoot), []);
+});
+
+/** Writes a v2 archive in the product container format from an inner header alone, without a source home. */
+function syntheticArchive(root, header) {
+  const key = randomBytes(32);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const inner = Buffer.from(JSON.stringify(header));
+  const innerLength = Buffer.alloc(4);
+  innerLength.writeUInt32BE(inner.length, 0);
+  const body = Buffer.concat([cipher.update(innerLength), cipher.update(inner), cipher.final()]);
+  const outer = Buffer.from(JSON.stringify({ schema: 'home23.backup.v1', version: 2,
+    encrypted: { algorithm: 'aes-256-gcm', iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64') } }));
+  const outerLength = Buffer.alloc(4);
+  outerLength.writeUInt32BE(outer.length, 0);
+  const archivePath = path.join(root, 'synthetic.h23b');
+  const keyPath = path.join(root, 'synthetic.backup-key.json');
+  fs.writeFileSync(archivePath, Buffer.concat([Buffer.from('H23B', 'ascii'), outerLength, outer, body]));
+  fs.writeFileSync(keyPath, JSON.stringify({ schema: 'home23.backup-key.v1', algorithm: 'aes-256-gcm', key: key.toString('base64') }), { mode: 0o600 });
+  return { archivePath, keyPath, innerLength: inner.length };
+}
+
+test('an authenticated file inventory larger than 32 MiB is read without a scratch file', async t => {
+  const root = tempRoot(t);
+  const empty = createHash('sha256').digest('hex');
+  const files = Array.from({ length: 300000 }, (_, index) => ({
+    path: `app/instances/milo/workspace/memory/${index}.json`, sha256: empty, bytes: 0, type: 'file',
+  }));
+  const { archivePath, keyPath, innerLength } = syntheticArchive(root, {
+    schema: 'home23.backup.v1', version: 2, homeRoot: path.join(root, 'origin'), packageId: null, sourceCommit: null, files,
+  });
+  assert.ok(innerLength > 32 * 1024 * 1024, `inventory header is ${innerLength} bytes`);
+  const header = readAuthenticatedBackupHeader({ archivePath, keyPath });
+  assert.equal(header.files.length, files.length);
+  assert.equal(header.files[files.length - 1].path, files[files.length - 1].path);
+  assert.deepEqual(fs.readdirSync(root).sort(), ['synthetic.backup-key.json', 'synthetic.h23b']);
+});
+
+test('inspection and header reads write only inside the inspection root', async t => {
+  const fixture = stoppedHome(t);
+  fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  // The archive's folder and the destination's parent are read-only: a scratch decrypt beside either would fail.
+  const archiveDirectory = path.dirname(fixture.archivePath);
+  const parent = path.dirname(fixture.inspectionRoot);
+  fs.chmodSync(archiveDirectory, 0o555);
+  fs.chmodSync(parent, 0o555);
+  try {
+    const header = readAuthenticatedBackupHeader({ archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+    assert.equal(header.homeRoot, fixture.home);
+    const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+    assert.equal(inspected.ok, true);
+  } finally {
+    fs.chmodSync(parent, 0o755);
+    fs.chmodSync(archiveDirectory, 0o755);
+  }
+  assert.equal(fs.readFileSync(path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/note.txt'), 'utf8'), 'remember this\n');
+  assert.deepEqual(fs.readdirSync(archiveDirectory).sort(), ['home.backup-key.json', 'home.h23b']);
 });
 
 test('writersStarted is false after inspection', async t => {
@@ -758,6 +816,46 @@ test('move rebinds continuing services while retaining external authority unchan
   assert.equal(moved.fenced, true);
   assertContinuingServiceDestination(destination, fixture);
   assert.deepEqual(fs.readFileSync(path.join(home, '.home23-host.json')), sourceHost);
+});
+
+test('move preserves an adopted home by its adoption receipt when no Seed birth receipt exists', async t => {
+  const root = tempRoot(t), home = path.join(root, 'home'), destination = path.join(root, 'destination');
+  seedRecoverableHome(home);
+  const fixture = continuingServiceFixture(home, root);
+  fs.unlinkSync(path.join(home, 'app/instances/ada/substrate/seed-01/birth-receipt.json'));
+  fs.mkdirSync(destination);
+  const input = { sourceHome: home, destinationRoot: destination, archivePath: path.join(root, 'backup.h23b'), keyPath: path.join(root, 'backup.key') };
+  const moved = await moveHome(input, quiet);
+  assert.equal(moved.fenced, true);
+  assert.deepEqual(Object.keys(moved.identity).sort(),
+    ['app/instances/ada/substrate/seed-01/seed-ledger.jsonl', 'runtime/adoption-preservation.json']);
+  assertContinuingServiceDestination(destination, fixture);
+  // Finishing the fenced move compares identity after rebind moved the continuing-service run bindings.
+  const finished = await moveHome(input, quiet);
+  assert.equal(finished.resumed, true);
+  assert.deepEqual(finished.identity, moved.identity);
+});
+
+test('move preserves an adopted home by its host resident binding when no adoption receipt exists', async t => {
+  const root = tempRoot(t), home = path.join(root, 'home'), destination = path.join(root, 'destination');
+  seedRecoverableHome(home);
+  fs.unlinkSync(path.join(home, 'app/instances/ada/substrate/seed-01/birth-receipt.json'));
+  fs.mkdirSync(destination);
+  const moved = await moveHome({ sourceHome: home, destinationRoot: destination,
+    archivePath: path.join(root, 'backup.h23b'), keyPath: path.join(root, 'backup.key') }, quiet);
+  assert.equal(moved.fenced, true);
+  assert.deepEqual(Object.keys(moved.identity).sort(), ['.home23-host.json', 'app/instances/ada/substrate/seed-01/seed-ledger.jsonl']);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(destination, '.home23-host.json'), 'utf8')).residentMap), ['ada']);
+});
+
+test('move refuses a home with neither a Seed birth receipt, an adoption receipt, nor a resident binding', async t => {
+  const root = tempRoot(t), home = path.join(root, 'home'), destination = path.join(root, 'destination');
+  seedRecoverableHome(home, { residentMap: null });
+  fs.unlinkSync(path.join(home, 'app/instances/ada/substrate/seed-01/birth-receipt.json'));
+  fs.mkdirSync(destination);
+  await assert.rejects(() => moveHome({ sourceHome: home, destinationRoot: destination,
+    archivePath: path.join(root, 'backup.h23b'), keyPath: path.join(root, 'backup.key') }, quiet),
+  error => error.code === 'backup_identity_missing');
 });
 
 test('source-absent continuing-service recovery resumes across both binding writes and refuses receipt changes', async t => {
