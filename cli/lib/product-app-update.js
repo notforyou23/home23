@@ -1,7 +1,7 @@
 /** Mac application preparation and swap. Invoke apply from a detached survivor. */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { verifyProductPayload } from './product-payload.js';
 
@@ -33,6 +33,37 @@ function readClaim(path, expected) {
     throw fail('app_busy', 'Prepared application claim belongs to another release or location');
   }
   return claim;
+}
+const PREVIOUS_APP = /^\.home23-previous-(\d+)\.app$/;
+/** The retained copy a prepared claim recorded, if it names a sibling
+ * .home23-previous-<build>.app. A swap resumes against exactly that path. */
+function recordedPreviousPath(claimPath, installed) {
+  let recorded = null;
+  try { recorded = JSON.parse(readFileSync(claimPath, 'utf8')).previousAppPath; } catch { return null; }
+  return typeof recorded === 'string' && dirname(recorded) === dirname(installed) && PREVIOUS_APP.test(basename(recorded)) ? recorded : null;
+}
+/** Where the installed bundle is retained during a swap: named after the
+ * build it holds (the one installed now, not the release replacing it), or
+ * wherever an existing claim for this release already recorded it. */
+export function retainedPreviousPath(installedAppPath, claimPath) {
+  const installed = resolve(installedAppPath);
+  const recorded = recordedPreviousPath(claimPath, installed);
+  if (recorded) return recorded;
+  const build = Number(appInfo(installed).CFBundleVersion);
+  if (!Number.isSafeInteger(build) || build < 1) throw fail('app_invalid', 'Installed application build is unreadable');
+  return join(dirname(installed), `.home23-previous-${build}.app`);
+}
+/** Only the newest retained copy is kept once a swap is verified. Removing a
+ * whole bundle continues detached. Home23.app itself never matches. */
+function pruneOlderPrevious(installed, keep, dependencies) {
+  const parent = dirname(installed);
+  const stale = readdirSync(parent).filter(name => PREVIOUS_APP.test(name)).map(name => join(parent, name))
+    .filter(path => { const stat = lstatSync(path); return path !== keep && stat.isDirectory() && !stat.isSymbolicLink(); });
+  if (!stale.length) return;
+  if (dependencies.removePaths) { dependencies.removePaths(stale); return; }
+  const child = spawn('/bin/rm', ['-rf', '--', ...stale], { detached: true, stdio: 'ignore' });
+  child.on('error', () => {});
+  child.unref();
 }
 export function verifyPreparedMacApplication({ appPath, release, full = true }) {
   const app = resolve(appPath);
@@ -77,7 +108,7 @@ export function prepareMacApplication({ archivePath, installedAppPath, release }
   const prepared = join(parent, `.home23-next-${suffix}.app`);
   const claim = `${prepared}.json`;
   const lifecycle = join(parent, `.home23-lifecycle-${suffix}`);
-  const previous = join(parent, `.home23-previous-${release.appBuild}.app`);
+  const previous = retainedPreviousPath(installed, claim);
   const expected = { packageId: release.packageId, appBuild: release.appBuild, version: release.version,
     installedAppPath: installed, preparedAppPath: prepared, previousAppPath: previous, lifecyclePath: lifecycle };
   if (!existsSync(prepared) && existsSync(claim)) {
@@ -136,7 +167,9 @@ export function applyPreparedMacApplication({ installedAppPath, preparedAppPath,
   const suffix = `${release.appBuild}-${release.packageId.slice(0, 12)}`;
   const expectedLifecycle = join(dirname(installed), `.home23-lifecycle-${suffix}`);
   const claim = `${prepared}.json`;
-  const previous = join(dirname(installed), `.home23-previous-${release.appBuild}.app`);
+  // Claims prepared before retained copies were named by their own build
+  // recorded the release build; readClaim still checks the whole claim.
+  const previous = recordedPreviousPath(claim, installed) ?? join(dirname(installed), `.home23-previous-${release.appBuild}.app`);
   if (resolve(lifecyclePath) !== expectedLifecycle) throw fail('app_invalid', 'Application lifecycle path changed');
   const expected = { packageId: release.packageId, appBuild: release.appBuild, version: release.version,
     installedAppPath: installed, preparedAppPath: prepared, previousAppPath: previous, lifecyclePath: expectedLifecycle };
@@ -182,6 +215,7 @@ export function applyPreparedMacApplication({ installedAppPath, preparedAppPath,
     }
     throw error;
   }
+  try { pruneOlderPrevious(installed, previous, dependencies); } catch { /* Retention is housekeeping; the swap stands. */ }
   return { status: relaunch ? 'reopened' : 'replaced', appPath: installed, previousAppPath: previous,
     appBuild: release.appBuild, launchEvidence };
 }
