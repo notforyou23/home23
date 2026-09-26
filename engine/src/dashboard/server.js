@@ -842,6 +842,7 @@ class DashboardServer {
       exporter: dependencies.exporter,
       buildCatalog: dependencies.buildCatalog,
       providerReadiness: dependencies.providerReadiness,
+      workerReadiness: dependencies.workerReadiness,
       researchRuns: dependencies.researchRuns,
       resolveSynthesisAnswer: typeof dependencies.synthesisOperationRuntime?.readCommittedAnswer === 'function'
         ? (operation, result) => dependencies.synthesisOperationRuntime.readCommittedAnswer(result)
@@ -1246,6 +1247,7 @@ class DashboardServer {
       onTerminal: (record) => this.queryNotebookNotificationDelivery?.onTerminal(record),
       capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
       exporter,
+      logger: this.logger,
     });
     return {
       coordinator,
@@ -1264,6 +1266,7 @@ class DashboardServer {
         retryable: true,
         migrated: false,
       }),
+      workerReadiness: () => worker.readRemoteWorkerReadiness(),
     };
   }
 

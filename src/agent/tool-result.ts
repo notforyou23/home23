@@ -1,5 +1,6 @@
+import { createRequire } from 'node:module';
 import { IDEMPOTENT_OPERATION_TOOLS } from './operation-work-policy.js';
-import type { BrainOperationResult } from './brain-operations/types.js';
+import type { BrainOperationRecord, BrainOperationResult } from './brain-operations/types.js';
 import type { ToolRegistry } from './tools/index.js';
 import type {
   AgentEventCallback,
@@ -8,6 +9,12 @@ import type {
   ToolResult,
 } from './types.js';
 import { applyForegroundToolPolicy, foregroundDetachRefusal } from './foreground-tool-policy.js';
+
+const require = createRequire(import.meta.url);
+// One admission-deadline definition for the home and the resident.
+const { admissionDeadlineAt } = require('../../shared/brain-operations/admission.cjs') as {
+  admissionDeadlineAt: (record: { operationType?: string; acceptedAt?: string | null }) => number | null;
+};
 
 const OPERATION_ID = /^brop_[A-Za-z0-9_-]{32}$/;
 const RESULT_HANDLE = /^brres_[A-Za-z0-9_-]{32}$/;
@@ -280,6 +287,47 @@ export function recoverableExcerpt(
   return `${prefix}${marker}`;
 }
 
+// HOME23 188 (H23-013) — A queued record whose updatedAt keeps moving looked
+// like live work, so the resident polled and narrated "still queued". These
+// helpers say plainly when no worker has started an operation, and turn an
+// admission failure into a failed answer with a fallback, never a relaunch.
+const ADMISSION_FAILURE_CODES = new Set([
+  'admission_stalled', 'worker_unavailable', 'worker_unreachable', 'worker_protocol_unavailable',
+]);
+
+type AdmissionView = Pick<BrainOperationRecord, 'operationId' | 'operationType' | 'state' | 'startedAt' | 'error'>
+  & { acceptedAt?: string | null };
+
+export function isAdmissionFailure(operation: AdmissionView): boolean {
+  return (operation.state === 'failed' || operation.state === 'interrupted')
+    && !operation.startedAt
+    && ADMISSION_FAILURE_CODES.has(operation.error?.code ?? '');
+}
+
+export function admissionFailureGuidance(operation: AdmissionView): string {
+  const brainQuery = operation.operationType === 'query' || operation.operationType === 'pgs';
+  return `\nThe ${brainQuery ? 'brain query' : `${operation.operationType} operation`} did not start: `
+    + `no worker admitted it. Keep operation=${operation.operationId} for diagnosis. Do not relaunch `
+    + 'the same request until brain_status {} shows the query worker ready.'
+    + (brainQuery ? ' Answer now from brain_search and say the answer is search-based.' : '');
+}
+
+export function admissionDeadlineIso(operation: AdmissionView): string | null {
+  const deadline = admissionDeadlineAt(operation);
+  return deadline === null ? null : new Date(deadline).toISOString();
+}
+
+export function unadmittedNotice(operation: AdmissionView, now = Date.now()): string {
+  const acceptedMs = typeof operation.acceptedAt === 'string' ? Date.parse(operation.acceptedAt) : Number.NaN;
+  const accepted = Number.isFinite(acceptedMs)
+    ? `accepted ${operation.acceptedAt}, ${Math.max(0, Math.floor((now - acceptedMs) / 60_000))} min ago`
+    : 'acceptance time unknown';
+  const deadline = admissionDeadlineIso(operation);
+  return `not admitted: no worker has started operation=${operation.operationId} (${accepted}). `
+    + 'Its updatedAt is a coordinator heartbeat, not progress.'
+    + (deadline ? ` If no worker admits it by ${deadline}, the home fails it as admission_stalled.` : '');
+}
+
 function isTypedTerminalError(error: BrainOperationResult['error']): boolean {
   return Boolean(error
     && typeof error.code === 'string' && error.code.trim()
@@ -338,8 +386,10 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
   if (operation.state === 'failed'
       || operation.state === 'cancelled'
       || operation.state === 'interrupted') {
+    const admissionFailed = isAdmissionFailure(operation);
     return {
-      content: `${stateLine}\n${operation.error?.code || 'operation_failed'}: ${operation.error?.message || 'No result'}`,
+      content: `${stateLine}\n${operation.error?.code || 'operation_failed'}: ${operation.error?.message || 'No result'}`
+        + (admissionFailed ? admissionFailureGuidance(operation) : ''),
       is_error: true,
       resultHandle: operation.resultHandle || undefined,
       metadata: {
@@ -347,7 +397,9 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
         operationType: operation.operationType,
         state: operation.state,
         attachmentState: operation.attachmentState,
-        classification: operation.operationType === 'pgs' ? 'all_failed' : operation.state,
+        classification: admissionFailed
+          ? 'admission_failed'
+          : operation.operationType === 'pgs' ? 'all_failed' : operation.state,
         pgs,
         sweepOutputs,
         error: operation.error,
@@ -382,10 +434,13 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
     };
   }
 
-  const detachedGuidance = operation.attachmentState === 'detached'
-      && (operation.state === 'queued' || operation.state === 'running')
-    ? `\nStarted in the background; the durable operation is ${operation.state}. Check with brain_status {action:"status",operationId:"${operation.operationId}"}, then use action:"result" after it is terminal. Use action:"wait" only when intentionally blocking.`
-    : '';
+  const detached = operation.attachmentState === 'detached'
+    && (operation.state === 'queued' || operation.state === 'running');
+  const deadline = detached && !operation.startedAt ? admissionDeadlineIso(operation) : null;
+  const detachedGuidance = !detached ? ''
+    : operation.state === 'queued' && !operation.startedAt
+      ? `\nStarted in the background; the durable operation is queued and no worker has admitted it yet${deadline ? ` (the home fails it as admission_stalled if none does by ${deadline})` : ''}. Check with brain_status {action:"status",operationId:"${operation.operationId}"} and tell the user its state once; do not re-report unchanged status or start a duplicate. Use action:"result" after it is terminal.`
+      : `\nStarted in the background; the durable operation is ${operation.state}. Check with brain_status {action:"status",operationId:"${operation.operationId}"}, then use action:"result" after it is terminal. Use action:"wait" only when intentionally blocking.`;
   return {
     content: `${invalidPartial ? 'invalid_partial_result: malformed partial payload' : useful}`
       + `${invalidPartial ? '' : errorLine}\n\n---\n[${stateLine}]${detachedGuidance}`,

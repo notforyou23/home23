@@ -683,8 +683,11 @@ function makeFixture(t, overrides = {}) {
         ad_hoc_export: 7_200_000,
         ...overrides.executionDeadlineMsByType,
       },
+      ...(overrides.admissionDeadlineMsByType
+        ? { admissionDeadlineMsByType: overrides.admissionDeadlineMsByType } : {}),
     },
     exporter: overrides.exporter,
+    logger: overrides.logger,
   });
   t.after(async () => {
     await coordinator.stop().catch(() => {});
@@ -2748,7 +2751,8 @@ test('source worker startup may exceed the short control timeout without creatin
   const worker = new ControlledWorker();
   worker.blockStart = deferred();
   t.after(() => worker.blockStart.resolve());
-  const fixture = makeFixture(t, { worker });
+  // This pins the control-timeout seam, so the admission window sits past it.
+  const fixture = makeFixture(t, { worker, admissionDeadlineMsByType: { query: 30 * 60_000 } });
   let settled = false;
   let startError = null;
   const starting = fixture.coordinator.start(request({ requestId: 'long-source-worker-start' }));
@@ -5624,4 +5628,398 @@ test('HTTP admission returns a durable handle before worker startup and replay r
   gate.resolve();
   await waitForState(fixture, admitted.operationId, 'running');
   assert.equal(fixture.worker.startCalls.length, 1);
+});
+
+// HOME23 188 (H23-013) — admission deadline for durable operations.
+const ADMISSION_MS = 10 * 60_000;
+
+function transportFailure(message = 'COSMO worker is unavailable') {
+  return Object.assign(new Error(message), { code: 'worker_transport_failed', retryable: true });
+}
+
+class UnreachableWorker extends ControlledWorker {
+  constructor() {
+    super();
+    this.unreachable = true;
+  }
+
+  async start(context, capability) {
+    if (!this.unreachable) return super.start(context, capability);
+    this.startCalls.push({ operationId: context.operationId, capability });
+    throw transportFailure();
+  }
+
+  async status(operationId, capability) {
+    if (!this.unreachable) return super.status(operationId, capability);
+    this.statusCalls.push({ operationId, capability });
+    throw transportFailure();
+  }
+}
+
+async function heartbeatCount(fixture, operationId) {
+  return (await fixture.store.readEvents(operationId, 0))
+    .filter(({ type }) => type === 'heartbeat').length;
+}
+
+test('default admission deadlines bound interactive query at ten minutes below every execution deadline', () => {
+  const {
+    DEFAULT_ADMISSION_DEADLINES_MS,
+    admissionDeadlineAt,
+  } = require('../../../shared/brain-operations/admission.cjs');
+  assert.equal(DEFAULT_ADMISSION_DEADLINES_MS.query, ADMISSION_MS);
+  assert.equal(DEFAULT_ADMISSION_DEADLINES_MS.pgs, 20 * 60_000);
+  for (const operationType of Object.keys(REAL_OPERATION_AUTHORITY)) {
+    assert.ok(DEFAULT_ADMISSION_DEADLINES_MS[operationType] > 0, operationType);
+    assert.ok(DEFAULT_ADMISSION_DEADLINES_MS[operationType]
+      < DEFAULT_EXECUTION_DEADLINES_MS[operationType], operationType);
+  }
+  assert.equal(admissionDeadlineAt({
+    operationType: 'query', acceptedAt: '2026-07-10T16:00:00.000Z',
+  }), Date.parse('2026-07-10T16:10:00.000Z'));
+  assert.equal(admissionDeadlineAt({ operationType: 'query', acceptedAt: null }), null);
+});
+
+test('coordinator rejects non-positive admission deadlines', (t) => {
+  for (const value of [0, -1, Number.NaN, '600000']) {
+    assert.throws(
+      () => makeFixture(t, { admissionDeadlineMsByType: { query: value } }),
+      typedCode('coordinator_configuration_invalid'),
+    );
+  }
+});
+
+test('a stranded worker start fails typed admission_stalled at the deadline and stops heartbeating', async (t) => {
+  const worker = new UnreachableWorker();
+  const readinessChecks = [];
+  worker.readRemoteWorkerReadiness = async () => {
+    readinessChecks.push(true);
+    return { ready: false, code: 'worker_unreachable', checkedAt: '2026-07-10T16:09:45.000Z' };
+  };
+  const warnings = [];
+  const fixture = makeFixture(t, {
+    worker,
+    logger: { warn: (...args) => warnings.push(args) },
+  });
+  const admitted = await fixture.coordinator.start(
+    request({ requestId: 'stranded-admission' }),
+    { acknowledgeAdmission: true },
+  );
+  const { operationId } = admitted;
+  assert.equal(admitted.state, 'queued');
+  await eventually(() => assert.equal(warnings.length, 1), 10_000);
+  assert.equal(warnings[0][1].operationId, operationId);
+  assert.equal(warnings[0][1].code, 'worker_transport_failed');
+  assert.equal(warnings[0][1].stage, 'worker_unreachable');
+  assert.equal(worker.startCalls.length, 1);
+  assert.equal(worker.statusCalls.length, 1);
+
+  await fixture.timers.advance(ADMISSION_MS - 1);
+  const stillQueued = await fixture.store.get(operationId);
+  assert.equal(stillQueued.state, 'queued');
+  assert.equal(stillQueued.startedAt, null);
+  assert.ok(await heartbeatCount(fixture, operationId) >= 59);
+
+  await fixture.timers.advance(1);
+  const failed = await waitForState(fixture, operationId, 'failed');
+  assert.equal(failed.startedAt, null);
+  assert.equal(failed.error.code, 'admission_stalled');
+  assert.equal(failed.error.retryable, true);
+  assert.equal(failed.error.message,
+    'no worker admitted this query operation within 10 min (stage worker_unreachable)');
+  assert.deepEqual(failed.error.admission, {
+    version: 1,
+    acceptedAt: admitted.acceptedAt,
+    deadlineAt: new Date(Date.parse(admitted.acceptedAt) + ADMISSION_MS).toISOString(),
+    stalledAt: new Date(Date.parse(admitted.acceptedAt) + ADMISSION_MS).toISOString(),
+    stage: 'worker_unreachable',
+    workerType: 'cosmo',
+    sourcePinAttached: true,
+    workerReferencePublished: false,
+    startAttempts: 1,
+    lastStartErrorCode: 'worker_transport_failed',
+    lastProbeErrorCode: 'worker_transport_failed',
+    queryWorker: { ready: false, code: 'worker_unreachable', checkedAt: '2026-07-10T16:09:45.000Z' },
+  });
+  assert.equal(readinessChecks.length, 1);
+  assert.equal(worker.statusCalls.length, 2, 'the deadline probes once before failing');
+  await eventually(() => assert.equal(worker.cancelCalls.length, 1), 10_000);
+  assert.equal(fixture.counters.releaseCalls, 1);
+
+  const heartbeats = await heartbeatCount(fixture, operationId);
+  await fixture.timers.advance(5 * 60_000);
+  assert.equal(await heartbeatCount(fixture, operationId), heartbeats);
+  assert.deepEqual(await fixture.store.listNonterminal(), []);
+  assert.equal(fixture.counters.releaseCalls, 1);
+  assert.equal(worker.startCalls.length, 1, 'the stall never relaunches the start');
+});
+
+test('after admission_stalled a healthy worker admits a new query through provider activity to completion', async (t) => {
+  const worker = new UnreachableWorker();
+  const fixture = makeFixture(t, { worker });
+  const stalled = await fixture.coordinator.start(
+    request({ requestId: 'stalled-before-recovery' }),
+    { acknowledgeAdmission: true },
+  );
+  await eventually(() => assert.equal(worker.statusCalls.length, 1), 10_000);
+  await fixture.timers.advance(ADMISSION_MS);
+  assert.equal((await waitForState(fixture, stalled.operationId, 'failed')).error.code,
+    'admission_stalled');
+
+  worker.unreachable = false;
+  const fresh = await fixture.coordinator.start(
+    request({ requestId: 'healthy-after-stall' }),
+    { acknowledgeAdmission: true },
+  );
+  const running = await waitForState(fixture, fresh.operationId, 'running');
+  assert.equal(typeof running.startedAt, 'string');
+  await eventually(() => assert.equal(worker.eventsCalls.length, 1), 10_000);
+  worker.emit(fresh.operationId, {
+    type: 'provider_selected', providerCallId: 'query', providerStallMs: 60_000,
+  });
+  worker.emit(fresh.operationId, { type: 'provider_activity', providerCallId: 'query' });
+  await eventually(async () => assert.equal(
+    typeof (await fixture.store.get(fresh.operationId)).lastProviderActivityAt, 'string',
+  ), 10_000);
+  worker.emit(fresh.operationId, { type: 'provider_call_terminal', providerCallId: 'query' });
+  worker.finish(fresh.operationId, {
+    state: 'complete', result: { answer: 'healthy answer' }, error: null, sourceEvidence: null,
+  });
+  const complete = await waitForState(fixture, fresh.operationId, 'complete');
+  assert.equal(complete.result.answer, 'healthy answer');
+  await fixture.timers.advance(ADMISSION_MS);
+  assert.equal((await fixture.store.get(fresh.operationId)).state, 'complete');
+});
+
+test('admission deadline aborts a slow source-pin wait without starting a worker', async (t) => {
+  const pinEntered = deferred();
+  let pinControl = null;
+  const sourcePins = {
+    async pin(_canonicalRoot, _operationId, capability) {
+      pinControl = readDurableOperationLockCapability(capability);
+      pinEntered.resolve();
+      await new Promise((resolve, reject) => {
+        if (pinControl.signal.aborted) reject(pinControl.signal.reason);
+        else pinControl.signal.addEventListener('abort', () => reject(pinControl.signal.reason), {
+          once: true,
+        });
+      });
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {},
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const admitted = await fixture.coordinator.start(
+    request({ requestId: 'admission-slow-pin' }),
+    { acknowledgeAdmission: true },
+  );
+  await pinEntered.promise;
+  await fixture.timers.advance(ADMISSION_MS);
+  const failed = await waitForState(fixture, admitted.operationId, 'failed');
+  assert.equal(failed.error.code, 'admission_stalled');
+  assert.equal(failed.error.admission.stage, 'source_pin');
+  assert.equal(failed.error.admission.sourcePinAttached, false);
+  assert.equal(failed.error.admission.startAttempts, 0);
+  assert.equal(pinControl.signal.aborted, true);
+  assert.equal(fixture.worker.startCalls.length, 0);
+  assert.equal(fixture.worker.statusCalls.length, 0);
+  assert.equal(fixture.worker.cancelCalls.length, 0);
+});
+
+test('a start that answers after admission_stalled is cancelled and never published running', async (t) => {
+  const worker = new ControlledWorker();
+  worker.blockStart = deferred();
+  t.after(() => worker.blockStart.resolve());
+  const fixture = makeFixture(t, { worker });
+  const admitted = await fixture.coordinator.start(
+    request({ requestId: 'late-start-after-stall' }),
+    { acknowledgeAdmission: true },
+  );
+  await eventually(() => assert.equal(worker.startCalls.length, 1), 10_000);
+  await fixture.timers.advance(ADMISSION_MS);
+  const failed = await waitForState(fixture, admitted.operationId, 'failed');
+  assert.equal(failed.error.code, 'admission_stalled');
+  assert.equal(failed.error.admission.stage, 'worker_start');
+  assert.equal(failed.error.admission.lastProbeErrorCode, 'worker_not_found');
+  await eventually(() => assert.equal(worker.cancelCalls.length, 1), 10_000);
+
+  worker.blockStart.resolve();
+  await eventually(() => assert.equal(worker.cancelCalls.length, 2), 10_000);
+  const settled = await fixture.store.get(admitted.operationId);
+  assert.equal(settled.state, 'failed');
+  assert.equal(settled.startedAt, null);
+  assert.equal(await fixture.store.getWorker(admitted.operationId), null);
+  assert.equal((await fixture.store.readEvents(admitted.operationId, 0))
+    .some(({ type, state }) => type === 'state' && state === 'running'), false);
+});
+
+test('admission deadline probe publishes a live worker whose start response was lost', async (t) => {
+  class LostResponseWorker extends ControlledWorker {
+    async start(context, capability) {
+      await super.start(context, capability);
+      throw transportFailure('COSMO start response was lost');
+    }
+
+    async status(operationId, capability) {
+      if (this.statusCalls.length === 0) {
+        this.statusCalls.push({ operationId, capability });
+        throw transportFailure();
+      }
+      return super.status(operationId, capability);
+    }
+  }
+  const worker = new LostResponseWorker();
+  const fixture = makeFixture(t, { worker });
+  const admitted = await fixture.coordinator.start(
+    request({ requestId: 'lost-start-admission-probe' }),
+    { acknowledgeAdmission: true },
+  );
+  await eventually(() => assert.equal(worker.statusCalls.length, 1), 10_000);
+  assert.equal((await fixture.store.get(admitted.operationId)).state, 'queued');
+
+  await fixture.timers.advance(ADMISSION_MS);
+  const running = await waitForState(fixture, admitted.operationId, 'running');
+  assert.equal(running.error, null);
+  assert.deepEqual(await fixture.store.getWorker(admitted.operationId),
+    worker.records.get(admitted.operationId).reference);
+  assert.equal(worker.cancelCalls.length, 0);
+  await fixture.timers.advance(ADMISSION_MS);
+  assert.equal((await fixture.store.get(admitted.operationId)).state, 'running');
+});
+
+test('reconciliation fails an expired unadmitted record typed and resumes an admitted one', async (t) => {
+  const fixture = makeFixture(t);
+  const unadmitted = await directQueuedRecord(fixture, { requestId: 'expired-unadmitted' });
+  const admittedBeforeCrash = await directQueuedRecord(fixture, { requestId: 'admitted-before-crash' });
+  const descriptor = validDescriptor('/brains/jerry');
+  const pinned = await fixture.store.attachSourcePin(admittedBeforeCrash.record.operationId, {
+    expectedVersion: admittedBeforeCrash.record.recordVersion,
+    descriptor,
+    digest: descriptorDigest(descriptor),
+  });
+  const reference = {
+    version: 1,
+    workerId: `worker-${pinned.operationId}`,
+    workerType: 'cosmo',
+    operationType: 'query',
+  };
+  await fixture.store.setWorker(pinned.operationId, {
+    expectedVersion: pinned.recordVersion,
+    worker: reference,
+  });
+  fixture.worker.records.set(pinned.operationId, {
+    reference,
+    operationId: pinned.operationId,
+    state: 'running',
+    phase: 'executing',
+    eventSequence: 0,
+    activeProviderCalls: [],
+    events: [],
+    result: null,
+  });
+  fixture.timers.now += ADMISSION_MS + 60_000;
+
+  await fixture.coordinator.reconcile();
+  const failed = await waitForState(fixture, unadmitted.record.operationId, 'failed');
+  assert.equal(failed.error.code, 'admission_stalled');
+  assert.equal(failed.error.admission.stage, 'recovery');
+  assert.equal(failed.error.admission.startAttempts, 0);
+  assert.equal(fixture.worker.startCalls.length, 0);
+  assert.equal(fixture.counters.pin, 0);
+  assert.equal(fixture.worker.cancelCalls.length, 0);
+  await waitForState(fixture, pinned.operationId, 'running');
+  assert.equal(fixture.worker.statusCalls.length >= 1, true);
+});
+
+test('a refused COSMO connection fails the query worker_unavailable at dispatch without a cancel', async (t) => {
+  const net = await import('node:net');
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  const sent = [];
+  const remoteWorker = createCosmoBrainOperationWorkerClient({
+    baseUrl: `http://127.0.0.1:${port}`,
+    fetchImpl: async (url, options) => {
+      sent.push(new URL(url).pathname.split('/').at(-1));
+      return fetch(url, options);
+    },
+  });
+  const worker = new BrainOperationWorkerAdapter({ remoteWorker });
+  t.after(() => worker.stop?.());
+  const fixture = makeFixture(t, { worker });
+  const admitted = await fixture.coordinator.start(
+    request({ requestId: 'cosmo-refused' }),
+    { acknowledgeAdmission: true },
+  );
+  const failed = await waitForState(fixture, admitted.operationId, 'failed');
+  assert.equal(failed.error.code, 'worker_unavailable');
+  assert.equal(failed.error.message, 'COSMO worker is not accepting connections');
+  assert.equal(failed.error.retryable, true);
+  assert.equal(failed.error.admission.stage, 'worker_start');
+  assert.equal(failed.error.admission.reason, 'worker_unreachable');
+  await eventually(() => assert.equal(fixture.counters.releaseCalls, 1), 10_000);
+  assert.deepEqual(sent, ['start'], 'no status probe and no cancel for a refused connection');
+  assert.ok(await heartbeatCount(fixture, admitted.operationId) <= 1);
+  await eventually(() => assert.equal(fixture.timers.pending(), 0), 10_000);
+});
+
+test('a typed 401 start rejection fails immediately with its own code', async (t) => {
+  const worker = new ControlledWorker();
+  worker.startError = Object.assign(new Error('bad capability'), {
+    code: 'capability_invalid', statusCode: 401, retryable: false,
+  });
+  const fixture = makeFixture(t, { worker });
+  await assert.rejects(
+    fixture.coordinator.start(request({ requestId: 'typed-401-start' })),
+    typedCode('capability_invalid'),
+  );
+  const [failed] = await fixture.store.list();
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'capability_invalid');
+  assert.equal(failed.error.retryable, false);
+  assert.equal(failed.error.admission.reason, 'capability_invalid');
+  assert.equal(worker.statusCalls.length, 0);
+  assert.equal(worker.cancelCalls.length, 0);
+  assert.equal(fixture.counters.releaseCalls, 1);
+});
+
+test('an uncertain start whose status probe finds COSMO absent fails worker_unavailable', async (t) => {
+  class VanishingWorker extends ControlledWorker {
+    async start(context, capability) {
+      this.startCalls.push({ operationId: context.operationId, capability });
+      throw transportFailure('COSMO start response was lost');
+    }
+
+    async status(operationId, capability) {
+      this.statusCalls.push({ operationId, capability });
+      throw Object.assign(new Error('COSMO worker does not expose the Home23 brain-operations protocol'), {
+        code: 'worker_protocol_unavailable', statusCode: 404, workerAbsent: true, retryable: true,
+      });
+    }
+  }
+  const worker = new VanishingWorker();
+  const fixture = makeFixture(t, { worker });
+  await assert.rejects(
+    fixture.coordinator.start(request({ requestId: 'uncertain-then-absent' })),
+    typedCode('worker_transport_failed'),
+  );
+  const [failed] = await fixture.store.list();
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'worker_unavailable');
+  assert.equal(failed.error.admission.reason, 'worker_protocol_unavailable');
+  assert.equal(failed.error.admission.lastStartErrorCode, 'worker_transport_failed');
+  assert.equal(worker.statusCalls.length, 1);
+  assert.equal(worker.cancelCalls.length, 0);
+});
+
+test('worker adapter reports remote query-worker readiness and names a missing remote worker', async () => {
+  const snapshot = Object.freeze({ ready: true, code: null, checkedAt: '2026-07-10T16:00:00.000Z' });
+  const adapter = new BrainOperationWorkerAdapter({
+    remoteWorker: { async probeReadiness() { return snapshot; } },
+  });
+  assert.equal(await adapter.readRemoteWorkerReadiness(), snapshot);
+  const localOnly = new BrainOperationWorkerAdapter({});
+  assert.deepEqual(await localOnly.readRemoteWorkerReadiness(), {
+    ready: false, code: 'worker_not_configured', checkedAt: null,
+  });
 });

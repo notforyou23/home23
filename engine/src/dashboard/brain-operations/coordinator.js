@@ -11,6 +11,10 @@ const {
   issueCapability,
 } = require('../../../../shared/brain-operations/capability.cjs');
 const {
+  DEFAULT_ADMISSION_DEADLINES_MS,
+  admissionDeadlineAt,
+} = require('../../../../shared/brain-operations/admission.cjs');
+const {
   createDurableOperationLockCapability,
 } = require('../../../../shared/memory-source/durable-lock-authority.cjs');
 const {
@@ -53,6 +57,10 @@ const PROVIDER_ACTIVITY_JOURNAL_INTERVAL_MS = 10_000;
 const DEFAULT_EVENT_SILENCE_MS = 60_000;
 const DEFAULT_WORKER_START_TIMEOUT_MS = 30 * MINUTE_MS;
 const DEFAULT_STOP_TIMEOUT_MS = 180_000;
+// The admission-deadline status probe runs while the operation queue is held.
+const ADMISSION_PROBE_TIMEOUT_MS = 10_000;
+// COSMO rejects these before registering a pending start.
+const START_REJECTION_STATUS = new Set([400, 401, 403]);
 const CAPABILITY_TTL_MS = 60_000;
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
 const SETTLED_PGS_PROGRESS_FIELDS = Object.freeze([
@@ -465,6 +473,7 @@ class BrainOperationCoordinator {
       throw coordinatorError('coordinator_configuration_invalid');
     }
     this.onTerminal = options.onTerminal ?? null;
+    this.logger = options.logger ?? null;
     this.now = typeof options.clock?.now === 'function' ? options.clock.now : Date.now;
     this.setTimeout = typeof options.timers?.setTimeout === 'function'
       ? options.timers.setTimeout
@@ -488,6 +497,10 @@ class BrainOperationCoordinator {
       ...DEFAULT_EXECUTION_DEADLINES_MS,
       ...(options.limits?.executionDeadlineMsByType || {}),
     });
+    this.admissionDeadlineMsByType = Object.freeze({
+      ...DEFAULT_ADMISSION_DEADLINES_MS,
+      ...(options.limits?.admissionDeadlineMsByType || {}),
+    });
     if (!Number.isFinite(this.heartbeatMs) || this.heartbeatMs <= 0
         || !Number.isFinite(this.eventSilenceMs) || this.eventSilenceMs <= 0
         || !Number.isFinite(this.workerControlTimeoutMs) || this.workerControlTimeoutMs <= 0
@@ -497,7 +510,9 @@ class BrainOperationCoordinator {
     }
     for (const operationType of Object.keys(this.operationAuthority)) {
       const deadline = this.executionDeadlineMsByType[operationType];
-      if (!Number.isFinite(deadline) || deadline <= 0) {
+      const admission = this.admissionDeadlineMsByType[operationType];
+      if (!Number.isFinite(deadline) || deadline <= 0
+          || !Number.isFinite(admission) || admission <= 0) {
         throw coordinatorError('coordinator_configuration_invalid');
       }
     }
@@ -840,7 +855,7 @@ class BrainOperationCoordinator {
   async _authenticatedWorkerStatus(record, options = {}) {
     const capability = this._issueCapability(record, 'status');
     const rawWorkerRecord = await this._boundedWorkerControl(() =>
-      this.worker.status(record.operationId, capability));
+      this.worker.status(record.operationId, capability), options.timeoutMs);
     try {
       validateActiveProviderCalls(rawWorkerRecord?.activeProviderCalls);
     } catch (error) {
@@ -880,6 +895,7 @@ class BrainOperationCoordinator {
         operationId: record.operationId,
         heartbeatTimer: null,
         hardDeadlineTimer: null,
+        admissionTimer: null,
         silenceTimer: null,
         streamController: null,
         pumpPromise: null,
@@ -890,12 +906,17 @@ class BrainOperationCoordinator {
         providerCalls: new Map(),
         attachments: new Map(),
         sourceLockController: new AbortController(),
+        // Where admission stands, for a typed admission_stalled diagnosis.
+        admission: {
+          stage: 'accepted', startAttempts: 0, lastStartErrorCode: null, lastProbeErrorCode: null,
+        },
         stopped: false,
       };
       this.runtimes.set(record.operationId, runtime);
     }
     this._armHeartbeat(record, runtime);
     this._armHardDeadline(record, runtime);
+    this._armAdmissionDeadline(record, runtime);
     return runtime;
   }
 
@@ -980,6 +1001,104 @@ class BrainOperationCoordinator {
         await this._handleTimerFailure(record.operationId, runtime, error);
       }
     }, delay);
+  }
+
+  _admissionDeadlineAt(record) {
+    return admissionDeadlineAt(record, this.admissionDeadlineMsByType[record.operationType]);
+  }
+
+  // HOME23 188 (H23-013) — Heartbeats keep a queued record's updatedAt moving
+  // even when no worker ever admits it, so without this bound a stranded
+  // start stayed 'queued' until the hours-long execution deadline.
+  _armAdmissionDeadline(record, runtime) {
+    if (record.state !== 'queued') {
+      if (runtime.admissionTimer) this.clearTimeout(runtime.admissionTimer);
+      runtime.admissionTimer = null;
+      return;
+    }
+    if (runtime.admissionTimer || runtime.stopped || this.stopped) return;
+    const deadlineAt = this._admissionDeadlineAt(record);
+    // The execution deadline already bounds an operation whose admission
+    // window would reach past it.
+    if (deadlineAt === null || deadlineAt >= this._hardDeadline(record)) return;
+    runtime.admissionTimer = this.setTimeout(async () => {
+      runtime.admissionTimer = null;
+      try {
+        await this._enqueue(record.operationId, async () => {
+          if (runtime.stopped || this.stopped || this.runtimes.get(record.operationId) !== runtime) return;
+          const current = await this.store.get(record.operationId);
+          if (current.state !== 'queued') return;
+          return this._admissionStalledLocked(current, runtime);
+        });
+      } catch (error) {
+        await this._handleTimerFailure(record.operationId, runtime, error);
+      }
+    }, Math.max(0, deadlineAt - this.now()));
+  }
+
+  async _admissionStalledLocked(record, runtime) {
+    const admission = runtime.admission;
+    // A lost start response can leave a live worker behind a queued record.
+    // Probe once so an admitted worker is published instead of cancelled.
+    if (admission.startAttempts > 0) {
+      try {
+        const workerRecord = await this._authenticatedWorkerStatus(record, {
+          allowUnassigned: true,
+          timeoutMs: Math.min(this.workerControlTimeoutMs, ADMISSION_PROBE_TIMEOUT_MS),
+        });
+        return await this._publishStartedWorkerLocked(record, workerRecord);
+      } catch (error) {
+        admission.lastProbeErrorCode = sanitizeErrorCode(error?.code, 'worker_status_failed');
+      }
+    }
+    return this._failAdmissionLocked(record, {
+      stage: admission.stage,
+      cancelWorker: admission.startAttempts > 0,
+    });
+  }
+
+  async _failAdmissionLocked(record, { stage, cancelWorker }) {
+    const admission = this.runtimes.get(record.operationId)?.admission || {};
+    const deadlineMs = this.admissionDeadlineMsByType[record.operationType];
+    const deadlineAt = this._admissionDeadlineAt(record);
+    const localWorker = typeof this.worker.usesLocalExecutor === 'function'
+      && this.worker.usesLocalExecutor(record.operationType);
+    const reference = await this.store.getWorker(record.operationId).catch(() => null);
+    // The cached, bounded query-worker readiness says whether COSMO itself
+    // was reachable when admission gave up.
+    const queryWorker = !localWorker && typeof this.worker.readRemoteWorkerReadiness === 'function'
+      ? await this.worker.readRemoteWorkerReadiness().catch(() => null)
+      : null;
+    return this._failLocked(record.operationId, {
+      state: 'failed',
+      code: 'admission_stalled',
+      message: `no worker admitted this ${record.operationType} operation within `
+        + `${Math.round(deadlineMs / MINUTE_MS)} min (stage ${stage})`,
+      retryable: true,
+      cancelWorker,
+      extra: {
+        admission: {
+          version: 1,
+          acceptedAt: record.acceptedAt,
+          deadlineAt: deadlineAt === null ? null : new Date(deadlineAt).toISOString(),
+          stalledAt: new Date(this.now()).toISOString(),
+          stage,
+          workerType: localWorker ? 'local' : 'cosmo',
+          sourcePinAttached: record.sourcePinDescriptor !== null,
+          workerReferencePublished: reference !== null,
+          startAttempts: admission.startAttempts ?? 0,
+          lastStartErrorCode: admission.lastStartErrorCode ?? null,
+          lastProbeErrorCode: admission.lastProbeErrorCode ?? null,
+          ...(queryWorker ? {
+            queryWorker: {
+              ready: queryWorker.ready === true,
+              code: sanitizeErrorCode(queryWorker.code, null),
+              checkedAt: typeof queryWorker.checkedAt === 'string' ? queryWorker.checkedAt : null,
+            },
+          } : {}),
+        },
+      },
+    });
   }
 
   async _pinRecord(record, options = {}) {
@@ -1194,11 +1313,14 @@ class BrainOperationCoordinator {
   }
 
   async _requestWorkerStart(record) {
+    const admission = this.runtimes.get(record.operationId)?.admission;
+    if (admission) admission.stage = 'worker_start';
     const context = await this._buildWorkerContext(record);
     const runtime = this.runtimes.get(record.operationId);
     if (!runtime || runtime.stopped || this.stopped) {
       throw coordinatorError('coordinator_stopped');
     }
+    runtime.admission.startAttempts += 1;
     const capability = this._issueCapability(record, 'start');
     const starting = this._boundedWorkerControl(
         () => this.worker.start(context, capability),
@@ -1260,9 +1382,12 @@ class BrainOperationCoordinator {
   async _dispatchCreatedOperation(created, policy) {
     if (!created.created) return created.record;
     let record = created.record;
-    this._ensureRuntime(record);
+    const runtime = this._ensureRuntime(record);
     try {
-      if (policy.requiresSourcePin) record = await this._pinRecord(record);
+      if (policy.requiresSourcePin) {
+        runtime.admission.stage = 'source_pin';
+        record = await this._pinRecord(record);
+      }
     } catch (error) {
       await this._enqueue(record.operationId, async () => {
         const current = await this.store.get(record.operationId);
@@ -1285,18 +1410,56 @@ class BrainOperationCoordinator {
       try {
         workerRecord = await this._requestWorkerStart(record);
       } catch (error) {
+        runtime.admission.lastStartErrorCode = sanitizeErrorCode(error?.code, 'worker_start_failed');
         return this._enqueue(record.operationId, async () => {
           const current = await this.store.get(record.operationId);
           if (TERMINAL_STATES.has(current.state)) return current;
-          try {
-            const recovered = await this._probeUncertainStartLocked(current);
-            if (recovered) return recovered;
-          } catch (probeError) {
-            if (probeError?.code !== 'worker_not_found') {
-              // A status transport/authentication failure cannot prove that the
-              // worker is absent. Leave queued durable truth for reconciliation.
-              throw error;
+          // HOME23 188 — A refused connection, a missing protocol route or a
+          // typed 400/401/403 start rejection happens before COSMO creates any
+          // pending start (it validates the request and capability first), so
+          // no work exists to probe for or cancel: fail now, not at the deadline.
+          const rejected = error?.workerAbsent === true || START_REJECTION_STATUS.has(error?.statusCode);
+          let absence = error?.workerAbsent === true ? error : null;
+          if (!rejected) {
+            try {
+              const recovered = await this._probeUncertainStartLocked(current);
+              if (recovered) return recovered;
+            } catch (probeError) {
+              if (probeError?.workerAbsent === true) {
+                absence = probeError;
+                runtime.admission.lastProbeErrorCode = sanitizeErrorCode(probeError.code, 'worker_unavailable');
+              } else if (probeError?.code !== 'worker_not_found') {
+                // A status transport/authentication failure cannot prove that the
+                // worker is absent. Leave queued durable truth for reconciliation;
+                // the admission deadline bounds how long it may stay queued.
+                runtime.admission.stage = 'worker_unreachable';
+                runtime.admission.lastProbeErrorCode = sanitizeErrorCode(
+                  probeError?.code, 'worker_status_failed',
+                );
+                throw error;
+              }
             }
+          }
+          if (rejected || absence) {
+            await this._failLocked(record.operationId, {
+              state: 'failed',
+              code: absence ? 'worker_unavailable' : sanitizeErrorCode(error?.code, 'worker_start_failed'),
+              message: (absence || error)?.message || 'worker start failed',
+              retryable: error?.retryable !== false,
+              cancelWorker: false,
+              extra: {
+                admission: {
+                  version: 1,
+                  stage: 'worker_start',
+                  reason: sanitizeErrorCode((absence || error)?.code, 'worker_start_failed'),
+                  workerType: 'cosmo',
+                  startAttempts: runtime.admission.startAttempts,
+                  lastStartErrorCode: runtime.admission.lastStartErrorCode,
+                  lastProbeErrorCode: runtime.admission.lastProbeErrorCode,
+                },
+              },
+            });
+            throw error;
           }
           await this._failLocked(record.operationId, {
             state: 'failed',
@@ -1365,7 +1528,16 @@ class BrainOperationCoordinator {
       // Dispatch owns failure publication and uncertain-start reconciliation.
       if (created.created) {
         const runtime = this._ensureRuntime(created.record);
-        runtime.admissionPromise = this._dispatchCreatedOperation(created, policy).catch(() => {});
+        runtime.admissionPromise = this._dispatchCreatedOperation(created, policy).catch((error) => {
+          // Dispatch has published a typed failure or left the record queued
+          // under its admission deadline; either way the operator should see it.
+          this.logger?.warn?.('[brain-operations] admission did not start a worker', {
+            operationId: created.record.operationId,
+            operationType: created.record.operationType,
+            code: sanitizeErrorCode(error?.code, 'worker_start_failed'),
+            stage: runtime.admission.stage,
+          });
+        });
       }
       return created.record;
     }
@@ -2540,7 +2712,9 @@ class BrainOperationCoordinator {
     const runtime = this.runtimes.get(operationId);
     if (!runtime) return;
     runtime.stopped = true;
-    for (const timer of [runtime.heartbeatTimer, runtime.hardDeadlineTimer, runtime.silenceTimer]) {
+    for (const timer of [
+      runtime.heartbeatTimer, runtime.hardDeadlineTimer, runtime.admissionTimer, runtime.silenceTimer,
+    ]) {
       if (timer) this.clearTimeout(timer);
     }
     for (const call of runtime.providerCalls.values()) this._clearProviderTimer(call);
@@ -2632,6 +2806,19 @@ class BrainOperationCoordinator {
         retryable: true,
         cancelWorker: current.state !== 'queued' || current.sourcePinDescriptor !== null,
       });
+    }
+    if (current.state === 'queued') {
+      const admissionDeadline = this._admissionDeadlineAt(current);
+      if (admissionDeadline !== null && admissionDeadline <= this.now()
+          && await this.store.getWorker(current.operationId) === null) {
+        // No worker was admitted before the restart and the window is over:
+        // fail it typed instead of starting work for a request long since
+        // reported. A pinned record may have sent a start, so cancel it.
+        return this._failAdmissionLocked(current, {
+          stage: 'recovery',
+          cancelWorker: current.sourcePinDescriptor !== null,
+        });
+      }
     }
     if (policy.requiresSourcePin) {
       if (!this._sourceOperationsReady(current.operationType)) {

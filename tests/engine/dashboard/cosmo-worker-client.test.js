@@ -519,3 +519,151 @@ test('an unsupported operation type is rejected BEFORE anything reaches COSMO', 
   );
   assert.equal(fetches, 0, 'the start must never be sent for a type the client will disown');
 });
+
+// HOME23 188 (H23-013) — failures that prove no COSMO work exists are
+// classified so the coordinator fails fast instead of stranding the op.
+
+async function closedLoopbackPort() {
+  const net = await import('node:net');
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+function htmlNotFound() {
+  return new Response('<!DOCTYPE html><html><body><pre>Cannot POST /api/internal/brain-operations</pre></body></html>', {
+    status: 404,
+    headers: { 'content-type': 'text/html; charset=utf-8' },
+  });
+}
+
+test('a refused loopback connection is a definitive worker absence', async () => {
+  const port = await closedLoopbackPort();
+  const client = createCosmoBrainOperationWorkerClient({
+    baseUrl: `http://127.0.0.1:${port}`,
+    capabilityKey: 'cosmo-worker-client-absence-key',
+  });
+  const expected = { code: 'worker_unreachable', workerAbsent: true, retryable: true };
+  await assert.rejects(
+    client.start({ operationId: OPERATION_ID, operationType: 'query' }, CAPABILITY), expected,
+  );
+  await assert.rejects(client.status(OPERATION_ID, CAPABILITY), expected);
+  await assert.rejects(client.readVerifiedFollowUpSupport(), expected);
+  await assert.rejects(async () => {
+    for await (const _event of client.events(OPERATION_ID, {
+      afterSequence: 0, signal: new AbortController().signal,
+    }, CAPABILITY)) { /* unreachable */ }
+  }, expected);
+});
+
+test('a non-JSON 404 means COSMO does not serve the Home23 protocol', async () => {
+  const client = createCosmoBrainOperationWorkerClient({
+    capabilityKey: 'cosmo-worker-client-absence-key',
+    fetchImpl: async () => htmlNotFound(),
+  });
+  const expected = {
+    code: 'worker_protocol_unavailable', workerAbsent: true, statusCode: 404, retryable: true,
+  };
+  await assert.rejects(
+    client.start({ operationId: OPERATION_ID, operationType: 'query' }, CAPABILITY), expected,
+  );
+  await assert.rejects(client.status(OPERATION_ID, CAPABILITY), expected);
+  await assert.rejects(client.readVerifiedFollowUpSupport(), expected);
+  await assert.rejects(async () => {
+    for await (const _event of client.events(OPERATION_ID, {
+      afterSequence: 0, signal: new AbortController().signal,
+    }, CAPABILITY)) { /* unreachable */ }
+  }, expected);
+});
+
+test('typed COSMO rejections and other transport failures stay uncertain', async () => {
+  const typed = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async () => jsonResponse({
+      success: false, error: { code: 'capability_invalid', message: 'bad capability' },
+    }, { status: 401 }),
+  });
+  const rejection = await typed.start(
+    { operationId: OPERATION_ID, operationType: 'query' }, CAPABILITY,
+  ).catch((error) => error);
+  assert.equal(rejection.code, 'capability_invalid');
+  assert.equal(rejection.statusCode, 401);
+  assert.equal(rejection.workerAbsent, undefined);
+
+  const jsonNotFound = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async () => jsonResponse({
+      success: false, error: { code: 'worker_not_found', message: 'no such operation' },
+    }, { status: 404 }),
+  });
+  const notFound = await jsonNotFound.status(OPERATION_ID, CAPABILITY).catch((error) => error);
+  assert.equal(notFound.code, 'worker_not_found');
+  assert.equal(notFound.workerAbsent, undefined);
+
+  const reset = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async () => {
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) });
+    },
+  });
+  const uncertain = await reset.start(
+    { operationId: OPERATION_ID, operationType: 'query' }, CAPABILITY,
+  ).catch((error) => error);
+  assert.equal(uncertain.code, 'worker_transport_failed');
+  assert.equal(uncertain.workerAbsent, undefined);
+
+  const brokenJson = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async () => new Response('not json', { status: 200 }),
+  });
+  await assert.rejects(brokenJson.status(OPERATION_ID, CAPABILITY), (error) =>
+    error.code === 'worker_transport_invalid' && error.workerAbsent === undefined);
+});
+
+test('query-worker readiness is a cached signed handshake that names why COSMO is not ready', async () => {
+  const key = 'cosmo-worker-client-readiness-key';
+  let now = Date.parse('2026-07-21T16:00:00.000Z');
+  let fetches = 0;
+  let healthy = true;
+  const client = createCosmoBrainOperationWorkerClient({
+    capabilityKey: key,
+    clock: { now: () => now },
+    fetchImpl: async (_url, options) => {
+      fetches += 1;
+      if (!healthy) return htmlNotFound();
+      return jsonResponse(createVerifiedFollowUpSupportResponse({
+        key,
+        request: JSON.parse(options.body),
+        authorization: options.headers.authorization.replace(/^Bearer /, ''),
+        runtimeSupport: VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+        now,
+      }));
+    },
+  });
+  const [first, concurrent] = await Promise.all([client.probeReadiness(), client.probeReadiness()]);
+  assert.deepEqual(first, { ready: true, code: null, checkedAt: '2026-07-21T16:00:00.000Z' });
+  assert.equal(concurrent, first);
+  assert.equal(fetches, 1);
+
+  healthy = false;
+  now += 29_999;
+  assert.equal(await client.probeReadiness(), first, 'cached for 30 s');
+  assert.equal(fetches, 1);
+  now += 1;
+  assert.deepEqual(await client.probeReadiness(), {
+    ready: false, code: 'worker_protocol_unavailable', checkedAt: '2026-07-21T16:00:30.000Z',
+  });
+  assert.equal(fetches, 2);
+
+  const port = await closedLoopbackPort();
+  const refused = createCosmoBrainOperationWorkerClient({
+    baseUrl: `http://127.0.0.1:${port}`,
+    capabilityKey: key,
+  });
+  const unreachable = await refused.probeReadiness();
+  assert.equal(unreachable.ready, false);
+  assert.equal(unreachable.code, 'worker_unreachable');
+
+  const unkeyed = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async () => { throw new Error('must not call'); },
+  });
+  assert.equal((await unkeyed.probeReadiness()).code, 'capability_unavailable');
+});
