@@ -253,7 +253,7 @@ export const macReadTool: ToolDefinition = {
       account: { type: 'string', description: 'mail/mail_message: the account value from mail_accounts or a mail item' },
       mailbox: { type: 'string', description: 'mail/mail_message: mailbox path (default INBOX)' },
       limit: { type: 'number', description: 'mail: messages to return (default 15, max 50)' },
-      before: { type: 'string', description: 'mail: ISO time; only older messages (pass nextBefore for the next page)' },
+      before: { type: 'string', description: 'mail: ISO time, or nextBefore from the previous page; only older messages' },
       since_hours: { type: 'number', description: 'mail: only messages received in the last N hours' },
       unread_only: { type: 'boolean', description: 'mail: only unread messages' },
       id: { type: 'string', description: 'mail_message: the mail item id (mac.mail:<n>)' },

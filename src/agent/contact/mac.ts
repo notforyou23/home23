@@ -32,7 +32,7 @@ export interface MailReadOptions {
   /** Mailbox path; default INBOX, including its sub-mailboxes. */
   mailbox?: string;
   limit?: number;
-  /** ISO cursor for paging: only messages received before it. */
+  /** Paging: an ISO time, or a previous `nextBefore` cursor; only older messages. */
   before?: string;
   sinceHours?: number;
   unreadOnly?: boolean;
@@ -51,7 +51,7 @@ export interface MailReport {
   degraded: Array<{ step: string; code: string }>;
   timings: Record<string, number>;
   skippedAccounts?: string[];
-  /** Index reads: pass as `before` for the next page. */
+  /** Index reads: `<ISO time>#<rowid>` of the last item; pass as `before` for the next page. */
   nextBefore?: string;
 }
 
@@ -409,11 +409,25 @@ function mailLimit(query: string, mail: MailReadOptions): number {
   return clampCount(mail.limit, query.trim() ? MAIL_QUERY_LIMIT : MAIL_DEFAULT_LIMIT, MAIL_MAX_LIMIT);
 }
 
-function beforeEpochSeconds(before: string | undefined): number | undefined {
-  if (!before?.trim()) return undefined;
-  const ms = Date.parse(before);
-  if (!Number.isFinite(ms)) throw new MacSurfaceError('invalid_before', `invalid_before: ${before.slice(0, 80)} is not an ISO time`);
-  return Math.floor(ms / 1000);
+// date_received has one-second resolution, so a time-only cursor would skip
+// the messages that share the last item's second but missed the page. The
+// nextBefore cursor carries that item's rowid to break the tie.
+interface MailCursor {
+  seconds: number;
+  rowid?: number;
+}
+
+function mailCursor(before: string | undefined): MailCursor | undefined {
+  const raw = before?.trim();
+  if (!raw) return undefined;
+  const match = /^(.*?)(?:#(\d{1,15}))?$/.exec(raw);
+  const ms = Date.parse(match?.[1] ?? '');
+  if (!Number.isFinite(ms)) throw new MacSurfaceError('invalid_before', `invalid_before: ${raw.slice(0, 80)} is not an ISO time or a nextBefore cursor`);
+  return { seconds: Math.floor(ms / 1000), ...(match?.[2] ? { rowid: Number(match[2]) } : {}) };
+}
+
+function mailRowid(item: AttentionItem): number {
+  return Number(/(\d+)$/.exec(item.id)?.[1] ?? 0);
 }
 
 function mailIndexQuery(query: string, mail: MailReadOptions = {}): string {
@@ -424,8 +438,9 @@ function mailIndexQuery(query: string, mail: MailReadOptions = {}): string {
   }
   const account = mail.account?.trim();
   if (account) filters.push(`lower(${MAILBOX_ACCOUNT_SQL}) like lower('%${escapeSqlLike(account)}%') escape '!'`);
-  const before = beforeEpochSeconds(mail.before);
-  if (before !== undefined) filters.push(`m.date_received < ${before}`);
+  const cursor = mailCursor(mail.before);
+  if (cursor?.rowid !== undefined) filters.push(`(m.date_received < ${cursor.seconds} or (m.date_received = ${cursor.seconds} and m.ROWID < ${cursor.rowid}))`);
+  else if (cursor) filters.push(`m.date_received < ${cursor.seconds}`);
   if (Number(mail.sinceHours) > 0) filters.push(`m.date_received >= ${Math.floor(Date.now() / 1000 - Number(mail.sinceHours) * 3600)}`);
   if (mail.unreadOnly) filters.push('m.read = 0');
   return `select m.ROWID as rowid, s.subject as subject, a.address as addr, a.comment as name, m.date_received as ts, m.read as read, mb.url as mailbox
@@ -435,7 +450,7 @@ from messages m
  left join addresses a on a.ROWID = m.sender
 where m.deleted = 0
  and ${filters.join('\n and ')}
-order by m.date_received desc limit ${mailLimit(normalized, mail)};`;
+order by m.date_received desc, m.ROWID desc limit ${mailLimit(normalized, mail)};`;
 }
 
 const MAIL_ACCOUNTS_SQL = `select ${MAILBOX_ACCOUNT_SQL} as account, count(m.ROWID) as messages, coalesce(sum(case when m.read = 0 then 1 else 0 end), 0) as unread
@@ -737,19 +752,20 @@ async function readMailViaAppleScript(
     throw new MacSurfaceError(failure.code, `${failure.message} ${MAIL_PERMISSION_HINT}`);
   }
   // Without the index there is no cheap search or paging; filter the recent window.
-  const before = beforeEpochSeconds(mail.before);
+  const cursor = mailCursor(mail.before);
   const since = Number(mail.sinceHours) > 0 ? Date.now() - Number(mail.sinceHours) * 3_600_000 : undefined;
   const matched = parsed.items.filter((item) => {
     const when = Date.parse(item.when ?? '');
     if (normalized && !`${item.title} ${item.who ?? ''}`.toLowerCase().includes(normalized)) return false;
     if (mail.unreadOnly && !item.needsOwner) return false;
-    if (before !== undefined && !(when < before * 1000)) return false;
+    if (cursor && !(when < cursor.seconds * 1000
+      || (cursor.rowid !== undefined && when === cursor.seconds * 1000 && mailRowid(item) < cursor.rowid))) return false;
     return since === undefined || when >= since;
   });
   if (normalized) parsed.degraded.push({ step: 'query', code: 'query_limited_to_recent' });
-  if (before !== undefined) parsed.degraded.push({ step: 'before', code: 'paging_limited_to_recent' });
+  if (cursor) parsed.degraded.push({ step: 'before', code: 'paging_limited_to_recent' });
   const items = matched
-    .sort((left, right) => Date.parse(right.when ?? '') - Date.parse(left.when ?? ''))
+    .sort((left, right) => Date.parse(right.when ?? '') - Date.parse(left.when ?? '') || mailRowid(right) - mailRowid(left))
     .slice(0, limit);
   return { items, degraded: parsed.degraded, skipped: parsed.skipped };
 }
@@ -774,7 +790,8 @@ async function readMail(query: string, runner: MacRunner, opts: MacRunOptions, m
     started = Date.now();
     const items = parseMailIndexRows(await runner.sqliteJson(dbPath, sql, opts));
     timings.queryMs = Date.now() - started;
-    const nextBefore = items.length === mailLimit(query, mail) ? items.at(-1)?.when : undefined;
+    const last = items.length === mailLimit(query, mail) ? items.at(-1) : undefined;
+    const nextBefore = last?.when ? `${last.when}#${mailRowid(last)}` : undefined;
     return { items, mail: { source: 'index', degraded: [], timings, ...(nextBefore ? { nextBefore } : {}) } };
   } catch (error) {
     const failure = indexFailure(error);

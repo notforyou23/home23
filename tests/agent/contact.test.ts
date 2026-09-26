@@ -140,7 +140,7 @@ function seedEnvelopeIndex(indexPath: string): void {
     'create table subjects (ROWID integer primary key, subject text);',
     'create table addresses (ROWID integer primary key, address text, comment text);',
     'create table messages (ROWID integer primary key, sender integer, subject integer, date_received integer, mailbox integer, read integer, deleted integer default 0);',
-    `insert into mailboxes values (1, 'imap://${ACCOUNT_A}/INBOX'), (2, 'imap://${ACCOUNT_A}/Archive'), (3, 'ews://${ACCOUNT_B}/Inbox'), (4, 'imap://${ACCOUNT_A}/%5BGmail%5D/All%20Mail');`,
+    `insert into mailboxes values (1, 'imap://${ACCOUNT_A}/INBOX'), (2, 'imap://${ACCOUNT_A}/Archive'), (3, 'ews://${ACCOUNT_B}/Inbox'), (4, 'imap://${ACCOUNT_A}/%5BGmail%5D/All%20Mail'), (5, 'imap://${ACCOUNT_A}/Tied');`,
     "insert into addresses values (1, 'alice@example.com', 'Alice'), (2, 'bob@example.com', null);",
   ];
   let rowid = 100;
@@ -154,6 +154,8 @@ function seedEnvelopeIndex(indexPath: string): void {
   for (let index = 0; index < 5; index += 1) add(3, MAIL_BASE_TS + 5_000 + index, 0, `b-inbox-${index}`);
   for (let index = 0; index < 3; index += 1) add(2, MAIL_BASE_TS + 20_000 + index, 1, `a-archive-${index}`);
   for (let index = 0; index < 2; index += 1) add(4, MAIL_BASE_TS + 30_000 + index, 1, `a-allmail-${index}`);
+  // Five messages received in the same second, for lossless paging.
+  for (let index = 0; index < 5; index += 1) add(5, MAIL_BASE_TS + 40_000, 1, `a-tied-${index}`);
   execFileSync('sqlite3', [indexPath], { input: statements.join('\n') });
 }
 
@@ -461,6 +463,13 @@ test('mac mail fallback limits merged accounts to the requested count and treats
   assert.equal(report.mail?.source, 'applescript');
   assert.equal(report.items.length, 15);
   assert.deepEqual(report.items.slice(0, 2).map((item) => item.title), ['m20', 'm19']);
+
+  const tie = [5, 7, 6].map((id) => mailScriptRecord('iCloud', id, [2026, 9, 26, 60], true, 'x@example.com', `t${id}`));
+  const tieRunner: MacRunner = { ...runner, async applescript() { return tie.join(RS); } };
+  const all = await withHome(fixture.home, () => macRead('mail', '', tieRunner));
+  assert.deepEqual(all.map((item) => item.title), ['t7', 't6', 't5']);
+  const paged = await withHome(fixture.home, () => macRead('mail', '', tieRunner, 36, { mail: { before: `${all[1]?.when}#6` } }));
+  assert.deepEqual(paged.map((item) => item.title), ['t5']);
 });
 
 test('mac mail fallback maps an Automation denial to a typed owner action', async () => {
@@ -554,11 +563,16 @@ test('mac mail builds bounded account, mailbox, paging and unread filters', asyn
   assert.match(sql, new RegExp(`m\\.date_received < ${Math.floor(Date.parse('2026-09-20T00:00:00.000Z') / 1000)}`));
   assert.match(sql, /m\.date_received >= \d+/);
   assert.match(sql, /m\.read = 0/);
-  assert.match(sql, /limit 50;$/);
-  await assert.rejects(
-    () => withHome(fixture.home, () => macRead('mail', '', runner, 36, { mail: { before: 'yesterday-ish' } })),
-    (error: unknown) => error instanceof MacSurfaceError && error.code === 'invalid_before',
-  );
+  assert.match(sql, /order by m\.date_received desc, m\.ROWID desc limit 50;$/);
+  const epoch = Math.floor(Date.parse('2026-09-20T00:00:00.000Z') / 1000);
+  await withHome(fixture.home, () => macReadReport('mail', '', runner, 36, { mail: { before: '2026-09-20T00:00:00.000Z#123' } }));
+  assert.ok(sql.includes(`(m.date_received < ${epoch} or (m.date_received = ${epoch} and m.ROWID < 123))`), sql);
+  for (const before of ['yesterday-ish', '2026-09-20T00:00:00.000Z#1 or 1=1']) {
+    await assert.rejects(
+      () => withHome(fixture.home, () => macRead('mail', '', runner, 36, { mail: { before } })),
+      (error: unknown) => error instanceof MacSurfaceError && error.code === 'invalid_before',
+    );
+  }
 });
 
 test('mac mail pages one account and mailbox of a real Envelope Index', { skip: !hasSqlite3 }, async () => {
@@ -571,7 +585,7 @@ test('mac mail pages one account and mailbox of a real Envelope Index', { skip: 
   assert.deepEqual(Object.keys(first.mail?.timings ?? {}).sort(), ['discoverMs', 'queryMs']);
   assert.deepEqual(first.items.map((item) => item.title), Array.from({ length: 10 }, (_, index) => `a-inbox-${29 - index}`));
   assert.match(String(first.items[0]?.excerpt), new RegExp(`Mailbox: INBOX \\| Account: ${ACCOUNT_A}`));
-  assert.equal(first.mail?.nextBefore, first.items.at(-1)?.when);
+  assert.equal(first.mail?.nextBefore, `${first.items.at(-1)?.when}#${first.items.at(-1)?.id.replace('mac.mail:', '')}`);
 
   const second = await withHome(fixture.home, () => macReadReport('mail', '', runner, 36, {
     mail: { account: ACCOUNT_A.slice(0, 8), limit: 10, before: first.mail?.nextBefore },
@@ -587,6 +601,21 @@ test('mac mail pages one account and mailbox of a real Envelope Index', { skip: 
 
   const nested = await withHome(fixture.home, () => macRead('mail', '', runner, 36, { mail: { mailbox: '[Gmail]/All Mail' } }));
   assert.deepEqual(nested.map((item) => item.title), ['a-allmail-1', 'a-allmail-0']);
+
+  // Messages sharing the page boundary's second are neither skipped nor repeated.
+  const tied: string[] = [];
+  let before: string | undefined;
+  for (let page = 0; page < 5; page += 1) {
+    const report = await withHome(fixture.home, () => macReadReport('mail', '', runner, 36, { mail: { mailbox: 'Tied', limit: 2, before } }));
+    tied.push(...report.items.map((item) => item.title));
+    before = report.mail?.nextBefore;
+    if (!before) break;
+  }
+  assert.deepEqual(tied, ['a-tied-4', 'a-tied-3', 'a-tied-2', 'a-tied-1', 'a-tied-0']);
+  const olderThanSecond = await withHome(fixture.home, () => macRead('mail', '', runner, 36, {
+    mail: { mailbox: 'Tied', before: new Date((MAIL_BASE_TS + 40_000) * 1000).toISOString() },
+  }));
+  assert.deepEqual(olderThanSecond, [], 'a plain ISO time means strictly older');
 });
 
 test('mac mail_accounts groups INBOX mailboxes per account and names them best-effort', { skip: !hasSqlite3 }, async () => {
