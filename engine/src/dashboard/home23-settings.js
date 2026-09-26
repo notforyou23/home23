@@ -2658,7 +2658,11 @@ async function loadFeederLiveStatus() {
       const live = await liveRes.json();
       if (live.ok && live.status) {
         started = live.status.started ? '✓ running' : '✗ stopped';
-        watchers = String(live.status.watching?.length ?? 0);
+        // Configured-but-missing folders used to vanish from this count.
+        const ws = live.status.watchSummary;
+        watchers = ws
+          ? `${ws.attached} of ${ws.configured} attached${ws.missing ? ` (${ws.missing} missing)` : ''}${ws.error ? ` (${ws.error} error)` : ''}`
+          : String(live.status.watching?.length ?? 0);
         const cv = live.status.converter;
         converter = cv?.available ? `✓ ${cv.visionModel || ''}` : '✗ unavailable';
         if (Number.isFinite(live.status.manifest?.pendingCount)) {

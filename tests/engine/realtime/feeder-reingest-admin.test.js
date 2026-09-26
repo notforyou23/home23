@@ -142,6 +142,24 @@ test('removeFile clears a quarantined entry so isStale allows the retry', async 
   assert.equal(await manifest.isStale(filePath, hash), true, 'retry allowed after forget');
 });
 
+test('POST /admin/feeder/addWatchPath returns the watch state instead of a silent ok', async () => {
+  const server = new RealtimeServer(0, silentLogger);
+  server.setOrchestrator({
+    feeder: {
+      addWatchPath: async (p, label) => ({ path: p, label, state: 'missing' }),
+    },
+  });
+
+  const res = makeResponse();
+  await server._handleFeederAdmin(
+    makeRequest({ url: '/admin/feeder/addWatchPath', body: { path: '/Users/x/not-yet', label: 'later' } }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { ok: true, added: '/Users/x/not-yet', label: 'later', state: 'missing' });
+});
+
 test('labelForPath resolves the covering watcher, deepest root wins, fallback is parent dir', () => {
   const feeder = new DocumentFeeder({
     memory: { embed: async () => null },

@@ -197,7 +197,7 @@ for (const [name, Feeder] of [['Root', DocumentFeeder]]) {
     t.after(() => fs.rmSync(runPath, { recursive: true, force: true }));
     const feeder = new Feeder({
       memory: { embed: async () => null },
-      config: { maintenanceMode: true },
+      config: { maintenanceMode: true, additionalWatchPaths: [{ path: path.join(runPath, 'absent'), label: 'absent' }] },
       logger: { info() {}, warn() {}, debug() {}, error() {} },
     });
     let scans = 0;
@@ -206,6 +206,9 @@ for (const [name, Feeder] of [['Root', DocumentFeeder]]) {
     assert.equal(feeder.manifest != null, true);
     assert.equal(feeder._watchers.length, 0);
     assert.equal(feeder._flushTimer, null);
+    assert.equal(feeder._retryTimer, null);
+    assert.equal(feeder._retryMissingWatchPaths(), 0);
+    assert.equal(feeder._retryTimer, null);
     assert.equal(scans, 0);
     assert.equal((await feeder.getStatus()).maintenanceMode, true);
     await feeder.shutdown();

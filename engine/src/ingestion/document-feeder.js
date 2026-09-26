@@ -31,8 +31,16 @@ class DocumentFeeder {
       : 5 * 1024 * 1024;
 
     this._watchers = [];
+    // Every watch root the feeder was asked to cover, attached or not. A
+    // configured folder that does not exist yet (a fresh resident's
+    // workspace/projects) used to be skipped for the life of the engine;
+    // now it stays registered as missing and attaches when it appears.
+    this._watchTargets = new Map();
+    this._retryTimer = null;
+    this._retryIntervalMs = this._positiveInt(config.missingPathRetrySeconds, 30) * 1000;
     this._flushTimer = null;
     this._started = false;
+    this._stopping = false;
     this._processingFiles = new Set();
 
     // Concurrency-limited compilation queue — prevents 429 rate-limit avalanche
@@ -116,14 +124,14 @@ class DocumentFeeder {
     }
 
     // Start default watcher on ingestion/documents/
-    this._startWatcher(ingestDir, null);
+    this._startWatcher(ingestDir, null, 'ingest');
 
     // Start additional configured watch paths
     const additionalPaths = this.config.additionalWatchPaths || [];
     for (const wp of additionalPaths) {
       const watchPath = wp.path || wp;
       const label = wp.label || path.basename(watchPath);
-      this._startWatcher(watchPath, label);
+      this._startWatcher(watchPath, label, 'configured');
     }
 
     // Start flush interval
@@ -133,10 +141,12 @@ class DocumentFeeder {
     }, intervalMs);
 
     this._started = true;
+    this._ensureRetryTimer();
 
     this.logger?.info?.('Document feeder started', {
       ingestDir,
       additionalPaths: additionalPaths.length,
+      missingPaths: [...this._watchTargets.values()].filter(t => t.state !== 'attached').length,
       converterAvailable: this.converter.available
     });
 
@@ -165,15 +175,24 @@ class DocumentFeeder {
    */
   async addWatchPath(watchPath, label = null, glob = null) {
     if (!this._started) throw new Error('Feeder not started');
+    this._retryMissingWatchPaths();
     label = label || path.basename(watchPath);
-    this._startWatcher(watchPath, label);
-    // Scan in background so it doesn't block the cognitive loop startup
-    this._scanDirectory(watchPath, label).then(() => {
-      this.logger?.info?.('Watch path scan complete', { watchPath, label });
-    }).catch(err => {
-      this.logger?.warn?.('Watch path scan failed', { watchPath, error: err.message });
-    });
-    this.logger?.info?.('Added watch path (scanning in background)', { watchPath, label });
+    const existing = this._watchTargets.get(path.resolve(watchPath));
+    // A second watcher on the same root doubled every file event.
+    if (existing?.state === 'attached') {
+      return { path: watchPath, label: existing.label, state: 'attached', duplicate: true };
+    }
+    const target = this._startWatcher(watchPath, label, existing?.source || 'runtime');
+    if (target.state === 'attached') {
+      // Scan in background so it doesn't block the cognitive loop startup
+      this._scanDirectory(watchPath, target.label).then(() => {
+        this.logger?.info?.('Watch path scan complete', { watchPath, label: target.label });
+      }).catch(err => {
+        this.logger?.warn?.('Watch path scan failed', { watchPath, error: err.message });
+      });
+      this.logger?.info?.('Added watch path (scanning in background)', { watchPath, label: target.label });
+    }
+    return { path: watchPath, label: target.label, state: target.state };
   }
 
   /**
@@ -229,15 +248,18 @@ class DocumentFeeder {
   async removeWatchPath(watchPath) {
     if (!this._started) throw new Error('Feeder not started');
     const normalized = path.resolve(watchPath);
+    const hadTarget = this._watchTargets.delete(normalized);
     const idx = this._watchers.findIndex(w => path.resolve(w.path) === normalized);
-    if (idx < 0) return false;
-    const entry = this._watchers[idx];
-    try {
-      await entry.watcher.close();
-    } catch (err) {
-      this.logger?.warn?.('Error closing watcher', { path: watchPath, error: err.message });
+    if (idx < 0 && !hadTarget) return false;
+    if (idx >= 0) {
+      const entry = this._watchers[idx];
+      this._watchers.splice(idx, 1);
+      try {
+        await entry.watcher?.close();
+      } catch (err) {
+        this.logger?.warn?.('Error closing watcher', { path: watchPath, error: err.message });
+      }
     }
-    this._watchers.splice(idx, 1);
     this.logger?.info?.('Removed watch path', { path: watchPath });
     return true;
   }
@@ -254,12 +276,33 @@ class DocumentFeeder {
    * Get feeder status and stats.
    */
   async getStatus() {
+    this._retryMissingWatchPaths();
     const manifestStats = this.manifest ? this.manifest.getStats() : { fileCount: 0, nodeCount: 0, pendingCount: 0 };
+    const watchPaths = [...this._watchTargets.values()].map(t => ({
+      path: t.path,
+      label: t.label,
+      source: t.source,
+      state: t.state,
+      configuredAt: t.configuredAt,
+      attachedAt: t.attachedAt,
+      missingSince: t.missingSince,
+      lastCheckedAt: t.lastCheckedAt,
+      lastError: t.lastError,
+    }));
+    const countState = state => watchPaths.filter(t => t.state === state).length;
     return {
       enabled: true,
       started: this._started,
       maintenanceMode: this.config.maintenanceMode === true,
+      // Attached roots only; watchPaths carries configured-but-missing ones.
       watching: this._watchers.map(w => w.path),
+      watchPaths,
+      watchSummary: {
+        configured: watchPaths.length,
+        attached: countState('attached'),
+        missing: countState('missing'),
+        error: countState('error'),
+      },
       manifest: manifestStats,
       converter: {
         available: this.converter?.available || false,
@@ -289,9 +332,12 @@ class DocumentFeeder {
    */
   async shutdown() {
     if (!this._started) return;
+    this._stopping = true;
+    this._clearRetryTimer();
 
     if (this.config.maintenanceMode === true) {
       this._started = false;
+      this._stopping = false;
       this.logger?.info?.('Document feeder maintenance mode shut down without flushing');
       return;
     }
@@ -305,36 +351,160 @@ class DocumentFeeder {
       this._flushDebounce = null;
     }
 
-    for (const w of this._watchers) {
+    const watchers = this._watchers;
+    this._watchers = [];
+    for (const w of watchers) {
       await w.watcher.close();
     }
-    this._watchers = [];
 
     if (this.manifest) {
       await this.manifest.shutdown();
     }
 
+    this._clearRetryTimer();
     this._started = false;
+    this._stopping = false;
     this.logger?.info?.('Document feeder shut down');
   }
 
   // ─── Internal ────────────────────────────────────────────────
 
-  _startWatcher(watchPath, fixedLabel) {
-    if (!fs.existsSync(watchPath)) {
-      this.logger?.warn?.('Watch path does not exist, skipping', { watchPath });
-      return;
+  /**
+   * Register a watch root and attach it if it exists. Returns the target;
+   * a missing root stays registered and the retry timer attaches it later.
+   */
+  _startWatcher(watchPath, fixedLabel, source = 'runtime') {
+    const key = path.resolve(watchPath);
+    let target = this._watchTargets.get(key);
+    if (target?.state === 'attached') return target;
+    if (!target) {
+      target = {
+        key,
+        path: watchPath,
+        label: fixedLabel,
+        source,
+        state: 'pending',
+        configuredAt: new Date().toISOString(),
+        attachedAt: null,
+        missingSince: null,
+        lastCheckedAt: null,
+        lastError: null,
+      };
+      this._watchTargets.set(key, target);
+    }
+    if (!this._attachWatchTarget(target) && target.state === 'missing') {
+      this.logger?.warn?.('Watch path does not exist yet; will attach when it appears', { watchPath });
+    }
+    this._ensureRetryTimer();
+    return target;
+  }
+
+  _attachWatchTarget(target) {
+    const now = new Date().toISOString();
+    target.lastCheckedAt = now;
+    if (!fs.existsSync(target.path)) {
+      if (target.state !== 'missing') {
+        target.state = 'missing';
+        target.missingSince = now;
+        target.attachedAt = null;
+      }
+      return false;
     }
 
-    const watcher = chokidar.watch(watchPath, this._watcherOptions());
-
-    watcher.on('add', (filePath) => this._onFileEvent(filePath, fixedLabel, watchPath));
-    watcher.on('change', (filePath) => this._onFileEvent(filePath, fixedLabel, watchPath));
+    let watcher;
+    try {
+      watcher = chokidar.watch(target.path, this._watcherOptions());
+    } catch (err) {
+      target.state = 'error';
+      target.lastError = err.message;
+      this.logger?.error?.('Watcher attach failed', { watchPath: target.path, error: err.message });
+      return false;
+    }
+    const watchPath = target.path;
+    watcher.on('add', (filePath) => this._onFileEvent(filePath, target.label, watchPath));
+    watcher.on('change', (filePath) => this._onFileEvent(filePath, target.label, watchPath));
+    // chokidar 4 goes silent for good once its root is deleted, even if the
+    // folder comes back; drop the watcher and let the retry reattach it. It
+    // reports no unlinkDir for an empty root, so the retry tick also checks.
+    watcher.on('unlinkDir', (dirPath) => {
+      if (path.resolve(dirPath) === target.key) this._detachWatchTarget(target);
+    });
     watcher.on('error', (err) => {
+      target.lastError = err.message;
       this.logger?.error?.('Watcher error', { watchPath, error: err.message });
     });
 
-    this._watchers.push({ path: watchPath, label: fixedLabel, watcher });
+    this._watchers.push({ path: watchPath, label: target.label, watcher });
+    target.state = 'attached';
+    target.attachedAt = now;
+    target.missingSince = null;
+    target.lastError = null;
+    return true;
+  }
+
+  _detachWatchTarget(target) {
+    const idx = this._watchers.findIndex(w => path.resolve(w.path) === target.key);
+    if (idx >= 0) {
+      const [entry] = this._watchers.splice(idx, 1);
+      entry.watcher?.close().catch(err => {
+        this.logger?.warn?.('Error closing watcher', { path: target.path, error: err.message });
+      });
+    }
+    if (this._watchTargets.get(target.key) !== target) return;
+    target.state = 'missing';
+    target.attachedAt = null;
+    target.missingSince = new Date().toISOString();
+    this.logger?.warn?.('Watch path removed; will reattach when it reappears', { watchPath: target.path });
+    this._ensureRetryTimer();
+  }
+
+  /**
+   * Detach roots that disappeared, attach every registered root that has
+   * appeared since the last check and scan it in the background
+   * (ignoreInitial means chokidar reports nothing that already exists).
+   * Manifest hashes dedupe files seen twice.
+   */
+  _retryMissingWatchPaths() {
+    if (!this._started || this._stopping || this.config.maintenanceMode === true) return 0;
+    let attached = 0;
+    for (const target of [...this._watchTargets.values()]) {
+      if (target.state === 'attached') {
+        target.lastCheckedAt = new Date().toISOString();
+        if (fs.existsSync(target.path)) continue;
+        this._detachWatchTarget(target);
+      }
+      if (!this._attachWatchTarget(target)) continue;
+      attached += 1;
+      this.logger?.info?.('Watch path appeared; attached and scanning', { watchPath: target.path, label: target.label });
+      this._scanDirectory(target.path, target.label)
+        .then(() => this.manifest?.flush('watch-attach'))
+        .catch(err => {
+          this.logger?.warn?.('Watch path scan failed', { watchPath: target.path, error: err.message });
+        });
+    }
+    return attached;
+  }
+
+  // One stat per watch root per tick (missingPathRetrySeconds, default 30 s),
+  // unref'd so it never holds the process open. Never in maintenance mode.
+  _ensureRetryTimer() {
+    if (this._retryTimer || !this._started || this._stopping || this.config.maintenanceMode === true) return;
+    this._retryTimer = setInterval(() => this._retryTick(), this._retryIntervalMs);
+    this._retryTimer.unref?.();
+  }
+
+  _clearRetryTimer() {
+    if (!this._retryTimer) return;
+    clearInterval(this._retryTimer);
+    this._retryTimer = null;
+  }
+
+  _retryTick() {
+    try {
+      this._retryMissingWatchPaths();
+    } catch (err) {
+      this.logger?.warn?.('Watch path retry failed', { error: err.message });
+    }
   }
 
   _watcherOptions() {
