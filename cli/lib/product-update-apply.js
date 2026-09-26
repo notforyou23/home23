@@ -133,8 +133,23 @@ function releaseDiscarded(updateDirectory, dependencies) {
   child.on('error', () => {});
   child.unref();
 }
+// Per-file identity serves only an open transaction (sameCanonical still needs
+// it through 'accepted'). A 237k-file home made a 155 MB journal that Host
+// status parsed on every call, so a terminal journal keeps a digest and count.
+const PER_FILE_IDENTITY = ['identity', 'identityMetadata', 'canonical', 'substratePrefixes'];
+function settledJournal(journal) {
+  if (!PER_FILE_IDENTITY.some(key => Object.hasOwn(journal, key))) return journal;
+  const settled = { ...journal };
+  for (const key of PER_FILE_IDENTITY) delete settled[key];
+  if (journal.identity) {
+    settled.identitySha256 = createHash('sha256').update(JSON.stringify(journal.identity)).digest('hex');
+    settled.identityFiles = Object.keys(journal.identity).length;
+  }
+  return settled;
+}
 async function commitPhase(file, journal, dependencies) {
-  const next = { ...journal, updatedAt: new Date().toISOString() };
+  const settled = ['committed', 'rolled_back', 'aborted'].includes(journal.phase) ? settledJournal(journal) : journal;
+  const next = { ...settled, updatedAt: new Date().toISOString() };
   delete next.startResult;
   durableJSON(file, next);
   if (dependencies.afterPhase) await dependencies.afterPhase(next);
@@ -142,8 +157,18 @@ async function commitPhase(file, journal, dependencies) {
   if (interrupt && interrupt === next.phase) process.kill(process.pid, 'SIGKILL');
   return next;
 }
+/** Keeps only the newest previous journal, in its settled form. Older archives
+ * are history nothing reads; each once cost as much as the journal itself. */
 function archiveJournal(file, journal) {
-  if (exists(file)) renameSync(file, `${file}.${journal.phase}.${journal.id}`);
+  if (!exists(file)) return;
+  const archive = `${file}.${journal.phase}.${journal.id}`;
+  durableJSON(archive, settledJournal(journal));
+  unlinkSync(file);
+  const directory = dirname(file), pattern = /^journal\.json\.(committed|rolled_back|aborted)\.[0-9a-f-]{36}$/;
+  for (const name of readdirSync(directory)) {
+    if (pattern.test(name) && join(directory, name) !== archive) rmSync(join(directory, name), { force: true });
+  }
+  fsyncDirectory(directory);
 }
 function installController(updateDirectory) {
   const lib = join(updateDirectory, 'controller', 'lib');

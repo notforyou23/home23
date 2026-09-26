@@ -721,6 +721,46 @@ test('an unretryable nothing-switched journal offers recover but is not reopened
   assert.equal(readUpdateJournal(fixture.home).recoveryReopens, undefined);
 });
 
+test('a committed journal no longer carries per-file identity', async t => {
+  const fixture = homeFixture(t);
+  let accepted;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging },
+    { ...quiet, afterPhase: async next => { if (next.phase === 'accepted') accepted = next; } });
+  assert.equal(result.status, 'committed');
+  assert.ok(Object.keys(accepted.identity).length > 0, 'identity is kept through acceptance');
+  const journal = readUpdateJournal(fixture.home);
+  for (const key of ['identity', 'identityMetadata', 'canonical', 'substratePrefixes']) assert.equal(Object.hasOwn(journal, key), false, key);
+  assert.match(journal.identitySha256, /^[a-f0-9]{64}$/);
+  assert.equal(journal.identityFiles, Object.keys(accepted.identity).length);
+  assert.ok(fs.statSync(path.join(updateDirectoryFor(fixture.home), 'journal.json')).size < 64 * 1024);
+  const replay = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.status, 'committed');
+});
+
+test('archiving keeps only the newest previous journal in its settled form', async t => {
+  const fixture = homeFixture(t);
+  const update = updateDirectoryFor(fixture.home);
+  assert.equal((await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet)).status, 'committed');
+  const first = readUpdateJournal(fixture.home);
+  // A journal committed by an earlier updater still carries its identity maps.
+  fs.writeFileSync(path.join(update, 'journal.json'), JSON.stringify({ ...first, identity: { 'app/config/home.yaml': 'a'.repeat(64) } }), { mode: 0o600 });
+  const older = path.join(update, `journal.json.committed.${'1'.repeat(8)}-1111-1111-1111-${'1'.repeat(12)}`);
+  fs.writeFileSync(older, '{}\n', { mode: 0o600 });
+  const unrelated = path.join(update, 'journal.json.notes');
+  fs.writeFileSync(unrelated, 'kept\n');
+  const next = path.join(fixture.root, 'third');
+  payload(next, { sourceCommit: 'c'.repeat(40), extra: { 'app/cli/lib/update-marker.txt': 'third\n' } });
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: next, staging: path.join(fixture.root, 'staging-third') }, quiet);
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  const archives = fs.readdirSync(update).filter(name => /^journal\.json\.committed\./.test(name));
+  assert.deepEqual(archives, [`journal.json.committed.${first.id}`]);
+  const archived = JSON.parse(fs.readFileSync(path.join(update, archives[0]), 'utf8'));
+  assert.equal(Object.hasOwn(archived, 'identity'), false);
+  assert.match(archived.identitySha256, /^[a-f0-9]{64}$/);
+  assert.equal(fs.existsSync(unrelated), true);
+});
+
 test('checkpoint and resume fingerprint a read-only attachment without copying it', async t => {
   const fixture = homeFixture(t);
   const relative = 'app/instances/milo/conversations/readonly-attachment.txt';
@@ -818,12 +858,13 @@ test('unchanged state and database use checkpoint metadata through final accepta
   };
   syncBuiltinESMExports();
   try {
+    let journal;
     const result = await applyProductUpdate({ homeRoot: fixture.home,
-      candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+      candidatePayload: fixture.candidate, staging: fixture.staging }, { ...quiet,
+      afterPhase: async next => { if (next.phase === 'accepted') journal = next; } });
     assert.equal(result.status, 'committed');
     assert.equal(opens.get(state), 1);
     assert.equal(opens.get(databaseFile), 1);
-    const journal = readUpdateJournal(fixture.home);
     assert.match(journal.identityMetadata['app/instances/milo/conversations/session.txt'].ctimeNs, /^\d+$/);
     assert.match(journal.identityMetadata['app/instances/.house/coordination/home23-coordination.sqlite3'].ino, /^\d+$/);
   } finally {
@@ -850,17 +891,18 @@ test('a same-size state edit after checkpoint forces a fresh hash and refuses ad
 test('Finder metadata written under a state root after the checkpoint leaves the identity unchanged', async t => {
   const fixture = homeFixture(t);
   const droppings = ['app/instances/milo/.DS_Store', 'app/instances/milo/conversations/._session.txt', 'app/config/.DS_Store'];
+  let journal;
   const result = await applyProductUpdate({ homeRoot: fixture.home,
     candidatePayload: fixture.candidate, staging: fixture.staging }, {
     ...quiet,
-    afterPhase: async journal => {
-      if (journal.phase !== 'checkpointed') return;
+    afterPhase: async next => {
+      if (next.phase === 'accepted') journal = next;
+      if (next.phase !== 'checkpointed') return;
       for (const relative of droppings) fs.writeFileSync(path.join(fixture.home, relative), Buffer.from([0, 0, 0, 1, 0x42, 0x75, 0x64, 0x31]));
     },
   });
   assert.equal(result.status, 'committed');
-  const journal = readUpdateJournal(fixture.home);
-  assert.equal(journal.identityPreserved, true);
+  assert.equal(readUpdateJournal(fixture.home).identityPreserved, true);
   assert.deepEqual(Object.keys(journal.identity).filter(relative => /(^|\/)(\.DS_Store|\._)/.test(relative)), []);
   // Left in place, neither checkpointed nor removed: a state root keeps whatever Finder wrote there.
   assert.equal(fs.existsSync(path.join(fixture.home, 'app/instances/milo/.DS_Store')), true);
@@ -1040,13 +1082,14 @@ test('checkpoint fingerprints state under an approved retained source parent', a
     links: [{ path: relative, target: external, sourcePath: 'app/evobrew', sourceTarget: external, kind: 'retain-authority' }],
     externalReferences: [], continuationServices: [],
   }), { mode: 0o600 });
+  let accepted;
   const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
-    staging: fixture.staging }, quiet);
+    staging: fixture.staging }, { ...quiet, afterPhase: async next => { if (next.phase === 'accepted') accepted = next; } });
   assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
   assert.equal(fs.readFileSync(path.join(external, 'config.json'), 'utf8'), '{"kept":true}\n');
   assert.equal(fs.statSync(path.join(external, 'config.json')).mode & 0o777, 0o400);
   assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'checkpoint/state')), false);
-  assert.match(readUpdateJournal(fixture.home).identity['app/evobrew/config.json'], /^[a-f0-9]{64}$/);
+  assert.match(accepted.identity['app/evobrew/config.json'], /^[a-f0-9]{64}$/);
 });
 
 test('continued services join the software update writer fence', async t => {
@@ -1247,8 +1290,10 @@ test('resident writes after startup keep seed lineage and do not restore softwar
   const ledger = path.join(fixture.home, 'app/instances/milo/substrate/seed-01/seed-ledger.jsonl');
   fs.mkdirSync(path.dirname(ledger), { recursive: true });
   fs.writeFileSync(ledger, '{"seq":1}\n');
+  let journal;
   const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging, admit: true }, {
     ...quiet,
+    afterPhase: async next => { if (next.phase === 'accepted') journal = next; },
     start: async () => {
       fs.appendFileSync(ledger, '{"seq":2}\n');
       fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/brain/thoughts.jsonl'), 'live\n');
@@ -1258,7 +1303,6 @@ test('resident writes after startup keep seed lineage and do not restore softwar
   assert.equal(result.status, 'committed');
   assert.equal(result.identityPreserved, true);
   assert.equal(fs.readFileSync(ledger, 'utf8'), '{"seq":1}\n{"seq":2}\n');
-  const journal = readUpdateJournal(fixture.home);
   assert.equal(journal.stateRetention, 'in_place');
   assert.deepEqual(journal.substratePrefixes['app/instances/milo/substrate/seed-01/seed-ledger.jsonl'], {
     bytes: Buffer.byteLength('{"seq":1}\n'), sha256: journal.identity['app/instances/milo/substrate/seed-01/seed-ledger.jsonl'],
