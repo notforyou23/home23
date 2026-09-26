@@ -9,7 +9,7 @@ import type { AttentionItem } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
-export type MacReadSurface = 'calendar' | 'reminders' | 'notes' | 'mail' | 'finder';
+export type MacReadSurface = 'calendar' | 'reminders' | 'notes' | 'mail' | 'mail_accounts' | 'mail_message' | 'finder';
 export type MacWriteAction = 'create_reminder' | 'run_shortcut';
 
 /** Per-call bounds: the caller's cancellation plus an optional tighter timeout. */
@@ -26,8 +26,24 @@ export interface MacRunner {
   applescript?(script: string, args?: string[], opts?: MacRunOptions): Promise<string>;
 }
 
+export interface MailReadOptions {
+  /** Index reads: part of the account in the mailbox URL (its UUID). Fallback: the account name or id. */
+  account?: string;
+  /** Mailbox path; default INBOX, including its sub-mailboxes. */
+  mailbox?: string;
+  limit?: number;
+  /** ISO cursor for paging: only messages received before it. */
+  before?: string;
+  sinceHours?: number;
+  unreadOnly?: boolean;
+  /** mail_message: the item id (mac.mail:<n>). */
+  id?: string;
+  maxChars?: number;
+}
+
 export interface MacReadOptions {
   signal?: AbortSignal;
+  mail?: MailReadOptions;
 }
 
 export interface MailReport {
@@ -35,12 +51,34 @@ export interface MailReport {
   degraded: Array<{ step: string; code: string }>;
   timings: Record<string, number>;
   skippedAccounts?: string[];
+  /** Index reads: pass as `before` for the next page. */
+  nextBefore?: string;
+}
+
+export interface MailAccount {
+  account: string;
+  name?: string;
+  inboxMessages?: number;
+  unread?: number;
+}
+
+/** One message body. It is returned to the turn only; callers must never persist `body`. */
+export interface MailMessage {
+  id: string;
+  subject: string;
+  sender: string;
+  when?: string;
+  chars: number;
+  truncated: boolean;
+  body: string;
 }
 
 export interface MacReadReport {
   items: AttentionItem[];
   /** Mail only: which reader answered, what degraded and how long each step took. */
   mail?: MailReport;
+  accounts?: MailAccount[];
+  message?: MailMessage;
 }
 
 /** A typed Mac surface failure. `code` (timeout, aborted, ...) also appears in the message the resident sees. */
@@ -339,31 +377,89 @@ function escapeSqlLike(value: string): string {
     .replace(/_/g, '!_');
 }
 
-function mailIndexQuery(query: string): string {
+const MAIL_DEFAULT_LIMIT = 15;
+const MAIL_QUERY_LIMIT = 25;
+const MAIL_MAX_LIMIT = 50;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// The account is the mailbox URL's authority: the account UUID in V10
+// (imap://<UUID>/INBOX), user@host in older layouts.
+const MAILBOX_ACCOUNT_SQL = "substr(mb.url, instr(mb.url, '://') + 3, instr(substr(mb.url, instr(mb.url, '://') + 3) || '/', '/') - 1)";
+
+function mailboxFilterSql(mailbox: string): string {
+  // Mailbox URLs percent-encode each path segment ("[Gmail]/All Mail").
+  const path = escapeSqlLike(mailbox.split('/').filter(Boolean).map((segment) => encodeURIComponent(segment)).join('/'));
+  return `(mb.url like '%/${path}' escape '!' or mb.url like '%/${path}/%' escape '!')`;
+}
+
+function clampCount(value: number | undefined, fallback: number, max: number): number {
+  const requested = Number(value);
+  if (!Number.isFinite(requested) || requested < 1) return fallback;
+  return Math.min(Math.floor(requested), max);
+}
+
+function mailLimit(query: string, mail: MailReadOptions): number {
+  return clampCount(mail.limit, query.trim() ? MAIL_QUERY_LIMIT : MAIL_DEFAULT_LIMIT, MAIL_MAX_LIMIT);
+}
+
+function beforeEpochSeconds(before: string | undefined): number | undefined {
+  if (!before?.trim()) return undefined;
+  const ms = Date.parse(before);
+  if (!Number.isFinite(ms)) throw new MacSurfaceError('invalid_before', `invalid_before: ${before.slice(0, 80)} is not an ISO time`);
+  return Math.floor(ms / 1000);
+}
+
+function mailIndexQuery(query: string, mail: MailReadOptions = {}): string {
   const normalized = query.trim();
-  const filter = normalized
-    ? `\n and (lower(coalesce(s.subject,'')) like lower('%${escapeSqlLike(normalized)}%') escape '!'\n  or lower(coalesce(a.address,'')) like lower('%${escapeSqlLike(normalized)}%') escape '!'\n  or lower(coalesce(a.comment,'')) like lower('%${escapeSqlLike(normalized)}%') escape '!')`
-    : '';
-  const limit = normalized ? 25 : 15;
+  const filters = [mailboxFilterSql(mail.mailbox?.trim() || 'INBOX')];
+  if (normalized) {
+    filters.push(`(lower(coalesce(s.subject,'')) like lower('%${escapeSqlLike(normalized)}%') escape '!'\n  or lower(coalesce(a.address,'')) like lower('%${escapeSqlLike(normalized)}%') escape '!'\n  or lower(coalesce(a.comment,'')) like lower('%${escapeSqlLike(normalized)}%') escape '!')`);
+  }
+  const account = mail.account?.trim();
+  if (account) filters.push(`lower(${MAILBOX_ACCOUNT_SQL}) like lower('%${escapeSqlLike(account)}%') escape '!'`);
+  const before = beforeEpochSeconds(mail.before);
+  if (before !== undefined) filters.push(`m.date_received < ${before}`);
+  if (Number(mail.sinceHours) > 0) filters.push(`m.date_received >= ${Math.floor(Date.now() / 1000 - Number(mail.sinceHours) * 3600)}`);
+  if (mail.unreadOnly) filters.push('m.read = 0');
   return `select m.ROWID as rowid, s.subject as subject, a.address as addr, a.comment as name, m.date_received as ts, m.read as read, mb.url as mailbox
 from messages m
  join mailboxes mb on mb.ROWID = m.mailbox
  left join subjects s on s.ROWID = m.subject
  left join addresses a on a.ROWID = m.sender
-where m.deleted = 0 and (mb.url like '%/INBOX' or mb.url like '%/INBOX/%')${filter}
-order by m.date_received desc limit ${limit};`;
+where m.deleted = 0
+ and ${filters.join('\n and ')}
+order by m.date_received desc limit ${mailLimit(normalized, mail)};`;
+}
+
+const MAIL_ACCOUNTS_SQL = `select ${MAILBOX_ACCOUNT_SQL} as account, count(m.ROWID) as messages, coalesce(sum(case when m.read = 0 then 1 else 0 end), 0) as unread
+from mailboxes mb
+ left join messages m on m.mailbox = mb.ROWID and m.deleted = 0
+where ${mailboxFilterSql('INBOX')}
+group by account
+order by messages desc limit 50;`;
+
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+function mailboxLocation(url: string): { account: string; mailbox: string } | undefined {
+  const match = /^[a-z][a-z0-9+.-]*:\/\/([^/]+)\/(.+)$/i.exec(url);
+  if (!match) return undefined;
+  return {
+    account: decodeSegment(String(match[1])),
+    mailbox: String(match[2]).split('/').filter(Boolean).map(decodeSegment).join('/'),
+  };
 }
 
 function mailboxExcerpt(mailbox: string | null): string | undefined {
   const segment = mailbox?.split('/').filter(Boolean).at(-1);
   if (!segment) return undefined;
-  let decoded = segment;
-  try {
-    decoded = decodeURIComponent(segment);
-  } catch {
-    // Preserve a malformed but still useful mailbox hint.
-  }
-  return `Mailbox: ${decoded.slice(0, 120)}`;
+  const account = mailbox ? mailboxLocation(mailbox)?.account : undefined;
+  return `Mailbox: ${decodeSegment(segment).slice(0, 120)}${account ? ` | Account: ${account.slice(0, 120)}` : ''}`;
 }
 
 function parseMailIndexRows(raw: string): AttentionItem[] {
@@ -409,14 +505,15 @@ on run argv
 		try
 			with timeout of 8 seconds
 				set acctNames to name of every account
+				set acctIds to id of every account
 			end timeout
 		on error errMsg number errNum
 			return "E" & US & errNum
 		end try
 		set scanned to 0
-		repeat with acctRef in acctNames
-			set acctName to contents of acctRef
-			if wantAccount is "" or acctName contains wantAccount then
+		repeat with k from 1 to count of acctNames
+			set acctName to item k of acctNames
+			if wantAccount is "" or acctName contains wantAccount or (item k of acctIds) is wantAccount then
 				if scanned is greater than or equal to maxAccounts or (current date) > deadline then
 					set end of out to "S" & US & acctName
 				else
@@ -472,8 +569,79 @@ end run
 `;
 
 export const MAIL_FALLBACK_MAX_ACCOUNTS = 6;
-const MAIL_DEFAULT_LIMIT = 15;
-const MAIL_QUERY_LIMIT = 25;
+
+const MAIL_ACCOUNTS_SCRIPT = `
+on run argv
+	set US to character id 31
+	set RS to character id 30
+	if application "Mail" is not running then return "E" & US & "mail_app_not_running"
+	tell application "Mail"
+		try
+			with timeout of 5 seconds
+				set idList to id of every account
+				set nameList to name of every account
+			end timeout
+		on error errMsg number errNum
+			return "E" & US & errNum
+		end try
+	end tell
+	set out to {}
+	repeat with i from 1 to count of idList
+		set end of out to "A" & US & (item i of idList) & US & (item i of nameList)
+	end repeat
+	set AppleScript's text item delimiters to RS
+	set joined to out as text
+	set AppleScript's text item delimiters to ""
+	return joined
+end run
+`;
+
+// One message by id inside one account's mailbox: no enumeration. Mail's
+// dictionary also has a "message id" property (the RFC header), so the
+// by-id specifier is written with the raw class code. The body is truncated
+// in the script, so an oversized message never crosses the pipe.
+const MAIL_MESSAGE_SCRIPT = `
+on clean(v)
+	if v is missing value then return ""
+	return v as text
+end clean
+
+on run argv
+	set msgId to (item 1 of argv) as integer
+	set mbPath to item 2 of argv
+	set acctId to item 3 of argv
+	set acctName to item 4 of argv
+	set maxChars to (item 5 of argv) as integer
+	set US to character id 31
+	set RS to character id 30
+	if application "Mail" is not running then return "E" & US & "mail_app_not_running"
+	tell application "Mail"
+		try
+			with timeout of 10 seconds
+				if acctId is not "" then
+					set acct to account id acctId
+				else
+					set acct to account acctName
+				end if
+				set msg to «class mssg» id msgId of mailbox mbPath of acct
+				set bodyText to my clean(content of msg)
+				set subj to my clean(subject of msg)
+				set sndr to my clean(sender of msg)
+				set d to date received of msg
+				set stamp to "" & (year of d) & US & ((month of d) as integer) & US & (day of d) & US & (time of d)
+			end timeout
+		on error errMsg number errNum
+			return "E" & US & errNum
+		end try
+	end tell
+	set fullLength to length of bodyText
+	if fullLength > maxChars then set bodyText to text 1 thru maxChars of bodyText
+	return "B" & US & fullLength & US & stamp & US & sndr & US & subj & RS & bodyText
+end run
+`;
+
+export const MAIL_BODY_DEFAULT_CHARS = 4_000;
+const MAIL_BODY_MAX_CHARS = 20_000;
 
 const APPLESCRIPT_ERROR_CODES: Record<string, string> = {
   '-600': 'mail_app_not_running',
@@ -489,18 +657,26 @@ function appleScriptCode(value: string | undefined): string {
 
 function appleScriptFailure(error: unknown): MacSurfaceError {
   if (error instanceof MacSurfaceError) return error;
-  const code = /\((-\d+)\)/.exec(errorMessage(error))?.[1];
-  return mailError(code ? appleScriptCode(code) : 'applescript_error', errorMessage(error));
+  const number = /\((-\d+)\)/.exec(errorMessage(error))?.[1];
+  const known = number ? APPLESCRIPT_ERROR_CODES[number] : undefined;
+  if (known) return mailScriptError(known);
+  return mailError(number ? appleScriptCode(number) : 'applescript_error', errorMessage(error).slice(0, 300));
 }
 
-function throwMailScriptError(code: string): never {
+function mailScriptError(code: string): MacSurfaceError {
+  if (code === 'mail_message_not_found') {
+    return mailError(code, 'Mail has no such message in that mailbox; it may have moved or been deleted.');
+  }
+  if (code === 'mail_body_timeout') {
+    return mailError(code, 'Mail did not return the message body in time (a remote IMAP fetch can be slow).');
+  }
   if (code === 'mail_app_not_running') {
-    throw mailError(code, 'Mail is not running, and Home23 does not launch it. Ask the owner to open Mail.');
+    return mailError(code, 'Mail is not running, and Home23 does not launch it. Ask the owner to open Mail.');
   }
   if (code === 'mail_automation_denied') {
-    throw mailError(code, 'macOS denied Home23 Automation access to Mail. Only the owner can allow it (System Settings > Privacy & Security > Automation).');
+    return mailError(code, 'macOS denied Home23 Automation access to Mail. Only the owner can allow it (System Settings > Privacy & Security > Automation).');
   }
-  throw mailError(code, 'Mail did not answer the bounded Apple Events read.');
+  return mailError(code, 'Mail did not answer the bounded Apple Events read.');
 }
 
 function localDate(year: string, month: string, day: string, seconds: string): string | undefined {
@@ -515,7 +691,7 @@ function parseMailScriptOutput(raw: string): { items: AttentionItem[]; degraded:
   const skipped: string[] = [];
   for (const record of raw.split('\u001e').filter(Boolean)) {
     const [kind, ...fields] = record.split('\u001f');
-    if (kind === 'E') throwMailScriptError(appleScriptCode(fields[0]));
+    if (kind === 'E') throw mailScriptError(appleScriptCode(fields[0]));
     if (kind === 'S') skipped.push(String(fields[0]));
     if (kind === 'D') degraded.push({ step: `account:${fields[0]}`, code: appleScriptCode(fields[1]) });
     if (kind !== 'M') continue;
@@ -538,24 +714,33 @@ async function readMailViaAppleScript(
   query: string,
   runner: MacRunner,
   opts: MacRunOptions,
+  mail: MailReadOptions,
 ): Promise<{ items: AttentionItem[]; degraded: MailReport['degraded']; skipped: string[] }> {
   if (!runner.applescript) throw mailError('mail_index_permission_denied', MAIL_PERMISSION_HINT);
   const normalized = query.trim().toLowerCase();
-  const limit = normalized ? MAIL_QUERY_LIMIT : MAIL_DEFAULT_LIMIT;
+  const limit = mailLimit(normalized, mail);
+  const args = [mail.account?.trim() ?? '', mail.mailbox?.trim() || 'INBOX', String(limit), String(MAIL_FALLBACK_MAX_ACCOUNTS)];
   let parsed: ReturnType<typeof parseMailScriptOutput>;
   try {
-    parsed = parseMailScriptOutput(await runner.applescript(MAIL_LIST_SCRIPT, ['', 'INBOX', String(limit), String(MAIL_FALLBACK_MAX_ACCOUNTS)], opts));
+    parsed = parseMailScriptOutput(await runner.applescript(MAIL_LIST_SCRIPT, args, opts));
   } catch (error) {
     const failure = appleScriptFailure(error);
     if (failure.code === 'timeout' || failure.code === 'aborted') throw failure;
     // The owner needs both halves: why the fallback failed and why it ran.
     throw new MacSurfaceError(failure.code, `${failure.message} ${MAIL_PERMISSION_HINT}`);
   }
-  // Without the index there is no cheap search; match only the recent window.
-  const matched = normalized
-    ? parsed.items.filter((item) => `${item.title} ${item.who ?? ''}`.toLowerCase().includes(normalized))
-    : parsed.items;
+  // Without the index there is no cheap search or paging; filter the recent window.
+  const before = beforeEpochSeconds(mail.before);
+  const since = Number(mail.sinceHours) > 0 ? Date.now() - Number(mail.sinceHours) * 3_600_000 : undefined;
+  const matched = parsed.items.filter((item) => {
+    const when = Date.parse(item.when ?? '');
+    if (normalized && !`${item.title} ${item.who ?? ''}`.toLowerCase().includes(normalized)) return false;
+    if (mail.unreadOnly && !item.needsOwner) return false;
+    if (before !== undefined && !(when < before * 1000)) return false;
+    return since === undefined || when >= since;
+  });
   if (normalized) parsed.degraded.push({ step: 'query', code: 'query_limited_to_recent' });
+  if (before !== undefined) parsed.degraded.push({ step: 'before', code: 'paging_limited_to_recent' });
   const items = matched
     .sort((left, right) => Date.parse(right.when ?? '') - Date.parse(left.when ?? ''))
     .slice(0, limit);
@@ -571,23 +756,25 @@ function indexFailure(error: unknown): MacSurfaceError {
   return mailError('mail_index_unavailable', message);
 }
 
-async function readMail(query: string, runner: MacRunner, opts: MacRunOptions): Promise<{ items: AttentionItem[]; mail: MailReport }> {
+async function readMail(query: string, runner: MacRunner, opts: MacRunOptions, mail: MailReadOptions): Promise<MacReadReport> {
   const timings: Record<string, number> = {};
+  const sql = mailIndexQuery(query, mail);
   let started = Date.now();
   try {
     if (!runner.sqliteJson) throw mailError('mail_index_unavailable', 'sqlite runner unavailable');
     const dbPath = await discoverMailEnvelopeIndex();
     timings.discoverMs = Date.now() - started;
     started = Date.now();
-    const items = parseMailIndexRows(await runner.sqliteJson(dbPath, mailIndexQuery(query), opts));
+    const items = parseMailIndexRows(await runner.sqliteJson(dbPath, sql, opts));
     timings.queryMs = Date.now() - started;
-    return { items, mail: { source: 'index', degraded: [], timings } };
+    const nextBefore = items.length === mailLimit(query, mail) ? items.at(-1)?.when : undefined;
+    return { items, mail: { source: 'index', degraded: [], timings, ...(nextBefore ? { nextBefore } : {}) } };
   } catch (error) {
     const failure = indexFailure(error);
     if (failure.code !== 'mail_index_permission_denied' || !runner.applescript) throw failure;
     timings.discoverMs ??= Date.now() - started;
     started = Date.now();
-    const fallback = await readMailViaAppleScript(query, runner, opts);
+    const fallback = await readMailViaAppleScript(query, runner, opts, mail);
     timings.applescriptMs = Date.now() - started;
     return {
       items: fallback.items,
@@ -599,6 +786,131 @@ async function readMail(query: string, runner: MacRunner, opts: MacRunOptions): 
       },
     };
   }
+}
+
+async function mailAccountNames(runner: MacRunner, opts: MacRunOptions): Promise<{ names: Map<string, string>; code?: string }> {
+  const names = new Map<string, string>();
+  if (!runner.applescript) return { names, code: 'applescript_unavailable' };
+  try {
+    const raw = await runner.applescript(MAIL_ACCOUNTS_SCRIPT, [], { signal: opts.signal, timeoutMs: 8_000 });
+    for (const record of raw.split('\u001e').filter(Boolean)) {
+      const [kind, id, ...name] = record.split('\u001f');
+      if (kind === 'E') return { names, code: appleScriptCode(id) };
+      if (kind === 'A' && id) names.set(id, name.join('\u001f'));
+    }
+    return { names };
+  } catch (error) {
+    const failure = appleScriptFailure(error);
+    if (failure.code === 'aborted') throw failure;
+    return { names, code: failure.code };
+  }
+}
+
+async function readMailAccounts(runner: MacRunner, opts: MacRunOptions): Promise<MacReadReport> {
+  const timings: Record<string, number> = {};
+  let started = Date.now();
+  try {
+    if (!runner.sqliteJson) throw mailError('mail_index_unavailable', 'sqlite runner unavailable');
+    const dbPath = await discoverMailEnvelopeIndex();
+    timings.discoverMs = Date.now() - started;
+    started = Date.now();
+    const rows = JSON.parse(await runner.sqliteJson(dbPath, MAIL_ACCOUNTS_SQL, opts) || '[]') as Array<{ account: string; messages: number; unread: number }>;
+    timings.queryMs = Date.now() - started;
+    // Names are a best-effort decoration from Mail itself; counts come from the index.
+    started = Date.now();
+    const { names, code } = await mailAccountNames(runner, opts);
+    timings.namesMs = Date.now() - started;
+    const accounts = rows.map((row) => {
+      const name = names.get(String(row.account));
+      return { account: String(row.account), ...(name ? { name } : {}), inboxMessages: Number(row.messages), unread: Number(row.unread) };
+    });
+    return { items: [], accounts, mail: { source: 'index', degraded: code ? [{ step: 'names', code }] : [], timings } };
+  } catch (error) {
+    const failure = indexFailure(error);
+    if (failure.code !== 'mail_index_permission_denied' || !runner.applescript) throw failure;
+    timings.discoverMs ??= Date.now() - started;
+    started = Date.now();
+    const { names, code } = await mailAccountNames(runner, opts);
+    timings.applescriptMs = Date.now() - started;
+    if (code) throw new MacSurfaceError(code, `${mailScriptError(code).message} ${MAIL_PERMISSION_HINT}`);
+    const accounts = [...names].map(([account, name]) => ({ account, name }));
+    return { items: [], accounts, mail: { source: 'applescript', degraded: [{ step: 'index', code: failure.code }], timings } };
+  }
+}
+
+const MAIL_MESSAGE_ERROR_CODES: Record<string, string> = {
+  '-1712': 'mail_body_timeout',
+  '-1719': 'mail_message_not_found',
+  '-1728': 'mail_message_not_found',
+};
+
+function parseMailMessage(raw: string, rowid: string, maxChars: number): MailMessage {
+  const split = raw.indexOf('\u001e');
+  const header = (split === -1 ? raw : raw.slice(0, split)).split('\u001f');
+  if (header[0] === 'E') throw mailScriptError(MAIL_MESSAGE_ERROR_CODES[String(header[1])] ?? appleScriptCode(header[1]));
+  if (header[0] !== 'B') throw mailError('mail_body_unavailable', 'Mail returned an unexpected answer');
+  const [, chars, year, month, day, seconds, sender, ...subject] = header;
+  const body = split === -1 ? '' : raw.slice(split + 1);
+  const total = Number(chars);
+  return {
+    id: `mac.mail:${rowid}`,
+    subject: subject.join('\u001f'),
+    sender: String(sender ?? ''),
+    when: localDate(String(year), String(month), String(day), String(seconds)),
+    chars: Number.isFinite(total) ? total : body.length,
+    truncated: Number.isFinite(total) ? total > maxChars : false,
+    body,
+  };
+}
+
+async function readMailMessage(runner: MacRunner, opts: MacRunOptions, mail: MailReadOptions): Promise<MacReadReport> {
+  const rowid = /^(?:mac\.mail:)?(\d+)$/.exec(String(mail.id ?? '').trim())?.[1];
+  if (!rowid) throw new MacSurfaceError('invalid_message_id', 'invalid_message_id: pass the id of a mail item (mac.mail:<n>)');
+  const maxChars = clampCount(mail.maxChars, MAIL_BODY_DEFAULT_CHARS, MAIL_BODY_MAX_CHARS);
+  const timings: Record<string, number> = {};
+  const degraded: MailReport['degraded'] = [];
+  let source: MailReport['source'] = 'index';
+  let location: { accountId: string; accountName: string; mailbox: string };
+  const named = (account: string, mailbox: string) => (UUID_PATTERN.test(account)
+    ? { accountId: account, accountName: '', mailbox }
+    : { accountId: '', accountName: account, mailbox });
+  let started = Date.now();
+  try {
+    if (!runner.sqliteJson) throw mailError('mail_index_unavailable', 'sqlite runner unavailable');
+    const dbPath = await discoverMailEnvelopeIndex();
+    const sql = `select mb.url as mailbox from messages m join mailboxes mb on mb.ROWID = m.mailbox where m.ROWID = ${rowid} and m.deleted = 0 limit 1;`;
+    const rows = JSON.parse(await runner.sqliteJson(dbPath, sql, opts) || '[]') as Array<{ mailbox?: string }>;
+    timings.lookupMs = Date.now() - started;
+    const found = rows[0]?.mailbox ? mailboxLocation(String(rows[0].mailbox)) : undefined;
+    if (!found) throw mailError('mail_message_not_found', `no message ${rowid} in the Mail index`);
+    // A pre-V10 authority (user@host) is not an account id; the caller's account name must name it.
+    location = UUID_PATTERN.test(found.account) ? named(found.account, found.mailbox) : named(mail.account?.trim() ?? '', found.mailbox);
+  } catch (error) {
+    const failure = indexFailure(error);
+    if (failure.code !== 'mail_index_permission_denied') throw failure;
+    source = 'applescript';
+    degraded.push({ step: 'index', code: failure.code });
+    location = named(mail.account?.trim() ?? '', mail.mailbox?.trim() || 'INBOX');
+  }
+  if (!location.accountId && !location.accountName) {
+    throw mailError('mail_message_account_required', 'name the account (the Account value from the mail item, or from mail_accounts) so the message can be found without enumerating mailboxes.');
+  }
+  if (!runner.applescript) throw mailError('mail_body_unavailable', 'the Apple Events runner is unavailable');
+  started = Date.now();
+  let raw: string;
+  try {
+    raw = await runner.applescript(
+      MAIL_MESSAGE_SCRIPT,
+      [rowid, location.mailbox, location.accountId, location.accountName, String(maxChars)],
+      { signal: opts.signal, timeoutMs: 15_000 },
+    );
+  } catch (error) {
+    const failure = appleScriptFailure(error);
+    if (failure.code === 'timeout') throw mailScriptError('mail_body_timeout');
+    throw failure;
+  }
+  timings.bodyMs = Date.now() - started;
+  return { items: [], message: parseMailMessage(raw, rowid, maxChars), mail: { source, degraded, timings } };
 }
 
 function parseItems(raw: string, fallbackSource: string): AttentionItem[] {
@@ -642,7 +954,7 @@ export async function macReadReport(
   const { signal } = options;
   if (signal?.aborted) throw abortedError(signal, `mac.${surface} read`);
   try {
-    return await untilAborted(readSurface(surface, query, runner, hoursAhead, { signal }), signal, `mac.${surface} read`);
+    return await untilAborted(readSurface(surface, query, runner, hoursAhead, { signal }, options.mail ?? {}), signal, `mac.${surface} read`);
   } catch (error) {
     // A runner that ignored the signal still reports the caller's typed reason.
     if (signal?.aborted && !(error instanceof MacSurfaceError)) throw abortedError(signal, `mac.${surface} read`);
@@ -656,6 +968,7 @@ async function readSurface(
   runner: MacRunner,
   hoursAhead: number,
   opts: MacRunOptions,
+  mail: MailReadOptions,
 ): Promise<MacReadReport> {
   if (surface === 'calendar') {
     return { items: parseItems(await runner.jxa(CALENDAR_SCRIPT, [String(hoursAhead)], opts), 'mac.calendar') };
@@ -667,7 +980,13 @@ async function readSurface(
     return { items: parseItems(await runner.jxa(NOTES_SCRIPT, [query, String(NOTES_SCAN_CAP), String(NOTES_DEADLINE_MS)], opts), 'mac.notes') };
   }
   if (surface === 'mail') {
-    return readMail(query, runner, opts);
+    return readMail(query, runner, opts, mail);
+  }
+  if (surface === 'mail_accounts') {
+    return readMailAccounts(runner, opts);
+  }
+  if (surface === 'mail_message') {
+    return readMailMessage(runner, opts, mail);
   }
   if (surface === 'finder') {
     const home = homedir();
