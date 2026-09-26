@@ -10,6 +10,7 @@ import { SqliteGroupChannelMessageContext } from "../../../src/coordination/app/
 import { createGroupChannelMessageService } from "../../../src/coordination/app/channel-message.js";
 import { directMessageManifest } from "../../../src/coordination/app/direct-message.js";
 import {
+  ChannelAdmissionContradictionError,
   ChannelCoordinatorError,
   createChannelCoordinator,
   getRoundRecoveryRefusal,
@@ -273,9 +274,9 @@ function terminalizeSucceeded(
 
 function appendResult(
   database: M11TestDatabase,
-  input: { roundId: string; workId: string },
+  input: { roundId: string; workId: string; messageId?: string },
 ): string {
-  const messageId = fixtureId("message", 2);
+  const messageId = input.messageId ?? fixtureId("message", 2);
   database.mutateWithEvent((transaction) => {
     transaction.run(
       `INSERT INTO messages (
@@ -314,6 +315,30 @@ function appendResult(
     };
   });
   return messageId;
+}
+
+/** A Work that carries the Round only as lineage, as a detached Working
+ * Thread or a resident-outcome review does. */
+function lineageWork(
+  services: ReturnType<typeof harness>,
+  database: M11TestDatabase,
+  parent: WorkRecord,
+  kind: "resident_work_thread" | "resident_turn",
+  suffix: number,
+): WorkRecord {
+  return services.work.create({
+    principalId: parent.principalId,
+    targetPrincipalId: parent.targetPrincipalId,
+    channelId: parent.channelId,
+    originMessageId: parent.originMessageId,
+    roundId: parent.roundId,
+    kind,
+    idempotencyKey: `lineage:${kind}:${suffix}`,
+    manifest: initialManifest(database),
+    maxAutomaticOffers: 1,
+    requestId: fixtureId("request", suffix),
+    correlationId: fixtureId("correlation", suffix),
+  }).work;
 }
 
 test("group Channel context admits an active processless Bot participant", async () => {
@@ -779,7 +804,8 @@ test("terminal replay rejects a falsely completed sequential prefix", () => {
     const restarted = harness(database, 61_000);
     assert.throws(
       () => restarted.coordinator.admissionReplay(replayIdentity(1_111)),
-      (error: unknown) => error instanceof ChannelCoordinatorError &&
+      (error: unknown) => error instanceof ChannelAdmissionContradictionError &&
+        error.reasonCode === "admission_terminal_inconsistent" &&
         error.code === "illegal_state" && /terminal Round is incomplete/u.test(error.message),
     );
     assert.equal(roundWorks(database, started.round.id).length, 1);
@@ -1280,6 +1306,219 @@ test("startup recovery refuses a Round whose admission evidence cannot be read o
       "the refusal is durable for the next start");
     database.reopen();
     assert.deepEqual(harness(database, 34_000).context.listRecoveryRoundIds(100), []);
+  } finally {
+    database.close();
+  }
+});
+
+test("startup recovery refuses a Round whose admitted Works contradict its plan, permanently and once", async (t) => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "parallel");
+    const plan = admissionPlan(database, "parallel");
+    const services = harness(database, 140_000);
+    const started = services.coordinator.start(trigger(plan));
+    const first = started.works[0]!.work;
+    // A second admitted turn for the same target, as a product retry of an open Round's turn would create.
+    services.work.create({
+      principalId: first.principalId, targetPrincipalId: first.targetPrincipalId,
+      channelId: first.channelId, originMessageId: first.originMessageId, roundId: started.round.id,
+      kind: "channel.bot_turn", idempotencyKey: "retry:duplicate-admitted-turn", manifest: initialManifest(database),
+      maxAutomaticOffers: 2, requestId: fixtureId("request", 4_300), correlationId: fixtureId("correlation", 4_300),
+    });
+    assert.throws(
+      () => services.coordinator.reconcile({
+        roundId: started.round.id,
+        requestId: fixtureId("request", 4_301), correlationId: fixtureId("correlation", 4_301),
+      }),
+      (error: unknown) => error instanceof ChannelAdmissionContradictionError &&
+        error instanceof ChannelCoordinatorError && error.code === "illegal_state" &&
+        error.reasonCode === "admission_works_mismatch" &&
+        error.message === "durable Channel Works differ from the immutable admission plan",
+    );
+    database.raw.prepare(
+      "INSERT INTO authority_epochs VALUES ('messages', 2, 'canonical', 'home23-coordination', 1, 1, '{}', ?)",
+    ).run(AT);
+
+    database.reopen();
+    const restarted = harness(database, 141_000);
+    assert.deepEqual(restarted.context.listRecoveryRoundIds(100), [started.round.id]);
+    const warnings: string[] = [];
+    t.mock.method(console, "warn", (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); });
+    const service = createGroupChannelMessageService({
+      messages: {
+        async sendMessage() { throw new Error("a refused recovery must not send a Message"); },
+        async listMessages() { throw new Error("durable recovery must not resnapshot mutable Messages"); },
+      },
+      context: restarted.context,
+      coordinator: restarted.coordinator,
+      work: restarted.work,
+      leases: restarted.leases,
+      resolveResident: () => undefined,
+      authority: {
+        current: () => ({
+          capability: "messages" as const, epoch: 2, mode: "canonical" as const,
+          writer: "home23-coordination", effectiveAtEventSequence: 1, rollbackEpoch: 1,
+        }),
+      },
+      recordMessage: async () => undefined,
+      beginWork: () => () => { throw new Error("a refused Round never begins Work"); },
+      recoveryIdentity: () => ({
+        requestId: fixtureId("request", 4_310), correlationId: fixtureId("correlation", 4_310),
+      }),
+      now: () => new Date(AT),
+    });
+    assert.deepEqual(await service.recoverResidentWork(), { discovered: 1, scheduled: 0, refused: 1 });
+    const refusal = getRoundRecoveryRefusal(database, started.round.id);
+    assert.deepEqual({ ...refusal, recordedAt: undefined }, {
+      roundId: started.round.id, reasonCode: "admission_works_mismatch", permanent: true, refusalCount: 1,
+      message: "durable Channel Works differ from the immutable admission plan", recordedAt: undefined,
+    });
+    assert.deepEqual(warnings, [
+      `[home23-coordination] group-channel recovery refused round=${started.round.id} reason=admission_works_mismatch (permanent): durable Channel Works differ from the immutable admission plan`,
+    ]);
+    assert.deepEqual(await service.recoverResidentWork(), { discovered: 0, scheduled: 0, refused: 0 },
+      "a contradiction on immutable rows is not retried at the next start");
+    assert.equal(restarted.rounds.get(started.round.id)?.state, "coordinating",
+      "a refusal records evidence, never a fabricated Round transition");
+  } finally {
+    database.close();
+  }
+});
+
+test("a Round whose Works detached a Working Thread and a review still settles on its admitted Works", () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "parallel");
+    const plan = admissionPlan(database, "parallel");
+    const services = harness(database, 110_000);
+    const started = services.coordinator.start(trigger(plan));
+    const admittedIds = started.works.map(({ work }) => work.id);
+    const parent = started.works[0]!.work;
+    const thread = lineageWork(services, database, parent, "resident_work_thread", 4_000);
+    const review = lineageWork(services, database, parent, "resident_turn", 4_001);
+    assert.equal(thread.roundId, started.round.id);
+    assert.equal(review.roundId, started.round.id);
+
+    const resumed = services.coordinator.resumeAdmission({
+      roundId: started.round.id, authority: AUTHORITY,
+      requestId: fixtureId("request", 4_002), correlationId: fixtureId("correlation", 4_002),
+    });
+    assert.deepEqual(resumed.works.map((work) => work.id), admittedIds,
+      "lineage Works are not members of the admitted Round");
+
+    started.works.forEach(({ work }, index) => terminalizeSucceeded(services, work, 4_010 + index * 10));
+    const settled = services.coordinator.reconcile({
+      roundId: started.round.id,
+      requestId: fixtureId("request", 4_030), correlationId: fixtureId("correlation", 4_030),
+    });
+    assert.equal(settled.outcome, "completed");
+    assert.deepEqual(settled.works.map((work) => work.id), admittedIds);
+    assert.deepEqual(services.context.listRecoveryRoundIds(100), []);
+    assert.deepEqual([thread, review].map((work) => services.work.get(work.id)?.state), ["queued", "queued"],
+      "the Round never settles lineage Works it does not own");
+  } finally {
+    database.close();
+  }
+});
+
+test("a sequential Round admits its next target after the first detached a Working Thread", async () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "sequential");
+    database.raw.prepare("UPDATE channels SET max_bot_turns = 2 WHERE id = ?").run(CHANNEL_ID);
+    const plan = admissionPlan(database, "sequential");
+    const services = harness(database, 120_000);
+    const first = services.coordinator.start(trigger(plan, { mentionedBotIds: [BOT_ID] }));
+    assert.equal(first.round.maxBotTurns, 2);
+    lineageWork(services, database, first.works[0]!.work, "resident_work_thread", 4_100);
+    terminalizeSucceeded(services, first.works[0]!.work, 4_110);
+    appendResult(database, { roundId: first.round.id, workId: first.works[0]!.work.id });
+    const recovered = await services.context.recoverPlan(first.round.id);
+    const secondPrepared = await services.context.prepareSequentialTurn({
+      plan: recovered.prepared, roundId: first.round.id, targetBotId: BOT_2,
+    });
+    const second = services.coordinator.start(trigger(plan, {
+      mentionedBotIds: [BOT_2], manifest: secondPrepared.manifest, identitySuffix: 4_120,
+    }));
+    assert.equal(second.round.id, first.round.id);
+    assert.deepEqual(second.works.map(({ work }) => work.targetPrincipalId), [BOT_2]);
+    terminalizeSucceeded(services, second.works[0]!.work, 4_130);
+    const settled = services.coordinator.reconcile({
+      roundId: first.round.id,
+      requestId: fixtureId("request", 4_140), correlationId: fixtureId("correlation", 4_140),
+    });
+    assert.equal(settled.outcome, "completed");
+    assert.deepEqual(settled.works.map((work) => work.targetPrincipalId), [BOT_ID, BOT_2]);
+  } finally {
+    database.close();
+  }
+});
+
+test("startup recovery settles a past-deadline Round stuck behind lineage Works through the deadline rule", async (t) => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "parallel");
+    const plan = admissionPlan(database, "parallel");
+    const services = harness(database, 130_000);
+    const started = services.coordinator.start(trigger(plan));
+    const [answered, stopped] = started.works.map(({ work }) => work);
+    const thread = lineageWork(services, database, answered!, "resident_work_thread", 4_200);
+    const review = lineageWork(services, database, answered!, "resident_turn", 4_201);
+    terminalizeSucceeded(services, answered!, 4_210);
+    appendResult(database, {
+      roundId: started.round.id, workId: answered!.id, messageId: `msg_${answered!.id.slice(4)}`,
+    });
+    services.work.cancelQueued({
+      workId: stopped!.id, actorPrincipalId: OWNER_ID, reasonCode: "operator_stop",
+      sourceReference: "owner:stop", timestamp: AT,
+      requestId: fixtureId("request", 4_220), correlationId: fixtureId("correlation", 4_220),
+    });
+    database.raw.prepare(
+      "INSERT INTO authority_epochs VALUES ('messages', 2, 'canonical', 'home23-coordination', 1, 1, '{}', ?)",
+    ).run(AT);
+
+    database.reopen();
+    const later = () => new Date("2026-08-25T16:11:00.000Z");
+    const restarted = harness(database, 131_000, undefined, later);
+    assert.deepEqual(restarted.context.listRecoveryRoundIds(100), [started.round.id]);
+    const warnings: string[] = [];
+    t.mock.method(console, "warn", (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); });
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    const service = createGroupChannelMessageService({
+      messages: {
+        async sendMessage() { throw new Error("a settled Round must not send a Message"); },
+        async listMessages() { throw new Error("durable recovery must not resnapshot mutable Messages"); },
+      },
+      context: restarted.context,
+      coordinator: restarted.coordinator,
+      work: restarted.work,
+      leases: restarted.leases,
+      resolveResident: () => undefined,
+      authority: {
+        current: () => ({
+          capability: "messages" as const, epoch: 2, mode: "canonical" as const,
+          writer: "home23-coordination", effectiveAtEventSequence: 1, rollbackEpoch: 1,
+        }),
+      },
+      recordMessage: async () => undefined,
+      beginWork: () => settle,
+      recoveryIdentity: () => ({
+        requestId: fixtureId("request", 4_230), correlationId: fixtureId("correlation", 4_230),
+      }),
+      now: later,
+    });
+    assert.deepEqual(await service.recoverResidentWork(), { discovered: 1, scheduled: 1, refused: 0 });
+    await settled;
+    const round = restarted.rounds.get(started.round.id);
+    assert.equal(round?.state, "failed");
+    assert.equal(round?.terminalReason, "deadline_exceeded");
+    assert.equal(getRoundRecoveryRefusal(database, started.round.id), null);
+    assert.deepEqual(warnings, []);
+    assert.deepEqual(restarted.context.listRecoveryRoundIds(100), []);
+    assert.deepEqual([thread, review].map((work) => restarted.work.get(work.id)?.state), ["queued", "queued"],
+      "deadline repair leaves lineage Works to their own owners");
   } finally {
     database.close();
   }

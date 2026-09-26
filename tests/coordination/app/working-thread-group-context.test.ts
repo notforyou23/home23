@@ -300,6 +300,21 @@ for (const fromReview of [false, true]) test(`group Working Thread ${fromReview 
   assert.deepEqual(deliveryErrors,[]);
   const results=database.readAll<{author:string;roundId:string;reply:string;body:string}>("SELECT author_principal_id AS author,round_id AS roundId,reply_to_message_id AS reply,body_text AS body FROM messages WHERE work_id=? AND kind='result'",child.id);
   assert.deepEqual(results,[{author:BOT_ID,roundId:parent.roundId,reply:MESSAGE_ID,body:response.text}]);
+  // The thread (and a saved review) carry the Round only as lineage: once the admitted Works finish, the Round settles.
+  services.leases.terminalize({...binding,receipt:{status:'succeeded',sourceReference:'resident:jerry',resultDigest:'e'.repeat(64),artifactIds:[],timestamp:AT}});
+  let suffix=83000;
+  for(const {work} of started.works){
+    if(services.work.get(work.id)?.state==='succeeded') continue;
+    const slug=work.targetPrincipalId===BOT_ID?'jerry':'ada';const turn={requestId:fixtureId('request',++suffix),correlationId:fixtureId('correlation',suffix)};
+    const offer=services.leases.offer({workId:work.id,holderPrincipalId:work.targetPrincipalId,holderInstanceId:`settle-${slug}`,authorityReference:`resident:${slug}`,automatic:true,...turn});
+    const lease={workId:work.id,attemptId:offer.attempt.id,leaseId:offer.lease.id,holderPrincipalId:work.targetPrincipalId,holderInstanceId:`settle-${slug}`,fencingToken:offer.fencingToken,...turn};
+    services.leases.accept(lease);services.leases.start(lease);
+    services.leases.terminalize({...lease,receipt:{status:'succeeded',sourceReference:`resident:${slug}`,resultDigest:'f'.repeat(64),artifactIds:[],timestamp:AT}});
+  }
+  const settled=services.coordinator.reconcile({roundId:parent.roundId!,requestId:fixtureId('request',83900),correlationId:fixtureId('correlation',83900)});
+  assert.equal(settled.outcome,'completed');
+  assert.deepEqual(settled.works.map(work=>work.id),started.works.map(row=>row.work.id));
+  assert.deepEqual(services.context.listRecoveryRoundIds(100),[]);
 });
 
 for(const targetSlug of ['ada','jerry']) test(`Jerry can dispatch joined channel Work to ${targetSlug} and recover one canonical result`,async t=>{

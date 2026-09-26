@@ -20,6 +20,7 @@ const { agentProcessNames } = require('../../shared/agent-process-names.cjs');
 const executeFile = promisify(execFile);
 const PROVIDERS = new Set(['anthropic', 'openai', 'openai-codex', 'minimax', 'xai', 'ollama-cloud', 'ollama-local']);
 const OAUTH_PROVIDERS = new Set(['anthropic', 'openai-codex']);
+const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const statePath = root => join(root, '.home23-host.json');
 const receiptPath = root => join(root, '.home23-install.json');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -46,19 +47,8 @@ function hostOAuthBroker(appRoot, dependencies = {}) {
     ...(typeof dependencies.oauthNow === 'function' ? { now: dependencies.oauthNow } : {}),
   });
 }
-function oauthPublicStatus(result) {
-  return {
-    configured: result?.configured === true,
-    valid: result?.valid === true,
-    refreshable: result?.refreshable === true,
-    source: result?.source || 'none',
-    expiresAt: result?.expiresAt ?? null,
-    accountId: result?.accountId ?? null,
-    verified: result?.verified === true,
-    revoked: result?.revoked === true,
-    verificationError: typeof result?.verificationError === 'string' ? result.verificationError : null,
-  };
-}
+// Shared with the dashboard's /oauth/status so the two public shapes cannot drift.
+const oauthPublicStatus = result => require('../../shared/home23-oauth.cjs').publicOAuthStatus(result);
 async function cancelHostOAuthPending(appRoot, provider) {
   assertHostOAuthProvider(provider);
   const { default: secretsStore } = await import('../../shared/home23-secrets.cjs');
@@ -524,6 +514,26 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
   const semantic = semanticStatusView(homeRoot, state);
   return { ready: issues.length === 0, issues, memory, warnings: memory.warnings, semantic, ...(recoveryRequired ? { recoveryRequired: true } : {}) };
 }
+/** Core records a Work or group-channel Round it will never recover again only as a
+ * permanent refusal event, and nothing retries it; count them so the owner still sees them.
+ * Read-only and bounded; null when Core's database is absent or cannot be read right now. */
+async function permanentRecoveryRefusals(homeRoot) {
+  const file = join(homeRoot, COORDINATION_DATABASE);
+  if (!existsSync(file)) return null;
+  let database;
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    database = new DatabaseSync(file, { readOnly: true, timeout: 250 });
+    const counts = { works: 0, rounds: 0 };
+    for (const row of database.prepare(`SELECT aggregate_kind AS kind, count(DISTINCT aggregate_id) AS count FROM events
+      WHERE aggregate_kind IN ('work_recovery_refusal', 'round_recovery_refusal')
+        AND json_extract(payload_json, '$.permanent') = 1
+      GROUP BY aggregate_kind`).all()) {
+      counts[row.kind === 'work_recovery_refusal' ? 'works' : 'rounds'] = Number(row.count);
+    }
+    return counts;
+  } catch { return null; } finally { database?.close(); }
+}
 async function status(homeRoot, dependencies = {}, createSession = false) {
   if (!existsSync(receiptPath(homeRoot))) return { ok: true, status: 'absent', homeRoot, desiredRunning: false, processes: [] };
   await validateInstallation(homeRoot);
@@ -540,6 +550,7 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
     desiredRunning: state.desiredRunning === true,
     encoderRequired: encoderRequiredFor(state), semantic: semanticStatusView(homeRoot, state),
     memorySeal: await inspectMemorySeal(homeRoot, residents),
+    permanentRecoveryRefusals: await permanentRecoveryRefusals(homeRoot),
     connection: {
       localURL: `http://127.0.0.1:${state.ports.coordination}`,
       dashboardURL: `http://127.0.0.1:${primaryPorts.dashboard}`,

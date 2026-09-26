@@ -10,7 +10,7 @@ export {
   normalizeActivityPageLimit,
   pageActivity,
 } from "./pagination.js";
-export { projectActivity } from "./projector.js";
+export { ACTIVITY_SOURCE_AGGREGATE_KINDS, projectActivity } from "./projector.js";
 export {
   adaptTrustedM11ActivityFact,
   projectTrustedM11Activity,

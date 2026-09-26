@@ -2231,10 +2231,22 @@ async function buildTS() {
 
 // ── OAuth cards on Providers tab (STEP 18) ──
 
+// The last provider-verified answer per card. The 3 s onboarding poll reads expiry only
+// (?verify=0) and must not paint a grant the provider revoked as connected again.
+const verifiedOAuthStatus = {};
+
+function withKnownRevocation(kind, status) {
+  const verified = verifiedOAuthStatus[kind];
+  return verified?.revoked === true && verified.expiresAt === status.expiresAt
+    && verified.accountId === status.accountId ? verified : status;
+}
+
 async function loadOAuthStatus() {
   try {
     const res = await fetch(`${API}/oauth/status`);
     const data = await res.json();
+    verifiedOAuthStatus.anthropic = data.anthropic || {};
+    verifiedOAuthStatus.codex = data.openaiCodex || {};
     renderOAuthCard('anthropic', data.anthropic || {});
     renderOAuthCard('codex', data.openaiCodex || {});
   } catch (err) {
@@ -2249,9 +2261,15 @@ function renderOAuthCard(kind, status) {
   const logoutBtn = document.getElementById(`btn-${kind}-oauth-logout`);
   if (!statusEl) return;
   statusEl.style.color = '';
-  if (status.configured && status.valid && status.refreshable) {
+  if (status.revoked === true) {
+    statusEl.innerHTML = '<span class="h23s-oauth-expired">⚠ Provider revoked this sign-in — sign in again</span>';
+    if (logoutBtn) logoutBtn.hidden = false;
+  } else if (status.configured && status.valid && status.refreshable) {
     const expiry = status.expiresAt ? ` · expires ${new Date(status.expiresAt).toLocaleDateString()}` : '';
-    statusEl.innerHTML = `<span class="h23s-oauth-connected">✓ Connected${expiry}</span>`;
+    // The provider could not be asked; the expiry answer stands, but say it is unconfirmed.
+    const unconfirmed = /^(unreachable|timeout|provider_error:)/.test(status.verificationError || '')
+      ? ' · couldn’t confirm with provider' : '';
+    statusEl.innerHTML = `<span class="h23s-oauth-connected">✓ Connected${expiry}${unconfirmed}</span>`;
     if (logoutBtn) logoutBtn.hidden = false;
   } else if (status.configured && status.valid) {
     statusEl.innerHTML = '<span class="h23s-oauth-expired">⚠ Sign in again — Home23 has no refresh credential</span>';
@@ -3953,15 +3971,18 @@ async function checkOnboardingProviderGate() {
   try {
     const [provRes, oauthRes, readiness] = await Promise.all([
       fetch(`${API}/providers`),
-      fetch(`${API}/oauth/status`),
+      // Every 3 s: expiry only, so the poll never probes both providers.
+      fetch(`${API}/oauth/status?verify=0`),
       loadSetupReadiness().catch(() => null),
     ]);
     const provData = await provRes.json();
     const oauthData = await oauthRes.json();
+    const anthropicOAuth = withKnownRevocation('anthropic', oauthData.anthropic || {});
+    const codexOAuth = withKnownRevocation('codex', oauthData.openaiCodex || {});
+    const connectedOAuth = status => status.configured && status.valid && status.refreshable && status.revoked !== true;
 
     const hasApiKey = Object.values(provData.providers || {}).some(p => p.hasKey);
-    const hasOAuth = (oauthData.anthropic?.configured && oauthData.anthropic?.valid && oauthData.anthropic?.refreshable)
-                  || (oauthData.openaiCodex?.configured && oauthData.openaiCodex?.valid && oauthData.openaiCodex?.refreshable);
+    const hasOAuth = connectedOAuth(anthropicOAuth) || connectedOAuth(codexOAuth);
 
     const gate = document.getElementById('ob-provider-gate');
     const nextBtn = document.getElementById('ob-next-1');
@@ -3981,8 +4002,8 @@ async function checkOnboardingProviderGate() {
     if (readiness) renderOnboardingReadiness(readiness);
 
     // Also refresh OAuth card statuses
-    renderOAuthCard('anthropic', oauthData.anthropic || {});
-    renderOAuthCard('codex', oauthData.openaiCodex || {});
+    renderOAuthCard('anthropic', anthropicOAuth);
+    renderOAuthCard('codex', codexOAuth);
   } catch (err) {
     console.warn('Provider gate check failed:', err);
   }

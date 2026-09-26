@@ -1208,6 +1208,36 @@ test('create refuses oauth that is configured but neither valid nor refreshable'
   assert.equal(readHostSecrets(homeRoot).providers.anthropic.oauth.refreshToken, 'refresh-stale-access');
 });
 
+test('status counts permanently refused Work and Round recoveries, read-only, so the owner still sees them', async t => {
+  const { homeRoot } = await prepared(t);
+  const stopped = { execute: async () => ({ stdout: '[]' }) };
+  assert.equal((await runHostAction('status', { homeRoot }, stopped)).permanentRecoveryRefusals, null, 'no Core database yet');
+  const file = path.join(homeRoot, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const { DatabaseSync } = await import('node:sqlite');
+  const database = new DatabaseSync(file);
+  database.exec(`CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, aggregate_kind TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL, aggregate_version INTEGER NOT NULL, payload_json TEXT NOT NULL,
+    UNIQUE (aggregate_kind, aggregate_id, aggregate_version))`);
+  const insert = database.prepare('INSERT INTO events (aggregate_kind, aggregate_id, aggregate_version, payload_json) VALUES (?, ?, ?, ?)');
+  for (const [kind, id, version, permanent] of [
+    ['work_recovery_refusal', 'wrk_limit', 1, false], ['work_recovery_refusal', 'wrk_limit', 2, false], ['work_recovery_refusal', 'wrk_limit', 3, true],
+    ['work_recovery_refusal', 'wrk_transient', 1, false],
+    ['round_recovery_refusal', 'rnd_a', 1, true], ['round_recovery_refusal', 'rnd_b', 1, true], ['round_recovery_refusal', 'rnd_transient', 1, false],
+    ['resident_outcome', 'not-a-refusal', 1, true],
+  ]) insert.run(kind, id, version, JSON.stringify({ permanent }));
+  database.close();
+  const before = fs.readFileSync(file);
+  const counted = await runHostAction('status', { homeRoot }, stopped);
+  assert.equal(counted.status, 'prepared');
+  assert.deepEqual(counted.permanentRecoveryRefusals, { works: 1, rounds: 2 });
+  assert.deepEqual(fs.readFileSync(file), before, 'status never writes Core\'s database');
+  fs.writeFileSync(file, 'not a database');
+  const unreadable = await runHostAction('status', { homeRoot }, stopped);
+  assert.equal(unreadable.status, 'prepared', 'an unreadable database never fails status');
+  assert.equal(unreadable.permanentRecoveryRefusals, null);
+});
+
 test('status reports a stale memory seal instead of leaving reads to fail silently', async t => {
   const { homeRoot } = await prepared(t);
   const brain = path.join(homeRoot, 'app/instances/milo/brain');

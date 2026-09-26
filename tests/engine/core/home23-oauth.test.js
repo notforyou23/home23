@@ -10,6 +10,7 @@ const require = createRequire(import.meta.url);
 const {
   createHome23OAuthBroker,
   parseCallback,
+  publicOAuthStatus,
 } = require('../../../shared/home23-oauth.cjs');
 
 function jwt(payload) {
@@ -324,5 +325,29 @@ test('verify never probes a missing or expired credential', async () => {
     assert.equal(expired.valid, false);
     assert.equal(expired.refreshable, true);
     assert.equal(requests, 0);
+  });
+});
+
+test('the public OAuth shape is exact, carries the verify verdict and never a credential', async () => {
+  assert.deepEqual(publicOAuthStatus(undefined), {
+    configured: false, valid: false, refreshable: false, source: 'none', expiresAt: null, accountId: null,
+    verified: false, revoked: false, verificationError: null,
+  });
+  await withRoot(async (root) => {
+    const accessToken = jwt({ exp: 2_000_000_000, sub: 'acct-anthropic' });
+    writeManaged(root, 'anthropic', { accessToken });
+    const broker = createHome23OAuthBroker({
+      home23Root: root,
+      fetchImpl: async () => new Response(JSON.stringify({ type: 'error', error: { type: 'authentication_error' } }), { status: 401 }),
+    });
+    const revoked = publicOAuthStatus(await broker.verify('anthropic'));
+    assert.deepEqual(Object.keys(revoked), [
+      'configured', 'valid', 'refreshable', 'source', 'expiresAt', 'accountId', 'verified', 'revoked', 'verificationError',
+    ]);
+    assert.deepEqual([revoked.configured, revoked.valid, revoked.verified, revoked.revoked], [true, false, true, true]);
+    assert.equal(JSON.stringify(revoked).includes(accessToken), false);
+    assert.equal(JSON.stringify(revoked).includes('refresh-fixture'), false);
+    const unverified = publicOAuthStatus(await broker.status('anthropic'));
+    assert.deepEqual([unverified.valid, unverified.verified, unverified.revoked, unverified.verificationError], [true, false, false, null]);
   });
 });
