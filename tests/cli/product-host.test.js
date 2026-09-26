@@ -423,6 +423,24 @@ test('status warns about foreign supervisors bound to this home without failing 
   assert.deepEqual(clean.foreignBindings.references, []);
 });
 
+test('status from a Host process environment scans the owner home, not the runtime HOME', async t => {
+  const { homeRoot } = await prepared(t);
+  const userHome = path.join(path.dirname(homeRoot), 'user');
+  fs.mkdirSync(path.join(userHome, '.pm2'), { recursive: true });
+  fs.writeFileSync(path.join(userHome, '.pm2/dump.pm2'), JSON.stringify([{ name: 'cosmo-engine', pm_cwd: path.join(homeRoot, 'app') }]));
+  const keys = ['HOME', 'PM2_HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  t.after(() => { for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; } });
+  // host.mjs replaces the whole environment with productEnvironment() before any action.
+  Object.assign(process.env, { HOME: path.join(homeRoot, 'runtime/user'), PM2_HOME: path.join(homeRoot, 'runtime/pm2'),
+    HOME23_OWNER_HOME: userHome, HOME23_PRODUCT_HOST: 'true' });
+  const status = await runHostAction('status', { homeRoot }, { execute: async () => ({ stdout: '[]' }) });
+  assert.equal(status.foreignBindings.scanned.ownerHome, userHome);
+  assert.equal(status.foreignBindings.scanned.pm2Dump, path.join(userHome, '.pm2/dump.pm2'));
+  assert.equal(status.warnings.length, 1);
+  assert.match(status.warnings[0], /PM2 app "cosmo-engine"/);
+});
+
 test('consumer Host skips Evobrew and accepts only its stopped legacy supervisor row', async t => {
   const { homeRoot } = await prepared(t, { omitEvobrew: true });
   const required = ownedProcessNames('milo', { home23Root: homeRoot });

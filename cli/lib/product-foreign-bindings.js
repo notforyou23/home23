@@ -6,8 +6,8 @@
  */
 import { execFileSync } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path';
+import { ownerAccountHome } from './product-environment.js';
 
 export const FOREIGN_BINDINGS_SCHEMA = 'home23.foreign-bindings.v1';
 
@@ -227,34 +227,43 @@ export function foreignBindingWarnings(references) {
 }
 
 /**
- * Scans the user's global PM2 dump, launchd agents and ~/bin shell scripts for references to
- * `homeRoot` and, when given, `previousRoot`. Read-only. `homeDirectory` overrides $HOME
- * (tests); when it is given, the global PM2 home is `<homeDirectory>/.pm2` unless `pm2Home`
- * says otherwise. Otherwise $PM2_HOME is honoured unless it names the home's own supervisor,
- * in which case `~/.pm2` is the global daemon. Anything inside a scanned root belongs to the
- * home and is never reported as foreign.
+ * Scans the owner's global PM2 dump, launchd agents and ~/bin shell scripts for references to
+ * `homeRoot` and, when given, `previousRoot`. Read-only. The owner's home is `homeDirectory`
+ * (tests), else $HOME23_OWNER_HOME, else $HOME when it lies outside every scanned root, else
+ * `accountHome` (the passwd entry). A Host process's HOME is inside the home (runtime/user),
+ * so it is never taken for the owner's. With `homeDirectory`, the global PM2 home is
+ * `<homeDirectory>/.pm2` unless `pm2Home` says otherwise. Otherwise $PM2_HOME is honoured unless
+ * it names the home's own supervisor, in which case `~/.pm2` is the global daemon. Anything
+ * inside a scanned root belongs to the home and is never reported as foreign.
  */
-export function detectForeignBindings({ homeRoot, previousRoot = null, homeDirectory, pm2Home, environment = process.env } = {}) {
+export function detectForeignBindings({ homeRoot, previousRoot = null, homeDirectory, pm2Home, environment = process.env,
+  accountHome = ownerAccountHome } = {}) {
   const roots = [normalizedRoot(homeRoot, 'home root')];
   if (previousRoot !== null && previousRoot !== undefined) {
     const previous = normalizedRoot(previousRoot, 'previous home root');
     if (!roots.includes(previous)) roots.push(previous);
   }
-  const explicitHome = typeof homeDirectory === 'string' && homeDirectory;
-  const userHome = resolve(explicitHome || environment.HOME || homedir());
-  const report = { schema: FOREIGN_BINDINGS_SCHEMA, roots, scanned: { pm2Dump: null, launchAgents: null, shellScripts: null }, references: [], unreadable: [], warnings: [] };
   const foreign = directory => !roots.some(root => inside(root, directory));
+  const absolute = value => typeof value === 'string' && isAbsolute(value) && !value.includes('\0') ? resolve(value) : null;
+  const explicitHome = typeof homeDirectory === 'string' && homeDirectory;
+  const environmentHome = absolute(environment.HOME);
+  const ownerHome = explicitHome ? resolve(explicitHome)
+    : (absolute(environment.HOME23_OWNER_HOME) ?? (environmentHome && foreign(environmentHome) ? environmentHome : accountHome(roots[0])));
+  const report = { schema: FOREIGN_BINDINGS_SCHEMA, roots, scanned: { ownerHome: ownerHome || null, pm2Dump: null, launchAgents: null, shellScripts: null },
+    references: [], unreadable: [], warnings: [] };
 
-  const pm2Candidates = pm2Home ? [pm2Home] : [explicitHome ? null : environment.PM2_HOME, join(userHome, '.pm2')];
+  const pm2Candidates = pm2Home ? [pm2Home] : [explicitHome ? null : environment.PM2_HOME, ownerHome && join(ownerHome, '.pm2')];
   const pm2Directory = pm2Candidates.filter(candidate => typeof candidate === 'string' && candidate).map(candidate => resolve(candidate)).find(foreign);
   if (pm2Directory) scanPm2Dump(join(pm2Directory, 'dump.pm2'), roots, report);
 
-  const agents = join(userHome, 'Library', 'LaunchAgents');
-  if (foreign(agents)) scanLaunchAgents(agents, roots, report);
+  if (ownerHome) {
+    const agents = join(ownerHome, 'Library', 'LaunchAgents');
+    if (foreign(agents)) scanLaunchAgents(agents, roots, report);
 
-  // The launchd agents above mostly run scripts kept in ~/bin; those scripts name the root too.
-  const scripts = join(userHome, 'bin');
-  if (foreign(scripts)) scanShellScripts(scripts, roots, report);
+    // The launchd agents above mostly run scripts kept in ~/bin; those scripts name the root too.
+    const scripts = join(ownerHome, 'bin');
+    if (foreign(scripts)) scanShellScripts(scripts, roots, report);
+  }
 
   report.warnings = foreignBindingWarnings(report.references);
   return report;

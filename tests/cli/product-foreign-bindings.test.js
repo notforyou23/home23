@@ -102,7 +102,7 @@ test('reports global PM2 apps and launchd agents still bound to a retired home r
   assert.equal(report.schema, 'home23.foreign-bindings.v1');
   assert.deepEqual(report.roots, [newRoot, oldRoot]);
   assert.deepEqual(report.unreadable, []);
-  assert.deepEqual(report.scanned, { pm2Dump: dumpFile, launchAgents: path.join(userHome, 'Library/LaunchAgents'), shellScripts: null });
+  assert.deepEqual(report.scanned, { ownerHome: userHome, pm2Dump: dumpFile, launchAgents: path.join(userHome, 'Library/LaunchAgents'), shellScripts: null });
   assert.deepEqual(report.references, [
     { source: 'pm2', name: 'cosmo-engine', field: 'pm_cwd', value: `${oldRoot}/app`, root: oldRoot, file: dumpFile },
     { source: 'pm2', name: 'cosmo-engine', field: 'env.HOME23_ROOT', value: `${oldRoot}/app`, root: oldRoot, file: dumpFile },
@@ -149,7 +149,7 @@ test('reports nothing when no supervisor references the roots or when the folder
   assert.deepEqual(absent.warnings, []);
   assert.deepEqual(absent.unreadable, []);
   assert.deepEqual(absent.roots, [homeRoot]);
-  assert.deepEqual(absent.scanned, { pm2Dump: null, launchAgents: null, shellScripts: null });
+  assert.deepEqual(absent.scanned, { ownerHome: path.join(root, 'nobody'), pm2Dump: null, launchAgents: null, shellScripts: null });
   assert.deepEqual(foreignBindingWarnings([]), []);
 });
 
@@ -157,7 +157,7 @@ test('respects HOME and PM2_HOME overrides and never treats the home\'s own supe
   const root = tempRoot(t);
   const homeRoot = path.join(root, 'home');
   const userHome = userHomeWith(root, { apps: [engineApp(homeRoot)] });
-  const previous = { HOME: process.env.HOME, PM2_HOME: process.env.PM2_HOME };
+  const previous = { HOME: process.env.HOME, PM2_HOME: process.env.PM2_HOME, HOME23_OWNER_HOME: process.env.HOME23_OWNER_HOME };
   t.after(() => {
     for (const key of Object.keys(previous)) {
       if (previous[key] === undefined) delete process.env[key];
@@ -166,6 +166,7 @@ test('respects HOME and PM2_HOME overrides and never treats the home\'s own supe
   });
   process.env.HOME = userHome;
   delete process.env.PM2_HOME;
+  delete process.env.HOME23_OWNER_HOME;
   const viaHome = detectForeignBindings({ homeRoot });
   assert.equal(viaHome.scanned.pm2Dump, path.join(userHome, '.pm2/dump.pm2'));
   assert.equal(viaHome.references.length, 5);
@@ -189,6 +190,58 @@ test('respects HOME and PM2_HOME overrides and never treats the home\'s own supe
   assert.deepEqual(ownedReport.references, []);
   const explicit = detectForeignBindings({ homeRoot, homeDirectory: path.join(root, 'nobody'), pm2Home: customPm2 });
   assert.equal(explicit.references.length, 1);
+});
+
+/** A Host process environment: HOME and PM2_HOME are this home's own, inside its root. */
+function productShaped(homeRoot, extra = {}) {
+  const runtimeUser = path.join(homeRoot, 'runtime/user');
+  // The home's private runtime home legitimately names the home; it is never scanned.
+  fs.mkdirSync(path.join(runtimeUser, '.pm2'), { recursive: true });
+  fs.writeFileSync(path.join(runtimeUser, '.pm2/dump.pm2'), JSON.stringify([engineApp(homeRoot)]));
+  fs.mkdirSync(path.join(runtimeUser, 'Library/LaunchAgents'), { recursive: true });
+  fs.writeFileSync(path.join(runtimeUser, 'Library/LaunchAgents/own.plist'), watcherAgent('own', homeRoot));
+  return { HOME: runtimeUser, PM2_HOME: path.join(homeRoot, 'runtime/pm2'), HOME23_PRODUCT_HOST: 'true', ...extra };
+}
+
+test('a Host process scans the owner home named by HOME23_OWNER_HOME, not its own runtime HOME', t => {
+  const root = tempRoot(t);
+  const homeRoot = path.join(root, 'home');
+  const userHome = userHomeWith(root, {
+    apps: [engineApp(homeRoot)],
+    agents: { 'com.example.home23-watch.plist': watcherAgent('com.example.home23-watch', homeRoot) },
+    bin: { 'sync.sh': `#!/bin/sh\ncd ${homeRoot}/app\n` },
+  });
+  const report = detectForeignBindings({ homeRoot, environment: productShaped(homeRoot, { HOME23_OWNER_HOME: userHome }),
+    accountHome: () => { throw new Error('the named owner home must be used'); } });
+  assert.deepEqual(report.scanned, { ownerHome: userHome, pm2Dump: path.join(userHome, '.pm2/dump.pm2'),
+    launchAgents: path.join(userHome, 'Library/LaunchAgents'), shellScripts: path.join(userHome, 'bin') });
+  assert.deepEqual([...new Set(report.references.map(reference => `${reference.source}:${reference.file}`))], [
+    `pm2:${path.join(userHome, '.pm2/dump.pm2')}`,
+    `launchd:${path.join(userHome, 'Library/LaunchAgents/com.example.home23-watch.plist')}`,
+    `shell:${path.join(userHome, 'bin/sync.sh')}`,
+  ]);
+  assert.equal(report.warnings.length, 3);
+});
+
+test('without the owner variable a HOME inside the home falls back to the passwd owner home', t => {
+  const root = tempRoot(t);
+  const homeRoot = path.join(root, 'home');
+  const userHome = userHomeWith(root, { apps: [engineApp(homeRoot)] });
+  const asked = [];
+  const report = detectForeignBindings({ homeRoot, environment: productShaped(homeRoot),
+    accountHome: home => { asked.push(home); return userHome; } });
+  assert.deepEqual(asked, [homeRoot]);
+  assert.equal(report.scanned.ownerHome, userHome);
+  assert.equal(report.scanned.pm2Dump, path.join(userHome, '.pm2/dump.pm2'));
+  assert.ok(report.references.length > 0 && report.references.every(reference => reference.file.startsWith(`${userHome}/`)));
+
+  // No usable account home: nothing inside the home is scanned in its place.
+  const none = detectForeignBindings({ homeRoot, environment: productShaped(homeRoot), accountHome: () => null });
+  assert.deepEqual(none.scanned, { ownerHome: null, pm2Dump: null, launchAgents: null, shellScripts: null });
+  assert.deepEqual(none.references, []);
+  // A HOME outside every root is still the owner home, as for the CLI.
+  const cli = detectForeignBindings({ homeRoot, environment: { HOME: userHome }, accountHome: () => null });
+  assert.equal(cli.scanned.pm2Dump, path.join(userHome, '.pm2/dump.pm2'));
 });
 
 test('unreadable dumps, agents and scripts are reported as unreadable instead of failing the scan', t => {
@@ -239,7 +292,7 @@ test('reports shell scripts in ~/bin that still name a retired home root without
 
   const report = detectForeignBindings({ homeRoot: newRoot, previousRoot: oldRoot, homeDirectory: userHome });
   assert.deepEqual(report.unreadable, []);
-  assert.deepEqual(report.scanned, { pm2Dump: null, launchAgents: path.join(userHome, 'Library/LaunchAgents'), shellScripts: path.join(userHome, 'bin') });
+  assert.deepEqual(report.scanned, { ownerHome: userHome, pm2Dump: null, launchAgents: path.join(userHome, 'Library/LaunchAgents'), shellScripts: path.join(userHome, 'bin') });
   assert.deepEqual(report.references, [
     { source: 'shell', name: 'log-health.sh', field: 'line 3', value: `LOG="${oldRoot}/app/logs/health.log"`, root: oldRoot, file: healthFile },
     { source: 'shell', name: 'log-health.sh', field: 'line 5', value: `cd ${oldRoot}/app && node scripts/health.mjs >> "$LOG"`, root: oldRoot, file: healthFile },
@@ -259,7 +312,7 @@ test('reports shell scripts in ~/bin that still name a retired home root without
 
   // A ~/bin inside a scanned root belongs to that home and is not scanned at all.
   const own = detectForeignBindings({ homeRoot: root, homeDirectory: userHome });
-  assert.deepEqual(own.scanned, { pm2Dump: null, launchAgents: null, shellScripts: null });
+  assert.deepEqual(own.scanned, { ownerHome: userHome, pm2Dump: null, launchAgents: null, shellScripts: null });
   assert.deepEqual(own.references, []);
 });
 
