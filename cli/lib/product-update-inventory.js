@@ -175,6 +175,7 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   if (!['full', 'fingerprint'].includes(databaseCheck)) throw new Error('Invalid database inspection mode.');
   const root = absoluteHome(homeRoot);
   const reasons = [];
+  const warnings = [];
   const unknown = [];
   let adoptedLinks = new Map();
   let adoptedReferences = new Set();
@@ -254,7 +255,13 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
             reasons.push(reason('linked_state_changed', `Reviewed state link ${relative} changed.`, { path: relative }));
           else if (approved.kind === 'retain-authority' && !exists(resolved)) reasons.push(reason('retained_authority_missing', `External authority for ${relative} is unavailable. Restore or reconnect it before updating.`, { path: relative }));
           else adoptedLinks.delete(relative);
-        } else if (!insideHome) reasons.push(reason('linked_state_path', `State path ${relative} points outside this home. Keep the real directory in place before updating.`, { path: relative }));
+        } else if (!insideHome) {
+          // An update never copies or follows state, so a link whose target is
+          // gone has nothing to keep in place. Only a present outside target
+          // is something the owner must move back before updating.
+          if (exists(resolved)) reasons.push(reason('linked_state_path', `State path ${relative} points outside this home. Keep the real directory in place before updating.`, { path: relative }));
+          else warnings.push(reason('dangling_state_link', `State link ${relative} points to a missing target; it does not block this update.`, { path: relative }));
+        }
       } else if (!manifestPaths.has(relative)) {
         reasons.push(reason('unknown_state', `Unclassified path ${relative} is a link.`, { path: relative }));
       }
@@ -359,7 +366,7 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
     schema: 'home23.product-update-inventory.v1', scope: 'host_v1_schema_preserving', complete: reasons.length === 0,
     writers: writerNames || [], database: COORDINATION_DATABASE, databaseInspection: { present: database.present, version: database.version ?? null, compatible: database.compatible === true, integrityChecked: database.integrityChecked === true },
     desiredRunning: state?.desiredRunning === true, created, resident: state?.profile?.name || null, encoderRequired: state?.encoderRequired === true,
-    reasons,
+    reasons, warnings,
   };
 }
 

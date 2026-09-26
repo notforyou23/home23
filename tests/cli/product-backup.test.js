@@ -429,6 +429,43 @@ test('restoring rebases an in-home symlink onto the new root', async t => {
   assert.equal(fs.readFileSync(restored, 'utf8'), 'remember this\n');
 });
 
+test('a dangling resident link is archived as written and recreated, still dangling, on restore', async t => {
+  const fixture = stoppedHome(t);
+  // The owner's live case: a worker's clone kept a link into a tree that was retired.
+  const clone = 'app/instances/workers/shakedown-jerry/workspace/source-clones/shakedownshuffle';
+  fs.mkdirSync(path.join(fixture.home, clone), { recursive: true });
+  const links = { [`${clone}/html-test`]: path.join(fixture.root, 'retired-tree/html-test'),
+    'app/instances/milo/workspace/old-notes': path.join(fixture.root, 'retired-tree/notes') };
+  for (const [relative, retired] of Object.entries(links)) fs.symlinkSync(retired, path.join(fixture.home, relative));
+  fs.mkdirSync(fixture.inspectionRoot);
+  const created = await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  assert.equal(created.ok, true);
+  const header = readAuthenticatedBackupHeader({ archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  for (const relative of Object.keys(links)) assert.equal(header.files.find(entry => entry.path === relative)?.type, 'symlink');
+
+  // A target that reappears outside the home is an escape again, not a dead link.
+  fs.mkdirSync(path.join(fixture.root, 'retired-tree/html-test'), { recursive: true });
+  await assert.rejects(() => inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+    inspectionRoot: fixture.inspectionRoot }), /escapes its home/);
+  assert.deepEqual(fs.readdirSync(fixture.inspectionRoot), []);
+  fs.rmSync(path.join(fixture.root, 'retired-tree'), { recursive: true });
+
+  const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  assert.equal(inspected.ok, true);
+  for (const [relative, retired] of Object.entries(links)) {
+    const restored = path.join(fixture.inspectionRoot, relative);
+    assert.equal(fs.lstatSync(restored).isSymbolicLink(), true);
+    assert.equal(fs.readlinkSync(restored), retired);
+    assert.equal(fs.existsSync(restored), false);
+  }
+
+  const config = stoppedHome(t);
+  fs.symlinkSync(path.join(config.root, 'retired-tree/agents.json'), path.join(config.home, 'app/config/agents.json'));
+  await assert.rejects(() => createHomeBackup({ homeRoot: config.home, archivePath: config.archivePath, keyPath: config.keyPath }, quiet),
+    /escapes its home/);
+  assert.equal(fs.existsSync(config.archivePath), false);
+});
+
 test('move fences the source and leaves the destination stopped', async t => {
   const fixture = stoppedHome(t);
   const birth = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
