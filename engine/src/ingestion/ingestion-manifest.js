@@ -17,13 +17,16 @@ class IngestionManifest {
    * @param {function} opts.embeddingFn - async (text) => float[] | null
    * @param {object} opts.config - { batchSize, intervalSeconds }
    * @param {object} opts.logger
+   * @param {function} [opts.onGenerationLost] - (filePath, label) after a
+   *   generation whose chunk nodes left the graph was reset for re-reading
    */
-  constructor({ runPath, memory, embeddingFn, config = {}, logger = null }) {
+  constructor({ runPath, memory, embeddingFn, config = {}, logger = null, onGenerationLost = null }) {
     this.runPath = runPath;
     this.memory = memory;
     this.embeddingFn = embeddingFn;
     this.config = config;
     this.logger = logger;
+    this.onGenerationLost = onGenerationLost;
 
     this._manifestPath = path.join(runPath, 'ingestion-manifest.json');
     // JSONL, not a single JSON array: the queue once serialized as one
@@ -317,12 +320,26 @@ class IngestionManifest {
 
         // Phase 4/5: finalize complete generations and apply each relationship
         // exactly once using the complete generation's node map.
+        const lostGenerations = [];
         for (const filePath of filesInBatch) {
           const representative = readyItems.find(i => i.filePath === filePath);
           const existing = ensureGenerationState(this, filePath, representative);
           const totalChunks = Number(representative.totalChunks) || existing._pendingTotalChunks || 0;
           const nodeIds = orderedGenerationNodeIds(existing._pendingChunks, totalChunks);
           if (!nodeIds) continue;
+          // Chunk IDs are recorded here at once, but the nodes reach the brain
+          // only at its next save. A restart in between leaves earlier chunks
+          // naming nodes that are gone or reused by other nodes; relating them
+          // wrote Forrest's dangling depends_on edges (2026-09-23).
+          const lostChunks = lostGenerationChunks(this.memory, filePath, existing._pendingChunks, totalChunks);
+          if (lostChunks.length) {
+            resetLostGeneration(this, filePath);
+            this.logger?.warn?.('Feeder generation lost chunk nodes; re-reading the file', {
+              filePath, lostChunks: lostChunks.length, totalChunks,
+            });
+            lostGenerations.push({ filePath, label: existing.label || representative.label });
+            continue;
+          }
           applyGenerationRelationships(this.memory, existing._pendingChunks, representative.relationships);
           const completed = {
             ...existing,
@@ -355,6 +372,14 @@ class IngestionManifest {
           this._queue.requeue(remaining, remaining.map((item) => deliveryByItem.get(item)));
         }
         this._queue.commit(queuedBatch.token);
+        // Not awaited: re-reading enqueues behind this flush's lock.
+        for (const { filePath, label } of lostGenerations) {
+          Promise.resolve()
+            .then(() => this.onGenerationLost?.(filePath, label))
+            .catch((err) => this.logger?.warn?.('Re-reading a lost feeder generation failed', {
+              filePath, error: err.message,
+            }));
+        }
 
         this.logger?.info?.(`Flushed ${readyItems.length} items (${reason})`, {
           filesProcessed: filesInBatch.size,
@@ -705,6 +730,50 @@ function orderedGenerationNodeIds(chunks, totalChunks) {
     nodeIds.push(nodeId);
   }
   return nodeIds;
+}
+
+// A chunk node may sit under either ID type (disk rows load as strings, fresh
+// allocations are numbers). It is this chunk's only while it still carries
+// the chunk's feeder key: IDs lost at a restart are handed to new nodes.
+function feederChunkNode(memory, nodeId, ownsKey) {
+  for (const id of [nodeId, String(nodeId), Number(nodeId)]) {
+    const node = memory.nodes.get(id);
+    if (node) return ownsKey(node.metadata?.chunkKey) ? { id, node } : null;
+  }
+  return null;
+}
+
+function lostGenerationChunks(memory, filePath, chunks, totalChunks) {
+  // Doubles without a node map keep the previous contract.
+  if (!(memory?.nodes instanceof Map)) return [];
+  const lost = [];
+  for (let index = 0; index < totalChunks; index += 1) {
+    const sourcePath = `${filePath}#chunk-${index}`;
+    if (!feederChunkNode(memory, chunks?.[String(index)], (key) => key === sourcePath)) lost.push(index);
+  }
+  return lost;
+}
+
+// The lost chunks' queue items are already acknowledged, so the generation
+// cannot finish. Remove the chunks that are provably still this file's, and
+// drop the hash so the feeder reads the file again as new.
+function resetLostGeneration(manifest, filePath) {
+  const entry = manifest._manifest[filePath];
+  const prefix = `${filePath}#chunk-`;
+  for (const nodeId of Object.values(entry._pendingChunks || {})) {
+    const owned = feederChunkNode(manifest.memory, nodeId, (key) => typeof key === 'string' && key.startsWith(prefix));
+    if (!owned) continue;
+    forgetFeederNode(manifest, owned.id);
+    manifest.memory.removeNode(owned.id);
+  }
+  entry.nodeIds = [];
+  entry.nodeCount = 0;
+  entry.lostChunksAt = new Date().toISOString();
+  delete entry.hash;
+  delete entry._pendingGeneration;
+  delete entry._pendingChunks;
+  delete entry._pendingTotalChunks;
+  delete entry._supersededNodeIds;
 }
 
 function applyGenerationRelationships(memory, chunks, relationships) {

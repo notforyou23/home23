@@ -419,6 +419,41 @@ test('node removal cascades all incident edge tombstones inside its single outer
   assert.equal([...mem.clusters.values()].some((members) => members.has(a.id)), false);
 });
 
+test('an edge is refused unless both endpoints are in the graph', async () => {
+  // Forrest, 2026-09-23: feeder depends_on edges named chunk nodes that a
+  // restart had lost. Load drops such rows, so they wedged every compaction.
+  const warnings = [];
+  const mem = memory();
+  mem.logger = { ...mem.logger, warn: (message, data) => warnings.push({ message, data }) };
+  const kept = await addIsolatedNode(mem, 7, [1, 0, 0]);
+  const dropped = await addIsolatedNode(mem, 8, [0, 1, 0]);
+  mem.addEdge(kept.id, dropped.id, 0.3, 'depends_on');
+  mem.removeNode(dropped.id);
+  assert.equal(mem.edges.size, 0, 'removal cascades the edge');
+  mem.markPersistenceClean();
+  const generation = mem.persistenceGeneration;
+
+  mem.addEdge(kept.id, dropped.id, 0.3, 'depends_on');
+  mem.addEdge(43420, kept.id, 0.3, 'depends_on');
+  assert.equal(mem.edges.size, 0);
+  assert.equal(mem.persistenceGeneration, generation);
+  assert.equal(mem.hasPersistenceChanges(), false, 'nothing reaches the next delta');
+  assert.deepEqual(warnings.map((entry) => entry.data), [
+    { nodeA: 7, nodeB: 8, type: 'depends_on' },
+    { nodeA: 43420, nodeB: 7, type: 'depends_on' },
+  ]);
+
+  // A string alias of a numeric node resolves to the graph's own identity,
+  // which is what load matches endpoints against.
+  await addIsolatedNode(mem, 9, [0, 0, 1]);
+  mem.addEdge('7', '9', 0.3, 'depends_on');
+  assert.deepEqual(
+    [mem.edges.get('7->9').source, mem.edges.get('7->9').target, mem.edges.get('7->9').type],
+    [7, 9, 'depends_on'],
+  );
+  assert.deepEqual(mem.capturePersistenceChangesSnapshot().changes.edges.map((edge) => [edge.source, edge.target]), [[7, 9]]);
+});
+
 test('decay updates every accepted node and edge record in one barrier', async () => {
   const mem = memory({
     decay: {

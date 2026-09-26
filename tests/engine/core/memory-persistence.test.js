@@ -1547,3 +1547,81 @@ test('stale base staging files are removed before a rebase while committed files
   ]) assert.ok(files.includes(file), `${file} is untouched`);
   assert.deepEqual(logs.find((entry) => entry.message === 'Removed stale memory base staging files')?.data.removed, [stale]);
 });
+
+// The real resident graph, loaded without network clients (the pattern of
+// tests/engine/memory/network-memory-persistence-generation.test.js).
+function createNetworkMemory() {
+  const Module = require('node:module');
+  const originalLoad = Module._load;
+  Module._load = function patchedLoad(request, parent, isMain) {
+    if (request === 'openai') return class OpenAI {};
+    if (request === 'dotenv') return { config() {} };
+    if (request === 'tiktoken') return { encoding_for_model: () => ({ encode: () => [], free() {} }) };
+    if (request.endsWith('/core/openai-client') || request === '../core/openai-client') {
+      return { getOpenAIClient: () => null, getEmbeddingClient: () => null };
+    }
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  let NetworkMemory;
+  try {
+    ({ NetworkMemory } = require('../../../engine/src/memory/network-memory.js'));
+  } finally {
+    Module._load = originalLoad;
+  }
+  const memory = new NetworkMemory({
+    embedding: {},
+    coordinator: {},
+    smallWorld: { maxBridgesPerNode: 40 },
+    spreading: { maxDepth: 2, activationThreshold: 0.01, decayFactor: 0.8 },
+    hebbian: { enabled: false, reinforcementStrength: 0.1 },
+    decay: { baseFactor: 0.95, minimumWeight: 0.01, decayInterval: 300, exemptTags: [] },
+  }, { info() {}, warn() {}, error() {}, debug() {} });
+  memory.tokenizer = null;
+  return memory;
+}
+
+test('an edge to a dropped or never-persisted node is never appended, so compaction counts clean', async (t) => {
+  // Forrest, 2026-09-23..26: the delta held 20 depends_on edges whose
+  // endpoints existed nowhere on disk. Load dropped them, every later append
+  // wrote the resident summary, and each compaction failed its count check.
+  const home23Root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-dangling-edge-'));
+  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
+  const brainDir = path.join(home23Root, 'instances', 'forrest', 'brain');
+  await fsp.mkdir(brainDir, { recursive: true });
+  const options = { brainDir, home23Root, schedule: () => {}, logger: quietLogger([]) };
+
+  const before = createNetworkMemory();
+  const chunk0 = await before.addNode({ concept: 'sources.json chunk 0' }, 'research_runs', [1, 0, 0]);
+  const chunk1 = await before.addNode({ concept: 'sources.json chunk 1' }, 'research_runs', [0, 1, 0]);
+  assert.equal((await persistMemoryRevision({ ...options, memory: before })).mode, 'full');
+  const dropped = await before.addNode({ concept: 'sources.json chunk 2' }, 'research_runs', [0, 0, 1]);
+  before.addEdge(chunk1.id, dropped.id, 0.3, 'depends_on');
+  before.removeNode(dropped.id); // dropped: removal cascades the edge
+  before.addEdge(chunk0.id, 43420, 0.3, 'depends_on'); // skipped: lost at a restart
+  before.addEdge(chunk0.id, chunk1.id, 0.3, 'depends_on');
+  const appended = await persistMemoryRevision({ ...options, memory: before });
+  assert.equal(appended.mode, 'delta');
+  assert.equal(appended.cleaned, true);
+
+  const disk = await loadMemoryRevision(brainDir, { home23Root });
+  const ids = new Set(disk.nodes.map((node) => String(node.id)));
+  assert.deepEqual(disk.edges.map((edge) => [String(edge.source), String(edge.target), edge.type]),
+    [[String(chunk0.id), String(chunk1.id), 'depends_on']]);
+  for (const edge of disk.edges) assert.ok(ids.has(String(edge.source)) && ids.has(String(edge.target)));
+  assert.equal(disk.summary.edges, appended.manifest.summary.edgeCount);
+
+  // Restart: hydrate as the orchestrator does, change the graph, and let the
+  // overdue rebase count the committed rows against the resident summary.
+  const after = createNetworkMemory();
+  after.importGraphChanges({ nodes: disk.nodes, edges: disk.edges });
+  after.markPersistenceClean();
+  await after.addNode({ concept: 'after the restart' }, 'research_runs', [0, 0, 1]);
+  const events = [];
+  const compacted = await persistMemoryRevision({
+    ...options, memory: after, writer: countingWriter(events), fullRewriteIntervalMs: 0,
+  });
+  assert.deepEqual(events, ['append', 'compact'], 'the counted rows match; no resident-rewrite fallback');
+  assert.equal(compacted.mode, 'full');
+  assert.equal(compacted.manifest.activeBase.edges.count, 1);
+  assert.equal(compacted.manifest.activeBase.nodes.count, 3);
+});

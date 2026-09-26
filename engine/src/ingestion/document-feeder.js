@@ -107,7 +107,8 @@ class DocumentFeeder {
         batchSize: this.config.flush?.batchSize || 20,
         intervalSeconds: this.config.flush?.intervalSeconds || 300
       },
-      logger: this.logger
+      logger: this.logger,
+      onGenerationLost: (filePath, label) => this._reingestLostGeneration(filePath, label),
     });
 
     if (this.config.maintenanceMode === true) {
@@ -598,6 +599,15 @@ class DocumentFeeder {
       depth: 99,
       ignored: (candidatePath) => this._shouldIgnorePath(candidatePath)
     };
+  }
+
+  // The manifest reset a generation whose chunk nodes a restart lost before
+  // the brain saved them. Read the file again now rather than at the next
+  // restart's scan or the next edit.
+  async _reingestLostGeneration(filePath, label) {
+    if (!this._started || this._stopping || this.config.maintenanceMode === true) return;
+    await this._processFile(filePath, label);
+    await this.manifest.flush('lost-generation');
   }
 
   async _onFileEvent(filePath, fixedLabel, watchRoot) {
