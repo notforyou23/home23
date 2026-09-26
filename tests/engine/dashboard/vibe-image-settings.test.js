@@ -219,7 +219,11 @@ test('settings agent creation records purpose and starter ingestion folders', as
     const instanceDir = path.join(root, 'instances', 'ada');
     const config = yaml.load(fs.readFileSync(path.join(instanceDir, 'config.yaml'), 'utf8'));
     assert.equal(config.agent.purpose, purpose);
-    assert.equal(config.engine.thought, 'MiniMax-M3');
+    // The first agent is a home birth (createHome, since 2026-09-09): its
+    // cognitive engine runs on the selected model, not the old fixed default.
+    assert.deepEqual(config.engine, {
+      thought: 'kimi-k3:cloud', consolidation: 'kimi-k3:cloud', dreaming: 'kimi-k3:cloud',
+    });
     assert.equal(config.engine.query, undefined, 'engine.query is retired — creation must not seed it');
     assert.equal(config.chat.defaultModel, 'kimi-k3:cloud');
     assert.equal(config.chat.memorySearch.enabled, true);
