@@ -477,30 +477,42 @@ async function persistMemoryRevision({
         }
       }
       if (failure) {
+        // A compaction or rewrite can throw after publishing its manifest
+        // (source lock release, pin or scratch cleanup). Callers then record
+        // the manifest actually on disk, and its new base is maintained as
+        // after any rewrite; only the cleanup failed.
+        const onDisk = await writer.readManifest(brainDir).catch(() => null) || committedManifest;
+        const published = onDisk.generation !== committedManifest.generation;
         // Back off on the error that ended this attempt: when the fallback
         // ran, a retryable resident-rewrite failure (a mutation during its
         // stream, a busy lock) retries on the next save, not in an hour.
-        const retryAfter = failure.retryable !== true ? now() + compactionBackoffMs : null;
-        if (retryAfter) compactionBackoff.set(backoffKey, { until: retryAfter, error: failure.message });
+        const retryAfter = !published && failure.retryable !== true ? now() + compactionBackoffMs : null;
+        if (published) compactionBackoff.delete(backoffKey);
+        else if (retryAfter) compactionBackoff.set(backoffKey, { until: retryAfter, error: failure.message });
         if (memoryDurable) {
           // The append (or a clean reuse) is durable at committedManifest, so
           // callers may save state exactly as after an ordinary delta. Dirty
           // markers stay set, matching the failed-compaction contract above.
           failure.memoryCommitted = {
             ...committedResult,
-            mode: committedResult.count > 0 ? 'delta' : 'reused',
+            manifest: onDisk,
+            mode: published ? 'full' : (committedResult.count > 0 ? 'delta' : 'reused'),
             cleaned: false,
             persistedGeneration: snapshot.generation,
             persistedChanges: snapshot.changes || null,
             persistedChangesCaptured: Boolean(snapshot.changes),
             maintenanceDebt: {
-              reason: 'compaction_failed',
+              reason: published ? 'compaction_cleanup_failed' : 'compaction_failed',
               error: failure.message,
               retryAfter: retryAfter ? new Date(retryAfter).toISOString() : null,
               graphCounts: failure.graphCounts ?? null,
               manifestSummary: committedManifest.summary,
             },
           };
+        }
+        if (published) {
+          scheduleSourceRetirement({ brainDir, home23Root, lockRoot, retire, schedule, logger });
+          scheduleAnnRebuild({ brainDir, home23Root, rebuildAnn, schedule, logger });
         }
         throw failure;
       }

@@ -1569,6 +1569,67 @@ test('a retryable resident-rewrite failure retries on the next save instead of b
   assert.equal(memory.dirtyNodeIds.size, 0);
 });
 
+test('a failure after the new manifest is published reports the manifest on disk', async (t) => {
+  const cleanupFailure = () => Object.assign(new Error('source lock release failed'), { code: 'lock_release_failed' });
+  const publishedThenThrew = [{
+    name: 'compaction',
+    brain: async () => {
+      const fixture = await createCompactionFixture(t);
+      const memory = createResidentMemory(fixture.nodes, fixture.edges);
+      memory.upsertNode({ ...fixture.nodes[0], concept: 'appended before compaction' });
+      return { ...fixture, memory };
+    },
+    wrap: (writer) => ({
+      ...writer,
+      compactMemoryBase: async (...args) => { await writer.compactMemoryBase(...args); throw cleanupFailure(); },
+    }),
+  }, {
+    name: 'resident rewrite',
+    brain: async () => {
+      const brain = await createDriftedBrain(t, driftedEdgeBrain);
+      const memory = driftedEdgeResident();
+      memory.upsertNode({ id: 'n1', concept: 'appended before compaction' });
+      return { ...brain, memory };
+    },
+    wrap: (writer) => ({
+      ...writer,
+      rewriteMemoryBaseFromSnapshot: async (...args) => {
+        await writer.rewriteMemoryBaseFromSnapshot(...args);
+        throw cleanupFailure();
+      },
+    }),
+  }];
+  for (const scenario of publishedThenThrew) {
+    const { brainDir, home23Root, memory } = await scenario.brain();
+    const before = await readManifest(brainDir);
+    const scheduled = [];
+    const options = {
+      brainDir, home23Root, memory, writer: scenario.wrap(countingWriter([])),
+      schedule: (task) => scheduled.push(task), logger: quietLogger([]),
+    };
+    let failure;
+    await assert.rejects(persistMemoryRevision({ ...options, fullRewriteIntervalMs: 0 }), (error) => {
+      failure = error;
+      return true;
+    });
+    const onDisk = await readManifest(brainDir);
+    assert.notEqual(onDisk.generation, before.generation, `${scenario.name}: the new base was published`);
+    assert.equal(failure.message, 'source lock release failed');
+    assert.deepEqual(failure.memoryCommitted.manifest, onDisk, `${scenario.name}: not the pre-rewrite manifest`);
+    assert.equal(failure.memoryCommitted.mode, 'full');
+    assert.equal(failure.memoryCommitted.cleaned, false, 'dirty markers stay for the next append');
+    assert.equal(failure.memoryCommitted.maintenanceDebt.reason, 'compaction_cleanup_failed');
+    assert.equal(failure.memoryCommitted.maintenanceDebt.retryAfter, null);
+    assert.equal(scheduled.length, 2, 'the published base gets retirement and an ANN rebuild');
+
+    const next = await persistMemoryRevision(options);
+    assert.equal(next.mode, 'delta', `${scenario.name}: the fresh base takes an ordinary append`);
+    assert.equal(next.manifest.generation, onDisk.generation);
+    assert.equal(next.maintenanceDebt, undefined, 'no back-off was recorded');
+    assert.equal(next.cleaned, true);
+  }
+});
+
 test('stale base staging files are removed before a rebase while committed files remain', async (t) => {
   const fixture = await createCompactionFixture(t);
   const committedBefore = await readManifest(fixture.brainDir);

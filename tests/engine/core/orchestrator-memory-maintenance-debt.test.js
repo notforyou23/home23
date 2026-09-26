@@ -20,7 +20,8 @@ const { readManifest, rewriteMemoryBase } = require('../../../shared/memory-sour
 
 async function createSavingOrchestrator(t) {
   const home23Root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-maintenance-debt-'));
-  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
+  // A save starts background backup rotation that can still be writing here.
+  t.after(() => fsp.rm(home23Root, { recursive: true, force: true, maxRetries: 5 }));
   const logsDir = path.join(home23Root, 'instances', 'forrest', 'brain');
   await fsp.mkdir(logsDir, { recursive: true });
   await rewriteMemoryBase(logsDir, {
@@ -49,7 +50,7 @@ async function createSavingOrchestrator(t) {
     stateModulator: { getState: () => ({ mode: 'active' }) },
     sleepSession: { active: false, startCycle: 0, consolidationRun: false, noticePassRun: false },
   });
-  return { orchestrator, entries, logsDir };
+  return { orchestrator, entries, logsDir, home23Root };
 }
 
 function stubPersister(t, implementation) {
@@ -88,6 +89,33 @@ test('a compaction failure after a committed append saves state with maintenance
   const snapshot = readSnapshot(logsDir);
   assert.equal(snapshot.memoryRevision, committed.currentRevision);
   assert.equal(snapshot.memoryDeltaEntries, 3);
+});
+
+test('a cleanup failure after a published rewrite records the manifest on disk', async (t) => {
+  const { orchestrator, logsDir, home23Root } = await createSavingOrchestrator(t);
+  const published = await rewriteMemoryBase(logsDir, {
+    nodes: [{ id: 'n1', concept: 'one' }, { id: 'n2', concept: 'two' }],
+    edges: [{ key: 'n1->n2', source: 'n1', target: 'n2' }],
+    summary: { nodeCount: 2, edgeCount: 1, clusterCount: 0 },
+  }, { lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks') });
+  const maintenanceDebt = {
+    reason: 'compaction_cleanup_failed', error: 'source lock release failed', retryAfter: null,
+    graphCounts: null, manifestSummary,
+  };
+  stubPersister(t, async () => {
+    throw Object.assign(new Error('source lock release failed'), {
+      memoryCommitted: { manifest: published.manifest, mode: 'full', count: 1, bytes: 300, cleaned: false, maintenanceDebt },
+    });
+  });
+  const result = await orchestrator._saveStateUnlocked();
+  assert.equal(result.saved, true);
+  assert.deepEqual(result.memoryMaintenanceDebt, maintenanceDebt);
+  const snapshot = readSnapshot(logsDir);
+  assert.equal(snapshot.memoryGeneration, published.manifest.generation);
+  assert.equal(snapshot.memoryRevision, published.manifest.currentRevision);
+  assert.equal(snapshot.sidecarMode, 'full');
+  assert.equal(snapshot.memoryDeltaEntries, undefined, 'a published base is not reported as a delta');
+  assert.ok(Date.parse(snapshot.fullSidecarSavedAt) >= Date.now() - 60_000);
 });
 
 test('an uncommitted sidecar failure still refuses the save and logs the counted view', async (t) => {
