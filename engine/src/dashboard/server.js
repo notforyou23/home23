@@ -1246,6 +1246,7 @@ class DashboardServer {
       onTerminal: (record) => this.queryNotebookNotificationDelivery?.onTerminal(record),
       capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
       exporter,
+      logger: this.logger,
     });
     return {
       coordinator,
