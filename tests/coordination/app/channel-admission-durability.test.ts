@@ -12,13 +12,16 @@ import { directMessageManifest } from "../../../src/coordination/app/direct-mess
 import {
   ChannelCoordinatorError,
   createChannelCoordinator,
+  getRoundRecoveryRefusal,
+  listRecoverableCoordinatorAdmissionRoundIds,
+  recordRoundRecoveryRefusal,
   type ChannelTurnTrigger,
   type CoordinatorAdmissionPlan,
   type CreateChannelCoordinatorOptions,
 } from "../../../src/coordination/channel-coordinator/index.js";
 import { createLeaseService } from "../../../src/coordination/leases/index.js";
 import { createRoundService } from "../../../src/coordination/rounds/index.js";
-import { createWorkService, type WorkRecord } from "../../../src/coordination/work/index.js";
+import { RECOVERY_REFUSAL_LIMIT, createWorkService, type WorkRecord } from "../../../src/coordination/work/index.js";
 import {
   AT,
   BOT_ID,
@@ -1146,6 +1149,137 @@ test("application recovery preserves different recipient choices after zero-Work
       ["succeeded", "succeeded"],
     );
     assert.equal(restarted.rounds.get(durableRoundId)?.state, "completed");
+  } finally {
+    database.close();
+  }
+});
+
+test("Round recovery refusals are durable: permanent ones leave the recovery list, transient ones count toward the limit", () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "parallel");
+    const plan = admissionPlan(database, "parallel");
+    const crashed = harness(database, 30_000, (point) => {
+      if (point === "after_round_created") throw new Error("simulated process loss after Round");
+    });
+    assert.throws(() => crashed.coordinator.start(trigger(plan)), /simulated process loss after Round/);
+    const durableRoundId = roundId(database);
+    const stateBefore = crashed.rounds.get(durableRoundId)?.state;
+    const identity = (suffix: number) => ({
+      requestId: fixtureId("request", suffix), correlationId: fixtureId("correlation", suffix),
+    });
+    const at = () => new Date(AT);
+    assert.equal(getRoundRecoveryRefusal(database, durableRoundId), null);
+    assert.deepEqual(listRecoverableCoordinatorAdmissionRoundIds(database, 100), [durableRoundId]);
+
+    for (let count = 1; count < RECOVERY_REFUSAL_LIMIT; count += 1) {
+      const recorded = recordRoundRecoveryRefusal(database, {
+        roundId: durableRoundId, reasonCode: "recovery_failed", permanent: false,
+        message: "resident has not registered yet", ...identity(3_100 + count),
+      }, at);
+      assert.deepEqual(recorded, {
+        roundId: durableRoundId, reasonCode: "recovery_failed", permanent: false,
+        refusalCount: count, message: "resident has not registered yet", recordedAt: AT,
+      });
+      assert.deepEqual(getRoundRecoveryRefusal(database, durableRoundId), recorded);
+      assert.deepEqual(listRecoverableCoordinatorAdmissionRoundIds(database, 100), [durableRoundId],
+        "a transient refusal keeps the Round discoverable");
+    }
+    const limit = recordRoundRecoveryRefusal(database, {
+      roundId: durableRoundId, reasonCode: "recovery_failed", permanent: false,
+      message: "resident has not registered yet", ...identity(3_110),
+    }, at);
+    assert.equal(limit.refusalCount, RECOVERY_REFUSAL_LIMIT);
+    assert.equal(limit.permanent, true, "the refusal limit makes a repeated transient refusal permanent");
+    assert.deepEqual(listRecoverableCoordinatorAdmissionRoundIds(database, 100), []);
+    assert.equal(crashed.rounds.get(durableRoundId)?.state, stateBefore,
+      "a refusal records evidence, never a fabricated Round transition");
+
+    // The refusal is evidence on the Round, so it survives a Core restart.
+    database.reopen();
+    const restarted = harness(database, 31_000);
+    assert.deepEqual(restarted.context.listRecoveryRoundIds(100), []);
+    assert.equal(getRoundRecoveryRefusal(database, durableRoundId)?.refusalCount, RECOVERY_REFUSAL_LIMIT);
+    assert.deepEqual(database.readAll<{ version: number; channelId: string }>(
+      `SELECT aggregate_version AS version, channel_id AS channelId FROM events
+       WHERE aggregate_kind = 'round_recovery_refusal' AND aggregate_id = ? ORDER BY aggregate_version`,
+      durableRoundId,
+    ), [1, 2, 3].map((version) => ({ version, channelId: CHANNEL_ID })), "one gap-free event per refusal");
+
+    assert.throws(() => recordRoundRecoveryRefusal(database, {
+      roundId: "rnd_0198d95f-6c00-7000-8000-000000000999", reasonCode: "recovery_failed", permanent: false,
+      message: "", ...identity(3_120),
+    }, at), /Round was not found/);
+    assert.throws(() => recordRoundRecoveryRefusal(database, {
+      roundId: durableRoundId, reasonCode: "Not A Code", permanent: true, message: "", ...identity(3_121),
+    }, at), /bounded identifier/);
+    assert.throws(() => recordRoundRecoveryRefusal(database, {
+      roundId: durableRoundId, reasonCode: "recovery_failed", permanent: true, message: "", ...identity(3_122),
+      extra: true,
+    } as never, at), /forbidden fields/);
+    assert.equal(getRoundRecoveryRefusal(database, durableRoundId)?.refusalCount, RECOVERY_REFUSAL_LIMIT,
+      "a rejected refusal records nothing");
+  } finally {
+    database.close();
+  }
+});
+
+test("startup recovery refuses a Round whose admission evidence cannot be read once, durably, through the real context", async (t) => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "parallel");
+    const plan = admissionPlan(database, "parallel");
+    const crashed = harness(database, 32_000, (point) => {
+      if (point === "after_round_created") throw new Error("simulated process loss after Round");
+    });
+    assert.throws(() => crashed.coordinator.start(trigger(plan)), /simulated process loss after Round/);
+    const durableRoundId = roundId(database);
+    // The immutable admission event no longer matches its digest: no start can read the plan.
+    database.raw.prepare(
+      `UPDATE events SET payload_json = json_set(payload_json, '$.admissionPlan.standingReference', 'tampered')
+       WHERE aggregate_kind = 'round' AND aggregate_id = ? AND aggregate_version = 1`,
+    ).run(durableRoundId);
+    database.reopen();
+    const restarted = harness(database, 33_000);
+    assert.deepEqual(restarted.context.listRecoveryRoundIds(100), [durableRoundId]);
+    const warnings: string[] = [];
+    t.mock.method(console, "warn", (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); });
+    const service = createGroupChannelMessageService({
+      messages: {
+        async sendMessage() { throw new Error("a refused recovery must not send a Message"); },
+        async listMessages() { throw new Error("durable recovery must not resnapshot mutable Messages"); },
+      },
+      context: restarted.context,
+      coordinator: restarted.coordinator,
+      work: restarted.work,
+      leases: restarted.leases,
+      resolveResident: () => undefined,
+      authority: {
+        current: () => ({
+          capability: "messages" as const, epoch: 2, mode: "canonical" as const,
+          writer: "home23-coordination", effectiveAtEventSequence: 1, rollbackEpoch: 1,
+        }),
+      },
+      recordMessage: async () => undefined,
+      beginWork: () => () => { throw new Error("a refused Round never begins Work"); },
+      recoveryIdentity: () => ({
+        requestId: fixtureId("request", 1_600), correlationId: fixtureId("correlation", 1_600),
+      }),
+      now: () => new Date(AT),
+    });
+    assert.deepEqual(await service.recoverResidentWork(), { discovered: 1, scheduled: 0, refused: 1 });
+    const refusal = getRoundRecoveryRefusal(database, durableRoundId);
+    assert.deepEqual({ ...refusal, recordedAt: undefined }, {
+      roundId: durableRoundId, reasonCode: "admission_plan_unreadable", permanent: true, refusalCount: 1,
+      message: "durable Channel admission event digest differs", recordedAt: undefined,
+    });
+    assert.deepEqual(warnings, [
+      `[home23-coordination] group-channel recovery refused round=${durableRoundId} reason=admission_plan_unreadable (permanent): durable Channel admission event digest differs`,
+    ]);
+    assert.deepEqual(await service.recoverResidentWork(), { discovered: 0, scheduled: 0, refused: 0 },
+      "the refusal is durable for the next start");
+    database.reopen();
+    assert.deepEqual(harness(database, 34_000).context.listRecoveryRoundIds(100), []);
   } finally {
     database.close();
   }

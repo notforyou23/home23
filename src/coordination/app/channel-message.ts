@@ -7,8 +7,11 @@ import type {
 } from "../../coordination-adapter/index.js";
 import {
   ChannelCoordinatorError,
+  CoordinatorAdmissionPlanError,
   type CoordinatorDispatch,
   type CoordinatorTurnDisposition,
+  type RecordRoundRecoveryRefusalInput,
+  type RoundRecoveryRefusalRecord,
 } from "../channel-coordinator/index.js";
 import type { createChannelCoordinator } from "../channel-coordinator/index.js";
 import { MessagingError, type MessagingActorContext } from "../channels/index.js";
@@ -16,7 +19,7 @@ import type { MessageProjection, MessageTurnSelection } from "../messages/index.
 import type { AuthorityEpoch } from "../epochs/index.js";
 import { isCanonicalMessagesAuthority } from "../epochs/index.js";
 import { workResultIdempotencyKey } from "../contracts/resident-presence.js";
-import type { ContextManifestInput, WorkRecord, WorkTurnSelection } from "../work/index.js";
+import { RECOVERY_REFUSAL_LIMIT, type ContextManifestInput, type WorkRecord, type WorkTurnSelection } from "../work/index.js";
 import type {
   CoordinationChannelCoordinatorPort,
   CoordinationLeasePort,
@@ -44,6 +47,30 @@ function once(callback: () => void): () => void {
     called = true;
     callback();
   };
+}
+
+/** A recovery refusal no later start can lift: the durable Round no longer
+ * matches the Works it would resume. */
+class PermanentRecoveryRefusal extends Error {
+  constructor(readonly reasonCode: string, message: string) {
+    super(message);
+    this.name = "PermanentRecoveryRefusal";
+  }
+}
+
+/** Context that cannot be rebuilt from durable evidence and admission
+ * evidence that cannot be read are refused for good. Anything else, such as
+ * a resident that has not registered yet, stays discoverable until the
+ * durable refusal limit turns it permanent. */
+function classifyRecoveryRefusal(error: unknown): { reasonCode: string; permanent: boolean } {
+  if (error instanceof PermanentRecoveryRefusal) return { reasonCode: error.reasonCode, permanent: true };
+  if (error instanceof MessagingError && error.code === "invalid_relation") {
+    return { reasonCode: "context_unrecoverable", permanent: true };
+  }
+  if (error instanceof CoordinatorAdmissionPlanError) {
+    return { reasonCode: "admission_plan_unreadable", permanent: true };
+  }
+  return { reasonCode: "recovery_failed", permanent: false };
 }
 
 export interface GroupChannelResidentTarget {
@@ -111,6 +138,9 @@ export interface GroupChannelMessageContextPort {
   recover(work: WorkRecord): Promise<GroupChannelPreparedContext>;
   recoverPlan(roundId: string): Promise<GroupChannelRecoveredPlan>;
   listRecoveryRoundIds(limit: number): readonly string[];
+  /** Durable refusal evidence; without it the same Round is rediscovered at
+   * every start. */
+  recordRecoveryRefusal?(input: RecordRoundRecoveryRefusalInput): RoundRecoveryRefusalRecord;
   listRoundWorks(roundId: string): readonly WorkRecord[];
   hasResult(workId: string): boolean;
 }
@@ -925,6 +955,25 @@ export function createGroupChannelMessageService(options: {
       const roundIds = options.context.listRecoveryRoundIds(100);
       let scheduled = 0;
       let refused = 0;
+      // A refusal is durable evidence on the Round, so the same unrecoverable
+      // Round is not rediscovered at every start; one line names each refused Round.
+      const recordRefusal = (roundId: string, error: unknown) => {
+        const { reasonCode, permanent } = classifyRecoveryRefusal(error);
+        const message = error instanceof Error ? error.message : String(error);
+        let record: RoundRecoveryRefusalRecord | null = null;
+        try {
+          record = options.context.recordRecoveryRefusal?.({
+            roundId, reasonCode, permanent, message, ...options.recoveryIdentity(),
+          }) ?? null;
+        } catch (recordError) {
+          console.warn("[home23-coordination] group-channel recovery refusal was not recorded:", roundId,
+            recordError instanceof Error ? recordError.message : String(recordError));
+        }
+        const outcome = record === null
+          ? "unrecorded"
+          : record.permanent ? "permanent" : `transient ${record.refusalCount}/${RECOVERY_REFUSAL_LIMIT}`;
+        console.warn(`[home23-coordination] group-channel recovery refused round=${roundId} reason=${reasonCode} (${outcome}): ${message}`);
+      };
       for (const roundId of roundIds) {
         try {
           const recoveredPlan = await options.context.recoverPlan(roundId);
@@ -950,7 +999,7 @@ export function createGroupChannelMessageService(options: {
             return candidate.modelAlias !== expected.modelAlias ||
               candidate.reasoningEffort !== expected.reasoningEffort;
           })) {
-            throw new Error("Channel Round has inconsistent turn selection");
+            throw new PermanentRecoveryRefusal("turn_selection_changed", "Channel Round has inconsistent turn selection");
           }
           const preparedByWork = new Map<string, GroupChannelPreparedContext>();
           for (const work of works) {
@@ -976,8 +1025,9 @@ export function createGroupChannelMessageService(options: {
           });
           void response.catch(() => undefined);
           scheduled += 1;
-        } catch {
+        } catch (error) {
           refused += 1;
+          recordRefusal(roundId, error);
         }
       }
       return Object.freeze({ discovered: roundIds.length, scheduled, refused });
