@@ -110,8 +110,8 @@ const DASHBOARD_SCOPE_FALLBACK = {
   },
   briefs: {
     kind: 'mixed',
-    chip: 'Jerry + Forrest',
-    summaryTemplate: 'Briefs collects human-facing reports, cron deliveries, worker receipts, and agent documents from Jerry and Forrest into readable dashboard pages.',
+    chip: 'All Agents',
+    summaryTemplate: 'Briefs collects human-facing reports, cron deliveries, worker receipts, and agent documents from {{houseAgents}} into readable dashboard pages.',
   },
   agency: {
     kind: 'dashboard',
@@ -155,6 +155,7 @@ function renderDashboardScopeText(meta, tabKey = currentTab) {
   const replacements = {
     dashboardAgent: currentAgentLabel('this dashboard agent'),
     primaryAgent: homePrimaryAgent?.displayName || homePrimaryAgent?.name || currentAgentLabel('the Home23 primary agent'),
+    houseAgents: agents.map((agent) => agent?.displayName || agent?.name).filter(Boolean).join(' + ') || 'this home\u2019s agents',
   };
   return String(meta?.summaryTemplate || '').replace(/\{\{(\w+)\}\}/g, (_, key) => replacements[key] || '');
 }
@@ -199,7 +200,19 @@ async function loadDashboardScopeRegistry() {
   } catch { /* best effort */ }
 }
 
+// Briefs collects from the same roster, so the filter offers exactly its agents.
+function renderBriefsAgentFilter() {
+  const select = document.getElementById('briefs-agent-filter');
+  if (!select) return;
+  const current = select.value;
+  const roster = agents.filter((agent) => agent?.name);
+  select.innerHTML = '<option value="">All agents</option>' + roster
+    .map((agent) => `<option value="${escapeAttr(agent.name)}">${escapeHtml(agent.displayName || agent.name)}</option>`).join('');
+  select.value = roster.some((agent) => agent.name === current) ? current : '';
+}
+
 function refreshDashboardIdentityUI() {
+  renderBriefsAgentFilter();
   const headerAgent = document.getElementById('header-agent-name');
   if (!primaryAgent) return;
 
@@ -4746,7 +4759,7 @@ function renderWorkerReceipt(receipt) {
       <ul>${artifacts || '<li>No artifacts recorded.</li>'}</ul>
     </div>
     <div class="h23-worker-receipt-block">
-      <h4>What Jerry can learn</h4>
+      <h4>What the house can learn</h4>
       <ul>${memory || '<li>No memory candidates proposed.</li>'}</ul>
       <button class="h23-worker-btn secondary" type="button" data-worker-promote-memory="${escapeHtml(receipt.runId)}">Send to Memory Curator</button>
       <span class="h23-workers-status" id="worker-memory-status"></span>

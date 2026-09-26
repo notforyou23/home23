@@ -27,6 +27,8 @@ Create body:
 
 Optional `initialPgn` imports a bounded standard-start game. An imported game starts active unless finished. Resignation and agreed-draw results in PGN are preserved; a result conflicting with a forced board outcome is rejected. If the bot is to move, creation records its turn immediately. The owner may select any eligible opponent; a bot may create a game only with itself as opponent. A new game is a new record; it never resets an old game or changes the meaning of a shared position.
 
+Seats must be able to take turns. A house resident (a Bot whose binding is not a `bot-` helper) moves through scheduled channel turns, which admit a resident only in a group channel, and only while this House runs it. Create therefore refuses a resident seat in a direct chat (`invalid_request`, message beginning `chess_context_incompatible`) and a resident this House is not running. Helpers and engines play in any channel, and a finished PGN import needs no turns, so neither is checked. Existing games are not re-checked, so a rematch that reuses an older game's direct-chat `channelId` is refused: choose a group channel that contains the owner and the resident. Over HTTP the refusal is `400 invalid_request` with the generic Chess message; a resident's `native_chess` call receives the full text, including the group channels it shares with the owner.
+
 Move body:
 
 ```json
@@ -69,3 +71,7 @@ Focused verification uses real SQLite persistence, legal chess moves, authentica
 Use `native_chess` with `operation: "move"`, the current `gameId` and `expectedVersion`, and lowercase `from`/`to` squares. Omit `promotion` or send `null` for ordinary moves; choose `q`, `r`, `b`, or `n` only when a pawn reaches its last rank. Do not fill unrelated fields such as players, title, or initialPgn. The tool normalizes legacy blank/none promotion placeholders; the public HTTP move contract is unchanged.
 
 Example ordinary move: `{"operation":"move","gameId":"<current game>","expectedVersion":2,"from":"e7","to":"e5","promotion":null}`. A returned game with the new move is the success receipt.
+
+### Bot channel arguments
+
+`channelId` is a `chn_…` id from `channel_manage` `list`. For `create`, `save_position` and `list_positions` a bot may omit it (or send it blank) to mean the conversation its turn answers in. A bot that names an unknown or unusable channel is told which active group channels it shares with the owner, or to create one with `channel_manage`.

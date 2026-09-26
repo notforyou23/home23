@@ -9,6 +9,8 @@ import { executeChessOperation } from '../../../src/coordination/chess/operation
 
 test('durable turn survives restart, moves through the bot tool, and never treats prose as a move', async t => {
   const db = M11TestDatabase.temporary(); t.after(() => db.close()); db.raw.exec(NATIVE_CHESS_MIGRATION_SQL); db.raw.exec(CHESS_ENGINES_MIGRATION_SQL);
+  // Resident Jerry takes scheduled turns only in a group channel.
+  db.raw.prepare("UPDATE channels SET kind='group' WHERE id=?").run(CHANNEL_ID);
   let chess = new NativeChessService({ database: db });
   const owner = {principalId:'user_owner'}, bot = {principalId:BOT_ID};
   let game = chess.create({channelId:CHANNEL_ID,players:{white:'user_owner',black:BOT_ID}},owner,'create-game');

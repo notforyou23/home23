@@ -8,7 +8,7 @@ import { escapeHtml, renderMarkdown } from './home23-chat-markdown.mjs';
 export const SHOW_MORE_CHARS = 100_000;
 
 const CHAT_STARTER_PROMPTS = Object.freeze([
-  'Hey Jerry. Where are we?',
+  'Hey. Where are we?',
   'What changed since we last talked that actually matters?',
   'What have we forgotten or let fall by the wayside?',
   'What are you noticing that I’m not?',
