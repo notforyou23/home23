@@ -219,6 +219,85 @@ test('a preflight refusal publishes only safe reason codes and a path-free expla
   assert.doesNotMatch(JSON.stringify(f.operation(accepted.operation.id)), /secret|credential XYZ/);
 });
 
+test('a resumed operation that completes drops the error fields of its earlier refusal', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  f.setOperation({ ...f.operation(id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  let installs = 0;
+  const dependencies = {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => {
+      installs++;
+      if (installs === 1) return { ok: false, status: 'refused', reasons: [
+        { code: 'linked_state_path', message: 'A link points outside the home' }, { code: 'external_reference', message: 'An external reference' },
+      ] };
+      return { ok: true, status: 'committed' };
+    } },
+    appUpdater: { applyPreparedMacApplication: async () => ({ status: 'reopened' }) },
+    verifyReady: async () => ({ running: true }),
+  };
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, dependencies);
+  const failed = f.operation(id);
+  assert.equal(failed.phase, 'failed');
+  assert.equal(failed.errorCode, 'linked_state_path');
+  assert.deepEqual(failed.reasonCodes, ['linked_state_path', 'external_reference']);
+  assert.equal(homeUpdateStatus({ homeRoot: f.home }).operation.errorCode, 'linked_state_path');
+
+  f.setOperation({ ...failed, pid: null });
+  await requestHomeUpdate(input(f.home, 'resume', 'resume'), noLaunch);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, dependencies);
+  const completed = f.operation(id);
+  assert.equal(installs, 2);
+  assert.equal(completed.phase, 'completed');
+  assert.equal('errorCode' in completed, false, JSON.stringify(completed));
+  assert.equal('reasonCodes' in completed, false, JSON.stringify(completed));
+  const status = homeUpdateStatus({ homeRoot: f.home });
+  assert.equal(status.state, 'upToDate');
+  assert.equal(status.operation.errorCode, null);
+  assert.deepEqual(status.operation.reasonCodes, []);
+});
+
+test('a failed operation keeps its error fields in the saved record', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  f.setOperation({ ...f.operation(id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => ({ ok: false, status: 'refused', reasons: [
+      { code: 'linked_state_path', message: 'A link points outside the home' }, { code: 'external_reference', message: 'An external reference' },
+    ] }) },
+    appUpdater: unusedAppUpdater,
+  });
+  const saved = f.operation(id);
+  assert.equal(saved.phase, 'failed');
+  assert.equal(saved.errorCode, 'linked_state_path');
+  assert.deepEqual(saved.reasonCodes, ['linked_state_path', 'external_reference']);
+  const status = homeUpdateStatus({ homeRoot: f.home });
+  assert.equal(status.operation.errorCode, 'linked_state_path');
+  assert.deepEqual(status.operation.reasonCodes, ['linked_state_path', 'external_reference']);
+});
+
+test('a progress persist without a phase changes nothing but progress in the saved record', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  let clock = 0;
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    progressNow: () => clock,
+    channel: { prepareConfiguredRelease: async ({ onProgress }) => {
+      const before = f.operation(id);
+      assert.equal(before.phase, 'downloading');
+      clock = 5_000; onProgress({ bytesCopied: 50, bytesTotal: 100 });
+      const during = f.operation(id);
+      assert.equal(during.progress, 0.5);
+      assert.deepEqual({ ...during, progress: before.progress, updatedAt: before.updatedAt }, before);
+      throw new Error('Download interrupted');
+    } }, updater: unusedUpdater, appUpdater: unusedAppUpdater,
+  });
+  assert.equal(f.operation(id).phase, 'failed');
+});
+
 test('a restored data-version refusal requires a fresh release check, not another stop and retry', async t => {
   const f = fixture(t); await check(f);
   const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
