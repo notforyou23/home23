@@ -468,8 +468,9 @@ function decodeSegment(segment: string): string {
   }
 }
 
+// The account is '' for a local:/// ("On My Mac") mailbox.
 function mailboxLocation(url: string): { account: string; mailbox: string } | undefined {
-  const match = /^[a-z][a-z0-9+.-]*:\/\/([^/]+)\/(.+)$/i.exec(url);
+  const match = /^[a-z][a-z0-9+.-]*:\/\/([^/]*)\/(.+)$/i.exec(url);
   if (!match) return undefined;
   return {
     account: decodeSegment(String(match[1])),
@@ -621,7 +622,10 @@ end run
 // One message by id inside one account's mailbox: no enumeration. Mail's
 // dictionary also has a "message id" property (the RFC header), so the
 // by-id specifier is written with the raw class code. The body is truncated
-// in the script, so an oversized message never crosses the pipe.
+// in the script, so an oversized message never crosses the pipe. With no
+// account id or name the mailbox is an "On My Mac" one (local:/// in the
+// index), which Mail keeps at the application level. INBOX retries as
+// "Inbox" (Exchange's name), as the list fallback does.
 const MAIL_MESSAGE_SCRIPT = `
 on clean(v)
 	if v is missing value then return ""
@@ -640,12 +644,22 @@ on run argv
 	tell application "Mail"
 		try
 			with timeout of 10 seconds
-				if acctId is not "" then
-					set acct to account id acctId
+				if acctId is "" and acctName is "" then
+					set mb to mailbox mbPath
 				else
-					set acct to account acctName
+					if acctId is not "" then
+						set acct to account id acctId
+					else
+						set acct to account acctName
+					end if
+					try
+						set mb to mailbox mbPath of acct
+					on error number -1728
+						if mbPath is not "INBOX" then error number -1728
+						set mb to mailbox "Inbox" of acct
+					end try
 				end if
-				set msg to «class mssg» id msgId of mailbox mbPath of acct
+				set msg to «class mssg» id msgId of mb
 				set bodyText to my clean(content of msg)
 				set subj to my clean(subject of msg)
 				set sndr to my clean(sender of msg)
@@ -894,7 +908,7 @@ async function readMailMessage(runner: MacRunner, opts: MacRunOptions, mail: Mai
   const timings: Record<string, number> = {};
   const degraded: MailReport['degraded'] = [];
   let source: MailReport['source'] = 'index';
-  let location: { accountId: string; accountName: string; mailbox: string };
+  let location: { accountId: string; accountName: string; mailbox: string; local?: boolean };
   const named = (account: string, mailbox: string) => (UUID_PATTERN.test(account)
     ? { accountId: account, accountName: '', mailbox }
     : { accountId: '', accountName: account, mailbox });
@@ -908,7 +922,8 @@ async function readMailMessage(runner: MacRunner, opts: MacRunOptions, mail: Mai
     const found = rows[0]?.mailbox ? mailboxLocation(String(rows[0].mailbox)) : undefined;
     if (!found) throw mailError('mail_message_not_found', `no message ${rowid} in the Mail index`);
     // A pre-V10 authority (user@host) is not an account id; the caller's account name must name it.
-    location = UUID_PATTERN.test(found.account) ? named(found.account, found.mailbox) : named(mail.account?.trim() ?? '', found.mailbox);
+    if (!found.account) location = { accountId: '', accountName: '', mailbox: found.mailbox, local: true };
+    else location = UUID_PATTERN.test(found.account) ? named(found.account, found.mailbox) : named(mail.account?.trim() ?? '', found.mailbox);
   } catch (error) {
     const failure = indexFailure(error);
     if (failure.code !== 'mail_index_permission_denied') throw failure;
@@ -916,7 +931,7 @@ async function readMailMessage(runner: MacRunner, opts: MacRunOptions, mail: Mai
     degraded.push({ step: 'index', code: failure.code });
     location = named(mail.account?.trim() ?? '', mail.mailbox?.trim() || 'INBOX');
   }
-  if (!location.accountId && !location.accountName) {
+  if (!location.local && !location.accountId && !location.accountName) {
     throw mailError('mail_message_account_required', 'name the account (the Account value from the mail item, or from mail_accounts) so the message can be found without enumerating mailboxes.');
   }
   if (!runner.applescript) throw mailError('mail_body_unavailable', 'the Apple Events runner is unavailable');
