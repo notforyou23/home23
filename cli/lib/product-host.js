@@ -46,19 +46,8 @@ function hostOAuthBroker(appRoot, dependencies = {}) {
     ...(typeof dependencies.oauthNow === 'function' ? { now: dependencies.oauthNow } : {}),
   });
 }
-function oauthPublicStatus(result) {
-  return {
-    configured: result?.configured === true,
-    valid: result?.valid === true,
-    refreshable: result?.refreshable === true,
-    source: result?.source || 'none',
-    expiresAt: result?.expiresAt ?? null,
-    accountId: result?.accountId ?? null,
-    verified: result?.verified === true,
-    revoked: result?.revoked === true,
-    verificationError: typeof result?.verificationError === 'string' ? result.verificationError : null,
-  };
-}
+// Shared with the dashboard's /oauth/status so the two public shapes cannot drift.
+const oauthPublicStatus = result => require('../../shared/home23-oauth.cjs').publicOAuthStatus(result);
 async function cancelHostOAuthPending(appRoot, provider) {
   assertHostOAuthProvider(provider);
   const { default: secretsStore } = await import('../../shared/home23-secrets.cjs');

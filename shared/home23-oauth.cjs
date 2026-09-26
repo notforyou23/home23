@@ -585,6 +585,22 @@ function createHome23OAuthBroker(options = {}) {
   });
 }
 
+// The one public shape of a status()/verify() answer. Host oauth-status and the dashboard's
+// /oauth/status both use it so the two cannot drift; status() leaves the verify fields false/null.
+function publicOAuthStatus(result) {
+  return {
+    configured: result?.configured === true,
+    valid: result?.valid === true,
+    refreshable: result?.refreshable === true,
+    source: result?.source || 'none',
+    expiresAt: result?.expiresAt ?? null,
+    accountId: result?.accountId ?? null,
+    verified: result?.verified === true,
+    revoked: result?.revoked === true,
+    verificationError: typeof result?.verificationError === 'string' ? result.verificationError : null,
+  };
+}
+
 module.exports = {
   FLOW_TTL_MS,
   Home23OAuthError,
@@ -594,5 +610,6 @@ module.exports = {
   decodeJwtPayload,
   extractOpenAIAccountId,
   parseCallback,
+  publicOAuthStatus,
   resolveHome23Root,
 };
