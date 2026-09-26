@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
 import type { AgentResponse } from "../../../src/agent/types.js";
 import type { ResidentInputAttachment } from "../../../src/coordination-adapter/index.js";
@@ -15,11 +15,15 @@ import type {
   DirectMessageExecutionTarget,
   DirectMessageResidentTarget,
 } from "../../../src/coordination/app/direct-message.js";
-import type { MessagingActorContext } from "../../../src/coordination/channels/index.js";
+import {
+  CoordinatorAdmissionPlanError,
+  type RoundRecoveryRefusalRecord,
+} from "../../../src/coordination/channel-coordinator/index.js";
+import { MessagingError, type MessagingActorContext } from "../../../src/coordination/channels/index.js";
 import { COORDINATION_MESSAGES_WRITER } from "../../../src/coordination/epochs/index.js";
 import { generateCoordinationId } from "../../../src/coordination/ids/index.js";
 import type { MessageProjection } from "../../../src/coordination/messages/index.js";
-import type { WorkRecord } from "../../../src/coordination/work/index.js";
+import { RECOVERY_REFUSAL_LIMIT, type WorkRecord } from "../../../src/coordination/work/index.js";
 
 const CHANNEL_ID = generateCoordinationId("channel");
 const CONVERSATION_ID = generateCoordinationId("conversation");
@@ -161,6 +165,9 @@ function harness(input: {
   onDemandTargetIndex?: number;
   preparedTranscript?: readonly GroupChannelTranscriptEntry[];
   preparedAttachments?: readonly ResidentInputAttachment[];
+  recoveryFailure?: { phase: "recoverPlan" | "recover" | "resumeAdmission"; error: Error };
+  turnSelectionDrift?: boolean;
+  durableRefusals?: false | "throwing";
 }) {
   const targets = BOT_IDS.map((botId, index) => Object.freeze({
     targetBotId: botId,
@@ -183,6 +190,7 @@ function harness(input: {
       .map((record) => [record.id, record]),
   );
   const results = new Set<string>();
+  const refusals = new Map<string, RoundRecoveryRefusalRecord>();
   const sent: Array<{ kind: string; message: MessageProjection }> = [];
   const recorded: MessageProjection[] = [];
   const dispositions: Array<Record<string, string>> = [];
@@ -262,6 +270,7 @@ function harness(input: {
       });
     },
     recover: async (record) => {
+      if (input.recoveryFailure?.phase === "recover") throw input.recoveryFailure.error;
       const committedResults = sent
         .filter((entry) => entry.kind === "result")
         .map((entry) => entry.message);
@@ -281,11 +290,30 @@ function harness(input: {
         ].join("\n"),
       });
     },
-    recoverPlan: async () => Object.freeze({
-      prepared: exactPrepared,
-      turnSelection: Object.freeze({ modelAlias: null, reasoningEffort: null }),
+    recoverPlan: async () => {
+      if (input.recoveryFailure?.phase === "recoverPlan") throw input.recoveryFailure.error;
+      return Object.freeze({
+        prepared: exactPrepared,
+        turnSelection: Object.freeze({ modelAlias: null, reasoningEffort: null }),
+      });
+    },
+    listRecoveryRoundIds: () => input.recovery && refusals.get(ROUND_ID)?.permanent !== true
+      ? Object.freeze([ROUND_ID])
+      : Object.freeze([]),
+    ...(input.durableRefusals === false ? {} : {
+      // Mirrors the durable rule: a permanent refusal leaves the recovery list.
+      recordRecoveryRefusal: (refusal: { roundId: string; reasonCode: string; permanent: boolean; message: string }) => {
+        if (input.durableRefusals === "throwing") throw new Error("events journal is read-only");
+        const refusalCount = (refusals.get(refusal.roundId)?.refusalCount ?? 0) + 1;
+        const record = Object.freeze({
+          roundId: refusal.roundId, reasonCode: refusal.reasonCode,
+          permanent: refusal.permanent || refusalCount >= RECOVERY_REFUSAL_LIMIT,
+          refusalCount, message: refusal.message, recordedAt: "2026-08-28T12:00:00.000Z",
+        });
+        refusals.set(refusal.roundId, record);
+        return record;
+      },
     }),
-    listRecoveryRoundIds: () => input.recovery ? Object.freeze([ROUND_ID]) : Object.freeze([]),
     listRoundWorks: () => Object.freeze([...current.values()]),
     hasResult: (workId) => results.has(workId),
   };
@@ -451,12 +479,15 @@ function harness(input: {
         works: [...current.values()],
         replayed: true,
       }),
-      resumeAdmission: () => ({
-        round: { id: ROUND_ID, state: "coordinating" },
-        recipients: BOT_IDS,
-        works: [...current.values()],
-        replayed: true,
-      }),
+      resumeAdmission: () => {
+        if (input.recoveryFailure?.phase === "resumeAdmission") throw input.recoveryFailure.error;
+        return {
+          round: { id: ROUND_ID, state: "coordinating" },
+          recipients: BOT_IDS,
+          works: [...current.values()],
+          replayed: true,
+        };
+      },
       reconcile: (request) => {
         coordinatorReconciles += 1;
         dispositions.push({ ...(request.dispositions ?? {}) });
@@ -473,7 +504,7 @@ function harness(input: {
       create: (() => { throw new Error("coordinator owns creation"); }) as never,
       cancelQueued: (() => { throw new Error("unused"); }) as never,
       get: (workId) => current.get(workId) ?? null,
-      getTurnSelection: () => ({ modelAlias: null, reasoningEffort: null }),
+      getTurnSelection: () => ({ modelAlias: input.turnSelectionDrift ? "drifted" : null, reasoningEffort: null }),
       listResidentRecoverable: () => [],
       listSucceededMissingResult: () => [],
     },
@@ -550,6 +581,7 @@ function harness(input: {
     residentRequests: () => Object.freeze([...residentRequests]),
     offeredAuthorities: () => Object.freeze([...offeredAuthorities]),
     workCount: () => current.size,
+    refusal: () => refusals.get(ROUND_ID) ?? null,
     coordinatorStarts: () => coordinatorStarts,
     coordinatorReconciles: () => coordinatorReconciles,
     ended: () => ended,
@@ -787,6 +819,104 @@ test("startup recovery resumes a sequential Work that was already admitted", asy
     /Jerry: Jerry committed before the second admission\./,
   );
   assert.deepEqual(Object.values(testHarness.dispositions[0]!), ["completed", "completed"]);
+});
+
+function recoveryResponses(): readonly AgentResponse[] {
+  return [
+    { text: "unused", model: "fixture", toolCallCount: 0, durationMs: 1 },
+    { text: "unused", model: "fixture", toolCallCount: 0, durationMs: 1 },
+  ];
+}
+
+function captureWarnings(t: TestContext): () => readonly string[] {
+  const lines: string[] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => { lines.push(args.map(String).join(" ")); });
+  return () => Object.freeze([...lines]);
+}
+
+test("startup recovery refuses an unrecoverable Round once, permanently, and never rediscovers it", async (t) => {
+  const warnings = captureWarnings(t);
+  const scenarios = [
+    {
+      recoveryFailure: { phase: "recover" as const, error: new MessagingError("invalid_relation") },
+      reasonCode: "context_unrecoverable", message: "invalid_relation",
+    },
+    {
+      recoveryFailure: {
+        phase: "recoverPlan" as const,
+        error: new CoordinatorAdmissionPlanError("durable Channel admission event digest differs"),
+      },
+      reasonCode: "admission_plan_unreadable", message: "durable Channel admission event digest differs",
+    },
+    {
+      turnSelectionDrift: true,
+      reasonCode: "turn_selection_changed", message: "Channel Round has inconsistent turn selection",
+    },
+  ];
+  for (const { reasonCode, message, ...options } of scenarios) {
+    const testHarness = harness({
+      responses: recoveryResponses(), initialStates: ["succeeded", "succeeded"], recovery: true, ...options,
+    });
+    const before = warnings().length;
+    assert.deepEqual(await testHarness.service.recoverResidentWork(),
+      { discovered: 1, scheduled: 0, refused: 1 }, reasonCode);
+    assert.deepEqual(testHarness.refusal(), {
+      roundId: ROUND_ID, reasonCode, permanent: true, refusalCount: 1, message,
+      recordedAt: "2026-08-28T12:00:00.000Z",
+    });
+    assert.deepEqual(warnings().slice(before), [
+      `[home23-coordination] group-channel recovery refused round=${ROUND_ID} reason=${reasonCode} (permanent): ${message}`,
+    ]);
+    assert.deepEqual(await testHarness.service.recoverResidentWork(),
+      { discovered: 0, scheduled: 0, refused: 0 }, `${reasonCode} is not rediscovered at the next start`);
+    assert.equal(testHarness.executions(), 0);
+    assert.equal(testHarness.ended(), 0, "a refused Round never begins Work");
+  }
+});
+
+test("startup recovery keeps a transiently refused Round discoverable until the refusal limit makes it permanent", async (t) => {
+  const warnings = captureWarnings(t);
+  const testHarness = harness({
+    responses: recoveryResponses(), initialStates: ["succeeded", "succeeded"], recovery: true,
+    recoveryFailure: { phase: "resumeAdmission", error: new Error("resident has not registered yet") },
+  });
+  for (let start = 1; start <= RECOVERY_REFUSAL_LIMIT; start += 1) {
+    assert.deepEqual(await testHarness.service.recoverResidentWork(),
+      { discovered: 1, scheduled: 0, refused: 1 }, `start ${start} rediscovers the transient refusal`);
+    assert.deepEqual(testHarness.refusal(), {
+      roundId: ROUND_ID, reasonCode: "recovery_failed", permanent: start === RECOVERY_REFUSAL_LIMIT,
+      refusalCount: start, message: "resident has not registered yet", recordedAt: "2026-08-28T12:00:00.000Z",
+    });
+  }
+  assert.deepEqual(warnings(), [
+    `transient 1/${RECOVERY_REFUSAL_LIMIT}`, `transient 2/${RECOVERY_REFUSAL_LIMIT}`, "permanent",
+  ].map((outcome) =>
+    `[home23-coordination] group-channel recovery refused round=${ROUND_ID} reason=recovery_failed (${outcome}): resident has not registered yet`,
+  ));
+  assert.deepEqual(await testHarness.service.recoverResidentWork(),
+    { discovered: 0, scheduled: 0, refused: 0 }, "the refusal limit is durable for every later start");
+  assert.equal(testHarness.executions(), 0);
+});
+
+test("startup recovery still refuses and reports the Round when refusal evidence cannot be recorded", async (t) => {
+  const warnings = captureWarnings(t);
+  for (const durableRefusals of [false, "throwing"] as const) {
+    const testHarness = harness({
+      responses: recoveryResponses(), initialStates: ["succeeded", "succeeded"], recovery: true, durableRefusals,
+      recoveryFailure: { phase: "recover", error: new MessagingError("invalid_relation") },
+    });
+    const before = warnings().length;
+    for (let start = 1; start <= 2; start += 1) {
+      assert.deepEqual(await testHarness.service.recoverResidentWork(),
+        { discovered: 1, scheduled: 0, refused: 1 }, "without evidence the Round is rediscovered");
+    }
+    assert.equal(testHarness.refusal(), null);
+    const refused = `[home23-coordination] group-channel recovery refused round=${ROUND_ID} reason=context_unrecoverable (unrecorded): invalid_relation`;
+    assert.deepEqual(warnings().slice(before), durableRefusals === false ? [refused, refused] : [
+      `[home23-coordination] group-channel recovery refusal was not recorded: ${ROUND_ID} events journal is read-only`, refused,
+      `[home23-coordination] group-channel recovery refusal was not recorded: ${ROUND_ID} events journal is read-only`, refused,
+    ]);
+  }
 });
 
 test("exact active or terminal message replay returns stored admission without policy reconstruction", async () => {

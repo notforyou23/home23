@@ -12,8 +12,8 @@ function tempRoot(t) {
   return root;
 }
 
-/** A user home with a global PM2 dump and LaunchAgents folder, all outside any home root. */
-function userHomeWith(root, { apps = null, agents = {} } = {}) {
+/** A user home with a global PM2 dump, LaunchAgents folder and optional ~/bin, all outside any home root. */
+function userHomeWith(root, { apps = null, agents = {}, bin = null } = {}) {
   const userHome = path.join(root, 'user');
   if (apps) {
     fs.mkdirSync(path.join(userHome, '.pm2'), { recursive: true });
@@ -22,6 +22,10 @@ function userHomeWith(root, { apps = null, agents = {} } = {}) {
   const agentsDir = path.join(userHome, 'Library', 'LaunchAgents');
   fs.mkdirSync(agentsDir, { recursive: true });
   for (const [file, text] of Object.entries(agents)) fs.writeFileSync(path.join(agentsDir, file), text);
+  if (bin) {
+    fs.mkdirSync(path.join(userHome, 'bin'), { recursive: true });
+    for (const [file, text] of Object.entries(bin)) fs.writeFileSync(path.join(userHome, 'bin', file), text);
+  }
   return userHome;
 }
 
@@ -98,6 +102,7 @@ test('reports global PM2 apps and launchd agents still bound to a retired home r
   assert.equal(report.schema, 'home23.foreign-bindings.v1');
   assert.deepEqual(report.roots, [newRoot, oldRoot]);
   assert.deepEqual(report.unreadable, []);
+  assert.deepEqual(report.scanned, { pm2Dump: dumpFile, launchAgents: path.join(userHome, 'Library/LaunchAgents'), shellScripts: null });
   assert.deepEqual(report.references, [
     { source: 'pm2', name: 'cosmo-engine', field: 'pm_cwd', value: `${oldRoot}/app`, root: oldRoot, file: dumpFile },
     { source: 'pm2', name: 'cosmo-engine', field: 'env.HOME23_ROOT', value: `${oldRoot}/app`, root: oldRoot, file: dumpFile },
@@ -137,12 +142,14 @@ test('reports nothing when no supervisor references the roots or when the folder
   assert.deepEqual(clean.unreadable, []);
   assert.equal(clean.scanned.pm2Dump, path.join(userHome, '.pm2/dump.pm2'));
   assert.equal(clean.scanned.launchAgents, path.join(userHome, 'Library/LaunchAgents'));
+  assert.equal(clean.scanned.shellScripts, null);
 
   const absent = detectForeignBindings({ homeRoot, homeDirectory: path.join(root, 'nobody') });
   assert.deepEqual(absent.references, []);
   assert.deepEqual(absent.warnings, []);
   assert.deepEqual(absent.unreadable, []);
   assert.deepEqual(absent.roots, [homeRoot]);
+  assert.deepEqual(absent.scanned, { pm2Dump: null, launchAgents: null, shellScripts: null });
   assert.deepEqual(foreignBindingWarnings([]), []);
 });
 
@@ -184,22 +191,76 @@ test('respects HOME and PM2_HOME overrides and never treats the home\'s own supe
   assert.equal(explicit.references.length, 1);
 });
 
-test('unreadable dumps and agents are reported as unreadable instead of failing the scan', t => {
+test('unreadable dumps, agents and scripts are reported as unreadable instead of failing the scan', t => {
   const root = tempRoot(t);
   const homeRoot = path.join(root, 'home');
   const userHome = userHomeWith(root, {
     apps: [],
     agents: { 'broken.plist': '<plist><dict><key>Label</key><string>x</string></dict>', 'com.example.home23-watch.plist': watcherAgent('com.example.home23-watch', homeRoot) },
+    bin: { 'secret.sh': `#!/bin/sh\ncd ${homeRoot}/app\n` },
   });
   fs.writeFileSync(path.join(userHome, '.pm2/dump.pm2'), '{ not json');
+  // Root reads mode-000 files anyway; only then does the script count as readable.
+  const privileged = process.getuid?.() === 0;
+  fs.chmodSync(path.join(userHome, 'bin/secret.sh'), 0o000);
   const report = detectForeignBindings({ homeRoot, homeDirectory: userHome });
-  assert.deepEqual(report.unreadable, [path.join(userHome, '.pm2/dump.pm2'), path.join(userHome, 'Library/LaunchAgents/broken.plist')]);
-  assert.equal(report.references.length, 4);
-  assert.ok(report.references.every(reference => reference.source === 'launchd'));
-  assert.equal(report.warnings.length, 1);
+  assert.deepEqual(report.unreadable, [path.join(userHome, '.pm2/dump.pm2'), path.join(userHome, 'Library/LaunchAgents/broken.plist'), ...(privileged ? [] : [path.join(userHome, 'bin/secret.sh')])]);
+  assert.equal(report.scanned.shellScripts, path.join(userHome, 'bin'));
+  assert.equal(report.references.length, privileged ? 5 : 4);
+  assert.ok(report.references.slice(0, 4).every(reference => reference.source === 'launchd'));
+  assert.equal(report.warnings.length, privileged ? 2 : 1);
 
   fs.writeFileSync(path.join(userHome, '.pm2/dump.pm2'), JSON.stringify({ name: 'not-a-list', pm_cwd: homeRoot }));
   assert.deepEqual(detectForeignBindings({ homeRoot, homeDirectory: userHome }).unreadable.slice(0, 1), [path.join(userHome, '.pm2/dump.pm2')]);
+});
+
+test('reports shell scripts in ~/bin that still name a retired home root without changing them', t => {
+  const root = tempRoot(t);
+  const oldRoot = path.join(root, 'old-home');
+  const newRoot = path.join(root, 'new-home');
+  const longLine = `export HOME23_NOTE="${oldRoot}/app ${'x'.repeat(300)}"`;
+  const userHome = userHomeWith(root, {
+    agents: { 'com.example.other.plist': unrelatedAgent },
+    bin: {
+      // The two launchd-driven scripts found by hand on the owner's Mac: one by extension, one by shebang only.
+      'log-health.sh': `#!/bin/bash\nset -euo pipefail\nLOG="${oldRoot}/app/logs/health.log"\necho unrelated >> /opt/other/health.log\n  cd ${oldRoot}/app && node scripts/health.mjs >> "$LOG"\n${longLine}\n`,
+      'sync-pressure': `#!/usr/bin/env bash\ncurl -s http://127.0.0.1:8080/pressure > "${oldRoot}/app/data/pressure.json"\n`,
+      // Not shell scripts: plain text, a python tool, and a compiled-size blob; a lookalike root; a symlink to a script.
+      'README.txt': `These used to live in ${oldRoot}/app/bin.\n`,
+      'python-tool': `#!/usr/bin/env python3\nprint("${oldRoot}/app")\n`,
+      'huge.sh': `#!/bin/sh\n# ${'#'.repeat(1024 * 1024)}\ncd ${oldRoot}/app\n`,
+      'archive.sh': `#!/bin/sh\nrsync -a ${oldRoot}-archive/app/ ${oldRoot}.bak/app/\n`,
+    },
+  });
+  fs.symlinkSync(path.join(userHome, 'bin/log-health.sh'), path.join(userHome, 'bin/link.sh'));
+  const healthFile = path.join(userHome, 'bin/log-health.sh');
+  const syncFile = path.join(userHome, 'bin/sync-pressure');
+  const before = { health: fs.readFileSync(healthFile), sync: fs.readFileSync(syncFile), healthStat: fs.statSync(healthFile).mtimeMs, syncStat: fs.statSync(syncFile).mtimeMs };
+
+  const report = detectForeignBindings({ homeRoot: newRoot, previousRoot: oldRoot, homeDirectory: userHome });
+  assert.deepEqual(report.unreadable, []);
+  assert.deepEqual(report.scanned, { pm2Dump: null, launchAgents: path.join(userHome, 'Library/LaunchAgents'), shellScripts: path.join(userHome, 'bin') });
+  assert.deepEqual(report.references, [
+    { source: 'shell', name: 'log-health.sh', field: 'line 3', value: `LOG="${oldRoot}/app/logs/health.log"`, root: oldRoot, file: healthFile },
+    { source: 'shell', name: 'log-health.sh', field: 'line 5', value: `cd ${oldRoot}/app && node scripts/health.mjs >> "$LOG"`, root: oldRoot, file: healthFile },
+    { source: 'shell', name: 'log-health.sh', field: 'line 6', value: longLine.slice(0, 200), root: oldRoot, file: healthFile },
+    { source: 'shell', name: 'sync-pressure', field: 'line 2', value: `curl -s http://127.0.0.1:8080/pressure > "${oldRoot}/app/data/pressure.json"`, root: oldRoot, file: syncFile },
+  ]);
+  assert.equal(report.references[2].value.length, 200);
+  assert.equal(report.warnings.length, 2);
+  assert.match(report.warnings[0], new RegExp(`^shell script "log-health\\.sh" in ${healthFile.replaceAll('.', '\\.')} still references ${oldRoot.replaceAll('.', '\\.')} through line 3, line 5, line 6\\. Home23 did not change it`));
+  assert.match(report.warnings[1], /^shell script "sync-pressure" in .* through line 2\./);
+
+  // Detection is read-only: neither script changed.
+  assert.deepEqual(fs.readFileSync(healthFile), before.health);
+  assert.deepEqual(fs.readFileSync(syncFile), before.sync);
+  assert.equal(fs.statSync(healthFile).mtimeMs, before.healthStat);
+  assert.equal(fs.statSync(syncFile).mtimeMs, before.syncStat);
+
+  // A ~/bin inside a scanned root belongs to that home and is not scanned at all.
+  const own = detectForeignBindings({ homeRoot: root, homeDirectory: userHome });
+  assert.deepEqual(own.scanned, { pm2Dump: null, launchAgents: null, shellScripts: null });
+  assert.deepEqual(own.references, []);
 });
 
 test('readPlist decodes nested dictionaries, arrays, entities and scalars', t => {

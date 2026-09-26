@@ -292,7 +292,14 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
   const workerPriority = dependencies.workerPriority ?? (operation.pid === process.pid ? setWorkerBackground : () => {});
   const registered = registration(home);
   if (!registered) throw fail('application_unavailable', 'Home23 application registration is missing.');
-  const persist = patch => { operation = { ...operation, ...patch, updatedAt: now(), pid: process.pid }; save(join(home.directory, `${operation.id}.json`), operation); };
+  const persist = patch => {
+    operation = { ...operation, ...patch, updatedAt: now(), pid: process.pid };
+    // Only the failed path writes errorCode/reasonCodes, so a resumed run that
+    // reaches any other phase would otherwise keep the refusal it recovered
+    // from in its durable record. The public view already hides them by phase.
+    if (patch.phase !== undefined && patch.phase !== 'failed') { delete operation.errorCode; delete operation.reasonCodes; }
+    save(join(home.directory, `${operation.id}.json`), operation);
+  };
   try {
     const channel = dependencies.channel ?? await import('./product-release-channel.js');
     const updater = dependencies.updater ?? await import('./product-update-apply.js');

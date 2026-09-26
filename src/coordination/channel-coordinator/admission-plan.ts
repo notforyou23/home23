@@ -5,7 +5,7 @@ import {
   type JsonValue,
 } from "../db/index.js";
 import { validateCoordinationId } from "../ids/index.js";
-import type { M11Database } from "../work/index.js";
+import { RECOVERY_REFUSAL_LIMIT, type M11Database } from "../work/index.js";
 import type {
   CoordinatorAdmissionPlan,
   CoordinatorAdmissionTarget,
@@ -15,16 +15,25 @@ type JsonObject = { [key: string]: JsonValue };
 
 const REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 
+/** Durable admission evidence this module could not read or trust. Recovery
+ * refuses such a Round for good: no later start reads the same bytes differently. */
+export class CoordinatorAdmissionPlanError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CoordinatorAdmissionPlanError";
+  }
+}
+
 function object(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`durable Channel admission ${label} is not an object`);
+    throw new CoordinatorAdmissionPlanError(`durable Channel admission ${label} is not an object`);
   }
   return value as Record<string, unknown>;
 }
 
 function string(value: unknown, label: string, maximum = 256): string {
   if (typeof value !== "string" || value.length < 1 || value.length > maximum || /[\0\r\n]/u.test(value)) {
-    throw new Error(`durable Channel admission ${label} is invalid`);
+    throw new CoordinatorAdmissionPlanError(`durable Channel admission ${label} is invalid`);
   }
   return value;
 }
@@ -36,7 +45,7 @@ function id(
 ): string {
   const candidate = string(value, label);
   if (!validateCoordinationId(kind, candidate)) {
-    throw new Error(`durable Channel admission ${label} has an invalid ID`);
+    throw new CoordinatorAdmissionPlanError(`durable Channel admission ${label} has an invalid ID`);
   }
   return candidate;
 }
@@ -48,18 +57,18 @@ function ids(
   maximum: number,
 ): readonly string[] {
   if (!Array.isArray(value) || value.length > maximum) {
-    throw new Error(`durable Channel admission ${label} is not bounded`);
+    throw new CoordinatorAdmissionPlanError(`durable Channel admission ${label} is not bounded`);
   }
   const values = value.map((candidate) => id(kind, candidate, label));
   if (new Set(values).size !== values.length) {
-    throw new Error(`durable Channel admission ${label} is duplicated`);
+    throw new CoordinatorAdmissionPlanError(`durable Channel admission ${label} is duplicated`);
   }
   return Object.freeze(values);
 }
 
 function integer(value: unknown, label: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw new Error(`durable Channel admission ${label} is invalid`);
+    throw new CoordinatorAdmissionPlanError(`durable Channel admission ${label} is invalid`);
   }
   return value as number;
 }
@@ -69,10 +78,10 @@ function parseTarget(value: unknown): CoordinatorAdmissionTarget {
   const targetBotId = id("bot", row.targetBotId, "target Bot");
   const targetPrincipalId = id("principal", row.targetPrincipalId, "target principal");
   if (targetBotId !== targetPrincipalId) {
-    throw new Error("durable Channel admission target identity is not exact");
+    throw new CoordinatorAdmissionPlanError("durable Channel admission target identity is not exact");
   }
   const selected = row.turnSelection === undefined ? undefined : object(row.turnSelection, "target selection");
-  if (selected && ((selected.modelAlias !== null && (typeof selected.modelAlias !== "string" || !selected.modelAlias.length || selected.modelAlias.length > 256 || /[\0\r\n]/u.test(selected.modelAlias))) || (selected.reasoningEffort !== null && (typeof selected.reasoningEffort !== "string" || !REASONING_EFFORTS.has(selected.reasoningEffort))))) throw new Error("Invalid target turn selection");
+  if (selected && ((selected.modelAlias !== null && (typeof selected.modelAlias !== "string" || !selected.modelAlias.length || selected.modelAlias.length > 256 || /[\0\r\n]/u.test(selected.modelAlias))) || (selected.reasoningEffort !== null && (typeof selected.reasoningEffort !== "string" || !REASONING_EFFORTS.has(selected.reasoningEffort))))) throw new CoordinatorAdmissionPlanError("Invalid target turn selection");
   return Object.freeze({
     ...(selected ? { turnSelection: { modelAlias: selected.modelAlias as string | null, reasoningEffort: selected.reasoningEffort as CoordinatorAdmissionPlan["turnSelection"]["reasoningEffort"] } } : {}),
     targetBotId,
@@ -84,22 +93,22 @@ function parseTarget(value: unknown): CoordinatorAdmissionTarget {
 
 export function parseCoordinatorAdmissionPlan(value: unknown): CoordinatorAdmissionPlan {
   const row = object(value, "plan");
-  if (row.version !== 1) throw new Error("durable Channel admission version is unsupported");
+  if (row.version !== 1) throw new CoordinatorAdmissionPlanError("durable Channel admission version is unsupported");
   const channelId = id("channel", row.channelId, "Channel");
   const originMessageId = id("message", row.originMessageId, "origin Message");
   const visibleParticipantIds = ids("bot", row.visibleParticipantIds, "visible participants", 64);
   if (!Array.isArray(row.selectedTargets) || row.selectedTargets.length < 1 || row.selectedTargets.length > 8) {
-    throw new Error("durable Channel admission targets are not bounded");
+    throw new CoordinatorAdmissionPlanError("durable Channel admission targets are not bounded");
   }
   const selectedTargets = Object.freeze(row.selectedTargets.map(parseTarget));
   if (
     new Set(selectedTargets.map((target) => target.targetBotId)).size !== selectedTargets.length ||
     selectedTargets.some((target) => !visibleParticipantIds.includes(target.targetBotId))
   ) {
-    throw new Error("durable Channel admission target plan is inconsistent");
+    throw new CoordinatorAdmissionPlanError("durable Channel admission target plan is inconsistent");
   }
   if (row.responseOrder !== "parallel" && row.responseOrder !== "sequential") {
-    throw new Error("durable Channel admission response order is invalid");
+    throw new CoordinatorAdmissionPlanError("durable Channel admission response order is invalid");
   }
 
   const manifestRow = object(row.manifest, "manifest");
@@ -117,7 +126,7 @@ export function parseCoordinatorAdmissionPlan(value: unknown): CoordinatorAdmiss
     integer(counts.artifacts, "artifact count") !== artifactIds.length ||
     !/^[0-9a-f]{64}$/u.test(contextDigest) || !/^[0-9a-f]{64}$/u.test(sourceDigest)
   ) {
-    throw new Error("durable Channel admission manifest is inconsistent");
+    throw new CoordinatorAdmissionPlanError("durable Channel admission manifest is inconsistent");
   }
 
   const selection = object(row.turnSelection, "turn selection");
@@ -127,13 +136,13 @@ export function parseCoordinatorAdmissionPlan(value: unknown): CoordinatorAdmiss
     modelAlias !== null &&
     (typeof modelAlias !== "string" || modelAlias.length < 1 || modelAlias.length > 256 || /[\0\r\n]/u.test(modelAlias))
   ) {
-    throw new Error("durable Channel admission model selection is invalid");
+    throw new CoordinatorAdmissionPlanError("durable Channel admission model selection is invalid");
   }
   if (
     reasoningEffort !== null &&
     (typeof reasoningEffort !== "string" || !REASONING_EFFORTS.has(reasoningEffort))
   ) {
-    throw new Error("durable Channel admission effort selection is invalid");
+    throw new CoordinatorAdmissionPlanError("durable Channel admission effort selection is invalid");
   }
 
   return Object.freeze({
@@ -207,7 +216,7 @@ interface AdmissionEventRow {
 
 function planFromEvent(row: AdmissionEventRow): CoordinatorAdmissionPlan {
   const digest = createHash("sha256").update(row.payloadJson, "utf8").digest("hex");
-  if (digest !== row.payloadDigest) throw new Error("durable Channel admission event digest differs");
+  if (digest !== row.payloadDigest) throw new CoordinatorAdmissionPlanError("durable Channel admission event digest differs");
   const payload = object(JSON.parse(row.payloadJson), "event payload");
   return parseCoordinatorAdmissionPlan(payload.admissionPlan);
 }
@@ -222,7 +231,7 @@ export function readCoordinatorAdmissionPlan(
        AND aggregate_version = 1 AND type = 'turn.updated'`,
     roundId,
   );
-  if (!row) throw new Error("Round is missing its immutable Channel admission event");
+  if (!row) throw new CoordinatorAdmissionPlanError("Round is missing its immutable Channel admission event");
   return planFromEvent(row);
 }
 
@@ -249,6 +258,40 @@ export function findCoordinatorAdmissionRoundIds(
   }));
 }
 
+/** A refused Round recovery is durable evidence on the Round, not a state
+ * change: the Round stays open, coordinating or waiting because only its
+ * coordinator may move it. The events journal already keeps per-Round
+ * evidence, so a refusal is one gap-free event per Round; a permanent one
+ * keeps the Round out of the recovery list at every later start. */
+const ROUND_RECOVERY_REFUSAL_AGGREGATE = "round_recovery_refusal";
+const NOT_PERMANENTLY_REFUSED_ROUND_SQL = `NOT EXISTS (
+  SELECT 1 FROM events refusal
+  WHERE refusal.aggregate_kind = '${ROUND_RECOVERY_REFUSAL_AGGREGATE}'
+    AND refusal.aggregate_id = r.id
+    AND json_extract(refusal.payload_json, '$.permanent') = 1
+)`;
+
+export interface RecordRoundRecoveryRefusalInput {
+  roundId: string;
+  /** Bounded identifier naming why recovery refused the Round. */
+  reasonCode: string;
+  /** True when no later start can recover the Round; repeated transient
+   * refusals become permanent at RECOVERY_REFUSAL_LIMIT. */
+  permanent: boolean;
+  message: string;
+  requestId: string;
+  correlationId: string;
+}
+
+export interface RoundRecoveryRefusalRecord {
+  roundId: string;
+  reasonCode: string;
+  permanent: boolean;
+  refusalCount: number;
+  message: string;
+  recordedAt: string;
+}
+
 export function listRecoverableCoordinatorAdmissionRoundIds(
   database: M11Database,
   limit: number,
@@ -267,8 +310,85 @@ export function listRecoverableCoordinatorAdmissionRoundIds(
            WHERE w.round_id = r.id AND w.kind = 'channel.bot_turn'
          )
        )
+       AND ${NOT_PERMANENTLY_REFUSED_ROUND_SQL}
      ORDER BY r.created_at, r.id LIMIT ?`,
     limit,
   );
   return Object.freeze(rows.map((row) => row.roundId));
+}
+
+export function recordRoundRecoveryRefusal(
+  database: M11Database,
+  input: RecordRoundRecoveryRefusalInput,
+  now: () => Date = () => new Date(),
+): RoundRecoveryRefusalRecord {
+  const keys = Object.keys(input).sort().join(",");
+  if (keys !== "correlationId,message,permanent,reasonCode,requestId,roundId") {
+    throw new Error("Round recovery refusal contains missing or forbidden fields");
+  }
+  for (const [kind, value] of [
+    ["round", input.roundId], ["request", input.requestId], ["correlation", input.correlationId],
+  ] as const) {
+    if (typeof value !== "string" || !validateCoordinationId(kind, value)) {
+      throw new Error(`Round recovery refusal ${kind} ID is invalid`);
+    }
+  }
+  if (typeof input.reasonCode !== "string" || !/^[a-z][a-z0-9_.-]{0,63}$/.test(input.reasonCode)) {
+    throw new Error("Round recovery refusal reason must be a bounded identifier");
+  }
+  if (typeof input.permanent !== "boolean") {
+    throw new Error("Round recovery refusal permanence must be a boolean");
+  }
+  if (typeof input.message !== "string") {
+    throw new Error("Round recovery refusal message must be a string");
+  }
+  const round = database.readOne<{ channelId: string }>(
+    "SELECT channel_id AS channelId FROM rounds WHERE id = ?", input.roundId,
+  );
+  if (!round) throw new Error("Round was not found");
+  const recordedAt = now().toISOString();
+  const message = input.message.slice(0, 500);
+  return database.mutateWithEvent((transaction) => {
+    const previous = transaction.readOne<{ version: number | null }>(
+      "SELECT max(aggregate_version) AS version FROM events WHERE aggregate_kind = ? AND aggregate_id = ?",
+      ROUND_RECOVERY_REFUSAL_AGGREGATE, input.roundId,
+    )?.version ?? 0;
+    const refusalCount = previous + 1;
+    const record: RoundRecoveryRefusalRecord = {
+      roundId: input.roundId, reasonCode: input.reasonCode,
+      permanent: input.permanent || refusalCount >= RECOVERY_REFUSAL_LIMIT,
+      refusalCount, message, recordedAt,
+    };
+    return {
+      value: Object.freeze(record),
+      event: {
+        type: "activity.updated",
+        aggregateKind: ROUND_RECOVERY_REFUSAL_AGGREGATE,
+        aggregateId: input.roundId,
+        aggregateVersion: refusalCount,
+        channelId: round.channelId,
+        actorPrincipalId: null,
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+        payload: { ...record },
+        createdAt: recordedAt,
+      },
+    };
+  }).value;
+}
+
+export function getRoundRecoveryRefusal(
+  database: M11Database,
+  roundId: string,
+): RoundRecoveryRefusalRecord | null {
+  if (typeof roundId !== "string" || !validateCoordinationId("round", roundId)) {
+    throw new Error("Round recovery refusal round ID is invalid");
+  }
+  const row = database.readOne<{ payload: string }>(
+    `SELECT payload_json AS payload FROM events
+     WHERE aggregate_kind = ? AND aggregate_id = ?
+     ORDER BY aggregate_version DESC LIMIT 1`,
+    ROUND_RECOVERY_REFUSAL_AGGREGATE, roundId,
+  );
+  return row ? Object.freeze(JSON.parse(row.payload) as RoundRecoveryRefusalRecord) : null;
 }

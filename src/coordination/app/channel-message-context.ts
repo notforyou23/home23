@@ -3,7 +3,10 @@ import {
   ChannelCoordinatorError,
   listRecoverableCoordinatorAdmissionRoundIds,
   readCoordinatorAdmissionPlan,
+  recordRoundRecoveryRefusal,
   type CoordinatorAdmissionPlan,
+  type RecordRoundRecoveryRefusalInput,
+  type RoundRecoveryRefusalRecord,
 } from "../channel-coordinator/index.js";
 import type { AttachmentSummary } from "../artifacts/index.js";
 import type { ResidentInputAttachment } from "../../coordination-adapter/index.js";
@@ -802,6 +805,10 @@ implements GroupChannelMessageContextPort {
       throw new TypeError("Channel recovery limit is invalid");
     }
     return listRecoverableCoordinatorAdmissionRoundIds(this.database, limit);
+  }
+
+  recordRecoveryRefusal(input: RecordRoundRecoveryRefusalInput): RoundRecoveryRefusalRecord {
+    return recordRoundRecoveryRefusal(this.database, input);
   }
 
   listRoundWorks(roundId: string): readonly WorkRecord[] {

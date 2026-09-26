@@ -6,6 +6,10 @@ export const AUTH_TOKEN_LIFETIMES = Object.freeze({
   pairingMs: 10 * 60 * 1000,
   accessMs: 15 * 60 * 1000,
   refreshFamilyMs: 30 * 24 * 60 * 60 * 1000,
+  // Equal to accessMs: within the successor's access lifetime, a retired refresh token presented
+  // again while its successor is still unused is a lost response or a racing duplicate, not theft;
+  // it receives the same successor credentials, so no second live session ever exists.
+  refreshReuseGraceMs: 15 * 60 * 1000,
 });
 
 export const PRODUCT_AUTH_SCOPES = Object.freeze([
@@ -55,6 +59,7 @@ export type AuthReasonCode =
   | "idempotency_conflict"
   | "rate_limit_exceeded"
   | "refresh_rotated"
+  | "refresh_reissued"
   | "refresh_invalid"
   | "refresh_expired"
   | "refresh_replay_family_revoked"
@@ -230,6 +235,8 @@ export interface RefreshRotationCommit {
   rotatedAt: string;
   successorSession: ClientSessionRecord;
   successorToken: RefreshTokenRecord;
+  /** Stored with the rotation so a grace-window reuse can re-derive the identical credentials; it carries no raw client key. */
+  credentialContext: string;
   idempotency: AuthIdempotencyClaim;
 }
 
@@ -243,6 +250,14 @@ export type RefreshRotationResult =
       outcome: "replayed";
       session: ClientSessionRecord;
       device: DeviceRecord;
+      credentialContext?: string;
+    }
+  | {
+      /** The retired token was reused inside the grace window: the first rotation's result again. */
+      outcome: "reissued";
+      session: ClientSessionRecord;
+      device: DeviceRecord;
+      credentialContext: string;
     }
   | { outcome: "conflict" }
   | { outcome: "replay"; familyId: string }
@@ -283,7 +298,13 @@ export type AuthIdempotencyResult =
       device: DeviceRecord;
       session: ClientSessionRecord;
     }
-  | { kind: "refresh"; device: DeviceRecord; session: ClientSessionRecord }
+  | {
+      kind: "refresh";
+      device: DeviceRecord;
+      session: ClientSessionRecord;
+      /** Absent on rotations committed before 187; such a token's reuse still revokes its family. */
+      credentialContext?: string;
+    }
   | { kind: "refresh_failure"; result: RefreshRotationResult }
   | { kind: "revoke"; result: RevokeResult };
 

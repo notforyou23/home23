@@ -12,6 +12,8 @@ const {
 const FLOW_TTL_MS = 10 * 60 * 1000;
 const REFRESH_THRESHOLD_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
+// Short on purpose: the providers panel waits on it, and an unreachable provider is not a revoked grant.
+const VERIFY_TIMEOUT_MS = 6_000;
 
 const PROVIDERS = Object.freeze({
   anthropic: Object.freeze({
@@ -21,6 +23,7 @@ const PROVIDERS = Object.freeze({
     redirectUri: 'https://console.anthropic.com/oauth/code/callback',
     scope: 'org:create_api_key user:profile user:inference',
     tokenEncoding: 'json',
+    probeUrl: 'https://api.anthropic.com/v1/models?limit=1',
   }),
   'openai-codex': Object.freeze({
     clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
@@ -29,6 +32,7 @@ const PROVIDERS = Object.freeze({
     redirectUri: 'http://localhost:1455/auth/callback',
     scope: 'openid profile email offline_access',
     tokenEncoding: 'form',
+    probeUrl: 'https://chatgpt.com/backend-api/codex/models?client_version=0.50.0',
   }),
 });
 
@@ -112,6 +116,24 @@ function credentialsStatus(provider, entry, now) {
     expiresAt: expiresAt === null ? null : new Date(expiresAt).toISOString(),
     accountId: credentials?.accountId ?? null,
   };
+}
+
+// The cheapest authenticated read each provider offers. Anthropic only honours a managed OAuth bearer
+// when the request looks like its own CLI, so those headers are part of the probe, not decoration.
+function probeRequest(provider, definition, credentials) {
+  const headers = { authorization: `Bearer ${credentials.accessToken}`, accept: 'application/json' };
+  if (provider === 'anthropic') {
+    Object.assign(headers, {
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'oauth-2025-04-20',
+      'user-agent': 'claude-cli/2.1.32 (external, cli)',
+      'x-app': 'cli',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    });
+  } else if (credentials.accountId) {
+    headers['chatgpt-account-id'] = credentials.accountId;
+  }
+  return { url: definition.probeUrl, headers };
 }
 
 function generatePkce() {
@@ -467,6 +489,41 @@ function createHome23OAuthBroker(options = {}) {
     return credentialsStatus(provider, providerEntry(secrets, provider), now());
   }
 
+  // status() trusts expiry, which cannot see a grant the provider revoked. verify() asks the provider,
+  // read-only: it never rotates tokens, and neither the bearer nor the provider's reply leaves this call.
+  async function verify(provider, optionsForCall = {}) {
+    const definition = assertProvider(provider);
+    const entry = providerEntry(await readSecrets(), provider);
+    const current = credentialsStatus(provider, entry, now());
+    const credentials = publicCredentials(provider, entry);
+    if (!credentials) return current;
+    const unverified = (verificationError) => ({ ...current, verified: false, revoked: false, verificationError });
+    // An expired access token would 401 whether or not the grant lives; only the refresh path can tell.
+    if (!current.valid) return unverified('expired');
+
+    const { url, headers } = probeRequest(provider, definition, credentials);
+    let response;
+    try {
+      const signals = [AbortSignal.timeout(VERIFY_TIMEOUT_MS)];
+      if (optionsForCall.signal) signals.push(optionsForCall.signal);
+      response = await fetchImpl(url, {
+        method: 'GET',
+        headers,
+        signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals),
+      });
+    } catch (error) {
+      if (optionsForCall.signal?.aborted) optionsForCall.signal.throwIfAborted();
+      return unverified(error?.name === 'TimeoutError' ? 'timeout' : 'unreachable');
+    }
+    // The body only tells an authentication 403 from a policy 403; an unreadable body is treated as empty.
+    const text = await readBoundedResponseText(response).catch(() => '');
+    if (response.ok) return { ...current, valid: true, verified: true, revoked: false, verificationError: null };
+    if (response.status === 401 || (response.status === 403 && text.includes('authentication_error'))) {
+      return { ...current, valid: false, verified: true, revoked: true, verificationError: null };
+    }
+    return unverified(`provider_error:${response.status}`);
+  }
+
   async function clear(provider) {
     assertProvider(provider);
     const outcome = await updateSecrets((secrets) => {
@@ -524,6 +581,7 @@ function createHome23OAuthBroker(options = {}) {
     home23Root,
     importCli,
     status,
+    verify,
   });
 }
 

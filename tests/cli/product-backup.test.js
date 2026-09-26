@@ -318,6 +318,23 @@ test('a restored state script keeps its executable bit and private files stay pr
   assert.equal(fs.statSync(path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/private.txt')).mode & 0o777, 0o600);
 });
 
+test('a backup neither carries nor requires Finder metadata under a state root', async t => {
+  const fixture = stoppedHome(t);
+  fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
+  const droppings = ['app/instances/milo/.DS_Store', 'app/instances/milo/workspace/._note.txt'];
+  for (const relative of droppings) fs.writeFileSync(path.join(fixture.home, relative), Buffer.from([0, 0, 0, 1, 0x42, 0x75, 0x64, 0x31]));
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  const header = readAuthenticatedBackupHeader({ archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  assert.deepEqual(header.files.map(entry => entry.path).filter(relative => /(^|\/)(\.DS_Store|\._)/.test(relative)), []);
+  assert.ok(header.files.some(entry => entry.path === 'app/instances/milo/workspace/note.txt'));
+  const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  assert.equal(inspected.ok, true);
+  for (const relative of droppings) assert.equal(fs.existsSync(path.join(fixture.inspectionRoot, relative)), false, relative);
+  // The reference scan reads state text, never a Finder dropping that happens to mention the old home.
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/.DS_Store'), `${fixture.root}/elsewhere\n`);
+  assert.deepEqual(scanHomeReferences(fixture.home, path.join(fixture.root, 'elsewhere')), []);
+});
+
 test('inspection and header reads write only inside the inspection root', async t => {
   const fixture = stoppedHome(t);
   fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
@@ -410,6 +427,43 @@ test('restoring rebases an in-home symlink onto the new root', async t => {
   assert.equal(target.startsWith(fixture.inspectionRoot), true);
   assert.equal(target.startsWith(fixture.home), false);
   assert.equal(fs.readFileSync(restored, 'utf8'), 'remember this\n');
+});
+
+test('a dangling resident link is archived as written and recreated, still dangling, on restore', async t => {
+  const fixture = stoppedHome(t);
+  // The owner's live case: a worker's clone kept a link into a tree that was retired.
+  const clone = 'app/instances/workers/shakedown-jerry/workspace/source-clones/shakedownshuffle';
+  fs.mkdirSync(path.join(fixture.home, clone), { recursive: true });
+  const links = { [`${clone}/html-test`]: path.join(fixture.root, 'retired-tree/html-test'),
+    'app/instances/milo/workspace/old-notes': path.join(fixture.root, 'retired-tree/notes') };
+  for (const [relative, retired] of Object.entries(links)) fs.symlinkSync(retired, path.join(fixture.home, relative));
+  fs.mkdirSync(fixture.inspectionRoot);
+  const created = await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  assert.equal(created.ok, true);
+  const header = readAuthenticatedBackupHeader({ archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  for (const relative of Object.keys(links)) assert.equal(header.files.find(entry => entry.path === relative)?.type, 'symlink');
+
+  // A target that reappears outside the home is an escape again, not a dead link.
+  fs.mkdirSync(path.join(fixture.root, 'retired-tree/html-test'), { recursive: true });
+  await assert.rejects(() => inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+    inspectionRoot: fixture.inspectionRoot }), /escapes its home/);
+  assert.deepEqual(fs.readdirSync(fixture.inspectionRoot), []);
+  fs.rmSync(path.join(fixture.root, 'retired-tree'), { recursive: true });
+
+  const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  assert.equal(inspected.ok, true);
+  for (const [relative, retired] of Object.entries(links)) {
+    const restored = path.join(fixture.inspectionRoot, relative);
+    assert.equal(fs.lstatSync(restored).isSymbolicLink(), true);
+    assert.equal(fs.readlinkSync(restored), retired);
+    assert.equal(fs.existsSync(restored), false);
+  }
+
+  const config = stoppedHome(t);
+  fs.symlinkSync(path.join(config.root, 'retired-tree/agents.json'), path.join(config.home, 'app/config/agents.json'));
+  await assert.rejects(() => createHomeBackup({ homeRoot: config.home, archivePath: config.archivePath, keyPath: config.keyPath }, quiet),
+    /escapes its home/);
+  assert.equal(fs.existsSync(config.archivePath), false);
 });
 
 test('move fences the source and leaves the destination stopped', async t => {
@@ -711,6 +765,106 @@ test('move rebinds destination ports and source paths without changing identity 
   assert.equal(JSON.stringify(agents).includes(fixture.home), false);
   assert.equal(fs.existsSync(path.join(destination, 'runtime/ecosystem.config.json')), false);
   assert.equal(fs.existsSync(path.join(fixture.home, 'runtime/ecosystem.config.json')), true);
+});
+
+/** What Core leaves under runtime/home-update after a completed update and a later check: the
+ * registration, both operation records, the latest pointer, a request receipt and an executor. */
+function seedHomeUpdateRecords(home) {
+  const directory = path.join(home, 'runtime/home-update');
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const delivery = path.join(path.dirname(home), `.${path.basename(home)}.home23-delivery`);
+  const updateId = '3f6a9c1e-5b2d-4e7f-8a90-1b2c3d4e5f60';
+  const checkId = '7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f';
+  const request = `request-${'c'.repeat(64)}.json`;
+  const write = (name, value, mode = 0o600) => fs.writeFileSync(path.join(directory, name), `${JSON.stringify(value)}\n`, { mode });
+  write('application.json', { schema: 'home23.product-application.v1', homeRoot: home, applicationPath: '/Applications/Home23.app',
+    version: '1.86', build: 186, registeredAt: '2026-09-25T20:00:00.000Z', updatedAt: '2026-09-25T20:00:00.000Z' }, 0o644);
+  write(`${updateId}.json`, {
+    schema: 'home23.home-update.v1', id: updateId, homeRoot: home, action: 'update', runAction: 'resume', attempt: 2, clientBuild: 181,
+    phase: 'completed', progress: null, pid: 4242, executor: path.join(directory, `executor-${updateId}-2`),
+    prepared: { release: { version: '1.86', appBuild: 186, packageId: 'package-186' }, packageId: 'package-186',
+      staging: path.join(delivery, `stage-${updateId}`), candidatePayload: path.join(delivery, `stage-${updateId}/payload`),
+      downloadDirectory: path.join(delivery, `download-${updateId}`), installedAppPath: '/Applications/Home23.app',
+      preparedAppPath: '/Applications/.Home23.app.next', lifecyclePath: '/Applications/Home23.app/Contents/Resources/home23-app-lifecycle' },
+    runtimeCompleted: true, applicationCompleted: true, message: 'Your home is up to date.',
+    startedAt: '2026-09-25T20:01:00.000Z', updatedAt: '2026-09-25T20:05:00.000Z',
+  });
+  write(`${checkId}.json`, {
+    schema: 'home23.home-update.v1', id: checkId, homeRoot: home, action: 'check', runAction: 'check', attempt: 1, clientBuild: 181,
+    phase: 'completed', progress: null, pid: 4343, executor: path.join(directory, `executor-${checkId}-1`),
+    check: { status: 'current', minimumClientBuild: 180 }, message: 'Home23 is up to date.',
+    startedAt: '2026-09-25T21:00:00.000Z', updatedAt: '2026-09-25T21:00:02.000Z',
+  });
+  write('latest.json', { id: checkId });
+  write(request, { id: checkId, action: 'check', clientBuild: 181 });
+  // A truncated temporary from an interrupted save is neither a record nor a reference.
+  fs.writeFileSync(path.join(directory, `${checkId}.json.${'d'.repeat(8)}.tmp`), `{"schema":"home23.home-update.v1","homeRoot":"${home}`, { mode: 0o600 });
+  fs.mkdirSync(path.join(directory, `executor-${checkId}-1`), { mode: 0o700 });
+  fs.writeFileSync(path.join(directory, `executor-${checkId}-1/package.json`), '{"type":"module"}\n', { mode: 0o600 });
+  return { directory, delivery, updateId, checkId, request };
+}
+
+test('move rebinds the home-update registration and operation records to the destination and its delivery directory', async t => {
+  const fixture = stoppedHome(t);
+  const seed = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+  fs.mkdirSync(seed, { recursive: true });
+  fs.writeFileSync(path.join(seed, 'birth-receipt.json'), '{"seedId":"updates"}\n');
+  const records = seedHomeUpdateRecords(fixture.home);
+  const names = ['application.json', `${records.updateId}.json`, `${records.checkId}.json`, 'latest.json', records.request];
+  const sourceBytes = name => fs.readFileSync(path.join(records.directory, name));
+  const before = Object.fromEntries(names.map(name => [name, sourceBytes(name)]));
+  // The leftover scan names an operation record that still carries the source home, so a rebind
+  // that skipped these records could not finish.
+  const stale = path.join(fixture.root, 'stale');
+  fs.mkdirSync(path.join(stale, 'runtime/home-update'), { recursive: true });
+  fs.copyFileSync(path.join(records.directory, `${records.checkId}.json`), path.join(stale, `runtime/home-update/${records.checkId}.json`));
+  assert.deepEqual(scanHomeReferences(stale, fixture.home), [`runtime/home-update/${records.checkId}.json`]);
+
+  const destination = path.join(fixture.root, 'updates-dest');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  const moved = await moveHome({
+    sourceHome: fixture.home, destinationRoot: destination, archivePath: fixture.archivePath, keyPath: fixture.keyPath,
+  }, quiet);
+  assert.equal(moved.fenced, true);
+  const directory = path.join(destination, 'runtime/home-update');
+  const delivery = path.join(fixture.root, '.updates-dest.home23-delivery');
+  const read = name => JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'));
+  const mode = name => fs.statSync(path.join(directory, name)).mode & 0o777;
+  const registration = read('application.json');
+  assert.equal(registration.homeRoot, destination);
+  assert.equal(registration.applicationPath, '/Applications/Home23.app');
+  assert.equal(registration.build, 186);
+  assert.equal(registration.registeredAt, '2026-09-25T20:00:00.000Z');
+  assert.equal(mode('application.json'), 0o644);
+  const update = read(`${records.updateId}.json`);
+  assert.equal(update.homeRoot, destination);
+  assert.equal(update.executor, path.join(directory, `executor-${records.updateId}-2`));
+  assert.equal(update.prepared.staging, path.join(delivery, `stage-${records.updateId}`));
+  assert.equal(update.prepared.candidatePayload, path.join(delivery, `stage-${records.updateId}/payload`));
+  assert.equal(update.prepared.downloadDirectory, path.join(delivery, `download-${records.updateId}`));
+  assert.equal(update.prepared.installedAppPath, '/Applications/Home23.app');
+  assert.equal(update.prepared.preparedAppPath, '/Applications/.Home23.app.next');
+  assert.equal(update.prepared.lifecyclePath, '/Applications/Home23.app/Contents/Resources/home23-app-lifecycle');
+  assert.deepEqual(update.prepared.release, { version: '1.86', appBuild: 186, packageId: 'package-186' });
+  assert.equal(update.phase, 'completed');
+  assert.equal(update.attempt, 2);
+  assert.equal(update.runtimeCompleted, true);
+  assert.equal(mode(`${records.updateId}.json`), 0o600);
+  const check = read(`${records.checkId}.json`);
+  assert.equal(check.homeRoot, destination);
+  assert.equal(check.executor, path.join(directory, `executor-${records.checkId}-1`));
+  assert.deepEqual(check.check, { status: 'current', minimumClientBuild: 180 });
+  assert.equal(mode(`${records.checkId}.json`), 0o600);
+  for (const name of ['latest.json', records.request]) {
+    assert.equal(fs.readFileSync(path.join(directory, name)).equals(before[name]), true, `${name} is untouched`);
+  }
+  for (const name of names) {
+    assert.equal(sourceBytes(name).equals(before[name]), true, `source ${name} is untouched`);
+    const text = fs.readFileSync(path.join(directory, name), 'utf8');
+    assert.equal(text.includes(fixture.home), false, `${name} still names the source home`);
+    assert.equal(text.includes(records.delivery), false, `${name} still names the source delivery directory`);
+  }
+  assert.deepEqual(scanHomeReferences(destination, fixture.home), []);
 });
 
 test('a resumed move corrects existing directory and file modes from the manifest', async t => {
@@ -1236,6 +1390,45 @@ test('recoverInspectedHome retry keeps the same archive binding', async t => {
     error => error.code === 'backup_recover_archive_mismatch',
   );
   assert.equal(JSON.parse(fs.readFileSync(journalPath, 'utf8')).filesDigest, first.filesDigest);
+});
+
+test('recoverInspectedHome rebinds the home-update records and a retry still matches the archive', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const { payload, manifest } = fixturePayload(root);
+  seedRecoverableHome(home, { packageId: manifest.packageId, sourceCommit: manifest.sourceCommit });
+  const records = seedHomeUpdateRecords(home);
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const archivePath = path.join(out, 'home.h23b');
+  const keyPath = path.join(out, 'home.backup-key.json');
+  const inspectionRoot = path.join(root, 'inspect');
+  fs.mkdirSync(inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  fs.rmSync(home, { recursive: true, force: true });
+
+  const recovered = await recoverInspectedHome({ inspectionRoot, payloadPath: payload, archivePath, keyPath }, quiet);
+  assert.equal(recovered.ok, true);
+  const directory = path.join(inspectionRoot, 'runtime/home-update');
+  const read = name => JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'));
+  assert.equal(read('application.json').homeRoot, inspectionRoot);
+  assert.equal(read('application.json').applicationPath, '/Applications/Home23.app');
+  const update = read(`${records.updateId}.json`);
+  assert.equal(update.homeRoot, inspectionRoot);
+  assert.equal(update.executor, path.join(directory, `executor-${records.updateId}-2`));
+  assert.equal(update.prepared.staging, path.join(root, '.inspect.home23-delivery', `stage-${records.updateId}`));
+  assert.equal(update.prepared.candidatePayload, path.join(root, '.inspect.home23-delivery', `stage-${records.updateId}/payload`));
+  assert.equal(update.prepared.installedAppPath, '/Applications/Home23.app');
+  assert.equal(read(`${records.checkId}.json`).executor, path.join(directory, `executor-${records.checkId}-1`));
+  assert.deepEqual(read('latest.json'), { id: records.checkId });
+  assert.deepEqual(scanHomeReferences(inspectionRoot, home), []);
+
+  // A retry re-verifies the committed destination against the archive; the rewritten records are rebind mutations, not tampering.
+  const again = await recoverInspectedHome({ inspectionRoot, payloadPath: payload, archivePath, keyPath }, quiet);
+  assert.equal(again.ok, true);
+  assert.equal(again.filesDigest, recovered.filesDigest);
+  assert.equal(read(`${records.updateId}.json`).homeRoot, inspectionRoot);
 });
 
 test('recoverInspectedHome refuses claimed retry after Seed changes', async t => {

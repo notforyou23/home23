@@ -54,6 +54,9 @@ function oauthPublicStatus(result) {
     source: result?.source || 'none',
     expiresAt: result?.expiresAt ?? null,
     accountId: result?.accountId ?? null,
+    verified: result?.verified === true,
+    revoked: result?.revoked === true,
+    verificationError: typeof result?.verificationError === 'string' ? result.verificationError : null,
   };
 }
 async function cancelHostOAuthPending(appRoot, provider) {
@@ -83,7 +86,9 @@ async function runHostOAuthAction(action, homeRoot, input = {}, dependencies = {
     return { ok: true, provider, ...oauthPublicStatus(completed) };
   }
   if (action === 'oauth-status') {
-    return { ok: true, provider, ...oauthPublicStatus(await broker.status(provider)) };
+    // Expiry alone kept saying "connected" after Anthropic revoked the grant; ask the provider unless told not to.
+    const current = input.verify === false ? await broker.status(provider) : await broker.verify(provider);
+    return { ok: true, provider, ...oauthPublicStatus(current) };
   }
   if (action === 'oauth-cancel') {
     return cancelHostOAuthPending(appRoot, provider);

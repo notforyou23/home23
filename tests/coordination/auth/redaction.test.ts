@@ -102,6 +102,19 @@ test("actual pairing and rotation audit receipts and stored records contain no r
     network: "vpn",
     mutation: refreshMutation,
   });
+  // A grace-window reissue stores the rotation's context; the raw key it was made with must not follow.
+  const reissued = await service.refreshSession({
+    refreshToken: paired.refreshToken,
+    network: "vpn",
+    mutation: mutation("refresh-retry"),
+  });
+  assert.equal(reissued.refreshToken, rotated.refreshToken);
+  now = new Date("2026-08-25T18:02:00.000Z");
+  await service.refreshSession({
+    refreshToken: rotated.refreshToken,
+    network: "vpn",
+    mutation: mutation("refresh-second"),
+  });
   await assert.rejects(
     service.refreshSession({
       refreshToken: paired.refreshToken,

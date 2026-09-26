@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { absoluteHome, privateDirectory, productEnvironment, readPrivateJSON } from './product-environment.js';
-import { acquireInstallLock, isStateBearingSoftwarePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
+import { acquireInstallLock, isOsMetadataPath, isStateBearingSoftwarePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
 import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath } from './product-update-inventory.js';
@@ -164,7 +164,10 @@ function installController(updateDirectory) {
 function identityFiles(home) {
   const files = new Set();
   function visit(relative) {
-    if (!relative || isRebuildableStatePath(relative) || relative === '.home23-install.json' || relative.startsWith('runtime/')) return;
+    // Finder writes .DS_Store under a state root at any time, including between
+    // the quiesced checkpoint and commit. It is not home state: it must neither
+    // enter the identity set nor be carried into the checkpoint.
+    if (!relative || isRebuildableStatePath(relative) || isOsMetadataPath(relative) || relative === '.home23-install.json' || relative.startsWith('runtime/')) return;
     const absolute = join(home, relative);
     if (!exists(absolute)) return;
     const stat = lstatSync(absolute);

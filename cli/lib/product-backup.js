@@ -27,7 +27,7 @@ import {
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
-import { PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
+import { isOsMetadataPath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectCoordinationDatabase, isProductStatePath, isRebuildableStatePath, ownedWriterNames } from './product-update-inventory.js';
 import { detectForeignBindings } from './product-foreign-bindings.js';
 
@@ -151,6 +151,15 @@ function retainedAuthorityDependencies(root) {
   });
 }
 
+// Content a resident or one of its workers writes freely. A link left there
+// whose target can no longer be reached carries nothing across a backup or a
+// restore, so it is archived as written instead of refused as an escape.
+const CONTENT_LINK = /^app\/instances\/(?:workers\/)?[^/]+\/(?:workspace|uploads|scratch|cron-runs|brain|conversations)\/.+$/;
+function danglingContentLink(relative, absolute) {
+  if (!CONTENT_LINK.test(relative)) return false;
+  try { realpathSync(absolute); return false; } catch { return true; }
+}
+
 function assertSymlinkInside(homeRoot, relative) {
   const file = join(homeRoot, relative);
   const target = readlinkSync(file);
@@ -160,7 +169,9 @@ function assertSymlinkInside(homeRoot, relative) {
   catch {
     const linked = resolve(dirname(file), target);
     if (reviewedAdoptedLinkKind(homeRoot, relative, target) === 'retain-authority') throw new Error(`Retained external authority is unavailable: ${relative}`);
-    if (!inside(homeRoot, linked) && !reviewedAdoptedLink(homeRoot, relative, target)) throw new Error(`Backup symlink escapes its home: ${relative}`);
+    // realpath failed, so nothing can be read through this link. Resident
+    // content pointing at a retired tree is kept; other dead links still refuse.
+    if (!inside(homeRoot, linked) && !reviewedAdoptedLink(homeRoot, relative, target) && !CONTENT_LINK.test(relative)) throw new Error(`Backup symlink escapes its home: ${relative}`);
     return target;
   }
   if (!inside(homeRoot, resolved) && !reviewedAdoptedLink(homeRoot, relative, target)) throw new Error(`Backup symlink escapes its home: ${relative}`);
@@ -356,7 +367,8 @@ async function collectRecords(homeRoot, sink, archiveParent, lock, maxHeaderByte
     inventory(type === 'file' ? { path: relative, sha256: digest, bytes: size, type, mode: lstatSync(absolute).mode & 0o777 } : { path: relative, sha256: digest, bytes: size, type });
   };
   const visit = async relative => {
-    if (!relative || seen.has(relative) || isRebuildableStatePath(relative) || omitSidecar(relative)) return;
+    // A backup neither carries nor requires the Finder metadata a state root may hold.
+    if (!relative || seen.has(relative) || isRebuildableStatePath(relative) || omitSidecar(relative) || isOsMetadataPath(relative)) return;
     if (!isProductStatePath(relative)) return;
     const absolute = join(homeRoot, relative);
     if (!exists(absolute)) return;
@@ -563,14 +575,14 @@ function restoredLink(sourceHome, inspectionRoot, linkRelative, target) {
   if (isAbsolute(target)) {
     if (reviewedAdoptedLinkKind(inspectionRoot, linkRelative, target) === 'retain-authority') return target;
     if (!inside(source, absolute)) {
-      if (!reviewedAdoptedLink(inspectionRoot, linkRelative, target)) throw new Error(`Backup symlink escapes its home: ${linkRelative}`);
+      if (!reviewedAdoptedLink(inspectionRoot, linkRelative, target) && !danglingContentLink(linkRelative, absolute)) throw new Error(`Backup symlink escapes its home: ${linkRelative}`);
       return target;
     }
     const rebased = join(inspectionRoot, relative(source, absolute));
     if (!inside(inspectionRoot, rebased)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
     return relative(linkDirectory, rebased);
   }
-  if (!inside(inspectionRoot, absolute) && !reviewedAdoptedLink(inspectionRoot, linkRelative, target)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
+  if (!inside(inspectionRoot, absolute) && !reviewedAdoptedLink(inspectionRoot, linkRelative, target) && !danglingContentLink(linkRelative, absolute)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
   return target;
 }
 
@@ -943,6 +955,7 @@ function hasRecoverableIdentity(host) {
 }
 
 const BRAIN_MANIFEST_PATH = /^app\/instances\/[^/]+\/brain\/memory-manifest\.json$/;
+const HOME_UPDATE_RECORD_PATH = /^runtime\/home-update\/(?:application|[0-9a-f-]{36})\.json$/;
 
 /** Host/config paths rewrite during rebind; identity bytes must still match the archive. */
 function isRebindMutablePath(relative, root = null) {
@@ -954,6 +967,7 @@ function isRebindMutablePath(relative, root = null) {
   if (/^app\/instances\/[^/]+\/(config|engine)\.yaml$/.test(relative)) return true;
   if (!rebindScanExcluded(relative) && embeddedRebindKind(relative, root ? join(root, relative) : null)) return true;
   if (BRAIN_MANIFEST_PATH.test(relative)) return true;
+  if (HOME_UPDATE_RECORD_PATH.test(relative)) return true;
   return false;
 }
 
@@ -1713,6 +1727,7 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     writePrivateJSON(file, config);
   }
   rebindSemanticPrep(source, destination, newPorts, adopted);
+  rebindHomeUpdateRecords(source, destination, adopted);
   rebindAgentsManifest(source, destination, adopted);
   const savedProcesses = join(destination, 'runtime/ecosystem.config.json');
   if (exists(savedProcesses)) unlinkSync(savedProcesses);
@@ -1778,7 +1793,8 @@ function homeStateEntries(destination) {
   const roots = PRODUCT_STATE_PATHS.filter(entry => !PRODUCT_STATE_PATHS.some(parent =>
     parent !== entry && (parent.type === 'directory' || parent.allowDescendants) && entry.path.startsWith(`${parent.path}/`)));
   const visit = relative => {
-    if (rebindScanExcluded(relative)) return;
+    // Finder metadata is not state to rebind or scan, and a Spotlight index is not a tree to walk.
+    if (rebindScanExcluded(relative) || isOsMetadataPath(relative)) return;
     const absolute = join(destination, relative);
     if (!exists(absolute)) return;
     const stat = lstatSync(absolute);
@@ -1935,6 +1951,38 @@ function rebindSemanticPrep(source, destination, newPorts, adopted = false) {
   if (recipeId) prep.recipeId = recipeId;
   if (treeContains(prep, source)) fail('move_rebind_incomplete', 'Destination semantic preparation still names the source home.');
   writePrivateJSON(file, prep);
+}
+
+/** The update registration and operation records name the home root, the executor retained under
+ * runtime/home-update and the delivery directory beside the home (product-home-update.js
+ * updateDeliveryPaths). Application paths belong to the Mac, so only those two prefixes move. */
+function rebindHomeUpdateRecords(source, destination, adopted = false) {
+  const directory = join(destination, 'runtime/home-update');
+  if (!exists(directory) || !lstatSync(directory).isDirectory()) return;
+  const deliveryFor = home => join(dirname(home), `.${basename(home)}.home23-delivery`);
+  const sourceDelivery = deliveryFor(source), destinationDelivery = deliveryFor(destination);
+  const rewrite = value => {
+    if (typeof value === 'string') {
+      if (value === sourceDelivery || value.startsWith(`${sourceDelivery}${sep}`)) return `${destinationDelivery}${value.slice(sourceDelivery.length)}`;
+      return replaceHomePath(value, source, destination, adopted);
+    }
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, rewrite(item)]));
+    return value;
+  };
+  for (const name of readdirSync(directory).sort()) {
+    // latest.json and request receipts hold identities only; executor directories and temporaries are not records.
+    const file = join(directory, name);
+    if (!HOME_UPDATE_RECORD_PATH.test(`runtime/home-update/${name}`) || !lstatSync(file).isFile()) continue;
+    let record;
+    try { record = JSON.parse(readFileSync(file, 'utf8')); }
+    catch { fail('move_rebind_incomplete', `Destination home-update record could not be read: ${relative(destination, file)}`); }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) fail('move_rebind_incomplete', `Destination home-update record is not a record: ${relative(destination, file)}`);
+    // The registration's applicationPath is the installed Mac application, which does not move with the home.
+    record = { ...(name === 'application.json' ? record : rewrite(record)), homeRoot: destination };
+    if (treeContains(record, source)) fail('move_rebind_incomplete', `Destination home-update record still names the source home: ${relative(destination, file)}`);
+    writePrivateJSON(file, record);
+  }
 }
 
 function rebindAgentsManifest(source, destination, adopted = false) {

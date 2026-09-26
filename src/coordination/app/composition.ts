@@ -830,12 +830,11 @@ export function createCoordinationProcess(
     drain: async () => undefined,
     close: async () => database.close(),
   }]);
+  type RecoveryReceipt = Readonly<{ discovered: number; scheduled: number; refused: number }>;
   type RecoveringMessageSubmission = CoordinationMessageSubmissionPort & {
-    recoverResidentWork(): Promise<Readonly<{
-      discovered: number;
-      scheduled: number;
-      refused: number;
-    }>>;
+    /** The combined receipt keeps its shape; the parts let the start log
+     * name each path truthfully. */
+    recoverResidentWork(): Promise<RecoveryReceipt & Readonly<{ direct: RecoveryReceipt; group: RecoveryReceipt }>>;
   };
   let messageSubmission: RecoveringMessageSubmission | undefined;
   let composedChannelCoordinator: CoordinationChannelCoordinatorPort | undefined;
@@ -1166,12 +1165,14 @@ export function createCoordinationProcess(
         recoverResidentWork: async () => {
           const direct = await directSubmission.recoverResidentWork();
           const group = groupSubmission === undefined
-            ? { discovered: 0, scheduled: 0, refused: 0 }
+            ? Object.freeze({ discovered: 0, scheduled: 0, refused: 0 })
             : await groupSubmission.recoverResidentWork();
           return Object.freeze({
             discovered: direct.discovered + group.discovered,
             scheduled: direct.scheduled + group.scheduled,
             refused: direct.refused + group.refused,
+            direct,
+            group,
           });
         },
       });
@@ -1654,11 +1655,14 @@ export function createCoordinationProcess(
       reconcileJoinedStops();
       if (messageSubmission) {
         void messageSubmission.recoverResidentWork().then((receipt) => {
-          if (receipt.discovered > 0) {
-            console.log(`[home23-coordination] direct-message recovery discovered=${receipt.discovered} scheduled=${receipt.scheduled} refused=${receipt.refused}`);
+          // One line per path: the sum under one name read group refusals as direct ones.
+          for (const [path, part] of [["direct-message", receipt.direct], ["group-channel", receipt.group]] as const) {
+            if (part.discovered > 0) {
+              console.log(`[home23-coordination] ${path} recovery discovered=${part.discovered} scheduled=${part.scheduled} refused=${part.refused}`);
+            }
           }
         }).catch((error: unknown) => {
-          console.error("[home23-coordination] direct-message recovery failed:", error instanceof Error ? error.message : error);
+          console.error("[home23-coordination] direct-message or group-channel recovery failed:", error instanceof Error ? error.message : error);
         });
       }
       return address;

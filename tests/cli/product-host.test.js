@@ -979,12 +979,15 @@ test('Host oauth start, cancel, status, and logout reuse the broker without netw
 
   const connected = await runHostAction('oauth-status', {
     homeRoot,
-    input: { provider: 'openai-codex' },
+    input: { provider: 'openai-codex', verify: false },
   }, { oauthFetch });
   assert.equal(connected.ok, true);
   assert.equal(connected.configured, true);
   assert.equal(connected.valid, true);
   assert.equal(connected.accountId, 'acct-fixture');
+  assert.equal(connected.verified, false);
+  assert.equal(connected.revoked, false);
+  assert.equal(connected.verificationError, null);
 
   const loggedOut = await runHostAction('oauth-logout', {
     homeRoot,
@@ -993,8 +996,52 @@ test('Host oauth start, cancel, status, and logout reuse the broker without netw
   assert.equal(loggedOut.ok, true);
   assert.equal(loggedOut.cleared, true);
   assert.equal(loggedOut.configured, false);
+  assert.equal(loggedOut.verified, false);
+  assert.equal(loggedOut.revoked, false);
+  assert.equal(loggedOut.verificationError, null);
   assert.equal(readHostSecrets(homeRoot).providers['openai-codex']?.apiKey, undefined);
   assert.equal(readHostSecrets(homeRoot).providers['openai-codex']?.oauthManaged, undefined);
+});
+
+test('Host oauth-status asks the provider and reports a revoked grant instead of trusting expiry', async t => {
+  const homeRoot = home(t);
+  const accessToken = writeConnectedOAuthFixture(homeRoot, 'anthropic');
+  const probes = [];
+  let reply = () => new Response(JSON.stringify({ data: [] }), { status: 200 });
+  const oauthFetch = async (url, init) => { probes.push({ url, init }); return reply(); };
+  const statusFor = input => runHostAction('oauth-status', { homeRoot, input: { provider: 'anthropic', ...input } }, { oauthFetch });
+
+  const live = await statusFor();
+  assert.equal(probes.length, 1);
+  assert.equal(probes[0].url, 'https://api.anthropic.com/v1/models?limit=1');
+  assert.ok(probes[0].init.headers.authorization.startsWith('Bearer '));
+  assert.deepEqual(
+    [live.ok, live.configured, live.valid, live.verified, live.revoked, live.verificationError],
+    [true, true, true, true, false, null],
+  );
+  assert.equal(JSON.stringify(live).includes(accessToken), false);
+
+  // The live defect: Anthropic had revoked the grant while expiry still said "connected".
+  reply = () => new Response(JSON.stringify({
+    type: 'error',
+    error: { type: 'authentication_error', message: 'OAuth access token has been revoked' },
+  }), { status: 401 });
+  const revoked = await statusFor();
+  assert.deepEqual(
+    [revoked.configured, revoked.valid, revoked.verified, revoked.revoked, revoked.refreshable, revoked.verificationError],
+    [true, false, true, true, true, null],
+  );
+  assert.equal(JSON.stringify(revoked).includes('has been revoked'), false);
+  assert.equal(readHostSecrets(homeRoot).providers.anthropic.apiKey, accessToken);
+  assert.equal(readHostSecrets(homeRoot).providers.anthropic.oauth.refreshToken, 'refresh-fixture');
+
+  reply = () => { throw new TypeError('fetch failed'); };
+  const down = await statusFor();
+  assert.deepEqual([down.valid, down.verified, down.revoked, down.verificationError], [true, false, false, 'unreachable']);
+
+  const skipped = await statusFor({ verify: false });
+  assert.equal(probes.length, 3);
+  assert.deepEqual([skipped.valid, skipped.verified, skipped.revoked, skipped.verificationError], [true, false, false, null]);
 });
 
 test('create admits a fixture oauth account and refuses a missing account without converting credentials', async t => {
@@ -1104,13 +1151,17 @@ test('create refuses oauth that is configured but neither valid nor refreshable'
       },
     },
   }), { mode: 0o600 });
+  let probes = 0;
+  const countingFetch = async () => { probes += 1; throw new Error('must not network'); };
   const status = await runHostAction('oauth-status', {
     homeRoot,
     input: { provider: 'anthropic' },
-  }, { oauthFetch: async () => { throw new Error('must not network'); } });
+  }, { oauthFetch: countingFetch });
   assert.equal(status.configured, true);
   assert.equal(status.valid, false);
   assert.equal(status.refreshable, false);
+  assert.equal(status.verificationError, 'expired');
+  assert.equal(probes, 0);
   await assert.rejects(
     runHostAction('create', {
       homeRoot,
@@ -1137,9 +1188,12 @@ test('create refuses oauth that is configured but neither valid nor refreshable'
   const refreshable = await runHostAction('oauth-status', {
     homeRoot,
     input: { provider: 'anthropic' },
-  }, { oauthFetch: async () => { throw new Error('must not network'); } });
+  }, { oauthFetch: countingFetch });
   assert.equal(refreshable.valid, false);
   assert.equal(refreshable.refreshable, true);
+  assert.equal(refreshable.revoked, false);
+  assert.equal(refreshable.verificationError, 'expired');
+  assert.equal(probes, 0);
   const admitted = await runHostAction('create', {
     homeRoot,
     input: {
