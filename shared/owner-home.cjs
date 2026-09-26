@@ -6,9 +6,9 @@
 // owner's. productEnvironment() names the owner's macOS account home in
 // HOME23_OWNER_HOME, from the passwd entry, at every launch. Outside the Host
 // (no HOME23_PRODUCT_HOST) HOME is honoured, so development checkouts and
-// tests can redirect it. cli/lib code cannot load this file (the retained
-// update executor copies only ./ imports) and uses product-environment.js's
-// ownerAccountHome(), the same passwd rule.
+// tests can redirect it. cli/lib code keeps to product-environment.js's
+// ownerAccountHome(), the same passwd rule, because the retained update
+// executor copies only ./ imports.
 
 const os = require('node:os');
 const path = require('node:path');

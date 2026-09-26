@@ -14,9 +14,9 @@ Under the Home23 Host every Home23 process runs with `HOME=<home>/runtime/user`.
   - `ownerHome(env)` returns `HOME23_OWNER_HOME`. Outside the Host (no `HOME23_PRODUCT_HOST`) it falls back to `HOME`, so development checkouts and tests can redirect it. Otherwise it falls back to the passwd entry.
   - `expandOwnerPath(p, env)` expands only `~` and `~/x`. It leaves `~user`, relative paths and absolute paths unchanged.
   - `runtimeHome(env)` returns `HOME23_RUNTIME_HOME`, falling back to `HOME`. It is for Home23's own state.
-- `cli/lib` uses `ownerAccountHome()` from `product-environment.js`, which applies the same passwd rule. The retained update executor copies only `./` imports, so `cli/lib` never loads `shared/owner-home.cjs`.
+- `cli/lib` uses `ownerAccountHome()` from `product-environment.js`, which applies the same passwd rule. The retained update executor copies only `./` imports, so `cli/lib` does not load `shared/owner-home.cjs`.
 - Shell scripts use `${HOME23_OWNER_HOME:-$HOME}`. Python uses `os.environ.get('HOME23_OWNER_HOME') or pwd.getpwuid(os.getuid()).pw_dir`. The owner's own cron has only `HOME`, and these forms keep working there.
-- A child process that acts for the owner gets its environment from `ownerChildEnv()` in `shared/child-process-env.cjs`. Under the Host that environment's `HOME` is the owner home, `HOME23_RUNTIME_HOME` still points to Home23's runtime home, and privileged keys are removed.
+- Spawn a child process that acts for the owner, such as a scheduled exec job or the resident shell, with `ownerChildEnv()` from `shared/child-process-env.cjs`. Under the Host that environment's `HOME` is the owner home, `HOME23_RUNTIME_HOME` still points to Home23's runtime home, and privileged keys are removed. Spawns that keep a child away from the owner's home use `unprivilegedChildEnv()`.
 
 ## Home23's own state
 
