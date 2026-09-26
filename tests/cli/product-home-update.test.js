@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { homeUpdateStatus, pruneUpdateDelivery, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
@@ -714,9 +714,11 @@ test('completing an operation removes executors of finished operations and earli
   f.setOperation({ ...f.operation(id), prepared: { release, packageId: release.packageId,
     candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
   let installs = 0;
-  const removed = [];
+  const removed = [], admitted = [];
+  const directory = join(f.home, 'runtime/home-update');
   const dependencies = {
-    channel: checkedChannel, removePaths: paths => removed.push(...paths),
+    // A request admitted meanwhile could not yet have saved its worker's pid.
+    channel: checkedChannel, removePaths: paths => { removed.push(...paths); admitted.push(existsSync(join(directory, 'admission.lock'))); },
     updater: { readUpdateJournal: () => null, applyProductUpdate: async () => {
       if (++installs === 1) return { ok: false, status: 'refused', reasons: [{ code: 'database_busy', message: 'busy' }] };
       f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
@@ -729,7 +731,6 @@ test('completing an operation removes executors of finished operations and earli
   f.setOperation({ ...f.operation(id), pid: null });
   await requestHomeUpdate(input(f.home, 'resume', 'resume'), noLaunch);
   assert.equal(f.operation(id).attempt, 2);
-  const directory = join(f.home, 'runtime/home-update');
   const finished = '11111111-1111-1111-1111-111111111111', live = '22222222-2222-2222-2222-222222222222';
   f.setOperation({ schema: 'home23.home-update.v1', id: finished, homeRoot: f.home, phase: 'completed', pid: null });
   f.setOperation({ schema: 'home23.home-update.v1', id: live, homeRoot: f.home, phase: 'downloading', pid: process.ppid });
@@ -740,6 +741,8 @@ test('completing an operation removes executors of finished operations and earli
   await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, dependencies);
   assert.equal(f.operation(id).phase, 'completed');
   assert.deepEqual(removed.sort(), [join(directory, `executor-${finished}-1`), join(directory, `executor-${id}-1`)].sort());
+  assert.deepEqual(admitted, [true]);
+  assert.equal(existsSync(join(directory, 'admission.lock')), false);
 });
 
 test('a completed update prunes its delivery download and stage and older deliveries', async t => {

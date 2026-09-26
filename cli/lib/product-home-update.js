@@ -506,7 +506,10 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
       : 'The update could not finish. Resume or recover to return your home to service.' });
   } finally {
     if (TERMINAL.has(operation.phase)) {
-      try { pruneExecutors(home, operation, dependencies); } catch { /* Retention is housekeeping; the result stands. */ }
+      // Under admission: once this phase is durable a new request can retain
+      // its executor before its record carries the worker's pid.
+      try { await withAdmission(home, async () => pruneExecutors(home, operation, dependencies)); }
+      catch { /* Retention is housekeeping; the result stands. */ }
     }
   }
 }
