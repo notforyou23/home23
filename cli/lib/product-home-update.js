@@ -37,6 +37,7 @@ const PREFLIGHT_MESSAGES = Object.freeze({
   retained_authority_missing: 'A preserved external service is unavailable. Reconnect it on this Mac before resuming.',
   continuation_receipt_mismatch: 'The home service bindings changed since adoption. Open Home23 on this Mac to review them before resuming.',
   network_binding_receipt_mismatch: 'The home network bindings changed since adoption. Open Home23 on this Mac to review them before resuming.',
+  external_reference: 'A home setting names a folder outside this home. Open Home23 on this Mac to review it before resuming.',
   database_busy: 'The home database is busy. Wait for current work to finish, then resume the update.',
   writer_stop_incomplete: 'A Home23 service did not stop for the update. Your home was restarted and nothing changed. Resume to try again.',
   running_restore_failed: 'The update stopped before changing your home, but your home did not start again. Open Home23 on the Mac running your home to restart it.',

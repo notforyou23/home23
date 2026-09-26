@@ -12,7 +12,7 @@ import { writeProductManifest, installProductPayload, verifyProductPayload } fro
 import {
   adoptManagedSourceHome, holdAdoptionSupervisorLock, inspectProductInstallation,
   listSourceWriters, managedSupervisorEnvironment, planManagedSourceAdoption,
-  previewProductUpdate, resolveAdoptionIdentity, sourceAdoptionSnapshot,
+  previewProductUpdate, resolveAdoptionIdentity, sourceAdoptionSnapshot, validateAdoptionPreservationPlan,
 } from '../../cli/lib/product-update.js';
 import { assertWritersIdle, rebindAdoptedHome } from '../../cli/lib/product-backup.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
@@ -1195,6 +1195,19 @@ test('adoption plans map root preserve paths explicitly', t => {
   assert.equal(plan.canAdopt, true);
   assert.ok(plan.inventory.paths.some(item => item.path === 'birth-receipt.json' && item.mapping?.destination === 'app/instances/ada/substrate/seed-01/birth-receipt.json'));
   assert.ok(plan.inventory.paths.some(item => item.path === 'seed-ledger.jsonl' && item.mapping?.action === 'copy'));
+});
+
+test('a reviewed external reference may name an instance config, which the update inventory judges', () => {
+  const source = '/Users/owner/source-home';
+  const plan = references => ({ schema: 'home23.adoption-preservation.v1', sourceRoot: source, entries: [], references });
+  const reviewed = validateAdoptionPreservationPlan(source,
+    plan([{ path: 'app/instances/grokbot/config.yaml', target: '/Volumes/Casey Jones/Home23/instances/grokbot' }]));
+  assert.deepEqual(reviewed.references.map(item => item.path), ['app/instances/grokbot/config.yaml']);
+  assert.equal(validateAdoptionPreservationPlan(source, plan([{ path: 'app/config/agents.json', target: '/Volumes/x' }])).references.length, 1);
+  for (const file of ['app/instances/grokbot/engine.yaml', 'app/instances/Grok/config.yaml', 'app/instances/a/b/config.yaml'])
+    assert.throws(() => validateAdoptionPreservationPlan(source, plan([{ path: file, target: '/Volumes/x' }])), /Invalid reviewed external reference/, file);
+  assert.throws(() => validateAdoptionPreservationPlan(source, plan([{ path: 'app/instances/grokbot/config.yaml', target: `${source}/instances/grokbot` }])),
+    /Invalid reviewed external reference/);
 });
 
 test('interrupted adoption refuses when preserved source bytes change', async t => {

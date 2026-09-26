@@ -182,3 +182,29 @@ test('a dangling state link only warns while a present outside target still refu
   assert.deepEqual(relevant(elsewhere, config), []);
   assert.deepEqual(elsewhere.warnings.map(item => [item.code, item.path]), [['dangling_state_link', config]]);
 });
+
+test('an adoption receipt keeps its agents.json references valid and honours a reviewed instance root', async t => {
+  const root = home(t);
+  const outside = `${root}-reviewed/instances/milo`;
+  const config = 'app/instances/milo/config.yaml';
+  fs.mkdirSync(path.join(root, 'app/instances/milo'), { recursive: true });
+  fs.writeFileSync(path.join(root, config), `system:\n  instanceRoot: ${outside}\n`);
+  fs.mkdirSync(path.join(root, 'runtime'), { recursive: true });
+  const receipt = references => fs.writeFileSync(path.join(root, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', sourceRoot: path.join(root, 'source'), links: [],
+    externalReferences: references, continuationServices: [] }), { mode: 0o600 });
+  const externals = result => result.reasons.filter(item => item.code === 'external_reference').map(item => item.target);
+  // Receipts sealed while agents.json was scanned name it; they stay valid and cover the same root.
+  for (const reference of ['app/config/agents.json', config]) {
+    receipt([{ path: reference, target: outside }]);
+    const result = await inspectUpdateInventory(root);
+    assert.equal(result.reasons.some(item => item.code === 'adoption_receipt_invalid'), false, reference);
+    assert.deepEqual(externals(result), [], reference);
+  }
+  fs.rmSync(path.join(root, 'runtime/adoption-preservation.json'));
+  assert.deepEqual(externals(await inspectUpdateInventory(root)), [outside]);
+  receipt([{ path: config, target: `${root}-different` }]);
+  assert.deepEqual(externals(await inspectUpdateInventory(root)), [outside]);
+  receipt([{ path: 'app/instances/milo/engine.yaml', target: outside }]);
+  assert.equal((await inspectUpdateInventory(root)).reasons.some(item => item.code === 'adoption_receipt_invalid'), true);
+});

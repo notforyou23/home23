@@ -14,6 +14,8 @@ import { candidateCoordinationSchema, inspectCoordinationDatabase, inspectUpdate
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
 import { acquireHostLock } from '../../cli/lib/product-backup.js';
+import { generateEcosystem } from '../../cli/lib/generate-ecosystem.js';
+import instancePaths from '../../shared/agent-instance-paths.cjs';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const quiet = { listProcesses: async () => [], acquireHostLock: async () => async () => {} };
@@ -241,6 +243,176 @@ test('a folded in-home path keeps its volume name with spaces', async t => {
   fs.writeFileSync(path.join(home, 'app/config/home.yaml'), `shell:\n  roots:\n    - >-\n      ${inside.split(' ').join('\n      ')}\n`, { mode: 0o600 });
   const result = await inspectUpdateInventory(home);
   assert.equal(result.reasons.some(item => item.code === 'external_reference'), false);
+});
+
+const INSTANCE = 'app/instances/milo/config.yaml';
+function instanceConfig(home, system, { name = 'milo', extra = '' } = {}) {
+  fs.mkdirSync(path.join(home, `app/instances/${name}`), { recursive: true });
+  fs.writeFileSync(path.join(home, `app/instances/${name}/config.yaml`), `agent:\n  name: ${name}\nsystem:\n  name: home23\n${system}${extra}`);
+}
+const staleAgents = (home, root) => fs.writeFileSync(path.join(home, 'app/config/agents.json'), JSON.stringify([{ name: 'milo',
+  configPath: path.join(home, INSTANCE), instanceRoot: root, storageMode: 'external', brainPath: `${root}/brain`,
+  workspacePath: `${root}/workspace`, conversationsPath: `${root}/conversations`, logsPath: `${root}/logs` }]));
+const externals = result => result.reasons.filter(item => item.code === 'external_reference');
+
+test('an external instance root is refused at its config field whatever agents.json says', async t => {
+  const fixture = homeFixture(t);
+  const outside = path.join(fixture.root, 'Casey Jones/Home23/instances/milo');
+  instanceConfig(fixture.home, `  instanceRoot: ${outside}\n`, { extra: `feeder:\n  additionalWatchPaths:\n    - ${outside}/workspace\n    - path: ${outside}/brain\n` });
+  for (const agents of ['absent', 'stale', 'repointed']) {
+    fs.rmSync(path.join(fixture.home, 'app/config/agents.json'), { force: true });
+    if (agents === 'stale') staleAgents(fixture.home, outside);
+    if (agents === 'repointed') staleAgents(fixture.home, path.join(fixture.home, 'app/instances/milo'));
+    const found = externals(await inspectUpdateInventory(fixture.home));
+    assert.equal(found.length, 1, `${agents}: ${JSON.stringify(found)}`);
+    assert.deepEqual({ ...found[0], message: undefined }, { code: 'external_reference', message: undefined, path: INSTANCE,
+      field: 'system.instanceRoot', target: outside, resident: 'milo', relatedOccurrences: 2 });
+    assert.match(found[0].message, /^app\/instances\/milo\/config\.yaml system\.instanceRoot names .*Casey Jones\/Home23\/instances\/milo, outside this home\..* 2 other settings/);
+  }
+});
+
+test('a stale external agents.json is derived output and never refuses', async t => {
+  const fixture = homeFixture(t);
+  instanceConfig(fixture.home, '  engineConfig: engine.yaml\n');
+  staleAgents(fixture.home, path.join(fixture.root, 'old-volume/instances/milo'));
+  const result = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate: fixture.next });
+  assert.deepEqual(result.reasons, []);
+});
+
+test('Start regenerates agents.json from exactly the inputs the preflight judged', async t => {
+  // Decision (188): Host Start keeps regenerating agents.json during an admitted
+  // update. Every Start that is not already all-running, including the
+  // update's candidate and rollback Start, derives it from the instance configs.
+  const host = fs.readFileSync(path.join(rootDir, 'cli/lib/product-host.js'), 'utf8');
+  const definitions = host.slice(host.indexOf('async definitions('), host.indexOf('async definitions(') + 300);
+  assert.match(definitions, /generateEcosystem\(join\(homeRoot, 'app'\)/);
+  assert.doesNotMatch(definitions, /writeManifest:\s*false/);
+  const fixture = homeFixture(t);
+  const app = path.join(fixture.home, 'app'), outside = path.join(fixture.root, 'old-volume/instances/milo');
+  const agents = () => JSON.parse(fs.readFileSync(path.join(app, 'config/agents.json'), 'utf8'));
+  const derived = entry => { const paths = instancePaths.resolveAgentInstancePaths(app, entry.name);
+    return { configPath: path.join(app, 'instances/milo/config.yaml'), instanceRoot: paths.instanceRoot, storageMode: paths.storageMode,
+      brainPath: paths.brainDir, workspacePath: paths.workspaceDir, conversationsPath: paths.conversationsDir, logsPath: paths.logsDir }; };
+  const storage = entry => Object.fromEntries(Object.keys(derived(entry)).map(key => [key, entry[key]]));
+
+  // In-home input, stale external output: the preflight passes and Start writes only home paths.
+  instanceConfig(fixture.home, '  engineConfig: engine.yaml\n');
+  staleAgents(fixture.home, outside);
+  assert.deepEqual(externals(await inspectUpdateInventory(fixture.home)), []);
+  const { manifest } = generateEcosystem(app, { quiet: true, writeEcosystem: false });
+  assert.deepEqual(agents(), manifest);
+  assert.deepEqual(storage(agents()[0]), derived(agents()[0]));
+  assert.equal(agents()[0].storageMode, 'local');
+  assert.equal(JSON.stringify(agents()).includes(outside), false);
+
+  // External input, hand-repointed output (the 186 fix): refused at the input,
+  // never at agents.json, and Start writes the input's root back.
+  instanceConfig(fixture.home, `  instanceRoot: ${outside}\n`);
+  staleAgents(fixture.home, path.join(app, 'instances/milo'));
+  const refused = externals(await inspectUpdateInventory(fixture.home));
+  assert.deepEqual(refused.map(({ path, field, target }) => ({ path, field, target })), [{ path: INSTANCE, field: 'system.instanceRoot', target: outside }]);
+  generateEcosystem(app, { quiet: true, writeEcosystem: false });
+  assert.deepEqual(storage(agents()[0]), derived(agents()[0]));
+  assert.equal(agents()[0].instanceRoot, outside);
+  assert.equal(agents()[0].configPath, path.join(app, INSTANCE.slice('app/'.length)), 'configPath is always the local config');
+  assert.deepEqual(externals(await inspectUpdateInventory(fixture.home)).map(item => item.path), [INSTANCE]);
+});
+
+test('owner folders in instance settings stay allowed; only storage roots are judged', async t => {
+  const fixture = homeFixture(t);
+  instanceConfig(fixture.home, `  instanceRoot: ${path.join(fixture.home, 'app/instances/milo')}\n  engineConfig: engine.yaml\n`, { extra: [
+    'feeder:', '  additionalWatchPaths:', '    - /Users/x/vault/notes', '    - path: /Users/x/vault/journal', '      label: vault',
+    'acp:', '  agents:', '    codex:', '      bin: /opt/homebrew/bin/codex', '    cursor:', '      bin: /Users/x/.local/bin/cursor-agent', ''].join('\n') });
+  assert.deepEqual((await inspectUpdateInventory(fixture.home)).reasons.filter(item => item.path === INSTANCE), []);
+});
+
+test('instance root forms: quoted and folded in-home paths pass, unknown forms fail closed', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'Casey Jones', 'Home23 Host', 'Home');
+  fs.mkdirSync(path.join(home, 'app/config'), { recursive: true });
+  const inside = path.join(home, 'app/instances/milo');
+  const folded = inside.split(' ');
+  for (const form of [`'${inside}'`, `"${inside}"`, `${inside} # kept local`, `>-\n    ${folded.join('\n    ')}`,
+    `>\n    ${folded.join('\n    ')}\n`, `|-\n    ${inside}`, '~', '', 'null']) {
+    instanceConfig(home, `  instanceRoot: ${form}\n  workspace: workspace\n`);
+    assert.deepEqual((await inspectUpdateInventory(home)).reasons.filter(item => item.path === INSTANCE), [], form);
+  }
+  for (const form of ['&root /Volumes/x', '*root', `[${inside}]`, `>-\n    ${inside}\n\n    more`, `>-\n    ${inside}\n      nested`, `"${inside}`,
+    `\n    ${inside}`, 'relative/instances/milo']) {
+    instanceConfig(home, `  instanceRoot: ${form}\n  workspace: workspace\n`);
+    const found = (await inspectUpdateInventory(home)).reasons.filter(item => item.path === INSTANCE);
+    assert.deepEqual(found.map(({ code, field }) => ({ code, field })), [{ code: 'state_uninspected', field: 'system.instanceRoot' }], form);
+    assert.match(found[0].message, /^app\/instances\/milo\/config\.yaml system\.instanceRoot /);
+  }
+  instanceConfig(home, `  <<: *defaults\n  workspace: workspace\n`);
+  assert.equal((await inspectUpdateInventory(home)).reasons.some(item => item.path === INSTANCE && item.code === 'state_uninspected'), true);
+});
+
+test('non-resident instances and engine configs are judged; symlinked instance directories are the walker\'s', async t => {
+  const fixture = homeFixture(t);
+  const outside = path.join(fixture.root, 'outside');
+  fs.mkdirSync(outside);
+  // grokbot shape: a config.yaml with no resident binding in the Host record.
+  instanceConfig(fixture.home, `  instanceRoot: ${outside}/grokbot\n`, { name: 'grokbot' });
+  instanceConfig(fixture.home, `  engineConfig: ${outside}/engine.yaml\n`);
+  const found = externals(await inspectUpdateInventory(fixture.home));
+  assert.deepEqual(found.map(({ path, field, target, resident }) => ({ path, field, target, resident })), [
+    { path: 'app/instances/grokbot/config.yaml', field: 'system.instanceRoot', target: `${outside}/grokbot`, resident: 'grokbot' },
+    { path: INSTANCE, field: 'system.engineConfig', target: `${outside}/engine.yaml`, resident: 'milo' },
+  ]);
+  // A relative engine config under an external root is that root's refusal, not a second one.
+  instanceConfig(fixture.home, `  instanceRoot: ${outside}/grokbot\n  engineConfig: engine.yaml\n`, { name: 'grokbot' });
+  instanceConfig(fixture.home, '  engineConfig: engine.yaml\n');
+  assert.deepEqual(externals(await inspectUpdateInventory(fixture.home)).map(item => item.field), ['system.instanceRoot']);
+
+  fs.rmSync(path.join(fixture.home, 'app/instances/grokbot'), { recursive: true });
+  const linked = path.join(outside, 'linked-instance');
+  fs.mkdirSync(linked);
+  fs.writeFileSync(path.join(linked, 'config.yaml'), `system:\n  instanceRoot: ${outside}/other\n`);
+  fs.symlinkSync(linked, path.join(fixture.home, 'app/instances/linked'));
+  const walked = await inspectUpdateInventory(fixture.home);
+  assert.deepEqual(externals(walked), []);
+  assert.deepEqual(walked.reasons.filter(item => item.path === 'app/instances/linked').map(item => item.code), ['linked_state_path']);
+});
+
+test('an outside spelling of the home is refused even when a link forwards it inside', async t => {
+  const fixture = homeFixture(t);
+  const forward = path.join(fixture.root, 'forwarding');
+  fs.symlinkSync(fixture.home, forward);
+  instanceConfig(fixture.home, `  instanceRoot: ${forward}/app/instances/milo\n`);
+  assert.deepEqual(externals(await inspectUpdateInventory(fixture.home)).map(item => item.target), [`${forward}/app/instances/milo`]);
+});
+
+test('config-file external references name the setting and target, redacting secrets', async t => {
+  const fixture = homeFixture(t);
+  fs.writeFileSync(path.join(fixture.home, 'app/config/home.yaml'), 'shell:\n  roots:\n    - /Volumes/Outside/photos\n', { mode: 0o600 });
+  fs.writeFileSync(path.join(fixture.home, 'app/config/secrets.yaml'), 'providers:\n  local:\n    keyFile: /Volumes/Outside/key\n', { mode: 0o600 });
+  const found = externals(await inspectUpdateInventory(fixture.home));
+  assert.deepEqual(found.map(({ path, field, target }) => ({ path, field, target })), [
+    { path: 'app/config/home.yaml', field: 'shell.roots', target: '/Volumes/Outside/photos' },
+    { path: 'app/config/secrets.yaml', field: 'providers.local.keyFile', target: '[redacted]' },
+  ]);
+  assert.match(found[0].message, /^app\/config\/home\.yaml shell\.roots names \/Volumes\/Outside\/photos outside this home/);
+  assert.doesNotMatch(found[1].message, /Outside\/key/);
+});
+
+test('the retained update executor graph imports only node: builtins and sibling modules', () => {
+  // product-home-update.js retainExecutor copies only './' imports beside the
+  // worker. Any other specifier fails at runtime once the package is replaced.
+  const library = path.join(rootDir, 'cli/lib');
+  const graph = new Set(), queue = ['product-home-update-worker.mjs', 'product-update-recover.mjs'];
+  while (queue.length) {
+    const name = queue.shift();
+    if (graph.has(name)) continue;
+    graph.add(name);
+    const source = fs.readFileSync(path.join(library, name), 'utf8');
+    for (const match of source.matchAll(/(?:from\s*|import\s*\(\s*)['"]\.\/([^'"]+)['"]/g)) queue.push(match[1]);
+    const specifiers = [...source.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|^\s*import\s+)['"]([^'"]+)['"]/gm)].map(match => match[1]);
+    assert.deepEqual(specifiers.filter(specifier => !specifier.startsWith('node:') && !specifier.startsWith('./')), [], name);
+    assert.doesNotMatch(source, /\brequire\s*\(|createRequire/, name);
+  }
+  for (const name of ['product-home-update.js', 'product-update-apply.js', 'product-update-inventory.js', 'product-environment.js'])
+    assert.ok(graph.has(name), name);
 });
 
 test('refusals happen before a journal or package change', async t => {
