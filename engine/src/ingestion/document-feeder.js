@@ -42,6 +42,11 @@ class DocumentFeeder {
     this._started = false;
     this._stopping = false;
     this._processingFiles = new Set();
+    // Convertible files the converter could not handle yet (not installed,
+    // missing extras, turned off). They are not quarantined; the retry tick
+    // re-processes them once the converter reports it can.
+    this._awaitingConversion = new Map();
+    this._retryingConversions = false;
 
     // Concurrency-limited compilation queue — prevents 429 rate-limit avalanche
     // when large folders are added and chokidar fires hundreds of file events at once
@@ -80,7 +85,9 @@ class DocumentFeeder {
     this.converter = new DocumentConverter({
       logger: this.logger,
       visionModel: converterConfig.visionModel || 'gpt-4o-mini',
-      pythonPath: converterConfig.pythonPath || 'python3'
+      pythonPath: converterConfig.pythonPath || 'python3',
+      // Persisted and offered in both settings UIs, but never read before.
+      enabled: converterConfig.enabled !== false,
     });
 
     this.chunker = new DocumentChunker({
@@ -116,14 +123,15 @@ class DocumentFeeder {
       logger: this.logger,
     });
 
-    // Log converter status once the async probe answers; start() never
+    // Log converter health once the async probe answers; start() never
     // waits on a python subprocess.
-    this.converter.checkAvailability().then((available) => {
-      if (available) {
-        this.logger?.info?.('Document feeder: MarkItDown available — binary formats supported');
-      } else {
-        this.logger?.warn?.('Document feeder: MarkItDown not installed — only text formats will be ingested');
-      }
+    this.converter.checkHealth().then((health) => {
+      const log = health.state === 'ready' ? this.logger?.info : this.logger?.warn;
+      log?.call(this.logger, `Document feeder: converter ${health.state}`, {
+        reason: health.reason,
+        remedy: health.remedy,
+        runtime: health.runtime?.path,
+      });
     }).catch(() => {});
 
     // Start default watcher on ingestion/documents/
@@ -306,10 +314,7 @@ class DocumentFeeder {
         error: countState('error'),
       },
       manifest: manifestStats,
-      converter: {
-        available: this.converter?.available || false,
-        visionModel: this.config.converter?.visionModel || 'gpt-4o-mini'
-      },
+      converter: this._converterStatus(),
       compiler: {
         enabled: this.compilerConfig.enabled !== false,
         model: this.compilerConfig.model || null,
@@ -509,6 +514,68 @@ class DocumentFeeder {
     } catch (err) {
       this.logger?.warn?.('Watch path retry failed', { error: err.message });
     }
+    this._retryAwaitingConversions().catch(err => {
+      this.logger?.warn?.('Awaiting-conversion retry failed', { error: err.message });
+    });
+  }
+
+  _trackAwaitingConversion(key, filePath, label, result) {
+    const previous = this._awaitingConversion.get(key);
+    this._awaitingConversion.set(key, {
+      filePath,
+      label,
+      status: result.status || 'converter_unavailable',
+      reason: result.error || null,
+      needs: result.needs || null,
+      since: previous?.since || new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Re-process files that were waiting on the converter once it reports it
+   * can handle them (health is re-probed on its own TTL, not per file).
+   */
+  async _retryAwaitingConversions() {
+    if (!this._awaitingConversion.size || !this.converter || this._retryingConversions) return 0;
+    this._retryingConversions = true;
+    let retried = 0;
+    try {
+      await this.converter.checkHealth?.();
+      for (const [key, entry] of [...this._awaitingConversion]) {
+        if (!this._started || this._stopping) break;
+        if (!fs.existsSync(entry.filePath)) {
+          this._awaitingConversion.delete(key);
+          continue;
+        }
+        if (!this.converter.canConvertNow?.(entry.filePath, entry.needs)) continue;
+        // _processFile puts it back if the converter still cannot.
+        this._awaitingConversion.delete(key);
+        await this._processFile(entry.filePath, entry.label);
+        retried += 1;
+      }
+      if (retried) await this.manifest?.flush('awaiting-converter');
+    } finally {
+      this._retryingConversions = false;
+    }
+    return retried;
+  }
+
+  _converterStatus() {
+    const maintenance = this.config.maintenanceMode === true;
+    const health = typeof this.converter?.healthSnapshot === 'function'
+      ? this.converter.healthSnapshot({ refresh: !maintenance })
+      : { available: this.converter?.available || false };
+    const pending = [...this._awaitingConversion.values()];
+    return {
+      ...health,
+      // Compatibility: older web and Apple clients read these two fields.
+      available: health.available === true,
+      visionModel: this.config.converter?.visionModel || 'gpt-4o-mini',
+      pendingConversionCount: pending.length,
+      pendingConversion: pending.slice(0, 20).map(({ filePath, status, reason, needs, since }) => ({
+        path: filePath, status, reason, needs, since,
+      })),
+    };
   }
 
   _watcherOptions() {
@@ -589,14 +656,18 @@ class DocumentFeeder {
           : await this.converter.convert(filePath);
         if (!result || result.ok === false) {
           if (result && result.retryable === false) {
+            this._awaitingConversion.delete(processingKey);
             await this.manifest.trackQuarantined(filePath, label, fullHash, {
               status: result.status || 'conversion_failed',
               issues: [result.error || result.status || 'conversion failed'],
               structuralSignature: null
             });
+          } else if (result) {
+            this._trackAwaitingConversion(processingKey, filePath, label, result);
           }
           return;
         }
+        this._awaitingConversion.delete(processingKey);
         text = result.text;
         format = result.format;
       } else {

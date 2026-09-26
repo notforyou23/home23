@@ -185,6 +185,121 @@ test('document feeder does not quarantine retryable converter outages', async ()
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a file waiting on the converter is re-processed exactly once when it becomes able', async (t) => {
+  const feeder = makeFeeder();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-awaiting-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'notes.docx');
+  fs.writeFileSync(filePath, 'docx bytes', 'utf8');
+
+  let ready = false;
+  let convertCalls = 0;
+  let healthChecks = 0;
+  const quarantined = [];
+  feeder._started = true;
+  feeder.manifest = {
+    isStale: async () => true,
+    trackQuarantined: async (...args) => { quarantined.push(args); },
+    flush: async () => {},
+  };
+  feeder.converter = {
+    isNativeText: () => false,
+    isConvertible: () => true,
+    checkHealth: async () => { healthChecks += 1; },
+    canConvertNow: () => ready,
+    convertDetailed: async () => {
+      convertCalls += 1;
+      return ready
+        ? { ok: false, status: 'conversion_empty', retryable: false }
+        : { ok: false, status: 'converter_unavailable', retryable: true, needs: 'docx', error: 'docx conversion is not installed' };
+    },
+  };
+
+  await feeder._processFile(filePath, 'notes');
+  assert.equal(feeder._awaitingConversion.size, 1);
+  assert.equal(quarantined.length, 0);
+  assert.equal(await feeder._retryAwaitingConversions(), 0, 'nothing retried while the converter cannot');
+  assert.equal(convertCalls, 1);
+
+  ready = true;
+  assert.equal(await feeder._retryAwaitingConversions(), 1);
+  assert.equal(await feeder._retryAwaitingConversions(), 0);
+  assert.equal(convertCalls, 2, 'the awaiting file ran exactly once more');
+  assert.equal(feeder._awaitingConversion.size, 0);
+  assert.equal(quarantined.length, 1);
+  assert.ok(healthChecks >= 2);
+});
+
+test('a disabled converter records nothing and makes no conversion attempts', async (t) => {
+  const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-disabled-'));
+  const feeder = makeFeeder({ compiler: { enabled: false }, converter: { enabled: false } });
+  feeder._scanDirectory = async () => {};
+  await feeder.start(runPath);
+  t.after(async () => {
+    await feeder.shutdown();
+    fs.rmSync(runPath, { recursive: true, force: true });
+  });
+  let spawned = 0;
+  feeder.converter._execFile = (_file, _args, _options, callback) => { spawned += 1; callback(new Error('must not spawn')); };
+  const filePath = path.join(runPath, 'scan.pdf');
+  fs.writeFileSync(filePath, 'pdf bytes', 'utf8');
+
+  await feeder._processFile(filePath, 'docs');
+  const status = await feeder.getStatus();
+
+  assert.equal(spawned, 0);
+  assert.equal(status.converter.state, 'disabled');
+  assert.equal(status.converter.available, false);
+  assert.equal(status.converter.pendingConversionCount, 1);
+  assert.equal(status.converter.pendingConversion[0].status, 'converter_disabled');
+  assert.equal(feeder.manifest.getEntry(filePath), null, 'not quarantined');
+});
+
+test('an unsupported format is recorded as unsupported_format, not conversion_failed', async (t) => {
+  const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-unsupported-'));
+  const feeder = makeFeeder({ compiler: { enabled: false } });
+  feeder._scanDirectory = async () => {};
+  await feeder.start(runPath);
+  t.after(async () => {
+    await feeder.shutdown();
+    fs.rmSync(runPath, { recursive: true, force: true });
+  });
+  const filePath = path.join(runPath, 'plan.pages');
+  fs.writeFileSync(filePath, 'pages bytes', 'utf8');
+
+  await feeder._processFile(filePath, 'docs');
+
+  const entry = feeder.manifest.getEntry(filePath);
+  assert.equal(entry.parseStatus, 'unsupported_format');
+  assert.match(entry.issues[0], /no converter reads \.pages files/);
+  assert.equal(feeder._awaitingConversion.size, 0);
+});
+
+test('status exposes converter state, reason and formats and keeps the available flag', async () => {
+  const feeder = makeFeeder({ converter: { visionModel: 'gpt-5.6-luna' } });
+  feeder._started = true;
+  feeder.manifest = { getStats: () => ({ fileCount: 0, nodeCount: 0, pendingCount: 0 }) };
+  feeder.converter = {
+    healthSnapshot: () => ({
+      state: 'ready',
+      reason: 'not installed: docx',
+      remedy: 'python3 -m pip install "markitdown[docx]"',
+      formats: { pdf: true, docx: false },
+      runtime: { path: 'python3', source: 'system' },
+      available: true,
+    }),
+  };
+
+  const { converter } = await feeder.getStatus();
+
+  assert.equal(converter.available, true);
+  assert.equal(converter.visionModel, 'gpt-5.6-luna');
+  assert.equal(converter.state, 'ready');
+  assert.equal(converter.reason, 'not installed: docx');
+  assert.deepEqual(converter.formats, { pdf: true, docx: false });
+  assert.equal(converter.pendingConversionCount, 0);
+});
+
 test('document feeder watcher leaves existing files to the explicit startup scan', () => {
   const feeder = makeFeeder();
 

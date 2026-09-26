@@ -14,24 +14,51 @@ const NATIVE_TEXT_EXTS = new Set([
   '.ics', '.vcf', '.css', '.xml'
 ]);
 
-const CONVERTIBLE_EXTS = new Set([
-  // Documents
-  '.pdf', '.docx', '.doc', '.rtf', '.pages', '.odt',
-  // Spreadsheets
-  '.xlsx', '.xls', '.numbers', '.ods',
-  // Presentations
-  '.pptx', '.ppt', '.key', '.odp',
-  // Images (OCR)
-  '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp', '.heic',
-  // Audio (transcription)
-  '.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac',
-  // Web
-  '.html', '.htm',
-  // Archives
-  '.zip',
-  // eBooks
-  '.epub'
+// What MarkItDown 0.1.x can actually read, by format, and the python
+// modules each needs beyond MarkItDown itself. `extra` is the pip extra that
+// installs them; init installs only markitdown[pdf].
+const PYTHON_FORMATS = Object.freeze({
+  pdf: { exts: ['.pdf'], modules: ['pdfminer', 'pdfplumber'], extra: 'pdf' },
+  docx: { exts: ['.docx'], modules: ['mammoth'], extra: 'docx' },
+  pptx: { exts: ['.pptx'], modules: ['pptx'], extra: 'pptx' },
+  xlsx: { exts: ['.xlsx'], modules: ['pandas', 'openpyxl'], extra: 'xlsx' },
+  xls: { exts: ['.xls'], modules: ['pandas', 'xlrd'], extra: 'xls' },
+  audio: { exts: ['.mp3', '.wav', '.m4a'], modules: ['pydub', 'speech_recognition'], extra: 'audio-transcription' },
+  images: { exts: ['.jpg', '.jpeg', '.png'], modules: [] },
+  html: { exts: ['.html', '.htm'], modules: [] },
+  epub: { exts: ['.epub'], modules: [] },
+  zip: { exts: ['.zip'], modules: [] },
+});
+
+// Document formats Home23 used to claim but no MarkItDown converter reads.
+// They were quarantined as conversion_failed, which read as a broken file.
+const UNSUPPORTED_EXTS = new Set([
+  '.doc', '.rtf', '.pages', '.odt', '.numbers', '.ods', '.key', '.odp', '.ppt',
+  '.gif', '.bmp', '.tiff', '.tif', '.webp', '.heic',
+  '.ogg', '.flac', '.aac',
 ]);
+
+const FORMAT_BY_EXT = new Map();
+for (const [format, spec] of Object.entries(PYTHON_FORMATS)) {
+  for (const ext of spec.exts) FORMAT_BY_EXT.set(ext, format);
+}
+
+const CONVERTIBLE_EXTS = new Set([...FORMAT_BY_EXT.keys(), ...UNSUPPORTED_EXTS]);
+
+// One probe for runtime, MarkItDown and every format's modules. find_spec
+// does not import the optional modules; MarkItDown itself is imported so a
+// broken install reads as broken, not present.
+const HEALTH_PROBE = [
+  'import importlib.util, json, sys',
+  `mods = ${JSON.stringify([...new Set(Object.values(PYTHON_FORMATS).flatMap(spec => spec.modules))])}`,
+  'found = {m: importlib.util.find_spec(m) is not None for m in mods}',
+  'try:',
+  '    from markitdown import MarkItDown',
+  '    ok, err = True, None',
+  'except Exception as e:',
+  '    ok, err = False, f"{type(e).__name__}: {e}"',
+  'print(json.dumps({"python": sys.version.split()[0], "markitdown": ok, "error": err, "modules": found}))',
+].join('\n');
 
 const CONVERT_SCRIPT = path.join(__dirname, 'convert-file.py');
 
@@ -44,17 +71,26 @@ const BUNDLED_VENV_PYTHON = path.join(__dirname, '..', '..', '.venv-markitdown',
 
 function resolvePythonPath(explicitPath) {
   // Explicit override from config always wins.
-  if (explicitPath && explicitPath !== 'python3') return explicitPath;
+  if (explicitPath && explicitPath !== 'python3') return { path: explicitPath, source: 'config' };
   // Prefer the bundled venv if it exists — gives us markitdown[pdf] + openai
   // pinned to a known-good install that survives `brew upgrade python`.
   try {
-    if (fs.existsSync(BUNDLED_VENV_PYTHON)) return BUNDLED_VENV_PYTHON;
+    if (fs.existsSync(BUNDLED_VENV_PYTHON)) return { path: BUNDLED_VENV_PYTHON, source: 'bundled' };
   } catch { /* ignore */ }
   // Last resort: system python3 (user may have installed markitdown globally).
-  return 'python3';
+  return { path: 'python3', source: 'system' };
 }
 
-const AVAILABLE_TTL_MS = 10 * 60 * 1000;
+function formatOf(filePath) {
+  return FORMAT_BY_EXT.get(path.extname(filePath).toLowerCase()) || null;
+}
+
+function tail(text, max = 600) {
+  const raw = String(text || '').trim();
+  return raw.length > max ? `…${raw.slice(-max)}` : raw;
+}
+
+const HEALTH_TTL_MS = 10 * 60 * 1000;
 const UNAVAILABLE_TTL_MS = 60 * 1000;
 
 /**
@@ -75,20 +111,25 @@ function runChild(execFileImpl, file, args, options) {
   });
 }
 
+const MISSING_DEPENDENCY = /MissingDependencyException|ModuleNotFoundError|No module named/;
+
 function isAbort(err, signal) {
   return Boolean(signal?.aborted) || err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
 }
 
 class DocumentConverter {
-  constructor({ logger = null, visionModel = 'gpt-4o-mini', pythonPath = 'python3', execFileImpl = execFile, now = Date.now }) {
+  constructor({ logger = null, visionModel = 'gpt-4o-mini', pythonPath = 'python3', enabled = true, execFileImpl = execFile, now = Date.now }) {
     this.logger = logger;
     this.visionModel = visionModel;
-    this.pythonPath = resolvePythonPath(pythonPath);
+    this.enabled = enabled !== false;
+    const runtime = resolvePythonPath(pythonPath);
+    this.pythonPath = runtime.path;
+    this.pythonSource = runtime.source;
     this._execFile = execFileImpl;
     this._now = now;
-    this._available = null; // unknown until the first async probe
-    this._availabilityCheckedAt = 0;
-    this._availabilityProbe = null;
+    this._health = null; // unknown until the first async probe
+    this._healthCheckedAt = 0;
+    this._healthProbe = null;
     this._availabilityWarned = false;
     // Conversions run in a child process; one at a time, like the old
     // synchronous path, but without blocking the engine's event loop.
@@ -102,36 +143,116 @@ class DocumentConverter {
    * Never spawns: the old getter ran a synchronous 10 s probe on first read.
    */
   get available() {
-    return this._available === true;
+    return this._health?.markitdown === true;
   }
 
   /**
-   * Probe MarkItDown asynchronously. Cached for 10 minutes when present and
-   * 60 seconds when absent, so installing it needs no engine restart.
+   * Probe the runtime, MarkItDown and each format's modules asynchronously.
+   * Cached for 10 minutes, or 60 seconds while MarkItDown is missing, so
+   * installing or repairing the converter needs no engine restart.
    */
-  async checkAvailability({ force = false } = {}) {
-    const ttl = this._available ? AVAILABLE_TTL_MS : UNAVAILABLE_TTL_MS;
-    if (!force && this._available !== null && this._now() - this._availabilityCheckedAt < ttl) {
-      return this._available;
+  async checkHealth({ force = false } = {}) {
+    if (!this.enabled) {
+      this._health = this._buildHealth(null);
+      this._healthCheckedAt = this._now();
+      return this._health;
     }
-    if (this._availabilityProbe) return this._availabilityProbe;
-    this._availabilityProbe = (async () => {
+    const ttl = this._health?.markitdown ? HEALTH_TTL_MS : UNAVAILABLE_TTL_MS;
+    if (!force && this._health && this._now() - this._healthCheckedAt < ttl) return this._health;
+    if (this._healthProbe) return this._healthProbe;
+    this._healthProbe = (async () => {
+      let probe;
       try {
-        await runChild(this._execFile, this.pythonPath, ['-c', 'from markitdown import MarkItDown'], {
+        const { stdout } = await runChild(this._execFile, this.pythonPath, ['-c', HEALTH_PROBE], {
           timeout: 20000,
+          encoding: 'utf8',
           env: unprivilegedChildEnv(),
           signal: this._abort.signal,
         });
-        this._available = true;
-      } catch {
-        this._available = false;
-      } finally {
-        this._availabilityCheckedAt = this._now();
-        this._availabilityProbe = null;
+        probe = JSON.parse(String(stdout || '').trim().split('\n').pop());
+      } catch (err) {
+        probe = {
+          markitdown: false,
+          error: err.code === 'ENOENT'
+            ? `python runtime not found: ${this.pythonPath}`
+            : tail(err.stderr || err.message, 300),
+        };
       }
-      return this._available;
+      this._health = this._buildHealth(probe);
+      this._healthCheckedAt = this._now();
+      this._healthProbe = null;
+      return this._health;
     })();
-    return this._availabilityProbe;
+    return this._healthProbe;
+  }
+
+  /**
+   * The cached health for status reads; starts a background re-probe when
+   * stale instead of making the caller wait on a subprocess.
+   */
+  healthSnapshot({ refresh = true } = {}) {
+    const ttl = this._health?.markitdown ? HEALTH_TTL_MS : UNAVAILABLE_TTL_MS;
+    if (refresh && !this._closed && (!this._health || this._now() - this._healthCheckedAt >= ttl)) {
+      this.checkHealth().catch(() => {});
+    }
+    return this._health || {
+      state: 'checking',
+      enabled: this.enabled,
+      reason: 'converter check has not finished yet',
+      remedy: null,
+      runtime: { path: this.pythonPath, source: this.pythonSource },
+      python: null,
+      markitdown: false,
+      formats: {},
+      unavailableFormats: [],
+      checkedAt: null,
+      available: false,
+    };
+  }
+
+  _buildHealth(probe) {
+    const runtime = { path: this.pythonPath, source: this.pythonSource };
+    const base = {
+      enabled: this.enabled,
+      runtime,
+      python: probe?.python || null,
+      markitdown: probe?.markitdown === true,
+      checkedAt: new Date(this._now()).toISOString(),
+    };
+    if (!this.enabled) {
+      return { ...base, state: 'disabled', reason: 'document conversion is turned off in feeder settings',
+        remedy: 'Enable the converter in Settings > Feeder', formats: {}, unavailableFormats: [], available: false };
+    }
+    const formats = {};
+    for (const [format, spec] of Object.entries(PYTHON_FORMATS)) {
+      formats[format] = base.markitdown && spec.modules.every(m => probe?.modules?.[m] === true);
+    }
+    const unavailableFormats = Object.keys(formats).filter(format => !formats[format]);
+    const python = /\s/.test(this.pythonPath) ? `"${this.pythonPath}"` : this.pythonPath;
+    const pip = `${python} -m pip install`;
+    if (!base.markitdown) {
+      return { ...base, state: 'unavailable', formats, unavailableFormats, available: false,
+        reason: probe?.error || 'MarkItDown is not installed',
+        remedy: `Run node cli/home23.js init, or: ${pip} "markitdown[pdf]" openai` };
+    }
+    const extras = [...new Set(unavailableFormats.map(format => PYTHON_FORMATS[format].extra).filter(Boolean))];
+    const remedy = extras.length ? `${pip} "markitdown[${extras.join(',')}]"` : null;
+    if (!formats.pdf) {
+      return { ...base, state: 'degraded', formats, unavailableFormats, available: true,
+        reason: 'PDF support is not installed (pdfminer.six, pdfplumber)', remedy };
+    }
+    return { ...base, state: 'ready', formats, unavailableFormats, available: true,
+      reason: unavailableFormats.length ? `not installed: ${unavailableFormats.join(', ')}` : null, remedy };
+  }
+
+  /**
+   * Whether a file waiting on the converter could convert now (per the
+   * cached health). Cheap: never spawns.
+   */
+  canConvertNow(filePath) {
+    if (!this.enabled || this._closed) return false;
+    const format = formatOf(filePath);
+    return Boolean(format && this._health?.markitdown && this._health.formats?.[format]);
   }
 
   /**
@@ -202,6 +323,14 @@ class DocumentConverter {
 
     // Convertible binary — use MarkItDown
     if (this.isConvertible(filePath)) {
+      if (!this.enabled) {
+        return { ok: false, status: 'converter_disabled', retryable: true, needs: 'enabled',
+          error: 'document conversion is turned off in feeder settings' };
+      }
+      if (UNSUPPORTED_EXTS.has(ext)) {
+        return { ok: false, status: 'unsupported_format', retryable: false,
+          error: `no converter reads ${ext} files; export it as PDF, DOCX or plain text to ingest it` };
+      }
       return this._exclusive(() => this._convertBinary(filePath));
     }
 
@@ -228,12 +357,18 @@ class DocumentConverter {
   async _convertBinary(filePath) {
     const signal = this._abort.signal;
     if (this._closed) return { ok: false, status: 'conversion_aborted', retryable: true, error: 'converter closed' };
-    if (!(await this.checkAvailability())) {
+    const format = formatOf(filePath);
+    const health = await this.checkHealth();
+    if (!health.markitdown) {
       if (!this._availabilityWarned) {
-        this.logger?.warn?.('MarkItDown not installed — binary files will be skipped. Install: pip install markitdown');
+        this.logger?.warn?.('MarkItDown not available — binary files wait until it is', { reason: health.reason, remedy: health.remedy });
         this._availabilityWarned = true;
       }
-      return { ok: false, status: 'converter_unavailable', retryable: true };
+      return { ok: false, status: 'converter_unavailable', retryable: true, needs: 'runtime', error: health.reason };
+    }
+    if (!health.formats[format]) {
+      return { ok: false, status: 'converter_unavailable', retryable: true, needs: format,
+        error: `${format} conversion is not installed${health.remedy ? `: ${health.remedy}` : ''}` };
     }
 
     try {
@@ -266,8 +401,12 @@ class DocumentConverter {
       }
       // Keep the TAIL of stderr: a python traceback puts the actual
       // exception on its last line — the first 200 chars are just frames.
-      const raw = String(err.stderr || err.message || '').trim();
-      const error = raw.length > 600 ? `…${raw.slice(-600)}` : raw;
+      const error = tail(err.stderr || err.message);
+      // A missing optional module is the converter's fault, not the file's.
+      if (MISSING_DEPENDENCY.test(error)) {
+        this.logger?.warn?.('MarkItDown is missing a module for this format', { filePath, error });
+        return { ok: false, status: 'converter_unavailable', retryable: true, needs: format, error };
+      }
       this.logger?.error?.('MarkItDown conversion failed', {
         filePath,
         error
@@ -277,4 +416,4 @@ class DocumentConverter {
   }
 }
 
-module.exports = { DocumentConverter };
+module.exports = { DocumentConverter, PYTHON_FORMATS, UNSUPPORTED_EXTS };

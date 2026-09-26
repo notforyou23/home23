@@ -160,6 +160,26 @@ test('POST /admin/feeder/addWatchPath returns the watch state instead of a silen
   assert.deepEqual(res.json(), { ok: true, added: '/Users/x/not-yet', label: 'later', state: 'missing' });
 });
 
+test('GET /admin/feeder/status carries converter health and watch summary', async () => {
+  const feeder = new DocumentFeeder({ memory: { embed: async () => null }, config: {}, logger: silentLogger });
+  feeder.converter = {
+    healthSnapshot: () => ({ state: 'unavailable', reason: 'python runtime not found: python3', remedy: 'Run node cli/home23.js init', formats: {}, available: false }),
+  };
+  const server = new RealtimeServer(0, silentLogger);
+  server.setOrchestrator({ feeder });
+
+  const res = makeResponse();
+  await server._handleFeederAdmin(makeRequest({ url: '/admin/feeder/status', method: 'GET' }), res);
+
+  assert.equal(res.statusCode, 200);
+  const { status } = res.json();
+  assert.equal(status.converter.state, 'unavailable');
+  assert.equal(status.converter.available, false);
+  assert.equal(status.converter.remedy, 'Run node cli/home23.js init');
+  assert.equal(status.converter.pendingConversionCount, 0);
+  assert.deepEqual(status.watchSummary, { configured: 0, attached: 0, missing: 0, error: 0 });
+});
+
 test('labelForPath resolves the covering watcher, deepest root wins, fallback is parent dir', () => {
   const feeder = new DocumentFeeder({
     memory: { embed: async () => null },

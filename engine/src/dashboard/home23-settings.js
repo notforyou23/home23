@@ -2640,6 +2640,19 @@ async function saveFeeder() {
   }
 }
 
+// The engine reports converter state, reason and remedy; a bare
+// available/unavailable flag hid why binary files were not ingesting.
+function describeConverterHealth(cv) {
+  if (!cv) return '—';
+  if (!cv.state) return cv.available ? `✓ ${cv.visionModel || ''}` : '✗ unavailable';
+  const icon = { ready: '✓', degraded: '⚠', unavailable: '✗', disabled: '○' }[cv.state] || '…';
+  const detail = cv.state === 'ready' && !cv.reason
+    ? (cv.visionModel || '')
+    : [cv.reason, cv.remedy].filter(Boolean).join(' — ');
+  const waiting = cv.pendingConversionCount ? ` · ${cv.pendingConversionCount} file(s) waiting` : '';
+  return `${icon} ${cv.state}${detail ? ` · ${detail}` : ''}${waiting}`;
+}
+
 async function loadFeederLiveStatus() {
   if (!selectedSettingsAgent) return;
   try {
@@ -2663,8 +2676,7 @@ async function loadFeederLiveStatus() {
         watchers = ws
           ? `${ws.attached} of ${ws.configured} attached${ws.missing ? ` (${ws.missing} missing)` : ''}${ws.error ? ` (${ws.error} error)` : ''}`
           : String(live.status.watching?.length ?? 0);
-        const cv = live.status.converter;
-        converter = cv?.available ? `✓ ${cv.visionModel || ''}` : '✗ unavailable';
+        converter = describeConverterHealth(live.status.converter);
         if (Number.isFinite(live.status.manifest?.pendingCount)) {
           livePending = live.status.manifest.pendingCount;
         }

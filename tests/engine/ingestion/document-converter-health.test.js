@@ -6,29 +6,42 @@ import test from 'node:test';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { DocumentConverter } = require('../../../engine/src/ingestion/document-converter');
+const { DocumentConverter, PYTHON_FORMATS } = require('../../../engine/src/ingestion/document-converter');
 const { DocumentFeeder } = require('../../../engine/src/ingestion/document-feeder');
 
 const silentLogger = { info() {}, warn() {}, debug() {}, error() {} };
 
-// A stand-in "python": answers the MarkItDown probe (-c ...) and converts
-// by sleeping, then printing markdown. No real python or network needed.
-function stubPython(t, { convertSleepSeconds = 0, probeExit = 0 } = {}) {
+const ALL_MODULES = [...new Set(Object.values(PYTHON_FORMATS).flatMap(spec => spec.modules))];
+
+function probeOutput({ markitdown = true, missing = [] } = {}) {
+  return JSON.stringify({
+    python: '3.12.4',
+    markitdown,
+    error: markitdown ? null : "ModuleNotFoundError: No module named 'markitdown'",
+    modules: Object.fromEntries(ALL_MODULES.map(m => [m, !missing.includes(m)])),
+  });
+}
+
+// A stand-in "python": answers the health probe (-c ...) with canned JSON
+// and converts by sleeping, then printing markdown. No real python needed.
+function stubPython(t, { convertSleepSeconds = 0, probe = probeOutput(), convertStderr = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-converter-stub-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const script = path.join(dir, 'python-stub');
+  fs.writeFileSync(path.join(dir, 'probe.json'), probe);
   fs.writeFileSync(script, [
     '#!/bin/sh',
     'if [ "$1" = "-c" ]; then',
-    `  exit ${probeExit}`,
+    `  cat "${path.join(dir, 'probe.json')}"`,
+    '  exit 0',
     'fi',
     `sleep ${convertSleepSeconds}`,
-    'echo "# converted"',
+    ...(convertStderr ? [`echo "${convertStderr}" >&2`, 'exit 1'] : ['echo "# converted"']),
     '',
   ].join('\n'), { mode: 0o755 });
   const doc = path.join(dir, 'report.pdf');
   fs.writeFileSync(doc, 'pdf bytes');
-  return { script, doc };
+  return { dir, script, doc };
 }
 
 test('the converter never uses a synchronous child process', () => {
@@ -61,7 +74,7 @@ test('conversions run one at a time', async (t) => {
     maxActive = Math.max(maxActive, active);
     setTimeout(() => {
       active -= 1;
-      callback(null, args[0] === '-c' ? '' : '# converted\n', '');
+      callback(null, args[0] === '-c' ? probeOutput() : '# converted\n', '');
     }, 30);
   };
   const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script, execFileImpl });
@@ -75,7 +88,7 @@ test('conversions run one at a time', async (t) => {
 test('closing the converter cancels an in-flight conversion promptly and retryably', async (t) => {
   const { script, doc } = stubPython(t, { convertSleepSeconds: 5 });
   const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script });
-  await converter.checkAvailability();
+  await converter.checkHealth();
 
   const started = Date.now();
   const pending = converter.convertDetailed(doc);
@@ -108,29 +121,106 @@ test('feeder shutdown closes the converter', async (t) => {
   assert.equal(closed, 1);
 });
 
-test('the availability probe is async, cached, and re-probes early while absent', async (t) => {
+test('the health probe is async, cached, and re-probes early while MarkItDown is missing', async (t) => {
   const { script } = stubPython(t);
   let probes = 0;
   let installed = false;
   let clock = 0;
   const execFileImpl = (file, args, options, callback) => {
     probes += 1;
-    setImmediate(() => (installed ? callback(null, '', '') : callback(new Error('No module named markitdown'), '', '')));
+    setImmediate(() => callback(null, probeOutput({ markitdown: installed }), ''));
   };
   const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script, execFileImpl, now: () => clock });
 
   assert.equal(converter.available, false, 'reading availability never spawns');
   assert.equal(probes, 0);
-  assert.equal(await converter.checkAvailability(), false);
-  assert.equal(await converter.checkAvailability(), false);
+  assert.equal((await converter.checkHealth()).state, 'unavailable');
+  assert.equal((await converter.checkHealth()).state, 'unavailable');
   assert.equal(probes, 1, 'cached within the unavailable TTL');
 
   installed = true;
   clock += 61_000;
-  assert.equal(await converter.checkAvailability(), true, 'installing MarkItDown needs no restart');
+  assert.equal((await converter.checkHealth()).state, 'ready', 'installing MarkItDown needs no restart');
+  assert.equal(converter.available, true);
   clock += 61_000;
-  assert.equal(await converter.checkAvailability(), true);
-  assert.equal(probes, 2, 'a present converter is cached longer');
-  assert.equal(await converter.checkAvailability({ force: true }), true);
+  await converter.checkHealth();
+  assert.equal(probes, 2, 'a working converter is cached longer');
+  await converter.checkHealth({ force: true });
   assert.equal(probes, 3);
+});
+
+test('health reports ready, missing extras, missing PDF support, and a missing runtime', async (t) => {
+  const ready = await new DocumentConverter({ logger: silentLogger, pythonPath: stubPython(t).script }).checkHealth();
+  assert.equal(ready.state, 'ready');
+  assert.equal(ready.available, true);
+  assert.equal(ready.python, '3.12.4');
+  assert.equal(ready.runtime.source, 'config');
+  assert.equal(ready.formats.docx, true);
+  assert.deepEqual(ready.unavailableFormats, []);
+
+  const extras = await new DocumentConverter({
+    logger: silentLogger,
+    pythonPath: stubPython(t, { probe: probeOutput({ missing: ['mammoth', 'pptx', 'openpyxl', 'xlrd', 'pydub'] }) }).script,
+  }).checkHealth();
+  assert.equal(extras.state, 'ready');
+  assert.equal(extras.formats.pdf, true);
+  assert.equal(extras.formats.docx, false);
+  assert.deepEqual(extras.unavailableFormats, ['docx', 'pptx', 'xlsx', 'xls', 'audio']);
+  assert.match(extras.remedy, /markitdown\[docx,pptx,xlsx,xls,audio-transcription\]/);
+
+  const noPdf = await new DocumentConverter({
+    logger: silentLogger,
+    pythonPath: stubPython(t, { probe: probeOutput({ missing: ['pdfplumber'] }) }).script,
+  }).checkHealth();
+  assert.equal(noPdf.state, 'degraded');
+  assert.match(noPdf.reason, /PDF support/);
+
+  const missing = await new DocumentConverter({ logger: silentLogger, pythonPath: '/nonexistent/home23/python3' }).checkHealth();
+  assert.equal(missing.state, 'unavailable');
+  assert.equal(missing.available, false);
+  assert.match(missing.reason, /python runtime not found/);
+  assert.match(missing.remedy, /cli\/home23\.js init/);
+});
+
+test('a format whose extras are missing waits instead of failing, and so does a missing-module traceback', async (t) => {
+  const { script, dir } = stubPython(t, { probe: probeOutput({ missing: ['mammoth'] }) });
+  const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script });
+  const docx = path.join(dir, 'notes.docx');
+  fs.writeFileSync(docx, 'docx bytes');
+
+  const result = await converter.convertDetailed(docx);
+  assert.equal(result.status, 'converter_unavailable');
+  assert.equal(result.retryable, true);
+  assert.equal(result.needs, 'docx');
+  assert.equal(converter.canConvertNow(docx), false);
+  assert.equal(converter.canConvertNow(path.join(dir, 'report.pdf')), true);
+
+  const traceback = stubPython(t, { convertStderr: 'markitdown._exceptions.MissingDependencyException: PdfConverter needs pdfminer' });
+  const failing = new DocumentConverter({ logger: silentLogger, pythonPath: traceback.script });
+  const pdf = await failing.convertDetailed(traceback.doc);
+  assert.equal(pdf.status, 'converter_unavailable');
+  assert.equal(pdf.retryable, true);
+});
+
+test('unsupported formats are named as such, and a disabled converter never spawns', async (t) => {
+  let spawns = 0;
+  const execFileImpl = (file, args, options, callback) => { spawns += 1; callback(null, probeOutput(), ''); };
+  const { dir, script } = stubPython(t);
+  const pages = path.join(dir, 'plan.pages');
+  fs.writeFileSync(pages, 'pages bytes');
+
+  const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script, execFileImpl });
+  const unsupported = await converter.convertDetailed(pages);
+  assert.equal(unsupported.status, 'unsupported_format');
+  assert.equal(unsupported.retryable, false);
+  assert.match(unsupported.error, /\.pages/);
+  assert.equal(spawns, 0);
+
+  const disabled = new DocumentConverter({ logger: silentLogger, pythonPath: script, execFileImpl, enabled: false });
+  const result = await disabled.convertDetailed(path.join(dir, 'report.pdf'));
+  assert.equal(result.status, 'converter_disabled');
+  assert.equal(result.retryable, true);
+  assert.equal((await disabled.checkHealth()).state, 'disabled');
+  assert.equal(disabled.canConvertNow(path.join(dir, 'report.pdf')), false);
+  assert.equal(spawns, 0);
 });
