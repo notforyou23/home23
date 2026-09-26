@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { resolveProposerRoots } from '../../src/agent/proposer-runtime.js';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
-const ROOT_VARS = ['HOME23_ROOT', 'SHAKEDOWN_SITE_ROOT', 'JERRY_COLLECTION_ROOT'] as const;
+const ROOT_VARS = ['HOME23_ROOT', 'SHAKEDOWN_SITE_ROOT', 'JERRY_COLLECTION_ROOT', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'] as const;
 
 function withEnv(values: Partial<Record<(typeof ROOT_VARS)[number], string>>, fn: () => void): void {
   const saved = new Map(ROOT_VARS.map((name) => [name, process.env[name]] as const));
@@ -56,4 +56,17 @@ test('with nothing configured, roots derive from the packaged app root and the u
     assert.equal(roots.jerryCollection, path.resolve(REPO_ROOT, '..', '..', 'jerry-collection'));
     assert.equal(roots.workerWorkspace, path.join(REPO_ROOT, 'instances/workers/shakedown-jerry/workspace'));
   });
+});
+
+test('under the Host the default site is in the owner home, not the runtime HOME', () => {
+  const previousHome = process.env.HOME;
+  process.env.HOME = '/fixture/home/runtime/user';
+  try {
+    withEnv({ HOME23_OWNER_HOME: '/fixture/owner', HOME23_PRODUCT_HOST: 'true' }, () => {
+      assert.equal(resolveProposerRoots().site, path.join('/fixture/owner', 'websites', 'shakedownshuffle.com'));
+    });
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
 });
