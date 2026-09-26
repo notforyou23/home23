@@ -802,3 +802,35 @@ test('pm2_restart is rejected while the engine is shutting down', async () => {
     setShuttingDown(false);
   }
 });
+
+test('a loop stopped during verification raises no fuse-box operator intent', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-stop-intent-'));
+  const intents = [];
+  let loop;
+  const server = http.createServer((req, res) => {
+    loop.stop();
+    res.statusCode = 503;
+    res.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const store = new LiveProblemStore({ brainDir: dir });
+    store.upsert({
+      id: 'fuse',
+      claim: 'fuse service responds',
+      verifier: { type: 'http_ping', args: { url: `http://127.0.0.1:${server.address().port}/verify`, expectStatus: 200 } },
+      remediation: [{ type: 'notify_jtr', args: { fuseBox: true, text: 'fuse service is down' }, cooldownMin: 0 }],
+    });
+    const osKernel = { store: { upsertOperatorIntent: intent => { intents.push(intent); return intent; } } };
+    loop = new LiveProblemsLoop({ store, ctxProvider: () => ({ brainDir: dir, osKernel }) });
+    loop.start();
+    clearTimeout(loop.timer);
+    await loop.tick();
+    assert.deepEqual(intents, []);
+    assert.equal(store.get('fuse').lastResult.ok, false, 'verification still records the truth');
+    assert.equal(store.get('fuse').remediationLog?.length ?? 0, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

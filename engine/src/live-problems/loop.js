@@ -370,6 +370,10 @@ class LiveProblemsLoop {
       return;
     }
 
+    // 3. Remediate, unless the loop stopped while this problem verified: a
+    // stopping engine neither raises an operator intent nor runs a remediator.
+    if (this.stopped) return;
+
     // Fuse-box notify: raise a governed operator intent so the escalation
     // shows up on the dashboard's "Needs You" rail, not just as a Telegram
     // ping. The remediator formats its message from this intent when present.
@@ -394,8 +398,6 @@ class LiveProblemsLoop {
       }
     }
 
-    // 3. Run the remediator, unless the loop stopped while this problem verified.
-    if (this.stopped) return;
     this.logger.info?.(`[live-problems] ${p.id}: step ${p.stepIndex} → ${step.type}`);
     // Pass the full problem record so dispatch_to_agent has verifier spec etc.
     const out = await runRemediator(step, { ...ctx, problem: p });
