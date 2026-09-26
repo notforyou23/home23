@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { installProductPayload, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
-import { applyProductUpdate, quiesceWriters, readUpdateJournal, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
+import { applyProductUpdate, productRecoveryFor, quiesceWriters, readUpdateJournal, recoverProductUpdate, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
 import { candidateCoordinationSchema, inspectCoordinationDatabase, inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, SUPPORTED_COORDINATION_SCHEMAS, ownedWriterNames, writerStopOrder } from '../../cli/lib/product-update-inventory.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
@@ -547,6 +547,178 @@ test('a controller killed during the quiesce still restores the running home on 
   assert.equal(result.runningRestored, true);
   assert.equal(starts, 1);
   assert.equal(packageId(fixture.home), fixture.installed.packageId);
+});
+
+/** A desired-running home whose stop left milo running and whose restart then failed. */
+async function stuckStop(t, options = {}) {
+  const fixture = homeFixture(t, { desiredRunning: true, ...options });
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    quiesce: async () => [{ name: 'home23-milo', status: 'online' }],
+    start: async () => ({ ok: false, status: 'failed' }),
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.deepEqual(result.reasons.map(reason => reason.code), ['writer_stop_incomplete', 'running_restore_failed']);
+  return fixture;
+}
+
+test('resume reopens a nothing-switched recovery_required journal and commits', async t => {
+  const fixture = await stuckStop(t, { extra: { 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/cli/lib/product-host.js': hostStub } });
+  const before = preserved(fixture.home);
+  assert.equal(readUpdateJournal(fixture.home).recoveryFrom, 'claimed');
+  assert.deepEqual(productRecoveryFor(fixture.home), { available: true, restore: true, retry: true,
+    reasonCodes: ['writer_stop_incomplete', 'running_restore_failed'] });
+  let online = true, quiesced = 0;
+  const result = await resumeProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { quiesced += 1; online = false; return []; },
+    start: async () => { online = true; return { ok: true, status: 'ready' }; },
+  });
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  assert.equal(quiesced, 1);
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.recoveryReopens, 1);
+  assert.deepEqual(journal.previousReasons.map(reason => reason.code), ['writer_stop_incomplete', 'running_restore_failed']);
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+});
+
+test('recoverProductUpdate restores the previous running home and closes the journal as aborted', async t => {
+  const fixture = await stuckStop(t);
+  let starts = 0;
+  const result = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    start: async () => { starts += 1; return { ok: true, status: 'ready' }; },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.runningRestored, true);
+  assert.equal(starts, 1);
+  assert.ok(result.reasons.some(reason => reason.code === 'recovered_by_owner'));
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(updateBlocksStart(readUpdateJournal(fixture.home)), false);
+  assert.equal(productRecoveryFor(fixture.home).available, false);
+});
+
+test('a failed recover stays recoverable and a stopped home recovers without starting', async t => {
+  const fixture = await stuckStop(t);
+  const failed = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet, start: async () => ({ ok: false, status: 'failed' }) });
+  assert.equal(failed.status, 'recovery_required');
+  assert.equal(productRecoveryFor(fixture.home).restore, true);
+  const stopped = homeFixture(t);
+  const journal = readUpdateJournal(fixture.home);
+  const file = path.join(updateDirectoryFor(stopped.home), 'journal.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify({ ...journal, homeRoot: stopped.home, desiredRunning: false,
+    fromPackageId: stopped.installed.packageId, toPackageId: stopped.next.packageId }), { mode: 0o600 });
+  let starts = 0;
+  const closed = await recoverProductUpdate({ homeRoot: stopped.home }, { ...quiet, start: async () => { starts += 1; return { ok: true }; } });
+  assert.equal(closed.status, 'aborted');
+  assert.equal(starts, 0);
+});
+
+test('the recovery entry --abort returns the home to service instead of resuming', async t => {
+  const fixture = await stuckStop(t, { currentExtra: { 'app/cli/lib/product-host.js': hostStub } });
+  const recovered = await run(process.execPath, [path.join(rootDir, 'cli/lib/product-update-recover.mjs'), '--home', fixture.home, '--abort'], process.env);
+  assert.equal(recovered.code, 0, recovered.stderr + recovered.stdout);
+  const result = JSON.parse(recovered.stdout);
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.runningRestored, true);
+  assert.equal(fs.readFileSync(path.join(fixture.home, 'runtime/started.txt'), 'utf8'), 'start');
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+});
+
+test('recover and resume refuse a post-selection recovery_required journal', async t => {
+  const tampered = homeFixture(t);
+  const failed = await applyProductUpdate({ homeRoot: tampered.home, candidatePayload: tampered.candidate, staging: tampered.staging }, {
+    ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase === 'selected') fs.writeFileSync(path.join(updateDirectoryFor(tampered.home), 'previous/bin/node'), 'tampered');
+    },
+    verifyBehavior: async () => ({ ok: false, issues: ['health failed'] }),
+  });
+  assert.equal(failed.status, 'recovery_required');
+  assert.deepEqual(productRecoveryFor(tampered.home), { available: true, restore: false, retry: false, reasonCodes: ['recovery_required'] });
+  const resumed = await resumeProductUpdate({ homeRoot: tampered.home }, quiet);
+  assert.equal(resumed.status, 'recovery_required');
+  assert.equal(resumed.replayed, true);
+  assert.equal((await recoverProductUpdate({ homeRoot: tampered.home }, quiet)).reasons[0].code, 'recovery_unavailable');
+  assert.equal(packageId(tampered.home), tampered.next.packageId);
+
+  const admitted = homeFixture(t, { desiredRunning: true });
+  let online = false;
+  const result = await applyProductUpdate({ homeRoot: admitted.home, candidatePayload: admitted.candidate, staging: admitted.staging, admit: true }, {
+    ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { online = true; return { ok: true, status: 'ready' }; },
+    quiesce: async () => { online = false; return []; },
+    verifyBehavior: async () => ({ ok: false, issues: ['candidate unhealthy after start'] }),
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(productRecoveryFor(admitted.home).available, false);
+  assert.equal((await recoverProductUpdate({ homeRoot: admitted.home }, quiet)).reasons[0].code, 'recovery_unavailable');
+});
+
+test('a rollback that restored software but not running is recoverable', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const failed = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging, admit: true }, {
+    ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase === 'selected') fs.writeFileSync(path.join(fixture.home, 'bin/node'), '#!/bin/sh\nbroken\n');
+    },
+    start: async () => ({ ok: false, status: 'failed' }),
+  });
+  assert.equal(failed.status, 'recovery_required');
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.softwareRestored, true);
+  assert.equal(journal.recoveryFrom, 'selected');
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.deepEqual(productRecoveryFor(fixture.home), { available: true, restore: true, retry: false, reasonCodes: ['recovery_required'] });
+  assert.equal((await resumeProductUpdate({ homeRoot: fixture.home }, quiet)).replayed, true);
+  let starts = 0;
+  const recovered = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet, start: async () => { starts += 1; return { ok: true, status: 'ready' }; } });
+  assert.equal(recovered.status, 'aborted');
+  assert.equal(recovered.runningRestored, true);
+  assert.equal(starts, 1);
+});
+
+test('reopen stops after three attempts', async t => {
+  const fixture = await stuckStop(t);
+  const stuck = { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    quiesce: async () => [{ name: 'home23-milo', status: 'online' }],
+    start: async () => ({ ok: false, status: 'failed' }) };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const result = await resumeProductUpdate({ homeRoot: fixture.home }, stuck);
+    assert.equal(result.status, 'recovery_required');
+    assert.equal(result.replayed, false);
+    assert.equal(readUpdateJournal(fixture.home).recoveryReopens, attempt);
+  }
+  assert.deepEqual(productRecoveryFor(fixture.home), { available: true, restore: true, retry: false,
+    reasonCodes: ['writer_stop_incomplete', 'running_restore_failed'] });
+  const last = await resumeProductUpdate({ homeRoot: fixture.home }, stuck);
+  assert.equal(last.replayed, true);
+  assert.equal(readUpdateJournal(fixture.home).recoveryReopens, 3);
+});
+
+test('an unretryable nothing-switched journal offers recover but is not reopened by resume', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true, version: 21 });
+  let online = true;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    inspectUpdateInventory: async (...args) => ({ ...(await inspectUpdateInventory(...args)),
+      databaseInspection: { present: true, version: null, busy: true, compatible: false },
+      reasons: [{ code: 'database_busy', message: 'database is locked' }] }),
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { online = false; return []; },
+    start: async () => ({ ok: false, status: 'failed' }),
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.deepEqual(productRecoveryFor(fixture.home), { available: true, restore: true, retry: false,
+    reasonCodes: ['unsupported_data_version', 'running_restore_failed'] });
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+  assert.equal(resumed.replayed, true);
+  assert.equal(readUpdateJournal(fixture.home).recoveryReopens, undefined);
 });
 
 test('checkpoint and resume fingerprint a read-only attachment without copying it', async t => {
