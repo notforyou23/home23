@@ -49,11 +49,20 @@ const PREFLIGHT_MESSAGES = Object.freeze({
   encoder_mismatch: 'This release does not support the home\'s current encoder. Check for a newer Home23 release.',
   encoder_recipe_changed: 'The home encoder recipe changed since this release was prepared. Check for a newer Home23 release.',
 });
+// Apply may include local paths in its reason messages. Persist and publish
+// only bounded machine codes and a fixed message, never those details.
+const safeReasonCodes = reasons => [...new Set((Array.isArray(reasons) ? reasons : [])
+  .map(reason => reason?.code).filter(code => typeof code === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(code)))].slice(0, 16);
+const LOCAL_RECOVERY_MESSAGE = 'Automatic recovery stopped to preserve your home. Open Home23 on the Mac running your home for recovery.';
+/** Owner copy for a fenced update. Recover and Resume are offered only as the updater classified them. */
+function localRecoveryFailure(recoverable, retryable, reasonCodes) {
+  const message = !recoverable ? LOCAL_RECOVERY_MESSAGE
+    : retryable ? 'The update stopped and your home is still on its current Home23 version. Recover returns it to service; Resume tries the update again.'
+      : 'The update stopped and your home is still on its current Home23 version. Recover returns it to service.';
+  return Object.assign(fail('local_recovery_required', message), { reasonCodes });
+}
 function preflightFailure(result) {
-  // Apply may include local paths in its reason messages. Persist and publish
-  // only bounded machine codes and a fixed message, never those details.
-  const codes = [...new Set((Array.isArray(result?.reasons) ? result.reasons : [])
-    .map(reason => reason?.code).filter(code => typeof code === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(code)))].slice(0, 16);
+  const codes = safeReasonCodes(result?.reasons);
   if (!codes.length) return null;
   const error = fail(codes[0], PREFLIGHT_MESSAGES[codes[0]]
     ?? `Home23 paused at an update safety check (${codes[0]}). Open Home23 on this Mac before resuming.`);
@@ -106,7 +115,8 @@ function publicOperation(operation) {
     errorCode: operation.phase === 'failed' ? operation.errorCode ?? null : null,
     reasonCodes: operation.phase === 'failed' ? operation.reasonCodes ?? [] : [],
     startedAt: operation.startedAt, updatedAt: operation.updatedAt,
-    canResume: !operation.requiresLocalRecovery && !operation.requiresNewRelease && (interrupted || ['failed', 'interrupted'].includes(operation.phase)) };
+    canResume: (operation.requiresLocalRecovery ? operation.retryable === true : true) && !operation.requiresNewRelease
+      && (interrupted || ['failed', 'interrupted'].includes(operation.phase)) };
 }
 function releaseView(release) {
   return release ? { version: release.version ?? 'Home23', build: release.appBuild ?? release.build ?? null, packageId: release.packageId ?? null } : null;
@@ -124,7 +134,11 @@ function projectStatus(home, operation, clientBuild) {
   let allowedActions = ['check'];
   if (!registered) { state = 'unavailable'; message = 'Open Home23 on the Mac running your home to finish connecting updates.'; allowedActions = []; }
   else if (visible && !TERMINAL.has(visible.phase)) { state = 'running'; allowedActions = []; message = visible.message; }
-  else if (operation?.requiresLocalRecovery) { state = 'failed'; allowedActions = []; message = visible.message; }
+  // Only flags the worker saved on the record; status never reads the update journal.
+  else if (operation?.requiresLocalRecovery) {
+    state = 'failed'; message = visible.message;
+    allowedActions = [...(operation.recoverable === true ? ['recover'] : []), ...(visible.canResume ? ['resume'] : [])];
+  }
   else if (operation?.requiresNewRelease) { state = 'failed'; allowedActions = ['check']; message = visible.message; }
   else if (visible?.canResume) { state = 'failed'; allowedActions = ['resume']; message = visible.message; }
   else if (refusedOffer) { state = 'incompatible'; allowedActions = ['check']; message = 'This release was already refused for this home. Check again when a newer Home23 release is available.'; }
@@ -316,6 +330,23 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
           : checked.status === 'incompatible' ? 'This release is not compatible with this home yet.' : 'Updates could not be checked. Try again later.' });
       return;
     }
+    if (operation.runAction === 'recover') {
+      // Recover returns the home to service on the version it has; it never
+      // downloads, retries the update or needs this device to be current.
+      persist({ phase: 'updating', message: 'Returning your home to service on its current Home23 version.' });
+      const result = await updater.recoverProductUpdate({ homeRoot: home.root });
+      const reasonCodes = safeReasonCodes(result?.reasons);
+      if (result?.status === 'aborted') {
+        const freshRelease = reasonCodes.some(code => FRESH_RELEASE_REQUIRED.has(code));
+        persist({ requiresLocalRecovery: false, recoverable: false, retryable: false,
+          ...(freshRelease ? { requiresNewRelease: true, blockedPackageId: result.toPackageId ?? operation.prepared?.packageId ?? null } : {}) });
+        const back = result.runningRestored ? 'Your home is running again on its current Home23 version.' : 'Your home is back on its current Home23 version and stays stopped.';
+        throw Object.assign(fail('update_recovered', `${back} ${freshRelease ? 'Check for a newer Home23 release.' : 'Resume to try the update again.'}`), { reasonCodes });
+      }
+      const recovery = updater.productRecoveryFor?.(home.root) ?? {};
+      persist({ requiresLocalRecovery: true, recoverable: recovery.restore === true, retryable: recovery.retry === true });
+      throw localRecoveryFailure(recovery.restore === true, recovery.retry === true, recovery.reasonCodes ?? reasonCodes);
+    }
     let prepared = operation.prepared;
     if (!prepared) {
       workerPriority(true);
@@ -342,7 +373,9 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     const minimum = prepared.release?.compatibility?.minimumClientBuild ?? 1;
     if (operation.clientBuild < minimum) throw fail('app_update_required', 'Update Home23 on this device before updating your home.');
     if (!operation.runtimeCompleted) {
-      persist({ phase: 'updating', message: 'Updating your home. Home23 will reconnect automatically.' });
+      // A resumed local recovery is re-classified below if it fences again.
+      persist({ phase: 'updating', message: 'Updating your home. Home23 will reconnect automatically.',
+        requiresLocalRecovery: undefined, recoverable: undefined, retryable: undefined });
       const journal = updater.readUpdateJournal(home.root);
       let result = journal && !['committed', 'rolled_back', 'aborted'].includes(journal.phase)
         ? await updater.resumeProductUpdate({ homeRoot: home.root })
@@ -365,8 +398,9 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
       if (!result.ok || result.status !== 'committed') {
         const recovery = updater.readUpdateJournal(home.root);
         if (recovery?.phase === 'recovery_required' && !recovery.writersAdmitted) {
-          persist({ requiresLocalRecovery: true });
-          throw fail('local_recovery_required', 'Automatic recovery stopped to preserve your home. Open Home23 on the Mac running your home for recovery.');
+          const product = updater.productRecoveryFor?.(home.root) ?? {};
+          persist({ requiresLocalRecovery: true, recoverable: product.restore === true, retryable: product.retry === true });
+          throw localRecoveryFailure(product.restore === true, product.retry === true, safeReasonCodes(recovery.reasons));
         }
         const refusal = preflightFailure(result);
         if (refusal?.reasonCodes.some(code => FRESH_RELEASE_REQUIRED.has(code)) && ['refused', 'aborted'].includes(result.status)) {
