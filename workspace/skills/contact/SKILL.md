@@ -80,5 +80,7 @@ Use this skill when the work is in the actual day, not inside Home23.
 - Do not expose arbitrary AppleScript. Named surfaces only.
 - Thermostat, cameras, garage, locks, security, water: `confirm=true`.
 - Mail and calendar need macOS permission; if a surface fails, report it, do not invent events.
+- Mail: use `mac_read` surface=mail. Never script Mail by hand (shell `osascript`), and never touch Mail's combined inbox; with tens of thousands of messages it times out. Without Full Disk Access, `mac_read` falls back to a bounded per-account read on its own and says so (`source`, `degraded`).
+- `mail_index_permission_denied`, `mail_app_not_running` and `mail_automation_denied` are owner actions: tell the owner. Never change privacy settings and never launch Mail.
 - Do not auto-send. Preview the exact recipient and body.
 - Share-sheet drops land in `workspace/intake`. Ingest them with `capture_artifact`.

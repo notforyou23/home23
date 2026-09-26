@@ -9,7 +9,7 @@ import { runBrowserWorkflow } from '../contact/browser.js';
 import { captureArtifact, listInbox, retrieveArtifact } from '../contact/capture.js';
 import { assertSendable, createDraft, loadDraft, previewDraft } from '../contact/comms.js';
 import { HouseClient } from '../contact/house.js';
-import { createOsascriptRunner, macRead, macWrite, type MacReadSurface } from '../contact/mac.js';
+import { createOsascriptRunner, macReadReport, macWrite, type MacReadSurface, type MacRunner } from '../contact/mac.js';
 import { runNamedShortcut } from '../contact/phone.js';
 import { buildReceipt, writeContactReceipt } from '../contact/receipts.js';
 import { loadHomeAssistantCreds, loadShortcutBridge } from '../contact/secrets.js';
@@ -242,21 +242,28 @@ export const macReadTool: ToolDefinition = {
     required: ['surface'],
   },
   async execute(input, ctx): Promise<ToolResult> {
-    const surface = String(input.surface) as MacReadSurface;
-    try {
-      const items = await macRead(surface, String(input.query ?? ''), createOsascriptRunner(), Number(input.hours_ahead ?? 36), {
-        signal: ctx.abortSignal,
-      });
-      return receiptResult(ctx.workspacePath, buildReceipt({
-        agent: ctx.agentName, chatId: ctx.chatId, capability: 'mac_read',
-        sideEffect: 'read', authority: 'autonomous', dryRun: false, confirmed: false, ok: true,
-        summary: `${surface}: ${items.length} items`, after: items,
-      }), items);
-    } catch (error) {
-      return fail(ctx, 'mac_read', error, { metadata: { surface } });
-    }
+    return runMacRead(input, ctx, createOsascriptRunner());
   },
 };
+
+/** mac_read with an explicit runner, so tests can drive it without osascript. */
+export async function runMacRead(input: Record<string, unknown>, ctx: ToolContext, runner: MacRunner): Promise<ToolResult> {
+  const surface = String(input.surface) as MacReadSurface;
+  try {
+    const report = await macReadReport(surface, String(input.query ?? ''), runner, Number(input.hours_ahead ?? 36), {
+      signal: ctx.abortSignal,
+    });
+    const { items } = report;
+    return receiptResult(ctx.workspacePath, buildReceipt({
+      agent: ctx.agentName, chatId: ctx.chatId, capability: 'mac_read',
+      sideEffect: 'read', authority: 'autonomous', dryRun: false, confirmed: false, ok: true,
+      summary: `${surface}: ${items.length} items${report.mail ? ` via ${report.mail.source}` : ''}`, after: items,
+      metadata: { surface, ...(report.mail ? { mail: report.mail } : {}) },
+    }), items);
+  } catch (error) {
+    return fail(ctx, 'mac_read', error, { metadata: { surface } });
+  }
+}
 
 export const macWriteTool: ToolDefinition = {
   name: 'mac_write',

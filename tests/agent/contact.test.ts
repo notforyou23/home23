@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,7 +9,16 @@ import { assertBrowserUrl } from '../../src/agent/contact/browser.js';
 import { captureArtifact, retrieveArtifact } from '../../src/agent/contact/capture.js';
 import { assertSendable, createDraft, previewDraft } from '../../src/agent/contact/comms.js';
 import { classifyHouseAction, HouseClient } from '../../src/agent/contact/house.js';
-import { createOsascriptRunner, macRead, macWrite, MacSurfaceError, NOTES_SCAN_CAP, type MacRunner } from '../../src/agent/contact/mac.js';
+import {
+  createOsascriptRunner,
+  MAIL_FALLBACK_MAX_ACCOUNTS,
+  macRead,
+  macReadReport,
+  macWrite,
+  MacSurfaceError,
+  NOTES_SCAN_CAP,
+  type MacRunner,
+} from '../../src/agent/contact/mac.js';
 import { runNamedShortcut } from '../../src/agent/contact/phone.js';
 import { contactReceiptPath } from '../../src/agent/contact/paths.js';
 import {
@@ -18,6 +27,7 @@ import {
   houseCallSafeServiceTool,
   houseGetEntityTool,
   macReadTool,
+  runMacRead,
 } from '../../src/agent/tools/contact.js';
 import { createToolRegistry } from '../../src/agent/tools/index.js';
 import type { ToolContext } from '../../src/agent/types.js';
@@ -75,15 +85,39 @@ function tmpMailHome(): { home: string; envelopeIndex: string } {
   };
 }
 
+// Mail is read from the owner's home; HOME points at a decoy with its own
+// index to prove the reader ignores Home23's private runtime HOME.
 async function withHome<T>(home: string, action: () => Promise<T>): Promise<T> {
-  const previous = process.env.HOME;
-  process.env.HOME = home;
+  const previous = { HOME: process.env.HOME, HOME23_OWNER_HOME: process.env.HOME23_OWNER_HOME };
+  process.env.HOME = tmpMailHome().home;
+  process.env.HOME23_OWNER_HOME = home;
   try {
     return await action();
   } finally {
-    if (previous === undefined) delete process.env.HOME;
-    else process.env.HOME = previous;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
+}
+
+async function withUnreadableMailRoot<T>(home: string, action: () => Promise<T>): Promise<T> {
+  const mailRoot = path.join(home, 'Library', 'Mail');
+  chmodSync(mailRoot, 0o000);
+  try {
+    return await action();
+  } finally {
+    chmodSync(mailRoot, 0o755);
+  }
+}
+
+const US = '\u001f';
+const RS = '\u001e';
+const canDenyPermissions = typeof process.getuid === 'function' && process.getuid() !== 0;
+
+function mailScriptRecord(account: string, id: number, isoLocal: [number, number, number, number], read: boolean, sender: string, subject: string): string {
+  const [year, month, day, seconds] = isoLocal;
+  return ['M', account, id, year, month, day, seconds, read, sender, subject].join(US);
 }
 
 test('house lane: lights autonomous, garage/locks policy', () => {
@@ -266,6 +300,155 @@ test('mac mail reports an unavailable surface when sqlite access is unsupported'
     () => withHome(fixture.home, () => macRead('mail', '', runner)),
     (error: unknown) => error instanceof Error && error.message.startsWith('mac.mail unavailable:'),
   );
+});
+
+test('mac mail reports a typed Full Disk Access error when the index is unreadable and no fallback exists', { skip: !canDenyPermissions }, async () => {
+  const fixture = tmpMailHome();
+  const runner: MacRunner = {
+    async jxa() {
+      throw new Error('mail must not invoke JXA');
+    },
+    async sqliteJson() {
+      throw new Error('the unreadable index must not be queried');
+    },
+  };
+
+  await assert.rejects(
+    () => withHome(fixture.home, () => withUnreadableMailRoot(fixture.home, () => macRead('mail', '', runner))),
+    (error: unknown) => error instanceof MacSurfaceError
+      && error.code === 'mail_index_permission_denied'
+      && /^mac\.mail unavailable: mail_index_permission_denied/.test(error.message)
+      && /Full Disk Access/.test(error.message)
+      && /never changes it/.test(error.message),
+  );
+});
+
+test('mac mail distinguishes an absent Mail folder from a permission problem', async () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'home23-no-mail-'));
+  const runner: MacRunner = { async jxa() { return '[]'; }, async sqliteJson() { return '[]'; } };
+  await assert.rejects(
+    () => withHome(home, () => macRead('mail', '', runner)),
+    (error: unknown) => error instanceof MacSurfaceError && error.code === 'mail_not_configured',
+  );
+});
+
+test('mac mail falls back to a bounded per-account Apple Events read when Full Disk Access is missing', { skip: !canDenyPermissions }, async () => {
+  const fixture = tmpMailHome();
+  const calls: Array<{ script: string; args: string[] }> = [];
+  const records = [
+    mailScriptRecord('iCloud', 7, [2026, 9, 25, 3600], true, 'Alice <alice@example.com>', 'Older'),
+    mailScriptRecord('iCloud', 9, [2026, 9, 26, 7200], false, 'Bob <bob@example.com>', 'Newest'),
+    mailScriptRecord('Work', 8, [2026, 9, 25, 43200], false, 'Carol <carol@example.com>', 'Middle'),
+    ['D', 'Gmail', '-1712'].join(US),
+    ['S', 'Archive Account'].join(US),
+  ];
+  const runner: MacRunner = {
+    async jxa() {
+      throw new Error('mail must not invoke JXA');
+    },
+    async sqliteJson() {
+      throw new Error('the unreadable index must not be queried');
+    },
+    async applescript(script, args = []) {
+      calls.push({ script, args });
+      return records.join(RS);
+    },
+  };
+
+  const report = await withHome(fixture.home, () => withUnreadableMailRoot(fixture.home, () => macReadReport('mail', '', runner)));
+
+  assert.equal(calls.length, 1);
+  const [{ script, args }] = calls as [{ script: string; args: string[] }];
+  assert.deepEqual(args, ['', 'INBOX', '15', String(MAIL_FALLBACK_MAX_ACCOUNTS)]);
+  assert.match(script, /mailbox wantMailbox of account acctName/);
+  assert.match(script, /of messages lo thru hi of mb/);
+  assert.match(script, /with timeout of 8 seconds/);
+  assert.doesNotMatch(script, /\bof inbox\b|\binbox of\b/i, 'never the combined inbox');
+  assert.doesNotMatch(script, /every message/i);
+  assert.doesNotMatch(script, /\bwhose\b/i);
+  assert.ok(script.indexOf('is not running') < script.indexOf('tell application "Mail"'), 'check Mail is running before any Apple Event');
+  assert.equal(report.mail?.source, 'applescript');
+  assert.deepEqual(report.mail?.degraded, [
+    { step: 'index', code: 'mail_index_permission_denied' },
+    { step: 'account:Gmail', code: 'timeout' },
+  ]);
+  assert.deepEqual(report.mail?.skippedAccounts, ['Archive Account']);
+  assert.ok(Number.isFinite(report.mail?.timings.applescriptMs));
+  assert.deepEqual(report.items.map(({ id, title, needsOwner, excerpt }) => ({ id, title, needsOwner, excerpt })), [
+    { id: 'mac.mail:9', title: 'Newest', needsOwner: true, excerpt: 'Account: iCloud' },
+    { id: 'mac.mail:8', title: 'Middle', needsOwner: true, excerpt: 'Account: Work' },
+    { id: 'mac.mail:7', title: 'Older', needsOwner: false, excerpt: 'Account: iCloud' },
+  ]);
+  assert.equal(report.items[0]?.when, new Date(2026, 8, 26, 2, 0, 0).toISOString());
+});
+
+test('mac mail fallback limits merged accounts to the requested count and treats sqlite authorization errors as permission', async () => {
+  const fixture = tmpMailHome();
+  const records = Array.from({ length: 20 }, (_, index) => mailScriptRecord(index % 2 ? 'Work' : 'iCloud', index + 1, [2026, 9, 1 + index, 0], true, 'x@example.com', `m${index + 1}`));
+  const runner: MacRunner = {
+    async jxa() {
+      throw new Error('mail must not invoke JXA');
+    },
+    async sqliteJson() {
+      throw new Error('sqlite3 failed (exit 1): Error: unable to open database "Envelope Index": authorization denied');
+    },
+    async applescript() {
+      return records.join(RS);
+    },
+  };
+
+  const report = await withHome(fixture.home, () => macReadReport('mail', '', runner));
+
+  assert.equal(report.mail?.source, 'applescript');
+  assert.equal(report.items.length, 15);
+  assert.deepEqual(report.items.slice(0, 2).map((item) => item.title), ['m20', 'm19']);
+});
+
+test('mac mail fallback never launches Mail and reports mail_app_not_running', async () => {
+  const fixture = tmpMailHome();
+  const runner: MacRunner = {
+    async jxa() {
+      throw new Error('mail must not invoke JXA');
+    },
+    async sqliteJson() {
+      throw new Error('Error: unable to open database file');
+    },
+    async applescript() {
+      return `E${US}mail_app_not_running`;
+    },
+  };
+
+  await assert.rejects(
+    () => withHome(fixture.home, () => macRead('mail', '', runner)),
+    (error: unknown) => error instanceof MacSurfaceError && error.code === 'mail_app_not_running'
+      && /does not launch it/.test(error.message) && /Full Disk Access/.test(error.message),
+  );
+});
+
+test('mac_read mail receipt records the reader source, degraded steps and timings', async () => {
+  const fixture = tmpMailHome();
+  const runner: MacRunner = {
+    async jxa() {
+      throw new Error('mail must not invoke JXA');
+    },
+    async sqliteJson() {
+      throw new Error('Error: unable to open database file: authorization denied');
+    },
+    async applescript() {
+      return mailScriptRecord('iCloud', 3, [2026, 9, 26, 60], false, 'a@example.com', 'Hello');
+    },
+  };
+  const toolCtx = ctx();
+
+  const result = await withHome(fixture.home, () => runMacRead({ surface: 'mail' }, toolCtx, runner));
+
+  assert.equal(result.is_error, undefined);
+  const receipt = JSON.parse(readFileSync(contactReceiptPath(toolCtx.workspacePath), 'utf8').trim());
+  assert.equal(receipt.metadata.surface, 'mail');
+  assert.equal(receipt.metadata.mail.source, 'applescript');
+  assert.deepEqual(receipt.metadata.mail.degraded, [{ step: 'index', code: 'mail_index_permission_denied' }]);
+  assert.deepEqual(Object.keys(receipt.metadata.mail.timings).sort(), ['applescriptMs', 'discoverMs']);
+  assert.match(receipt.summary, /via applescript/);
 });
 
 test('mac reminders preserve EventKit list, ownership and ISO due date fields', async () => {
