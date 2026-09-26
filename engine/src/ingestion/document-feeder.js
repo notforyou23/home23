@@ -116,12 +116,15 @@ class DocumentFeeder {
       logger: this.logger,
     });
 
-    // Log converter status
-    if (this.converter.available) {
-      this.logger?.info?.('Document feeder: MarkItDown available — binary formats supported');
-    } else {
-      this.logger?.warn?.('Document feeder: MarkItDown not installed — only text formats will be ingested');
-    }
+    // Log converter status once the async probe answers; start() never
+    // waits on a python subprocess.
+    this.converter.checkAvailability().then((available) => {
+      if (available) {
+        this.logger?.info?.('Document feeder: MarkItDown available — binary formats supported');
+      } else {
+        this.logger?.warn?.('Document feeder: MarkItDown not installed — only text formats will be ingested');
+      }
+    }).catch(() => {});
 
     // Start default watcher on ingestion/documents/
     this._startWatcher(ingestDir, null, 'ingest');
@@ -147,7 +150,6 @@ class DocumentFeeder {
       ingestDir,
       additionalPaths: additionalPaths.length,
       missingPaths: [...this._watchTargets.values()].filter(t => t.state !== 'attached').length,
-      converterAvailable: this.converter.available
     });
 
     // Run initial scan in background so it doesn't block the cognitive loop
@@ -334,6 +336,8 @@ class DocumentFeeder {
     if (!this._started) return;
     this._stopping = true;
     this._clearRetryTimer();
+    // Cancel an in-flight conversion instead of waiting up to 300 s for it.
+    this.converter?.close?.();
 
     if (this.config.maintenanceMode === true) {
       this._started = false;

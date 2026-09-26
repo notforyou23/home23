@@ -1,6 +1,6 @@
 'use strict';
 
-const { execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
@@ -54,32 +54,100 @@ function resolvePythonPath(explicitPath) {
   return 'python3';
 }
 
+const AVAILABLE_TTL_MS = 10 * 60 * 1000;
+const UNAVAILABLE_TTL_MS = 60 * 1000;
+
+/**
+ * Promise wrapper over the callback execFile so stdout/stderr survive on a
+ * failure and tests can inject the spawner.
+ */
+function runChild(execFileImpl, file, args, options) {
+  return new Promise((resolve, reject) => {
+    execFileImpl(file, args, options, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+function isAbort(err, signal) {
+  return Boolean(signal?.aborted) || err?.name === 'AbortError' || err?.code === 'ABORT_ERR';
+}
+
 class DocumentConverter {
-  constructor({ logger = null, visionModel = 'gpt-4o-mini', pythonPath = 'python3' }) {
+  constructor({ logger = null, visionModel = 'gpt-4o-mini', pythonPath = 'python3', execFileImpl = execFile, now = Date.now }) {
     this.logger = logger;
     this.visionModel = visionModel;
     this.pythonPath = resolvePythonPath(pythonPath);
-    this._available = null; // lazy-checked
+    this._execFile = execFileImpl;
+    this._now = now;
+    this._available = null; // unknown until the first async probe
+    this._availabilityCheckedAt = 0;
+    this._availabilityProbe = null;
     this._availabilityWarned = false;
+    // Conversions run in a child process; one at a time, like the old
+    // synchronous path, but without blocking the engine's event loop.
+    this._tail = Promise.resolve();
+    this._abort = new AbortController();
+    this._closed = false;
   }
 
   /**
-   * Check if MarkItDown is installed.
+   * Last known MarkItDown availability (false until a probe has answered).
+   * Never spawns: the old getter ran a synchronous 10 s probe on first read.
    */
   get available() {
-    if (this._available === null) {
+    return this._available === true;
+  }
+
+  /**
+   * Probe MarkItDown asynchronously. Cached for 10 minutes when present and
+   * 60 seconds when absent, so installing it needs no engine restart.
+   */
+  async checkAvailability({ force = false } = {}) {
+    const ttl = this._available ? AVAILABLE_TTL_MS : UNAVAILABLE_TTL_MS;
+    if (!force && this._available !== null && this._now() - this._availabilityCheckedAt < ttl) {
+      return this._available;
+    }
+    if (this._availabilityProbe) return this._availabilityProbe;
+    this._availabilityProbe = (async () => {
       try {
-        execFileSync(this.pythonPath, ['-c', 'from markitdown import MarkItDown'], {
-          timeout: 10000,
-          stdio: 'pipe',
+        await runChild(this._execFile, this.pythonPath, ['-c', 'from markitdown import MarkItDown'], {
+          timeout: 20000,
           env: unprivilegedChildEnv(),
+          signal: this._abort.signal,
         });
         this._available = true;
       } catch {
         this._available = false;
+      } finally {
+        this._availabilityCheckedAt = this._now();
+        this._availabilityProbe = null;
       }
-    }
-    return this._available;
+      return this._available;
+    })();
+    return this._availabilityProbe;
+  }
+
+  /**
+   * Cancel in-flight and queued conversions (feeder shutdown). Cancelled
+   * work reports a retryable status and is never quarantined.
+   */
+  close() {
+    if (this._closed) return;
+    this._closed = true;
+    this._abort.abort();
+  }
+
+  _exclusive(task) {
+    const run = this._tail.then(task, task);
+    this._tail = run.catch(() => {});
+    return run;
   }
 
   /**
@@ -116,6 +184,7 @@ class DocumentConverter {
    */
   async convertDetailed(filePath) {
     const ext = path.extname(filePath).toLowerCase();
+    if (this._closed) return { ok: false, status: 'conversion_aborted', retryable: true, error: 'converter closed' };
 
     // Native text — read directly
     if (this.isNativeText(filePath)) {
@@ -133,47 +202,7 @@ class DocumentConverter {
 
     // Convertible binary — use MarkItDown
     if (this.isConvertible(filePath)) {
-      if (!this.available) {
-        if (!this._availabilityWarned) {
-          this.logger?.warn?.('MarkItDown not installed — binary files will be skipped. Install: pip install markitdown');
-          this._availabilityWarned = true;
-        }
-        return { ok: false, status: 'converter_unavailable', retryable: true };
-      }
-
-      try {
-        const env = unprivilegedChildEnv();
-        if (this.visionModel) {
-          env.MLM_MODEL = this.visionModel;
-        }
-
-        // 300s: scanned-PDF OCR renders and vision-reads up to 20 pages —
-        // a plain text-layer conversion never gets near this.
-        const output = execFileSync(this.pythonPath, [CONVERT_SCRIPT, filePath], {
-          timeout: 300000,
-          maxBuffer: 50 * 1024 * 1024,
-          encoding: 'utf8',
-          env,
-          stdio: ['pipe', 'pipe', 'pipe']
-        });
-
-        if (!output || output.trim().length === 0) {
-          this.logger?.warn?.('MarkItDown returned empty output', { filePath });
-          return { ok: false, status: 'conversion_empty', retryable: false };
-        }
-
-        return { ok: true, text: output, format: 'md' };
-      } catch (err) {
-        // Keep the TAIL of stderr: a python traceback puts the actual
-        // exception on its last line — the first 200 chars are just frames.
-        const raw = String(err.stderr || err.message || '').trim();
-        const error = raw.length > 600 ? `…${raw.slice(-600)}` : raw;
-        this.logger?.error?.('MarkItDown conversion failed', {
-          filePath,
-          error
-        });
-        return { ok: false, status: 'conversion_failed', retryable: false, error };
-      }
+      return this._exclusive(() => this._convertBinary(filePath));
     }
 
     // Unknown extension — try reading as UTF-8
@@ -193,6 +222,57 @@ class DocumentConverter {
     } catch (err) {
       this.logger?.debug?.('Failed to read unknown file type', { filePath, error: err.message });
       return { ok: false, status: 'read_failed', retryable: true, error: err.message };
+    }
+  }
+
+  async _convertBinary(filePath) {
+    const signal = this._abort.signal;
+    if (this._closed) return { ok: false, status: 'conversion_aborted', retryable: true, error: 'converter closed' };
+    if (!(await this.checkAvailability())) {
+      if (!this._availabilityWarned) {
+        this.logger?.warn?.('MarkItDown not installed — binary files will be skipped. Install: pip install markitdown');
+        this._availabilityWarned = true;
+      }
+      return { ok: false, status: 'converter_unavailable', retryable: true };
+    }
+
+    try {
+      const env = unprivilegedChildEnv();
+      if (this.visionModel) {
+        env.MLM_MODEL = this.visionModel;
+      }
+
+      // 300s: scanned-PDF OCR renders and vision-reads up to 20 pages —
+      // a plain text-layer conversion never gets near this. Async: the
+      // synchronous call froze the whole engine (cognition, admin HTTP,
+      // heartbeats) for the length of every conversion.
+      const { stdout: output } = await runChild(this._execFile, this.pythonPath, [CONVERT_SCRIPT, filePath], {
+        timeout: 300000,
+        maxBuffer: 50 * 1024 * 1024,
+        encoding: 'utf8',
+        env,
+        signal,
+      });
+
+      if (!output || output.trim().length === 0) {
+        this.logger?.warn?.('MarkItDown returned empty output', { filePath });
+        return { ok: false, status: 'conversion_empty', retryable: false };
+      }
+
+      return { ok: true, text: output, format: 'md' };
+    } catch (err) {
+      if (isAbort(err, signal)) {
+        return { ok: false, status: 'conversion_aborted', retryable: true, error: 'conversion cancelled by feeder shutdown' };
+      }
+      // Keep the TAIL of stderr: a python traceback puts the actual
+      // exception on its last line — the first 200 chars are just frames.
+      const raw = String(err.stderr || err.message || '').trim();
+      const error = raw.length > 600 ? `…${raw.slice(-600)}` : raw;
+      this.logger?.error?.('MarkItDown conversion failed', {
+        filePath,
+        error
+      });
+      return { ok: false, status: 'conversion_failed', retryable: false, error };
     }
   }
 }
