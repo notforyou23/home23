@@ -395,7 +395,7 @@ export function createSqliteActivityReadService(options: {
       ? undefined
       : options.database.readOne<Pick<WorkFactRow, "id">>(
       `SELECT id FROM works
-       WHERE round_id = ? AND target_principal_id = ?
+       WHERE round_id = ? AND target_principal_id = ? AND kind = 'channel.bot_turn'
        ORDER BY created_at, id LIMIT 1`,
       event.aggregate.id,
       round.coordinatorBotId,
