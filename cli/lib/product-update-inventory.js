@@ -213,6 +213,15 @@ function settingFor(relative, text, token) {
   }
   return keys.join('.') || null;
 }
+/**
+ * The one home.yaml setting allowed to name a path outside the home: an
+ * owner-installed Stockfish (docs/reference/CHESS-ENGINE.md). It is a program
+ * Core runs, not home state, and when it is missing the chess engine is only
+ * reported unavailable. The path must appear in the file only as that setting.
+ */
+function ownerChessEngine(relative, text, token) {
+  return relative === 'app/config/home.yaml' && text.split(token).length === 2 && settingFor(relative, text, token) === 'chess.engine.path';
+}
 function recipeIds(file) {
   const parsed = JSON.parse(readFileSync(file, 'utf8'));
   return Object.values(parsed.profiles || {}).map(profile => profile.recipeId).filter(Boolean);
@@ -425,7 +434,7 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
       : readFileSync(file, 'utf8');
     for (const token of absoluteTokens(text)) {
       if (!allowedExternal(root, token) && !refersToHome(text, root, token)
-        && !adoptedReferences.has(`${relative}\0${token}`)) external.push({ path: relative, field: settingFor(relative, text, token),
+        && !adoptedReferences.has(`${relative}\0${token}`) && !ownerChessEngine(relative, text, token)) external.push({ path: relative, field: settingFor(relative, text, token),
         target: relative.endsWith('secrets.yaml') ? '[redacted]' : token });
     }
   }

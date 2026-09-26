@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { accessSync, constants, statSync } from 'node:fs';
-import { delimiter, isAbsolute, join, resolve } from 'node:path';
-import { Chess } from 'chess.js';
+import { accessSync, constants, lstatSync, statSync, type Stats } from 'node:fs';
+import { resolve } from 'node:path';
+import { Chess, DEFAULT_POSITION } from 'chess.js';
 
 export interface StockfishAnalysisInput {
   fen: string;
@@ -23,24 +23,65 @@ export class StockfishError extends Error {
   }
 }
 
+/** Standard Homebrew locations, Apple silicon first. Without a configured path Core
+ * checks these and nothing else: it never searches PATH for an engine. */
+export const STOCKFISH_HOMEBREW_PATHS: readonly string[] = Object.freeze(['/opt/homebrew/bin/stockfish', '/usr/local/bin/stockfish']);
+const STOCKFISH_INSTALL_GUIDANCE = 'Install Stockfish with Homebrew: brew install stockfish';
+const REINSTALL_GUIDANCE = 'Reinstall Stockfish with Homebrew: brew reinstall stockfish';
+const CONFIGURED_GUIDANCE = 'Correct or remove the configured Stockfish path (chess.engine.path in config/home.yaml, or HOME23_STOCKFISH_PATH), then restart Home23';
+export type StockfishSetupState = 'found' | 'not_installed' | 'not_executable' | 'probe_failed';
+/** Where Stockfish is and whether Core can use it. Every state but found carries detail and guidance. */
+export interface StockfishSetup {
+  state: StockfishSetupState;
+  /** The executable Core runs, or the one it cannot use. */
+  path?: string;
+  /** configured: HOME23_STOCKFISH_PATH, which home.yaml chess.engine.path sets; homebrew: a standard Homebrew location. */
+  source?: 'configured' | 'homebrew';
+  /** What is wrong. */
+  detail?: string;
+  /** What the owner can do about it. */
+  guidance?: string;
+}
+export const STOCKFISH_NOT_INSTALLED: Readonly<StockfishSetup> = Object.freeze({
+  state: 'not_installed', detail: 'Stockfish is not installed on this House.', guidance: STOCKFISH_INSTALL_GUIDANCE,
+});
+/** One sentence for clients that show only a reason: what is wrong, then what to do. */
+export function stockfishUnavailableReason(setup: StockfishSetup): string | undefined {
+  return setup.state === 'found' ? undefined : [setup.detail, setup.guidance].filter(Boolean).join(' ');
+}
+/** Test seams. Production reads the process environment, the file system and child_process. */
+export interface StockfishDiscovery {
+  env?: NodeJS.ProcessEnv;
+  /** Locations checked, in order, when no path is configured. */
+  candidates?: readonly string[];
+  fs?: {
+    lstat(path: string): unknown;
+    stat(path: string): Pick<Stats, 'isFile' | 'dev' | 'ino' | 'size' | 'mtimeMs' | 'ctimeMs'>;
+    access(path: string, mode: number): void;
+  };
+  spawn?: typeof spawn;
+}
+type Located = { setup: StockfishSetup; identity?: string };
+
 // Shared across instances: Core never accumulates an unbounded subprocess queue.
 let busy = false;
 const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
 const DEADLINE_MS = 10_000;
+const PROBE_DEADLINE_MS = 5_000;
+/** How long a failed probe stands before an options request checks the same file again. */
+const PROBE_RETRY_MS = 60_000;
 const EXIT_GRACE_MS = 100;
 const MAX_OUTPUT = 1_048_576;
 const MAX_LINE = 16_384;
+/** Stockfish needs no Home23 settings or credentials, so it inherits none of Core's. */
+const ENGINE_ENV_KEYS = ['PATH', 'HOME', 'TMPDIR', 'LANG'];
 
-function executable(): string | undefined {
-  const override = process.env.HOME23_STOCKFISH_PATH;
-  const candidates = override !== undefined
-    ? (override.trim() ? [resolve(override)] : [])
-    : (process.env.PATH ?? '').split(delimiter).filter(isAbsolute)
-      .map(directory => join(directory, process.platform === 'win32' ? 'stockfish.exe' : 'stockfish'));
-  return candidates.find(candidate => {
-    try { accessSync(candidate, constants.X_OK); return statSync(candidate).isFile(); }
-    catch { return false; }
-  });
+function engineEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(ENGINE_ENV_KEYS.filter(key => env[key] !== undefined).map(key => [key, env[key]]));
+}
+function probeFailed(found: StockfishSetup, detail = `Stockfish at ${found.path} failed a startup check.`): StockfishSetup {
+  return { state: 'probe_failed', path: found.path, source: found.source, detail,
+    guidance: found.source === 'configured' ? CONFIGURED_GUIDANCE : REINSTALL_GUIDANCE };
 }
 
 function bounded(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -68,26 +109,121 @@ function position(input: StockfishAnalysisInput): Chess {
   } catch { throw new StockfishError('invalid_input', 'A legal FEN and up to 1000 legal UCI moves are required'); }
 }
 
+type Search = { chess: Chess; fen: string; skill: number; moveTime: number; multiPV: number; positionCommand: string };
+function prepare(input: StockfishAnalysisInput): Search {
+  const chess = position(input);
+  return { chess, fen: chess.fen(), skill: bounded(input.skillLevel, 20, 0, 20), moveTime: bounded(input.moveTimeMs, 500, 1, 1500),
+    multiPV: bounded(input.multiPV, 1, 1, 3),
+    positionCommand: `position fen ${new Chess(input.fen).fen()}${input.moves?.length ? ` moves ${input.moves.join(' ')}` : ''}` };
+}
+
 export class StockfishEngine {
-  /** Cheap executable lookup only; this does not launch or probe the engine. */
-  available(): boolean { return executable() !== undefined; }
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly candidates: readonly string[];
+  private readonly fs: NonNullable<StockfishDiscovery['fs']>;
+  private readonly start: typeof spawn;
+  /** The last probe of each location, for the exact file it checked. */
+  private readonly probes = new Map<string, { identity: string; ok: boolean; at: number; detail?: string }>();
+  private readonly probing = new Map<string, Promise<void>>();
+
+  constructor(discovery: StockfishDiscovery = {}) {
+    this.env = discovery.env ?? process.env;
+    this.candidates = discovery.candidates ?? STOCKFISH_HOMEBREW_PATHS;
+    this.fs = discovery.fs ?? { lstat: path => lstatSync(path), stat: path => statSync(path), access: (path, mode) => accessSync(path, mode) };
+    this.start = discovery.spawn ?? spawn;
+  }
+
+  /** Cheap lookup only; this never launches the engine. A recent failed probe of the same file counts as unavailable. */
+  available(): boolean { return this.status().state === 'found'; }
+
+  /** The setup as the file system and the last probe show it, without launching a process. */
+  status(): StockfishSetup {
+    const located = this.locate();
+    if (located.setup.state !== 'found') return located.setup;
+    const probe = this.probes.get(located.setup.path!);
+    if (probe && probe.identity === located.identity && !probe.ok && Date.now() - probe.at < PROBE_RETRY_MS) return probeFailed(located.setup, probe.detail);
+    return located.setup;
+  }
+
+  /** status(), after a short UCI search has checked a newly found executable. A replaced or
+   * changed file is checked again, and a failed one after PROBE_RETRY_MS. Never throws. */
+  async setup(): Promise<StockfishSetup> {
+    const located = this.locate();
+    const path = located.setup.path, identity = located.identity;
+    if (located.setup.state === 'found' && path && identity) {
+      const known = this.probes.get(path);
+      if (known?.identity !== identity || (!known.ok && Date.now() - known.at >= PROBE_RETRY_MS)) {
+        const key = `${path}\0${identity}`;
+        let pending = this.probing.get(key);
+        if (!pending) {
+          pending = this.probe(path, identity).finally(() => this.probing.delete(key));
+          this.probing.set(key, pending);
+        }
+        await pending;
+      }
+    }
+    return this.status();
+  }
 
   async analyze(input: StockfishAnalysisInput, signal?: AbortSignal): Promise<StockfishAnalysis> {
-    const chess = position(input);
-    const fen = chess.fen();
-    const skill = bounded(input.skillLevel, 20, 0, 20);
-    const moveTime = bounded(input.moveTimeMs, 500, 1, 1500);
-    const multiPV = bounded(input.multiPV, 1, 1, 3);
-    const positionCommand = `position fen ${new Chess(input.fen).fen()}${input.moves?.length ? ` moves ${input.moves.join(' ')}` : ''}`;
+    const search = prepare(input);
     if (signal?.aborted) throw new StockfishError('engine_cancelled', 'Engine analysis cancelled');
     if (busy) throw new StockfishError('engine_busy', 'The chess engine is busy');
-    const path = executable();
-    if (!path) throw new StockfishError('engine_unavailable', 'Stockfish is not installed or executable');
+    const { state, path } = this.locate().setup;
+    if (state !== 'found' || !path) throw new StockfishError('engine_unavailable', 'Stockfish is not installed or executable');
+    return this.session(path, search, DEADLINE_MS, signal);
+  }
+
+  /** A configured path is authoritative; otherwise the first usable Homebrew location. */
+  private locate(): Located {
+    const configured = this.env.HOME23_STOCKFISH_PATH;
+    if (configured !== undefined && configured.trim()) return this.inspect(resolve(configured), 'configured');
+    let unusable: Located | undefined;
+    for (const candidate of this.candidates) {
+      const located = this.inspect(candidate, 'homebrew');
+      if (located.setup.state === 'found') return located;
+      if (located.setup.state === 'not_executable' && !unusable) unusable = located;
+    }
+    return unusable ?? { setup: STOCKFISH_NOT_INSTALLED };
+  }
+
+  /** Found only as a regular executable file, links followed. Its identity changes when the file is replaced or altered. */
+  private inspect(path: string, source: 'configured' | 'homebrew'): Located {
+    try { this.fs.lstat(path); }
+    catch {
+      return { setup: { state: 'not_installed', path, source, detail: `There is no Stockfish at ${path}.`,
+        guidance: source === 'configured' ? CONFIGURED_GUIDANCE : STOCKFISH_INSTALL_GUIDANCE } };
+    }
+    try {
+      const file = this.fs.stat(path);
+      if (file.isFile()) {
+        this.fs.access(path, constants.X_OK);
+        return { setup: { state: 'found', path, source }, identity: [file.dev, file.ino, file.size, file.mtimeMs, file.ctimeMs].join(':') };
+      }
+    } catch { /* A broken link, or a file that cannot be read or executed. */ }
+    return { setup: { state: 'not_executable', path, source, detail: `${path} is not an executable file.`,
+      guidance: source === 'configured' ? CONFIGURED_GUIDANCE : REINSTALL_GUIDANCE } };
+  }
+
+  /** One short search, never during a chess turn: an engine run already holding the slot defers it. */
+  private async probe(path: string, identity: string): Promise<void> {
+    if (busy) return;
+    try {
+      await this.session(path, prepare({ fen: DEFAULT_POSITION, moveTimeMs: 10 }), PROBE_DEADLINE_MS);
+      this.probes.set(path, { identity, ok: true, at: Date.now() });
+    } catch (error) {
+      const reason = error instanceof StockfishError ? error.message : 'the check could not run';
+      this.probes.set(path, { identity, ok: false, at: Date.now(), detail: `Stockfish at ${path} failed a startup check: ${reason}.` });
+    }
+  }
+
+  private session(path: string, search: Search, deadlineMs: number, signal?: AbortSignal): Promise<StockfishAnalysis> {
+    const { chess, fen, skill, moveTime, multiPV, positionCommand } = search;
     busy = true;
 
     return new Promise<StockfishAnalysis>((resolveResult, reject) => {
       let child: ReturnType<typeof spawn>;
-      try { child = spawn(path, [], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }); }
+      try { child = this.start(path, [], { shell: false, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: engineEnvironment(this.env) }); }
       catch { busy = false; reject(new StockfishError('engine_unavailable', 'Stockfish could not start')); return; }
       let phase: 'uci' | 'ready' | 'search' = 'uci';
       let buffer = '';
@@ -115,7 +251,7 @@ export class StockfishEngine {
       const deadline = setTimeout(() => {
         finish(new StockfishError('engine_timeout', 'Stockfish exceeded its hard deadline'));
         child.kill('SIGKILL');
-      }, DEADLINE_MS);
+      }, deadlineMs);
 
       const parse = (line: string) => {
         if (ended) return;

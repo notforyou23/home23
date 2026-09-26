@@ -1,10 +1,46 @@
 # House chess engine
 
 House runs an optional local Stockfish executable through asynchronous UCI pipes.
-Install it explicitly before enabling engine opponents or analysis. Home23 does
-not download software or change a running House's environment automatically.
+Home23 does not bundle, download or install Stockfish; the owner installs it.
+Engine opponents and analysis become available once Core finds a working engine,
+and until then the Chess options say what is missing and how to set it up.
 
 ## Installation
+
+On a Mac, install Stockfish with Homebrew:
+
+```sh
+brew install stockfish
+```
+
+Without a configured path, Core checks the standard Homebrew locations in this
+order: `/opt/homebrew/bin/stockfish` (Apple silicon), then
+`/usr/local/bin/stockfish` (Intel). It looks again on every request, so a
+Homebrew install needs no configuration or restart. Core never searches PATH:
+the product Host gives Core a fixed PATH without Homebrew, and a PATH search
+could run an unrelated program.
+
+For a Stockfish installed anywhere else, such as the official release below,
+set its absolute path in the home's `config/home.yaml`, then restart Home23:
+
+```yaml
+chess:
+  engine:
+    path: /absolute/path/to/stockfish
+```
+
+Start passes that setting to Core as `HOME23_STOCKFISH_PATH`; a source
+installation may export that variable instead. A configured path is
+authoritative: when it is missing or unusable, Core reports that and does not
+fall back to Homebrew. It is the one `home.yaml` setting that may name a path
+outside the home. A software update accepts it because it names a program Core
+runs, not home state; if it is missing after a move, the engine is only reported
+unavailable. The update check allows only that exact setting, and refuses the
+same path anywhere else in the file.
+
+A candidate counts only as a regular executable file. Links are followed, so
+Homebrew's linked entries work, but a link to a missing file, a folder or a file
+without execute permission is reported as not executable.
 
 Use the [official Stockfish 17.1 release](https://github.com/official-stockfish/Stockfish/releases/tag/sf_17.1)
 (tag `sf_17.1`, source commit `03e27488f3d21d8ff4dbf3065603afa21dbd0ef3`).
@@ -13,13 +49,15 @@ archive into an operator-owned tools directory outside the source checkout and
 runtime state. Keep its source, notices and license alongside the executable.
 No package manager or privileged installation is required.
 
-For example, on an Apple silicon Mac, with an existing private tools directory:
+For example, on an Apple silicon Mac with an existing private tools directory,
+download and extract it, then set `chess.engine.path` to the path the last
+command prints:
 
 ```sh
 curl --fail --location --output "$TOOLS_DIR/stockfish-17.1.tar" \
   https://github.com/official-stockfish/Stockfish/releases/download/sf_17.1/stockfish-macos-m1-apple-silicon.tar
 tar -xf "$TOOLS_DIR/stockfish-17.1.tar" -C "$TOOLS_DIR"
-export HOME23_STOCKFISH_PATH="$TOOLS_DIR/stockfish/stockfish-macos-m1-apple-silicon"
+echo "$TOOLS_DIR/stockfish/stockfish-macos-m1-apple-silicon"
 ```
 
 SHA-256 of that official archive:
@@ -37,20 +75,42 @@ curl --fail --location --output "$TOOLS_DIR/stockfish-17.1-source.tar.gz" \
 
 The build's `src/Makefile` and `scripts/net.sh` retrieve the matching neural
 networks when needed. Keep those build inputs when retaining a reproducible
-source build. A separately authorized runtime configuration change is needed
-for a managed House to inherit the executable setting.
+source build.
 
-`HOME23_STOCKFISH_PATH` is an operator setting, never a request field. When set,
-it is authoritative: a missing or non-executable override reports unavailable.
-Otherwise Home23 looks for `stockfish` (`stockfish.exe` on Windows) in absolute
-PATH directories. `available()` only checks file/executable access; it does not
-start a process or promise that a binary is compatible with the current CPU.
+The engine path is an owner setting, never a request field. Stockfish runs with
+only `PATH`, `HOME`, `TMPDIR` and `LANG` from Core's environment, never Core's
+settings or credentials.
+
+## Setup check
+
+`GET /api/v1/chess/options` reports `engine.setup`:
+
+- `state`: `found`, `not_installed`, `not_executable` or `probe_failed`.
+- `path` and `source` (`configured` or `homebrew`): the executable Core runs, or
+  the one it cannot use.
+- `detail` and `guidance`, in every state but `found`: what is wrong and what
+  the owner can do, for example
+  `Install Stockfish with Homebrew: brew install stockfish`.
+
+`engine.available` and `analysis` are true only when the state is `found`.
+`engine.reason` joins `detail` and `guidance` for clients that show one
+sentence. Older Cores omit `setup`.
+
+When the options route first finds an executable, it runs one short search from
+the start position to check that it answers UCI. That result is kept for the
+exact file. A replaced or changed file is checked again. A failed check stands
+for a minute, then the next options request repeats it. While a check stands
+failed, engine seats and analysis are unavailable. The check uses the engine's
+single slot, is skipped while a search holds it, and never runs inside a chess
+turn. A failed engine turn names the setup problem and its guidance.
 
 ## Adapter contract
 
 ```ts
 const engine = new StockfishEngine();
 engine.available(); // boolean; no process launch
+engine.status(); // StockfishSetup from the files and the last check; no process launch
+await engine.setup(); // StockfishSetup after checking a newly found executable; never throws
 await engine.analyze({ fen, moves, skillLevel, moveTimeMs, multiPV }, signal);
 // { fen, bestMove: string | null, lines: [{ moves, scoreCp?, mate?, depth }] }
 ```
@@ -108,7 +168,7 @@ under GPLv3. This integration adds no Stockfish binaries to the Home23 repositor
 ## Games and study
 
 The authenticated Chess options route (`GET /api/v1/chess/options`) reports
-availability. Chess seats accept the owner, active channel bots, and
+availability and setup (see Setup check). Chess seats accept the owner, active channel bots, and
 `engine_stockfish_0` through `engine_stockfish_20`. Only the owner can create
 a game they are watching without playing. Engine seats are local to chess and
 do not create bot accounts or grant House permissions.

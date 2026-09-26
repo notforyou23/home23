@@ -4,7 +4,12 @@
     "name": "Stockfish",
     "available": true,
     "skillMin": 0,
-    "skillMax": 20
+    "skillMax": 20,
+    "setup": {
+      "state": "found",
+      "path": "/opt/homebrew/bin/stockfish",
+      "source": "homebrew"
+    }
   },
   "botVsBot": true,
   "analysis": true

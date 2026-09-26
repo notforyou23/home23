@@ -43,7 +43,7 @@ export function mountChessRoutes(router: Express, application: CoordinationAppli
   const actor = (response: Response) => ({ principalId: requireCoordinationContext(response).principalId });
   const listArgs = (request: Request) => ({ channelId: optionalString(request.query.channelId), limit: queryLimit(request.query.limit), cursor: optionalString(request.query.cursor) });
   router.get('/api/v1/chess/stats', read, route(async (_request, response) => { response.json(service().statistics(actor(response))); }));
-  router.get('/api/v1/chess/options', read, route(async (_request, response) => { response.json(service().engineOptions()); }));
+  router.get('/api/v1/chess/options', read, route(async (_request, response) => { response.json(await service().engineOptions()); }));
   router.post('/api/v1/chess/analysis', read, json, route(async (request, response) => {
     const body=object(request.body);
     if(body.moves !== undefined && (!Array.isArray(body.moves) || body.moves.length > 1000 || body.moves.some(move=>typeof move!=='string'))) throw invalid();

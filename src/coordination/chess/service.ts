@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Chess, DEFAULT_POSITION, type Square } from 'chess.js';
-import { StockfishError, type StockfishEngine } from './stockfish.js';
+import { STOCKFISH_NOT_INSTALLED, StockfishError, stockfishUnavailableReason, type StockfishEngine, type StockfishSetup } from './stockfish.js';
 import type { M11Database } from '../work/types.js';
 import { generateCoordinationId, uuidV7 } from '../ids/index.js';
 import type { CoordinationTransaction } from '../db/index.js';
@@ -39,13 +39,23 @@ const hashRequest = (operation:string, data:unknown) => digest(JSON.stringify([o
 
 export class NativeChessService {
   private readonly dueTurnCursors: Record<'queued' | 'dispatched', {createdAt:string;id:string}|undefined> = {queued:undefined,dispatched:undefined};
-  constructor(private readonly options: { database: M11Database; engine?: Pick<StockfishEngine, 'available' | 'analyze'>;
+  constructor(private readonly options: { database: M11Database;
+    engine?: Pick<StockfishEngine, 'available' | 'analyze'> & Partial<Pick<StockfishEngine, 'status' | 'setup'>>;
     /** Whether this House runs the resident's turns; absent means every active resident is assumed running. */
     residentAvailable?: (residentBinding: string) => boolean }) {}
-  engineOptions() {
-    const available = this.options.engine?.available() ?? false;
+  /** A newly found Stockfish is probed once; otherwise setup says why it cannot play and how to set it up. */
+  async engineOptions() {
+    const setup = this.options.engine?.setup ? await this.options.engine.setup() : this.engineStatus();
+    const available = setup.state === 'found';
     return { engine: { id: 'stockfish', name: 'Stockfish', available, skillMin: 0, skillMax: 20,
-      ...(!available ? { reason: 'Stockfish is not installed on this House.' } : {}) }, botVsBot: true, analysis: available };
+      ...(!available ? { reason: stockfishUnavailableReason(setup) } : {}), setup }, botVsBot: true, analysis: available };
+  }
+  /** Why engine seats cannot play right now, with setup guidance; undefined while Stockfish is usable. */
+  engineUnavailableReason(): string | undefined { return stockfishUnavailableReason(this.engineStatus()); }
+  private engineStatus(): StockfishSetup {
+    const engine = this.options.engine;
+    if (engine?.status) return engine.status();
+    return engine?.available() ? { state: 'found' } : STOCKFISH_NOT_INSTALLED;
   }
   async analyze(input: {fen: string; moves?: string[]}, actor: ChessActor, signal?: AbortSignal) {
     if (actor.principalId !== 'user_owner') throw new ChessError('forbidden', 'Only the owner can request analysis');
@@ -325,7 +335,9 @@ export class NativeChessService {
         if(row.status==='dispatched'&&input.status==='dispatched'&&JSON.stringify(input.workIds??[])!==row.work_ids_json)throw new ChessError('conflict','turn already dispatched');
         const revision=row.status==='queued'?1:2;
         t.run('UPDATE chess_turn_intents SET status=?,work_ids_json=?,error=?,updated_at=? WHERE id=?',input.status,JSON.stringify(input.workIds??JSON.parse(row.work_ids_json??'[]')),input.error??null,at,intentId);
-        return {value:undefined,event:this.event('chess_turn_delivery',intentId,revision,game.channel_id,row.target_bot_id,at,{gameId:game.id,version:game.version,deliveryStatus:input.status})};
+        // An engine seat is not a principal: the House records its turns for the owner, as it does its moves.
+        const actor=engineSkill(row.target_bot_id)!==undefined?'user_owner':row.target_bot_id;
+        return {value:undefined,event:this.event('chess_turn_delivery',intentId,revision,game.channel_id,actor,at,{gameId:game.id,version:game.version,deliveryStatus:input.status})};
       });
     } catch(error) { if(!(error instanceof SupersededTurn))throw error; }
   }

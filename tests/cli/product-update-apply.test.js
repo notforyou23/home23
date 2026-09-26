@@ -271,6 +271,31 @@ test('an external instance root is refused at its config field whatever agents.j
   }
 });
 
+test('an owner-set Stockfish is the one home.yaml setting that may name a program outside the home', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  fs.mkdirSync(path.join(home, 'app/config'), { recursive: true });
+  const brew = '/opt/homebrew/bin/stockfish', spaced = path.join(root, 'Owner Tools', 'stockfish-macos-m1-apple-silicon');
+  const judged = async (text, file = 'app/config/home.yaml') => {
+    fs.rmSync(path.join(home, 'app/config'), { recursive: true, force: true });
+    fs.mkdirSync(path.join(home, 'app/config'), { recursive: true });
+    fs.writeFileSync(path.join(home, file), text, { mode: 0o600 });
+    return externals(await inspectUpdateInventory(home)).map(item => [item.path, item.field, item.target]);
+  };
+  assert.deepEqual(await judged(`chess:\n  engine:\n    path: ${brew}\n`), []);
+  assert.deepEqual(await judged(`chess:\n  engine:\n    path: "${spaced}"\n`), []);
+  // yaml.dump folds a long path at its spaces.
+  assert.deepEqual(await judged(`chess:\n  engine:\n    path: >-\n      ${spaced.split(' ').join('\n      ')}\n`), []);
+  // Only that exact setting, only in home.yaml, and only while nothing else names the same path.
+  assert.deepEqual(await judged(`chess:\n  engine:\n    path: ${brew}\n    book: /Volumes/Openings/book.bin\n`),
+    [['app/config/home.yaml', 'chess.engine.book', '/Volumes/Openings/book.bin']]);
+  assert.deepEqual(await judged(`chess:\n  path: ${brew}\n`), [['app/config/home.yaml', 'chess.path', brew]]);
+  assert.deepEqual(await judged(`other:\n  chess:\n    engine:\n      path: ${brew}\n`), [['app/config/home.yaml', 'other.chess.engine.path', brew]]);
+  assert.deepEqual(await judged(`chess:\n  engine:\n    path: ${brew}\nshell:\n  roots:\n    - ${brew}\n`),
+    [['app/config/home.yaml', 'chess.engine.path', brew], ['app/config/home.yaml', 'chess.engine.path', brew]]);
+  assert.deepEqual(await judged(`chess:\n  engine:\n    path: ${brew}\n`, 'app/config/targets.yaml'), [['app/config/targets.yaml', 'chess.engine.path', brew]]);
+});
+
 test('a stale external agents.json is derived output and never refuses', async t => {
   const fixture = homeFixture(t);
   instanceConfig(fixture.home, '  engineConfig: engine.yaml\n');

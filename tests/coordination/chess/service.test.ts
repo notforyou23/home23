@@ -7,6 +7,8 @@ import { openCoordinationDatabase } from '../../../src/coordination/db/index.js'
 import { nativeChessTool } from '../../../src/agent/tools/channels.js';
 import { executeChessOperation } from '../../../src/coordination/chess/operations.js';
 import { NativeChessService, ChessError, CHESS_CONTEXT_INCOMPATIBLE } from '../../../src/coordination/chess/service.js';
+import type { StockfishSetup } from '../../../src/coordination/chess/stockfish.js';
+import { validateCanonicalFixture } from '../../../src/coordination/contracts/contract-pack.js';
 import { createChannelOperationConsumer } from '../../../src/coordination/app/channel-operations.js';
 import { ResidentProtocolError, createResidentCredential } from '../../../src/coordination/resident-protocol/index.js';
 import { ResidentUdsClient, ResidentUdsServer } from '../../../src/coordination/transport/uds/index.js';
@@ -225,10 +227,38 @@ test('owner creates bot-vs-bot; bots cannot start spectator games; next turn alt
 
 test('analysis is owner-only and an absent engine reports availability without mutating games',async t=>{
   const f=fixture(t);t.after(()=>f.database.close());
-  assert.equal(f.service.engineOptions().engine.available,false);
+  assert.deepEqual(await f.service.engineOptions(),{engine:{id:'stockfish',name:'Stockfish',available:false,skillMin:0,skillMax:20,
+    reason:'Stockfish is not installed on this House. Install Stockfish with Homebrew: brew install stockfish',
+    setup:{state:'not_installed',detail:'Stockfish is not installed on this House.',guidance:'Install Stockfish with Homebrew: brew install stockfish'}},
+    botVsBot:true,analysis:false});
   await assert.rejects(f.service.analyze({fen:'ignored'},bot),(error:unknown)=>(error as {code:string}).code==='forbidden');
   await assert.rejects(f.service.analyze({fen:'ignored'},owner),(error:unknown)=>(error as {code:string}).code==='engine_unavailable');
   assert.equal(f.service.list({channelId:CHANNEL},owner).items.length,0);
+});
+
+test('engine options say where Stockfish is, why it cannot play and how to set it up, in the published contract',async t=>{
+  const f=fixture(t);t.after(()=>f.database.close());
+  let setup:StockfishSetup={state:'probe_failed',path:'/opt/homebrew/bin/stockfish',source:'homebrew',
+    detail:'Stockfish at /opt/homebrew/bin/stockfish failed a startup check: Stockfish could not start.',guidance:'Reinstall Stockfish with Homebrew: brew reinstall stockfish'};
+  let probes=0;
+  const engine={available:()=>setup.state==='found',status:()=>setup,setup:async()=>{probes++;return setup;},analyze:async()=>{throw Error('unused');}};
+  const service=new NativeChessService({database:f.database,engine});
+  const failed=await service.engineOptions();
+  assert.deepEqual(failed,{engine:{id:'stockfish',name:'Stockfish',available:false,skillMin:0,skillMax:20,
+    reason:'Stockfish at /opt/homebrew/bin/stockfish failed a startup check: Stockfish could not start. Reinstall Stockfish with Homebrew: brew reinstall stockfish',
+    setup},botVsBot:true,analysis:false});
+  assert.equal(service.engineUnavailableReason(),failed.engine.reason);
+  assert.throws(()=>service.create({channelId:CHANNEL,players:{white:'engine_stockfish_2',black:'user_owner'}},owner,'unusable-engine'),
+    (error:unknown)=>(error as {code:string}).code==='engine_unavailable');
+  setup={state:'found',path:'/opt/homebrew/bin/stockfish',source:'homebrew'};
+  const found=await service.engineOptions();
+  assert.deepEqual(found,{engine:{id:'stockfish',name:'Stockfish',available:true,skillMin:0,skillMax:20,setup},botVsBot:true,analysis:true});
+  assert.equal(service.engineUnavailableReason(),undefined);
+  assert.equal(probes,2);
+  for(const options of [failed,found])assert.deepEqual(validateCanonicalFixture('chess-options',options),{valid:true,errors:[]});
+  // An adapter without a probe still reports plain availability.
+  const plain=new NativeChessService({database:f.database,engine:{available:()=>true,analyze:async()=>{throw Error('unused');}}});
+  assert.deepEqual((await plain.engineOptions()).engine.setup,{state:'found'});
 });
 
 

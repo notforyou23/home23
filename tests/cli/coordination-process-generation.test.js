@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import yaml from 'js-yaml';
 
 import { generateEcosystem } from '../../cli/lib/generate-ecosystem.js';
+import { definitionMatchesProcess } from '../../cli/lib/product-host.js';
 
 const require = createRequire(import.meta.url);
 const TEST_NODE_MODULES = dirname(dirname(require.resolve('js-yaml/package.json')));
@@ -134,4 +135,45 @@ test('explicit M14 generation gives the coordinator and Jerry harness one exact 
     coordinator.env.HOME23_COORDINATION_RESIDENT_JERRY_KEY_VERSION);
   assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_KEY,
     coordinator.env.HOME23_COORDINATION_RESIDENT_JERRY_KEY);
+});
+
+test('an owner-set Stockfish reaches Core alone, and removing it changes Core\'s definition', (t) => {
+  const previous = process.env.HOME23_STOCKFISH_PATH;
+  delete process.env.HOME23_STOCKFISH_PATH;
+  t.after(() => { if (previous === undefined) delete process.env.HOME23_STOCKFISH_PATH; else process.env.HOME23_STOCKFISH_PATH = previous; });
+  const apps = (home) => {
+    const root = generate(home);
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    return require(join(root, 'ecosystem.config.cjs')).apps;
+  };
+  const core = (home) => apps(home).find((app) => app.name === 'home23-coordination');
+  const configured = apps({ chess: { engine: { path: ' /Users/owner/Tools/stockfish ' } } });
+  const configuredCore = configured.find((app) => app.name === 'home23-coordination');
+  assert.equal(configuredCore.env.HOME23_STOCKFISH_PATH, '/Users/owner/Tools/stockfish');
+  for (const app of configured.filter((candidate) => candidate.name !== 'home23-coordination')) {
+    assert.equal('HOME23_STOCKFISH_PATH' in (app.env || {}), false, app.name);
+  }
+  // Blank lets Core find Homebrew's stockfish itself.
+  for (const home of [{}, { chess: { engine: { path: '  ' } } }, { chess: { engine: { path: ['/Users/owner/Tools/stockfish'] } } }]) {
+    assert.equal(core(home).env.HOME23_STOCKFISH_PATH, '', JSON.stringify(home));
+  }
+  // The Host compares every generated key with the saved process, so removing the setting re-registers Core.
+  const root = generate({ chess: { engine: { path: '/Users/owner/Tools/stockfish' } } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ecosystem = join(root, 'ecosystem.config.cjs');
+  const load = () => {
+    delete require.cache[require.resolve(ecosystem)];
+    return require(ecosystem).apps.find((app) => app.name === 'home23-coordination');
+  };
+  const before = load();
+  const running = { pm2_env: { ...before.env, pm_exec_path: resolve(before.cwd, before.script), pm_cwd: before.cwd, args: [] } };
+  assert.equal(definitionMatchesProcess(before, running), true);
+  writeFileSync(join(root, 'config', 'home.yaml'), yaml.dump({ home: { primaryAgent: 'jerry' } }));
+  const after = load();
+  assert.equal(after.env.HOME23_STOCKFISH_PATH, '');
+  assert.equal(definitionMatchesProcess(after, running), false);
+  // A source installation's own export still reaches Core when home.yaml sets nothing.
+  process.env.HOME23_STOCKFISH_PATH = '/opt/local/bin/stockfish';
+  assert.equal(core({}).env.HOME23_STOCKFISH_PATH, '/opt/local/bin/stockfish');
+  assert.equal(core({ chess: { engine: { path: '/Users/owner/Tools/stockfish' } } }).env.HOME23_STOCKFISH_PATH, '/Users/owner/Tools/stockfish');
 });

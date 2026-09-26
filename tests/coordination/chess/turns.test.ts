@@ -4,6 +4,7 @@ import { M11TestDatabase, CHANNEL_ID, BOT_ID } from '../work/test-fixture.js';
 import { CHESS_ENGINES_MIGRATION_SQL } from '../../../src/coordination/migrations/0020-chess-engines.js';
 import { NATIVE_CHESS_MIGRATION_SQL } from '../../../src/coordination/migrations/0017-native-chess.js';
 import { NativeChessService } from '../../../src/coordination/chess/service.js';
+import { STOCKFISH_NOT_INSTALLED, StockfishError, type StockfishSetup } from '../../../src/coordination/chess/stockfish.js';
 import { createChessTurnDispatcher } from '../../../src/coordination/chess/turns.js';
 import { executeChessOperation } from '../../../src/coordination/chess/operations.js';
 
@@ -54,4 +55,25 @@ test('engine migration preserves populated games, positions, turns and idempoten
   assert.throws(()=>db.raw.prepare("UPDATE chess_games SET white_principal_id='engine_stockfish_99'").run(),/supported engine/);
   db.raw.prepare("UPDATE chess_games SET white_principal_id='engine_stockfish_20'").run();
   assert.equal(db.raw.prepare('SELECT automatic_remaining FROM chess_games').pluck().get(),80);
+});
+
+test('a failed engine turn is recorded for the owner and says why Stockfish cannot play and how to set it up', async t => {
+  const db = M11TestDatabase.temporary(); t.after(() => db.close()); db.raw.exec(NATIVE_CHESS_MIGRATION_SQL); db.raw.exec(CHESS_ENGINES_MIGRATION_SQL);
+  let setup: StockfishSetup = { state: 'found', path: '/opt/homebrew/bin/stockfish', source: 'homebrew' };
+  const engine = { available: () => setup.state === 'found', status: () => setup,
+    analyze: async () => { throw new StockfishError('engine_protocol', 'Stockfish exited before returning a best move'); } };
+  const chess = new NativeChessService({ database: db, engine }), owner = { principalId: 'user_owner' };
+  const game = chess.create({ channelId: CHANNEL_ID, players: { white: 'engine_stockfish_5', black: 'user_owner' } }, owner, 'engine-game');
+  const dispatch = createChessTurnDispatcher({ chess, accepting: () => true, run: async () => { throw new Error('engine turns are not Work'); } });
+  await dispatch();
+  assert.equal(chess.get(game.id, owner).turnDelivery?.error, 'Engine turn failed. Check Stockfish on this House, then retry.');
+  setup = STOCKFISH_NOT_INSTALLED;
+  chess.control(game.id, { expectedVersion: game.version, action: 'retry_turn' }, owner, 'retry-engine');
+  await dispatch();
+  const failed = chess.get(game.id, owner);
+  assert.equal(failed.turnDelivery?.error,
+    'Engine turn failed. Stockfish is not installed on this House. Install Stockfish with Homebrew: brew install stockfish. Then retry.');
+  assert.equal(failed.ply, 0);
+  // An engine seat is not a principal, so its delivery events name the owner.
+  assert.deepEqual(db.raw.prepare("SELECT DISTINCT actor_principal_id FROM events WHERE aggregate_kind = 'chess_turn_delivery'").pluck().all(), ['user_owner']);
 });

@@ -56,7 +56,7 @@ export { CONNECTED_AGENTS_CONTRACT_VERSION };
 // Filled only after the canonical byte pack is complete. The test compares this
 // reviewed literal with a fresh digest, so any later byte drift is visible.
 export const CONNECTED_AGENTS_CONTRACT_PACK_SHA256 =
-  "35f97fa3f5db73064b3869be4081f7faa6de58994a91d8490567f28ae82ac9a8";
+  "ddfd5b4ea89c83ae1ce6731dd45e483d1a1f9c452eff6dd5415fa06bb96ce231";
 
 export function canonicalContractFiles(): string[] {
   return [...manifest.canonicalFiles].sort();

@@ -101,10 +101,15 @@ test('only the Work admitted for the current Chess intent resolves a turn fence'
 test('engine options and analysis use authenticated reads, bounded inputs and engine errors', async t => {
   const {StockfishError}=await import('../../../src/coordination/chess/stockfish.js');
   let calls=0;
+  // The options route waits for the setup check and returns its reason and guidance.
+  const setupOptions={engine:{id:'stockfish',name:'Stockfish',available:false,skillMin:0,skillMax:20,
+    reason:'Stockfish is not installed on this House. Install Stockfish with Homebrew: brew install stockfish',
+    setup:{state:'not_installed',detail:'Stockfish is not installed on this House.',guidance:'Install Stockfish with Homebrew: brew install stockfish'}},
+    botVsBot:true,analysis:false};
   const application=createCoordinationApplication({
     flags:{...disabledCoordinationFeatureFlags(),'coordination.process.enabled':true,'coordination.public_api.enabled':true},
     services:{auth:{validateAccessToken:async()=>({principalId:'user_owner',deviceId:'dev_1',sessionId:'ses_1',scopes:['product:read']})},
-      chess:{engineOptions:()=>({engine:{id:'stockfish',name:'Stockfish',available:true,skillMin:0,skillMax:20},botVsBot:true,analysis:true}),
+      chess:{engineOptions:async()=>setupOptions,
         analyze:async(input:{fen:string},actor:{principalId:string})=>{
           calls++;assert.equal(actor.principalId,'user_owner');
           if(input.fen==='busy')throw new StockfishError('engine_busy','Busy');
@@ -115,7 +120,7 @@ test('engine options and analysis use authenticated reads, bounded inputs and en
   const server=createCoordinationHttpServer({application,port:0});t.after(()=>server.drain());const {origin}=await server.start();
   const headers={authorization:'Bearer token','content-type':'application/json'};
   assert.equal((await fetch(`${origin}/api/v1/chess/options`)).status,401);
-  const options=await fetch(`${origin}/api/v1/chess/options`,{headers});assert.equal(options.status,200);assert.equal((await options.json() as {analysis:boolean}).analysis,true);
+  const options=await fetch(`${origin}/api/v1/chess/options`,{headers});assert.equal(options.status,200);assert.deepEqual(await options.json(),setupOptions);
   const post=(body:unknown)=>fetch(`${origin}/api/v1/chess/analysis`,{method:'POST',headers,body:JSON.stringify(body)});
   assert.equal((await post({fen:'start'})).status,200);
   assert.equal((await post({fen:'start',moves:Array(1001).fill('e2e4')})).status,400);assert.equal(calls,1);

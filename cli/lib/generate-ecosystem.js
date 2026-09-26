@@ -303,6 +303,10 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`        HOME23_COORDINATION_ATTACHMENTS_ROOT: path.join(coordinationRuntimeDir, 'attachments'),`);
   lines.push(`        HOME23_COORDINATION_SOCKET_ROOT: coordinationSocketDir,`);
   lines.push(`        HOME23_COORDINATION_CAPABILITY_TOKEN: String(secrets.coordination?.capabilityToken || ''),`);
+  // An owner-set Stockfish is authoritative; blank lets Core check the Homebrew
+  // locations itself (docs/reference/CHESS-ENGINE.md). Always present, so removing
+  // the setting changes Core's definition and Start replaces its saved environment.
+  lines.push(`        HOME23_STOCKFISH_PATH: typeof homeConfig.chess?.engine?.path === 'string' && homeConfig.chess.engine.path.trim() ? homeConfig.chess.engine.path.trim() : String(process.env.HOME23_STOCKFISH_PATH || ''),`);
   for (const slug of new Set(['jerry', 'forrest', ...(homeConfig.coordination?.residentSlugs || [])])) {
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug)) throw new Error('Invalid coordination resident slug');
     const resident = slug.toUpperCase().replaceAll('-', '_');

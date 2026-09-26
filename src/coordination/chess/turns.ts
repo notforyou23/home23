@@ -31,9 +31,15 @@ export function createChessTurnDispatcher(options: {
         } catch (error) {
           if (!options.accepting()) break;
           if (['server_busy', 'turn_in_progress', 'deadline_exceeded', 'connection_lost', 'request_rate_limited', 'engine_busy'].includes(String((error as { code?: string }).code))) continue;
-          options.chess.settleTurn(turn.id, { status: 'failed', error: engineSkill(turn.targetBotId) !== undefined ? 'Engine turn failed. Check Stockfish on this House, then retry.' : 'Bot turn could not be admitted. Check that the player is an active channel member, then retry.' });
+          options.chess.settleTurn(turn.id, { status: 'failed', error: engineSkill(turn.targetBotId) !== undefined ? engineTurnFailure(options.chess) : 'Bot turn could not be admitted. Check that the player is an active channel member, then retry.' });
         }
       }
     } finally { running = false; }
   };
+}
+
+/** When Stockfish is missing or unusable, the failed turn says so and how to set it up. */
+function engineTurnFailure(chess: NativeChessService): string {
+  const reason = chess.engineUnavailableReason();
+  return reason ? `Engine turn failed. ${reason}. Then retry.`.slice(0, 1000) : 'Engine turn failed. Check Stockfish on this House, then retry.';
 }
