@@ -12,10 +12,51 @@ const execFileAsync = promisify(execFile);
 export type MacReadSurface = 'calendar' | 'reminders' | 'notes' | 'mail' | 'finder';
 export type MacWriteAction = 'create_reminder' | 'run_shortcut';
 
+/** Per-call bounds: the caller's cancellation plus an optional tighter timeout. */
+export interface MacRunOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 export interface MacRunner {
-  jxa(script: string, args?: string[]): Promise<string>;
-  spotlight?(query: string, onlyIn: string): Promise<string>;
-  sqliteJson?(dbPath: string, sql: string): Promise<string>;
+  jxa(script: string, args?: string[], opts?: MacRunOptions): Promise<string>;
+  spotlight?(query: string, onlyIn: string, opts?: MacRunOptions): Promise<string>;
+  sqliteJson?(dbPath: string, sql: string, opts?: MacRunOptions): Promise<string>;
+}
+
+export interface MacReadOptions {
+  signal?: AbortSignal;
+}
+
+/** A typed Mac surface failure. `code` (timeout, aborted, ...) also appears in the message the resident sees. */
+export class MacSurfaceError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'MacSurfaceError';
+    this.code = code;
+  }
+}
+
+function abortCode(signal: AbortSignal): 'timeout' | 'aborted' {
+  // combineRequestSignals/AbortSignal.timeout abort with a TimeoutError reason.
+  return (signal.reason as { name?: string } | undefined)?.name === 'TimeoutError' ? 'timeout' : 'aborted';
+}
+
+function abortedError(signal: AbortSignal, what: string): MacSurfaceError {
+  const code = abortCode(signal);
+  return new MacSurfaceError(code, `${code}: ${what} ${code === 'timeout' ? 'exceeded its time budget' : 'was cancelled'}`);
+}
+
+/** Settle as soon as the signal aborts, even if the work ignores it. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) return Promise.reject(abortedError(signal, what));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortedError(signal, what));
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
 const CALENDAR_SCRIPT = `
@@ -95,31 +136,47 @@ function run(argv) {
 }
 `;
 
+// Bulk property reads are one Apple Event each for the whole library; per-note
+// plaintext reads are capped (most recently modified first) and stop at a
+// script-side deadline. The old loop made one event per note until 20 matched.
 const NOTES_SCRIPT = `
 function run(argv) {
   const query = String(argv[0] || '').toLowerCase();
+  const scanCap = Math.max(1, Number(argv[1]) || 300);
+  const deadline = Date.now() + (Number(argv[2]) || 8000);
   const Notes = Application('Notes');
-  const notes = Notes.notes();
-  const out = [];
+  const ids = Notes.notes.id();
+  const names = Notes.notes.name();
+  const modified = Notes.notes.modificationDate();
+  const order = ids.map(function (_, i) { return i; })
+    .sort(function (a, b) { return (modified[b] || 0) - (modified[a] || 0); })
+    .slice(0, scanCap);
   const limit = 20;
-  for (let i = 0; i < notes.length && out.length < limit; i++) {
-    const n = notes[i];
-    const title = String(n.name());
-    let body = '';
-    try { body = String(n.plaintext()); } catch (e) { body = ''; }
-    const hay = (title + ' ' + body).toLowerCase();
-    if (query && hay.indexOf(query) === -1) continue;
-    out.push({
-      kind: 'artifact',
-      id: String(n.id()),
-      title,
-      source: 'mac.notes',
-      excerpt: body.slice(0, 280)
-    });
+  const out = [];
+  const taken = {};
+  function plain(i) { try { return String(Notes.notes[i].plaintext()); } catch (e) { return ''; } }
+  function take(i, body) {
+    taken[i] = true;
+    out.push({ kind: 'artifact', id: String(ids[i]), title: String(names[i]), source: 'mac.notes', excerpt: body.slice(0, 280) });
+  }
+  if (query) {
+    for (let k = 0; k < order.length && out.length < limit && Date.now() < deadline; k++) {
+      if (String(names[order[k]]).toLowerCase().indexOf(query) !== -1) take(order[k], plain(order[k]));
+    }
+  }
+  for (let k = 0; k < order.length && out.length < limit && Date.now() < deadline; k++) {
+    const i = order[k];
+    if (taken[i]) continue;
+    const body = plain(i);
+    if (query && body.toLowerCase().indexOf(query) === -1) continue;
+    take(i, body);
   }
   return JSON.stringify(out);
 }
 `;
+
+export const NOTES_SCAN_CAP = 300;
+const NOTES_DEADLINE_MS = 8_000;
 
 const CREATE_REMINDER_SCRIPT = `
 function run(argv) {
@@ -144,33 +201,46 @@ function run(argv) {
 }
 `;
 
+async function runBounded(
+  file: string,
+  args: string[],
+  defaults: { timeoutMs: number; maxBuffer: number },
+  opts: MacRunOptions = {},
+): Promise<string> {
+  const timeoutMs = opts.timeoutMs ?? defaults.timeoutMs;
+  if (opts.signal?.aborted) throw abortedError(opts.signal, file);
+  try {
+    const { stdout } = await execFileAsync(file, args, {
+      timeout: timeoutMs,
+      maxBuffer: defaults.maxBuffer,
+      env: unprivilegedChildEnv(),
+      signal: opts.signal,
+    });
+    return stdout.trim();
+  } catch (error) {
+    if (opts.signal?.aborted) throw abortedError(opts.signal, file);
+    const failure = error as { killed?: boolean; signal?: string; code?: unknown; stderr?: string };
+    if (failure.killed && failure.signal === 'SIGTERM') {
+      throw new MacSurfaceError('timeout', `timeout: ${file} exceeded ${timeoutMs} ms`);
+    }
+    // execFile's own message repeats the whole script; keep the child's stderr instead.
+    const detail = String(failure.stderr ?? '').trim().slice(0, 500) || errorMessage(error);
+    throw new Error(`${file} failed${typeof failure.code === 'number' ? ` (exit ${failure.code})` : ''}: ${detail}`);
+  }
+}
+
 export function createOsascriptRunner(): MacRunner {
   return {
-    async jxa(script: string, args: string[] = []): Promise<string> {
-      const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script, ...args], {
-        timeout: 30_000,
-        maxBuffer: 2_000_000,
-        env: unprivilegedChildEnv(),
-      });
-      return stdout.trim();
+    async jxa(script: string, args: string[] = [], opts?: MacRunOptions): Promise<string> {
+      return runBounded('osascript', ['-l', 'JavaScript', '-e', script, ...args], { timeoutMs: 30_000, maxBuffer: 2_000_000 }, opts);
     },
-    async spotlight(query: string, onlyIn: string): Promise<string> {
-      const { stdout } = await execFileAsync('mdfind', ['-onlyin', onlyIn, query], {
-        timeout: 15_000,
-        maxBuffer: 1_000_000,
-        env: unprivilegedChildEnv(),
-      });
-      return stdout.trim();
+    async spotlight(query: string, onlyIn: string, opts?: MacRunOptions): Promise<string> {
+      return runBounded('mdfind', ['-onlyin', onlyIn, query], { timeoutMs: 15_000, maxBuffer: 1_000_000 }, opts);
     },
-    async sqliteJson(dbPath: string, sql: string): Promise<string> {
+    async sqliteJson(dbPath: string, sql: string, opts?: MacRunOptions): Promise<string> {
       const absolutePath = resolve(dbPath);
       const uri = `file:${encodeURI(absolutePath).replace(/#/g, '%23')}?mode=ro`;
-      const { stdout } = await execFileAsync('sqlite3', ['-json', uri, sql], {
-        timeout: 15_000,
-        maxBuffer: 2_000_000,
-        env: unprivilegedChildEnv(),
-      });
-      return stdout.trim();
+      return runBounded('sqlite3', ['-json', uri, sql], { timeoutMs: 15_000, maxBuffer: 2_000_000 }, opts);
     },
   };
 }
@@ -272,13 +342,14 @@ function parseMailIndexRows(raw: string): AttentionItem[] {
   });
 }
 
-async function readMail(query: string, runner: MacRunner): Promise<AttentionItem[]> {
+async function readMail(query: string, runner: MacRunner, opts: MacRunOptions): Promise<AttentionItem[]> {
   if (!runner.sqliteJson) throw new Error('mac.mail unavailable: sqlite runner unavailable');
   try {
     const dbPath = await discoverMailEnvelopeIndex();
-    const raw = await runner.sqliteJson(dbPath, mailIndexQuery(query));
+    const raw = await runner.sqliteJson(dbPath, mailIndexQuery(query), opts);
     return parseMailIndexRows(raw);
   } catch (error) {
+    if (error instanceof MacSurfaceError) throw error;
     if (error instanceof Error && error.message.startsWith('mac.mail unavailable:')) throw error;
     throw new Error(`mac.mail unavailable: ${errorMessage(error)}`);
   }
@@ -310,24 +381,43 @@ export async function macRead(
   query: string,
   runner: MacRunner,
   hoursAhead = 36,
+  options: MacReadOptions = {},
+): Promise<AttentionItem[]> {
+  const { signal } = options;
+  if (signal?.aborted) throw abortedError(signal, `mac.${surface} read`);
+  try {
+    return await untilAborted(readSurface(surface, query, runner, hoursAhead, { signal }), signal, `mac.${surface} read`);
+  } catch (error) {
+    // A runner that ignored the signal still reports the caller's typed reason.
+    if (signal?.aborted && !(error instanceof MacSurfaceError)) throw abortedError(signal, `mac.${surface} read`);
+    throw error;
+  }
+}
+
+async function readSurface(
+  surface: MacReadSurface,
+  query: string,
+  runner: MacRunner,
+  hoursAhead: number,
+  opts: MacRunOptions,
 ): Promise<AttentionItem[]> {
   if (surface === 'calendar') {
-    return parseItems(await runner.jxa(CALENDAR_SCRIPT, [String(hoursAhead)]), 'mac.calendar');
+    return parseItems(await runner.jxa(CALENDAR_SCRIPT, [String(hoursAhead)], opts), 'mac.calendar');
   }
   if (surface === 'reminders') {
-    return parseItems(await runner.jxa(REMINDERS_SCRIPT, ['false']), 'mac.reminders');
+    return parseItems(await runner.jxa(REMINDERS_SCRIPT, ['false'], opts), 'mac.reminders');
   }
   if (surface === 'notes') {
-    return parseItems(await runner.jxa(NOTES_SCRIPT, [query]), 'mac.notes');
+    return parseItems(await runner.jxa(NOTES_SCRIPT, [query, String(NOTES_SCAN_CAP), String(NOTES_DEADLINE_MS)], opts), 'mac.notes');
   }
   if (surface === 'mail') {
-    return readMail(query, runner);
+    return readMail(query, runner, opts);
   }
   if (surface === 'finder') {
     const home = homedir();
     if (!query.trim()) throw new Error('finder search requires a query');
     if (!runner.spotlight) throw new Error('spotlight runner unavailable');
-    const raw = await runner.spotlight(query, home);
+    const raw = await runner.spotlight(query, home, opts);
     return raw.split('\n').filter(Boolean).slice(0, 20).map((filePath, index) => ({
       kind: 'artifact' as const,
       id: `finder:${index}`,

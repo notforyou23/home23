@@ -9,7 +9,7 @@ import { assertBrowserUrl } from '../../src/agent/contact/browser.js';
 import { captureArtifact, retrieveArtifact } from '../../src/agent/contact/capture.js';
 import { assertSendable, createDraft, previewDraft } from '../../src/agent/contact/comms.js';
 import { classifyHouseAction, HouseClient } from '../../src/agent/contact/house.js';
-import { macRead, macWrite, type MacRunner } from '../../src/agent/contact/mac.js';
+import { createOsascriptRunner, macRead, macWrite, MacSurfaceError, NOTES_SCAN_CAP, type MacRunner } from '../../src/agent/contact/mac.js';
 import { runNamedShortcut } from '../../src/agent/contact/phone.js';
 import { contactReceiptPath } from '../../src/agent/contact/paths.js';
 import {
@@ -17,6 +17,7 @@ import {
   commsSendTool,
   houseCallSafeServiceTool,
   houseGetEntityTool,
+  macReadTool,
 } from '../../src/agent/tools/contact.js';
 import { createToolRegistry } from '../../src/agent/tools/index.js';
 import type { ToolContext } from '../../src/agent/types.js';
@@ -314,6 +315,105 @@ test('attention_scan is degraded-honest when a surface fails', async () => {
   const scan = await scanAttention({ hoursAhead: 6 }, runner);
   assert.equal(scan.items.length, 1);
   assert.ok(scan.degraded.some((row) => row.source === 'mac.reminders'));
+});
+
+test('mac reads pass the caller signal to the runner and reject promptly with aborted', async () => {
+  let received: AbortSignal | undefined;
+  const runner: MacRunner = {
+    jxa(_script, _args, opts) {
+      received = opts?.signal;
+      return new Promise<string>(() => undefined);
+    },
+  };
+  const controller = new AbortController();
+  const pending = macRead('calendar', '', runner, 12, { signal: controller.signal });
+  const started = Date.now();
+  setTimeout(() => controller.abort('operator_stop'), 10);
+  await assert.rejects(pending, (error: unknown) => error instanceof MacSurfaceError
+    && error.code === 'aborted' && /^aborted:/.test(error.message));
+  assert.ok(Date.now() - started < 100, 'abort must settle within 100 ms');
+  assert.equal(received, controller.signal);
+});
+
+test('mac_read tool honours an aborted turn signal before starting osascript', async () => {
+  const controller = new AbortController();
+  controller.abort('operator_stop');
+  const result = await macReadTool.execute({ surface: 'calendar' }, ctx({ abortSignal: controller.signal }));
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /aborted: mac\.calendar read was cancelled/);
+});
+
+test('osascript runner maps its timeout and the caller abort to typed codes', { skip: process.platform !== 'darwin' }, async () => {
+  const runner = createOsascriptRunner();
+  await assert.rejects(
+    () => runner.jxa('delay(5)', [], { timeoutMs: 150 }),
+    (error: unknown) => error instanceof MacSurfaceError && error.code === 'timeout',
+  );
+  const controller = new AbortController();
+  setTimeout(() => controller.abort('operator_stop'), 100);
+  const started = Date.now();
+  await assert.rejects(
+    () => runner.jxa('delay(5)', [], { signal: controller.signal }),
+    (error: unknown) => error instanceof MacSurfaceError && error.code === 'aborted',
+  );
+  assert.ok(Date.now() - started < 2_000);
+});
+
+test('attention_scan gives each source its own budget and reports per-source timings', async () => {
+  const signals: AbortSignal[] = [];
+  const runner: MacRunner = {
+    async jxa(script, _args, opts) {
+      if (opts?.signal) signals.push(opts.signal);
+      if (script.includes('calendarsForEntityType(0)')) {
+        return JSON.stringify([{ kind: 'event', id: '1', title: 'Standup', source: 'mac.calendar', when: '2026-08-20T18:00:00.000Z' }]);
+      }
+      if (script.includes('requestAccessToEntityTypeCompletion(1')) return new Promise<string>(() => undefined);
+      return '[]';
+    },
+  };
+  const started = Date.now();
+  const scan = await scanAttention({ hoursAhead: 6 }, runner, { sourceBudgetMs: 50 });
+  assert.ok(Date.now() - started < 1_000, 'a hung source must not hold the scan');
+  assert.deepEqual(scan.items.map((item) => item.title), ['Standup']);
+  assert.deepEqual(scan.degraded.map(({ source, code }) => ({ source, code })), [{ source: 'mac.reminders', code: 'timeout' }]);
+  assert.deepEqual(scan.timings.map(({ source, code }) => ({ source, code })), [
+    { source: 'mac.calendar', code: undefined },
+    { source: 'mac.reminders', code: 'timeout' },
+    { source: 'mac.notes', code: undefined },
+  ]);
+  assert.ok(scan.timings.every((row) => Number.isFinite(row.ms)));
+  assert.equal(signals.length, 3);
+  assert.ok(signals[1]?.aborted, 'the hung source is told to stop');
+});
+
+test('attention_scan stops when the turn is cancelled', async () => {
+  const controller = new AbortController();
+  const runner: MacRunner = {
+    async jxa() {
+      controller.abort('operator_stop');
+      return '[]';
+    },
+  };
+  await assert.rejects(
+    () => scanAttention({ hoursAhead: 6 }, runner, { signal: controller.signal }),
+    (error: unknown) => error instanceof MacSurfaceError && error.code === 'aborted',
+  );
+});
+
+test('mac notes read is bounded by a scan cap and a script deadline', async () => {
+  let seen: { script: string; args: string[] } | undefined;
+  const runner: MacRunner = {
+    async jxa(script, args = []) {
+      seen = { script, args };
+      return '[]';
+    },
+  };
+  await macRead('notes', 'taxes', runner);
+  assert.deepEqual(seen?.args, ['taxes', String(NOTES_SCAN_CAP), '8000']);
+  assert.match(seen?.script ?? '', /\.slice\(0, scanCap\)/);
+  assert.match(seen?.script ?? '', /Date\.now\(\) < deadline/);
+  assert.match(seen?.script ?? '', /Notes\.notes\.name\(\)/);
+  assert.doesNotMatch(seen?.script ?? '', /Notes\.notes\(\)/);
 });
 
 test('capture_artifact archives source with provenance and retrieve returns it', () => {

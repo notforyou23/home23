@@ -244,7 +244,9 @@ export const macReadTool: ToolDefinition = {
   async execute(input, ctx): Promise<ToolResult> {
     const surface = String(input.surface) as MacReadSurface;
     try {
-      const items = await macRead(surface, String(input.query ?? ''), createOsascriptRunner(), Number(input.hours_ahead ?? 36));
+      const items = await macRead(surface, String(input.query ?? ''), createOsascriptRunner(), Number(input.hours_ahead ?? 36), {
+        signal: ctx.abortSignal,
+      });
       return receiptResult(ctx.workspacePath, buildReceipt({
         agent: ctx.agentName, chatId: ctx.chatId, capability: 'mac_read',
         sideEffect: 'read', authority: 'autonomous', dryRun: false, confirmed: false, ok: true,
@@ -319,7 +321,7 @@ export const attentionScanTool: ToolDefinition = {
         query: input.query as string | undefined,
         includeMail: Boolean(input.include_mail),
         includeFinder: Boolean(input.include_finder),
-      }, createOsascriptRunner());
+      }, createOsascriptRunner(), { signal: ctx.abortSignal });
       return receiptResult(ctx.workspacePath, buildReceipt({
         agent: ctx.agentName, chatId: ctx.chatId, capability: 'attention_scan',
         sideEffect: 'read', authority: 'autonomous', dryRun: false, confirmed: false, ok: true,
