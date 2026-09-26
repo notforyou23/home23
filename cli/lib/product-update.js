@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { choosePortPlan, privateJSON, readPrivateJSON, validatePortPlan } from './product-environment.js';
 import { assertWritersIdle, rebindAdoptedHome, residentInstancePortSets } from './product-backup.js';
 import { projectFencedCoordination, readFencedCoordination } from './product-adoption.js';
-import { installProductPayload, isProductStatePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
+import { installProductPayload, isOsMetadataPath, isProductStatePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation, previewRoot } from './product-update-preview.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 import { DatabaseSync } from 'node:sqlite';
@@ -298,6 +298,10 @@ function walkAdoptionPaths(root, reasons, reviewed = null) {
   const paths = [];
   const visited = new Set();
   const visit = (relative, inherited = null) => {
+    // Finder droppings are neither state nor software: never classified, copied
+    // or walked. A review made before they were ignored may still name one;
+    // that decision is satisfied, not missing.
+    if (isOsMetadataPath(relative)) { if (reviewed?.entries.has(relative)) visited.add(relative); return; }
     const absolute = relative ? join(root, relative) : root;
     const stat = lstatSync(absolute);
     if (relative) {

@@ -318,6 +318,23 @@ test('a restored state script keeps its executable bit and private files stay pr
   assert.equal(fs.statSync(path.join(fixture.inspectionRoot, 'app/instances/milo/workspace/private.txt')).mode & 0o777, 0o600);
 });
 
+test('a backup neither carries nor requires Finder metadata under a state root', async t => {
+  const fixture = stoppedHome(t);
+  fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
+  const droppings = ['app/instances/milo/.DS_Store', 'app/instances/milo/workspace/._note.txt'];
+  for (const relative of droppings) fs.writeFileSync(path.join(fixture.home, relative), Buffer.from([0, 0, 0, 1, 0x42, 0x75, 0x64, 0x31]));
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  const header = readAuthenticatedBackupHeader({ archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  assert.deepEqual(header.files.map(entry => entry.path).filter(relative => /(^|\/)(\.DS_Store|\._)/.test(relative)), []);
+  assert.ok(header.files.some(entry => entry.path === 'app/instances/milo/workspace/note.txt'));
+  const inspected = await inspectHomeBackup({ archivePath: fixture.archivePath, keyPath: fixture.keyPath, inspectionRoot: fixture.inspectionRoot });
+  assert.equal(inspected.ok, true);
+  for (const relative of droppings) assert.equal(fs.existsSync(path.join(fixture.inspectionRoot, relative)), false, relative);
+  // The reference scan reads state text, never a Finder dropping that happens to mention the old home.
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/.DS_Store'), `${fixture.root}/elsewhere\n`);
+  assert.deepEqual(scanHomeReferences(fixture.home, path.join(fixture.root, 'elsewhere')), []);
+});
+
 test('inspection and header reads write only inside the inspection root', async t => {
   const fixture = stoppedHome(t);
   fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });
