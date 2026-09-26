@@ -943,6 +943,7 @@ function hasRecoverableIdentity(host) {
 }
 
 const BRAIN_MANIFEST_PATH = /^app\/instances\/[^/]+\/brain\/memory-manifest\.json$/;
+const HOME_UPDATE_RECORD_PATH = /^runtime\/home-update\/(?:application|[0-9a-f-]{36})\.json$/;
 
 /** Host/config paths rewrite during rebind; identity bytes must still match the archive. */
 function isRebindMutablePath(relative, root = null) {
@@ -954,6 +955,7 @@ function isRebindMutablePath(relative, root = null) {
   if (/^app\/instances\/[^/]+\/(config|engine)\.yaml$/.test(relative)) return true;
   if (!rebindScanExcluded(relative) && embeddedRebindKind(relative, root ? join(root, relative) : null)) return true;
   if (BRAIN_MANIFEST_PATH.test(relative)) return true;
+  if (HOME_UPDATE_RECORD_PATH.test(relative)) return true;
   return false;
 }
 
@@ -1713,6 +1715,7 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     writePrivateJSON(file, config);
   }
   rebindSemanticPrep(source, destination, newPorts, adopted);
+  rebindHomeUpdateRecords(source, destination, adopted);
   rebindAgentsManifest(source, destination, adopted);
   const savedProcesses = join(destination, 'runtime/ecosystem.config.json');
   if (exists(savedProcesses)) unlinkSync(savedProcesses);
@@ -1935,6 +1938,38 @@ function rebindSemanticPrep(source, destination, newPorts, adopted = false) {
   if (recipeId) prep.recipeId = recipeId;
   if (treeContains(prep, source)) fail('move_rebind_incomplete', 'Destination semantic preparation still names the source home.');
   writePrivateJSON(file, prep);
+}
+
+/** The update registration and operation records name the home root, the executor retained under
+ * runtime/home-update and the delivery directory beside the home (product-home-update.js
+ * updateDeliveryPaths). Application paths belong to the Mac, so only those two prefixes move. */
+function rebindHomeUpdateRecords(source, destination, adopted = false) {
+  const directory = join(destination, 'runtime/home-update');
+  if (!exists(directory) || !lstatSync(directory).isDirectory()) return;
+  const deliveryFor = home => join(dirname(home), `.${basename(home)}.home23-delivery`);
+  const sourceDelivery = deliveryFor(source), destinationDelivery = deliveryFor(destination);
+  const rewrite = value => {
+    if (typeof value === 'string') {
+      if (value === sourceDelivery || value.startsWith(`${sourceDelivery}${sep}`)) return `${destinationDelivery}${value.slice(sourceDelivery.length)}`;
+      return replaceHomePath(value, source, destination, adopted);
+    }
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, rewrite(item)]));
+    return value;
+  };
+  for (const name of readdirSync(directory).sort()) {
+    // latest.json and request receipts hold identities only; executor directories and temporaries are not records.
+    const file = join(directory, name);
+    if (!HOME_UPDATE_RECORD_PATH.test(`runtime/home-update/${name}`) || !lstatSync(file).isFile()) continue;
+    let record;
+    try { record = JSON.parse(readFileSync(file, 'utf8')); }
+    catch { fail('move_rebind_incomplete', `Destination home-update record could not be read: ${relative(destination, file)}`); }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) fail('move_rebind_incomplete', `Destination home-update record is not a record: ${relative(destination, file)}`);
+    // The registration's applicationPath is the installed Mac application, which does not move with the home.
+    record = { ...(name === 'application.json' ? record : rewrite(record)), homeRoot: destination };
+    if (treeContains(record, source)) fail('move_rebind_incomplete', `Destination home-update record still names the source home: ${relative(destination, file)}`);
+    writePrivateJSON(file, record);
+  }
 }
 
 function rebindAgentsManifest(source, destination, adopted = false) {
