@@ -864,6 +864,15 @@ test('failed candidate health restores previous software and leaves state in pla
   assert.deepEqual(preserved(tampered.home), tamperedState);
 });
 
+// installController copies realpath(process.execPath) as the retained Node. A
+// shared-library build (Homebrew: node_shared, @rpath/libnode) cannot run from that
+// copy; the Host always runs its self-contained bin/node, where the copy itself runs.
+function retainedControllerNode(update) {
+  const copied = path.join(update, 'controller/node');
+  assert.equal(fs.statSync(copied).size, fs.statSync(fs.realpathSync(process.execPath)).size);
+  return process.config.variables.node_shared ? process.execPath : copied;
+}
+
 test('killing the controller before and after selection resumes without a second home', async t => {
   const retained = homeFixture(t);
   const before = preserved(retained.home);
@@ -871,7 +880,7 @@ test('killing the controller before and after selection resumes without a second
   assert.equal(killed.signal, 'SIGKILL', killed.stderr);
   assert.equal(packageId(retained.home), retained.installed.packageId);
   const update = updateDirectoryFor(retained.home);
-  const resumed = await run(path.join(update, 'controller/node'), [path.join(update, 'controller/lib/product-update-recover.mjs'), '--home', retained.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: retained.root, TMPDIR: retained.root, LANG: 'en_US.UTF-8' });
+  const resumed = await run(retainedControllerNode(update), [path.join(update, 'controller/lib/product-update-recover.mjs'), '--home', retained.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: retained.root, TMPDIR: retained.root, LANG: 'en_US.UTF-8' });
   assert.equal(resumed.code, 0, resumed.stderr + resumed.stdout);
   const parsed = JSON.parse(resumed.stdout.trim());
   assert.equal(parsed.status, 'committed');
@@ -886,7 +895,7 @@ test('killing the controller before and after selection resumes without a second
   assert.equal(packageId(selected.home), selected.next.packageId);
   assert.equal(fs.existsSync(path.join(selected.home, 'runtime/started.txt')), false);
   const selectedUpdate = updateDirectoryFor(selected.home);
-  const resumedAfter = await run(path.join(selectedUpdate, 'controller/node'), [path.join(selectedUpdate, 'controller/lib/product-update-recover.mjs'), '--home', selected.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: selected.root, TMPDIR: selected.root, LANG: 'en_US.UTF-8' });
+  const resumedAfter = await run(retainedControllerNode(selectedUpdate), [path.join(selectedUpdate, 'controller/lib/product-update-recover.mjs'), '--home', selected.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: selected.root, TMPDIR: selected.root, LANG: 'en_US.UTF-8' });
   assert.equal(resumedAfter.code, 0, resumedAfter.stderr + resumedAfter.stdout);
   assert.equal(JSON.parse(resumedAfter.stdout.trim()).status, 'committed');
   assert.equal(fs.readFileSync(path.join(selected.home, 'runtime/started.txt'), 'utf8'), 'start');
