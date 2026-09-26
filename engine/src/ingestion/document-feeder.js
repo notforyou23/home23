@@ -19,12 +19,16 @@ class DocumentFeeder {
    * @param {object} opts.config - feeder config block from config.yaml
    * @param {object} opts.logger
    * @param {function} opts.embeddingFn - async (text) => float[] | null
+   * @param {function} [opts.onCommitted] - ({ reason, flushed }) after items
+   *   reach live memory; search sees them only once the brain saves
    */
-  constructor({ memory, config = {}, logger = null, embeddingFn = null }) {
+  constructor({ memory, config = {}, logger = null, embeddingFn = null, onCommitted = null }) {
     this.memory = memory;
     this.config = config;
     this.logger = logger;
     this.embeddingFn = embeddingFn || (text => memory.embed(text));
+    this.onCommitted = onCommitted;
+    this._lastFlush = null;
     this.compilerConfig = config.compiler || {};
     this.maxFileBytes = Number.isFinite(Number(config.maxFileBytes))
       ? Number(config.maxFileBytes)
@@ -107,7 +111,12 @@ class DocumentFeeder {
         batchSize: this.config.flush?.batchSize || 20,
         intervalSeconds: this.config.flush?.intervalSeconds || 300
       },
-      logger: this.logger
+      logger: this.logger,
+      onGenerationLost: (filePath, label) => this._reingestLostGeneration(filePath, label),
+      onFlushed: (flush) => {
+        this._lastFlush = { at: new Date().toISOString(), nodes: flush.flushed, reason: flush.reason };
+        this.onCommitted?.(flush);
+      },
     });
 
     if (this.config.maintenanceMode === true) {
@@ -289,6 +298,11 @@ class DocumentFeeder {
   async forceFlush() {
     if (!this._started || !this.manifest) return { flushed: 0 };
     return this.manifest.flush('manual');
+  }
+
+  /** When the feeder last put items into live memory, for the freshness view. */
+  flushFreshness() {
+    return { lastFlushAt: this._lastFlush?.at || null, lastFlushNodes: this._lastFlush?.nodes ?? null };
   }
 
   /**
@@ -598,6 +612,15 @@ class DocumentFeeder {
       depth: 99,
       ignored: (candidatePath) => this._shouldIgnorePath(candidatePath)
     };
+  }
+
+  // The manifest reset a generation whose chunk nodes a restart lost before
+  // the brain saved them. Read the file again now rather than at the next
+  // restart's scan or the next edit.
+  async _reingestLostGeneration(filePath, label) {
+    if (!this._started || this._stopping || this.config.maintenanceMode === true) return;
+    await this._processFile(filePath, label);
+    await this.manifest.flush('lost-generation');
   }
 
   async _onFileEvent(filePath, fixedLabel, watchRoot) {

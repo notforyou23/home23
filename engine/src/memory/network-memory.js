@@ -1030,6 +1030,9 @@ class NetworkMemory {
       type,
       { enforceBridgeCap, bridgeCap, timestamp },
     ));
+    if (result.refused) {
+      this.logger?.warn?.('Refused edge to a node that is not in the graph', { nodeA, nodeB, type });
+    }
     for (const eviction of result.evictions) {
       this.logger?.debug?.('Bridge cap enforced', eviction);
     }
@@ -1680,7 +1683,17 @@ class NetworkMemory {
 
   _upsertEdgeUnsafe(nodeA, nodeB, weight, type, options = {}) {
     this._requirePersistenceBarrierUnsafe();
-    const sortedPair = [nodeA, nodeB].sort((a, b) => String(a).localeCompare(String(b)));
+    // Both endpoints must be in the graph, under the graph's own ID type. An
+    // edge to a missing node persists and counts on disk, but load drops it,
+    // so committed rows never match the summary again: Forrest's feeder wrote
+    // 20 depends_on edges to chunk nodes lost at a restart (2026-09-23) and
+    // every compaction then failed. Removal cascades edges; creation refuses.
+    const source = resolveEquivalentGraphIdentity(this.nodes, nodeA);
+    const target = resolveEquivalentGraphIdentity(this.nodes, nodeB);
+    if (source === undefined || target === undefined || Object.is(source, target)) {
+      return { edgeKey: null, evictions: [], inserted: false, refused: source === undefined || target === undefined };
+    }
+    const sortedPair = [source, target].sort((a, b) => String(a).localeCompare(String(b)));
     const edgeKey = sortedPair.join('->');
     const existing = this.edges.get(edgeKey);
     const timestamp = options.timestamp || new Date();

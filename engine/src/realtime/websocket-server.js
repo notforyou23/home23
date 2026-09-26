@@ -263,7 +263,9 @@ class RealtimeServer {
     // GET /admin/feeder/status
     if (req.method === 'GET' && url === '/admin/feeder/status') {
       const status = await feeder.getStatus();
-      return json(200, { ok: true, status });
+      // How long committed documents wait before brain_search can see them.
+      const freshness = this.orchestrator?.getPersistenceFreshness?.() ?? null;
+      return json(200, { ok: true, status: { ...status, freshness } });
     }
 
     // POST /admin/feeder/flush

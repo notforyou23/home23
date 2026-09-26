@@ -118,3 +118,28 @@ test('shutdown uses shorter grace when joining an in-progress save with durable 
   assert.ok(elapsedMs < 200, `expected short in-progress save grace, got ${elapsedMs}ms`);
   fs.rmSync(logsDir, { recursive: true, force: true });
 });
+
+test('stop halts the persistence scheduler before the final save', async () => {
+  let schedulerRunning = true;
+  const { fake, calls } = makeFakeOrchestrator({
+    persistenceScheduler: {
+      stop: () => {
+        schedulerRunning = false;
+        calls.push('scheduler-stop');
+      },
+    },
+    feeder: {
+      shutdown: async () => {
+        calls.push(schedulerRunning ? 'feeder-shutdown-while-scheduling' : 'feeder-shutdown');
+      },
+    },
+    saveState: async () => {
+      calls.push(schedulerRunning ? 'save-while-scheduling' : 'save');
+      return { saved: true };
+    },
+  });
+
+  await fake.stop();
+
+  assert.deepEqual(calls, ['scheduler-stop', 'feeder-shutdown', 'save', 'mark-clean', 'telemetry-cleanup']);
+});

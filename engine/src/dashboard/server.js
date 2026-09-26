@@ -7325,7 +7325,7 @@ Be specific, actionable, and maintain research continuity.`;
         if (!problem) return res.status(404).json({ error: 'not found' });
         if (!problem.verifier?.type) return res.status(400).json({ error: 'problem has no verifier' });
 
-        const UNSUPPORTED = new Set(['graph_not_empty', 'node_count_stable']);
+        const UNSUPPORTED = new Set(['graph_not_empty', 'node_count_stable', 'brain_persistence_fresh']);
         if (UNSUPPORTED.has(problem.verifier.type)) {
           return res.json({
             ok: false,
@@ -7459,7 +7459,7 @@ Be specific, actionable, and maintain research continuity.`;
         const body = req.body || {};
         const v = body.verifier;
         if (!v || !v.type) return res.status(400).json({ error: 'verifier.type required' });
-        const UNSUPPORTED = new Set(['graph_not_empty', 'node_count_stable']);
+        const UNSUPPORTED = new Set(['graph_not_empty', 'node_count_stable', 'brain_persistence_fresh']);
         if (UNSUPPORTED.has(v.type)) {
           return res.json({ supported: false, reason: `verifier type ${v.type} needs engine memory context` });
         }
