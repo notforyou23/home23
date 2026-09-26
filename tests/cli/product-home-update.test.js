@@ -219,6 +219,26 @@ test('a preflight refusal publishes only safe reason codes and a path-free expla
   assert.doesNotMatch(JSON.stringify(f.operation(accepted.operation.id)), /secret|credential XYZ/);
 });
 
+test('an external instance root refusal publishes its code with a path-free explanation', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => ({ ok: false, status: 'refused', reasons: [
+      { code: 'external_reference', message: 'app/instances/grokbot/config.yaml system.instanceRoot names /Volumes/Private Drive/grokbot',
+        path: 'app/instances/grokbot/config.yaml', field: 'system.instanceRoot', target: '/Volumes/Private Drive/grokbot' },
+    ] }) },
+    appUpdater: unusedAppUpdater,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home });
+  assert.equal(status.operation.errorCode, 'external_reference');
+  assert.equal(status.message, 'A home setting names a folder outside this home. Open Home23 on this Mac to review it before resuming.');
+  assert.doesNotMatch(JSON.stringify(status), /Private Drive/);
+  assert.doesNotMatch(JSON.stringify(f.operation(accepted.operation.id)), /Private Drive/);
+});
+
 test('a resumed operation that completes drops the error fields of its earlier refusal', async t => {
   const f = fixture(t); await check(f);
   const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;

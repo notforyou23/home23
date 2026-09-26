@@ -169,7 +169,9 @@ export function validateAdoptionPreservationPlan(source, plan, expectedHash) {
   const references = Array.isArray(plan.references) ? plan.references : [];
   const seenReferences = new Set();
   for (const reference of references) {
-    if (!['app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml', 'app/.home23-state.json'].includes(reference.path)
+    // Instance configs are where the update inventory judges system.instanceRoot and engineConfig.
+    if (!(['app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml', 'app/.home23-state.json'].includes(reference.path)
+      || /^app\/instances\/[a-z0-9][a-z0-9-]*\/config\.yaml$/.test(reference.path))
       || typeof reference.target !== 'string' || !reference.target.startsWith('/')
       || reference.target === source || reference.target.startsWith(`${source}${sep}`)
       || seenReferences.has(`${reference.path}\0${reference.target}`)) {
