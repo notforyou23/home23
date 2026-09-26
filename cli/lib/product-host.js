@@ -330,6 +330,8 @@ function driver(homeRoot, dependencies, state) {
   }
   return {
     env,
+    // Set by list(): no daemon listens for this home, so a PM2 CLI call would start one.
+    supervisorAbsent: false,
     async list() {
       // This home's daemon listens on productEnvironment's socket. pm2.pid can
       // be missing, stale or name a daemon on other sockets, and `pm2 jlist`
@@ -345,9 +347,11 @@ function driver(homeRoot, dependencies, state) {
           if (await listening(join(env.PM2_HOME, 'rpc.sock')) !== false) {
             throw supervisorAmbiguous('A supervisor for this home is running on an unexpected socket. No processes were changed.');
           }
+          this.supervisorAbsent = true;
           return [];
         }
       }
+      this.supervisorAbsent = false;
       const { stdout } = await pm2(['jlist', '--silent']);
       try { const rows = JSON.parse(stdout); if (!Array.isArray(rows)) throw new Error(); return rows; }
       catch { throw new Error('Home23 supervisor returned an invalid process inventory.'); }
@@ -813,7 +817,8 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       const order = writerStopOrder(names);
       for (const name of order) {
         const row = processes.find(item => item.name === name);
-        if (row?.status === 'stopped') continue;
+        // With no daemon nothing runs, and `pm2 stop` would start one.
+        if (row?.status === 'stopped' || (!row && processDriver.supervisorAbsent)) continue;
         try {
           await processDriver.pm2(['stop', name, '--silent']);
         } catch (error) {

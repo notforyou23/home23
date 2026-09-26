@@ -184,6 +184,21 @@ test('status never spawns a supervisor when no daemon listens', async t => {
   assert.deepEqual(result.processes, []);
 });
 
+test('Stop on a home with no daemon runs no pm2 command, so it starts no supervisor', async t => {
+  const { homeRoot, state } = await prepared(t);
+  privateJSON(path.join(homeRoot, '.home23-host.json'), { ...state, desiredRunning: true, phase: 'starting' });
+  const calls = [];
+  // Stop tolerates a failed `pm2 stop` for a name with no row, so record rather than throw.
+  const result = await runHostAction('stop', { homeRoot }, {
+    execute: async (_node, args) => { calls.push(args[1]); return { stdout: '' }; },
+    supervisorListening: async () => false,
+  });
+  assert.equal(result.status, 'stopped');
+  assert.equal(result.desiredRunning, false);
+  assert.deepEqual(result.processes, []);
+  assert.deepEqual(calls, []);
+});
+
 test('a supervisor on the wrong socket makes status unavailable and Stop changes nothing', async t => {
   const { homeRoot, state } = await prepared(t);
   const env = productEnvironment(homeRoot, { prepare: true });
