@@ -5,6 +5,7 @@
 set -e
 
 PORT="${CDP_PORT:-9222}"
+# product-private: Home23's managed profile; the Host pins CDP_USER_DATA_DIR in its runtime home.
 USER_DATA_DIR="${CDP_USER_DATA_DIR:-$HOME/.home23/chrome-cdp}"
 
 CHROME_BIN=""

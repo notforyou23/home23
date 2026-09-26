@@ -30,6 +30,7 @@ const { encryptApiKey, decryptApiKey } = require('./encryption.js');
 // This supports both global config (~/.cosmo2.3/database.db) and local (.env)
 if (!process.env.DATABASE_URL) {
   // Check for global config first
+  // product-private: a provider store, not owner data; runtime HOME by design.
   const globalConfigPath = process.env.COSMO23_CONFIG_PATH || path.join(os.homedir(), '.cosmo2.3', 'config.json');
   if (fs.existsSync(globalConfigPath)) {
     const globalDbPath = path.join(os.homedir(), '.cosmo2.3', 'database.db');

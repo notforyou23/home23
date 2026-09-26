@@ -171,6 +171,7 @@ export function beginSemanticPrepare(homeRoot, state, { spawnWorker = spawn, nod
     return existing;
   }
   const cache = embedderCacheDir(homeRoot);
+  // product-private: HOME is only compared; the cache lies inside the home, never the owner's.
   if (cache === process.env.HOME || cache.includes('/release/home23')) throw new Error('HOME23_EMBEDDER_CACHE must be this home\'s runtime cache.');
   const handle = existing?.handle || randomUUID();
   const env = productEnvironment(homeRoot, { prepare: true, encoderRequired: true, embedderPort: state.ports.embedder });

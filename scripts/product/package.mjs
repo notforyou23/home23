@@ -170,6 +170,7 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
   // may be on a different (and much slower) volume from the build output.
   const compilerEnv = Object.fromEntries(['DEVELOPER_DIR', 'CC', 'CXX']
     .filter(key => process.env[key]).map(key => [key, process.env[key]]));
+  // product-private: the publisher's own build environment, not a home's.
   const env = { ...compilerEnv, PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: process.env.HOME, USER: process.env.USER,
     TMPDIR: path.join(cachePath, 'tmp'), npm_config_cache: cachePath, npm_config_devdir: path.join(cachePath, 'node-gyp'),
     npm_config_nodedir: headerAlias, npm_config_userconfig: '/dev/null', npm_config_audit: 'false', npm_config_fund: 'false' };

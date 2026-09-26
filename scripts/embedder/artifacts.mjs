@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { HF_ID, OWNED_ARTIFACTS } from './recipe.mjs';
+
+const { ownerHome } = createRequire(import.meta.url)('../../shared/owner-home.cjs');
 
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -82,7 +85,9 @@ export async function ensureArtifacts(cacheDir, {
   if (typeof cacheDir !== 'string' || !cacheDir.trim()) {
     throw new Error('HOME23_EMBEDDER_CACHE is required and must be an explicit directory');
   }
-  if (cacheDir === '~' || cacheDir.startsWith('~/') || cacheDir === process.env.HOME) {
+  // product-private: never a home directory. Under the Host, HOME is Home23's
+  // runtime home and the GUI (owner) home is a different directory.
+  if (cacheDir === '~' || cacheDir.startsWith('~/') || cacheDir === process.env.HOME || cacheDir === ownerHome()) {
     throw new Error('HOME23_EMBEDDER_CACHE must not be the GUI or home directory');
   }
   if (cacheDir.includes('/release/home23')) {

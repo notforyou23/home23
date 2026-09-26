@@ -87,6 +87,7 @@ export function productEnvironment(homeRoot, { prepare = false, encoderRequired 
     PM2_SILENT: 'true', PM2_DISABLE_UPDATE: 'true',
   };
   if (encoderRequired) {
+    // product-private: HOME is only compared; the cache lies inside the home, never the owner's.
     if (cache === env.HOME || cache === process.env.HOME) throw new Error('HOME23_EMBEDDER_CACHE must not be the GUI or home directory');
     env.HOME23_EMBEDDER_CACHE = cache;
     env.HOME23_EMBEDDER_BIND = '127.0.0.1';

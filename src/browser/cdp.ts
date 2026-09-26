@@ -101,6 +101,7 @@ export function browserUnavailableReason(error: unknown, platform: string = proc
  * rather than deriving the profile here.
  */
 export function managedProfileDir(env: NodeJS.ProcessEnv = process.env): string {
+  // product-private: the managed Chrome profile is Home23's; runtime HOME by design.
   return env.CDP_USER_DATA_DIR?.trim() || join(env.HOME?.trim() || homedir(), '.home23', 'chrome-cdp');
 }
 

@@ -83,6 +83,7 @@ export async function verifyInstalledHome({ payloadPath, outputPath, resumeInsta
     const runtime = installed ? homeRoot : payloadPath;
     const args = [join(runtime, 'app/scripts/product/host.mjs'), action, '--home', homeRoot];
     if (action === 'install') args.push('--payload', payloadPath);
+    // product-private: a verification Host gets a throwaway HOME.
     const env = { PATH: `${join(runtime, 'bin')}:/usr/bin:/bin:/usr/sbin:/sbin`,
       HOME: outputPath, TMPDIR: '/private/tmp', LANG: 'en_US.UTF-8' };
     const result = await new Promise((accept, reject) => {
