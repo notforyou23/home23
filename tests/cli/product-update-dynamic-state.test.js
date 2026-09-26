@@ -152,3 +152,33 @@ test('unclassified path reasons are bounded to ten named paths plus a remainder 
   assert.equal(unknown[10].omitted, 2);
   assert.match(unknown[10].message, /2 more unclassified paths/);
 });
+
+test('a dangling state link only warns while a present outside target still refuses', async t => {
+  const root = home(t);
+  // The owner's live case: a worker's clone kept a link into a tree that was retired.
+  const clone = 'app/instances/workers/shakedown-jerry/workspace/source-clones/shakedownshuffle';
+  fs.mkdirSync(path.join(root, clone), { recursive: true });
+  const relative = `${clone}/html-test`;
+  fs.symlinkSync(path.join(`${root}-retired`, 'html-test'), path.join(root, relative));
+  const dangling = await inspectUpdateInventory(root);
+  assert.deepEqual(relevant(dangling, relative), []);
+  assert.equal(dangling.complete, true);
+  assert.deepEqual(dangling.warnings.map(item => [item.code, item.path]), [['dangling_state_link', relative]]);
+  assert.match(dangling.warnings[0].message, /does not block this update/);
+
+  const outside = fs.mkdtempSync('/private/tmp/h23out-');
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  fs.unlinkSync(path.join(root, relative));
+  fs.symlinkSync(outside, path.join(root, relative));
+  const present = await inspectUpdateInventory(root);
+  assert.deepEqual(relevant(present, relative), ['linked_state_path']);
+  assert.deepEqual(present.warnings, []);
+
+  // Dangling state outside resident content is just as unreachable, so it warns too.
+  const config = 'app/config/agents.json';
+  fs.mkdirSync(path.join(root, 'app/config'), { recursive: true });
+  fs.symlinkSync(path.join(`${root}-retired`, 'agents.json'), path.join(root, config));
+  const elsewhere = await inspectUpdateInventory(root);
+  assert.deepEqual(relevant(elsewhere, config), []);
+  assert.deepEqual(elsewhere.warnings.map(item => [item.code, item.path]), [['dangling_state_link', config]]);
+});

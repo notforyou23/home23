@@ -181,7 +181,9 @@ test('an in-home relative state link is preserved and an outside link is refused
   const allowed = await inspectUpdateInventory(fixture.home);
   assert.equal(allowed.reasons.some(item => item.code === 'linked_state_path'), false);
   fs.unlinkSync(path.join(directory, 'insights_curated_LATEST.md'));
-  fs.symlinkSync('/tmp/outside-insight.md', path.join(directory, 'insights_curated_LATEST.md'));
+  const outside = path.join(fixture.root, 'outside-insight.md');
+  fs.writeFileSync(outside, 'outside\n');
+  fs.symlinkSync(outside, path.join(directory, 'insights_curated_LATEST.md'));
   const refused = await inspectUpdateInventory(fixture.home);
   assert.equal(refused.reasons.some(item => item.code === 'linked_state_path'), true);
 });
@@ -1675,7 +1677,9 @@ test('staged Install repairs old software but still refuses unknown and linked h
   assert.equal((await install()).reasons.some(item => item.code === 'unknown_state'), true);
   fs.unlinkSync(note);
   const link = path.join(fixture.home, 'app/instances/milo/brain/outside');
-  fs.symlinkSync('/tmp/outside-home23-state', link);
+  const outsideState = path.join(fixture.root, 'outside-home23-state');
+  fs.mkdirSync(outsideState);
+  fs.symlinkSync(outsideState, link);
   assert.equal((await install()).reasons.some(item => item.code === 'linked_state_path'), true);
   fs.unlinkSync(link);
   const cli = path.join(fixture.home, 'app/cli'), held = path.join(fixture.root, 'held-cli');

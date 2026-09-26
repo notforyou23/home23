@@ -151,6 +151,15 @@ function retainedAuthorityDependencies(root) {
   });
 }
 
+// Content a resident or one of its workers writes freely. A link left there
+// whose target can no longer be reached carries nothing across a backup or a
+// restore, so it is archived as written instead of refused as an escape.
+const CONTENT_LINK = /^app\/instances\/(?:workers\/)?[^/]+\/(?:workspace|uploads|scratch|cron-runs|brain|conversations)\/.+$/;
+function danglingContentLink(relative, absolute) {
+  if (!CONTENT_LINK.test(relative)) return false;
+  try { realpathSync(absolute); return false; } catch { return true; }
+}
+
 function assertSymlinkInside(homeRoot, relative) {
   const file = join(homeRoot, relative);
   const target = readlinkSync(file);
@@ -160,7 +169,9 @@ function assertSymlinkInside(homeRoot, relative) {
   catch {
     const linked = resolve(dirname(file), target);
     if (reviewedAdoptedLinkKind(homeRoot, relative, target) === 'retain-authority') throw new Error(`Retained external authority is unavailable: ${relative}`);
-    if (!inside(homeRoot, linked) && !reviewedAdoptedLink(homeRoot, relative, target)) throw new Error(`Backup symlink escapes its home: ${relative}`);
+    // realpath failed, so nothing can be read through this link. Resident
+    // content pointing at a retired tree is kept; other dead links still refuse.
+    if (!inside(homeRoot, linked) && !reviewedAdoptedLink(homeRoot, relative, target) && !CONTENT_LINK.test(relative)) throw new Error(`Backup symlink escapes its home: ${relative}`);
     return target;
   }
   if (!inside(homeRoot, resolved) && !reviewedAdoptedLink(homeRoot, relative, target)) throw new Error(`Backup symlink escapes its home: ${relative}`);
@@ -563,14 +574,14 @@ function restoredLink(sourceHome, inspectionRoot, linkRelative, target) {
   if (isAbsolute(target)) {
     if (reviewedAdoptedLinkKind(inspectionRoot, linkRelative, target) === 'retain-authority') return target;
     if (!inside(source, absolute)) {
-      if (!reviewedAdoptedLink(inspectionRoot, linkRelative, target)) throw new Error(`Backup symlink escapes its home: ${linkRelative}`);
+      if (!reviewedAdoptedLink(inspectionRoot, linkRelative, target) && !danglingContentLink(linkRelative, absolute)) throw new Error(`Backup symlink escapes its home: ${linkRelative}`);
       return target;
     }
     const rebased = join(inspectionRoot, relative(source, absolute));
     if (!inside(inspectionRoot, rebased)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
     return relative(linkDirectory, rebased);
   }
-  if (!inside(inspectionRoot, absolute) && !reviewedAdoptedLink(inspectionRoot, linkRelative, target)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
+  if (!inside(inspectionRoot, absolute) && !reviewedAdoptedLink(inspectionRoot, linkRelative, target) && !danglingContentLink(linkRelative, absolute)) throw new Error(`Backup symlink escapes inspection: ${linkRelative}`);
   return target;
 }
 
