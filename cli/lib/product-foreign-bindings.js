@@ -1,13 +1,13 @@
 /**
  * Read-only detector for other supervisors on this machine that still name a Home23 home root:
- * the owner's global PM2 daemon dump and launchd agents in the user's Library. After a move,
- * such registrations keep writing into the retired tree. This module only reports them; it
- * never edits, reloads or deletes a registration.
+ * the owner's global PM2 daemon dump, launchd agents in the user's Library and the shell scripts
+ * in ~/bin those agents launch. After a move, such registrations keep writing into the retired
+ * tree. This module only reports them; it never edits, reloads or deletes a registration.
  */
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path';
 
 export const FOREIGN_BINDINGS_SCHEMA = 'home23.foreign-bindings.v1';
 
@@ -15,7 +15,12 @@ export const FOREIGN_BINDINGS_SCHEMA = 'home23.foreign-bindings.v1';
 const PM2_FIELDS = ['pm_cwd', 'cwd', 'pm_exec_path', 'args', 'node_args', 'env', 'pm_out_log_path', 'pm_err_log_path', 'pm_pid_path'];
 /** launchd job keys that carry paths, in report order. */
 const LAUNCHD_FIELDS = ['Program', 'ProgramArguments', 'WorkingDirectory', 'EnvironmentVariables', 'StandardInPath', 'StandardOutPath', 'StandardErrorPath', 'WatchPaths', 'QueueDirectories'];
-const SOURCE_LABELS = { pm2: 'PM2 app', launchd: 'launchd agent' };
+const SOURCE_LABELS = { pm2: 'PM2 app', launchd: 'launchd agent', shell: 'shell script' };
+/** ~/bin files with these extensions are scripts; any other file counts only with a shell shebang. */
+const SCRIPT_EXTENSIONS = new Set(['.sh', '.bash', '.zsh', '.command']);
+const SHELL_SHEBANG = /^#!\s*(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?(?:sh|bash|zsh|dash|ksh)(?:\s|$)/;
+/** A hand-written launcher is small; anything larger in ~/bin is a binary or a bundle and is skipped unread. */
+const SCRIPT_SIZE_LIMIT = 1024 * 1024;
 /** Characters that may delimit a path inside a shell line or KEY=value string. */
 const BOUNDARY = /[\s"'=:;,&|()<>]/;
 
@@ -183,6 +188,33 @@ function scanLaunchAgents(directory, roots, report) {
   }
 }
 
+function scanShellScripts(directory, roots, report) {
+  let entries;
+  try {
+    if (!statSync(directory, { throwIfNoEntry: false })?.isDirectory()) return;
+    report.scanned.shellScripts = directory;
+    entries = readdirSync(directory).sort();
+  } catch {
+    report.unreadable.push(directory);
+    return;
+  }
+  for (const entry of entries) {
+    const file = join(directory, entry);
+    let lines;
+    try {
+      // lstat so a symlink is never followed: a link into a home root is that home's file, not a binding.
+      const stat = lstatSync(file);
+      if (!stat.isFile() || stat.size > SCRIPT_SIZE_LIMIT) continue;
+      lines = readFileSync(file, 'utf8').split('\n');
+    } catch { report.unreadable.push(file); continue; }
+    if (!SCRIPT_EXTENSIONS.has(extname(entry)) && !SHELL_SHEBANG.test(lines[0])) continue;
+    lines.forEach((line, index) => {
+      const root = roots.find(candidate => namesRoot(line, candidate));
+      if (root) report.references.push({ source: 'shell', name: entry, field: `line ${index + 1}`, value: line.trim().slice(0, 200), root, file });
+    });
+  }
+}
+
 /** One owner-facing warning per registration and root, listing the fields that still name it. */
 export function foreignBindingWarnings(references) {
   const groups = new Map();
@@ -195,12 +227,12 @@ export function foreignBindingWarnings(references) {
 }
 
 /**
- * Scans the user's global PM2 dump and launchd agents for references to `homeRoot` and,
- * when given, `previousRoot`. Read-only. `homeDirectory` overrides $HOME (tests); when it
- * is given, the global PM2 home is `<homeDirectory>/.pm2` unless `pm2Home` says otherwise.
- * Otherwise $PM2_HOME is honoured unless it names the home's own supervisor, in which case
- * `~/.pm2` is the global daemon. Anything inside a scanned root belongs to the home and is
- * never reported as foreign.
+ * Scans the user's global PM2 dump, launchd agents and ~/bin shell scripts for references to
+ * `homeRoot` and, when given, `previousRoot`. Read-only. `homeDirectory` overrides $HOME
+ * (tests); when it is given, the global PM2 home is `<homeDirectory>/.pm2` unless `pm2Home`
+ * says otherwise. Otherwise $PM2_HOME is honoured unless it names the home's own supervisor,
+ * in which case `~/.pm2` is the global daemon. Anything inside a scanned root belongs to the
+ * home and is never reported as foreign.
  */
 export function detectForeignBindings({ homeRoot, previousRoot = null, homeDirectory, pm2Home, environment = process.env } = {}) {
   const roots = [normalizedRoot(homeRoot, 'home root')];
@@ -210,7 +242,7 @@ export function detectForeignBindings({ homeRoot, previousRoot = null, homeDirec
   }
   const explicitHome = typeof homeDirectory === 'string' && homeDirectory;
   const userHome = resolve(explicitHome || environment.HOME || homedir());
-  const report = { schema: FOREIGN_BINDINGS_SCHEMA, roots, scanned: { pm2Dump: null, launchAgents: null }, references: [], unreadable: [], warnings: [] };
+  const report = { schema: FOREIGN_BINDINGS_SCHEMA, roots, scanned: { pm2Dump: null, launchAgents: null, shellScripts: null }, references: [], unreadable: [], warnings: [] };
   const foreign = directory => !roots.some(root => inside(root, directory));
 
   const pm2Candidates = pm2Home ? [pm2Home] : [explicitHome ? null : environment.PM2_HOME, join(userHome, '.pm2')];
@@ -219,6 +251,10 @@ export function detectForeignBindings({ homeRoot, previousRoot = null, homeDirec
 
   const agents = join(userHome, 'Library', 'LaunchAgents');
   if (foreign(agents)) scanLaunchAgents(agents, roots, report);
+
+  // The launchd agents above mostly run scripts kept in ~/bin; those scripts name the root too.
+  const scripts = join(userHome, 'bin');
+  if (foreign(scripts)) scanShellScripts(scripts, roots, report);
 
   report.warnings = foreignBindingWarnings(report.references);
   return report;
