@@ -379,6 +379,10 @@ export interface BrowserConfig {
   enabled: boolean;
   headless: boolean;
   cdpUrl: string;
+  /** Bound for each DevTools HTTP request and WebSocket open (defaults 3000 / 5000 ms). */
+  connectTimeoutMs?: number;
+  /** Bound for each DevTools command (default 30000 ms). */
+  commandTimeoutMs?: number;
 }
 
 export interface TTSConfig {
