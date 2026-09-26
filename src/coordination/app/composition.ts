@@ -352,6 +352,8 @@ export function createCoordinationProcess(
   if (!config.enabled) {
     throw new Error("the disabled coordination process cannot be composed");
   }
+  // loadCoordinationRuntimeConfig always sets home and requires a named primary for any configured resident
+  // set; only a hand-built config without home (tests, the legacy jerry/forrest pair) reaches this default.
   const primaryResident = config.home?.primaryResident ?? "jerry";
   const database = openCoordinationDatabase({
     path: config.databasePath,

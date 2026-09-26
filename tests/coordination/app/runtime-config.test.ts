@@ -171,6 +171,10 @@ test("an arbitrary primary resident uses explicit authenticated runtime configur
   const { HOME23_COORDINATION_PRIMARY_RESIDENT: _primary, ...unnamed } = environment;
   assert.throws(() => loadCoordinationRuntimeConfig(unnamed), /HOME23_COORDINATION_PRIMARY_RESIDENT is required/);
   assert.throws(() => loadCoordinationRuntimeConfig({ ...unnamed, HOME23_COORDINATION_PRIMARY_RESIDENT: "" }), /HOME23_COORDINATION_PRIMARY_RESIDENT is required/);
+  // An explicitly empty primary fails closed even for the legacy unconfigured pair.
+  const { HOME23_COORDINATION_RESIDENT_SLUGS: _slugs, ...legacy } = unnamed;
+  assert.equal(loadCoordinationRuntimeConfig({ ...legacy, HOME23_COORDINATION_ENABLED: "false" }).home?.primaryResident, "jerry");
+  assert.throws(() => loadCoordinationRuntimeConfig({ ...legacy, HOME23_COORDINATION_PRIMARY_RESIDENT: "" }), /HOME23_COORDINATION_PRIMARY_RESIDENT is required/);
   assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_RESIDENT_SLUGS: '["bot-helper"]' }), /slugs are invalid/);
   assert.equal(loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_ENABLED: "false" }).residents["milo-river"]?.enabled, false);
 });
