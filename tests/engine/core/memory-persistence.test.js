@@ -1630,6 +1630,70 @@ test('a failure after the new manifest is published reports the manifest on disk
   }
 });
 
+test('after a summary mismatch the next rebase skips compaction and rewrites from the resident graph', async (t) => {
+  const brain = await createDriftedBrain(t, driftedEdgeBrain);
+  const memory = driftedEdgeResident();
+  memory.upsertNode({ id: 'n1', concept: 'appended before compaction' });
+  const events = [];
+  const writer = countingWriter(events);
+  const residentRewrite = writer.rewriteMemoryBaseFromSnapshot;
+  let rewrites = 0;
+  writer.rewriteMemoryBaseFromSnapshot = async (...args) => {
+    rewrites += 1;
+    if (rewrites > 1) return residentRewrite(...args);
+    events.push('resident-rewrite');
+    throw Object.assign(new Error('memory changed during persistence snapshot'), { code: 'source_changed', retryable: true });
+  };
+  const logs = [];
+  const options = {
+    brainDir: brain.brainDir, home23Root: brain.home23Root, memory, writer,
+    fullRewriteIntervalMs: 0, schedule: () => {}, logger: quietLogger(logs),
+  };
+  await assert.rejects(persistMemoryRevision(options), { code: 'source_changed' });
+  assert.deepEqual(events, ['append', 'compact', 'resident-rewrite']);
+
+  const retried = await persistMemoryRevision(options);
+  assert.deepEqual(events.slice(3), ['append', 'resident-rewrite'], 'the recount is not repeated');
+  assert.equal(retried.mode, 'full');
+  assert.equal(retried.cleaned, true);
+  const fallback = logs.filter((entry) => entry.message.startsWith('Memory compaction summary mismatch')).at(-1);
+  assert.equal(fallback.data.compactionSkipped, true);
+  assert.deepEqual(fallback.data.graphCounts, { nodes: 2, edges: 2, clusters: 0 });
+
+  // Rows and summary now agree, so the next due rebase compacts as normal.
+  memory.upsertNode({ id: 'n3', concept: 'after the rewrite' });
+  const compacted = await persistMemoryRevision(options);
+  assert.deepEqual(events.slice(5), ['append', 'compact']);
+  assert.equal(compacted.mode, 'full');
+  assert.equal(compacted.manifest.activeBase.nodes.count, 3);
+});
+
+test('a remembered mismatch keeps the catastrophic-loss floor without recounting', async (t) => {
+  const diskNodes = Array.from({ length: 150 }, (_, index) => ({ id: `n${index}`, concept: `kept ${index}` }));
+  const brain = await createDriftedBrain(t, { diskNodes, diskEdges: [] });
+  const memory = createResidentMemory(diskNodes.slice(0, 10));
+  const events = [];
+  const startedAt = Date.now();
+  const at = (offsetMs) => ({
+    brainDir: brain.brainDir, home23Root: brain.home23Root, memory, writer: countingWriter(events),
+    fullRewriteIntervalMs: 0, schedule: () => {}, logger: quietLogger([]), now: () => startedAt + offsetMs,
+  });
+  memory.upsertNode({ id: 'n0', concept: 'still here' });
+  await assert.rejects(persistMemoryRevision(at(0)), { code: 'catastrophic_graph_loss' });
+  assert.deepEqual(events, ['append', 'compact']);
+  memory.upsertNode({ id: 'n1', concept: 'inside the window' });
+  assert.equal((await persistMemoryRevision(at(30 * 60 * 1000))).maintenanceDebt.reason, 'compaction_backoff');
+
+  memory.upsertNode({ id: 'n2', concept: 'after the window' });
+  let failure;
+  await assert.rejects(persistMemoryRevision(at(60 * 60 * 1000 + 1)), (error) => { failure = error; return true; });
+  assert.equal(failure.code, 'catastrophic_graph_loss');
+  assert.equal(failure.compactionSkipped, true);
+  assert.equal(failure.graphCounts.nodes, 150, 'the remembered disk rows set the floor');
+  assert.equal(failure.memoryCommitted, undefined);
+  assert.deepEqual(events, ['append', 'compact', 'append', 'append']);
+});
+
 test('stale base staging files are removed before a rebase while committed files remain', async (t) => {
   const fixture = await createCompactionFixture(t);
   const committedBefore = await readManifest(fixture.brainDir);

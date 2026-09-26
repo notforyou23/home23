@@ -20,7 +20,9 @@ const {
 // restage a whole base and re-append every dirty record on each save: from
 // 2026-09-24 Forrest did that ~900 times, growing its delta to 1.96 GB while
 // every state save was refused. Keyed by brain; retryable failures such as a
-// busy lock or a concurrent append still retry on the next save.
+// busy lock or a concurrent append still retry on the next save. An entry
+// also keeps the counts of committed rows that failed the summary check, so
+// that brain's next rebase goes straight to the resident rewrite.
 const compactionBackoff = new Map();
 
 function defaultRebuildAnnIndex({ brainDir, home23Root }) {
@@ -302,7 +304,7 @@ async function persistMemoryRevision({
   // ordinary delta so memory stays durable, and reports the debt.
   const backoffKey = path.resolve(brainDir);
   const backoff = compactionBackoff.get(backoffKey);
-  const deferredDebt = rewriteDue && !forceFull && manifest && backoff && now() < backoff.until
+  const deferredDebt = rewriteDue && !forceFull && manifest && backoff?.until && now() < backoff.until
     ? { reason: 'compaction_backoff', error: backoff.error, retryAfter: new Date(backoff.until).toISOString() }
     : null;
   const rewrite = rewriteDue && !deferredDebt;
@@ -431,91 +433,102 @@ async function persistMemoryRevision({
         committedManifest,
       )),
     };
-    try {
-      result = await writer.compactMemoryBase(brainDir, {
-        home23Root, lockRoot, level: gzipLevel, ...committedSource,
-      });
-    } catch (compactionError) {
-      compactionError.manifestSummary ??= committedManifest.summary;
-      let failure = compactionError;
-      let memoryDurable = true;
-      // Committed rows that disagree with the summary can never compact:
-      // Forrest's base+delta held 65,372 edges against a summary of 65,352,
-      // because hydration drops the 20 whose endpoint node is missing. The
-      // summary was written from the resident graph, so publish that graph
-      // instead, under the same CAS a forced or first write uses. Mutations
-      // during the stream abort it retryably; later ones stay dirty.
-      if (canStreamSnapshot && isGraphSummaryMismatch(compactionError)) {
-        try {
-          const resident = memory.capturePersistenceStreamingSnapshot();
-          const diagnostics = {
+    // Committed rows that disagree with the summary can never compact:
+    // Forrest's base+delta held 65,372 edges against a summary of 65,352,
+    // because hydration drops the 20 whose endpoint node is missing. The
+    // summary was written from the resident graph, so publish that graph
+    // instead, under the same CAS a forced or first write uses. Mutations
+    // during the stream abort it retryably; later ones stay dirty. A brain
+    // whose rows already failed the count skips the compaction: recounting
+    // them took ~6 minutes inside Forrest's saveState, only to fail again.
+    let mismatchCounts = canStreamSnapshot ? backoff?.graphCounts || null : null;
+    let failure = null;
+    let memoryDurable = true;
+    if (!mismatchCounts) {
+      try {
+        result = await writer.compactMemoryBase(brainDir, {
+          home23Root, lockRoot, level: gzipLevel, ...committedSource,
+        });
+      } catch (compactionError) {
+        compactionError.manifestSummary ??= committedManifest.summary;
+        failure = compactionError;
+        if (canStreamSnapshot && isGraphSummaryMismatch(compactionError)) mismatchCounts = compactionError.graphCounts;
+      }
+    }
+    if (mismatchCounts) {
+      try {
+        const resident = memory.capturePersistenceStreamingSnapshot();
+        const diagnostics = {
+          manifestSummary: committedManifest.summary,
+          graphCounts: mismatchCounts,
+          residentSummary: resident.summary,
+          ...(!failure && { compactionSkipped: true }),
+        };
+        const refusal = residentRewriteRefusal(resident.summary, mismatchCounts, committedManifest.summary);
+        if (refusal) {
+          // Fail closed as a state save would: no memoryCommitted, so the
+          // orchestrator keeps refusing to save over a graph this depleted.
+          memoryDurable = false;
+          failure = Object.assign(new Error('resident rewrite refused — catastrophic graph loss'), {
+            code: 'catastrophic_graph_loss', retryable: false, refusal, ...diagnostics,
+            ...(failure && { cause: failure }),
+          });
+        } else {
+          logger.warn?.('Memory compaction summary mismatch — rewriting base from resident graph', diagnostics);
+          result = await writer.rewriteMemoryBaseFromSnapshot(brainDir, resident, {
+            lockRoot, level: gzipLevel, ...committedSource,
+          });
+          snapshot = resident;
+          streamCompaction = false;
+          failure = null;
+        }
+      } catch (rewriteError) {
+        failure = rewriteError;
+        failure.graphCounts ??= mismatchCounts;
+        failure.manifestSummary ??= committedManifest.summary;
+      }
+    }
+    if (failure) {
+      // A compaction or rewrite can throw after publishing its manifest
+      // (source lock release, pin or scratch cleanup). Callers then record
+      // the manifest actually on disk, and its new base is maintained as
+      // after any rewrite; only the cleanup failed.
+      const onDisk = await writer.readManifest(brainDir).catch(() => null) || committedManifest;
+      const published = onDisk.generation !== committedManifest.generation;
+      // Back off on the error that ended this attempt: when the fallback
+      // ran, a retryable resident-rewrite failure (a mutation during its
+      // stream, a busy lock) retries on the next save, not in an hour.
+      const retryAfter = !published && failure.retryable !== true ? now() + compactionBackoffMs : null;
+      if (published) compactionBackoff.delete(backoffKey);
+      else if (retryAfter || mismatchCounts) {
+        compactionBackoff.set(backoffKey, { until: retryAfter, error: failure.message, graphCounts: mismatchCounts });
+      }
+      if (memoryDurable) {
+        // The append (or a clean reuse) is durable at committedManifest, so
+        // callers may save state exactly as after an ordinary delta. Dirty
+        // markers stay set, matching the failed-compaction contract above.
+        failure.memoryCommitted = {
+          ...committedResult,
+          manifest: onDisk,
+          mode: published ? 'full' : (committedResult.count > 0 ? 'delta' : 'reused'),
+          cleaned: false,
+          persistedGeneration: snapshot.generation,
+          persistedChanges: snapshot.changes || null,
+          persistedChangesCaptured: Boolean(snapshot.changes),
+          maintenanceDebt: {
+            reason: published ? 'compaction_cleanup_failed' : 'compaction_failed',
+            error: failure.message,
+            retryAfter: retryAfter ? new Date(retryAfter).toISOString() : null,
+            graphCounts: failure.graphCounts ?? null,
             manifestSummary: committedManifest.summary,
-            graphCounts: compactionError.graphCounts,
-            residentSummary: resident.summary,
-          };
-          const refusal = residentRewriteRefusal(resident.summary, compactionError.graphCounts, committedManifest.summary);
-          if (refusal) {
-            // Fail closed as a state save would: no memoryCommitted, so the
-            // orchestrator keeps refusing to save over a graph this depleted.
-            memoryDurable = false;
-            failure = Object.assign(new Error('resident rewrite refused — catastrophic graph loss'), {
-              code: 'catastrophic_graph_loss', retryable: false, refusal, ...diagnostics, cause: compactionError,
-            });
-          } else {
-            logger.warn?.('Memory compaction summary mismatch — rewriting base from resident graph', diagnostics);
-            result = await writer.rewriteMemoryBaseFromSnapshot(brainDir, resident, {
-              lockRoot, level: gzipLevel, ...committedSource,
-            });
-            snapshot = resident;
-            streamCompaction = false;
-            failure = null;
-          }
-        } catch (rewriteError) {
-          failure = rewriteError;
-          failure.graphCounts ??= compactionError.graphCounts;
-          failure.manifestSummary ??= committedManifest.summary;
-        }
+          },
+        };
       }
-      if (failure) {
-        // A compaction or rewrite can throw after publishing its manifest
-        // (source lock release, pin or scratch cleanup). Callers then record
-        // the manifest actually on disk, and its new base is maintained as
-        // after any rewrite; only the cleanup failed.
-        const onDisk = await writer.readManifest(brainDir).catch(() => null) || committedManifest;
-        const published = onDisk.generation !== committedManifest.generation;
-        // Back off on the error that ended this attempt: when the fallback
-        // ran, a retryable resident-rewrite failure (a mutation during its
-        // stream, a busy lock) retries on the next save, not in an hour.
-        const retryAfter = !published && failure.retryable !== true ? now() + compactionBackoffMs : null;
-        if (published) compactionBackoff.delete(backoffKey);
-        else if (retryAfter) compactionBackoff.set(backoffKey, { until: retryAfter, error: failure.message });
-        if (memoryDurable) {
-          // The append (or a clean reuse) is durable at committedManifest, so
-          // callers may save state exactly as after an ordinary delta. Dirty
-          // markers stay set, matching the failed-compaction contract above.
-          failure.memoryCommitted = {
-            ...committedResult,
-            manifest: onDisk,
-            mode: published ? 'full' : (committedResult.count > 0 ? 'delta' : 'reused'),
-            cleaned: false,
-            persistedGeneration: snapshot.generation,
-            persistedChanges: snapshot.changes || null,
-            persistedChangesCaptured: Boolean(snapshot.changes),
-            maintenanceDebt: {
-              reason: published ? 'compaction_cleanup_failed' : 'compaction_failed',
-              error: failure.message,
-              retryAfter: retryAfter ? new Date(retryAfter).toISOString() : null,
-              graphCounts: failure.graphCounts ?? null,
-              manifestSummary: committedManifest.summary,
-            },
-          };
-        }
-        if (published) {
-          scheduleSourceRetirement({ brainDir, home23Root, lockRoot, retire, schedule, logger });
-          scheduleAnnRebuild({ brainDir, home23Root, rebuildAnn, schedule, logger });
-        }
-        throw failure;
+      if (published) {
+        scheduleSourceRetirement({ brainDir, home23Root, lockRoot, retire, schedule, logger });
+        scheduleAnnRebuild({ brainDir, home23Root, rebuildAnn, schedule, logger });
       }
+      throw failure;
     }
     performedRewrite = true;
   }
