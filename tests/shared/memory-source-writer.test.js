@@ -20,9 +20,11 @@ const {
   readManifest,
   pruneAbandonedCompactionPins,
   releaseOperationSource,
+  removeStaleBaseStaging,
   retireUnpinnedSources,
   rewriteMemoryBase,
   sourceDescriptorDigest,
+  withMemorySourceLock,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
 
@@ -605,6 +607,32 @@ test('retirement preserves files named by an active reader pin', async () => {
   const releasedResult = await retireUnpinnedSources(dir, { home23Root, lockRoot });
   assert.equal(releasedResult.retired.includes(oldNodeFile), true);
   scratchQuota.close();
+});
+
+test('stale base staging cleanup removes only old staging files, under the source lock', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const stale = 'memory-nodes.base-2.g-2-0a1b2c3d-aaaa-bbbb-cccc-000000000002.jsonl.gz.4242.1790218557262.76b4b704e61ca.tmp';
+  const fresh = 'memory-edges.base-2.g-2-0a1b2c3d-aaaa-bbbb-cccc-000000000002.jsonl.gz.4243.1790218557263.022415a2b59aa.tmp';
+  const lookalikes = [
+    'memory-nodes.base-2.g-2-0a1b2c3d-aaaa-bbbb-cccc-000000000002.jsonl.gz',
+    'memory-delta.e3.jsonl.4242.1790218557262.ab.tmp',
+    '.memory-manifest.json.tmp-4242-0a1b',
+  ];
+  for (const name of [stale, fresh, ...lookalikes]) await fsp.writeFile(path.join(dir, name), name);
+  const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+  for (const name of [stale, ...lookalikes]) await fsp.utimes(path.join(dir, name), hourAgo, hourAgo);
+  const olderThanMs = Date.now() - 15 * 60 * 1000;
+  await assert.rejects(removeStaleBaseStaging(dir, { lockRoot }), { code: 'invalid_request' });
+  await withMemorySourceLock(dir, { lockRoot }, async () => {
+    await assert.rejects(removeStaleBaseStaging(dir, { lockRoot, olderThanMs, lockTimeoutMs: 50 }));
+  });
+  assert.ok((await fsp.readdir(dir)).includes(stale), 'nothing is removed without the source lock');
+  assert.deepEqual(await removeStaleBaseStaging(dir, { lockRoot, olderThanMs }), { removed: [stale] });
+  const files = await fsp.readdir(dir);
+  for (const name of [
+    fresh, ...lookalikes,
+    'memory-manifest.json', 'memory-nodes.base-1.jsonl.gz', 'memory-edges.base-1.jsonl.gz', 'memory-delta.e2.jsonl',
+  ]) assert.ok(files.includes(name), `${name} is kept`);
 });
 
 test('retirement fails closed on an oversized discovered pin record', async (t) => {

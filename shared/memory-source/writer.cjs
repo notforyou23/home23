@@ -829,6 +829,36 @@ async function compareAndSwapSourceRevision(brainDir, update = {}) {
   }
 }
 
+// writeJsonlGzAtomic stages `<base file>.<pid>.<ms>.<hex>.tmp`, outside the
+// source lock, and removes it on any failure it survives. Only a killed
+// process leaves one, but at base size (~300 MB for Forrest) each orphan
+// matters on a nearly full volume. Committed base, delta and manifest names
+// never match this pattern.
+const BASE_STAGING_FILE = /^memory-(nodes|edges)\.base-\d+\.g-[A-Za-z0-9-]+\.jsonl\.gz\.\d+\.\d+\.[0-9a-f]+\.tmp$/;
+
+/** Remove base staging files last modified before `olderThanMs`, under the source lock. */
+async function removeStaleBaseStaging(brainDir, options = {}) {
+  if (!Number.isFinite(options.olderThanMs)) {
+    throw memorySourceError('invalid_request', 'staging cutoff required');
+  }
+  return withMemorySourceLock(brainDir, {
+    lockRoot: options.lockRoot,
+    signal: options.signal,
+    lockTimeoutMs: options.lockTimeoutMs,
+  }, async () => {
+    const removed = [];
+    for (const name of await fsp.readdir(brainDir)) {
+      if (!BASE_STAGING_FILE.test(name)) continue;
+      const file = path.join(brainDir, name);
+      const stat = await fsp.lstat(file).catch(() => null);
+      if (!stat?.isFile() || stat.mtimeMs >= options.olderThanMs) continue;
+      await fsp.rm(file, { force: true });
+      removed.push(name);
+    }
+    return { removed: removed.sort() };
+  });
+}
+
 async function retireUnpinnedSources(brainDir, options = {}) {
   // Release pins left by compaction runs whose process died, before taking
   // the source lock (release takes that lock itself). Injected pin lists are
@@ -879,6 +909,7 @@ module.exports = {
   rewriteMemoryBaseFromSnapshot,
   advanceAnnBuiltFromRevision,
   compareAndSwapSourceRevision,
+  removeStaleBaseStaging,
   retireUnpinnedSources,
   normalizeCapturedView,
 };

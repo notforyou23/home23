@@ -15,6 +15,7 @@ const {
   compactMemoryBase,
   openMemorySource,
   readManifest,
+  removeStaleBaseStaging,
   rewriteMemoryBase,
   rewriteMemoryBaseFromSnapshot,
   writeJsonlGzAtomic,
@@ -965,15 +966,21 @@ test('failed compaction preserves appended data and dirty markers without schedu
   const memory = createChangesOnlyMemory(changes, fixture.summary);
   const before = await readManifest(fixture.brainDir);
   const scheduled = [];
-  await assert.rejects(persistMemoryRevision({
+  let compactions = 0;
+  const options = {
     ...fixture, memory, fullRewriteIntervalMs: 0, schedule: (task) => scheduled.push(task),
     writer: {
       readManifest, appendMemoryRevision,
       compactMemoryBase: async () => {
+        compactions += 1;
         throw Object.assign(new Error('compaction source changed'), { code: 'source_changed', retryable: true });
       },
     },
-  }), { code: 'source_changed', retryable: true });
+  };
+  let failure;
+  await assert.rejects(persistMemoryRevision(options), (error) => { failure = error; return true; });
+  assert.equal(failure.code, 'source_changed');
+  assert.equal(failure.retryable, true);
   assert.equal(memory.cleanCalls, 0);
   assert.equal(scheduled.length, 0);
   const after = await readManifest(fixture.brainDir);
@@ -981,6 +988,15 @@ test('failed compaction preserves appended data and dirty markers without schedu
   assert.ok(after.currentRevision > before.currentRevision);
   const loaded = await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root });
   assert.equal(loaded.nodes.find((node) => node.id === 'n1').concept, 'durably appended');
+  // The append is durable, so the caller may save state with maintenance debt.
+  assert.equal(failure.memoryCommitted.mode, 'delta');
+  assert.equal(failure.memoryCommitted.cleaned, false);
+  assert.deepEqual(failure.memoryCommitted.manifest, after);
+  assert.equal(failure.memoryCommitted.maintenanceDebt.reason, 'compaction_failed');
+  assert.equal(failure.memoryCommitted.maintenanceDebt.retryAfter, null, 'retryable failures do not back off');
+  assert.deepEqual(failure.manifestSummary, after.summary);
+  await assert.rejects(persistMemoryRevision(options), { code: 'source_changed' });
+  assert.equal(compactions, 2, 'a retryable compaction failure is retried on the next save');
 });
 
 test('resident mutations during streaming compaction remain dirty after commit', async (t) => {
@@ -1268,4 +1284,266 @@ test('fresh alias repair publishes canonical rows before a later overdue disk co
   const reused = await persistMemoryRevision(options);
   assert.equal(reused.mode, 'reused');
   assert.equal(scheduled.length, 4);
+});
+
+// Resident graph as the engine holds it: hydration may drop disk rows (the
+// orchestrator skips dangling and self-loop edges), dirty markers track
+// mutations, and every mutation advances the persistence generation.
+function createResidentMemory(nodes, edges = []) {
+  let generation = 20;
+  let cleanCalls = 0;
+  const rows = { nodes: [...nodes], edges: [...edges] };
+  const summary = () => ({
+    nodeCount: rows.nodes.length,
+    edgeCount: rows.edges.length,
+    clusterCount: new Set(rows.nodes.map((node) => node.cluster)
+      .filter((cluster) => cluster !== null && cluster !== undefined)).size,
+  });
+  const memory = {
+    dirtyNodeIds: new Set(),
+    dirtyEdgeKeys: new Set(),
+    get generation() { return generation; },
+    get cleanCalls() { return cleanCalls; },
+    get rows() { return rows; },
+    upsertNode(node) {
+      const index = rows.nodes.findIndex((row) => row.id === node.id);
+      if (index >= 0) rows.nodes[index] = node;
+      else rows.nodes.push(node);
+      memory.dirtyNodeIds.add(node.id);
+      generation += 1;
+    },
+    capturePersistenceSnapshot() { throw new Error('full graph allocation is forbidden'); },
+    capturePersistenceChangesSnapshot() {
+      return {
+        generation,
+        changes: {
+          ...emptyCompactionChanges(),
+          nodes: rows.nodes.filter((node) => memory.dirtyNodeIds.has(node.id)),
+        },
+        summary: summary(),
+      };
+    },
+    capturePersistenceStreamingSnapshot() {
+      const captured = generation;
+      const nodesView = [...rows.nodes];
+      const edgesView = [...rows.edges];
+      const validate = () => {
+        if (captured !== generation) {
+          throw Object.assign(new Error('resident generation changed'), { code: 'source_changed', retryable: true });
+        }
+      };
+      return {
+        generation: captured,
+        summary: summary(),
+        fullView: {
+          nodes: { *[Symbol.iterator]() { for (const node of nodesView) { validate(); yield node; } } },
+          edges: { *[Symbol.iterator]() { for (const edge of edgesView) { validate(); yield edge; } } },
+        },
+        validate,
+      };
+    },
+    markPersistenceCleanIfGeneration(expected) {
+      cleanCalls += 1;
+      if (expected !== generation) return false;
+      memory.dirtyNodeIds.clear();
+      return true;
+    },
+  };
+  return memory;
+}
+
+async function createDriftedBrain(t, { diskNodes, diskEdges }) {
+  const home23Root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-summary-drift-'));
+  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
+  const brainDir = path.join(home23Root, 'instances', 'forrest', 'brain');
+  await fsp.mkdir(brainDir, { recursive: true });
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  const clusterCount = new Set(diskNodes.map((node) => node.cluster).filter((c) => c !== undefined)).size;
+  await rewriteMemoryBase(brainDir, {
+    nodes: diskNodes,
+    edges: diskEdges,
+    summary: { nodeCount: diskNodes.length, edgeCount: diskEdges.length, clusterCount },
+  }, { lockRoot });
+  return { home23Root, brainDir, lockRoot };
+}
+
+function countingWriter(events) {
+  return {
+    readManifest,
+    removeStaleBaseStaging,
+    appendMemoryRevision: async (...args) => { events.push('append'); return appendMemoryRevision(...args); },
+    compactMemoryBase: async (...args) => { events.push('compact'); return compactMemoryBase(...args); },
+    rewriteMemoryBaseFromSnapshot: async (brainDir, snapshot, options) => {
+      events.push('resident-rewrite');
+      const current = await readManifest(brainDir);
+      assert.equal(options.expectedGeneration, current.generation);
+      assert.equal(options.expectedRevision, current.currentRevision);
+      assert.match(options.expectedDigest, /^sha256:[a-f0-9]{64}$/);
+      return rewriteMemoryBaseFromSnapshot(brainDir, snapshot, options);
+    },
+  };
+}
+
+const quietLogger = (entries) => ({
+  info: (message, data) => entries.push({ level: 'info', message, data }),
+  warn: (message, data) => entries.push({ level: 'warn', message, data }),
+  error: (message, data) => entries.push({ level: 'error', message, data }),
+});
+
+test('an edge or cluster summary mismatch falls back to a CAS-checked resident rewrite', async (t) => {
+  const cases = [{
+    // Forrest, 2026-09: base+delta held dangling edges that hydration drops,
+    // while every append wrote the resident summary.
+    name: 'edges',
+    diskNodes: [{ id: 'n1', concept: 'one' }, { id: 'n2', concept: 'two' }],
+    diskEdges: [
+      { key: 'n1->n2', source: 'n1', target: 'n2', weight: 0.5 },
+      { key: 'ghost->n1', source: 'ghost', target: 'n1', weight: 0.2 },
+    ],
+    resident: {
+      nodes: [{ id: 'n1', concept: 'one' }, { id: 'n2', concept: 'two' }],
+      edges: [{ key: 'n1->n2', source: 'n1', target: 'n2', weight: 0.5 }],
+    },
+    disk: { nodes: 2, edges: 2, clusters: 0 },
+  }, {
+    name: 'clusters',
+    diskNodes: [{ id: 'n1', concept: 'one', cluster: 1 }, { id: 'n2', concept: 'two', cluster: 2 }],
+    diskEdges: [{ key: 'n1->n2', source: 'n1', target: 'n2', weight: 0.5 }],
+    resident: {
+      nodes: [{ id: 'n1', concept: 'one', cluster: 1 }, { id: 'n2', concept: 'two', cluster: 1 }],
+      edges: [{ key: 'n1->n2', source: 'n1', target: 'n2', weight: 0.5 }],
+    },
+    disk: { nodes: 2, edges: 1, clusters: 2 },
+  }];
+  for (const scenario of cases) {
+    const brain = await createDriftedBrain(t, scenario);
+    const before = await readManifest(brain.brainDir);
+    const memory = createResidentMemory(scenario.resident.nodes, scenario.resident.edges);
+    memory.upsertNode({ ...scenario.resident.nodes[0], concept: 'appended before compaction' });
+    const events = [];
+    const logs = [];
+    const scheduled = [];
+    const options = {
+      brainDir: brain.brainDir, home23Root: brain.home23Root, memory,
+      writer: countingWriter(events), logger: quietLogger(logs),
+      schedule: (task) => scheduled.push(task),
+    };
+    const first = await persistMemoryRevision({ ...options, fullRewriteIntervalMs: 0 });
+    assert.deepEqual(events, ['append', 'compact', 'resident-rewrite'], scenario.name);
+    const fallback = logs.find((entry) => entry.message.startsWith('Memory compaction summary mismatch'));
+    assert.ok(fallback, `${scenario.name}: the fallback names itself`);
+    assert.deepEqual(fallback.data.graphCounts, scenario.disk);
+    const residentSummary = memory.capturePersistenceStreamingSnapshot().summary;
+    assert.deepEqual(fallback.data.manifestSummary, residentSummary);
+    assert.equal(first.mode, 'full');
+    assert.equal(first.cleaned, true);
+    assert.equal(memory.dirtyNodeIds.size, 0, 'dirty markers cleared by the resident rewrite');
+    assert.notEqual(first.manifest.generation, before.generation);
+    assert.deepEqual(first.manifest.summary, residentSummary);
+    assert.equal(first.manifest.activeBase.nodes.count, residentSummary.nodeCount);
+    assert.equal(first.manifest.activeBase.edges.count, residentSummary.edgeCount);
+    assert.equal(first.manifest.activeDelta.count, 0);
+    assert.equal(first.manifest.activeDelta.committedBytes, 0);
+    assert.equal(first.maintenanceDebt, undefined);
+    assert.equal(scheduled.length, 2, 'retirement and ANN rebuild follow the rewrite');
+    const loaded = await loadMemoryRevision(brain.brainDir, { home23Root: brain.home23Root });
+    assert.deepEqual(loaded.nodes, memory.rows.nodes);
+    assert.deepEqual(loaded.edges, memory.rows.edges);
+
+    memory.upsertNode({ id: 'n3', concept: 'after the fallback' });
+    const second = await persistMemoryRevision(options);
+    assert.equal(second.mode, 'delta');
+    assert.equal(second.count, 1);
+    assert.equal(second.cleaned, true);
+    assert.equal(second.manifest.generation, first.manifest.generation);
+    assert.equal(second.manifest.activeDelta.count, 1);
+    assert.deepEqual(events, ['append', 'compact', 'resident-rewrite', 'append'], 'a clean incremental append');
+  }
+});
+
+test('the catastrophic-loss guard refuses a resident rewrite over a depleted graph', async (t) => {
+  const diskNodes = Array.from({ length: 150 }, (_, index) => ({ id: `n${index}`, concept: `kept ${index}` }));
+  const brain = await createDriftedBrain(t, { diskNodes, diskEdges: [] });
+  // A resident graph that lost most nodes without removals: its append
+  // publishes the depleted summary, and the disk rows keep the real count.
+  const memory = createResidentMemory(diskNodes.slice(0, 10));
+  memory.upsertNode({ id: 'n0', concept: 'still here' });
+  const events = [];
+  const scheduled = [];
+  const options = {
+    brainDir: brain.brainDir, home23Root: brain.home23Root, memory,
+    writer: countingWriter(events), logger: quietLogger([]),
+    schedule: (task) => scheduled.push(task), fullRewriteIntervalMs: 0,
+  };
+  let failure;
+  await assert.rejects(persistMemoryRevision(options), (error) => { failure = error; return true; });
+  assert.equal(failure.code, 'catastrophic_graph_loss');
+  assert.equal(failure.refusal.kind, 'nodes');
+  assert.equal(failure.graphCounts.nodes, 150);
+  assert.equal(failure.residentSummary.nodeCount, 10);
+  assert.equal(failure.memoryCommitted, undefined, 'the orchestrator must keep refusing this save');
+  assert.deepEqual(events, ['append', 'compact']);
+  assert.equal(memory.cleanCalls, 0);
+  assert.equal(scheduled.length, 0);
+  const loaded = await loadMemoryRevision(brain.brainDir, { home23Root: brain.home23Root });
+  assert.equal(loaded.nodes.length, 150, 'disk rows survive the refusal');
+});
+
+test('a deterministic compaction failure backs off further compaction for the window', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const memory = createResidentMemory(fixture.nodes, fixture.edges);
+  memory.upsertNode({ ...fixture.nodes[0], concept: 'first' });
+  let compactions = 0;
+  const writer = {
+    readManifest, appendMemoryRevision, rewriteMemoryBaseFromSnapshot,
+    compactMemoryBase: async () => {
+      compactions += 1;
+      throw Object.assign(new Error('compaction input rejected'), { code: 'source_unavailable', retryable: false });
+    },
+  };
+  const startedAt = Date.now();
+  const at = (offsetMs) => ({
+    ...fixture, memory, writer, fullRewriteIntervalMs: 0, schedule: () => {}, logger: quietLogger([]),
+    now: () => startedAt + offsetMs,
+  });
+  let failure;
+  await assert.rejects(persistMemoryRevision(at(0)), (error) => { failure = error; return true; });
+  assert.equal(compactions, 1);
+  assert.equal(failure.memoryCommitted.maintenanceDebt.retryAfter, new Date(startedAt + 60 * 60 * 1000).toISOString());
+
+  memory.upsertNode({ ...fixture.nodes[0], concept: 'second' });
+  const deferred = await persistMemoryRevision(at(30 * 60 * 1000));
+  assert.equal(compactions, 1, 'no second compaction attempt inside the window');
+  assert.equal(deferred.mode, 'delta');
+  assert.equal(deferred.cleaned, true, 'the ordinary append acknowledges the retained dirty records');
+  assert.equal(deferred.maintenanceDebt.reason, 'compaction_backoff');
+  assert.equal(deferred.maintenanceDebt.error, 'compaction input rejected');
+
+  await assert.rejects(persistMemoryRevision(at(60 * 60 * 1000 + 1)), { message: 'compaction input rejected' });
+  assert.equal(compactions, 2, 'compaction resumes once the window has passed');
+});
+
+test('stale base staging files are removed before a rebase while committed files remain', async (t) => {
+  const fixture = await createCompactionFixture(t);
+  const committedBefore = await readManifest(fixture.brainDir);
+  const stale = 'memory-nodes.base-9.g-9-0f0e0d0c-aaaa-bbbb-cccc-000000000009.jsonl.gz.35317.1790218557262.76b4b704e61ca.tmp';
+  const live = 'memory-edges.base-9.g-9-0f0e0d0c-aaaa-bbbb-cccc-000000000009.jsonl.gz.77430.1790255305377.022415a2b59aa.tmp';
+  await fsp.writeFile(path.join(fixture.brainDir, stale), 'orphaned by a killed rewrite');
+  await fsp.writeFile(path.join(fixture.brainDir, live), 'still being written');
+  const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+  await fsp.utimes(path.join(fixture.brainDir, stale), hourAgo, hourAgo);
+  const logs = [];
+  const result = await persistMemoryRevision({
+    ...fixture, memory: createChangesOnlyMemory(emptyCompactionChanges(), fixture.summary),
+    fullRewriteIntervalMs: 0, schedule: () => {}, logger: quietLogger(logs),
+  });
+  assert.equal(result.mode, 'full');
+  const files = await fsp.readdir(fixture.brainDir);
+  assert.ok(!files.includes(stale), 'the stale staging file is removed');
+  assert.ok(files.includes(live), 'a recently written staging file is left alone');
+  for (const file of [
+    committedBefore.activeBase.nodes.file, committedBefore.activeBase.edges.file, committedBefore.activeDelta.file,
+    result.manifest.activeBase.nodes.file, result.manifest.activeBase.edges.file, result.manifest.activeDelta.file,
+  ]) assert.ok(files.includes(file), `${file} is untouched`);
+  assert.deepEqual(logs.find((entry) => entry.message === 'Removed stale memory base staging files')?.data.removed, [stale]);
 });
