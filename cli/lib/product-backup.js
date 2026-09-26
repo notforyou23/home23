@@ -1663,18 +1663,19 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     if (treeContains(document, source)) fail('move_rebind_incomplete', `Destination configuration still names the source home: ${relative(destination, entry.file)}`);
     writePrivateYaml(entry.file, document, yaml);
   }
+  // The product owns its process registration and agent registry: derive both
+  // from the rebound configuration, as Start does. Without a resident to
+  // generate from, rewrite the recorded paths instead.
+  let generated = null;
+  if (files.some(entry => entry.kind === 'instance')) {
+    try {
+      const { generateEcosystem } = await import('./generate-ecosystem.js');
+      generated = generateEcosystem(join(destination, 'app'), { quiet: true, writeEcosystem: false, writeManifest: false });
+    } catch { generated = null; }
+  }
   const ecosystem = join(destination, 'app/ecosystem.config.cjs');
   if (exists(ecosystem)) {
-    // The product owns its process registration: regenerate it from the
-    // rebound configuration, as Start does. Without a resident to generate
-    // from, rewrite the recorded paths instead.
-    let text = null;
-    if (files.some(entry => entry.kind === 'instance')) {
-      try {
-        const { generateEcosystem } = await import('./generate-ecosystem.js');
-        text = generateEcosystem(join(destination, 'app'), { quiet: true, writeEcosystem: false, writeManifest: false }).ecosystemSource;
-      } catch { text = null; }
-    }
+    let text = generated?.ecosystemSource ?? null;
     if (typeof text !== 'string') {
       text = readFileSync(ecosystem, 'utf8');
       if (adopted) {
@@ -1728,7 +1729,7 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
   }
   rebindSemanticPrep(source, destination, newPorts, adopted);
   rebindHomeUpdateRecords(source, destination, adopted);
-  rebindAgentsManifest(source, destination, adopted);
+  rebindAgentsManifest(source, destination, adopted, generated?.manifest);
   const savedProcesses = join(destination, 'runtime/ecosystem.config.json');
   if (exists(savedProcesses)) unlinkSync(savedProcesses);
   // The supervisor dump is derived from the registration; PM2 rebuilds it.
@@ -1902,6 +1903,52 @@ export function scanHomeReferences(destination, source) {
   return found.sort();
 }
 
+/**
+ * Instance storage a home's Start would use outside that home: system.instanceRoot
+ * and the engine config it resolves against it (shared/agent-instance-paths.cjs,
+ * generate-ecosystem.js COSMO_CONFIG_PATH), for residents and non-residents alike.
+ * A root the resolver refuses is listed without a target.
+ */
+async function instanceStorageOutside(home) {
+  const instances = join(home, 'app/instances');
+  try { if (!statSync(instances).isDirectory()) return []; } catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return []; throw error; }
+  const { default: instancePaths } = await import('../../shared/agent-instance-paths.cjs');
+  const outside = [];
+  for (const name of readdirSync(instances).sort()) {
+    const directory = join(instances, name);
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(name) || !lstatSync(directory).isDirectory()) continue;
+    try { statSync(join(directory, 'config.yaml')); } catch { continue; }
+    const path = `app/instances/${name}/config.yaml`;
+    let paths;
+    try { paths = instancePaths.resolveAgentInstancePaths(join(home, 'app'), name); }
+    catch { outside.push({ path, field: 'system.instanceRoot', target: null }); continue; }
+    if (!inside(home, paths.instanceRoot)) { outside.push({ path, field: 'system.instanceRoot', target: paths.instanceRoot }); continue; }
+    const engine = paths.config?.system?.engineConfig;
+    if (typeof engine === 'string' && engine && !inside(home, resolve(paths.instanceRoot, engine))) {
+      outside.push({ path, field: 'system.engineConfig', target: resolve(paths.instanceRoot, engine) });
+    }
+  }
+  return outside;
+}
+const describeInstanceStorage = item => `${item.path} ${item.field} ${item.target ? `names ${item.target}` : 'is not an absolute path'}`;
+
+/** A move copies only the home. Refuse before any archive, journal or fence when a
+ * resident's storage lives elsewhere; a blind rewrite could switch it onto stale data. */
+async function assertInstanceStorageInside(source) {
+  const paths = await instanceStorageOutside(source);
+  if (!paths.length) return;
+  throw Object.assign(new Error(`Instance storage lies outside this home: ${paths.map(describeInstanceStorage).join('; ')}. `
+    + 'Bring that folder into the home or remove the setting, then move again.'), { code: 'move_external_instance_root', paths });
+}
+
+/** Rebind moves only the source home's own paths. A storage root anywhere else survives it, so name each one. */
+async function assertInstanceStorageRebound(destination) {
+  const paths = await instanceStorageOutside(destination);
+  if (!paths.length) return;
+  throw Object.assign(new Error(`Destination instance storage lies outside the destination: ${paths.map(describeInstanceStorage).join('; ')}. `
+    + 'Correct those settings in the destination, then retry.'), { code: 'move_rebind_incomplete', paths: paths.map(item => `${item.path}#${item.field}`) });
+}
+
 function assertNoHomeReferences(destination, source) {
   const paths = scanHomeReferences(destination, source);
   if (!paths.length) return;
@@ -1985,7 +2032,7 @@ function rebindHomeUpdateRecords(source, destination, adopted = false) {
   }
 }
 
-function rebindAgentsManifest(source, destination, adopted = false) {
+function rebindAgentsManifest(source, destination, adopted = false, manifest = null) {
   const file = join(destination, 'app/config/agents.json');
   if (!exists(file)) return;
   let agents;
@@ -1994,6 +2041,12 @@ function rebindAgentsManifest(source, destination, adopted = false) {
   if (!Array.isArray(agents)) fail('move_rebind_incomplete', 'Destination agent registry is not a list.');
   // Path fields and prose (notes, descriptions) both name the home.
   agents = rewriteMachineStrings(agents, source, destination, null, null, adopted);
+  if (Array.isArray(manifest) && manifest.length) {
+    // Start derives every generated field from the instance configs; take them
+    // from the same derivation so no stale path the configs no longer name survives.
+    const previous = new Map(agents.filter(entry => entry && typeof entry === 'object').map(entry => [entry.name, entry]));
+    agents = manifest.map(entry => ({ ...previous.get(entry.name), ...entry }));
+  }
   if (treeContains(agents, source)) fail('move_rebind_incomplete', 'Destination agent registry still names the source home.');
   writePrivateJSON(file, agents);
 }
@@ -2196,6 +2249,7 @@ async function rebindDestination(source, destination, options = {}) {
   // A rebind that leaves the source home named anywhere in state fails here,
   // naming every file, instead of finishing silently.
   assertNoHomeReferences(destination, rewriteFrom);
+  await assertInstanceStorageRebound(destination);
   return packageId;
 }
 
@@ -2432,6 +2486,7 @@ export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPa
     if (journal.destinationRoot !== destination) fail('move_journal_invalid', 'An unfinished move belongs to another destination.');
     const held = { ...dependencies, existingLock: lock, retainLock: true };
     if (!['backed_up', 'restored', 'fenced', 'committed'].includes(journal.phase)) {
+      await assertInstanceStorageInside(source);
       if (readdirSync(destination).length !== 0) throw new Error('Move destination must be empty.');
       await createHomeBackup({ homeRoot: source, archivePath, keyPath }, held);
       journal = { ...journal, phase: 'backed_up', archivePath, keyPath };

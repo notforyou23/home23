@@ -13,6 +13,7 @@ import {
 import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { runHostAction } from '../../cli/lib/product-host.js';
+import { generateEcosystem } from '../../cli/lib/generate-ecosystem.js';
 import { SUPPORTED_COORDINATION_SCHEMAS } from '../../cli/lib/product-update-inventory.js';
 
 const memorySource = createRequire(import.meta.url)('../../shared/memory-source');
@@ -557,6 +558,41 @@ test('move refuses a stopped home whose resident has no Seed substrate, adoption
   );
 });
 
+test('move refuses an instance storage root or engine config outside the home before any copy', async t => {
+  for (const [field, system] of [['system.instanceRoot', outside => `  instanceRoot: ${outside}/milo\n`],
+    ['system.engineConfig', outside => `  engineConfig: ${outside}/engine.yaml\n`]]) {
+    await t.test(field, async subtest => {
+      const fixture = stoppedHome(subtest);
+      const seed = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
+      fs.mkdirSync(seed, { recursive: true });
+      fs.writeFileSync(path.join(seed, 'birth-receipt.json'), '{"seedId":"milo-seed"}\n');
+      const outside = path.join(fixture.root, 'Casey Jones/Home23/instances');
+      fs.mkdirSync(outside, { recursive: true });
+      // The pre-fix grokbot shape: storage and feeder paths on another volume, not under this home.
+      fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/config.yaml'),
+        `system:\n${system(outside)}feeder:\n  additionalWatchPaths:\n    - ${outside}/milo/workspace\n`);
+      const hostBefore = fs.readFileSync(path.join(fixture.home, '.home23-host.json'));
+      const configBefore = fs.readFileSync(path.join(fixture.home, 'app/instances/milo/config.yaml'));
+      const destination = path.join(fixture.root, 'destination');
+      fs.mkdirSync(destination, { mode: 0o755 });
+      await assert.rejects(() => moveHome({ sourceHome: fixture.home, destinationRoot: destination,
+        archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet), error => {
+        assert.equal(error.code, 'move_external_instance_root');
+        const target = field === 'system.instanceRoot' ? `${outside}/milo` : `${outside}/engine.yaml`;
+        assert.deepEqual(error.paths, [{ path: 'app/instances/milo/config.yaml', field, target }]);
+        assert.match(error.message, new RegExp(`app/instances/milo/config\\.yaml ${field.replace('.', '\\.')} names `));
+        return true;
+      });
+      assert.deepEqual(fs.readdirSync(destination), []);
+      assert.equal(fs.existsSync(fixture.archivePath), false);
+      assert.equal(fs.existsSync(path.join(fixture.root, '.home.home23-move')), false);
+      assert.equal(readMoveFence(fixture.home), null);
+      assert.equal(fs.readFileSync(path.join(fixture.home, '.home23-host.json')).equals(hostBefore), true);
+      assert.equal(fs.readFileSync(path.join(fixture.home, 'app/instances/milo/config.yaml')).equals(configBefore), true);
+    });
+  }
+});
+
 test('a live move owner keeps the lock after its mtime goes stale', async t => {
   const fixture = stoppedHome(t);
   const seed = path.join(fixture.home, 'app/instances/milo/substrate/seed-01');
@@ -672,6 +708,9 @@ test('move rebinds destination ports and source paths without changing identity 
     'chat:',
     '  provider: ollama-local',
     '  model: fixture-local',
+    'system:',
+    `  instanceRoot: ${fixture.home}/app/instances/milo`,
+    '  engineConfig: engine.yaml',
     'feeder:',
     '  additionalWatchPaths:',
     `    - path: ${fixture.home}/app/instances/milo/workspace/sessions`,
@@ -695,6 +734,8 @@ test('move rebinds destination ports and source paths without changing identity 
     configPath: path.join(fixture.home, 'app/instances/milo/config.yaml'),
     instanceRoot: path.join(fixture.home, 'app/instances/milo'),
     brainPath: path.join(fixture.home, 'app/instances/milo/brain'),
+    // Stale output from an older generation that no config names any more.
+    workspacePath: '/Volumes/Old Drive/instances/milo/workspace',
   }]), { mode: 0o600 });
   fs.mkdirSync(path.join(fixture.home, 'runtime'), { recursive: true });
   fs.writeFileSync(path.join(fixture.home, 'runtime/ecosystem.config.json'), JSON.stringify({
@@ -745,6 +786,7 @@ test('move rebinds destination ports and source paths without changing identity 
   assert.equal(instance.ports.engine, destHost.ports.engine);
   assert.equal(instance.ports.dashboard, destHost.ports.dashboard);
   assert.equal(instance.feeder.additionalWatchPaths[0].path, `${destination}/app/instances/milo/workspace/sessions`);
+  assert.equal(instance.system.instanceRoot, `${destination}/app/instances/milo`);
   const engine = yaml.load(fs.readFileSync(path.join(destination, 'app/instances/milo/engine.yaml'), 'utf8'));
   assert.equal(engine.model, 'fixture-local');
   assert.equal(engine.feeder.path, `${destination}/app/instances/milo/workspace`);
@@ -763,6 +805,11 @@ test('move rebinds destination ports and source paths without changing identity 
   assert.equal(agents[0].instanceRoot, path.join(destination, 'app/instances/milo'));
   assert.equal(agents[0].brainPath, path.join(destination, 'app/instances/milo/brain'));
   assert.equal(JSON.stringify(agents).includes(fixture.home), false);
+  // The registry is derived as Start derives it, not text-rewritten from the old one.
+  assert.deepEqual(agents, generateEcosystem(path.join(destination, 'app'), { quiet: true, writeEcosystem: false, writeManifest: false }).manifest);
+  assert.equal(agents[0].storageMode, 'local');
+  for (const key of ['configPath', 'instanceRoot', 'brainPath', 'workspacePath', 'conversationsPath', 'logsPath'])
+    assert.ok(agents[0][key].startsWith(`${destination}/app/instances/milo`), key);
   assert.equal(fs.existsSync(path.join(destination, 'runtime/ecosystem.config.json')), false);
   assert.equal(fs.existsSync(path.join(fixture.home, 'runtime/ecosystem.config.json')), true);
 });
@@ -1553,6 +1600,45 @@ test('recoverInspectedHome resumes a legitimate interrupted recovery after rebin
     hostAfterInterrupt.ports,
   );
   assert.equal(fs.readFileSync(path.join(inspectionRoot, 'bin/node'), 'utf8'), nodeMarker);
+});
+
+test('recoverInspectedHome stops at a foreign instance root and finishes once the setting is corrected', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'home');
+  const { payload, manifest } = fixturePayload(root);
+  const { resident } = seedRecoverableHome(home, { packageId: manifest.packageId, sourceCommit: manifest.sourceCommit });
+  // Neither the archived home nor the destination: a rebind cannot know where this belongs.
+  const foreign = path.join(root, 'Casey Jones/Home23/instances', resident);
+  const config = `app/instances/${resident}/config.yaml`;
+  fs.writeFileSync(path.join(home, config), `system:\n  instanceRoot: ${foreign}\nfeeder:\n  additionalWatchPaths:\n    - ${home}/app/instances/${resident}/workspace\n`);
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o755 });
+  const archivePath = path.join(out, 'home.h23b');
+  const keyPath = path.join(out, 'home.backup-key.json');
+  const inspectionRoot = path.join(root, 'inspect');
+  fs.mkdirSync(inspectionRoot, { mode: 0o755 });
+  await createHomeBackup({ homeRoot: home, archivePath, keyPath }, quiet);
+  await inspectHomeBackup({ archivePath, keyPath, inspectionRoot });
+  fs.rmSync(home, { recursive: true, force: true });
+
+  await assert.rejects(() => recoverInspectedHome({ inspectionRoot, payloadPath: payload, archivePath, keyPath }, quiet), error => {
+    assert.equal(error.code, 'move_rebind_incomplete');
+    assert.deepEqual(error.paths, [`${config}#system.instanceRoot`]);
+    assert.match(error.message, new RegExp(`${config.replaceAll('.', '\\.')} system\\.instanceRoot names .*Casey Jones`));
+    return true;
+  });
+  const journalPath = path.join(root, '.inspect.home23-recover', 'journal.json');
+  assert.equal(JSON.parse(fs.readFileSync(journalPath, 'utf8')).phase, 'runtime_installed');
+  const { default: yaml } = await import('js-yaml');
+  const rebound = yaml.load(fs.readFileSync(path.join(inspectionRoot, config), 'utf8'));
+  assert.equal(rebound.system.instanceRoot, foreign, 'an unknown foreign root is never rewritten');
+  assert.equal(rebound.feeder.additionalWatchPaths[0], `${inspectionRoot}/app/instances/${resident}/workspace`);
+
+  delete rebound.system.instanceRoot;
+  fs.writeFileSync(path.join(inspectionRoot, config), yaml.dump(rebound));
+  const recovered = await recoverInspectedHome({ inspectionRoot, payloadPath: payload, archivePath, keyPath }, quiet);
+  assert.equal(recovered.ok, true);
+  assert.equal(JSON.parse(fs.readFileSync(journalPath, 'utf8')).phase, 'committed');
 });
 
 test('recoverInspectedHome refuses an unsafe bin symlink and leaves an outside sentinel unchanged', async t => {
