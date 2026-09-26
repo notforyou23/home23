@@ -5,9 +5,11 @@
 // The app root is HOME23_ROOT when set, otherwise the parent of the scripts/
 // directory that holds the calling script (the same rule src/config.ts uses).
 
-import { homedir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const { ownerHome } = createRequire(import.meta.url)("../../shared/owner-home.cjs");
 
 /**
  * Resolve the Home23 app root for a script that lives directly in scripts/.
@@ -28,11 +30,12 @@ export function resolveAppRoot(scriptUrl, env = process.env) {
 /**
  * The owner's Shakedown Shuffle site checkout: operational state that lives
  * outside the app root. SHAKEDOWN_SITE_ROOT names it explicitly; the default
- * is its conventional location under the current user's home directory.
+ * is its conventional location under the owner's home (shared/owner-home.cjs).
+ * Under the Host, HOME is Home23's private runtime home, which has no site.
  * @param {NodeJS.ProcessEnv} [env]
  */
 export function resolveShakedownSiteRoot(env = process.env) {
   const configured = env.SHAKEDOWN_SITE_ROOT;
   if (typeof configured === "string" && configured !== "") return resolve(configured);
-  return join(homedir(), "websites", "shakedownshuffle.com");
+  return join(ownerHome(env), "websites", "shakedownshuffle.com");
 }

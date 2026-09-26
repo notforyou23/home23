@@ -1036,3 +1036,92 @@ test('oauth_token_lineage_fresh reports a missing profile rather than throwing',
   assert.equal(result.ok, false);
   assert.match(result.detail, /missing/i);
 });
+
+test('brain_persistence_fresh opens after 10 unsaved minutes or 3 refused saves', async () => {
+  const spec = { type: 'brain_persistence_fresh', args: { maxDirtyMinutes: 10, maxConsecutiveRefusals: 3 } };
+  const check = (status) => runVerifier(spec, { persistenceFreshness: () => status });
+  const fresh = await check({ dirty: true, unpersistedForMs: 45_000, consecutiveRefusals: 0, persistedRevision: 9 });
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.observed.persistedRevision, 9);
+
+  const stale = await check({ dirty: true, unpersistedForMs: 11 * 60_000, consecutiveRefusals: 1 });
+  assert.equal(stale.ok, false);
+  assert.match(stale.detail, /unsaved for 11\.0 min \(limit 10\)/);
+
+  // Forrest, 2026-09-24..26: every save refused for 61 hours.
+  const refused = await check({
+    dirty: true, unpersistedForMs: 4 * 60_000, consecutiveRefusals: 3,
+    lastSaveResult: { saved: false, reason: 'memory_sidecar_write_failed' },
+  });
+  assert.equal(refused.ok, false);
+  assert.match(refused.detail, /3 consecutive brain saves did not persist memory \(memory_sidecar_write_failed\)/);
+
+  const outside = await runVerifier(spec, {});
+  assert.equal(outside.ok, false);
+  assert.match(outside.detail, /engine context only/);
+});
+
+/** A Host process: HOME is Home23's private runtime home and the owner home is named. */
+function withHostHomes(t) {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-verifier-homes-'));
+  const owner = path.join(base, 'owner');
+  const runtime = path.join(base, 'runtime-user');
+  fs.mkdirSync(owner);
+  fs.mkdirSync(runtime);
+  const keys = ['HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+  Object.assign(process.env, { HOME: runtime, HOME23_OWNER_HOME: owner, HOME23_PRODUCT_HOST: 'true' });
+  return { owner, runtime };
+}
+
+test("'~' in verifier paths is the owner home, not the Host's runtime HOME", async (t) => {
+  const { owner, runtime } = withHostHomes(t);
+  const today = new Date().toISOString().slice(0, 10);
+  fs.writeFileSync(path.join(owner, '.health_log.jsonl'), JSON.stringify({
+    ts: new Date().toISOString(),
+    metrics: { heartRateVariability: { date: today, unit: 'ms', value: 42 } },
+  }) + '\n');
+  // The split copy the redirect produced: old, empty, and not what is judged.
+  const stale = path.join(runtime, '.health_log.jsonl');
+  fs.writeFileSync(stale, '');
+  fs.utimesSync(stale, new Date(0), new Date(0));
+
+  const mtime = await runVerifier({ type: 'file_mtime', args: { path: '~/.health_log.jsonl', maxAgeMin: 360 } });
+  assert.equal(mtime.ok, true, mtime.detail);
+  const metric = await runVerifier({ type: 'jsonl_metric_date_fresh',
+    args: { path: '~/.health_log.jsonl', metricDateField: 'metrics.heartRateVariability.date', maxAgeDays: 3 } });
+  assert.equal(metric.ok, true, metric.detail);
+  const match = await runVerifier({ type: 'jsonl_recent_match', args: { path: '~/.health_log.jsonl', windowMinutes: 60 } });
+  assert.equal(match.ok, true, match.detail);
+  const exists = await runVerifier({ type: 'file_exists', args: { path: '~/.health_log.jsonl', minBytes: 1 } });
+  assert.equal(exists.ok, true, exists.detail);
+});
+
+test('the lineage rival store keeps resolving against the process HOME, never the owner home', async (t) => {
+  // Reading the owner's own Codex CLI store is not decided; rivalPath is unchanged.
+  const { owner, runtime } = withHostHomes(t);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const { profilePath } = writeLineageFixture(owner, { profileIat: nowSec - 3600, profileExp: nowSec + 864000 });
+  const rival = (dir) => {
+    fs.mkdirSync(path.join(dir, '.codex'));
+    fs.writeFileSync(path.join(dir, '.codex/auth.json'), JSON.stringify({
+      tokens: { access_token: fakeJwt({ iat: nowSec - 60, exp: nowSec + 864000 }), account_id: 'acct-1' },
+    }));
+  };
+  const args = { profilePath, profileKey: 'openai-codex:default', rivalPath: '~/.codex/auth.json' };
+
+  rival(owner);
+  const ownerOnly = await runVerifier({ type: 'oauth_token_lineage_fresh', args });
+  assert.equal(ownerOnly.ok, true, ownerOnly.detail);
+  rival(runtime);
+  const processHome = await runVerifier({ type: 'oauth_token_lineage_fresh', args });
+  assert.equal(processHome.ok, false);
+  assert.equal(processHome.observed.superseded, true);
+});

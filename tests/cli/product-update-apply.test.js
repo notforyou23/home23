@@ -9,11 +9,13 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { installProductPayload, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
-import { applyProductUpdate, readUpdateJournal, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
-import { candidateCoordinationSchema, inspectCoordinationDatabase, inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, SUPPORTED_COORDINATION_SCHEMAS, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
+import { applyProductUpdate, productRecoveryFor, quiesceWriters, readUpdateJournal, recoverProductUpdate, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
+import { candidateCoordinationSchema, inspectCoordinationDatabase, inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, SUPPORTED_COORDINATION_SCHEMAS, ownedWriterNames, writerStopOrder } from '../../cli/lib/product-update-inventory.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
 import { acquireHostLock } from '../../cli/lib/product-backup.js';
+import { generateEcosystem } from '../../cli/lib/generate-ecosystem.js';
+import instancePaths from '../../shared/agent-instance-paths.cjs';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const quiet = { listProcesses: async () => [], acquireHostLock: async () => async () => {} };
@@ -114,6 +116,51 @@ test('reviewed schema constants and writer names stay aligned with source', () =
   assert.equal(updateBlocksStart({ phase: 'rolled_back' }), false);
 });
 
+test('writer stop order stops every resident engine first and coordination last', () => {
+  // The live two-resident inventory: resident writers deduplicated, then continuing services.
+  const names = [...new Set([...ownedWriterNames('jerry'), ...ownedWriterNames('forrest')]), 'home23-chrome-cdp', 'home23-screenlogic'];
+  const order = writerStopOrder(names);
+  assert.deepEqual(order.slice(0, 2), ['home23-jerry', 'home23-forrest']);
+  assert.equal(order.at(-1), 'home23-coordination');
+  assert.deepEqual([...order].sort(), [...names].sort());
+  for (const resident of ['jerry', 'forrest']) {
+    for (const sidecar of ['-dash', '-mcp', '-harness', '-seed', '-shipper', '-house-sense']) {
+      assert.ok(order.indexOf(`home23-${resident}`) < order.indexOf(`home23-${resident}${sidecar}`), `${resident}${sidecar}`);
+    }
+  }
+  assert.ok(order.indexOf('home23-chrome-cdp') > order.indexOf('home23-forrest'));
+});
+
+test('quiesce stops engines before their dashboards and re-stops a writer restarted during the stop', async t => {
+  const home = tempRoot(t);
+  const names = [...new Set([...ownedWriterNames('jerry'), ...ownedWriterNames('forrest')]), 'home23-chrome-cdp'];
+  const status = new Map(names.map(name => [name, 'online']));
+  const stops = [];
+  let lateRestart = false;
+  const list = async () => [...status].map(([name, value]) => ({ name, status: value }));
+  const exec = async (_node, args) => {
+    const name = args[2];
+    stops.push(name);
+    // A still-running engine's watchdog restarts its dashboard the moment it stops.
+    if (name.endsWith('-dash') && status.get(name.slice(0, -5)) === 'online') { status.set(name, 'online'); return; }
+    status.set(name, 'stopped');
+    if (lateRestart && name === 'home23-coordination') status.set('home23-jerry-harness', 'online');
+    return {};
+  };
+  const first = await quiesceWriters(home, names, { exec, list });
+  assert.deepEqual(new Set(stops.slice(0, 2)), new Set(['home23-jerry', 'home23-forrest']));
+  assert.equal(stops.at(-1), 'home23-coordination');
+  assert.deepEqual(first.restopped, []);
+  assert.equal(first.processes.some(row => row.status !== 'stopped'), false);
+
+  for (const name of names) status.set(name, 'online');
+  stops.length = 0; lateRestart = true;
+  const second = await quiesceWriters(home, names, { exec, list });
+  assert.deepEqual(second.restopped, ['home23-jerry-harness']);
+  assert.deepEqual(stops.slice(-1), ['home23-jerry-harness']);
+  assert.equal(second.processes.some(row => row.status !== 'stopped'), false);
+});
+
 test('the reviewed v21 migration is the only accepted schema asset transition', async t => {
   const fixture = homeFixture(t);
   const databaseFile = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
@@ -196,6 +243,176 @@ test('a folded in-home path keeps its volume name with spaces', async t => {
   fs.writeFileSync(path.join(home, 'app/config/home.yaml'), `shell:\n  roots:\n    - >-\n      ${inside.split(' ').join('\n      ')}\n`, { mode: 0o600 });
   const result = await inspectUpdateInventory(home);
   assert.equal(result.reasons.some(item => item.code === 'external_reference'), false);
+});
+
+const INSTANCE = 'app/instances/milo/config.yaml';
+function instanceConfig(home, system, { name = 'milo', extra = '' } = {}) {
+  fs.mkdirSync(path.join(home, `app/instances/${name}`), { recursive: true });
+  fs.writeFileSync(path.join(home, `app/instances/${name}/config.yaml`), `agent:\n  name: ${name}\nsystem:\n  name: home23\n${system}${extra}`);
+}
+const staleAgents = (home, root) => fs.writeFileSync(path.join(home, 'app/config/agents.json'), JSON.stringify([{ name: 'milo',
+  configPath: path.join(home, INSTANCE), instanceRoot: root, storageMode: 'external', brainPath: `${root}/brain`,
+  workspacePath: `${root}/workspace`, conversationsPath: `${root}/conversations`, logsPath: `${root}/logs` }]));
+const externals = result => result.reasons.filter(item => item.code === 'external_reference');
+
+test('an external instance root is refused at its config field whatever agents.json says', async t => {
+  const fixture = homeFixture(t);
+  const outside = path.join(fixture.root, 'Casey Jones/Home23/instances/milo');
+  instanceConfig(fixture.home, `  instanceRoot: ${outside}\n`, { extra: `feeder:\n  additionalWatchPaths:\n    - ${outside}/workspace\n    - path: ${outside}/brain\n` });
+  for (const agents of ['absent', 'stale', 'repointed']) {
+    fs.rmSync(path.join(fixture.home, 'app/config/agents.json'), { force: true });
+    if (agents === 'stale') staleAgents(fixture.home, outside);
+    if (agents === 'repointed') staleAgents(fixture.home, path.join(fixture.home, 'app/instances/milo'));
+    const found = externals(await inspectUpdateInventory(fixture.home));
+    assert.equal(found.length, 1, `${agents}: ${JSON.stringify(found)}`);
+    assert.deepEqual({ ...found[0], message: undefined }, { code: 'external_reference', message: undefined, path: INSTANCE,
+      field: 'system.instanceRoot', target: outside, resident: 'milo', relatedOccurrences: 2 });
+    assert.match(found[0].message, /^app\/instances\/milo\/config\.yaml system\.instanceRoot names .*Casey Jones\/Home23\/instances\/milo, outside this home\..* 2 other settings/);
+  }
+});
+
+test('a stale external agents.json is derived output and never refuses', async t => {
+  const fixture = homeFixture(t);
+  instanceConfig(fixture.home, '  engineConfig: engine.yaml\n');
+  staleAgents(fixture.home, path.join(fixture.root, 'old-volume/instances/milo'));
+  const result = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate: fixture.next });
+  assert.deepEqual(result.reasons, []);
+});
+
+test('Start regenerates agents.json from exactly the inputs the preflight judged', async t => {
+  // Decision (188): Host Start keeps regenerating agents.json during an admitted
+  // update. Every Start that is not already all-running, including the
+  // update's candidate and rollback Start, derives it from the instance configs.
+  const host = fs.readFileSync(path.join(rootDir, 'cli/lib/product-host.js'), 'utf8');
+  const definitions = host.slice(host.indexOf('async definitions('), host.indexOf('async definitions(') + 300);
+  assert.match(definitions, /generateEcosystem\(join\(homeRoot, 'app'\)/);
+  assert.doesNotMatch(definitions, /writeManifest:\s*false/);
+  const fixture = homeFixture(t);
+  const app = path.join(fixture.home, 'app'), outside = path.join(fixture.root, 'old-volume/instances/milo');
+  const agents = () => JSON.parse(fs.readFileSync(path.join(app, 'config/agents.json'), 'utf8'));
+  const derived = entry => { const paths = instancePaths.resolveAgentInstancePaths(app, entry.name);
+    return { configPath: path.join(app, 'instances/milo/config.yaml'), instanceRoot: paths.instanceRoot, storageMode: paths.storageMode,
+      brainPath: paths.brainDir, workspacePath: paths.workspaceDir, conversationsPath: paths.conversationsDir, logsPath: paths.logsDir }; };
+  const storage = entry => Object.fromEntries(Object.keys(derived(entry)).map(key => [key, entry[key]]));
+
+  // In-home input, stale external output: the preflight passes and Start writes only home paths.
+  instanceConfig(fixture.home, '  engineConfig: engine.yaml\n');
+  staleAgents(fixture.home, outside);
+  assert.deepEqual(externals(await inspectUpdateInventory(fixture.home)), []);
+  const { manifest } = generateEcosystem(app, { quiet: true, writeEcosystem: false });
+  assert.deepEqual(agents(), manifest);
+  assert.deepEqual(storage(agents()[0]), derived(agents()[0]));
+  assert.equal(agents()[0].storageMode, 'local');
+  assert.equal(JSON.stringify(agents()).includes(outside), false);
+
+  // External input, hand-repointed output (the 186 fix): refused at the input,
+  // never at agents.json, and Start writes the input's root back.
+  instanceConfig(fixture.home, `  instanceRoot: ${outside}\n`);
+  staleAgents(fixture.home, path.join(app, 'instances/milo'));
+  const refused = externals(await inspectUpdateInventory(fixture.home));
+  assert.deepEqual(refused.map(({ path, field, target }) => ({ path, field, target })), [{ path: INSTANCE, field: 'system.instanceRoot', target: outside }]);
+  generateEcosystem(app, { quiet: true, writeEcosystem: false });
+  assert.deepEqual(storage(agents()[0]), derived(agents()[0]));
+  assert.equal(agents()[0].instanceRoot, outside);
+  assert.equal(agents()[0].configPath, path.join(app, INSTANCE.slice('app/'.length)), 'configPath is always the local config');
+  assert.deepEqual(externals(await inspectUpdateInventory(fixture.home)).map(item => item.path), [INSTANCE]);
+});
+
+test('owner folders in instance settings stay allowed; only storage roots are judged', async t => {
+  const fixture = homeFixture(t);
+  instanceConfig(fixture.home, `  instanceRoot: ${path.join(fixture.home, 'app/instances/milo')}\n  engineConfig: engine.yaml\n`, { extra: [
+    'feeder:', '  additionalWatchPaths:', '    - /Users/x/vault/notes', '    - path: /Users/x/vault/journal', '      label: vault',
+    'acp:', '  agents:', '    codex:', '      bin: /opt/homebrew/bin/codex', '    cursor:', '      bin: /Users/x/.local/bin/cursor-agent', ''].join('\n') });
+  assert.deepEqual((await inspectUpdateInventory(fixture.home)).reasons.filter(item => item.path === INSTANCE), []);
+});
+
+test('instance root forms: quoted and folded in-home paths pass, unknown forms fail closed', async t => {
+  const root = tempRoot(t);
+  const home = path.join(root, 'Casey Jones', 'Home23 Host', 'Home');
+  fs.mkdirSync(path.join(home, 'app/config'), { recursive: true });
+  const inside = path.join(home, 'app/instances/milo');
+  const folded = inside.split(' ');
+  for (const form of [`'${inside}'`, `"${inside}"`, `${inside} # kept local`, `>-\n    ${folded.join('\n    ')}`,
+    `>\n    ${folded.join('\n    ')}\n`, `|-\n    ${inside}`, '~', '', 'null']) {
+    instanceConfig(home, `  instanceRoot: ${form}\n  workspace: workspace\n`);
+    assert.deepEqual((await inspectUpdateInventory(home)).reasons.filter(item => item.path === INSTANCE), [], form);
+  }
+  for (const form of ['&root /Volumes/x', '*root', `[${inside}]`, `>-\n    ${inside}\n\n    more`, `>-\n    ${inside}\n      nested`, `"${inside}`,
+    `\n    ${inside}`, 'relative/instances/milo']) {
+    instanceConfig(home, `  instanceRoot: ${form}\n  workspace: workspace\n`);
+    const found = (await inspectUpdateInventory(home)).reasons.filter(item => item.path === INSTANCE);
+    assert.deepEqual(found.map(({ code, field }) => ({ code, field })), [{ code: 'state_uninspected', field: 'system.instanceRoot' }], form);
+    assert.match(found[0].message, /^app\/instances\/milo\/config\.yaml system\.instanceRoot /);
+  }
+  instanceConfig(home, `  <<: *defaults\n  workspace: workspace\n`);
+  assert.equal((await inspectUpdateInventory(home)).reasons.some(item => item.path === INSTANCE && item.code === 'state_uninspected'), true);
+});
+
+test('non-resident instances and engine configs are judged; symlinked instance directories are the walker\'s', async t => {
+  const fixture = homeFixture(t);
+  const outside = path.join(fixture.root, 'outside');
+  fs.mkdirSync(outside);
+  // grokbot shape: a config.yaml with no resident binding in the Host record.
+  instanceConfig(fixture.home, `  instanceRoot: ${outside}/grokbot\n`, { name: 'grokbot' });
+  instanceConfig(fixture.home, `  engineConfig: ${outside}/engine.yaml\n`);
+  const found = externals(await inspectUpdateInventory(fixture.home));
+  assert.deepEqual(found.map(({ path, field, target, resident }) => ({ path, field, target, resident })), [
+    { path: 'app/instances/grokbot/config.yaml', field: 'system.instanceRoot', target: `${outside}/grokbot`, resident: 'grokbot' },
+    { path: INSTANCE, field: 'system.engineConfig', target: `${outside}/engine.yaml`, resident: 'milo' },
+  ]);
+  // A relative engine config under an external root is that root's refusal, not a second one.
+  instanceConfig(fixture.home, `  instanceRoot: ${outside}/grokbot\n  engineConfig: engine.yaml\n`, { name: 'grokbot' });
+  instanceConfig(fixture.home, '  engineConfig: engine.yaml\n');
+  assert.deepEqual(externals(await inspectUpdateInventory(fixture.home)).map(item => item.field), ['system.instanceRoot']);
+
+  fs.rmSync(path.join(fixture.home, 'app/instances/grokbot'), { recursive: true });
+  const linked = path.join(outside, 'linked-instance');
+  fs.mkdirSync(linked);
+  fs.writeFileSync(path.join(linked, 'config.yaml'), `system:\n  instanceRoot: ${outside}/other\n`);
+  fs.symlinkSync(linked, path.join(fixture.home, 'app/instances/linked'));
+  const walked = await inspectUpdateInventory(fixture.home);
+  assert.deepEqual(externals(walked), []);
+  assert.deepEqual(walked.reasons.filter(item => item.path === 'app/instances/linked').map(item => item.code), ['linked_state_path']);
+});
+
+test('an outside spelling of the home is refused even when a link forwards it inside', async t => {
+  const fixture = homeFixture(t);
+  const forward = path.join(fixture.root, 'forwarding');
+  fs.symlinkSync(fixture.home, forward);
+  instanceConfig(fixture.home, `  instanceRoot: ${forward}/app/instances/milo\n`);
+  assert.deepEqual(externals(await inspectUpdateInventory(fixture.home)).map(item => item.target), [`${forward}/app/instances/milo`]);
+});
+
+test('config-file external references name the setting and target, redacting secrets', async t => {
+  const fixture = homeFixture(t);
+  fs.writeFileSync(path.join(fixture.home, 'app/config/home.yaml'), 'shell:\n  roots:\n    - /Volumes/Outside/photos\n', { mode: 0o600 });
+  fs.writeFileSync(path.join(fixture.home, 'app/config/secrets.yaml'), 'providers:\n  local:\n    keyFile: /Volumes/Outside/key\n', { mode: 0o600 });
+  const found = externals(await inspectUpdateInventory(fixture.home));
+  assert.deepEqual(found.map(({ path, field, target }) => ({ path, field, target })), [
+    { path: 'app/config/home.yaml', field: 'shell.roots', target: '/Volumes/Outside/photos' },
+    { path: 'app/config/secrets.yaml', field: 'providers.local.keyFile', target: '[redacted]' },
+  ]);
+  assert.match(found[0].message, /^app\/config\/home\.yaml shell\.roots names \/Volumes\/Outside\/photos outside this home/);
+  assert.doesNotMatch(found[1].message, /Outside\/key/);
+});
+
+test('the retained update executor graph imports only node: builtins and sibling modules', () => {
+  // product-home-update.js retainExecutor copies only './' imports beside the
+  // worker. Any other specifier fails at runtime once the package is replaced.
+  const library = path.join(rootDir, 'cli/lib');
+  const graph = new Set(), queue = ['product-home-update-worker.mjs', 'product-update-recover.mjs'];
+  while (queue.length) {
+    const name = queue.shift();
+    if (graph.has(name)) continue;
+    graph.add(name);
+    const source = fs.readFileSync(path.join(library, name), 'utf8');
+    for (const match of source.matchAll(/(?:from\s*|import\s*\(\s*)['"]\.\/([^'"]+)['"]/g)) queue.push(match[1]);
+    const specifiers = [...source.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|^\s*import\s+)['"]([^'"]+)['"]/gm)].map(match => match[1]);
+    assert.deepEqual(specifiers.filter(specifier => !specifier.startsWith('node:') && !specifier.startsWith('./')), [], name);
+    assert.doesNotMatch(source, /\brequire\s*\(|createRequire/, name);
+  }
+  for (const name of ['product-home-update.js', 'product-update-apply.js', 'product-update-inventory.js', 'product-environment.js'])
+    assert.ok(graph.has(name), name);
 });
 
 test('refusals happen before a journal or package change', async t => {
@@ -440,20 +657,280 @@ test('a database still busy after quiesce restores the previous running home', a
   assert.equal(preserved(fixture.home).value, 'same-home');
 });
 
-test('an incomplete graceful stop is fenced without starting a second writer', async t => {
+test('an incomplete graceful stop restarts the previous home and aborts', async t => {
   const fixture = homeFixture(t, { desiredRunning: true });
   let starts = 0;
   const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
     staging: fixture.staging, admit: true }, { ...quiet,
-    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
-    quiesce: async () => [{ name: 'home23-milo', status: 'online' }],
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }, { name: 'home23-milo-dash', status: 'stopped' }],
+    quiesce: async () => ({ processes: [{ name: 'home23-milo', status: 'online' }], restopped: ['home23-milo-dash'] }),
     start: async () => { starts += 1; return { ok: true, status: 'ready' }; },
   });
-  assert.equal(result.status, 'recovery_required');
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.runningRestored, true);
   assert.equal(result.reasons[0].code, 'writer_stop_incomplete');
-  assert.equal(starts, 0);
+  assert.deepEqual(result.reasons[0].writers, ['home23-milo']);
+  assert.equal(starts, 1);
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.stoppedForUpdate, true);
+  assert.deepEqual(journal.quiesceRestopped, ['home23-milo-dash']);
+  assert.equal(updateBlocksStart(journal), false);
   assert.equal(packageId(fixture.home), fixture.installed.packageId);
   assert.equal(preserved(fixture.home).value, 'same-home');
+});
+
+test('stoppedForUpdate is durable before owned writers are stopped', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true, extra: { 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/cli/lib/product-host.js': hostStub } });
+  let online = true, observed = null;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => {
+      const journal = readUpdateJournal(fixture.home);
+      observed = { phase: journal.phase, stoppedForUpdate: journal.stoppedForUpdate };
+      online = false;
+      return [];
+    },
+    start: async () => ({ ok: true, status: 'ready' }),
+  });
+  assert.deepEqual(observed, { phase: 'claimed', stoppedForUpdate: true });
+  assert.equal(result.status, 'committed');
+});
+
+test('a controller killed during the quiesce still restores the running home on a later pre-switch abort', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const databaseFile = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+  let starts = 0, lock;
+  t.after(() => { if (lock?.isOpen) lock.close(); });
+  await assert.rejects(applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    quiesce: async () => { throw new Error('controller killed while stopping writers'); },
+  }), /controller killed/);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'claimed');
+  assert.equal(readUpdateJournal(fixture.home).stoppedForUpdate, true);
+  lock = new DatabaseSync(databaseFile);
+  lock.exec('BEGIN EXCLUSIVE');
+  const result = await resumeProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    start: async () => { starts += 1; lock.exec('ROLLBACK'); lock.close(); return { ok: true, status: 'ready' }; },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.reasons[0].code, 'database_busy');
+  assert.equal(result.runningRestored, true);
+  assert.equal(starts, 1);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+});
+
+/** A desired-running home whose stop left milo running and whose restart then failed. */
+async function stuckStop(t, options = {}) {
+  const fixture = homeFixture(t, { desiredRunning: true, ...options });
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    quiesce: async () => [{ name: 'home23-milo', status: 'online' }],
+    start: async () => ({ ok: false, status: 'failed' }),
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.deepEqual(result.reasons.map(reason => reason.code), ['writer_stop_incomplete', 'running_restore_failed']);
+  return fixture;
+}
+
+test('resume reopens a nothing-switched recovery_required journal and commits', async t => {
+  const fixture = await stuckStop(t, { extra: { 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/cli/lib/product-host.js': hostStub } });
+  const before = preserved(fixture.home);
+  assert.equal(readUpdateJournal(fixture.home).recoveryFrom, 'claimed');
+  assert.deepEqual(productRecoveryFor(fixture.home), { available: true, restore: true, retry: true,
+    reasonCodes: ['writer_stop_incomplete', 'running_restore_failed'] });
+  let online = true, quiesced = 0;
+  const result = await resumeProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { quiesced += 1; online = false; return []; },
+    start: async () => { online = true; return { ok: true, status: 'ready' }; },
+  });
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  assert.equal(quiesced, 1);
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.recoveryReopens, 1);
+  assert.deepEqual(journal.previousReasons.map(reason => reason.code), ['writer_stop_incomplete', 'running_restore_failed']);
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+});
+
+test('recoverProductUpdate restores the previous running home and closes the journal as aborted', async t => {
+  const fixture = await stuckStop(t);
+  let starts = 0;
+  const result = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    start: async () => { starts += 1; return { ok: true, status: 'ready' }; },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.runningRestored, true);
+  assert.equal(starts, 1);
+  assert.ok(result.reasons.some(reason => reason.code === 'recovered_by_owner'));
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(updateBlocksStart(readUpdateJournal(fixture.home)), false);
+  assert.equal(productRecoveryFor(fixture.home).available, false);
+});
+
+test('a failed recover stays recoverable and a stopped home recovers without starting', async t => {
+  const fixture = await stuckStop(t);
+  const failed = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet, start: async () => ({ ok: false, status: 'failed' }) });
+  assert.equal(failed.status, 'recovery_required');
+  assert.equal(productRecoveryFor(fixture.home).restore, true);
+  const stopped = homeFixture(t);
+  const journal = readUpdateJournal(fixture.home);
+  const file = path.join(updateDirectoryFor(stopped.home), 'journal.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify({ ...journal, homeRoot: stopped.home, desiredRunning: false,
+    fromPackageId: stopped.installed.packageId, toPackageId: stopped.next.packageId }), { mode: 0o600 });
+  let starts = 0;
+  const closed = await recoverProductUpdate({ homeRoot: stopped.home }, { ...quiet, start: async () => { starts += 1; return { ok: true }; } });
+  assert.equal(closed.status, 'aborted');
+  assert.equal(starts, 0);
+});
+
+test('the recovery entry --abort returns the home to service instead of resuming', async t => {
+  const fixture = await stuckStop(t, { currentExtra: { 'app/cli/lib/product-host.js': hostStub } });
+  const recovered = await run(process.execPath, [path.join(rootDir, 'cli/lib/product-update-recover.mjs'), '--home', fixture.home, '--abort'], process.env);
+  assert.equal(recovered.code, 0, recovered.stderr + recovered.stdout);
+  const result = JSON.parse(recovered.stdout);
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.runningRestored, true);
+  assert.equal(fs.readFileSync(path.join(fixture.home, 'runtime/started.txt'), 'utf8'), 'start');
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+});
+
+test('recover and resume refuse a post-selection recovery_required journal', async t => {
+  const tampered = homeFixture(t);
+  const failed = await applyProductUpdate({ homeRoot: tampered.home, candidatePayload: tampered.candidate, staging: tampered.staging }, {
+    ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase === 'selected') fs.writeFileSync(path.join(updateDirectoryFor(tampered.home), 'previous/bin/node'), 'tampered');
+    },
+    verifyBehavior: async () => ({ ok: false, issues: ['health failed'] }),
+  });
+  assert.equal(failed.status, 'recovery_required');
+  assert.deepEqual(productRecoveryFor(tampered.home), { available: true, restore: false, retry: false, reasonCodes: ['recovery_required'] });
+  const resumed = await resumeProductUpdate({ homeRoot: tampered.home }, quiet);
+  assert.equal(resumed.status, 'recovery_required');
+  assert.equal(resumed.replayed, true);
+  assert.equal((await recoverProductUpdate({ homeRoot: tampered.home }, quiet)).reasons[0].code, 'recovery_unavailable');
+  assert.equal(packageId(tampered.home), tampered.next.packageId);
+
+  const admitted = homeFixture(t, { desiredRunning: true });
+  let online = false;
+  const result = await applyProductUpdate({ homeRoot: admitted.home, candidatePayload: admitted.candidate, staging: admitted.staging, admit: true }, {
+    ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { online = true; return { ok: true, status: 'ready' }; },
+    quiesce: async () => { online = false; return []; },
+    verifyBehavior: async () => ({ ok: false, issues: ['candidate unhealthy after start'] }),
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(productRecoveryFor(admitted.home).available, false);
+  assert.equal((await recoverProductUpdate({ homeRoot: admitted.home }, quiet)).reasons[0].code, 'recovery_unavailable');
+});
+
+test('a rollback that restored software but not running is recoverable', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const failed = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging, admit: true }, {
+    ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase === 'selected') fs.writeFileSync(path.join(fixture.home, 'bin/node'), '#!/bin/sh\nbroken\n');
+    },
+    start: async () => ({ ok: false, status: 'failed' }),
+  });
+  assert.equal(failed.status, 'recovery_required');
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.softwareRestored, true);
+  assert.equal(journal.recoveryFrom, 'selected');
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.deepEqual(productRecoveryFor(fixture.home), { available: true, restore: true, retry: false, reasonCodes: ['recovery_required'] });
+  assert.equal((await resumeProductUpdate({ homeRoot: fixture.home }, quiet)).replayed, true);
+  let starts = 0;
+  const recovered = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet, start: async () => { starts += 1; return { ok: true, status: 'ready' }; } });
+  assert.equal(recovered.status, 'aborted');
+  assert.equal(recovered.runningRestored, true);
+  assert.equal(starts, 1);
+});
+
+test('reopen stops after three attempts', async t => {
+  const fixture = await stuckStop(t);
+  const stuck = { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    quiesce: async () => [{ name: 'home23-milo', status: 'online' }],
+    start: async () => ({ ok: false, status: 'failed' }) };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const result = await resumeProductUpdate({ homeRoot: fixture.home }, stuck);
+    assert.equal(result.status, 'recovery_required');
+    assert.equal(result.replayed, false);
+    assert.equal(readUpdateJournal(fixture.home).recoveryReopens, attempt);
+  }
+  assert.deepEqual(productRecoveryFor(fixture.home), { available: true, restore: true, retry: false,
+    reasonCodes: ['writer_stop_incomplete', 'running_restore_failed'] });
+  const last = await resumeProductUpdate({ homeRoot: fixture.home }, stuck);
+  assert.equal(last.replayed, true);
+  assert.equal(readUpdateJournal(fixture.home).recoveryReopens, 3);
+});
+
+test('an unretryable nothing-switched journal offers recover but is not reopened by resume', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true, version: 21 });
+  let online = true;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    inspectUpdateInventory: async (...args) => ({ ...(await inspectUpdateInventory(...args)),
+      databaseInspection: { present: true, version: null, busy: true, compatible: false },
+      reasons: [{ code: 'database_busy', message: 'database is locked' }] }),
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { online = false; return []; },
+    start: async () => ({ ok: false, status: 'failed' }),
+  });
+  assert.equal(result.status, 'recovery_required');
+  assert.deepEqual(productRecoveryFor(fixture.home), { available: true, restore: true, retry: false,
+    reasonCodes: ['unsupported_data_version', 'running_restore_failed'] });
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, quiet);
+  assert.equal(resumed.replayed, true);
+  assert.equal(readUpdateJournal(fixture.home).recoveryReopens, undefined);
+});
+
+test('a committed journal no longer carries per-file identity', async t => {
+  const fixture = homeFixture(t);
+  let accepted;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging },
+    { ...quiet, afterPhase: async next => { if (next.phase === 'accepted') accepted = next; } });
+  assert.equal(result.status, 'committed');
+  assert.ok(Object.keys(accepted.identity).length > 0, 'identity is kept through acceptance');
+  const journal = readUpdateJournal(fixture.home);
+  for (const key of ['identity', 'identityMetadata', 'canonical', 'substratePrefixes']) assert.equal(Object.hasOwn(journal, key), false, key);
+  assert.match(journal.identitySha256, /^[a-f0-9]{64}$/);
+  assert.equal(journal.identityFiles, Object.keys(accepted.identity).length);
+  assert.ok(fs.statSync(path.join(updateDirectoryFor(fixture.home), 'journal.json')).size < 64 * 1024);
+  const replay = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.status, 'committed');
+});
+
+test('archiving keeps only the newest previous journal in its settled form', async t => {
+  const fixture = homeFixture(t);
+  const update = updateDirectoryFor(fixture.home);
+  assert.equal((await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging }, quiet)).status, 'committed');
+  const first = readUpdateJournal(fixture.home);
+  // A journal committed by an earlier updater still carries its identity maps.
+  fs.writeFileSync(path.join(update, 'journal.json'), JSON.stringify({ ...first, identity: { 'app/config/home.yaml': 'a'.repeat(64) } }), { mode: 0o600 });
+  const older = path.join(update, `journal.json.committed.${'1'.repeat(8)}-1111-1111-1111-${'1'.repeat(12)}`);
+  fs.writeFileSync(older, '{}\n', { mode: 0o600 });
+  const unrelated = path.join(update, 'journal.json.notes');
+  fs.writeFileSync(unrelated, 'kept\n');
+  const next = path.join(fixture.root, 'third');
+  payload(next, { sourceCommit: 'c'.repeat(40), extra: { 'app/cli/lib/update-marker.txt': 'third\n' } });
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: next, staging: path.join(fixture.root, 'staging-third') }, quiet);
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  const archives = fs.readdirSync(update).filter(name => /^journal\.json\.committed\./.test(name));
+  assert.deepEqual(archives, [`journal.json.committed.${first.id}`]);
+  const archived = JSON.parse(fs.readFileSync(path.join(update, archives[0]), 'utf8'));
+  assert.equal(Object.hasOwn(archived, 'identity'), false);
+  assert.match(archived.identitySha256, /^[a-f0-9]{64}$/);
+  assert.equal(fs.existsSync(unrelated), true);
 });
 
 test('checkpoint and resume fingerprint a read-only attachment without copying it', async t => {
@@ -553,12 +1030,13 @@ test('unchanged state and database use checkpoint metadata through final accepta
   };
   syncBuiltinESMExports();
   try {
+    let journal;
     const result = await applyProductUpdate({ homeRoot: fixture.home,
-      candidatePayload: fixture.candidate, staging: fixture.staging }, quiet);
+      candidatePayload: fixture.candidate, staging: fixture.staging }, { ...quiet,
+      afterPhase: async next => { if (next.phase === 'accepted') journal = next; } });
     assert.equal(result.status, 'committed');
     assert.equal(opens.get(state), 1);
     assert.equal(opens.get(databaseFile), 1);
-    const journal = readUpdateJournal(fixture.home);
     assert.match(journal.identityMetadata['app/instances/milo/conversations/session.txt'].ctimeNs, /^\d+$/);
     assert.match(journal.identityMetadata['app/instances/.house/coordination/home23-coordination.sqlite3'].ino, /^\d+$/);
   } finally {
@@ -585,17 +1063,18 @@ test('a same-size state edit after checkpoint forces a fresh hash and refuses ad
 test('Finder metadata written under a state root after the checkpoint leaves the identity unchanged', async t => {
   const fixture = homeFixture(t);
   const droppings = ['app/instances/milo/.DS_Store', 'app/instances/milo/conversations/._session.txt', 'app/config/.DS_Store'];
+  let journal;
   const result = await applyProductUpdate({ homeRoot: fixture.home,
     candidatePayload: fixture.candidate, staging: fixture.staging }, {
     ...quiet,
-    afterPhase: async journal => {
-      if (journal.phase !== 'checkpointed') return;
+    afterPhase: async next => {
+      if (next.phase === 'accepted') journal = next;
+      if (next.phase !== 'checkpointed') return;
       for (const relative of droppings) fs.writeFileSync(path.join(fixture.home, relative), Buffer.from([0, 0, 0, 1, 0x42, 0x75, 0x64, 0x31]));
     },
   });
   assert.equal(result.status, 'committed');
-  const journal = readUpdateJournal(fixture.home);
-  assert.equal(journal.identityPreserved, true);
+  assert.equal(readUpdateJournal(fixture.home).identityPreserved, true);
   assert.deepEqual(Object.keys(journal.identity).filter(relative => /(^|\/)(\.DS_Store|\._)/.test(relative)), []);
   // Left in place, neither checkpointed nor removed: a state root keeps whatever Finder wrote there.
   assert.equal(fs.existsSync(path.join(fixture.home, 'app/instances/milo/.DS_Store')), true);
@@ -775,13 +1254,14 @@ test('checkpoint fingerprints state under an approved retained source parent', a
     links: [{ path: relative, target: external, sourcePath: 'app/evobrew', sourceTarget: external, kind: 'retain-authority' }],
     externalReferences: [], continuationServices: [],
   }), { mode: 0o600 });
+  let accepted;
   const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
-    staging: fixture.staging }, quiet);
+    staging: fixture.staging }, { ...quiet, afterPhase: async next => { if (next.phase === 'accepted') accepted = next; } });
   assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
   assert.equal(fs.readFileSync(path.join(external, 'config.json'), 'utf8'), '{"kept":true}\n');
   assert.equal(fs.statSync(path.join(external, 'config.json')).mode & 0o777, 0o400);
   assert.equal(fs.existsSync(path.join(updateDirectoryFor(fixture.home), 'checkpoint/state')), false);
-  assert.match(readUpdateJournal(fixture.home).identity['app/evobrew/config.json'], /^[a-f0-9]{64}$/);
+  assert.match(accepted.identity['app/evobrew/config.json'], /^[a-f0-9]{64}$/);
 });
 
 test('continued services join the software update writer fence', async t => {
@@ -864,6 +1344,15 @@ test('failed candidate health restores previous software and leaves state in pla
   assert.deepEqual(preserved(tampered.home), tamperedState);
 });
 
+// installController copies realpath(process.execPath) as the retained Node. A
+// shared-library build (Homebrew: node_shared, @rpath/libnode) cannot run from that
+// copy; the Host always runs its self-contained bin/node, where the copy itself runs.
+function retainedControllerNode(update) {
+  const copied = path.join(update, 'controller/node');
+  assert.equal(fs.statSync(copied).size, fs.statSync(fs.realpathSync(process.execPath)).size);
+  return process.config.variables.node_shared ? process.execPath : copied;
+}
+
 test('killing the controller before and after selection resumes without a second home', async t => {
   const retained = homeFixture(t);
   const before = preserved(retained.home);
@@ -871,7 +1360,7 @@ test('killing the controller before and after selection resumes without a second
   assert.equal(killed.signal, 'SIGKILL', killed.stderr);
   assert.equal(packageId(retained.home), retained.installed.packageId);
   const update = updateDirectoryFor(retained.home);
-  const resumed = await run(path.join(update, 'controller/node'), [path.join(update, 'controller/lib/product-update-recover.mjs'), '--home', retained.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: retained.root, TMPDIR: retained.root, LANG: 'en_US.UTF-8' });
+  const resumed = await run(retainedControllerNode(update), [path.join(update, 'controller/lib/product-update-recover.mjs'), '--home', retained.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: retained.root, TMPDIR: retained.root, LANG: 'en_US.UTF-8' });
   assert.equal(resumed.code, 0, resumed.stderr + resumed.stdout);
   const parsed = JSON.parse(resumed.stdout.trim());
   assert.equal(parsed.status, 'committed');
@@ -886,7 +1375,7 @@ test('killing the controller before and after selection resumes without a second
   assert.equal(packageId(selected.home), selected.next.packageId);
   assert.equal(fs.existsSync(path.join(selected.home, 'runtime/started.txt')), false);
   const selectedUpdate = updateDirectoryFor(selected.home);
-  const resumedAfter = await run(path.join(selectedUpdate, 'controller/node'), [path.join(selectedUpdate, 'controller/lib/product-update-recover.mjs'), '--home', selected.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: selected.root, TMPDIR: selected.root, LANG: 'en_US.UTF-8' });
+  const resumedAfter = await run(retainedControllerNode(selectedUpdate), [path.join(selectedUpdate, 'controller/lib/product-update-recover.mjs'), '--home', selected.home], { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: selected.root, TMPDIR: selected.root, LANG: 'en_US.UTF-8' });
   assert.equal(resumedAfter.code, 0, resumedAfter.stderr + resumedAfter.stdout);
   assert.equal(JSON.parse(resumedAfter.stdout.trim()).status, 'committed');
   assert.equal(fs.readFileSync(path.join(selected.home, 'runtime/started.txt'), 'utf8'), 'start');
@@ -982,8 +1471,10 @@ test('resident writes after startup keep seed lineage and do not restore softwar
   const ledger = path.join(fixture.home, 'app/instances/milo/substrate/seed-01/seed-ledger.jsonl');
   fs.mkdirSync(path.dirname(ledger), { recursive: true });
   fs.writeFileSync(ledger, '{"seq":1}\n');
+  let journal;
   const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate, staging: fixture.staging, admit: true }, {
     ...quiet,
+    afterPhase: async next => { if (next.phase === 'accepted') journal = next; },
     start: async () => {
       fs.appendFileSync(ledger, '{"seq":2}\n');
       fs.writeFileSync(path.join(fixture.home, 'app/instances/milo/brain/thoughts.jsonl'), 'live\n');
@@ -993,7 +1484,6 @@ test('resident writes after startup keep seed lineage and do not restore softwar
   assert.equal(result.status, 'committed');
   assert.equal(result.identityPreserved, true);
   assert.equal(fs.readFileSync(ledger, 'utf8'), '{"seq":1}\n{"seq":2}\n');
-  const journal = readUpdateJournal(fixture.home);
   assert.equal(journal.stateRetention, 'in_place');
   assert.deepEqual(journal.substratePrefixes['app/instances/milo/substrate/seed-01/seed-ledger.jsonl'], {
     bytes: Buffer.byteLength('{"seq":1}\n'), sha256: journal.identity['app/instances/milo/substrate/seed-01/seed-ledger.jsonl'],
@@ -1046,6 +1536,28 @@ test('a failed Host status probe defers healthy admitted writers without fencing
   assert.equal(result.reasons[0].code, 'candidate_starting');
   assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
   assert.equal(fences, 0);
+});
+
+test('a Host that cannot read its supervisor defers healthy admitted writers without fencing', async t => {
+  const unavailable = { ok: false, status: 'unavailable', processes: [], error: { code: 'host_supervisor_ambiguous' } };
+  // What runHostAction('status') returns while this admitted journal blocks Start.
+  const masked = { ...unavailable, ok: true, status: 'recovery_required', update: { phase: 'writers_admitted', acceptedWork: false } };
+  for (const reported of [masked, unavailable]) {
+    const fixture = homeFixture(t, { desiredRunning: true });
+    let online = false, fences = 0;
+    const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+      staging: fixture.staging, admit: true }, { ...quiet,
+      listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+      start: async () => { online = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+      status: async () => reported,
+      quiesce: async () => { fences += 1; online = false; return []; },
+      readinessWaitMs: 0,
+    });
+    assert.equal(result.status, 'deferred', reported.status);
+    assert.equal(result.reasons[0].code, 'candidate_starting');
+    assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
+    assert.equal(fences, 0);
+  }
 });
 
 test('transient readiness probe timeouts re-probe with bounded backoff and commit without deferring', async t => {

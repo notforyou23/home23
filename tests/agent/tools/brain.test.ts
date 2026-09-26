@@ -1377,3 +1377,107 @@ test('canonical search failure remains an error even when it carries an operatio
   } });
   assert.equal((await brainSearchTool.execute({ query: 'memory' }, ctx)).is_error, true);
 });
+
+test('brain_status leads with query-worker readiness so an unreachable COSMO is visible', async () => {
+  const unreachable = await brainStatusTool.execute({}, makeCtx({ brainOperations: {
+    status: async () => ({
+      memory: { nodeCount: 139000 },
+      sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'matches' },
+      queryWorker: { ready: false, code: 'worker_unreachable', checkedAt: '2026-09-26T12:00:00.000Z' },
+    }),
+  } }));
+  assert.equal(unreachable.is_error, undefined);
+  assert.match(unreachable.content.split('\n')[0],
+    /^query worker: NOT READY \(worker_unreachable, checked 2026-09-26T12:00:00\.000Z\)/);
+  assert.match(unreachable.content, /do not launch a brain query until this reads ready/);
+  assert.match(unreachable.content, /139000/);
+  assert.doesNotMatch(unreachable.content, /"queryWorker"/);
+  assert.deepEqual(unreachable.metadata?.queryWorker, {
+    ready: false, code: 'worker_unreachable', checkedAt: '2026-09-26T12:00:00.000Z',
+  });
+
+  const ready = await brainStatusTool.execute({}, makeCtx({ brainOperations: {
+    status: async () => ({ memory: { nodeCount: 1 }, queryWorker: { ready: true, code: null, checkedAt: null } }),
+  } }));
+  assert.match(ready.content, /^query worker: ready \(brain_query, PGS and research can be admitted\)/);
+
+  const unknown = await brainStatusTool.execute({}, makeCtx({ brainOperations: {
+    status: async () => ({ memory: { nodeCount: 1 } }),
+  } }));
+  assert.match(unknown.content, /^brain_status\n/);
+});
+
+// HOME23 188 (H23-013) — unadmitted and admission-failed brain operations.
+
+function admissionStalled(operationId: string, operationType = 'query'): BrainOperationResult {
+  const failed = failedOperation(operationId, 'admission_stalled');
+  failed.operationType = operationType;
+  failed.startedAt = null;
+  failed.acceptedAt = '2026-09-26T12:00:00.000Z';
+  failed.error = {
+    code: 'admission_stalled',
+    message: `no worker admitted this ${operationType} operation within 10 min (stage worker_unreachable)`,
+    retryable: true,
+    admission: { version: 1, stage: 'worker_unreachable' },
+  };
+  return failed;
+}
+
+test('brain_status status says an unadmitted queued operation is not progress and not worth re-reporting', async () => {
+  const operationId = `brop_${'Q'.repeat(32)}`;
+  const acceptedAt = new Date(Date.now() - 3 * 60_000).toISOString();
+  const queued = makeBrainOperationRecord({
+    operationId, state: 'queued', phase: null, startedAt: null,
+    updatedAt: new Date().toISOString(), lastProviderActivityAt: null, lastProgressAt: null,
+  });
+  queued.acceptedAt = acceptedAt;
+  const result = await brainStatusTool.execute({ operationId, action: 'status' }, makeCtx({
+    brainOperations: { inspectOperation: async () => queued },
+  }));
+  const deadline = new Date(Date.parse(acceptedAt) + 10 * 60_000).toISOString();
+  assert.equal(result.is_error, undefined);
+  assert.match(result.content, new RegExp(`^not admitted: no worker has started operation=${operationId}`));
+  assert.match(result.content, new RegExp(`accepted ${acceptedAt.replace(/\./g, '\\.')}, 3 min ago`));
+  assert.match(result.content, /updatedAt is a coordinator heartbeat, not progress/);
+  assert.match(result.content, new RegExp(`fails it as admission_stalled`));
+  assert.ok(result.content.includes(deadline));
+  assert.match(result.content, /Tell the user once; do not re-report unchanged status/);
+  assert.match(result.content, /action:"wait"/);
+  assert.match(result.content, /action:"cancel"/);
+  assert.doesNotMatch(result.content, /"updatedAt"/);
+  assert.equal(result.metadata?.admitted, false);
+  assert.equal(result.metadata?.admissionDeadlineAt, deadline);
+  assert.equal(Object.hasOwn(result.metadata || {}, 'updatedAt'), false);
+});
+
+test('an admission_stalled brain query is a failed answer with a search fallback and no relaunch', async () => {
+  const operationId = `brop_${'F'.repeat(32)}`;
+  let starts = 0;
+  const result = await brainQueryTool.execute({ query: 'what changed?' }, makeCtx({
+    brainOperations: { query: async () => { starts += 1; return admissionStalled(operationId); } },
+  }));
+  assert.equal(starts, 1);
+  assert.equal(result.is_error, true);
+  assert.equal(result.metadata?.classification, 'admission_failed');
+  assert.match(result.content, /admission_stalled: no worker admitted this query operation/);
+  assert.match(result.content, new RegExp(`Keep operation=${operationId} for diagnosis`));
+  assert.match(result.content, /Do not relaunch the same request until brain_status \{\} shows the query worker ready/);
+  assert.match(result.content, /Answer now from brain_search and say the answer is search-based/);
+
+  const { attachmentState: _attachmentState, ...status } = admissionStalled(operationId);
+  const inspected = await brainStatusTool.execute({ operationId, action: 'status' }, makeCtx({
+    brainOperations: { inspectOperation: async () => status },
+  }));
+  assert.equal(inspected.is_error, true);
+  assert.equal(inspected.metadata?.classification, 'admission_failed');
+  assert.match(inspected.content, /Answer now from brain_search/);
+
+  const started = admissionStalled(operationId);
+  started.startedAt = '2026-09-26T12:00:05.000Z';
+  started.error = { code: 'worker_unreachable', message: 'lost after start', retryable: true };
+  const lostAfterStart = await brainQueryTool.execute({ query: 'what changed?' }, makeCtx({
+    brainOperations: { query: async () => started },
+  }));
+  assert.equal(lostAfterStart.metadata?.classification, 'failed');
+  assert.doesNotMatch(lostAfterStart.content, /did not start/);
+});

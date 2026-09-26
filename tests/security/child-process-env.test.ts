@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
 
 import {
+  ownerChildEnv,
   PRIVILEGED_CHILD_ENV_KEYS,
   unprivilegedChildEnv,
 } from '../../src/security/child-process-env.js';
@@ -56,12 +58,30 @@ test('model shell subprocess cannot observe privileged Home23 authority env', as
   assert.doesNotMatch(result.content, /authority-test-value|capability-test-value/);
 });
 
+test('owner child environments carry the owner home only under the Host and stay unprivileged', () => {
+  const shared = createRequire(import.meta.url)('../../shared/child-process-env.cjs');
+  assert.equal(ownerChildEnv, shared.ownerChildEnv);
+  const product = {
+    HOME23_PRODUCT_HOST: 'true', HOME: '/fixture/home/runtime/user', HOME23_OWNER_HOME: '/fixture/owner',
+    [AUTHORITY_ENV]: 'authority-test-value', [CAPABILITY_ENV]: 'capability-test-value',
+  };
+  const child = ownerChildEnv(product);
+  assert.equal(child.HOME, '/fixture/owner');
+  assert.equal(child.HOME23_RUNTIME_HOME, '/fixture/home/runtime/user');
+  assert.equal(child.HOME23_OWNER_HOME, '/fixture/owner');
+  assert.equal(Object.hasOwn(child, AUTHORITY_ENV), false);
+  assert.equal(Object.hasOwn(child, CAPABILITY_ENV), false);
+  assert.equal(product.HOME, '/fixture/home/runtime/user');
+  assert.deepEqual(ownerChildEnv({ HOME: '/fixture/dev', [AUTHORITY_ENV]: 'x' }), { HOME: '/fixture/dev' });
+});
+
 test('every model-controlled spawn uses the centralized unprivileged child environment', () => {
+  // ownerChildEnv delegates to unprivilegedChildEnv; either satisfies the guard.
   const required = new Map([
-    ['src/agent/tools/shell.ts', /unprivilegedChildEnv\(/],
-    ['src/agent/tools/files.ts', /env:\s*unprivilegedChildEnv\(/],
-    ['src/acp/bridge.ts', /env:\s*unprivilegedChildEnv\(/],
-    ['src/home.ts', /env:\s*unprivilegedChildEnv\(/],
+    ['src/agent/tools/shell.ts', /(?:unprivilegedChildEnv|ownerChildEnv)\(/],
+    ['src/agent/tools/files.ts', /env:\s*(?:unprivilegedChildEnv|ownerChildEnv)\(/],
+    ['src/acp/bridge.ts', /env:\s*(?:unprivilegedChildEnv|ownerChildEnv)\(/],
+    ['src/home.ts', /env:\s*(?:unprivilegedChildEnv|ownerChildEnv)\(/],
   ]);
   for (const [file, pattern] of required) {
     const source = fs.readFileSync(path.join(process.cwd(), file), 'utf8');

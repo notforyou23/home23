@@ -28,6 +28,7 @@ import type {
   OperationActivity,
   ResolvedBrainTarget,
   QueryCapabilityCatalog,
+  QueryWorkerReadiness,
   ResearchRunList,
   ActiveResearchRun,
   SynthesisStateResponse,
@@ -498,7 +499,37 @@ export class BrainOperationsClient {
   }
 
   async status(request: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    return this.runShort('status', request, signal);
+    // HOME23 188 (H23-013) — Brain health comes from the local source; the
+    // worker that admits brain_query/PGS/research is a separate process, so
+    // its readiness is reported beside the health instead of implied by it.
+    const [health, queryWorker] = await Promise.all([
+      this.runShort('status', request, signal),
+      this.readQueryWorkerReadiness(signal),
+    ]);
+    return queryWorker ? { ...health, queryWorker } : health;
+  }
+
+  /** Advisory query-worker readiness from the dashboard, or null when unknown. */
+  async readQueryWorkerReadiness(signal?: AbortSignal): Promise<QueryWorkerReadiness | null> {
+    const deadline = {
+      code: 'readiness_timeout', timeoutMs: this.options.statusReadMs ?? 10_000, signal,
+    };
+    try {
+      // /readiness answers 503 when the provider is down; the worker field is
+      // still meaningful then, so read the body for either status.
+      const response = await this.requestResponse('/home23/api/brain-operations/readiness', {}, deadline);
+      const text = await this.withDeadline(deadline, () => response.text());
+      if (text.length > 16_384) return null;
+      const value = (JSON.parse(text) as { queryWorker?: Partial<QueryWorkerReadiness> } | null)?.queryWorker;
+      if (!value || typeof value !== 'object' || typeof value.ready !== 'boolean') return null;
+      return {
+        ready: value.ready,
+        code: typeof value.code === 'string' ? value.code : null,
+        checkedAt: typeof value.checkedAt === 'string' ? value.checkedAt : null,
+      };
+    } catch {
+      return null;
+    }
   }
 
   async watchResearch(request: {

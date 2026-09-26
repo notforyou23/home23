@@ -7,10 +7,12 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:http';
-import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
-import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses } from '../../cli/lib/product-host.js';
+import { choosePortPlan, ownerAccountHome, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
+import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses, supervisorListening } from '../../cli/lib/product-host.js';
 import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
+import { writerStopOrder } from '../../cli/lib/product-update-inventory.js';
+import { updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 
 const memorySource = createRequire(import.meta.url)('../../shared/memory-source');
@@ -48,11 +50,30 @@ test('environment removes host credentials and PM2 metadata and uses short priva
   assert.equal(env.OPENAI_API_KEY, undefined); assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined); assert.equal(env.NODE_OPTIONS, undefined); assert.equal(env.pm_id, undefined);
   assert.equal(env.PM2_HOME, path.join(homeRoot, 'runtime/pm2'));
   assert.notEqual(env.HOME, os.homedir());
+  // HOME stays Home23's private runtime home; the owner's account home is
+  // named beside it from the passwd entry, and the Chrome profile is pinned.
+  assert.equal(env.HOME, path.join(homeRoot, 'runtime/user'));
+  assert.equal(env.HOME23_RUNTIME_HOME, env.HOME);
+  assert.equal(env.CDP_USER_DATA_DIR, path.join(env.HOME, '.home23/chrome-cdp'));
+  assert.equal(env.HOME23_OWNER_HOME, os.userInfo().homedir);
   assert.ok(env.PM2_DAEMON_RPC_PORT.length < 100);
   assert.equal(fs.statSync(env.TMPDIR).mode & 0o777, 0o700);
   fs.rmSync(env.TMPDIR, { recursive: true }); fs.symlinkSync(homeRoot, env.TMPDIR);
   assert.throws(() => productEnvironment(homeRoot, { prepare: true }), /private/);
   fs.unlinkSync(env.TMPDIR);
+});
+
+test('the owner account home comes from passwd, never HOME, and is left out when unusable', t => {
+  const account = os.userInfo().homedir;
+  const previous = process.env.HOME;
+  t.after(() => { process.env.HOME = previous; });
+  process.env.HOME = path.join(os.tmpdir(), 'not-the-owner');
+  assert.equal(ownerAccountHome(path.join(fs.realpathSync(os.tmpdir()), 'home23-owner-fixture')), account);
+  assert.equal(ownerAccountHome(), account);
+  // A home that is, or contains, the account home cannot name it as the owner's.
+  assert.equal(ownerAccountHome(account), null);
+  assert.equal(ownerAccountHome(path.dirname(account)), null);
+  assert.equal('HOME23_OWNER_HOME' in productEnvironment(path.dirname(account)), false);
 });
 
 test('complete persisted port plans refuse occupied ports and do not use historical defaults', async () => {
@@ -72,7 +93,10 @@ test('model endpoint excludes credentials and unsupported transports', () => {
 test('definitions resolve the exact bundled Node without PM2 shell rewriting and retain bounded recovery', t => {
   const homeRoot = home(t);
   const result = productDefinitions([...definitions(homeRoot), { name: 'home23-screenlogic' }], homeRoot, 'milo');
-  assert.equal(result.length, 8);
+  // A resident without an instance config runs with substrate off: coordination,
+  // engine, dash, mcp, harness and evobrew. No seed, shipper or observatory.
+  assert.equal(result.length, 6);
+  assert.deepEqual(result.map(app => app.name), ownedProcessNames('milo', { home23Root: homeRoot }));
   assert.ok(result.every(app => app.interpreter === 'none' && path.resolve(app.cwd, app.script) === path.join(homeRoot, 'bin/node')
     && !/\s/.test(app.script) && app.autorestart && app.max_restarts === 5));
   assert.ok(result.every(app => app.args.includes(path.join(homeRoot, 'app/dist/home.js'))));
@@ -112,12 +136,141 @@ test('explicit stop is exact, durable, preserves data, and unexpected processes 
     signalProcess() { throw new Error('unexpected'); },
   });
   assert.equal(result.status, 'stopped'); assert.equal(result.desiredRunning, false);
-  assert.equal(calls.filter(args => args[0] === 'stop').length, 8);
+  const owned = ownedProcessNames('milo', { home23Root: homeRoot });
+  const stops = calls.filter(args => args[0] === 'stop').map(args => args[1]);
+  // The engine stops before the dashboard and harness it would otherwise restart; Core stops last.
+  assert.deepEqual(stops, writerStopOrder(owned));
+  assert.equal(stops[0], 'home23-milo'); assert.equal(stops.at(-1), 'home23-coordination');
   assert.ok(calls.every(args => !args.includes('all')));
   assert.equal(JSON.parse(fs.readFileSync(path.join(homeRoot, '.home23-host.json'))).birth.home.id, state.birth.home.id);
   rows.push(row(homeRoot, 'someone-else'));
   await assert.rejects(runHostAction('stop', { homeRoot }, { execute }), /unexpected/);
-  assert.equal(calls.filter(args => args[0] === 'stop').length, 8);
+  assert.equal(calls.filter(args => args[0] === 'stop').length, owned.length);
+});
+
+test('explicit stop stops once more a dashboard its engine restarted during the stop', async t => {
+  const { homeRoot } = await prepared(t);
+  const rows = ownedProcessNames('milo').map(name => row(homeRoot, name));
+  const stops = [];
+  const status = name => rows.find(item => item.name === name).pm2_env.status;
+  const execute = async (_node, args) => {
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'stop') {
+      stops.push(args[2]);
+      rows.find(item => item.name === args[2]).pm2_env.status = 'stopped';
+      // The stopping engine's watchdog restarts its dashboard once, late.
+      if (args[2] === 'home23-coordination' && stops.filter(name => name === 'home23-milo-dash').length === 1) {
+        rows.find(item => item.name === 'home23-milo-dash').pm2_env.status = 'online';
+      }
+    }
+    return { stdout: '' };
+  };
+  const result = await runHostAction('stop', { homeRoot }, { execute });
+  assert.equal(result.status, 'stopped');
+  assert.deepEqual(stops.slice(-1), ['home23-milo-dash']);
+  assert.equal(status('home23-milo-dash'), 'stopped');
+  assert.ok(ownedProcessNames('milo').every(name => status(name) === 'stopped'));
+});
+
+test('status reads the canonical supervisor socket when pm2.pid is missing or stale', async t => {
+  const { homeRoot } = await prepared(t);
+  const env = productEnvironment(homeRoot, { prepare: true });
+  const rows = ownedProcessNames('milo').map(name => row(homeRoot, name, 'stopped'));
+  const probed = [], calls = [];
+  const dependencies = {
+    execute: async (_node, args) => { calls.push(args[1]); return { stdout: JSON.stringify(rows) }; },
+    supervisorListening: async path => { probed.push(path); return path === env.PM2_DAEMON_RPC_PORT; },
+  };
+  assert.equal(fs.existsSync(path.join(env.PM2_HOME, 'pm2.pid')), false);
+  const missing = await runHostAction('status', { homeRoot }, dependencies);
+  assert.equal(missing.processes.length, rows.length);
+  fs.writeFileSync(path.join(env.PM2_HOME, 'pm2.pid'), '999999\n');
+  const stale = await runHostAction('status', { homeRoot }, dependencies);
+  assert.equal(stale.processes.length, rows.length);
+  assert.deepEqual(calls, ['jlist', 'jlist']);
+  assert.deepEqual(probed, [env.PM2_DAEMON_RPC_PORT, env.PM2_DAEMON_RPC_PORT]);
+});
+
+test('status never spawns a supervisor when no daemon listens', async t => {
+  const { homeRoot } = await prepared(t);
+  fs.writeFileSync(path.join(productEnvironment(homeRoot, { prepare: true }).PM2_HOME, 'pm2.pid'), `${process.pid}\n`);
+  const result = await runHostAction('status', { homeRoot }, {
+    execute: async (_node, args) => { throw new Error(`pm2 ${args[1]} must not run without a daemon`); },
+    supervisorListening: async () => false,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'prepared');
+  assert.deepEqual(result.processes, []);
+});
+
+test('Stop on a home with no daemon runs no pm2 command, so it starts no supervisor', async t => {
+  const { homeRoot, state } = await prepared(t);
+  privateJSON(path.join(homeRoot, '.home23-host.json'), { ...state, desiredRunning: true, phase: 'starting' });
+  const calls = [];
+  // Stop tolerates a failed `pm2 stop` for a name with no row, so record rather than throw.
+  const result = await runHostAction('stop', { homeRoot }, {
+    execute: async (_node, args) => { calls.push(args[1]); return { stdout: '' }; },
+    supervisorListening: async () => false,
+  });
+  assert.equal(result.status, 'stopped');
+  assert.equal(result.desiredRunning, false);
+  assert.deepEqual(result.processes, []);
+  assert.deepEqual(calls, []);
+});
+
+test('a supervisor on the wrong socket makes status unavailable and Stop changes nothing', async t => {
+  const { homeRoot, state } = await prepared(t);
+  const env = productEnvironment(homeRoot, { prepare: true });
+  privateJSON(path.join(homeRoot, '.home23-host.json'), { ...state, desiredRunning: true, phase: 'starting' });
+  const calls = [];
+  const dependencies = {
+    execute: async (_node, args) => { calls.push(args[1]); return { stdout: '[]' }; },
+    supervisorListening: async socket => socket === path.join(env.PM2_HOME, 'rpc.sock'),
+  };
+  const result = await runHostAction('status', { homeRoot }, dependencies);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.error.code, 'host_supervisor_ambiguous');
+  assert.deepEqual(result.processes, []);
+  await assert.rejects(runHostAction('stop', { homeRoot }, dependencies), /unexpected socket/);
+  assert.deepEqual(calls, []);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(homeRoot, '.home23-host.json'))).desiredRunning, true);
+  const silent = await runHostAction('status', { homeRoot }, { ...dependencies, supervisorListening: async () => null });
+  assert.equal(silent.status, 'unavailable');
+  assert.match(silent.error.message, /not answering/);
+});
+
+test('while an update blocks Start, an unreadable supervisor keeps its error code in the masked status', async t => {
+  const { homeRoot, state } = await prepared(t);
+  privateJSON(path.join(homeRoot, '.home23-host.json'), { ...state, desiredRunning: true, phase: 'starting' });
+  fs.mkdirSync(updateDirectoryFor(homeRoot), { mode: 0o700 });
+  privateJSON(path.join(updateDirectoryFor(homeRoot), 'journal.json'), { schema: 'home23.product-update.v1', homeRoot, phase: 'writers_admitted' });
+  const result = await runHostAction('status', { homeRoot }, {
+    execute: async (_node, args) => { throw new Error(`pm2 ${args[1]} must not run`); },
+    supervisorListening: async () => null,
+  });
+  // The update controller reads this shape as an unreadable Host, not a failed candidate.
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(result.update.phase, 'writers_admitted');
+  assert.equal(result.error.code, 'host_supervisor_ambiguous');
+  assert.deepEqual(result.processes, []);
+});
+
+test('the supervisor probe tells a listening socket from an absent or refused one', async t => {
+  const { createServer: createSocketServer } = await import('node:net');
+  const directory = fs.mkdtempSync('/tmp/h23-probe-');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const socket = path.join(directory, 'rpc.sock');
+  assert.equal(await supervisorListening(socket), false);
+  const server = createSocketServer(connection => connection.end());
+  await new Promise(resolve => server.listen(socket, resolve));
+  assert.equal(await supervisorListening(socket), true);
+  await new Promise(resolve => server.close(resolve));
+  fs.writeFileSync(socket, 'left behind');
+  assert.equal(await supervisorListening(socket), false);
+  // PM2's default socket under a deep home path is longer than a socket address allows.
+  assert.equal(await supervisorListening(path.join(directory, 'x'.repeat(120), 'rpc.sock')), false);
 });
 
 test('start persists intent and returns starting until readiness succeeds', async t => {
@@ -130,7 +283,32 @@ test('start persists intent and returns starting until readiness succeeds', asyn
   };
   const result = await runHostAction('start', { homeRoot }, { execute, definitions: () => productDefinitions(definitions(homeRoot), homeRoot, 'milo'), readinessWaitMs: 0, probeReadiness: async () => ({ ready: false, issues: ['waiting for signed resident'] }) });
   assert.equal(result.status, 'starting'); assert.equal(result.desiredRunning, true);
-  assert.equal(calls.filter(args => args[0] === 'start').length, 8);
+  assert.deepEqual(calls.filter(args => args[0] === 'start').map(args => args[args.indexOf('--only') + 1]), ownedProcessNames('milo', { home23Root: homeRoot }));
+  // Processes learn the owner home from their environment, computed at launch;
+  // the saved Host state, which the update preflight scans, never carries it.
+  const owner = os.userInfo().homedir;
+  assert.equal(productDefinitions(definitions(homeRoot), homeRoot, 'milo')[0].env.HOME23_OWNER_HOME, owner);
+  const saved = fs.readFileSync(path.join(homeRoot, '.home23-host.json'), 'utf8');
+  assert.equal(saved.includes('HOME23_OWNER_HOME'), false);
+  if (!homeRoot.startsWith(`${owner}/`)) assert.equal(saved.includes(owner), false);
+});
+
+test('definitions and Start include seed, shipper and seed-observatory when the resident enables substrate', async t => {
+  const { homeRoot } = await prepared(t), rows = [], starts = [];
+  fs.mkdirSync(path.join(homeRoot, 'app/instances/milo'), { recursive: true });
+  fs.writeFileSync(path.join(homeRoot, 'app/instances/milo/config.yaml'), 'substrate:\n  enabled: true\n');
+  const expected = ['home23-coordination', 'home23-milo', 'home23-milo-dash', 'home23-milo-mcp', 'home23-milo-harness',
+    'home23-milo-seed', 'home23-milo-shipper', 'home23-seed-observatory', 'home23-evobrew'];
+  const apps = expected.map(name => ({ name, script: 'dist/home.js', cwd: path.join(homeRoot, 'app'), env: {}, node_args: '', args: [] }));
+  assert.deepEqual(productDefinitions(apps, homeRoot, 'milo').map(app => app.name), expected);
+  const execute = async (_node, args) => {
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'start') { const name = args[args.indexOf('--only') + 1]; starts.push(name); rows.push(row(homeRoot, name)); }
+    return { stdout: '' };
+  };
+  const result = await runHostAction('start', { homeRoot }, { execute, definitions: () => productDefinitions(apps, homeRoot, 'milo'), readinessWaitMs: 0, probeReadiness: async () => ({ ready: false, issues: ['waiting for signed resident'] }) });
+  assert.equal(result.status, 'starting');
+  assert.deepEqual(starts, expected);
 });
 
 test('Start reports a restarting service as failed instead of starting', async t => {
@@ -243,6 +421,24 @@ test('status warns about foreign supervisors bound to this home without failing 
   const clean = await runHostAction('status', { homeRoot }, { ...dependencies, detectForeignBindings: options => detectForeignBindings({ ...options, homeDirectory: path.join(userHome, 'nobody') }) });
   assert.deepEqual(clean.warnings, []);
   assert.deepEqual(clean.foreignBindings.references, []);
+});
+
+test('status from a Host process environment scans the owner home, not the runtime HOME', async t => {
+  const { homeRoot } = await prepared(t);
+  const userHome = path.join(path.dirname(homeRoot), 'user');
+  fs.mkdirSync(path.join(userHome, '.pm2'), { recursive: true });
+  fs.writeFileSync(path.join(userHome, '.pm2/dump.pm2'), JSON.stringify([{ name: 'cosmo-engine', pm_cwd: path.join(homeRoot, 'app') }]));
+  const keys = ['HOME', 'PM2_HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  t.after(() => { for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; } });
+  // host.mjs replaces the whole environment with productEnvironment() before any action.
+  Object.assign(process.env, { HOME: path.join(homeRoot, 'runtime/user'), PM2_HOME: path.join(homeRoot, 'runtime/pm2'),
+    HOME23_OWNER_HOME: userHome, HOME23_PRODUCT_HOST: 'true' });
+  const status = await runHostAction('status', { homeRoot }, { execute: async () => ({ stdout: '[]' }) });
+  assert.equal(status.foreignBindings.scanned.ownerHome, userHome);
+  assert.equal(status.foreignBindings.scanned.pm2Dump, path.join(userHome, '.pm2/dump.pm2'));
+  assert.equal(status.warnings.length, 1);
+  assert.match(status.warnings[0], /PM2 app "cosmo-engine"/);
 });
 
 test('consumer Host skips Evobrew and accepts only its stopped legacy supervisor row', async t => {
@@ -427,7 +623,7 @@ test('status finishes only the first pairing admitted by Start after the startup
   rows.find(item => item.name === 'home23-evobrew').pm2_env.status = 'online';
   const ready = await runHostAction('status', { homeRoot: f.homeRoot }, dependencies);
   assert.equal(ready.status, 'ready');
-  assert.equal(starts.length, 8);
+  assert.deepEqual(starts, ownedProcessNames('milo', { home23Root: f.homeRoot }));
   assert.equal(f.repository.devices.size, 1);
   assert.equal(f.readSession().initialPairingAuthorized, undefined);
   assert.equal(f.calls.find(call => call.route === '/api/v1/pairing/sessions').key, pending.pending.issueKey);
@@ -1206,6 +1402,36 @@ test('create refuses oauth that is configured but neither valid nor refreshable'
   });
   assert.equal(admitted.status, 'prepared');
   assert.equal(readHostSecrets(homeRoot).providers.anthropic.oauth.refreshToken, 'refresh-stale-access');
+});
+
+test('status counts permanently refused Work and Round recoveries, read-only, so the owner still sees them', async t => {
+  const { homeRoot } = await prepared(t);
+  const stopped = { execute: async () => ({ stdout: '[]' }) };
+  assert.equal((await runHostAction('status', { homeRoot }, stopped)).permanentRecoveryRefusals, null, 'no Core database yet');
+  const file = path.join(homeRoot, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const { DatabaseSync } = await import('node:sqlite');
+  const database = new DatabaseSync(file);
+  database.exec(`CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, aggregate_kind TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL, aggregate_version INTEGER NOT NULL, payload_json TEXT NOT NULL,
+    UNIQUE (aggregate_kind, aggregate_id, aggregate_version))`);
+  const insert = database.prepare('INSERT INTO events (aggregate_kind, aggregate_id, aggregate_version, payload_json) VALUES (?, ?, ?, ?)');
+  for (const [kind, id, version, permanent] of [
+    ['work_recovery_refusal', 'wrk_limit', 1, false], ['work_recovery_refusal', 'wrk_limit', 2, false], ['work_recovery_refusal', 'wrk_limit', 3, true],
+    ['work_recovery_refusal', 'wrk_transient', 1, false],
+    ['round_recovery_refusal', 'rnd_a', 1, true], ['round_recovery_refusal', 'rnd_b', 1, true], ['round_recovery_refusal', 'rnd_transient', 1, false],
+    ['resident_outcome', 'not-a-refusal', 1, true],
+  ]) insert.run(kind, id, version, JSON.stringify({ permanent }));
+  database.close();
+  const before = fs.readFileSync(file);
+  const counted = await runHostAction('status', { homeRoot }, stopped);
+  assert.equal(counted.status, 'prepared');
+  assert.deepEqual(counted.permanentRecoveryRefusals, { works: 1, rounds: 2 });
+  assert.deepEqual(fs.readFileSync(file), before, 'status never writes Core\'s database');
+  fs.writeFileSync(file, 'not a database');
+  const unreadable = await runHostAction('status', { homeRoot }, stopped);
+  assert.equal(unreadable.status, 'prepared', 'an unreadable database never fails status');
+  assert.equal(unreadable.permanentRecoveryRefusals, null);
 });
 
 test('status reports a stale memory seal instead of leaving reads to fail silently', async t => {

@@ -17,13 +17,22 @@ class IngestionManifest {
    * @param {function} opts.embeddingFn - async (text) => float[] | null
    * @param {object} opts.config - { batchSize, intervalSeconds }
    * @param {object} opts.logger
+   * @param {function} [opts.onGenerationLost] - (filePath, label) after a
+   *   generation whose chunk nodes left the graph was reset for re-reading
+   * @param {function} [opts.onFlushed] - ({ reason, flushed }) after a flush
+   *   put items into memory; the brain is not durable until it saves them
    */
-  constructor({ runPath, memory, embeddingFn, config = {}, logger = null }) {
+  constructor({ runPath, memory, embeddingFn, config = {}, logger = null, onGenerationLost = null, onFlushed = null }) {
     this.runPath = runPath;
     this.memory = memory;
     this.embeddingFn = embeddingFn;
     this.config = config;
     this.logger = logger;
+    this.onGenerationLost = onGenerationLost;
+    this.onFlushed = onFlushed;
+    this.deferredFlushMs = config.deferredFlushMs ?? 2000;
+    this._deferredFlush = null;
+    this._closed = false;
 
     this._manifestPath = path.join(runPath, 'ingestion-manifest.json');
     // JSONL, not a single JSON array: the queue once serialized as one
@@ -150,15 +159,39 @@ class IngestionManifest {
   }
 
   /**
+   * Drop quarantine entries the predicate marks as the converter's fault,
+   * not the file's, so the next scan re-evaluates them. An entry with nodes
+   * or a pending generation is never touched. Returns the released paths.
+   */
+  async releaseQuarantined(predicate) {
+    return this._withLock(async () => {
+      const released = [];
+      for (const [filePath, entry] of Object.entries(this._manifest)) {
+        if (!entry?.quarantinedAt || entry.nodeIds?.length || entry._pendingGeneration) continue;
+        if (!predicate(filePath, entry)) continue;
+        delete this._manifest[filePath];
+        released.push(filePath);
+      }
+      if (released.length) this._saveManifest();
+      return released;
+    });
+  }
+
+  /**
    * Flush pending items: embed, create nodes, create edges, update manifest.
+   * Resolves { flushed } with the number of items put into memory.
    */
   async flush(reason = 'manual') {
     return this._withLock(async () => {
       this._adoptCompatPending();
-      if (this._flushInProgress || this._queue.pendingCount === 0) return;
-      // Adding nodes mid-save makes the brain save refuse; the next interval
-      // flush picks the batch up once the save completes.
-      if (this.memory?.persistenceSaveActive) return;
+      if (this._flushInProgress || this._queue.pendingCount === 0) return { flushed: 0 };
+      // Adding nodes mid-save makes the brain save refuse. The file-event
+      // debounce has already fired, and the interval flush is 300 s away, so
+      // retry shortly after the save instead.
+      if (this.memory?.persistenceSaveActive) {
+        this._deferFlush(reason);
+        return { flushed: 0, deferred: true };
+      }
       this._flushInProgress = true;
 
       const batchSize = this.config.batchSize || 20;
@@ -231,7 +264,7 @@ class IngestionManifest {
             this._queue.requeue(remaining, remaining.map((item) => deliveryByItem.get(item)));
           }
           this._queue.commit(queuedBatch.token);
-          return;
+          return { flushed: 0 };
         }
 
         // Phase 2: establish a durable file-generation accumulator. Old nodes
@@ -298,12 +331,26 @@ class IngestionManifest {
 
         // Phase 4/5: finalize complete generations and apply each relationship
         // exactly once using the complete generation's node map.
+        const lostGenerations = [];
         for (const filePath of filesInBatch) {
           const representative = readyItems.find(i => i.filePath === filePath);
           const existing = ensureGenerationState(this, filePath, representative);
           const totalChunks = Number(representative.totalChunks) || existing._pendingTotalChunks || 0;
           const nodeIds = orderedGenerationNodeIds(existing._pendingChunks, totalChunks);
           if (!nodeIds) continue;
+          // Chunk IDs are recorded here at once, but the nodes reach the brain
+          // only at its next save. A restart in between leaves earlier chunks
+          // naming nodes that are gone or reused by other nodes; relating them
+          // wrote Forrest's dangling depends_on edges (2026-09-23).
+          const lostChunks = lostGenerationChunks(this.memory, filePath, existing._pendingChunks, totalChunks);
+          if (lostChunks.length) {
+            resetLostGeneration(this, filePath);
+            this.logger?.warn?.('Feeder generation lost chunk nodes; re-reading the file', {
+              filePath, lostChunks: lostChunks.length, totalChunks,
+            });
+            lostGenerations.push({ filePath, label: existing.label || representative.label });
+            continue;
+          }
           applyGenerationRelationships(this.memory, existing._pendingChunks, representative.relationships);
           const completed = {
             ...existing,
@@ -336,21 +383,48 @@ class IngestionManifest {
           this._queue.requeue(remaining, remaining.map((item) => deliveryByItem.get(item)));
         }
         this._queue.commit(queuedBatch.token);
+        // Not awaited: re-reading enqueues behind this flush's lock.
+        for (const { filePath, label } of lostGenerations) {
+          Promise.resolve()
+            .then(() => this.onGenerationLost?.(filePath, label))
+            .catch((err) => this.logger?.warn?.('Re-reading a lost feeder generation failed', {
+              filePath, error: err.message,
+            }));
+        }
 
         this.logger?.info?.(`Flushed ${readyItems.length} items (${reason})`, {
           filesProcessed: filesInBatch.size,
           nodesCreated: readyItems.length,
           remaining: this._queue.pendingCount
         });
+        try {
+          this.onFlushed?.({ reason, flushed: readyItems.length });
+        } catch (err) {
+          this.logger?.warn?.('Feeder flush listener failed', { error: err.message });
+        }
 
         // Chain next flush if overflow
         if (this._queue.pendingCount > 0) {
           setTimeout(() => this.flush('drain'), 500);
         }
+        return { flushed: readyItems.length };
       } finally {
         this._flushInProgress = false;
       }
     });
+  }
+
+  // One pending retry, however many flushes a save deferred.
+  _deferFlush(reason) {
+    if (this._deferredFlush || this._closed) return;
+    this._deferredFlush = setTimeout(() => {
+      this._deferredFlush = null;
+      if (this._closed) return;
+      this.flush(`${reason}:after-save`).catch((err) => {
+        this.logger?.warn?.('Deferred feeder flush failed', { error: err.message });
+      });
+    }, this.deferredFlushMs);
+    this._deferredFlush.unref?.();
   }
 
   /**
@@ -397,6 +471,10 @@ class IngestionManifest {
    */
   async shutdown() {
     await this.flush('shutdown');
+    // A flush the final save deferred stays queued on disk for next start.
+    this._closed = true;
+    if (this._deferredFlush) clearTimeout(this._deferredFlush);
+    this._deferredFlush = null;
     this._saveManifest();
     this._adoptCompatPending();
   }
@@ -686,6 +764,50 @@ function orderedGenerationNodeIds(chunks, totalChunks) {
     nodeIds.push(nodeId);
   }
   return nodeIds;
+}
+
+// A chunk node may sit under either ID type (disk rows load as strings, fresh
+// allocations are numbers). It is this chunk's only while it still carries
+// the chunk's feeder key: IDs lost at a restart are handed to new nodes.
+function feederChunkNode(memory, nodeId, ownsKey) {
+  for (const id of [nodeId, String(nodeId), Number(nodeId)]) {
+    const node = memory.nodes.get(id);
+    if (node) return ownsKey(node.metadata?.chunkKey) ? { id, node } : null;
+  }
+  return null;
+}
+
+function lostGenerationChunks(memory, filePath, chunks, totalChunks) {
+  // Doubles without a node map keep the previous contract.
+  if (!(memory?.nodes instanceof Map)) return [];
+  const lost = [];
+  for (let index = 0; index < totalChunks; index += 1) {
+    const sourcePath = `${filePath}#chunk-${index}`;
+    if (!feederChunkNode(memory, chunks?.[String(index)], (key) => key === sourcePath)) lost.push(index);
+  }
+  return lost;
+}
+
+// The lost chunks' queue items are already acknowledged, so the generation
+// cannot finish. Remove the chunks that are provably still this file's, and
+// drop the hash so the feeder reads the file again as new.
+function resetLostGeneration(manifest, filePath) {
+  const entry = manifest._manifest[filePath];
+  const prefix = `${filePath}#chunk-`;
+  for (const nodeId of Object.values(entry._pendingChunks || {})) {
+    const owned = feederChunkNode(manifest.memory, nodeId, (key) => typeof key === 'string' && key.startsWith(prefix));
+    if (!owned) continue;
+    forgetFeederNode(manifest, owned.id);
+    manifest.memory.removeNode(owned.id);
+  }
+  entry.nodeIds = [];
+  entry.nodeCount = 0;
+  entry.lostChunksAt = new Date().toISOString();
+  delete entry.hash;
+  delete entry._pendingGeneration;
+  delete entry._pendingChunks;
+  delete entry._pendingTotalChunks;
+  delete entry._supersededNodeIds;
 }
 
 function applyGenerationRelationships(memory, chunks, relationships) {

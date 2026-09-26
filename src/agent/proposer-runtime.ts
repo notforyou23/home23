@@ -16,9 +16,9 @@
  * read roots — deny overrides allow.
  */
 
-import os from 'node:os';
 import path from 'node:path';
 import { getHome23Root } from '../config.js';
+import { ownerHome } from '../security/owner-home.js';
 import { AgentLoop } from './loop.js';
 import { ContextManager } from './context.js';
 import { ConversationHistory } from './history.js';
@@ -32,7 +32,7 @@ export const PROPOSER_CHAT_PREFIX = 'proposer:shakedown';
 export interface ProposerRoots {
   /** Home23 app root: HOME23_ROOT when set, else the packaged root (src/config.ts). */
   home23: string;
-  /** Shakedown Shuffle site checkout: SHAKEDOWN_SITE_ROOT, else ~/websites/shakedownshuffle.com. */
+  /** Shakedown Shuffle site checkout: SHAKEDOWN_SITE_ROOT, else websites/shakedownshuffle.com in the owner's home. */
   site: string;
   /** Jerry collection archive: JERRY_COLLECTION_ROOT, else a sibling two levels above the app root. */
   jerryCollection: string;
@@ -48,9 +48,10 @@ export interface ProposerRoots {
  */
 export function resolveProposerRoots(): ProposerRoots {
   const home23 = getHome23Root();
+  // The owner's checkout. Under the Host, HOME is Home23's private runtime home.
   const site = process.env.SHAKEDOWN_SITE_ROOT
     ? path.resolve(process.env.SHAKEDOWN_SITE_ROOT)
-    : path.join(os.homedir(), 'websites', 'shakedownshuffle.com');
+    : path.join(ownerHome(), 'websites', 'shakedownshuffle.com');
   const jerryCollection = process.env.JERRY_COLLECTION_ROOT
     ? path.resolve(process.env.JERRY_COLLECTION_ROOT)
     : path.resolve(home23, '..', '..', 'jerry-collection');

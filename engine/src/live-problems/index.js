@@ -34,7 +34,7 @@ function loadActionAllowlistIntegrations() {
   }
 }
 
-function initLiveProblems({ brainDir, memory, logger, agentName, dashboardPort, bridgePort, harnessNotifyToken }) {
+function initLiveProblems({ brainDir, memory, logger, agentName, dashboardPort, bridgePort, harnessNotifyToken, persistenceStatus = null }) {
   const store = new LiveProblemStore({ brainDir, logger });
   // Ensure dispatch ledger path exists so file_exists verifiers are not chronic fiction.
   try {
@@ -75,6 +75,7 @@ function initLiveProblems({ brainDir, memory, logger, agentName, dashboardPort, 
   const ctxProvider = () => ({
     memory,
     brainDir,
+    persistenceFreshness: persistenceStatus,
     agentName: ownerAgent,
     dashboardBaseUrl,
     osKernel,

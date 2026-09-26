@@ -56,6 +56,16 @@ const TERMINAL_EXPLANATIONS: Readonly<Record<ActivityTerminalReason, string>> = 
   attachment_failed: "Attachment processing failed.",
 };
 const SAFE_REFERENCE = /^[A-Za-z0-9._:-]{1,128}$/;
+/** Aggregates whose activity.updated events are Activity: Work observations and
+ * the M11 facts (Round, Outbox, recovery observation) the trusted assembler
+ * turns into them. An unpaired one is a conflict. Core also writes
+ * activity.updated as bookkeeping for other aggregates (resident outcomes and
+ * assignments, invocations, recovery refusals, scheduled runs, chess); those
+ * are not Activity, and one of them must not take the whole feed down. */
+export const ACTIVITY_SOURCE_AGGREGATE_KINDS: readonly string[] = Object.freeze([
+  "work", "round", "outbox", "workObservation",
+]);
+const ACTIVITY_SOURCE_KINDS: ReadonlySet<string> = new Set(ACTIVITY_SOURCE_AGGREGATE_KINDS);
 // Frozen M02 presentation mapping. Additions require a numbered contract delta.
 const LOCKED_SAFE_SUMMARY_LABELS: ReadonlyMap<string, string> = new Map([
   ["Checking one source.", "Checking one source"],
@@ -902,7 +912,7 @@ export function projectActivity(input: ProjectActivityInput): ActivityProjection
     const workInput = work.byEventId.get(event.id);
     if (event.type === "activity.updated") {
       if (!workInput) {
-        if (!work.recognizedEventIds.has(event.id)) {
+        if (!work.recognizedEventIds.has(event.id) && ACTIVITY_SOURCE_KINDS.has(event.aggregate.kind)) {
           reconciliationConflict = earlierConflict(reconciliationConflict, event.sequence);
         } else {
           decisions.set(event.id, { kind: "ignore" });

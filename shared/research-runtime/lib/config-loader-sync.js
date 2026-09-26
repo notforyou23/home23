@@ -36,6 +36,7 @@ function getEncryptionKey() {
 
   // 2) Config file security key
   try {
+    // product-private: a provider store, not owner data; runtime HOME by design.
     const configDir = process.env.COSMO23_CONFIG_DIR || path.join(os.homedir(), '.cosmo2.3');
     const configPath = process.env.COSMO23_CONFIG_PATH || path.join(configDir, 'config.json');
     if (fs.existsSync(configPath)) {
@@ -138,6 +139,7 @@ function getConfigDir() {
   if (process.env.COSMO23_CONFIG_DIR) {
     return process.env.COSMO23_CONFIG_DIR;
   }
+  // product-private: a provider store, not owner data; runtime HOME by design.
   return path.join(os.homedir(), CONFIG_DIR_NAME);
 }
 

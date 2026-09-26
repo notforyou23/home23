@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TailChannel } from '../../../../engine/src/channels/base/tail-channel.js';
@@ -37,6 +37,25 @@ test('TailChannel emits each new JSONL line as a parsed observation', { timeout:
     assert.equal(out.length, 2);
     assert.equal(out[0].payload.a, 1);
     assert.equal(out[1].payload.a, 2);
+  } finally {
+    await ch.stop();
+  }
+});
+
+test('TailChannel leaves a missing file uncreated and reads it once its writer creates it', { timeout: 5000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tail-'));
+  const path = join(dir, 'owner-log.jsonl');
+  const ch = new FakeTail(path);
+  await ch.start();
+  try {
+    assert.equal(existsSync(path), false, 'a reader must not create the owner log');
+    appendFileSync(path, JSON.stringify({ a: 1 }) + '\n' + JSON.stringify({ a: 2 }) + '\n');
+    const out = [];
+    for await (const parsed of ch.source()) {
+      out.push(parsed.payload.a);
+      if (out.length >= 2) break;
+    }
+    assert.deepEqual(out, [1, 2]);
   } finally {
     await ch.stop();
   }

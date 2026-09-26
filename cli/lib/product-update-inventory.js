@@ -1,7 +1,7 @@
 /** Classifies a Host v1 home for a schema-preserving update. No package writes. */
 import { createHash } from 'node:crypto';
-import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { absoluteHome, readPrivateJSON, socketRootFor } from './product-environment.js';
 import { PRODUCT_STATE_PATHS, isOsMetadataPath, isProductStatePath } from './product-payload.js';
 import { compareUpdateContracts } from './product-update-plan.js';
@@ -68,9 +68,16 @@ const COORDINATION_SOCKET = 'app/instances/.house/coordination/coord.sock';
 const PM2_SOCKETS = new Set(['runtime/pm2/pub.sock', 'runtime/pm2/rpc.sock']);
 const CHROME_SINGLETON_SOCKET = 'runtime/user/.home23/chrome-cdp/SingletonSocket';
 const CHROME_SOCKET_TARGET = /^\/var\/folders\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/T\/com\.google\.Chrome\.[A-Za-z0-9_-]+\/SingletonSocket$/;
-const SCAN_FILES = ['.home23-host.json', 'app/.home23-state.json', 'app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml'];
+// app/config/agents.json is not scanned: every Start regenerates it from the
+// instance configs below before any process runs, so its paths are derived.
+const SCAN_FILES = ['.home23-host.json', 'app/.home23-state.json', 'app/config/home.yaml', 'app/config/targets.yaml', 'app/config/secrets.yaml'];
+const INSTANCE_CONFIG = /^app\/instances\/[a-z0-9][a-z0-9-]*\/config\.yaml$/;
+// Receipts sealed before agents.json stopped being scanned may still name it.
+const REVIEWABLE_REFERENCE_FILES = [...SCAN_FILES, 'app/config/agents.json'];
 const ADOPTED_LINK_RECEIPT = 'runtime/adoption-preservation.json';
-const REBUILDABLE_PREFIXES = ['app/logs/', 'app/engine/logs/', 'app/engine/runtime/', 'runtime/pm2/', 'runtime/embedder-cache/', 'runtime/user/', 'runtime/.host.lock/'];
+// Retained update executors (a Node copy each) serve only their own worker.
+const REBUILDABLE_PREFIXES = ['app/logs/', 'app/engine/logs/', 'app/engine/runtime/', 'runtime/pm2/', 'runtime/embedder-cache/', 'runtime/user/', 'runtime/.host.lock/',
+  'runtime/home-update/executor-'];
 // Enough named paths for the owner to act on; the remainder is counted, not listed.
 const UNKNOWN_PATH_LIMIT = 10;
 
@@ -90,6 +97,19 @@ export function ownedWriterNames(name, { encoderRequired = false } = {}) {
     `${base}-seed`, `${base}-shipper`, `${base}-house-sense`, 'home23-seed-observatory', 'home23-evobrew'];
   if (encoderRequired) names.push('home23-embedder');
   return names;
+}
+/** The order owned writers stop in. A resident engine's live-problems loop
+ * restarts its own dashboard, harness and shared services while the engine
+ * waits for agents during shutdown, so every engine stops first. The rest
+ * stop in reverse start order, which keeps home23-coordination (Core) last. */
+export function writerStopOrder(names) {
+  const engines = residentEngines(names);
+  return [...engines, ...(names || []).filter(name => !engines.includes(name)).reverse()];
+}
+/** Resident engines are the names whose own dashboard or harness is also listed. */
+export function residentEngines(names) {
+  const known = new Set(names || []);
+  return [...known].filter(name => known.has(`${name}-harness`) || known.has(`${name}-dash`));
 }
 
 const reason = (code, message, extra = {}) => ({ code, message, ...extra });
@@ -115,6 +135,83 @@ function refersToHome(text, home, token) {
   const boundary = home[token.length];
   if (!home.startsWith(token) || (boundary !== undefined && boundary !== ' ' && boundary !== '/')) return false;
   return new RegExp(escapeRegex(home).replaceAll(' ', '\\s+')).test(text);
+}
+const indentOf = line => line.length - line.trimStart().length;
+/**
+ * The top-level system.<field> scalar of an instance config.yaml, read without
+ * js-yaml because the retained update executor copies only ./ modules. Reads
+ * the forms yaml.dump and hand edits write: plain, quoted, and folded or
+ * literal blocks (yaml.dump folds long paths at spaces). Returns undefined when
+ * unset and false for any other form, so the caller refuses instead of guessing.
+ */
+function systemScalar(text, field) {
+  const lines = text.split(/\r?\n/);
+  const heads = lines.flatMap((line, index) => /^(?:system|"system"|'system')\s*:(?=\s|$)/.test(line) ? [index] : []);
+  if (!heads.length) return undefined;
+  const head = lines[heads[0]].replace(/^\S+\s*:/, '').replace(/(^|\s)#.*$/, '').trim().replace(/^&\S+/, '').trim();
+  if (heads.length > 1 || head.startsWith('*')) return false;
+  if (head) return head !== '{}' && head.includes(field) ? false : undefined;
+  let end = heads[0] + 1;
+  while (end < lines.length && (/^\s/.test(lines[end]) || /^(#.*)?$/.test(lines[end]))) end++;
+  const block = lines.slice(heads[0] + 1, end);
+  const first = block.find(line => !/^\s*(#.*)?$/.test(line));
+  if (first === undefined) return undefined;
+  const indent = indentOf(first);
+  const key = new RegExp(`^ {${indent}}(?:${field}|"${field}"|'${field}')\\s*:(?=\\s|$)(.*)$`);
+  const loose = new RegExp(`^ {${indent}}(?:\\?\\s+)?["']?${field}\\b`);
+  const at = block.findIndex(line => key.test(line));
+  if (block.some(line => /^\s*<<\s*:/.test(line)) || block.filter(line => key.test(line)).length > 1
+    || block.some(line => loose.test(line) && !key.test(line))) return false;
+  if (at < 0) return undefined;
+  const value = key.exec(block[at])[1].trim();
+  const body = [];
+  for (const line of block.slice(at + 1)) {
+    if (!/^\s*$/.test(line) && indentOf(line) <= indent) break;
+    body.push(line);
+  }
+  while (body.length && !body.at(-1).trim()) body.pop();
+  const scalar = /^([|>])(?:([1-9])?[+-]?|[+-]([1-9])?)\s*(?:#.*)?$/.exec(value);
+  if (scalar) {
+    if (!body.length) return '';
+    const digit = scalar[2] || scalar[3];
+    const depth = digit ? indent + Number(digit) : indentOf(body.find(line => line.trim()));
+    if (body.some(line => line.trim() && indentOf(line) < depth)) return false;
+    const content = body.map(line => line.slice(depth));
+    if (scalar[1] === '|') return content.join('\n');
+    return content.some(line => !line || /^\s/.test(line)) ? false : content.join(' ');
+  }
+  if (body.some(line => !/^\s*(#.*)?$/.test(line))) return false;
+  const double = /^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/.exec(value);
+  if (double) { try { return JSON.parse(`"${double[1]}"`); } catch { return false; } }
+  const single = /^'((?:[^']|'')*)'\s*(?:#.*)?$/.exec(value);
+  if (single) return single[1].replaceAll("''", "'");
+  if (/^([&*!\[\]{}@`%,|>'"]|[?:-](\s|$))/.test(value)) return false;
+  const plain = value.startsWith('#') ? '' : value.replace(/\s+#.*$/, '');
+  if (/:(\s|$)/.test(plain)) return false;
+  return ['', '~', 'null', 'Null', 'NULL'].includes(plain) ? undefined : plain;
+}
+/** The dotted setting that names token, so the owner can find it. JSON is exact; YAML follows indentation. */
+function settingFor(relative, text, token) {
+  if (relative.endsWith('.json')) {
+    const find = (value, trail) => {
+      if (typeof value === 'string') return value.includes(token) ? trail : null;
+      if (!value || typeof value !== 'object') return null;
+      for (const [key, item] of Object.entries(value)) {
+        const found = find(item, trail ? (Array.isArray(value) ? `${trail}[${key}]` : `${trail}.${key}`) : key);
+        if (found) return found;
+      }
+      return null;
+    };
+    try { return find(JSON.parse(text), ''); } catch { return null; }
+  }
+  const lines = text.split(/\r?\n/), keys = [];
+  for (let at = lines.findIndex(line => line.includes(token)), depth = Infinity; at >= 0; at--) {
+    const match = /^(\s*(?:-\s+)?)(?:"([^"]+)"|'([^']+)'|([^\s#'"{[][^:#]*?))\s*:(?:\s|$)/.exec(lines[at]);
+    if (!match || match[1].length >= depth) continue;
+    keys.unshift(match[2] ?? match[3] ?? match[4]);
+    depth = match[1].length;
+  }
+  return keys.join('.') || null;
 }
 function recipeIds(file) {
   const parsed = JSON.parse(readFileSync(file, 'utf8'));
@@ -200,7 +297,8 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
       if (receipt.externalReferences !== undefined) {
         if (!Array.isArray(receipt.externalReferences)) throw new Error();
         adoptedReferences = new Set(receipt.externalReferences.map(reference => {
-          if (!SCAN_FILES.includes(reference.path) || typeof reference.target !== 'string' || !reference.target.startsWith('/')) throw new Error();
+          if (!(REVIEWABLE_REFERENCE_FILES.includes(reference.path) || INSTANCE_CONFIG.test(reference.path))
+            || typeof reference.target !== 'string' || !reference.target.startsWith('/')) throw new Error();
           return `${reference.path}\0${reference.target}`;
         }));
         if (adoptedReferences.size !== receipt.externalReferences.length) throw new Error();
@@ -327,10 +425,54 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
       : readFileSync(file, 'utf8');
     for (const token of absoluteTokens(text)) {
       if (!allowedExternal(root, token) && !refersToHome(text, root, token)
-        && !adoptedReferences.has(`${relative}\0${token}`)) external.push({ path: relative, target: relative.endsWith('secrets.yaml') ? '[redacted]' : token });
+        && !adoptedReferences.has(`${relative}\0${token}`)) external.push({ path: relative, field: settingFor(relative, text, token),
+        target: relative.endsWith('secrets.yaml') ? '[redacted]' : token });
     }
   }
-  for (const item of external) reasons.push(reason('external_reference', `External path in ${item.path} is not part of this home. Reconnect or remove it before a software update.`, { path: item.path }));
+  for (const item of external) reasons.push(reason('external_reference', `${item.path}${item.field ? ` ${item.field}` : ''} names ${
+    item.target === '[redacted]' ? 'a path' : item.target} outside this home. Reconnect or remove it before a software update.`, item));
+  // Instance configs are the generator's inputs. Start derives every storage
+  // path in agents.json and the process registration from system.instanceRoot
+  // and system.engineConfig (generate-ecosystem.js through
+  // shared/agent-instance-paths.cjs), for residents and non-residents alike.
+  // Judge those two settings, not other owner folders such as feeder paths.
+  const instances = join(root, 'app/instances');
+  let instanceNames = [];
+  try { if (statSync(instances).isDirectory()) instanceNames = readdirSync(instances).sort(); }
+  catch (error) { if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error; }
+  for (const name of instanceNames.filter(name => /^[a-z0-9][a-z0-9-]*$/.test(name))) {
+    if (!lstatSync(join(instances, name)).isDirectory()) continue;
+    const relative = `app/instances/${name}/config.yaml`;
+    let stat = null;
+    try { stat = statSync(join(root, relative)); } catch (error) { if (error.code === 'ENOENT') continue; }
+    if (!stat?.isFile() || stat.size > 1_000_000) {
+      reasons.push(reason('state_uninspected', `${relative} could not be read to classify its system settings.`, { path: relative, field: 'system' }));
+      continue;
+    }
+    const text = readFileSync(join(root, relative), 'utf8');
+    let base = join(instances, name), externalRoot = null;
+    for (const field of ['instanceRoot', 'engineConfig']) {
+      const value = systemScalar(text, field), setting = `system.${field}`;
+      if (value === undefined || (typeof value === 'string' && !value.trim())) continue;
+      if (value === false || (field === 'instanceRoot' && !isAbsolute(value))) {
+        reasons.push(reason('state_uninspected', `${relative} ${setting} is not a plain absolute path the updater can read. Correct it before a software update.`, { path: relative, field: setting }));
+        continue;
+      }
+      const target = field === 'instanceRoot' ? resolve(value.trim()) : resolve(base, value);
+      if (field === 'instanceRoot') base = target;
+      if (allowedExternal(root, target)) continue;
+      if (field === 'instanceRoot') externalRoot = target;
+      else if (externalRoot && (target === externalRoot || target.startsWith(`${externalRoot}/`))) continue;
+      if (adoptedReferences.has(`${relative}\0${target}`)
+        || (field === 'instanceRoot' && adoptedReferences.has(`app/config/agents.json\0${target}`))) continue;
+      // Other settings under the same folder, such as feeder watch paths, move with it.
+      const own = new RegExp(`^\\s*["']?${field}["']?\\s*:\\s*["']?${escapeRegex(target)}`, 'm').test(text) ? 1 : 0;
+      const relatedOccurrences = [...text.matchAll(new RegExp(`${escapeRegex(target)}(?![A-Za-z0-9._~@+-])`, 'g'))].length - own;
+      reasons.push(reason('external_reference', `${relative} ${setting} names ${target}, outside this home. Bring that folder into the home or remove the setting before a software update.${
+        relatedOccurrences ? ` ${relatedOccurrences} other setting${relatedOccurrences === 1 ? '' : 's'} in that file name the same folder.` : ''}`,
+      { path: relative, field: setting, target, resident: name, relatedOccurrences }));
+    }
+  }
   let database = { present: false, compatible: !created };
   if (exists(join(root, COORDINATION_DATABASE))) database = await inspectCoordinationDatabase(join(root, COORDINATION_DATABASE), { quickCheck: databaseCheck === 'full' });
   else if (created) reasons.push(reason('database_missing', 'This created home has no coordination database. A schema-preserving update cannot invent one.'));

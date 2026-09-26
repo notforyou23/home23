@@ -351,6 +351,81 @@ test('high-frequency operation activity renews the lease without flooding persis
   }
 });
 
+test('heartbeat-only queued activity renews the lease but persists at most one status a minute', async () => {
+  const root = join(tmpdir(), `chat-turn-activity-heartbeat-${process.pid}-${Math.random()}`);
+  const { agent } = makeAgent(root);
+  const clock = installManualClock(agent);
+  let capturedRuntime: TurnRuntimeContext | null = null;
+  let response: Promise<unknown> | null = null;
+
+  try {
+    (agent as any).run = async (
+      _chatId: string,
+      _userText: string,
+      _media: unknown,
+      _onEvent: unknown,
+      _modelRuntime: unknown,
+      turnRuntime: TurnRuntimeContext,
+    ) => {
+      capturedRuntime = turnRuntime;
+      await new Promise((_resolve, reject) => {
+        turnRuntime.signal.addEventListener('abort', () => reject(turnRuntime.signal.reason), {
+          once: true,
+        });
+      });
+    };
+
+    const started = await agent.runWithTurn('heartbeat-only-chat', 'hello', {
+      inactivityMs: 30_000,
+      hardDurationMs: 3_600_000,
+      firstTokenTimeoutMs: 60_000,
+    });
+    response = started.response;
+    response.catch(() => {});
+    await flushMicrotasks();
+    assert.ok(capturedRuntime);
+
+    // Five minutes of 10 s coordinator heartbeats for a queued, unadmitted op.
+    for (let sequence = 1; sequence <= 30; sequence += 1) {
+      clock.advance(10_000);
+      capturedRuntime!.onOperationActivity({
+        source: 'brain_operation', operationId: 'op-unadmitted', sequence,
+        eventSequence: sequence, type: 'heartbeat',
+        state: 'queued', phase: null, updatedAt: new Date(clock.nowMs).toISOString(),
+        lastProviderActivityAt: null, lastProgressAt: null,
+      });
+      await flushMicrotasks();
+    }
+    assert.equal(capturedRuntime!.signal.aborted, false, 'heartbeats still renew the activity lease');
+    const jsonl = readFileSync(
+      join(root, 'conversations', 'test-agent__heartbeat-only-chat.jsonl'),
+      'utf8',
+    );
+    assert.equal((jsonl.match(/brain_operation_active/g) || []).length, 5);
+
+    // Admission is a material change and is persisted at once.
+    clock.advance(1_000);
+    capturedRuntime!.onOperationActivity({
+      source: 'brain_operation', operationId: 'op-unadmitted', sequence: 31,
+      eventSequence: 31, type: 'phase',
+      state: 'running', phase: 'executing', updatedAt: new Date(clock.nowMs).toISOString(),
+      lastProviderActivityAt: null, lastProgressAt: null,
+    });
+    await flushMicrotasks();
+    const after = readFileSync(
+      join(root, 'conversations', 'test-agent__heartbeat-only-chat.jsonl'),
+      'utf8',
+    );
+    assert.equal((after.match(/brain_operation_active/g) || []).length, 6);
+  } finally {
+    if (capturedRuntime && !capturedRuntime.signal.aborted) {
+      capturedRuntime.abortController.abort(new Error('test cleanup'));
+    }
+    if (response) await response.catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('concurrent turns receive isolated controller, signal, client, and activity lease', async () => {
   const root = join(tmpdir(), `chat-turn-concurrent-${process.pid}-${Math.random()}`);
   const { agent, toolContext } = makeAgent(root);

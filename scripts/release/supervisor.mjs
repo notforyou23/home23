@@ -76,32 +76,13 @@ async function readiness(root, release) {
   if (![200, 401].includes(response.status)) throw new Error('Coordinator HTTP readiness failed');
   return { signedResidents: residents, httpListening: true };
 }
-function loadSupervisorDatabase(root) {
-  try {
-    const Better = createRequire(path.join(root, 'package.json'))('better-sqlite3');
-    const probe = new Better(':memory:');
-    probe.close();
-    return Better;
-  } catch {
-    try {
-      const Better = createRequire(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../package.json'))('better-sqlite3');
-      const probe = new Better(':memory:');
-      probe.close();
-      return Better;
-    } catch {
-      return DatabaseSync;
-    }
-  }
-}
-
-function openSupervisorLockDb(file, Database) {
-  if (!Database || Database === DatabaseSync) return new DatabaseSync(file);
-  try {
-    return new Database(file, { timeout: 0 });
-  } catch (error) {
-    if (!/NODE_MODULE_VERSION|ERR_DLOPEN_FAILED|Could not locate the bindings/.test(String(error))) throw error;
-    return new DatabaseSync(file);
-  }
+// One SQLite library holds this lock. POSIX locks belong to the process and each
+// bundled SQLite keeps its own lock table, so a second library in the same process
+// takes BEGIN EXCLUSIVE beside the holder, and closing either one's handle drops the
+// other's lock for the whole process. Every holder therefore uses node:sqlite.
+function openSupervisorLockDb(file, Database = DatabaseSync) {
+  if (Database !== DatabaseSync) throw new Error('The supervisor lock is taken with node:sqlite only.');
+  return new DatabaseSync(file);
 }
 
 // An operator may select a verified new package before calling this operation.
@@ -112,7 +93,7 @@ export async function restartManaged(root, receiptFile, options = {}) {
   let releaseLock = options.releaseLock;
   let ownLock = false;
   if (!releaseLock) {
-    releaseLock = acquireSupervisorLock(directory(root), loadSupervisorDatabase(root), { purpose: 'restart-managed' });
+    releaseLock = acquireSupervisorLock(directory(root), DatabaseSync, { purpose: 'restart-managed' });
     ownLock = true;
   }
   try {
@@ -234,7 +215,7 @@ export async function serve(root) {
   const dir = directory(root), queue = path.join(dir, 'requests');
   fs.mkdirSync(queue, { recursive: true, mode: 0o700 });
   const lock = path.join(dir, 'supervisor.lock');
-  const releaseLock = acquireSupervisorLock(dir, loadSupervisorDatabase(root), { purpose: 'serve' });
+  const releaseLock = acquireSupervisorLock(dir, DatabaseSync, { purpose: 'serve' });
   fs.writeFileSync(lock, String(process.pid), {mode:0o600});
   let stopping = false;
   process.on('SIGINT', () => { stopping = true; });

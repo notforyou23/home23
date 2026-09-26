@@ -842,6 +842,7 @@ class DashboardServer {
       exporter: dependencies.exporter,
       buildCatalog: dependencies.buildCatalog,
       providerReadiness: dependencies.providerReadiness,
+      workerReadiness: dependencies.workerReadiness,
       researchRuns: dependencies.researchRuns,
       resolveSynthesisAnswer: typeof dependencies.synthesisOperationRuntime?.readCommittedAnswer === 'function'
         ? (operation, result) => dependencies.synthesisOperationRuntime.readCommittedAnswer(result)
@@ -1246,6 +1247,7 @@ class DashboardServer {
       onTerminal: (record) => this.queryNotebookNotificationDelivery?.onTerminal(record),
       capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
       exporter,
+      logger: this.logger,
     });
     return {
       coordinator,
@@ -1264,6 +1266,7 @@ class DashboardServer {
         retryable: true,
         migrated: false,
       }),
+      workerReadiness: () => worker.readRemoteWorkerReadiness(),
     };
   }
 
@@ -2465,8 +2468,8 @@ class DashboardServer {
           },
           briefs: {
             kind: 'mixed',
-            chip: 'Jerry + Forrest',
-            summaryTemplate: 'Briefs collects human-facing reports, cron deliveries, worker receipts, and agent documents from Jerry and Forrest into readable dashboard pages.',
+            chip: 'All Agents',
+            summaryTemplate: 'Briefs collects human-facing reports, cron deliveries, worker receipts, and agent documents from {{houseAgents}} into readable dashboard pages.',
             routes: [
               { method: 'GET', path: '/home23/api/briefs' },
               { method: 'GET', path: '/home23/api/briefs/:id' },
@@ -2771,7 +2774,10 @@ class DashboardServer {
         const manifest = JSON.parse(fsSync.readFileSync(manifestPath, 'utf8'));
         const entries = Object.entries(manifest);
         const compiled = entries.filter(([, meta]) => meta.compiled);
-        const quarantined = entries.filter(([, meta]) => meta.parseStatus === 'suspect_truncation' || meta.parseStatus === 'un_normalizable');
+        // Conversion failures are quarantined too (pinned until the file
+        // changes); formats no converter reads are counted separately.
+        const quarantined = entries.filter(([, meta]) => ['suspect_truncation', 'un_normalizable', 'conversion_failed', 'conversion_empty'].includes(meta.parseStatus));
+        const unsupported = entries.filter(([, meta]) => meta.parseStatus === 'unsupported_format');
         const chunks = entries.reduce((sum, [, meta]) => sum + (meta.nodeCount || (Array.isArray(meta.nodeIds) ? meta.nodeIds.length : 0)), 0);
         const remaining = Math.max(0, workspaceFileCount - entries.length);
 
@@ -2796,6 +2802,7 @@ class DashboardServer {
             pendingCount: remaining,
             compiledCount: compiled.length,
             quarantinedCount: quarantined.length,
+            unsupportedCount: unsupported.length,
             chunkCount: chunks,
             files,
           }]
@@ -6509,7 +6516,7 @@ Be specific, actionable, and maintain research continuity.`;
     this.app.get('/api/temporal/current', async (req, res) => {
       try {
         const workspacePath = process.env.COSMO_WORKSPACE_PATH
-          || path.join(__dirname, '..', '..', '..', 'instances', process.env.HOME23_AGENT || 'jerry', 'workspace');
+          || path.join(__dirname, '..', '..', '..', 'instances', this.getHome23AgentName(), 'workspace');
         const ctx = buildTemporalContext({ workspacePath });
         res.json({
           ok: true,
@@ -7318,7 +7325,7 @@ Be specific, actionable, and maintain research continuity.`;
         if (!problem) return res.status(404).json({ error: 'not found' });
         if (!problem.verifier?.type) return res.status(400).json({ error: 'problem has no verifier' });
 
-        const UNSUPPORTED = new Set(['graph_not_empty', 'node_count_stable']);
+        const UNSUPPORTED = new Set(['graph_not_empty', 'node_count_stable', 'brain_persistence_fresh']);
         if (UNSUPPORTED.has(problem.verifier.type)) {
           return res.json({
             ok: false,
@@ -7452,7 +7459,7 @@ Be specific, actionable, and maintain research continuity.`;
         const body = req.body || {};
         const v = body.verifier;
         if (!v || !v.type) return res.status(400).json({ error: 'verifier.type required' });
-        const UNSUPPORTED = new Set(['graph_not_empty', 'node_count_stable']);
+        const UNSUPPORTED = new Set(['graph_not_empty', 'node_count_stable', 'brain_persistence_fresh']);
         if (UNSUPPORTED.has(v.type)) {
           return res.json({ supported: false, reason: `verifier type ${v.type} needs engine memory context` });
         }

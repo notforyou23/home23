@@ -1,4 +1,5 @@
 import {
+  ACTIVITY_SOURCE_AGGREGATE_KINDS,
   adaptTrustedM11ActivityFact,
   pageActivity,
   projectTrustedM11Activity,
@@ -305,6 +306,8 @@ export function createSqliteActivityReadService(options: {
               CASE
                 WHEN w.kind = 'bot_turn' THEN 'bot_turn'
                 WHEN w.kind = 'resident_turn' THEN 'resident_turn'
+                -- Working Threads are admitted only for resident credentials.
+                WHEN w.kind = 'resident_work_thread' THEN 'resident_turn'
                 WHEN w.kind = 'channel.bot_turn' AND EXISTS (
                   SELECT 1 FROM bots target
                   WHERE target.principal_id = w.target_principal_id
@@ -395,7 +398,7 @@ export function createSqliteActivityReadService(options: {
       ? undefined
       : options.database.readOne<Pick<WorkFactRow, "id">>(
       `SELECT id FROM works
-       WHERE round_id = ? AND target_principal_id = ?
+       WHERE round_id = ? AND target_principal_id = ? AND kind = 'channel.bot_turn'
        ORDER BY created_at, id LIMIT 1`,
       event.aggregate.id,
       round.coordinatorBotId,
@@ -551,11 +554,16 @@ export function createSqliteActivityReadService(options: {
         event.aggregate.kind === "workObservation"
       ) {
         output.push(recoveryFact(event));
-      } else if (event.type === "activity.updated") {
+      } else if (
+        event.type === "activity.updated" &&
+        ACTIVITY_SOURCE_AGGREGATE_KINDS.includes(event.aggregate.kind)
+      ) {
         throw new Error(
           `Activity event ${event.id} has no trusted M11 fact assembler`,
         );
       }
+      // Any other activity.updated aggregate is Core bookkeeping, not Activity;
+      // the projector ignores it.
     }
     return Object.freeze(output);
   }

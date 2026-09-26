@@ -6,6 +6,7 @@ import type {
   ResidentTerminalReceipt,
 } from "../../coordination-adapter/index.js";
 import {
+  ChannelAdmissionContradictionError,
   ChannelCoordinatorError,
   CoordinatorAdmissionPlanError,
   type CoordinatorDispatch,
@@ -58,12 +59,14 @@ class PermanentRecoveryRefusal extends Error {
   }
 }
 
-/** Context that cannot be rebuilt from durable evidence and admission
- * evidence that cannot be read are refused for good. Anything else, such as
- * a resident that has not registered yet, stays discoverable until the
- * durable refusal limit turns it permanent. */
+/** Context that cannot be rebuilt from durable evidence, admission evidence
+ * that cannot be read and Works that contradict the immutable plan are
+ * refused for good. Anything else, such as a resident that has not
+ * registered yet, stays discoverable until the durable refusal limit turns
+ * it permanent. */
 function classifyRecoveryRefusal(error: unknown): { reasonCode: string; permanent: boolean } {
   if (error instanceof PermanentRecoveryRefusal) return { reasonCode: error.reasonCode, permanent: true };
+  if (error instanceof ChannelAdmissionContradictionError) return { reasonCode: error.reasonCode, permanent: true };
   if (error instanceof MessagingError && error.code === "invalid_relation") {
     return { reasonCode: "context_unrecoverable", permanent: true };
   }

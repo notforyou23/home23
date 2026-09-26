@@ -352,6 +352,8 @@ export function createCoordinationProcess(
   if (!config.enabled) {
     throw new Error("the disabled coordination process cannot be composed");
   }
+  // loadCoordinationRuntimeConfig always sets home and requires a named primary for any configured resident
+  // set; only a hand-built config without home (tests, the legacy jerry/forrest pair) reaches this default.
   const primaryResident = config.home?.primaryResident ?? "jerry";
   const database = openCoordinationDatabase({
     path: config.databasePath,
@@ -471,7 +473,8 @@ export function createCoordinationProcess(
       ? {}
       : { artifactMessageLink: artifactRepository }),
   });
-  const nativeChess = new NativeChessService({ database, engine: new StockfishEngine() });
+  // Residents take chess turns through completion targets; a resident without one could never move.
+  const nativeChess = new NativeChessService({ database, engine: new StockfishEngine(), residentAvailable: binding => completionTargets.has(binding) });
   const channels = createChannelService({ repository: messagingRepository, participantDirectory, cursorSigningKey: channelCursorKey });
   const projects = new ProjectContinuityStore(config.botRootDirectory,
     (context, channelId) => channels.getChannel({context, channelId}),
@@ -1096,7 +1099,7 @@ export function createCoordinationProcess(
             const coordinator = createChannelCoordinator({
               presentation: messageId => {
                 const row=database.readOne<{kind:string}>("SELECT aggregate_kind AS kind FROM events WHERE aggregate_version=1 AND ((aggregate_kind='bot_invocation' AND aggregate_id=?) OR (aggregate_kind='scheduled_channel_run' AND json_extract(payload_json,'$.messageId')=?))",messageId,messageId);
-                return row ? {title:row.kind==='bot_invocation'?'Helper assignment':'Scheduled channel run',summary:row.kind==='bot_invocation'?'A helper assignment requested by Jerry.':'A scheduled assignment in this topic channel.'} : undefined;
+                return row ? {title:row.kind==='bot_invocation'?'Helper assignment':'Scheduled channel run',summary:row.kind==='bot_invocation'?'A helper assignment requested by the accountable resident.':'A scheduled assignment in this topic channel.'} : undefined;
               },
               database,
               rounds: createRoundService({ database, generateId: generateCoordinationId }),
@@ -1265,7 +1268,7 @@ export function createCoordinationProcess(
           ...((args.operation === 'chess_move' || (args.operation === 'chess_control' && args.action === 'resign')) && typeof args.gameId === 'string'
             ? { turnId: resolveChessMoveTurnId(database, origin, context.principalId, args.gameId) }
             : {}) };
-        return executeChessOperation(nativeChess, actor, args, key);
+        return executeChessOperation(nativeChess, actor, args, key, origin);
       },
       authorize: detachments.authorize,
       authorizeRead: detachments.authorizeRead,

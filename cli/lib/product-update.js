@@ -6,7 +6,6 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, relative as relativePath, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { choosePortPlan, privateJSON, readPrivateJSON, validatePortPlan } from './product-environment.js';
 import { assertWritersIdle, rebindAdoptedHome, residentInstancePortSets } from './product-backup.js';
 import { projectFencedCoordination, readFencedCoordination } from './product-adoption.js';
@@ -169,7 +168,9 @@ export function validateAdoptionPreservationPlan(source, plan, expectedHash) {
   const references = Array.isArray(plan.references) ? plan.references : [];
   const seenReferences = new Set();
   for (const reference of references) {
-    if (!['app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml', 'app/.home23-state.json'].includes(reference.path)
+    // Instance configs are where the update inventory judges system.instanceRoot and engineConfig.
+    if (!(['app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml', 'app/.home23-state.json'].includes(reference.path)
+      || /^app\/instances\/[a-z0-9][a-z0-9-]*\/config\.yaml$/.test(reference.path))
       || typeof reference.target !== 'string' || !reference.target.startsWith('/')
       || reference.target === source || reference.target.startsWith(`${source}${sep}`)
       || seenReferences.has(`${reference.path}\0${reference.target}`)) {
@@ -1030,28 +1031,13 @@ async function verifySourceServiceBindings(source, services, dependencies = {}) 
   }
 }
 
-function loadBetterSqlite3(sourceRoot) {
-  for (const candidate of [
-    join(sourceRoot, 'package.json'),
-    join(fileURLToPath(new URL('../..', import.meta.url)), 'package.json'),
-  ]) {
-    try {
-      const Better = createRequire(candidate)('better-sqlite3');
-      const probe = new Better(':memory:');
-      probe.close();
-      return Better;
-    } catch { /* try next or fall through */ }
-  }
-  return null;
-}
-
 /** Hold the managed supervisor lock for every resident writer through the copy. */
 export function holdAdoptionSupervisorLock(source, identity, dependencies = {}) {
   const maintenance = join(source, 'instances/.house/maintenance');
   mkdirSync(maintenance, { recursive: true, mode: 0o700 });
-  // Prefer an explicit Database, then a working better-sqlite3, else node:sqlite —
-  // mixed native builds across Node versions must not silently lose the fence.
-  const Database = dependencies.Database || loadBetterSqlite3(source) || DatabaseSync;
+  // node:sqlite, as Start and restart take it: a second SQLite library in this
+  // process would acquire beside this fence and could drop it on close.
+  const Database = dependencies.Database || DatabaseSync;
   const acquire = dependencies.acquireSupervisorLock || acquireSupervisorLock;
   const writers = Array.isArray(identity.writers) ? identity.writers : [];
   try {

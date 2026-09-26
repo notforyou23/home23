@@ -2231,10 +2231,22 @@ async function buildTS() {
 
 // ── OAuth cards on Providers tab (STEP 18) ──
 
+// The last provider-verified answer per card. The 3 s onboarding poll reads expiry only
+// (?verify=0) and must not paint a grant the provider revoked as connected again.
+const verifiedOAuthStatus = {};
+
+function withKnownRevocation(kind, status) {
+  const verified = verifiedOAuthStatus[kind];
+  return verified?.revoked === true && verified.expiresAt === status.expiresAt
+    && verified.accountId === status.accountId ? verified : status;
+}
+
 async function loadOAuthStatus() {
   try {
     const res = await fetch(`${API}/oauth/status`);
     const data = await res.json();
+    verifiedOAuthStatus.anthropic = data.anthropic || {};
+    verifiedOAuthStatus.codex = data.openaiCodex || {};
     renderOAuthCard('anthropic', data.anthropic || {});
     renderOAuthCard('codex', data.openaiCodex || {});
   } catch (err) {
@@ -2249,9 +2261,15 @@ function renderOAuthCard(kind, status) {
   const logoutBtn = document.getElementById(`btn-${kind}-oauth-logout`);
   if (!statusEl) return;
   statusEl.style.color = '';
-  if (status.configured && status.valid && status.refreshable) {
+  if (status.revoked === true) {
+    statusEl.innerHTML = '<span class="h23s-oauth-expired">⚠ Provider revoked this sign-in — sign in again</span>';
+    if (logoutBtn) logoutBtn.hidden = false;
+  } else if (status.configured && status.valid && status.refreshable) {
     const expiry = status.expiresAt ? ` · expires ${new Date(status.expiresAt).toLocaleDateString()}` : '';
-    statusEl.innerHTML = `<span class="h23s-oauth-connected">✓ Connected${expiry}</span>`;
+    // The provider could not be asked; the expiry answer stands, but say it is unconfirmed.
+    const unconfirmed = /^(unreachable|timeout|provider_error:)/.test(status.verificationError || '')
+      ? ' · couldn’t confirm with provider' : '';
+    statusEl.innerHTML = `<span class="h23s-oauth-connected">✓ Connected${expiry}${unconfirmed}</span>`;
     if (logoutBtn) logoutBtn.hidden = false;
   } else if (status.configured && status.valid) {
     statusEl.innerHTML = '<span class="h23s-oauth-expired">⚠ Sign in again — Home23 has no refresh credential</span>';
@@ -2640,6 +2658,34 @@ async function saveFeeder() {
   }
 }
 
+// The engine reports converter state, reason and remedy; a bare
+// available/unavailable flag hid why binary files were not ingesting.
+function describeConverterHealth(cv) {
+  if (!cv) return '—';
+  if (!cv.state) return cv.available ? `✓ ${cv.visionModel || ''}` : '✗ unavailable';
+  const icon = { ready: '✓', degraded: '⚠', unavailable: '✗', disabled: '○' }[cv.state] || '…';
+  const detail = cv.state === 'ready' && !cv.reason
+    ? (cv.visionModel || '')
+    : [cv.reason, cv.remedy].filter(Boolean).join(' — ');
+  const waiting = cv.pendingConversionCount ? ` · ${cv.pendingConversionCount} file(s) waiting` : '';
+  return `${icon} ${cv.state}${detail ? ` · ${detail}` : ''}${waiting}`;
+}
+
+// Brain search reads only saved memory, so a flushed document is searchable
+// once the brain saves; the engine reports how long changes have waited.
+function describePersistenceFreshness(fr) {
+  if (!fr) return '—';
+  const minutes = (ms) => Math.max(0, Math.round(ms / 60000));
+  if (fr.consecutiveRefusals >= 3) {
+    return `✗ ${fr.consecutiveRefusals} saves in a row did not persist${fr.lastSaveResult?.reason ? ` · ${fr.lastSaveResult.reason}` : ''}`;
+  }
+  if (fr.dirty && fr.unpersistedForMs > 10 * 60000) return `⚠ changes unsaved for ${minutes(fr.unpersistedForMs)} min`;
+  const saved = fr.lastPersistedAt
+    ? `saved ${minutes(Date.now() - Date.parse(fr.lastPersistedAt))} min ago`
+    : 'no save since engine start';
+  return `${fr.dirty ? '…' : '✓'} ${saved}${fr.persistedRevision != null ? ` · rev ${fr.persistedRevision}` : ''}`;
+}
+
 async function loadFeederLiveStatus() {
   if (!selectedSettingsAgent) return;
   try {
@@ -2648,7 +2694,7 @@ async function loadFeederLiveStatus() {
       fetch(feederAgentUrl('/home23/feeder-status')).catch(() => null),
     ]);
 
-    let started = '—', watchers = '—', converter = '—';
+    let started = '—', watchers = '—', converter = '—', freshness = '—';
     // The live flush queue is the only honest source for "Pending" — the
     // summary aggregator computes `files_on_disk - manifest.length` which
     // permanently inflates by files the feeder will never ingest (binary
@@ -2658,9 +2704,13 @@ async function loadFeederLiveStatus() {
       const live = await liveRes.json();
       if (live.ok && live.status) {
         started = live.status.started ? '✓ running' : '✗ stopped';
-        watchers = String(live.status.watching?.length ?? 0);
-        const cv = live.status.converter;
-        converter = cv?.available ? `✓ ${cv.visionModel || ''}` : '✗ unavailable';
+        // Configured-but-missing folders used to vanish from this count.
+        const ws = live.status.watchSummary;
+        watchers = ws
+          ? `${ws.attached} of ${ws.configured} attached${ws.missing ? ` (${ws.missing} missing)` : ''}${ws.error ? ` (${ws.error} error)` : ''}`
+          : String(live.status.watching?.length ?? 0);
+        converter = describeConverterHealth(live.status.converter);
+        freshness = describePersistenceFreshness(live.status.freshness);
         if (Number.isFinite(live.status.manifest?.pendingCount)) {
           livePending = live.status.manifest.pendingCount;
         }
@@ -2674,6 +2724,8 @@ async function loadFeederLiveStatus() {
     document.getElementById('fd-live-started').textContent = started;
     document.getElementById('fd-live-watchers').textContent = watchers;
     document.getElementById('fd-live-converter').textContent = converter;
+    const freshnessEl = document.getElementById('fd-live-freshness');
+    if (freshnessEl) freshnessEl.textContent = freshness;
     document.getElementById('fd-converter-status').textContent = converter;
 
     if (summaryRes && summaryRes.ok) {
@@ -3953,15 +4005,18 @@ async function checkOnboardingProviderGate() {
   try {
     const [provRes, oauthRes, readiness] = await Promise.all([
       fetch(`${API}/providers`),
-      fetch(`${API}/oauth/status`),
+      // Every 3 s: expiry only, so the poll never probes both providers.
+      fetch(`${API}/oauth/status?verify=0`),
       loadSetupReadiness().catch(() => null),
     ]);
     const provData = await provRes.json();
     const oauthData = await oauthRes.json();
+    const anthropicOAuth = withKnownRevocation('anthropic', oauthData.anthropic || {});
+    const codexOAuth = withKnownRevocation('codex', oauthData.openaiCodex || {});
+    const connectedOAuth = status => status.configured && status.valid && status.refreshable && status.revoked !== true;
 
     const hasApiKey = Object.values(provData.providers || {}).some(p => p.hasKey);
-    const hasOAuth = (oauthData.anthropic?.configured && oauthData.anthropic?.valid && oauthData.anthropic?.refreshable)
-                  || (oauthData.openaiCodex?.configured && oauthData.openaiCodex?.valid && oauthData.openaiCodex?.refreshable);
+    const hasOAuth = connectedOAuth(anthropicOAuth) || connectedOAuth(codexOAuth);
 
     const gate = document.getElementById('ob-provider-gate');
     const nextBtn = document.getElementById('ob-next-1');
@@ -3981,8 +4036,8 @@ async function checkOnboardingProviderGate() {
     if (readiness) renderOnboardingReadiness(readiness);
 
     // Also refresh OAuth card statuses
-    renderOAuthCard('anthropic', oauthData.anthropic || {});
-    renderOAuthCard('codex', oauthData.openaiCodex || {});
+    renderOAuthCard('anthropic', anthropicOAuth);
+    renderOAuthCard('codex', codexOAuth);
   } catch (err) {
     console.warn('Provider gate check failed:', err);
   }

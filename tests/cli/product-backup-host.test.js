@@ -181,6 +181,23 @@ test('host move fences source and leaves destination stopped via command path', 
   assert.equal(fs.existsSync(path.join(fixture.home, 'runtime/home23-move-fence.json')), true);
 });
 
+test('host move names an instance storage root outside the home and copies nothing', async t => {
+  const fixture = fixtureHome(t, { withSeed: true });
+  const outside = path.join(fixture.root, 'Other Volume/instances/ada');
+  fs.writeFileSync(path.join(fixture.home, 'app/instances/ada/config.yaml'), `system:\n  instanceRoot: ${outside}\n`);
+  const destination = path.join(fixture.root, 'destination');
+  fs.mkdirSync(destination, { mode: 0o755 });
+  const result = await runHost(['move', '--home', fixture.home, '--destination', destination,
+    '--archive', fixture.archivePath, '--key', fixture.keyPath]);
+  const body = JSON.parse(result.stdout);
+  assert.equal(result.code, 1);
+  assert.equal(body.error.code, 'move_external_instance_root');
+  assert.match(body.error.message, /app\/instances\/ada\/config\.yaml system\.instanceRoot names .*Other Volume\/instances\/ada/);
+  assert.deepEqual(body.error.paths, [{ path: 'app/instances/ada/config.yaml', field: 'system.instanceRoot', target: outside }]);
+  assert.deepEqual(fs.readdirSync(destination), []);
+  assert.equal(fs.existsSync(fixture.archivePath), false);
+});
+
 test('host backup-inspect recovers after the source home is gone', async t => {
   const fixture = fixtureHome(t, { withSeed: true });
   const backed = await runHost([

@@ -617,6 +617,47 @@ test("deadline and cancellation terminalize durably and cancel queued Work", () 
   } finally { database.close(); }
 });
 
+test("an explicit Round cancel stops queued lineage Works but settles on its admitted Works", () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database);
+    const services = harness(database, { value: new Date(AT) }, 70_000);
+    const started = services.coordinator.start(trigger({ mentionedBotIds: [BOT_ID] }));
+    const admitted = started.works[0]!.work;
+    const lineage = (suffix: number) => services.work.create({
+      principalId: admitted.principalId, targetPrincipalId: admitted.targetPrincipalId,
+      channelId: admitted.channelId, originMessageId: admitted.originMessageId,
+      roundId: started.round.id, kind: "resident_work_thread", idempotencyKey: `foreground-detach:lineage-${suffix}`,
+      manifest: manifestInput(), maxAutomaticOffers: 1,
+      requestId: fixtureId("request", suffix), correlationId: fixtureId("correlation", suffix),
+    }).work;
+    const queued = lineage(820);
+    const running = lineage(821);
+    const offered = services.leases.offer({
+      workId: running.id, holderPrincipalId: BOT_ID, holderInstanceId: "resident-thread",
+      authorityReference: "resident:thread", automatic: true,
+      requestId: fixtureId("request", 822), correlationId: fixtureId("correlation", 822),
+    });
+    const binding = {
+      workId: running.id, attemptId: offered.attempt.id, leaseId: offered.lease.id,
+      holderPrincipalId: BOT_ID, holderInstanceId: "resident-thread", fencingToken: offered.fencingToken,
+      requestId: fixtureId("request", 823), correlationId: fixtureId("correlation", 823),
+    };
+    services.leases.accept(binding);
+    services.leases.start(binding);
+
+    const cancelled = services.coordinator.cancel({
+      roundId: started.round.id, actorPrincipalId: OWNER_ID,
+      requestId: fixtureId("request", 824), correlationId: fixtureId("correlation", 824),
+    });
+    assert.equal(cancelled.outcome, "cancelled");
+    assert.equal(cancelled.reasonCode, "owner_cancelled");
+    assert.deepEqual(cancelled.works.map((work) => [work.id, work.state]), [[admitted.id, "cancelled"]]);
+    assert.equal(services.work.get(queued.id)?.state, "cancelled", "a queued lineage Work is stopped with its Round");
+    assert.equal(services.work.get(running.id)?.state, "running", "a running Working Thread does not hold the Round open");
+  } finally { database.close(); }
+});
+
 test("each channel recipient retains its own model through durable admission and replay", () => {
   const database = M11TestDatabase.temporary();
   try {

@@ -2832,3 +2832,97 @@ test('explicit result recovery also retries transient delivery failures', async 
   assert.equal(result.result?.answer, 'Recovered result');
   assert.equal(reads, 2);
 });
+
+test('own-brain status reports query-worker readiness beside health, even when /readiness is 503', async () => {
+  const requested: string[] = [];
+  const health = record('op-status', 1, 'complete', { memory: { nodeCount: 42 } });
+  const readiness = (status: number, body: unknown): typeof fetch => async (url, init) => {
+    const parsed = new URL(String(url));
+    requested.push(`${init?.method || 'GET'} ${parsed.pathname}`);
+    if (parsed.pathname.endsWith('/readiness')) {
+      return new Response(typeof body === 'string' ? body : JSON.stringify(body), { status });
+    }
+    if (init?.method === 'POST') return new Response(JSON.stringify(health));
+    if (parsed.pathname.endsWith('/result')) return new Response(JSON.stringify(resultEnvelope(health)));
+    throw new Error(`unexpected ${parsed.pathname}`);
+  };
+  const worker = { ready: false, code: 'worker_unreachable', checkedAt: '2026-07-09T12:00:00.000Z' };
+  const down = new BrainOperationsClient({
+    baseUrl: 'http://fixture', callerAgent: 'jerry',
+    fetchImpl: readiness(503, { ready: false, providerOperations: {}, queryWorker: worker }),
+  });
+  const reported = await down.status({});
+  assert.deepEqual(reported.queryWorker, worker);
+  assert.deepEqual((reported as { memory?: unknown }).memory, { nodeCount: 42 });
+  assert.equal(requested.filter((line) => line === 'GET /home23/api/brain-operations/readiness').length, 1);
+  assert.equal(requested.filter((line) => line.startsWith('POST')).length, 1);
+
+  for (const body of [{ ready: true, providerOperations: {} }, 'not json', { queryWorker: { ready: 'no' } }]) {
+    const unknown = new BrainOperationsClient({
+      baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl: readiness(200, body),
+    });
+    const value = await unknown.status({});
+    assert.equal(Object.hasOwn(value, 'queryWorker'), false, JSON.stringify(body));
+  }
+});
+
+test('queued heartbeats then admission_stalled return the failed query once, without a second start', async () => {
+  const clock = new ManualClock();
+  const sse = controlledStream();
+  let starts = 0;
+  const activities: Array<{ state: string; type: string }> = [];
+  const at = (sequence: number) => new Date(Date.parse('2026-07-09T12:00:00.000Z') + sequence * 10_000)
+    .toISOString();
+  const queued = (sequence: number) => makeBrainOperationRecord({
+    ...record('op-unadmitted', sequence, 'queued'),
+    startedAt: null, lastProviderActivityAt: null, phase: null, updatedAt: at(sequence),
+  });
+  const stalled = makeBrainOperationRecord({
+    ...record('op-unadmitted', 62, 'failed'),
+    startedAt: null, lastProviderActivityAt: null, phase: 'terminal',
+    updatedAt: at(62), completedAt: at(62),
+    error: {
+      code: 'admission_stalled',
+      message: 'no worker admitted this query operation within 10 min (stage worker_unreachable)',
+      retryable: true,
+      admission: { version: 1, stage: 'worker_unreachable' },
+    },
+  });
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const parsed = new URL(String(url));
+    if (init?.method === 'POST') {
+      starts += 1;
+      return new Response(JSON.stringify(queued(1)));
+    }
+    if (parsed.pathname.endsWith('/result')) return new Response(JSON.stringify(resultEnvelope(stalled)));
+    if (parsed.pathname.endsWith('/op-unadmitted')) {
+      return new Response(JSON.stringify(sse.latestRecord || queued(1)));
+    }
+    return new Response(sse.body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl,
+    inactivityMs: 30_000,
+    now: clock.now, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    onActivity: (activity) => activities.push({ state: activity.state, type: activity.type }),
+  });
+  const pending = client.query({ query: 'nobody admits this', mode: 'quick' });
+  await sse.opened;
+  await flushMicrotasks();
+  for (let sequence = 2; sequence <= 61; sequence += 1) {
+    clock.advance(10_000);
+    sse.frame(queued(sequence));
+    await flushMicrotasks();
+  }
+  clock.advance(10_000);
+  sse.frame(stalled);
+  sse.close();
+  const result = await pending;
+  assert.equal(result.state, 'failed');
+  assert.equal(result.attachmentState, 'closed');
+  assert.equal(result.error?.code, 'admission_stalled');
+  assert.equal(result.startedAt, null);
+  assert.equal(starts, 1);
+  assert.equal(activities.filter((activity) => activity.type === 'heartbeat').length, 60);
+  assert.ok(activities.every((activity) => activity.state === 'queued' || activity.state === 'failed'));
+});

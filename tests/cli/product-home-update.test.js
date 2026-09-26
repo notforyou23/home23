@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
-import { homeUpdateStatus, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
+import { homeUpdateStatus, pruneUpdateDelivery, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
 
 function fixture(t) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'home23-update-contract-'))), home = join(parent, 'home');
@@ -37,7 +37,7 @@ async function check(f) {
 test('external homes expand runtime in a private local cache and resume the same signed download', t => {
   const f = fixture(t), id = '12345678-1234-1234-1234-123456789abc';
   const cacheRoot = join(f.parent, 'cache');
-  const deviceFor = path => path === f.home ? 2 : path === homedir() || path === cacheRoot ? 1 : 2;
+  const deviceFor = path => path === f.home ? 2 : path === userInfo().homedir || path === cacheRoot ? 1 : 2;
   const options = { cacheRoot, deviceFor, release: { runtime: { bytes: 1024 } } };
   const first = updateDeliveryPaths(f.home, id, options);
   assert.equal(first.staging, join(f.parent, '.home.home23-delivery', `stage-${id}`));
@@ -48,6 +48,18 @@ test('external homes expand runtime in a private local cache and resume the same
   const linkedCache = join(f.parent, 'linked-cache');
   symlinkSync(cacheRoot, linkedCache);
   assert.throws(() => updateDeliveryPaths(f.home, id, { ...options, cacheRoot: linkedCache }), /real home directory ancestors|symbolic links/);
+});
+
+test('a Host HOME inside the home does not hide that the Mac local volume is separate', t => {
+  const f = fixture(t), id = '12345678-1234-1234-1234-123456789abd';
+  const cacheRoot = join(f.parent, 'cache');
+  const previous = process.env.HOME;
+  t.after(() => { process.env.HOME = previous; });
+  // Under the Host, HOME is this home's runtime/user, on the home's own volume.
+  process.env.HOME = join(f.home, 'runtime/user');
+  const deviceFor = path => path === userInfo().homedir || path === cacheRoot ? 1 : 2;
+  const paths = updateDeliveryPaths(f.home, id, { cacheRoot, deviceFor });
+  assert.equal(paths.extractionDirectory, join(cacheRoot, `extraction-${id}`));
 });
 
 test('parallel duplicate owner request launches once and preserves operation across status reads', async t => {
@@ -217,6 +229,26 @@ test('a preflight refusal publishes only safe reason codes and a path-free expla
   assert.match(status.message, /files the updater cannot classify/);
   assert.doesNotMatch(JSON.stringify(status), /secret|credential XYZ/);
   assert.doesNotMatch(JSON.stringify(f.operation(accepted.operation.id)), /secret|credential XYZ/);
+});
+
+test('an external instance root refusal publishes its code with a path-free explanation', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => ({ ok: false, status: 'refused', reasons: [
+      { code: 'external_reference', message: 'app/instances/grokbot/config.yaml system.instanceRoot names /Volumes/Private Drive/grokbot',
+        path: 'app/instances/grokbot/config.yaml', field: 'system.instanceRoot', target: '/Volumes/Private Drive/grokbot' },
+    ] }) },
+    appUpdater: unusedAppUpdater,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home });
+  assert.equal(status.operation.errorCode, 'external_reference');
+  assert.equal(status.message, 'A home setting names a folder outside this home. Open Home23 on this Mac to review it before resuming.');
+  assert.doesNotMatch(JSON.stringify(status), /Private Drive/);
+  assert.doesNotMatch(JSON.stringify(f.operation(accepted.operation.id)), /Private Drive/);
 });
 
 test('a resumed operation that completes drops the error fields of its earlier refusal', async t => {
@@ -512,7 +544,7 @@ test('a refused automatic recovery does not advertise an ineffective retry', asy
   await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
     channel: { prepareConfiguredRelease: async () => ({ release, packageId: release.packageId }) },
     updater: { readUpdateJournal: () => journal, applyProductUpdate: async () => {
-      journal = { phase: 'recovery_required', writersAdmitted: false };
+      journal = { phase: 'recovery_required', writersAdmitted: false, reasons: [{ code: 'recovery_required', message: 'Private /secret path' }] };
       return { ok: false, status: 'recovery_required' };
     } },
     appUpdater: unusedAppUpdater,
@@ -522,4 +554,311 @@ test('a refused automatic recovery does not advertise an ineffective retry', asy
   assert.equal(status.operation.canResume, false);
   assert.deepEqual(status.allowedActions, []);
   assert.match(status.message, /preserve your home/);
+  assert.equal(status.operation.errorCode, 'local_recovery_required');
+  assert.deepEqual(status.operation.reasonCodes, ['recovery_required']);
+  assert.doesNotMatch(JSON.stringify(status), /secret/);
+  await assert.rejects(requestHomeUpdate(input(f.home, 'recover', 'recover-refused'), noLaunch), { code: 'home_update_busy' });
+});
+
+/** An update whose journal fenced before switching, with the updater's classification. */
+async function fencedUpdate(t, recovery) {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  f.setOperation({ ...f.operation(id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  const journal = { phase: 'recovery_required', writersAdmitted: false,
+    reasons: [{ code: 'writer_stop_incomplete', message: 'x' }, { code: 'running_restore_failed', message: 'y' }] };
+  let fenced = false;
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => fenced ? journal : null, productRecoveryFor: () => recovery,
+      applyProductUpdate: async () => { fenced = true; return { ok: false, status: 'recovery_required', reasons: journal.reasons }; } },
+    appUpdater: unusedAppUpdater,
+  });
+  f.setOperation({ ...f.operation(id), pid: null });
+  return { f, id, journal };
+}
+
+test('a nothing-switched recovery offers recover and resume and publishes its reason codes', async t => {
+  const { f, id } = await fencedUpdate(t, { available: true, restore: true, retry: true, reasonCodes: ['writer_stop_incomplete', 'running_restore_failed'] });
+  const saved = f.operation(id);
+  assert.equal(saved.requiresLocalRecovery, true);
+  assert.equal(saved.recoverable, true);
+  assert.equal(saved.retryable, true);
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.equal(status.state, 'failed');
+  assert.deepEqual(status.allowedActions, ['recover', 'resume']);
+  assert.equal(status.operation.canResume, true);
+  assert.equal(status.operation.errorCode, 'local_recovery_required');
+  assert.deepEqual(status.operation.reasonCodes, ['writer_stop_incomplete', 'running_restore_failed']);
+  assert.match(status.message, /Recover returns it to service; Resume tries the update again/);
+});
+
+test('a recoverable but unretryable recovery offers recover only', async t => {
+  const { f } = await fencedUpdate(t, { available: true, restore: true, retry: false, reasonCodes: ['unsupported_data_version'] });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.deepEqual(status.allowedActions, ['recover']);
+  assert.equal(status.operation.canResume, false);
+  await assert.rejects(requestHomeUpdate(input(f.home, 'resume', 'resume-refused'), noLaunch), { code: 'home_update_busy' });
+});
+
+test('recover returns the home to service and then offers resume', async t => {
+  const { f, id } = await fencedUpdate(t, { available: true, restore: true, retry: true, reasonCodes: ['writer_stop_incomplete'] });
+  const queued = await requestHomeUpdate(input(f.home, 'recover', 'recover'), noLaunch);
+  assert.equal(queued.operation.id, id);
+  let recovers = 0;
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: { prepareConfiguredRelease: async () => { throw new Error('recover must not download'); } },
+    updater: { recoverProductUpdate: async ({ homeRoot }) => {
+      recovers++; assert.equal(homeRoot, f.home);
+      return { ok: false, status: 'aborted', runningRestored: true, toPackageId: release.packageId,
+        reasons: [{ code: 'writer_stop_incomplete', message: 'x' }, { code: 'recovered_by_owner', message: 'z' }] };
+    } },
+    appUpdater: unusedAppUpdater,
+  });
+  assert.equal(recovers, 1);
+  const saved = f.operation(id);
+  assert.equal(saved.requiresLocalRecovery, false);
+  assert.equal(saved.errorCode, 'update_recovered');
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.equal(status.state, 'failed');
+  assert.deepEqual(status.allowedActions, ['resume']);
+  assert.equal(status.operation.canResume, true);
+  assert.match(status.message, /running again on its current Home23 version\. Resume to try the update again/);
+});
+
+test('recovering a release that cannot run this home asks for a newer release', async t => {
+  const { f, id } = await fencedUpdate(t, { available: true, restore: true, retry: false, reasonCodes: ['unsupported_data_version'] });
+  await requestHomeUpdate(input(f.home, 'recover', 'recover'), noLaunch);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: checkedChannel,
+    updater: { recoverProductUpdate: async () => ({ ok: false, status: 'aborted', runningRestored: true, toPackageId: release.packageId,
+      reasons: [{ code: 'unsupported_data_version', message: 'x' }, { code: 'recovered_by_owner', message: 'z' }] }) },
+    appUpdater: unusedAppUpdater,
+  });
+  const saved = f.operation(id);
+  assert.equal(saved.requiresNewRelease, true);
+  assert.equal(saved.blockedPackageId, release.packageId);
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.deepEqual(status.allowedActions, ['check']);
+  assert.match(status.message, /Check for a newer Home23 release/);
+});
+
+test('a recover that throws publishes only the fixed local recovery copy', async t => {
+  const { f, id } = await fencedUpdate(t, { available: true, restore: true, retry: true, reasonCodes: ['writer_stop_incomplete'] });
+  await requestHomeUpdate(input(f.home, 'recover', 'recover'), noLaunch);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: checkedChannel,
+    updater: {
+      recoverProductUpdate: async () => { throw new Error('EACCES: permission denied, open /secret/home/journal.json'); },
+      productRecoveryFor: () => ({ available: true, restore: true, retry: true, reasonCodes: ['writer_stop_incomplete'] }),
+    },
+    appUpdater: unusedAppUpdater,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.deepEqual(status.allowedActions, ['recover', 'resume']);
+  assert.equal(status.operation.errorCode, 'local_recovery_required');
+  assert.doesNotMatch(JSON.stringify(status), /secret|EACCES/);
+  assert.doesNotMatch(JSON.stringify(f.operation(id)), /secret|EACCES/);
+});
+
+test('a failed recover keeps local recovery and stays recoverable', async t => {
+  const { f, id } = await fencedUpdate(t, { available: true, restore: true, retry: true, reasonCodes: ['writer_stop_incomplete'] });
+  await requestHomeUpdate(input(f.home, 'recover', 'recover'), noLaunch);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: checkedChannel,
+    updater: {
+      recoverProductUpdate: async () => ({ ok: false, status: 'recovery_required', reasons: [{ code: 'writer_stop_incomplete', message: 'x' }, { code: 'running_restore_failed', message: 'y' }] }),
+      productRecoveryFor: () => ({ available: true, restore: true, retry: true, reasonCodes: ['writer_stop_incomplete', 'running_restore_failed'] }),
+    },
+    appUpdater: unusedAppUpdater,
+  });
+  const saved = f.operation(id);
+  assert.equal(saved.phase, 'failed');
+  assert.equal(saved.requiresLocalRecovery, true);
+  assert.equal(saved.errorCode, 'local_recovery_required');
+  assert.deepEqual(homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 }).allowedActions, ['recover', 'resume']);
+});
+
+test('a resumed local recovery clears its flags while it runs', async t => {
+  const { f, id, journal } = await fencedUpdate(t, { available: true, restore: true, retry: true, reasonCodes: ['writer_stop_incomplete'] });
+  await requestHomeUpdate(input(f.home, 'resume', 'resume'), noLaunch);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => journal, resumeProductUpdate: async () => {
+      const running = f.operation(id);
+      assert.equal(running.requiresLocalRecovery, undefined);
+      assert.equal(running.recoverable, undefined);
+      f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+      return { ok: true, status: 'committed' };
+    } },
+    appUpdater: { applyPreparedMacApplication: async () => ({ status: 'reopened' }) },
+    verifyReady: async () => ({ running: true }),
+  });
+  assert.equal(f.operation(id).phase, 'completed');
+  assert.equal(homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 }).state, 'upToDate');
+});
+
+test('a writer_stop_incomplete abort is resumable with a path-free message', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => ({ phase: 'aborted', runningRestored: true }), applyProductUpdate: async () => ({ ok: false, status: 'aborted', runningRestored: true,
+      reasons: [{ code: 'writer_stop_incomplete', message: 'Services at /secret/home did not stop', writers: ['home23-milo'] }] }) },
+    appUpdater: unusedAppUpdater,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.equal(status.state, 'failed');
+  assert.deepEqual(status.allowedActions, ['resume']);
+  assert.equal(status.operation.errorCode, 'writer_stop_incomplete');
+  assert.deepEqual(status.operation.reasonCodes, ['writer_stop_incomplete']);
+  assert.match(status.message, /restarted and nothing changed/);
+  assert.doesNotMatch(JSON.stringify(status), /secret/);
+});
+
+test('a resume whose launch fails reports only its own error', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  f.setOperation({ ...f.operation(id), phase: 'failed', pid: null, errorCode: 'linked_state_path',
+    reasonCodes: ['linked_state_path', 'external_reference'], message: 'A home state link points outside its approved location.' });
+  let queued = null;
+  const status = await requestHomeUpdate(input(f.home, 'resume', 'resume'), { launch: async operation => {
+    queued = f.operation(operation.id);
+    throw Object.assign(new Error('x'), { code: 'spawn_failed' });
+  } });
+  assert.equal(queued.phase, 'queued');
+  assert.equal('errorCode' in queued, false);
+  assert.equal('reasonCodes' in queued, false);
+  const saved = f.operation(id);
+  assert.equal(saved.errorCode, 'spawn_failed');
+  assert.deepEqual(saved.reasonCodes, []);
+  assert.equal(status.operation.errorCode, 'spawn_failed');
+  assert.deepEqual(status.operation.reasonCodes, []);
+  assert.deepEqual(status.allowedActions, ['resume']);
+});
+
+test('completing an operation removes executors of finished operations and earlier attempts', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  f.setOperation({ ...f.operation(id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  let installs = 0;
+  const removed = [], admitted = [];
+  const directory = join(f.home, 'runtime/home-update');
+  const dependencies = {
+    // A request admitted meanwhile could not yet have saved its worker's pid.
+    channel: checkedChannel, removePaths: paths => { removed.push(...paths); admitted.push(existsSync(join(directory, 'admission.lock'))); },
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => {
+      if (++installs === 1) return { ok: false, status: 'refused', reasons: [{ code: 'database_busy', message: 'busy' }] };
+      f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+      return { ok: true, status: 'committed' };
+    } },
+    appUpdater: { applyPreparedMacApplication: async () => ({ status: 'reopened' }) },
+    verifyReady: async () => ({ running: true }),
+  };
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, dependencies);
+  f.setOperation({ ...f.operation(id), pid: null });
+  await requestHomeUpdate(input(f.home, 'resume', 'resume'), noLaunch);
+  assert.equal(f.operation(id).attempt, 2);
+  const finished = '11111111-1111-1111-1111-111111111111', live = '22222222-2222-2222-2222-222222222222';
+  f.setOperation({ schema: 'home23.home-update.v1', id: finished, homeRoot: f.home, phase: 'completed', pid: null });
+  f.setOperation({ schema: 'home23.home-update.v1', id: live, homeRoot: f.home, phase: 'downloading', pid: process.ppid });
+  for (const name of [`executor-${id}-1`, `executor-${id}-2`, `executor-${finished}-1`, `executor-${live}-1`, 'executor-not-an-operation']) {
+    mkdirSync(join(directory, name), { mode: 0o700 });
+  }
+  symlinkSync(join(directory, `executor-${finished}-1`), join(directory, `executor-${'3'.repeat(8)}-3333-3333-3333-${'3'.repeat(12)}-1`));
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, dependencies);
+  assert.equal(f.operation(id).phase, 'completed');
+  assert.deepEqual(removed.sort(), [join(directory, `executor-${finished}-1`), join(directory, `executor-${id}-1`)].sort());
+  assert.deepEqual(admitted, [true]);
+  assert.equal(existsSync(join(directory, 'admission.lock')), false);
+});
+
+test('a completed update prunes its delivery download and stage and older deliveries', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  const delivery = join(f.parent, '.home.home23-delivery');
+  const older = '44444444-4444-4444-4444-444444444444', held = '55555555-5555-5555-5555-555555555555';
+  mkdirSync(delivery, { mode: 0o700 });
+  for (const name of [`download-${id}`, `stage-${id}`, `download-${older}`, `stage-${older}`, `stage-${held}`, `download-${held}`]) mkdirSync(join(delivery, name));
+  writeFileSync(join(delivery, `stage-${id}.home23-stage.json`), '{}');
+  writeFileSync(join(delivery, `stage-${older}.home23-stage.lock`), JSON.stringify({ pid: 999999, id: 'gone' }));
+  // An apply still holds this stage.
+  writeFileSync(join(delivery, `stage-${held}.home23-stage.lock`), JSON.stringify({ pid: process.pid, id: 'live' }));
+  writeFileSync(join(delivery, 'notes.txt'), 'kept');
+  f.setOperation({ ...f.operation(id), prepared: { release, packageId: release.packageId, candidatePayload: join(delivery, `stage-${id}/payload`),
+    staging: join(delivery, `stage-${id}`), installedAppPath: join(f.parent, 'Home23.app'), preparedAppPath: join(f.parent, '.next.app'), lifecyclePath: join(f.parent, 'lifecycle') } });
+  const removed = [];
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: checkedChannel, removePaths: paths => removed.push(...paths),
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => {
+      f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+      return { ok: true, status: 'committed' };
+    } },
+    appUpdater: { applyPreparedMacApplication: async () => ({ status: 'reopened' }) },
+    verifyReady: async () => ({ running: true }),
+  });
+  assert.equal(f.operation(id).phase, 'completed');
+  assert.deepEqual(removed.map(path => path.slice(delivery.length + 1)).sort(), [
+    `download-${id}`, `download-${older}`, `stage-${id}`, `stage-${id}.home23-stage.json`, `stage-${older}`, `stage-${older}.home23-stage.lock`,
+  ].sort());
+});
+
+test('a new download prunes older deliveries and a failed resumable update keeps its own', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  const delivery = join(f.parent, '.home.home23-delivery');
+  const older = '66666666-6666-6666-6666-666666666666';
+  mkdirSync(join(delivery, `download-${older}`), { recursive: true, mode: 0o700 });
+  const removed = [];
+  const dependencies = {
+    channel: { ...checkedChannel, prepareConfiguredRelease: async options => {
+      mkdirSync(options.downloadDirectory, { recursive: true }); mkdirSync(options.staging, { recursive: true });
+      return { release, packageId: release.packageId, appBuild: 180, candidatePayload: join(options.staging, 'payload'), staging: options.staging };
+    } },
+    removePaths: paths => removed.push(...paths),
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => ({ ok: false, status: 'refused', reasons: [{ code: 'database_busy', message: 'busy' }] }) },
+    appUpdater: unusedAppUpdater,
+  };
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, dependencies);
+  assert.equal(f.operation(id).phase, 'failed');
+  assert.deepEqual(homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 }).allowedActions, ['resume']);
+  assert.deepEqual(removed, [join(delivery, `download-${older}`)]);
+});
+
+test('an unfinished journal keeps every delivery when a new download starts', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  mkdirSync(join(f.parent, '.home.home23-delivery', 'stage-77777777-7777-7777-7777-777777777777'), { recursive: true, mode: 0o700 });
+  const removed = [];
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: { ...checkedChannel, prepareConfiguredRelease: async () => { throw Object.assign(new Error('offline'), { code: 'download_failed' }); } },
+    removePaths: paths => removed.push(...paths),
+    updater: { readUpdateJournal: () => ({ phase: 'recovery_required', writersAdmitted: false }) },
+    appUpdater: unusedAppUpdater,
+  });
+  assert.deepEqual(removed, []);
+});
+
+test('pruning ignores links, other names and a local cache of a same-volume home', t => {
+  const f = fixture(t);
+  const delivery = join(f.parent, '.home.home23-delivery'), cache = join(f.parent, 'cache');
+  const gone = '88888888-8888-8888-8888-888888888888', linked = '99999999-9999-9999-9999-999999999999';
+  mkdirSync(join(delivery, `download-${gone}`), { recursive: true, mode: 0o700 });
+  mkdirSync(join(delivery, 'download-not-an-operation'));
+  mkdirSync(join(f.parent, 'elsewhere'));
+  symlinkSync(join(f.parent, 'elsewhere'), join(delivery, `stage-${linked}`));
+  mkdirSync(join(cache, `extraction-${gone}`), { recursive: true, mode: 0o700 });
+  symlinkSync(join(f.parent, 'elsewhere'), join(cache, `extraction-${linked}`));
+  const removed = [];
+  const removePaths = paths => removed.push(...paths);
+  pruneUpdateDelivery(f.home, { cacheRoot: cache, deviceFor: () => 1 }, { removePaths });
+  assert.deepEqual(removed, [join(delivery, `download-${gone}`)]);
+  removed.length = 0;
+  // An external home expanded its runtime in the Mac's local cache.
+  pruneUpdateDelivery(f.home, { cacheRoot: cache, deviceFor: path => path === f.home ? 2 : 1 }, { removePaths });
+  assert.deepEqual(removed.sort(), [join(delivery, `download-${gone}`), join(cache, `extraction-${gone}`)].sort());
 });

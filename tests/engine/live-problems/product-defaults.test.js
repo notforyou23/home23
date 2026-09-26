@@ -10,6 +10,7 @@ test('new Host monitors its own provisioned services without assuming hardware, 
   const seeds = defaultSeeds(options);
   assert.deepEqual(seeds.map(seed => seed.id), [
     'milo_harness_online', 'milo_dashboard_ping', 'milo_dashboard_port_owner', 'milo_engine_admin_ping',
+    'brain_persistence_fresh',
   ]);
   assert.equal(seeds.find(seed => seed.id === 'milo_dashboard_ping').verifier.args.url, 'http://127.0.0.1:24002/home23/agents.json');
   assert.doesNotMatch(JSON.stringify(seeds), /jerry|forrest|Casey Jones|health_log|sauna|weather|\.codex|9222/);

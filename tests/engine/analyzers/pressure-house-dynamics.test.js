@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -47,4 +47,26 @@ test('pressure house dynamics analyzer writes single-sensor inference artifact',
   const md = readFileSync(mdPath, 'utf8');
   assert.match(md, /Pressure House Dynamics/);
   assert.match(md, /Spatial inference: \*\*not_supported\*\*/);
+});
+
+test('under the Host the analyzer reads the owner pressure log by default, not the runtime HOME', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pressure-house-owner-'));
+  const owner = join(dir, 'owner');
+  const runtimeHome = join(dir, 'runtime-user');
+  const outDir = join(dir, 'out');
+  mkdirSync(owner);
+  mkdirSync(runtimeHome);
+  const start = Date.parse('2026-05-10T00:00:00-04:00');
+  const rows = Array.from({ length: 24 }, (_, i) => JSON.stringify({ ts: new Date(start + i * 5 * 60 * 1000).toISOString(), pressure_pa: 100000 + i * 18 }));
+  writeFileSync(join(owner, '.pressure_log.jsonl'), `${rows.join('\n')}\n`);
+  // The empty split copy the runtime HOME once held.
+  writeFileSync(join(runtimeHome, '.pressure_log.jsonl'), '');
+
+  execFileSync('node', ['scripts/analyzers/pressure-house-dynamics.js', '--date', '2026-05-11', '--out-dir', outDir], {
+    cwd: process.cwd(), stdio: 'pipe',
+    env: { ...process.env, HOME: runtimeHome, HOME23_OWNER_HOME: owner, HOME23_PRODUCT_HOST: 'true' },
+  });
+
+  const artifact = JSON.parse(readFileSync(join(outDir, 'pressure-house-dynamics-2026-05-11.json'), 'utf8'));
+  assert.equal(artifact.analysis.sampleCount, 24);
 });

@@ -5,6 +5,40 @@ const test = require('node:test');
 
 const root = process.cwd();
 const read = (name) => fs.readFileSync(path.join(root, 'engine/src/dashboard', name), 'utf8');
+const vm = require('node:vm');
+
+// Runs the page's identity and details code against a fixture home without a browser.
+function identityHarness({ bots, channels, bootstrap }) {
+  const js = read('connected-agents.js');
+  const slice = (from, to) => {
+    const start = js.indexOf(from), end = js.indexOf(to, start);
+    assert.ok(start !== -1 && end !== -1, `missing ${from}`);
+    return js.slice(start, end);
+  };
+  const elements = new Map();
+  const element = (id) => {
+    if (!elements.has(id)) elements.set(id, { id, innerHTML: '', hidden: true, classList: { add() {}, remove() {} }, addEventListener() {}, focus() {} });
+    return elements.get(id);
+  };
+  const context = {
+    state: { bots, channels, bootstrap, inspectorVisible: false, selected: null, inbox: [], capabilities: { capabilities: { botLifecycle: true } } },
+    $: element,
+    document: { querySelectorAll: () => [] },
+    esc: (value) => String(value ?? '').replace(/[&<>'"]/g, (c) => `&#${c.charCodeAt(0)};`),
+    fmtTime: () => '',
+    availability: (bot) => bot?.availability || 'offline',
+    closeInspectorPane() {}, closeDetails() {}, controlBot() {},
+  };
+  vm.runInNewContext(`${slice('function primaryBotId(', '\n  function rank(')}
+${slice('function row(', '\n  function renderRoster(')}
+${slice('function showDetails(', '\n  function closeDetails(')}
+this.api = { primaryBotId, isPermanentResident, welcomeHtml, row, showDetails };`, context);
+  return { ...context.api, details: () => element('details-pane').innerHTML };
+}
+
+const coz = { id: 'bot_coz', principalId: 'bot_coz', name: 'Coz', purpose: 'Primary resident.', lifecycle: 'active', conversationId: 'conversation_coz', residentBinding: 'coz', availability: 'available' };
+const scout = { id: 'bot_scout', principalId: 'bot_scout', name: 'Scout', purpose: 'Helper.', lifecycle: 'active', conversationId: 'conversation_scout', residentBinding: 'bot-scout-1', availability: 'available' };
+const direct = (bot) => ({ id: `channel_${bot.name.toLowerCase()}`, conversationId: bot.conversationId, kind: 'direct', title: bot.name, purpose: '', members: [{ kind: 'owner', principalId: 'user_owner' }, { kind: 'bot', principalId: bot.principalId }] });
 
 test('retained Connected Agents assets preserve their contract alongside the current dashboard', () => {
   const html = read('connected-agents.html');
@@ -15,7 +49,8 @@ test('retained Connected Agents assets preserve their contract alongside the cur
   assert.match(html, /\/home23\/legacy/);
   assert.match(server, /home23-dashboard\.html/);
   assert.match(server, /this\.app\.get\('\/home23'/);
-  assert.match(js, /name\?\.toLowerCase\(\) === "jerry"/);
+  assert.match(js, /state\.bootstrap\?\.home\?\.primaryBotId/);
+  assert.doesNotMatch(`${html}\n${js}`, /jerry|forrest/i);
   assert.match(js, /\/channels\/\$\{encodeURIComponent\(record\.channelId\)\}\/messages/);
   assert.match(js, /readCursorMutation/);
   assert.match(js, /botLifecycle/);
@@ -24,7 +59,6 @@ test('retained Connected Agents assets preserve their contract alongside the cur
   assert.match(js, /bot\.lifecycle === "archived"/);
   assert.match(js, /data-restore-bot/);
   assert.match(js, /controlBot\(button\.dataset\.restoreBot, "restore"\)/);
-  assert.match(js, /"jerry", "forrest"/);
   assert.doesNotMatch(js, /data-control="(?:start|stop|restart)"/);
   assert.doesNotMatch(js, /state\.provisioning|residentBinding,\s*purpose|requiredCapabilities:\s*\["messages"\]|is provisioning|Getting ready/);
   assert.match(js, /scheduleRefresh/);
@@ -125,4 +159,26 @@ test('calm transcript and exact turn Inspector share canonical communication evi
   assert.match(css, /\.ca-inspector-pane/);
   assert.match(css, /--event-depth/);
   assert.match(css, /@media \(max-width:\s*680px\)[\s\S]*\.ca-inspector-pane/);
+});
+
+test('a home without Jerry derives its primary and permanent residents from Core, not names', () => {
+  const home = identityHarness({ bots: [scout, coz], channels: [direct(coz), direct(scout)], bootstrap: { home: { primaryBotId: 'bot_coz' } } });
+  assert.equal(home.primaryBotId(), 'bot_coz');
+  assert.match(home.row({ channelId: 'channel_coz', title: 'Coz' }, 'bot', coz), /ca-primary-label/);
+  assert.doesNotMatch(home.row({ channelId: 'channel_scout', title: 'Scout' }, 'bot', scout), /ca-primary-label/);
+  assert.match(home.welcomeHtml(), /Choose Coz, another Bot, or a Channel\./);
+  home.showDetails(direct(coz));
+  assert.match(home.details(), /Coz remains available as a permanent house resident\./);
+  assert.doesNotMatch(home.details(), /data-control=/);
+  home.showDetails(direct(scout));
+  assert.match(home.details(), /data-control="archive"/);
+  assert.doesNotMatch(`${home.welcomeHtml()}${home.details()}`, /jerry|forrest/i);
+});
+
+test('without Core bootstrap no Bot is presented as primary and the welcome stays neutral', () => {
+  const namedJerry = { ...scout, id: 'bot_named', principalId: 'bot_named', name: 'Jerry', residentBinding: 'bot-named-1' };
+  const home = identityHarness({ bots: [namedJerry], channels: [direct(namedJerry)], bootstrap: null });
+  assert.equal(home.primaryBotId(), null);
+  assert.doesNotMatch(home.row({ channelId: 'channel_jerry', title: 'Jerry' }, 'bot', namedJerry), /ca-primary-label/);
+  assert.match(home.welcomeHtml(), /Choose a Bot or a Channel\./);
 });

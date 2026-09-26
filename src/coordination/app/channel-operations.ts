@@ -2,6 +2,7 @@ import type { CoordinationTurnOrigin } from '../../agent/types.js';
 import type { createChannelService } from '../channels/service.js';
 import type { MessagingActorContext, ResponderPolicy } from '../channels/types.js';
 import { WorkError } from '../work/errors.js';
+import { ChessError } from '../chess/service.js';
 import type { DetachmentCredential } from './foreground-detachments.js';
 
 /** Current fenced house agents share the owner's channel mandate under their own identities. */
@@ -61,7 +62,10 @@ export function createChannelOperationConsumer(options: {
       case 'chess_control': case 'chess_save_position': case 'chess_get_position':
       case 'chess_list_positions': case 'chess_export':
         if (!options.chess) throw new Error('Native Chess unavailable');
-        return options.chess(context, input.origin, args, key);
+        // A Chess refusal says what to change (channel, seat, move); the resident transport keeps only
+        // invalid_request text, so an untranslated ChessError reached residents as a retried 'resident request failed'.
+        try { return await options.chess(context, input.origin, args, key); }
+        catch (error) { throw error instanceof ChessError ? new WorkError('invalid_request', error.message) : error; }
       case 'history':
         if (!options.history) throw new Error('Channel history unavailable');
         return options.history(context,args,input.origin);

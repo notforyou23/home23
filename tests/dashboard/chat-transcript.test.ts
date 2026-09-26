@@ -21,7 +21,7 @@ import * as chatModule from '../../engine/src/dashboard/home23-chat.js';
 import { reconcileCanonicalAssistantElements } from '../../engine/src/dashboard/home23-chat-reconstruction.mjs';
 
 const STARTER_PROMPTS = [
-  'Hey Jerry. Where are we?',
+  'Hey. Where are we?',
   'What changed since we last talked that actually matters?',
   'What have we forgotten or let fall by the wayside?',
   'What are you noticing that I’m not?',

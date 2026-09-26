@@ -3,7 +3,7 @@ import path from "node:path";
 
 function requireBrowser(context) {
   if (!context?.browser) {
-    throw new Error("Home23 browser controller is unavailable");
+    throw new Error("browser_unavailable (disabled): Home23's managed browser is not enabled for this resident. Do not launch or reconfigure Chrome yourself; tell the owner.");
   }
   return context.browser;
 }

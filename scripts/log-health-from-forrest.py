@@ -7,11 +7,15 @@ Jerry's engine.
 """
 import json
 import os
+import pwd
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-HOME = Path.home()
+# The health log is the owner's. Under the Home23 Host, HOME is Home23's
+# private runtime home and HOME23_OWNER_HOME names the owner's; otherwise
+# the account's passwd entry is the owner home, never the process HOME.
+HOME = Path(os.environ.get('HOME23_OWNER_HOME') or pwd.getpwuid(os.getuid()).pw_dir)
 LOG_PATH = Path(os.environ.get('HEALTH_LOG_PATH', str(HOME / '.health_log.jsonl')))
 STATUS_PATH = Path(os.environ.get('HEALTH_STATUS_PATH', str(HOME / '.health_log.status.json')))
 BASE = Path(os.environ.get('HEALTH_LEDGER_DIR', str(Path.cwd() / 'instances' / 'forrest' / 'workspace' / 'health_jtr')))

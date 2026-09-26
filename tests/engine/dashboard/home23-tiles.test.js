@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -397,4 +398,42 @@ test('offline tile payload keeps the dashboard display shape stable', () => {
   assert.deepEqual(payload.content.metrics, []);
   assert.equal(payload.actions.length, 0);
   assert.equal(payload.error, 'fetch failed');
+});
+
+test('sauna start and stop events append to the owner home log, not the runtime HOME', async (t) => {
+  const base = mkdtempSync(join(tmpdir(), 'home23-sauna-owner-'));
+  const owner = join(base, 'owner');
+  const runtime = join(base, 'runtime-user');
+  mkdirSync(owner);
+  mkdirSync(runtime);
+  const keys = ['HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  let statusCode = 231;
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ statusCode, temperature: 80, targetTemperature: 90, duration: 60 }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    await new Promise((resolve) => server.close(resolve));
+    rmSync(base, { recursive: true, force: true });
+  });
+  // A Host dashboard: HOME is Home23's private runtime home.
+  Object.assign(process.env, { HOME: runtime, HOME23_OWNER_HOME: owner, HOME23_PRODUCT_HOST: 'true' });
+  const service = new Home23TileService({ home23Root: base, autoStartBackgroundRefresh: false, logger: { warn() {} } });
+  service.resolveTile = () => ({ id: 'owner-sauna', kind: 'custom', mode: 'huum-sauna', connectionId: 'huum', refreshMs: 0, title: 'Sauna' });
+  service.resolveConnection = () => ({ id: 'huum', type: 'huum', config: { baseUrl: `http://127.0.0.1:${server.address().port}/` },
+    secrets: { username: 'fixture', password: 'fixture' } });
+
+  await service.getTileData('owner-sauna');
+  statusCode = 232;
+  await service.getTileData('owner-sauna');
+
+  const events = readFileSync(join(owner, '.sauna_usage_log.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line).event);
+  assert.deepEqual(events, ['start', 'stop']);
+  assert.equal(existsSync(join(runtime, '.sauna_usage_log.jsonl')), false);
 });

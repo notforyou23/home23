@@ -396,3 +396,62 @@ test('non-pageable truncation does not invent an offset argument', () => {
   assert.match(excerpt, /does not support offset paging/);
   assert.doesNotMatch(excerpt, /offset, or limit/);
 });
+
+test('detached queued work that no worker admitted names the admission deadline instead of inviting polls', () => {
+  const operation = makeBrainOperationRecord({
+    operationId: 'brop_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    operationType: 'pgs',
+    state: 'queued',
+    startedAt: null,
+  }) as Parameters<typeof operationToolResult>[0];
+  operation.acceptedAt = '2026-09-26T12:00:00.000Z';
+  operation.attachmentState = 'detached';
+  const queued = operationToolResult(operation);
+  assert.match(queued.content, /queued and no worker has admitted it yet/);
+  assert.match(queued.content, /admission_stalled if none does by 2026-09-26T12:20:00\.000Z/);
+  assert.match(queued.content, /do not re-report unchanged status or start a duplicate/);
+
+  operation.state = 'running';
+  operation.startedAt = '2026-09-26T12:00:10.000Z';
+  const running = operationToolResult(operation);
+  assert.match(running.content, /the durable operation is running\. Check with brain_status/);
+  assert.doesNotMatch(running.content, /admitted/);
+});
+
+test('admission failures classify as admission_failed with fallback guidance', () => {
+  for (const code of ['admission_stalled', 'worker_unavailable', 'worker_unreachable', 'worker_protocol_unavailable']) {
+    const operation = makeBrainOperationRecord({
+      operationId: 'brop_ffffffffffffffffffffffffffffffff',
+      operationType: 'query',
+      state: 'failed',
+      startedAt: null,
+      error: { code, message: `${code} fixture`, retryable: true },
+    }) as Parameters<typeof operationToolResult>[0];
+    operation.attachmentState = 'closed';
+    const rendered = operationToolResult(operation);
+    assert.equal(rendered.is_error, true, code);
+    assert.equal(rendered.metadata?.classification, 'admission_failed', code);
+    assert.match(rendered.content, /The brain query did not start: no worker admitted it/, code);
+    assert.match(rendered.content, /Keep operation=brop_f{32} for diagnosis/, code);
+    assert.match(rendered.content, /brain_search/, code);
+  }
+  const research = makeBrainOperationRecord({
+    operationId: 'brop_gggggggggggggggggggggggggggggggg',
+    operationType: 'research_launch',
+    state: 'failed',
+    startedAt: null,
+    error: { code: 'admission_stalled', message: 'stalled', retryable: true },
+  }) as Parameters<typeof operationToolResult>[0];
+  research.attachmentState = 'closed';
+  const rendered = operationToolResult(research);
+  assert.equal(rendered.metadata?.classification, 'admission_failed');
+  assert.match(rendered.content, /The research_launch operation did not start/);
+  assert.doesNotMatch(rendered.content, /brain_search/);
+
+  const ordinary = makeBrainOperationRecord({
+    operationType: 'query', state: 'failed', startedAt: null,
+    error: { code: 'provider_timeout', message: 'slow', retryable: true },
+  }) as Parameters<typeof operationToolResult>[0];
+  ordinary.attachmentState = 'closed';
+  assert.equal(operationToolResult(ordinary).metadata?.classification, 'failed');
+});

@@ -4,14 +4,21 @@ const {
   DEFAULT_ENGINE_MODEL,
 } = require('../../shared/model-defaults.cjs');
 
+// Workspace folders every new resident's feeder watches. Agent creation makes
+// them too (agent-create.js, home23-settings-api.js): the harness used to
+// create some lazily after the engine had started, so the feeder skipped them.
+const DEFAULT_WORKSPACE_WATCH_DIRS = Object.freeze([
+  Object.freeze({ dir: 'sessions', label: 'conversation_sessions' }),
+  Object.freeze({ dir: 'memory', label: 'memory_snapshots' }),
+  Object.freeze({ dir: 'projects', label: 'projects' }),
+  Object.freeze({ dir: 'reports', label: 'reports' }),
+  Object.freeze({ dir: 'research-runs', label: 'research_runs' }),
+  Object.freeze({ dir: 'research', label: 'compiled_research' }),
+]);
+
 function buildFeederWatchPaths(instanceDir, ingestPaths = []) {
   return [
-    { path: `${instanceDir}/workspace/sessions`, label: 'conversation_sessions' },
-    { path: `${instanceDir}/workspace/memory`, label: 'memory_snapshots' },
-    { path: `${instanceDir}/workspace/projects`, label: 'projects' },
-    { path: `${instanceDir}/workspace/reports`, label: 'reports' },
-    { path: `${instanceDir}/workspace/research-runs`, label: 'research_runs' },
-    { path: `${instanceDir}/workspace/research`, label: 'compiled_research' },
+    ...DEFAULT_WORKSPACE_WATCH_DIRS.map(({ dir, label }) => ({ path: `${instanceDir}/workspace/${dir}`, label })),
     ...ingestPaths,
   ];
 }
@@ -146,6 +153,7 @@ module.exports = {
   DEFAULT_CHAT_PROVIDER,
   DEFAULT_CHAT_MODEL,
   DEFAULT_ENGINE_MODEL,
+  DEFAULT_WORKSPACE_WATCH_DIRS,
   buildAgentConfig,
   buildFeederConfig,
   buildFeederWatchPaths,

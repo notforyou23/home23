@@ -2,11 +2,13 @@
 # Logs barometric pressure from a configured sensor to ~/.pressure_log.jsonl
 # Runs via cron every 5 minutes
 
-LOG_PATH="$HOME/.pressure_log.jsonl"
+# Owner data: under the Home23 Host, HOME is Home23's private runtime home
+# and HOME23_OWNER_HOME names the owner's. The owner's own cron has only HOME.
+LOG_PATH="${HOME23_OWNER_HOME:-$HOME}/.pressure_log.jsonl"
 PI="${PI_SSH_TARGET:-}"
 SENSOR_FILE="${PI_SENSOR_FILE:-/home/pi/.openclaw/workspace/state/sensor-latest.json}"
 API_URL="${PI_PRESSURE_API_URL:-}"
-PI_SSH_KEY_PATH="${PI_SSH_KEY_PATH:-$HOME/.ssh/id_ed25519_pi}"
+PI_SSH_KEY_PATH="${PI_SSH_KEY_PATH:-${HOME23_OWNER_HOME:-$HOME}/.ssh/id_ed25519_pi}"
 TRANSPORT=""
 
 DATA=""

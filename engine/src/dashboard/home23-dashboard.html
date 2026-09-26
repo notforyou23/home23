@@ -370,18 +370,16 @@
     <!-- Query panel — scoped to the current dashboard agent brain, powered by cosmo23's PGS. -->
     <div class="h23-panel" id="panel-query" role="tabpanel" aria-labelledby="dashboard-tab-query" aria-hidden="true"></div>
 
-    <!-- Briefs panel — human-facing outputs from Jerry, Forrest, cron runs, and worker receipts. -->
+    <!-- Briefs panel — human-facing outputs from this home's agents, cron runs, and worker receipts. -->
     <div class="h23-panel" id="panel-briefs" role="tabpanel" aria-labelledby="dashboard-tab-briefs" aria-hidden="true">
       <div class="h23-workers-header">
         <div>
           <h2>Briefs</h2>
-          <div class="h23-workers-subtitle">Readable reports, agent-turn cron outputs, worker receipts, sessions, and insights from Jerry and Forrest.</div>
+          <div class="h23-workers-subtitle">Readable reports, agent-turn cron outputs, worker receipts, sessions, and insights from this home's agents.</div>
         </div>
         <div class="h23-workers-actions">
           <select id="briefs-agent-filter" aria-label="Agent">
             <option value="">All agents</option>
-            <option value="jerry">Jerry</option>
-            <option value="forrest">Forrest</option>
           </select>
           <select id="briefs-type-filter" aria-label="Brief type">
             <option value="">All documents</option>
@@ -475,7 +473,7 @@
         <section class="h23-workers-section">
           <div class="h23-workers-section-title">Proof Receipt</div>
           <div id="workers-receipt" class="h23-workers-receipt">
-            <p class="h23-muted">Select a completed check to see what was inspected, what passed, what failed, and what Jerry can learn from it.</p>
+            <p class="h23-muted">Select a completed check to see what was inspected, what passed, what failed, and what the house can learn from it.</p>
           </div>
         </section>
         <section class="h23-workers-section">

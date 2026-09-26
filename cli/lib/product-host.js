@@ -4,11 +4,13 @@ import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { connect } from 'node:net';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { readMoveFence } from './product-backup.js';
 import { detectForeignBindings } from './product-foreign-bindings.js';
 import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { inspectMemorySeal, inspectProductMemory } from './product-memory.js';
+import { writerStopOrder } from './product-update-inventory.js';
 import {
   OWNED_EMBEDDER_PROCESS, OWNED_PROFILE_ID, OWNED_RECIPE_HASH,
   beginSemanticPrepare, encoderRequiredFor, ensureOwnedEncoderStopped, probeOwnedReady, semanticStatusView,
@@ -20,6 +22,7 @@ const { agentProcessNames } = require('../../shared/agent-process-names.cjs');
 const executeFile = promisify(execFile);
 const PROVIDERS = new Set(['anthropic', 'openai', 'openai-codex', 'minimax', 'xai', 'ollama-cloud', 'ollama-local']);
 const OAUTH_PROVIDERS = new Set(['anthropic', 'openai-codex']);
+const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const statePath = root => join(root, '.home23-host.json');
 const receiptPath = root => join(root, '.home23-install.json');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -46,19 +49,8 @@ function hostOAuthBroker(appRoot, dependencies = {}) {
     ...(typeof dependencies.oauthNow === 'function' ? { now: dependencies.oauthNow } : {}),
   });
 }
-function oauthPublicStatus(result) {
-  return {
-    configured: result?.configured === true,
-    valid: result?.valid === true,
-    refreshable: result?.refreshable === true,
-    source: result?.source || 'none',
-    expiresAt: result?.expiresAt ?? null,
-    accountId: result?.accountId ?? null,
-    verified: result?.verified === true,
-    revoked: result?.revoked === true,
-    verificationError: typeof result?.verificationError === 'string' ? result.verificationError : null,
-  };
-}
+// Shared with the dashboard's /oauth/status so the two public shapes cannot drift.
+const oauthPublicStatus = result => require('../../shared/home23-oauth.cjs').publicOAuthStatus(result);
 async function cancelHostOAuthPending(appRoot, provider) {
   assertHostOAuthProvider(provider);
   const { default: secretsStore } = await import('../../shared/home23-secrets.cjs');
@@ -298,6 +290,21 @@ export function productDefinitions(apps, homeRoot, nameOrNames, { encoderRequire
     };
   });
 }
+/** Whether a supervisor accepts connections on a unix socket: true when it
+ * connects, false when the socket is absent or refused, null when it neither
+ * answers nor refuses. A connection attempt never starts a daemon. */
+export function supervisorListening(path, timeoutMs = 2000) {
+  return new Promise(resolve => {
+    const socket = connect(path);
+    let timer = null;
+    const done = value => { clearTimeout(timer); socket.destroy(); resolve(value); };
+    timer = setTimeout(() => done(null), timeoutMs);
+    socket.once('connect', () => done(true));
+    // EINVAL: a path longer than a socket address, where no daemon can listen.
+    socket.once('error', error => done(['ENOENT', 'ENOTDIR', 'ECONNREFUSED', 'ENOTSOCK', 'EINVAL'].includes(error.code) ? false : null));
+  });
+}
+const supervisorAmbiguous = message => Object.assign(new Error(message), { code: 'host_supervisor_ambiguous' });
 function driver(homeRoot, dependencies, state) {
   const encoderRequired = encoderRequiredFor(state);
   const env = productEnvironment(homeRoot, { prepare: true, encoderRequired, embedderPort: state?.ports?.embedder });
@@ -313,12 +320,28 @@ function driver(homeRoot, dependencies, state) {
   }
   return {
     env,
+    // Set by list(): no daemon listens for this home, so a PM2 CLI call would start one.
+    supervisorAbsent: false,
     async list() {
-      if (!dependencies.execute) {
-        const pidPath = join(env.PM2_HOME, 'pm2.pid');
-        if (!existsSync(pidPath)) return [];
-        try { process.kill(Number(readFileSync(pidPath, 'utf8').trim()), 0); } catch { return []; }
+      // This home's daemon listens on productEnvironment's socket. pm2.pid can
+      // be missing, stale or name a daemon on other sockets, and `pm2 jlist`
+      // with no daemon there spawns one. Only a listening canonical socket
+      // admits the query; no daemon at all is an empty home.
+      const listening = dependencies.supervisorListening ?? (dependencies.execute ? null : supervisorListening);
+      if (listening) {
+        const canonical = await listening(env.PM2_DAEMON_RPC_PORT);
+        if (canonical === null) throw supervisorAmbiguous('This home\'s supervisor is not answering. No processes were changed.');
+        if (!canonical) {
+          // PM2's own default socket under PM2_HOME: a daemon started without
+          // this home's socket variables. Neither empty nor controllable.
+          if (await listening(join(env.PM2_HOME, 'rpc.sock')) !== false) {
+            throw supervisorAmbiguous('A supervisor for this home is running on an unexpected socket. No processes were changed.');
+          }
+          this.supervisorAbsent = true;
+          return [];
+        }
       }
+      this.supervisorAbsent = false;
       const { stdout } = await pm2(['jlist', '--silent']);
       try { const rows = JSON.parse(stdout); if (!Array.isArray(rows)) throw new Error(); return rows; }
       catch { throw new Error('Home23 supervisor returned an invalid process inventory.'); }
@@ -524,6 +547,26 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
   const semantic = semanticStatusView(homeRoot, state);
   return { ready: issues.length === 0, issues, memory, warnings: memory.warnings, semantic, ...(recoveryRequired ? { recoveryRequired: true } : {}) };
 }
+/** Core records a Work or group-channel Round it will never recover again only as a
+ * permanent refusal event, and nothing retries it; count them so the owner still sees them.
+ * Read-only and bounded; null when Core's database is absent or cannot be read right now. */
+async function permanentRecoveryRefusals(homeRoot) {
+  const file = join(homeRoot, COORDINATION_DATABASE);
+  if (!existsSync(file)) return null;
+  let database;
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    database = new DatabaseSync(file, { readOnly: true, timeout: 250 });
+    const counts = { works: 0, rounds: 0 };
+    for (const row of database.prepare(`SELECT aggregate_kind AS kind, count(DISTINCT aggregate_id) AS count FROM events
+      WHERE aggregate_kind IN ('work_recovery_refusal', 'round_recovery_refusal')
+        AND json_extract(payload_json, '$.permanent') = 1
+      GROUP BY aggregate_kind`).all()) {
+      counts[row.kind === 'work_recovery_refusal' ? 'works' : 'rounds'] = Number(row.count);
+    }
+    return counts;
+  } catch { return null; } finally { database?.close(); }
+}
 async function status(homeRoot, dependencies = {}, createSession = false) {
   if (!existsSync(receiptPath(homeRoot))) return { ok: true, status: 'absent', homeRoot, desiredRunning: false, processes: [] };
   await validateInstallation(homeRoot);
@@ -540,6 +583,7 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
     desiredRunning: state.desiredRunning === true,
     encoderRequired: encoderRequiredFor(state), semantic: semanticStatusView(homeRoot, state),
     memorySeal: await inspectMemorySeal(homeRoot, residents),
+    permanentRecoveryRefusals: await permanentRecoveryRefusals(homeRoot),
     connection: {
       localURL: `http://127.0.0.1:${state.ports.coordination}`,
       dashboardURL: `http://127.0.0.1:${primaryPorts.dashboard}`,
@@ -547,7 +591,14 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
       access: 'loopback; use a trusted HTTPS or VPN transport for other devices',
     },
     foreignBindings, warnings };
-  const rows = await driver(homeRoot, dependencies, state).list();
+  let rows;
+  try { rows = await driver(homeRoot, dependencies, state).list(); }
+  catch (error) {
+    // An unreadable supervisor is neither a stopped nor a running home. Say so,
+    // so no client mistakes it for a home that needs Start.
+    if (error.code !== 'host_supervisor_ambiguous') throw error;
+    return { ...output, ok: false, status: 'unavailable', processes: [], error: { code: error.code, message: error.message } };
+  }
   const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state), continuationServicesForState(state));
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
@@ -772,15 +823,22 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       state = { ...state, desiredRunning: false, phase: 'stopped' };
       privateJSON(statePath(homeRoot), state);
       await authorizeInitialHostPairing(homeRoot, false);
-      for (const name of [...names].reverse()) {
+      // Engines first: a stopping engine's live-problems loop restarts its own
+      // dashboard and harness, so they stop only once no engine can.
+      const order = writerStopOrder(names);
+      for (const name of order) {
         const row = processes.find(item => item.name === name);
-        if (row?.status === 'stopped') continue;
+        // With no daemon nothing runs, and `pm2 stop` would start one.
+        if (row?.status === 'stopped' || (!row && processDriver.supervisorAbsent)) continue;
         try {
           await processDriver.pm2(['stop', name, '--silent']);
         } catch (error) {
           if (row) throw error;
         }
       }
+      // A writer restarted during that pass is stopped once more; no engine remains to restart it.
+      const restarted = new Set((await processDriver.list()).filter(row => row.pm2_env?.status !== 'stopped').map(row => row.name));
+      for (const name of order.filter(name => restarted.has(name))) await processDriver.pm2(['stop', name, '--silent']);
       if (encoderRequiredFor(state)) {
         try {
           await ensureOwnedEncoderStopped(state, {

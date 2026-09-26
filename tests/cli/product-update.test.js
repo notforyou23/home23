@@ -12,7 +12,7 @@ import { writeProductManifest, installProductPayload, verifyProductPayload } fro
 import {
   adoptManagedSourceHome, holdAdoptionSupervisorLock, inspectProductInstallation,
   listSourceWriters, managedSupervisorEnvironment, planManagedSourceAdoption,
-  previewProductUpdate, resolveAdoptionIdentity, sourceAdoptionSnapshot,
+  previewProductUpdate, resolveAdoptionIdentity, sourceAdoptionSnapshot, validateAdoptionPreservationPlan,
 } from '../../cli/lib/product-update.js';
 import { assertWritersIdle, rebindAdoptedHome } from '../../cli/lib/product-backup.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
@@ -1197,6 +1197,19 @@ test('adoption plans map root preserve paths explicitly', t => {
   assert.ok(plan.inventory.paths.some(item => item.path === 'seed-ledger.jsonl' && item.mapping?.action === 'copy'));
 });
 
+test('a reviewed external reference may name an instance config, which the update inventory judges', () => {
+  const source = '/Users/owner/source-home';
+  const plan = references => ({ schema: 'home23.adoption-preservation.v1', sourceRoot: source, entries: [], references });
+  const reviewed = validateAdoptionPreservationPlan(source,
+    plan([{ path: 'app/instances/grokbot/config.yaml', target: '/Volumes/Casey Jones/Home23/instances/grokbot' }]));
+  assert.deepEqual(reviewed.references.map(item => item.path), ['app/instances/grokbot/config.yaml']);
+  assert.equal(validateAdoptionPreservationPlan(source, plan([{ path: 'app/config/agents.json', target: '/Volumes/x' }])).references.length, 1);
+  for (const file of ['app/instances/grokbot/engine.yaml', 'app/instances/Grok/config.yaml', 'app/instances/a/b/config.yaml'])
+    assert.throws(() => validateAdoptionPreservationPlan(source, plan([{ path: file, target: '/Volumes/x' }])), /Invalid reviewed external reference/, file);
+  assert.throws(() => validateAdoptionPreservationPlan(source, plan([{ path: 'app/instances/grokbot/config.yaml', target: `${source}/instances/grokbot` }])),
+    /Invalid reviewed external reference/);
+});
+
 test('interrupted adoption refuses when preserved source bytes change', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root);
@@ -1228,6 +1241,20 @@ test('holdAdoptionSupervisorLock records writers for every resident', t => {
     () => acquireSupervisorLock(path.join(source.home, 'instances/.house/maintenance'), Database),
     /Another maintenance supervisor/,
   );
+});
+
+test('adoption takes the supervisor lock with node:sqlite whatever better-sqlite3 build loads', t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-fence-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = managedHome(root, { hostRecord: false });
+  const received = [];
+  const release = holdAdoptionSupervisorLock(source.home, resolveAdoptionIdentity(source.home), {
+    acquireSupervisorLock: (dir, Library, options) => { received.push(Library); return acquireSupervisorLock(dir, Library, options); },
+  });
+  t.after(() => release());
+  assert.deepEqual(received, [DatabaseSync]);
+  // Host Start admission (node:sqlite) in this same process is refused by the fence.
+  assert.throws(() => acquireManagedStartLocks(source.home), error => error.code === 'supervisor_lock_unavailable');
 });
 
 const memorySource = require('../../shared/memory-source');

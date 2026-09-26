@@ -752,3 +752,67 @@ test('restart reuses an orphaned committed chunk after manifest persistence cras
   assert.equal(adds, 1, 'same durable chunk identity is reused rather than duplicated');
   assert.equal(restarted.getStats().pendingCount, 0);
 });
+
+test('a generation finished after a restart never relates chunk nodes the restart lost', async (t) => {
+  // Forrest, 2026-09-23T19:55Z: sources.json had 20 of 21 chunks flushed and
+  // recorded when the engine restarted before any brain save. The last chunk
+  // then finished the generation, and FOLLOWS relationships over the recorded
+  // IDs wrote 20 depends_on edges to nodes that no longer existed.
+  const runPath = tempRun(t);
+  const logger = { info() {}, warn() {}, error() {}, debug() {} };
+  // A resident graph allocating IDs from 1, as a graph reloaded without the
+  // unsaved chunks does: the restarted process hands out the lost IDs again.
+  function residentGraph() {
+    let sequence = 0;
+    return {
+      nodes: new Map(),
+      edges: [],
+      async addNode(value) {
+        const node = { id: ++sequence, concept: value.concept, metadata: value.metadata };
+        this.nodes.set(node.id, node);
+        return node;
+      },
+      patchNode(id, patch) { Object.assign(this.nodes.get(id), patch); return this.nodes.get(id); },
+      removeNode(id) { return this.nodes.delete(id); },
+      addEdge(a, b, weight, type) { this.edges.push([a, b, type]); },
+    };
+  }
+  const chunks = [0, 1, 2].map((index) => ({ index, text: `chunk-${index}`, totalChunks: 3, heading: null, depth: 0 }));
+  const relationships = [{ from: 0, to: 1, type: 'FOLLOWS' }, { from: 1, to: 2, type: 'FOLLOWS' }];
+  const before = residentGraph();
+  const first = new IngestionManifest({
+    runPath, memory: before, embeddingFn: async () => [0.1], config: { batchSize: 2 }, logger,
+  });
+  await first.enqueue('/sources.json', 'research_runs', 'full-hash-0123456789', chunks, relationships);
+  await first.flush('before-restart');
+  first.flush = async () => {}; // the process dies before its drain flush
+  assert.deepEqual(first.getEntry('/sources.json')._pendingChunks, { 0: 1, 1: 2 });
+
+  const after = residentGraph();
+  const lost = [];
+  const restarted = new IngestionManifest({
+    runPath, memory: after, embeddingFn: async () => [0.1], config: { batchSize: 2 }, logger,
+    onGenerationLost: (filePath, label) => lost.push({ filePath, label }),
+  });
+  await restarted.flush('after-restart');
+  await new Promise(setImmediate);
+  assert.deepEqual(after.edges, [], 'nothing relates a lost or reused ID');
+  assert.equal(after.nodes.size, 0, 'the chunk that survived is removed for a clean re-read');
+  const entry = restarted.getEntry('/sources.json');
+  assert.deepEqual(entry.nodeIds, []);
+  assert.equal(entry._pendingChunks, undefined);
+  assert.equal(await restarted.isStale('/sources.json', 'full-hash-0123456789'), true);
+  assert.deepEqual(lost, [{ filePath: '/sources.json', label: 'research_runs' }]);
+
+  // The feeder's re-read ingests and relates all three chunks.
+  await restarted.enqueue('/sources.json', 'research_runs', 'full-hash-0123456789', chunks, relationships);
+  await restarted.flush('reread');
+  await restarted.flush('reread-rest');
+  assert.equal(after.nodes.size, 3);
+  assert.equal(after.edges.length, 2);
+  for (const [a, b, type] of after.edges) {
+    assert.ok(after.nodes.has(a) && after.nodes.has(b), `${a}->${b} names live nodes`);
+    assert.equal(type, 'depends_on');
+  }
+  assert.equal(restarted.getEntry('/sources.json').nodeIds.length, 3);
+});

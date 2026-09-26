@@ -120,7 +120,7 @@ function discoverAgents(home23Root) {
     .map((entry) => entry.agentName);
 }
 
-function resolveAgentFromRoot(home23Root, candidate, fallback = 'jerry') {
+function resolveAgentFromRoot(home23Root, candidate, fallback = null) {
   const requested = String(candidate || '').replace(/^home23-/, '').trim();
   const agents = discoverAgents(home23Root);
   if (requested && agents.includes(requested)) return requested;
@@ -334,7 +334,7 @@ function buildDryRunQueryResult(req, { agent, catalog, operation }) {
 
 async function buildQueryCatalog(options = {}) {
   const home23Root = options.home23Root || null;
-  const fallbackAgent = options.getDefaultAgent?.() || process.env.HOME23_AGENT || 'jerry';
+  const fallbackAgent = options.getDefaultAgent?.() || process.env.HOME23_AGENT || null;
   const agent = options.agent || (home23Root ? resolveAgentFromRoot(home23Root, null, fallbackAgent) : fallbackAgent);
   const cosmoBaseUrl = options.cosmoBaseUrl || getDefaultCosmoBaseUrl();
   const fetchImpl = options.fetchImpl || fetch;
@@ -1164,9 +1164,9 @@ function createQueryApiRouter(options = {}) {
   router.use(createQueryCompatibilityBodyParser());
   const resolveAgent = options.resolveAgent || ((candidate) => {
     if (options.home23Root) {
-      return resolveAgentFromRoot(options.home23Root, candidate, options.getDefaultAgent?.() || 'jerry');
+      return resolveAgentFromRoot(options.home23Root, candidate, options.getDefaultAgent?.() || null);
     }
-    return candidate || options.getDefaultAgent?.() || 'jerry';
+    return candidate || options.getDefaultAgent?.() || null;
   });
 
   router.get('/catalog', async (req, res) => {

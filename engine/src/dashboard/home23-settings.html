@@ -661,6 +661,7 @@
           <div class="h23s-field"><label>Quarantined</label><div id="fd-live-quarantined" title="Files the feeder tried to ingest but rejected (conversion failure, truncation, unsupported format)">—</div></div>
           <div class="h23s-field"><label>Pending</label><div id="fd-live-pending" title="Files currently queued for flush to the brain (live from the engine)">—</div></div>
           <div class="h23s-field"><label>Converter</label><div id="fd-live-converter">—</div></div>
+          <div class="h23s-field"><label>Brain saved</label><div id="fd-live-freshness" title="Brain search sees only saved memory: when the brain last saved, and how long changes have waited">—</div></div>
         </div>
         <div class="h23s-action-row" style="margin-top:8px;">
           <button class="h23s-btn-secondary" id="btn-feeder-refresh">Refresh</button>
@@ -736,8 +737,8 @@
       <div class="h23s-section">
         <h3 class="h23s-section-title">Binary Format Converter</h3>
         <p class="h23s-panel-desc" style="margin-top:0;">
-          Uses MarkItDown (Python) to convert PDFs, DOCX, images, audio, and other binary formats to markdown before ingestion.
-          Requires <code>pip install markitdown</code>. Vision model needs OpenAI API access.
+          Uses MarkItDown (Python) to convert PDFs, DOCX and other binary formats to markdown before ingestion.
+          Requires <code>pip install markitdown</code>. Images and scanned PDFs are read by the vision model through its own provider.
         </p>
         <div class="h23s-field-row">
           <div class="h23s-field">

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { canonicalTimestamp } from "../work/canonical.js";
 import type { WorkRecord } from "../work/index.js";
 import type { RoundRecord } from "../rounds/index.js";
-import { ChannelCoordinatorError } from "./errors.js";
+import { ChannelAdmissionContradictionError, ChannelCoordinatorError } from "./errors.js";
 import {
   coordinatorAdmissionPlanJson,
   findCoordinatorAdmissionRoundIds,
@@ -68,7 +68,11 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     }
   }
 
-  function worksForRound(roundId: string): readonly WorkRecord[] {
+  // Only channel.bot_turn Works are admitted Round members. Working Threads,
+  // outcome reviews and product retries carry round_id as lineage (Message
+  // provenance, group context); counting them against the immutable plan kept
+  // every such Round from ever settling. `lineage` is for an explicit cancel.
+  function worksForRound(roundId: string, scope: "admitted" | "lineage" = "admitted"): readonly WorkRecord[] {
     return Object.freeze(options.database.readAll<WorkRecord>(
       `SELECT id, principal_id AS principalId, target_principal_id AS targetPrincipalId,
               channel_id AS channelId, origin_message_id AS originMessageId,
@@ -78,7 +82,8 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
               automatic_offer_count AS automaticOfferCount, max_automatic_offers AS maxAutomaticOffers,
               terminal_reason AS terminalReason, terminal_receipt_digest AS terminalReceiptDigest,
               version, created_at AS createdAt, updated_at AS updatedAt, terminal_at AS terminalAt
-       FROM works WHERE round_id = ? ORDER BY target_principal_id, created_at, id`,
+       FROM works WHERE round_id = ?${scope === "admitted" ? " AND kind = 'channel.bot_turn'" : ""}
+       ORDER BY target_principal_id, created_at, id`,
       roundId,
     ).map((row) => Object.freeze(row)));
   }
@@ -193,8 +198,8 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
         [...indexes].sort((left, right) => left - right)
           .some((value, index) => value !== index))
     ) {
-      throw new ChannelCoordinatorError(
-        "illegal_state",
+      throw new ChannelAdmissionContradictionError(
+        "admission_works_mismatch",
         "durable Channel Works differ from the immutable admission plan",
       );
     }
@@ -218,8 +223,8 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       );
     }
     if (round.state === "completed" && works.some((work) => work.state !== "succeeded")) {
-      throw new ChannelCoordinatorError(
-        "illegal_state",
+      throw new ChannelAdmissionContradictionError(
+        "admission_terminal_inconsistent",
         "completed Round retains unsuccessful Work",
       );
     }
@@ -230,8 +235,8 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     ) {
       return;
     }
-    throw new ChannelCoordinatorError(
-      "illegal_state",
+    throw new ChannelAdmissionContradictionError(
+      "admission_terminal_inconsistent",
       "terminal Round is incomplete relative to its immutable admission plan",
     );
   }
@@ -605,7 +610,7 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     }
 
     const existingRoundWorks = options.database.readOne<{ count: number }>(
-      "SELECT count(*) AS count FROM works WHERE round_id = ?", round.id,
+      "SELECT count(*) AS count FROM works WHERE round_id = ? AND kind = 'channel.bot_turn'", round.id,
     )?.count ?? 0;
     const newRecipients = recipients.filter((botId) => !options.database.readOne<{ id: string }>(
       "SELECT id FROM works WHERE round_id = ? AND target_principal_id = ? AND origin_message_id = ? AND kind = 'channel.bot_turn'",
@@ -629,7 +634,7 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     }
     for (const botId of newRecipients) {
       const botTurns = options.database.readOne<{ count: number }>(
-        "SELECT count(*) AS count FROM works WHERE round_id = ? AND target_principal_id = ?",
+        "SELECT count(*) AS count FROM works WHERE round_id = ? AND target_principal_id = ? AND kind = 'channel.bot_turn'",
         round.id, botId,
       )?.count ?? 0;
       assertChannelTurnCapacity({ roundTurns: existingRoundWorks, botTurns });
@@ -637,7 +642,7 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
 
     const works = recipients.map((botId) => {
       const counts = options.database.readOne<{ total: number }>(
-        "SELECT count(*) AS total FROM works WHERE round_id = ? AND target_principal_id = ?",
+        "SELECT count(*) AS total FROM works WHERE round_id = ? AND target_principal_id = ? AND kind = 'channel.bot_turn'",
         round!.id, botId,
       ) ?? { total: 0 };
       const existing = options.database.readOne<{ id: string }>(
@@ -646,7 +651,7 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       );
       if (!existing && counts.total >= MAX_CHANNEL_TURNS_PER_BOT) throw new ChannelCoordinatorError("turn_limit", "Bot turn limit reached");
       const roundCount = options.database.readOne<{ count: number }>(
-        "SELECT count(*) AS count FROM works WHERE round_id = ?", round!.id,
+        "SELECT count(*) AS count FROM works WHERE round_id = ? AND kind = 'channel.bot_turn'", round!.id,
       )?.count ?? 0;
       if (!existing && roundCount >= MAX_CHANNEL_TURNS_PER_ROUND) {
         throw new ChannelCoordinatorError("round_limit", "Round turn limit reached");
@@ -776,9 +781,11 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     assertEnabled();
     const round = options.rounds.get(input.roundId);
     if (!round) throw new ChannelCoordinatorError("invalid_request", "Round was not found");
+    // An explicit cancel also stops queued lineage Works; the Round itself
+    // settles on its admitted Works only.
     const works = cancelQueuedRoundWorks({
       round,
-      works: worksForRound(round.id),
+      works: worksForRound(round.id, "lineage"),
       actorPrincipalId: input.actorPrincipalId,
       reasonCode: "round_cancelled",
       requestId: input.requestId,

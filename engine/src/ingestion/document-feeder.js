@@ -4,13 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const chokidar = require('chokidar');
-const { DocumentConverter } = require('./document-converter');
+const { DocumentConverter, isConverterFaultQuarantine } = require('./document-converter');
 const { DocumentChunker } = require('./document-chunker');
 const { DocumentValidator } = require('./document-validator');
 const { DocumentClassifier } = require('./document-classifier');
 const { IngestionManifest, isIngestionInternalFile } = require('./ingestion-manifest');
 const { DocumentCompiler } = require('./document-compiler');
 const { normalizeTranscript } = require('./transcript-normalizer');
+const { expandOwnerPath } = require('../../../shared/owner-home.cjs');
 
 class DocumentFeeder {
   /**
@@ -19,21 +20,38 @@ class DocumentFeeder {
    * @param {object} opts.config - feeder config block from config.yaml
    * @param {object} opts.logger
    * @param {function} opts.embeddingFn - async (text) => float[] | null
+   * @param {function} [opts.onCommitted] - ({ reason, flushed }) after items
+   *   reach live memory; search sees them only once the brain saves
    */
-  constructor({ memory, config = {}, logger = null, embeddingFn = null }) {
+  constructor({ memory, config = {}, logger = null, embeddingFn = null, onCommitted = null }) {
     this.memory = memory;
     this.config = config;
     this.logger = logger;
     this.embeddingFn = embeddingFn || (text => memory.embed(text));
+    this.onCommitted = onCommitted;
+    this._lastFlush = null;
     this.compilerConfig = config.compiler || {};
     this.maxFileBytes = Number.isFinite(Number(config.maxFileBytes))
       ? Number(config.maxFileBytes)
       : 5 * 1024 * 1024;
 
     this._watchers = [];
+    // Every watch root the feeder was asked to cover, attached or not. A
+    // configured folder that does not exist yet (a fresh resident's
+    // workspace/projects) used to be skipped for the life of the engine;
+    // now it stays registered as missing and attaches when it appears.
+    this._watchTargets = new Map();
+    this._retryTimer = null;
+    this._retryIntervalMs = this._positiveInt(config.missingPathRetrySeconds, 30) * 1000;
     this._flushTimer = null;
     this._started = false;
+    this._stopping = false;
     this._processingFiles = new Set();
+    // Convertible files the converter could not handle yet (not installed,
+    // missing extras, turned off). They are not quarantined; the retry tick
+    // re-processes them once the converter reports it can.
+    this._awaitingConversion = new Map();
+    this._retryingConversions = false;
 
     // Concurrency-limited compilation queue — prevents 429 rate-limit avalanche
     // when large folders are added and chokidar fires hundreds of file events at once
@@ -72,7 +90,9 @@ class DocumentFeeder {
     this.converter = new DocumentConverter({
       logger: this.logger,
       visionModel: converterConfig.visionModel || 'gpt-4o-mini',
-      pythonPath: converterConfig.pythonPath || 'python3'
+      pythonPath: converterConfig.pythonPath || 'python3',
+      // Persisted and offered in both settings UIs, but never read before.
+      enabled: converterConfig.enabled !== false,
     });
 
     this.chunker = new DocumentChunker({
@@ -92,7 +112,12 @@ class DocumentFeeder {
         batchSize: this.config.flush?.batchSize || 20,
         intervalSeconds: this.config.flush?.intervalSeconds || 300
       },
-      logger: this.logger
+      logger: this.logger,
+      onGenerationLost: (filePath, label) => this._reingestLostGeneration(filePath, label),
+      onFlushed: (flush) => {
+        this._lastFlush = { at: new Date().toISOString(), nodes: flush.flushed, reason: flush.reason };
+        this.onCommitted?.(flush);
+      },
     });
 
     if (this.config.maintenanceMode === true) {
@@ -108,22 +133,28 @@ class DocumentFeeder {
       logger: this.logger,
     });
 
-    // Log converter status
-    if (this.converter.available) {
-      this.logger?.info?.('Document feeder: MarkItDown available — binary formats supported');
-    } else {
-      this.logger?.warn?.('Document feeder: MarkItDown not installed — only text formats will be ingested');
-    }
+    // Log converter health once the async probe answers; start() never
+    // waits on a python subprocess.
+    this.converter.checkHealth().then((health) => {
+      const log = health.state === 'ready' ? this.logger?.info : this.logger?.warn;
+      log?.call(this.logger, `Document feeder: converter ${health.state}`, {
+        reason: health.reason,
+        remedy: health.remedy,
+        runtime: health.runtime?.path,
+      });
+    }).catch(() => {});
 
     // Start default watcher on ingestion/documents/
-    this._startWatcher(ingestDir, null);
+    this._startWatcher(ingestDir, null, 'ingest');
 
-    // Start additional configured watch paths
-    const additionalPaths = this.config.additionalWatchPaths || [];
-    for (const wp of additionalPaths) {
-      const watchPath = wp.path || wp;
-      const label = wp.label || path.basename(watchPath);
-      this._startWatcher(watchPath, label);
+    // Start additional configured watch paths. Settings -> Feeder saves a
+    // folder as typed; '~' is the owner's home, never Home23's runtime HOME.
+    const additionalPaths = (this.config.additionalWatchPaths || []).map((wp) => {
+      const watchPath = expandOwnerPath(wp.path || wp);
+      return { path: watchPath, label: wp.label || path.basename(watchPath) };
+    });
+    for (const { path: watchPath, label } of additionalPaths) {
+      this._startWatcher(watchPath, label, 'configured');
     }
 
     // Start flush interval
@@ -133,20 +164,28 @@ class DocumentFeeder {
     }, intervalMs);
 
     this._started = true;
+    this._ensureRetryTimer();
 
     this.logger?.info?.('Document feeder started', {
       ingestDir,
       additionalPaths: additionalPaths.length,
-      converterAvailable: this.converter.available
+      missingPaths: [...this._watchTargets.values()].filter(t => t.state !== 'attached').length,
     });
 
     // Run initial scan in background so it doesn't block the cognitive loop
     (async () => {
       try {
+        // Files the old converter quarantined for its own faults (an image
+        // sent to OpenAI with another provider's model, no API key, a
+        // missing module, a format it never read) were pinned until their
+        // bytes changed. Release them so this scan re-evaluates them; a
+        // provider that still fails now leaves them waiting, not failed.
+        const released = await this.manifest.releaseQuarantined(isConverterFaultQuarantine);
+        if (released.length) {
+          this.logger?.info?.('Released converter-fault quarantines for re-evaluation', { count: released.length });
+        }
         await this._scanDirectory(ingestDir, null);
-        for (const wp of additionalPaths) {
-          const watchPath = wp.path || wp;
-          const label = wp.label || path.basename(watchPath);
+        for (const { path: watchPath, label } of additionalPaths) {
           await this._scanDirectory(watchPath, label);
         }
         // Flush after scan completes
@@ -165,15 +204,25 @@ class DocumentFeeder {
    */
   async addWatchPath(watchPath, label = null, glob = null) {
     if (!this._started) throw new Error('Feeder not started');
+    watchPath = expandOwnerPath(watchPath);
+    this._retryMissingWatchPaths();
     label = label || path.basename(watchPath);
-    this._startWatcher(watchPath, label);
-    // Scan in background so it doesn't block the cognitive loop startup
-    this._scanDirectory(watchPath, label).then(() => {
-      this.logger?.info?.('Watch path scan complete', { watchPath, label });
-    }).catch(err => {
-      this.logger?.warn?.('Watch path scan failed', { watchPath, error: err.message });
-    });
-    this.logger?.info?.('Added watch path (scanning in background)', { watchPath, label });
+    const existing = this._watchTargets.get(path.resolve(watchPath));
+    // A second watcher on the same root doubled every file event.
+    if (existing?.state === 'attached') {
+      return { path: watchPath, label: existing.label, state: 'attached', duplicate: true };
+    }
+    const target = this._startWatcher(watchPath, label, existing?.source || 'runtime');
+    if (target.state === 'attached') {
+      // Scan in background so it doesn't block the cognitive loop startup
+      this._scanDirectory(watchPath, target.label).then(() => {
+        this.logger?.info?.('Watch path scan complete', { watchPath, label: target.label });
+      }).catch(err => {
+        this.logger?.warn?.('Watch path scan failed', { watchPath, error: err.message });
+      });
+      this.logger?.info?.('Added watch path (scanning in background)', { watchPath, label: target.label });
+    }
+    return { path: watchPath, label: target.label, state: target.state };
   }
 
   /**
@@ -229,15 +278,18 @@ class DocumentFeeder {
   async removeWatchPath(watchPath) {
     if (!this._started) throw new Error('Feeder not started');
     const normalized = path.resolve(watchPath);
+    const hadTarget = this._watchTargets.delete(normalized);
     const idx = this._watchers.findIndex(w => path.resolve(w.path) === normalized);
-    if (idx < 0) return false;
-    const entry = this._watchers[idx];
-    try {
-      await entry.watcher.close();
-    } catch (err) {
-      this.logger?.warn?.('Error closing watcher', { path: watchPath, error: err.message });
+    if (idx < 0 && !hadTarget) return false;
+    if (idx >= 0) {
+      const entry = this._watchers[idx];
+      this._watchers.splice(idx, 1);
+      try {
+        await entry.watcher?.close();
+      } catch (err) {
+        this.logger?.warn?.('Error closing watcher', { path: watchPath, error: err.message });
+      }
     }
-    this._watchers.splice(idx, 1);
     this.logger?.info?.('Removed watch path', { path: watchPath });
     return true;
   }
@@ -250,21 +302,44 @@ class DocumentFeeder {
     return this.manifest.flush('manual');
   }
 
+  /** When the feeder last put items into live memory, for the freshness view. */
+  flushFreshness() {
+    return { lastFlushAt: this._lastFlush?.at || null, lastFlushNodes: this._lastFlush?.nodes ?? null };
+  }
+
   /**
    * Get feeder status and stats.
    */
   async getStatus() {
+    this._retryMissingWatchPaths();
     const manifestStats = this.manifest ? this.manifest.getStats() : { fileCount: 0, nodeCount: 0, pendingCount: 0 };
+    const watchPaths = [...this._watchTargets.values()].map(t => ({
+      path: t.path,
+      label: t.label,
+      source: t.source,
+      state: t.state,
+      configuredAt: t.configuredAt,
+      attachedAt: t.attachedAt,
+      missingSince: t.missingSince,
+      lastCheckedAt: t.lastCheckedAt,
+      lastError: t.lastError,
+    }));
+    const countState = state => watchPaths.filter(t => t.state === state).length;
     return {
       enabled: true,
       started: this._started,
       maintenanceMode: this.config.maintenanceMode === true,
+      // Attached roots only; watchPaths carries configured-but-missing ones.
       watching: this._watchers.map(w => w.path),
-      manifest: manifestStats,
-      converter: {
-        available: this.converter?.available || false,
-        visionModel: this.config.converter?.visionModel || 'gpt-4o-mini'
+      watchPaths,
+      watchSummary: {
+        configured: watchPaths.length,
+        attached: countState('attached'),
+        missing: countState('missing'),
+        error: countState('error'),
       },
+      manifest: manifestStats,
+      converter: this._converterStatus(),
       compiler: {
         enabled: this.compilerConfig.enabled !== false,
         model: this.compilerConfig.model || null,
@@ -289,9 +364,14 @@ class DocumentFeeder {
    */
   async shutdown() {
     if (!this._started) return;
+    this._stopping = true;
+    this._clearRetryTimer();
+    // Cancel an in-flight conversion instead of waiting up to 300 s for it.
+    this.converter?.close?.();
 
     if (this.config.maintenanceMode === true) {
       this._started = false;
+      this._stopping = false;
       this.logger?.info?.('Document feeder maintenance mode shut down without flushing');
       return;
     }
@@ -305,36 +385,222 @@ class DocumentFeeder {
       this._flushDebounce = null;
     }
 
-    for (const w of this._watchers) {
+    const watchers = this._watchers;
+    this._watchers = [];
+    for (const w of watchers) {
       await w.watcher.close();
     }
-    this._watchers = [];
 
     if (this.manifest) {
       await this.manifest.shutdown();
     }
 
+    this._clearRetryTimer();
     this._started = false;
+    this._stopping = false;
     this.logger?.info?.('Document feeder shut down');
   }
 
   // ─── Internal ────────────────────────────────────────────────
 
-  _startWatcher(watchPath, fixedLabel) {
-    if (!fs.existsSync(watchPath)) {
-      this.logger?.warn?.('Watch path does not exist, skipping', { watchPath });
-      return;
+  /**
+   * Register a watch root and attach it if it exists. Returns the target;
+   * a missing root stays registered and the retry timer attaches it later.
+   */
+  _startWatcher(watchPath, fixedLabel, source = 'runtime') {
+    const key = path.resolve(watchPath);
+    let target = this._watchTargets.get(key);
+    if (target?.state === 'attached') return target;
+    if (!target) {
+      target = {
+        key,
+        path: watchPath,
+        label: fixedLabel,
+        source,
+        state: 'pending',
+        configuredAt: new Date().toISOString(),
+        attachedAt: null,
+        missingSince: null,
+        lastCheckedAt: null,
+        lastError: null,
+      };
+      this._watchTargets.set(key, target);
+    }
+    if (!this._attachWatchTarget(target) && target.state === 'missing') {
+      this.logger?.warn?.('Watch path does not exist yet; will attach when it appears', { watchPath });
+    }
+    this._ensureRetryTimer();
+    return target;
+  }
+
+  _attachWatchTarget(target) {
+    const now = new Date().toISOString();
+    target.lastCheckedAt = now;
+    if (!fs.existsSync(target.path)) {
+      if (target.state !== 'missing') {
+        target.state = 'missing';
+        target.missingSince = now;
+        target.attachedAt = null;
+      }
+      return false;
     }
 
-    const watcher = chokidar.watch(watchPath, this._watcherOptions());
-
-    watcher.on('add', (filePath) => this._onFileEvent(filePath, fixedLabel, watchPath));
-    watcher.on('change', (filePath) => this._onFileEvent(filePath, fixedLabel, watchPath));
+    let watcher;
+    try {
+      watcher = chokidar.watch(target.path, this._watcherOptions());
+    } catch (err) {
+      target.state = 'error';
+      target.lastError = err.message;
+      this.logger?.error?.('Watcher attach failed', { watchPath: target.path, error: err.message });
+      return false;
+    }
+    const watchPath = target.path;
+    watcher.on('add', (filePath) => this._onFileEvent(filePath, target.label, watchPath));
+    watcher.on('change', (filePath) => this._onFileEvent(filePath, target.label, watchPath));
+    // chokidar 4 goes silent for good once its root is deleted, even if the
+    // folder comes back; drop the watcher and let the retry reattach it. It
+    // reports no unlinkDir for an empty root, so the retry tick also checks.
+    watcher.on('unlinkDir', (dirPath) => {
+      if (path.resolve(dirPath) === target.key) this._detachWatchTarget(target);
+    });
     watcher.on('error', (err) => {
+      target.lastError = err.message;
       this.logger?.error?.('Watcher error', { watchPath, error: err.message });
     });
 
-    this._watchers.push({ path: watchPath, label: fixedLabel, watcher });
+    this._watchers.push({ path: watchPath, label: target.label, watcher });
+    target.state = 'attached';
+    target.attachedAt = now;
+    target.missingSince = null;
+    target.lastError = null;
+    return true;
+  }
+
+  _detachWatchTarget(target) {
+    const idx = this._watchers.findIndex(w => path.resolve(w.path) === target.key);
+    if (idx >= 0) {
+      const [entry] = this._watchers.splice(idx, 1);
+      entry.watcher?.close().catch(err => {
+        this.logger?.warn?.('Error closing watcher', { path: target.path, error: err.message });
+      });
+    }
+    if (this._watchTargets.get(target.key) !== target) return;
+    target.state = 'missing';
+    target.attachedAt = null;
+    target.missingSince = new Date().toISOString();
+    this.logger?.warn?.('Watch path removed; will reattach when it reappears', { watchPath: target.path });
+    this._ensureRetryTimer();
+  }
+
+  /**
+   * Detach roots that disappeared, attach every registered root that has
+   * appeared since the last check and scan it in the background
+   * (ignoreInitial means chokidar reports nothing that already exists).
+   * Manifest hashes dedupe files seen twice.
+   */
+  _retryMissingWatchPaths() {
+    if (!this._started || this._stopping || this.config.maintenanceMode === true) return 0;
+    let attached = 0;
+    for (const target of [...this._watchTargets.values()]) {
+      if (target.state === 'attached') {
+        target.lastCheckedAt = new Date().toISOString();
+        if (fs.existsSync(target.path)) continue;
+        this._detachWatchTarget(target);
+      }
+      if (!this._attachWatchTarget(target)) continue;
+      attached += 1;
+      this.logger?.info?.('Watch path appeared; attached and scanning', { watchPath: target.path, label: target.label });
+      this._scanDirectory(target.path, target.label)
+        .then(() => this.manifest?.flush('watch-attach'))
+        .catch(err => {
+          this.logger?.warn?.('Watch path scan failed', { watchPath: target.path, error: err.message });
+        });
+    }
+    return attached;
+  }
+
+  // One stat per watch root per tick (missingPathRetrySeconds, default 30 s),
+  // unref'd so it never holds the process open. Never in maintenance mode.
+  _ensureRetryTimer() {
+    if (this._retryTimer || !this._started || this._stopping || this.config.maintenanceMode === true) return;
+    this._retryTimer = setInterval(() => this._retryTick(), this._retryIntervalMs);
+    this._retryTimer.unref?.();
+  }
+
+  _clearRetryTimer() {
+    if (!this._retryTimer) return;
+    clearInterval(this._retryTimer);
+    this._retryTimer = null;
+  }
+
+  _retryTick() {
+    try {
+      this._retryMissingWatchPaths();
+    } catch (err) {
+      this.logger?.warn?.('Watch path retry failed', { error: err.message });
+    }
+    this._retryAwaitingConversions().catch(err => {
+      this.logger?.warn?.('Awaiting-conversion retry failed', { error: err.message });
+    });
+  }
+
+  _trackAwaitingConversion(key, filePath, label, result) {
+    const previous = this._awaitingConversion.get(key);
+    this._awaitingConversion.set(key, {
+      filePath,
+      label,
+      status: result.status || 'converter_unavailable',
+      reason: result.error || null,
+      needs: result.needs || null,
+      since: previous?.since || new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Re-process files that were waiting on the converter once it reports it
+   * can handle them (health is re-probed on its own TTL, not per file).
+   */
+  async _retryAwaitingConversions() {
+    if (!this._awaitingConversion.size || !this.converter || this._retryingConversions) return 0;
+    this._retryingConversions = true;
+    let retried = 0;
+    try {
+      await this.converter.checkHealth?.();
+      for (const [key, entry] of [...this._awaitingConversion]) {
+        if (!this._started || this._stopping) break;
+        if (!fs.existsSync(entry.filePath)) {
+          this._awaitingConversion.delete(key);
+          continue;
+        }
+        if (!this.converter.canConvertNow?.(entry.filePath, entry.needs)) continue;
+        // _processFile puts it back if the converter still cannot.
+        this._awaitingConversion.delete(key);
+        await this._processFile(entry.filePath, entry.label);
+        retried += 1;
+      }
+      if (retried) await this.manifest?.flush('awaiting-converter');
+    } finally {
+      this._retryingConversions = false;
+    }
+    return retried;
+  }
+
+  _converterStatus() {
+    const maintenance = this.config.maintenanceMode === true;
+    const health = typeof this.converter?.healthSnapshot === 'function'
+      ? this.converter.healthSnapshot({ refresh: !maintenance })
+      : { available: this.converter?.available || false };
+    const pending = [...this._awaitingConversion.values()];
+    return {
+      ...health,
+      // Compatibility: older web and Apple clients read these two fields.
+      available: health.available === true,
+      visionModel: this.config.converter?.visionModel || 'gpt-4o-mini',
+      pendingConversionCount: pending.length,
+      pendingConversion: pending.slice(0, 20).map(({ filePath, status, reason, needs, since }) => ({
+        path: filePath, status, reason, needs, since,
+      })),
+    };
   }
 
   _watcherOptions() {
@@ -348,6 +614,15 @@ class DocumentFeeder {
       depth: 99,
       ignored: (candidatePath) => this._shouldIgnorePath(candidatePath)
     };
+  }
+
+  // The manifest reset a generation whose chunk nodes a restart lost before
+  // the brain saved them. Read the file again now rather than at the next
+  // restart's scan or the next edit.
+  async _reingestLostGeneration(filePath, label) {
+    if (!this._started || this._stopping || this.config.maintenanceMode === true) return;
+    await this._processFile(filePath, label);
+    await this.manifest.flush('lost-generation');
   }
 
   async _onFileEvent(filePath, fixedLabel, watchRoot) {
@@ -415,14 +690,18 @@ class DocumentFeeder {
           : await this.converter.convert(filePath);
         if (!result || result.ok === false) {
           if (result && result.retryable === false) {
+            this._awaitingConversion.delete(processingKey);
             await this.manifest.trackQuarantined(filePath, label, fullHash, {
               status: result.status || 'conversion_failed',
               issues: [result.error || result.status || 'conversion failed'],
               structuralSignature: null
             });
+          } else if (result) {
+            this._trackAwaitingConversion(processingKey, filePath, label, result);
           }
           return;
         }
+        this._awaitingConversion.delete(processingKey);
         text = result.text;
         format = result.format;
       } else {

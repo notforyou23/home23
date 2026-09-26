@@ -60,7 +60,7 @@ test('nested PM2 launch cannot inherit supervisor identity or arguments', async 
 
 test('exclusive service lock rejects a second owner and releases for restart', async () => {
   const fs = await import('node:fs');const os = await import('node:os');const path = await import('node:path');
-  const {default:Database} = await import('better-sqlite3');
+  const {DatabaseSync:Database} = await import('node:sqlite');
   const {acquireSupervisorLock} = await import('../../scripts/release/supervisor.mjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(),'home23-service-lock-'));
   try {
@@ -70,4 +70,33 @@ test('exclusive service lock rejects a second owner and releases for restart', a
     fs.writeFileSync(path.join(dir,'supervisor.lock'),'999999');
     const recovered = acquireSupervisorLock(dir, Database); recovered();
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+});
+
+// A second SQLite library in one process acquires beside a node:sqlite holder and
+// drops its lock on close, so the lock refuses any other library outright.
+test('service lock refuses a second SQLite library in the same process', async () => {
+  const fs = await import('node:fs');const os = await import('node:os');const path = await import('node:path');
+  const {DatabaseSync} = await import('node:sqlite');
+  const {default:BetterSqlite3} = await import('better-sqlite3');
+  const {acquireSupervisorLock} = await import('../../scripts/release/supervisor.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(),'home23-service-lock-'));
+  try {
+    const release = acquireSupervisorLock(dir, DatabaseSync, { purpose: 'adoption' });
+    assert.throws(() => acquireSupervisorLock(dir, BetterSqlite3), /node:sqlite only/);
+    release();
+    assert.throws(() => acquireSupervisorLock(dir, BetterSqlite3), /node:sqlite only/);
+  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('restartManaged refuses while an in-process node:sqlite holder owns the lock', async () => {
+  const fs = await import('node:fs');const os = await import('node:os');const path = await import('node:path');
+  const {DatabaseSync} = await import('node:sqlite');
+  const {acquireSupervisorLock, restartManaged} = await import('../../scripts/release/supervisor.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(),'home23-restart-lock-'));
+  const receipt = path.join(root, 'receipt.json');
+  const held = acquireSupervisorLock(path.join(root, 'instances/.house/maintenance'), DatabaseSync, { purpose: 'adoption', writers: ['home23-ada'] });
+  try {
+    await assert.rejects(restartManaged(root, receipt), /Another maintenance supervisor/);
+    assert.equal(fs.existsSync(receipt), false);
+  } finally { held(); fs.rmSync(root,{recursive:true,force:true}); }
 });

@@ -219,7 +219,11 @@ test('settings agent creation records purpose and starter ingestion folders', as
     const instanceDir = path.join(root, 'instances', 'ada');
     const config = yaml.load(fs.readFileSync(path.join(instanceDir, 'config.yaml'), 'utf8'));
     assert.equal(config.agent.purpose, purpose);
-    assert.equal(config.engine.thought, 'MiniMax-M3');
+    // The first agent is a home birth (createHome, since 2026-09-09): its
+    // cognitive engine runs on the selected model, not the old fixed default.
+    assert.deepEqual(config.engine, {
+      thought: 'kimi-k3:cloud', consolidation: 'kimi-k3:cloud', dreaming: 'kimi-k3:cloud',
+    });
     assert.equal(config.engine.query, undefined, 'engine.query is retired — creation must not seed it');
     assert.equal(config.chat.defaultModel, 'kimi-k3:cloud');
     assert.equal(config.chat.memorySearch.enabled, true);
@@ -251,6 +255,43 @@ test('settings agent creation records purpose and starter ingestion folders', as
     assert.equal(updateRes.status, 200);
     const updatedMission = fs.readFileSync(path.join(instanceDir, 'workspace', 'MISSION.md'), 'utf8');
     assert.match(updatedMission, new RegExp(updatedPurpose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  });
+});
+
+test("a second resident's '~' folder is saved under the owner home, not the dashboard's runtime HOME", async (t) => {
+  const keys = ['HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const homes = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-settings-owner-'));
+  t.after(() => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    fs.rmSync(homes, { recursive: true, force: true });
+  });
+  const owner = path.join(homes, 'owner');
+  // A Host dashboard: HOME is Home23's private runtime home.
+  Object.assign(process.env, { HOME: path.join(homes, 'runtime-user'), HOME23_OWNER_HOME: owner, HOME23_PRODUCT_HOST: 'true' });
+  await withSettingsServer({
+    providers: { 'ollama-cloud': { defaultModels: ['kimi-k3:cloud'] } },
+    models: { aliases: { kimi: { provider: 'ollama-cloud', model: 'kimi-k3:cloud' } } },
+  }, async (baseUrl, root) => {
+    // An existing resident: a later one is written to its own config.yaml only.
+    fs.mkdirSync(path.join(root, 'instances', 'milo'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'instances', 'milo', 'config.yaml'), yaml.dump({ agent: { name: 'milo' } }), 'utf8');
+    const createRes = await fetch(`${baseUrl}/home23/api/settings/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'ada', displayName: 'Ada', ownerName: 'JTR', purpose: 'Test owner folders.',
+        ingestPaths: '~/Projects/app', provider: 'ollama-cloud', model: 'kimi-k3:cloud' }),
+    });
+    assert.equal(createRes.status, 200);
+    const expected = path.join(owner, 'Projects', 'app');
+    assert.deepEqual((await createRes.json()).agent.ingestPaths.map((entry) => entry.path), [expected]);
+    const config = yaml.load(fs.readFileSync(path.join(root, 'instances', 'ada', 'config.yaml'), 'utf8'));
+    assert.ok(config.feeder.additionalWatchPaths.some((entry) => entry.path === expected));
+    // Nothing owner-specific lands in home.yaml, which the update preflight scans.
+    assert.doesNotMatch(fs.readFileSync(path.join(root, 'config', 'home.yaml'), 'utf8'), new RegExp(owner.replaceAll('.', '\\.')));
   });
 });
 

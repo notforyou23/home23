@@ -433,10 +433,25 @@ function createBrainOperationsPlaceholderRouter(options = {}) {
   });
 }
 
+async function readQueryWorker(workerReadiness) {
+  try {
+    const value = await workerReadiness();
+    exactObject(value, ['ready', 'code', 'checkedAt']);
+    if (typeof value.ready !== 'boolean'
+        || (value.code !== null && (typeof value.code !== 'string' || !/^[a-z0-9_]{1,64}$/.test(value.code)))
+        || (value.checkedAt !== null && typeof value.checkedAt !== 'string')) {
+      throw routeError('invalid_request');
+    }
+    return { ready: value.ready, code: value.code, checkedAt: value.checkedAt };
+  } catch {
+    return { ready: false, code: 'worker_readiness_unavailable', checkedAt: null };
+  }
+}
+
 function createBrainOperationsRouter(options = {}) {
   const {
     requesterAgent, coordinator, reader, exporter, buildCatalog, providerReadiness, researchRuns,
-    resolveSynthesisAnswer,
+    resolveSynthesisAnswer, workerReadiness,
   } = options;
   assertIdentifier(requesterAgent, 'requesterAgent');
   if (!coordinator || !reader || !exporter || typeof buildCatalog !== 'function') {
@@ -458,9 +473,16 @@ function createBrainOperationsRouter(options = {}) {
       ? await providerReadiness()
       : { ready: false, status: 'unavailable', code: 'provider_unavailable', retryable: true };
     exactObject(provider, ['ready', 'status', 'code', 'retryable', 'migrated'], 'operation_store_corrupt');
+    // HOME23 188 (H23-013) — The query worker (COSMO) is reported beside the
+    // provider, never folded into `ready`: a home may deliberately run without
+    // it, and its absence must not make the whole surface look down.
+    const queryWorker = typeof workerReadiness === 'function'
+      ? await readQueryWorker(workerReadiness)
+      : null;
     res.status(provider.ready ? 200 : 503).json({
       ready: provider.ready === true,
       providerOperations: provider,
+      ...(queryWorker ? { queryWorker } : {}),
     });
   }));
 

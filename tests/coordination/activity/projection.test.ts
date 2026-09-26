@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { projectActivity } from "../../../src/coordination/activity/index.js";
+import { ACTIVITY_SOURCE_AGGREGATE_KINDS, projectActivity } from "../../../src/coordination/activity/index.js";
 import {
   FORREST,
   GROUP_CHANNEL,
@@ -461,3 +461,36 @@ function eventlessObservation(sequence: number, observedAt: string) {
     sourceUpdatedAt: observedAt,
   });
 }
+
+test("bookkeeping activity.updated aggregates are ignored while unpaired Activity sources still conflict", () => {
+  const bookkeeping = (sequence: number, kind: string) => event(sequence, {
+    type: "activity.updated",
+    aggregate: { kind, id: `${kind}-${sequence}`, version: 1 },
+    actorPrincipalId: null,
+    payload: { state: "recorded" },
+  });
+  const started = observation(52, "started");
+  const ignored = projectActivity({
+    sourceWindow: sourceWindow(50, 54),
+    events: [bookkeeping(51, "resident_outcome"), bookkeeping(53, "round_recovery_refusal"), bookkeeping(54, "chess_game")],
+    messages: [],
+    workObservations: [started],
+    audience: audience(),
+  });
+  assert.deepEqual(ignored.integrity, { status: "complete" });
+  assert.equal(ignored.throughEventSequence, 54);
+  assert.deepEqual(ignored.entries.map((entry) => entry.eventSequence), [52]);
+
+  assert.deepEqual(ACTIVITY_SOURCE_AGGREGATE_KINDS, ["work", "round", "outbox", "workObservation"]);
+  for (const kind of ACTIVITY_SOURCE_AGGREGATE_KINDS) {
+    const unpaired = projectActivity({
+      sourceWindow: sourceWindow(50, 51),
+      events: [bookkeeping(51, kind)],
+      messages: [],
+      workObservations: [],
+      audience: audience(),
+    });
+    assert.deepEqual(unpaired.integrity, { status: "conflict", conflictAtEventSequence: 51 },
+      `an unpaired ${kind} fact stays fail-closed`);
+  }
+});

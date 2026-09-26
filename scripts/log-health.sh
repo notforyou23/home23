@@ -3,8 +3,10 @@
 # Fetches the health dashboard export and appends latest daily values per metric
 # Runs via cron every 15 minutes
 
-LOG_PATH="$HOME/.health_log.jsonl"
-STATUS_PATH="$HOME/.health_log.status.json"
+# Owner data: under the Home23 Host, HOME is Home23's private runtime home
+# and HOME23_OWNER_HOME names the owner's. The owner's own cron has only HOME.
+LOG_PATH="${HOME23_OWNER_HOME:-$HOME}/.health_log.jsonl"
+STATUS_PATH="${HOME23_OWNER_HOME:-$HOME}/.health_log.status.json"
 PI_HOST="${HEALTH_PI_HOST:-}"
 API_URL="${HEALTH_API_URL:-}"
 if [ -z "$API_URL" ] && [ -n "$PI_HOST" ]; then

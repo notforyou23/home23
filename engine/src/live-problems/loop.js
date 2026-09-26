@@ -19,7 +19,7 @@
  */
 
 const fs = require('fs');
-const os = require('os');
+const { expandOwnerPath } = require('../../../shared/owner-home.cjs');
 const { runVerifier } = require('./verifiers');
 const { runRemediator } = require('./remediators');
 const { isAgendaHandoffProblem, isOperatorSuppressed } = require('./store');
@@ -73,18 +73,14 @@ function classifyDispatchRecipe(recipe) {
   return { outcome: 'failed', advance: true };
 }
 
-function expandHome(p) {
-  if (!p || typeof p !== 'string') return p;
-  return p.startsWith('~') ? p.replace(/^~/, os.homedir()) : p;
-}
-
 function verifierSourcePaths(verifier) {
   if (!verifier?.type) return [];
   if (verifier.type === 'composed') {
     return (verifier.args?.verifiers || []).flatMap((child) => verifierSourcePaths(child));
   }
   const p = verifier.args?.path;
-  return typeof p === 'string' && p.trim() ? [expandHome(p)] : [];
+  // The same owner-home rule the verifier applies when it reads this path.
+  return typeof p === 'string' && p.trim() ? [expandOwnerPath(p)] : [];
 }
 
 function verifierSourceChangedSinceLastCheck(problem) {
@@ -118,6 +114,8 @@ class LiveProblemsLoop {
     this.ctxProvider = ctxProvider || (() => ({}));
     this.intervalMs = intervalMs || DEFAULT_INTERVAL_MS;
     this.running = false;
+    // Set only by stop(). A never-started loop still serves processNow.
+    this.stopped = false;
     this.timer = null;
     this._ticking = false;
     this._processingGeneration = new Map();
@@ -126,12 +124,14 @@ class LiveProblemsLoop {
   start() {
     if (this.running) return;
     this.running = true;
+    this.stopped = false;
     this.timer = setTimeout(() => this.tick(), WARMUP_DELAY_MS);
     this.logger.info?.('[live-problems] loop started');
   }
 
   stop() {
     this.running = false;
+    this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
@@ -151,6 +151,8 @@ class LiveProblemsLoop {
       this.store.pruneResolved();
       const all = this.store.all();
       for (const p of all) {
+        // stop() only clears the timer; an in-flight tick must not keep remediating.
+        if (this.stopped) break;
         if (p.state === 'unverifiable') continue;
         if (p.state === 'resolved') {
           if (!shouldReverifyResolvedProblem(p)) continue;
@@ -364,6 +366,10 @@ class LiveProblemsLoop {
       return;
     }
 
+    // 3. Remediate, unless the loop stopped while this problem verified: a
+    // stopping engine neither raises an operator intent nor runs a remediator.
+    if (this.stopped) return;
+
     // Fuse-box notify: raise a governed operator intent so the escalation
     // shows up on the dashboard's "Needs You" rail, not just as a Telegram
     // ping. The remediator formats its message from this intent when present.
@@ -388,7 +394,6 @@ class LiveProblemsLoop {
       }
     }
 
-    // 3. Run the remediator
     this.logger.info?.(`[live-problems] ${p.id}: step ${p.stepIndex} → ${step.type}`);
     // Pass the full problem record so dispatch_to_agent has verifier spec etc.
     const out = await runRemediator(step, { ...ctx, problem: p });

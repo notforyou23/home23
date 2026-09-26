@@ -1,6 +1,5 @@
 import { mkdir, readFile, realpath } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { homedir } from 'node:os';
 import { createServer, createConnection } from 'node:net';
 import { unlink } from 'node:fs/promises';
 import lockfile from 'proper-lockfile';
@@ -8,6 +7,7 @@ import { type Binding, readBoard, hash, BoardValidationError } from './board.js'
 import { bootstrap, ChessSession, validateBinding, type Session } from './session.js';
 import { atomicWrite } from './store.js';
 import { signedChessWake } from './wake.js';
+import { runtimeHome } from '../security/owner-home.js';
 
 const usage = 'Usage: chess-watch inspect <window-marker> <document-path> | start|serve <session-directory> <binding.json> | status|pause|resume|stop <session-directory>';
 export async function main(args: string[], dependencies: { read?: typeof readBoard; wake?: typeof signedChessWake; lockRoot?: string; shutdownSignal?: AbortSignal } = {}) {
@@ -19,8 +19,9 @@ export async function main(args: string[], dependencies: { read?: typeof readBoa
   }
   if (!directory || !['start','serve','status','pause','resume','stop'].includes(command!) || args.length !== (['start', 'serve'].includes(command!) ? 3 : 2)) throw new Error(usage);
   const dir = resolve(directory), stateFile = join(dir, 'state.json');
-  // Keep Unix socket paths below macOS's length limit.
-  const lockRoot = dependencies.lockRoot ?? join(homedir(), '.home23', 'chess-watch-locks');
+  // Keep Unix socket paths below macOS's length limit. Home23's own state: a
+  // child given the owner's HOME still reaches the same sockets and leases.
+  const lockRoot = dependencies.lockRoot ?? join(runtimeHome(), '.home23', 'chess-watch-locks');
   await mkdir(lockRoot, { recursive: true, mode: 0o700 });
   const socket = join(lockRoot, hash(dir).slice(0, 24) + '.sock');
   if (command !== 'start' && command !== 'serve') {

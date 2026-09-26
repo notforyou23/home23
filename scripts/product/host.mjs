@@ -316,7 +316,10 @@ try {
   if (result.ok === false) process.exitCode = 1;
   }
 } catch (error) {
-  const message = sensitive.filter(Boolean).reduce((value, secret) => value.split(secret).join('[redacted]'), String(error.message || 'Home23 Host operation failed.'));
-  originalStdout(JSON.stringify({ ok: false, status: 'degraded', homeRoot, error: { code: error.code || 'host_operation_failed', message } }) + '\n');
+  const redact = text => sensitive.filter(Boolean).reduce((value, secret) => value.split(secret).join('[redacted]'), String(text));
+  const message = redact(error.message || 'Home23 Host operation failed.');
+  // Move and recovery name each file (and setting) still to correct.
+  const paths = Array.isArray(error.paths) ? JSON.parse(redact(JSON.stringify(error.paths))) : null;
+  originalStdout(JSON.stringify({ ok: false, status: 'degraded', homeRoot, error: { code: error.code || 'host_operation_failed', message, ...(paths ? { paths } : {}) } }) + '\n');
   process.exitCode = 1;
 }

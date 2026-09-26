@@ -1,6 +1,5 @@
 const express = require('express');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const yaml = require('js-yaml');
@@ -8,11 +7,12 @@ const { Home23TileService } = require('./home23-tiles');
 const {
   updateSettingsSecrets,
 } = require('./home23-secrets');
-const { createHome23OAuthBroker } = require('../../../shared/home23-oauth.cjs');
+const { createHome23OAuthBroker, publicOAuthStatus } = require('../../../shared/home23-oauth.cjs');
+const { expandOwnerPath } = require('../../../shared/owner-home.cjs');
 const { writeYamlSafely } = require('./yaml-write-safety');
 const { StateCompression } = require('../core/state-compression');
 const { readJsonlGz, sidecarsExist, nodesPath } = require('../core/memory-sidecar');
-const { buildAgentConfig, buildFeederConfig } = require('../../../cli/lib/agent-config-builder.cjs');
+const { buildAgentConfig, buildFeederConfig, DEFAULT_WORKSPACE_WATCH_DIRS } = require('../../../cli/lib/agent-config-builder.cjs');
 const {
   agentProcessNames,
   agentProcessNameCandidates,
@@ -1199,12 +1199,11 @@ function createSettingsRouter(home23Root, options = {}) {
     return `Help ${owner} organize work, remember important context, and keep projects moving.`;
   }
 
+  // '~' is the owner's home: under the Host, this dashboard's HOME is Home23's
+  // private runtime home. The expanded folders go to the resident's own
+  // config.yaml (feeder paths), never to home.yaml.
   function expandUserPath(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    if (raw === '~') return os.homedir();
-    if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
-    return raw;
+    return expandOwnerPath(String(value || '').trim());
   }
 
   function pathLabel(filePath, seenLabels) {
@@ -1347,7 +1346,8 @@ function createSettingsRouter(home23Root, options = {}) {
     const resolvedPersonalFacts = parsePersonalFacts(personalFacts);
     const starterIngestPaths = parseIngestPaths(ingestPaths);
 
-    for (const dir of ['workspace', 'workspace/scripts', 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
+    const workspaceWatchDirs = DEFAULT_WORKSPACE_WATCH_DIRS.map(({ dir }) => `workspace/${dir}`);
+    for (const dir of ['workspace', 'workspace/scripts', ...workspaceWatchDirs, 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
       fs.mkdirSync(path.join(instanceDir, dir), { recursive: true });
     }
 
@@ -2557,23 +2557,16 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     });
   }
 
-  function oauthPayload(result) {
-    return {
-      configured: !!result?.configured,
-      valid: !!result?.valid,
-      refreshable: !!result?.refreshable,
-      source: result?.source || 'none',
-      expiresAt: result?.expiresAt || null,
-      accountId: result?.accountId || null,
-    };
-  }
+  // Host oauth-status and this route share one public shape so they cannot drift.
+  const oauthPayload = publicOAuthStatus;
 
-  router.get('/oauth/status', async (_req, res) => {
+  // Expiry alone kept showing "Connected" after Anthropic revoked the grant, so ask the
+  // provider (read-only, bounded) unless the caller polls: ?verify=0 reads expiry only.
+  router.get('/oauth/status', async (req, res) => {
     try {
-      const [anthropic, codex] = await Promise.all([
-        oauthBroker.status('anthropic'),
-        oauthBroker.status('openai-codex'),
-      ]);
+      const verify = !['0', 'false'].includes(String(req.query?.verify ?? ''));
+      const read = provider => (verify ? oauthBroker.verify(provider) : oauthBroker.status(provider));
+      const [anthropic, codex] = await Promise.all([read('anthropic'), read('openai-codex')]);
       res.json({ anthropic: oauthPayload(anthropic), openaiCodex: oauthPayload(codex) });
     } catch (error) {
       sendOAuthError(res, error);
