@@ -668,3 +668,24 @@ test('a writer_stop_incomplete abort is resumable with a path-free message', asy
   assert.match(status.message, /restarted and nothing changed/);
   assert.doesNotMatch(JSON.stringify(status), /secret/);
 });
+
+test('a resume whose launch fails reports only its own error', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  f.setOperation({ ...f.operation(id), phase: 'failed', pid: null, errorCode: 'linked_state_path',
+    reasonCodes: ['linked_state_path', 'external_reference'], message: 'A home state link points outside its approved location.' });
+  let queued = null;
+  const status = await requestHomeUpdate(input(f.home, 'resume', 'resume'), { launch: async operation => {
+    queued = f.operation(operation.id);
+    throw Object.assign(new Error('x'), { code: 'spawn_failed' });
+  } });
+  assert.equal(queued.phase, 'queued');
+  assert.equal('errorCode' in queued, false);
+  assert.equal('reasonCodes' in queued, false);
+  const saved = f.operation(id);
+  assert.equal(saved.errorCode, 'spawn_failed');
+  assert.deepEqual(saved.reasonCodes, []);
+  assert.equal(status.operation.errorCode, 'spawn_failed');
+  assert.deepEqual(status.operation.reasonCodes, []);
+  assert.deepEqual(status.allowedActions, ['resume']);
+});

@@ -266,7 +266,10 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
     if (!status.allowedActions.includes(action)) throw fail('home_update_busy', status.message);
     if (action === 'resume' || action === 'recover') {
       if (!operation || alive(operation.pid)) throw fail('home_update_busy', 'The previous update is still running.');
-      operation = { ...operation, runAction: action, clientBuild: clientBuild ?? operation.clientBuild, attempt: operation.attempt + 1, phase: 'queued', pid: null, updatedAt: now(), message: 'Resuming Home23 update.' };
+      // The earlier failure's error fields must not describe this new attempt.
+      const previous = { ...operation };
+      delete previous.errorCode; delete previous.reasonCodes;
+      operation = { ...previous, runAction: action, clientBuild: clientBuild ?? operation.clientBuild, attempt: operation.attempt + 1, phase: 'queued', pid: null, updatedAt: now(), message: 'Resuming Home23 update.' };
     } else {
       operation = { schema: SCHEMA, id: randomUUID(), homeRoot: home.root, action, runAction: action, attempt: 1,
         clientBuild: clientBuild ?? null, phase: 'queued', progress: null, pid: null, startedAt: now(), updatedAt: now(),
@@ -289,7 +292,8 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
         child.unref();
       }
     } catch (error) {
-      operation = { ...loadOperation(home, operation.id), phase: 'failed', updatedAt: now(), message: 'The update could not start. Resume to try again.', errorCode: error.code ?? 'launch_failed' };
+      operation = { ...loadOperation(home, operation.id), phase: 'failed', updatedAt: now(), message: 'The update could not start. Resume to try again.',
+        errorCode: error.code ?? 'launch_failed', reasonCodes: Array.isArray(error.reasonCodes) ? error.reasonCodes : [] };
       save(join(home.directory, `${operation.id}.json`), operation);
     }
     return projectStatus(home, loadOperation(home, operation.id), clientBuild);
