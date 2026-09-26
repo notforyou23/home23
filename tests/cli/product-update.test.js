@@ -326,6 +326,38 @@ test('managed and source adoption plans stay fail-closed and never write', t => 
   assert.deepEqual(fs.readFileSync(ledgerPath), beforeLedger);
 });
 
+test('an adoption plan ignores Finder metadata at every depth and never walks it', t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-adoption-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const browsed = path.join(root, 'browsed');
+  fs.mkdirSync(path.join(browsed, 'instances/.house/coordination'), { recursive: true });
+  fs.mkdirSync(path.join(browsed, 'instances/ada/substrate/seed-01'), { recursive: true });
+  fs.mkdirSync(path.join(browsed, 'config'), { recursive: true });
+  fs.writeFileSync(path.join(browsed, 'instances/.house/coordination/active-release.json'), JSON.stringify({ releaseId: 'browsed', residents: { ada: {} } }));
+  fs.writeFileSync(path.join(browsed, 'ecosystem.config.cjs'), 'module.exports = {};\n');
+  fs.writeFileSync(path.join(browsed, 'config/home.yaml'), 'name: ada\n');
+  fs.writeFileSync(path.join(browsed, 'instances/ada/substrate/seed-01/birth-receipt.json'), '{"seedId":"ada"}\n');
+  fs.writeFileSync(path.join(browsed, 'instances/ada/substrate/seed-01/seed-ledger.jsonl'), '{"event":"birth"}\n');
+  // Finder droppings at the root (unknown before), beside preserved config and
+  // inside a resident (preserve entries before), and a Spotlight index tree.
+  const droppings = ['.DS_Store', 'config/.DS_Store', 'config/._home.yaml', 'instances/ada/.DS_Store', 'instances/ada/substrate/seed-01/._seed-ledger.jsonl'];
+  for (const relative of droppings) fs.writeFileSync(path.join(browsed, relative), Buffer.from([0, 0, 0, 1, 0x42, 0x75, 0x64, 0x31]));
+  fs.mkdirSync(path.join(browsed, '.Spotlight-V100/Store-V2'), { recursive: true });
+  fs.writeFileSync(path.join(browsed, '.Spotlight-V100/Store-V2/index'), 'index');
+  const before = tree(browsed);
+  const plan = planManagedSourceAdoption(browsed);
+  assert.equal(plan.canAdopt, true, JSON.stringify(plan.reasons));
+  assert.deepEqual(plan.reasons.filter(item => item.code === 'unknown_state'), []);
+  assert.deepEqual(plan.inventory.paths.filter(item => /(^|\/)(\.DS_Store|\._|\.Spotlight-V100)/.test(item.path)), []);
+  assert.ok(plan.inventory.paths.some(item => item.path === 'config/home.yaml' && item.role === 'preserve'));
+  assert.ok(plan.inventory.paths.some(item => item.path === 'instances/ada/substrate/seed-01/seed-ledger.jsonl' && item.role === 'preserve'));
+  assert.deepEqual(tree(browsed), before);
+  // A review made while droppings were still unclassified may name one; that decision is satisfied, not missing.
+  const preservationPlan = { schema: 'home23.adoption-preservation.v1', sourceRoot: browsed, entries: [{ path: '.DS_Store', action: 'replace' }] };
+  const reviewed = planManagedSourceAdoption(browsed, { preservationPlan });
+  assert.deepEqual(reviewed.reasons.filter(item => item.code === 'preservation_entry_missing' || item.code === 'invalid_preservation_choice'), []);
+});
+
 test('adoption refuses malformed fenced coordination before installing a destination', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root);

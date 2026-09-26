@@ -580,6 +580,26 @@ test('a same-size state edit after checkpoint forces a fresh hash and refuses ad
   assert.equal(fs.readFileSync(state, 'utf8'), 'changed123');
 });
 
+test('Finder metadata written under a state root after the checkpoint leaves the identity unchanged', async t => {
+  const fixture = homeFixture(t);
+  const droppings = ['app/instances/milo/.DS_Store', 'app/instances/milo/conversations/._session.txt', 'app/config/.DS_Store'];
+  const result = await applyProductUpdate({ homeRoot: fixture.home,
+    candidatePayload: fixture.candidate, staging: fixture.staging }, {
+    ...quiet,
+    afterPhase: async journal => {
+      if (journal.phase !== 'checkpointed') return;
+      for (const relative of droppings) fs.writeFileSync(path.join(fixture.home, relative), Buffer.from([0, 0, 0, 1, 0x42, 0x75, 0x64, 0x31]));
+    },
+  });
+  assert.equal(result.status, 'committed');
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.identityPreserved, true);
+  assert.deepEqual(Object.keys(journal.identity).filter(relative => /(^|\/)(\.DS_Store|\._)/.test(relative)), []);
+  // Left in place, neither checkpointed nor removed: a state root keeps whatever Finder wrote there.
+  assert.equal(fs.existsSync(path.join(fixture.home, 'app/instances/milo/.DS_Store')), true);
+  assert.equal(fs.existsSync(path.join(fixture.home, 'app/instances/milo/conversations/._session.txt')), true);
+});
+
 test('an older checkpoint journal without metadata still hashes saved identity', async t => {
   const fixture = homeFixture(t);
   const state = path.join(fixture.home, 'app/instances/milo/conversations/session.txt');

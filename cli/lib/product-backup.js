@@ -27,7 +27,7 @@ import {
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
-import { PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
+import { isOsMetadataPath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectCoordinationDatabase, isProductStatePath, isRebuildableStatePath, ownedWriterNames } from './product-update-inventory.js';
 import { detectForeignBindings } from './product-foreign-bindings.js';
 
@@ -356,7 +356,8 @@ async function collectRecords(homeRoot, sink, archiveParent, lock, maxHeaderByte
     inventory(type === 'file' ? { path: relative, sha256: digest, bytes: size, type, mode: lstatSync(absolute).mode & 0o777 } : { path: relative, sha256: digest, bytes: size, type });
   };
   const visit = async relative => {
-    if (!relative || seen.has(relative) || isRebuildableStatePath(relative) || omitSidecar(relative)) return;
+    // A backup neither carries nor requires the Finder metadata a state root may hold.
+    if (!relative || seen.has(relative) || isRebuildableStatePath(relative) || omitSidecar(relative) || isOsMetadataPath(relative)) return;
     if (!isProductStatePath(relative)) return;
     const absolute = join(homeRoot, relative);
     if (!exists(absolute)) return;
@@ -1778,7 +1779,8 @@ function homeStateEntries(destination) {
   const roots = PRODUCT_STATE_PATHS.filter(entry => !PRODUCT_STATE_PATHS.some(parent =>
     parent !== entry && (parent.type === 'directory' || parent.allowDescendants) && entry.path.startsWith(`${parent.path}/`)));
   const visit = relative => {
-    if (rebindScanExcluded(relative)) return;
+    // Finder metadata is not state to rebind or scan, and a Spotlight index is not a tree to walk.
+    if (rebindScanExcluded(relative) || isOsMetadataPath(relative)) return;
     const absolute = join(destination, relative);
     if (!exists(absolute)) return;
     const stat = lstatSync(absolute);
