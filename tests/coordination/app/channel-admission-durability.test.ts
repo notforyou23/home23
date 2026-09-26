@@ -10,6 +10,7 @@ import { SqliteGroupChannelMessageContext } from "../../../src/coordination/app/
 import { createGroupChannelMessageService } from "../../../src/coordination/app/channel-message.js";
 import { directMessageManifest } from "../../../src/coordination/app/direct-message.js";
 import {
+  ChannelAdmissionContradictionError,
   ChannelCoordinatorError,
   createChannelCoordinator,
   getRoundRecoveryRefusal,
@@ -803,7 +804,8 @@ test("terminal replay rejects a falsely completed sequential prefix", () => {
     const restarted = harness(database, 61_000);
     assert.throws(
       () => restarted.coordinator.admissionReplay(replayIdentity(1_111)),
-      (error: unknown) => error instanceof ChannelCoordinatorError &&
+      (error: unknown) => error instanceof ChannelAdmissionContradictionError &&
+        error.reasonCode === "admission_terminal_inconsistent" &&
         error.code === "illegal_state" && /terminal Round is incomplete/u.test(error.message),
     );
     assert.equal(roundWorks(database, started.round.id).length, 1);
@@ -1304,6 +1306,81 @@ test("startup recovery refuses a Round whose admission evidence cannot be read o
       "the refusal is durable for the next start");
     database.reopen();
     assert.deepEqual(harness(database, 34_000).context.listRecoveryRoundIds(100), []);
+  } finally {
+    database.close();
+  }
+});
+
+test("startup recovery refuses a Round whose admitted Works contradict its plan, permanently and once", async (t) => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "parallel");
+    const plan = admissionPlan(database, "parallel");
+    const services = harness(database, 140_000);
+    const started = services.coordinator.start(trigger(plan));
+    const first = started.works[0]!.work;
+    // A second admitted turn for the same target, as a product retry of an open Round's turn would create.
+    services.work.create({
+      principalId: first.principalId, targetPrincipalId: first.targetPrincipalId,
+      channelId: first.channelId, originMessageId: first.originMessageId, roundId: started.round.id,
+      kind: "channel.bot_turn", idempotencyKey: "retry:duplicate-admitted-turn", manifest: initialManifest(database),
+      maxAutomaticOffers: 2, requestId: fixtureId("request", 4_300), correlationId: fixtureId("correlation", 4_300),
+    });
+    assert.throws(
+      () => services.coordinator.reconcile({
+        roundId: started.round.id,
+        requestId: fixtureId("request", 4_301), correlationId: fixtureId("correlation", 4_301),
+      }),
+      (error: unknown) => error instanceof ChannelAdmissionContradictionError &&
+        error instanceof ChannelCoordinatorError && error.code === "illegal_state" &&
+        error.reasonCode === "admission_works_mismatch" &&
+        error.message === "durable Channel Works differ from the immutable admission plan",
+    );
+    database.raw.prepare(
+      "INSERT INTO authority_epochs VALUES ('messages', 2, 'canonical', 'home23-coordination', 1, 1, '{}', ?)",
+    ).run(AT);
+
+    database.reopen();
+    const restarted = harness(database, 141_000);
+    assert.deepEqual(restarted.context.listRecoveryRoundIds(100), [started.round.id]);
+    const warnings: string[] = [];
+    t.mock.method(console, "warn", (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); });
+    const service = createGroupChannelMessageService({
+      messages: {
+        async sendMessage() { throw new Error("a refused recovery must not send a Message"); },
+        async listMessages() { throw new Error("durable recovery must not resnapshot mutable Messages"); },
+      },
+      context: restarted.context,
+      coordinator: restarted.coordinator,
+      work: restarted.work,
+      leases: restarted.leases,
+      resolveResident: () => undefined,
+      authority: {
+        current: () => ({
+          capability: "messages" as const, epoch: 2, mode: "canonical" as const,
+          writer: "home23-coordination", effectiveAtEventSequence: 1, rollbackEpoch: 1,
+        }),
+      },
+      recordMessage: async () => undefined,
+      beginWork: () => () => { throw new Error("a refused Round never begins Work"); },
+      recoveryIdentity: () => ({
+        requestId: fixtureId("request", 4_310), correlationId: fixtureId("correlation", 4_310),
+      }),
+      now: () => new Date(AT),
+    });
+    assert.deepEqual(await service.recoverResidentWork(), { discovered: 1, scheduled: 0, refused: 1 });
+    const refusal = getRoundRecoveryRefusal(database, started.round.id);
+    assert.deepEqual({ ...refusal, recordedAt: undefined }, {
+      roundId: started.round.id, reasonCode: "admission_works_mismatch", permanent: true, refusalCount: 1,
+      message: "durable Channel Works differ from the immutable admission plan", recordedAt: undefined,
+    });
+    assert.deepEqual(warnings, [
+      `[home23-coordination] group-channel recovery refused round=${started.round.id} reason=admission_works_mismatch (permanent): durable Channel Works differ from the immutable admission plan`,
+    ]);
+    assert.deepEqual(await service.recoverResidentWork(), { discovered: 0, scheduled: 0, refused: 0 },
+      "a contradiction on immutable rows is not retried at the next start");
+    assert.equal(restarted.rounds.get(started.round.id)?.state, "coordinating",
+      "a refusal records evidence, never a fabricated Round transition");
   } finally {
     database.close();
   }

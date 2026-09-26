@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { canonicalTimestamp } from "../work/canonical.js";
 import type { WorkRecord } from "../work/index.js";
 import type { RoundRecord } from "../rounds/index.js";
-import { ChannelCoordinatorError } from "./errors.js";
+import { ChannelAdmissionContradictionError, ChannelCoordinatorError } from "./errors.js";
 import {
   coordinatorAdmissionPlanJson,
   findCoordinatorAdmissionRoundIds,
@@ -198,8 +198,8 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
         [...indexes].sort((left, right) => left - right)
           .some((value, index) => value !== index))
     ) {
-      throw new ChannelCoordinatorError(
-        "illegal_state",
+      throw new ChannelAdmissionContradictionError(
+        "admission_works_mismatch",
         "durable Channel Works differ from the immutable admission plan",
       );
     }
@@ -223,8 +223,8 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       );
     }
     if (round.state === "completed" && works.some((work) => work.state !== "succeeded")) {
-      throw new ChannelCoordinatorError(
-        "illegal_state",
+      throw new ChannelAdmissionContradictionError(
+        "admission_terminal_inconsistent",
         "completed Round retains unsuccessful Work",
       );
     }
@@ -235,8 +235,8 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     ) {
       return;
     }
-    throw new ChannelCoordinatorError(
-      "illegal_state",
+    throw new ChannelAdmissionContradictionError(
+      "admission_terminal_inconsistent",
       "terminal Round is incomplete relative to its immutable admission plan",
     );
   }

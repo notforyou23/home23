@@ -15,3 +15,15 @@ export class ChannelCoordinatorError extends Error {
     this.name = "ChannelCoordinatorError";
   }
 }
+
+/** Durable Round Works contradict the immutable admission plan. Both sides are
+ * immutable rows, so every later start reaches the same verdict: recovery
+ * refuses such a Round permanently instead of retrying it at each boot. */
+export class ChannelAdmissionContradictionError extends ChannelCoordinatorError {
+  constructor(
+    readonly reasonCode: "admission_works_mismatch" | "admission_terminal_inconsistent",
+    message: string,
+  ) {
+    super("illegal_state", message);
+  }
+}
