@@ -8,7 +8,7 @@
 
 'use strict';
 
-import { createReadStream, statSync, existsSync, openSync, closeSync } from 'node:fs';
+import { createReadStream, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import chokidar from 'chokidar';
 import { Channel } from '../contract.js';
@@ -31,9 +31,9 @@ export class TailChannel extends Channel {
   async start() {
     if (this._running) return;
     this._running = true;
-    if (!existsSync(this.path)) {
-      closeSync(openSync(this.path, 'a'));
-    }
+    // A missing file is left for its writer to create: these logs live in the
+    // owner's home, where a reader must not drop empty files. Everything in a
+    // file that appears after start is new, so it is read from its beginning.
     if (this._position === null) {
       try { this._position = statSync(this.path).size; } catch { this._position = 0; }
     }

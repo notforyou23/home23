@@ -57,8 +57,8 @@ export class NotifyChannel extends TailChannel {
 
   async _startAckWatcher() {
     if (this._ackWatcher) return;
-    // Pre-create the ack file (like TailChannel does for its path): under
-    // chokidar v4's polling backend, a file created while the watcher is
+    // Pre-create the ack file, which lives beside the brain's notify stream:
+    // under chokidar v4's polling backend, a file created while the watcher is
     // establishing its baseline can be folded in silently and never emit —
     // watching an existing file avoids that startup race entirely.
     if (!existsSync(this.ackPath)) {
