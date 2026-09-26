@@ -70,7 +70,9 @@ const CHROME_SINGLETON_SOCKET = 'runtime/user/.home23/chrome-cdp/SingletonSocket
 const CHROME_SOCKET_TARGET = /^\/var\/folders\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/T\/com\.google\.Chrome\.[A-Za-z0-9_-]+\/SingletonSocket$/;
 const SCAN_FILES = ['.home23-host.json', 'app/.home23-state.json', 'app/config/home.yaml', 'app/config/targets.yaml', 'app/config/agents.json', 'app/config/secrets.yaml'];
 const ADOPTED_LINK_RECEIPT = 'runtime/adoption-preservation.json';
-const REBUILDABLE_PREFIXES = ['app/logs/', 'app/engine/logs/', 'app/engine/runtime/', 'runtime/pm2/', 'runtime/embedder-cache/', 'runtime/user/', 'runtime/.host.lock/'];
+// Retained update executors (a Node copy each) serve only their own worker.
+const REBUILDABLE_PREFIXES = ['app/logs/', 'app/engine/logs/', 'app/engine/runtime/', 'runtime/pm2/', 'runtime/embedder-cache/', 'runtime/user/', 'runtime/.host.lock/',
+  'runtime/home-update/executor-'];
 // Enough named paths for the owner to act on; the remainder is counted, not listed.
 const UNKNOWN_PATH_LIMIT = 10;
 
@@ -90,6 +92,19 @@ export function ownedWriterNames(name, { encoderRequired = false } = {}) {
     `${base}-seed`, `${base}-shipper`, `${base}-house-sense`, 'home23-seed-observatory', 'home23-evobrew'];
   if (encoderRequired) names.push('home23-embedder');
   return names;
+}
+/** The order owned writers stop in. A resident engine's live-problems loop
+ * restarts its own dashboard, harness and shared services while the engine
+ * waits for agents during shutdown, so every engine stops first. The rest
+ * stop in reverse start order, which keeps home23-coordination (Core) last. */
+export function writerStopOrder(names) {
+  const engines = residentEngines(names);
+  return [...engines, ...(names || []).filter(name => !engines.includes(name)).reverse()];
+}
+/** Resident engines are the names whose own dashboard or harness is also listed. */
+export function residentEngines(names) {
+  const known = new Set(names || []);
+  return [...known].filter(name => known.has(`${name}-harness`) || known.has(`${name}-dash`));
 }
 
 const reason = (code, message, extra = {}) => ({ code, message, ...extra });

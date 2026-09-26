@@ -335,6 +335,19 @@ test('a backup neither carries nor requires Finder metadata under a state root',
   assert.deepEqual(scanHomeReferences(fixture.home, path.join(fixture.root, 'elsewhere')), []);
 });
 
+test('a backup omits retained update executors', async t => {
+  const fixture = stoppedHome(t);
+  const executor = path.join(fixture.home, 'runtime/home-update/executor-12345678-1234-1234-1234-123456789abc-1');
+  fs.mkdirSync(executor, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(executor, 'node'), 'a retained runtime copy\n', { mode: 0o700 });
+  fs.writeFileSync(path.join(fixture.home, 'runtime/home-update/latest.json'), '{"id":"12345678-1234-1234-1234-123456789abc"}\n', { mode: 0o600 });
+  await createHomeBackup({ homeRoot: fixture.home, archivePath: fixture.archivePath, keyPath: fixture.keyPath }, quiet);
+  const header = readAuthenticatedBackupHeader({ archivePath: fixture.archivePath, keyPath: fixture.keyPath });
+  const paths = header.files.map(entry => entry.path);
+  assert.deepEqual(paths.filter(relative => relative.includes('executor-')), []);
+  assert.ok(paths.includes('app/instances/milo/workspace/note.txt'));
+});
+
 test('inspection and header reads write only inside the inspection root', async t => {
   const fixture = stoppedHome(t);
   fs.mkdirSync(fixture.inspectionRoot, { mode: 0o755 });

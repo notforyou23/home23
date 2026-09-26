@@ -41,6 +41,12 @@ function currentProcessName() {
   return null;
 }
 
+// Set once this engine begins graceful shutdown. Its live-problems loop, a
+// direct processNow and an operator safe action all restart through
+// pm2_restart; none may restart a service the Host or an update is stopping.
+let shuttingDown = false;
+function setShuttingDown(value = true) { shuttingDown = value === true; }
+
 function isSelfProcess(name) {
   return Boolean(name && currentProcessName() && name === currentProcessName());
 }
@@ -175,6 +181,7 @@ const remediators = {
     if (!isRestartableProcess(name)) {
       return { outcome: 'rejected', detail: `not restartable: ${name}` };
     }
+    if (shuttingDown) return { outcome: 'rejected', detail: 'engine shutting down' };
     if (isSelfProcess(name)) {
       try {
         scheduleSelfRestart(name);
@@ -515,4 +522,5 @@ module.exports = {
   isRestartableProcess,
   isSelfProcess,
   formatOperatorIntentNotify,
+  setShuttingDown,
 };

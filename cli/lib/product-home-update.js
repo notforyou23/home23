@@ -1,8 +1,8 @@
 /** Durable, owner-requested whole-product updates. HTTP only passes actions, never paths. */
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile, execFileSync } from 'node:child_process';
-import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
+import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { absoluteHome, privateDirectory, readPrivateJSON, productEnvironment } from './product-environment.js';
@@ -38,6 +38,8 @@ const PREFLIGHT_MESSAGES = Object.freeze({
   continuation_receipt_mismatch: 'The home service bindings changed since adoption. Open Home23 on this Mac to review them before resuming.',
   network_binding_receipt_mismatch: 'The home network bindings changed since adoption. Open Home23 on this Mac to review them before resuming.',
   database_busy: 'The home database is busy. Wait for current work to finish, then resume the update.',
+  writer_stop_incomplete: 'A Home23 service did not stop for the update. Your home was restarted and nothing changed. Resume to try again.',
+  running_restore_failed: 'The update stopped before changing your home, but your home did not start again. Open Home23 on the Mac running your home to restart it.',
   candidate_starting: 'Your home is still starting. Its services keep running; resume the update once it is ready.',
   insufficient_space: 'The Mac needs more free space to finish this update.',
   modified_installation: 'The installed Home23 software changed unexpectedly. Open Home23 on this Mac for recovery.',
@@ -47,11 +49,20 @@ const PREFLIGHT_MESSAGES = Object.freeze({
   encoder_mismatch: 'This release does not support the home\'s current encoder. Check for a newer Home23 release.',
   encoder_recipe_changed: 'The home encoder recipe changed since this release was prepared. Check for a newer Home23 release.',
 });
+// Apply may include local paths in its reason messages. Persist and publish
+// only bounded machine codes and a fixed message, never those details.
+const safeReasonCodes = reasons => [...new Set((Array.isArray(reasons) ? reasons : [])
+  .map(reason => reason?.code).filter(code => typeof code === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(code)))].slice(0, 16);
+const LOCAL_RECOVERY_MESSAGE = 'Automatic recovery stopped to preserve your home. Open Home23 on the Mac running your home for recovery.';
+/** Owner copy for a fenced update. Recover and Resume are offered only as the updater classified them. */
+function localRecoveryFailure(recoverable, retryable, reasonCodes) {
+  const message = !recoverable ? LOCAL_RECOVERY_MESSAGE
+    : retryable ? 'The update stopped and your home is still on its current Home23 version. Recover returns it to service; Resume tries the update again.'
+      : 'The update stopped and your home is still on its current Home23 version. Recover returns it to service.';
+  return Object.assign(fail('local_recovery_required', message), { reasonCodes });
+}
 function preflightFailure(result) {
-  // Apply may include local paths in its reason messages. Persist and publish
-  // only bounded machine codes and a fixed message, never those details.
-  const codes = [...new Set((Array.isArray(result?.reasons) ? result.reasons : [])
-    .map(reason => reason?.code).filter(code => typeof code === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(code)))].slice(0, 16);
+  const codes = safeReasonCodes(result?.reasons);
   if (!codes.length) return null;
   const error = fail(codes[0], PREFLIGHT_MESSAGES[codes[0]]
     ?? `Home23 paused at an update safety check (${codes[0]}). Open Home23 on this Mac before resuming.`);
@@ -104,7 +115,8 @@ function publicOperation(operation) {
     errorCode: operation.phase === 'failed' ? operation.errorCode ?? null : null,
     reasonCodes: operation.phase === 'failed' ? operation.reasonCodes ?? [] : [],
     startedAt: operation.startedAt, updatedAt: operation.updatedAt,
-    canResume: !operation.requiresLocalRecovery && !operation.requiresNewRelease && (interrupted || ['failed', 'interrupted'].includes(operation.phase)) };
+    canResume: (operation.requiresLocalRecovery ? operation.retryable === true : true) && !operation.requiresNewRelease
+      && (interrupted || ['failed', 'interrupted'].includes(operation.phase)) };
 }
 function releaseView(release) {
   return release ? { version: release.version ?? 'Home23', build: release.appBuild ?? release.build ?? null, packageId: release.packageId ?? null } : null;
@@ -122,7 +134,11 @@ function projectStatus(home, operation, clientBuild) {
   let allowedActions = ['check'];
   if (!registered) { state = 'unavailable'; message = 'Open Home23 on the Mac running your home to finish connecting updates.'; allowedActions = []; }
   else if (visible && !TERMINAL.has(visible.phase)) { state = 'running'; allowedActions = []; message = visible.message; }
-  else if (operation?.requiresLocalRecovery) { state = 'failed'; allowedActions = []; message = visible.message; }
+  // Only flags the worker saved on the record; status never reads the update journal.
+  else if (operation?.requiresLocalRecovery) {
+    state = 'failed'; message = visible.message;
+    allowedActions = [...(operation.recoverable === true ? ['recover'] : []), ...(visible.canResume ? ['resume'] : [])];
+  }
   else if (operation?.requiresNewRelease) { state = 'failed'; allowedActions = ['check']; message = visible.message; }
   else if (visible?.canResume) { state = 'failed'; allowedActions = ['resume']; message = visible.message; }
   else if (refusedOffer) { state = 'incompatible'; allowedActions = ['check']; message = 'This release was already refused for this home. Check again when a newer Home23 release is available.'; }
@@ -205,6 +221,66 @@ function retainExecutor(home, operation) {
   chmodSync(join(directory, 'node'), 0o700);
   return directory;
 }
+/** Removing a 100 MB Node copy and its module graph must not hold a worker
+ * open, so removal continues detached. Tests observe it through removePaths. */
+function removeDetached(paths, dependencies) {
+  if (!paths.length) return;
+  if (dependencies.removePaths) { dependencies.removePaths(paths); return; }
+  const child = spawn('/bin/rm', ['-rf', '--', ...paths], { detached: true, stdio: 'ignore' });
+  child.on('error', () => {});
+  child.unref();
+}
+const realDirectory = path => { try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); } catch { return false; } };
+/** Every request retains an executor (a copy of bin/node plus its module
+ * graph). Once an operation is terminal, only its own current attempt may
+ * still be running: earlier attempts and other finished operations go. */
+function pruneExecutors(home, operation, dependencies) {
+  const stale = [];
+  for (const name of readdirSync(home.directory)) {
+    const match = /^executor-([a-f0-9-]{36})-(\d+)$/.exec(name);
+    if (!match || !realDirectory(join(home.directory, name))) continue;
+    const [, id, attempt] = match;
+    if (id === operation.id && Number(attempt) >= operation.attempt) continue;
+    let owner = null;
+    try { owner = id === operation.id ? null : loadOperation(home, id); } catch { owner = null; }
+    if (owner && owner.pid !== process.pid && alive(owner.pid)) continue;
+    stale.push(join(home.directory, name));
+  }
+  removeDetached(stale, dependencies);
+}
+/** The owner account's home from its passwd entry. A product-environment
+ * process has HOME inside the installation, so homedir() there is not where
+ * this Mac keeps its caches. The retained executor imports only ./ modules. */
+const ownerAccountHome = () => userInfo().homedir;
+const heldLock = path => { try { return alive(JSON.parse(readFileSync(path, 'utf8')).pid); } catch { return false; } };
+/** Removes other operations' download, stage and local extraction. Only the
+ * latest operation can resume, and a committed journal no longer needs its
+ * stage. A stage whose lock has a live owner (an apply holding it) stays, as
+ * do links, other owners' entries and names that are not operation deliveries. */
+export function pruneUpdateDelivery(homeRoot, { keepIds = [], cacheRoot = join(ownerAccountHome(), 'Library/Caches/Home23'),
+  deviceFor = path => lstatSync(path).dev } = {}, dependencies = {}) {
+  const home = absoluteHome(homeRoot), keep = new Set(keepIds);
+  const delivery = join(dirname(home), `.${basename(home)}.home23-delivery`);
+  const entries = [];
+  const scan = (directory, pattern) => {
+    if (!realDirectory(directory)) return;
+    for (const name of readdirSync(directory)) {
+      const match = pattern.exec(name);
+      if (match && !keep.has(match[2])) entries.push({ id: match[2], path: join(directory, name), lock: name.endsWith('.home23-stage.lock') });
+    }
+  };
+  scan(delivery, /^(download|stage)-([a-f0-9-]{36})(?:\.home23-stage\.(?:json|lock))?$/);
+  // Extraction uses the local cache only for a home on another volume.
+  try { if (deviceFor(home) !== deviceFor(ownerAccountHome())) scan(absoluteHome(cacheRoot), /^(extraction)-([a-f0-9-]{36})$/); } catch { /* No cache to prune. */ }
+  const held = new Set(entries.filter(entry => entry.lock && heldLock(entry.path)).map(entry => entry.id));
+  const stale = entries.filter(entry => {
+    if (held.has(entry.id)) return false;
+    try { const stat = lstatSync(entry.path); return !stat.isSymbolicLink() && (stat.isDirectory() || stat.isFile()) && stat.uid === process.getuid?.(); }
+    catch { return false; }
+  }).map(entry => entry.path);
+  removeDetached(stale, dependencies);
+  return stale;
+}
 
 /** Keep the signed download claim and final stage beside the home, but expand
  * a runtime archive on the Mac's local volume when the home is external. */
@@ -250,7 +326,10 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
     if (!status.allowedActions.includes(action)) throw fail('home_update_busy', status.message);
     if (action === 'resume' || action === 'recover') {
       if (!operation || alive(operation.pid)) throw fail('home_update_busy', 'The previous update is still running.');
-      operation = { ...operation, runAction: action, clientBuild: clientBuild ?? operation.clientBuild, attempt: operation.attempt + 1, phase: 'queued', pid: null, updatedAt: now(), message: 'Resuming Home23 update.' };
+      // The earlier failure's error fields must not describe this new attempt.
+      const previous = { ...operation };
+      delete previous.errorCode; delete previous.reasonCodes;
+      operation = { ...previous, runAction: action, clientBuild: clientBuild ?? operation.clientBuild, attempt: operation.attempt + 1, phase: 'queued', pid: null, updatedAt: now(), message: 'Resuming Home23 update.' };
     } else {
       operation = { schema: SCHEMA, id: randomUUID(), homeRoot: home.root, action, runAction: action, attempt: 1,
         clientBuild: clientBuild ?? null, phase: 'queued', progress: null, pid: null, startedAt: now(), updatedAt: now(),
@@ -273,7 +352,8 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
         child.unref();
       }
     } catch (error) {
-      operation = { ...loadOperation(home, operation.id), phase: 'failed', updatedAt: now(), message: 'The update could not start. Resume to try again.', errorCode: error.code ?? 'launch_failed' };
+      operation = { ...loadOperation(home, operation.id), phase: 'failed', updatedAt: now(), message: 'The update could not start. Resume to try again.',
+        errorCode: error.code ?? 'launch_failed', reasonCodes: Array.isArray(error.reasonCodes) ? error.reasonCodes : [] };
       save(join(home.directory, `${operation.id}.json`), operation);
     }
     return projectStatus(home, loadOperation(home, operation.id), clientBuild);
@@ -314,6 +394,26 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
           : checked.status === 'incompatible' ? 'This release is not compatible with this home yet.' : 'Updates could not be checked. Try again later.' });
       return;
     }
+    if (operation.runAction === 'recover') {
+      // Recover returns the home to service on the version it has; it never
+      // downloads, retries the update or needs this device to be current.
+      persist({ phase: 'updating', message: 'Returning your home to service on its current Home23 version.' });
+      // A thrown error may carry local paths; the fixed copy below replaces it.
+      let result = null;
+      try { result = await updater.recoverProductUpdate({ homeRoot: home.root }); } catch { result = null; }
+      const reasonCodes = safeReasonCodes(result?.reasons);
+      if (result?.status === 'aborted') {
+        const freshRelease = reasonCodes.some(code => FRESH_RELEASE_REQUIRED.has(code));
+        persist({ requiresLocalRecovery: false, recoverable: false, retryable: false,
+          ...(freshRelease ? { requiresNewRelease: true, blockedPackageId: result.toPackageId ?? operation.prepared?.packageId ?? null } : {}) });
+        const back = result.runningRestored ? 'Your home is running again on its current Home23 version.' : 'Your home is back on its current Home23 version and stays stopped.';
+        throw Object.assign(fail('update_recovered', `${back} ${freshRelease ? 'Check for a newer Home23 release.' : 'Resume to try the update again.'}`),
+          { reasonCodes: reasonCodes.length ? reasonCodes : ['recovered_by_owner'] });
+      }
+      const recovery = updater.productRecoveryFor?.(home.root) ?? {};
+      persist({ requiresLocalRecovery: true, recoverable: recovery.restore === true, retryable: recovery.retry === true });
+      throw localRecoveryFailure(recovery.restore === true, recovery.retry === true, recovery.reasonCodes ?? reasonCodes);
+    }
     let prepared = operation.prepared;
     if (!prepared) {
       workerPriority(true);
@@ -321,6 +421,14 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
         persist({ phase: 'downloading', progress: null, message: 'Downloading and preparing Home23 on your Mac. Your home is still available.' });
         const progressNow = dependencies.progressNow ?? Date.now;
         let lastProgressPersistAt = progressNow();
+        // Earlier operations can no longer resume once this one is latest. An
+        // unfinished journal may still own an older stage, so keep them all then.
+        try {
+          const journal = updater.readUpdateJournal?.(home.root);
+          if (!journal || ['committed', 'rolled_back', 'aborted'].includes(journal.phase)) {
+            pruneUpdateDelivery(home.root, { keepIds: [operation.id], ...dependencies.delivery }, dependencies);
+          }
+        } catch { /* Housekeeping never blocks a download. */ }
         const delivery = updateDeliveryPaths(home.root, operation.id, { release: operation.release });
         prepared = await channel.prepareConfiguredRelease({ ...options,
           staging: delivery.staging, downloadDirectory: delivery.downloadDirectory, extractionDirectory: delivery.extractionDirectory,
@@ -340,7 +448,9 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     const minimum = prepared.release?.compatibility?.minimumClientBuild ?? 1;
     if (operation.clientBuild < minimum) throw fail('app_update_required', 'Update Home23 on this device before updating your home.');
     if (!operation.runtimeCompleted) {
-      persist({ phase: 'updating', message: 'Updating your home. Home23 will reconnect automatically.' });
+      // A resumed local recovery is re-classified below if it fences again.
+      persist({ phase: 'updating', message: 'Updating your home. Home23 will reconnect automatically.',
+        requiresLocalRecovery: undefined, recoverable: undefined, retryable: undefined });
       const journal = updater.readUpdateJournal(home.root);
       let result = journal && !['committed', 'rolled_back', 'aborted'].includes(journal.phase)
         ? await updater.resumeProductUpdate({ homeRoot: home.root })
@@ -363,8 +473,9 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
       if (!result.ok || result.status !== 'committed') {
         const recovery = updater.readUpdateJournal(home.root);
         if (recovery?.phase === 'recovery_required' && !recovery.writersAdmitted) {
-          persist({ requiresLocalRecovery: true });
-          throw fail('local_recovery_required', 'Automatic recovery stopped to preserve your home. Open Home23 on the Mac running your home for recovery.');
+          const product = updater.productRecoveryFor?.(home.root) ?? {};
+          persist({ requiresLocalRecovery: true, recoverable: product.restore === true, retryable: product.retry === true });
+          throw localRecoveryFailure(product.restore === true, product.retry === true, safeReasonCodes(recovery.reasons));
         }
         const refusal = preflightFailure(result);
         if (refusal?.reasonCodes.some(code => FRESH_RELEASE_REQUIRED.has(code)) && ['refused', 'aborted'].includes(result.status)) {
@@ -387,10 +498,19 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     const readiness = await verify(home.root, prepared.packageId, dependencies);
     persist({ phase: 'completed', progress: 1, message: readiness?.running === false
       ? 'Home23 is updated. Your home remains stopped.' : 'Home23 is updated and your home is ready.' });
+    // Nothing is kept after a completed update; the channel keeps the signed release.
+    try { pruneUpdateDelivery(home.root, { ...dependencies.delivery }, dependencies); } catch { /* Housekeeping only. */ }
   } catch (error) {
     persist({ phase: 'failed', errorCode: error.code ?? 'update_failed', reasonCodes: error.reasonCodes ?? [], message: operation.requiresLocalRecovery ? error.message : error.reasonCodes?.length ? error.message : operation.runtimeCompleted
       ? 'Your home software is updated. Resume to finish the Mac application and reconnect.'
       : 'The update could not finish. Resume or recover to return your home to service.' });
+  } finally {
+    if (TERMINAL.has(operation.phase)) {
+      // Under admission: once this phase is durable a new request can retain
+      // its executor before its record carries the worker's pid.
+      try { await withAdmission(home, async () => pruneExecutors(home, operation, dependencies)); }
+      catch { /* Retention is housekeeping; the result stands. */ }
+    }
   }
 }
 async function shippedHostStatus(homeRoot) {

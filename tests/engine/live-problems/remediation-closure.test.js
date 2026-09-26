@@ -752,3 +752,85 @@ test('legacy exhausted agenda handoff reconciliation is idempotent and preserves
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a stopped loop does not remediate the rest of an in-flight tick', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-stop-'));
+  const remediated = [];
+  let loop;
+  const server = http.createServer((req, res) => {
+    // Shutdown begins while the first problem is being verified.
+    if (req.url === '/verify/first') loop.stop();
+    if (req.url.startsWith('/remediate/')) remediated.push(req.url);
+    res.statusCode = req.url.startsWith('/verify/') ? 503 : 200;
+    res.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = server.address().port;
+    const store = new LiveProblemStore({ brainDir: dir });
+    for (const id of ['first', 'second']) {
+      store.upsert({
+        id,
+        claim: `${id} service responds`,
+        verifier: { type: 'http_ping', args: { url: `http://127.0.0.1:${port}/verify/${id}`, expectStatus: 200 } },
+        remediation: [{ type: 'fetch_url', args: { url: `http://127.0.0.1:${port}/remediate/${id}` }, cooldownMin: 0 }],
+      });
+    }
+    loop = new LiveProblemsLoop({ store, ctxProvider: () => ({ brainDir: dir }) });
+    loop.start();
+    clearTimeout(loop.timer);
+    await loop.tick();
+    assert.deepEqual(remediated, []);
+    assert.equal(store.get('first').lastResult.ok, false, 'verification still records the truth');
+    assert.equal(loop.timer, null, 'a stopped loop schedules no further tick');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('pm2_restart is rejected while the engine is shutting down', async () => {
+  const { runRemediator, setShuttingDown } = require('../../../engine/src/live-problems/remediators.js');
+  setShuttingDown(true);
+  try {
+    assert.deepEqual(await runRemediator({ type: 'pm2_restart', args: { name: 'home23-test-dash' } }),
+      { outcome: 'rejected', detail: 'engine shutting down' });
+    const { runSafeAction } = require('../../../engine/src/os-kernel/safe-actions.js');
+    assert.deepEqual(await runSafeAction({ id: 'restart_pm2', args: { name: 'home23-test-harness' } }, {}),
+      { outcome: 'rejected', detail: 'engine shutting down' });
+  } finally {
+    setShuttingDown(false);
+  }
+});
+
+test('a loop stopped during verification raises no fuse-box operator intent', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-stop-intent-'));
+  const intents = [];
+  let loop;
+  const server = http.createServer((req, res) => {
+    loop.stop();
+    res.statusCode = 503;
+    res.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const store = new LiveProblemStore({ brainDir: dir });
+    store.upsert({
+      id: 'fuse',
+      claim: 'fuse service responds',
+      verifier: { type: 'http_ping', args: { url: `http://127.0.0.1:${server.address().port}/verify`, expectStatus: 200 } },
+      remediation: [{ type: 'notify_jtr', args: { fuseBox: true, text: 'fuse service is down' }, cooldownMin: 0 }],
+    });
+    const osKernel = { store: { upsertOperatorIntent: intent => { intents.push(intent); return intent; } } };
+    loop = new LiveProblemsLoop({ store, ctxProvider: () => ({ brainDir: dir, osKernel }) });
+    loop.start();
+    clearTimeout(loop.timer);
+    await loop.tick();
+    assert.deepEqual(intents, []);
+    assert.equal(store.get('fuse').lastResult.ok, false, 'verification still records the truth');
+    assert.equal(store.get('fuse').remediationLog?.length ?? 0, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

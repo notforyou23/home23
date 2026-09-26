@@ -10,7 +10,7 @@ import { absoluteHome, privateDirectory, productEnvironment, readPrivateJSON } f
 import { acquireInstallLock, isOsMetadataPath, isStateBearingSoftwarePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
-import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath } from './product-update-inventory.js';
+import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath, residentEngines, writerStopOrder } from './product-update-inventory.js';
 
 const executeFile = promisify(execFile);
 const SCHEMA = 'home23.product-update.v1';
@@ -116,6 +116,8 @@ function publicResult(journal, extras = {}) {
     admission: deferred ? 'wait' : undefined, reasons: extras.reasons || journal.reasons || [],
   };
 }
+/** The phase a journal failed from, kept when an already fenced journal is re-fenced. */
+const failedFrom = journal => journal.phase === 'recovery_required' ? journal.recoveryFrom : journal.phase;
 function deferred(home, code, message, journal = {}) {
   return { ...publicResult({ ...journal, phase: journal.phase || 'claimed', homeRoot: home }, { deferred: true }), reasons: [{ code, message }] };
 }
@@ -131,8 +133,23 @@ function releaseDiscarded(updateDirectory, dependencies) {
   child.on('error', () => {});
   child.unref();
 }
+// Per-file identity serves only an open transaction (sameCanonical still needs
+// it through 'accepted'). A 237k-file home made a 155 MB journal that Host
+// status parsed on every call, so a terminal journal keeps a digest and count.
+const PER_FILE_IDENTITY = ['identity', 'identityMetadata', 'canonical', 'substratePrefixes'];
+function settledJournal(journal) {
+  if (!PER_FILE_IDENTITY.some(key => Object.hasOwn(journal, key))) return journal;
+  const settled = { ...journal };
+  for (const key of PER_FILE_IDENTITY) delete settled[key];
+  if (journal.identity) {
+    settled.identitySha256 = createHash('sha256').update(JSON.stringify(journal.identity)).digest('hex');
+    settled.identityFiles = Object.keys(journal.identity).length;
+  }
+  return settled;
+}
 async function commitPhase(file, journal, dependencies) {
-  const next = { ...journal, updatedAt: new Date().toISOString() };
+  const settled = ['committed', 'rolled_back', 'aborted'].includes(journal.phase) ? settledJournal(journal) : journal;
+  const next = { ...settled, updatedAt: new Date().toISOString() };
   delete next.startResult;
   durableJSON(file, next);
   if (dependencies.afterPhase) await dependencies.afterPhase(next);
@@ -140,8 +157,18 @@ async function commitPhase(file, journal, dependencies) {
   if (interrupt && interrupt === next.phase) process.kill(process.pid, 'SIGKILL');
   return next;
 }
+/** Keeps only the newest previous journal, in its settled form. Older archives
+ * are history nothing reads; each once cost as much as the journal itself. */
 function archiveJournal(file, journal) {
-  if (exists(file)) renameSync(file, `${file}.${journal.phase}.${journal.id}`);
+  if (!exists(file)) return;
+  const archive = `${file}.${journal.phase}.${journal.id}`;
+  durableJSON(archive, settledJournal(journal));
+  unlinkSync(file);
+  const directory = dirname(file), pattern = /^journal\.json\.(committed|rolled_back|aborted)\.[0-9a-f-]{36}$/;
+  for (const name of readdirSync(directory)) {
+    if (pattern.test(name) && join(directory, name) !== archive) rmSync(join(directory, name), { force: true });
+  }
+  fsyncDirectory(directory);
 }
 function installController(updateDirectory) {
   const lib = join(updateDirectory, 'controller', 'lib');
@@ -275,13 +302,30 @@ async function defaultListProcesses(home) {
     throw Object.assign(new Error('Home process inventory is unavailable. No package files were changed.'), { code: 'process_inventory_unavailable' });
   }
 }
-async function defaultQuiesce(home, names) {
+/** Gracefully stops owned writers. Engines stop first and together: while one
+ * waits for its agents it still remediates, and would restart a dashboard or
+ * harness already stopped. With every engine down, nothing restarts the rest;
+ * one more pass stops any writer that was restarted during the first. */
+export async function quiesceWriters(home, names, { exec = executeFile, list = defaultListProcesses } = {}) {
   const node = join(home, 'bin', 'node'), pm2 = join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'), env = productEnvironment(home);
-  for (const name of [...names].reverse()) {
-    try { await executeFile(node, [pm2, 'stop', name, '--silent'], { cwd: join(home, 'app'), env, timeout: 240000, maxBuffer: 8 * 1024 * 1024 }); }
+  const stop = async name => {
+    try { await exec(node, [pm2, 'stop', name, '--silent'], { cwd: join(home, 'app'), env, timeout: 240000, maxBuffer: 8 * 1024 * 1024 }); }
     catch { /* An absent name is not a running writer. */ }
-  }
-  return defaultListProcesses(home);
+  };
+  const order = writerStopOrder(names), engines = residentEngines(names);
+  await Promise.allSettled(engines.map(stop));
+  for (const name of order.filter(name => !engines.includes(name))) await stop(name);
+  let processes = await list(home);
+  const restopped = order.filter(name => processes.some(row => row.name === name && BUSY.has(row.status)));
+  if (!restopped.length) return { processes, restopped };
+  for (const name of restopped) await stop(name);
+  processes = await list(home);
+  return { processes, restopped };
+}
+/** An injected quiesce may return the final rows alone. */
+async function quiesce(home, names, dependencies) {
+  const result = await (dependencies.quiesce || quiesceWriters)(home, names);
+  return Array.isArray(result) ? { processes: result, restopped: [] } : { processes: result?.processes || [], restopped: result?.restopped || [] };
 }
 async function defaultStart(home, journal) {
   const { runHostAction } = await import(pathToFileURL(join(home, 'app/cli/lib/product-host.js')).href);
@@ -332,7 +376,11 @@ async function awaitCandidateReadiness(home, journal, dependencies, { busy, list
     catch { statusUnavailable = true; }
     const maskedStatusFailure = current?.ok === false && current?.status === 'recovery_required' &&
       current?.error?.code === 'update_recovery_required' && !current?.readiness && !current?.processes;
-    const kind = statusUnavailable || !current || maskedStatusFailure ? 'unavailable' : candidateStatusKind(current);
+    // A Host that cannot read its supervisor reports 'unavailable', not a failed
+    // home. While this journal blocks Start, runHostAction masks that as an ok
+    // recovery_required status that keeps only its error code.
+    const supervisorUnreadable = current?.status === 'unavailable' || current?.error?.code === 'host_supervisor_ambiguous';
+    const kind = statusUnavailable || !current || maskedStatusFailure || supervisorUnreadable ? 'unavailable' : candidateStatusKind(current);
     const waiting = kind === 'starting' ? await busy()
       : kind === 'unavailable' ? healthyAdmittedWriters(await list(home), journal.writerNames) : false;
     const remaining = deadline - clock();
@@ -716,12 +764,12 @@ async function mutate(journal, dependencies, verify) {
   const file = journalPath(journal.homeRoot), home = journal.homeRoot;
   const rank = () => RANK[journal.phase];
   const names = journal.writerNames || [];
-  async function abortBeforeSwitch(code, message) {
-    const reasons = [{ code, message }];
+  async function abortBeforeSwitch(code, message, extra = {}) {
+    const reasons = [{ code, message, ...extra }];
     if (journal.stoppedForUpdate && journal.desiredRunning) {
       // Start needs the Host lifecycle lock held by runTransaction. Fence the
       // journal now, then restore after that lock is released.
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons }, dependencies);
       return { restore: journal };
     } else {
       journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons }, dependencies);
@@ -734,13 +782,18 @@ async function mutate(journal, dependencies, verify) {
     if (classified.unknown.length) return { done: deferred(home, 'unknown_writer', 'An unexpected process is using this home. Wait for it to exit before updating.', journal) };
     if (classified.busy.length) {
       if (!journal.admit) return { done: deferred(home, 'busy', 'This home is still working. Retry when it is quiet, or explicitly admit maintenance. Nothing was forced to stop.', journal) };
-      processes = await (dependencies.quiesce || defaultQuiesce)(home, names);
+      // Durable before the first stop: a controller killed mid-stop resumes
+      // knowing this update stopped the home and must restart it on abort.
+      if (!journal.stoppedForUpdate) journal = await commitPhase(file, { ...journal, stoppedForUpdate: true }, dependencies);
+      const stopped = await quiesce(home, names, dependencies);
+      processes = stopped.processes;
+      // Writers restarted during the stop and stopped again, kept for diagnosis.
+      if (stopped.restopped.length) journal = { ...journal, quiesceRestopped: stopped.restopped };
       classified = classifyProcesses(processes, names);
       if (classified.busy.length) {
-        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'writer_stop_incomplete', message: 'Owned writers remain active after a graceful stop. The home was not restarted or switched; inspect the partly stopped services before recovery.' }] }, dependencies);
-        return { done: publicResult(journal) };
+        return abortBeforeSwitch('writer_stop_incomplete', 'A Home23 service did not stop for the update. Nothing was switched; the home is restarted on its current version.',
+          { writers: classified.busy.map(row => row.name) });
       }
-      journal.stoppedForUpdate = true;
     }
     journal = await commitPhase(file, { ...journal, phase: 'quiesced' }, dependencies);
   }
@@ -773,7 +826,7 @@ async function mutate(journal, dependencies, verify) {
   if (rank() < RANK.retained) {
     const installed = readProductManifest(home);
     if (installed.packageId !== journal.fromPackageId) {
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'baseline_changed', message: 'The installed package changed before selection. Automatic recovery stopped.' }] }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'baseline_changed', message: 'The installed package changed before selection. Automatic recovery stopped.' }] }, dependencies);
       return { done: publicResult(journal) };
     }
     // A normal Host install already has a verified stage and a bound installed
@@ -811,7 +864,9 @@ async function restorePreSwitch(journal, dependencies) {
   const home = journal.homeRoot, file = journalPath(home);
   try {
     const processes = await (dependencies.listProcesses || defaultListProcesses)(home);
-    if (classifyProcesses(processes, journal.writerNames || []).busy.length) throw new Error('A writer is still active.');
+    // Owned writers that did not stop are fine: Start skips online rows and
+    // starts the rest. Only a process this home does not own stops restoration.
+    if (classifyProcesses(processes, journal.writerNames || []).unknown.length) throw new Error('An unexpected process is active.');
     if (readProductManifest(home).packageId !== journal.fromPackageId) throw new Error('The previous software changed.');
     const started = await (dependencies.start || defaultStart)(home, journal);
     if (!startObservation(started).startOk) throw new Error('The previous home did not become ready.');
@@ -830,12 +885,12 @@ async function finish(journal, dependencies, verify) {
   const busy = async () => classifyProcesses(await list(home), journal.writerNames || []).busy.length > 0;
   const fence = async () => {
     if (!(await busy())) return true;
-    await (dependencies.quiesce || defaultQuiesce)(home, journal.writerNames || []);
+    await quiesce(home, journal.writerNames || [], dependencies);
     return !(await busy());
   };
   async function rollback(reason) {
     if (journal.writersAdmitted || journal.acceptedWork || !(await fence())) {
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'recovery_required', message: 'Software was not restored because writers were admitted or could not be fenced. The data snapshot was not restored.' }] }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'recovery_required', message: 'Software was not restored because writers were admitted or could not be fenced. The data snapshot was not restored.' }] }, dependencies);
       return publicResult(journal);
     }
     try {
@@ -843,7 +898,7 @@ async function finish(journal, dependencies, verify) {
       else restorePrevious(home, updateDirectoryFor(home), previousManifest(home), candidateManifest(journal), verify, join(updateDirectoryFor(home), `discarded-candidate-${journal.id}`));
     }
     catch (error) {
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'recovery_required', message: `No safe automatic rollback is available (${error.message}). Home state was not replaced from the checkpoint.` }] }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'recovery_required', message: `No safe automatic rollback is available (${error.message}). Home state was not replaced from the checkpoint.` }] }, dependencies);
       return publicResult(journal);
     }
     const preserved = await sameIdentity(home, journal.identity, journal.identityMetadata);
@@ -852,7 +907,7 @@ async function finish(journal, dependencies, verify) {
       try { restoredRunning = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
       catch { restoredRunning = false; }
       if (!restoredRunning) {
-        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', identityPreserved: preserved, reasons: [{ code: 'recovery_required', message: 'Previous software was restored, but the home did not return to its desired running state.' }] }, dependencies);
+        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), identityPreserved: preserved, softwareRestored: true, reasons: [{ code: 'recovery_required', message: 'Previous software was restored, but the home did not return to its desired running state.' }] }, dependencies);
         return publicResult(journal);
       }
     }
@@ -866,11 +921,11 @@ async function finish(journal, dependencies, verify) {
     let rollbackReason = null;
     try {
       if (await busy()) {
-        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'recovery_required', message: 'Writers are active before the candidate was admitted. They were not replaced or force-killed.' }] }, dependencies);
+        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'recovery_required', message: 'Writers are active before the candidate was admitted. They were not replaced or force-killed.' }] }, dependencies);
         return publicResult(journal);
       }
       if (!(await sameIdentity(home, journal.identity, journal.identityMetadata))) {
-        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', identityPreserved: false, reasons: [{ code: 'recovery_required', message: 'Quiesced home identity changed before writers were admitted. Software and the data snapshot were not restored.' }] }, dependencies);
+        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), identityPreserved: false, reasons: [{ code: 'recovery_required', message: 'Quiesced home identity changed before writers were admitted. Software and the data snapshot were not restored.' }] }, dependencies);
         return publicResult(journal);
       }
       let packageOk = true;
@@ -927,7 +982,7 @@ async function finish(journal, dependencies, verify) {
   if (!behavior.ok || !identityPreserved) {
     if (journal.writersAdmitted || journal.acceptedWork) {
       const fenced = await fence();
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', identityPreserved, reasons: [{ code: 'recovery_required', message: fenced ? 'The candidate started and a later check failed. Writers were fenced. Previous software and the data snapshot were not restored.' : 'The candidate started and writers could not be fenced. Previous software and the data snapshot were not restored.' }] }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), identityPreserved, reasons: [{ code: 'recovery_required', message: fenced ? 'The candidate started and a later check failed. Writers were fenced. Previous software and the data snapshot were not restored.' : 'The candidate started and writers could not be fenced. Previous software and the data snapshot were not restored.' }] }, dependencies);
       return publicResult(journal);
     }
     return rollback(behavior.issues?.[0] || 'The candidate did not become healthy. Previous software was restored and home state was left in place.');
@@ -1053,13 +1108,91 @@ async function withReusedStageLock(journal, verify, body) {
     if (releaseStage) releaseStage();
   }
 }
+// A stop or database that stayed busy is worth another attempt. Restoration
+// failures and an owner's earlier recover do not change that.
+const RETRYABLE = new Set(['writer_stop_incomplete', 'database_busy']);
+const RETRY_NEUTRAL = new Set(['running_restore_failed', 'recovered_by_owner']);
+const MAX_RECOVERY_REOPENS = 3;
+/** What the product may do with a fenced journal whose writers were never
+ * admitted. `restore` returns the home to service on its current version:
+ * only while the installed software is still (or again, after a verified
+ * rollback) the version the update started from. `retry` additionally needs
+ * a cause another attempt can clear, and at most three reopens. Everything
+ * after selection or admission stays a local recovery. */
+function productRecovery(journal, home) {
+  const none = { restore: false, retry: false };
+  if (journal?.phase !== 'recovery_required' || journal.writersAdmitted || journal.acceptedWork || journal.candidateStarted) return none;
+  // 187 journals have neither recoveryFrom nor softwareRestored: a recorded
+  // staged manifest means the switch began, so they stay local.
+  if (journal.stagedManifestSha256 && journal.softwareRestored !== true) return none;
+  const codes = [...(journal.reasons || []), ...(journal.previousReasons || [])].map(reason => reason?.code);
+  if (codes.includes('baseline_changed')) return none;
+  try {
+    if (readProductManifest(home).packageId !== journal.fromPackageId
+      || readPrivateJSON(join(home, '.home23-install.json'))?.packageId !== journal.fromPackageId) return none;
+  } catch { return none; }
+  const current = (journal.reasons || []).map(reason => reason?.code);
+  const retry = current.some(code => RETRYABLE.has(code)) && current.every(code => RETRYABLE.has(code) || RETRY_NEUTRAL.has(code))
+    && (journal.recoveryReopens || 0) < MAX_RECOVERY_REOPENS;
+  return { restore: true, retry };
+}
+/** Read-only: whether this home's fenced update can be recovered or retried by the product. */
+export function productRecoveryFor(homeRoot) {
+  const home = absoluteHome(homeRoot);
+  let journal = null;
+  try { journal = readUpdateJournal(home); } catch { journal = null; }
+  const available = journal?.phase === 'recovery_required' && !journal.writersAdmitted;
+  const reasonCodes = available ? [...new Set((journal.reasons || []).map(reason => reason?.code)
+    .filter(code => typeof code === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(code)))].slice(0, 16) : [];
+  return { available, ...(available ? productRecovery(journal, home) : { restore: false, retry: false }), reasonCodes };
+}
 export async function resumeProductUpdate({ homeRoot } = {}, dependencies = {}) {
   const home = absoluteHome(homeRoot);
   const verify = payloadVerifyFrom(dependencies);
   return locked(home, dependencies, async () => {
     const journal = readUpdateJournal(home);
     if (!journal) return refuse(home, [{ code: 'update_not_found', message: 'This home has no update journal to resume.' }]);
+    if (productRecovery(journal, home).retry) {
+      // Nothing was switched, so the update reopens at claimed and runs every
+      // check again. Stopping is idempotent: writers already stopped stay
+      // stopped. The stage is re-checked before the reopen is committed.
+      const reopened = { ...journal, phase: 'claimed', previousReasons: [...(journal.previousReasons || []), ...(journal.reasons || [])], reasons: [],
+        recoveryReopens: (journal.recoveryReopens || 0) + 1, recoveryFrom: undefined,
+        stoppedForUpdate: journal.stoppedForUpdate === true || journal.desiredRunning === true };
+      return withReusedStageLock(reopened, verify, async () =>
+        runTransaction(await commitPhase(journalPath(home), reopened, dependencies), dependencies, verify));
+    }
     return withReusedStageLock(journal, verify, () => runTransaction(journal, dependencies, verify));
+  });
+}
+/** The owner's recover: close a fenced journal whose software never changed
+ * (or was verified back) and return the home to its running state on the
+ * version it already has. It never retries the update. */
+export async function recoverProductUpdate({ homeRoot } = {}, dependencies = {}) {
+  const home = absoluteHome(homeRoot), file = journalPath(home);
+  return locked(home, dependencies, async () => {
+    let journal = readUpdateJournal(home);
+    if (!journal) return refuse(home, [{ code: 'update_not_found', message: 'This home has no update journal to recover.' }]);
+    if (!productRecovery(journal, home).restore) {
+      return refuse(home, [{ code: 'recovery_unavailable', message: 'This update cannot be recovered automatically. Open Home23 on the Mac running your home.' }]);
+    }
+    const release = await (dependencies.acquireHostLock || defaultAcquireHostLock)(home, journal);
+    if (release === null) return deferred(home, 'busy', 'Another lifecycle operation holds this home.', journal);
+    try {
+      const processes = await (dependencies.listProcesses || defaultListProcesses)(home);
+      if (classifyProcesses(processes, journal.writerNames || []).unknown.length) {
+        return deferred(home, 'unknown_writer', 'An unexpected process is using this home. Wait for it to exit before recovering.', journal);
+      }
+      const reasons = journal.reasons || [];
+      if (!reasons.some(reason => reason?.code === 'recovered_by_owner')) {
+        journal = await commitPhase(file, { ...journal, reasons: [...reasons, { code: 'recovered_by_owner', message: 'The owner chose to return the home to service on its current version.' }] }, dependencies);
+      }
+      if (!journal.desiredRunning) journal = await commitPhase(file, { ...journal, phase: 'aborted' }, dependencies);
+    } finally { await release(); }
+    // Start takes the Host lifecycle lock itself.
+    const result = journal.phase === 'aborted' ? publicResult(journal) : await restorePreSwitch(journal, dependencies);
+    if (result.status === 'aborted') releaseDiscarded(updateDirectoryFor(home), dependencies);
+    return result;
   });
 }
 export async function applyProductUpdate({ homeRoot, candidatePayload, staging, admit = false, reuseVerifiedStage = false } = {}, dependencies = {}) {
