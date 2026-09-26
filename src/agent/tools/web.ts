@@ -3,6 +3,7 @@
  */
 
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import { BROWSER_DISABLED_MESSAGE } from '../../browser/cdp.js';
 
 export interface WebToolsConfig {
   braveApiKey?: string;
@@ -11,7 +12,7 @@ export interface WebToolsConfig {
 
 export const webBrowseTool: ToolDefinition = {
   name: 'web_browse',
-  description: 'Navigate to a URL and extract the page text content. Requires Chrome running with --remote-debugging-port. Can also take screenshots.',
+  description: "Navigate to a URL and extract the page text content, or take a screenshot, in Home23's managed browser. If the browser is unavailable the result says why; never launch Chrome yourself.",
   input_schema: {
     type: 'object',
     properties: {
@@ -26,10 +27,7 @@ export const webBrowseTool: ToolDefinition = {
     const screenshot = (input.screenshot as boolean) || false;
 
     if (!ctx.browser) {
-      return {
-        content: 'Browser not available. Chrome must be running with --remote-debugging-port=9222. Start Chrome and restart the agent.',
-        is_error: true,
-      };
+      return { content: BROWSER_DISABLED_MESSAGE, is_error: true };
     }
 
     let tabId: string | null = null;

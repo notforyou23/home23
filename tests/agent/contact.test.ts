@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createTcpServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { WebSocketServer, type WebSocket } from 'ws';
 
 import { scanAttention } from '../../src/agent/contact/attention.js';
 import { assertBrowserUrl } from '../../src/agent/contact/browser.js';
@@ -24,6 +27,7 @@ import {
 import { runNamedShortcut } from '../../src/agent/contact/phone.js';
 import { contactReceiptPath } from '../../src/agent/contact/paths.js';
 import {
+  browserWorkflowTool,
   captureArtifactTool,
   commsSendTool,
   houseCallSafeServiceTool,
@@ -32,6 +36,9 @@ import {
   runMacRead,
 } from '../../src/agent/tools/contact.js';
 import { createToolRegistry } from '../../src/agent/tools/index.js';
+import { webBrowseTool } from '../../src/agent/tools/web.js';
+import { CORE_RUNTIME_PROMPT } from '../../src/agents/system-prompt.js';
+import { BrowserController, BrowserUnavailableError, browserUnavailableReason } from '../../src/browser/cdp.js';
 import type { ToolContext } from '../../src/agent/types.js';
 
 function tmpWorkspace(): { root: string; workspace: string } {
@@ -998,4 +1005,166 @@ test('capture tool refuses missing files and registry exposes contact tools', as
   ]) {
     assert.equal(registry.get(name)?.name, name, name);
   }
+});
+
+async function withEnv<T>(values: Record<string, string | undefined>, action: () => Promise<T>): Promise<T> {
+  const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return await action();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+/** A managed Chrome profile whose SingletonLock names `pid` (or no lock). */
+function managedProfile(pid?: number): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'home23-cdp-profile-'));
+  if (pid !== undefined) symlinkSync(`fixture-host.local-${pid}`, path.join(dir, 'SingletonLock'));
+  return dir;
+}
+
+/** Minimal DevTools endpoint: /json routes plus browser and page WebSockets. */
+async function fakeCdp(options: { browserPid: number; hang?: string[] }): Promise<{ url: string; close(): Promise<void> }> {
+  const server = createHttpServer();
+  const wss = new WebSocketServer({ server });
+  let port = 0;
+  server.on('request', (req, res) => {
+    const target = { id: 't1', type: 'page', title: '', url: 'about:blank', webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/t1` };
+    const json = (body: unknown) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+    if (req.url === '/json/version') return json({ Browser: 'FakeChrome/1', webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/fake` });
+    if (req.url === '/json') return json([target]);
+    if (req.url?.startsWith('/json/new')) return json(target);
+    res.writeHead(req.url?.startsWith('/json/close/') ? 200 : 404);
+    res.end('Target is closing');
+  });
+  wss.on('connection', (socket: WebSocket) => {
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as { id: number; method: string };
+      if (options.hang?.includes(message.method)) return;
+      const result = message.method === 'SystemInfo.getProcessInfo'
+        ? { processInfo: [{ type: 'renderer', id: 1 }, { type: 'browser', id: options.browserPid }] }
+        : { result: { value: 'ok' } };
+      socket.send(JSON.stringify({ id: message.id, result }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  port = (server.address() as AddressInfo).port;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    async close() {
+      for (const client of wss.clients) client.terminate();
+      wss.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+function browserConfig(cdpUrl: string, extra: Partial<{ connectTimeoutMs: number; commandTimeoutMs: number }> = {}) {
+  return { enabled: true, headless: true, cdpUrl, ...extra };
+}
+
+test('CDP connect is bounded when the port accepts but never answers', async () => {
+  const sockets: Socket[] = [];
+  const server = createTcpServer((socket) => { sockets.push(socket); });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const controller = new BrowserController(browserConfig(`http://127.0.0.1:${port}`, { connectTimeoutMs: 200 }));
+    const started = Date.now();
+    await assert.rejects(() => controller.connect(), (error: unknown) => error instanceof BrowserUnavailableError
+      && error.code === 'browser_unavailable' && error.reason === 'timeout'
+      && /Do not launch or reconfigure Chrome yourself; tell the owner\./.test(error.message));
+    assert.ok(Date.now() - started < 2_000);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('CDP connect names why nothing is listening', async () => {
+  const server = createTcpServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  const controller = new BrowserController(browserConfig(`http://127.0.0.1:${port}`));
+  await assert.rejects(() => controller.connect(), (error: unknown) => error instanceof BrowserUnavailableError
+    && error.code === 'browser_unavailable' && ['not_started', 'chrome_not_installed'].includes(error.reason));
+
+  const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+  assert.equal(browserUnavailableReason(refused, 'darwin', ['/nonexistent/Google Chrome']), 'chrome_not_installed');
+  assert.equal(browserUnavailableReason(refused, 'darwin', [process.execPath]), 'not_started');
+  assert.equal(browserUnavailableReason(refused, 'linux', []), 'not_started');
+  assert.equal(browserUnavailableReason(new DOMException('timed out', 'TimeoutError')), 'timeout');
+});
+
+test('CDP connect drives only the browser that holds the managed profile', async () => {
+  const cdp = await fakeCdp({ browserPid: 4242 });
+  try {
+    const connect = (env: Record<string, string | undefined>) => withEnv(env, () => new BrowserController(browserConfig(cdp.url)).connect());
+    await connect({ CDP_USER_DATA_DIR: managedProfile(4242), HOME23_PRODUCT_HOST: 'true' });
+    await assert.rejects(
+      () => connect({ CDP_USER_DATA_DIR: managedProfile(999), HOME23_PRODUCT_HOST: undefined }),
+      (error: unknown) => error instanceof BrowserUnavailableError && error.code === 'browser_endpoint_not_managed'
+        && /pid 4242/.test(error.message) && /held by pid 999/.test(error.message),
+    );
+    await assert.rejects(
+      () => connect({ CDP_USER_DATA_DIR: managedProfile(), HOME23_PRODUCT_HOST: 'true' }),
+      (error: unknown) => error instanceof BrowserUnavailableError && error.code === 'browser_endpoint_not_managed',
+    );
+    // A source install without a managed browser may still use a hand-run one.
+    await connect({ CDP_USER_DATA_DIR: managedProfile(), HOME23_PRODUCT_HOST: undefined });
+  } finally {
+    await cdp.close();
+  }
+});
+
+test('CDP command timeout removes its listeners from the socket', async () => {
+  const cdp = await fakeCdp({ browserPid: 7, hang: ['Runtime.evaluate'] });
+  try {
+    await withEnv({ CDP_USER_DATA_DIR: managedProfile(7), HOME23_PRODUCT_HOST: 'true' }, async () => {
+      const controller = new BrowserController(browserConfig(cdp.url, { commandTimeoutMs: 50 }));
+      await controller.connect();
+      const tab = await controller.newTab();
+      await controller.navigate(tab.id, 'https://example.com');
+      const socket = (controller as unknown as { sockets: Map<string, WebSocket> }).sockets.get(tab.id);
+      assert.ok(socket);
+      const baseline = { message: socket.listenerCount('message'), close: socket.listenerCount('close') };
+      await assert.rejects(() => controller.evaluate(tab.id, '1'), /browser_command_timeout: \[cdp\] Command Runtime\.evaluate timed out after 50 ms/);
+      assert.deepEqual({ message: socket.listenerCount('message'), close: socket.listenerCount('close') }, baseline);
+      controller.disconnect();
+    });
+  } finally {
+    await cdp.close();
+  }
+});
+
+test('browser tools report typed unavailability and never tell the resident to start Chrome', async () => {
+  const server = createTcpServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+
+  const browse = await webBrowseTool.execute({ url: 'https://example.com' }, ctx({ browser: new BrowserController(browserConfig(`http://127.0.0.1:${port}`)) }));
+  assert.equal(browse.is_error, true);
+  assert.match(browse.content, /browser_unavailable \((not_started|chrome_not_installed)\)/);
+  const disabled = await webBrowseTool.execute({ url: 'https://example.com' }, ctx());
+  const workflow = await browserWorkflowTool.execute({ url: 'https://example.com' }, ctx());
+  for (const content of [browse.content, disabled.content, workflow.content]) {
+    assert.match(content, /tell the owner/);
+    assert.doesNotMatch(content, /restart the agent|Start Chrome|remote-debugging/);
+  }
+  assert.match(workflow.content, /browser_unavailable \(disabled\)/);
+  assert.doesNotMatch(CORE_RUNTIME_PROMPT, /remote-debugging-port/);
+  assert.match(CORE_RUNTIME_PROMPT, /never launch or reconfigure Chrome yourself/);
 });

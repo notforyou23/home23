@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { scanAttention } from '../contact/attention.js';
+import { BROWSER_DISABLED_MESSAGE } from '../../browser/cdp.js';
 import { runBrowserWorkflow } from '../contact/browser.js';
 import { captureArtifact, listInbox, retrieveArtifact } from '../contact/capture.js';
 import { assertSendable, createDraft, loadDraft, previewDraft } from '../contact/comms.js';
@@ -477,7 +478,7 @@ export const browserWorkflowTool: ToolDefinition = {
   },
   async execute(input, ctx): Promise<ToolResult> {
     try {
-      if (!ctx.browser) throw new Error('Browser not available. Chrome must be running with remote debugging.');
+      if (!ctx.browser) throw new Error(BROWSER_DISABLED_MESSAGE);
       const result = await runBrowserWorkflow({
         browser: ctx.browser,
         url: String(input.url),

@@ -71,6 +71,6 @@ Input:
 
 ## Gotchas
 
-- This skill requires the Home23 browser controller to be available.
+- This skill uses Home23's managed browser. If it reports `browser_unavailable` or `browser_endpoint_not_managed`, tell the owner; never launch or reconfigure Chrome yourself.
 - Heavy client-side pages may need a longer `waitMs`.
 - Use this when rendering matters. If plain HTTP text is enough, `web_browse` may be cheaper.
