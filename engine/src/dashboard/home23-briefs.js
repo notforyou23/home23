@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { discoverAgentInstancePaths } = require('../../../shared/agent-instance-paths.cjs');
+const { discoverAgentInstancePaths, loadAgentsManifest } = require('../../../shared/agent-instance-paths.cjs');
 
 const DEFAULT_LIMIT = 80;
 const MAX_LIMIT = 240;
@@ -51,14 +51,12 @@ function safeReadJson(file, fallback = null) {
 // Briefs covers this home's roster (the dashboard manifest, else configured
 // agent instances), never an assumed pair of residents.
 function rosterAgents(home23Root) {
-  const manifest = safeReadJson(path.join(home23Root, 'config', 'agents.json'), null);
-  let names = Array.isArray(manifest) ? manifest.map((agent) => agent?.name) : [];
-  if (!names.length) {
-    try {
-      names = discoverAgentInstancePaths(home23Root, { requireConfig: true }).map((entry) => entry.agentName);
-    } catch {
-      names = [];
-    }
+  let names = [];
+  try {
+    names = loadAgentsManifest(home23Root).map((agent) => agent?.name);
+    if (!names.length) names = discoverAgentInstancePaths(home23Root, { requireConfig: true }).map((entry) => entry.agentName);
+  } catch {
+    names = [];
   }
   return [...new Set(names.filter((name) => typeof name === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(name)))];
 }
