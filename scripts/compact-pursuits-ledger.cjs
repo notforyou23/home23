@@ -9,7 +9,8 @@
  * jerry's reached 661MB (past V8's ~536MB string limit; bus init died reading
  * it at boot, 2026-07-17). This keeps the newest record per pursuit id,
  * re-diets it (evidence cap, no linkedEvidence, history cap), and atomically
- * replaces the file. The original is gzipped into ~/brain-backups first.
+ * replaces the file. The original is gzipped into the agent's brain/backups
+ * first, inside the home, so home backups and moves carry it.
  *
  * RUN WITH THE AGENT'S ENGINE STOPPED — the engine appends to this file.
  *
@@ -18,7 +19,6 @@
  */
 
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline');
 const zlib = require('node:zlib');
@@ -92,8 +92,9 @@ async function main() {
     return;
   }
 
-  // Backup: gzip the original before touching anything.
-  const backupDir = path.join(os.homedir(), 'brain-backups');
+  // Backup: gzip the original before touching anything. Not ~/brain-backups:
+  // under the Host that is Home23's runtime home, which backups leave out.
+  const backupDir = path.join(home23Root, 'instances', agent, 'brain', 'backups');
   fs.mkdirSync(backupDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupPath = path.join(backupDir, `pursuits-${agent}-${stamp}.jsonl.gz`);

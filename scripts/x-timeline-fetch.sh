@@ -5,7 +5,9 @@
 set -euo pipefail
 
 COUNT="${1:-50}"
-OUTPUT_DIR="${HOME}/.openclaw/workspace/reports/x-timeline"
+# The owner's legacy OpenClaw workspace; under the Home23 Host, HOME is
+# Home23's private runtime home and HOME23_OWNER_HOME names the owner's.
+OUTPUT_DIR="${HOME23_OWNER_HOME:-$HOME}/.openclaw/workspace/reports/x-timeline"
 mkdir -p "$OUTPUT_DIR"
 
 TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
