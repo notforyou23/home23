@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,9 @@ import {
   disabledCoordinationFeatureFlags,
 } from "../../../src/coordination/app/index.js";
 import { openCoordinationDatabase } from "../../../src/coordination/db/index.js";
+
+// The Work projection runs off the request loop in yielding steps.
+const settled = () => new Promise(resolve => setTimeout(resolve, 100));
 
 test("derived resident Work projection starts once and has its own 30-second cadence", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-resident-work-cadence-"));
@@ -28,19 +31,37 @@ test("derived resident Work projection starts once and has its own 30-second cad
     capabilityToken: "c".repeat(64), residents: {},
     flags: { ...disabledCoordinationFeatureFlags(), "coordination.process.enabled": true },
   });
-  await process.start();
+  // A listener left open by a failed assertion keeps the test file from exiting.
+  t.after(() => process.drain());
+  // The Core database is exclusive, so the journal cannot change under the test.
+  // A file where the directory belongs fails the start-time projection instead;
+  // the next 30-second tick must then project in full.
   const projectionDirectory = join(runtime, "resident-contact");
-  assert.equal(existsSync(projectionDirectory), true);
+  rmSync(projectionDirectory, { recursive: true });
+  writeFileSync(projectionDirectory, "");
+  const errors: string[] = [];
+  t.mock.method(console, "error", (label: unknown) => { errors.push(String(label)); });
+  const workRuns = () => errors.filter(label => label === "[resident-work]").length;
+  await process.start();
+  await settled();
+  assert.equal(workRuns(), 1);
   assert.equal(callbacks.has(2_000), true);
   assert.equal(callbacks.has(30_000), true);
-  rmSync(projectionDirectory, { recursive: true });
+  rmSync(projectionDirectory);
   // The contact pump reports its missing test directory, but must not run the
   // separate Work projection or recreate it on the two-second tick.
-  t.mock.method(console, "error", () => {});
   callbacks.get(2_000)!();
+  await settled();
   assert.equal(existsSync(projectionDirectory), false);
+  assert.equal(workRuns(), 1);
   callbacks.get(30_000)!();
+  await settled();
   assert.equal(existsSync(projectionDirectory), true);
+  // Once projected, a quiet journal is not rewritten: a clock is not progress.
+  rmSync(projectionDirectory, { recursive: true });
+  callbacks.get(30_000)!();
+  await settled();
+  assert.equal(existsSync(projectionDirectory), false);
   await process.drain();
 });
 
@@ -63,6 +84,7 @@ test("shadow composition advertises no unfinished product capability and closes 
       "coordination.process.enabled": true,
     },
   });
+  t.after(() => process.drain());
 
   const capabilities = process.capabilities().capabilities;
   assert.equal(capabilities.bootstrap, true);

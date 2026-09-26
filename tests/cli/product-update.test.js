@@ -1230,6 +1230,20 @@ test('holdAdoptionSupervisorLock records writers for every resident', t => {
   );
 });
 
+test('adoption takes the supervisor lock with node:sqlite whatever better-sqlite3 build loads', t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-fence-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = managedHome(root, { hostRecord: false });
+  const received = [];
+  const release = holdAdoptionSupervisorLock(source.home, resolveAdoptionIdentity(source.home), {
+    acquireSupervisorLock: (dir, Library, options) => { received.push(Library); return acquireSupervisorLock(dir, Library, options); },
+  });
+  t.after(() => release());
+  assert.deepEqual(received, [DatabaseSync]);
+  // Host Start admission (node:sqlite) in this same process is refused by the fence.
+  assert.throws(() => acquireManagedStartLocks(source.home), error => error.code === 'supervisor_lock_unavailable');
+});
+
 const memorySource = require('../../shared/memory-source');
 
 /** A resident brain whose manifest seals a chain-backed committed delta, as the engine writer leaves it. */

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:http';
 import yaml from 'js-yaml';
 import { inspectProductMemory } from '../../cli/lib/product-memory.js';
+import { listenInPlanRange } from '../helpers/plan-range-port.mjs';
 
 test('Host detects its configured local embedding model and exposes its absence without dropping text memory', async t => {
   const root = mkdtempSync(join(tmpdir(), 'h23-memory-status-'));
@@ -50,9 +51,9 @@ test('owned encoder readiness uses GET /ready and never treats /api/tags as warm
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ models: [{ name: 'owned-nomic-v1.5-onnx-fp32-mean-noprefix' }] }));
   });
-  await new Promise(accept => server.listen(0, '127.0.0.1', accept));
+  // probeOwnedReady refuses a port outside the Host plan without a request.
+  const port = await listenInPlanRange(server);
   t.after(() => { server.closeAllConnections(); return new Promise(accept => server.close(accept)); });
-  const port = server.address().port;
   const endpoint = `http://127.0.0.1:${port}/api/embeddings`;
   mkdirSync(join(root, 'app/config'), { recursive: true });
   writeFileSync(join(root, 'app/config/home.yaml'), yaml.dump({
