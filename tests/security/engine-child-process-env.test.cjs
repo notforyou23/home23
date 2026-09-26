@@ -68,6 +68,28 @@ test('macOS-native model execution passes only an unprivileged child env', async
   assert.equal(CAPABILITY_ENV in observedEnv, false);
 });
 
+test('owner children get the owner home as HOME only under the Host, without privileged keys', () => {
+  const { ownerChildEnv } = require('../../shared/child-process-env.cjs');
+  const secrets = { [AUTHORITY_ENV]: 'authority-test-value', [CAPABILITY_ENV]: 'capability-test-value' };
+  const runtime = '/fixture/home/runtime/user';
+  const product = ownerChildEnv({ HOME23_PRODUCT_HOST: 'true', HOME: runtime, HOME23_OWNER_HOME: '/fixture/owner', ...secrets });
+  assert.equal(product.HOME, '/fixture/owner');
+  assert.equal(product.HOME23_RUNTIME_HOME, runtime);
+  assert.equal(product.HOME23_OWNER_HOME, '/fixture/owner');
+  // A child of an owner child still finds Home23's private home.
+  assert.equal(ownerChildEnv(product).HOME23_RUNTIME_HOME, runtime);
+  // Without the variable the passwd entry is the owner, never the runtime HOME.
+  assert.equal(ownerChildEnv({ HOME23_PRODUCT_HOST: 'true', HOME: runtime }).HOME, os.userInfo().homedir);
+  // An explicit override wins.
+  assert.equal(ownerChildEnv({ HOME23_PRODUCT_HOST: 'true', HOME: runtime }, { HOME: '/fixture/chosen' }).HOME, '/fixture/chosen');
+  const development = ownerChildEnv({ HOME: '/fixture/dev', ...secrets });
+  assert.deepEqual(development, { HOME: '/fixture/dev' });
+  for (const env of [product, development]) {
+    assert.equal(AUTHORITY_ENV in env, false);
+    assert.equal(CAPABILITY_ENV in env, false);
+  }
+});
+
 test('every root engine model/provider child path uses the centralized scrubber', () => {
   const files = [
     'engine/src/core/capabilities.js',

@@ -151,3 +151,30 @@ test('shutdown clears the retry timer', async (t) => {
 
   assert.equal(feeder._retryTimer, null);
 });
+
+test("a configured or added '~' folder is watched in the owner home, not the runtime HOME", async (t) => {
+  const keys = ['HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  const homes = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-owner-'));
+  t.after(() => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    fs.rmSync(homes, { recursive: true, force: true });
+  });
+  const owner = path.join(homes, 'owner');
+  fs.mkdirSync(path.join(owner, 'Projects'), { recursive: true });
+  fs.mkdirSync(path.join(owner, 'Notes'), { recursive: true });
+  // A Host engine: HOME is Home23's private runtime home. Settings -> Feeder
+  // saves folders as typed, so '~' reaches the feeder unexpanded.
+  Object.assign(process.env, { HOME: path.join(homes, 'runtime-user'), HOME23_OWNER_HOME: owner, HOME23_PRODUCT_HOST: 'true' });
+  const { feeder } = await startedFeeder(t, { extraConfig: { additionalWatchPaths: [{ path: '~/Projects', label: 'projects' }] } });
+
+  const projects = (await feeder.getStatus()).watchPaths.find(entry => entry.label === 'projects');
+  assert.equal(projects.path, path.join(owner, 'Projects'));
+  assert.equal(projects.state, 'attached');
+  const added = await feeder.addWatchPath('~/Notes', 'notes');
+  assert.equal(added.path, path.join(owner, 'Notes'));
+  assert.equal(added.state, 'attached');
+});

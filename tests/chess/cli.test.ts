@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { main } from '../../src/chess/cli.js';
 import { replay, type Binding } from '../../src/chess/board.js';
@@ -69,4 +70,20 @@ test('managed serve preserves running, paused and stopped modes through shutdown
     await writeFile(config,JSON.stringify({...binding,botId:'bot_other'}));
     await assert.rejects(main(['serve',dir,config],deps),/Stored session differs/);
   } finally {await rm(root,{recursive:true,force:true});}
+});
+test('the default lock root is the runtime home, so a child given the owner HOME reaches the same watcher', async()=>{
+  const root=await mkdtemp('/tmp/chess-home-'),dir=join(root,'session');
+  const previous={HOME:process.env.HOME,HOME23_RUNTIME_HOME:process.env.HOME23_RUNTIME_HOME};
+  const log=console.log; console.log=()=>{};
+  try {
+    await mkdir(dir); await writeFile(join(dir,'state.json'),JSON.stringify({version:1,mode:'stopped'}));
+    process.env.HOME=join(root,'owner'); process.env.HOME23_RUNTIME_HOME=join(root,'runtime');
+    await main(['status',dir]);
+    assert.equal(existsSync(join(root,'runtime','.home23','chess-watch-locks')),true);
+    assert.equal(existsSync(join(root,'owner')),false);
+  } finally {
+    console.log=log;
+    for(const [key,value] of Object.entries(previous)){if(value===undefined)delete process.env[key];else process.env[key]=value;}
+    await rm(root,{recursive:true,force:true});
+  }
 });

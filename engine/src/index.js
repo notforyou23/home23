@@ -739,10 +739,8 @@ async function main() {
     // provider catalog fallback, so osEngine must be loaded directly here.
     const yaml = require('js-yaml');
     const fs = require('node:fs');
-    const os = require('node:os');
     const home23RepoRoot = path.resolve(__dirname, '..', '..');
     const homeYamlPath = path.join(home23RepoRoot, 'config', 'home.yaml');
-    const expandHome = (p) => (typeof p === 'string' && p.startsWith('~')) ? path.join(os.homedir(), p.slice(1)) : p;
     const deepMerge = (a, b) => {
       if (!a || typeof a !== 'object' || Array.isArray(a)) return b;
       if (!b || typeof b !== 'object' || Array.isArray(b)) return b;
@@ -1068,17 +1066,12 @@ async function main() {
       const { WeatherChannel }  = await import('./channels/domain/weather-channel.js');
       const { GoodLifeChannel } = await import('./channels/domain/good-life-channel.js');
       const { buildGoodLifeSnapshot } = require('./good-life/snapshot.js');
-      if (readers.pressure?.path) {
-        channelBus.register(new PressureChannel({ path: expandHome(readers.pressure.path) }));
-        registered.push('domain.pressure');
-      }
-      if (readers.health?.path) {
-        channelBus.register(new HealthChannel({ path: expandHome(readers.health.path) }));
-        registered.push('domain.health');
-      }
-      if (readers.sauna?.path) {
-        channelBus.register(new SaunaChannel({ path: expandHome(readers.sauna.path) }));
-        registered.push('domain.sauna');
+      const { domainReaderSpecs } = await import('./channels/domain/reader-config.js');
+      // The logs are the owner's: '~' is the owner home, not the runtime HOME.
+      const tailChannels = { pressure: PressureChannel, health: HealthChannel, sauna: SaunaChannel };
+      for (const reader of domainReaderSpecs(domainCfg)) {
+        channelBus.register(new tailChannels[reader.kind]({ path: reader.path }));
+        registered.push(`domain.${reader.kind}`);
       }
       if (readers.weather?.enabled) {
         // Weather fetcher is agent-specific; default to no-op until plumbed.

@@ -2,7 +2,9 @@
 # Logs workouts data from a configured bridge to ~/.workouts_log.jsonl
 # Runs via cron every 15 minutes
 
-LOG_PATH="$HOME/.workouts_log.jsonl"
+# Owner data: under the Home23 Host, HOME is Home23's private runtime home
+# and HOME23_OWNER_HOME names the owner's. The owner's own cron has only HOME.
+LOG_PATH="${HOME23_OWNER_HOME:-$HOME}/.workouts_log.jsonl"
 PI_HOST="${WORKOUTS_PI_HOST:-}"
 API_URL="${WORKOUTS_API_URL:-}"
 if [ -z "$API_URL" ] && [ -n "$PI_HOST" ]; then

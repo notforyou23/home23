@@ -95,12 +95,13 @@ function tmpMailHome(): { home: string; envelopeIndex: string } {
   };
 }
 
-// Mail is read from the owner's home; HOME points at a decoy with its own
-// index to prove the reader ignores Home23's private runtime HOME.
+// Mail is read from the owner's home; as under the Host, HOME points at a
+// decoy with its own index to prove the reader ignores Home23's private HOME.
 async function withHome<T>(home: string, action: () => Promise<T>): Promise<T> {
-  const previous = { HOME: process.env.HOME, HOME23_OWNER_HOME: process.env.HOME23_OWNER_HOME };
+  const previous = { HOME: process.env.HOME, HOME23_OWNER_HOME: process.env.HOME23_OWNER_HOME, HOME23_PRODUCT_HOST: process.env.HOME23_PRODUCT_HOST };
   process.env.HOME = tmpMailHome().home;
   process.env.HOME23_OWNER_HOME = home;
+  process.env.HOME23_PRODUCT_HOST = 'true';
   try {
     return await action();
   } finally {
@@ -383,6 +384,23 @@ test('mac mail reports a typed Full Disk Access error when the index is unreadab
       && /Full Disk Access/.test(error.message)
       && /never changes it/.test(error.message),
   );
+});
+
+test('finder searches the owner home, not the Host runtime HOME', async () => {
+  const owner = mkdtempSync(path.join(tmpdir(), 'home23-finder-owner-'));
+  const searched: string[] = [];
+  const runner: MacRunner = {
+    async jxa() {
+      throw new Error('finder must not invoke JXA');
+    },
+    async spotlight(_query, onlyIn) {
+      searched.push(onlyIn);
+      return `${owner}/Documents/plan.md\n`;
+    },
+  };
+  const items = await withHome(owner, () => macRead('finder', 'plan', runner));
+  assert.deepEqual(searched, [owner]);
+  assert.deepEqual(items.map((item) => item.title), ['plan.md']);
 });
 
 test('mac mail distinguishes an absent Mail folder from a permission problem', async () => {

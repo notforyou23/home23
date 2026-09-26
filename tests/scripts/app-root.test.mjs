@@ -53,12 +53,17 @@ test("resolveAppRoot rejects a relative or filesystem-root HOME23_ROOT", () => {
   assert.throws(() => resolveAppRoot(scriptUrl, { HOME23_ROOT: "/" }), /absolute dedicated Home23 directory/);
 });
 
-test("resolveShakedownSiteRoot honours SHAKEDOWN_SITE_ROOT, else the current user's home", () => {
+test("resolveShakedownSiteRoot honours SHAKEDOWN_SITE_ROOT, else the owner's home", () => {
   withTempRoot((root) => {
     assert.equal(resolveShakedownSiteRoot({ SHAKEDOWN_SITE_ROOT: root }), path.resolve(root));
   });
-  assert.equal(resolveShakedownSiteRoot({}), path.join(os.homedir(), "websites", "shakedownshuffle.com"));
-  assert.equal(resolveShakedownSiteRoot({ SHAKEDOWN_SITE_ROOT: "" }), path.join(os.homedir(), "websites", "shakedownshuffle.com"));
+  // Under the Host, HOME is Home23's private runtime home, which holds no site.
+  const host = { HOME23_PRODUCT_HOST: "true", HOME: "/fixture/home/runtime/user", HOME23_OWNER_HOME: "/fixture/owner" };
+  assert.equal(resolveShakedownSiteRoot(host), path.join("/fixture/owner", "websites", "shakedownshuffle.com"));
+  assert.equal(resolveShakedownSiteRoot({ ...host, SHAKEDOWN_SITE_ROOT: "" }), path.join("/fixture/owner", "websites", "shakedownshuffle.com"));
+  const { HOME23_OWNER_HOME: _named, ...unnamed } = host;
+  assert.equal(resolveShakedownSiteRoot(unnamed), path.join(os.userInfo().homedir, "websites", "shakedownshuffle.com"));
+  assert.equal(resolveShakedownSiteRoot({}), path.join(os.userInfo().homedir, "websites", "shakedownshuffle.com"));
 });
 
 // scripts/home23-disk-maintenance.sh applies the same rule in bash. It only

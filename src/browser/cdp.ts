@@ -94,12 +94,14 @@ export function browserUnavailableReason(error: unknown, platform: string = proc
 /**
  * The managed profile, computed exactly as the launcher does
  * (`${CDP_USER_DATA_DIR:-$HOME/.home23/chrome-cdp}` in scripts/chrome-cdp.sh),
- * so both sides name the same directory. The owner-home contract is to set
- * CDP_USER_DATA_DIR for every Host process; until it lands, the HOME
- * fallback is what the launcher uses. Keep this in step with the launcher
- * when that contract merges rather than deriving the profile here.
+ * so both sides name the same directory. productEnvironment() sets
+ * CDP_USER_DATA_DIR (under Home23's runtime home) for every Host process, so a
+ * child running with the owner's HOME still names the same profile; the HOME
+ * fallback serves development checkouts. Keep this in step with the launcher
+ * rather than deriving the profile here.
  */
 export function managedProfileDir(env: NodeJS.ProcessEnv = process.env): string {
+  // product-private: the managed Chrome profile is Home23's; runtime HOME by design.
   return env.CDP_USER_DATA_DIR?.trim() || join(env.HOME?.trim() || homedir(), '.home23', 'chrome-cdp');
 }
 

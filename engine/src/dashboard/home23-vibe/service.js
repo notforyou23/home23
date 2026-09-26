@@ -2,11 +2,11 @@
 
 const fs = require('fs');
 const fsp = require('fs').promises;
-const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const yaml = require('js-yaml');
 const { createImageProvider } = require('../../core/image-provider');
+const { expandOwnerPath } = require('../../../../shared/owner-home.cjs');
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 const DEFAULT_GALLERY_LIMIT = 60;
@@ -67,13 +67,12 @@ const ACTION_HINT_WORDS = new Set([
   'looks', 'looking', 'watched', 'watching', 'arrive', 'arriving', 'leave', 'leaving',
 ]);
 
+// home.yaml keeps sourcePaths as entered ('~' included): the update preflight
+// refuses absolute paths outside the home there. '~' is expanded here, at
+// read, to the owner's home rather than Home23's runtime HOME.
 function expandPath(p) {
   if (!p || typeof p !== 'string') return '';
-  const trimmed = p.trim();
-  if (!trimmed) return '';
-  if (trimmed === '~') return os.homedir();
-  if (trimmed.startsWith('~/')) return path.join(os.homedir(), trimmed.slice(2));
-  return trimmed;
+  return expandOwnerPath(p.trim());
 }
 
 function normalizeSourcePaths(raw) {

@@ -133,3 +133,28 @@ test('targets registry allows cron job error verifiers for known agent cron stat
     { ok: true },
   );
 });
+
+test("targets registry matches '~' targets and verifier paths through the owner home", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-targets-owner-'));
+  const keys = ['HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const owner = path.join(root, 'owner');
+  const runtime = path.join(root, 'runtime-user');
+  // A Host engine: HOME is Home23's private runtime home.
+  Object.assign(process.env, { HOME: runtime, HOME23_OWNER_HOME: owner, HOME23_PRODUCT_HOST: 'true' });
+  const filePath = path.join(root, 'targets.yaml');
+  fs.writeFileSync(filePath, JSON.stringify({ files: [{ path: '~/.health_log.jsonl' }], urls: [], pm2: [], mounts: [], sensors: [] }));
+  const registry = new TargetsRegistry({ filePath });
+  const check = (p) => registry.validateVerifier({ type: 'file_mtime', args: { path: p, maxAgeMin: 360 } });
+
+  assert.deepEqual(check('~/.health_log.jsonl'), { ok: true });
+  assert.deepEqual(check(path.join(owner, '.health_log.jsonl')), { ok: true });
+  assert.equal(check(path.join(runtime, '.health_log.jsonl')).ok, false);
+});

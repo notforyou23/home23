@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, readdir, stat } from 'node:fs/promises';
-import { homedir, userInfo } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
+import { ownerHome } from '../../security/owner-home.js';
 import type { AttentionItem } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -322,15 +322,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-// Mail lives in the owner's macOS home. Under the Host, HOME is Home23's
-// private runtime home (<home>/runtime/user), so it must not be used here.
-// Resolved locally until the shared owner-home contract (HOME23_OWNER_HOME,
-// shared/owner-home.cjs) lands; switch to that resolver then.
-function ownerHomeDirectory(): string {
-  const explicit = process.env.HOME23_OWNER_HOME?.trim();
-  return explicit && isAbsolute(explicit) ? explicit : userInfo().homedir;
-}
-
 const MAIL_PERMISSION_HINT = 'Full Disk Access is required for the fast Mail index. Only the owner can grant it (System Settings > Privacy & Security > Full Disk Access > Home23 Host); Home23 never changes it.';
 
 function mailError(code: string, detail: string): MacSurfaceError {
@@ -343,7 +334,9 @@ function isPermissionError(error: unknown): boolean {
 }
 
 async function discoverMailEnvelopeIndex(): Promise<string> {
-  const mailRoot = join(ownerHomeDirectory(), 'Library', 'Mail');
+  // Mail lives in the owner's macOS home, never HOME: under the Host that is
+  // Home23's private runtime home (<home>/runtime/user).
+  const mailRoot = join(ownerHome(), 'Library', 'Mail');
   let entries: string[];
   try {
     entries = await readdir(mailRoot);
@@ -1028,7 +1021,8 @@ async function readSurface(
     return readMailMessage(runner, opts, mail);
   }
   if (surface === 'finder') {
-    const home = homedir();
+    // Spotlight searches the owner's files, never Home23's runtime HOME.
+    const home = ownerHome();
     if (!query.trim()) throw new Error('finder search requires a query');
     if (!runner.spotlight) throw new Error('spotlight runner unavailable');
     const raw = await runner.spotlight(query, home, opts);

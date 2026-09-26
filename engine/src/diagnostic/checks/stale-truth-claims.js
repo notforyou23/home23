@@ -12,6 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { expandOwnerPath } = require('../../../../shared/owner-home.cjs');
 
 async function run(ctx) {
   const truthPath = path.join(ctx.brainDir, 'agency', 'truth.jsonl');
@@ -41,11 +42,8 @@ async function run(ctx) {
     if (claim.status !== 'current') continue;
     if (!claim.sourceRef) continue;
 
-    // Check if sourceRef is a file path
-    let refPath = claim.sourceRef;
-    if (refPath.startsWith('~/')) {
-      refPath = path.join(os.homedir(), refPath.slice(2));
-    }
+    // Check if sourceRef is a file path; '~' is the owner's home.
+    const refPath = expandOwnerPath(claim.sourceRef);
     if (!refPath.startsWith('/')) continue; // not a path
 
     // Check if the referenced file still exists
@@ -96,8 +94,6 @@ async function run(ctx) {
 
   return { ok: true, findings };
 }
-
-const os = require('os');
 
 module.exports = {
   id: 'stale_truth_claims',

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -31,6 +32,8 @@ function runLogPressure(home, extraEnv = {}) {
     env: {
       ...process.env,
       HOME: home,
+      // The owner's own cron: HOME only, no Host owner variable.
+      HOME23_OWNER_HOME: undefined,
       PATH: `${join(home, 'bin')}:${process.env.PATH}`,
       ...extraEnv,
     },
@@ -144,5 +147,35 @@ JSON
     assert.doesNotMatch(sshArgs, / -i /);
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('under the Host log-pressure writes the owner log and uses the owner Pi key, not the runtime HOME', () => {
+  const runtimeHome = makeTempHome();
+  const owner = mkdtempSync(join(tmpdir(), 'home23-pressure-owner-'));
+  try {
+    mkdirSync(join(owner, '.ssh'), { recursive: true });
+    const keyPath = join(owner, '.ssh', 'id_ed25519_pi');
+    writeFileSync(keyPath, 'test-key');
+    const argsPath = join(runtimeHome, 'ssh-args.txt');
+    writeExecutable(join(runtimeHome, 'bin', 'curl'), '#!/bin/bash\nexit 0\n');
+    writeExecutable(
+      join(runtimeHome, 'bin', 'ssh'),
+      `#!/bin/bash
+printf '%s\\n' "$*" > "$SSH_ARGS_CAPTURE"
+cat <<'JSON'
+{"ts":"2026-05-11T10:15:00Z","pressure_pa":101050,"pressure_inhg":29.84}
+JSON
+`
+    );
+
+    runLogPressure(runtimeHome, { HOME23_OWNER_HOME: owner, HOME23_PRODUCT_HOST: 'true', PI_SSH_TARGET: 'sensor-host', SSH_ARGS_CAPTURE: argsPath });
+
+    assert.equal(readLoggedEntry(owner).pressure_pa, 101050);
+    assert.equal(existsSync(join(runtimeHome, '.pressure_log.jsonl')), false);
+    assert.match(readFileSync(argsPath, 'utf8'), new RegExp(`-i ${keyPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  } finally {
+    rmSync(runtimeHome, { recursive: true, force: true });
+    rmSync(owner, { recursive: true, force: true });
   }
 });

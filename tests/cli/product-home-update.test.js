@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { homeUpdateStatus, pruneUpdateDelivery, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
 
@@ -37,7 +37,7 @@ async function check(f) {
 test('external homes expand runtime in a private local cache and resume the same signed download', t => {
   const f = fixture(t), id = '12345678-1234-1234-1234-123456789abc';
   const cacheRoot = join(f.parent, 'cache');
-  const deviceFor = path => path === f.home ? 2 : path === homedir() || path === cacheRoot ? 1 : 2;
+  const deviceFor = path => path === f.home ? 2 : path === userInfo().homedir || path === cacheRoot ? 1 : 2;
   const options = { cacheRoot, deviceFor, release: { runtime: { bytes: 1024 } } };
   const first = updateDeliveryPaths(f.home, id, options);
   assert.equal(first.staging, join(f.parent, '.home.home23-delivery', `stage-${id}`));
@@ -48,6 +48,18 @@ test('external homes expand runtime in a private local cache and resume the same
   const linkedCache = join(f.parent, 'linked-cache');
   symlinkSync(cacheRoot, linkedCache);
   assert.throws(() => updateDeliveryPaths(f.home, id, { ...options, cacheRoot: linkedCache }), /real home directory ancestors|symbolic links/);
+});
+
+test('a Host HOME inside the home does not hide that the Mac local volume is separate', t => {
+  const f = fixture(t), id = '12345678-1234-1234-1234-123456789abd';
+  const cacheRoot = join(f.parent, 'cache');
+  const previous = process.env.HOME;
+  t.after(() => { process.env.HOME = previous; });
+  // Under the Host, HOME is this home's runtime/user, on the home's own volume.
+  process.env.HOME = join(f.home, 'runtime/user');
+  const deviceFor = path => path === userInfo().homedir || path === cacheRoot ? 1 : 2;
+  const paths = updateDeliveryPaths(f.home, id, { cacheRoot, deviceFor });
+  assert.equal(paths.extractionDirectory, join(cacheRoot, `extraction-${id}`));
 });
 
 test('parallel duplicate owner request launches once and preserves operation across status reads', async t => {

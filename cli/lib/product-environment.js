@@ -1,6 +1,7 @@
 /** Isolation boundaries for an installed Home23 Host. No ambient credentials. */
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 
@@ -45,6 +46,22 @@ export function socketRootFor(homeRoot) {
   const hash = createHash('sha256').update(resolve(homeRoot)).digest('hex').slice(0, 16);
   return join('/tmp', `h23-${process.getuid?.() ?? 'user'}-${hash}`);
 }
+/**
+ * The owner's macOS account home, from its passwd entry. Never $HOME: a Host
+ * process's HOME is this home's private runtime/user. Null unless it is an
+ * existing absolute directory other than '/' and outside homeRoot. Computed at
+ * every launch and never written into a home setting: the update preflight
+ * refuses absolute paths outside the home there, and '~/...' is portable.
+ */
+export function ownerAccountHome(homeRoot) {
+  try {
+    const account = userInfo().homedir;
+    if (typeof account !== 'string' || !isAbsolute(account) || account.includes('\0')) return null;
+    const owner = resolve(account), root = homeRoot ? resolve(homeRoot) : null;
+    if (owner === '/' || !statSync(owner).isDirectory() || (root && (owner === root || owner.startsWith(`${root}/`)))) return null;
+    return owner;
+  } catch { return null; }
+}
 export function productEnvironment(homeRoot, { prepare = false, encoderRequired = false, embedderPort } = {}) {
   homeRoot = absoluteHome(homeRoot);
   const runtime = join(homeRoot, 'runtime');
@@ -52,17 +69,25 @@ export function productEnvironment(homeRoot, { prepare = false, encoderRequired 
   const userHome = join(runtime, 'user');
   const pm2Home = join(runtime, 'pm2');
   const cache = embedderCacheDir(homeRoot);
+  const owner = ownerAccountHome(homeRoot);
   if (prepare) for (const directory of [runtime, userHome, pm2Home, socketRoot, ...(encoderRequired ? [cache] : [])]) privateDirectory(directory);
   const env = {
     HOME: userHome, USER: `home23-${process.getuid?.() ?? 'user'}`, LOGNAME: `home23-${process.getuid?.() ?? 'user'}`,
     PATH: `${join(homeRoot, 'bin')}:${join(homeRoot, 'tools', 'node_modules', 'pm2', 'bin')}:/usr/bin:/bin:/usr/sbin:/sbin`,
     TMPDIR: socketRoot, LANG: 'en_US.UTF-8', NODE_ENV: 'production',
     HOME23_ROOT: join(homeRoot, 'app'), HOME23_PRODUCT_HOST: 'true',
+    // HOME is Home23's own (npm, Chrome profile, Caddy, Python caches,
+    // provider-CLI stores). '~' in a path the owner or a resident names means
+    // HOME23_OWNER_HOME (shared/owner-home.cjs); a child acting for the owner
+    // still finds Home23's own state through HOME23_RUNTIME_HOME.
+    HOME23_RUNTIME_HOME: userHome, CDP_USER_DATA_DIR: join(userHome, '.home23', 'chrome-cdp'),
+    ...(owner ? { HOME23_OWNER_HOME: owner } : {}),
     PM2_HOME: pm2Home, PM2_DAEMON_RPC_PORT: join(socketRoot, 'pm2-rpc.sock'),
     PM2_DAEMON_PUB_PORT: join(socketRoot, 'pm2-pub.sock'), PM2_INTERACTOR_RPC_PORT: join(socketRoot, 'pm2-agent.sock'),
     PM2_SILENT: 'true', PM2_DISABLE_UPDATE: 'true',
   };
   if (encoderRequired) {
+    // product-private: HOME is only compared; the cache lies inside the home, never the owner's.
     if (cache === env.HOME || cache === process.env.HOME) throw new Error('HOME23_EMBEDDER_CACHE must not be the GUI or home directory');
     env.HOME23_EMBEDDER_CACHE = cache;
     env.HOME23_EMBEDDER_BIND = '127.0.0.1';

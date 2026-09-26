@@ -19,7 +19,7 @@
  */
 
 const fs = require('fs');
-const os = require('os');
+const { expandOwnerPath } = require('../../../shared/owner-home.cjs');
 const { runVerifier } = require('./verifiers');
 const { runRemediator } = require('./remediators');
 const { isAgendaHandoffProblem, isOperatorSuppressed } = require('./store');
@@ -73,18 +73,14 @@ function classifyDispatchRecipe(recipe) {
   return { outcome: 'failed', advance: true };
 }
 
-function expandHome(p) {
-  if (!p || typeof p !== 'string') return p;
-  return p.startsWith('~') ? p.replace(/^~/, os.homedir()) : p;
-}
-
 function verifierSourcePaths(verifier) {
   if (!verifier?.type) return [];
   if (verifier.type === 'composed') {
     return (verifier.args?.verifiers || []).flatMap((child) => verifierSourcePaths(child));
   }
   const p = verifier.args?.path;
-  return typeof p === 'string' && p.trim() ? [expandHome(p)] : [];
+  // The same owner-home rule the verifier applies when it reads this path.
+  return typeof p === 'string' && p.trim() ? [expandOwnerPath(p)] : [];
 }
 
 function verifierSourceChangedSinceLastCheck(problem) {

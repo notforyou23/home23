@@ -1,7 +1,7 @@
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const yaml = require('js-yaml');
+const { ownerHome } = require('../../../shared/owner-home.cjs');
 const { updateSettingsSecrets } = require('./home23-secrets');
 const { writeYamlSafely } = require('./yaml-write-safety');
 
@@ -67,12 +67,14 @@ function buildOfflineTilePayload(tileId, { status = 'Offline', value = '—', su
 
 const TILE_SIZES = ['third', 'half', 'full'];
 const GENERIC_AUTH_TYPES = ['none', 'basic', 'bearer', 'header'];
-const SAUNA_LOG_PATH = path.join(process.env.HOME || os.homedir() || process.cwd(), '.sauna_usage_log.jsonl');
+// The owner's sauna log (the sauna channel reads '~/.sauna_usage_log.jsonl'),
+// resolved per write. Under the Host, HOME is Home23's private home.
+const saunaLogPath = () => path.join(ownerHome(), '.sauna_usage_log.jsonl');
 let _prevSaunaState = null; // for usage transition detection
 
 function logSaunaEvent(event, saunaData) {
   try {
-    fs.appendFileSync(SAUNA_LOG_PATH, JSON.stringify({ event, ts: new Date().toISOString(), temp: saunaData.temperature, targetTemp: saunaData.targetTemperature, status: saunaData.status }) + '\n');
+    fs.appendFileSync(saunaLogPath(), JSON.stringify({ event, ts: new Date().toISOString(), temp: saunaData.temperature, targetTemp: saunaData.targetTemperature, status: saunaData.status }) + '\n');
   } catch (e) {
     console.warn('[TILES] Sauna usage log write failed:', e.message);
   }

@@ -4,14 +4,16 @@
 'use strict';
 
 const fs   = require('fs');
-const os   = require('os');
 const path = require('path');
+const { ownerHome } = require('../../../shared/owner-home.cjs');
 const { fetchWeatherData } = require('./integrations/weather');
 const { fetchSaunaStatus, toggleSauna } = require('./integrations/sauna');
 const { fetchPiSensor } = require('./integrations/pi-sensor');
 
 const CACHE_PATH    = path.join(__dirname, '..', '..', 'data', 'sensor-cache.json');
-const USAGE_LOG_PATH = path.join(process.env.HOME || os.homedir() || process.cwd(), '.sauna_usage_log.jsonl');
+// The owner's sauna log, which the domain sauna channel reads as
+// '~/.sauna_usage_log.jsonl'. Under the Host, HOME is Home23's private home.
+const usageLogPath = () => path.join(ownerHome(), '.sauna_usage_log.jsonl');
 const WEATHER_INTERVAL_MS = 5 * 60 * 1000;  // 5 min
 const SAUNA_INTERVAL_MS   = 2 * 60 * 1000;  // 2 min
 const PI_INTERVAL_MS      = 5 * 60 * 1000;  // 5 min — matches pressure log cron
@@ -48,7 +50,7 @@ function logSaunaEvent(event, saunaData) {
       targetTemp: saunaData.targetTemperature,
       status: saunaData.status,
     };
-    fs.appendFileSync(USAGE_LOG_PATH, JSON.stringify(entry) + '\n');
+    fs.appendFileSync(usageLogPath(), JSON.stringify(entry) + '\n');
   } catch (e) {
     console.warn('[SENSORS] Sauna usage log write failed:', e.message);
   }

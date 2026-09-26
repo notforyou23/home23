@@ -258,6 +258,43 @@ test('settings agent creation records purpose and starter ingestion folders', as
   });
 });
 
+test("a second resident's '~' folder is saved under the owner home, not the dashboard's runtime HOME", async (t) => {
+  const keys = ['HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const homes = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-settings-owner-'));
+  t.after(() => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    fs.rmSync(homes, { recursive: true, force: true });
+  });
+  const owner = path.join(homes, 'owner');
+  // A Host dashboard: HOME is Home23's private runtime home.
+  Object.assign(process.env, { HOME: path.join(homes, 'runtime-user'), HOME23_OWNER_HOME: owner, HOME23_PRODUCT_HOST: 'true' });
+  await withSettingsServer({
+    providers: { 'ollama-cloud': { defaultModels: ['kimi-k3:cloud'] } },
+    models: { aliases: { kimi: { provider: 'ollama-cloud', model: 'kimi-k3:cloud' } } },
+  }, async (baseUrl, root) => {
+    // An existing resident: a later one is written to its own config.yaml only.
+    fs.mkdirSync(path.join(root, 'instances', 'milo'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'instances', 'milo', 'config.yaml'), yaml.dump({ agent: { name: 'milo' } }), 'utf8');
+    const createRes = await fetch(`${baseUrl}/home23/api/settings/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'ada', displayName: 'Ada', ownerName: 'JTR', purpose: 'Test owner folders.',
+        ingestPaths: '~/Projects/app', provider: 'ollama-cloud', model: 'kimi-k3:cloud' }),
+    });
+    assert.equal(createRes.status, 200);
+    const expected = path.join(owner, 'Projects', 'app');
+    assert.deepEqual((await createRes.json()).agent.ingestPaths.map((entry) => entry.path), [expected]);
+    const config = yaml.load(fs.readFileSync(path.join(root, 'instances', 'ada', 'config.yaml'), 'utf8'));
+    assert.ok(config.feeder.additionalWatchPaths.some((entry) => entry.path === expected));
+    // Nothing owner-specific lands in home.yaml, which the update preflight scans.
+    assert.doesNotMatch(fs.readFileSync(path.join(root, 'config', 'home.yaml'), 'utf8'), new RegExp(owner.replaceAll('.', '\\.')));
+  });
+});
+
 test('settings agent creation rejects an unconfigured selected chat provider', async () => {
   await withSettingsServer({ home: {} }, async (baseUrl) => {
     const createRes = await fetch(`${baseUrl}/home23/api/settings/agents`, {

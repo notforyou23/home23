@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -142,4 +142,24 @@ test('downloadFile overwrites the part when the server ignores Range', async () 
   });
   assert.equal(readFileSync(dest).equals(full), true);
   assert.equal(statSync(dest).size, full.length);
+});
+
+test('ensureArtifacts refuses the owner home as its cache under the Host, not only HOME', async (t) => {
+  const keys = ['HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const dir = mkdtempSync(join(tmpdir(), 'embedder-home-'));
+  t.after(() => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const owner = join(dir, 'owner');
+  mkdirSync(owner);
+  // A Host process: HOME is Home23's runtime home; the GUI home is the owner's.
+  Object.assign(process.env, { HOME: join(dir, 'runtime-user'), HOME23_OWNER_HOME: owner, HOME23_PRODUCT_HOST: 'true' });
+  await assert.rejects(() => ensureArtifacts(owner, { fetchIfMissing: false }), /must not be the GUI or home directory/);
+  await assert.rejects(() => ensureArtifacts(process.env.HOME, { fetchIfMissing: false }), /must not be the GUI or home directory/);
+  assert.equal(existsSync(join(owner, 'nomic-ai')), false);
 });

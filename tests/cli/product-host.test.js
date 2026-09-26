@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:http';
-import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
+import { choosePortPlan, ownerAccountHome, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
 import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses, supervisorListening } from '../../cli/lib/product-host.js';
 import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
@@ -50,11 +50,30 @@ test('environment removes host credentials and PM2 metadata and uses short priva
   assert.equal(env.OPENAI_API_KEY, undefined); assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined); assert.equal(env.NODE_OPTIONS, undefined); assert.equal(env.pm_id, undefined);
   assert.equal(env.PM2_HOME, path.join(homeRoot, 'runtime/pm2'));
   assert.notEqual(env.HOME, os.homedir());
+  // HOME stays Home23's private runtime home; the owner's account home is
+  // named beside it from the passwd entry, and the Chrome profile is pinned.
+  assert.equal(env.HOME, path.join(homeRoot, 'runtime/user'));
+  assert.equal(env.HOME23_RUNTIME_HOME, env.HOME);
+  assert.equal(env.CDP_USER_DATA_DIR, path.join(env.HOME, '.home23/chrome-cdp'));
+  assert.equal(env.HOME23_OWNER_HOME, os.userInfo().homedir);
   assert.ok(env.PM2_DAEMON_RPC_PORT.length < 100);
   assert.equal(fs.statSync(env.TMPDIR).mode & 0o777, 0o700);
   fs.rmSync(env.TMPDIR, { recursive: true }); fs.symlinkSync(homeRoot, env.TMPDIR);
   assert.throws(() => productEnvironment(homeRoot, { prepare: true }), /private/);
   fs.unlinkSync(env.TMPDIR);
+});
+
+test('the owner account home comes from passwd, never HOME, and is left out when unusable', t => {
+  const account = os.userInfo().homedir;
+  const previous = process.env.HOME;
+  t.after(() => { process.env.HOME = previous; });
+  process.env.HOME = path.join(os.tmpdir(), 'not-the-owner');
+  assert.equal(ownerAccountHome(path.join(fs.realpathSync(os.tmpdir()), 'home23-owner-fixture')), account);
+  assert.equal(ownerAccountHome(), account);
+  // A home that is, or contains, the account home cannot name it as the owner's.
+  assert.equal(ownerAccountHome(account), null);
+  assert.equal(ownerAccountHome(path.dirname(account)), null);
+  assert.equal('HOME23_OWNER_HOME' in productEnvironment(path.dirname(account)), false);
 });
 
 test('complete persisted port plans refuse occupied ports and do not use historical defaults', async () => {
@@ -265,6 +284,13 @@ test('start persists intent and returns starting until readiness succeeds', asyn
   const result = await runHostAction('start', { homeRoot }, { execute, definitions: () => productDefinitions(definitions(homeRoot), homeRoot, 'milo'), readinessWaitMs: 0, probeReadiness: async () => ({ ready: false, issues: ['waiting for signed resident'] }) });
   assert.equal(result.status, 'starting'); assert.equal(result.desiredRunning, true);
   assert.deepEqual(calls.filter(args => args[0] === 'start').map(args => args[args.indexOf('--only') + 1]), ownedProcessNames('milo', { home23Root: homeRoot }));
+  // Processes learn the owner home from their environment, computed at launch;
+  // the saved Host state, which the update preflight scans, never carries it.
+  const owner = os.userInfo().homedir;
+  assert.equal(productDefinitions(definitions(homeRoot), homeRoot, 'milo')[0].env.HOME23_OWNER_HOME, owner);
+  const saved = fs.readFileSync(path.join(homeRoot, '.home23-host.json'), 'utf8');
+  assert.equal(saved.includes('HOME23_OWNER_HOME'), false);
+  if (!homeRoot.startsWith(`${owner}/`)) assert.equal(saved.includes(owner), false);
 });
 
 test('definitions and Start include seed, shipper and seed-observatory when the resident enables substrate', async t => {
@@ -395,6 +421,24 @@ test('status warns about foreign supervisors bound to this home without failing 
   const clean = await runHostAction('status', { homeRoot }, { ...dependencies, detectForeignBindings: options => detectForeignBindings({ ...options, homeDirectory: path.join(userHome, 'nobody') }) });
   assert.deepEqual(clean.warnings, []);
   assert.deepEqual(clean.foreignBindings.references, []);
+});
+
+test('status from a Host process environment scans the owner home, not the runtime HOME', async t => {
+  const { homeRoot } = await prepared(t);
+  const userHome = path.join(path.dirname(homeRoot), 'user');
+  fs.mkdirSync(path.join(userHome, '.pm2'), { recursive: true });
+  fs.writeFileSync(path.join(userHome, '.pm2/dump.pm2'), JSON.stringify([{ name: 'cosmo-engine', pm_cwd: path.join(homeRoot, 'app') }]));
+  const keys = ['HOME', 'PM2_HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  t.after(() => { for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; } });
+  // host.mjs replaces the whole environment with productEnvironment() before any action.
+  Object.assign(process.env, { HOME: path.join(homeRoot, 'runtime/user'), PM2_HOME: path.join(homeRoot, 'runtime/pm2'),
+    HOME23_OWNER_HOME: userHome, HOME23_PRODUCT_HOST: 'true' });
+  const status = await runHostAction('status', { homeRoot }, { execute: async () => ({ stdout: '[]' }) });
+  assert.equal(status.foreignBindings.scanned.ownerHome, userHome);
+  assert.equal(status.foreignBindings.scanned.pm2Dump, path.join(userHome, '.pm2/dump.pm2'));
+  assert.equal(status.warnings.length, 1);
+  assert.match(status.warnings[0], /PM2 app "cosmo-engine"/);
 });
 
 test('consumer Host skips Evobrew and accepts only its stopped legacy supervisor row', async t => {

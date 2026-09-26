@@ -8,9 +8,12 @@
  */
 
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+
+// The pressure log is the owner's; under the Host, HOME is Home23's own.
+const { ownerHome } = createRequire(import.meta.url)('../../shared/owner-home.cjs');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,7 +25,7 @@ function argValue(name, fallback = null) {
 }
 
 const agent = argValue('--agent', 'jerry');
-const pressurePath = argValue('--pressure-path', path.join(os.homedir(), '.pressure_log.jsonl'));
+const pressurePath = argValue('--pressure-path', path.join(ownerHome(), '.pressure_log.jsonl'));
 const repoRoot = path.resolve(__dirname, '..', '..');
 const outDir = argValue('--out-dir', path.join(repoRoot, 'instances', agent, 'workspace', 'insights'));
 const today = argValue('--date', new Date().toISOString().slice(0, 10));

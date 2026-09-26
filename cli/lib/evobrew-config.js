@@ -34,6 +34,7 @@ function getKnownLegacyBrainRoots(home23Root) {
 }
 
 function loadExternalBrainDirectories(home23Root) {
+  // product-private: retired Evobrew and provider stores; runtime HOME by design.
   const configPaths = [
     join(homedir(), '.evobrew', 'config.json'),
     join(homedir(), '.cosmo2.3', 'config.json'),
