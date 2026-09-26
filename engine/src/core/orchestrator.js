@@ -7566,20 +7566,39 @@ class Orchestrator {
 
       if (expectedNodes > 0 || expectedEdges > 0) {
         try {
-          const persistence = await persistMemoryRevision({
-            brainDir: this.logsDir,
-            home23Root: this.home23Root || path.resolve(__dirname, '../../..'),
-            memory: this.memory,
-            fullRewriteIntervalMs: this.config?.persistence?.memorySidecarFullRewriteIntervalMs,
-            gzipLevel: this.config?.persistence?.memorySidecarGzipLevel,
-            logger: this.logger,
-          });
+          let persistence;
+          try {
+            persistence = await persistMemoryRevision({
+              brainDir: this.logsDir,
+              home23Root: this.home23Root || path.resolve(__dirname, '../../..'),
+              memory: this.memory,
+              fullRewriteIntervalMs: this.config?.persistence?.memorySidecarFullRewriteIntervalMs,
+              gzipLevel: this.config?.persistence?.memorySidecarGzipLevel,
+              logger: this.logger,
+            });
+          } catch (err) {
+            // The delta append (or a clean reuse) committed before the due
+            // compaction failed, so memory is durable at that manifest and the
+            // state shell below is as consistent as after any delta save. The
+            // refusal guards only against inlining a large graph; applying it
+            // here reverted Forrest's cognition to 23 Sep on every restart.
+            if (!err?.memoryCommitted?.manifest) throw err;
+            persistence = err.memoryCommitted;
+            this.logger.warn('Memory compaction failed after delta commit — saving state with maintenance debt', {
+              error: err.message,
+              graphCounts: err.graphCounts,
+              manifestSummary: err.manifestSummary,
+              revision: persistence.manifest.currentRevision,
+              retryAfter: persistence.maintenanceDebt?.retryAfter,
+            });
+          }
           if (persistence?.manifest) {
             sidecarsWritten = {
               mode: persistence.mode,
               manifest: persistence.manifest,
               revision: persistence.manifest.currentRevision,
               cleaned: persistence.cleaned,
+              maintenanceDebt: persistence.maintenanceDebt || null,
               nodes: {
                 file: persistence.manifest.activeBase.nodes.file,
                 count: expectedNodes,
@@ -7636,8 +7655,13 @@ class Orchestrator {
             state.memory = { ...state.memory, nodes: [], edges: [] };
           }
         } catch (err) {
+          // graphCounts is the counted base+delta; without it beside the
+          // manifest summary a mismatch cannot say which count disagrees.
           this.logger.warn('Memory sidecar write failed', {
             error: err.message,
+            ...(err.graphCounts && { graphCounts: err.graphCounts }),
+            ...(err.manifestSummary && { manifestSummary: err.manifestSummary }),
+            ...(err.residentSummary && { residentSummary: err.residentSummary }),
           });
           sidecarsWritten = null;
           const inlineFallbackMaxNodes = this.config?.persistence?.inlineMemoryFallbackMaxNodes || 1000;
@@ -7696,6 +7720,7 @@ class Orchestrator {
                 deltaKB: +(sidecarsWritten.delta.bytes / 1024).toFixed(1),
               }) }
           : 'inline (fallback)',
+        ...(sidecarsWritten?.maintenanceDebt && { memoryMaintenanceDebt: sidecarsWritten.maintenanceDebt }),
         ...(saveResult.ratio && { compressionRatio: saveResult.ratio })
       });
       this.lastSaveResult = {
@@ -7704,6 +7729,7 @@ class Orchestrator {
         totalNodes,
         expectedEdges,
         sidecars: sidecarsWritten ? 'sidecar' : 'inline',
+        ...(sidecarsWritten?.maintenanceDebt && { memoryMaintenanceDebt: sidecarsWritten.maintenanceDebt }),
       };
 
       // Write the brain-snapshot sidecar as the new source of truth for
