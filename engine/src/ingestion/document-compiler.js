@@ -56,6 +56,30 @@ Produce a structured synthesis:
 
 Be concise. Extract meaning, not text. What would a sharp person remember after reading this?`;
 
+/**
+ * The provider whose catalog lists this model (config/home.yaml providers),
+ * with its baseUrl and credential. Shared with the feeder's vision OCR so
+ * both route a picked model to the provider it came from.
+ */
+function resolveProviderForModel(model) {
+  try {
+    const engineDir = path.resolve(__dirname, '..', '..');
+    const homePath = path.join(engineDir, '..', 'config', 'home.yaml');
+    if (!fs.existsSync(homePath)) return null;
+    const home = yaml.load(fs.readFileSync(homePath, 'utf8')) || {};
+    for (const [name, prov] of Object.entries(home.providers || {})) {
+      if ((prov.defaultModels || []).includes(model)) {
+        return {
+          providerName: name,
+          baseUrl: prov.baseUrl || prov.baseURL,
+          apiKey: name === 'openai-codex' ? undefined : resolveProviderKey(name) || undefined,
+        };
+      }
+    }
+  } catch { /* best-effort */ }
+  return null;
+}
+
 class DocumentCompiler {
   constructor({ workspacePath, config = {}, logger = null }) {
     this.workspacePath = workspacePath;
@@ -154,22 +178,7 @@ class DocumentCompiler {
   }
 
   _resolveProviderForModel(model) {
-    try {
-      const engineDir = path.resolve(__dirname, '..', '..');
-      const homePath = path.join(engineDir, '..', 'config', 'home.yaml');
-      if (!fs.existsSync(homePath)) return null;
-      const home = yaml.load(fs.readFileSync(homePath, 'utf8')) || {};
-      for (const [name, prov] of Object.entries(home.providers || {})) {
-        if ((prov.defaultModels || []).includes(model)) {
-          return {
-            providerName: name,
-            baseUrl: prov.baseUrl || prov.baseURL,
-            apiKey: name === 'openai-codex' ? undefined : resolveProviderKey(name) || undefined,
-          };
-        }
-      }
-    } catch { /* best-effort */ }
-    return null;
+    return resolveProviderForModel(model);
   }
 
   async compile(text, metadata = {}) {
@@ -432,4 +441,4 @@ class DocumentCompiler {
   }
 }
 
-module.exports = { DocumentCompiler };
+module.exports = { DocumentCompiler, resolveProviderForModel };

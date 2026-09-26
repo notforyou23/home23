@@ -11,6 +11,14 @@ const { DocumentFeeder } = require('../../../engine/src/ingestion/document-feede
 
 const silentLogger = { info() {}, warn() {}, debug() {}, error() {} };
 
+// Vision OCR resolves the configured model's provider; tests pin a
+// credentialed OpenAI target so health does not depend on this machine.
+const openaiTarget = (model = 'gpt-4o-mini') => ({
+  model, provider: 'openai', api: 'openai', baseURL: 'https://api.openai.com/v1',
+  apiKey: 'test-key', credential: 'test-key', hasCredentials: true, listed: false,
+});
+const visionOk = { logger: silentLogger, visionResolver: () => openaiTarget(), visionCall: async () => 'ocr text' };
+
 const ALL_MODULES = [...new Set(Object.values(PYTHON_FORMATS).flatMap(spec => spec.modules))];
 
 function probeOutput({ markitdown = true, missing = [] } = {}) {
@@ -51,7 +59,7 @@ test('the converter never uses a synchronous child process', () => {
 
 test('a slow conversion leaves the event loop free', async (t) => {
   const { script, doc } = stubPython(t, { convertSleepSeconds: 1 });
-  const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script });
+  const converter = new DocumentConverter({ ...visionOk, pythonPath: script });
   let ticks = 0;
   const timer = setInterval(() => { ticks += 1; }, 20);
   try {
@@ -77,7 +85,7 @@ test('conversions run one at a time', async (t) => {
       callback(null, args[0] === '-c' ? probeOutput() : '# converted\n', '');
     }, 30);
   };
-  const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script, execFileImpl });
+  const converter = new DocumentConverter({ ...visionOk, pythonPath: script, execFileImpl });
 
   const results = await Promise.all([doc, doc, doc].map(file => converter.convertDetailed(file)));
 
@@ -87,7 +95,7 @@ test('conversions run one at a time', async (t) => {
 
 test('closing the converter cancels an in-flight conversion promptly and retryably', async (t) => {
   const { script, doc } = stubPython(t, { convertSleepSeconds: 5 });
-  const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script });
+  const converter = new DocumentConverter({ ...visionOk, pythonPath: script });
   await converter.checkHealth();
 
   const started = Date.now();
@@ -130,7 +138,7 @@ test('the health probe is async, cached, and re-probes early while MarkItDown is
     probes += 1;
     setImmediate(() => callback(null, probeOutput({ markitdown: installed }), ''));
   };
-  const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script, execFileImpl, now: () => clock });
+  const converter = new DocumentConverter({ ...visionOk, pythonPath: script, execFileImpl, now: () => clock });
 
   assert.equal(converter.available, false, 'reading availability never spawns');
   assert.equal(probes, 0);
@@ -150,7 +158,7 @@ test('the health probe is async, cached, and re-probes early while MarkItDown is
 });
 
 test('health reports ready, missing extras, missing PDF support, and a missing runtime', async (t) => {
-  const ready = await new DocumentConverter({ logger: silentLogger, pythonPath: stubPython(t).script }).checkHealth();
+  const ready = await new DocumentConverter({ ...visionOk, pythonPath: stubPython(t).script }).checkHealth();
   assert.equal(ready.state, 'ready');
   assert.equal(ready.available, true);
   assert.equal(ready.python, '3.12.4');
@@ -159,7 +167,7 @@ test('health reports ready, missing extras, missing PDF support, and a missing r
   assert.deepEqual(ready.unavailableFormats, []);
 
   const extras = await new DocumentConverter({
-    logger: silentLogger,
+    ...visionOk,
     pythonPath: stubPython(t, { probe: probeOutput({ missing: ['mammoth', 'pptx', 'openpyxl', 'xlrd', 'pydub'] }) }).script,
   }).checkHealth();
   assert.equal(extras.state, 'ready');
@@ -169,13 +177,13 @@ test('health reports ready, missing extras, missing PDF support, and a missing r
   assert.match(extras.remedy, /markitdown\[docx,pptx,xlsx,xls,audio-transcription\]/);
 
   const noPdf = await new DocumentConverter({
-    logger: silentLogger,
+    ...visionOk,
     pythonPath: stubPython(t, { probe: probeOutput({ missing: ['pdfplumber'] }) }).script,
   }).checkHealth();
   assert.equal(noPdf.state, 'degraded');
   assert.match(noPdf.reason, /PDF support/);
 
-  const missing = await new DocumentConverter({ logger: silentLogger, pythonPath: '/nonexistent/home23/python3' }).checkHealth();
+  const missing = await new DocumentConverter({ ...visionOk, pythonPath: '/nonexistent/home23/python3' }).checkHealth();
   assert.equal(missing.state, 'unavailable');
   assert.equal(missing.available, false);
   assert.match(missing.reason, /python runtime not found/);
@@ -184,7 +192,7 @@ test('health reports ready, missing extras, missing PDF support, and a missing r
 
 test('a format whose extras are missing waits instead of failing, and so does a missing-module traceback', async (t) => {
   const { script, dir } = stubPython(t, { probe: probeOutput({ missing: ['mammoth'] }) });
-  const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script });
+  const converter = new DocumentConverter({ ...visionOk, pythonPath: script });
   const docx = path.join(dir, 'notes.docx');
   fs.writeFileSync(docx, 'docx bytes');
 
@@ -196,7 +204,7 @@ test('a format whose extras are missing waits instead of failing, and so does a 
   assert.equal(converter.canConvertNow(path.join(dir, 'report.pdf')), true);
 
   const traceback = stubPython(t, { convertStderr: 'markitdown._exceptions.MissingDependencyException: PdfConverter needs pdfminer' });
-  const failing = new DocumentConverter({ logger: silentLogger, pythonPath: traceback.script });
+  const failing = new DocumentConverter({ ...visionOk, pythonPath: traceback.script });
   const pdf = await failing.convertDetailed(traceback.doc);
   assert.equal(pdf.status, 'converter_unavailable');
   assert.equal(pdf.retryable, true);
@@ -209,14 +217,14 @@ test('unsupported formats are named as such, and a disabled converter never spaw
   const pages = path.join(dir, 'plan.pages');
   fs.writeFileSync(pages, 'pages bytes');
 
-  const converter = new DocumentConverter({ logger: silentLogger, pythonPath: script, execFileImpl });
+  const converter = new DocumentConverter({ ...visionOk, pythonPath: script, execFileImpl });
   const unsupported = await converter.convertDetailed(pages);
   assert.equal(unsupported.status, 'unsupported_format');
   assert.equal(unsupported.retryable, false);
   assert.match(unsupported.error, /\.pages/);
   assert.equal(spawns, 0);
 
-  const disabled = new DocumentConverter({ logger: silentLogger, pythonPath: script, execFileImpl, enabled: false });
+  const disabled = new DocumentConverter({ ...visionOk, pythonPath: script, execFileImpl, enabled: false });
   const result = await disabled.convertDetailed(path.join(dir, 'report.pdf'));
   assert.equal(result.status, 'converter_disabled');
   assert.equal(result.retryable, true);

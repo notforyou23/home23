@@ -300,6 +300,72 @@ test('status exposes converter state, reason and formats and keeps the available
   assert.equal(converter.pendingConversionCount, 0);
 });
 
+test('a vision model error leaves the image waiting, never quarantined', async (t) => {
+  const feeder = makeFeeder();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-vision-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'shot.png');
+  fs.writeFileSync(filePath, 'png bytes', 'utf8');
+  let quarantineCalls = 0;
+  feeder.manifest = {
+    isStale: async () => true,
+    trackQuarantined: async () => { quarantineCalls += 1; },
+  };
+  feeder.converter = {
+    isNativeText: () => false,
+    isConvertible: () => true,
+    convertDetailed: async () => ({
+      ok: false,
+      status: 'converter_misconfigured',
+      retryable: true,
+      needs: 'vision',
+      error: "vision OCR (openai MiniMax-M3): 404 The model `MiniMax-M3` does not exist (model_not_found)",
+    }),
+  };
+
+  await feeder._processFile(filePath, 'screenshots');
+
+  assert.equal(quarantineCalls, 0);
+  const waiting = feeder._awaitingConversion.get(path.resolve(filePath));
+  assert.equal(waiting.status, 'converter_misconfigured');
+  assert.equal(waiting.needs, 'vision');
+});
+
+test('feeder start releases converter-fault quarantines and keeps the file\'s own', async (t) => {
+  const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-release-'));
+  const quarantine = (issue, extra = {}) => ({
+    hash: 'a'.repeat(64), label: 'shots', parseStatus: 'conversion_failed', issues: [issue],
+    structuralSignature: null, quarantinedAt: '2026-09-20T00:00:00.000Z', nodeIds: [], ...extra,
+  });
+  fs.writeFileSync(path.join(runPath, 'ingestion-manifest.json'), JSON.stringify({
+    '/w/shot-1.png': quarantine("openai.NotFoundError: Error code: 404 - {'error': {'code': 'model_not_found'}}"),
+    '/w/shot-2.png': quarantine("openai.NotFoundError: Error code: 404 - {'error': {'code': 'model_not_found'}}"),
+    '/w/broken.pdf': quarantine('pdfminer.pdfparser.PDFSyntaxError: No /Root object!'),
+    '/w/kept.png': quarantine('conversion produced empty text: kept.png', { nodeIds: ['n1'] }),
+  }));
+  const logs = [];
+  const feeder = makeFeeder({ compiler: { enabled: false } }, logs);
+  let scanned = false;
+  const scan = feeder._scanDirectory.bind(feeder);
+  feeder._scanDirectory = async (...args) => { scanned = true; return scan(...args); };
+  await feeder.start(runPath);
+  t.after(async () => {
+    await feeder.shutdown();
+    fs.rmSync(runPath, { recursive: true, force: true });
+  });
+
+  const deadline = Date.now() + 5000;
+  while (!scanned && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+
+  assert.equal(feeder.manifest.getEntry('/w/shot-1.png'), null);
+  assert.equal(feeder.manifest.getEntry('/w/shot-2.png'), null);
+  assert.equal(feeder.manifest.getEntry('/w/broken.pdf').parseStatus, 'conversion_failed');
+  assert.deepEqual(feeder.manifest.getEntry('/w/kept.png').nodeIds, ['n1'], 'entries with nodes are never released');
+  assert.equal(logs.find(entry => entry.message === 'Released converter-fault quarantines for re-evaluation').meta.count, 2);
+  const onDisk = JSON.parse(fs.readFileSync(path.join(runPath, 'ingestion-manifest.json'), 'utf8'));
+  assert.deepEqual(Object.keys(onDisk).sort(), ['/w/broken.pdf', '/w/kept.png']);
+});
+
 test('document feeder watcher leaves existing files to the explicit startup scan', () => {
   const feeder = makeFeeder();
 

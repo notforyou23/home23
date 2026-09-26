@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const chokidar = require('chokidar');
-const { DocumentConverter } = require('./document-converter');
+const { DocumentConverter, isConverterFaultQuarantine } = require('./document-converter');
 const { DocumentChunker } = require('./document-chunker');
 const { DocumentValidator } = require('./document-validator');
 const { DocumentClassifier } = require('./document-classifier');
@@ -163,6 +163,15 @@ class DocumentFeeder {
     // Run initial scan in background so it doesn't block the cognitive loop
     (async () => {
       try {
+        // Files the old converter quarantined for its own faults (an image
+        // sent to OpenAI with another provider's model, no API key, a
+        // missing module, a format it never read) were pinned until their
+        // bytes changed. Release them so this scan re-evaluates them; a
+        // provider that still fails now leaves them waiting, not failed.
+        const released = await this.manifest.releaseQuarantined(isConverterFaultQuarantine);
+        if (released.length) {
+          this.logger?.info?.('Released converter-fault quarantines for re-evaluation', { count: released.length });
+        }
         await this._scanDirectory(ingestDir, null);
         for (const wp of additionalPaths) {
           const watchPath = wp.path || wp;
