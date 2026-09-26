@@ -1,27 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:net';
 import { createEmbedderServer } from '../../scripts/embedder/serve.mjs';
 import { MEMORY_TRUNCATION_CHARS } from '../../shared/semantic-encoder-contract.cjs';
 import { OWNED_PROFILE, OWNED_RECIPE_ID, EXPECTED_DIM } from '../../scripts/embedder/recipe.mjs';
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close((error) => (error ? reject(error) : resolve(port)));
-    });
-    server.once('error', reject);
-  });
-}
+import { freePlanPort } from '../helpers/plan-range-port.mjs';
 
 async function listenOnAllowedPort(embed, { failAfter } = {}) {
-  let port;
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    port = await freePort();
-    if (port >= 20000 && port <= 60999 && port !== 11435) break;
-  }
+  // listen(0) can hand out 61000-65535, which the encoder's own port rule refuses.
+  const port = await freePlanPort();
   const seen = [];
   let calls = 0;
   const service = createEmbedderServer({
