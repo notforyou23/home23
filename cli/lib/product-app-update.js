@@ -35,6 +35,8 @@ function readClaim(path, expected) {
   return claim;
 }
 const PREVIOUS_APP = /^\.home23-previous-(\d+)\.app$/;
+// Also a copy set aside because it occupied the name a new swap needed.
+const RETIRED_APP = /^\.home23-previous-\d+(?:-[0-9a-f]{8})?\.app$/;
 /** The retained copy a prepared claim recorded, if it names a sibling
  * .home23-previous-<build>.app. A swap resumes against exactly that path. */
 function recordedPreviousPath(claimPath, installed) {
@@ -53,11 +55,23 @@ export function retainedPreviousPath(installedAppPath, claimPath) {
   if (!Number.isSafeInteger(build) || build < 1) throw fail('app_invalid', 'Installed application build is unreadable');
   return join(dirname(installed), `.home23-previous-${build}.app`);
 }
+/** A fresh claim's retained path can already hold a copy no swap of this
+ * release made: older code named copies after the build replacing them (so
+ * .home23-previous-188.app holds 187), and a reinstalled build meets its own
+ * earlier copy. The swap would then find previous, installed and prepared all
+ * present and refuse on every resume. Set the copy aside under a name the
+ * verified-swap prune retires; a link or file there is only removed. */
+function setAsideOccupiedPrevious(previous) {
+  let stat;
+  try { stat = lstatSync(previous); } catch { return; }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) { rmSync(previous, { force: true }); return; }
+  renameSync(previous, previous.replace(/\.app$/, `-${randomUUID().slice(0, 8)}.app`));
+}
 /** Only the newest retained copy is kept once a swap is verified. Removing a
  * whole bundle continues detached. Home23.app itself never matches. */
 function pruneOlderPrevious(installed, keep, dependencies) {
   const parent = dirname(installed);
-  const stale = readdirSync(parent).filter(name => PREVIOUS_APP.test(name)).map(name => join(parent, name))
+  const stale = readdirSync(parent).filter(name => RETIRED_APP.test(name)).map(name => join(parent, name))
     .filter(path => { const stat = lstatSync(path); return path !== keep && stat.isDirectory() && !stat.isSymbolicLink(); });
   if (!stale.length) return;
   if (dependencies.removePaths) { dependencies.removePaths(stale); return; }
@@ -97,7 +111,9 @@ export function verifyPreparedMacApplication({ appPath, release, full = true }) 
 }
 
 /** Extract verified channel ZIP and copy to a sibling of the installation before downtime. */
-export function prepareMacApplication({ archivePath, installedAppPath, release }) {
+export function prepareMacApplication({ archivePath, installedAppPath, release }, dependencies = {}) {
+  const inspect = dependencies.verifyPreparedMacApplication || verifyPreparedMacApplication;
+  const execute = dependencies.run || run;
   const installed = resolve(installedAppPath);
   if (basename(installed) !== 'Home23.app' || !existsSync(installed)) {
     throw fail('app_invalid', 'Installed Home23.app path is invalid');
@@ -114,7 +130,7 @@ export function prepareMacApplication({ archivePath, installedAppPath, release }
   if (!existsSync(prepared) && existsSync(claim)) {
     const recorded = readClaim(claim, expected);
     if (existsSync(previous) && existsSync(installed)) {
-      verifyPreparedMacApplication({ appPath: installed, release, full: false });
+      inspect({ appPath: installed, release, full: false });
       return { ...expected, resumed: true };
     }
     if (recorded.phase !== 'prepared') throw fail('app_busy', 'An application swap is in progress; resume it before preparing again');
@@ -124,7 +140,7 @@ export function prepareMacApplication({ archivePath, installedAppPath, release }
   if (existsSync(prepared)) {
     readClaim(claim, expected);
     try {
-      verifyPreparedMacApplication({ appPath: prepared, release });
+      inspect({ appPath: prepared, release });
       if (!existsSync(lifecycle)) throw fail('app_invalid', 'Prepared lifecycle tool is missing');
       return { ...expected, resumed: true };
     } catch {
@@ -133,13 +149,16 @@ export function prepareMacApplication({ archivePath, installedAppPath, release }
       rmSync(lifecycle, { force: true });
     }
   }
+  // No claim of this release has moved anything yet; whatever holds its
+  // retained path is not part of this swap.
+  setAsideOccupiedPrevious(previous);
   rmSync(scratch, { recursive: true, force: true });
   mkdirSync(scratch, { mode: 0o700 });
   try {
-    run('/usr/bin/ditto', ['-x', '-k', resolve(archivePath), scratch]);
+    execute('/usr/bin/ditto', ['-x', '-k', resolve(archivePath), scratch]);
     const candidate = join(scratch, 'Home23/Home23.app');
-    run('/usr/bin/ditto', [candidate, prepared]);
-    verifyPreparedMacApplication({ appPath: prepared, release });
+    execute('/usr/bin/ditto', [candidate, prepared]);
+    inspect({ appPath: prepared, release });
     const sourceTool = join(prepared, 'Contents/Resources/home23-app-lifecycle');
     if (!existsSync(sourceTool)) throw fail('app_invalid', 'Application lifecycle tool is missing');
     copyFileSync(sourceTool, lifecycle);

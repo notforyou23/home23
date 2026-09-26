@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyPreparedMacApplication, retainedPreviousPath } from '../../cli/lib/product-app-update.js';
+import { applyPreparedMacApplication, prepareMacApplication, retainedPreviousPath } from '../../cli/lib/product-app-update.js';
 
 const release = { version: '2.0', appBuild: 180, packageId: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), minimumOs: '27.0', arch: 'arm64' };
 function fixture(t) {
@@ -101,4 +101,43 @@ test('the retained copy is named after the installed build unless a claim record
   assert.equal(retainedPreviousPath(installed, claim), join(root, '.home23-previous-180.app'));
   writeFileSync(claim, JSON.stringify({ previousAppPath: '/Applications/Home23.app' }));
   assert.equal(retainedPreviousPath(installed, claim), join(root, '.home23-previous-179.app'));
+});
+
+function bundle(path, build, marker) {
+  mkdirSync(join(path, 'Contents/Resources'), { recursive: true });
+  writeFileSync(join(path, 'Contents/Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleVersion</key><string>${build}</string></dict></plist>\n`);
+  writeFileSync(join(path, 'marker'), marker);
+}
+test('a copy named by older code does not block the next swap', { skip: process.platform !== 'darwin' }, t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'home23-app-prepare-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const installed = join(root, 'Home23.app'), occupied = join(root, '.home23-previous-179.app');
+  // Build 179 is installed; older code retained 178 under the name of the build replacing it.
+  bundle(installed, 179, 'old'); bundle(occupied, 178, 'older');
+  const run = (_tool, args) => {
+    if (args[0] === '-x') {
+      bundle(join(args[3], 'Home23/Home23.app'), 180, 'new');
+      writeFileSync(join(args[3], 'Home23/Home23.app/Contents/Resources/home23-app-lifecycle'), 'tool');
+    } else cpSync(args[0], args[1], { recursive: true });
+    return '';
+  };
+  const prepare = () => prepareMacApplication({ archivePath: join(root, 'app.zip'), installedAppPath: installed, release },
+    { run, verifyPreparedMacApplication: () => {} });
+  const prepared = prepare();
+  assert.equal(prepared.previousAppPath, occupied);
+  const setAside = () => readdirSync(root).filter(name => /^\.home23-previous-179-[0-9a-f]{8}\.app$/.test(name));
+  assert.equal(setAside().length, 1);
+  assert.equal(readFileSync(join(root, setAside()[0], 'marker'), 'utf8'), 'older');
+  assert.equal(existsSync(occupied), false);
+  // A prepare resumed against its own claim sets nothing further aside.
+  assert.equal(prepare().resumed, true);
+  assert.equal(setAside().length, 1);
+  const removed = [];
+  const result = applyPreparedMacApplication({ ...prepared, release }, { removePaths: paths => removed.push(...paths),
+    verifyPreparedMacApplication: ({ appPath }) => assert.equal(readFileSync(join(appPath, 'marker'), 'utf8'), 'new'),
+    run: (_tool, args) => args[0] === 'launch' ? 'pid=123 build=180 path=Home23.app' : 'terminated' });
+  assert.equal(result.status, 'reopened');
+  assert.equal(readFileSync(join(installed, 'marker'), 'utf8'), 'new');
+  assert.equal(readFileSync(join(occupied, 'marker'), 'utf8'), 'old');
+  assert.deepEqual(removed, [join(root, setAside()[0])]);
 });
