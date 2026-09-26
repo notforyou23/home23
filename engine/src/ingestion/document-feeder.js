@@ -11,6 +11,7 @@ const { DocumentClassifier } = require('./document-classifier');
 const { IngestionManifest, isIngestionInternalFile } = require('./ingestion-manifest');
 const { DocumentCompiler } = require('./document-compiler');
 const { normalizeTranscript } = require('./transcript-normalizer');
+const { expandOwnerPath } = require('../../../shared/owner-home.cjs');
 
 class DocumentFeeder {
   /**
@@ -137,11 +138,13 @@ class DocumentFeeder {
     // Start default watcher on ingestion/documents/
     this._startWatcher(ingestDir, null, 'ingest');
 
-    // Start additional configured watch paths
-    const additionalPaths = this.config.additionalWatchPaths || [];
-    for (const wp of additionalPaths) {
-      const watchPath = wp.path || wp;
-      const label = wp.label || path.basename(watchPath);
+    // Start additional configured watch paths. Settings -> Feeder saves a
+    // folder as typed; '~' is the owner's home, never Home23's runtime HOME.
+    const additionalPaths = (this.config.additionalWatchPaths || []).map((wp) => {
+      const watchPath = expandOwnerPath(wp.path || wp);
+      return { path: watchPath, label: wp.label || path.basename(watchPath) };
+    });
+    for (const { path: watchPath, label } of additionalPaths) {
       this._startWatcher(watchPath, label, 'configured');
     }
 
@@ -173,9 +176,7 @@ class DocumentFeeder {
           this.logger?.info?.('Released converter-fault quarantines for re-evaluation', { count: released.length });
         }
         await this._scanDirectory(ingestDir, null);
-        for (const wp of additionalPaths) {
-          const watchPath = wp.path || wp;
-          const label = wp.label || path.basename(watchPath);
+        for (const { path: watchPath, label } of additionalPaths) {
           await this._scanDirectory(watchPath, label);
         }
         // Flush after scan completes
@@ -194,6 +195,7 @@ class DocumentFeeder {
    */
   async addWatchPath(watchPath, label = null, glob = null) {
     if (!this._started) throw new Error('Feeder not started');
+    watchPath = expandOwnerPath(watchPath);
     this._retryMissingWatchPaths();
     label = label || path.basename(watchPath);
     const existing = this._watchTargets.get(path.resolve(watchPath));

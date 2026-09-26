@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -132,4 +132,34 @@ test('Vibe can resolve a displayed source image directly with prompt metadata', 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("Vibe reads a '~' source folder from the owner home and leaves home.yaml as entered", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-vibe-owner-'));
+  const keys = ['HOME', 'HOME23_OWNER_HOME', 'HOME23_PRODUCT_HOST'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+  const owner = join(root, 'owner');
+  const runtime = join(root, 'runtime-user');
+  for (const dir of [join(owner, 'pics'), join(runtime, 'pics'), join(root, 'config'), join(root, 'instances', 'jerry', 'workspace', 'vibe')]) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeTinyPng(join(owner, 'pics', 'owner-image.png'));
+  writeTinyPng(join(runtime, 'pics', 'runtime-decoy.png'));
+  const homeYaml = 'dashboard:\n  vibe:\n    autoGenerate: false\n    sourcePaths:\n      - ~/pics\n';
+  writeFileSync(join(root, 'config', 'home.yaml'), homeYaml, 'utf8');
+  // A Host dashboard: HOME is Home23's private runtime home.
+  Object.assign(process.env, { HOME: runtime, HOME23_OWNER_HOME: owner, HOME23_PRODUCT_HOST: 'true' });
+  const service = new Home23VibeService({ home23Root: root, agentName: 'jerry', loadState: async () => ({}), logger: { info() {}, warn() {} } });
+
+  assert.deepEqual(service.getConfig().sourcePaths, [join(owner, 'pics')]);
+  const gallery = await service.listGallery('all');
+  assert.equal(gallery.externalTotal, 1);
+  assert.equal(readFileSync(join(root, 'config', 'home.yaml'), 'utf8'), homeYaml);
 });

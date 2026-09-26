@@ -1,6 +1,5 @@
 const express = require('express');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const yaml = require('js-yaml');
@@ -9,6 +8,7 @@ const {
   updateSettingsSecrets,
 } = require('./home23-secrets');
 const { createHome23OAuthBroker, publicOAuthStatus } = require('../../../shared/home23-oauth.cjs');
+const { expandOwnerPath } = require('../../../shared/owner-home.cjs');
 const { writeYamlSafely } = require('./yaml-write-safety');
 const { StateCompression } = require('../core/state-compression');
 const { readJsonlGz, sidecarsExist, nodesPath } = require('../core/memory-sidecar');
@@ -1199,12 +1199,11 @@ function createSettingsRouter(home23Root, options = {}) {
     return `Help ${owner} organize work, remember important context, and keep projects moving.`;
   }
 
+  // '~' is the owner's home: under the Host, this dashboard's HOME is Home23's
+  // private runtime home. The expanded folders go to the resident's own
+  // config.yaml (feeder paths), never to home.yaml.
   function expandUserPath(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    if (raw === '~') return os.homedir();
-    if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
-    return raw;
+    return expandOwnerPath(String(value || '').trim());
   }
 
   function pathLabel(filePath, seenLabels) {
