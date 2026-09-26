@@ -1,20 +1,21 @@
 import { timingSafeEqual } from "node:crypto";
 
-import type {
-  AuthRepository,
-  AuthIdempotencyClaim,
-  AuthIdempotencyResult,
-  AuthorizationState,
-  PairingCreationCommit,
-  PairingCreationResult,
-  PairingFailureResult,
-  PairingRedemptionCommit,
-  PairingRedemptionResult,
-  PairingSessionRecord,
-  RefreshRotationCommit,
-  RefreshRotationResult,
-  RefreshContext,
-  RevokeResult,
+import {
+  AUTH_TOKEN_LIFETIMES,
+  type AuthRepository,
+  type AuthIdempotencyClaim,
+  type AuthIdempotencyResult,
+  type AuthorizationState,
+  type PairingCreationCommit,
+  type PairingCreationResult,
+  type PairingFailureResult,
+  type PairingRedemptionCommit,
+  type PairingRedemptionResult,
+  type PairingSessionRecord,
+  type RefreshRotationCommit,
+  type RefreshRotationResult,
+  type RefreshContext,
+  type RevokeResult,
 } from "../../../src/coordination/auth/index.js";
 
 type StoredIdempotencyResult = AuthIdempotencyResult;
@@ -200,6 +201,9 @@ export class TestAuthRepository implements AuthRepository {
         outcome: "replayed",
         session: copy(existing.result.session),
         device: copy(existing.result.device),
+        ...(existing.result.credentialContext
+          ? { credentialContext: existing.result.credentialContext }
+          : {}),
       };
     }
     const current = this.refreshTokens.get(input.currentTokenId);
@@ -207,6 +211,16 @@ export class TestAuthRepository implements AuthRepository {
       return { outcome: "invalid" };
     }
     if (current.state === "rotated") {
+      const reissue = this.reissuable(current, input.rotatedAt);
+      if (reissue) {
+        this.commitIdempotency(input.idempotency, {
+          kind: "refresh",
+          device: reissue.device,
+          session: reissue.session,
+          credentialContext: reissue.credentialContext,
+        });
+        return reissue;
+      }
       this.revokeFamily(current.familyId, input.rotatedAt, "refresh_replay");
       const result = { outcome: "replay", familyId: current.familyId } as const;
       this.commitIdempotency(input.idempotency, { kind: "refresh_failure", result });
@@ -238,12 +252,35 @@ export class TestAuthRepository implements AuthRepository {
       kind: "refresh",
       device: copy(device),
       session: copy(input.successorSession),
+      credentialContext: input.credentialContext,
     });
     return {
       outcome: "rotated",
       session: copy(input.successorSession),
       device: copy(device),
     };
+  }
+
+  // Mirrors the SQLite repository: a retired token reused inside the grace window while its
+  // successor is still unused gets the first rotation's stored context back instead of a revoke.
+  private reissuable(
+    retired: PairingRedemptionCommit["refreshToken"],
+    at: string,
+  ): Extract<RefreshRotationResult, { outcome: "reissued" }> | null {
+    if (
+      !retired.rotatedAt || !retired.rotatedToTokenId ||
+      Date.parse(at) - Date.parse(retired.rotatedAt) > AUTH_TOKEN_LIFETIMES.refreshReuseGraceMs
+    ) return null;
+    const successor = this.refreshTokens.get(retired.rotatedToTokenId);
+    const session = successor?.state === "active" ? this.sessions.get(successor.sessionId) : undefined;
+    const device = session?.state === "active" ? this.devices.get(session.deviceId) : undefined;
+    if (!session || device?.status !== "active") return null;
+    const first = [...this.idempotency.values()].find((stored) =>
+      stored.claim.operation === "session.refresh" &&
+      stored.result.kind === "refresh" && stored.result.session.id === session.id);
+    const credentialContext = first?.result.kind === "refresh" ? first.result.credentialContext : undefined;
+    if (!credentialContext) return null;
+    return { outcome: "reissued", session: copy(session), device: copy(device), credentialContext };
   }
 
   async getRefreshContext(tokenId: string): Promise<RefreshContext | null> {

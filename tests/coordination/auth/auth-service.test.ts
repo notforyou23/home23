@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { type AuthAuditRecord } from "../../../src/coordination/auth/index.js";
+import {
+  AUTH_TOKEN_LIFETIMES,
+  deriveAuthKey,
+  deriveRefreshCredential,
+  parseRefreshToken,
+  type AuthAuditRecord,
+} from "../../../src/coordination/auth/index.js";
 
 import { TestAuthRepository } from "./test-repository.js";
 import { createTestAuthService as createAuthService, mutation } from "./test-context.js";
@@ -171,7 +177,7 @@ test("refresh rotates the token and session once without extending the family li
   assert.equal(audit.at(-1)?.reason, "refresh_rotated");
 });
 
-test("replay of an old refresh token revokes its family and rejects the successor access token", async () => {
+test("replay of an old refresh token after its successor rotated revokes its family and rejects the live access token", async () => {
   const repository = new TestAuthRepository();
   const audit: AuthAuditRecord[] = [];
   let now = new Date("2026-08-25T15:00:00.000Z");
@@ -199,8 +205,15 @@ test("replay of an old refresh token revokes its family and rejects the successo
     network: "vpn",
     mutation: mutation("refresh-first"),
   });
+  now = new Date("2026-08-25T15:02:00.000Z");
+  const live = await service.refreshSession({
+    refreshToken: successor.refreshToken,
+    network: "vpn",
+    mutation: mutation("refresh-second"),
+  });
   const replayMutation = mutation("refresh-replay");
 
+  // The successor was already spent, so the first token's reuse cannot be a lost response.
   await assert.rejects(
     service.refreshSession({
       refreshToken: paired.refreshToken,
@@ -227,6 +240,14 @@ test("replay of an old refresh token revokes its family and rejects the successo
   );
   await assert.rejects(
     service.validateAccessToken({
+      accessToken: live.accessToken,
+      network: "vpn",
+      requiredScopes: ["product:read"],
+    }),
+    { name: "AuthError", reasonCode: "session_revoked", httpStatus: 401 },
+  );
+  await assert.rejects(
+    service.validateAccessToken({
       accessToken: successor.accessToken,
       network: "vpn",
       requiredScopes: ["product:read"],
@@ -234,13 +255,228 @@ test("replay of an old refresh token revokes its family and rejects the successo
     { name: "AuthError", reasonCode: "session_revoked", httpStatus: 401 },
   );
   assert.equal(
-    repository.sessions.get(successor.clientSession.id)?.revokeReason,
+    repository.sessions.get(live.clientSession.id)?.revokeReason,
     "refresh_replay",
   );
-  assert.deepEqual(audit.slice(-2).map((entry) => entry.reason), [
+  assert.deepEqual(audit.slice(-3).map((entry) => entry.reason), [
     "refresh_replay_family_revoked",
     "session_revoked",
+    "session_revoked",
   ]);
+});
+
+test("a retired refresh token reused inside the grace window is answered with the identical successor credentials", async () => {
+  const repository = new TestAuthRepository();
+  const audit: AuthAuditRecord[] = [];
+  let now = new Date("2026-08-25T15:30:00.000Z");
+  const service = createAuthService({
+    repository,
+    keyMaterial: Buffer.alloc(32, 0x47),
+    now: () => now,
+    audit: { record: (entry) => audit.push(entry) },
+  });
+  const issued = await service.issuePairing({
+    deviceName: "Owner iPad",
+    operator: { authenticated: true, network: "loopback" },
+    mutation: mutation("issue"),
+  });
+  const paired = await service.redeemPairing({
+    pairingSessionId: issued.pairingSession.id,
+    pairingCode: issued.pairingCode,
+    network: "vpn",
+    device: { platform: "ios", name: "Owner iPad", appBuild: "181" },
+    mutation: mutation("redeem"),
+  });
+  now = new Date("2026-08-25T15:31:00.000Z");
+  const first = await service.refreshSession({
+    refreshToken: paired.refreshToken,
+    network: "vpn",
+    mutation: mutation("refresh-first"),
+  });
+  now = new Date("2026-08-25T15:31:01.000Z");
+  // The Apple client retries a lost response with a fresh idempotency key.
+  const retry = mutation("refresh-retry");
+  const again = await service.refreshSession({
+    refreshToken: paired.refreshToken,
+    network: "vpn",
+    mutation: retry,
+  });
+
+  assert.equal(again.accessToken, first.accessToken);
+  assert.equal(again.refreshToken, first.refreshToken);
+  assert.equal(again.clientSession.id, first.clientSession.id);
+  assert.deepEqual(again, first);
+  assert.equal(audit.at(-1)?.reason, "refresh_reissued");
+  assert.equal(audit.at(-1)?.outcome, "allowed");
+  assert.equal(audit.at(-1)?.sessionId, first.clientSession.id);
+  assert.equal(repository.sessions.get(first.clientSession.id)?.state, "active");
+  assert.ok([...repository.refreshTokens.values()].every((token) => token.state !== "revoked"));
+  // A same-key retry of the reissue replays the reissued credentials, not ones derived from its own key.
+  assert.deepEqual(await service.refreshSession({
+    refreshToken: paired.refreshToken,
+    network: "vpn",
+    mutation: retry,
+  }), first);
+
+  now = new Date("2026-08-25T15:32:00.000Z");
+  const next = await service.refreshSession({
+    refreshToken: first.refreshToken,
+    network: "vpn",
+    mutation: mutation("refresh-next"),
+  });
+  assert.notEqual(next.clientSession.id, first.clientSession.id);
+  assert.equal(next.clientSession.familyId, first.clientSession.familyId);
+  assert.equal(repository.sessions.get(first.clientSession.id)?.state, "rotated");
+  assert.equal(audit.at(-1)?.reason, "refresh_rotated");
+  assert.equal((await service.validateAccessToken({
+    accessToken: next.accessToken, network: "vpn", requiredScopes: ["product:read"],
+  })).sessionId, next.clientSession.id);
+});
+
+test("a retired refresh token reused after the grace window revokes its family", async () => {
+  const repository = new TestAuthRepository();
+  const audit: AuthAuditRecord[] = [];
+  let now = new Date("2026-08-25T16:00:00.000Z");
+  const service = createAuthService({
+    repository,
+    keyMaterial: Buffer.alloc(32, 0x4a),
+    now: () => now,
+    audit: { record: (entry) => audit.push(entry) },
+  });
+  const issued = await service.issuePairing({
+    deviceName: "Owner iPad",
+    operator: { authenticated: true, network: "loopback" },
+    mutation: mutation("issue"),
+  });
+  const paired = await service.redeemPairing({
+    pairingSessionId: issued.pairingSession.id,
+    pairingCode: issued.pairingCode,
+    network: "vpn",
+    device: { platform: "ios", name: "Owner iPad", appBuild: "181" },
+    mutation: mutation("redeem"),
+  });
+  now = new Date("2026-08-25T16:01:00.000Z");
+  const first = await service.refreshSession({
+    refreshToken: paired.refreshToken,
+    network: "vpn",
+    mutation: mutation("refresh-first"),
+  });
+  now = new Date(now.getTime() + AUTH_TOKEN_LIFETIMES.refreshReuseGraceMs + 1000);
+
+  await assert.rejects(
+    service.refreshSession({
+      refreshToken: paired.refreshToken,
+      network: "vpn",
+      mutation: mutation("refresh-late"),
+    }),
+    { name: "AuthError", reasonCode: "refresh_replay_family_revoked", httpStatus: 409 },
+  );
+  assert.equal(repository.sessions.get(first.clientSession.id)?.revokeReason, "refresh_replay");
+  assert.equal(audit.at(-1)?.reason, "refresh_replay_family_revoked");
+  await assert.rejects(
+    service.refreshSession({
+      refreshToken: first.refreshToken,
+      network: "vpn",
+      mutation: mutation("refresh-after"),
+    }),
+    { name: "AuthError", reasonCode: "session_revoked", httpStatus: 401 },
+  );
+});
+
+test("reuse of a token whose rotation stored no context (a pre-187 record) still revokes the family", async () => {
+  const repository = new TestAuthRepository();
+  const audit: AuthAuditRecord[] = [];
+  let now = new Date("2026-08-25T17:00:00.000Z");
+  const service = createAuthService({
+    repository,
+    keyMaterial: Buffer.alloc(32, 0x4b),
+    now: () => now,
+    audit: { record: (entry) => audit.push(entry) },
+  });
+  const issued = await service.issuePairing({
+    deviceName: "Owner iPhone",
+    operator: { authenticated: true, network: "loopback" },
+    mutation: mutation("issue"),
+  });
+  const paired = await service.redeemPairing({
+    pairingSessionId: issued.pairingSession.id,
+    pairingCode: issued.pairingCode,
+    network: "vpn",
+    device: { platform: "ios", name: "Owner iPhone", appBuild: "181" },
+    mutation: mutation("redeem"),
+  });
+  now = new Date("2026-08-25T17:01:00.000Z");
+  const first = await service.refreshSession({
+    refreshToken: paired.refreshToken,
+    network: "vpn",
+    mutation: mutation("refresh-first"),
+  });
+  // Build 186 stored the rotation without its credential context; nothing can be re-derived from it.
+  for (const stored of repository.idempotency.values()) {
+    if (stored.result.kind === "refresh") delete stored.result.credentialContext;
+  }
+  now = new Date("2026-08-25T17:01:01.000Z");
+
+  await assert.rejects(
+    service.refreshSession({
+      refreshToken: paired.refreshToken,
+      network: "vpn",
+      mutation: mutation("refresh-retry"),
+    }),
+    { name: "AuthError", reasonCode: "refresh_replay_family_revoked", httpStatus: 409 },
+  );
+  assert.equal(repository.sessions.get(first.clientSession.id)?.revokeReason, "refresh_replay");
+  assert.equal(audit.at(-1)?.reason, "refresh_replay_family_revoked");
+});
+
+test("a same-key retry of a rotation committed before 187 re-derives that rotation's credentials from the raw key", async () => {
+  const repository = new TestAuthRepository();
+  const keyMaterial = Buffer.alloc(32, 0x4c);
+  let now = new Date("2026-08-25T17:30:00.000Z");
+  const service = createAuthService({
+    repository,
+    keyMaterial: Buffer.from(keyMaterial),
+    now: () => now,
+  });
+  const issued = await service.issuePairing({
+    deviceName: "Owner Mac",
+    operator: { authenticated: true, network: "loopback" },
+    mutation: mutation("issue"),
+  });
+  const paired = await service.redeemPairing({
+    pairingSessionId: issued.pairingSession.id,
+    pairingCode: issued.pairingCode,
+    network: "loopback",
+    device: { platform: "macos", name: "Owner Mac", appBuild: "1.0.0" },
+    mutation: mutation("redeem"),
+  });
+  now = new Date("2026-08-25T17:31:00.000Z");
+  // The Mac Host retries a lost response under its durable key.
+  const durable = mutation("refresh-durable");
+  const first = await service.refreshSession({
+    refreshToken: paired.refreshToken,
+    network: "loopback",
+    mutation: durable,
+  });
+  // Build 186 derived the successor from the raw key and stored no context; its record looks like this.
+  for (const stored of repository.idempotency.values()) {
+    if (stored.result.kind === "refresh") delete stored.result.credentialContext;
+  }
+  const legacy = deriveRefreshCredential(
+    deriveAuthKey(keyMaterial, "refresh-digest"),
+    deriveAuthKey(keyMaterial, "credential-generation"),
+    `session.refresh\0${durable.idempotencyKey}\0${parseRefreshToken(paired.refreshToken)?.id}`,
+  );
+
+  const replayed = await service.refreshSession({
+    refreshToken: paired.refreshToken,
+    network: "loopback",
+    mutation: durable,
+  });
+  assert.equal(replayed.clientSession.id, first.clientSession.id);
+  assert.equal(replayed.refreshToken, legacy.raw);
+  // 187 derives from the key digest, so taking the legacy path is what makes the retry differ here.
+  assert.notEqual(replayed.refreshToken, first.refreshToken);
 });
 
 test("revoking the current session refuses its access token on the protected auth fixture", async () => {
