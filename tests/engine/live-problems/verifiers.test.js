@@ -1036,3 +1036,27 @@ test('oauth_token_lineage_fresh reports a missing profile rather than throwing',
   assert.equal(result.ok, false);
   assert.match(result.detail, /missing/i);
 });
+
+test('brain_persistence_fresh opens after 10 unsaved minutes or 3 refused saves', async () => {
+  const spec = { type: 'brain_persistence_fresh', args: { maxDirtyMinutes: 10, maxConsecutiveRefusals: 3 } };
+  const check = (status) => runVerifier(spec, { persistenceFreshness: () => status });
+  const fresh = await check({ dirty: true, unpersistedForMs: 45_000, consecutiveRefusals: 0, persistedRevision: 9 });
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.observed.persistedRevision, 9);
+
+  const stale = await check({ dirty: true, unpersistedForMs: 11 * 60_000, consecutiveRefusals: 1 });
+  assert.equal(stale.ok, false);
+  assert.match(stale.detail, /unsaved for 11\.0 min \(limit 10\)/);
+
+  // Forrest, 2026-09-24..26: every save refused for 61 hours.
+  const refused = await check({
+    dirty: true, unpersistedForMs: 4 * 60_000, consecutiveRefusals: 3,
+    lastSaveResult: { saved: false, reason: 'memory_sidecar_write_failed' },
+  });
+  assert.equal(refused.ok, false);
+  assert.match(refused.detail, /3 consecutive brain saves did not persist memory \(memory_sidecar_write_failed\)/);
+
+  const outside = await runVerifier(spec, {});
+  assert.equal(outside.ok, false);
+  assert.match(outside.detail, /engine context only/);
+});

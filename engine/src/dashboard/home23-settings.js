@@ -2671,6 +2671,21 @@ function describeConverterHealth(cv) {
   return `${icon} ${cv.state}${detail ? ` · ${detail}` : ''}${waiting}`;
 }
 
+// Brain search reads only saved memory, so a flushed document is searchable
+// once the brain saves; the engine reports how long changes have waited.
+function describePersistenceFreshness(fr) {
+  if (!fr) return '—';
+  const minutes = (ms) => Math.max(0, Math.round(ms / 60000));
+  if (fr.consecutiveRefusals >= 3) {
+    return `✗ ${fr.consecutiveRefusals} saves in a row did not persist${fr.lastSaveResult?.reason ? ` · ${fr.lastSaveResult.reason}` : ''}`;
+  }
+  if (fr.dirty && fr.unpersistedForMs > 10 * 60000) return `⚠ changes unsaved for ${minutes(fr.unpersistedForMs)} min`;
+  const saved = fr.lastPersistedAt
+    ? `saved ${minutes(Date.now() - Date.parse(fr.lastPersistedAt))} min ago`
+    : 'no save since engine start';
+  return `${fr.dirty ? '…' : '✓'} ${saved}${fr.persistedRevision != null ? ` · rev ${fr.persistedRevision}` : ''}`;
+}
+
 async function loadFeederLiveStatus() {
   if (!selectedSettingsAgent) return;
   try {
@@ -2679,7 +2694,7 @@ async function loadFeederLiveStatus() {
       fetch(feederAgentUrl('/home23/feeder-status')).catch(() => null),
     ]);
 
-    let started = '—', watchers = '—', converter = '—';
+    let started = '—', watchers = '—', converter = '—', freshness = '—';
     // The live flush queue is the only honest source for "Pending" — the
     // summary aggregator computes `files_on_disk - manifest.length` which
     // permanently inflates by files the feeder will never ingest (binary
@@ -2695,6 +2710,7 @@ async function loadFeederLiveStatus() {
           ? `${ws.attached} of ${ws.configured} attached${ws.missing ? ` (${ws.missing} missing)` : ''}${ws.error ? ` (${ws.error} error)` : ''}`
           : String(live.status.watching?.length ?? 0);
         converter = describeConverterHealth(live.status.converter);
+        freshness = describePersistenceFreshness(live.status.freshness);
         if (Number.isFinite(live.status.manifest?.pendingCount)) {
           livePending = live.status.manifest.pendingCount;
         }
@@ -2708,6 +2724,8 @@ async function loadFeederLiveStatus() {
     document.getElementById('fd-live-started').textContent = started;
     document.getElementById('fd-live-watchers').textContent = watchers;
     document.getElementById('fd-live-converter').textContent = converter;
+    const freshnessEl = document.getElementById('fd-live-freshness');
+    if (freshnessEl) freshnessEl.textContent = freshness;
     document.getElementById('fd-converter-status').textContent = converter;
 
     if (summaryRes && summaryRes.ok) {

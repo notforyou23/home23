@@ -193,3 +193,22 @@ test('labelForPath resolves the covering watcher, deepest root wins, fallback is
   assert.equal(feeder.labelForPath('/Users/x/vault/notes/a.md'), 'vault');
   assert.equal(feeder.labelForPath('/elsewhere/health_jtr/doc.pdf'), 'health_jtr');
 });
+
+test('GET /admin/feeder/status reports how fresh durable memory is', async () => {
+  const freshness = {
+    lastFlushAt: '2026-09-26T12:00:00.000Z', lastFlushNodes: 3, dirty: false,
+    oldestUnpersistedAt: null, lastPersistedAt: '2026-09-26T12:00:07.000Z', persistedRevision: 42,
+    lastSaveResult: { saved: true, memoryRevision: 42 }, consecutiveRefusals: 0,
+  };
+  const server = new RealtimeServer(0, silentLogger);
+  server.setOrchestrator({
+    feeder: { getStatus: async () => ({ started: true, manifest: { pendingCount: 0 } }) },
+    getPersistenceFreshness: () => freshness,
+  });
+  const res = makeResponse();
+  await server._handleFeederAdmin(makeRequest({ url: '/admin/feeder/status', method: 'GET' }), res);
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  assert.equal(body.status.started, true);
+  assert.deepEqual(body.status.freshness, freshness);
+});

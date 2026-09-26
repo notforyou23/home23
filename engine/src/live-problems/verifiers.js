@@ -638,6 +638,42 @@ const verifiers = {
       observed: { current, highWater: effectiveHighWater, floor, accepted: hasAccepted, allTimeHigh: hw.maxNodeCount },
     };
   },
+
+  /**
+   * Durable brain memory keeps up with live memory (H23-003): nothing has
+   * waited more than maxDirtyMinutes to be saved, and state saves are not
+   * refused over and over. brain_search reads only the saved memory, so a
+   * failure here means new memory is invisible to search and lost on restart.
+   * Engine-only: needs ctx.persistenceFreshness.
+   * args: { maxDirtyMinutes, maxConsecutiveRefusals }
+   */
+  brain_persistence_fresh({ maxDirtyMinutes = 10, maxConsecutiveRefusals = 3 }, ctx = {}) {
+    const status = typeof ctx.persistenceFreshness === 'function' ? ctx.persistenceFreshness() : null;
+    if (!status) return { ok: false, detail: 'no persistence status (engine context only)' };
+    const unsavedMinutes = (Number(status.unpersistedForMs) || 0) / 60000;
+    const refusals = Number(status.consecutiveRefusals) || 0;
+    const observed = {
+      unsavedMinutes: Number(unsavedMinutes.toFixed(1)),
+      consecutiveRefusals: refusals,
+      oldestUnpersistedAt: status.oldestUnpersistedAt ?? null,
+      lastPersistedAt: status.lastPersistedAt ?? null,
+      persistedRevision: status.persistedRevision ?? null,
+      lastSaveResult: status.lastSaveResult ?? null,
+    };
+    if (refusals >= maxConsecutiveRefusals) {
+      const why = status.lastSaveResult?.searchStale ? 'saved inline, memory source not updated'
+        : status.lastSaveResult?.reason || status.lastSaveResult?.error || 'unknown';
+      return { ok: false, detail: `${refusals} consecutive brain saves did not persist memory (${why})`, observed };
+    }
+    if (unsavedMinutes > maxDirtyMinutes) {
+      return { ok: false, detail: `memory changes unsaved for ${unsavedMinutes.toFixed(1)} min (limit ${maxDirtyMinutes})`, observed };
+    }
+    return {
+      ok: true,
+      detail: observed.unsavedMinutes > 0 ? `unsaved for ${observed.unsavedMinutes} min` : 'memory saved',
+      observed,
+    };
+  },
 };
 
 // ─── Compositional primitives ──────────────────────────────

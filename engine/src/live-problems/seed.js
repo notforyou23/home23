@@ -441,6 +441,35 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort, productHost = proc
       ],
       seedOrigin: 'system',
     },
+    {
+      id: 'brain_persistence_fresh',
+      claim: 'Brain memory reaches durable storage within 10 minutes and state saves are not being refused',
+      verifier: {
+        type: 'brain_persistence_fresh',
+        args: { maxDirtyMinutes: 10, maxConsecutiveRefusals: 3 },
+      },
+      // brain_search reads only saved memory, and a restart drops what was
+      // never saved, so there is deliberately no restart step. Refused saves
+      // once went unnoticed for 61 hours; this opens within minutes (H23-003).
+      remediation: [
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 15 },
+        {
+          type: 'notify_jtr',
+          args: {
+            fuseBox: true,
+            severity: 'alert',
+            text: 'Brain memory has not been saved for over 10 minutes, or its saves keep being refused. New memory is invisible to search and would be lost on restart.',
+            checklist: [
+              'Check the engine log for "REFUSING STATE SAVE" or "Memory sidecar write failed"',
+              'Check free disk space on the brain volume',
+              'Mark done once a save succeeds and the problem resolves',
+            ],
+          },
+          cooldownMin: 360,
+        },
+      ],
+      seedOrigin: 'system',
+    },
     // ── New invariants using compositional primitives ──
     {
       id: 'synthesis_fresh',
@@ -688,9 +717,11 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort, productHost = proc
   if (requested !== undefined && (!Array.isArray(requested) || requested.some(id => typeof id !== 'string' || !seeds.some(seed => seed.id === id)))) {
     throw new Error('monitoring.liveProblems.seedIds must contain known live-problem IDs');
   }
+  // Every resident's brain persists, however young, so its freshness alarm
+  // is one of the Host's own invariants.
   const selected = new Set(requested ?? [
     `${agent}_harness_online`, `${agent}_dashboard_ping`,
-    `${agent}_dashboard_port_owner`, `${agent}_engine_admin_ping`,
+    `${agent}_dashboard_port_owner`, `${agent}_engine_admin_ping`, 'brain_persistence_fresh',
   ]);
   return seeds.filter(seed => selected.has(seed.id));
 }

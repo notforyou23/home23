@@ -100,3 +100,52 @@ for (const [label, Manifest] of [
     }
   });
 }
+
+test('a flush deferred by an active brain save runs again about 2 s after the save clears', async (t) => {
+  // The file-event debounce had already fired, so a deferred batch used to
+  // wait for the 300 s interval flush before reaching memory (H23-003).
+  const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-ingestion-deferred-'));
+  const nodes = new Map();
+  const memory = {
+    persistenceSaveActive: true,
+    nodes,
+    async addNode(value) {
+      const node = { id: `node-${nodes.size + 1}`, concept: value.concept, metadata: value.metadata };
+      nodes.set(node.id, node);
+      return node;
+    },
+    patchNode(id, patch) { Object.assign(nodes.get(id), patch); return nodes.get(id); },
+    removeNode(id) { return nodes.delete(id); },
+    addEdge() {},
+  };
+  const flushed = [];
+  const manifest = new IngestionManifest({
+    runPath,
+    memory,
+    embeddingFn: async () => [0.1, 0.2],
+    config: { batchSize: 20 },
+    logger: { info() {}, warn() {}, debug() {} },
+    onFlushed: (flush) => flushed.push(flush),
+  });
+  t.after(async () => {
+    await manifest.shutdown();
+    fs.rmSync(runPath, { recursive: true, force: true });
+  });
+  await manifest.enqueue('/workspace/note.md', 'notes', 'full-hash-0123456789', [
+    { index: 0, text: 'deferred chunk', totalChunks: 1, heading: null, depth: 0 },
+  ], []);
+
+  assert.deepEqual(await manifest.flush('file-event'), { flushed: 0, deferred: true });
+  assert.deepEqual(await manifest.flush('interval'), { flushed: 0, deferred: true });
+  assert.equal(nodes.size, 0, 'nothing enters memory during the save');
+  const clearedAt = Date.now();
+  memory.persistenceSaveActive = false;
+
+  const deadline = Date.now() + 3_000;
+  while (nodes.size === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+  const elapsed = Date.now() - clearedAt;
+  assert.equal(nodes.size, 1, 'the deferred batch reached memory');
+  assert.ok(elapsed < 2_700, `re-ran ${elapsed} ms after the save cleared`);
+  assert.deepEqual(flushed, [{ reason: 'file-event:after-save', flushed: 1 }], 'one coalesced retry');
+  assert.equal(manifest.getEntry('/workspace/note.md').nodeIds.length, 1);
+});

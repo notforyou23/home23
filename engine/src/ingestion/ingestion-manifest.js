@@ -19,14 +19,20 @@ class IngestionManifest {
    * @param {object} opts.logger
    * @param {function} [opts.onGenerationLost] - (filePath, label) after a
    *   generation whose chunk nodes left the graph was reset for re-reading
+   * @param {function} [opts.onFlushed] - ({ reason, flushed }) after a flush
+   *   put items into memory; the brain is not durable until it saves them
    */
-  constructor({ runPath, memory, embeddingFn, config = {}, logger = null, onGenerationLost = null }) {
+  constructor({ runPath, memory, embeddingFn, config = {}, logger = null, onGenerationLost = null, onFlushed = null }) {
     this.runPath = runPath;
     this.memory = memory;
     this.embeddingFn = embeddingFn;
     this.config = config;
     this.logger = logger;
     this.onGenerationLost = onGenerationLost;
+    this.onFlushed = onFlushed;
+    this.deferredFlushMs = config.deferredFlushMs ?? 2000;
+    this._deferredFlush = null;
+    this._closed = false;
 
     this._manifestPath = path.join(runPath, 'ingestion-manifest.json');
     // JSONL, not a single JSON array: the queue once serialized as one
@@ -173,14 +179,19 @@ class IngestionManifest {
 
   /**
    * Flush pending items: embed, create nodes, create edges, update manifest.
+   * Resolves { flushed } with the number of items put into memory.
    */
   async flush(reason = 'manual') {
     return this._withLock(async () => {
       this._adoptCompatPending();
-      if (this._flushInProgress || this._queue.pendingCount === 0) return;
-      // Adding nodes mid-save makes the brain save refuse; the next interval
-      // flush picks the batch up once the save completes.
-      if (this.memory?.persistenceSaveActive) return;
+      if (this._flushInProgress || this._queue.pendingCount === 0) return { flushed: 0 };
+      // Adding nodes mid-save makes the brain save refuse. The file-event
+      // debounce has already fired, and the interval flush is 300 s away, so
+      // retry shortly after the save instead.
+      if (this.memory?.persistenceSaveActive) {
+        this._deferFlush(reason);
+        return { flushed: 0, deferred: true };
+      }
       this._flushInProgress = true;
 
       const batchSize = this.config.batchSize || 20;
@@ -253,7 +264,7 @@ class IngestionManifest {
             this._queue.requeue(remaining, remaining.map((item) => deliveryByItem.get(item)));
           }
           this._queue.commit(queuedBatch.token);
-          return;
+          return { flushed: 0 };
         }
 
         // Phase 2: establish a durable file-generation accumulator. Old nodes
@@ -386,15 +397,34 @@ class IngestionManifest {
           nodesCreated: readyItems.length,
           remaining: this._queue.pendingCount
         });
+        try {
+          this.onFlushed?.({ reason, flushed: readyItems.length });
+        } catch (err) {
+          this.logger?.warn?.('Feeder flush listener failed', { error: err.message });
+        }
 
         // Chain next flush if overflow
         if (this._queue.pendingCount > 0) {
           setTimeout(() => this.flush('drain'), 500);
         }
+        return { flushed: readyItems.length };
       } finally {
         this._flushInProgress = false;
       }
     });
+  }
+
+  // One pending retry, however many flushes a save deferred.
+  _deferFlush(reason) {
+    if (this._deferredFlush || this._closed) return;
+    this._deferredFlush = setTimeout(() => {
+      this._deferredFlush = null;
+      if (this._closed) return;
+      this.flush(`${reason}:after-save`).catch((err) => {
+        this.logger?.warn?.('Deferred feeder flush failed', { error: err.message });
+      });
+    }, this.deferredFlushMs);
+    this._deferredFlush.unref?.();
   }
 
   /**
@@ -441,6 +471,10 @@ class IngestionManifest {
    */
   async shutdown() {
     await this.flush('shutdown');
+    // A flush the final save deferred stays queued on disk for next start.
+    this._closed = true;
+    if (this._deferredFlush) clearTimeout(this._deferredFlush);
+    this._deferredFlush = null;
     this._saveManifest();
     this._adoptCompatPending();
   }

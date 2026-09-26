@@ -793,6 +793,20 @@ class Orchestrator {
     
     this.logger.info('✅ Reality Layer, Router, AgentRouter, MemoryGovernor & RecursivePlanner initialized');
 
+    // Durable memory no longer waits for a cycle to finish a save (H23-003):
+    // the scheduler saves a graph left dirty for a minute, and a feeder commit
+    // asks for a save within seconds. It starts with the cognitive loop, runs
+    // while the engine is paused, and saves through saveState and its guards.
+    const { PersistenceScheduler } = require('./persistence-scheduler');
+    const maxDirtyAgeMs = Number(this.config?.persistence?.maxDirtyAgeMs);
+    this.persistenceScheduler = new PersistenceScheduler({
+      isDirty: () => Boolean(this.memory?.hasPersistenceChanges?.()),
+      isSaving: () => Boolean(this._saveStatePromise),
+      save: () => this.saveState(),
+      logger: this.logger,
+      ...(Number.isFinite(maxDirtyAgeMs) && maxDirtyAgeMs > 0 && { maxDirtyAgeMs }),
+    });
+
     // Initialize Document Feeder (ingestion pipeline for workspace files)
     if (this.config.feeder?.enabled !== false) {
       try {
@@ -807,7 +821,8 @@ class Orchestrator {
           memory: this.memory,
           config: feederConfig,
           logger: this.logger,
-          embeddingFn: (text) => this.memory.embed(text)
+          embeddingFn: (text) => this.memory.embed(text),
+          onCommitted: () => this.persistenceScheduler?.request('feeder'),
         });
         await this.feeder.start(this.logsDir);
         // Also watch the workspace directory only as a legacy fallback. Modern
@@ -865,6 +880,7 @@ class Orchestrator {
    */
   async start() {
     this.running = true;
+    this.persistenceScheduler?.start();
 
     // Live-problems registry + verifier/remediator loop. Boots before the
     // pulse so the first remark already has live-problem state to read.
@@ -879,6 +895,7 @@ class Orchestrator {
           dashboardPort: process.env.DASHBOARD_PORT || process.env.COSMO_DASHBOARD_PORT || null,
           bridgePort: process.env.BRIDGE_PORT || null,
           harnessNotifyToken: resolveLiveProblemsBridgeToken(),
+          persistenceStatus: () => this.getPersistenceFreshness(),
         });
         this.liveProblems.start();
       }
@@ -7361,7 +7378,12 @@ class Orchestrator {
     const savePromise = this._saveStateUnlocked();
     this._saveStatePromise = savePromise;
     try {
-      return await savePromise;
+      const result = await savePromise;
+      this.persistenceScheduler?.recordSave(result);
+      return result;
+    } catch (error) {
+      this.persistenceScheduler?.recordSave({ saved: false, reason: 'save_failed', error: error?.message });
+      throw error;
     } finally {
       if (this._saveStatePromise === savePromise) {
         this._saveStatePromise = null;
@@ -7559,6 +7581,7 @@ class Orchestrator {
       // committed delta, and clears dirty sets only after a generation CAS.
       const { persistMemoryRevision } = require('./memory-persistence');
       let sidecarsWritten = null;
+      let sidecarError = null;
       const origNodes = state.memory?.nodes;
       const origEdges = state.memory?.edges;
       const expectedNodes = totalNodes;
@@ -7664,6 +7687,7 @@ class Orchestrator {
             ...(err.residentSummary && { residentSummary: err.residentSummary }),
           });
           sidecarsWritten = null;
+          sidecarError = err;
           const inlineFallbackMaxNodes = this.config?.persistence?.inlineMemoryFallbackMaxNodes || 1000;
           if (expectedNodes > inlineFallbackMaxNodes) {
             this.logger.error('REFUSING STATE SAVE — sidecar write failed for large brain', {
@@ -7720,6 +7744,7 @@ class Orchestrator {
                 deltaKB: +(sidecarsWritten.delta.bytes / 1024).toFixed(1),
               }) }
           : 'inline (fallback)',
+        ...(sidecarError && { searchStale: true }),
         ...(sidecarsWritten?.maintenanceDebt && { memoryMaintenanceDebt: sidecarsWritten.maintenanceDebt }),
         ...(saveResult.ratio && { compressionRatio: saveResult.ratio })
       });
@@ -7729,6 +7754,10 @@ class Orchestrator {
         totalNodes,
         expectedEdges,
         sidecars: sidecarsWritten ? 'sidecar' : 'inline',
+        ...(sidecarsWritten?.manifest && { memoryRevision: sidecarsWritten.manifest.currentRevision }),
+        // A small brain saved inline after its sidecar write failed: the
+        // revisioned memory that search reads did not move.
+        ...(sidecarError && { searchStale: true, memoryError: sidecarError.message }),
         ...(sidecarsWritten?.maintenanceDebt && { memoryMaintenanceDebt: sidecarsWritten.maintenanceDebt }),
       };
 
@@ -8815,9 +8844,23 @@ class Orchestrator {
     return { saved: false, reason: 'shutdown_save_timeout_no_state' };
   }
 
+  /**
+   * How fresh durable memory is: /admin/feeder/status and the
+   * brain_persistence_fresh live problem read this (H23-003).
+   */
+  getPersistenceFreshness() {
+    if (!this.persistenceScheduler) return null;
+    return {
+      ...(this.feeder?.flushFreshness?.() || { lastFlushAt: null, lastFlushNodes: null }),
+      ...this.persistenceScheduler.status(),
+    };
+  }
+
   async stop() {
     this.logger.info('Stopping GPT-5.5 system...');
     this.running = false;
+    // Stopped first: the final save below is the last one.
+    this.persistenceScheduler?.stop();
 
     if (this.liveProblems) {
       try { this.liveProblems.stop(); } catch {}
