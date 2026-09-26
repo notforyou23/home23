@@ -376,8 +376,11 @@ async function awaitCandidateReadiness(home, journal, dependencies, { busy, list
     catch { statusUnavailable = true; }
     const maskedStatusFailure = current?.ok === false && current?.status === 'recovery_required' &&
       current?.error?.code === 'update_recovery_required' && !current?.readiness && !current?.processes;
-    // A Host that cannot read its supervisor reports 'unavailable', not a failed home.
-    const kind = statusUnavailable || !current || maskedStatusFailure || current.status === 'unavailable' ? 'unavailable' : candidateStatusKind(current);
+    // A Host that cannot read its supervisor reports 'unavailable', not a failed
+    // home. While this journal blocks Start, runHostAction masks that as an ok
+    // recovery_required status that keeps only its error code.
+    const supervisorUnreadable = current?.status === 'unavailable' || current?.error?.code === 'host_supervisor_ambiguous';
+    const kind = statusUnavailable || !current || maskedStatusFailure || supervisorUnreadable ? 'unavailable' : candidateStatusKind(current);
     const waiting = kind === 'starting' ? await busy()
       : kind === 'unavailable' ? healthyAdmittedWriters(await list(home), journal.writerNames) : false;
     const remaining = deadline - clock();

@@ -12,6 +12,7 @@ import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, s
 import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writerStopOrder } from '../../cli/lib/product-update-inventory.js';
+import { updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 
 const memorySource = createRequire(import.meta.url)('../../shared/memory-source');
@@ -203,6 +204,23 @@ test('a supervisor on the wrong socket makes status unavailable and Stop changes
   const silent = await runHostAction('status', { homeRoot }, { ...dependencies, supervisorListening: async () => null });
   assert.equal(silent.status, 'unavailable');
   assert.match(silent.error.message, /not answering/);
+});
+
+test('while an update blocks Start, an unreadable supervisor keeps its error code in the masked status', async t => {
+  const { homeRoot, state } = await prepared(t);
+  privateJSON(path.join(homeRoot, '.home23-host.json'), { ...state, desiredRunning: true, phase: 'starting' });
+  fs.mkdirSync(updateDirectoryFor(homeRoot), { mode: 0o700 });
+  privateJSON(path.join(updateDirectoryFor(homeRoot), 'journal.json'), { schema: 'home23.product-update.v1', homeRoot, phase: 'writers_admitted' });
+  const result = await runHostAction('status', { homeRoot }, {
+    execute: async (_node, args) => { throw new Error(`pm2 ${args[1]} must not run`); },
+    supervisorListening: async () => null,
+  });
+  // The update controller reads this shape as an unreadable Host, not a failed candidate.
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'recovery_required');
+  assert.equal(result.update.phase, 'writers_admitted');
+  assert.equal(result.error.code, 'host_supervisor_ambiguous');
+  assert.deepEqual(result.processes, []);
 });
 
 test('the supervisor probe tells a listening socket from an absent or refused one', async t => {

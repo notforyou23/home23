@@ -1358,19 +1358,25 @@ test('a failed Host status probe defers healthy admitted writers without fencing
 });
 
 test('a Host that cannot read its supervisor defers healthy admitted writers without fencing', async t => {
-  const fixture = homeFixture(t, { desiredRunning: true });
-  let online = false, fences = 0;
-  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
-    staging: fixture.staging, admit: true }, { ...quiet,
-    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
-    start: async () => { online = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
-    status: async () => ({ ok: false, status: 'unavailable', processes: [], error: { code: 'host_supervisor_ambiguous' } }),
-    quiesce: async () => { fences += 1; online = false; return []; },
-    readinessWaitMs: 0,
-  });
-  assert.equal(result.status, 'deferred');
-  assert.equal(result.reasons[0].code, 'candidate_starting');
-  assert.equal(fences, 0);
+  const unavailable = { ok: false, status: 'unavailable', processes: [], error: { code: 'host_supervisor_ambiguous' } };
+  // What runHostAction('status') returns while this admitted journal blocks Start.
+  const masked = { ...unavailable, ok: true, status: 'recovery_required', update: { phase: 'writers_admitted', acceptedWork: false } };
+  for (const reported of [masked, unavailable]) {
+    const fixture = homeFixture(t, { desiredRunning: true });
+    let online = false, fences = 0;
+    const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+      staging: fixture.staging, admit: true }, { ...quiet,
+      listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+      start: async () => { online = true; return { ok: true, status: 'starting', readiness: { ready: false } }; },
+      status: async () => reported,
+      quiesce: async () => { fences += 1; online = false; return []; },
+      readinessWaitMs: 0,
+    });
+    assert.equal(result.status, 'deferred', reported.status);
+    assert.equal(result.reasons[0].code, 'candidate_starting');
+    assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
+    assert.equal(fences, 0);
+  }
 });
 
 test('transient readiness probe timeouts re-probe with bounded backoff and commit without deferring', async t => {
