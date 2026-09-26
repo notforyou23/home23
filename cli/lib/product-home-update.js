@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile, execFileSync } from 'node:child_process';
 import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { absoluteHome, privateDirectory, readPrivateJSON, productEnvironment } from './product-environment.js';
@@ -248,6 +248,39 @@ function pruneExecutors(home, operation, dependencies) {
   }
   removeDetached(stale, dependencies);
 }
+/** The owner account's home from its passwd entry. A product-environment
+ * process has HOME inside the installation, so homedir() there is not where
+ * this Mac keeps its caches. The retained executor imports only ./ modules. */
+const ownerAccountHome = () => userInfo().homedir;
+const heldLock = path => { try { return alive(JSON.parse(readFileSync(path, 'utf8')).pid); } catch { return false; } };
+/** Removes other operations' download, stage and local extraction. Only the
+ * latest operation can resume, and a committed journal no longer needs its
+ * stage. A stage whose lock has a live owner (an apply holding it) stays, as
+ * do links, other owners' entries and names that are not operation deliveries. */
+export function pruneUpdateDelivery(homeRoot, { keepIds = [], cacheRoot = join(ownerAccountHome(), 'Library/Caches/Home23'),
+  deviceFor = path => lstatSync(path).dev } = {}, dependencies = {}) {
+  const home = absoluteHome(homeRoot), keep = new Set(keepIds);
+  const delivery = join(dirname(home), `.${basename(home)}.home23-delivery`);
+  const entries = [];
+  const scan = (directory, pattern) => {
+    if (!realDirectory(directory)) return;
+    for (const name of readdirSync(directory)) {
+      const match = pattern.exec(name);
+      if (match && !keep.has(match[2])) entries.push({ id: match[2], path: join(directory, name), lock: name.endsWith('.home23-stage.lock') });
+    }
+  };
+  scan(delivery, /^(download|stage)-([a-f0-9-]{36})(?:\.home23-stage\.(?:json|lock))?$/);
+  // Extraction uses the local cache only for a home on another volume.
+  try { if (deviceFor(home) !== deviceFor(ownerAccountHome())) scan(absoluteHome(cacheRoot), /^(extraction)-([a-f0-9-]{36})$/); } catch { /* No cache to prune. */ }
+  const held = new Set(entries.filter(entry => entry.lock && heldLock(entry.path)).map(entry => entry.id));
+  const stale = entries.filter(entry => {
+    if (held.has(entry.id)) return false;
+    try { const stat = lstatSync(entry.path); return !stat.isSymbolicLink() && (stat.isDirectory() || stat.isFile()) && stat.uid === process.getuid?.(); }
+    catch { return false; }
+  }).map(entry => entry.path);
+  removeDetached(stale, dependencies);
+  return stale;
+}
 
 /** Keep the signed download claim and final stage beside the home, but expand
  * a runtime archive on the Mac's local volume when the home is external. */
@@ -385,6 +418,14 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
         persist({ phase: 'downloading', progress: null, message: 'Downloading and preparing Home23 on your Mac. Your home is still available.' });
         const progressNow = dependencies.progressNow ?? Date.now;
         let lastProgressPersistAt = progressNow();
+        // Earlier operations can no longer resume once this one is latest. An
+        // unfinished journal may still own an older stage, so keep them all then.
+        try {
+          const journal = updater.readUpdateJournal?.(home.root);
+          if (!journal || ['committed', 'rolled_back', 'aborted'].includes(journal.phase)) {
+            pruneUpdateDelivery(home.root, { keepIds: [operation.id], ...dependencies.delivery }, dependencies);
+          }
+        } catch { /* Housekeeping never blocks a download. */ }
         const delivery = updateDeliveryPaths(home.root, operation.id, { release: operation.release });
         prepared = await channel.prepareConfiguredRelease({ ...options,
           staging: delivery.staging, downloadDirectory: delivery.downloadDirectory, extractionDirectory: delivery.extractionDirectory,
@@ -454,6 +495,8 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     const readiness = await verify(home.root, prepared.packageId, dependencies);
     persist({ phase: 'completed', progress: 1, message: readiness?.running === false
       ? 'Home23 is updated. Your home remains stopped.' : 'Home23 is updated and your home is ready.' });
+    // Nothing is kept after a completed update; the channel keeps the signed release.
+    try { pruneUpdateDelivery(home.root, { ...dependencies.delivery }, dependencies); } catch { /* Housekeeping only. */ }
   } catch (error) {
     persist({ phase: 'failed', errorCode: error.code ?? 'update_failed', reasonCodes: error.reasonCodes ?? [], message: operation.requiresLocalRecovery ? error.message : error.reasonCodes?.length ? error.message : operation.runtimeCompleted
       ? 'Your home software is updated. Resume to finish the Mac application and reconnect.'

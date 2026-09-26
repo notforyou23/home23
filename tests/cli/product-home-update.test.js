@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { homeUpdateStatus, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
+import { homeUpdateStatus, pruneUpdateDelivery, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
 
 function fixture(t) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'home23-update-contract-'))), home = join(parent, 'home');
@@ -722,4 +722,90 @@ test('completing an operation removes executors of finished operations and earli
   await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, dependencies);
   assert.equal(f.operation(id).phase, 'completed');
   assert.deepEqual(removed.sort(), [join(directory, `executor-${finished}-1`), join(directory, `executor-${id}-1`)].sort());
+});
+
+test('a completed update prunes its delivery download and stage and older deliveries', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  const delivery = join(f.parent, '.home.home23-delivery');
+  const older = '44444444-4444-4444-4444-444444444444', held = '55555555-5555-5555-5555-555555555555';
+  mkdirSync(delivery, { mode: 0o700 });
+  for (const name of [`download-${id}`, `stage-${id}`, `download-${older}`, `stage-${older}`, `stage-${held}`, `download-${held}`]) mkdirSync(join(delivery, name));
+  writeFileSync(join(delivery, `stage-${id}.home23-stage.json`), '{}');
+  writeFileSync(join(delivery, `stage-${older}.home23-stage.lock`), JSON.stringify({ pid: 999999, id: 'gone' }));
+  // An apply still holds this stage.
+  writeFileSync(join(delivery, `stage-${held}.home23-stage.lock`), JSON.stringify({ pid: process.pid, id: 'live' }));
+  writeFileSync(join(delivery, 'notes.txt'), 'kept');
+  f.setOperation({ ...f.operation(id), prepared: { release, packageId: release.packageId, candidatePayload: join(delivery, `stage-${id}/payload`),
+    staging: join(delivery, `stage-${id}`), installedAppPath: join(f.parent, 'Home23.app'), preparedAppPath: join(f.parent, '.next.app'), lifecyclePath: join(f.parent, 'lifecycle') } });
+  const removed = [];
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: checkedChannel, removePaths: paths => removed.push(...paths),
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => {
+      f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+      return { ok: true, status: 'committed' };
+    } },
+    appUpdater: { applyPreparedMacApplication: async () => ({ status: 'reopened' }) },
+    verifyReady: async () => ({ running: true }),
+  });
+  assert.equal(f.operation(id).phase, 'completed');
+  assert.deepEqual(removed.map(path => path.slice(delivery.length + 1)).sort(), [
+    `download-${id}`, `download-${older}`, `stage-${id}`, `stage-${id}.home23-stage.json`, `stage-${older}`, `stage-${older}.home23-stage.lock`,
+  ].sort());
+});
+
+test('a new download prunes older deliveries and a failed resumable update keeps its own', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  const delivery = join(f.parent, '.home.home23-delivery');
+  const older = '66666666-6666-6666-6666-666666666666';
+  mkdirSync(join(delivery, `download-${older}`), { recursive: true, mode: 0o700 });
+  const removed = [];
+  const dependencies = {
+    channel: { ...checkedChannel, prepareConfiguredRelease: async options => {
+      mkdirSync(options.downloadDirectory, { recursive: true }); mkdirSync(options.staging, { recursive: true });
+      return { release, packageId: release.packageId, appBuild: 180, candidatePayload: join(options.staging, 'payload'), staging: options.staging };
+    } },
+    removePaths: paths => removed.push(...paths),
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => ({ ok: false, status: 'refused', reasons: [{ code: 'database_busy', message: 'busy' }] }) },
+    appUpdater: unusedAppUpdater,
+  };
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, dependencies);
+  assert.equal(f.operation(id).phase, 'failed');
+  assert.deepEqual(homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 }).allowedActions, ['resume']);
+  assert.deepEqual(removed, [join(delivery, `download-${older}`)]);
+});
+
+test('an unfinished journal keeps every delivery when a new download starts', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  mkdirSync(join(f.parent, '.home.home23-delivery', 'stage-77777777-7777-7777-7777-777777777777'), { recursive: true, mode: 0o700 });
+  const removed = [];
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: { ...checkedChannel, prepareConfiguredRelease: async () => { throw Object.assign(new Error('offline'), { code: 'download_failed' }); } },
+    removePaths: paths => removed.push(...paths),
+    updater: { readUpdateJournal: () => ({ phase: 'recovery_required', writersAdmitted: false }) },
+    appUpdater: unusedAppUpdater,
+  });
+  assert.deepEqual(removed, []);
+});
+
+test('pruning ignores links, other names and a local cache of a same-volume home', t => {
+  const f = fixture(t);
+  const delivery = join(f.parent, '.home.home23-delivery'), cache = join(f.parent, 'cache');
+  const gone = '88888888-8888-8888-8888-888888888888', linked = '99999999-9999-9999-9999-999999999999';
+  mkdirSync(join(delivery, `download-${gone}`), { recursive: true, mode: 0o700 });
+  mkdirSync(join(delivery, 'download-not-an-operation'));
+  mkdirSync(join(f.parent, 'elsewhere'));
+  symlinkSync(join(f.parent, 'elsewhere'), join(delivery, `stage-${linked}`));
+  mkdirSync(join(cache, `extraction-${gone}`), { recursive: true, mode: 0o700 });
+  symlinkSync(join(f.parent, 'elsewhere'), join(cache, `extraction-${linked}`));
+  const removed = [];
+  const removePaths = paths => removed.push(...paths);
+  pruneUpdateDelivery(f.home, { cacheRoot: cache, deviceFor: () => 1 }, { removePaths });
+  assert.deepEqual(removed, [join(delivery, `download-${gone}`)]);
+  removed.length = 0;
+  // An external home expanded its runtime in the Mac's local cache.
+  pruneUpdateDelivery(f.home, { cacheRoot: cache, deviceFor: path => path === f.home ? 2 : 1 }, { removePaths });
+  assert.deepEqual(removed.sort(), [join(delivery, `download-${gone}`), join(cache, `extraction-${gone}`)].sort());
 });
