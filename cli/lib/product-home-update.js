@@ -2,10 +2,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile, execFileSync } from 'node:child_process';
 import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
-import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { absoluteHome, privateDirectory, readPrivateJSON, productEnvironment } from './product-environment.js';
+import { absoluteHome, ownerAccountHome, privateDirectory, readPrivateJSON, productEnvironment } from './product-environment.js';
 import { promisify } from 'node:util';
 
 const SCHEMA = 'home23.home-update.v1';
@@ -249,18 +248,18 @@ function pruneExecutors(home, operation, dependencies) {
   }
   removeDetached(stale, dependencies);
 }
-/** The owner account's home from its passwd entry. A product-environment
- * process has HOME inside the installation, so homedir() there is not where
- * this Mac keeps its caches. The retained executor imports only ./ modules. */
-const ownerAccountHome = () => userInfo().homedir;
+/** The Mac's local cache lives under the owner account's home, the passwd
+ * entry (ownerAccountHome, the HOME23_OWNER_HOME rule). A product-environment
+ * process has HOME inside the installation, so homedir() there is on the
+ * home's own volume and is not where this Mac keeps its caches. */
+const localCacheRoot = owner => join(owner, 'Library/Caches/Home23');
 const heldLock = path => { try { return alive(JSON.parse(readFileSync(path, 'utf8')).pid); } catch { return false; } };
 /** Removes other operations' download, stage and local extraction. Only the
  * latest operation can resume, and a committed journal no longer needs its
  * stage. A stage whose lock has a live owner (an apply holding it) stays, as
  * do links, other owners' entries and names that are not operation deliveries. */
-export function pruneUpdateDelivery(homeRoot, { keepIds = [], cacheRoot = join(ownerAccountHome(), 'Library/Caches/Home23'),
-  deviceFor = path => lstatSync(path).dev } = {}, dependencies = {}) {
-  const home = absoluteHome(homeRoot), keep = new Set(keepIds);
+export function pruneUpdateDelivery(homeRoot, { keepIds = [], cacheRoot, deviceFor = path => lstatSync(path).dev } = {}, dependencies = {}) {
+  const home = absoluteHome(homeRoot), keep = new Set(keepIds), owner = ownerAccountHome(home);
   const delivery = join(dirname(home), `.${basename(home)}.home23-delivery`);
   const entries = [];
   const scan = (directory, pattern) => {
@@ -272,7 +271,7 @@ export function pruneUpdateDelivery(homeRoot, { keepIds = [], cacheRoot = join(o
   };
   scan(delivery, /^(download|stage)-([a-f0-9-]{36})(?:\.home23-stage\.(?:json|lock))?$/);
   // Extraction uses the local cache only for a home on another volume.
-  try { if (deviceFor(home) !== deviceFor(ownerAccountHome())) scan(absoluteHome(cacheRoot), /^(extraction)-([a-f0-9-]{36})$/); } catch { /* No cache to prune. */ }
+  try { if (owner && deviceFor(home) !== deviceFor(owner)) scan(absoluteHome(cacheRoot ?? localCacheRoot(owner)), /^(extraction)-([a-f0-9-]{36})$/); } catch { /* No cache to prune. */ }
   const held = new Set(entries.filter(entry => entry.lock && heldLock(entry.path)).map(entry => entry.id));
   const stale = entries.filter(entry => {
     if (held.has(entry.id)) return false;
@@ -285,18 +284,19 @@ export function pruneUpdateDelivery(homeRoot, { keepIds = [], cacheRoot = join(o
 
 /** Keep the signed download claim and final stage beside the home, but expand
  * a runtime archive on the Mac's local volume when the home is external. */
-export function updateDeliveryPaths(homeRoot, operationId, { cacheRoot = join(homedir(), 'Library/Caches/Home23'), deviceFor = path => lstatSync(path).dev, release } = {}) {
+export function updateDeliveryPaths(homeRoot, operationId, { cacheRoot, deviceFor = path => lstatSync(path).dev, release } = {}) {
   if (typeof operationId !== 'string' || !/^[a-f0-9-]{36}$/.test(operationId)) throw fail('update_state_invalid', 'Update delivery identity is invalid.');
   const home = absoluteHome(homeRoot);
   const delivery = privateDirectory(join(dirname(home), `.${basename(home)}.home23-delivery`));
   const staging = join(delivery, `stage-${operationId}`);
   const downloadDirectory = join(delivery, `download-${operationId}`);
-  const userHome = absoluteHome(homedir());
-  if (deviceFor(home) === deviceFor(userHome)) return { staging, downloadDirectory };
+  const owner = ownerAccountHome(home);
+  if (!owner) throw fail('update_storage_unavailable', 'The Mac account home for this home update cannot be found.');
+  if (deviceFor(home) === deviceFor(absoluteHome(owner))) return { staging, downloadDirectory };
 
   // Validate every existing ancestor before creating the owned cache. A
   // relocated/symlinked cache must never redirect an updater into a home.
-  const cache = privateDirectory(absoluteHome(cacheRoot));
+  const cache = privateDirectory(absoluteHome(cacheRoot ?? localCacheRoot(owner)));
   if (deviceFor(cache) === deviceFor(home)) throw fail('update_storage_unavailable', 'The Mac has no separate local cache volume for this home update.');
   const extractionDirectory = privateDirectory(join(cache, `extraction-${operationId}`));
   const runtimeBytes = release?.runtime?.bytes;
