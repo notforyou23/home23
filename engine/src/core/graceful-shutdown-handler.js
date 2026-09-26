@@ -119,6 +119,12 @@ class GracefulShutdownHandler {
 
     this.logger.info('[GracefulShutdown] Starting graceful shutdown', { trigger });
 
+    // Remediation ends now, not after the agent wait below. While this engine
+    // waits for agents, a Host Stop or update is stopping its dashboard,
+    // harness and shared services; restarting them defeats that stop.
+    try { this.orchestrator?.liveProblems?.stop?.(); } catch { /* shutdown continues */ }
+    try { require('../live-problems/remediators').setShuttingDown(true); } catch { /* shutdown continues */ }
+
     // Setup shutdown timeout (force exit)
     const shutdownTimer = setTimeout(() => {
       const elapsed = Date.now() - this.shutdownStartTime;

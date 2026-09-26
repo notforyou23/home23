@@ -118,6 +118,8 @@ class LiveProblemsLoop {
     this.ctxProvider = ctxProvider || (() => ({}));
     this.intervalMs = intervalMs || DEFAULT_INTERVAL_MS;
     this.running = false;
+    // Set only by stop(). A never-started loop still serves processNow.
+    this.stopped = false;
     this.timer = null;
     this._ticking = false;
     this._processingGeneration = new Map();
@@ -126,12 +128,14 @@ class LiveProblemsLoop {
   start() {
     if (this.running) return;
     this.running = true;
+    this.stopped = false;
     this.timer = setTimeout(() => this.tick(), WARMUP_DELAY_MS);
     this.logger.info?.('[live-problems] loop started');
   }
 
   stop() {
     this.running = false;
+    this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
@@ -151,6 +155,8 @@ class LiveProblemsLoop {
       this.store.pruneResolved();
       const all = this.store.all();
       for (const p of all) {
+        // stop() only clears the timer; an in-flight tick must not keep remediating.
+        if (this.stopped) break;
         if (p.state === 'unverifiable') continue;
         if (p.state === 'resolved') {
           if (!shouldReverifyResolvedProblem(p)) continue;
@@ -388,7 +394,8 @@ class LiveProblemsLoop {
       }
     }
 
-    // 3. Run the remediator
+    // 3. Run the remediator, unless the loop stopped while this problem verified.
+    if (this.stopped) return;
     this.logger.info?.(`[live-problems] ${p.id}: step ${p.stepIndex} → ${step.type}`);
     // Pass the full problem record so dispatch_to_agent has verifier spec etc.
     const out = await runRemediator(step, { ...ctx, problem: p });
