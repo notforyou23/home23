@@ -2,10 +2,10 @@ import type { ToolContext, ToolDefinition } from '../types.js';
 
 export const nativeChessTool: ToolDefinition = {
   name: 'native_chess',
-  description: 'Play and study native Chess in a Connected Agents channel. Always identify the gameId. Read the current game and board before moving, then supply its expectedVersion with from and to squares (and promotion if needed). For an ordinary move, omit promotion or use null; only a pawn reaching its last rank uses q, r, b, or n. Send only fields needed by the selected operation. Example: {"operation":"move","gameId":"<current game>","expectedVersion":2,"from":"e7","to":"e5","promotion":null}. Algebraic notation alone cannot submit a move. Save a teaching position with save_position; this does not alter a live game. A boardReference URL in the result can be shared as a normal chat link for an inline board.',
+  description: 'Play and study native Chess in a Connected Agents channel. Always identify the gameId. Read the current game and board before moving, then supply its expectedVersion with from and to squares (and promotion if needed). For an ordinary move, omit promotion or use null; only a pawn reaching its last rank uses q, r, b, or n. Send only fields needed by the selected operation. Example: {"operation":"move","gameId":"<current game>","expectedVersion":2,"from":"e7","to":"e5","promotion":null}. Algebraic notation alone cannot submit a move. channelId is a chn_… id from channel_manage list; omit it to use the current conversation. A house resident takes turns only in a group channel that includes it and the owner. Save a teaching position with save_position; this does not alter a live game. A boardReference URL in the result can be shared as a normal chat link for an inline board.',
   input_schema: { type: 'object', required: ['operation'], properties: {
     operation: { type: 'string', enum: ['list', 'get', 'create', 'move', 'control', 'save_position', 'get_position', 'list_positions', 'export'] },
-    gameId: { type: 'string' }, positionId: { type: 'string' }, channelId: { type: 'string' },
+    gameId: { type: 'string' }, positionId: { type: 'string' }, channelId: { type: 'string', description: 'A chn_… id from channel_manage list. Omit for the current conversation.' },
     players: { type: 'object', required: ['white', 'black'], properties: { white: { type: 'string' }, black: { type: 'string' } } },
     title: { type: 'string' }, initialPgn: { type: 'string' },
     expectedVersion: { type: 'integer', description: 'Current game.version from get.' },

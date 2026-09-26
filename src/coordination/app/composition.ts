@@ -471,7 +471,8 @@ export function createCoordinationProcess(
       ? {}
       : { artifactMessageLink: artifactRepository }),
   });
-  const nativeChess = new NativeChessService({ database, engine: new StockfishEngine() });
+  // Residents take chess turns through completion targets; a resident without one could never move.
+  const nativeChess = new NativeChessService({ database, engine: new StockfishEngine(), residentAvailable: binding => completionTargets.has(binding) });
   const channels = createChannelService({ repository: messagingRepository, participantDirectory, cursorSigningKey: channelCursorKey });
   const projects = new ProjectContinuityStore(config.botRootDirectory,
     (context, channelId) => channels.getChannel({context, channelId}),
@@ -1265,7 +1266,7 @@ export function createCoordinationProcess(
           ...((args.operation === 'chess_move' || (args.operation === 'chess_control' && args.action === 'resign')) && typeof args.gameId === 'string'
             ? { turnId: resolveChessMoveTurnId(database, origin, context.principalId, args.gameId) }
             : {}) };
-        return executeChessOperation(nativeChess, actor, args, key);
+        return executeChessOperation(nativeChess, actor, args, key, origin);
       },
       authorize: detachments.authorize,
       authorizeRead: detachments.authorizeRead,

@@ -6,7 +6,7 @@ import test from 'node:test';
 import { openCoordinationDatabase } from '../../../src/coordination/db/index.js';
 import { nativeChessTool } from '../../../src/agent/tools/channels.js';
 import { executeChessOperation } from '../../../src/coordination/chess/operations.js';
-import { NativeChessService, ChessError } from '../../../src/coordination/chess/service.js';
+import { NativeChessService, ChessError, CHESS_CONTEXT_INCOMPATIBLE } from '../../../src/coordination/chess/service.js';
 
 const BOT='bot_0198d95f-6c00-7000-8000-000000000301';
 const OTHER='bot_0198d95f-6c00-7000-8000-000000000302';
@@ -258,4 +258,57 @@ test('records count completed outcomes once, distinguish opponents, exclude unfi
   assert.deepEqual(service.statistics({principalId:OTHER}),{finishedGames:0,activeGames:0,pausedGames:0,players:[],opponents:[]});
   service.create({channelId:CHANNEL,players:{white:'engine_stockfish_6',black:'engine_stockfish_6'},initialPgn:'1. e4 1-0'},owner,'same-engine-record');
   assert.deepEqual(service.statistics(owner).players.find(p=>p.id==='engine_stockfish_6'),{id:'engine_stockfish_6',games:2,wins:1,losses:1,draws:0});
+});
+
+const DIRECT='chn_0198d95f-6c00-7000-8000-000000000501';
+const HELPER='bot_0198d95f-6c00-7000-8000-000000000502';
+const HELPER_DIRECT='chn_0198d95f-6c00-7000-8000-000000000503';
+/** Adds the resident's direct chat and a bot- helper with its own direct chat, as Core creates them. */
+function withDirectChats(f:ReturnType<typeof fixture>) {
+  f.database.mutateWithEvent(tx=>{
+    tx.run("INSERT INTO principals (id,kind,created_at) VALUES (?,'bot',?)",HELPER,NOW);
+    tx.run(`INSERT INTO bots (id,principal_id,name,purpose,lifecycle,conversation_id,resident_binding,continuing_identity,durable_mailbox,required_capabilities_json,active_instance_id,active_key_version,resident_protocol_version,resident_capabilities_json,resident_registered_at,last_heartbeat_at,reported_availability,version,created_at,updated_at) VALUES (?,?,'Helper','Helper','active',NULL,'bot-helper-1',1,1,'[]',NULL,NULL,NULL,'[]',NULL,NULL,NULL,1,?,?)`,HELPER,HELPER,NOW,NOW);
+    for(const [channel,member] of [[DIRECT,BOT],[HELPER_DIRECT,HELPER]] as const) {
+      tx.run(`INSERT INTO channels (id,kind,title,purpose,owner_principal_id,responder_mode,coordinator_bot_id,response_order,max_bot_turns,lifecycle,pinned,version,next_message_sequence,created_at,updated_at) VALUES (?,'direct','Direct','','user_owner','mentions_only',NULL,'parallel',1,'active',0,1,1,?,?)`,channel,NOW,NOW);
+      for(const p of ['user_owner',member])tx.run("INSERT INTO channel_members (channel_id,principal_id,kind,role,active,joined_at,left_at) VALUES (?,?,?,?,1,?,NULL)",channel,p,p==='user_owner'?'owner':'bot',p==='user_owner'?'owner':'member',NOW);
+    }
+    return {value:undefined,event:{type:'test.seed',aggregateKind:'test',aggregateId:'chess-direct-seed',aggregateVersion:1,channelId:DIRECT,actorPrincipalId:'user_owner',requestId:'req_0198d95f-6c00-7000-8000-000000000504',correlationId:'cor_0198d95f-6c00-7000-8000-000000000505',payload:{},createdAt:NOW}};
+  });
+}
+const incompatible=(e:unknown)=>e instanceof ChessError&&e.code==='invalid_request'&&e.message.startsWith(CHESS_CONTEXT_INCOMPATIBLE);
+
+test('a resident cannot be seated where its turns are refused; helpers and group channels still play',t=>{
+  const f=fixture(t);t.after(()=>f.database.close());withDirectChats(f);
+  // The resident's scheduled turn is refused outside a group channel, so create refuses first.
+  assert.throws(()=>f.service.create({channelId:DIRECT,players:{white:'user_owner',black:BOT}},owner,'direct-resident'),incompatible);
+  assert.throws(()=>f.service.create({channelId:DIRECT,players:{white:BOT,black:'user_owner'}},bot,'direct-resident-bot'),incompatible);
+  assert.equal(f.database.readOne<{n:number}>('SELECT count(*) n FROM chess_games')!.n,0);
+  // A finished import needs no turns, so it may still be kept in the direct chat.
+  assert.equal(f.service.create({channelId:DIRECT,players:{white:'user_owner',black:BOT},initialPgn:'1. e4 1-0'},owner,'direct-finished').status,'finished');
+  assert.equal(f.service.create({channelId:HELPER_DIRECT,players:{white:'user_owner',black:HELPER}},owner,'direct-helper').channelId,HELPER_DIRECT);
+  assert.equal(f.service.create({channelId:CHANNEL,players:{white:'user_owner',black:BOT}},owner,'group-resident').channelId,CHANNEL);
+  // A resident this House does not run could never move.
+  const stopped=new NativeChessService({database:f.database,residentAvailable:binding=>binding!==BOT});
+  assert.throws(()=>stopped.create({channelId:CHANNEL,players:{white:'user_owner',black:BOT}},owner,'stopped-resident'),/not running on this House/);
+  assert.equal(stopped.create({channelId:HELPER_DIRECT,players:{white:'user_owner',black:HELPER}},owner,'running-helper').channelId,HELPER_DIRECT);
+});
+
+test('native_chess create and positions default to the current conversation and explain unusable channels',t=>{
+  const f=fixture(t);t.after(()=>f.database.close());withDirectChats(f);
+  const create=(args:Record<string,unknown>,key:string,origin?:{channelId:string},actor:{principalId:string}=bot)=>
+    executeChessOperation(f.service,actor,{operation:'chess_create',players:{white:actor.principalId,black:'user_owner'},...args},key,origin) as {game:{channelId:string}};
+  assert.equal(create({},'from-group',{channelId:CHANNEL}).game.channelId,CHANNEL);
+  assert.equal(create({channelId:''},'blank-from-group',{channelId:CHANNEL}).game.channelId,CHANNEL);
+  assert.throws(()=>create({},'from-direct',{channelId:DIRECT}),(e:unknown)=>incompatible(e)&&
+    /defaulted to the current conversation/.test((e as Error).message)&&(e as Error).message.includes(`${CHANNEL} (Chess)`));
+  assert.throws(()=>create({channelId:'cz'},'guessed',{channelId:DIRECT}),(e:unknown)=>e instanceof ChessError&&e.code==='not_found'&&
+    e.message.includes(`${CHANNEL} (Chess)`)&&!e.message.includes(DIRECT));
+  assert.throws(()=>create({channelId:'cz'},'no-shared-group',{channelId:HELPER_DIRECT},{principalId:OTHER}),(e:unknown)=>e instanceof ChessError&&
+    e.code==='not_found'&&/create one with channel_manage/.test(e.message));
+  assert.throws(()=>executeChessOperation(f.service,owner,{operation:'chess_create',channelId:'cz',players:{white:'user_owner',black:BOT}},'owner-guess'),
+    (e:unknown)=>e instanceof ChessError&&e.message==='channel not found');
+  const saved=executeChessOperation(f.service,bot,{operation:'chess_save_position',title:'Here',fen:'8/8/8/8/8/8/8/K6k w - - 0 1'},'save-here',{channelId:DIRECT}) as {position:{channelId:string}};
+  assert.equal(saved.position.channelId,DIRECT);
+  assert.deepEqual((executeChessOperation(f.service,bot,{operation:'chess_list_positions'},'list-here',{channelId:DIRECT}) as {items:{channelId:string}[]}).items.map(p=>p.channelId),[DIRECT]);
+  assert.match(nativeChessTool.description,/omit it to use the current conversation/);
 });

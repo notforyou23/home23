@@ -11,6 +11,8 @@ export type ChessErrorCode = 'invalid_request' | 'not_found' | 'forbidden' | 'co
 export class ChessError extends Error {
   constructor(public readonly code: ChessErrorCode, message: string) { super(message); this.name = 'ChessError'; }
 }
+/** Refusal prefix for a seat whose scheduled turns this channel can never admit. */
+export const CHESS_CONTEXT_INCOMPATIBLE = 'chess_context_incompatible';
 
 type GameRow = { id:string; channel_id:string; white_principal_id:string; black_principal_id:string; title:string; initial_fen:string; fen:string; pgn:string; moves_json:string; status:ChessGame['status']; result:ChessGame['result']; turn:'w'|'b'; ply:number; version:number; created_at:string; updated_at:string; automatic_max_plies:number; automatic_remaining:number; pause_reason:string|null };
 type PositionRow = { id:string; channel_id:string; title:string; fen:string; annotations_json:string; source_game_id:string|null; source_ply:number|null; created_by:string; created_at:string };
@@ -37,7 +39,9 @@ const hashRequest = (operation:string, data:unknown) => digest(JSON.stringify([o
 
 export class NativeChessService {
   private readonly dueTurnCursors: Record<'queued' | 'dispatched', {createdAt:string;id:string}|undefined> = {queued:undefined,dispatched:undefined};
-  constructor(private readonly options: { database: M11Database; engine?: Pick<StockfishEngine, 'available' | 'analyze'> }) {}
+  constructor(private readonly options: { database: M11Database; engine?: Pick<StockfishEngine, 'available' | 'analyze'>;
+    /** Whether this House runs the resident's turns; absent means every active resident is assumed running. */
+    residentAvailable?: (residentBinding: string) => boolean }) {}
   engineOptions() {
     const available = this.options.engine?.available() ?? false;
     return { engine: { id: 'stockfish', name: 'Stockfish', available, skillMin: 0, skillMax: 20,
@@ -119,6 +123,21 @@ export class NativeChessService {
     if (principalId !== 'user_owner' && !principalId.startsWith('bot_')) throw new ChessError('invalid_request','invalid player');
     if (principalId.startsWith('bot_') && !t.readOne('SELECT 1 FROM bots WHERE id = ? AND lifecycle = ?',principalId,'active')) throw new ChessError('invalid_request','bot player is unavailable');
   }
+  /** Scheduled turns admit a house resident only in a group channel, and only while this House runs it. Helpers (bot-) and engines play anywhere. */
+  private requireTurnable(t:CoordinationTransaction,channelId:string,principalId:string):void {
+    if (!principalId.startsWith('bot_')) return;
+    const bot=t.readOne<{name:string;binding:string}>('SELECT name, resident_binding AS binding FROM bots WHERE id = ?',principalId);
+    if (!bot || bot.binding.startsWith('bot-')) return;
+    if (t.readOne<{kind:string}>('SELECT kind FROM channels WHERE id = ?',channelId)?.kind !== 'group') throw new ChessError('invalid_request',`${CHESS_CONTEXT_INCOMPATIBLE}: ${bot.name} is a house resident and takes chess turns only in a group channel`);
+    if (this.options.residentAvailable?.(bot.binding) === false) throw new ChessError('invalid_request',`${bot.name} is not running on this House, so it cannot take chess turns`);
+  }
+  /** Active group channels shared by the owner and this bot: where a resident's game can actually run. */
+  sharedGroupChannels(principalId:string,limit=10):{id:string;title:string}[] {
+    return this.db.readAll<{id:string;title:string}>(`SELECT c.id, c.title FROM channels c
+      JOIN channel_members b ON b.channel_id=c.id AND b.principal_id=? AND b.active=1
+      JOIN channel_members o ON o.channel_id=c.id AND o.principal_id='user_owner' AND o.active=1
+      WHERE c.kind='group' AND c.lifecycle='active' ORDER BY c.updated_at DESC, c.id LIMIT ?`,principalId,limit);
+  }
   private queueTurn(t:CoordinationTransaction,row:GameRow,at:string):void {
     if (row.status !== 'active' || row.result !== '*') return;
     const target=row.turn==='w'?row.white_principal_id:row.black_principal_id;
@@ -173,7 +192,7 @@ export class NativeChessService {
     if(input.initialPgn && boardResult!=='*' && declaredResult && declaredResult!=='*' && declaredResult!==boardResult)throw new ChessError('invalid_request','PGN result conflicts with the final board position');
     const importedResult=boardResult==='*' && ['1-0','0-1','1/2-1/2'].includes(declaredResult??'') ? declaredResult as ChessGame['result'] : boardResult;
     const at=now(); const gameId=id('chess');const request={channelId:input.channelId,title,players:{white,black},initialPgn:input.initialPgn??null,...(input.automation ? {automation:{maxPlies}} : {}),...(input.startPaused !== undefined ? {startPaused:input.startPaused} : {})};const prior=this.prior<ChessGame>(actor.principalId,key,'create',request,input.channelId);if(prior)return prior;
-    return this.db.mutateWithEvent(t=>{this.channel(t,input.channelId,actor,true);this.requirePlayer(t,input.channelId,white);this.requirePlayer(t,input.channelId,black);if(actor.principalId!=='user_owner'&&actor.principalId!==white&&actor.principalId!==black) throw new ChessError('forbidden','bot must be a player to create a game');const replay=this.replay(t,actor.principalId,key,'create',request);if(replay.existing)throw new ChessError('conflict','concurrent replay');
+    return this.db.mutateWithEvent(t=>{this.channel(t,input.channelId,actor,true);this.requirePlayer(t,input.channelId,white);this.requirePlayer(t,input.channelId,black);if(importedResult==='*'){this.requireTurnable(t,input.channelId,white);this.requireTurnable(t,input.channelId,black);}if(actor.principalId!=='user_owner'&&actor.principalId!==white&&actor.principalId!==black) throw new ChessError('forbidden','bot must be a player to create a game');const replay=this.replay(t,actor.principalId,key,'create',request);if(replay.existing)throw new ChessError('conflict','concurrent replay');
       const result=importedResult;const status=result==='*'?(input.startPaused?'paused':'active'):'finished';
       t.run('INSERT INTO chess_games (id,channel_id,white_principal_id,black_principal_id,title,initial_fen,fen,pgn,moves_json,status,result,turn,ply,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)',gameId,input.channelId,white,black,title,DEFAULT_POSITION,chess.fen(),chess.pgn(),JSON.stringify(moves),status,result,chess.turn(),moves.length,at,at);
       t.run('UPDATE chess_games SET automatic_max_plies=?, automatic_remaining=?, pause_reason=? WHERE id=?',maxPlies,maxPlies,input.startPaused?'Ready to play':null,gameId);

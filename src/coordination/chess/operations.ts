@@ -1,5 +1,5 @@
 import type { NativeChessService } from './service.js';
-import { ChessError } from './service.js';
+import { ChessError, CHESS_CONTEXT_INCOMPATIBLE } from './service.js';
 import type { M11Database } from '../work/types.js';
 import type { CoordinationTurnOrigin } from '../../agent/types.js';
 
@@ -33,16 +33,31 @@ function positionReference(position: { id: string }) {
   return { boardReference: { kind: 'chess_position', positionId: position.id,
     url: `home23://chess/positions/${encodeURIComponent(position.id)}` } };
 }
-export function executeChessOperation(service: NativeChessService, actor: { principalId: string }, args: Record<string, unknown>, key: string): unknown {
+/** A resident that named an unusable channel learns where its game can run instead of guessing again. */
+function withChannelChoices(service: NativeChessService, actor: { principalId: string }, error: unknown, defaulted: boolean): unknown {
+  if (!(error instanceof ChessError) || actor.principalId === 'user_owner' ||
+      (error.code !== 'not_found' && !error.message.startsWith(CHESS_CONTEXT_INCOMPATIBLE))) return error;
+  const shared = service.sharedGroupChannels(actor.principalId);
+  const choices = shared.length
+    ? `Group channels you share with the owner: ${shared.map(channel => `${channel.id} (${channel.title})`).join(', ')}. Pass one as channelId.`
+    : 'No active group channel includes you and the owner yet; create one with channel_manage (operation create), then pass its channelId.';
+  return new ChessError(error.code, `${error.message}${defaulted ? ' (channelId defaulted to the current conversation)' : ''}. ${choices}`);
+}
+export function executeChessOperation(service: NativeChessService, actor: { principalId: string }, args: Record<string, unknown>, key: string, origin?: { channelId: string }): unknown {
   const gameId = () => required(args.gameId, 'gameId');
-  const listArgs = () => ({ channelId: optional(args.channelId, 'channelId'), limit: limit(args.limit), cursor: optional(args.cursor, 'cursor') });
+  // Omitted (or blank placeholder) channelId means the conversation this turn answers in.
+  const defaulted = (args.channelId === undefined || args.channelId === null || args.channelId === '') && origin !== undefined;
+  const channelId = () => required(defaulted ? origin?.channelId : args.channelId, 'channelId');
+  const listArgs = (channel = optional(args.channelId, 'channelId')) => ({ channelId: channel, limit: limit(args.limit), cursor: optional(args.cursor, 'cursor') });
   switch (args.operation) {
     case 'chess_list': return service.list(listArgs(), actor);
     case 'chess_get': { const game = service.get(gameId(), actor); return { game, ...gameReference(game) }; }
     case 'chess_create': {
       const players = args.players;
       if (!players || typeof players !== 'object' || Array.isArray(players)) throw new ChessError('invalid_request', 'Players are required');
-      const game = service.create({ channelId: required(args.channelId, 'channelId'), players: { white: required((players as Record<string, unknown>).white, 'players.white'), black: required((players as Record<string, unknown>).black, 'players.black') }, title: optional(args.title, 'title'), initialPgn: optional(args.initialPgn, 'initialPgn') }, actor, key);
+      const input = { channelId: channelId(), players: { white: required((players as Record<string, unknown>).white, 'players.white'), black: required((players as Record<string, unknown>).black, 'players.black') }, title: optional(args.title, 'title'), initialPgn: optional(args.initialPgn, 'initialPgn') };
+      let game;
+      try { game = service.create(input, actor, key); } catch (error) { throw withChannelChoices(service, actor, error, defaulted); }
       return { game, ...gameReference(game) };
     }
     case 'chess_move': {
@@ -56,10 +71,10 @@ export function executeChessOperation(service: NativeChessService, actor: { prin
       return { game, ...gameReference(game) };
     }
     case 'chess_export': return { pgn: service.exportPgn(gameId(), actor) };
-    case 'chess_list_positions': return service.listPositions({ ...listArgs(), channelId: required(args.channelId, 'channelId') }, actor);
+    case 'chess_list_positions': return service.listPositions(listArgs(channelId()), actor);
     case 'chess_get_position': { const position = service.getPosition(required(args.positionId, 'positionId'), actor); return { position, ...positionReference(position) }; }
     case 'chess_save_position': {
-      const position = service.savePosition(args as Parameters<NativeChessService['savePosition']>[0], actor, key);
+      const position = service.savePosition({ ...args, channelId: channelId() } as Parameters<NativeChessService['savePosition']>[0], actor, key);
       return { position, ...positionReference(position) };
     }
     default: throw new ChessError('invalid_request', 'Unknown Chess operation');
