@@ -248,3 +248,75 @@ test("Activity derives queued and Outbox Bot authority from immutable Work kind 
     assert.equal(page.entries[0]?.source.authoritySystem, current.expected);
   }
 });
+
+test("Activity ignores Core bookkeeping activity.updated events instead of failing the whole feed", async () => {
+  // Every producer of a non-Activity activity.updated aggregate in src/coordination.
+  const bookkeeping = [
+    "resident_outcome", "resident_assignment", "scheduled_channel_run", "bot_invocation",
+    "work_invocation", "work_recovery_refusal", "round_recovery_refusal",
+    "chess_game", "chess_position", "chess_turn_delivery",
+  ] as const;
+  const workId = fixtureId("work", 960);
+  const event = (sequence: number, type: string, aggregate: { kind: string; id: string }, payload: Record<string, string>) =>
+    Object.freeze({
+      id: fixtureId("event", 960 + sequence),
+      sequence,
+      schemaVersion: 1,
+      type,
+      durability: "durable" as const,
+      aggregate: Object.freeze({ ...aggregate, version: 1 }),
+      channelId: DIRECT_CHANNEL,
+      actorPrincipalId: sequence % 2 === 0 ? null : JERRY,
+      requestId: fixtureId("request", 960 + sequence),
+      correlationId: fixtureId("correlation", 960 + sequence),
+      createdAt: `2026-08-28T03:00:${String(sequence).padStart(2, "0")}.000Z`,
+      payload: Object.freeze(payload),
+    });
+  // One Activity source in the middle of the bookkeeping, so both sides of it are exercised.
+  const events = [
+    ...bookkeeping.slice(0, 5).map((kind, index) => event(index + 1, "activity.updated", { kind, id: `${kind}-1` }, { state: "recorded" })),
+    event(6, "turn.updated", { kind: "work", id: workId }, { workId, state: "queued" }),
+    ...bookkeeping.slice(5).map((kind, index) => event(index + 7, "activity.updated", { kind, id: `${kind}-1` }, { state: "recorded" })),
+  ];
+  const database = {
+    readOne: (sql: string) => {
+      if (sql.includes("sqlite_sequence")) {
+        return { currentSequence: events.length, retainedFloor: 1, retainedCount: events.length };
+      }
+      if (sql.includes("FROM works")) {
+        return {
+          id: workId, targetPrincipalId: JERRY, channelId: DIRECT_CHANNEL, roundId: null,
+          kind: "resident_turn", executionAuthoritySystem: "resident_turn", state: "queued",
+          updatedAt: events[5]!.createdAt,
+        };
+      }
+      throw new Error(`unexpected readOne: ${sql}`);
+    },
+    readAll: (sql: string) => {
+      if (!sql.includes("FROM channel_members viewer")) throw new Error(`unexpected readAll: ${sql}`);
+      return [
+        { channelId: DIRECT_CHANNEL, memberPrincipalId: "user_owner" },
+        { channelId: DIRECT_CHANNEL, memberPrincipalId: JERRY },
+      ];
+    },
+  } as unknown as M11Database;
+  const activity = createSqliteActivityReadService({
+    database,
+    events: {
+      resumeAfter: () => ({
+        kind: "events", events, throughSequence: events.length, currentSequence: events.length,
+        retentionFloorSequence: 1, hasMore: false,
+      }),
+    } as never,
+    messages: { listMessages: async () => { throw new Error("no Message facts expected"); } },
+  });
+
+  const page = await activity.list({
+    context: ownerContext(["product:read"]),
+    scope: { kind: "all" },
+    after: null,
+    limit: 50,
+  });
+  assert.equal(page.throughEventSequence, events.length, "bookkeeping never caps the trusted watermark");
+  assert.deepEqual(page.entries.map((entry) => [entry.workId, entry.source.authoritySystem]), [[workId, "resident_turn"]]);
+});

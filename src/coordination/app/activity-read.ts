@@ -1,4 +1,5 @@
 import {
+  ACTIVITY_SOURCE_AGGREGATE_KINDS,
   adaptTrustedM11ActivityFact,
   pageActivity,
   projectTrustedM11Activity,
@@ -551,11 +552,16 @@ export function createSqliteActivityReadService(options: {
         event.aggregate.kind === "workObservation"
       ) {
         output.push(recoveryFact(event));
-      } else if (event.type === "activity.updated") {
+      } else if (
+        event.type === "activity.updated" &&
+        ACTIVITY_SOURCE_AGGREGATE_KINDS.includes(event.aggregate.kind)
+      ) {
         throw new Error(
           `Activity event ${event.id} has no trusted M11 fact assembler`,
         );
       }
+      // Any other activity.updated aggregate is Core bookkeeping, not Activity;
+      // the projector ignores it.
     }
     return Object.freeze(output);
   }
