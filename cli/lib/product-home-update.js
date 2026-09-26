@@ -38,6 +38,8 @@ const PREFLIGHT_MESSAGES = Object.freeze({
   continuation_receipt_mismatch: 'The home service bindings changed since adoption. Open Home23 on this Mac to review them before resuming.',
   network_binding_receipt_mismatch: 'The home network bindings changed since adoption. Open Home23 on this Mac to review them before resuming.',
   database_busy: 'The home database is busy. Wait for current work to finish, then resume the update.',
+  writer_stop_incomplete: 'A Home23 service did not stop for the update. Your home was restarted and nothing changed. Resume to try again.',
+  running_restore_failed: 'The update stopped before changing your home, but your home did not start again. Open Home23 on the Mac running your home to restart it.',
   candidate_starting: 'Your home is still starting. Its services keep running; resume the update once it is ready.',
   insufficient_space: 'The Mac needs more free space to finish this update.',
   modified_installation: 'The installed Home23 software changed unexpectedly. Open Home23 on this Mac for recovery.',

@@ -733,8 +733,8 @@ async function mutate(journal, dependencies, verify) {
   const file = journalPath(journal.homeRoot), home = journal.homeRoot;
   const rank = () => RANK[journal.phase];
   const names = journal.writerNames || [];
-  async function abortBeforeSwitch(code, message) {
-    const reasons = [{ code, message }];
+  async function abortBeforeSwitch(code, message, extra = {}) {
+    const reasons = [{ code, message, ...extra }];
     if (journal.stoppedForUpdate && journal.desiredRunning) {
       // Start needs the Host lifecycle lock held by runTransaction. Fence the
       // journal now, then restore after that lock is released.
@@ -751,16 +751,18 @@ async function mutate(journal, dependencies, verify) {
     if (classified.unknown.length) return { done: deferred(home, 'unknown_writer', 'An unexpected process is using this home. Wait for it to exit before updating.', journal) };
     if (classified.busy.length) {
       if (!journal.admit) return { done: deferred(home, 'busy', 'This home is still working. Retry when it is quiet, or explicitly admit maintenance. Nothing was forced to stop.', journal) };
+      // Durable before the first stop: a controller killed mid-stop resumes
+      // knowing this update stopped the home and must restart it on abort.
+      if (!journal.stoppedForUpdate) journal = await commitPhase(file, { ...journal, stoppedForUpdate: true }, dependencies);
       const stopped = await quiesce(home, names, dependencies);
       processes = stopped.processes;
       // Writers restarted during the stop and stopped again, kept for diagnosis.
       if (stopped.restopped.length) journal = { ...journal, quiesceRestopped: stopped.restopped };
       classified = classifyProcesses(processes, names);
       if (classified.busy.length) {
-        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'writer_stop_incomplete', message: 'Owned writers remain active after a graceful stop. The home was not restarted or switched; inspect the partly stopped services before recovery.' }] }, dependencies);
-        return { done: publicResult(journal) };
+        return abortBeforeSwitch('writer_stop_incomplete', 'A Home23 service did not stop for the update. Nothing was switched; the home is restarted on its current version.',
+          { writers: classified.busy.map(row => row.name) });
       }
-      journal.stoppedForUpdate = true;
     }
     journal = await commitPhase(file, { ...journal, phase: 'quiesced' }, dependencies);
   }
@@ -831,7 +833,9 @@ async function restorePreSwitch(journal, dependencies) {
   const home = journal.homeRoot, file = journalPath(home);
   try {
     const processes = await (dependencies.listProcesses || defaultListProcesses)(home);
-    if (classifyProcesses(processes, journal.writerNames || []).busy.length) throw new Error('A writer is still active.');
+    // Owned writers that did not stop are fine: Start skips online rows and
+    // starts the rest. Only a process this home does not own stops restoration.
+    if (classifyProcesses(processes, journal.writerNames || []).unknown.length) throw new Error('An unexpected process is active.');
     if (readProductManifest(home).packageId !== journal.fromPackageId) throw new Error('The previous software changed.');
     const started = await (dependencies.start || defaultStart)(home, journal);
     if (!startObservation(started).startOk) throw new Error('The previous home did not become ready.');

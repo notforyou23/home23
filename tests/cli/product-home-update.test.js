@@ -523,3 +523,23 @@ test('a refused automatic recovery does not advertise an ineffective retry', asy
   assert.deepEqual(status.allowedActions, []);
   assert.match(status.message, /preserve your home/);
 });
+
+test('a writer_stop_incomplete abort is resumable with a path-free message', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel,
+    updater: { readUpdateJournal: () => ({ phase: 'aborted', runningRestored: true }), applyProductUpdate: async () => ({ ok: false, status: 'aborted', runningRestored: true,
+      reasons: [{ code: 'writer_stop_incomplete', message: 'Services at /secret/home did not stop', writers: ['home23-milo'] }] }) },
+    appUpdater: unusedAppUpdater,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.equal(status.state, 'failed');
+  assert.deepEqual(status.allowedActions, ['resume']);
+  assert.equal(status.operation.errorCode, 'writer_stop_incomplete');
+  assert.deepEqual(status.operation.reasonCodes, ['writer_stop_incomplete']);
+  assert.match(status.message, /restarted and nothing changed/);
+  assert.doesNotMatch(JSON.stringify(status), /secret/);
+});

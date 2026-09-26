@@ -485,20 +485,68 @@ test('a database still busy after quiesce restores the previous running home', a
   assert.equal(preserved(fixture.home).value, 'same-home');
 });
 
-test('an incomplete graceful stop is fenced without starting a second writer', async t => {
+test('an incomplete graceful stop restarts the previous home and aborts', async t => {
   const fixture = homeFixture(t, { desiredRunning: true });
   let starts = 0;
   const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
     staging: fixture.staging, admit: true }, { ...quiet,
-    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
-    quiesce: async () => [{ name: 'home23-milo', status: 'online' }],
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }, { name: 'home23-milo-dash', status: 'stopped' }],
+    quiesce: async () => ({ processes: [{ name: 'home23-milo', status: 'online' }], restopped: ['home23-milo-dash'] }),
     start: async () => { starts += 1; return { ok: true, status: 'ready' }; },
   });
-  assert.equal(result.status, 'recovery_required');
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.runningRestored, true);
   assert.equal(result.reasons[0].code, 'writer_stop_incomplete');
-  assert.equal(starts, 0);
+  assert.deepEqual(result.reasons[0].writers, ['home23-milo']);
+  assert.equal(starts, 1);
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.stoppedForUpdate, true);
+  assert.deepEqual(journal.quiesceRestopped, ['home23-milo-dash']);
+  assert.equal(updateBlocksStart(journal), false);
   assert.equal(packageId(fixture.home), fixture.installed.packageId);
   assert.equal(preserved(fixture.home).value, 'same-home');
+});
+
+test('stoppedForUpdate is durable before owned writers are stopped', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true, extra: { 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/cli/lib/product-host.js': hostStub } });
+  let online = true, observed = null;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => {
+      const journal = readUpdateJournal(fixture.home);
+      observed = { phase: journal.phase, stoppedForUpdate: journal.stoppedForUpdate };
+      online = false;
+      return [];
+    },
+    start: async () => ({ ok: true, status: 'ready' }),
+  });
+  assert.deepEqual(observed, { phase: 'claimed', stoppedForUpdate: true });
+  assert.equal(result.status, 'committed');
+});
+
+test('a controller killed during the quiesce still restores the running home on a later pre-switch abort', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const databaseFile = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+  let starts = 0, lock;
+  t.after(() => { if (lock?.isOpen) lock.close(); });
+  await assert.rejects(applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    quiesce: async () => { throw new Error('controller killed while stopping writers'); },
+  }), /controller killed/);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'claimed');
+  assert.equal(readUpdateJournal(fixture.home).stoppedForUpdate, true);
+  lock = new DatabaseSync(databaseFile);
+  lock.exec('BEGIN EXCLUSIVE');
+  const result = await resumeProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    start: async () => { starts += 1; lock.exec('ROLLBACK'); lock.close(); return { ok: true, status: 'ready' }; },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.reasons[0].code, 'database_busy');
+  assert.equal(result.runningRestored, true);
+  assert.equal(starts, 1);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
 });
 
 test('checkpoint and resume fingerprint a read-only attachment without copying it', async t => {
