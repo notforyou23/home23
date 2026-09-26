@@ -4,6 +4,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { scanAttention } from '../contact/attention.js';
 import { BROWSER_DISABLED_MESSAGE } from '../../browser/cdp.js';
@@ -21,6 +22,7 @@ import {
   type MailReadOptions,
 } from '../contact/mac.js';
 import { runNamedShortcut } from '../contact/phone.js';
+import { artifactRoot } from '../contact/paths.js';
 import { buildReceipt, writeContactReceipt } from '../contact/receipts.js';
 import { loadHomeAssistantCreds, loadShortcutBridge } from '../contact/secrets.js';
 import type { ContactReceipt } from '../contact/types.js';
@@ -463,41 +465,62 @@ export const captureArtifactTool: ToolDefinition = {
   },
 };
 
+const BROWSER_ACTIONS = new Set(['open', 'click', 'submit']);
+
 export const browserWorkflowTool: ToolDefinition = {
   name: 'browser_workflow',
-  description: 'Complete a web page workflow with before/after snapshots. Default action is open (navigate + extract). action=submit requires confirm=true. Prefer this over web_browse when the result of the page matters.',
+  description: "Complete a web page workflow in Home23's managed browser. action=open (default) navigates and returns the page text; screenshot=true also saves a PNG. action=click clicks the element matching selector; action=submit submits that element's form. click and submit need confirm=true and return before/after snapshots. Prefer this over web_browse when the result of the page matters.",
   input_schema: {
     type: 'object',
     properties: {
       url: { type: 'string' },
-      action: { type: 'string', description: 'open (default) | submit' },
-      wait_ms: { type: 'number' },
-      confirm: { type: 'boolean' },
+      action: { type: 'string', description: 'open (default) | click | submit' },
+      selector: { type: 'string', description: 'CSS selector of the element to click or submit (click/submit)' },
+      screenshot: { type: 'boolean', description: 'Also save a PNG of the final page' },
+      wait_ms: { type: 'number', description: 'Wait after navigation and after the interaction (default 2500, max 30000)' },
+      confirm: { type: 'boolean', description: 'Required for click and submit' },
     },
     required: ['url'],
   },
   async execute(input, ctx): Promise<ToolResult> {
+    const action = String(input.action ?? 'open') as 'open' | 'click' | 'submit';
+    const interactive = action !== 'open';
+    const selector = input.selector === undefined ? undefined : String(input.selector);
+    const extras = {
+      sideEffect: interactive ? 'write' as const : 'read' as const,
+      authority: interactive ? 'confirm' as const : 'autonomous' as const,
+      confirmed: Boolean(input.confirm),
+    };
     try {
+      if (!BROWSER_ACTIONS.has(action)) throw new Error(`unknown browser action: ${action} (open | click | submit)`);
       if (!ctx.browser) throw new Error(BROWSER_DISABLED_MESSAGE);
       const result = await runBrowserWorkflow({
         browser: ctx.browser,
         url: String(input.url),
         waitMs: input.wait_ms as number | undefined,
-        action: input.action === 'submit' ? 'submit' : 'open',
-        confirmSubmit: Boolean(input.confirm),
+        action,
+        selector,
+        confirm: Boolean(input.confirm),
+        screenshot: Boolean(input.screenshot),
+        screenshotDir: join(artifactRoot(ctx.workspacePath), 'browser'),
       });
-      return receiptResult(ctx.workspacePath, buildReceipt({
+      // The receipt keeps where and what, never the page text.
+      const page = (snapshot: { url: string; title: string }) => ({ url: snapshot.url, title: snapshot.title });
+      const toolResult = receiptResult(ctx.workspacePath, buildReceipt({
         agent: ctx.agentName, chatId: ctx.chatId, capability: 'browser_workflow',
-        sideEffect: input.action === 'submit' ? 'write' : 'read',
-        authority: input.action === 'submit' ? 'confirm' : 'autonomous',
-        dryRun: false, confirmed: Boolean(input.confirm), ok: true,
-        summary: `${result.after.title} — ${result.after.url}`, after: result.after,
-      }), result.after);
+        ...extras, dryRun: false, ok: true,
+        summary: interactive
+          ? `${action} ${selector} on ${result.before?.url}: ${result.after.title} — ${result.after.url}`
+          : `${result.after.title} — ${result.after.url}`,
+        before: result.before ? page(result.before) : undefined,
+        after: page(result.after),
+        metadata: { action, ...(selector ? { selector } : {}), ...(result.screenshotPath ? { screenshotPath: result.screenshotPath } : {}) },
+      }), result);
+      return result.screenshotPath
+        ? { ...toolResult, media: [{ type: 'image', path: result.screenshotPath, mimeType: 'image/png' }] }
+        : toolResult;
     } catch (error) {
-      return fail(ctx, 'browser_workflow', error, {
-        sideEffect: input.action === 'submit' ? 'write' : 'read',
-        authority: input.action === 'submit' ? 'confirm' : 'autonomous',
-      });
+      return fail(ctx, 'browser_workflow', error, { ...extras, metadata: { action, ...(selector ? { selector } : {}) } });
     }
   },
 };

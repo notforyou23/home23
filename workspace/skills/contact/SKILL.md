@@ -72,7 +72,7 @@ Use this skill when the work is in the actual day, not inside Home23.
 - `house_get_entity` / `house_get_area` / `house_history`
 - `house_call_safe_service` / `house_scene_activate` / `house_verify_change`
 - `capture_artifact` — ingest | retrieve | inbox
-- `browser_workflow` — open snapshot; submit requires confirm
+- `browser_workflow` — open returns the page text (screenshot=true saves a PNG); click or submit one element by CSS `selector` with confirm=true and get before/after snapshots
 - `phone_run_shortcut` — allowlisted iOS shortcuts, confirm required
 - `comms_draft` / `comms_send` — telegram send only, confirm required
 

@@ -7,10 +7,11 @@ import { createServer as createTcpServer, type AddressInfo, type Socket } from '
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import { scanAttention } from '../../src/agent/contact/attention.js';
-import { assertBrowserUrl } from '../../src/agent/contact/browser.js';
+import { assertBrowserUrl, browserInteractionExpression, runBrowserWorkflow } from '../../src/agent/contact/browser.js';
 import { captureArtifact, retrieveArtifact } from '../../src/agent/contact/capture.js';
 import { assertSendable, createDraft, previewDraft } from '../../src/agent/contact/comms.js';
 import { classifyHouseAction, HouseClient } from '../../src/agent/contact/house.js';
@@ -25,7 +26,7 @@ import {
   type MacRunner,
 } from '../../src/agent/contact/mac.js';
 import { runNamedShortcut } from '../../src/agent/contact/phone.js';
-import { contactReceiptPath } from '../../src/agent/contact/paths.js';
+import { artifactRoot, contactReceiptPath } from '../../src/agent/contact/paths.js';
 import {
   browserWorkflowTool,
   captureArtifactTool,
@@ -1167,4 +1168,125 @@ test('browser tools report typed unavailability and never tell the resident to s
   assert.match(workflow.content, /browser_unavailable \(disabled\)/);
   assert.doesNotMatch(CORE_RUNTIME_PROMPT, /remote-debugging-port/);
   assert.match(CORE_RUNTIME_PROMPT, /never launch or reconfigure Chrome yourself/);
+});
+
+interface StubPage { url: string; title: string; text: string }
+
+function stubBrowser(options: { pages?: StubPage[]; interaction?: Record<string, unknown> } = {}) {
+  const calls: string[] = [];
+  const expressions: string[] = [];
+  const pages = options.pages ?? [{ url: 'https://example.com/', title: 'Example', text: 'secret page text' }];
+  let snapshots = 0;
+  const browser = {
+    async connect() { calls.push('connect'); },
+    async newTab() { calls.push('newTab'); return { id: 'tab-1', title: '', url: '', type: 'page' }; },
+    async navigate(_id: string, url: string) { calls.push(`navigate ${url}`); },
+    async evaluate(_id: string, expression: string) {
+      expressions.push(expression);
+      if (expression.includes('document.querySelector(selector)')) return options.interaction ?? { found: true, clicked: true };
+      const page = pages[Math.min(snapshots, pages.length - 1)];
+      snapshots += 1;
+      return page;
+    },
+    async screenshot() { calls.push('screenshot'); return Buffer.from('fake-png'); },
+    async closeTab(id: string) { calls.push(`closeTab ${id}`); },
+  };
+  return { browser: browser as unknown as BrowserController, calls, expressions };
+}
+
+test('browser_workflow open saves a screenshot under brain artifacts and returns it as media', async () => {
+  const stub = stubBrowser();
+  const toolCtx = ctx({ browser: stub.browser });
+  const result = await browserWorkflowTool.execute({ url: 'https://example.com', screenshot: true, wait_ms: 0 }, toolCtx);
+  assert.equal(result.is_error, undefined);
+  const media = result.media?.[0];
+  assert.equal(media?.mimeType, 'image/png');
+  assert.equal(path.dirname(String(media?.path)), path.join(artifactRoot(toolCtx.workspacePath), 'browser'));
+  assert.equal(readFileSync(String(media?.path), 'utf8'), 'fake-png');
+  assert.deepEqual(stub.calls, ['connect', 'newTab', 'navigate https://example.com', 'screenshot', 'closeTab tab-1']);
+  const receipt = JSON.parse(readFileSync(contactReceiptPath(toolCtx.workspacePath), 'utf8').trim());
+  assert.deepEqual(receipt.after, { url: 'https://example.com/', title: 'Example' });
+  assert.equal(receipt.metadata.screenshotPath, media?.path);
+});
+
+test('browser_workflow refuses click and submit without confirm or selector before touching the browser', async () => {
+  for (const input of [
+    { url: 'https://example.com', action: 'submit', selector: 'form' },
+    { url: 'https://example.com', action: 'click', selector: '#go' },
+    { url: 'https://example.com', action: 'click', confirm: true },
+    { url: 'https://example.com', action: 'type', confirm: true },
+  ]) {
+    const stub = stubBrowser();
+    const result = await browserWorkflowTool.execute(input, ctx({ browser: stub.browser }));
+    assert.equal(result.is_error, true, JSON.stringify(input));
+    assert.match(result.content, /requires confirm=true|selector_required|unknown browser action/);
+    assert.deepEqual(stub.calls, [], 'the browser is untouched');
+  }
+});
+
+test('browser_workflow submit runs one parameterized interaction and records before and after', async () => {
+  const hostile = `form"), alert(1), ("`;
+  const stub = stubBrowser({
+    pages: [
+      { url: 'https://example.com/form', title: 'Form', text: 'before text' },
+      { url: 'https://example.com/done', title: 'Thanks', text: 'after text' },
+    ],
+    interaction: { found: true, submitted: true },
+  });
+  const toolCtx = ctx({ browser: stub.browser });
+  const result = await browserWorkflowTool.execute({ url: 'https://example.com/form', action: 'submit', selector: hostile, confirm: true, wait_ms: 0 }, toolCtx);
+  assert.equal(result.is_error, undefined, result.content);
+  const interaction = stub.expressions.find((expression) => expression.includes('document.querySelector(selector)'));
+  assert.equal(interaction, browserInteractionExpression(hostile, 'submit'));
+  assert.ok(interaction?.endsWith(`(${JSON.stringify(hostile)}, "submit")`), 'the selector is a JSON argument, not code');
+  assert.match(String(interaction), /form\.requestSubmit\(submitter\)/);
+  assert.match(String(interaction), /element\.click\(\)/);
+  const payload = JSON.parse(result.content) as { result: { before: StubPage; after: StubPage; submitted: boolean } };
+  assert.equal(payload.result.before.title, 'Form');
+  assert.equal(payload.result.after.title, 'Thanks');
+  assert.equal(payload.result.submitted, true);
+  assert.equal(stub.calls.at(-1), 'closeTab tab-1');
+  const persisted = readFileSync(contactReceiptPath(toolCtx.workspacePath), 'utf8');
+  assert.doesNotMatch(persisted, /before text|after text/);
+  const receipt = JSON.parse(persisted.trim());
+  assert.equal(receipt.sideEffect, 'write');
+  assert.equal(receipt.authority, 'confirm');
+  assert.deepEqual(receipt.before, { url: 'https://example.com/form', title: 'Form' });
+  assert.deepEqual(receipt.after, { url: 'https://example.com/done', title: 'Thanks' });
+  assert.equal(receipt.metadata.selector, hostile);
+});
+
+test('browser_workflow reports a missing element as selector_not_found and still closes the tab', async () => {
+  for (const [interaction, pattern] of [[{ found: false }, /selector_not_found/], [{ found: false, invalid: true }, /invalid_selector/]] as const) {
+    const stub = stubBrowser({ interaction });
+    await assert.rejects(
+      () => runBrowserWorkflow({ browser: stub.browser, url: 'https://example.com', action: 'click', selector: '#missing', confirm: true, waitMs: 0 }),
+      pattern,
+    );
+    assert.equal(stub.calls.at(-1), 'closeTab tab-1');
+  }
+});
+
+test('the in-page interaction submits a form with its submitter and clicks anything else', () => {
+  const events: string[] = [];
+  const form = { tagName: 'FORM', requestSubmit: (submitter?: { id: string }) => events.push(`requestSubmit:${submitter?.id ?? 'none'}`) };
+  const button = { id: 'send', tagName: 'BUTTON', type: 'submit', form, click: () => events.push('click:send') };
+  const field = { id: 'name', tagName: 'INPUT', type: 'text', form, click: () => events.push('click:name') };
+  const link = { id: 'more', tagName: 'A', form: null, closest: () => null, click: () => events.push('click:more') };
+  const elements: Record<string, unknown> = { '#send': button, '#name': field, '#more': link, form };
+  const document = {
+    querySelector(selector: string) {
+      if (selector === '[') throw new SyntaxError('bad selector');
+      return elements[selector] ?? null;
+    },
+  };
+  const run = (selector: string, mode: 'click' | 'submit') => vm.runInNewContext(browserInteractionExpression(selector, mode), { document });
+  assert.deepEqual({ ...run('#send', 'submit') }, { found: true, submitted: true, tag: 'button' });
+  assert.deepEqual({ ...run('#name', 'submit') }, { found: true, submitted: true, tag: 'input' });
+  assert.deepEqual({ ...run('form', 'submit') }, { found: true, submitted: true, tag: 'form' });
+  assert.deepEqual({ ...run('#more', 'submit') }, { found: true, clicked: true, tag: 'a' });
+  assert.deepEqual({ ...run('#send', 'click') }, { found: true, clicked: true, tag: 'button' });
+  assert.deepEqual({ ...run('#nothing', 'click') }, { found: false });
+  assert.deepEqual({ ...run('[', 'click') }, { found: false, invalid: true });
+  assert.deepEqual(events, ['requestSubmit:send', 'requestSubmit:none', 'requestSubmit:none', 'click:more', 'click:send']);
 });
