@@ -376,7 +376,8 @@ async function awaitCandidateReadiness(home, journal, dependencies, { busy, list
     catch { statusUnavailable = true; }
     const maskedStatusFailure = current?.ok === false && current?.status === 'recovery_required' &&
       current?.error?.code === 'update_recovery_required' && !current?.readiness && !current?.processes;
-    const kind = statusUnavailable || !current || maskedStatusFailure ? 'unavailable' : candidateStatusKind(current);
+    // A Host that cannot read its supervisor reports 'unavailable', not a failed home.
+    const kind = statusUnavailable || !current || maskedStatusFailure || current.status === 'unavailable' ? 'unavailable' : candidateStatusKind(current);
     const waiting = kind === 'starting' ? await busy()
       : kind === 'unavailable' ? healthyAdmittedWriters(await list(home), journal.writerNames) : false;
     const remaining = deadline - clock();

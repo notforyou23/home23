@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { connect } from 'node:net';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { readMoveFence } from './product-backup.js';
 import { detectForeignBindings } from './product-foreign-bindings.js';
@@ -299,6 +300,21 @@ export function productDefinitions(apps, homeRoot, nameOrNames, { encoderRequire
     };
   });
 }
+/** Whether a supervisor accepts connections on a unix socket: true when it
+ * connects, false when the socket is absent or refused, null when it neither
+ * answers nor refuses. A connection attempt never starts a daemon. */
+export function supervisorListening(path, timeoutMs = 2000) {
+  return new Promise(resolve => {
+    const socket = connect(path);
+    let timer = null;
+    const done = value => { clearTimeout(timer); socket.destroy(); resolve(value); };
+    timer = setTimeout(() => done(null), timeoutMs);
+    socket.once('connect', () => done(true));
+    // EINVAL: a path longer than a socket address, where no daemon can listen.
+    socket.once('error', error => done(['ENOENT', 'ENOTDIR', 'ECONNREFUSED', 'ENOTSOCK', 'EINVAL'].includes(error.code) ? false : null));
+  });
+}
+const supervisorAmbiguous = message => Object.assign(new Error(message), { code: 'host_supervisor_ambiguous' });
 function driver(homeRoot, dependencies, state) {
   const encoderRequired = encoderRequiredFor(state);
   const env = productEnvironment(homeRoot, { prepare: true, encoderRequired, embedderPort: state?.ports?.embedder });
@@ -315,10 +331,22 @@ function driver(homeRoot, dependencies, state) {
   return {
     env,
     async list() {
-      if (!dependencies.execute) {
-        const pidPath = join(env.PM2_HOME, 'pm2.pid');
-        if (!existsSync(pidPath)) return [];
-        try { process.kill(Number(readFileSync(pidPath, 'utf8').trim()), 0); } catch { return []; }
+      // This home's daemon listens on productEnvironment's socket. pm2.pid can
+      // be missing, stale or name a daemon on other sockets, and `pm2 jlist`
+      // with no daemon there spawns one. Only a listening canonical socket
+      // admits the query; no daemon at all is an empty home.
+      const listening = dependencies.supervisorListening ?? (dependencies.execute ? null : supervisorListening);
+      if (listening) {
+        const canonical = await listening(env.PM2_DAEMON_RPC_PORT);
+        if (canonical === null) throw supervisorAmbiguous('This home\'s supervisor is not answering. No processes were changed.');
+        if (!canonical) {
+          // PM2's own default socket under PM2_HOME: a daemon started without
+          // this home's socket variables. Neither empty nor controllable.
+          if (await listening(join(env.PM2_HOME, 'rpc.sock')) !== false) {
+            throw supervisorAmbiguous('A supervisor for this home is running on an unexpected socket. No processes were changed.');
+          }
+          return [];
+        }
       }
       const { stdout } = await pm2(['jlist', '--silent']);
       try { const rows = JSON.parse(stdout); if (!Array.isArray(rows)) throw new Error(); return rows; }
@@ -548,7 +576,14 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
       access: 'loopback; use a trusted HTTPS or VPN transport for other devices',
     },
     foreignBindings, warnings };
-  const rows = await driver(homeRoot, dependencies, state).list();
+  let rows;
+  try { rows = await driver(homeRoot, dependencies, state).list(); }
+  catch (error) {
+    // An unreadable supervisor is neither a stopped nor a running home. Say so,
+    // so no client mistakes it for a home that needs Start.
+    if (error.code !== 'host_supervisor_ambiguous') throw error;
+    return { ...output, ok: false, status: 'unavailable', processes: [], error: { code: error.code, message: error.message } };
+  }
   const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state), continuationServicesForState(state));
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };

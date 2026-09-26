@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:http';
 import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
-import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses } from '../../cli/lib/product-host.js';
+import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses, supervisorListening } from '../../cli/lib/product-host.js';
 import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writerStopOrder } from '../../cli/lib/product-update-inventory.js';
@@ -150,6 +150,75 @@ test('explicit stop stops once more a dashboard its engine restarted during the 
   assert.deepEqual(stops.slice(-1), ['home23-milo-dash']);
   assert.equal(status('home23-milo-dash'), 'stopped');
   assert.ok(ownedProcessNames('milo').every(name => status(name) === 'stopped'));
+});
+
+test('status reads the canonical supervisor socket when pm2.pid is missing or stale', async t => {
+  const { homeRoot } = await prepared(t);
+  const env = productEnvironment(homeRoot, { prepare: true });
+  const rows = ownedProcessNames('milo').map(name => row(homeRoot, name, 'stopped'));
+  const probed = [], calls = [];
+  const dependencies = {
+    execute: async (_node, args) => { calls.push(args[1]); return { stdout: JSON.stringify(rows) }; },
+    supervisorListening: async path => { probed.push(path); return path === env.PM2_DAEMON_RPC_PORT; },
+  };
+  assert.equal(fs.existsSync(path.join(env.PM2_HOME, 'pm2.pid')), false);
+  const missing = await runHostAction('status', { homeRoot }, dependencies);
+  assert.equal(missing.processes.length, rows.length);
+  fs.writeFileSync(path.join(env.PM2_HOME, 'pm2.pid'), '999999\n');
+  const stale = await runHostAction('status', { homeRoot }, dependencies);
+  assert.equal(stale.processes.length, rows.length);
+  assert.deepEqual(calls, ['jlist', 'jlist']);
+  assert.deepEqual(probed, [env.PM2_DAEMON_RPC_PORT, env.PM2_DAEMON_RPC_PORT]);
+});
+
+test('status never spawns a supervisor when no daemon listens', async t => {
+  const { homeRoot } = await prepared(t);
+  fs.writeFileSync(path.join(productEnvironment(homeRoot, { prepare: true }).PM2_HOME, 'pm2.pid'), `${process.pid}\n`);
+  const result = await runHostAction('status', { homeRoot }, {
+    execute: async (_node, args) => { throw new Error(`pm2 ${args[1]} must not run without a daemon`); },
+    supervisorListening: async () => false,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'prepared');
+  assert.deepEqual(result.processes, []);
+});
+
+test('a supervisor on the wrong socket makes status unavailable and Stop changes nothing', async t => {
+  const { homeRoot, state } = await prepared(t);
+  const env = productEnvironment(homeRoot, { prepare: true });
+  privateJSON(path.join(homeRoot, '.home23-host.json'), { ...state, desiredRunning: true, phase: 'starting' });
+  const calls = [];
+  const dependencies = {
+    execute: async (_node, args) => { calls.push(args[1]); return { stdout: '[]' }; },
+    supervisorListening: async socket => socket === path.join(env.PM2_HOME, 'rpc.sock'),
+  };
+  const result = await runHostAction('status', { homeRoot }, dependencies);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.error.code, 'host_supervisor_ambiguous');
+  assert.deepEqual(result.processes, []);
+  await assert.rejects(runHostAction('stop', { homeRoot }, dependencies), /unexpected socket/);
+  assert.deepEqual(calls, []);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(homeRoot, '.home23-host.json'))).desiredRunning, true);
+  const silent = await runHostAction('status', { homeRoot }, { ...dependencies, supervisorListening: async () => null });
+  assert.equal(silent.status, 'unavailable');
+  assert.match(silent.error.message, /not answering/);
+});
+
+test('the supervisor probe tells a listening socket from an absent or refused one', async t => {
+  const { createServer: createSocketServer } = await import('node:net');
+  const directory = fs.mkdtempSync('/tmp/h23-probe-');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const socket = path.join(directory, 'rpc.sock');
+  assert.equal(await supervisorListening(socket), false);
+  const server = createSocketServer(connection => connection.end());
+  await new Promise(resolve => server.listen(socket, resolve));
+  assert.equal(await supervisorListening(socket), true);
+  await new Promise(resolve => server.close(resolve));
+  fs.writeFileSync(socket, 'left behind');
+  assert.equal(await supervisorListening(socket), false);
+  // PM2's default socket under a deep home path is longer than a socket address allows.
+  assert.equal(await supervisorListening(path.join(directory, 'x'.repeat(120), 'rpc.sock')), false);
 });
 
 test('start persists intent and returns starting until readiness succeeds', async t => {
