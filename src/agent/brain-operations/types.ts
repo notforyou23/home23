@@ -118,6 +118,14 @@ export interface OperationActivity {
   partitionId?: string;
 }
 
+export interface BrainOperationError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  /** Queue diagnostics on admission_stalled and worker-absence failures. */
+  admission?: Record<string, unknown>;
+}
+
 export interface BrainOperationRecord {
   operationId: string;
   requestId: string;
@@ -136,6 +144,9 @@ export interface BrainOperationRecord {
     | { domain: 'requester'; requesterAgent: string };
   state: BrainOperationState;
   phase: string | null;
+  /** When the home accepted the request; the admission deadline counts from here. */
+  acceptedAt?: string | null;
+  /** Null until a worker admits the operation (queued -> running). */
   startedAt: string | null;
   updatedAt: string;
   completedAt: string | null;
@@ -144,7 +155,7 @@ export interface BrainOperationRecord {
   result: Record<string, unknown> | null;
   resultHandle: string | null;
   resultArtifact: { mediaType: string; contentEncoding: 'identity'; bytes: number; sha256: string } | null;
-  error: { code: string; message: string; retryable: boolean } | null;
+  error: BrainOperationError | null;
   sourceEvidence: Record<string, unknown> | null;
   sourcePinDescriptor: Record<string, unknown> | null;
   sourcePinDigest: string | null;
@@ -279,7 +290,7 @@ export interface BrainOperationResultEnvelope {
   result: Record<string, unknown> | null;
   resultHandle: string | null;
   resultArtifact: { mediaType: string; contentEncoding: 'identity'; bytes: number; sha256: string } | null;
-  error: { code: string; message: string; retryable: boolean } | null;
+  error: BrainOperationError | null;
   sourceEvidence: Record<string, unknown> | null;
 }
 

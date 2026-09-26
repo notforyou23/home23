@@ -1118,6 +1118,8 @@ export class AgentLoop {
       emittedAt: number;
       state: OperationActivity['state'];
       phase: OperationActivity['phase'];
+      lastProviderActivityAt: OperationActivity['lastProviderActivityAt'];
+      lastProgressAt: OperationActivity['lastProgressAt'];
     }>();
     const onOperationActivity = (activity: OperationActivity): void => {
       if (!lease.observe(activity)) return;
@@ -1126,11 +1128,20 @@ export class AgentLoop {
       const materialChange = !previous
         || previous.state !== activity.state
         || previous.phase !== activity.phase;
-      if (!materialChange && now - previous.emittedAt < 10_000) return;
+      // HOME23 188 (H23-013) — A coordinator heartbeat changes nothing but
+      // updatedAt, and a queued operation nobody admitted emits only those.
+      // It still renews the lease, but its persisted status is kept to one
+      // row a minute instead of one per heartbeat.
+      const progressed = previous !== undefined
+        && (previous.lastProviderActivityAt !== activity.lastProviderActivityAt
+          || previous.lastProgressAt !== activity.lastProgressAt);
+      if (!materialChange && now - previous.emittedAt < (progressed ? 10_000 : 60_000)) return;
       persistedOperationActivity.set(activity.operationId, {
         emittedAt: now,
         state: activity.state,
         phase: activity.phase,
+        lastProviderActivityAt: activity.lastProviderActivityAt,
+        lastProgressAt: activity.lastProgressAt,
       });
       persistAndFanOut({
         type: 'status',

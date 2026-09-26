@@ -19,7 +19,13 @@ import {
   optionalJsonObject,
   requiredBoundedText,
 } from '../brain-operations/input-validation.js';
-import { operationToolResult } from '../tool-result.js';
+import {
+  admissionDeadlineIso,
+  admissionFailureGuidance,
+  isAdmissionFailure,
+  operationToolResult,
+  unadmittedNotice,
+} from '../tool-result.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import type { RelationshipLedger } from '../relationship-ledger.js';
 import { clipToolOutput } from './clip-output.js';
@@ -424,7 +430,32 @@ function operationControlResult(
       },
     };
   }
+  if (value.state === 'queued' && 'startedAt' in value && value.startedAt === null) {
+    // Not admitted: the heartbeat-driven updatedAt is omitted so an unchanged
+    // queue never reads as progress worth re-reporting.
+    return {
+      content: `${unadmittedNotice(value)} Tell the user once; do not re-report unchanged status or `
+        + 'start a duplicate. Use brain_status {action:"wait",operationId:'
+        + `"${value.operationId}"} to block until it finishes or fails, or action:"cancel" to stop it.`
+        + `\noperation=${value.operationId} state=${value.state}`,
+      metadata: {
+        action,
+        operationId: value.operationId,
+        state: value.state,
+        admitted: false,
+        acceptedAt: value.acceptedAt ?? null,
+        admissionDeadlineAt: admissionDeadlineIso(value),
+        phase: value.phase,
+        lastProviderActivityAt: value.lastProviderActivityAt,
+        lastProgressAt: value.lastProgressAt,
+        error: value.error,
+        sourceEvidence: value.sourceEvidence,
+        resultArtifact: value.resultArtifact,
+      },
+    };
+  }
   const failed = ['failed', 'cancelled', 'interrupted'].includes(value.state);
+  const admissionFailed = failed && 'startedAt' in value && isAdmissionFailure(value);
   const running = value.state === 'queued' || value.state === 'running';
   const runningProjection = running ? {
     phase: 'phase' in value ? value.phase : null,
@@ -438,6 +469,7 @@ function operationControlResult(
     content: `${failed
       ? `${value.error?.code || value.state}: ${value.error?.message || value.state}`
       : JSON.stringify(runningProjection || value.result || {})}\noperation=${value.operationId} state=${value.state}`
+      + (admissionFailed && 'startedAt' in value ? admissionFailureGuidance(value) : '')
       + (running
         ? `\nUse brain_status {action:"status",operationId:"${value.operationId}"} to check it,`
           + ' action:"result" after terminal, or action:"cancel" to stop it.'
@@ -448,6 +480,7 @@ function operationControlResult(
       action,
       operationId: value.operationId,
       state: value.state,
+      ...(admissionFailed ? { classification: 'admission_failed' } : {}),
       error: value.error,
       sourceEvidence: value.sourceEvidence,
       resultArtifact: value.resultArtifact,
