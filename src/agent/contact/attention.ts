@@ -1,5 +1,4 @@
 import type { AttentionItem } from './types.js';
-import { combineRequestSignals } from '../abort-signals.js';
 import { macRead, MacSurfaceError, type MacRunner } from './mac.js';
 
 export interface AttentionScanInput {
@@ -23,6 +22,22 @@ export interface AttentionScanResult {
 }
 
 export const ATTENTION_SOURCE_BUDGET_MS = 12_000;
+
+/** The caller's signal plus a budget. The timer is ref'd (unlike AbortSignal.timeout), so it fires even when a hung source holds nothing else open. */
+function budgetSignal(caller: AbortSignal | undefined, budgetMs: number): { signal: AbortSignal; release(): void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException('source budget exceeded', 'TimeoutError')), budgetMs);
+  const onAbort = () => controller.abort(caller?.reason);
+  if (caller?.aborted) onAbort();
+  else caller?.addEventListener('abort', onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    release() {
+      clearTimeout(timer);
+      caller?.removeEventListener('abort', onAbort);
+    },
+  };
+}
 
 function needsOwner(item: AttentionItem, now: number, hoursAhead: number): boolean {
   if (item.needsOwner) return true;
@@ -61,13 +76,16 @@ export async function scanAttention(
   for (const source of sources) {
     if (options.signal?.aborted) throw new MacSurfaceError('aborted', 'aborted: attention scan was cancelled');
     const started = Date.now();
+    const budget = budgetSignal(options.signal, budgetMs);
     try {
-      items.push(...await source.read(combineRequestSignals(options.signal, budgetMs)));
+      items.push(...await source.read(budget.signal));
       timings.push({ source: source.name, ms: Date.now() - started });
     } catch (error) {
       const code = error instanceof MacSurfaceError ? error.code : 'error';
       timings.push({ source: source.name, ms: Date.now() - started, code });
       degraded.push({ source: source.name, error: error instanceof Error ? error.message : String(error), code });
+    } finally {
+      budget.release();
     }
   }
   if (options.signal?.aborted) throw new MacSurfaceError('aborted', 'aborted: attention scan was cancelled');
