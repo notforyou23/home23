@@ -14,6 +14,8 @@ import { candidateCoordinationSchema, inspectCoordinationDatabase, inspectUpdate
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
 import { acquireHostLock } from '../../cli/lib/product-backup.js';
+import { generateEcosystem } from '../../cli/lib/generate-ecosystem.js';
+import instancePaths from '../../shared/agent-instance-paths.cjs';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const quiet = { listProcesses: async () => [], acquireHostLock: async () => async () => {} };
@@ -230,6 +232,45 @@ test('a stale external agents.json is derived output and never refuses', async t
   staleAgents(fixture.home, path.join(fixture.root, 'old-volume/instances/milo'));
   const result = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate: fixture.next });
   assert.deepEqual(result.reasons, []);
+});
+
+test('Start regenerates agents.json from exactly the inputs the preflight judged', async t => {
+  // Decision (188): Host Start keeps regenerating agents.json during an admitted
+  // update. Every Start that is not already all-running, including the
+  // update's candidate and rollback Start, derives it from the instance configs.
+  const host = fs.readFileSync(path.join(rootDir, 'cli/lib/product-host.js'), 'utf8');
+  const definitions = host.slice(host.indexOf('async definitions('), host.indexOf('async definitions(') + 300);
+  assert.match(definitions, /generateEcosystem\(join\(homeRoot, 'app'\)/);
+  assert.doesNotMatch(definitions, /writeManifest:\s*false/);
+  const fixture = homeFixture(t);
+  const app = path.join(fixture.home, 'app'), outside = path.join(fixture.root, 'old-volume/instances/milo');
+  const agents = () => JSON.parse(fs.readFileSync(path.join(app, 'config/agents.json'), 'utf8'));
+  const derived = entry => { const paths = instancePaths.resolveAgentInstancePaths(app, entry.name);
+    return { configPath: path.join(app, 'instances/milo/config.yaml'), instanceRoot: paths.instanceRoot, storageMode: paths.storageMode,
+      brainPath: paths.brainDir, workspacePath: paths.workspaceDir, conversationsPath: paths.conversationsDir, logsPath: paths.logsDir }; };
+  const storage = entry => Object.fromEntries(Object.keys(derived(entry)).map(key => [key, entry[key]]));
+
+  // In-home input, stale external output: the preflight passes and Start writes only home paths.
+  instanceConfig(fixture.home, '  engineConfig: engine.yaml\n');
+  staleAgents(fixture.home, outside);
+  assert.deepEqual(externals(await inspectUpdateInventory(fixture.home)), []);
+  const { manifest } = generateEcosystem(app, { quiet: true, writeEcosystem: false });
+  assert.deepEqual(agents(), manifest);
+  assert.deepEqual(storage(agents()[0]), derived(agents()[0]));
+  assert.equal(agents()[0].storageMode, 'local');
+  assert.equal(JSON.stringify(agents()).includes(outside), false);
+
+  // External input, hand-repointed output (the 186 fix): refused at the input,
+  // never at agents.json, and Start writes the input's root back.
+  instanceConfig(fixture.home, `  instanceRoot: ${outside}\n`);
+  staleAgents(fixture.home, path.join(app, 'instances/milo'));
+  const refused = externals(await inspectUpdateInventory(fixture.home));
+  assert.deepEqual(refused.map(({ path, field, target }) => ({ path, field, target })), [{ path: INSTANCE, field: 'system.instanceRoot', target: outside }]);
+  generateEcosystem(app, { quiet: true, writeEcosystem: false });
+  assert.deepEqual(storage(agents()[0]), derived(agents()[0]));
+  assert.equal(agents()[0].instanceRoot, outside);
+  assert.equal(agents()[0].configPath, path.join(app, INSTANCE.slice('app/'.length)), 'configPath is always the local config');
+  assert.deepEqual(externals(await inspectUpdateInventory(fixture.home)).map(item => item.path), [INSTANCE]);
 });
 
 test('owner folders in instance settings stay allowed; only storage roots are judged', async t => {
