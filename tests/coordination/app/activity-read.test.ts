@@ -3,9 +3,19 @@ import test from "node:test";
 
 import { createSqliteActivityReadService } from "../../../src/coordination/app/index.js";
 import { MessagingError, type MessagingActorContext } from "../../../src/coordination/channels/index.js";
-import type { M11Database } from "../../../src/coordination/work/index.js";
+import { SqliteEventRepository } from "../../../src/coordination/events/index.js";
+import { createWorkService, type M11Database } from "../../../src/coordination/work/index.js";
 import { fixtureId } from "../activity/fixtures.js";
 import { DIRECT_CHANNEL, JERRY } from "../activity/fixtures.js";
+import {
+  BOT_ID,
+  CHANNEL_ID,
+  M11TestDatabase,
+  MESSAGE_ID,
+  OWNER_ID,
+  createFixtureIdGenerator,
+  manifestInput,
+} from "../work/test-fixture.js";
 
 function ownerContext(scopes: readonly ("product:read" | "message:send" | "attachment:write")[]): MessagingActorContext {
   return {
@@ -160,6 +170,9 @@ test("a rejected fence stays stale attention after the retained Work later succe
   assert.equal(page.entries[0]?.source.freshness, "stale");
 });
 
+// The stub returns executionAuthoritySystem directly, so this covers the
+// adapter's kind/authority pairing only; the SQL that derives the authority
+// from the Work kind is exercised by the real-database test below.
 test("Activity derives queued and Outbox Bot authority from immutable Work kind while residents stay resident", async () => {
   const cases = [
     { source: "work", workKind: "bot_turn", expected: "bot_turn" },
@@ -319,4 +332,36 @@ test("Activity ignores Core bookkeeping activity.updated events instead of faili
   });
   assert.equal(page.throughEventSequence, events.length, "bookkeeping never caps the trusted watermark");
   assert.deepEqual(page.entries.map((entry) => [entry.workId, entry.source.authoritySystem]), [[workId, "resident_turn"]]);
+});
+
+test("a Working Thread Work gets resident authority from the real Activity SQL", async () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    const work = createWorkService({ database, generateId: createFixtureIdGenerator(970), now: () => new Date("2026-08-25T16:00:00.000Z") });
+    const thread = work.create({
+      principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID, originMessageId: MESSAGE_ID,
+      roundId: null, kind: "resident_work_thread", idempotencyKey: "foreground-detach:activity-thread",
+      manifest: manifestInput(), maxAutomaticOffers: 1,
+      requestId: fixtureId("request", 971), correlationId: fixtureId("correlation", 971),
+    }).work;
+    // The fixture's seed Message event carries no projection payload; retention
+    // pruning leaves a window that starts at the Work's own events.
+    database.raw.prepare("DELETE FROM events WHERE type = 'message.appended'").run();
+    const activity = createSqliteActivityReadService({
+      database,
+      events: new SqliteEventRepository(database),
+      messages: { listMessages: async () => { throw new Error("no Message facts expected"); } },
+    });
+    const page = await activity.list({
+      context: ownerContext(["product:read"]),
+      scope: { kind: "all" },
+      after: null,
+      limit: 50,
+    });
+    assert.ok(page.entries.length >= 1);
+    assert.ok(page.entries.every((entry) => entry.workId === thread.id));
+    assert.deepEqual([...new Set(page.entries.map((entry) => entry.source.authoritySystem))], ["resident_turn"]);
+  } finally {
+    database.close();
+  }
 });

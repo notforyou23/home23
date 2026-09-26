@@ -306,6 +306,8 @@ export function createSqliteActivityReadService(options: {
               CASE
                 WHEN w.kind = 'bot_turn' THEN 'bot_turn'
                 WHEN w.kind = 'resident_turn' THEN 'resident_turn'
+                -- Working Threads are admitted only for resident credentials.
+                WHEN w.kind = 'resident_work_thread' THEN 'resident_turn'
                 WHEN w.kind = 'channel.bot_turn' AND EXISTS (
                   SELECT 1 FROM bots target
                   WHERE target.principal_id = w.target_principal_id
