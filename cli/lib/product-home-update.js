@@ -398,14 +398,17 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
       // Recover returns the home to service on the version it has; it never
       // downloads, retries the update or needs this device to be current.
       persist({ phase: 'updating', message: 'Returning your home to service on its current Home23 version.' });
-      const result = await updater.recoverProductUpdate({ homeRoot: home.root });
+      // A thrown error may carry local paths; the fixed copy below replaces it.
+      let result = null;
+      try { result = await updater.recoverProductUpdate({ homeRoot: home.root }); } catch { result = null; }
       const reasonCodes = safeReasonCodes(result?.reasons);
       if (result?.status === 'aborted') {
         const freshRelease = reasonCodes.some(code => FRESH_RELEASE_REQUIRED.has(code));
         persist({ requiresLocalRecovery: false, recoverable: false, retryable: false,
           ...(freshRelease ? { requiresNewRelease: true, blockedPackageId: result.toPackageId ?? operation.prepared?.packageId ?? null } : {}) });
         const back = result.runningRestored ? 'Your home is running again on its current Home23 version.' : 'Your home is back on its current Home23 version and stays stopped.';
-        throw Object.assign(fail('update_recovered', `${back} ${freshRelease ? 'Check for a newer Home23 release.' : 'Resume to try the update again.'}`), { reasonCodes });
+        throw Object.assign(fail('update_recovered', `${back} ${freshRelease ? 'Check for a newer Home23 release.' : 'Resume to try the update again.'}`),
+          { reasonCodes: reasonCodes.length ? reasonCodes : ['recovered_by_owner'] });
       }
       const recovery = updater.productRecoveryFor?.(home.root) ?? {};
       persist({ requiresLocalRecovery: true, recoverable: recovery.restore === true, retryable: recovery.retry === true });

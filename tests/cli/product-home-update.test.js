@@ -612,6 +612,24 @@ test('recovering a release that cannot run this home asks for a newer release', 
   assert.match(status.message, /Check for a newer Home23 release/);
 });
 
+test('a recover that throws publishes only the fixed local recovery copy', async t => {
+  const { f, id } = await fencedUpdate(t, { available: true, restore: true, retry: true, reasonCodes: ['writer_stop_incomplete'] });
+  await requestHomeUpdate(input(f.home, 'recover', 'recover'), noLaunch);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, {
+    channel: checkedChannel,
+    updater: {
+      recoverProductUpdate: async () => { throw new Error('EACCES: permission denied, open /secret/home/journal.json'); },
+      productRecoveryFor: () => ({ available: true, restore: true, retry: true, reasonCodes: ['writer_stop_incomplete'] }),
+    },
+    appUpdater: unusedAppUpdater,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.deepEqual(status.allowedActions, ['recover', 'resume']);
+  assert.equal(status.operation.errorCode, 'local_recovery_required');
+  assert.doesNotMatch(JSON.stringify(status), /secret|EACCES/);
+  assert.doesNotMatch(JSON.stringify(f.operation(id)), /secret|EACCES/);
+});
+
 test('a failed recover keeps local recovery and stays recoverable', async t => {
   const { f, id } = await fencedUpdate(t, { available: true, restore: true, retry: true, reasonCodes: ['writer_stop_incomplete'] });
   await requestHomeUpdate(input(f.home, 'recover', 'recover'), noLaunch);
