@@ -623,7 +623,12 @@ export function createAuthService(options: CreateAuthServiceOptions) {
       });
       throw new AuthError("refresh_invalid");
     }
-    const credentialContext = `${idempotency.operation}\0${input.mutation.idempotencyKey}\0${parsed.id}`;
+    // The context is stored with the rotation so a grace-window reuse can re-derive the same
+    // credentials; deriving from the key's keyed digest (already stored beside it) rather than the
+    // raw key keeps anything a client sent out of the database. Rotations committed before 187
+    // derived from the raw key and stored nothing, so their same-key retries need the old context.
+    const credentialContext = `${idempotency.operation}\0${idempotency.idempotencyKeyDigest}\0${parsed.id}`;
+    const legacyCredentialContext = `${idempotency.operation}\0${input.mutation.idempotencyKey}\0${parsed.id}`;
     if (existing) {
       if (existing.kind === "refresh_failure") {
         const reason = refreshFailureReason(existing.result);
@@ -651,7 +656,7 @@ export function createAuthService(options: CreateAuthServiceOptions) {
       return refreshDelivery({
         device: existing.device,
         session: existing.session,
-        credentialContext,
+        credentialContext: existing.credentialContext ?? legacyCredentialContext,
       });
     }
     consumeMutationRate(admission, "refresh", at);
@@ -679,9 +684,9 @@ export function createAuthService(options: CreateAuthServiceOptions) {
     const rotated = await repository.rotateRefresh({
       currentTokenId: parsed.id,
       presentedTokenDigest: digestRefreshToken(input.refreshToken, refreshDigestKey),
-      rotatedAt: at.toISOString(), successorSession, successorToken, idempotency,
+      rotatedAt: at.toISOString(), successorSession, successorToken, credentialContext, idempotency,
     });
-    if (rotated.outcome !== "rotated" && rotated.outcome !== "replayed") {
+    if (rotated.outcome !== "rotated" && rotated.outcome !== "replayed" && rotated.outcome !== "reissued") {
       const reason = refreshFailureReason(rotated);
       record({
         at: at.toISOString(), requestId: idempotency.requestId,
@@ -695,14 +700,17 @@ export function createAuthService(options: CreateAuthServiceOptions) {
     record({
       at: at.toISOString(), requestId: idempotency.requestId,
       correlationId: idempotency.correlationId,
-      event: "session.refresh", outcome: "allowed", reason: "refresh_rotated",
+      event: "session.refresh", outcome: "allowed",
+      reason: rotated.outcome === "reissued" ? "refresh_reissued" : "refresh_rotated",
       deviceId: rotated.device.id, sessionId: rotated.session.id,
       familyId: rotated.session.familyId, network: admission.network,
     });
     return refreshDelivery({
       device: rotated.device,
       session: rotated.session,
-      credentialContext,
+      // A reissue (or a same-key race that landed on one) must re-derive the credentials the first
+      // rotation committed, so the client holds exactly the refresh token whose digest is stored.
+      credentialContext: rotated.outcome === "rotated" ? credentialContext : rotated.credentialContext ?? credentialContext,
     });
   }
 
