@@ -689,3 +689,37 @@ test('a resume whose launch fails reports only its own error', async t => {
   assert.deepEqual(status.operation.reasonCodes, []);
   assert.deepEqual(status.allowedActions, ['resume']);
 });
+
+test('completing an operation removes executors of finished operations and earlier attempts', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch), id = accepted.operation.id;
+  f.setOperation({ ...f.operation(id), prepared: { release, packageId: release.packageId,
+    candidatePayload: join(f.parent, 'candidate'), staging: join(f.parent, 'stage') } });
+  let installs = 0;
+  const removed = [];
+  const dependencies = {
+    channel: checkedChannel, removePaths: paths => removed.push(...paths),
+    updater: { readUpdateJournal: () => null, applyProductUpdate: async () => {
+      if (++installs === 1) return { ok: false, status: 'refused', reasons: [{ code: 'database_busy', message: 'busy' }] };
+      f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+      return { ok: true, status: 'committed' };
+    } },
+    appUpdater: { applyPreparedMacApplication: async () => ({ status: 'reopened' }) },
+    verifyReady: async () => ({ running: true }),
+  };
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, dependencies);
+  f.setOperation({ ...f.operation(id), pid: null });
+  await requestHomeUpdate(input(f.home, 'resume', 'resume'), noLaunch);
+  assert.equal(f.operation(id).attempt, 2);
+  const directory = join(f.home, 'runtime/home-update');
+  const finished = '11111111-1111-1111-1111-111111111111', live = '22222222-2222-2222-2222-222222222222';
+  f.setOperation({ schema: 'home23.home-update.v1', id: finished, homeRoot: f.home, phase: 'completed', pid: null });
+  f.setOperation({ schema: 'home23.home-update.v1', id: live, homeRoot: f.home, phase: 'downloading', pid: process.ppid });
+  for (const name of [`executor-${id}-1`, `executor-${id}-2`, `executor-${finished}-1`, `executor-${live}-1`, 'executor-not-an-operation']) {
+    mkdirSync(join(directory, name), { mode: 0o700 });
+  }
+  symlinkSync(join(directory, `executor-${finished}-1`), join(directory, `executor-${'3'.repeat(8)}-3333-3333-3333-${'3'.repeat(12)}-1`));
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: id }, dependencies);
+  assert.equal(f.operation(id).phase, 'completed');
+  assert.deepEqual(removed.sort(), [join(directory, `executor-${finished}-1`), join(directory, `executor-${id}-1`)].sort());
+});

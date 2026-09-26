@@ -1,7 +1,7 @@
 /** Durable, owner-requested whole-product updates. HTTP only passes actions, never paths. */
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile, execFileSync } from 'node:child_process';
-import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -221,6 +221,33 @@ function retainExecutor(home, operation) {
   chmodSync(join(directory, 'node'), 0o700);
   return directory;
 }
+/** Removing a 100 MB Node copy and its module graph must not hold a worker
+ * open, so removal continues detached. Tests observe it through removePaths. */
+function removeDetached(paths, dependencies) {
+  if (!paths.length) return;
+  if (dependencies.removePaths) { dependencies.removePaths(paths); return; }
+  const child = spawn('/bin/rm', ['-rf', '--', ...paths], { detached: true, stdio: 'ignore' });
+  child.on('error', () => {});
+  child.unref();
+}
+const realDirectory = path => { try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); } catch { return false; } };
+/** Every request retains an executor (a copy of bin/node plus its module
+ * graph). Once an operation is terminal, only its own current attempt may
+ * still be running: earlier attempts and other finished operations go. */
+function pruneExecutors(home, operation, dependencies) {
+  const stale = [];
+  for (const name of readdirSync(home.directory)) {
+    const match = /^executor-([a-f0-9-]{36})-(\d+)$/.exec(name);
+    if (!match || !realDirectory(join(home.directory, name))) continue;
+    const [, id, attempt] = match;
+    if (id === operation.id && Number(attempt) >= operation.attempt) continue;
+    let owner = null;
+    try { owner = id === operation.id ? null : loadOperation(home, id); } catch { owner = null; }
+    if (owner && owner.pid !== process.pid && alive(owner.pid)) continue;
+    stale.push(join(home.directory, name));
+  }
+  removeDetached(stale, dependencies);
+}
 
 /** Keep the signed download claim and final stage beside the home, but expand
  * a runtime archive on the Mac's local volume when the home is external. */
@@ -431,6 +458,10 @@ export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dep
     persist({ phase: 'failed', errorCode: error.code ?? 'update_failed', reasonCodes: error.reasonCodes ?? [], message: operation.requiresLocalRecovery ? error.message : error.reasonCodes?.length ? error.message : operation.runtimeCompleted
       ? 'Your home software is updated. Resume to finish the Mac application and reconnect.'
       : 'The update could not finish. Resume or recover to return your home to service.' });
+  } finally {
+    if (TERMINAL.has(operation.phase)) {
+      try { pruneExecutors(home, operation, dependencies); } catch { /* Retention is housekeeping; the result stands. */ }
+    }
   }
 }
 async function shippedHostStatus(homeRoot) {
