@@ -1,10 +1,6 @@
-const os = require('os');
+// '~' is the owner's home, as in the registry and the verifiers.
+const { expandOwnerPath } = require('../../../shared/owner-home.cjs');
 const { TargetsRegistry } = require('./registry');
-
-function expandHome(p) {
-  if (!p || typeof p !== 'string') return p;
-  return p.startsWith('~') ? p.replace(/^~/, os.homedir()) : p;
-}
 
 function pushFinding(findings, severity, code, message, meta = {}) {
   findings.push({ severity, code, message, ...meta });
@@ -29,8 +25,8 @@ function parseNowMinusMinutesTemplate(value) {
 }
 
 function findFileTarget(registry, filePath) {
-  const expanded = expandHome(filePath);
-  return (registry.files || []).find((entry) => expandHome(entry.path) === expanded) || null;
+  const expanded = expandOwnerPath(filePath);
+  return (registry.files || []).find((entry) => expandOwnerPath(entry.path) === expanded) || null;
 }
 
 function findSensorTarget(registry, jsonPath) {

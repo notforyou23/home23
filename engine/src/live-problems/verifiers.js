@@ -19,6 +19,7 @@ const { promisify } = require('util');
 const http = require('http');
 const https = require('https');
 const yaml = require('js-yaml');
+const { expandOwnerPath } = require('../../../shared/owner-home.cjs');
 const execFileAsync = promisify(execFile);
 
 async function pm2Jlist(ctx, timeout) {
@@ -42,7 +43,13 @@ function normalizePm2RestartCount(value) {
   return null;
 }
 
-function expandPath(p) {
+// '~' in a problem's paths is the owner's home (shared/owner-home.cjs); under
+// the Host, os.homedir() is Home23's private runtime home.
+//
+// Unchanged pending an owner decision: the lineage verifier's rivalPath (the
+// Codex CLI's own credential store) still resolves '~' against this
+// process's HOME, never the owner home.
+function expandRivalPath(p) {
   if (!p) return p;
   if (p.startsWith('~')) return path.join(os.homedir(), p.slice(1));
   return p;
@@ -180,7 +187,7 @@ const verifiers = {
    */
   file_mtime({ path: p, maxAgeMin }) {
     try {
-      const full = expandPath(p);
+      const full = expandOwnerPath(p);
       if (!fs.existsSync(full)) {
         return { ok: false, detail: `missing: ${p}`, observed: { exists: false } };
       }
@@ -205,7 +212,7 @@ const verifiers = {
    */
   file_exists({ path: p, minBytes }) {
     try {
-      const full = expandPath(p);
+      const full = expandOwnerPath(p);
       if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${p}` };
       if (minBytes !== undefined) {
         const stat = fs.statSync(full);
@@ -233,7 +240,7 @@ const verifiers = {
    * }
    */
   async create_file_tool_probe(args = {}) {
-    const modulePath = expandPath(args.modulePath);
+    const modulePath = expandOwnerPath(args.modulePath);
     if (!modulePath) return { ok: false, detail: 'modulePath required' };
     if (!fs.existsSync(modulePath)) {
       return { ok: false, detail: `tool module missing: ${modulePath}`, observed: { modulePath } };
@@ -243,7 +250,7 @@ const verifiers = {
     const content = args.content || `home23-create-file-probe ${new Date().toISOString()}\n`;
     const createdTempRoot = !args.workingDirectory;
     const root = args.workingDirectory
-      ? path.resolve(expandPath(args.workingDirectory))
+      ? path.resolve(expandOwnerPath(args.workingDirectory))
       : fs.mkdtempSync(path.join(os.tmpdir(), 'home23-create-file-probe-'));
     const targetPath = path.resolve(root, filePath);
     let releaseProbeLock;
@@ -729,7 +736,7 @@ function isRetryableMissingJsonPath(jsonPath, op, observed) {
 
 function maybeLoadNotificationAcks(filePath, args) {
   if (args.ackPath === false || args.overlayNotificationAcks === false) return null;
-  const explicit = typeof args.ackPath === 'string' ? expandPath(args.ackPath) : null;
+  const explicit = typeof args.ackPath === 'string' ? expandOwnerPath(args.ackPath) : null;
   const candidates = explicit
     ? [explicit]
     : [
@@ -844,7 +851,7 @@ verifiers.log_recent_count = async function logRecentCount(args = {}) {
   if (!filePath) return { ok: false, detail: 'path required' };
   if (!pattern) return { ok: false, detail: 'pattern required' };
 
-  const full = expandPath(filePath);
+  const full = expandOwnerPath(filePath);
   if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${filePath}` };
 
   let re;
@@ -976,7 +983,7 @@ verifiers.log_recent_count = async function logRecentCount(args = {}) {
 verifiers.cron_job_errors = async function cronJobErrors(args = {}) {
   const { path: filePath } = args;
   if (!filePath) return { ok: false, detail: 'path required' };
-  const full = expandPath(filePath);
+  const full = expandOwnerPath(filePath);
   if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${filePath}` };
 
   let nameRe = null;
@@ -1141,7 +1148,7 @@ verifiers.jsonpath_http = async function jsonpath_http(args = {}) {
 verifiers.jsonl_recent_match = async function jsonl_recent_match(args = {}) {
   const { path: filePath } = args;
   if (!filePath) return { ok: false, detail: 'path required' };
-  const full = filePath.replace(/^~/, os.homedir());
+  const full = expandOwnerPath(filePath);
   if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${filePath}` };
   const tsField = args.tsField || 'ts';
   const minCount = Number.isFinite(args.minCount) ? args.minCount : 1;
@@ -1214,7 +1221,7 @@ verifiers.jsonl_recent_match = async function jsonl_recent_match(args = {}) {
 verifiers.jsonl_metric_date_fresh = async function jsonlMetricDateFresh(args = {}) {
   const { path: filePath } = args;
   if (!filePath) return { ok: false, detail: 'path required' };
-  const full = filePath.replace(/^~/, os.homedir());
+  const full = expandOwnerPath(filePath);
   if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${filePath}` };
 
   const metricDateField = args.metricDateField || 'metrics.heartRateVariability.date';
@@ -1406,7 +1413,7 @@ verifiers.oauth_token_lineage_fresh = function oauthTokenLineageFresh(args = {})
   let profile;
   try {
     const configuredPath = currentStore ? secretsPath : profilePath;
-    const full = expandPath(configuredPath);
+    const full = expandOwnerPath(configuredPath);
     if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${configuredPath}` };
     if (currentStore) {
       const entry = yaml.load(fs.readFileSync(full, 'utf8'))?.providers?.[provider];
@@ -1450,7 +1457,7 @@ verifiers.oauth_token_lineage_fresh = function oauthTokenLineageFresh(args = {})
   // refresh token is already dead even though the access token still works.
   if (rivalPath) {
     try {
-      const rivalFull = expandPath(rivalPath);
+      const rivalFull = expandRivalPath(rivalPath);
       if (fs.existsSync(rivalFull)) {
         const rival = JSON.parse(fs.readFileSync(rivalFull, 'utf8'))?.tokens;
         const sameAccount = rival?.account_id && profile.accountId

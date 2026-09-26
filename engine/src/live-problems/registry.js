@@ -12,14 +12,11 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
-const os = require('os');
+// '~' is the owner's home, the rule the verifiers and the audit use too, so a
+// target and a verifier path compare equal however each is written.
+const { expandOwnerPath } = require('../../../shared/owner-home.cjs');
 
 const DEFAULT_PATH = path.resolve(__dirname, '..', '..', '..', 'config', 'targets.yaml');
-
-function expandHome(p) {
-  if (!p || typeof p !== 'string') return p;
-  return p.startsWith('~') ? p.replace(/^~/, os.homedir()) : p;
-}
 
 class TargetsRegistry {
   constructor({ filePath } = {}) {
@@ -76,7 +73,7 @@ class TargetsRegistry {
     if (spec.type === 'file_mtime' || spec.type === 'file_exists' || spec.type === 'jsonl_recent_match') {
       const p = typeof args.path === 'string' ? args.path : '';
       if (!p) return { ok: false, reason: `${spec.type} needs args.path` };
-      const known = reg.files.some((f) => expandHome(f.path) === expandHome(p));
+      const known = reg.files.some((f) => expandOwnerPath(f.path) === expandOwnerPath(p));
       if (!known) return { ok: false, reason: `file not in registry: ${p}` };
 
       // actions.jsonl is an event-driven ACT dispatcher ledger, not a heartbeat.
@@ -84,7 +81,7 @@ class TargetsRegistry {
       // correctly goes hours without emitting an allow-listed action. Existence is
       // still valid, and specific receipt lookups remain valid when matchField is
       // supplied (for example: "did action X execute recently?").
-      if (/\/brain\/actions\.jsonl$/.test(expandHome(p))) {
+      if (/\/brain\/actions\.jsonl$/.test(expandOwnerPath(p))) {
         if (spec.type === 'file_mtime') {
           return { ok: false, reason: `actions.jsonl is event-driven; use file_exists plus thoughts freshness, not file_mtime: ${p}` };
         }
@@ -99,7 +96,7 @@ class TargetsRegistry {
     if (spec.type === 'cron_job_errors') {
       const p = typeof args.path === 'string' ? args.path : '';
       if (!p) return { ok: false, reason: 'cron_job_errors needs args.path' };
-      const known = reg.files.some((f) => expandHome(f.path) === expandHome(p));
+      const known = reg.files.some((f) => expandOwnerPath(f.path) === expandOwnerPath(p));
       if (!known) return { ok: false, reason: `file not in registry: ${p}` };
       return { ok: true };
     }
