@@ -7,6 +7,9 @@ import { openCoordinationDatabase } from '../../../src/coordination/db/index.js'
 import { nativeChessTool } from '../../../src/agent/tools/channels.js';
 import { executeChessOperation } from '../../../src/coordination/chess/operations.js';
 import { NativeChessService, ChessError, CHESS_CONTEXT_INCOMPATIBLE } from '../../../src/coordination/chess/service.js';
+import { createChannelOperationConsumer } from '../../../src/coordination/app/channel-operations.js';
+import { ResidentProtocolError, createResidentCredential } from '../../../src/coordination/resident-protocol/index.js';
+import { ResidentUdsClient, ResidentUdsServer } from '../../../src/coordination/transport/uds/index.js';
 
 const BOT='bot_0198d95f-6c00-7000-8000-000000000301';
 const OTHER='bot_0198d95f-6c00-7000-8000-000000000302';
@@ -293,7 +296,8 @@ test('a resident cannot be seated where its turns are refused; helpers and group
   assert.equal(stopped.create({channelId:HELPER_DIRECT,players:{white:'user_owner',black:HELPER}},owner,'running-helper').channelId,HELPER_DIRECT);
 });
 
-test('native_chess create and positions default to the current conversation and explain unusable channels',t=>{
+// Operation level: what executeChessOperation throws. Whether a resident receives it is the signed-connection test below.
+test('chess operations default create and positions to the current conversation and name usable channels',t=>{
   const f=fixture(t);t.after(()=>f.database.close());withDirectChats(f);
   const create=(args:Record<string,unknown>,key:string,origin?:{channelId:string},actor:{principalId:string}=bot)=>
     executeChessOperation(f.service,actor,{operation:'chess_create',players:{white:actor.principalId,black:'user_owner'},...args},key,origin) as {game:{channelId:string}};
@@ -311,4 +315,32 @@ test('native_chess create and positions default to the current conversation and 
   assert.equal(saved.position.channelId,DIRECT);
   assert.deepEqual((executeChessOperation(f.service,bot,{operation:'chess_list_positions'},'list-here',{channelId:DIRECT}) as {items:{channelId:string}[]}).items.map(p=>p.channelId),[DIRECT]);
   assert.match(nativeChessTool.description,/omit it to use the current conversation/);
+});
+
+test('a resident receives the Chess channel hint over its signed connection instead of a retried internal failure',async t=>{
+  const f=fixture(t);t.after(()=>f.database.close());withDirectChats(f);
+  let running=true;const service=new NativeChessService({database:f.database,residentAvailable:()=>running});
+  // Core's resident ingress: signed UDS request -> channel-operations consumer -> the same chess callback composition wires.
+  const consume=createChannelOperationConsumer({authorize:()=>undefined,authorizeRead:()=>undefined,
+    context:origin=>({principalId:origin.holderPrincipalId}) as never,channels:{} as never,listBots:async()=>[],botOperation:async()=>({}),
+    chess:async(context,origin,args,key)=>executeChessOperation(service,{principalId:context.principalId},args,key,origin)});
+  const credential=createResidentCredential({rootKey:Buffer.alloc(32,0x42),residentSlug:'coz',role:'resident',instanceId:'resident-coz-1',keyVersion:1});
+  const socketPath=join(mkdtempSync(join(tmpdir(),'home23-chess-uds-')),'coordination','resident.sock');
+  t.after(()=>rmSync(join(socketPath,'..','..'),{recursive:true,force:true}));
+  const server=new ResidentUdsServer({socketPath,serverInstanceId:'coordination-kernel-1',credentials:[credential],
+    handleRequest:(request,context)=>consume(context.credential as never,request.payload).then(value=>JSON.parse(JSON.stringify(value)))});
+  await server.start();t.after(()=>server.close());
+  const client=new ResidentUdsClient({socketPath,serverInstanceId:'coordination-kernel-1',credential});t.after(()=>client.close());
+  let calls=0;
+  const create=(channelId:string,args:Record<string,unknown>={})=>client.request({method:'POST',path:'/internal/v1/channel-operations',deadlineAtMs:Date.now()+2000,
+    payload:{origin:{workId:'wrk_1',attemptId:'att_1',holderPrincipalId:BOT,holderInstanceId:'resident-coz-1',channelId},invocationId:`call-${++calls}`,
+      args:{operation:'chess_create',players:{white:BOT,black:'user_owner'},...args}}});
+  const refused=(pattern:RegExp)=>(e:unknown)=>e instanceof ResidentProtocolError&&e.code==='request_invalid'&&!e.retryable&&
+    pattern.test(e.message)&&e.message.includes(`${CHANNEL} (Chess)`);
+  await assert.rejects(create(DIRECT),refused(new RegExp(`^${CHESS_CONTEXT_INCOMPATIBLE}: .*defaulted to the current conversation`)));
+  await assert.rejects(create(DIRECT,{channelId:'cz'}),refused(/^channel not found\b/));
+  running=false;
+  await assert.rejects(create(CHANNEL),(e:unknown)=>e instanceof ResidentProtocolError&&e.code==='request_invalid'&&/^Chess bot is not running on this House/.test(e.message));
+  running=true;
+  assert.equal(((await create(CHANNEL)).payload as {game:{channelId:string}}).game.channelId,CHANNEL);
 });
