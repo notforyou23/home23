@@ -5922,3 +5922,85 @@ test('reconciliation fails an expired unadmitted record typed and resumes an adm
   await waitForState(fixture, pinned.operationId, 'running');
   assert.equal(fixture.worker.statusCalls.length >= 1, true);
 });
+
+test('a refused COSMO connection fails the query worker_unavailable at dispatch without a cancel', async (t) => {
+  const net = await import('node:net');
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  const sent = [];
+  const remoteWorker = createCosmoBrainOperationWorkerClient({
+    baseUrl: `http://127.0.0.1:${port}`,
+    fetchImpl: async (url, options) => {
+      sent.push(new URL(url).pathname.split('/').at(-1));
+      return fetch(url, options);
+    },
+  });
+  const worker = new BrainOperationWorkerAdapter({ remoteWorker });
+  t.after(() => worker.stop?.());
+  const fixture = makeFixture(t, { worker });
+  const admitted = await fixture.coordinator.start(
+    request({ requestId: 'cosmo-refused' }),
+    { acknowledgeAdmission: true },
+  );
+  const failed = await waitForState(fixture, admitted.operationId, 'failed');
+  assert.equal(failed.error.code, 'worker_unavailable');
+  assert.equal(failed.error.message, 'COSMO worker is not accepting connections');
+  assert.equal(failed.error.retryable, true);
+  assert.equal(failed.error.admission.stage, 'worker_start');
+  assert.equal(failed.error.admission.reason, 'worker_unreachable');
+  await eventually(() => assert.equal(fixture.counters.releaseCalls, 1), 10_000);
+  assert.deepEqual(sent, ['start'], 'no status probe and no cancel for a refused connection');
+  assert.ok(await heartbeatCount(fixture, admitted.operationId) <= 1);
+  await eventually(() => assert.equal(fixture.timers.pending(), 0), 10_000);
+});
+
+test('a typed 401 start rejection fails immediately with its own code', async (t) => {
+  const worker = new ControlledWorker();
+  worker.startError = Object.assign(new Error('bad capability'), {
+    code: 'capability_invalid', statusCode: 401, retryable: false,
+  });
+  const fixture = makeFixture(t, { worker });
+  await assert.rejects(
+    fixture.coordinator.start(request({ requestId: 'typed-401-start' })),
+    typedCode('capability_invalid'),
+  );
+  const [failed] = await fixture.store.list();
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'capability_invalid');
+  assert.equal(failed.error.retryable, false);
+  assert.equal(failed.error.admission.reason, 'capability_invalid');
+  assert.equal(worker.statusCalls.length, 0);
+  assert.equal(worker.cancelCalls.length, 0);
+  assert.equal(fixture.counters.releaseCalls, 1);
+});
+
+test('an uncertain start whose status probe finds COSMO absent fails worker_unavailable', async (t) => {
+  class VanishingWorker extends ControlledWorker {
+    async start(context, capability) {
+      this.startCalls.push({ operationId: context.operationId, capability });
+      throw transportFailure('COSMO start response was lost');
+    }
+
+    async status(operationId, capability) {
+      this.statusCalls.push({ operationId, capability });
+      throw Object.assign(new Error('COSMO worker does not expose the Home23 brain-operations protocol'), {
+        code: 'worker_protocol_unavailable', statusCode: 404, workerAbsent: true, retryable: true,
+      });
+    }
+  }
+  const worker = new VanishingWorker();
+  const fixture = makeFixture(t, { worker });
+  await assert.rejects(
+    fixture.coordinator.start(request({ requestId: 'uncertain-then-absent' })),
+    typedCode('worker_transport_failed'),
+  );
+  const [failed] = await fixture.store.list();
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'worker_unavailable');
+  assert.equal(failed.error.admission.reason, 'worker_protocol_unavailable');
+  assert.equal(failed.error.admission.lastStartErrorCode, 'worker_transport_failed');
+  assert.equal(worker.statusCalls.length, 1);
+  assert.equal(worker.cancelCalls.length, 0);
+});

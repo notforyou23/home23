@@ -39,7 +39,37 @@ function clientError(code, message = code, options = {}) {
     code,
     retryable: options.retryable === true,
     statusCode: options.statusCode,
+    ...(options.workerAbsent === true ? { workerAbsent: true } : {}),
   });
+}
+
+// HOME23 188 (H23-013) — Some transport failures prove that no COSMO work
+// exists for the request, so callers need not treat them as uncertain. A
+// refused loopback connection sent no request bytes; a non-JSON 404 is
+// Express's page for a COSMO that never registered the protected routes
+// (it runs without HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY).
+function fetchFailure(error, message) {
+  if (error?.cause?.code === 'ECONNREFUSED') {
+    return clientError('worker_unreachable', 'COSMO worker is not accepting connections', {
+      retryable: true, workerAbsent: true, cause: error,
+    });
+  }
+  return clientError('worker_transport_failed', message, { retryable: true, cause: error });
+}
+
+async function readEnvelope(response, maxBytes) {
+  try {
+    return await readBoundedJson(response, maxBytes);
+  } catch (error) {
+    if (response.status === 404 && error?.code === 'worker_transport_invalid') {
+      throw clientError(
+        'worker_protocol_unavailable',
+        'COSMO worker does not expose the Home23 brain-operations protocol',
+        { retryable: true, workerAbsent: true, statusCode: 404, cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 function normalizeLoopbackBaseUrl(rawBaseUrl) {
@@ -233,12 +263,9 @@ function createCosmoBrainOperationWorkerClient({
     try {
       response = await fetchImpl(endpoint(operationId, action), options);
     } catch (error) {
-      throw clientError('worker_transport_failed', 'COSMO worker is unavailable', {
-        retryable: true,
-        cause: error,
-      });
+      throw fetchFailure(error, 'COSMO worker is unavailable');
     }
-    const envelope = await readBoundedJson(response, responseMaxBytes);
+    const envelope = await readEnvelope(response, responseMaxBytes);
     if (!response.ok) throw remoteError(response, envelope);
     return envelope;
   }
@@ -269,12 +296,9 @@ function createCosmoBrainOperationWorkerClient({
         signal: AbortSignal.timeout(supportTimeoutMs),
       });
     } catch (error) {
-      throw clientError('worker_transport_failed', 'COSMO worker support is unavailable', {
-        retryable: true,
-        cause: error,
-      });
+      throw fetchFailure(error, 'COSMO worker support is unavailable');
     }
-    const envelope = await readBoundedJson(response, maxSupportBytes);
+    const envelope = await readEnvelope(response, maxSupportBytes);
     if (!response.ok) throw remoteError(response, envelope);
     try {
       return verifyVerifiedFollowUpSupportResponse({
@@ -339,13 +363,10 @@ function createCosmoBrainOperationWorkerClient({
         });
       } catch (error) {
         if (signal.aborted) throw signal.reason;
-        throw clientError('worker_transport_failed', 'COSMO worker event stream is unavailable', {
-          retryable: true,
-          cause: error,
-        });
+        throw fetchFailure(error, 'COSMO worker event stream is unavailable');
       }
       if (!response.ok) {
-        throw remoteError(response, await readBoundedJson(response, maxJsonBytes));
+        throw remoteError(response, await readEnvelope(response, maxJsonBytes));
       }
       const decoder = new TextDecoder('utf-8', { fatal: true });
       let buffered = '';

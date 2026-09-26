@@ -59,6 +59,8 @@ const DEFAULT_WORKER_START_TIMEOUT_MS = 30 * MINUTE_MS;
 const DEFAULT_STOP_TIMEOUT_MS = 180_000;
 // The admission-deadline status probe runs while the operation queue is held.
 const ADMISSION_PROBE_TIMEOUT_MS = 10_000;
+// COSMO rejects these before registering a pending start.
+const START_REJECTION_STATUS = new Set([400, 401, 403]);
 const CAPABILITY_TTL_MS = 60_000;
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
 const SETTLED_PGS_PROGRESS_FIELDS = Object.freeze([
@@ -1400,20 +1402,52 @@ class BrainOperationCoordinator {
         return this._enqueue(record.operationId, async () => {
           const current = await this.store.get(record.operationId);
           if (TERMINAL_STATES.has(current.state)) return current;
-          try {
-            const recovered = await this._probeUncertainStartLocked(current);
-            if (recovered) return recovered;
-          } catch (probeError) {
-            if (probeError?.code !== 'worker_not_found') {
-              // A status transport/authentication failure cannot prove that the
-              // worker is absent. Leave queued durable truth for reconciliation;
-              // the admission deadline bounds how long it may stay queued.
-              runtime.admission.stage = 'worker_unreachable';
-              runtime.admission.lastProbeErrorCode = sanitizeErrorCode(
-                probeError?.code, 'worker_status_failed',
-              );
-              throw error;
+          // HOME23 188 — A refused connection, a missing protocol route or a
+          // typed 400/401/403 start rejection happens before COSMO creates any
+          // pending start (it validates the request and capability first), so
+          // no work exists to probe for or cancel: fail now, not at the deadline.
+          const rejected = error?.workerAbsent === true || START_REJECTION_STATUS.has(error?.statusCode);
+          let absence = error?.workerAbsent === true ? error : null;
+          if (!rejected) {
+            try {
+              const recovered = await this._probeUncertainStartLocked(current);
+              if (recovered) return recovered;
+            } catch (probeError) {
+              if (probeError?.workerAbsent === true) {
+                absence = probeError;
+                runtime.admission.lastProbeErrorCode = sanitizeErrorCode(probeError.code, 'worker_unavailable');
+              } else if (probeError?.code !== 'worker_not_found') {
+                // A status transport/authentication failure cannot prove that the
+                // worker is absent. Leave queued durable truth for reconciliation;
+                // the admission deadline bounds how long it may stay queued.
+                runtime.admission.stage = 'worker_unreachable';
+                runtime.admission.lastProbeErrorCode = sanitizeErrorCode(
+                  probeError?.code, 'worker_status_failed',
+                );
+                throw error;
+              }
             }
+          }
+          if (rejected || absence) {
+            await this._failLocked(record.operationId, {
+              state: 'failed',
+              code: absence ? 'worker_unavailable' : sanitizeErrorCode(error?.code, 'worker_start_failed'),
+              message: (absence || error)?.message || 'worker start failed',
+              retryable: error?.retryable !== false,
+              cancelWorker: false,
+              extra: {
+                admission: {
+                  version: 1,
+                  stage: 'worker_start',
+                  reason: sanitizeErrorCode((absence || error)?.code, 'worker_start_failed'),
+                  workerType: 'cosmo',
+                  startAttempts: runtime.admission.startAttempts,
+                  lastStartErrorCode: runtime.admission.lastStartErrorCode,
+                  lastProbeErrorCode: runtime.admission.lastProbeErrorCode,
+                },
+              },
+            });
+            throw error;
           }
           await this._failLocked(record.operationId, {
             state: 'failed',
