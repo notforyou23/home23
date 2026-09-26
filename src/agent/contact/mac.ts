@@ -282,10 +282,17 @@ async function runBounded(
   }
 }
 
+// osascript keeps parsing options after -e, so a resident-supplied argument
+// such as "-e<statement>" would be compiled into the script. "--" ends option
+// parsing: every argument after it reaches the script as argv data.
+function osascriptArgs(language: string[], script: string, args: string[]): string[] {
+  return [...language, '-e', script, '--', ...args];
+}
+
 export function createOsascriptRunner(): MacRunner {
   return {
     async jxa(script: string, args: string[] = [], opts?: MacRunOptions): Promise<string> {
-      return runBounded('osascript', ['-l', 'JavaScript', '-e', script, ...args], { timeoutMs: 30_000, maxBuffer: 2_000_000 }, opts);
+      return runBounded('osascript', osascriptArgs(['-l', 'JavaScript'], script, args), { timeoutMs: 30_000, maxBuffer: 2_000_000 }, opts);
     },
     async spotlight(query: string, onlyIn: string, opts?: MacRunOptions): Promise<string> {
       return runBounded('mdfind', ['-onlyin', onlyIn, query], { timeoutMs: 15_000, maxBuffer: 1_000_000 }, opts);
@@ -296,7 +303,7 @@ export function createOsascriptRunner(): MacRunner {
       return runBounded('sqlite3', ['-json', uri, sql], { timeoutMs: 15_000, maxBuffer: 2_000_000 }, opts);
     },
     async applescript(script: string, args: string[] = [], opts?: MacRunOptions): Promise<string> {
-      return runBounded('osascript', ['-e', script, ...args], { timeoutMs: 35_000, maxBuffer: 2_000_000 }, opts);
+      return runBounded('osascript', osascriptArgs([], script, args), { timeoutMs: 35_000, maxBuffer: 2_000_000 }, opts);
     },
   };
 }

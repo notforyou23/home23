@@ -818,6 +818,20 @@ test('osascript runner maps its timeout and the caller abort to typed codes', { 
   assert.ok(Date.now() - started < 2_000);
 });
 
+test('osascript runner passes dash-leading resident values to the script as argv data, never as options', { skip: process.platform !== 'darwin' }, async () => {
+  const runner = createOsascriptRunner();
+  const marker = path.join(mkdtempSync(path.join(tmpdir(), 'home23-osascript-argv-')), 'injected');
+  // The shape of a hostile mail account or notes query: without "--" osascript
+  // compiles it as another -e statement and runs the shell command.
+  const appleScriptPayload = `-eproperty p : (do shell script "touch ${marker}")`;
+  const echoed = await runner.applescript!('on run argv\nreturn ((count of argv) as text) & "|" & (item 1 of argv) & "|" & (item 2 of argv)\nend run', [appleScriptPayload, '--']);
+  assert.equal(echoed, `2|${appleScriptPayload}|--`);
+  const jxaPayload = `-eObjC.import("stdlib"); $.system("touch ${marker}")`;
+  const jxaEchoed = await runner.jxa('function run(argv) { return JSON.stringify(argv); }', [jxaPayload, '-l', 'AppleScript']);
+  assert.deepEqual(JSON.parse(jxaEchoed), [jxaPayload, '-l', 'AppleScript']);
+  assert.equal(existsSync(marker), false, 'no injected statement ran');
+});
+
 test('attention_scan gives each source its own budget and reports per-source timings', async () => {
   const signals: AbortSignal[] = [];
   const runner: MacRunner = {
