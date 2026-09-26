@@ -85,6 +85,10 @@ test('a file created after a late attach reaches the pipeline through chokidar',
   feeder._retryMissingWatchPaths();
   const watcher = feeder._watchers.find(entry => entry.path === lateDir).watcher;
   await new Promise(resolve => watcher.once('ready', resolve));
+  // macOS starts the underlying fs event stream a moment after 'ready'; a
+  // file written inside that gap is covered in production by the attach
+  // scan, not by an event, so give the stream time to start.
+  await new Promise(resolve => setTimeout(resolve, 500));
 
   const fresh = path.join(lateDir, 'fresh.md');
   fs.writeFileSync(fresh, '# fresh\n');
