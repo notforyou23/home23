@@ -62,7 +62,7 @@ export const channelManageTool: ToolDefinition = {
 
 export const botInvokeTool: ToolDefinition = {
   name: 'bot_invoke',
-  description: 'Ask a persistent Bot to contribute in a shared Connected Agents topic channel. The Bot must be a channel member. This creates a Working Thread; Jerry waits for its verified result and remains accountable. Bot replies appear under the Bot’s identity in the channel. Use channel_manage to discover IDs and configure membership first.',
+  description: 'Ask a persistent Bot to contribute in a shared Connected Agents topic channel. The Bot must be a channel member. This creates a Working Thread; you wait for its verified result and remain accountable. Bot replies appear under the Bot’s identity in the channel. Use channel_manage to discover IDs and configure membership first.',
   input_schema: { type: 'object', required: ['botId', 'prompt'], properties: {
     botId: { type: 'string' }, prompt: { type: 'string' }, channelId: { type: 'string' },
   } },

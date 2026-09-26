@@ -115,14 +115,22 @@
   function inboxFor(channelId) {
     return state.inbox.find((c) => c.channelId === channelId) || null;
   }
+  // Core bootstrap names the primary; without it no Bot is presented as primary.
   function primaryBotId() {
-    return (
-      state.bootstrap?.home?.primaryBotId ||
-      state.bootstrap?.snapshot?.bots?.find(
-        (b) => b.name?.toLowerCase() === "jerry",
-      )?.id ||
-      state.bots.find((b) => b.name?.toLowerCase() === "jerry")?.id
-    );
+    return state.bootstrap?.home?.primaryBotId || null;
+  }
+  // Resident bindings are the Host's resident slugs; Core protects every binding outside bot-.
+  function isPermanentResident(bot) {
+    return Boolean(bot?.residentBinding) && !bot.residentBinding.startsWith("bot-");
+  }
+  function welcomeHtml() {
+    const primary = primaryBotId();
+    const names = state.bots
+      .filter((b) => b.lifecycle === "active" && isPermanentResident(b))
+      .sort((a, b) => Number(b.id === primary) - Number(a.id === primary))
+      .map((b) => b.name);
+    const choice = names.length ? `${names.join(", ")}, another Bot, or a Channel` : "a Bot or a Channel";
+    return `<div class="ca-welcome"><div class="ca-house-mark">H23</div><h2>Your conversations live here.</h2><p>Choose ${esc(choice)}.</p></div>`;
   }
   function rank(item) {
     return [
@@ -380,21 +388,19 @@
         state.selected && state.channels.some((c) => c.id === state.selected)
           ? state.selected
           : null;
-      const jerry =
-        state.bots.find((b) => b.id === primaryBotId()) ||
-        state.bots.find((b) => b.name?.toLowerCase() === "jerry");
+      const primary = state.bots.find((b) => b.id === primaryBotId());
       const requestedChannel = new URLSearchParams(location.search).get("channel");
       const first =
         requestedChannel ||
         current ||
         (matchMedia("(min-width: 681px)").matches
-          ? directChannel(jerry)?.id || ordered(state.inbox)[0]?.channelId
+          ? (primary && directChannel(primary)?.id) || ordered(state.inbox)[0]?.channelId
           : null);
       if (first) {
         await openConversation(first, null, {
           historyMode: requestedChannel ? "none" : "replace",
         });
-      }
+      } else if (!state.selected) $("conversation").innerHTML = welcomeHtml();
     } catch (error) {
       setConnection(
         error.status === 401 ? "revoked" : "degraded",
@@ -1387,12 +1393,12 @@
             "Bot",
       )
       .join(", ");
-    const isPermanentResident = bot && ["jerry", "forrest"].includes(bot.residentBinding);
-    const lifecycleOperation = bot && !isPermanentResident
+    const permanent = isPermanentResident(bot);
+    const lifecycleOperation = bot && !permanent
       ? bot.lifecycle === "archived" ? "restore" : "archive"
       : null;
-    const lifecycleCopy = isPermanentResident
-      ? "Jerry and Forrest remain available as permanent house residents."
+    const lifecycleCopy = permanent
+      ? `${bot.name} remains available as a permanent house resident.`
       : "Archiving keeps this Bot’s identity, conversation, and history.";
     const lifecycleControls = lifecycleOperation && state.capabilities.capabilities?.botLifecycle
       ? `<div class="ca-detail-actions"><button data-control="${lifecycleOperation}">${lifecycleOperation === "archive" ? "Archive Bot" : "Restore Bot"}</button></div>`
@@ -1741,8 +1747,7 @@
       state.currentMessages = [];
       resetEvidence(null);
       $("conversation").classList.remove("open");
-      $("conversation").innerHTML =
-        '<div class="ca-welcome"><div class="ca-house-mark">H23</div><h2>Your conversations live here.</h2><p>Choose Jerry, Forrest, another Bot, or a Channel.</p></div>';
+      $("conversation").innerHTML = welcomeHtml();
       renderRoster();
       return;
     }

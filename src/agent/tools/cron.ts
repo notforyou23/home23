@@ -35,7 +35,7 @@ Delivery:
   For external channels delivery_to MUST be a valid, durable chat ID:
     Telegram: a numeric user/group ID like "123456789" or "-5204338402"
     Discord:  a numeric channel ID
-  Do NOT use dashboard session IDs (dashboard-jerry-...) — those are ephemeral and stop working.
+  Do NOT use dashboard session IDs (dashboard-<agent>-...) — those are ephemeral and stop working.
   Use Home23 when enabled; Telegram and Discord remain optional explicit destinations.`,
   input_schema: {
     type: 'object',

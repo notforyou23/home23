@@ -41,7 +41,7 @@ const targetSchema = {
   properties: {
     agent: {
       type: 'string', minLength: 1, maxLength: 256,
-      description: 'Agent name for an authorized resident brain, for example forrest.',
+      description: 'Agent name (instance name) of another authorized resident brain in this home.',
     },
     brainId: {
       type: 'string', minLength: 1, maxLength: 256,

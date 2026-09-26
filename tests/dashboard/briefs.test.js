@@ -21,6 +21,11 @@ function writeJsonl(file, rows) {
   write(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
 }
 
+// Fixture homes declare their roster the way generate-ecosystem does.
+function writeRoster(root, names) {
+  writeJson(path.join(root, 'config/agents.json'), names.map((name) => ({ name, displayName: name })));
+}
+
 test('Briefs service turns Jerry and Forrest artifacts into readable dashboard documents', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-briefs-'));
   try {
@@ -85,6 +90,7 @@ test('Briefs service turns Jerry and Forrest artifacts into readable dashboard d
       }
     );
 
+    writeRoster(root, ['jerry', 'forrest']);
     const service = new Home23BriefsService({ home23Root: root });
     const list = await service.list({ limit: 20 });
 
@@ -208,6 +214,7 @@ test('Briefs service formats machine JSON artifacts as reader-grade documents', 
       }
     );
 
+    writeRoster(root, ['jerry', 'forrest']);
     const service = new Home23BriefsService({ home23Root: root });
     const list = await service.list({ limit: 20 });
     const insight = list.items.find((item) => item.type === 'insight');
@@ -251,6 +258,7 @@ test('all report pages remain searchable and old report details stay reachable',
       fs.utimesSync(file, 1700000000 + i, 1700000000 + i);
     }
     write(path.join(root, 'instances/jerry/workspace/sessions/note.md'), '# A conversation note\n\nKeep in Notes.');
+    writeRoster(root, ['jerry', 'forrest']);
     const service = new Home23BriefsService({ home23Root: root });
     let timerRan = false;
     setImmediate(() => { timerRan = true; });
@@ -275,4 +283,28 @@ test('all report pages remain searchable and old report details stay reachable',
     assert.match(detail.item.text, /rare archival finding/);
     assert.equal((await service.list({ agent: 'forrest' })).total, 0);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Briefs follows a home without Jerry or Forrest through its configured roster', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-briefs-roster-'));
+  try {
+    write(path.join(root, 'instances/coz/config.yaml'), 'agent:\n  displayName: Coz\n');
+    write(path.join(root, 'instances/coz/workspace/reports/today.md'), '# Coz Read\n\nThe garden needs water.\n');
+    write(path.join(root, 'instances/jerry/workspace/reports/stale.md'), '# Leftover\n\nNot part of this home.\n');
+    writeJson(path.join(root, 'instances/workers/systems/runs/wr_coz/receipt.json'), {
+      runId: 'wr_coz', worker: 'systems', ownerAgent: 'coz', status: 'fixed', verifierStatus: 'pass',
+      finishedAt: '2026-09-26T12:00:00Z', summary: 'Coz verifier passed.',
+    });
+    const service = new Home23BriefsService({ home23Root: root });
+    const all = await service.list({ limit: 20 });
+    assert.deepEqual(all.items.map((item) => item.title).sort(), ['Coz Read', 'systems worker: fixed']);
+    const cozOnly = await service.list({ agent: 'coz' });
+    assert.equal(cozOnly.items.some((item) => item.type === 'worker' && item.agent === 'coz'), true);
+    assert.equal((await service.list({ agent: 'jerry' })).total, 0);
+    writeRoster(root, ['coz', 'milo']);
+    write(path.join(root, 'instances/milo/workspace/insights/note.md'), '# Milo Note\n\nListed by the manifest.\n');
+    assert.equal((await service.list({ agent: 'milo' })).items[0]?.title, 'Milo Note');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

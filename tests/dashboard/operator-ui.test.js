@@ -427,7 +427,7 @@ test('Home dashboard is the human front door, with agency detail behind the agen
   assert.match(server, /resident agency state/);
 });
 
-test('Dashboard exposes Jerry and Forrest briefs as readable human documents', () => {
+test('Dashboard exposes each roster agent\'s briefs as readable human documents', () => {
   const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.js'), 'utf8');
   const css = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.css'), 'utf8');
   const html = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.html'), 'utf8');
@@ -455,6 +455,34 @@ test('Dashboard exposes Jerry and Forrest briefs as readable human documents', (
   assert.match(css, /\.h23-human-briefs/);
   assert.match(server, /Home23BriefsService/);
   assert.match(server, /\/home23\/api\/briefs/);
+  const panel = html.slice(html.indexOf('id="panel-briefs"'), html.indexOf('id="briefs-type-filter"'));
+  assert.doesNotMatch(panel, /jerry|forrest/i);
+  assert.doesNotMatch(`${js}\n${server}`, /Jerry \+ Forrest|from Jerry and Forrest|What Jerry can learn/);
+});
+
+test('Briefs agent filter and scope copy are built from the roster', () => {
+  const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.js'), 'utf8');
+  const slice = (from, to) => js.slice(js.indexOf(from), js.indexOf(to, js.indexOf(from)));
+  const select = { value: '', innerHTML: '' };
+  const context = vm.createContext({
+    agents: [{ name: 'coz', displayName: 'Coz' }, { name: 'milo', displayName: 'Milo' }],
+    homePrimaryAgent: null, primaryAgent: null, currentTab: 'briefs',
+    document: { getElementById: (id) => (id === 'briefs-agent-filter' ? select : null) },
+    escapeHtml: (value) => String(value ?? ''), escapeAttr: (value) => String(value ?? ''),
+  });
+  vm.runInContext(`${slice('function currentAgentLabel(', '\nconst DASHBOARD_SCOPE_FALLBACK')}
+${slice('const DASHBOARD_SCOPE_FALLBACK', '\nfunction getDashboardScopeMeta(')}
+${slice('function renderDashboardScopeText(', '\nfunction refreshDashboardScopeUI(')}
+${slice('function renderBriefsAgentFilter(', '\nfunction refreshDashboardIdentityUI(')}
+this.api = { renderDashboardScopeText, renderBriefsAgentFilter, briefs: DASHBOARD_SCOPE_FALLBACK.briefs };`, context);
+  context.api.renderBriefsAgentFilter();
+  assert.equal(select.innerHTML, '<option value="">All agents</option><option value="coz">Coz</option><option value="milo">Milo</option>');
+  assert.equal(context.api.briefs.chip, 'All Agents');
+  assert.match(context.api.renderDashboardScopeText(context.api.briefs), /agent documents from Coz \+ Milo into readable/);
+  select.value = 'milo';
+  vm.runInContext("agents = [{ name: 'coz', displayName: 'Coz' }]", context);
+  context.api.renderBriefsAgentFilter();
+  assert.equal(select.value, '');
 });
 
 test('Home dashboard exposes a Chat tab plus a glanceable Home preview, not a live tile editor', () => {

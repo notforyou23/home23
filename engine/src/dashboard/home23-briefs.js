@@ -1,8 +1,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { discoverAgentInstancePaths } = require('../../../shared/agent-instance-paths.cjs');
 
-const DEFAULT_AGENTS = ['jerry', 'forrest'];
 const DEFAULT_LIMIT = 80;
 const MAX_LIMIT = 240;
 const MAX_FILE_BYTES = 512 * 1024;
@@ -46,6 +46,21 @@ function safeReadJson(file, fallback = null) {
   } catch {
     return fallback;
   }
+}
+
+// Briefs covers this home's roster (the dashboard manifest, else configured
+// agent instances), never an assumed pair of residents.
+function rosterAgents(home23Root) {
+  const manifest = safeReadJson(path.join(home23Root, 'config', 'agents.json'), null);
+  let names = Array.isArray(manifest) ? manifest.map((agent) => agent?.name) : [];
+  if (!names.length) {
+    try {
+      names = discoverAgentInstancePaths(home23Root, { requireConfig: true }).map((entry) => entry.agentName);
+    } catch {
+      names = [];
+    }
+  }
+  return [...new Set(names.filter((name) => typeof name === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(name)))];
 }
 
 function readJsonlTail(file, limit = 1, maxBytes = 192 * 1024) {
@@ -493,7 +508,7 @@ function jobShouldBeBrief(job, row) {
 class Home23BriefsService {
   constructor(options = {}) {
     this.home23Root = options.home23Root || path.resolve(__dirname, '..', '..', '..');
-    this.agents = Array.isArray(options.agents) && options.agents.length ? options.agents : DEFAULT_AGENTS;
+    this.agents = Array.isArray(options.agents) && options.agents.length ? options.agents : null;
     this.logger = options.logger || console;
   }
 
@@ -507,12 +522,13 @@ class Home23BriefsService {
     const perAgentBudget = Infinity;
 
     let items = [];
-    for (const agent of this.agents) {
+    const agents = this.agents || rosterAgents(this.home23Root);
+    for (const agent of agents) {
       if (agentFilter && agentFilter !== agent) continue;
       items.push(...await this.collectAgentFiles(agent, perAgentBudget, typeFilter));
       items.push(...this.collectCronBriefs(agent));
     }
-    if (!agentFilter || agentFilter === 'forrest' || agentFilter === 'jerry') {
+    if (!agentFilter || agents.includes(agentFilter)) {
       items.push(...await this.collectWorkerReceipts(agentFilter));
     }
     if (typeFilter) {

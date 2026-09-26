@@ -2465,8 +2465,8 @@ class DashboardServer {
           },
           briefs: {
             kind: 'mixed',
-            chip: 'Jerry + Forrest',
-            summaryTemplate: 'Briefs collects human-facing reports, cron deliveries, worker receipts, and agent documents from Jerry and Forrest into readable dashboard pages.',
+            chip: 'All Agents',
+            summaryTemplate: 'Briefs collects human-facing reports, cron deliveries, worker receipts, and agent documents from {{houseAgents}} into readable dashboard pages.',
             routes: [
               { method: 'GET', path: '/home23/api/briefs' },
               { method: 'GET', path: '/home23/api/briefs/:id' },
@@ -6509,7 +6509,7 @@ Be specific, actionable, and maintain research continuity.`;
     this.app.get('/api/temporal/current', async (req, res) => {
       try {
         const workspacePath = process.env.COSMO_WORKSPACE_PATH
-          || path.join(__dirname, '..', '..', '..', 'instances', process.env.HOME23_AGENT || 'jerry', 'workspace');
+          || path.join(__dirname, '..', '..', '..', 'instances', this.getHome23AgentName(), 'workspace');
         const ctx = buildTemporalContext({ workspacePath });
         res.json({
           ok: true,

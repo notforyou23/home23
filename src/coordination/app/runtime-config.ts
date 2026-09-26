@@ -243,7 +243,10 @@ export function loadCoordinationRuntimeConfig(
   if (!Array.isArray(configuredSlugs) || configuredSlugs.length < 1 || configuredSlugs.length > 32 ||
       configuredSlugs.some(slug => typeof slug !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug) || slug.startsWith("bot-")) ||
       new Set(configuredSlugs).size !== configuredSlugs.length) throw new Error("coordination resident slugs are invalid");
-  const primaryResident = environment.HOME23_COORDINATION_PRIMARY_RESIDENT ?? "jerry";
+  // Only the legacy unconfigured pair implies Jerry; a configured resident set names its own primary.
+  const primaryResident = environment.HOME23_COORDINATION_PRIMARY_RESIDENT ||
+    (environment.HOME23_COORDINATION_RESIDENT_SLUGS ? "" : "jerry");
+  if (!primaryResident) throw new Error("HOME23_COORDINATION_PRIMARY_RESIDENT is required when HOME23_COORDINATION_RESIDENT_SLUGS is set");
   if (!configuredSlugs.includes(primaryResident)) throw new Error("coordination primary resident is not configured");
   const home = Object.freeze({
     id: environment.HOME23_COORDINATION_HOME_ID ?? "home_00000000-0000-7000-8000-000000000000",

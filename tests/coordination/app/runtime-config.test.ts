@@ -167,6 +167,10 @@ test("an arbitrary primary resident uses explicit authenticated runtime configur
   assert.equal(configured.home?.name, "River Home");
   assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_RESIDENT_MILO_RIVER_KEY: "" }), /32 bytes of hex/);
   assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_PRIMARY_RESIDENT: "another" }), /not configured/);
+  // A configured resident set never inherits Jerry as its primary.
+  const { HOME23_COORDINATION_PRIMARY_RESIDENT: _primary, ...unnamed } = environment;
+  assert.throws(() => loadCoordinationRuntimeConfig(unnamed), /HOME23_COORDINATION_PRIMARY_RESIDENT is required/);
+  assert.throws(() => loadCoordinationRuntimeConfig({ ...unnamed, HOME23_COORDINATION_PRIMARY_RESIDENT: "" }), /HOME23_COORDINATION_PRIMARY_RESIDENT is required/);
   assert.throws(() => loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_RESIDENT_SLUGS: '["bot-helper"]' }), /slugs are invalid/);
   assert.equal(loadCoordinationRuntimeConfig({ ...environment, HOME23_COORDINATION_ENABLED: "false" }).residents["milo-river"]?.enabled, false);
 });

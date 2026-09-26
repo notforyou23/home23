@@ -1096,7 +1096,7 @@ export function createCoordinationProcess(
             const coordinator = createChannelCoordinator({
               presentation: messageId => {
                 const row=database.readOne<{kind:string}>("SELECT aggregate_kind AS kind FROM events WHERE aggregate_version=1 AND ((aggregate_kind='bot_invocation' AND aggregate_id=?) OR (aggregate_kind='scheduled_channel_run' AND json_extract(payload_json,'$.messageId')=?))",messageId,messageId);
-                return row ? {title:row.kind==='bot_invocation'?'Helper assignment':'Scheduled channel run',summary:row.kind==='bot_invocation'?'A helper assignment requested by Jerry.':'A scheduled assignment in this topic channel.'} : undefined;
+                return row ? {title:row.kind==='bot_invocation'?'Helper assignment':'Scheduled channel run',summary:row.kind==='bot_invocation'?'A helper assignment requested by the accountable resident.':'A scheduled assignment in this topic channel.'} : undefined;
               },
               database,
               rounds: createRoundService({ database, generateId: generateCoordinationId }),
