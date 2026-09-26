@@ -1523,6 +1523,52 @@ test('a deterministic compaction failure backs off further compaction for the wi
   assert.equal(compactions, 2, 'compaction resumes once the window has passed');
 });
 
+// Forrest's committed rows: an edge whose endpoint node is nowhere on disk.
+const driftedEdgeBrain = {
+  diskNodes: [{ id: 'n1', concept: 'one' }, { id: 'n2', concept: 'two' }],
+  diskEdges: [
+    { key: 'n1->n2', source: 'n1', target: 'n2', weight: 0.5 },
+    { key: 'ghost->n1', source: 'ghost', target: 'n1', weight: 0.2 },
+  ],
+};
+const driftedEdgeResident = () => createResidentMemory(
+  [{ id: 'n1', concept: 'one' }, { id: 'n2', concept: 'two' }],
+  [{ key: 'n1->n2', source: 'n1', target: 'n2', weight: 0.5 }],
+);
+
+test('a retryable resident-rewrite failure retries on the next save instead of backing off', async (t) => {
+  const brain = await createDriftedBrain(t, driftedEdgeBrain);
+  const memory = driftedEdgeResident();
+  memory.upsertNode({ id: 'n1', concept: 'appended before compaction' });
+  const events = [];
+  const writer = countingWriter(events);
+  const residentRewrite = writer.rewriteMemoryBaseFromSnapshot;
+  let rewrites = 0;
+  writer.rewriteMemoryBaseFromSnapshot = async (...args) => {
+    rewrites += 1;
+    if (rewrites > 1) return residentRewrite(...args);
+    events.push('resident-rewrite');
+    throw Object.assign(new Error('memory changed during persistence snapshot'), { code: 'source_changed', retryable: true });
+  };
+  const startedAt = Date.now();
+  const at = (offsetMs) => ({
+    brainDir: brain.brainDir, home23Root: brain.home23Root, memory, writer,
+    fullRewriteIntervalMs: 0, schedule: () => {}, logger: quietLogger([]), now: () => startedAt + offsetMs,
+  });
+  let failure;
+  await assert.rejects(persistMemoryRevision(at(0)), (error) => { failure = error; return true; });
+  assert.equal(failure.message, 'memory changed during persistence snapshot');
+  assert.deepEqual(failure.graphCounts, { nodes: 2, edges: 2, clusters: 0 });
+  assert.equal(failure.memoryCommitted.maintenanceDebt.retryAfter, null, 'keyed on the fallback error, not the mismatch');
+
+  const retried = await persistMemoryRevision(at(60_000));
+  assert.equal(rewrites, 2, 'the next save retries the resident rewrite');
+  assert.equal(retried.mode, 'full');
+  assert.equal(retried.maintenanceDebt, undefined);
+  assert.equal(retried.manifest.activeBase.edges.count, 1);
+  assert.equal(memory.dirtyNodeIds.size, 0);
+});
+
 test('stale base staging files are removed before a rebase while committed files remain', async (t) => {
   const fixture = await createCompactionFixture(t);
   const committedBefore = await readManifest(fixture.brainDir);

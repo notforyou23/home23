@@ -477,7 +477,10 @@ async function persistMemoryRevision({
         }
       }
       if (failure) {
-        const retryAfter = compactionError.retryable !== true ? now() + compactionBackoffMs : null;
+        // Back off on the error that ended this attempt: when the fallback
+        // ran, a retryable resident-rewrite failure (a mutation during its
+        // stream, a busy lock) retries on the next save, not in an hour.
+        const retryAfter = failure.retryable !== true ? now() + compactionBackoffMs : null;
         if (retryAfter) compactionBackoff.set(backoffKey, { until: retryAfter, error: failure.message });
         if (memoryDurable) {
           // The append (or a clean reuse) is durable at committedManifest, so
