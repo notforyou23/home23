@@ -2832,3 +2832,36 @@ test('explicit result recovery also retries transient delivery failures', async 
   assert.equal(result.result?.answer, 'Recovered result');
   assert.equal(reads, 2);
 });
+
+test('own-brain status reports query-worker readiness beside health, even when /readiness is 503', async () => {
+  const requested: string[] = [];
+  const health = record('op-status', 1, 'complete', { memory: { nodeCount: 42 } });
+  const readiness = (status: number, body: unknown): typeof fetch => async (url, init) => {
+    const parsed = new URL(String(url));
+    requested.push(`${init?.method || 'GET'} ${parsed.pathname}`);
+    if (parsed.pathname.endsWith('/readiness')) {
+      return new Response(typeof body === 'string' ? body : JSON.stringify(body), { status });
+    }
+    if (init?.method === 'POST') return new Response(JSON.stringify(health));
+    if (parsed.pathname.endsWith('/result')) return new Response(JSON.stringify(resultEnvelope(health)));
+    throw new Error(`unexpected ${parsed.pathname}`);
+  };
+  const worker = { ready: false, code: 'worker_unreachable', checkedAt: '2026-07-09T12:00:00.000Z' };
+  const down = new BrainOperationsClient({
+    baseUrl: 'http://fixture', callerAgent: 'jerry',
+    fetchImpl: readiness(503, { ready: false, providerOperations: {}, queryWorker: worker }),
+  });
+  const reported = await down.status({});
+  assert.deepEqual(reported.queryWorker, worker);
+  assert.deepEqual((reported as { memory?: unknown }).memory, { nodeCount: 42 });
+  assert.equal(requested.filter((line) => line === 'GET /home23/api/brain-operations/readiness').length, 1);
+  assert.equal(requested.filter((line) => line.startsWith('POST')).length, 1);
+
+  for (const body of [{ ready: true, providerOperations: {} }, 'not json', { queryWorker: { ready: 'no' } }]) {
+    const unknown = new BrainOperationsClient({
+      baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl: readiness(200, body),
+    });
+    const value = await unknown.status({});
+    assert.equal(Object.hasOwn(value, 'queryWorker'), false, JSON.stringify(body));
+  }
+});

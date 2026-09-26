@@ -1377,3 +1377,32 @@ test('canonical search failure remains an error even when it carries an operatio
   } });
   assert.equal((await brainSearchTool.execute({ query: 'memory' }, ctx)).is_error, true);
 });
+
+test('brain_status leads with query-worker readiness so an unreachable COSMO is visible', async () => {
+  const unreachable = await brainStatusTool.execute({}, makeCtx({ brainOperations: {
+    status: async () => ({
+      memory: { nodeCount: 139000 },
+      sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'matches' },
+      queryWorker: { ready: false, code: 'worker_unreachable', checkedAt: '2026-09-26T12:00:00.000Z' },
+    }),
+  } }));
+  assert.equal(unreachable.is_error, undefined);
+  assert.match(unreachable.content.split('\n')[0],
+    /^query worker: NOT READY \(worker_unreachable, checked 2026-09-26T12:00:00\.000Z\)/);
+  assert.match(unreachable.content, /do not launch a brain query until this reads ready/);
+  assert.match(unreachable.content, /139000/);
+  assert.doesNotMatch(unreachable.content, /"queryWorker"/);
+  assert.deepEqual(unreachable.metadata?.queryWorker, {
+    ready: false, code: 'worker_unreachable', checkedAt: '2026-09-26T12:00:00.000Z',
+  });
+
+  const ready = await brainStatusTool.execute({}, makeCtx({ brainOperations: {
+    status: async () => ({ memory: { nodeCount: 1 }, queryWorker: { ready: true, code: null, checkedAt: null } }),
+  } }));
+  assert.match(ready.content, /^query worker: ready \(brain_query, PGS and research can be admitted\)/);
+
+  const unknown = await brainStatusTool.execute({}, makeCtx({ brainOperations: {
+    status: async () => ({ memory: { nodeCount: 1 } }),
+  } }));
+  assert.match(unknown.content, /^brain_status\n/);
+});

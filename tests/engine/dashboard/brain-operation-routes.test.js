@@ -90,6 +90,52 @@ test('readiness reports provider migration truth without creating an operation',
   assert.deepEqual(unavailable.calls, []);
 });
 
+test('readiness reports the query worker as an advisory field that never changes ready', async () => {
+  const snapshot = { ready: false, code: 'worker_unreachable', checkedAt: '2026-07-10T12:00:00.000Z' };
+  const unreachable = fakes({ workerReadiness: async () => snapshot });
+  await withRouter(unreachable, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/readiness`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.ready, true);
+    assert.deepEqual(body.queryWorker, snapshot);
+  });
+
+  const bothDown = fakes({
+    providerReadiness: () => ({
+      ready: false, status: 'unavailable', code: 'provider_unavailable',
+      retryable: true, migrated: false,
+    }),
+    workerReadiness: async () => snapshot,
+  });
+  await withRouter(bothDown, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/readiness`);
+    assert.equal(response.status, 503);
+    assert.deepEqual((await response.json()).queryWorker, snapshot);
+  });
+
+  const ready = { ready: true, code: null, checkedAt: '2026-07-10T12:00:00.000Z' };
+  await withRouter(fakes({ workerReadiness: async () => ready }), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/readiness`);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).queryWorker, ready);
+  });
+
+  for (const workerReadiness of [
+    async () => { throw new Error('probe exploded'); },
+    async () => ({ ready: 'yes', code: null, checkedAt: null }),
+    async () => ({ ...ready, secret: 'x' }),
+  ]) {
+    await withRouter(fakes({ workerReadiness }), async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/readiness`);
+      assert.equal(response.status, 200);
+      assert.deepEqual((await response.json()).queryWorker, {
+        ready: false, code: 'worker_readiness_unavailable', checkedAt: null,
+      });
+    });
+  }
+});
+
 async function withRouter(dependencies, callback, { broadParser } = {}) {
   const app = express();
   const placeholder = createBrainOperationsPlaceholderRouter();

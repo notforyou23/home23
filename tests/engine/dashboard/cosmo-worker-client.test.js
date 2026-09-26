@@ -617,3 +617,53 @@ test('typed COSMO rejections and other transport failures stay uncertain', async
   await assert.rejects(brokenJson.status(OPERATION_ID, CAPABILITY), (error) =>
     error.code === 'worker_transport_invalid' && error.workerAbsent === undefined);
 });
+
+test('query-worker readiness is a cached signed handshake that names why COSMO is not ready', async () => {
+  const key = 'cosmo-worker-client-readiness-key';
+  let now = Date.parse('2026-07-21T16:00:00.000Z');
+  let fetches = 0;
+  let healthy = true;
+  const client = createCosmoBrainOperationWorkerClient({
+    capabilityKey: key,
+    clock: { now: () => now },
+    fetchImpl: async (_url, options) => {
+      fetches += 1;
+      if (!healthy) return htmlNotFound();
+      return jsonResponse(createVerifiedFollowUpSupportResponse({
+        key,
+        request: JSON.parse(options.body),
+        authorization: options.headers.authorization.replace(/^Bearer /, ''),
+        runtimeSupport: VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+        now,
+      }));
+    },
+  });
+  const [first, concurrent] = await Promise.all([client.probeReadiness(), client.probeReadiness()]);
+  assert.deepEqual(first, { ready: true, code: null, checkedAt: '2026-07-21T16:00:00.000Z' });
+  assert.equal(concurrent, first);
+  assert.equal(fetches, 1);
+
+  healthy = false;
+  now += 29_999;
+  assert.equal(await client.probeReadiness(), first, 'cached for 30 s');
+  assert.equal(fetches, 1);
+  now += 1;
+  assert.deepEqual(await client.probeReadiness(), {
+    ready: false, code: 'worker_protocol_unavailable', checkedAt: '2026-07-21T16:00:30.000Z',
+  });
+  assert.equal(fetches, 2);
+
+  const port = await closedLoopbackPort();
+  const refused = createCosmoBrainOperationWorkerClient({
+    baseUrl: `http://127.0.0.1:${port}`,
+    capabilityKey: key,
+  });
+  const unreachable = await refused.probeReadiness();
+  assert.equal(unreachable.ready, false);
+  assert.equal(unreachable.code, 'worker_unreachable');
+
+  const unkeyed = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async () => { throw new Error('must not call'); },
+  });
+  assert.equal((await unkeyed.probeReadiness()).code, 'capability_unavailable');
+});

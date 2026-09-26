@@ -842,6 +842,7 @@ class DashboardServer {
       exporter: dependencies.exporter,
       buildCatalog: dependencies.buildCatalog,
       providerReadiness: dependencies.providerReadiness,
+      workerReadiness: dependencies.workerReadiness,
       researchRuns: dependencies.researchRuns,
       resolveSynthesisAnswer: typeof dependencies.synthesisOperationRuntime?.readCommittedAnswer === 'function'
         ? (operation, result) => dependencies.synthesisOperationRuntime.readCommittedAnswer(result)
@@ -1265,6 +1266,7 @@ class DashboardServer {
         retryable: true,
         migrated: false,
       }),
+      workerReadiness: () => worker.readRemoteWorkerReadiness(),
     };
   }
 

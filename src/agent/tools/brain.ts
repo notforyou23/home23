@@ -6,6 +6,7 @@ import type {
   BrainOperationRecord,
   BrainOperationResult,
   BrainOperationResultEnvelope,
+  QueryWorkerReadiness,
 } from '../brain-operations/types.js';
 import {
   assertExactKeys,
@@ -455,6 +456,20 @@ function operationControlResult(
   };
 }
 
+function isQueryWorkerReadiness(value: unknown): value is QueryWorkerReadiness {
+  const record = asRecord(value);
+  return record !== null && typeof record.ready === 'boolean';
+}
+
+function queryWorkerLine(worker: QueryWorkerReadiness): string {
+  const checked = worker.checkedAt ? `, checked ${worker.checkedAt}` : '';
+  return worker.ready
+    ? `query worker: ready (brain_query, PGS and research can be admitted${checked})`
+    : `query worker: NOT READY (${worker.code || 'unknown'}${checked}). brain_query, PGS and research `
+      + 'cannot start until it is ready; brain_search and brain health still work. Answer from '
+      + 'brain_search, say so, and do not launch a brain query until this reads ready.';
+}
+
 function synthesisResult(operation: BrainOperationResult): ToolResult {
   const rendered = operationToolResult(operation);
   const generationMarker = operation.result?.generationMarker;
@@ -882,9 +897,17 @@ async function executeBrainStatus(
     }
     if (hasOwn(input, 'action')) throw invalidRequest();
     const target = targetFrom(input);
-    return boundedJson('brain_status', await turn.brainOperations.status(
+    const { queryWorker, ...health } = await turn.brainOperations.status(
       target ? { target } : {}, turn.signal,
-    ));
+    );
+    const rendered = boundedJson('brain_status', health);
+    if (!isQueryWorkerReadiness(queryWorker)) return rendered;
+    // Lead with the worker line so a truncated health page cannot hide it.
+    return {
+      ...rendered,
+      content: `${queryWorkerLine(queryWorker)}\n${rendered.content}`,
+      metadata: { ...rendered.metadata, queryWorker },
+    };
   } catch (error) {
     return toolFailure('brain_status', error);
   }

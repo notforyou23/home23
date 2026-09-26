@@ -5690,6 +5690,11 @@ test('coordinator rejects non-positive admission deadlines', (t) => {
 
 test('a stranded worker start fails typed admission_stalled at the deadline and stops heartbeating', async (t) => {
   const worker = new UnreachableWorker();
+  const readinessChecks = [];
+  worker.readRemoteWorkerReadiness = async () => {
+    readinessChecks.push(true);
+    return { ready: false, code: 'worker_unreachable', checkedAt: '2026-07-10T16:09:45.000Z' };
+  };
   const warnings = [];
   const fixture = makeFixture(t, {
     worker,
@@ -5733,7 +5738,9 @@ test('a stranded worker start fails typed admission_stalled at the deadline and 
     startAttempts: 1,
     lastStartErrorCode: 'worker_transport_failed',
     lastProbeErrorCode: 'worker_transport_failed',
+    queryWorker: { ready: false, code: 'worker_unreachable', checkedAt: '2026-07-10T16:09:45.000Z' },
   });
+  assert.equal(readinessChecks.length, 1);
   assert.equal(worker.statusCalls.length, 2, 'the deadline probes once before failing');
   await eventually(() => assert.equal(worker.cancelCalls.length, 1), 10_000);
   assert.equal(fixture.counters.releaseCalls, 1);
@@ -6003,4 +6010,16 @@ test('an uncertain start whose status probe finds COSMO absent fails worker_unav
   assert.equal(failed.error.admission.lastStartErrorCode, 'worker_transport_failed');
   assert.equal(worker.statusCalls.length, 1);
   assert.equal(worker.cancelCalls.length, 0);
+});
+
+test('worker adapter reports remote query-worker readiness and names a missing remote worker', async () => {
+  const snapshot = Object.freeze({ ready: true, code: null, checkedAt: '2026-07-10T16:00:00.000Z' });
+  const adapter = new BrainOperationWorkerAdapter({
+    remoteWorker: { async probeReadiness() { return snapshot; } },
+  });
+  assert.equal(await adapter.readRemoteWorkerReadiness(), snapshot);
+  const localOnly = new BrainOperationWorkerAdapter({});
+  assert.deepEqual(await localOnly.readRemoteWorkerReadiness(), {
+    ready: false, code: 'worker_not_configured', checkedAt: null,
+  });
 });

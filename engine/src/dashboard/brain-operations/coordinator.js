@@ -1064,6 +1064,11 @@ class BrainOperationCoordinator {
     const localWorker = typeof this.worker.usesLocalExecutor === 'function'
       && this.worker.usesLocalExecutor(record.operationType);
     const reference = await this.store.getWorker(record.operationId).catch(() => null);
+    // The cached, bounded query-worker readiness says whether COSMO itself
+    // was reachable when admission gave up.
+    const queryWorker = !localWorker && typeof this.worker.readRemoteWorkerReadiness === 'function'
+      ? await this.worker.readRemoteWorkerReadiness().catch(() => null)
+      : null;
     return this._failLocked(record.operationId, {
       state: 'failed',
       code: 'admission_stalled',
@@ -1084,6 +1089,13 @@ class BrainOperationCoordinator {
           startAttempts: admission.startAttempts ?? 0,
           lastStartErrorCode: admission.lastStartErrorCode ?? null,
           lastProbeErrorCode: admission.lastProbeErrorCode ?? null,
+          ...(queryWorker ? {
+            queryWorker: {
+              ready: queryWorker.ready === true,
+              code: sanitizeErrorCode(queryWorker.code, null),
+              checkedAt: typeof queryWorker.checkedAt === 'string' ? queryWorker.checkedAt : null,
+            },
+          } : {}),
         },
       },
     });

@@ -287,6 +287,13 @@ export interface BrainOperationResult extends BrainOperationRecord {
   attachmentState: AttachmentState;
 }
 
+/** Advisory readiness of the worker (COSMO) that admits query, PGS and research. */
+export interface QueryWorkerReadiness {
+  ready: boolean;
+  code: string | null;
+  checkedAt: string | null;
+}
+
 export interface SynthesisStateResponse {
   ready: boolean;
   requestedGenerationMarker: string | null;

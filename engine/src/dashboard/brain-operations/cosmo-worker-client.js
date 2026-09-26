@@ -15,6 +15,7 @@ const DEFAULT_MAX_EVENT_BYTES = 512 * 1024;
 const DEFAULT_MAX_OPERATION_TYPE_ENTRIES = 4096;
 const DEFAULT_MAX_SUPPORT_BYTES = 4 * 1024;
 const DEFAULT_SUPPORT_TIMEOUT_MS = 2_000;
+const DEFAULT_READINESS_CACHE_MS = 30_000;
 const RESULT_CONTROL_HEADROOM_BYTES = 256 * 1024;
 const TERMINAL_RESULT_STATES = new Set([
   'complete', 'partial', 'failed', 'cancelled', 'interrupted',
@@ -181,6 +182,7 @@ function createCosmoBrainOperationWorkerClient({
   randomBytes,
   maxSupportBytes = DEFAULT_MAX_SUPPORT_BYTES,
   supportTimeoutMs = DEFAULT_SUPPORT_TIMEOUT_MS,
+  readinessCacheMs = DEFAULT_READINESS_CACHE_MS,
 } = {}) {
   const origin = normalizeLoopbackBaseUrl(baseUrl);
   if (typeof fetchImpl !== 'function'
@@ -189,6 +191,7 @@ function createCosmoBrainOperationWorkerClient({
       || !Number.isSafeInteger(maxOperationTypeEntries) || maxOperationTypeEntries < 1
       || !Number.isSafeInteger(maxSupportBytes) || maxSupportBytes < 1024
       || !Number.isSafeInteger(supportTimeoutMs) || supportTimeoutMs < 1
+      || !Number.isSafeInteger(readinessCacheMs) || readinessCacheMs < 0
       || typeof clock?.now !== 'function'
       || (randomBytes !== undefined && typeof randomBytes !== 'function')
       || !Array.isArray(sourceOperationTypes)
@@ -315,12 +318,41 @@ function createCosmoBrainOperationWorkerClient({
     }
   }
 
+  // HOME23 188 (H23-013) — The coordinator and provider can be healthy while
+  // the worker that executes query/PGS/research is missing, so readiness asks
+  // the worker itself. The signed support handshake proves a keyed COSMO
+  // serving the protocol; its answer is cached so status polling stays cheap.
+  let readinessCache = null;
+  let readinessPending = null;
+  function probeReadiness() {
+    if (readinessCache && clock.now() < readinessCache.expiresAt) {
+      return Promise.resolve(readinessCache.value);
+    }
+    readinessPending ??= readVerifiedFollowUpSupport().then(
+      () => ({ ready: true, code: null }),
+      (error) => ({
+        ready: false,
+        code: typeof error?.code === 'string' && /^[a-z0-9_]{1,64}$/.test(error.code)
+          ? error.code : 'worker_unavailable',
+      }),
+    ).then((outcome) => {
+      const checkedAt = clock.now();
+      const value = Object.freeze({ ...outcome, checkedAt: new Date(checkedAt).toISOString() });
+      readinessCache = { value, expiresAt: checkedAt + readinessCacheMs };
+      return value;
+    }).finally(() => {
+      readinessPending = null;
+    });
+    return readinessPending;
+  }
+
   return Object.freeze({
     supportsSourceOperations: true,
     supportsSourceOperation(operationType) {
       return supportedSourceOperations.has(operationType);
     },
     readVerifiedFollowUpSupport,
+    probeReadiness,
     async start(context, capability) {
       if (typeof context?.operationType !== 'string' || !context.operationType) {
         throw clientError('worker_transport_invalid');
