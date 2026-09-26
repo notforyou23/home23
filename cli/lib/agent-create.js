@@ -15,7 +15,7 @@ import { askWithDefault, askSecret, closeRL } from './prompts.js';
 import { generateEcosystem } from './generate-ecosystem.js';
 
 const require = createRequire(import.meta.url);
-const { buildAgentConfig, buildFeederConfig } = require('./agent-config-builder.cjs');
+const { buildAgentConfig, buildFeederConfig, DEFAULT_WORKSPACE_WATCH_DIRS } = require('./agent-config-builder.cjs');
 const { updateHome23Secrets } = require('../../shared/home23-secrets.cjs');
 
 function findNextPorts(home23Root) {
@@ -271,7 +271,8 @@ export async function runAgentCreate(home23Root, name, options = {}) {
   console.log(`Creating instances/${name}/...`);
 
   // Create directories
-  for (const dir of ['workspace', 'workspace/scripts', 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
+  const workspaceWatchDirs = DEFAULT_WORKSPACE_WATCH_DIRS.map(({ dir }) => `workspace/${dir}`);
+  for (const dir of ['workspace', 'workspace/scripts', ...workspaceWatchDirs, 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
     mkdirSync(join(instanceDir, dir), { recursive: true });
     console.log(`  ${dir.padEnd(16)} \u2713`);
   }

@@ -2771,7 +2771,10 @@ class DashboardServer {
         const manifest = JSON.parse(fsSync.readFileSync(manifestPath, 'utf8'));
         const entries = Object.entries(manifest);
         const compiled = entries.filter(([, meta]) => meta.compiled);
-        const quarantined = entries.filter(([, meta]) => meta.parseStatus === 'suspect_truncation' || meta.parseStatus === 'un_normalizable');
+        // Conversion failures are quarantined too (pinned until the file
+        // changes); formats no converter reads are counted separately.
+        const quarantined = entries.filter(([, meta]) => ['suspect_truncation', 'un_normalizable', 'conversion_failed', 'conversion_empty'].includes(meta.parseStatus));
+        const unsupported = entries.filter(([, meta]) => meta.parseStatus === 'unsupported_format');
         const chunks = entries.reduce((sum, [, meta]) => sum + (meta.nodeCount || (Array.isArray(meta.nodeIds) ? meta.nodeIds.length : 0)), 0);
         const remaining = Math.max(0, workspaceFileCount - entries.length);
 
@@ -2796,6 +2799,7 @@ class DashboardServer {
             pendingCount: remaining,
             compiledCount: compiled.length,
             quarantinedCount: quarantined.length,
+            unsupportedCount: unsupported.length,
             chunkCount: chunks,
             files,
           }]

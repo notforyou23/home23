@@ -278,8 +278,16 @@ class RealtimeServer {
       if (!body.path || typeof body.path !== 'string') {
         return json(400, { ok: false, error: 'path is required' });
       }
-      await feeder.addWatchPath(body.path, body.label || null);
-      return json(200, { ok: true, added: body.path, label: body.label || null });
+      // state is 'missing' when the folder does not exist yet: it stays
+      // registered and attaches when it appears, instead of a silent no-op.
+      const result = await feeder.addWatchPath(body.path, body.label || null);
+      return json(200, {
+        ok: true,
+        added: body.path,
+        label: result?.label ?? body.label ?? null,
+        state: result?.state ?? null,
+        ...(result?.duplicate ? { duplicate: true } : {}),
+      });
     }
 
     // POST /admin/feeder/removeWatchPath  { path }

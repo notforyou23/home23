@@ -12,7 +12,7 @@ const { createHome23OAuthBroker, publicOAuthStatus } = require('../../../shared/
 const { writeYamlSafely } = require('./yaml-write-safety');
 const { StateCompression } = require('../core/state-compression');
 const { readJsonlGz, sidecarsExist, nodesPath } = require('../core/memory-sidecar');
-const { buildAgentConfig, buildFeederConfig } = require('../../../cli/lib/agent-config-builder.cjs');
+const { buildAgentConfig, buildFeederConfig, DEFAULT_WORKSPACE_WATCH_DIRS } = require('../../../cli/lib/agent-config-builder.cjs');
 const {
   agentProcessNames,
   agentProcessNameCandidates,
@@ -1347,7 +1347,8 @@ function createSettingsRouter(home23Root, options = {}) {
     const resolvedPersonalFacts = parsePersonalFacts(personalFacts);
     const starterIngestPaths = parseIngestPaths(ingestPaths);
 
-    for (const dir of ['workspace', 'workspace/scripts', 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
+    const workspaceWatchDirs = DEFAULT_WORKSPACE_WATCH_DIRS.map(({ dir }) => `workspace/${dir}`);
+    for (const dir of ['workspace', 'workspace/scripts', ...workspaceWatchDirs, 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
       fs.mkdirSync(path.join(instanceDir, dir), { recursive: true });
     }
 

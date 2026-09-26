@@ -150,6 +150,25 @@ class IngestionManifest {
   }
 
   /**
+   * Drop quarantine entries the predicate marks as the converter's fault,
+   * not the file's, so the next scan re-evaluates them. An entry with nodes
+   * or a pending generation is never touched. Returns the released paths.
+   */
+  async releaseQuarantined(predicate) {
+    return this._withLock(async () => {
+      const released = [];
+      for (const [filePath, entry] of Object.entries(this._manifest)) {
+        if (!entry?.quarantinedAt || entry.nodeIds?.length || entry._pendingGeneration) continue;
+        if (!predicate(filePath, entry)) continue;
+        delete this._manifest[filePath];
+        released.push(filePath);
+      }
+      if (released.length) this._saveManifest();
+      return released;
+    });
+  }
+
+  /**
    * Flush pending items: embed, create nodes, create edges, update manifest.
    */
   async flush(reason = 'manual') {

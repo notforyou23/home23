@@ -185,6 +185,187 @@ test('document feeder does not quarantine retryable converter outages', async ()
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a file waiting on the converter is re-processed exactly once when it becomes able', async (t) => {
+  const feeder = makeFeeder();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-awaiting-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'notes.docx');
+  fs.writeFileSync(filePath, 'docx bytes', 'utf8');
+
+  let ready = false;
+  let convertCalls = 0;
+  let healthChecks = 0;
+  const quarantined = [];
+  feeder._started = true;
+  feeder.manifest = {
+    isStale: async () => true,
+    trackQuarantined: async (...args) => { quarantined.push(args); },
+    flush: async () => {},
+  };
+  feeder.converter = {
+    isNativeText: () => false,
+    isConvertible: () => true,
+    checkHealth: async () => { healthChecks += 1; },
+    canConvertNow: () => ready,
+    convertDetailed: async () => {
+      convertCalls += 1;
+      return ready
+        ? { ok: false, status: 'conversion_empty', retryable: false }
+        : { ok: false, status: 'converter_unavailable', retryable: true, needs: 'docx', error: 'docx conversion is not installed' };
+    },
+  };
+
+  await feeder._processFile(filePath, 'notes');
+  assert.equal(feeder._awaitingConversion.size, 1);
+  assert.equal(quarantined.length, 0);
+  assert.equal(await feeder._retryAwaitingConversions(), 0, 'nothing retried while the converter cannot');
+  assert.equal(convertCalls, 1);
+
+  ready = true;
+  assert.equal(await feeder._retryAwaitingConversions(), 1);
+  assert.equal(await feeder._retryAwaitingConversions(), 0);
+  assert.equal(convertCalls, 2, 'the awaiting file ran exactly once more');
+  assert.equal(feeder._awaitingConversion.size, 0);
+  assert.equal(quarantined.length, 1);
+  assert.ok(healthChecks >= 2);
+});
+
+test('a disabled converter records nothing and makes no conversion attempts', async (t) => {
+  const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-disabled-'));
+  const feeder = makeFeeder({ compiler: { enabled: false }, converter: { enabled: false } });
+  feeder._scanDirectory = async () => {};
+  await feeder.start(runPath);
+  t.after(async () => {
+    await feeder.shutdown();
+    fs.rmSync(runPath, { recursive: true, force: true });
+  });
+  let spawned = 0;
+  feeder.converter._execFile = (_file, _args, _options, callback) => { spawned += 1; callback(new Error('must not spawn')); };
+  const filePath = path.join(runPath, 'scan.pdf');
+  fs.writeFileSync(filePath, 'pdf bytes', 'utf8');
+
+  await feeder._processFile(filePath, 'docs');
+  const status = await feeder.getStatus();
+
+  assert.equal(spawned, 0);
+  assert.equal(status.converter.state, 'disabled');
+  assert.equal(status.converter.available, false);
+  assert.equal(status.converter.pendingConversionCount, 1);
+  assert.equal(status.converter.pendingConversion[0].status, 'converter_disabled');
+  assert.equal(feeder.manifest.getEntry(filePath), null, 'not quarantined');
+});
+
+test('an unsupported format is recorded as unsupported_format, not conversion_failed', async (t) => {
+  const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-unsupported-'));
+  const feeder = makeFeeder({ compiler: { enabled: false } });
+  feeder._scanDirectory = async () => {};
+  await feeder.start(runPath);
+  t.after(async () => {
+    await feeder.shutdown();
+    fs.rmSync(runPath, { recursive: true, force: true });
+  });
+  const filePath = path.join(runPath, 'plan.pages');
+  fs.writeFileSync(filePath, 'pages bytes', 'utf8');
+
+  await feeder._processFile(filePath, 'docs');
+
+  const entry = feeder.manifest.getEntry(filePath);
+  assert.equal(entry.parseStatus, 'unsupported_format');
+  assert.match(entry.issues[0], /no converter reads \.pages files/);
+  assert.equal(feeder._awaitingConversion.size, 0);
+});
+
+test('status exposes converter state, reason and formats and keeps the available flag', async () => {
+  const feeder = makeFeeder({ converter: { visionModel: 'gpt-5.6-luna' } });
+  feeder._started = true;
+  feeder.manifest = { getStats: () => ({ fileCount: 0, nodeCount: 0, pendingCount: 0 }) };
+  feeder.converter = {
+    healthSnapshot: () => ({
+      state: 'ready',
+      reason: 'not installed: docx',
+      remedy: 'python3 -m pip install "markitdown[docx]"',
+      formats: { pdf: true, docx: false },
+      runtime: { path: 'python3', source: 'system' },
+      available: true,
+    }),
+  };
+
+  const { converter } = await feeder.getStatus();
+
+  assert.equal(converter.available, true);
+  assert.equal(converter.visionModel, 'gpt-5.6-luna');
+  assert.equal(converter.state, 'ready');
+  assert.equal(converter.reason, 'not installed: docx');
+  assert.deepEqual(converter.formats, { pdf: true, docx: false });
+  assert.equal(converter.pendingConversionCount, 0);
+});
+
+test('a vision model error leaves the image waiting, never quarantined', async (t) => {
+  const feeder = makeFeeder();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-vision-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'shot.png');
+  fs.writeFileSync(filePath, 'png bytes', 'utf8');
+  let quarantineCalls = 0;
+  feeder.manifest = {
+    isStale: async () => true,
+    trackQuarantined: async () => { quarantineCalls += 1; },
+  };
+  feeder.converter = {
+    isNativeText: () => false,
+    isConvertible: () => true,
+    convertDetailed: async () => ({
+      ok: false,
+      status: 'converter_misconfigured',
+      retryable: true,
+      needs: 'vision',
+      error: "vision OCR (openai MiniMax-M3): 404 The model `MiniMax-M3` does not exist (model_not_found)",
+    }),
+  };
+
+  await feeder._processFile(filePath, 'screenshots');
+
+  assert.equal(quarantineCalls, 0);
+  const waiting = feeder._awaitingConversion.get(path.resolve(filePath));
+  assert.equal(waiting.status, 'converter_misconfigured');
+  assert.equal(waiting.needs, 'vision');
+});
+
+test('feeder start releases converter-fault quarantines and keeps the file\'s own', async (t) => {
+  const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-release-'));
+  const quarantine = (issue, extra = {}) => ({
+    hash: 'a'.repeat(64), label: 'shots', parseStatus: 'conversion_failed', issues: [issue],
+    structuralSignature: null, quarantinedAt: '2026-09-20T00:00:00.000Z', nodeIds: [], ...extra,
+  });
+  fs.writeFileSync(path.join(runPath, 'ingestion-manifest.json'), JSON.stringify({
+    '/w/shot-1.png': quarantine("openai.NotFoundError: Error code: 404 - {'error': {'code': 'model_not_found'}}"),
+    '/w/shot-2.png': quarantine("openai.NotFoundError: Error code: 404 - {'error': {'code': 'model_not_found'}}"),
+    '/w/broken.pdf': quarantine('pdfminer.pdfparser.PDFSyntaxError: No /Root object!'),
+    '/w/kept.png': quarantine('conversion produced empty text: kept.png', { nodeIds: ['n1'] }),
+  }));
+  const logs = [];
+  const feeder = makeFeeder({ compiler: { enabled: false } }, logs);
+  let scanned = false;
+  const scan = feeder._scanDirectory.bind(feeder);
+  feeder._scanDirectory = async (...args) => { scanned = true; return scan(...args); };
+  await feeder.start(runPath);
+  t.after(async () => {
+    await feeder.shutdown();
+    fs.rmSync(runPath, { recursive: true, force: true });
+  });
+
+  const deadline = Date.now() + 5000;
+  while (!scanned && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+
+  assert.equal(feeder.manifest.getEntry('/w/shot-1.png'), null);
+  assert.equal(feeder.manifest.getEntry('/w/shot-2.png'), null);
+  assert.equal(feeder.manifest.getEntry('/w/broken.pdf').parseStatus, 'conversion_failed');
+  assert.deepEqual(feeder.manifest.getEntry('/w/kept.png').nodeIds, ['n1'], 'entries with nodes are never released');
+  assert.equal(logs.find(entry => entry.message === 'Released converter-fault quarantines for re-evaluation').meta.count, 2);
+  const onDisk = JSON.parse(fs.readFileSync(path.join(runPath, 'ingestion-manifest.json'), 'utf8'));
+  assert.deepEqual(Object.keys(onDisk).sort(), ['/w/broken.pdf', '/w/kept.png']);
+});
+
 test('document feeder watcher leaves existing files to the explicit startup scan', () => {
   const feeder = makeFeeder();
 
@@ -197,7 +378,7 @@ for (const [name, Feeder] of [['Root', DocumentFeeder]]) {
     t.after(() => fs.rmSync(runPath, { recursive: true, force: true }));
     const feeder = new Feeder({
       memory: { embed: async () => null },
-      config: { maintenanceMode: true },
+      config: { maintenanceMode: true, additionalWatchPaths: [{ path: path.join(runPath, 'absent'), label: 'absent' }] },
       logger: { info() {}, warn() {}, debug() {}, error() {} },
     });
     let scans = 0;
@@ -206,6 +387,9 @@ for (const [name, Feeder] of [['Root', DocumentFeeder]]) {
     assert.equal(feeder.manifest != null, true);
     assert.equal(feeder._watchers.length, 0);
     assert.equal(feeder._flushTimer, null);
+    assert.equal(feeder._retryTimer, null);
+    assert.equal(feeder._retryMissingWatchPaths(), 0);
+    assert.equal(feeder._retryTimer, null);
     assert.equal(scans, 0);
     assert.equal((await feeder.getStatus()).maintenanceMode, true);
     await feeder.shutdown();
