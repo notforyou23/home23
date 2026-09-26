@@ -91,6 +91,19 @@ export function ownedWriterNames(name, { encoderRequired = false } = {}) {
   if (encoderRequired) names.push('home23-embedder');
   return names;
 }
+/** The order owned writers stop in. A resident engine's live-problems loop
+ * restarts its own dashboard, harness and shared services while the engine
+ * waits for agents during shutdown, so every engine stops first. The rest
+ * stop in reverse start order, which keeps home23-coordination (Core) last. */
+export function writerStopOrder(names) {
+  const engines = residentEngines(names);
+  return [...engines, ...(names || []).filter(name => !engines.includes(name)).reverse()];
+}
+/** Resident engines are the names whose own dashboard or harness is also listed. */
+export function residentEngines(names) {
+  const known = new Set(names || []);
+  return [...known].filter(name => known.has(`${name}-harness`) || known.has(`${name}-dash`));
+}
 
 const reason = (code, message, extra = {}) => ({ code, message, ...extra });
 const exists = file => { try { lstatSync(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };

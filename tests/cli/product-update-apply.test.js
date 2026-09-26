@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { installProductPayload, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
-import { applyProductUpdate, readUpdateJournal, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
-import { candidateCoordinationSchema, inspectCoordinationDatabase, inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, SUPPORTED_COORDINATION_SCHEMAS, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
+import { applyProductUpdate, quiesceWriters, readUpdateJournal, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
+import { candidateCoordinationSchema, inspectCoordinationDatabase, inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, SUPPORTED_COORDINATION_SCHEMAS, ownedWriterNames, writerStopOrder } from '../../cli/lib/product-update-inventory.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
 import { acquireHostLock } from '../../cli/lib/product-backup.js';
@@ -112,6 +112,51 @@ test('reviewed schema constants and writer names stay aligned with source', () =
   assert.equal(updateBlocksStart({ phase: 'selected', ownerToken: 'token' }, 'token'), false);
   assert.equal(updateBlocksStart({ phase: 'committed' }), false);
   assert.equal(updateBlocksStart({ phase: 'rolled_back' }), false);
+});
+
+test('writer stop order stops every resident engine first and coordination last', () => {
+  // The live two-resident inventory: resident writers deduplicated, then continuing services.
+  const names = [...new Set([...ownedWriterNames('jerry'), ...ownedWriterNames('forrest')]), 'home23-chrome-cdp', 'home23-screenlogic'];
+  const order = writerStopOrder(names);
+  assert.deepEqual(order.slice(0, 2), ['home23-jerry', 'home23-forrest']);
+  assert.equal(order.at(-1), 'home23-coordination');
+  assert.deepEqual([...order].sort(), [...names].sort());
+  for (const resident of ['jerry', 'forrest']) {
+    for (const sidecar of ['-dash', '-mcp', '-harness', '-seed', '-shipper', '-house-sense']) {
+      assert.ok(order.indexOf(`home23-${resident}`) < order.indexOf(`home23-${resident}${sidecar}`), `${resident}${sidecar}`);
+    }
+  }
+  assert.ok(order.indexOf('home23-chrome-cdp') > order.indexOf('home23-forrest'));
+});
+
+test('quiesce stops engines before their dashboards and re-stops a writer restarted during the stop', async t => {
+  const home = tempRoot(t);
+  const names = [...new Set([...ownedWriterNames('jerry'), ...ownedWriterNames('forrest')]), 'home23-chrome-cdp'];
+  const status = new Map(names.map(name => [name, 'online']));
+  const stops = [];
+  let lateRestart = false;
+  const list = async () => [...status].map(([name, value]) => ({ name, status: value }));
+  const exec = async (_node, args) => {
+    const name = args[2];
+    stops.push(name);
+    // A still-running engine's watchdog restarts its dashboard the moment it stops.
+    if (name.endsWith('-dash') && status.get(name.slice(0, -5)) === 'online') { status.set(name, 'online'); return; }
+    status.set(name, 'stopped');
+    if (lateRestart && name === 'home23-coordination') status.set('home23-jerry-harness', 'online');
+    return {};
+  };
+  const first = await quiesceWriters(home, names, { exec, list });
+  assert.deepEqual(new Set(stops.slice(0, 2)), new Set(['home23-jerry', 'home23-forrest']));
+  assert.equal(stops.at(-1), 'home23-coordination');
+  assert.deepEqual(first.restopped, []);
+  assert.equal(first.processes.some(row => row.status !== 'stopped'), false);
+
+  for (const name of names) status.set(name, 'online');
+  stops.length = 0; lateRestart = true;
+  const second = await quiesceWriters(home, names, { exec, list });
+  assert.deepEqual(second.restopped, ['home23-jerry-harness']);
+  assert.deepEqual(stops.slice(-1), ['home23-jerry-harness']);
+  assert.equal(second.processes.some(row => row.status !== 'stopped'), false);
 });
 
 test('the reviewed v21 migration is the only accepted schema asset transition', async t => {

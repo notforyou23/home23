@@ -10,7 +10,7 @@ import { absoluteHome, privateDirectory, productEnvironment, readPrivateJSON } f
 import { acquireInstallLock, isOsMetadataPath, isStateBearingSoftwarePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
-import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath } from './product-update-inventory.js';
+import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath, residentEngines, writerStopOrder } from './product-update-inventory.js';
 
 const executeFile = promisify(execFile);
 const SCHEMA = 'home23.product-update.v1';
@@ -275,13 +275,30 @@ async function defaultListProcesses(home) {
     throw Object.assign(new Error('Home process inventory is unavailable. No package files were changed.'), { code: 'process_inventory_unavailable' });
   }
 }
-async function defaultQuiesce(home, names) {
+/** Gracefully stops owned writers. Engines stop first and together: while one
+ * waits for its agents it still remediates, and would restart a dashboard or
+ * harness already stopped. With every engine down, nothing restarts the rest;
+ * one more pass stops any writer that was restarted during the first. */
+export async function quiesceWriters(home, names, { exec = executeFile, list = defaultListProcesses } = {}) {
   const node = join(home, 'bin', 'node'), pm2 = join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'), env = productEnvironment(home);
-  for (const name of [...names].reverse()) {
-    try { await executeFile(node, [pm2, 'stop', name, '--silent'], { cwd: join(home, 'app'), env, timeout: 240000, maxBuffer: 8 * 1024 * 1024 }); }
+  const stop = async name => {
+    try { await exec(node, [pm2, 'stop', name, '--silent'], { cwd: join(home, 'app'), env, timeout: 240000, maxBuffer: 8 * 1024 * 1024 }); }
     catch { /* An absent name is not a running writer. */ }
-  }
-  return defaultListProcesses(home);
+  };
+  const order = writerStopOrder(names), engines = residentEngines(names);
+  await Promise.allSettled(engines.map(stop));
+  for (const name of order.filter(name => !engines.includes(name))) await stop(name);
+  let processes = await list(home);
+  const restopped = order.filter(name => processes.some(row => row.name === name && BUSY.has(row.status)));
+  if (!restopped.length) return { processes, restopped };
+  for (const name of restopped) await stop(name);
+  processes = await list(home);
+  return { processes, restopped };
+}
+/** An injected quiesce may return the final rows alone. */
+async function quiesce(home, names, dependencies) {
+  const result = await (dependencies.quiesce || quiesceWriters)(home, names);
+  return Array.isArray(result) ? { processes: result, restopped: [] } : { processes: result?.processes || [], restopped: result?.restopped || [] };
 }
 async function defaultStart(home, journal) {
   const { runHostAction } = await import(pathToFileURL(join(home, 'app/cli/lib/product-host.js')).href);
@@ -734,7 +751,10 @@ async function mutate(journal, dependencies, verify) {
     if (classified.unknown.length) return { done: deferred(home, 'unknown_writer', 'An unexpected process is using this home. Wait for it to exit before updating.', journal) };
     if (classified.busy.length) {
       if (!journal.admit) return { done: deferred(home, 'busy', 'This home is still working. Retry when it is quiet, or explicitly admit maintenance. Nothing was forced to stop.', journal) };
-      processes = await (dependencies.quiesce || defaultQuiesce)(home, names);
+      const stopped = await quiesce(home, names, dependencies);
+      processes = stopped.processes;
+      // Writers restarted during the stop and stopped again, kept for diagnosis.
+      if (stopped.restopped.length) journal = { ...journal, quiesceRestopped: stopped.restopped };
       classified = classifyProcesses(processes, names);
       if (classified.busy.length) {
         journal = await commitPhase(file, { ...journal, phase: 'recovery_required', reasons: [{ code: 'writer_stop_incomplete', message: 'Owned writers remain active after a graceful stop. The home was not restarted or switched; inspect the partly stopped services before recovery.' }] }, dependencies);
@@ -830,7 +850,7 @@ async function finish(journal, dependencies, verify) {
   const busy = async () => classifyProcesses(await list(home), journal.writerNames || []).busy.length > 0;
   const fence = async () => {
     if (!(await busy())) return true;
-    await (dependencies.quiesce || defaultQuiesce)(home, journal.writerNames || []);
+    await quiesce(home, journal.writerNames || [], dependencies);
     return !(await busy());
   };
   async function rollback(reason) {

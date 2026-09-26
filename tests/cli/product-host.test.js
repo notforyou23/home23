@@ -11,6 +11,7 @@ import { choosePortPlan, privateJSON, productEnvironment, providerEndpoint, sock
 import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses } from '../../cli/lib/product-host.js';
 import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
+import { writerStopOrder } from '../../cli/lib/product-update-inventory.js';
 import { writeProductManifest, installProductPayload } from '../../cli/lib/product-payload.js';
 
 const memorySource = createRequire(import.meta.url)('../../shared/memory-source');
@@ -72,7 +73,10 @@ test('model endpoint excludes credentials and unsupported transports', () => {
 test('definitions resolve the exact bundled Node without PM2 shell rewriting and retain bounded recovery', t => {
   const homeRoot = home(t);
   const result = productDefinitions([...definitions(homeRoot), { name: 'home23-screenlogic' }], homeRoot, 'milo');
-  assert.equal(result.length, 8);
+  // A resident without an instance config runs with substrate off: coordination,
+  // engine, dash, mcp, harness and evobrew. No seed, shipper or observatory.
+  assert.equal(result.length, 6);
+  assert.deepEqual(result.map(app => app.name), ownedProcessNames('milo', { home23Root: homeRoot }));
   assert.ok(result.every(app => app.interpreter === 'none' && path.resolve(app.cwd, app.script) === path.join(homeRoot, 'bin/node')
     && !/\s/.test(app.script) && app.autorestart && app.max_restarts === 5));
   assert.ok(result.every(app => app.args.includes(path.join(homeRoot, 'app/dist/home.js'))));
@@ -112,12 +116,40 @@ test('explicit stop is exact, durable, preserves data, and unexpected processes 
     signalProcess() { throw new Error('unexpected'); },
   });
   assert.equal(result.status, 'stopped'); assert.equal(result.desiredRunning, false);
-  assert.equal(calls.filter(args => args[0] === 'stop').length, 8);
+  const owned = ownedProcessNames('milo', { home23Root: homeRoot });
+  const stops = calls.filter(args => args[0] === 'stop').map(args => args[1]);
+  // The engine stops before the dashboard and harness it would otherwise restart; Core stops last.
+  assert.deepEqual(stops, writerStopOrder(owned));
+  assert.equal(stops[0], 'home23-milo'); assert.equal(stops.at(-1), 'home23-coordination');
   assert.ok(calls.every(args => !args.includes('all')));
   assert.equal(JSON.parse(fs.readFileSync(path.join(homeRoot, '.home23-host.json'))).birth.home.id, state.birth.home.id);
   rows.push(row(homeRoot, 'someone-else'));
   await assert.rejects(runHostAction('stop', { homeRoot }, { execute }), /unexpected/);
-  assert.equal(calls.filter(args => args[0] === 'stop').length, 8);
+  assert.equal(calls.filter(args => args[0] === 'stop').length, owned.length);
+});
+
+test('explicit stop stops once more a dashboard its engine restarted during the stop', async t => {
+  const { homeRoot } = await prepared(t);
+  const rows = ownedProcessNames('milo').map(name => row(homeRoot, name));
+  const stops = [];
+  const status = name => rows.find(item => item.name === name).pm2_env.status;
+  const execute = async (_node, args) => {
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'stop') {
+      stops.push(args[2]);
+      rows.find(item => item.name === args[2]).pm2_env.status = 'stopped';
+      // The stopping engine's watchdog restarts its dashboard once, late.
+      if (args[2] === 'home23-coordination' && stops.filter(name => name === 'home23-milo-dash').length === 1) {
+        rows.find(item => item.name === 'home23-milo-dash').pm2_env.status = 'online';
+      }
+    }
+    return { stdout: '' };
+  };
+  const result = await runHostAction('stop', { homeRoot }, { execute });
+  assert.equal(result.status, 'stopped');
+  assert.deepEqual(stops.slice(-1), ['home23-milo-dash']);
+  assert.equal(status('home23-milo-dash'), 'stopped');
+  assert.ok(ownedProcessNames('milo').every(name => status(name) === 'stopped'));
 });
 
 test('start persists intent and returns starting until readiness succeeds', async t => {
@@ -130,7 +162,25 @@ test('start persists intent and returns starting until readiness succeeds', asyn
   };
   const result = await runHostAction('start', { homeRoot }, { execute, definitions: () => productDefinitions(definitions(homeRoot), homeRoot, 'milo'), readinessWaitMs: 0, probeReadiness: async () => ({ ready: false, issues: ['waiting for signed resident'] }) });
   assert.equal(result.status, 'starting'); assert.equal(result.desiredRunning, true);
-  assert.equal(calls.filter(args => args[0] === 'start').length, 8);
+  assert.deepEqual(calls.filter(args => args[0] === 'start').map(args => args[args.indexOf('--only') + 1]), ownedProcessNames('milo', { home23Root: homeRoot }));
+});
+
+test('definitions and Start include seed, shipper and seed-observatory when the resident enables substrate', async t => {
+  const { homeRoot } = await prepared(t), rows = [], starts = [];
+  fs.mkdirSync(path.join(homeRoot, 'app/instances/milo'), { recursive: true });
+  fs.writeFileSync(path.join(homeRoot, 'app/instances/milo/config.yaml'), 'substrate:\n  enabled: true\n');
+  const expected = ['home23-coordination', 'home23-milo', 'home23-milo-dash', 'home23-milo-mcp', 'home23-milo-harness',
+    'home23-milo-seed', 'home23-milo-shipper', 'home23-seed-observatory', 'home23-evobrew'];
+  const apps = expected.map(name => ({ name, script: 'dist/home.js', cwd: path.join(homeRoot, 'app'), env: {}, node_args: '', args: [] }));
+  assert.deepEqual(productDefinitions(apps, homeRoot, 'milo').map(app => app.name), expected);
+  const execute = async (_node, args) => {
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'start') { const name = args[args.indexOf('--only') + 1]; starts.push(name); rows.push(row(homeRoot, name)); }
+    return { stdout: '' };
+  };
+  const result = await runHostAction('start', { homeRoot }, { execute, definitions: () => productDefinitions(apps, homeRoot, 'milo'), readinessWaitMs: 0, probeReadiness: async () => ({ ready: false, issues: ['waiting for signed resident'] }) });
+  assert.equal(result.status, 'starting');
+  assert.deepEqual(starts, expected);
 });
 
 test('Start reports a restarting service as failed instead of starting', async t => {
@@ -427,7 +477,7 @@ test('status finishes only the first pairing admitted by Start after the startup
   rows.find(item => item.name === 'home23-evobrew').pm2_env.status = 'online';
   const ready = await runHostAction('status', { homeRoot: f.homeRoot }, dependencies);
   assert.equal(ready.status, 'ready');
-  assert.equal(starts.length, 8);
+  assert.deepEqual(starts, ownedProcessNames('milo', { home23Root: f.homeRoot }));
   assert.equal(f.repository.devices.size, 1);
   assert.equal(f.readSession().initialPairingAuthorized, undefined);
   assert.equal(f.calls.find(call => call.route === '/api/v1/pairing/sessions').key, pending.pending.issueKey);

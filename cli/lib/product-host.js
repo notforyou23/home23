@@ -9,6 +9,7 @@ import { readMoveFence } from './product-backup.js';
 import { detectForeignBindings } from './product-foreign-bindings.js';
 import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { inspectMemorySeal, inspectProductMemory } from './product-memory.js';
+import { writerStopOrder } from './product-update-inventory.js';
 import {
   OWNED_EMBEDDER_PROCESS, OWNED_PROFILE_ID, OWNED_RECIPE_HASH,
   beginSemanticPrepare, encoderRequiredFor, ensureOwnedEncoderStopped, probeOwnedReady, semanticStatusView,
@@ -772,7 +773,10 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       state = { ...state, desiredRunning: false, phase: 'stopped' };
       privateJSON(statePath(homeRoot), state);
       await authorizeInitialHostPairing(homeRoot, false);
-      for (const name of [...names].reverse()) {
+      // Engines first: a stopping engine's live-problems loop restarts its own
+      // dashboard and harness, so they stop only once no engine can.
+      const order = writerStopOrder(names);
+      for (const name of order) {
         const row = processes.find(item => item.name === name);
         if (row?.status === 'stopped') continue;
         try {
@@ -781,6 +785,9 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
           if (row) throw error;
         }
       }
+      // A writer restarted during that pass is stopped once more; no engine remains to restart it.
+      const restarted = new Set((await processDriver.list()).filter(row => row.pm2_env?.status !== 'stopped').map(row => row.name));
+      for (const name of order.filter(name => restarted.has(name))) await processDriver.pm2(['stop', name, '--silent']);
       if (encoderRequiredFor(state)) {
         try {
           await ensureOwnedEncoderStopped(state, {
