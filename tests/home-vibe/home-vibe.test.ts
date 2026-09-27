@@ -60,6 +60,7 @@ test('only a completed resident turn publishes with exact feed and ledger proven
   assert.equal(events[0].event_type, 'ExecutionOutcomeObserved');
   assert.equal(events[0].payload.verificationStatus, 'verified');
   assert.equal(events[0].payload.turnId, 'turn-1');
+  assert.match(events[0].payload.detail, /Authored Vibe publication text \(not a verified family fact\): Jerry sees a calm morning\./);
 });
 
 test('failed generation retains the last successful text and authorship with stale error state', () => {
@@ -93,6 +94,21 @@ test('same-run retry repairs a missing ledger receipt and clears failure without
   assert.equal(readFileSync(ledgerPath, 'utf8').trim().split('\n').length, 1);
   publishHomeVibe(input);
   assert.equal(readFileSync(ledgerPath, 'utf8').trim().split('\n').length, 1);
+});
+
+test('next scheduled run repairs the previous published turn before replacing its feed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home-vibe-next-run-'));
+  const path = join(dir, 'feed.json');
+  const ledgerPath = join(dir, 'ledger.jsonl');
+  mkdirSync(ledgerPath);
+  assert.throws(() => publishHomeVibe({ path, ledgerPath, config, text: 'First Vibe.', turnId: 'turn-1', runId: 'run-1' }));
+  failHomeVibe(path, config, 'receipt unavailable');
+  rmSync(ledgerPath, { recursive: true });
+  const next = publishHomeVibe({ path, ledgerPath, config, text: 'Second Vibe.', turnId: 'turn-2', runId: 'run-2' });
+  assert.equal(next.section.data?.runId, 'run-2');
+  assert.equal(next.history.length, 2);
+  const events = readFileSync(ledgerPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(events.map(event => event.event_id), ['home-vibe:run-1', 'home-vibe:run-2']);
 });
 
 test('boot job preserves owner edits and scheduler rejects overlapping manual refreshes', async () => {

@@ -179,6 +179,7 @@ function recordPublicationReceipt(feedPath: string, ledgerPath: string, entry: H
       payload: { schema: 'home23.execution-outcome.v1', executionKind: 'action', executionId: entry.runId,
         status: 'completed', declaredStatus: 'completed', verificationStatus: 'verified', taskOutcomeVerified: true,
         head: `${entry.authorName} published a household Vibe; exact feed readback matched the completed resident turn.`,
+        detail: `Authored Vibe publication text (not a verified family fact): ${entry.text.slice(0, 1200)}`,
         sourceRef: `home-vibe:${entry.runId}`, evidenceRefs: [`home-vibe.feed:${entry.runId}`, `resident.turn:${entry.turnId}`],
         authorAgent: entry.authorAgent, turnId: entry.turnId, runId: entry.runId } };
     mkdirSync(dirname(ledgerPath), { recursive: true, mode: 0o700 });
