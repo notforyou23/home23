@@ -25,6 +25,7 @@ export async function executeTrackedTurn(
     coordinationWorkDestination?: CoordinationWorkDestination;
     parentWorkId?: string;
     onDurableStart?: (start: DurableTurnStart) => void | Promise<void>;
+    suppressCompletionPush?: boolean;
     delegatedContext?: { systemPrompt: string; workspacePath: string };
   } = {},
 ): Promise<{ turnId: string; response: AgentResponse }> {
@@ -42,6 +43,7 @@ export async function executeTrackedTurn(
     ...(options.coordinationWorkDestination ? { coordinationWorkDestination: options.coordinationWorkDestination } : {}),
     ...(options.parentWorkId ? { parentWorkId: options.parentWorkId } : {}),
     ...(options.onDurableStart ? { onDurableStart: options.onDurableStart } : {}),
+    ...(options.suppressCompletionPush ? { suppressCompletionPush: true } : {}),
   });
   const cancel = () => agent.stop?.(chatId, started.turnId);
   options.signal?.addEventListener('abort', cancel, { once: true });

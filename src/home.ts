@@ -121,6 +121,7 @@ import {
   reviewBoundRecurringCronJobsForAgency,
 } from './agency/cron-bootcamp.js';
 import { mergeInstallCronJobs, shouldLoadInstallCronJobs } from './install-cron-jobs.js';
+import { authorizeHomeVibeRefresh, failHomeVibe, HOME_VIBE_JOB_ID, homeVibePrompt, loadAvailableHomeVibeConfig, publishHomeVibe, readHomeVibeFeed, reconcileHomeVibeJob } from './home-vibe/index.js';
 
 // ─── Constants ──────────────────────────────────────────────
 
@@ -232,6 +233,9 @@ async function main(): Promise<void> {
 
   // ── Load config ──
   const config = loadConfig(AGENT_NAME);
+  let homeVibeConfig = loadAvailableHomeVibeConfig(join(PROJECT_ROOT, 'config', 'home-vibe.json'), AGENT_NAME,
+    error => console.error(`[home-vibe] ${error}`));
+  const homeVibeFeedPath = join(WORKSPACE_PATH, 'home-vibe', 'feed.json');
   console.log(`[home] Config loaded for agent: ${AGENT_NAME}`);
 
   // ── Resolve ports and ENGINE_BASE from config ──
@@ -882,6 +886,10 @@ async function main(): Promise<void> {
 
       try {
         if (job.payload.kind === 'agentTurn') {
+          const isHomeVibe = job.payload.publication === 'homeVibe';
+          if (isHomeVibe && (!homeVibeConfig || job.id !== HOME_VIBE_JOB_ID || joined || job.payload.channelId)) {
+            throw new Error('Home Vibe publication is not configured for this isolated resident job');
+          }
           if (!joined && execution?.canonicalTurn) return runScheduledChannelTurn(execution.canonicalTurn,execution,input=>{
             if(!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
             return residentCoordinationHarness.scheduledTurn(input);
@@ -891,7 +899,14 @@ async function main(): Promise<void> {
 
           // Resolve message: prefer messagePath if set (and readable), else inline message.
           let resolvedMessage = job.payload.message ?? '';
-          if (job.payload.messagePath) {
+          let homeVibeSourceUpdatedAt: string | undefined;
+          if (isHomeVibe) {
+            const previousPublication = readHomeVibeFeed(homeVibeFeedPath)?.section.data?.text;
+            const context = await homeVibePrompt(homeVibeConfig!, caller?.abortSignal, previousPublication);
+            resolvedMessage = context.prompt;
+            homeVibeSourceUpdatedAt = context.sourceUpdatedAt;
+          }
+          if (!isHomeVibe && job.payload.messagePath) {
             const abs = job.payload.messagePath.startsWith('/')
               ? job.payload.messagePath
               : resolve(PROJECT_ROOT, job.payload.messagePath);
@@ -939,7 +954,7 @@ async function main(): Promise<void> {
             : null;
           let jobResult: JobResult | undefined;
           try {
-            const { response: result } = await executeTrackedTurn(
+            const { turnId, response: result } = await executeTrackedTurn(
               agent,
               cronChatId,
               resolvedMessage,
@@ -953,13 +968,21 @@ async function main(): Promise<void> {
                 settlementTimeoutMs: timeoutMs,
                 ...(cronModelOverride ? { modelOverride: cronModelOverride } : {}),
                 ...(job.payload.effort ? { effort: job.payload.effort } : {}),
+                ...(isHomeVibe ? { suppressCompletionPush: true } : {}),
               },
             );
             const durationMs = Date.now() - startMs;
 
             if (result.terminalStatus && result.terminalStatus !== 'complete') throw new Error(`Scheduled turn ${result.terminalStatus}`);
             caller?.abortSignal?.throwIfAborted();
-            jobResult = { status: 'ok', response: result.text, durationMs, media: result.media };
+            if (isHomeVibe) {
+              if (!execution?.runId) throw new Error('Home Vibe publication requires a scheduler run ID');
+              publishHomeVibe({ path: homeVibeFeedPath, ledgerPath: join(BRAIN_DIR, 'event-ledger.jsonl'),
+                config: homeVibeConfig!, text: result.text, turnId, runId: execution.runId,
+                sourceUpdatedAt: homeVibeSourceUpdatedAt });
+            }
+            jobResult = { status: 'ok', response: result.text, durationMs, media: result.media,
+              ...(isHomeVibe ? { semanticStatus: 'satisfied' as const, artifacts: [homeVibeFeedPath] } : {}) };
             if (joined) return jobResult;
             const deliveryOutcome = await deliverCronJobResult(job, jobResult, execution?.runId);
             if (deliveryOutcome.retryEligible) {
@@ -1055,6 +1078,10 @@ async function main(): Promise<void> {
       } catch (err) {
         const durationMs = Date.now() - startMs;
         const errorMsg = err instanceof Error ? err.message : String(err);
+        if (job.payload.kind === 'agentTurn' && job.payload.publication === 'homeVibe' && homeVibeConfig) {
+          try { failHomeVibe(homeVibeFeedPath, homeVibeConfig, errorMsg); }
+          catch (feedError) { console.error('[home-vibe] Could not record failure:', feedError); }
+        }
         console.error(`[scheduler] Job ${job.id} error:`, errorMsg);
         const failure: JobResult = { status: 'error', error: errorMsg, durationMs };
         if (!joined) await deliverCronJobResult(job, failure, execution?.runId);
@@ -1063,6 +1090,7 @@ async function main(): Promise<void> {
     };
 
     scheduler = new CronScheduler(config.scheduler, cronHandler, RUNTIME_DIR);
+    homeVibeConfig = reconcileHomeVibeJob(scheduler, homeVibeConfig, error => console.error(`[home-vibe] ${error}`));
 
     // Load external cron jobs from config dir if file exists
     const externalJobsPath = join(PROJECT_ROOT, 'config', 'cron-jobs.json');
@@ -1660,6 +1688,32 @@ async function main(): Promise<void> {
   bridgeApp.post('/api/chat', createEvobrewChatHandler(bridgeConfig));
   bridgeApp.post('/api/stop', createStopHandler(bridgeConfig));
   bridgeApp.get('/health', createHealthHandler({ agentName: AGENT_NAME, agent }));
+
+  // The web editor's manual Generate uses the same scheduled resident job.
+  // Its bearer token is an install-local capability, separate from chat auth.
+  bridgeApp.post('/api/home-vibe/refresh', async (req: any, res: any) => {
+    if (!homeVibeConfig?.refreshToken || !scheduler?.getJob(HOME_VIBE_JOB_ID)) {
+      res.status(503).json({ error: 'Home Vibe refresh is unavailable' });
+      return;
+    }
+    if (!authorizeHomeVibeRefresh(homeVibeConfig, req.header('authorization'))) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    const result = await scheduler.runJobNow(HOME_VIBE_JOB_ID);
+    if (result.status !== 'ok') {
+      res.status(result.error?.includes('already has an active run') ? 409 : 503)
+        .json({ error: result.error ?? 'Home Vibe refresh failed' });
+      return;
+    }
+    try {
+      const feed = readHomeVibeFeed(homeVibeFeedPath);
+      if (!feed || feed.section.status !== 'ok') throw new Error('Home Vibe feed not published');
+      res.json(feed);
+    } catch (error) {
+      res.status(503).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
 
   bridgeApp.get('/api/house/state', async (_req: any, res: any) => {
     const haUrl = config.homeAssistant?.url?.replace(/\/+$/, '');

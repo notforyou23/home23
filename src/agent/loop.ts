@@ -1034,6 +1034,7 @@ export class AgentLoop {
       parentWorkId?: string;
       delegationOrigin?: import('./types.js').DelegationTurnOrigin;
       onDurableStart?: (start: import('./types.js').DurableTurnStart) => void | Promise<void>;
+      suppressCompletionPush?: boolean;
     } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
     const historyBackfill = parseHistoricalContext(opts.historyBackfill, opts.coordinationOrigin?.originMessageId);
@@ -1307,7 +1308,7 @@ export class AgentLoop {
         // Coordination turns use a synthetic resident chat id and do not own
         // the canonical product Message yet. Their notification is emitted by
         // the post-commit Connected Agents path, never this legacy hook.
-        if (this.pusher && !opts.coordinationOrigin) {
+        if (this.pusher && !opts.coordinationOrigin && !opts.suppressCompletionPush) {
           this.pusher.notifyTurnComplete({
             chatId,
             turnId,
