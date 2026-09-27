@@ -22,6 +22,7 @@ import type {
   CellDispositions,
   CellStatus,
   SourceEvent,
+  RealityRef,
 } from './types.js';
 import { CONTINUOUS_STATE_DIM, INITIAL_CELL_IDS, DEFAULT_ANATOMY } from './types.js';
 import type { AnatomyCellSpec } from './types.js';
@@ -200,6 +201,18 @@ export function applyMetabolicTransition(
   // source), the ref carries it too — complete — so a recruited mind reads
   // the life, not just its reference metadata.
   const head = event.payload['head'];
+  const outcome = event.payload;
+  const executionOutcome: RealityRef['executionOutcome'] = event.sourceAuthority === 'home23.event-ledger'
+    && outcome['schema'] === 'home23.execution-outcome.v1' && outcome['event_type'] === 'ExecutionOutcomeObserved'
+    && (outcome['executionKind'] === 'action' || outcome['executionKind'] === 'work')
+    && typeof outcome['receiptEventId'] === 'string' && outcome['receiptEventId'].length > 0
+    && typeof outcome['status'] === 'string'
+    && Array.isArray(outcome['evidenceRefs']) && outcome['evidenceRefs'].some(ref => typeof ref === 'string' && ref.length > 0)
+    ? { schema: 'home23.execution-outcome.v1' as const, executionKind: outcome['executionKind'],
+        status: outcome['status'], verificationStatus: outcome['verificationStatus'] === 'verified' ? 'verified' as const : 'unknown' as const,
+        receiptEventId: outcome['receiptEventId'],
+        evidenceRefs: outcome['evidenceRefs'].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0).slice(0, 12),
+      } : undefined;
   cell.realityRefs.push({
     refId: event.eventId,
     sourceAuthority: event.sourceAuthority,
@@ -208,6 +221,7 @@ export function applyMetabolicTransition(
     confidence: event.category === 'correction' ? 1 : 0.8,
     flag: 'COLLECTED',
     ...(typeof head === 'string' && head.length > 0 ? { head } : {}),
+    ...(executionOutcome ? { executionOutcome } : {}),
   });
   if (cell.realityRefs.length > MAX_CELL_REALITY_REFS) {
     cell.realityRefs.splice(0, cell.realityRefs.length - MAX_CELL_REALITY_REFS);

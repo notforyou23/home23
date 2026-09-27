@@ -207,3 +207,43 @@ test('receipted growth proposals materialize as readable forms', (t) => {
   assert.ok(body.includes('rollback'), 'the form shows the rollback');
   assert.ok(body.includes('nothing applies without an operator'));
 });
+
+
+test('a receipted intention closure closes the manifest while preserving the original inquiry document', async t => {
+  const { stateDir, formsDir } = makeDirs(t);
+  const seed = SeedProcess.initialize(stateDir, undefined, { reservoirSeed: 95, name: 'form-test' });
+  liveALittle(seed);
+  const outcome = seed.workspaceCycle('2026-08-07T20:09:00.000Z');
+  assert.equal(outcome.kind, 'workspace');
+  if (outcome.kind !== 'workspace') return;
+  await seed.recruitLobe(intentionLobe('follow a question about musical anticipation'), outcome.packet, '2026-08-07T20:10:00.000Z');
+  const cells = checkpointCells(seed, stateDir);
+  const records = new SeedLedger(stateDir).readAll();
+  const first = materializeForms(formsDir, 'form-test', cells, records).created[0]!;
+  const original = readFileSync(join(formsDir, first.path), 'utf8');
+  const cell = cells.find(c => c.id === first.cellId)!;
+  const tension = cell.intentions[0]!;
+  const close: LobeAdapter = { ...intentionLobe('unused'), invoke: async p => ({
+    ...await intentionLobe('unused').invoke(p), stateDeltas: [{ cellId: cell.id, field: 'intentions.resolve',
+      authority: 'propose', delta: { tensionId: tension.tensionId, reason: 'Let this question rest until another listening experience changes it.' } }],
+  }) };
+  const resolution = await seed.recruitLobe(close, outcome.packet, '2026-08-07T21:00:00.000Z');
+  const closedCells = checkpointCells(seed, stateDir);
+  const closedRecords = new SeedLedger(stateDir).readAll();
+  const hash = seed.getState().stateHash;
+  const result = materializeForms(formsDir, 'form-test', closedCells, closedRecords);
+  assert.equal(result.closed.length, 1);
+  assert.equal(result.closed[0]?.status, 'closed');
+  assert.ok(result.closed[0]?.lineageSeqs.includes(resolution.seq));
+  assert.equal(readManifest(formsDir)[0]?.status, 'closed');
+  assert.equal(readFileSync(join(formsDir, first.path), 'utf8'), original, 'the original expression remains history');
+  assert.match(readFileSync(join(formsDir, result.closed[0]!.closurePath!), 'utf8'), /Let this question rest/);
+  assert.equal(seed.getState().stateHash, hash, 'projection never changes canonical Seed state');
+  assert.equal(materializeForms(formsDir, 'form-test', closedCells, closedRecords).closed.length, 0);
+
+  await seed.recruitLobe(intentionLobe(tension.description), outcome.packet, '2026-08-08T21:00:00.000Z');
+  const renewed = materializeForms(formsDir, 'form-test', checkpointCells(seed, stateDir), new SeedLedger(stateDir).readAll());
+  assert.equal(renewed.created.length, 1);
+  assert.notEqual(renewed.created[0]?.formId, first.formId, 'a later exploration is a new occurrence, not a resurrected historical form');
+  assert.equal(readManifest(formsDir).filter(f => f.status === 'closed').length, 1);
+});

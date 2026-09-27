@@ -15,6 +15,7 @@
 'use strict';
 
 const path = require('path');
+const { createMemoryAuthorityResolver, projectMemoryAuthority } = require('../../../shared/memory-authority.cjs');
 
 const DEFAULT_BUDGET = {
   maxTokensIn: 10000,
@@ -298,11 +299,18 @@ function toPgsGraph(memory, focusNodes, opts = {}) {
   }
 
   const nodes = [];
-  for (const [id, node] of memory.nodes.entries()) {
+  const resolver = createMemoryAuthorityResolver({ intent: 'general', authorityCandidates: memory.nodes.values() });
+  for (const [id, sourceNode] of memory.nodes.entries()) {
     if (!allowedNodeIds.has(id)) continue;
+    const node = resolver.apply([sourceNode])[0];
+    const authority = projectMemoryAuthority(node);
+    const status = node.supersessionEvidence ? `; SUPERSEDED by ${node.supersessionEvidence.correctionNodeId}; not current fact`
+      : node.closureEvidence ? `; CLOSED by ${node.closureEvidence.closureNodeId}; not current fact` : '';
+    const label = `[${authority.retrievalDomain}; ${authority.authorityClass}${status}; material, not automatic current-state proof]`;
     nodes.push({
       id,
-      concept: typeof node.concept === 'string' ? node.concept : String(node.concept || ''),
+      concept: `${label}\n${typeof node.concept === 'string' ? node.concept : String(node.concept || '')}`,
+      authority,
       embedding: node.embedding && typeof node.embedding.length === 'number' ? Array.from(node.embedding) : undefined,
       tag: node.tag || undefined,
     });
@@ -371,7 +379,7 @@ function makeSweepProvider(unifiedClient) {
       const response = await unifiedClient.generate({
         component: 'pgsSweep',
         purpose: 'partition',
-        instructions: opts.instructions || '',
+        instructions: `${opts.instructions || ''}\nPreserve memory authority and correction labels in your answer. Explore associations without turning narrative, history, superseded claims, or closed incidents into verified current facts. Distinguish a tentative connection from supporting evidence.`,
         messages,
         maxTokens: opts.maxTokens || 2000,
         temperature: 0.3,
@@ -394,7 +402,7 @@ function makeSynthesisProvider(unifiedClient) {
       const response = await unifiedClient.generate({
         component: 'pgsSynthesis',
         purpose: 'synthesize',
-        instructions: opts.instructions || '',
+        instructions: `${opts.instructions || ''}\nPreserve memory authority and correction labels in your answer. Explore associations without turning narrative, history, superseded claims, or closed incidents into verified current facts. Distinguish a tentative connection from supporting evidence.`,
         messages,
         maxTokens: opts.maxTokens || 3000,
         temperature: 0.4,

@@ -254,13 +254,13 @@ function relLine(i: number, type: string, ts: string): string {
   });
 }
 
-function workerLine(i: number, status: string, finishedAt: string): string {
+function workerLine(i: number, status: string, finishedAt: string, verifierStatus = 'unknown'): string {
   return JSON.stringify({
     schema: 'home23.worker-run-memory.v1',
     runId: `wr_test_${i}`,
     worker: 'parity',
     status,
-    verifierStatus: 'unknown',
+    verifierStatus,
     startedAt: finishedAt,
     finishedAt,
     summary: 'fixture',
@@ -281,11 +281,11 @@ test('relationship mapper: corrections are corrections, threads are observations
   assert.equal(events[1]?.category, 'observation');
 });
 
-test('worker-runs mapper: failures/blocked teach, successes corroborate', (t) => {
+test('worker-runs mapper: failures/blocked teach, verified successes corroborate', (t) => {
   const srcDir = makeDir(t, 'wr-src');
   const stateDir = makeDir(t, 'wr-state');
   const sourcePath = join(srcDir, 'worker-runs.jsonl');
-  writeFileSync(sourcePath, `${workerLine(0, 'blocked', '2026-08-07T10:00:00.000Z')}\n${workerLine(1, 'success', '2026-08-07T10:01:00.000Z')}\n`, 'utf-8');
+  writeFileSync(sourcePath, `${workerLine(0, 'blocked', '2026-08-07T10:00:00.000Z')}\n${workerLine(1, 'success', '2026-08-07T10:01:00.000Z', 'pass')}\n`, 'utf-8');
 
   const adapter = new EventLedgerTailAdapter({ sourcePath, cursorDir: stateDir, sourceType: 'worker-runs', fromEnd: false });
   const events = adapter.pullSync();
@@ -295,7 +295,7 @@ test('worker-runs mapper: failures/blocked teach, successes corroborate', (t) =>
   assert.match(events[0]?.sourceRef ?? '', /^worker\.parity:/);
 });
 
-test('worker-runs mapper speaks the LIVE stream vocabulary: fixed/no_change corroborate, failed/blocked teach', (t) => {
+test('worker-runs mapper speaks the LIVE stream vocabulary: fixed/no_change with verification corroborate, failed/blocked teach', (t) => {
   // The 2026-08-08 diet bug: the success list missed the live statuses
   // entirely — 41 'fixed' runs in one window all taught as corrections and
   // both live seeds' consequence-role cells starved structurally.
@@ -303,8 +303,8 @@ test('worker-runs mapper speaks the LIVE stream vocabulary: fixed/no_change corr
   const stateDir = makeDir(t, 'wrv-state');
   const sourcePath = join(srcDir, 'worker-runs.jsonl');
   writeFileSync(sourcePath, [
-    workerLine(0, 'fixed', '2026-08-08T10:00:00.000Z'),
-    workerLine(1, 'no_change', '2026-08-08T10:01:00.000Z'),
+    workerLine(0, 'fixed', '2026-08-08T10:00:00.000Z', 'pass'),
+    workerLine(1, 'no_change', '2026-08-08T10:01:00.000Z', 'pass'),
     workerLine(2, 'failed', '2026-08-08T10:02:00.000Z'),
     workerLine(3, 'blocked', '2026-08-08T10:03:00.000Z'),
   ].join('\n') + '\n', 'utf-8');

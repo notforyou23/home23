@@ -68,12 +68,13 @@ class Critique {
         confidence: 0.5,
         gaps: [],
         rationale: `critique LLM call failed: ${err?.message}`,
+        failure: 'provider_error',
         raw: null,
       };
     }
 
     const rawText = response?.content || '';
-    return this._parseVerdict(rawText, response);
+    return this._parseVerdict(rawText, response, args);
   }
 
   _buildPrompt(args) {
@@ -82,8 +83,8 @@ class Critique {
 Your job:
 1. Read the thought produced by the deep-dive phase.
 2. Check it against the graph neighborhood and PGS connection output.
-3. Decide: is this load-bearing (real signal, new connection, useful to act on) or dressed-up restatement of what the agent already knows?
-4. If load-bearing and the verdict is stable → verdict: keep.
+3. Decide: does this add a grounded connection, a worthwhile question, a useful contrast, or a clearer uncertainty? Practical action is optional. A tentative association can be worth keeping without pretending it is a fact.
+4. If the thought adds understanding or opens a grounded inquiry and the verdict is stable → verdict: keep. An unresolved question can remain unresolved.
 5. If worth refining but has specific missing angles → verdict: revise, list the gaps concretely.
 6. If restatement, shallow, or doesn't survive scrutiny → verdict: discard. Silence is honest.
 
@@ -97,7 +98,8 @@ Output format (STRICT — JSON inside a markdown code block, no prose outside):
   "gaps": ["<specific gap>", "..."],
   "agendaCandidates": [
     { "content": "<1-2 sentence actionable item>", "kind": "decision" | "question" | "idea", "topicTags": ["..."] }
-  ]
+  ],
+  "ownerOutreach": null | { "category": "question" | "insight" | "action", "text": "<message in the resident's voice>", "reason": "<why this is worth contacting the owner now>", "evidenceRefs": ["<exact supplied reference>"] }
 }
 \`\`\`
 
@@ -107,6 +109,7 @@ Notes on confidence:
 - 0.7-1.0: high confidence in whatever verdict you picked
 
 Rules:
+- Evaluate against the supplied material and conversation, respecting their source and correction labels. Narrative, historical material, external intake and hypotheses are not verified current facts. Creative associations need a real starting point, not operational proof or an invented personal story.
 - If verdict is "keep" or "discard", gaps MUST be [].
 - If verdict is "revise", gaps MUST be concrete, specific, and actionable by the deep-dive phase.
 - agendaCandidates: ONLY on verdict "keep". Extract things that warrant jtr's attention — decisions to make, questions worth answering, concrete next-step ideas. MUST be [] on "discard" or "revise". 0-3 items typical. Each item: 1-2 short sentences, actionable, reference specific graph material where relevant. Leave agendaCandidates: [] if nothing genuinely actionable emerged — not every kept thought needs an agenda item.
@@ -115,6 +118,9 @@ Rules:
 - For Home23 specifically: agendaCandidates should overwhelmingly be operational. Good examples: fix a broken bridge, verify a stale sensor, resolve a recurring SyntaxError, audit a specific cron/process/log/API mismatch, or ask jtr for a decision that changes what gets built now. Bad examples: "follow this node", "map the mythology", "trace this theme", "answer what Home23 really is", "consider whether absence means X".
 - A node id by itself is NOT enough to justify an agenda item. "Investigate node 77762" is only valid if tied to a concrete operational failure mode, artifact, or fix path.
 - If the thought is fresh research, speculative synthesis, philosophy, or worldbuilding, keep the thought if it deserves to be kept — but agendaCandidates should be [].
+- ownerOutreach is a separate, optional conversational act, independent of tasks, predictions, and agendaCandidates. Only on an explicit keep, propose a question worth asking, an insight worth sharing, or a concrete next action to discuss. Do not require every thought to be sent. Silence remains available.
+- Outreach must use the actual conversation/material and exact references supplied below, with a concrete reason to contact the owner. Preserve uncertainty and historical/source labels. Never present a failed, superseded, or unverified hypothesis as a current fact. A tentative connection may be shared as a tentative connection. An action proposal is not a claim of completed work.
+- Do not repeat an earlier outreach without new relevant evidence or owner contact. If the source does not support a useful message, set ownerOutreach to null. Never invent a source reference. MUST be null on revise or discard.
 
 Do not pad. Do not restate the thought. Output the JSON block and nothing else.`;
 
@@ -163,17 +169,23 @@ IMPORTANT: do not penalize the thought for lacking cross-partition connections. 
       ? `## Recent conversation with jtr\n${args.conversationContext}`
       : '';
 
+    const materialBlock = args.materialContext ? `## Source material and authority labels\n${args.materialContext}` : '';
+    const livedBlock = args.livedContext ? `## Lived context and correction history (respect uncertainty and failure labels)\n${args.livedContext}` : '';
+    const outreachBlock = `## Permitted outreach evidence references\n${(args.outreachEvidenceRefs || []).join('\n') || '(none; do not propose outreach)'}`;
+    const recentOutreachBlock = (args.recentOutreach || []).length
+      ? `## Recent owner outreach (delivery state, not proof it was read)\n${args.recentOutreach.map(item => `${item.status}: ${item.text}\nBasis: ${(item.evidenceRefs || []).join(', ')}`).join('\n\n')}` : '';
+
     const thoughtBlock = `## Thought to evaluate
 ${args.thought || '(empty thought)'}`;
 
-    const input = [candidateBlock, temporalBlock, conversationBlock, thoughtBlock, pgsBlock, priorBlock]
+    const input = [candidateBlock, temporalBlock, conversationBlock, materialBlock, livedBlock, thoughtBlock, pgsBlock, priorBlock, outreachBlock, recentOutreachBlock]
       .filter(Boolean)
       .join('\n\n') + '\n\nEvaluate. Output the JSON verdict block only.';
 
     return { instructions, input };
   }
 
-  _parseVerdict(rawText, response) {
+  _parseVerdict(rawText, response, args = {}) {
     let parsed;
     try {
       parsed = parseWithFallback(rawText, 'object');
@@ -187,6 +199,7 @@ ${args.thought || '(empty thought)'}`;
         confidence: 0.5,
         gaps: [],
         rationale: `critique output could not be parsed: ${err?.message}`,
+        failure: 'invalid_verdict',
         raw: rawText,
       };
     }
@@ -212,7 +225,9 @@ ${args.thought || '(empty thought)'}`;
         .filter(a => this._isActionableAgendaCandidate(a));
     }
 
-    return { verdict, confidence, gaps: finalGaps, rationale, agendaCandidates, raw: rawText, model: response?.model || null };
+    const { normalizeOwnerOutreach } = require('./owner-outreach');
+    const ownerOutreach = verdict === 'keep' ? normalizeOwnerOutreach(parsed?.ownerOutreach, args.outreachEvidenceRefs) : null;
+    return { verdict, confidence, gaps: finalGaps, rationale, agendaCandidates, ownerOutreach, raw: rawText, model: response?.model || null };
   }
 
   _normalizeVerdict(v) {

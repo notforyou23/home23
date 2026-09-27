@@ -27,3 +27,25 @@ for (const slug of ['jerry', 'forrest'] as const) test(`${slug} notification com
   await assert.rejects(notify(credential, { ...input, channelId: fixtureId('channel', 999) }));
   await assert.rejects(notify(credential, { ...input, text: 'changed' }));
 });
+
+test('a signed resident can establish its own missing owner DM but cannot establish another bot pair', async t => {
+  const f = await createMessagingFixture(); t.after(f.close);
+  const channels = createChannelService({ repository: f.repository, participantDirectory: f.directory, cursorSigningKey: Buffer.alloc(32, 1) });
+  const messages = createMessageService({ repository: f.repository, participantDirectory: f.directory });
+  const notify = createResidentNotifications({ database: f.database as never, messages, channels,
+    resolveResident: slug => slug === 'jerry' ? { clientInstanceId: 'jerry-client', serverInstanceId: 'jerry-instance-1', keyVersion: 1,
+      context: input => { const c = residentContext(f.bots.jerry, 'jerry', 610); if (c.identity.kind === 'resident') {
+        c.identity.resident.requestId = input.requestId; c.identity.resident.correlationId = input.correlationId;
+      } return { ...c, ...input }; } } : undefined, recordMessage: async () => {},
+  });
+  const input = { messageId: fixtureId('message', 611), text: 'I found something worth bringing to you.' };
+  const result = await notify({ residentSlug: 'jerry', instanceId: 'jerry-client', keyVersion: 1 }, input);
+  const conversation = await channels.getChannel({ context: ownerContext(612), channelId: result.channelId });
+  assert.equal(conversation.kind, 'direct');
+  assert.deepEqual(conversation.members.map(member => member.principalId).sort(), ['user_owner', f.bots.jerry.principalId].sort());
+  await assert.rejects(channels.createDirectConversation({ context: residentContext(f.bots.jerry, 'jerry', 613),
+    memberBotIds: [f.bots.forrest.principalId], pinned: false, idempotencyKey: 'reject-foreign-owner-pair' }));
+  await assert.rejects(channels.createDirectConversation({ context: residentContext(f.bots.jerry, 'jerry', 614),
+    memberBotIds: [f.bots.jerry.principalId, f.bots.forrest.principalId], pinned: false, idempotencyKey: 'reject-group-owner-pair' }));
+  await assert.rejects(notify({ residentSlug: 'jerry', instanceId: 'stale-client', keyVersion: 1 }, input));
+});

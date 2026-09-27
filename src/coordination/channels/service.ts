@@ -175,9 +175,14 @@ export function createChannelService(options: CreateChannelServiceOptions) {
     pinned: boolean;
     idempotencyKey: string;
   }) {
-    const actor = await ownerActor(input.context);
+    const actor = await resolveActor(input.context, 'message:send');
     const memberBotIds = canonicalMemberBotIds(input.memberBotIds);
     if (memberBotIds.length !== 1) throw new MessagingError("invalid_membership");
+    // An authenticated house agent may establish only its own owner mailbox.
+    // The caller cannot use this path to open another agent's private pair.
+    if (actor.kind !== 'owner' && memberBotIds[0] !== actor.principalId) {
+      throw new MessagingError('identity_context_mismatch');
+    }
     if (typeof input.pinned !== "boolean") throw new MessagingError("request_invalid");
     const title = input.title === undefined
       ? null

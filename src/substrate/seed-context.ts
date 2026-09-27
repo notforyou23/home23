@@ -41,6 +41,8 @@ import { join } from 'node:path';
 import { embedTextRawSync } from './embed-at-contact.js';
 import { cachedEmbedRaw, cosine } from './semantic-match.js';
 import { admitsPoolScore, resolveAttentionPolicy } from './encoder-attention-policy.js';
+import { projectFeedbackState } from '../../shared/seed-feedback-view.cjs';
+import { getClaimFeedback, type FeedbackClaim, type FeedbackRef } from '../../shared/prediction-feedback.cjs';
 
 export interface SeedCell {
   id: string;
@@ -48,11 +50,11 @@ export interface SeedCell {
   workspacePressure: number;
   energy: { current: number };
   uncertainty: number;
-  estimates: Array<{ claim: string; confidence: number }>;
-  predictions: Array<{ claim: string; confidence: number; horizon: string; createdAt: string; resolvedAt?: string; error?: number }>;
+  estimates: Array<FeedbackClaim & { confidence: number; expiresAt?: string }>;
+  predictions: Array<FeedbackClaim & { confidence: number; horizon: string; createdAt: string }>;
   intentions: Array<{ description: string; magnitude: number; open: boolean }>;
   /** Reality references; those born from language carry a bounded head. */
-  realityRefs?: Array<{ sourceRef: string; observedAt: string; head?: string }>;
+  realityRefs?: Array<FeedbackRef & { sourceRef: string; observedAt: string }>;
 }
 
 export interface LedgerLine {
@@ -159,7 +161,7 @@ export function readSeedLedgerTail(stateDir: string): LedgerLine[] {
     if (fd !== undefined) closeSync(fd);
   }
   const lines: LedgerLine[] = [];
-  for (const line of raw.split('\n')) {
+  for (const line of raw.slice(0, raw.lastIndexOf('\n') + 1).split('\n')) {
     if (line.trim() === '') continue;
     try {
       const parsed = JSON.parse(line) as LedgerLine;
@@ -246,16 +248,15 @@ function buildLivedItems(checkpoint: { cells: SeedCell[]; ledgerSeq: number }, t
           : p.error >= 0.7
             ? `reality said no (error ${p.error.toFixed(2)})`
             : `reality partly agreed (error ${p.error.toFixed(2)})`;
-        // Resolution receipts carry ids the checkpoint predictions don't; the
-        // freshest resolution seqs attach in receipt order as a best effort.
         items.push({
           key: `resolution:${cell.id}:${predIndex}`,
           kind: 'resolution',
           text: `You predicted "${claim}" — ${verdict}.`,
           matchText: claim,
           reach: 0.9,
+          seq: p.predictionId ? resolutionSeqById.get(p.predictionId) : undefined,
         });
-      } else {
+      } else if (p.resolvedAt === undefined && !getClaimFeedback(cell, p).failedHypothesis) {
         items.push({
           key: `expectation:${cell.id}:${predIndex}`,
           kind: 'expectation',
@@ -266,16 +267,8 @@ function buildLivedItems(checkpoint: { cells: SeedCell[]; ledgerSeq: number }, t
       }
     }
   }
-  // Attach resolution seqs newest-first so recently judged predictions can
-  // ride the freshness rule even without a semantic match.
-  const resolutionSeqs = [...resolutionSeqById.values()].sort((a, b) => b - a);
-  let seqCursor = 0;
-  for (const item of items) {
-    if (item.kind === 'resolution' && item.seq === undefined && seqCursor < resolutionSeqs.length) {
-      item.seq = resolutionSeqs[seqCursor];
-      seqCursor += 1;
-    }
-  }
+  // A receipt dates only its own prediction. Never attach a newer verdict's
+  // sequence to an unrelated historical claim to manufacture freshness.
 
   // Pending growth proposals — his own pressure, awaiting jtr.
   for (const line of tail) {
@@ -324,12 +317,13 @@ function buildLivedItems(checkpoint: { cells: SeedCell[]; ledgerSeq: number }, t
   let estIndex = 0;
   for (const cell of checkpoint.cells) {
     for (const e of cell.estimates) {
+      if (getClaimFeedback(cell, e).failedHypothesis) continue;
       estIndex += 1;
       const claim = e.claim;
       items.push({
         key: `estimate:${cell.id}:${estIndex}`,
         kind: 'estimate',
-        text: `You hold, from receipts: "${claim}" (${e.confidence}).`,
+        text: `You formed an estimate, not an established fact: "${claim}" (confidence ${e.confidence}).`,
         matchText: claim,
         reach: 0.5,
       });
@@ -355,9 +349,10 @@ export function composeSeedSituation(stateDir: string, budgetOrOpts?: number | C
   const embed = opts.embed ?? embedTextRawSync;
   const policy = resolveAttentionPolicy(opts.recipeId);
 
-  const checkpoint = readSeedCheckpoint(stateDir);
-  if (checkpoint === null) return null;
+  const snapshot = readSeedCheckpoint(stateDir);
+  if (snapshot === null) return null;
   const tail = readSeedLedgerTail(stateDir);
+  const checkpoint = projectFeedbackState(snapshot, tail);
   const headSeq = Math.max(checkpoint.ledgerSeq, ...tail.map((l) => l.seq), 0);
 
   const pool = buildLivedItems(checkpoint, tail);
@@ -445,7 +440,7 @@ export function composeSeedSituation(stateDir: string, budgetOrOpts?: number | C
     '',
     ...chosen.map((item) => `- ${item.text}`),
     '',
-    `(receipted state, chain seq ${checkpoint.ledgerSeq})`,
+    `(feedback through chain seq ${checkpoint.ledgerSeq}; contact snapshot seq ${snapshot.ledgerSeq}${checkpoint.feedbackView.complete ? "" : "; incomplete receipt coverage: active estimates and expectations omitted"})`,
   ].join('\n');
 
   // The character target is advisory. Selected memories retain their complete meaning.

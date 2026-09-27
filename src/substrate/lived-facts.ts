@@ -28,6 +28,8 @@
  */
 
 import { readSeedCheckpoint, readSeedLedgerTail } from './seed-context.js';
+import { projectFeedbackState } from '../../shared/seed-feedback-view.cjs';
+import { getClaimFeedback, isExternalEvidenceRef } from '../../shared/prediction-feedback.cjs';
 
 const DEFAULT_BUDGET = 1600;
 const MIN_CONFIDENCE = 0.75;
@@ -46,25 +48,32 @@ interface EstimateWithRefs {
 }
 
 export function composeLivedFacts(stateDir: string, budget = DEFAULT_BUDGET): string | null {
-  const checkpoint = readSeedCheckpoint(stateDir);
-  if (checkpoint === null) return null;
+  const snapshot = readSeedCheckpoint(stateDir);
+  if (snapshot === null) return null;
   const tail = readSeedLedgerTail(stateDir);
+  const checkpoint = projectFeedbackState(snapshot, tail);
   if (tail.length === 0) return null;
 
   const headSeq = Math.max(checkpoint.ledgerSeq, ...tail.map((l) => l.seq));
   const windowStart = headSeq - AGE_WINDOW_SEQS;
   const windowOpensAt = tail.find((l) => l.seq >= windowStart)?.issuedAt;
+  const latestEventAt = tail.filter((l) => l.issuedAt).at(-1)?.issuedAt;
+  if (!windowOpensAt || !latestEventAt) return null;
 
   const facts: Array<{ cell: string; claim: string; confidence: number; refs: number; createdAt: string }> = [];
   for (const cell of checkpoint.cells) {
     for (const e of (cell.estimates ?? []) as EstimateWithRefs[]) {
       if (typeof e.claim !== 'string' || e.claim.trim().length === 0) continue;
       if (typeof e.confidence !== 'number' || e.confidence < MIN_CONFIDENCE) continue;
-      const refs = Array.isArray(e.evidenceRefs) ? e.evidenceRefs.length : 0;
+      if (getClaimFeedback(cell, e).failedHypothesis) continue;
+      const evidenceIds = new Set(Array.isArray(e.evidenceRefs) ? e.evidenceRefs : []);
+      const refs = new Set((cell.realityRefs ?? [])
+        .filter((r) => r.refId && evidenceIds.has(r.refId) && isExternalEvidenceRef(r))
+        .map((r) => r.refId)).size;
       if (refs < MIN_EVIDENCE_REFS) continue;
       if (typeof e.createdAt !== 'string') continue;
       if (windowOpensAt !== undefined && e.createdAt > windowOpensAt) continue; // too young — has not stood through lived time
-      if (typeof e.expiresAt === 'string' && windowOpensAt !== undefined && e.expiresAt < windowOpensAt) continue;
+      if (typeof e.expiresAt === 'string' && e.expiresAt <= latestEventAt) continue;
       facts.push({ cell: cell.id, claim: e.claim, confidence: e.confidence, refs, createdAt: e.createdAt });
     }
   }
@@ -74,7 +83,7 @@ export function composeLivedFacts(stateDir: string, budget = DEFAULT_BUDGET): st
   const chosen = facts.slice(0, MAX_FACTS);
 
   const render = (rows: typeof chosen): string => [
-    `FACTS (lived) — your own conclusions that earned fact-grade: confidence ≥${MIN_CONFIDENCE}, ≥${MIN_EVIDENCE_REFS} reality refs, and they have stood while ≥${AGE_WINDOW_SEQS} chain events flowed past. State them as what you know from living; cite the receipt if challenged. (chain seq ${headSeq})`,
+    `FACTS (lived) — supported conclusions, still revisable: confidence ≥${MIN_CONFIDENCE}, ≥${MIN_EVIDENCE_REFS} distinct traceable reality refs, no unrevised failed hypothesis, and they have stood while ≥${AGE_WINDOW_SEQS} chain events flowed past. Confidence and age do not prove truth; retain the evidence and correct these conclusions when reality disagrees. (chain seq ${headSeq})`,
     '',
     ...rows.map((f) => `- [${f.cell}] ${f.claim} (${f.confidence}, ${f.refs} refs, held since ${f.createdAt.slice(0, 10)})`),
   ].join('\n');

@@ -56,6 +56,24 @@ export interface RealityRef {
    * the life they are reasoning about instead of inferring rhythm from
    * reference metadata. Optional: telemetry refs stay wordless. */
   head?: string;
+  /** Typed canonical execution receipt, not narration or proof of task success. */
+  executionOutcome?: {
+    schema: 'home23.execution-outcome.v1';
+    executionKind: 'action' | 'work';
+    status: string;
+    verificationStatus: 'unknown' | 'verified';
+    receiptEventId: string;
+    evidenceRefs: string[];
+  };
+}
+
+/** Exact external evidence retained by the admission writer for a revision.
+ * This witnesses admission, not the truth of the new claim. */
+export interface RevisionEvidence {
+  version: 1;
+  admittedAt: string;
+  failedPredictionIds: string[];
+  refs: RealityRef[];
 }
 
 export interface Estimate {
@@ -65,6 +83,9 @@ export interface Estimate {
   evidenceRefs: string[];
   createdAt: string;
   expiresAt?: string;
+  revisesPredictionIds?: string[];
+  revisionReason?: string;
+  revisionEvidence?: RevisionEvidence;
 }
 
 export interface IntentionTension {
@@ -75,6 +96,8 @@ export interface IntentionTension {
   createdAt: string;
   consequenceRefs: string[];
   open: boolean;
+  closedAt?: string;
+  resolutionReason?: string;
 }
 
 export interface Prediction {
@@ -85,6 +108,10 @@ export interface Prediction {
   createdAt: string;
   resolvedAt?: string;
   error?: number;                    // prediction error on resolution
+  evidenceRefs?: string[];
+  revisesPredictionIds?: string[];
+  revisionReason?: string;
+  revisionEvidence?: RevisionEvidence;
 }
 
 export interface CellDispositions {
@@ -402,6 +429,7 @@ export interface SeedState {
 
 export interface TensionProjection {
   tensionId: string;
+  description?: string;
   cellId: string;
   magnitude: number;
   direction: string;
@@ -418,6 +446,11 @@ export interface PredictionProjection {
   createdAt: string;
 }
 
+export interface ResolvedPredictionProjection extends PredictionProjection {
+  resolvedAt: string;
+  error?: number;
+}
+
 export type AuthorityLevel = 'observe' | 'propose' | 'propose-and-checkpoint';
 
 export interface LobeOutputContract {
@@ -431,6 +464,11 @@ export interface WorkspacePacket {
   eventRefs: RealityRef[];
   tensions: TensionProjection[];
   predictions: PredictionProjection[];
+  /** Optional for older packets; current recruitment includes recent verdicts. */
+  resolvedPredictions?: ResolvedPredictionProjection[];
+  /** Receipt-derived prior ideas, never promoted to facts or external evidence. */
+  recentConsiderations?: Array<{ seq: number; asOf: string; cellId: string;
+    kind: 'observation' | 'interpretation'; text: string; confidence: number }>;
   uncertainty: number;
   requestedCapability: string;
   authorityCeiling: AuthorityLevel;

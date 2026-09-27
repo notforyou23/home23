@@ -7,7 +7,7 @@
  *   - Phase 1 (discover)   — handled by DiscoveryEngine, queue ready
  *   - Phase 2 (deep-dive)  — DeepDive module, wired here
  *   - Phase 3 (connect)    — PGSAdapter, wired here
- *   - Phase 4 (critique)   — STUB (Phase 4 implementation follows this)
+ *   - Phase 4 (critique)   — grounded evaluation, optional agenda and owner contact
  *
  * Behind `architecture.cognitionMode` flag. When `legacy_roles`, this runner
  * never fires — the orchestrator's existing cycle continues untouched. When
@@ -26,6 +26,7 @@ const { DeepDive } = require('./deep-dive');
 const { PGSAdapter } = require('./pgs-adapter');
 const { Critique } = require('./critique');
 const { assessConvergence } = require('./convergence');
+const { outreachEvidenceRefs, normalizeOwnerOutreach } = require('./owner-outreach');
 
 const DEFAULT_CONFIG = {
   heartbeatMs: 15 * 60 * 1000,   // 15-min minimum between deep cycles (per spec)
@@ -59,6 +60,10 @@ class ThinkingMachine {
     this.discoveryEngine = opts.discoveryEngine;
     this.logger = opts.logger || console;
     this.getTemporalContext = opts.getTemporalContext || (() => null);
+    this.getConversationContext = opts.getConversationContext || opts.config?.getConversationContext || (() => null);
+    this.getConversationEvidenceRefs = opts.getConversationEvidenceRefs || (() => []);
+    this.sendOwnerOutreach = opts.sendOwnerOutreach || null;
+    this.retryFeedback = opts.retryFeedback || null;
     this.emitThought = opts.emitThought || null;
     this.logThought = opts.logThought || null;
     // Step 24 hooks: called at the end of each cycle and on each critic
@@ -77,6 +82,7 @@ class ThinkingMachine {
       memory: this.memory,
       logger: this.logger,
       getLivedState: this.config.getLivedState || null,
+      getConversationContext: this.getConversationContext,
     });
 
     this.pgsAdapter = new PGSAdapter({
@@ -186,6 +192,8 @@ class ThinkingMachine {
 
     this.stats.heartbeats++;
     this.lastHeartbeatAt = new Date().toISOString();
+    try { await this.retryFeedback?.(); }
+    catch (error) { this.logger.warn?.('[thinking-machine] feedback retry failed', { error: error.message }); }
 
     const candidates = this.discoveryEngine.pop(this.config.maxCandidatesPerHeartbeat);
     if (!candidates || candidates.length === 0) {
@@ -194,7 +202,7 @@ class ThinkingMachine {
     }
 
     for (const candidate of candidates) {
-      if (!this.running) break;
+      if (!this.running) { this.discoveryEngine.release?.(candidate); continue; }
       await this._runCycle(candidate).catch(e => this._onError('cycle', e));
     }
   }
@@ -206,6 +214,7 @@ class ThinkingMachine {
     const started = Date.now();
     const temporalContext = this._safeTemporalContext();
     const cycleSessionId = `tm-cycle-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+    let evaluated = false;
 
     try {
       this.stats.cyclesRun++;
@@ -215,7 +224,14 @@ class ThinkingMachine {
         signal: candidate.signal,
         score: candidate.score,
       });
-      let dive = await this.deepDive.think(candidate, temporalContext, null);
+      // Freeze the same conversation for deep-dive and its critique/revisions.
+      let conversationContext = null;
+      let conversationEvidenceRefs = [];
+      try { conversationContext = this.getConversationContext(); }
+      catch (error) { this.logger.warn?.('[thinking-machine] conversation context unavailable', { error: error.message }); }
+      try { conversationEvidenceRefs = this.getConversationEvidenceRefs(); } catch { /* no invented evidence */ }
+      const cycleContext = { conversationContext };
+      let dive = await this.deepDive.think(candidate, temporalContext, null, cycleContext);
 
       // Event: ThoughtEmerged (raw output of deep-dive, pre-critique)
       this._emit('ThoughtEmerged', cycleSessionId, {
@@ -230,6 +246,7 @@ class ThinkingMachine {
       });
 
       if (!dive.text || dive.text.trim().length < 20) {
+        evaluated = !dive.usage?.error;
         this.logger.info?.('[thinking-machine] deep-dive returned empty, discarding');
         this.stats.cyclesDiscarded++;
         this._emit('ThoughtDiscarded', cycleSessionId, { reason: 'empty_deep_dive', passes: 0 });
@@ -267,6 +284,11 @@ class ThinkingMachine {
           temporalContext,
           candidate,
           priorPasses: passes,
+          conversationContext: dive.conversationContext || null,
+          materialContext: dive.materialContext || null,
+          livedContext: dive.livedContext || null,
+          outreachEvidenceRefs: outreachEvidenceRefs(this.memory, candidate, dive, conversationEvidenceRefs),
+          recentOutreach: this.recentThoughts.map(entry => entry.ownerOutreach).filter(Boolean).slice(0, 5),
         });
         passes.push(pass);
 
@@ -306,7 +328,7 @@ class ThinkingMachine {
         dive = await this.deepDive.think(candidate, temporalContext, {
           previousThought: priorText,
           critique: pass,
-        });
+        }, cycleContext);
 
         // Event: ThoughtEmerged (revised)
         this._emit('ThoughtEmerged', cycleSessionId, {
@@ -332,8 +354,13 @@ class ThinkingMachine {
         terminationReason = 'loop_exit';
       }
 
+      evaluated = !finalVerdict.failure && !dive.usage?.error;
+
       // Build the canonical thought record
+      const evidenceRefs = outreachEvidenceRefs(this.memory, candidate, dive, conversationEvidenceRefs);
+      const thoughtId = `thought-${crypto.createHash('sha256').update(JSON.stringify({ text: dive.text, evidenceRefs })).digest('hex')}`;
       const thought = {
+        id: thoughtId,
         text: dive.text,
         reasoning: dive.reasoning,
         referencedNodes: dive.referencedNodes,
@@ -375,6 +402,7 @@ class ThinkingMachine {
         // the observability panel. Include the cycleSessionId so the UI can
         // cross-reference agenda items back to their parent thought.
         const recentEntry = {
+          thoughtId,
           cycleSessionId,
           ts: new Date().toISOString(),
           candidate: { signal: candidate.signal, score: candidate.score, clusterId: candidate.clusterId, rationale: candidate.rationale },
@@ -514,6 +542,39 @@ class ThinkingMachine {
         recentEntry.agendaIds = agendaIds;
         recentEntry.motorActions = motorActions;
 
+        // Contact is a distinct conversational choice. A kept thought needs no
+        // task, prediction or contact; only an explicit critic-approved message
+        // with admitted source references may leave this pipeline.
+        const outreach = finalVerdict.forcedBy ? null : normalizeOwnerOutreach(finalVerdict.ownerOutreach, evidenceRefs);
+        if (outreach) {
+          const deliveryId = `outreach:${thoughtId}`;
+          let result;
+          try {
+            const duplicate = this.recentThoughts.some(entry => {
+              const prior = entry.ownerOutreach;
+              return prior && ['committed', 'queued', 'pending'].includes(prior.status)
+                && prior.text.replace(/\s+/g, ' ').trim() === outreach.text.replace(/\s+/g, ' ').trim()
+                && JSON.stringify([...prior.evidenceRefs].sort()) === JSON.stringify([...outreach.evidenceRefs].sort());
+            });
+            if (duplicate) {
+              result = { status: 'suppressed', detail: 'same outreach already accepted with the same evidence' };
+            } else {
+              if (!this.sendOwnerOutreach) throw new Error('owner outreach transport unavailable');
+              result = await this.sendOwnerOutreach({
+                text: outreach.text, reason: outreach.reason, evidenceRefs: outreach.evidenceRefs, deliveryId,
+              });
+              if (!['committed', 'queued', 'pending'].includes(result?.status)) throw new Error('owner outreach returned no durable delivery state');
+            }
+          } catch (error) {
+            result = { status: 'failed', detail: String(error.message || error).slice(0, 500) };
+            this.logger.warn?.('[thinking-machine] owner outreach failed', { thoughtId, error: result.detail });
+          }
+          const receipt = { ...outreach, deliveryId, ...result, notification: 'not_confirmed' };
+          thought.ownerOutreach = receipt;
+          recentEntry.ownerOutreach = receipt;
+          this._emit('OwnerOutreachRouted', cycleSessionId, { thoughtId, ...receipt });
+        }
+
         if (this.emitThought) {
           try { this.emitThought(thought); } catch (e) {
             this.logger.warn?.('[thinking-machine] emitThought failed', { error: e?.message });
@@ -595,8 +656,22 @@ class ThinkingMachine {
         } catch (e) { this.logger.warn?.('[thinking-machine] onCriticVerdict failed', { error: e?.message }); }
       }
     } finally {
+      if (!evaluated) this.discoveryEngine.release?.(candidate);
       this.cycleInFlight = false;
     }
+  }
+
+  recordOutreachRetry(result) {
+    for (const entry of this.recentThoughts) {
+      if (entry.ownerOutreach?.deliveryId === result.deliveryId) {
+        entry.ownerOutreach = { ...entry.ownerOutreach, ...result };
+        if (['committed', 'queued'].includes(result.status)) {
+          delete entry.ownerOutreach.transport;
+          delete entry.ownerOutreach.detail;
+        }
+      }
+    }
+    this._emit('OwnerOutreachRetried', result.deliveryId, result);
   }
 
   _emit(eventType, sessionId, payload) {

@@ -18,6 +18,9 @@
  */
 
 import { readSeedCheckpoint, readSeedLedgerTail, type LedgerLine } from './seed-context.js';
+import { projectFeedbackState } from '../../shared/seed-feedback-view.cjs';
+import { getClaimFeedback } from '../../shared/prediction-feedback.cjs';
+import { thoughtsFromReceipt } from '../../shared/lived-thoughts.cjs';
 
 const DEFAULT_BUDGET = 3000;
 /** Chain-seq window treated as "recent" (~2 days of 5-min heartbeats). */
@@ -29,15 +32,17 @@ const THOUGHT_LINES = 4;
 const MIN_ITEMS = 3;
 
 export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): string | null {
-  const checkpoint = readSeedCheckpoint(stateDir);
-  if (checkpoint === null) return null;
+  const snapshot = readSeedCheckpoint(stateDir);
+  if (snapshot === null) return null;
   const tail = readSeedLedgerTail(stateDir);
+  const checkpoint = projectFeedbackState(snapshot, tail);
   if (tail.length === 0) return null;
 
   const headSeq = Math.max(checkpoint.ledgerSeq, ...tail.map((l) => l.seq));
   const windowStart = headSeq - WINDOW_SEQS;
   const window = tail.filter((l) => l.seq >= windowStart);
-  const windowOpensAt = window[0]?.issuedAt;
+  const first = window[0];
+  const windowOpensAt = typeof first?.payload?.['asOf'] === 'string' ? first.payload['asOf'] : first?.issuedAt;
 
   // ── Contact: his actual conversations, words attached (ref heads) ──
   const refs = checkpoint.cells
@@ -63,14 +68,16 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
   // ── Thoughts: what his lobe actually wrote into state in the window ──
   const thoughts: string[] = [];
   for (const line of window) {
-    if (line.category !== 'lobe') continue;
-    const deltas = line.payload['appliedDeltas'];
-    if (!Array.isArray(deltas)) continue;
-    for (const d of deltas as Array<{ cellId?: string; field?: string; delta?: Record<string, unknown> }>) {
-      const claim = d.delta?.['claim'];
-      if (typeof claim !== 'string') continue;
-      const verb = d.field === 'predictions.append' ? 'expects' : 'believes';
-      thoughts.push(`- [${d.cellId ?? '?'}] ${verb}: ${claim}`);
+    for (const thought of thoughtsFromReceipt(line)) {
+      const claim = thought.text;
+      const cell = checkpoint.cells.find((c) => c.id === thought.cellId);
+      const carried = cell && (thought.kind === 'prediction' ? cell.predictions : cell.estimates)
+        .filter((p) => p.claim === claim).at(-1);
+      const failed = cell && getClaimFeedback(cell, carried ?? thought.candidate).failedHypothesis;
+      const status = failed ? ' — failed hypothesis; not current truth'
+        : carried?.resolvedAt !== undefined ? ` — resolved (error ${carried.error ?? 'unknown'})`
+        : ' — a hypothesis, not an established fact';
+      thoughts.push(`- [${thought.cellId}] ${thought.kind === 'prediction' ? 'predicted' : 'considered'}: ${claim}${status}`);
     }
   }
   const recentThoughts = thoughts.slice(-THOUGHT_LINES);
@@ -113,6 +120,8 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
 
   const sections: string[][] = [];
   sections.push([`RECENT — lived record, composed from the Seed's chain (seq ${Math.max(windowStart, 1)}–${headSeq}) at read time. Selected recent records, not exhaustive history; chain integrity alone does not establish freshness.`]);
+  if (!checkpoint.feedbackView.complete) sections.push(["Feedback coverage is incomplete; active estimates and expectations are omitted."]);
+  sections.push([`Contact retained from checkpoint seq ${snapshot.ledgerSeq}; later contact may exist.`]);
   if (contact.length > 0) sections.push(['Contact:', ...contact]);
   if (teachings.length > 0) sections.push(['Teachings taken:', ...teachings]);
   if (recentThoughts.length > 0) sections.push(['Thoughts he formed:', ...recentThoughts]);

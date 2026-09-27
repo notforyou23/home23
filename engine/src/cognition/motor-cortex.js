@@ -61,7 +61,9 @@ class MotorCortex {
       addRejected('critique_raw_agenda', item, 'critique agenda filter rejected this candidate before motor routing');
     }
 
-    if (accepted.length === 0) {
+    // A structured verdict is the action boundary. In particular [] means
+    // keep thinking without manufacturing work from an exploratory sentence.
+    if (!Array.isArray(verdict.agendaCandidates) && accepted.length === 0) {
       for (const item of this._extractThoughtCandidates(thoughtText)) {
         const normalized = this._normalizeCandidate(item);
         if (!normalized) continue;
@@ -106,11 +108,12 @@ class MotorCortex {
         actor,
         origin: 'thinking-machine',
       });
-      const acted = Boolean(action?.directAction || action?.problemId || action?.action);
+      const status = executionDisposition(action);
+      const acted = status === 'acted' || status === 'dispatched';
       if (acted && this.agendaStore?.updateStatus) {
         this.agendaStore.updateStatus(agendaId, 'acted_on', {
           actor,
-          note: action.detail || action.status || action.action || 'motor action routed',
+          note: status === 'dispatched' ? `Dispatched ${action.turnId}; result pending` : action.detail || action.status || action.action || 'motor action routed',
         });
       }
       this.logger.info?.('[motor-cortex] agenda action routed', {
@@ -120,7 +123,7 @@ class MotorCortex {
         status: action?.status || null,
       });
       return {
-        status: acted ? 'acted' : 'no_action',
+        status,
         agendaId,
         action: action || null,
       };
@@ -186,4 +189,12 @@ class MotorCortex {
   }
 }
 
-module.exports = { MotorCortex };
+function executionDisposition(action) {
+  if (!action) return 'no_action';
+  if (['failed', 'blocked', 'rejected', 'error'].includes(action.status)) return 'failed';
+  if (action.status === 'dry_run') return 'simulated';
+  if (action.action === 'diagnose_agenda') return action.turnId ? 'dispatched' : 'queued';
+  return action.directAction || action.action ? 'acted' : 'no_action';
+}
+
+module.exports = { MotorCortex, executionDisposition };

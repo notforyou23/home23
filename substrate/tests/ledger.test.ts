@@ -179,3 +179,17 @@ test('exists() reports a content-bearing ledger file only', (t) => {
   ledger.append({ category: 'genesis', sourceAuthority: 'seed.internal', sourceRef: 's', payload: {} });
   assert.equal(SeedLedger.exists(dir), true);
 });
+
+
+test('readTail reads complete recent receipts inside a byte bound without changing the ledger', (t) => {
+  const dir = makeDir(t);
+  const ledger = new SeedLedger(dir);
+  ledger.append({ category: 'genesis', sourceAuthority: 'seed.internal', sourceRef: 's', payload: { padding: 'x'.repeat(300000) } });
+  const recent = ledger.append({ category: 'lobe', sourceAuthority: 'seed.internal', sourceRef: 'test', payload: { advisory: { version: 1, interpretations: [{ interpretation: '音楽 🌱' }] } } });
+  const cursor = ledger.currentCursor;
+  const bytes = ledger.bytes;
+  assert.deepEqual(ledger.readTail(4096), [JSON.parse(JSON.stringify(recent))]);
+  assert.equal(ledger.currentCursor, cursor);
+  assert.equal(ledger.bytes, bytes);
+  assert.equal(ledger.verifyChain().ok, true);
+});

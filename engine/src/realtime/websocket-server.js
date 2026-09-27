@@ -15,6 +15,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { cosmoEvents } = require('./event-emitter');
+const { executionDisposition } = require('../cognition/motor-cortex');
 const { collectBrainCleanupCandidates } = require('../memory/brain-cleanup');
 const {
   applyConsolidationBacklogCompost,
@@ -448,21 +449,28 @@ class RealtimeServer {
       if (!existing) return json(404, { ok: false, error: 'not found or invalid status' });
 
       let execution = null;
+      let requestedStatus = body.status;
       let note = body.note || null;
       if (body.status === 'acted_on') {
         try {
           execution = await this.orchestrator?.executeAgendaItem?.(existing, { actor: body.actor || 'api' });
+          const disposition = executionDisposition(execution);
+          if (['failed', 'no_action'].includes(disposition)) throw new Error(execution?.detail || 'No action was dispatched');
+          if (['queued', 'simulated'].includes(disposition)) requestedStatus = existing.status;
+          execution = { ...execution, disposition };
           const detail = [
             execution?.action ? `action ${execution.action}` : null,
             execution?.target ? `target ${execution.target}` : null,
           ].filter(Boolean).join(', ');
-          note = detail ? `executed directly via ${detail}` : (note || 'executed directly');
+          note = disposition === 'dispatched' ? `Dispatched ${execution.turnId}; result pending`
+            : disposition === 'acted' ? (detail ? `executed directly via ${detail}` : (note || 'executed directly'))
+              : execution.detail || disposition;
         } catch (error) {
           return json(409, { ok: false, error: `agenda execution failed: ${error.message}` });
         }
       }
 
-      const rec = store.updateStatus(agendaId, body.status, { note, actor: body.actor || 'api' });
+      const rec = store.updateStatus(agendaId, requestedStatus, { note, actor: body.actor || 'api' });
       if (!rec) return json(404, { ok: false, error: 'not found or invalid status' });
       return json(200, { ok: true, item: rec, execution });
     }

@@ -57,6 +57,76 @@ interface HarnessEntry {
   object_id?: string;
   timestamp?: string;
   ts?: string;
+  payload?: Record<string, unknown>;
+}
+
+function boundedText(value: unknown, max = 1200): string | null {
+  return typeof value === 'string' ? value.slice(0, max) : null;
+}
+
+/** Retain execution facts, including failures, without promoting transport or
+ * an executor's declaration into independent verification of the task. */
+function executionProjection(eventType: string, data: Record<string, unknown>, eventId: string): {
+  category: EventCategory; sourceRef: string; payload: Record<string, unknown>;
+} | null {
+  if (eventType === 'ExecutionIntentObserved' || eventType === 'ExecutionOutcomeObserved') {
+    if (data['schema'] !== 'home23.execution-outcome.v1') return null;
+    const kind = data['executionKind'];
+    const executionId = boundedText(data['executionId'], 300);
+    if ((kind !== 'work' && kind !== 'action') || !executionId) return null;
+    const allowed = ['intent', 'queued', 'dispatched', 'simulated', 'completed', 'failed', 'cancelled', 'blocked', 'rejected', 'unknown'];
+    const status = eventType === 'ExecutionIntentObserved' ? 'intent'
+      : typeof data['status'] === 'string' && allowed.includes(data['status']) ? data['status'] : 'unknown';
+    const category: EventCategory = ['failed', 'blocked', 'rejected'].includes(status) ? 'correction'
+      : status === 'completed' ? 'consequence' : status === 'simulated' ? 'interpretation' : 'observation';
+    const evidenceRefs = Array.isArray(data['evidenceRefs'])
+      ? data['evidenceRefs'].filter((ref): ref is string => typeof ref === 'string').slice(0, 12).map(ref => ref.slice(0, 500)) : [];
+    const verificationStatus = data['verificationStatus'] === 'verified' && evidenceRefs.length > 0 ? 'verified' : 'unknown';
+    const scope = verificationStatus === 'verified' ? 'reported verification has evidence references'
+      : status === 'completed' ? 'execution completed; task outcome unverified'
+      : status === 'simulated' ? 'simulation only; no execution result'
+      : ['intent', 'queued', 'dispatched'].includes(status) ? 'execution result pending' : 'task outcome unverified';
+    return {
+      category,
+      sourceRef: boundedText(data['sourceRef'], 500) || `${kind}:${executionId}`,
+      payload: {
+        schema: data['schema'], event_type: eventType, executionKind: kind, executionId,
+        status, declaredStatus: boundedText(data['declaredStatus'], 120) || status,
+        verificationStatus,
+        // Keep declared and verified states separate. The ledger transport
+        // cannot upgrade a claim; the verification flag is descriptive only.
+        taskOutcomeVerified: verificationStatus === 'verified' && data['taskOutcomeVerified'] === true,
+        head: `${kind} ${executionId}: ${status} (${scope}). ${boundedText(data['head']) || boundedText(data['detail']) || ''}`,
+        action: boundedText(data['action'], 160), target: boundedText(data['target'], 500),
+        agendaId: boundedText(data['agendaId'], 300), detail: boundedText(data['detail']),
+        terminalReason: boundedText(data['terminalReason'], 500), evidenceRefs,
+        workId: boundedText(data['workId'], 300), attemptId: boundedText(data['attemptId'], 300),
+        sourceEventId: boundedText(data['sourceEventId'], 300),
+        sourceSequence: typeof data['sourceSequence'] === 'number' && Number.isSafeInteger(data['sourceSequence']) ? data['sourceSequence'] : null,
+        receiptDigest: boundedText(data['receiptDigest'], 200),
+        receiptEventId: eventId,
+      },
+    };
+  }
+  if (eventType === 'MotorActionRouted') {
+    const status = boundedText(data['status'], 120) || 'unknown';
+    const scope = status === 'acted' ? 'action routed; consult execution receipt for result'
+      : status === 'dispatched' ? 'dispatch accepted; execution result pending'
+      : status === 'queued' ? 'queued; no dispatch confirmed'
+      : status === 'simulated' ? 'simulation only; no action executed' : status;
+    return {
+      category: ['failed', 'rejected'].includes(status) ? 'correction' : status === 'simulated' ? 'interpretation' : 'observation',
+      sourceRef: `MotorActionRouted:${eventId}`,
+      payload: {
+        event_type: eventType, status, agendaId: boundedText(data['agendaId'], 300),
+        action: boundedText(data['action'], 160), target: boundedText(data['target'], 500),
+        verificationStatus: 'unknown', taskOutcomeVerified: false,
+        head: `Motor routing: ${scope}. ${boundedText(data['detail']) || boundedText(data['content']) || ''}`,
+        receiptEventId: eventId,
+      },
+    };
+  }
+  return null;
 }
 
 export interface TailedSourceEvent extends SourceEvent {
@@ -446,36 +516,53 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     };
   }
 
-  /** Worker-run outcomes (worker-runs.jsonl): completed runs are consequences
-   * of the house acting; failed/blocked runs are reality pushing back —
-   * mapped as corrections so they TEACH rather than corroborate. */
+  /** Worker reports are observations until their explicit verification passes.
+   * Keep declared result separate from reported verification; neither missing
+   * verification nor an unfinished/cancelled run manufactures a failure. */
   private mapWorkerRunLine(parsed: Record<string, unknown>, line: string, endOffset: number): TailedSourceEvent | null {
     const producedAt = (typeof parsed['finishedAt'] === 'string' ? parsed['finishedAt'] : parsed['startedAt']);
     if (typeof producedAt !== 'string' || !Number.isFinite(Date.parse(producedAt))) return null;
     const status = typeof parsed['status'] === 'string' ? parsed['status'] : 'unknown';
+    const declaredStatus = status.toLowerCase();
+    const reportedVerifier = typeof parsed['verifierStatus'] === 'string' ? parsed['verifierStatus'] : null;
+    const verificationStatus = ['pass', 'fail', 'not_run'].includes(String(reportedVerifier).toLowerCase())
+      ? String(reportedVerifier).toLowerCase() : 'unknown';
     const worker = typeof parsed['worker'] === 'string' ? parsed['worker'] : 'unknown';
     const runId = typeof parsed['runId'] === 'string'
       ? parsed['runId']
       : `wr_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`;
-    // The live stream's actual vocabulary: 'fixed' and 'no_change' are the
-    // house acting and the outcome holding (consequences — they corroborate);
-    // 'failed' and 'blocked' are reality pushing back (corrections — they
-    // teach). The generic terms stay for other producers. Before 2026-08-08
-    // the list below missed the live vocabulary entirely — every run
-    // (including 41 successes in the recent window) taught as a correction,
-    // and both live seeds' consequence-role cells starved structurally.
-    const succeeded = ['success', 'ok', 'completed', 'done', 'fixed', 'no_change'].includes(status.toLowerCase());
+    const succeeded = ['success', 'ok', 'completed', 'done', 'fixed', 'no_change'].includes(declaredStatus);
+    const unfinished = ['queued', 'pending', 'running', 'cancelled', 'canceled', 'unknown'].includes(declaredStatus);
+    const failed = ['failed', 'failure', 'error', 'blocked'].includes(declaredStatus);
+    const category: EventCategory = unfinished ? 'observation'
+      : failed || verificationStatus === 'fail' ? 'correction'
+        : succeeded && verificationStatus === 'pass' ? 'consequence' : 'observation';
+    const bounded = (value: unknown, limit: number): string | null => typeof value === 'string' && value.trim()
+      ? value.trim().slice(0, limit) : null;
+    const summary = bounded(parsed['summary'], 2000);
+    const rootCause = bounded(parsed['rootCause'], 2000);
+    const evidence = (Array.isArray(parsed['evidence']) ? parsed['evidence'] : []).slice(0, 4)
+      .filter((item): item is Record<string, unknown> => item !== null && typeof item === 'object' && !Array.isArray(item))
+      .map(item => ({ type: bounded(item['type'], 80) ?? 'reported', detail: bounded(item['detail'], 1000),
+        status: bounded(item['status'], 40) ?? 'unknown' }))
+      .filter(item => item.detail !== null);
+    const head = [
+      `Worker ${worker} reported ${status}; reported verification ${verificationStatus}. This is a worker receipt, not independent verification.`,
+      ...(summary ? [`Summary: ${summary}`] : []),
+      ...(rootCause ? [`Reported cause: ${rootCause}`] : []),
+      ...evidence.map(item => `Reported evidence (${item.type}, ${item.status}): ${item.detail}`),
+    ].join('\n');
     const semanticVector = sanitizeSemanticVector(parsed['semantic_vector']);
     return {
       eventId: runId,
-      category: succeeded ? 'consequence' : 'correction',
+      category,
       sourceAuthority: this.authority,
       sourceRef: `worker.${worker}:${runId}`,
       ...(semanticVector !== null ? { semanticVector } : {}),
       payload: {
-        worker,
-        status,
-        verifierStatus: typeof parsed['verifierStatus'] === 'string' ? parsed['verifierStatus'] : null,
+        worker, status, declaredStatus, verifierStatus: reportedVerifier,
+        verificationStatus, verificationSource: 'worker-reported',
+        ...(summary ? { summary } : {}), ...(rootCause ? { rootCause } : {}), evidence, head,
       },
       producedAt,
       endOffset,
@@ -498,9 +585,16 @@ export class EventLedgerTailAdapter implements SourceAdapter {
       ? entry.event_id
       : `harness_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`;
 
+    const data = entry.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload) ? entry.payload : {};
+    const execution = executionProjection(eventType, data, eventId);
+    if (execution) {
+      return { eventId, ...execution, sourceAuthority: this.authority, producedAt, endOffset };
+    }
+
     return {
       eventId,
-      category: mapHarnessCategory(eventType),
+      // A malformed execution envelope is never a successful consequence.
+      category: eventType === 'ExecutionOutcomeObserved' ? 'observation' : mapHarnessCategory(eventType),
       sourceAuthority: this.authority,
       sourceRef: `${eventType}:${entry.object_id ?? entry.thread_id ?? entry.session_id ?? ''}`,
       // Payload stays a bounded projection — the harness ledger remains the

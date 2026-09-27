@@ -40,7 +40,7 @@ implements BotConversationBindingTransactionPort {
     const timestamp = new Date(input.updatedAt);
     if (
       input.botId !== input.botPrincipalId ||
-      input.actorPrincipalId !== "user_owner" ||
+      (input.actorPrincipalId !== "user_owner" && input.actorPrincipalId !== input.botPrincipalId) ||
       typeof input.residentBinding !== "string" ||
       input.residentBinding.length < 1 ||
       input.residentBinding.length > 63 ||

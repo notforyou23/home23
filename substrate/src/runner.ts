@@ -213,11 +213,11 @@ export class SeedRunner {
 
   /**
    * Cut 6 motor dispatch (embodiment half): append the authorized reach to
-   * <stateDir>/outbox.jsonl — the operator's channel; the observatory
-   * surfaces it — then receipt the dispatch on the chain. Idempotent: an
+   * <stateDir>/outbox.jsonl — a local queue for the owner-conversation relay —
+   * then receipt that queue write on the chain. Idempotent: an
    * outbox line with this key+actSeq is never written twice, and an already
-   * receipted dispatch is a no-op. "I intended it" is not "I did it";
-   * this is the did-it record.
+   * receipted dispatch is a no-op. This proves queueing only, not canonical
+   * conversation commit, phone notification, delivery, or owner attention.
    */
   private dispatchMotor(auth: { actSeq: number; commitmentId: string; message: string; idempotencyKey: string }): boolean {
     if (this.seed === null) return false;
@@ -236,7 +236,7 @@ export class SeedRunner {
       }) + '\n', 'utf-8');
     }
     const seq = this.seed.recordMotorDispatch(auth.actSeq, auth.idempotencyKey);
-    if (seq !== null) this.log(`motor: DISPATCHED to outbox — "${auth.message.slice(0, 120)}" (commitment ${auth.commitmentId}, dispatch seq ${seq})`);
+    if (seq !== null) this.log(`motor: QUEUED in outbox — "${auth.message.slice(0, 120)}" (commitment ${auth.commitmentId}, dispatch seq ${seq})`);
     return seq !== null;
   }
 

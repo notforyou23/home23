@@ -1,6 +1,7 @@
 /**
- * Conversation Salience — reads harness-written sidecar, scores graph clusters
- * by relevance to recent conversation.
+ * Conversation Salience — reads canonical Seed contact, scores graph material
+ * by relevance to recent conversation. Compiled sidecar history is a labeled
+ * fallback for older installations without current canonical contact.
  *
  * Phase 7 of thinking-machine-cycle rebuild. See
  * docs/superpowers/specs/2026-04-18-thinking-machine-cycle.md Conversation Salience.
@@ -23,12 +24,14 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readRecentConversationEntries } = require('./seed-conversation-context');
 
 const DEFAULT_CONFIG = {
   maxAgeMs: 72 * 60 * 60 * 1000,    // ignore entries older than 72h
   maxEntries: 50,                    // cap recent entries to prevent unbounded scan
   minTokenLength: 3,                 // token must be at least 3 chars (drop "the","and")
   reloadIntervalMs: 60 * 1000,       // re-read sidecar every 60s (cheap)
+  maxReadBytes: 256 * 1024,          // bounded sidecar tail, never load the lifetime transcript
   minClusterScore: 0.05,             // below this, cluster isn't considered salient
 };
 
@@ -46,6 +49,8 @@ class ConversationSalience {
     if (!opts.brainDir) throw new Error('ConversationSalience requires brainDir');
     this.brainDir = opts.brainDir;
     this.sidecarPath = path.join(opts.brainDir, 'conversation-salience.jsonl');
+    this.conversationStreamPath = opts.conversationStreamPath || null;
+    this.nodeMatchCache = new Map();
     this.logger = opts.logger || console;
     this.config = { ...DEFAULT_CONFIG, ...(opts.config || {}) };
 
@@ -67,13 +72,13 @@ class ConversationSalience {
    * @param {Date} [now=new Date()]
    */
   scoreClusters(memory, now = new Date()) {
-    this._maybeReload();
-    if (this.recentEntries.length === 0) return new Map();
+    const entries = this.getRecentEntries(now);
+    if (entries.length === 0) return new Map();
 
     const nowMs = now.getTime();
     const summaryTokensWithWeight = [];
 
-    for (const entry of this.recentEntries) {
+    for (const entry of entries) {
       const tsMs = new Date(entry.ts).getTime();
       if (!Number.isFinite(tsMs)) continue;
       const ageMs = nowMs - tsMs;
@@ -123,10 +128,68 @@ class ConversationSalience {
       return {
         clusterId,
         score,
-        nodeIds: Array.from(nodeSet).slice(0, 10),
-        rationale: `recent conversation (last ${this.recentEntries.length} sessions) proximal to cluster ${clusterId} — score ${score.toFixed(3)}`,
+        nodeIds: this.relevantNodeIds(memory, this.getRecentContext(now), 10, nodeSet),
+        rationale: `recent conversation (last ${this.getRecentEntries(now).length} contact records) proximal to cluster ${clusterId} — score ${score.toFixed(3)}`,
       };
     });
+  }
+
+  /** Actual conversational material, with the sidecar's authorship labels intact. */
+  getRecentEntries(now = new Date()) {
+    const canonical = readRecentConversationEntries(this.conversationStreamPath, {
+      now, maxAgeMs: this.config.maxAgeMs, maxEntries: 24,
+    });
+    if (canonical.length) return canonical;
+    this._maybeReload();
+    const nowMs = now.getTime();
+    return this.recentEntries.filter(entry => {
+      const age = nowMs - Date.parse(entry.ts);
+      return Number.isFinite(age) && age >= 0 && age <= this.config.maxAgeMs;
+    }).slice(-6).map(entry => ({ ...entry, source: 'compiled_history',
+      summary: `[Compiled session excerpt; ${entry.ts} is compilation time, not proof of current contact]\n${String(entry.summary).slice(0, 4000)}`,
+    }));
+  }
+
+  getRecentContext(now = new Date()) {
+    const selected = [];
+    let chars = 0;
+    for (const entry of this.getRecentEntries(now).slice().reverse()) {
+      const text = `[Conversation channel ${String(entry.chatId || 'unknown').slice(0, 120)}]\n${entry.summary}`;
+      if (text.length > 12000) {
+        // Never silently replace an oversized new correction with older speech.
+        selected.unshift(`[Contact omitted from this bounded view: ${String(entry.eventId || entry.ts).slice(0, 160)}; ${String(entry.summary).split('\n')[0].slice(0, 300)}; ${text.length} characters. Its content is unavailable here; do not infer it or treat older context as the latest contact.]`);
+        break;
+      }
+      if (chars + text.length > 12000) break; // keep complete, attributed turns
+      selected.unshift(text);
+      chars += text.length + 2;
+    }
+    return selected.join('\n\n') || null;
+  }
+
+  /** Select the matching memories, not whichever nodes were inserted first. */
+  relevantNodeIds(memory, text, limit = 10, nodeIds = null) {
+    const cacheKey = `${limit}:${text}`;
+    const cached = !nodeIds && this.nodeMatchCache.get(cacheKey);
+    if (cached && cached.memory === memory && cached.size === memory.nodes.size && Date.now() - cached.at < 60000) return cached.ids;
+    const query = this._tokenize(text);
+    if (!query.size) return [];
+    const matches = [];
+    for (const id of nodeIds || memory.nodes.keys()) {
+      const node = memory.nodes.get(id);
+      if (!node?.concept) continue;
+      const tokens = this._tokenize(String(node.concept).slice(0, 4000));
+      const overlap = this._intersectSize(query, tokens);
+      if (!overlap) continue;
+      matches.push({ id, score: overlap / Math.sqrt(query.size * tokens.size) });
+    }
+    matches.sort((a, b) => b.score - a.score || String(a.id).localeCompare(String(b.id)));
+    const ids = matches.slice(0, limit).map(match => match.id);
+    if (!nodeIds) {
+      this.nodeMatchCache.set(cacheKey, { memory, size: memory.nodes.size, at: Date.now(), ids });
+      while (this.nodeMatchCache.size > 12) this.nodeMatchCache.delete(this.nodeMatchCache.keys().next().value);
+    }
+    return ids;
   }
 
   /**
@@ -169,8 +232,15 @@ class ConversationSalience {
     this.lastMtimeMs = stat.mtimeMs;
 
     try {
-      const raw = fs.readFileSync(this.sidecarPath, 'utf8');
-      const lines = raw.split('\n').filter(Boolean);
+      const size = Math.min(stat.size, this.config.maxReadBytes);
+      const buffer = Buffer.alloc(size);
+      const fd = fs.openSync(this.sidecarPath, 'r');
+      try { fs.readSync(fd, buffer, 0, size, stat.size - size); }
+      finally { fs.closeSync(fd); }
+      const raw = buffer.toString('utf8');
+      const lines = raw.split('\n');
+      if (stat.size > size) lines.shift(); // a tail can begin in the middle of a record
+
       const parsed = [];
       for (const line of lines) {
         try {

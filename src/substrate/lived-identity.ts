@@ -17,9 +17,10 @@
  * only exactly as before.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { openSync, readSync, closeSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readSeedCheckpoint, readSeedLedgerTail } from './seed-context.js';
+import { projectFeedbackState } from '../../shared/seed-feedback-view.cjs';
 import { composeLivedFacts } from './lived-facts.js';
 
 const DEFAULT_BUDGET = 1100;
@@ -29,9 +30,20 @@ const DEFAULT_BUDGET = 1100;
 export function readSeedGenesis(stateDir: string): { seedId: string; bornAt: string; name?: string } | null {
   const p = join(stateDir, 'seed-ledger.jsonl');
   if (!existsSync(p)) return null;
+  let fd: number | undefined;
   try {
-    const fd = readFileSync(p, 'utf-8');
-    const firstLine = fd.slice(0, fd.indexOf('\n'));
+    fd = openSync(p, 'r');
+    const bytes = Buffer.alloc(1024 * 1024);
+    let length = 0;
+    let newline = -1;
+    while (length < bytes.length && newline < 0) {
+      const count = readSync(fd, bytes, length, Math.min(64 * 1024, bytes.length - length), length);
+      if (!count) return null;
+      length += count;
+      newline = bytes.subarray(0, length).indexOf(10);
+    }
+    if (newline < 0) return null;
+    const firstLine = bytes.subarray(0, newline).toString('utf8');
     const rec = JSON.parse(firstLine) as { category?: string; issuedAt?: string; payload?: Record<string, unknown> };
     if (rec.category !== 'genesis') return null;
     const seedId = rec.payload?.['seedId'];
@@ -43,14 +55,17 @@ export function readSeedGenesis(stateDir: string): { seedId: string; bornAt: str
     };
   } catch {
     return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
 export function composeLivedIdentity(stateDir: string, budget = DEFAULT_BUDGET): string | null {
   const genesis = readSeedGenesis(stateDir);
-  const checkpoint = readSeedCheckpoint(stateDir);
-  if (genesis === null || checkpoint === null) return null;
+  const snapshot = readSeedCheckpoint(stateDir);
+  if (genesis === null || snapshot === null) return null;
   const tail = readSeedLedgerTail(stateDir);
+  const checkpoint = projectFeedbackState(snapshot, tail);
   const headSeq = Math.max(checkpoint.ledgerSeq, ...tail.map((l) => l.seq), 0);
 
   const lines: string[] = [];
@@ -76,13 +91,15 @@ export function composeLivedIdentity(stateDir: string, budget = DEFAULT_BUDGET):
     }
   }
   if (right + wrong + partial + open > 0) {
-    lines.push(`My record: ${right + wrong + partial} prediction(s) judged by reality — ${right} right, ${wrong} wrong, ${partial} partial${open > 0 ? `; ${open} still open` : ''}.`);
+    lines.push(`My retained prediction record: ${right + wrong + partial} prediction(s) judged by reality — ${right} right, ${wrong} wrong, ${partial} partial${open > 0 ? `; ${open} still open` : ''}.`);
   }
+
+  if (!checkpoint.feedbackView.complete) lines.push('Recent feedback coverage is incomplete; active expectations are omitted.');
 
   // Earned facts — conclusions that survived into fact-grade.
   const facts = composeLivedFacts(stateDir);
   const factCount = facts === null ? 0 : facts.split('\n').filter((l) => l.startsWith('- ')).length;
-  if (factCount > 0) lines.push(`${factCount} of my conclusions have earned fact-grade (confidence + evidence + stood through lived time).`);
+  if (factCount > 0) lines.push(`${factCount} of my conclusions have retained support (confidence + traceable evidence + time); they remain revisable.`);
 
   // Trust earned through lived corrections (bookkeeping keys stay out).
   const trust = new Map<string, number>();

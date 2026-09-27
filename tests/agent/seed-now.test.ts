@@ -51,7 +51,7 @@ test('composes the lived now: continuity, identity events, freshest thought, ope
   assert.ok(now.includes('jtr: "should I do the sauna tonight?"'), 'last contact carried');
   assert.ok(now.includes('you: "Skip the heroics'), "the agent's own last words, as 'you'");
   assert.ok(now.includes('jtr declined your merge — "feed them"'), 'identity events since');
-  assert.ok(now.includes('you currently believe: [body.jtr] jtr is favoring recovery'), 'freshest thought');
+  assert.ok(now.includes('you considered: [body.jtr] jtr is favoring recovery'), 'freshest thought remains a hypothesis');
   assert.ok(now.includes('"HRV will recover by mid-week"'), 'open expectation held');
 });
 

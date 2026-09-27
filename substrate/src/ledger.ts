@@ -14,6 +14,7 @@
 
 import {
   readFileSync,
+  readSync,
   existsSync,
   mkdirSync,
   statSync,
@@ -223,6 +224,31 @@ export class SeedLedger {
       } catch {
         // torn tail or corruption — surface via verifyChain(), not here
       }
+    }
+    return records;
+  }
+
+  /** Bounded projection read for recent cognitive context. This does not
+   * replace chain verification or replay; an incomplete head/tail is omitted. */
+  readTail(maxBytes = 128 * 1024): LedgerRecord[] {
+    if (!existsSync(this.ledgerPath)) return [];
+    const size = statSync(this.ledgerPath).size;
+    const length = Math.min(size, Math.max(1, Math.floor(maxBytes)));
+    const start = size - length;
+    const fd = openSync(this.ledgerPath, 'r');
+    const buffer = Buffer.alloc(length);
+    let count: number;
+    try { count = readSync(fd, buffer, 0, length, start); } finally { closeSync(fd); }
+    const first = start === 0 ? 0 : buffer.indexOf(10) + 1;
+    if (start > 0 && first === 0) return [];
+    const last = buffer.lastIndexOf(10, count - 1);
+    if (last < first) return [];
+    const records: LedgerRecord[] = [];
+    for (const line of buffer.subarray(first, last).toString('utf8').split('\n')) {
+      try {
+        const record = JSON.parse(line) as LedgerRecord;
+        if (record.schema === 'home23.seed.ledger.v1' && Number.isFinite(record.seq)) records.push(record);
+      } catch { /* projections omit torn records; verifyChain owns diagnosis */ }
     }
     return records;
   }

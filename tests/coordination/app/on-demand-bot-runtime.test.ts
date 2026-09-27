@@ -47,6 +47,7 @@ const SPECIALIST_BINDING = "bot-lens-0123456789abcdef";
 const PRIVATE_RESIDENT_SENTINEL = "JERRY_PRIVATE_MEMORY_MUST_NEVER_CROSS";
 const INPUT_ATTACHMENT_PROMPT = "Lens, acknowledge these canonical attachments.";
 const ARTIFACT_PROMPT = "Lens, return your private note as a file.";
+const OUTREACH_PROMPT = "Lens, ask the owner about the finding.";
 const ARTIFACT_RELATIVE_PATH = "media/returned-artifacts/lens-note.txt";
 const authority = Object.freeze({
   capability: "messages" as const,
@@ -93,6 +94,12 @@ async function startModelFixture() {
         .find((message) => message.role === "user");
       const prompt = contentText(current?.content);
       const returnedArtifact = (body.messages ?? []).some((message) => message.role === "tool");
+      if (prompt === OUTREACH_PROMPT && !returnedArtifact) {
+        return new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null,
+          tool_calls: [{ id: 'call-contact-owner', type: 'function', function: { name: 'contact_owner',
+            arguments: JSON.stringify({ text: 'Which connection should I use?', reason: 'The provider failed after dispatch.', delivery_id: 'helper-fixture-outreach' }) } }],
+        } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
       if (prompt === ARTIFACT_PROMPT && !returnedArtifact) {
         return new Response(JSON.stringify({ choices: [{ message: {
           role: "assistant",
@@ -301,12 +308,18 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
     activeWork += 1;
     return () => { activeWork -= 1; };
   };
+  const outreachCalls: Array<{ text: string; reason: string; deliveryId: string }> = [];
   const makeService = () => {
     const runtime = createOnDemandBotRuntime({
       botsRootDirectory: botsRoot,
       bots: { getBotById: (botId) => botRepository.getBotById(botId) },
       leases,
       communications,
+      notifyOwner: async (bot, input) => {
+        assert.equal(bot.id, BOT_ID); assert.equal(bot.residentBinding, SPECIALIST_BINDING);
+        outreachCalls.push(input);
+        return { status: 'committed', notification: 'not_confirmed', messageIds: [fixtureId('message', 99990)], channelId: CHANNEL_ID };
+      },
       artifactPromotion: (bot) => createResidentArtifactPromotionPort({
         database,
         store: () => artifactStore,
@@ -607,6 +620,10 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
       `processless Bot evidence leaked resident term ${residentTerm}`);
   }
 
+  const outreach = await send(firstService, 90, OUTREACH_PROMPT);
+  await outreach.response;
+  assert.equal(outreachCalls.length, 1, 'the real helper tool context reaches its identity-bound owner callback');
+  assert.equal(outreachCalls[0]!.deliveryId, 'helper-fixture-outreach');
   const archived = await botRepository.transitionLifecycle({
     botId: BOT_ID,
     from: "active",

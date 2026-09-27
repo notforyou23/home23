@@ -19,8 +19,11 @@
 
 const fs = require('fs');
 const path = require('path');
+const { projectFeedbackState } = require('../../../shared/seed-feedback-view.cjs');
+const { getClaimFeedback } = require('../../../shared/prediction-feedback.cjs');
+const { thoughtsFromReceipt } = require('../../../shared/lived-thoughts.cjs');
 
-const MAX_CHARS = 800;
+const MAX_CHARS = 1800;
 const FRESH_ACT_WINDOW_SEQS = 150;
 
 function newestCheckpoint(stateDir) {
@@ -42,10 +45,19 @@ function ledgerTail(stateDir, maxBytes = 128 * 1024) {
   const p = path.join(stateDir, 'seed-ledger.jsonl');
   if (!fs.existsSync(p)) return [];
   let raw;
-  try { raw = fs.readFileSync(p, 'utf-8'); } catch { return []; }
-  if (raw.length > maxBytes) raw = raw.slice(-maxBytes);
+  let fd;
+  try {
+    fd = fs.openSync(p, 'r');
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - maxBytes);
+    const buffer = Buffer.alloc(size - start);
+    const count = fs.readSync(fd, buffer, 0, buffer.length, start);
+    raw = buffer.subarray(0, count).toString('utf-8');
+    if (start > 0) raw = raw.slice(raw.indexOf('\n') + 1);
+  } catch { return []; }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
   const lines = [];
-  for (const line of raw.split('\n')) {
+  for (const line of raw.slice(0, raw.lastIndexOf('\n') + 1).split('\n')) {
     if (line.trim() === '') continue;
     try {
       const rec = JSON.parse(line);
@@ -57,26 +69,26 @@ function ledgerTail(stateDir, maxBytes = 128 * 1024) {
 
 /** Compose the individual's lived state for a thinking cycle, or null. */
 function composeLivedState(stateDir) {
-  const ck = newestCheckpoint(stateDir);
-  if (ck === null) return null;
+  const snapshot = newestCheckpoint(stateDir);
+  if (snapshot === null) return null;
   const tail = ledgerTail(stateDir);
+  const ck = projectFeedbackState(snapshot, tail);
   const headSeq = Math.max(ck.ledgerSeq || 0, ...tail.map(l => l.seq), 0);
 
   const lines = [];
+  if (!ck.feedbackView.complete) lines.push("- feedback coverage incomplete: active estimates and expectations omitted");
 
-  // Freshest confident beliefs (top 3 by recency among conf ≥ 0.6).
+  // Confidence is a selection signal, never evidence that a claim is true.
   const beliefs = [];
   for (const cell of ck.cells) {
     for (const e of (cell.estimates || [])) {
       if (typeof e.claim !== 'string' || typeof e.confidence !== 'number' || e.confidence < 0.6) continue;
       if (/^echo estimate/.test(e.claim)) continue;
+      if (getClaimFeedback(cell, e).failedHypothesis) continue;
       beliefs.push({ cell: cell.id, claim: e.claim, confidence: e.confidence, createdAt: e.createdAt || '' });
     }
   }
   beliefs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  for (const b of beliefs.slice(0, 3)) {
-    lines.push(`- believes: [${b.cell}] ${b.claim.slice(0, 130)} (${b.confidence})`);
-  }
 
   // Last real contact (refs with words).
   const contact = [];
@@ -90,14 +102,34 @@ function composeLivedState(stateDir) {
   contact.sort((a, b) => String(a.observedAt).localeCompare(String(b.observedAt)));
   for (const r of contact.slice(-2)) {
     const voice = String(r.sourceRef).startsWith('conversation.jtr') ? 'jtr' : 'self';
-    lines.push(`- last contact — ${voice}: "${r.head.slice(0, 110)}"`);
+    lines.push(`- last contact — ${voice}: "${r.head}"`);
+  }
+
+  // Contact and correction precede self-generated hypotheses. Otherwise old,
+  // confident prose consumes the budget and crowds out the world again.
+  const failures = ck.cells.flatMap(cell => (cell.predictions || [])
+    .filter(p => p.resolvedAt !== undefined && typeof p.error === 'number' && p.error >= 0.7))
+    .sort((a, b) => String(b.resolvedAt).localeCompare(String(a.resolvedAt)));
+  for (const p of failures.slice(0, 2)) {
+    lines.push(`- failed hypothesis: "${p.claim}" (error ${p.error.toFixed(2)}); needs newer evidence and an explicit revision, not repetition.`);
+  }
+  const reflections = tail.flatMap(thoughtsFromReceipt).filter(thought => thought.kind === 'reflection')
+    .filter(thought => {
+      const cell = ck.cells.find(cell => cell.id === thought.cellId);
+      return cell && !getClaimFeedback(cell, thought.candidate).failedHypothesis;
+    });
+  for (const thought of reflections.slice(-2)) {
+    lines.push(`- earlier reflection (not an observation or obligation): ${thought.text}`);
+  }
+  for (const b of beliefs.slice(0, 2)) {
+    lines.push(`- tentative estimate: [${b.cell}] ${b.claim} (confidence ${b.confidence}; not an established fact)`);
   }
 
   // Open expectations (he is on record).
   for (const cell of ck.cells) {
     for (const p of (cell.predictions || [])) {
-      if (p.resolvedAt === undefined && typeof p.claim === 'string') {
-        lines.push(`- expecting: ${p.claim.slice(0, 110)} (horizon ${p.horizon || '?'})`);
+      if (p.resolvedAt === undefined && typeof p.claim === 'string' && !getClaimFeedback(cell, p).failedHypothesis) {
+        lines.push(`- expecting (unresolved): ${p.claim} (horizon ${p.horizon || '?'})`);
       }
     }
   }
@@ -115,18 +147,15 @@ function composeLivedState(stateDir) {
 
   if (lines.length === 0) return null;
 
-  let text = lines.slice(0, 8).join('\n');
-  if (text.length > MAX_CHARS) {
-    const kept = [];
-    let total = 0;
-    for (const line of lines) {
-      if (total + line.length + 1 > MAX_CHARS) break;
-      kept.push(line);
-      total += line.length + 1;
-    }
-    text = kept.join('\n');
+  const kept = [];
+  let total = 0;
+  for (const line of lines) {
+    if (kept.length >= 8) break;
+    if (kept.length && total + line.length + 1 > MAX_CHARS) continue;
+    kept.push(line);
+    total += line.length + 1;
   }
-  return text;
+  return kept.join('\n');
 }
 
 module.exports = { composeLivedState };
@@ -138,8 +167,9 @@ module.exports = { composeLivedState };
  * the brain and goals (slow, semantic) — hippocampus to cortex, by way of
  * dreaming. Null when the seed has no residue; dreams then stay generic. */
 function composeDayResidue(stateDir, maxFragments = 6) {
-  const ck = newestCheckpoint(stateDir);
-  if (ck === null) return null;
+  const snapshot = newestCheckpoint(stateDir);
+  if (snapshot === null) return null;
+  const ck = projectFeedbackState(snapshot, ledgerTail(stateDir));
   const fragments = [];
 
   const refs = [];
@@ -169,7 +199,7 @@ function composeDayResidue(stateDir, maxFragments = 6) {
       // fallthrough in a caption table. Degraded-honest: with nothing lived
       // left, this returns null and dreams stay generic, which the contract
       // below already allows and which is strictly better than a closed loop.
-      if (String(r.sourceRef || '').startsWith('dream:')) continue;
+      if (!/^(?:conversation\.|relationship\.|house\.|tool[.:]|external[.:]|observation[.:]|sensor[.:])/.test(String(r.sourceRef || ''))) continue;
       refs.push(r);
     }
   }
@@ -177,18 +207,19 @@ function composeDayResidue(stateDir, maxFragments = 6) {
   for (const r of refs.slice(-Math.max(2, maxFragments - 2))) {
     const src = String(r.sourceRef || '');
     const who = src.startsWith('conversation.jtr') ? 'jtr said'
-      : src.startsWith('conversation.') ? 'he said'
+      : src.startsWith('conversation.self') ? 'resident said (self-report)'
+      : src.startsWith('conversation.') ? 'conversation participant said'
       : src.startsWith('house.') ? 'the house'
       : src.startsWith('relationship.') ? 'a teaching'
-      : 'lived';
-    fragments.push(`${who}: "${r.head.slice(0, 100)}"`);
+      : 'recorded observation';
+    fragments.push(`${who}: "${r.head}"`);
   }
 
   for (const cell of ck.cells) {
     for (const p of (cell.predictions || [])) {
       if (p.resolvedAt !== undefined && typeof p.error === 'number') {
         const verdict = p.error <= 0.3 ? 'held' : p.error >= 0.7 ? 'broke' : 'bent';
-        fragments.push(`an expectation ${verdict}: "${String(p.claim).slice(0, 80)}"`);
+        fragments.push(`an expectation ${verdict}: "${String(p.claim)}"`);
         if (fragments.length >= maxFragments) break;
       }
     }

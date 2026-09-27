@@ -108,6 +108,7 @@ export interface OnDemandBotRuntimeOptions {
   communications?: ResidentCommunicationPort;
   channelOperation?: NonNullable<ToolContext['coordinationChannelOperation']>;
   scheduledTurn?: (bot: BotDirectoryRecord, input: import('./scheduled-turns.js').ScheduledChannelTurn) => Promise<unknown>;
+  notifyOwner?: (bot: BotDirectoryRecord, input: import('../../channels/owner-outreach.js').OwnerOutreachInput) => Promise<import('../../channels/owner-outreach.js').OwnerOutreachReceipt>;
 
   artifactPromotion?: (bot: BotDirectoryRecord) => ResidentArtifactPromotionPort;
   /** Canonical content-addressed store; paths never enter product Messages or model text. */
@@ -923,6 +924,7 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
           turnRuntime: null,
           ...services.context,
           coordinationChannelOperation: options.channelOperation,
+          ...(options.notifyOwner ? { contactOwner: (input: import('../../channels/owner-outreach.js').OwnerOutreachInput) => options.notifyOwner!(bot, input) } : {}),
         };
         const agent = new AgentLoop({
           apiKey: config.apiKey || "on-demand-local",

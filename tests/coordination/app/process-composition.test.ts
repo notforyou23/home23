@@ -48,8 +48,9 @@ test("derived resident Work projection starts once and has its own 30-second cad
   assert.equal(callbacks.has(2_000), true);
   assert.equal(callbacks.has(30_000), true);
   rmSync(projectionDirectory);
-  // The contact pump reports its missing test directory, but must not run the
-  // separate Work projection or recreate it on the two-second tick.
+  // The contact pump reports its missing test directory. With no resident
+  // destinations, execution feedback is idle too; the separate Work projection
+  // must still not run or recreate its directory on the two-second tick.
   callbacks.get(2_000)!();
   await settled();
   assert.equal(existsSync(projectionDirectory), false);

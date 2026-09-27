@@ -58,6 +58,7 @@ import {
 } from './agency.js';
 import { skillsAuditTool, skillsGetTool, skillsListTool, skillsRunTool, skillsSuggestTool } from './skills.js';
 import { contactTools } from './contact.js';
+import { contactOwnerTool } from './owner-outreach.js';
 import {
   listBrainsTool,
   listResearchRunsTool,
@@ -252,6 +253,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig; coding?: { defa
   const registry = new ToolRegistry();
 
   registry.register(taskContextTool);
+  registry.register(contactOwnerTool);
   registry.register(shellTool);
   registry.register(readFileTool);
   registry.register(writeFileTool);

@@ -61,7 +61,7 @@ test('composes the lived record: contact with words, thoughts, verdicts, develop
   assert.ok(text.includes('jtr: "give me two lines on what matters tonight"'), "jtr's words carried");
   assert.ok(text.includes('you: "Skip the sauna heroics'), "the agent's own words carried, addressed as 'you'");
   assert.ok(text.includes('Teachings taken:'), 'teachings section present');
-  assert.ok(text.includes('believes: jtr is watching HRV closely'), "the lobe's thought surfaces");
+  assert.ok(text.includes('considered: jtr is watching HRV closely'), "the lobe's thought surfaces as a historical hypothesis");
   assert.ok(text.includes('reality agreed (error 0.00)'), 'judged prediction narrated');
   assert.ok(text.includes('correction.v1 ×1'), 'development summarized');
   assert.ok(text.includes('jtr declined his dissolve'), 'operator act in the record');

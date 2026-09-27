@@ -19,6 +19,7 @@ import type {
   WorkspacePacket,
   TensionProjection,
   PredictionProjection,
+  ResolvedPredictionProjection,
 } from './types.js';
 import type { CellPlasticState, DevelopmentalState } from './plasticity.js';
 import { effectiveDispositions } from './plasticity.js';
@@ -91,10 +92,20 @@ export function scoreCells(
 export function buildPacket(admitted: SituationCell[], dispositions: SeedDispositions): WorkspacePacket {
   const tensions: TensionProjection[] = [];
   const predictions: PredictionProjection[] = [];
+  const resolvedPredictions: ResolvedPredictionProjection[] = [];
   for (const cell of admitted) {
     for (const t of cell.intentions) {
-      if (t.open) tensions.push({ tensionId: t.tensionId, cellId: cell.id, magnitude: t.magnitude, direction: t.direction });
+      if (t.open) tensions.push({ tensionId: t.tensionId, description: t.description, cellId: cell.id, magnitude: t.magnitude, direction: t.direction });
     }
+    // Expose the same bounded history used by admission, including the IDs
+    // a revision must cite. Hiding older failures would make the gate unanswerable.
+    resolvedPredictions.push(...cell.predictions
+      .filter((p) => p.resolvedAt !== undefined)
+      .sort((a, b) => String(b.resolvedAt).localeCompare(String(a.resolvedAt)))
+      .slice(0, 32)
+      .map((p) => ({ predictionId: p.predictionId, cellId: cell.id, claim: p.claim,
+        confidence: p.confidence, horizon: p.horizon, createdAt: p.createdAt,
+        resolvedAt: p.resolvedAt as string, error: p.error })));
     for (const p of cell.predictions) {
       if (p.resolvedAt === undefined) {
         predictions.push({ predictionId: p.predictionId, cellId: cell.id, claim: p.claim, confidence: p.confidence, horizon: p.horizon, createdAt: p.createdAt });
@@ -110,6 +121,7 @@ export function buildPacket(admitted: SituationCell[], dispositions: SeedDisposi
     eventRefs: admitted.flatMap((c) => c.realityRefs.slice(-PACKET_REFS_PER_CELL)),
     tensions,
     predictions,
+    resolvedPredictions,
     uncertainty,
     requestedCapability: 'lobe.recruit.model',
     // 'propose': lobes may stage typed deltas — but only through validation

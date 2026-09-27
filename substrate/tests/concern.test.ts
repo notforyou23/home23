@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { SeedProcess } from '../src/seed.js';
 import { SeedRunner } from '../src/runner.js';
 import type { LobeAdapter } from '../src/lobe.js';
-import { buildLobePrompt, predictionIdFor, applyLobeDeltas } from '../src/lobe.js';
+import { buildLobePrompt, applyLobeDeltas } from '../src/lobe.js';
 import type { WorkspacePacket, LobeResult, SituationCell } from '../src/types.js';
 import {
   parseHorizon,
@@ -139,7 +139,7 @@ test('formation gates: confidence, capacity, duplicates — honest skips', () =>
 
 // ─── The loop, end to end through the real runner ────────────────────────────
 
-test('RUNNER: a committed prediction becomes an obligation; the crossing is an endogenous occasion at its SOLVED time; the motor reaches jtr transactionally; resolution discharges', async (t) => {
+test('RUNNER: prediction obligation queues outreach transactionally; actual owner contact permits later resolution', async (t) => {
   const srcDir = makeDir('concern-src-', t);
   const stateDir = makeDir('concern-run-', t);
   const sourcePath = join(srcDir, 'event-ledger.jsonl');
@@ -192,9 +192,9 @@ test('RUNNER: a committed prediction becomes an obligation; the crossing is an e
   const runner = new SeedRunner({
     stateDir, sourcePath, fromEnd: false, lobe,
     workspaceEveryN: 4, checkpointEveryN: 1000, lobeMinIntervalMs: 0,
-    extraSources: [{ sourcePath: join(srcDir, 'relationship.jsonl'), sourceType: 'relationship-ledger', id: 'relationship', backfillBytes: 0 }],
+    extraSources: [{ sourcePath: join(srcDir, 'conversation-stream.jsonl'), sourceType: 'conversation-stream', id: 'conversation', backfillBytes: 0 }],
   });
-  writeFileSync(join(srcDir, 'relationship.jsonl'), '', 'utf-8');
+  writeFileSync(join(srcDir, 'conversation-stream.jsonl'), '', 'utf-8');
   runner.start();
   // Formation tick: events → recruitment 1 (prediction committed, commitment
   // formed) — and because the horizon is already long past, the solver at
@@ -210,7 +210,10 @@ test('RUNNER: a committed prediction becomes an obligation; the crossing is an e
   assert.ok(formation !== undefined, 'formation receipted as concern.v1');
   const formedList = formation.payload?.['formed'] as Array<{ commitmentId: string; predictionId: string; dueAt: string }>;
   const cellId = (formedList[0] as unknown as { cellId: string }).cellId;
-  assert.equal(formedList[0]?.predictionId, predictionIdFor(cellId, 'the test world will answer'), 'commitment bound to the exact committed prediction');
+  const admittedPrediction = afterFormation.flatMap((r) => Array.isArray(r.payload?.['appliedDeltas'])
+    ? r.payload['appliedDeltas'] as Array<{ field: string; delta: { predictionId?: string } }> : [])
+    .find((d) => d.field === 'predictions.append');
+  assert.equal(formedList[0]?.predictionId, admittedPrediction?.delta.predictionId, 'commitment bound to the exact receipted occurrence');
   // The first workspace cadence fires at event 4 (10:03) — the recruitment's
   // event-time anchors the horizon.
   assert.equal(formedList[0]?.dueAt, '2026-08-01T11:03:00.000Z', 'horizon parsed relative to the recruitment event-time');
@@ -246,7 +249,9 @@ test('RUNNER: a committed prediction becomes an obligation; the crossing is an e
   assert.ok(dispatched !== undefined, 'dispatch receipted');
   const outbox = readFileSync(join(stateDir, 'outbox.jsonl'), 'utf-8').trim().split('\n');
   assert.equal(outbox.length, 1, 'exactly one outbox line');
-  assert.ok(outbox[0]?.includes('asking jtr'), 'the message reached the operator channel');
+  assert.ok(outbox[0]?.includes('asking jtr'), 'the request is queued for the owner-conversation relay');
+  assert.equal(dispatched.payload?.['destination'], 'seed-outbox');
+  assert.equal(dispatched.payload?.['deliveryState'], 'queued');
 
   // Press 2 tried to CONFIRM without an answer — the law refuses it, and the
   // commitment stays open (the hand stays extended).
@@ -257,11 +262,11 @@ test('RUNNER: a committed prediction becomes an obligation; the crossing is an e
   assert.ok(!afterPress2.some((r) => r.category === 'concern' && Array.isArray(r.payload?.['discharged']) && (r.payload?.['discharged'] as unknown[]).length > 0),
     'nothing discharged — you may not answer your own question');
 
-  // jtr answers (a teaching — his channel alone). Now the same confirmation
+  // jtr answers through the same conversation stream the real chat uses. Now the same confirmation
   // is honest, and press 3 lands it.
-  writeFileSync(join(srcDir, 'relationship.jsonl'), JSON.stringify({
-    entry_id: 'rel_answer_1', ts: '2026-08-01T23:00:00.000Z',
-    payload: { type: 'correction', actor: 'jtr', head: 'jtr answered the question' },
+  writeFileSync(join(srcDir, 'conversation-stream.jsonl'), JSON.stringify({
+    ts: '2026-08-01T23:00:00.000Z', role: 'user', session: 'owner-reply',
+    text: 'I checked the test world and it did answer the question.',
   }) + '\n', 'utf-8');
   // One tick: the answer is ingested, then the solver presses — same tick,
   // ingest before solve (an answer that arrives is heard before he speaks).

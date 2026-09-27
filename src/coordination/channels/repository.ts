@@ -872,7 +872,7 @@ export class SqliteMessagingRepository implements ChannelRepository {
     const expectedBot = "expectedBot" in input ? input.expectedBot : null;
     if (
       !isChannelManager(input.actor) ||
-      (input.actor.kind !== "owner" && (expectedKind !== "group" || !memberIds.includes(input.actor.principalId))) ||
+      (input.actor.kind !== "owner" && !memberIds.includes(input.actor.principalId)) ||
       input.idempotency.operation !== "channel.create" ||
       input.channel.kind !== expectedKind ||
       input.channel.ownerPrincipalId !== "user_owner" ||

@@ -103,8 +103,8 @@ test('a matched turn surfaces exactly the lived facts it touches, under the usag
   assert.ok(block !== null);
   assert.ok(block.includes('never recite or summarize this block'), 'usage contract present');
   assert.ok(block.includes('You are on the record expecting: "pressure will fall below 1010"'), 'open expectation surfaced');
-  assert.ok(block.includes('You hold, from receipts: "Barometric pressure mean 1011.20 hPa"'), 'matched estimate surfaced');
-  assert.ok(block.indexOf('on the record expecting') < block.indexOf('You hold, from receipts'), 'higher-reach items lead');
+  assert.ok(block.includes('You formed an estimate, not an established fact: "Barometric pressure mean 1011.20 hPa"'), 'matched estimate remains a hypothesis');
+  assert.ok(block.indexOf('on the record expecting') < block.indexOf('You formed an estimate'), 'higher-reach items lead');
   assert.ok(!block.includes('feed them'), 'stale unmatched identity events stay out');
   assert.ok(!/(pressure|energy) \d+%/.test(block), 'v1 telemetry dump is dead');
   assert.ok(!block.includes('Recent development'), 'v1 rule counts are dead');

@@ -1,5 +1,7 @@
 import { createExecutionControlPort } from "./agent/execution-control.js";
 import { Home23Adapter } from './channels/home23.js';
+import { createOwnerOutreachSender, createOwnerOutreachHandler } from './channels/owner-outreach.js';
+import { createSeedOperatorOutreach } from './substrate/operator-outreach.js';
 import { runScheduledChannelTurn } from './scheduler/channel-run.js';
 /**
  * Home23 — Agent Harness Entry Point
@@ -702,7 +704,14 @@ async function main(): Promise<void> {
     router.registerAdapter(adapter);
     adapterMap.set(adapter.name, adapter);
     enabledAdapters.push(adapter.name);
+    toolContext.contactOwner = createOwnerOutreachSender(adapter);
   }
+
+  const seedOperatorOutreach = toolContext.contactOwner ? createSeedOperatorOutreach({
+    stateDir: resolve(workspacePath, '..', 'substrate', 'seed-01'),
+    send: input => toolContext.contactOwner!(input),
+    onError: error => console.warn('[seed-outreach] Pending owner message:', error.message),
+  }) : undefined;
 
   if (config.channels?.telegram?.enabled) {
     const tc = config.channels.telegram;
@@ -1320,6 +1329,7 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error('[home] Failed to start adapters:', err);
   }
+  seedOperatorOutreach?.start();
 
   if (scheduler) {
     scheduler.start();
@@ -1751,6 +1761,13 @@ async function main(): Promise<void> {
   // autonomous remediation has been exhausted. Routes the message to the
   // owner's default channel (Telegram DM for now). Bearer-token gated so
   // only the local engine can fire it.
+  bridgeApp.post('/api/owner-outreach', createOwnerOutreachHandler({
+    token: bridgeToken || '',
+    send: async input => {
+      if (!toolContext.contactOwner) throw new Error('Home23 owner conversation unavailable');
+      return toolContext.contactOwner(input);
+    },
+  }));
   bridgeApp.post('/api/notify', async (req: any, res: any) => {
     if (bridgeToken) {
       const header = req.headers.authorization || '';
@@ -2213,6 +2230,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string): Promise<void> => {
     if (!shutdownGuard.begin(signal)) return;
+    await seedOperatorOutreach?.stop();
     clearInterval(chatTurnRecoveryInterval);
     agent.stopRecoverySweep();
     agent.stop(undefined, undefined, 'harness_shutdown');

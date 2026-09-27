@@ -17,6 +17,9 @@
  */
 
 import { readSeedCheckpoint, readSeedLedgerTail } from './seed-context.js';
+import { projectFeedbackState } from '../../shared/seed-feedback-view.cjs';
+import { getClaimFeedback } from '../../shared/prediction-feedback.cjs';
+import { thoughtsFromReceipt } from '../../shared/lived-thoughts.cjs';
 
 const DEFAULT_BUDGET = 1200;
 /** Chain-seq window for "since last session" identity events (~½ day). */
@@ -24,9 +27,10 @@ const FRESH_WINDOW_SEQS = 150;
 const CONTACT_LINES = 4;
 
 export function composeSeedNow(stateDir: string, budget = DEFAULT_BUDGET): string | null {
-  const checkpoint = readSeedCheckpoint(stateDir);
-  if (checkpoint === null) return null;
+  const snapshot = readSeedCheckpoint(stateDir);
+  if (snapshot === null) return null;
   const tail = readSeedLedgerTail(stateDir);
+  const checkpoint = projectFeedbackState(snapshot, tail);
   const headSeq = Math.max(checkpoint.ledgerSeq, ...tail.map((l) => l.seq), 0);
 
   // Where the last contact left off — continuity across the session gap.
@@ -39,7 +43,7 @@ export function composeSeedNow(stateDir: string, budget = DEFAULT_BUDGET): strin
 
   // Standing commitments — open expectations are his to resolve.
   const open = checkpoint.cells
-    .flatMap((c) => (c.predictions ?? []).filter((p) => p.resolvedAt === undefined).map((p) => ({ cell: c.id, ...p })))
+    .flatMap((c) => (c.predictions ?? []).filter((p) => p.resolvedAt === undefined && !getClaimFeedback(c, p).failedHypothesis).map((p) => ({ cell: c.id, ...p })))
     .slice(0, 3)
     .map((p) => `- [${p.cell}] "${p.claim}" (confidence ${p.confidence}, horizon ${p.horizon})`);
 
@@ -60,24 +64,32 @@ export function composeSeedNow(stateDir: string, budget = DEFAULT_BUDGET): strin
   // The freshest thought his mind wrote into state.
   let freshest: string | null = null;
   for (const line of tail) {
-    if (line.category !== 'lobe') continue;
-    const deltas = line.payload['appliedDeltas'];
-    if (!Array.isArray(deltas)) continue;
-    for (const d of deltas as Array<{ cellId?: string; field?: string; delta?: Record<string, unknown> }>) {
-      const claim = d.delta?.['claim'];
-      if (typeof claim === 'string') {
-        const verb = d.field === 'predictions.append' ? 'expect' : 'believe';
-        freshest = `- you currently ${verb}: [${d.cellId ?? '?'}] ${claim}`;
-      }
+    for (const thought of thoughtsFromReceipt(line)) {
+      const claim = thought.text;
+      const cell = checkpoint.cells.find((c) => c.id === thought.cellId);
+      if (!cell) continue;
+      const carried = (thought.kind === 'prediction' ? cell.predictions : cell.estimates)
+        .filter((p) => p.claim === claim).at(-1);
+      if (carried?.resolvedAt !== undefined || getClaimFeedback(cell, carried ?? thought.candidate).failedHypothesis) continue;
+      // An append receipt proves a thought was formed, not that it is still true.
+      freshest = `- you ${thought.kind === 'prediction' ? 'predicted' : 'considered'}: [${cell.id}] ${claim} (a prior thought, not an established fact or obligation)`;
     }
   }
 
-  if (contact.length === 0 && open.length === 0 && since.length === 0 && freshest === null) return null;
+  const corrections = checkpoint.cells.flatMap((c) => c.predictions
+    .filter((p) => p.resolvedAt !== undefined && typeof p.error === 'number' && p.error >= 0.7))
+    .sort((a, b) => String(b.resolvedAt).localeCompare(String(a.resolvedAt)))
+    .slice(0, 3).map((p) => `- failed hypothesis: "${p.claim}" (error ${p.error!.toFixed(2)}, resolved ${p.resolvedAt}); do not carry forward without new evidence.`);
+
+  if (contact.length === 0 && open.length === 0 && since.length === 0 && freshest === null && corrections.length === 0) return null;
 
   const sections: string[][] = [
     [`NOW (lived) — where your life stands as this session opens (chain seq ${headSeq}).`],
   ];
+  if (!checkpoint.feedbackView.complete) sections.push(["Feedback coverage is incomplete; active estimates and expectations are omitted."]);
+  sections.push([`Contact retained from checkpoint seq ${snapshot.ledgerSeq}; later contact may exist.`]);
   if (contact.length > 0) sections.push(['Last contact:', ...contact]);
+  if (corrections.length > 0) sections.push(['What corrected your expectations:', ...corrections]);
   if (since.length > 0) sections.push(['Since then:', ...since]);
   if (freshest !== null) sections.push(['Freshest thought:', freshest]);
   if (open.length > 0) sections.push(['You are on the record expecting:', ...open]);

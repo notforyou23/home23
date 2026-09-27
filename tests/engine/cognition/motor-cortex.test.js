@@ -7,7 +7,7 @@ const { MotorCortex } = require('../../../engine/src/cognition/motor-cortex.js')
 
 const logger = { info() {}, warn() {}, error() {} };
 
-test('motor cortex routes bounded agenda through executor and marks acted_on', async () => {
+test('motor cortex records confirmed dispatch as acted_on while result remains pending', async () => {
   const statusUpdates = [];
   const calls = [];
   const motor = new MotorCortex({
@@ -25,7 +25,8 @@ test('motor cortex routes bounded agenda through executor and marks acted_on', a
         action: 'diagnose_agenda',
         problemId: `agenda_${item.id}`,
         status: 'open',
-        detail: 'queued for diagnostic dispatch',
+        turnId: 'turn-receipt',
+        detail: 'turnId=turn-receipt',
       };
     },
   });
@@ -35,12 +36,12 @@ test('motor cortex routes bounded agenda through executor and marks acted_on', a
     content: 'Investigate why RECENT.md has not regenerated in 9 days.',
   }, { cycleSessionId: 'tm-cycle-test' });
 
-  assert.equal(result.status, 'acted');
+  assert.equal(result.status, 'dispatched');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].opts.actor, 'motor-cortex');
   assert.equal(calls[0].opts.origin, 'thinking-machine');
   assert.deepEqual(statusUpdates.map(u => [u.id, u.status]), [['ag-test', 'acted_on']]);
-  assert.match(statusUpdates[0].opts.note, /queued/);
+  assert.match(statusUpdates[0].opts.note, /result pending/);
 });
 
 test('motor cortex rejects agenda items that fail policy without executing', async () => {

@@ -13,8 +13,9 @@ import { createLiveVoiceService, type LiveVoiceService } from './live-voice.js';
 import { createLiveVoiceTranscriptPort } from './live-voice-transcripts.js';
 import { ProjectContinuityStore } from '../projects/continuity.js';
 import { boundHistoricalContext } from '../../agent/historical-context.js';
-import { createResidentNotifications } from './resident-notifications.js';
+import { createHelperOwnerOutreach, createResidentNotifications } from './resident-notifications.js';
 import { createResidentContactProjection } from './resident-contact.js';
+import { createResidentExecutionFeedbackProjection } from './resident-execution-feedback.js';
 import { canRecoverOutcomeTarget } from './outcome-target.js';
 import { projectResidentWorkIncrementally, residentWorkProjectionChangesSince } from './resident-work-projection.js';
 import { createResidentAssignments } from './resident-assignments.js';
@@ -790,7 +791,8 @@ export function createCoordinationProcess(
     if (residentWorkProjectionTimer) clearInterval(residentWorkProjectionTimer);
     if (residentAttestationTimer) clearInterval(residentAttestationTimer);
     residentAttestationTimer = undefined;
-    await residentAttestationRun;
+    try { await residentExecutionFeedback.drain(); }
+    finally { await residentAttestationRun; }
   };
   let liveVoice: LiveVoiceService | undefined;
   const lifecycle = createCoordinationLifecycle([{
@@ -983,11 +985,18 @@ export function createCoordinationProcess(
     {
       const resolveResident = (residentBinding: string) =>
         residentTargets.get(residentBinding);
+      const notifyHelperOwner = createHelperOwnerOutreach({ database, messages, channels,
+        recordMessage: createCanonicalMessageRecorder(communications, deviceNotifications) });
       const onDemandBots = helperRuntime = createOnDemandBotRuntime({
         botsRootDirectory: config.botRootDirectory,
         bots: { getBotById: (botId) => botRepository.getBotById(botId) },
         leases,
         communications,
+        notifyOwner: async (bot, input) => {
+          if (!isCanonicalMessagesAuthority(currentAuthority('messages'))) throw new MessagingError('authority_unavailable');
+          const done = lifecycle.beginWork();
+          try { return await notifyHelperOwner(bot, input); } finally { done(); }
+        },
         scheduledTurn: (bot, input) => {
           if (!helperScheduledTurn) throw new Error('House scheduler is starting');
           return helperScheduledTurn(bot, input);
@@ -1353,7 +1362,7 @@ export function createCoordinationProcess(
       if (!bot) throw new Error('Helper identity unavailable');
       return channelOperations({role:'on_demand_bot',residentSlug:bot.residentBinding,instanceId:input.origin.holderInstanceId,keyVersion:0},input);
     };
-    const notifyResident = createResidentNotifications({ database, messages,
+    const notifyResident = createResidentNotifications({ database, messages, channels,
       resolveResident: slug => completionTargets.get(slug),
       recordMessage: createCanonicalMessageRecorder(communications, deviceNotifications) });
     const detachmentPath = "/internal/v1/foreground-detachments";
@@ -1469,6 +1478,12 @@ export function createCoordinationProcess(
   const resolveInstancePaths = createRequire(import.meta.url)("../../../shared/agent-instance-paths.cjs").resolveAgentInstancePaths as (root:string,slug:string)=>{instanceRoot:string;conversationsDir:string};
   const consoleRoot = config.home23Root ?? resolve(dirname(config.databasePath),"../../..");
   const consoleBotRoot = config.botRootDirectory ?? join(dirname(config.databasePath),"..","bots");
+  const residentExecutionFeedback = createResidentExecutionFeedbackProjection(database,
+    join(dirname(config.databasePath), 'resident-contact'),
+    Object.entries(config.residents).filter(([, resident]) => resident.enabled).map(([slug, resident]) => ({
+      slug, ledgerPath: join(resident.instanceDirectory ?? resolveInstancePaths(consoleRoot, slug).instanceRoot,
+        'brain', 'event-ledger.jsonl'),
+    })));
   const consoleCatalog = new ConsoleCatalog(async () => {
     const bots = database.readAll<{id:string;name:string;binding:string}>("SELECT id,name,resident_binding AS binding FROM bots");
     const roots:ConsoleRoot[]=[];
@@ -1595,6 +1610,7 @@ export function createCoordinationProcess(
       residentWorkProjectionTimer.unref?.();
       outcomeTimer = setInterval(() => {
         try { residentContact.pump(); } catch (error) { console.error('[resident-contact]', error); }
+        void residentExecutionFeedback.pump().catch(error => console.error('[resident-execution-feedback]', error));
         void reconcileChessTurns?.().catch(error => console.error('[native-chess]', error));
         try { reconcileScheduledTurns?.(); } catch (error) { console.error('[scheduled-turns]', error); }
         try { reconcileJoinedStops(); } catch(error) { console.error('[joined-stop]',error); }

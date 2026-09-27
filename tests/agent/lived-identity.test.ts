@@ -25,7 +25,10 @@ function writeFixture(dir: string): void {
     version: 2, ledgerSeq: 900,
     cells: [{
       id: 'world.home23', generation: 800, workspacePressure: 0.3,
-      energy: { current: 1 }, uncertainty: 0.4, intentions: [], realityRefs: [],
+      energy: { current: 1 }, uncertainty: 0.4, intentions: [], realityRefs: ['a','b','c','d','e'].map(refId => ({
+        refId, sourceRef: `house.sensor:${refId}`, sourceAuthority: 'seed.adapter', flag: 'COLLECTED',
+        head: 'An actual sensor observation', observedAt: '2026-08-07T09:00:00.000Z',
+      })),
       estimates: [
         { claim: 'Heartbeat cadence stable ~5min', confidence: 0.85, evidenceRefs: ['a', 'b', 'c'], createdAt: '2026-08-07T10:00:00.000Z' },
         { claim: 'Degradation recovers under 100ms', confidence: 0.78, evidenceRefs: ['d', 'e'], createdAt: '2026-08-07T11:00:00.000Z' },
@@ -55,7 +58,7 @@ test('the biography composes in first person with receipts underneath', (t) => {
   assert.ok(bio.includes('I was born 2026-08-07 as seed_test_0001; my chain holds 900 lived events.'), 'birth + age');
   assert.ok(bio.includes('My body: world.home23 (gen 800)'), 'the body with wear');
   assert.ok(bio.includes('2 prediction(s) judged by reality — 1 right, 1 wrong, 0 partial; 1 still open'), 'honest track record');
-  assert.ok(bio.includes('2 of my conclusions have earned fact-grade'), 'earned facts counted through the real gates');
+  assert.ok(bio.includes('2 of my conclusions have retained support'), 'earned facts counted through the real gates');
   assert.ok(bio.includes('worker.systems (1.40)'), 'earned trust');
   assert.ok(bio.includes('jtr has ruled on my growth 1 time(s); last: declined my dissolve — "feed them, dont shrink them"'), "the operator's hand, his words");
   assert.ok(bio.includes('cannot be edited, only lived further'), 'names its own nature');

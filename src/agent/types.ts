@@ -122,6 +122,7 @@ export interface DurableTurnStart {
 }
 
 export interface ToolContext {
+  contactOwner?: (input: import('../channels/owner-outreach.js').OwnerOutreachInput) => Promise<import('../channels/owner-outreach.js').OwnerOutreachReceipt>;
   personalWorkspacePath?: string;
   artifactWorkspacePath?: string;
   schedulerUsesCurrentChannel?: boolean;

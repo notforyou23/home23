@@ -51,10 +51,10 @@ test('composes lived state: beliefs (echo junk excluded), contact, expectation, 
   writeFixture(dir);
   const lived = composeLivedState(dir);
   assert.ok(lived !== null);
-  assert.ok(lived.includes('believes: [world.home23] Heartbeat cadence stable'), 'confident belief present');
+  assert.ok(lived.includes('tentative estimate: [world.home23] Heartbeat cadence stable'), 'belief kept as a revisable estimate');
   assert.ok(!lived.includes('echo estimate'), 'echo junk excluded');
   assert.ok(lived.includes('last contact — jtr: "give jerry the house"'), 'contact words carried');
-  assert.ok(lived.includes('expecting: degradation will recur within 6h'), 'open expectation held');
+  assert.ok(lived.includes('expecting (unresolved): degradation will recur within 6h'), 'open expectation held');
   assert.ok(lived.includes('jtr declined his merge — "feed them"'), 'fresh identity event');
 });
 
@@ -117,6 +117,7 @@ test('day residue excludes the individual\'s own dreams — a dream is not lived
       id: 'contact.jtr', realityRefs: [
         { sourceRef: 'conversation.jtr', head: 'the thing jtr actually said', observedAt: '2026-08-13T01:00:00Z' },
         { sourceRef: 'relationship.teaching', head: 'a correction that was earned', observedAt: '2026-08-13T02:00:00Z' },
+        { sourceRef: 'retrieval:internal1', head: 'Internal search guessed a watcher story', observedAt: '2026-08-13T03:00:00Z' },
         { sourceRef: 'dream:dream_cycle18903_2', head: 'I dreamt the ceiling remembered', observedAt: '2026-08-13T03:00:00Z' },
         { sourceRef: 'dream:dream_cycle18903_3', head: 'Three inches above the carpet', observedAt: '2026-08-13T04:00:00Z' },
       ],
@@ -127,7 +128,7 @@ test('day residue excludes the individual\'s own dreams — a dream is not lived
   const residue = composeDayResidue(dir);
   assert.ok(Array.isArray(residue) && residue.length > 0, 'lived material must survive');
   const joined = residue.join('\n');
-  assert.doesNotMatch(joined, /I dreamt|Three inches/, 'a prior dream may not enter day residue');
+  assert.doesNotMatch(joined, /I dreamt|Three inches|Internal search guessed/, 'a prior dream may not enter day residue');
   assert.doesNotMatch(joined, /^lived: "I dream/m, 'and may certainly not be captioned as lived');
   assert.match(joined, /jtr actually said/, 'what jtr said is what the day left');
   assert.match(joined, /correction that was earned/);

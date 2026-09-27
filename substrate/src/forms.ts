@@ -29,7 +29,10 @@ export interface FormManifestEntry {
   cellId?: string;
   /** Event-time of the newest lineage receipt. */
   asOf: string;
-  status: 'open' | 'deleted';
+  status: 'open' | 'closed' | 'deleted';
+  closedAt?: string;
+  resolutionReason?: string;
+  closurePath?: string;
   path: string;
   deletedAt?: string;
 }
@@ -166,6 +169,7 @@ function composeGrowthForm(record: LedgerRecord, seedName: string): string {
 
 export interface MaterializeResult {
   created: FormManifestEntry[];
+  closed: FormManifestEntry[];
 }
 
 export function materializeForms(
@@ -177,9 +181,39 @@ export function materializeForms(
   const manifest = readManifest(formsDir);
   const known = new Set(manifest.map((e) => e.formId));
   const created: FormManifestEntry[] = [];
+  const closed: FormManifestEntry[] = [];
 
   const privateDir = join(formsDir, 'private');
   const growthDir = join(formsDir, 'growth');
+
+  // Reconcile the current manifest against explicit receipted closure. Keep
+  // the original inquiry document intact as dated history; a separate closure
+  // note and appended manifest entry describe what happened subsequently.
+  for (const cell of cells) {
+    for (const intention of cell.intentions) {
+      if (intention.open || !intention.closedAt || !intention.resolutionReason) continue;
+      if (cell.intentions.some((i) => i.tensionId === intention.tensionId && i.open)) continue;
+      const existing = manifest.find((entry) => entry.formId === `inquiry-${intention.tensionId}` && entry.status === 'open');
+      if (existing === undefined) continue;
+      const closureSeqs = windowRecords.filter((record) => record.category === 'lobe'
+        && Array.isArray(record.payload?.['appliedDeltas'])
+        && (record.payload['appliedDeltas'] as Array<{ cellId?: string; field?: string; delta?: { tensionId?: string } }>)
+          .some((d) => d.cellId === cell.id && d.field === 'intentions.resolve' && d.delta?.tensionId === intention.tensionId)).map((r) => r.seq);
+      const closurePath = join('private', `${existing.formId}.closure.md`);
+      mkdirSync(privateDir, { recursive: true });
+      writeFileSync(join(formsDir, closurePath), [
+        `# Inquiry closed — ${existing.title}`, '',
+        `Closed at ${intention.closedAt}: ${intention.resolutionReason}`, '',
+        closureSeqs.length ? `Resolution receipt seq ${closureSeqs.join(', ')}.` : 'Closure carried by the current checkpoint; its receipt is outside this window.',
+        `The original inquiry remains at ${existing.path} as history.`,
+      ].join('\n'), 'utf8');
+      const entry: FormManifestEntry = { ...existing, status: 'closed', closedAt: intention.closedAt,
+        resolutionReason: intention.resolutionReason, closurePath, asOf: intention.closedAt,
+        lineageSeqs: [...new Set([...existing.lineageSeqs, ...closureSeqs])] };
+      appendManifest(formsDir, entry);
+      closed.push(entry);
+    }
+  }
 
   for (const cell of cells) {
     for (const intention of cell.intentions) {
@@ -228,5 +262,5 @@ export function materializeForms(
     known.add(formId);
   }
 
-  return { created };
+  return { created, closed };
 }

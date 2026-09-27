@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -64,8 +64,10 @@ test('unreadable installed inventory reports the failure without falling back to
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test('real generated optional Chrome and MCP services do not enter the submitted Host monitoring plan', () => {
-  const home = mkdtempSync(join(tmpdir(), 'host-generated-probe-'));
+test('generated Host monitoring includes configured MCP and substrate services but excludes optional Chrome', () => {
+  // macOS temporary paths may begin with /var, a symlink to /private/var.
+  // The product correctly rejects symlinked home ancestors; use a real fixture.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'host-generated-probe-')));
   const root = join(home, 'app');
   try {
     mkdirSync(join(root, 'config'), { recursive: true });
@@ -82,8 +84,11 @@ test('real generated optional Chrome and MCP services do not enter the submitted
     const submitted = productDefinitions(module.exports.apps, home, 'milo');
     writeFileSync(join(home, 'runtime', 'ecosystem.config.json'), JSON.stringify({ apps: submitted }));
     const roster = localProbeRoster(root);
-    assert.deepEqual(roster.expected, ownedProcessNames('milo'));
-    assert.equal(roster.expected.some(name => /chrome|mcp/.test(name)), false);
+    assert.deepEqual(roster.expected, ownedProcessNames('milo', { home23Root: home }));
+    assert.equal(roster.expected.includes('home23-chrome-cdp'), false);
+    for (const required of ['home23-milo-mcp', 'home23-milo-seed', 'home23-milo-shipper', 'home23-seed-observatory']) {
+      assert.ok(roster.expected.includes(required), `${required} is configured and owned by this Host`);
+    }
     assert.equal(roster.feeds[0]?.agent, 'milo');
   } finally { rmSync(home, { recursive: true, force: true }); }
 });

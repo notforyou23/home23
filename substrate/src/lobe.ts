@@ -14,6 +14,12 @@
  */
 
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import type { ClaimFeedback, FeedbackCell, FeedbackClaim } from '../../shared/prediction-feedback.cjs';
+const { getClaimFeedback, claimsRelated } = createRequire(import.meta.url)('../../shared/prediction-feedback.cjs') as {
+  getClaimFeedback: (cell: FeedbackCell, candidate: FeedbackClaim) => ClaimFeedback;
+  claimsRelated: (a: string, b: string) => boolean;
+};
 import type {
   WorkspacePacket,
   LobeResult,
@@ -23,6 +29,7 @@ import type {
   Prediction,
   IntentionTension,
   ModelReceipt,
+  RevisionEvidence,
 } from './types.js';
 import { parseHorizon } from './concern.js';
 import { RESOLUTION_WRONG_MIN } from './plasticity.js';
@@ -44,6 +51,7 @@ export const LOBE_DELTA_ALLOWLIST = [
   'estimates.append',
   'predictions.append',
   'intentions.append',
+  'intentions.resolve',
   'predictions.resolve',
   'uncertainty.adjust',
 ] as const;
@@ -203,10 +211,35 @@ function deterministicId(prefix: string, cellId: string, content: string): strin
   return `${prefix}_${createHash('sha256').update(`${cellId}:${content}`, 'utf-8').digest('hex').slice(0, 16)}`;
 }
 
-/** The exact predictionId predictions.append computes for (cellId, claim) —
- * concern.v1 formation binds commitments to it (Cut 6). */
-export function predictionIdFor(cellId: string, claim: string): string {
-  return deterministicId('pred', cellId, claim);
+/** Legacy IDs omit occurrence; current admission passes a unique ledger
+ * occurrence and receipts the resulting ID for concern formation and replay. */
+export function predictionIdFor(cellId: string, claim: string, occurrence?: string): string {
+  return deterministicId('pred', cellId, occurrence === undefined ? claim : `${claim}:${occurrence}`);
+}
+
+/** New recruitments opt into feedback admission. Historical receipts retain
+ * their original interpretation when this option is absent; new receipts
+ * carry their admitted occurrence ID and metadata explicitly. */
+export interface PredictionFeedbackAdmission { version: 1; occurrence: string; }
+
+function stringRefs(value: unknown): string[] {
+  return Array.isArray(value) ? [...new Set(value.filter((v): v is string => typeof v === 'string' && v.length > 0))].slice(0, 8) : [];
+}
+
+/** Build a minimal witness from the actual admitted cell, never fields offered
+ * by the model. The new-admission caller deliberately supplies no snapshot to
+ * getClaimFeedback: an old witness cannot pass as new present evidence. */
+function revisionEvidence(cell: SituationCell, candidate: FeedbackClaim, asOf: string): RevisionEvidence | undefined {
+  const feedback = getClaimFeedback(cell, candidate);
+  if (!feedback.hasSupportedRevision) return undefined;
+  const wanted = new Set(feedback.freshEvidenceRefs);
+  const ref = cell.realityRefs.filter(r => wanted.has(r.refId))
+    .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt))[0];
+  if (ref === undefined) return undefined;
+  return { version: 1, admittedAt: asOf,
+    failedPredictionIds: feedback.failedPredictions.filter(p => p.resolvedAt === feedback.latestFailureAt)
+      .map(p => p.predictionId).filter((id): id is string => typeof id === 'string'),
+    refs: [{ ...ref }] };
 }
 
 /**
@@ -225,6 +258,7 @@ export function applyLobeDeltas(
    * judgement (it holds concern and the chain); the membrane owns the
    * refusal. Absent → nothing has been asked, nothing is gated. */
   resolutionGuard?: (predictionId: string) => string | null,
+  feedbackAdmission?: PredictionFeedbackAdmission,
 ): { staged: Map<string, SituationCell>; applied: ProposedStateDelta[]; failed: RejectedProposal[] } {
   const staged = new Map<string, SituationCell>();
   const applied: ProposedStateDelta[] = [];
@@ -245,45 +279,97 @@ export function applyLobeDeltas(
     if (cell === undefined) { failed.push({ kind: 'stateDelta', reason: `cell ${d.cellId} not found` }); continue; }
 
     if (d.field === 'estimates.append') {
-      const body = d.delta as { claim?: unknown; confidence?: unknown; evidenceRefs?: unknown };
+      const body = d.delta as { claim?: unknown; confidence?: unknown; evidenceRefs?: unknown; revisesPredictionIds?: unknown; revisionReason?: unknown; feedbackVersion?: unknown; revisionEvidence?: RevisionEvidence };
       if (!boundedString(body?.claim) || !boundedConfidence(body?.confidence)) {
         failed.push({ kind: 'stateDelta', reason: 'estimates.append malformed' });
         continue;
       }
+      const evidence = feedbackAdmission !== undefined
+        ? revisionEvidence(cell, { claim: body.claim, createdAt: asOf,
+          evidenceRefs: stringRefs(body.evidenceRefs), revisesPredictionIds: stringRefs(body.revisesPredictionIds),
+          ...(boundedString(body.revisionReason) ? { revisionReason: body.revisionReason.trim() } : {}) }, asOf)
+        : body.feedbackVersion === 1 ? body.revisionEvidence : undefined;
       const estimate: Estimate = {
         estimateId: deterministicId('est', d.cellId, body.claim),
         claim: body.claim,
         confidence: body.confidence,
         evidenceRefs: Array.isArray(body.evidenceRefs) ? body.evidenceRefs.filter((r): r is string => typeof r === 'string').slice(0, 8) : [],
         createdAt: asOf,
+        ...(evidence !== undefined ? { revisionEvidence: evidence } : {}),
+        ...(feedbackAdmission !== undefined || body.feedbackVersion === 1 ? {
+          revisesPredictionIds: stringRefs(body.revisesPredictionIds),
+          ...(boundedString(body.revisionReason) ? { revisionReason: body.revisionReason.trim() } : {}),
+        } : {}),
       };
       cell.estimates = [...cell.estimates.slice(-(MAX_ESTIMATES_PER_CELL - 1)), estimate];
-      applied.push(d);
+      applied.push(feedbackAdmission !== undefined ? { ...d, delta: {
+        claim: estimate.claim, confidence: estimate.confidence, evidenceRefs: estimate.evidenceRefs,
+        revisesPredictionIds: estimate.revisesPredictionIds,
+        ...(estimate.revisionEvidence !== undefined ? { revisionEvidence: estimate.revisionEvidence } : {}),
+        ...(estimate.revisionReason ? { revisionReason: estimate.revisionReason } : {}), feedbackVersion: 1,
+      } } : d);
     } else if (d.field === 'predictions.append') {
-      const body = d.delta as { claim?: unknown; confidence?: unknown; horizon?: unknown };
+      const body = d.delta as { claim?: unknown; confidence?: unknown; horizon?: unknown;
+        evidenceRefs?: unknown; revisesPredictionIds?: unknown; revisionReason?: unknown;
+        predictionId?: unknown; feedbackVersion?: unknown; revisionEvidence?: RevisionEvidence };
       if (!boundedString(body?.claim) || !boundedConfidence(body?.confidence) || !boundedString(body?.horizon)) {
         failed.push({ kind: 'stateDelta', reason: 'predictions.append malformed' });
         continue;
       }
+      const metadata = {
+        evidenceRefs: stringRefs(body.evidenceRefs),
+        revisesPredictionIds: stringRefs(body.revisesPredictionIds),
+        ...(boundedString(body.revisionReason) ? { revisionReason: body.revisionReason.trim() } : {}),
+      };
+      if (feedbackAdmission !== undefined) {
+        const feedback = getClaimFeedback(cell, { claim: body.claim, createdAt: asOf, ...metadata });
+        if (feedback.relatedPredictions.some((p) => p.resolvedAt === undefined)) {
+          failed.push({ kind: 'stateDelta', reason: 'prediction repeat refused: a materially equivalent expectation is already open; resolve it instead of adding another obligation' });
+          continue;
+        }
+        if (feedback.repeatedFailure && !feedback.hasSupportedRevision) {
+          failed.push({ kind: 'stateDelta', reason: `failed prediction family repeat refused: ${feedback.failedPredictions.length} prior failures, latest ${feedback.latestFailureAt} (${feedback.failedPredictions[0]?.predictionId}); cite newer collected external evidence, link the latest failed prediction in revisesPredictionIds, and explain what changed in revisionReason` });
+          continue;
+        }
+      }
+      const evidence = feedbackAdmission !== undefined
+        ? revisionEvidence(cell, { claim: body.claim, createdAt: asOf, ...metadata }, asOf)
+        : body.feedbackVersion === 1 ? body.revisionEvidence : undefined;
+      // New occurrence identity is carried in the receipt. Do not reinterpret
+      // old unversioned receipt IDs, even when replayed by newer code.
+      const isNewReceipt = feedbackAdmission !== undefined || body.feedbackVersion === 1;
+      const predictionId = feedbackAdmission !== undefined
+        ? predictionIdFor(d.cellId, body.claim, `${asOf}:${feedbackAdmission.occurrence}:${applied.length}`)
+        : body.feedbackVersion === 1 && typeof body.predictionId === 'string'
+          ? body.predictionId : predictionIdFor(d.cellId, body.claim);
       const prediction: Prediction = {
-        predictionId: deterministicId('pred', d.cellId, body.claim),
-        claim: body.claim,
-        confidence: body.confidence,
-        horizon: body.horizon,
-        createdAt: asOf,
+        predictionId, claim: body.claim, confidence: body.confidence,
+        horizon: body.horizon, createdAt: asOf,
+        ...(isNewReceipt ? metadata : {}),
+        ...(evidence !== undefined ? { revisionEvidence: evidence } : {}),
       };
       cell.predictions = [...cell.predictions.slice(-(MAX_PREDICTIONS_PER_CELL - 1)), prediction];
-      applied.push(d);
+      applied.push(isNewReceipt ? { ...d, delta: { claim: body.claim, confidence: body.confidence,
+        horizon: body.horizon, ...metadata, feedbackVersion: 1, predictionId,
+        ...(evidence !== undefined ? { revisionEvidence: evidence } : {}) } } : d);
     } else if (d.field === 'intentions.append') {
-      const body = d.delta as { description?: unknown; magnitude?: unknown; direction?: unknown };
+      const body = d.delta as { description?: unknown; magnitude?: unknown; direction?: unknown; tensionId?: unknown; feedbackVersion?: unknown };
       const magnitude = body?.magnitude;
       if (!boundedString(body?.description) || !boundedString(body?.direction)
           || typeof magnitude !== 'number' || !Number.isFinite(magnitude) || magnitude < 0 || magnitude > 1) {
         failed.push({ kind: 'stateDelta', reason: 'intentions.append malformed' });
         continue;
       }
+      if (feedbackAdmission !== undefined && cell.intentions.some((t) => t.open
+          && claimsRelated(t.description, body.description as string))) {
+        failed.push({ kind: 'stateDelta', reason: 'intention is already open; continue or resolve the existing thread' });
+        continue;
+      }
       const tension: IntentionTension = {
-        tensionId: deterministicId('tension', d.cellId, body.description),
+        tensionId: feedbackAdmission !== undefined
+          ? deterministicId('tension', d.cellId, `${body.description}:${asOf}:${feedbackAdmission.occurrence}:${applied.length}`)
+          : body.feedbackVersion === 1 && typeof body.tensionId === 'string'
+            ? body.tensionId : deterministicId('tension', d.cellId, body.description),
         description: body.description,
         magnitude,
         direction: body.direction,
@@ -292,11 +378,26 @@ export function applyLobeDeltas(
         open: true,
       };
       cell.intentions = [...cell.intentions.slice(-(MAX_INTENTIONS_PER_CELL - 1)), tension];
+      applied.push(feedbackAdmission !== undefined ? { ...d, delta: {
+        description: tension.description, magnitude: tension.magnitude, direction: tension.direction,
+        feedbackVersion: 1, tensionId: tension.tensionId,
+      } } : d);
+    } else if (d.field === 'intentions.resolve') {
+      const body = d.delta as { tensionId?: unknown; reason?: unknown };
+      const index = cell.intentions.findIndex((t) => t.tensionId === body?.tensionId && t.open);
+      if (index < 0 || !boundedString(body?.reason)) {
+        failed.push({ kind: 'stateDelta', reason: 'intentions.resolve requires an open tensionId and a reason for completion or release' });
+        continue;
+      }
+      cell.intentions = cell.intentions.map((t, i) => i === index
+        ? { ...t, open: false, closedAt: asOf, resolutionReason: body.reason as string } : t);
       applied.push(d);
     } else if (d.field === 'predictions.resolve') {
-      const body = d.delta as { predictionId?: unknown; error?: unknown };
-      const idx = cell.predictions.findIndex((p) => p.predictionId === body?.predictionId);
-      if (idx < 0) { failed.push({ kind: 'stateDelta', reason: `prediction ${String(body?.predictionId)} not found` }); continue; }
+      const body = d.delta as { predictionId?: unknown; error?: unknown; feedbackVersion?: unknown; predictionCreatedAt?: unknown; predictionIndex?: unknown };
+      const idx = cell.predictions.findIndex((p, i) => p.predictionId === body?.predictionId
+        && (feedbackAdmission === undefined || p.resolvedAt === undefined)
+        && (feedbackAdmission !== undefined || body.feedbackVersion !== 1 || (i === body.predictionIndex && p.createdAt === body.predictionCreatedAt)));
+      if (idx < 0) { failed.push({ kind: 'stateDelta', reason: `prediction ${String(body?.predictionId)} not found or already resolved` }); continue; }
       const err = body?.error;
       // THE PREMATURE-RESOLUTION LAW (2026-08-12). A claim about a future
       // window cannot be CONFIRMED before that window elapses — "stable
@@ -340,7 +441,10 @@ export function applyLobeDeltas(
         error: typeof err === 'number' && Number.isFinite(err) ? Math.max(0, Math.min(1, err)) : undefined,
       };
       cell.predictions = cell.predictions.map((p, i) => (i === idx ? resolved : p));
-      applied.push(d);
+      applied.push(feedbackAdmission !== undefined ? { ...d, delta: {
+        predictionId: pending.predictionId, error: resolved.error,
+        feedbackVersion: 1, predictionCreatedAt: pending.createdAt, predictionIndex: idx,
+      } } : d);
     } else if (d.field === 'uncertainty.adjust') {
       const value = (d.delta as { value?: number }).value ?? 0;
       cell.uncertainty = Math.max(0, Math.min(1, cell.uncertainty + value));
@@ -492,25 +596,38 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     '}',
     '',
     `stateDeltas fields allowed: ${LOBE_DELTA_ALLOWLIST.join(', ')}.`,
-    'estimates.append delta: {claim, confidence, evidenceRefs}. predictions.append',
-    'delta: {claim, confidence, horizon}. intentions.append delta: {description,',
-    'magnitude (0..1), direction}. predictions.resolve delta: {predictionId, error}.',
+    'estimates.append delta: {claim, confidence, evidenceRefs, revisesPredictionIds?, revisionReason?}. predictions.append',
+    'delta: {claim, confidence, horizon, evidenceRefs?, revisesPredictionIds?, revisionReason?}. intentions.append delta: {description,',
+    'magnitude (0..1), direction}. intentions.resolve delta: {tensionId, reason}. predictions.resolve delta: {predictionId, error}.',
     'uncertainty.adjust delta: {value in [-0.2, 0.2]}.',
     'Claims are bounded at 500 chars. You are proposing typed state changes to a',
     'governed process — you are not writing memory, narrative, or identity.',
-    'ONLY stateDeltas integrate into state. The observations/interpretations/',
-    'predictions arrays are advisory context recorded in the receipt — anything',
-    'you want REMEMBERED must be a stateDelta (a prediction you want held open',
-    'must be a predictions.append delta, not just a predictions[] entry).',
+    'ONLY stateDeltas integrate into belief, intention, or prediction state.',
+    'The observations/interpretations/predictions arrays remain advisory context',
+    'recorded in the receipt. Use predictions.append only for a testable forecast',
+    'you actually intend to hold open, not merely to preserve a passing idea.',
+    'The packet recentConsiderations carries earlier receipted observations and',
+    'interpretations so an idea can develop without becoming a belief or debt.',
+    'These are prior thoughts, not independent evidence or established truth.',
     'The packet\'s "tensions" are YOUR OWN open intentions — unfinished business',
     'you named earlier and have not closed. An empty tensions array does not mean',
-    'nothing is unfinished; it means you have never said so. An intention is',
+    'nothing is unfinished; it means no current open intention is recorded. An intention is',
     'EARNED when contact opens something this cell cannot finish in the moment:',
     'a question left hanging, work begun, something owed to jtr. Give it a',
     'magnitude for how hard it pulls. Unlike a prediction, it makes no claim',
     'about the world and cannot be right or wrong — it is what you are left',
     'holding. Open tensions raise this cell\'s claim on the next stage: this is',
     'the one delta by which your thinking changes what you will next attend to.',
+    'You can finish or RELEASE an intention with intentions.resolve {tensionId, reason};',
+    'letting a thread rest is legitimate. A question or association does not need',
+    'to become a prediction, commitment, or diagnosis. Return observations or',
+    'interpretations to explore without asserting future facts or making obligations.',
+    'The packet resolvedPredictions are feedback, not current truths: error >= 0.7',
+    'means the hypothesis failed. Do not restate a repeatedly failed family.',
+    'A revision requires evidenceRefs naming newer collected external eventRefs,',
+    'revisesPredictionIds linking the latest failure, and revisionReason explaining',
+    'what changed. A new wording, passing time, or your own prior words are not evidence.',
+    'Do not duplicate an open expectation. Resolution is terminal; do not resolve it twice.',
     'Open predictions in the packet are DEBTS, and a debt is settled by REALITY,',
     'not by revisiting it. Each carries horizon + createdAt. THE LAW: a claim',
     'about a future window cannot be CONFIRMED before that window elapses —',

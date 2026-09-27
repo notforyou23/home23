@@ -19,8 +19,10 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const yaml = require('js-yaml');
 const { appendJsonlDurableSync } = require('../utils/durable-write');
+const { flushActionFeedback } = require('./action-feedback');
 
 const ALLOWLIST_PATH_ENV = 'HOME23_ACTION_ALLOWLIST';
 const DEFAULT_ALLOWLIST_PATH = path.join(__dirname, '..', '..', '..', 'configs', 'action-allowlist.yaml');
@@ -74,10 +76,18 @@ function appendRequestedAction(brainDir, entry) {
 }
 
 function appendActionLog(brainDir, entry) {
-  try {
-    const file = path.join(brainDir, 'actions.jsonl');
-    appendJsonlDurableSync(file, entry);
-  } catch { /* best-effort */ }
+  // The execution receipt is required. If it cannot be persisted, fail visibly;
+  // a handler must never run without its durable intent.
+  try { appendJsonlDurableSync(path.join(brainDir, 'actions.jsonl'), entry); }
+  catch (error) {
+    throw new Error(`Action ${entry.action} ${entry.phase} receipt failed: ${error.message}. ${entry.phase === 'outcome' ? 'Handler already returned; do not infer failure or rerun it from this receipt error.' : 'Handler has not run.'}`);
+  }
+  try { flushActionFeedback(brainDir); }
+  catch (error) {
+    // The source receipt remains pending; startup/heartbeat retries projection,
+    // not the action. A broken event ledger cannot erase the observed outcome.
+    console.warn('[actions] execution feedback pending:', error.message);
+  }
 }
 
 function loadHandler(handlerName) {
@@ -140,6 +150,8 @@ async function executeAction(opts) {
   const intentReceipt = {
     stage: 'execute',
     phase: 'intent',
+    executionId: crypto.randomUUID(),
+    agendaId: opts.agendaId || null,
     action: actionName,
     target,
     role,

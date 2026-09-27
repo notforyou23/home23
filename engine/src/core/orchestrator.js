@@ -397,6 +397,73 @@ class Orchestrator {
     this.thinkingMachine?.setPublishHooks(this.step24Hooks);
   }
 
+  createConversationSalience(options = {}) {
+    const workspacePath = options.workspacePath ?? process.env.COSMO_WORKSPACE_PATH;
+    const brainDir = options.brainDir || process.env.COSMO_RUNTIME_DIR
+      || (workspacePath ? path.join(workspacePath, '..', 'brain') : this.logsDir);
+    return brainDir ? new ConversationSalience({
+      brainDir, logger: this.logger,
+      conversationStreamPath: workspacePath ? path.join(workspacePath, '..', 'substrate', 'conversation-stream.jsonl') : null,
+    }) : null;
+  }
+
+  createThinkingMachine(options) {
+    return new ThinkingMachine({
+      ...options,
+      getConversationContext: () => this.conversationSalience?.getRecentContext() || null,
+      getConversationEvidenceRefs: () => (this.conversationSalience?.getRecentEntries() || [])
+        .filter(entry => entry.source === 'seed_contact' && entry.eventId).map(entry => entry.eventId),
+      sendOwnerOutreach: request => this.sendOwnerOutreach(request),
+      retryFeedback: () => this.retryCognitionFeedback(),
+    });
+  }
+
+  async sendOwnerOutreach(request) {
+    return this.getOwnerOutreachOutbox().send(request);
+  }
+
+  getOwnerOutreachOutbox() {
+    if (!this.ownerOutreachOutbox) {
+      const { OwnerOutreachOutbox } = require('../cognition/owner-outreach-outbox');
+      this.ownerOutreachOutbox = new OwnerOutreachOutbox(this.logsDir, request => this.deliverOwnerOutreach(request));
+    }
+    return this.ownerOutreachOutbox;
+  }
+
+  async retryCognitionFeedback() {
+    try { require('../cognition/action-feedback').flushActionFeedback(this.logsDir); }
+    catch (error) { this.logger.warn?.('[actions] execution feedback remains pending', { error: error.message }); }
+    if (!this.logsDir) return;
+    try {
+      for (const result of await this.getOwnerOutreachOutbox().retry()) {
+        this.logger.info?.('[owner-outreach] pending delivery retried', { deliveryId: result.deliveryId, status: result.status });
+        this.thinkingMachine?.recordOutreachRetry(result);
+      }
+    } catch (error) { this.logger.warn?.('[owner-outreach] retry failed', { error: error.message }); }
+  }
+
+  async deliverOwnerOutreach(request) {
+    // Each resident's launch environment supplies its own bridge port. A
+    // default port could accidentally contact a different resident's owner DM.
+    const port = Number(process.env.BRIDGE_PORT);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('resident bridge port unavailable');
+    const token = resolveLiveProblemsBridgeToken();
+    if (!token) throw new Error('owner outreach bridge authentication unavailable');
+    const response = await fetch(`http://127.0.0.1:${port}/api/owner-outreach`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(request), signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error(`owner outreach HTTP ${response.status}`);
+    const result = await response.json();
+    if (!['committed', 'queued'].includes(result?.status)) throw new Error('owner outreach response missing delivery state');
+    return {
+      status: result.status, notification: 'not_confirmed',
+      ...(typeof result.channelId === 'string' ? { channelId: result.channelId } : {}),
+      ...(Array.isArray(result.messageIds) ? { messageIds: result.messageIds.filter(id => typeof id === 'string').slice(0, 16) } : {}),
+    };
+  }
+
   /**
    * Initialize
    */
@@ -880,6 +947,7 @@ class Orchestrator {
    */
   async start() {
     this.running = true;
+    await this.retryCognitionFeedback();
     this.persistenceScheduler?.start();
 
     // Live-problems registry + verifier/remediator loop. Boots before the
@@ -1007,11 +1075,7 @@ class Orchestrator {
         // Conversation salience (Phase 7) — reads harness-written sidecar and
         // scores graph clusters by overlap with recent conversations. Always
         // constructed; degrades gracefully if sidecar is missing.
-        const salienceBrainDir = process.env.COSMO_RUNTIME_DIR
-          || (process.env.COSMO_WORKSPACE_PATH ? path.join(process.env.COSMO_WORKSPACE_PATH, '..', 'brain') : this.logsDir);
-        this.conversationSalience = salienceBrainDir
-          ? new ConversationSalience({ brainDir: salienceBrainDir, logger: this.logger })
-          : null;
+        this.conversationSalience = this.createConversationSalience();
 
         this.discoveryEngine = new DiscoveryEngine({
           memory: this.memory,
@@ -1050,7 +1114,7 @@ class Orchestrator {
           executeAgendaItem: (item, opts = {}) => this.executeAgendaItem(item, opts),
           canAct: (item) => Boolean(this.inferAgendaAction(item) || this.isBoundedOperationalAgendaItem(item)),
         });
-        this.thinkingMachine = new ThinkingMachine({
+        this.thinkingMachine = this.createThinkingMachine({
           unifiedClient: pipelineClient,
           memory: this.memory,
           discoveryEngine: this.discoveryEngine,
@@ -1450,6 +1514,7 @@ class Orchestrator {
    */
   async executeCycle() {
     const cycleStart = new Date();
+    await this.retryCognitionFeedback();
     this.cycleCount++;
 
     // Compute temporal context once per cycle. Attached to every thought
@@ -8675,6 +8740,7 @@ class Orchestrator {
 
     const result = await executeAction({
       action,
+      agendaId: item.id,
       role: 'agenda',
       cycle: this.cycleCount,
       brainDir: this.logsDir,

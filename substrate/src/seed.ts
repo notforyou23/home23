@@ -1016,6 +1016,28 @@ export class SeedProcess {
     motorAuthorized?: { actSeq: number; commitmentId: string; message: string; idempotencyKey: string };
   }> {
     this.membrane.assert('lobe.recruit.model');
+    // Derive continuity from actual committed receipts, with bounded I/O. These
+    // ideas are not state, evidence, admission pressure, or action authority.
+    const considerations: NonNullable<WorkspacePacket['recentConsiderations']> = [];
+    const admitted = new Set(packet.activeCellIds);
+    for (const record of this.ledger.readTail()) {
+      if (record.category !== 'lobe' || record.sourceAuthority !== 'seed.internal') continue;
+      const advisory = record.payload['advisory'] as { version?: unknown;
+        observations?: Array<{ cellId: string; claim: string; confidence: number }>;
+        interpretations?: Array<{ cellId: string; interpretation: string; confidence: number }> } | undefined;
+      const at = record.payload['asOf'];
+      if (advisory?.version !== 1 || typeof at !== 'string' || !Number.isFinite(Date.parse(at)) || Date.parse(at) > Date.parse(asOf)) continue;
+      for (const item of advisory.observations ?? []) {
+        if (admitted.has(item.cellId)) considerations.push({ seq: record.seq, asOf: at,
+          cellId: item.cellId, kind: 'observation', text: item.claim, confidence: item.confidence });
+      }
+      for (const item of advisory.interpretations ?? []) {
+        if (admitted.has(item.cellId)) considerations.push({ seq: record.seq, asOf: at,
+          cellId: item.cellId, kind: 'interpretation', text: item.interpretation, confidence: item.confidence });
+      }
+    }
+    packet = { ...packet, recentConsiderations: considerations.slice(-4) };
+
     this.membrane.assert('local.state.write');
     this.membrane.assert('local.ledger.append');
     this.accounting.assertEventBudget();
@@ -1062,6 +1084,7 @@ export class SeedProcess {
       asOf,
       cloneCell,
       guard,
+      { version: 1, occurrence: String(this.ledger.currentSeq + 1) },
     );
     const rejected = [...validated.rejected, ...failed];
 
@@ -1081,6 +1104,15 @@ export class SeedProcess {
         // Full applied deltas: the receipt IS the state change. Replay
         // re-applies these without any model in the loop.
         appliedDeltas: applied,
+        advisory: {
+          version: 1,
+          observations: validated.accepted.observations.map((o) => ({ cellId: o.cellId, claim: o.claim,
+            confidence: o.confidence, ...(typeof o.evidenceRef === 'string' && o.evidenceRef.length <= 500 ? { evidenceRef: o.evidenceRef } : {}) })),
+          interpretations: validated.accepted.interpretations.map((i) => ({ cellId: i.cellId,
+            interpretation: i.interpretation, confidence: i.confidence })),
+          predictions: validated.accepted.predictions.map((p) => ({ cellId: p.cellId, claim: p.claim,
+            confidence: p.confidence, horizon: p.horizon })),
+        },
         acceptedCounts: {
           observations: validated.accepted.observations.length,
           interpretations: validated.accepted.interpretations.length,
@@ -1136,11 +1168,11 @@ export class SeedProcess {
       const dischargeSummaries: Array<Record<string, unknown>> = [];
       for (const delta of applied) {
         if (delta.field === 'predictions.append') {
-          const body = delta.delta as { claim?: unknown; confidence?: unknown; horizon?: unknown };
+          const body = delta.delta as { claim?: unknown; confidence?: unknown; horizon?: unknown; predictionId?: unknown };
           if (typeof body?.claim !== 'string' || typeof body?.confidence !== 'number' || typeof body?.horizon !== 'string') continue;
           formationInputs.push({
             cellId: delta.cellId,
-            predictionId: predictionIdFor(delta.cellId, body.claim),
+            predictionId: typeof body.predictionId === 'string' ? body.predictionId : predictionIdFor(delta.cellId, body.claim),
             claim: body.claim,
             confidence: body.confidence,
             horizon: body.horizon,
@@ -1460,7 +1492,7 @@ export class SeedProcess {
       category: 'act',
       sourceAuthority: 'seed.internal',
       sourceRef: 'concern.motor',
-      payload: { motor: true, dispatched: true, authorizedSeq, idempotencyKey },
+      payload: { motor: true, dispatched: true, authorizedSeq, idempotencyKey, destination: 'seed-outbox', deliveryState: 'queued' },
     });
     this._eventCount++;
     this.accounting.recordEvent();

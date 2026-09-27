@@ -69,7 +69,7 @@ export class Home23Adapter implements ChannelAdapter {
       .finally(() => { this.flushPromise = undefined; });
     return this.flushPromise;
   }
-  async send(response: OutgoingResponse): Promise<{ status: 'delivered' | 'queued' }> {
+  async send(response: OutgoingResponse): Promise<{ status: 'delivered' | 'queued'; messageIds?: string[] }> {
     if (!['owner', 'scheduler', ''].includes(response.chatId)) throw new Error('Home23 notifications target the resident owner conversation');
     if (!response.text.trim() || response.text.includes('\0')) throw new Error('Invalid Home23 notification text');
     const key = createHash('sha256').update(response.deliveryId ?? randomUUID()).digest('hex');
@@ -83,7 +83,7 @@ export class Home23Adapter implements ChannelAdapter {
     this.sends.set(file, { text: response.text, operation });
     return operation;
   }
-  private async sendUnlocked(file: string, response: OutgoingResponse): Promise<{ status: 'delivered' | 'queued' }> {
+  private async sendUnlocked(file: string, response: OutgoingResponse): Promise<{ status: 'delivered' | 'queued'; messageIds: string[] }> {
     let entry: SavedDelivery | undefined;
     try { entry = JSON.parse(await readFile(file, 'utf8')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -99,6 +99,6 @@ export class Home23Adapter implements ChannelAdapter {
       entry = { version: 1, text: response.text, messages: chunks.map(text => ({ messageId: generateCoordinationId('message'), text })), delivered: 0, createdAt: new Date().toISOString() };
       await this.save(file, entry);
     }
-    return { status: await this.attempt(file) ? 'delivered' : 'queued' };
+    return { status: await this.attempt(file) ? 'delivered' : 'queued', messageIds: entry.messages.map(message => message.messageId) };
   }
 }

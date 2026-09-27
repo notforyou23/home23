@@ -9,13 +9,15 @@
  * math — no LLM calls. Emits a ranked queue of candidates that later phases
  * (deep-dive → PGS → critique) will consume.
  *
- * Six signals:
+ * Graph and contact signals:
  *   - anomaly:    clusters with unusual density relative to the mean
  *   - novelty:    recently-ingested nodes with few edges (unconnected material)
  *   - orphan:     high-centrality nodes not visited in a long time
  *   - drift:      new clusters with thin structure (thought diverging from established graph)
  *   - stagnation: clusters thought about repeatedly without producing new edges
- *   - salience:   conversation-proximal clusters (stub until Phase 7 wires the sidecar)
+ *   - salience:   conversation-proximal clusters with current-state authority
+ *   - conversation: canonical contact, even without a graph match
+ *   - exploration: remembered material with its source and correction labels
  *
  * Behind `architecture.cognitionMode` flag — daemon runs for observability
  * under `legacy_roles`, feeds the deep-thought pipeline under `thinking_machine`.
@@ -23,15 +25,21 @@
 
 'use strict';
 
+const crypto = require('crypto');
+
 const {
   classifyMemoryDomain,
   classifyClaimAuthority,
   scoreMemoryAuthority,
   createMemoryAuthorityResolver,
+  projectMemoryAuthority,
 } = require('../../../shared/memory-authority.cjs');
 
 const DEFAULT_CONFIG = {
   probeIntervalMs: 30 * 1000,     // 30s between probes
+  consumedEvidenceCooldownMs: 6 * 60 * 60 * 1000,
+  maxConsumedEvidence: 512,
+  maxConsecutiveOperational: 1, // when meaningful exploratory material is waiting
   queueCapacity: 100,              // max candidates in the ranked queue
   // Signal thresholds — tunable from config later
   novelty: {
@@ -102,7 +110,7 @@ class DiscoveryEngine {
    * @param {object} [opts.config]        - override DEFAULT_CONFIG
    * @param {Function} [opts.getThoughtsHistory] - returns recent thoughts array for stagnation detection
    * @param {Function} [opts.getTemporalContext] - returns current temporal context (age weighting)
-   * @param {Function} [opts.getConversationSalience] - stubbed for Phase 7
+   * @param {Function} [opts.getConversationSalience] - current contact/salience reader
    */
   constructor(opts = {}) {
     if (!opts.memory) throw new Error('DiscoveryEngine requires memory (NetworkMemory instance)');
@@ -116,6 +124,10 @@ class DiscoveryEngine {
     // Ranked queue — map keyed by candidate.key for dedup, sorted on pop
     this.queue = new Map();
     this.observationBuckets = new Map();
+    this.consumedEvidence = new Map();
+    this.consumedSubjects = new Map();
+    this.consumedSubjectIndex = new Set();
+    this.consecutiveOperational = 0;
 
     // Probe state
     this.probeTimer = null;
@@ -173,7 +185,7 @@ class DiscoveryEngine {
       // crowds everything else out, or a cheap-but-overfiring signal
       // (drift on uniformly sparse real graphs) claims every heartbeat.
       const SIGNAL_CAP = this.config.perSignalCap || 8;
-      const cap = (arr) => arr.sort((a, b) => b.score - a.score).slice(0, SIGNAL_CAP);
+      const cap = (arr) => arr.filter(candidate => !this._recentlyConsumed(candidate)).sort((a, b) => b.score - a.score).slice(0, SIGNAL_CAP);
 
       const all = [
         ...cap(this._probeAnomaly()),
@@ -182,6 +194,8 @@ class DiscoveryEngine {
         ...cap(this._probeDrift()),
         ...cap(this._probeStagnation()),
         ...cap(this._probeSalience()),
+        ...cap(this._probeConversation()),
+        ...cap(this._probeExploration()),
       ];
 
       for (const cand of all) {
@@ -228,8 +242,31 @@ class DiscoveryEngine {
    */
   pop(n = 1) {
     const ranked = Array.from(this.queue.values()).sort((a, b) => b.score - a.score);
-    const out = ranked.slice(0, n);
-    for (const c of out) this.queue.delete(c.key);
+    const out = [];
+    for (const candidate of ranked) {
+      if (this._recentlyConsumed(candidate)) this.queue.delete(candidate.key);
+    }
+    const remaining = ranked.filter(candidate => this.queue.has(candidate.key));
+    while (out.length < n && remaining.length) {
+      const exploratoryIndex = remaining.findIndex(candidate => candidate.attentionKind === 'exploration');
+      const index = this.consecutiveOperational >= this.config.maxConsecutiveOperational && exploratoryIndex >= 0
+        ? exploratoryIndex : 0;
+      const [candidate] = remaining.splice(index, 1);
+      this.queue.delete(candidate.key);
+      if (this._recentlyConsumed(candidate)) continue;
+      out.push(candidate);
+      this.consecutiveOperational = candidate.attentionKind === 'exploration' ? 0 : this.consecutiveOperational + 1;
+      const fingerprint = this._evidenceFingerprint(candidate);
+      this.consumedEvidence.set(fingerprint, Date.now());
+      this.consumedSubjects.set(fingerprint, this._evidenceSubject(candidate));
+      candidate.consumedEvidenceFingerprint = fingerprint;
+      while (this.consumedEvidence.size > Math.max(1, this.config.maxConsumedEvidence)) {
+        const oldest = this.consumedEvidence.keys().next().value;
+        this.consumedEvidence.delete(oldest);
+        this.consumedSubjects.delete(oldest);
+      }
+      this.consumedSubjectIndex = new Set(this.consumedSubjects.values());
+    }
     this.stats.queueDepth = this.queue.size;
     return out;
   }
@@ -477,6 +514,108 @@ class DiscoveryEngine {
     return out;
   }
 
+  // Operational truth and material worth thinking about have different admission rules.
+  // This path never promotes narrative, history, or an intake into current-state authority.
+  _probeExploration() {
+    const { eligibleIds } = this._authorityContext();
+    const resolver = createMemoryAuthorityResolver({ intent: 'general', authorityCandidates: this.memory.nodes.values() });
+    const out = [];
+    const limit = Math.max(1, this.config.perSignalCap || 8);
+    for (const sourceNode of this.memory.nodes.values()) {
+      if (eligibleIds.has(sourceNode.id)) continue;
+      const node = resolver.apply([sourceNode])[0];
+      if (!node || eligibleIds.has(node.id) || typeof node.concept !== 'string' || !node.concept.trim()) continue;
+      // Superseded claims can be retrieved as counterevidence in a neighborhood,
+      // but do not independently restart a settled line of thought.
+      if (node.supersessionEvidence || node.closureEvidence) continue;
+      const ageMs = Math.max(0, Date.now() - (Date.parse(node.created) || 0));
+      const freshness = 1 / (1 + ageMs / (7 * 86400000));
+      const candidate = {
+        key: `material:${node.id}`, signal: 'exploration', attentionKind: 'exploration',
+        clusterId: node.cluster ?? null, nodeIds: [node.id],
+        score: 0.65 + 0.5 * freshness, importance: 0.65 + 0.5 * freshness,
+        rationale: 'Remembered material available for inquiry, not asserted current operational truth',
+        discoveredAt: new Date().toISOString(),
+      };
+      if (this._recentlyConsumed(candidate)) continue;
+      out.push(candidate);
+      out.sort((a, b) => b.score - a.score);
+      if (out.length > limit) out.pop();
+    }
+    this.stats.candidatesByeSignal.exploration = out.length;
+    return out.map(candidate => ({ ...candidate, materialAuthority: candidate.nodeIds.map(nodeId => ({
+      nodeId, ...projectMemoryAuthority(this.memory.nodes.get(nodeId)),
+    })) }));
+  }
+
+  _probeConversation() {
+    const scorer = this.getConversationSalience?.();
+    if (typeof scorer?.getRecentEntries !== 'function') return [];
+    const sessions = new Map();
+    for (const entry of scorer.getRecentEntries()) {
+      const prior = sessions.get(entry.chatId);
+      const summaries = [...(prior?.summaries || []), entry.summary];
+      let chars = summaries.reduce((total, text) => total + text.length + 2, 0);
+      while (chars > 12000 && summaries.length) chars -= summaries.shift().length + 2;
+      sessions.set(entry.chatId, { ...entry, summaries });
+    }
+    const out = [...sessions.values()].filter(entry => entry.summaries.length).map(entry => {
+      const summary = entry.summaries.join('\n\n');
+      return {
+        key: `conversation:${entry.chatId}:${entry.eventId || entry.ts}`,
+        signal: 'conversation', attentionKind: 'exploration', clusterId: null,
+        nodeIds: typeof scorer.relevantNodeIds === 'function'
+          ? scorer.relevantNodeIds(this.memory, summary, 8) : [],
+        conversation: { ts: entry.ts, chatId: entry.chatId, source: entry.source, eventId: entry.eventId, summary },
+        score: entry.source === 'seed_contact' ? 1.25 : 0.9, importance: 1,
+        rationale: entry.source === 'seed_contact'
+          ? 'Canonical contact can start an inquiry even without an existing graph match'
+          : 'Compiled conversation history; timestamp is not evidence of current contact',
+        discoveredAt: new Date().toISOString(),
+      };
+    });
+    this.stats.candidatesByeSignal.conversation = out.length;
+    return out.reverse(); // the newest contact first when scores tie
+  }
+
+  _evidenceFingerprint(candidate) {
+    const material = (candidate.nodeIds || []).map(id => {
+      const node = this.memory.nodes.get(id);
+      return [id, node?.concept, node?.updated, node?.asserted_at, node?.metadata?.content_hash,
+        node?.superseded_by, node?.metadata?.superseded_by];
+    });
+    const evidence = candidate.observation
+      ? [candidate.observation.channelId, candidate.observation.flag, candidate.observation.payload]
+      : candidate.conversation
+        ? [candidate.conversation.chatId, candidate.conversation.ts, candidate.conversation.summary, material]
+        : material.length ? material : [candidate.key];
+    return crypto.createHash('sha256').update(JSON.stringify(evidence)).digest('hex');
+  }
+
+  _evidenceSubject(candidate) {
+    if (candidate.observation) return `observation:${candidate.observation.channelId}`;
+    if (candidate.conversation) return `conversation:${candidate.conversation.chatId}`;
+    return (candidate.nodeIds || []).length ? `nodes:${candidate.nodeIds.join(',')}` : candidate.key;
+  }
+
+  _recentlyConsumed(candidate) {
+    if (!this.consumedEvidence.size) return false;
+    // Most of a large brain has never been selected. Do not hash every concept
+    // on every probe just to learn that its subject has no consumed history.
+    const subject = this._evidenceSubject(candidate);
+    if (!this.consumedSubjectIndex.has(subject)) return false;
+    const at = this.consumedEvidence.get(this._evidenceFingerprint(candidate));
+    return at !== undefined && Date.now() - at < this.config.consumedEvidenceCooldownMs;
+  }
+
+  release(candidate) {
+    // Provider failure or an unstarted selection did not consume the material.
+    const fingerprint = candidate.consumedEvidenceFingerprint || this._evidenceFingerprint(candidate);
+    this.consumedEvidence.delete(fingerprint);
+    this.consumedSubjects.delete(fingerprint);
+    this.consumedSubjectIndex = new Set(this.consumedSubjects.values());
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────────
 
   _makeCandidate({ key, signal, clusterId, nodeIds, importance, rationale }) {
@@ -614,10 +753,11 @@ class DiscoveryEngine {
   }
 
   _enqueue(candidate) {
+    if (this._recentlyConsumed(candidate)) return;
     const existing = this.queue.get(candidate.key);
     if (existing) {
       // Re-discovered — refresh timestamp, keep higher score
-      if (candidate.score > existing.score) {
+      if (candidate.score > existing.score || this._evidenceFingerprint(candidate) !== this._evidenceFingerprint(existing)) {
         this.queue.set(candidate.key, candidate);
       } else {
         existing.discoveredAt = candidate.discoveredAt;
@@ -689,7 +829,9 @@ class DiscoveryEngine {
     });
     // Attach the raw observation so DeepDive can access the payload.
     candidate.observation = obs;
+    candidate.attentionKind = /^(machine\.|work\.|notify\.|agent\.|system\.)/.test(obs.channelId) ? 'operational' : 'exploration';
     this._enqueue(candidate);
+    this._trimQueue();
     this.stats.candidatesByeSignal[signal] =
       (this.stats.candidatesByeSignal[signal] || 0) + 1;
     this.stats.totalCandidatesProduced += 1;
@@ -741,7 +883,9 @@ class DiscoveryEngine {
     if (this.queue.size <= this.config.queueCapacity) return;
     // Drop lowest-scoring first
     const sorted = Array.from(this.queue.values()).sort((a, b) => b.score - a.score);
-    const keep = sorted.slice(0, this.config.queueCapacity);
+    const reserved = sorted.filter(candidate => candidate.attentionKind === 'exploration').slice(0, Math.min(8, this.config.queueCapacity));
+    const reservedKeys = new Set(reserved.map(candidate => candidate.key));
+    const keep = [...reserved, ...sorted.filter(candidate => !reservedKeys.has(candidate.key)).slice(0, this.config.queueCapacity - reserved.length)];
     this.queue = new Map(keep.map(c => [c.key, c]));
   }
 

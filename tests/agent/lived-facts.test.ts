@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeLivedFacts } from '../../src/substrate/lived-facts.js';
@@ -28,7 +28,10 @@ function writeFixture(dir: string, estimates: Array<Record<string, unknown>>): v
     cells: [{
       id: 'world.home23', generation: 500, workspacePressure: 0.3,
       energy: { current: 1 }, uncertainty: 0.4,
-      estimates, predictions: [], intentions: [], realityRefs: [],
+      estimates, predictions: [], intentions: [],
+      realityRefs: [...new Set(estimates.flatMap((e) => Array.isArray(e.evidenceRefs) ? e.evidenceRefs : []))]
+        .map(refId => ({ refId, sourceAuthority: 'home23.channel.bus', sourceRef: `house.sensor:${refId}`, flag: 'COLLECTED',
+          observedAt: '2026-08-07T09:00:00.000Z', head: `Observed sensor measurement ${refId}` })),
     }],
   }), 'utf-8');
   const ledger = [
@@ -84,4 +87,22 @@ test('advisory target preserves every selected fact', (t) => {
   assert.ok(tiny !== null && tiny.includes('regularity number 0'));
   assert.ok(tiny.includes('regularity number 7'), 'highest confidence survives');
   assert.ok(tiny.includes('FACTS (lived)'), 'header survives');
+});
+
+
+test('unknown, duplicate and self-generated refs cannot manufacture support; expiry uses latest event', t => {
+  const dir = makeSeedDir(t);
+  writeFixture(dir, [
+    { claim: 'known one', confidence: .9, evidenceRefs: ['a', 'b'], createdAt: AGED },
+    { claim: 'unknown references', confidence: .9, evidenceRefs: ['unknown1', 'unknown2'], createdAt: AGED },
+    { claim: 'same reference twice', confidence: .9, evidenceRefs: ['a', 'a'], createdAt: AGED },
+    { claim: 'self observation', confidence: .9, evidenceRefs: ['self1', 'self2'], createdAt: AGED },
+    { claim: 'expired after window opened', confidence: .9, evidenceRefs: ['a', 'b'], createdAt: AGED, expiresAt: '2026-08-09T06:00:00.000Z' },
+  ]);
+  const file = join(dir, 'checkpoints/ckpt_aaaa0001_t.json');
+  const snapshot = JSON.parse(readFileSync(file, 'utf8'));
+  snapshot.cells[0].realityRefs = snapshot.cells[0].realityRefs.filter((r: any) => !r.refId.startsWith('unknown'))
+    .map((r: any) => r.refId.startsWith('self') ? { ...r, sourceRef: 'conversation.self:s1' } : r);
+  writeFileSync(file, JSON.stringify(snapshot));
+  assert.equal(composeLivedFacts(dir), null, 'only one independently supported non-expired conclusion remains');
 });
