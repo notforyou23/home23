@@ -5,6 +5,7 @@ import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, l
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { absoluteHome, ownerAccountHome, privateDirectory, readPrivateJSON, productEnvironment } from './product-environment.js';
+import { launchIndependentUpdateWorker } from './product-home-update-launcher.mjs';
 import { promisify } from 'node:util';
 
 const SCHEMA = 'home23.home-update.v1';
@@ -161,6 +162,36 @@ export function homeUpdateStatus({ homeRoot, clientBuild } = {}) {
       appDeliveryURL: null, operation: null, allowedActions: [], checkedAt: null,
       message: error.code === 'home_update_unavailable' ? error.message : 'Home23 update status could not be read. Open Home23 on your Mac for recovery.' };
   }
+}
+/** Close an abandoned outer operation after a separate, successful local
+ * recovery. This reconciles receipts only; it never resumes or starts a home. */
+export async function reconcileAbortedHomeUpdate({ homeRoot, operationId, clientBuild } = {}) {
+  const home = installedHome(homeRoot);
+  return withAdmission(home, async () => {
+    const operation = loadOperation(home, operationId);
+    const { readUpdateJournal } = await import('./product-update-apply.js');
+    const { readProductManifest } = await import('./product-payload.js');
+    const journal = readUpdateJournal(home.root);
+    const refused = () => { throw fail('update_reconciliation_refused', 'The saved update does not match a completed local recovery.'); };
+    const startedAt = Date.parse(operation.startedAt), createdAt = Date.parse(journal?.createdAt);
+    if (latestOperation(home)?.id !== operation.id || operation.action !== 'update' || alive(operation.pid)
+        || !['updating', 'interrupted', 'failed'].includes(operation.phase) || operation.runtimeCompleted || operation.applicationCompleted
+        || !journal || journal.phase !== 'aborted' || journal.writersAdmitted || journal.acceptedWork || journal.candidateStarted
+        || journal.desiredRunning && journal.runningRestored !== true
+        || !Number.isFinite(startedAt) || !Number.isFinite(createdAt) || createdAt < startedAt
+        || typeof operation.prepared?.packageId !== 'string' || operation.prepared.packageId !== journal.toPackageId
+        || typeof journal.fromPackageId !== 'string' || journal.fromPackageId === journal.toPackageId
+        || home.receipt.packageId !== journal.fromPackageId || readProductManifest(home.root).packageId !== journal.fromPackageId) refused();
+    if (operation.errorCode === 'update_recovered' && operation.requiresNewRelease && operation.blockedPackageId === journal.toPackageId) {
+      return { reconciled: true, operationId, status: projectStatus(home, operation, clientBuild) };
+    }
+    const recovered = { ...operation, phase: 'failed', pid: null, updatedAt: now(), errorCode: 'update_recovered',
+      reasonCodes: [...new Set([...safeReasonCodes(journal.reasons), 'recovered_by_owner'])],
+      requiresLocalRecovery: false, recoverable: false, retryable: false, requiresNewRelease: true, blockedPackageId: journal.toPackageId,
+      message: `${journal.runningRestored ? 'Your home is running again' : 'Your home remains stopped'} on its current Home23 version. Check for a newer Home23 release.` };
+    save(join(home.directory, `${operation.id}.json`), recovered);
+    return { reconciled: true, operationId, status: projectStatus(home, recovered, clientBuild) };
+  });
 }
 /** Called only by the local embedded helper after installation/selection. */
 export function registerProductApplication({ homeRoot, applicationPath } = {}) {
@@ -345,12 +376,9 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
       if (dependencies.launch) await dependencies.launch(operation, home);
       else {
         const executor = retainExecutor(home, operation);
-        const child = spawn(join(executor, 'node'), [join(executor, 'product-home-update-worker.mjs'), home.root, operation.id],
-          { detached: true, stdio: 'ignore', env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'en_US.UTF-8' } });
-        await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+        const { pid } = await launchIndependentUpdateWorker({ executor, homeRoot: home.root, operationId: operation.id });
         const latest = loadOperation(home, operation.id);
-        save(join(home.directory, `${operation.id}.json`), { ...latest, pid: child.pid, executor });
-        child.unref();
+        save(join(home.directory, `${operation.id}.json`), { ...latest, pid, executor });
       }
     } catch (error) {
       operation = { ...loadOperation(home, operation.id), phase: 'failed', updatedAt: now(), message: 'The update could not start. Resume to try again.',
@@ -362,11 +390,14 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
 }
 
 /** Entry in a retained detached process. No dependency on the API lifetime or app bundle. */
-export async function runHomeUpdateOperation({ homeRoot, operationId } = {}, dependencies = {}) {
+export async function runHomeUpdateOperation({ homeRoot, operationId, requireWorkerAdmission = false } = {}, dependencies = {}) {
   const home = installedHome(homeRoot);
   // Admission holds the durable launch receipt before the worker may update it.
   await withAdmission(home, async () => {});
   let operation = loadOperation(home, operationId);
+  // If the requester died or the independent handoff failed, a retained
+  // process must not turn a queued receipt into permission to change a home.
+  if (requireWorkerAdmission && operation.pid !== process.pid) return;
   if (TERMINAL.has(operation.phase)) return;
   // A test or local caller may invoke this function in-process. Only the
   // durable worker launched for this operation may change its OS priority.

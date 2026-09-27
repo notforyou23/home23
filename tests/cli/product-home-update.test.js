@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
-import { join } from 'node:path';
-import { homeUpdateStatus, pruneUpdateDelivery, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
+import { dirname, join } from 'node:path';
+import { homeUpdateStatus, pruneUpdateDelivery, reconcileAbortedHomeUpdate, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
+import { writeProductManifest } from '../../cli/lib/product-payload.js';
+import { launchIndependentUpdateWorker } from '../../cli/lib/product-home-update-launcher.mjs';
 
 function fixture(t) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'home23-update-contract-'))), home = join(parent, 'home');
@@ -33,6 +35,66 @@ async function check(f) {
   await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id },
     { channel: checkedChannel, updater: unusedUpdater, appUpdater: unusedAppUpdater });
 }
+
+async function recoveredFixture(t) {
+  const f = fixture(t), payload = join(f.parent, 'payload');
+  for (const relative of ['bin/node', 'app/cli/home23.js', 'app/cli/lib/product-payload.js', 'app/scripts/product/host.mjs', 'tools/node_modules/pm2/bin/pm2']) {
+    const file = join(payload, relative);
+    mkdirSync(dirname(file), { recursive: true, mode: 0o755 });
+    writeFileSync(file, 'fixture\n', { mode: relative === 'bin/node' ? 0o755 : 0o644 });
+  }
+  const manifest = writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+  copyFileSync(join(payload, 'manifest.json'), join(f.home, 'manifest.json'));
+  f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: manifest.packageId });
+  await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'recover-fixture'), noLaunch), id = accepted.operation.id;
+  f.setOperation({ ...f.operation(id), phase: 'updating', pid: null, prepared: { packageId: release.packageId } });
+  const directory = join(f.parent, '.home.home23-update');
+  mkdirSync(directory, { mode: 0o700 });
+  const journalPath = join(directory, 'journal.json');
+  const journal = { schema: 'home23.product-update.v1', homeRoot: f.home, phase: 'aborted', createdAt: new Date().toISOString(),
+    fromPackageId: manifest.packageId, toPackageId: release.packageId, desiredRunning: true, runningRestored: true,
+    reasons: [{ code: 'recovered_by_owner', message: '/private/path must not reach status' }] };
+  f.write(journalPath, journal);
+  return { ...f, id, journal, journalPath };
+}
+
+test('local abort reconciliation durably closes only the matching abandoned update and blocks its stale candidate', async t => {
+  const f = await recoveredFixture(t), args = { homeRoot: f.home, operationId: f.id };
+  const result = await reconcileAbortedHomeUpdate(args);
+  assert.equal(result.reconciled, true);
+  const status = homeUpdateStatus(args);
+  assert.equal(status.operation.errorCode, 'update_recovered');
+  assert.equal(status.operation.canResume, false);
+  assert.deepEqual(status.allowedActions, ['check']);
+  assert.match(status.message, /running again.*current.*Check/);
+  assert.doesNotMatch(JSON.stringify(status), /private\/path/);
+  const saved = readFileSync(join(f.home, `runtime/home-update/${f.id}.json`), 'utf8');
+  await reconcileAbortedHomeUpdate(args);
+  assert.equal(readFileSync(join(f.home, `runtime/home-update/${f.id}.json`), 'utf8'), saved);
+  const next = await requestHomeUpdate(input(f.home, 'check', 'fresh-after-recovery'), noLaunch);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: next.operation.id }, { channel: checkedChannel, updater: unusedUpdater, appUpdater: unusedAppUpdater });
+  assert.equal(homeUpdateStatus(args).state, 'incompatible');
+  assert.deepEqual(homeUpdateStatus(args).allowedActions, ['check']);
+});
+
+test('local abort reconciliation refuses active, mismatched, un-restored, admitted, or stale records without writing', async t => {
+  const cases = [
+    { operation: { pid: process.pid } }, { operation: { prepared: { packageId: 'other' } } },
+    { journal: { phase: 'claimed' } }, { journal: { runningRestored: false } },
+    { journal: { writersAdmitted: true } }, { journal: { acceptedWork: true } },
+    { journal: { candidateStarted: true } }, { journal: { fromPackageId: 'other' } },
+    { journal: { createdAt: '2000-01-01T00:00:00.000Z' } }, { operation: { runtimeCompleted: true } },
+  ];
+  for (const change of cases) {
+    const f = await recoveredFixture(t);
+    if (change.operation) f.setOperation({ ...f.operation(f.id), ...change.operation });
+    if (change.journal) f.write(f.journalPath, { ...f.journal, ...change.journal });
+    const file = join(f.home, `runtime/home-update/${f.id}.json`), before = readFileSync(file, 'utf8');
+    await assert.rejects(reconcileAbortedHomeUpdate({ homeRoot: f.home, operationId: f.id }), { code: 'update_reconciliation_refused' });
+    assert.equal(readFileSync(file, 'utf8'), before);
+  }
+});
 
 test('external homes expand runtime in a private local cache and resume the same signed download', t => {
   const f = fixture(t), id = '12345678-1234-1234-1234-123456789abc';
@@ -106,6 +168,79 @@ test('durable executor is detached and can finish after requesting process exits
     [join(current.executor, 'product-update-recover.mjs'), '--home', f.home], { encoding: 'utf8', timeout: 15000 });
   assert.equal(recovery.status, 1, recovery.stderr);
   assert.equal(JSON.parse(recovery.stdout).reasons[0].code, 'update_not_found');
+});
+
+test('independent updater survives a recursive kill of its still-running requester', async t => {
+  const { spawn, execFileSync } = await import('node:child_process');
+  const { once } = await import('node:events');
+  const f = fixture(t), executor = join(f.parent, 'executor'), heartbeat = join(f.parent, 'heartbeat');
+  mkdirSync(executor, { mode: 0o700 });
+  copyFileSync(join(f.home, 'bin/node'), join(executor, 'node'));
+  copyFileSync(new URL('../../cli/lib/product-home-update-launcher.mjs', import.meta.url), join(executor, 'product-home-update-launcher.mjs'));
+  writeFileSync(join(executor, 'product-home-update-worker.mjs'),
+    `import {writeFileSync} from 'node:fs'; setInterval(()=>writeFileSync(${JSON.stringify(heartbeat)}, String(Date.now())), 25);`);
+  const source = new URL('../../cli/lib/product-home-update-launcher.mjs', import.meta.url).href;
+  const program = `import {launchIndependentUpdateWorker} from ${JSON.stringify(source)};
+    const receipt=await launchIndependentUpdateWorker(${JSON.stringify({ executor, homeRoot: f.home, operationId: 'fixture' })});
+    console.log(JSON.stringify(receipt)); setInterval(()=>{},1000);`;
+  const parent = spawn(process.execPath, ['--input-type=module', '-e', program], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let pid;
+  t.after(() => { for (const target of [pid, parent.pid]) if (target) { try { process.kill(target, 'SIGKILL'); } catch {} } });
+  const data = await Promise.race([once(parent.stdout, 'data'), once(parent, 'exit').then(([code]) => { throw new Error(`Requester exited: ${code}`); })]);
+  ({ pid } = JSON.parse(String(data[0])));
+  for (let count = 0; count < 100 && !existsSync(heartbeat); count++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(existsSync(heartbeat));
+  const before = Number(readFileSync(heartbeat, 'utf8'));
+  // PM2 walks PPID descendants, irrespective of detached process groups.
+  // Signal only this fixture requester's captured descendants and itself.
+  const rows = execFileSync('/bin/ps', ['-e', '-o', 'pid=,ppid='], { encoding: 'utf8' }).trim().split('\n').map(line => line.trim().split(/\s+/).map(Number));
+  const descendants = [];
+  const visit = root => { for (const [child, owner] of rows) if (owner === root) { visit(child); descendants.push(child); } };
+  visit(parent.pid);
+  assert.ok(!descendants.includes(pid), 'The updater must leave Core ancestry before admission');
+  for (const target of [...descendants, parent.pid]) { try { process.kill(target, 'SIGTERM'); } catch {} }
+  await once(parent, 'exit');
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.doesNotThrow(() => process.kill(pid, 0));
+  assert.ok(Number(readFileSync(heartbeat, 'utf8')) > before, 'The independent worker continues after the requester tree is killed');
+});
+
+test('failed independence verification kills the unadmitted worker', async t => {
+  const { spawn } = await import('node:child_process');
+  const f = fixture(t), executor = join(f.parent, 'executor');
+  mkdirSync(executor, { mode: 0o700 });
+  copyFileSync(join(f.home, 'bin/node'), join(executor, 'node'));
+  // A worker still parented by this requester must never be accepted merely
+  // because a launcher supplied a PID. It is safe to kill this owned fixture.
+  const worker = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  t.after(() => { try { worker.kill('SIGKILL'); } catch {} });
+  writeFileSync(join(executor, 'product-home-update-launcher.mjs'), `console.log(JSON.stringify({pid:${worker.pid},launcherPid:process.pid}));`);
+  await assert.rejects(launchIndependentUpdateWorker({ executor, homeRoot: f.home, operationId: 'fixture' }), { code: 'launch_failed' });
+  for (let count = 0; count < 100 && worker.exitCode === null && worker.signalCode === null; count++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(worker.signalCode, 'SIGKILL');
+});
+
+test('launch failure leaves a truthful resumable receipt and releases admission', async t => {
+  const f = fixture(t);
+  writeFileSync(join(f.home, 'bin/node'), '#!/bin/sh\nexit 17\n', { mode: 0o700 });
+  const result = await requestHomeUpdate(input(f.home, 'check'));
+  assert.equal(result.operation.phase, 'failed');
+  assert.equal(result.operation.errorCode, 'launch_failed');
+  assert.equal(f.operation(result.operation.id).pid, null);
+  assert.deepEqual(result.allowedActions, ['resume']);
+  assert.equal(existsSync(join(f.home, 'runtime/home-update/admission.lock')), false);
+  const resumed = await requestHomeUpdate(input(f.home, 'resume', 'retry'), noLaunch);
+  assert.equal(resumed.operation.id, result.operation.id);
+  assert.equal(resumed.operation.phase, 'queued');
+});
+
+test('retained worker cannot execute before its actual PID is durably admitted', async t => {
+  const { spawnSync } = await import('node:child_process');
+  const f = fixture(t), accepted = await requestHomeUpdate(input(f.home, 'check'), noLaunch);
+  const file = join(f.home, `runtime/home-update/${accepted.operation.id}.json`), before = readFileSync(file, 'utf8');
+  const worker = spawnSync(process.execPath, [new URL('../../cli/lib/product-home-update-worker.mjs', import.meta.url).pathname, f.home, accepted.operation.id], { timeout: 10_000, encoding: 'utf8' });
+  assert.equal(worker.status, 0, worker.stderr);
+  assert.equal(readFileSync(file, 'utf8'), before);
 });
 
 test('prepared update resumes after component failure without downloading or repeating home update', async t => {
