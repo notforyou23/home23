@@ -1221,6 +1221,34 @@ test('mixed roots switch packaged software and retain operator siblings', async 
   for (const file of operator) assert.equal(fs.readFileSync(path.join(fixture.home, file), 'utf8'), 'kept operator state\n');
 });
 
+test('Home Vibe configuration and family context survive a software update as private home state', async t => {
+  const fixture = homeFixture(t);
+  const privateState = {
+    'app/config/home-vibe.json': '{"enabled":true,"authorAgent":"milo","refreshToken":"private-fixture-capability"}\n',
+    'app/config/home-vibe-context.json': '{"notes":["owner note"],"history":[{"authorName":"Cosmo","text":"inherited entry"}]}\n',
+  };
+  for (const [relative, contents] of Object.entries(privateState)) {
+    fs.writeFileSync(path.join(fixture.home, relative), contents, { mode: 0o600 });
+  }
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging }, quiet);
+  assert.equal(result.status, 'committed', JSON.stringify(result.reasons));
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+  for (const [relative, contents] of Object.entries(privateState)) {
+    const file = path.join(fixture.home, relative);
+    assert.equal(fs.readFileSync(file, 'utf8'), contents);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  }
+  assert.equal(verifyProductPayload(fixture.home, { allowRuntimeState: true }).packageId, fixture.next.packageId);
+
+  // Neither credentials nor inherited family history may enter a distributable payload.
+  for (const [index, relative] of Object.keys(privateState).entries()) {
+    const leaking = path.join(fixture.root, `leaking-${index}`);
+    payload(leaking, { sourceCommit: 'c'.repeat(40), extra: { [relative]: privateState[relative] } });
+    assert.throws(() => verifyProductPayload(leaking), /cannot contain installation state/);
+  }
+});
+
 test('an adopted external state link survives one software update by its exact receipt', async t => {
   const fixture = homeFixture(t);
   const external = path.join(fixture.root, 'retained-coding-state');

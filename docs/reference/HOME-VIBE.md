@@ -36,7 +36,9 @@ The Family service opts in with `HOME23_VIBE_FEED_PATH`,
 uses the optional local `refreshURL` from `home-vibe.json`. The existing
 `COSMO_VIBE_DATA_PATH` can point to Home-owned `config/home-vibe-context.json`,
 preserving family profiles, authored notes, personality preferences, and old
-history byte-for-byte during migration. Old Cosmo entries retain their author.
+history byte-for-byte during migration. Both Home Vibe configuration files are
+private home state: product updates preserve them and distributable packages
+must exclude them. Old Cosmo entries retain their author.
 
 `/api/dashboard/state` and `/api/cosmo/insight/latest` retain their compatibility
 paths while serving the same Home23 feed. Manual Generate forwards to the

@@ -132,7 +132,8 @@ export function readProductManifest(payloadPath) {
  * two metadata files requires the future activation transaction. */
 export const PRODUCT_STATE_PATHS = Object.freeze([
   ...['.home23-install.json', '.home23-host.json',
-    ...['home.yaml', 'targets.yaml', 'secrets.yaml', 'agents.json', 'cron-jobs.json'].map(name => `app/config/${name}`),
+    ...['home.yaml', 'targets.yaml', 'secrets.yaml', 'agents.json', 'cron-jobs.json',
+      'home-vibe.json', 'home-vibe-context.json'].map(name => `app/config/${name}`),
     'app/ecosystem.config.cjs', 'app/.home23-state.json',
     'app/engine/.env',
     ...['.evobrew-config.json', 'config.json', 'runtime-state.json', 'model-catalog-cache.json'].map(name => `app/evobrew/${name}`),
