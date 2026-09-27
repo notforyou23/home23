@@ -85,6 +85,46 @@ test('the existing background tile refresh publishes without UI; another agent d
   assert.equal(registry.get('tile.outside-weather').ts, stamp, 'station time is not rewritten as refresh time');
 });
 
+test('the first scheduled weather refresh fetches after delayed initial completion instead of serving the UI cache', async t => {
+  const f = fixture(t); const previous = globalThis.fetch;
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: AT });
+  let calls = 0;
+  let finishInitial!: (response: Response) => void;
+  let finishScheduled!: (response: Response) => void;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls === 1) return new Promise<Response>(resolve => { finishInitial = resolve; });
+    return new Promise<Response>(resolve => { finishScheduled = resolve; });
+  };
+  t.after(() => { globalThis.fetch = previous; registry.remove('tile.outside-weather'); });
+  const primary = new Home23TileService({ home23Root: f.root, agentName: 'main', logger: { warn() {} } });
+  const helper = new Home23TileService({ home23Root: f.root, agentName: 'another', logger: { warn() {} } });
+  t.after(() => { primary.stopBackgroundRefresh(); helper.stopBackgroundRefresh(); });
+  assert.equal(calls, 1);
+  assert.equal(helper.backgroundRefreshTimers.size, 0);
+  t.mock.timers.tick(1000); // Initial fetch completes after the interval was scheduled.
+  finishInitial(new Response(JSON.stringify({ code: 0, data: f.raw(AT) }), { status: 200 }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(primary.backgroundRefreshInFlight.size, 0);
+  const initial = readHomeWorldContext({ home23Root: f.root }).weather;
+  assert.equal(initial.checkedAt, new Date(AT.getTime() + 1000).toISOString());
+  t.mock.timers.tick(599_000); // First 10-minute callback; UI cache would expire 1 second later.
+  assert.equal(calls, 2, 'the scheduled refresh must contact the provider at its first interval');
+  const concurrentPrimary = await primary.getTileData('outside-weather');
+  assert.equal(concurrentPrimary.cache.hit, true, 'UI keeps its still-valid reading while the scheduled request runs');
+  assert.equal(concurrentPrimary.observedAt, initial.observedAt);
+  assert.equal(calls, 2, 'a concurrent primary UI read must not start a duplicate provider request');
+  finishScheduled(new Response(JSON.stringify({ code: 0, data: f.raw(new Date()) }), { status: 200 }));
+  await new Promise(resolve => setImmediate(resolve));
+  const refreshed = readHomeWorldContext({ home23Root: f.root }).weather;
+  assert.equal(refreshed.checkedAt, new Date(AT.getTime() + 600_000).toISOString());
+  assert.equal(refreshed.observedAt, refreshed.checkedAt);
+  assert.equal(refreshed.status, 'fresh');
+  const secondary = await helper.getTileData('outside-weather');
+  assert.equal(secondary.observedAt, refreshed.observedAt);
+  assert.equal(calls, 2, 'secondary UI reads still use the shared snapshot');
+});
+
 test('domain weather and background thoughts consume the same home snapshot without a cloud fetch', async t => {
   const f = fixture(t);
   publishHomeWeather({ home23Root: f.root, tileId: 'outside-weather', weather: { rawData: f.raw() }, now: AT });

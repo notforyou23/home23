@@ -1046,7 +1046,10 @@ class Home23TileService {
         if (this.backgroundRefreshInFlight.has(tile.id)) return;
         this.backgroundRefreshInFlight.add(tile.id);
         try {
-          await this.getTileData(tile.id);
+          // The UI cache expires after fetch completion, later than this
+          // timer's next tick. Bypass it for station polling, but preserve
+          // the cached reading for concurrent UI requests until replacement.
+          await this.getTileData(tile.id, { refresh: tile.mode === 'ecowitt-weather' });
         } catch (err) {
           // A failed refresh is an availability report, not a new station observation.
           this.logger?.warn?.(`[home23-tiles] background refresh failed for ${tile.id}: ${err.message}`);
@@ -1208,7 +1211,7 @@ class Home23TileService {
     });
   }
 
-  async getTileData(tileId) {
+  async getTileData(tileId, { refresh = false } = {}) {
     const requestStartedAt = Date.now();
     const tile = this.resolveTile(tileId);
     if (!tile) throw new Error(`Unknown tile: ${tileId}`);
@@ -1223,7 +1226,7 @@ class Home23TileService {
       return buildWeatherTilePayload(tileId, station);
     }
 
-    const cached = this.getCachedTileData(tileId, tile.refreshMs);
+    const cached = refresh ? null : this.getCachedTileData(tileId, tile.refreshMs);
     if (cached) {
       publishTileLatency(tile, tile.mode || 'generic', Date.now() - requestStartedAt);
       return cached;
