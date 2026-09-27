@@ -1121,7 +1121,12 @@ const MAX_RECOVERY_REOPENS = 3;
  * after selection or admission stays a local recovery. */
 function productRecovery(journal, home) {
   const none = { restore: false, retry: false };
-  if (journal?.phase !== 'recovery_required' || journal.writersAdmitted || journal.acceptedWork || journal.candidateStarted) return none;
+  // A dead controller can leave its durable stop receipt at claimed. No
+  // software unit can move in that phase; abort may restore the original home.
+  const claimed = journal?.phase === 'claimed';
+  if ((!claimed && journal?.phase !== 'recovery_required') || journal.writersAdmitted || journal.acceptedWork || journal.candidateStarted) return none;
+  if (claimed && ((journal.stoppedForUpdate !== true && journal.desiredRunning !== false)
+    || journal.stagedManifestSha256 || journal.retention)) return none;
   // 187 journals have neither recoveryFrom nor softwareRestored: a recorded
   // staged manifest means the switch began, so they stay local.
   if (journal.stagedManifestSha256 && journal.softwareRestored !== true) return none;
@@ -1131,6 +1136,7 @@ function productRecovery(journal, home) {
     if (readProductManifest(home).packageId !== journal.fromPackageId
       || readPrivateJSON(join(home, '.home23-install.json'))?.packageId !== journal.fromPackageId) return none;
   } catch { return none; }
+  if (claimed) return { restore: true, retry: false };
   const current = (journal.reasons || []).map(reason => reason?.code);
   const retry = current.some(code => RETRYABLE.has(code)) && current.every(code => RETRYABLE.has(code) || RETRY_NEUTRAL.has(code))
     && (journal.recoveryReopens || 0) < MAX_RECOVERY_REOPENS;
@@ -1141,7 +1147,7 @@ export function productRecoveryFor(homeRoot) {
   const home = absoluteHome(homeRoot);
   let journal = null;
   try { journal = readUpdateJournal(home); } catch { journal = null; }
-  const available = journal?.phase === 'recovery_required' && !journal.writersAdmitted;
+  const available = ['recovery_required', 'claimed'].includes(journal?.phase) && !journal.writersAdmitted;
   const reasonCodes = available ? [...new Set((journal.reasons || []).map(reason => reason?.code)
     .filter(code => typeof code === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(code)))].slice(0, 16) : [];
   return { available, ...(available ? productRecovery(journal, home) : { restore: false, retry: false }), reasonCodes };
@@ -1179,13 +1185,20 @@ export async function recoverProductUpdate({ homeRoot } = {}, dependencies = {})
     const release = await (dependencies.acquireHostLock || defaultAcquireHostLock)(home, journal);
     if (release === null) return deferred(home, 'busy', 'Another lifecycle operation holds this home.', journal);
     try {
+      // Recheck the unchanged baseline while both lifecycle locks are held.
+      if (!productRecovery(journal, home).restore) {
+        return refuse(home, [{ code: 'recovery_unavailable', message: 'The installed home changed before recovery could begin.' }]);
+      }
       const processes = await (dependencies.listProcesses || defaultListProcesses)(home);
       if (classifyProcesses(processes, journal.writerNames || []).unknown.length) {
         return deferred(home, 'unknown_writer', 'An unexpected process is using this home. Wait for it to exit before recovering.', journal);
       }
       const reasons = journal.reasons || [];
-      if (!reasons.some(reason => reason?.code === 'recovered_by_owner')) {
-        journal = await commitPhase(file, { ...journal, reasons: [...reasons, { code: 'recovered_by_owner', message: 'The owner chose to return the home to service on its current version.' }] }, dependencies);
+      if (journal.phase === 'claimed' || !reasons.some(reason => reason?.code === 'recovered_by_owner')) {
+        journal = await commitPhase(file, { ...journal,
+          ...(journal.phase === 'claimed' ? { phase: 'recovery_required', recoveryFrom: 'claimed' } : {}),
+          reasons: reasons.some(reason => reason?.code === 'recovered_by_owner') ? reasons
+            : [...reasons, { code: 'recovered_by_owner', message: 'The owner chose to return the home to service on its current version.' }] }, dependencies);
       }
       if (!journal.desiredRunning) journal = await commitPhase(file, { ...journal, phase: 'aborted' }, dependencies);
     } finally { await release(); }

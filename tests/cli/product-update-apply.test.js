@@ -735,6 +735,114 @@ async function stuckStop(t, options = {}) {
   return fixture;
 }
 
+async function interruptedClaimedStop(t, options = {}) {
+  const fixture = homeFixture(t, { desiredRunning: true, ...options });
+  await assert.rejects(applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    quiesce: async () => { throw new Error('interrupted after stop receipt'); },
+  }), /interrupted after stop receipt/);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'claimed');
+  assert.equal(readUpdateJournal(fixture.home).stoppedForUpdate, true);
+  return fixture;
+}
+
+test('claimed recovery restores the same home with an owner-authorized journal and released Host lock', async t => {
+  const fixture = await interruptedClaimedStop(t);
+  const before = preserved(fixture.home);
+  let starts = 0;
+  assert.deepEqual(productRecoveryFor(fixture.home), { available: true, restore: true, retry: false, reasonCodes: [] });
+  const result = await recoverProductUpdate({ homeRoot: fixture.home }, {
+    listProcesses: async () => [],
+    start: async (home, journal) => {
+      starts += 1;
+      assert.equal(home, fixture.home);
+      assert.equal(journal.phase, 'recovery_required');
+      assert.equal(journal.recoveryFrom, 'claimed');
+      assert.equal(readUpdateJournal(home).phase, journal.phase);
+      assert.equal(updateBlocksStart(journal), true);
+      assert.equal(updateBlocksStart(journal, journal.ownerToken), false);
+      assert.equal(packageId(home), fixture.installed.packageId);
+      const lock = acquireHostLock(home);
+      assert.ok(lock, 'Host Start owns its own lifecycle lock');
+      lock.release();
+      assert.throws(() => acquireInstallLock(`${updateDirectoryFor(home)}.lock`), /lock|another|progress/i);
+      return { ok: true, status: 'ready' };
+    },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.runningRestored, true);
+  assert.equal(starts, 1);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+  assert.equal(productRecoveryFor(fixture.home).available, false);
+});
+
+test('claimed recovery respects desiredRunning false without starting or selecting the candidate', async t => {
+  const fixture = await interruptedClaimedStop(t, { desiredRunning: false });
+  const before = preserved(fixture.home);
+  const result = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    start: async () => { assert.fail('a deliberately stopped home must stay stopped'); },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+  assert.equal(readUpdateJournal(fixture.home).candidateStarted, false);
+});
+
+test('claimed recovery refuses switch evidence, admission, and changed manifest or install identity', async t => {
+  for (const damage of ['selected', 'stagedManifest', 'retention', 'candidateStarted', 'writersAdmitted', 'acceptedWork', 'manifest', 'install']) {
+    const fixture = await interruptedClaimedStop(t);
+    const file = path.join(updateDirectoryFor(fixture.home), 'journal.json');
+    const journal = readUpdateJournal(fixture.home);
+    if (damage === 'selected') journal.phase = 'selected';
+    else if (damage === 'stagedManifest') journal.stagedManifestSha256 = 'a'.repeat(64);
+    else if (damage === 'retention') journal.retention = 'switch';
+    else if (['candidateStarted', 'writersAdmitted', 'acceptedWork'].includes(damage)) journal[damage] = true;
+    else if (damage === 'manifest') fs.copyFileSync(path.join(fixture.candidate, 'manifest.json'), path.join(fixture.home, 'manifest.json'));
+    else {
+      const install = path.join(fixture.home, '.home23-install.json');
+      fs.writeFileSync(install, JSON.stringify({ ...JSON.parse(fs.readFileSync(install)), packageId: fixture.next.packageId }));
+    }
+    fs.writeFileSync(file, JSON.stringify(journal));
+    const before = fs.readFileSync(file, 'utf8');
+    const result = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+      start: async () => { assert.fail(`unsafe recovery started: ${damage}`); },
+    });
+    assert.equal(result.reasons[0].code, 'recovery_unavailable', damage);
+    assert.equal(fs.readFileSync(file, 'utf8'), before, damage);
+  }
+});
+
+test('claimed recovery leaves the journal untouched when the Host or update lock is held', async t => {
+  const fixture = await interruptedClaimedStop(t);
+  const file = path.join(updateDirectoryFor(fixture.home), 'journal.json');
+  const before = fs.readFileSync(file, 'utf8');
+  const hostLock = acquireHostLock(fixture.home);
+  // Represent a different live lifecycle owner, not this controller process.
+  fs.writeFileSync(path.join(fixture.home, 'runtime/.home23-update-lock.json'),
+    JSON.stringify({ pid: process.ppid, purpose: 'backup' }));
+  try {
+    const result = await recoverProductUpdate({ homeRoot: fixture.home }, { listProcesses: async () => [] });
+    assert.equal(result.reasons[0].code, 'busy');
+    assert.equal(fs.readFileSync(file, 'utf8'), before);
+  } finally { hostLock.release(); }
+  const updateLock = acquireInstallLock(`${updateDirectoryFor(fixture.home)}.lock`);
+  try {
+    await assert.rejects(recoverProductUpdate({ homeRoot: fixture.home }, quiet), /lock|another|progress/i);
+    assert.equal(fs.readFileSync(file, 'utf8'), before);
+  } finally { updateLock(); }
+});
+
+test('claimed recovery entry --abort restores current software without resuming the candidate', async t => {
+  const fixture = await interruptedClaimedStop(t, { currentExtra: { 'app/cli/lib/product-host.js': hostStub } });
+  const result = await run(process.execPath, [path.join(rootDir, 'cli/lib/product-update-recover.mjs'), '--home', fixture.home, '--abort'], process.env);
+  assert.equal(result.code, 0, result.stderr + result.stdout);
+  assert.equal(JSON.parse(result.stdout).status, 'aborted');
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(fs.readFileSync(path.join(fixture.home, 'runtime/started.txt'), 'utf8'), 'start');
+});
+
 test('resume reopens a nothing-switched recovery_required journal and commits', async t => {
   const fixture = await stuckStop(t, { extra: { 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/cli/lib/product-host.js': hostStub } });
   const before = preserved(fixture.home);
