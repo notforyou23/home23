@@ -115,7 +115,7 @@ async function applyModelAuthorityRuntimeRefresh({
 
 function createSettingsRouter(home23Root, options = {}) {
   const router = express.Router();
-  const tileService = new Home23TileService({ home23Root });
+  const tileService = options.tileService || new Home23TileService({ home23Root, autoStartBackgroundRefresh: false });
   const oauthBroker = options.oauthBroker || createHome23OAuthBroker({ home23Root });
   const getOrchestrator = typeof options.getOrchestrator === 'function'
     ? options.getOrchestrator

@@ -240,6 +240,7 @@ export interface PromptSourceInfo {
 
 export interface ContextManagerRef {
   getSystemPrompt(): string;
+  getWorldContext?(now?: Date): string;
   getPromptSourceInfo(): PromptSourceInfo;
   invalidate(): void;
 }

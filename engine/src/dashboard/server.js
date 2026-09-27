@@ -770,6 +770,7 @@ class DashboardServer {
     this.logger = console;
     this.home23Tiles = new Home23TileService({
       home23Root: this.getHome23Root(),
+      agentName: this.getHome23AgentName(),
       logger: this.logger,
       getTemporalContext: () => buildTemporalContext({
         workspacePath: this.getHome23AgentContext().workspacePath,
@@ -3040,6 +3041,7 @@ class DashboardServer {
         },
       });
       const { router: settingsRouter } = createSettingsRouter(home23Root, {
+        tileService: this.home23Tiles,
         getOrchestrator: () => this.orchestrator,
         getCurrentDashboardAgent: () => this.getHome23AgentName(),
         reloadCurrentDashboardModelAuthority: (change) => (

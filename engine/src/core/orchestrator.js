@@ -410,6 +410,7 @@ class Orchestrator {
   createThinkingMachine(options) {
     return new ThinkingMachine({
       ...options,
+      getTemporalContext: () => this.buildCurrentTemporalContext(),
       getConversationContext: () => this.conversationSalience?.getRecentContext() || null,
       getConversationEvidenceRefs: () => (this.conversationSalience?.getRecentEntries() || [])
         .filter(entry => entry.source === 'seed_contact' && entry.eventId).map(entry => entry.eventId),
@@ -1142,7 +1143,6 @@ class Orchestrator {
             })(),
           },
           logger: this.logger,
-          getTemporalContext: () => this.currentTemporalContext,
           // Step 24 publisher hooks — propagated from engine/src/index.js
           // via orchestrator.step24Hooks (set by the engine boot before
           // orchestrator.start()).
@@ -1509,21 +1509,14 @@ class Orchestrator {
     return null;
   }
 
-  /**
-   * Execute one cognitive cycle with GPT-5
-   */
-  async executeCycle() {
-    const cycleStart = new Date();
-    await this.retryCognitionFeedback();
-    this.cycleCount++;
-
-    // Compute temporal context once per cycle. Attached to every thought
-    // emitted this cycle so jerry knows where-we-are-in-time. Pure utility;
-    // failure returns a sensible default context without throwing.
+  buildCurrentTemporalContext(now = new Date()) {
+    // Thinking-machine heartbeats run independently of executeCycle. Read the
+    // clock and shared station snapshot at each use, not from the last cycle.
     try {
-      const nowMs = cycleStart.getTime();
-      this.currentTemporalContext = buildTemporalContext({
-        now: cycleStart,
+      const nowMs = now.getTime();
+      return buildTemporalContext({
+        now,
+        home23Root: this.home23Root || process.env.HOME23_ROOT,
         workspacePath: process.env.COSMO_WORKSPACE_PATH || null,
         loopState: {
           continuousRunMs: nowMs - (this.processStartedAt || nowMs),
@@ -1532,9 +1525,18 @@ class Orchestrator {
           awakeForMs: this.lastSleepEndedAt ? nowMs - this.lastSleepEndedAt : (nowMs - (this.processStartedAt || nowMs)),
         },
       });
-    } catch (e) {
-      this.currentTemporalContext = null; // graceful — temporal unavailable is non-fatal
-    }
+    } catch { return null; }
+  }
+
+  /**
+   * Execute one cognitive cycle with GPT-5
+   */
+  async executeCycle() {
+    const cycleStart = new Date();
+    await this.retryCognitionFeedback();
+    this.cycleCount++;
+
+    this.currentTemporalContext = this.buildCurrentTemporalContext(cycleStart);
 
     // Reload HEARTBEAT context at cycle start (optional, non-fatal)
     try {

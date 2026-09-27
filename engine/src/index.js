@@ -1074,8 +1074,9 @@ async function main() {
         registered.push(`domain.${reader.kind}`);
       }
       if (readers.weather?.enabled) {
-        // Weather fetcher is agent-specific; default to no-op until plumbed.
-        channelBus.register(new WeatherChannel({ intervalMs: 5 * 60 * 1000 }));
+        // Consume the existing house tile refresh; no per-agent cloud fetch.
+        channelBus.register(new WeatherChannel({ intervalMs: 5 * 60 * 1000,
+          home23Root: process.env.HOME23_ROOT || path.resolve(__dirname, '..', '..') }));
         registered.push('domain.weather');
       }
       if (readers.goodLife?.enabled) {

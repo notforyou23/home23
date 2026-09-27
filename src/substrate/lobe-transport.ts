@@ -10,7 +10,13 @@
  */
 
 import { generateText, inferTextGenerationProvider } from '../agent/text-generation.js';
-import { loadHomeConfig } from '../config.js';
+import { loadHomeConfig, getHome23Root } from '../config.js';
+import { createRequire } from 'node:module';
+import type { HomeWorldContext } from '../../shared/home-world-context.cjs';
+const { readHomeWorldContext, formatHomeWorldContext } = createRequire(import.meta.url)('../../shared/home-world-context.cjs') as {
+  readHomeWorldContext: (options: { home23Root: string; now?: Date }) => HomeWorldContext;
+  formatHomeWorldContext: (context: HomeWorldContext) => string;
+};
 
 export interface SeedModelReceipt {
   modelId: string;
@@ -52,7 +58,7 @@ export function createSeedLobeTransport(opts: SeedLobeTransportOptions): SeedLob
       provider,
       baseURL,
       apiKey: configured?.apiKey,
-      prompt,
+      prompt: `${prompt}\n\n${formatHomeWorldContext(readHomeWorldContext({ home23Root: getHome23Root() }))}`,
       maxTokens: opts.maxTokens ?? 8192,
       temperature: 0.2,
       timeoutMs: opts.timeoutMs ?? 45_000,

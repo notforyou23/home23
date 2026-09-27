@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { WeatherChannel } from '../../../../engine/src/channels/domain/weather-channel.js';
 
 test('WeatherChannel emits COLLECTED on successful fetch', async () => {
-  const ch = new WeatherChannel({ intervalMs: 10, fetchWeather: async () => ({ tempF: 66.7, humidity: 40, pressureInhg: 30.2, at: '2026-04-21T00:00:00Z' }) });
+  const ch = new WeatherChannel({ intervalMs: 10, now: () => new Date('2026-04-21T00:01:00Z'), fetchWeather: async () => ({ tempF: 66.7, humidity: 40, pressureInhg: 30.2, at: '2026-04-21T00:00:00Z' }) });
   const raw = await ch.poll();
   const parsed = ch.parse(raw[0]);
   const obs = ch.verify(parsed);

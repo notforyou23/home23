@@ -26,6 +26,12 @@ An owner reply enters the same agent conversation and existing Work route. For c
 
 `committed` means the message exists in the conversation. `queued` means the durable delivery path has accepted it for retry. Neither means Apple accepted a notification, a device displayed it, or the owner read it. Tests exercise the real notification service with a simulated APNs client; physical phone acceptance is a separate live check.
 
+## Time and weather at home
+
+Each resident/helper turn and Seed model request receives the current local clock as a dynamic suffix, separate from cached identity and historical conversation dates. Engine thought uses the same home context. The home timezone comes from its configuration or primary resident; missing or invalid configuration is labelled honestly with UTC rather than borrowing another home's location.
+
+The existing primary dashboard's background Ecowitt refresh writes a small, credential-free snapshot for all agents in that home. Settings reuse that service and other residents do not create extra periodic station requests. The snapshot preserves the station's observation times and units. Fetch failure or readings older than twenty minutes are stale; absent, mismatched or invalid observations are unavailable. Re-reading or republishing a measurement never makes it new. Enabling the optional weather channel is a separate home setting; model context does not depend on it.
+
 ## Compatibility and limits
 
 Historical unversioned delta semantics remain unchanged. Current accepted receipts carry the exact occurrence identity needed for replay, including an index for ambiguous legacy prediction rows. A read-only feedback projection copies state; it does not mutate the resident, change the encoder, re-ingest conversations, or rewrite history.

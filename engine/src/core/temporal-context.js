@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
+const { readHomeWorldContext, formatHomeWorldContext } = require('../../../shared/home-world-context.cjs');
 
 const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
@@ -70,7 +71,7 @@ function loadTemporalConfig(workspacePath) {
   }
 
   const config = {
-    timezone: parsed.timezone || 'UTC',
+    timezone: parsed.timezone || null,
     workweek: { ...DEFAULT_WORKWEEK, ...(parsed.workweek || {}) },
     rhythms: Array.isArray(parsed.rhythms) ? parsed.rhythms : [],
     overrides: Array.isArray(parsed.overrides) ? parsed.overrides : [],
@@ -170,11 +171,12 @@ function buildTemporalContext(opts = {}) {
   const now = opts.now instanceof Date ? opts.now : new Date();
   const config = opts.workspacePath ? loadTemporalConfig(opts.workspacePath) : null;
 
-  const timezone = config?.timezone || 'America/New_York';
+  const world = readHomeWorldContext({ home23Root: opts.home23Root || process.env.HOME23_ROOT, timezone: opts.timezone || config?.timezone, now });
+  const timezone = world.timezone;
   const workweek = config?.workweek || DEFAULT_WORKWEEK;
-  const { dayName, minutesSinceMidnight } = computeLocalTimeParts(now, timezone);
-  const phase = computePhase(minutesSinceMidnight, workweek);
-  const dayType = isWorkday(dayName, workweek.workDays) ? 'weekday' : 'weekend';
+  const { dayName, minutesSinceMidnight } = timezone ? computeLocalTimeParts(now, timezone) : { dayName: 'unknown', minutesSinceMidnight: 0 };
+  const phase = timezone ? computePhase(minutesSinceMidnight, workweek) : 'unknown';
+  const dayType = timezone ? (isWorkday(dayName, workweek.workDays) ? 'weekday' : 'weekend') : 'unknown';
 
   const override = activeOverride(now, config?.overrides || []);
   const rhythms = activeRhythms(dayName, phase, config?.rhythms || []);
@@ -188,9 +190,12 @@ function buildTemporalContext(opts = {}) {
 
   return {
     now: now.toISOString(),
+    homeContext: formatHomeWorldContext(world),
+    homeWeather: world.weather,
     configLoaded: Boolean(config),
     jtrTime: {
       timezone,
+      localTime: world.localTime,
       dayName,
       phase,
       dayType,

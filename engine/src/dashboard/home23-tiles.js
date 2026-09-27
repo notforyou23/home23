@@ -4,6 +4,7 @@ const yaml = require('js-yaml');
 const { ownerHome } = require('../../../shared/owner-home.cjs');
 const { updateSettingsSecrets } = require('./home23-secrets');
 const { writeYamlSafely } = require('./yaml-write-safety');
+const { publishHomeWeather, weatherSnapshot, readHomeWorldContext } = require('../../../shared/home-world-context.cjs');
 
 // Sensor registry — optional. We lazy-load to keep tiles decoupled from the
 // engine's internal modules. If the engine/src/sensors module isn't present
@@ -855,6 +856,31 @@ async function fetchEcowittData(connection) {
   };
 }
 
+function buildWeatherTilePayload(tileId, station) {
+  const readings = station.status === 'unavailable' ? {} : station.readings;
+  const value = name => readings[name] ? `${readings[name].value} ${readings[name].unit}` : '—';
+  return {
+    tileId,
+    fetchedAt: station.checkedAt || new Date().toISOString(),
+    observedAt: station.observedAt,
+    stale: station.status === 'stale',
+    offline: station.status === 'unavailable',
+    content: {
+      status: station.status === 'fresh' ? 'Weather' : station.status === 'stale' ? 'Weather (stale)' : 'Weather unavailable',
+      value: value('temperature'),
+      subtitle: [
+        readings.feelsLike ? `Feels like ${value('feelsLike')}` : null,
+        readings.humidity ? `${value('humidity')} humidity` : null,
+        station.status === 'stale' ? `Last observed ${station.observedAt}` : null,
+      ].filter(Boolean).join(' · ') || 'No outdoor readings',
+      metrics: [['Wind', 'wind'], ['Gust', 'gust'], ['Pressure', 'pressure'], ['UV', 'uv'],
+        ['Indoor', 'indoorTemperature'], ['Indoor Humidity', 'indoorHumidity']]
+        .map(([label, name]) => ({ label, value: value(name) })),
+    },
+    actions: [],
+  };
+}
+
 function huumStatusText(statusCode) {
   switch (statusCode) {
     case 230: return 'Offline';
@@ -987,17 +1013,16 @@ function expandBodyTemplate(template, values) {
 }
 
 class Home23TileService {
-  constructor({ home23Root, logger = console, getTemporalContext = null, autoStartBackgroundRefresh = true }) {
+  constructor({ home23Root, logger = console, getTemporalContext = null, autoStartBackgroundRefresh = true, agentName = null }) {
     this.home23Root = home23Root;
+    this.agentName = agentName;
     this.logger = logger;
     this.getTemporalContext = typeof getTemporalContext === 'function' ? getTemporalContext : null;
     this.cache = new Map();
     this.backgroundRefreshTimers = new Map();
     this.backgroundRefreshInFlight = new Set();
-    // Last successfully-fetched payload per tile, used to keep tile-backed
-    // sensors fresh through transient upstream failures (e.g. Ecowitt rate
-    // limiting). Republishing recent-but-valid data is better than letting the
-    // sensor go stale and tripping freshness verifiers.
+    // Preserve last-known observations through upstream failures, retaining
+    // their station timestamps and explicit stale status.
     this.lastGood = new Map();
     if (autoStartBackgroundRefresh) this.startBackgroundRefresh();
   }
@@ -1012,6 +1037,10 @@ class Home23TileService {
     for (const tile of tiles.customTiles) {
       if (!tile || tile.kind !== 'custom') continue;
       if (tile.mode !== 'ecowitt-weather' && tile.mode !== 'huum-sauna') continue;
+      // One existing primary dashboard refresh owns the shared station.
+      // Other agents consume its home-scoped snapshot, not another cloud poll.
+      const primary = this.readHomeConfig().home?.primaryAgent;
+      if (tile.mode === 'ecowitt-weather' && this.agentName && primary && this.agentName !== primary) continue;
 
       const run = async () => {
         if (this.backgroundRefreshInFlight.has(tile.id)) return;
@@ -1019,13 +1048,11 @@ class Home23TileService {
         try {
           await this.getTileData(tile.id);
         } catch (err) {
-          // Even on hard failure (no last-good cache to fall back on), keep
-          // the tile sensor timestamp advancing so freshness verifiers don't
-          // trip during prolonged upstream outages. Mirror the pool-screenlogic
-          // offline-publish behavior.
+          // A failed refresh is an availability report, not a new station observation.
           this.logger?.warn?.(`[home23-tiles] background refresh failed for ${tile.id}: ${err.message}`);
           try {
             publishTileSensor(tile, tile.mode || 'generic', { offline: true, error: err.message }, 'offline', { ok: false });
+            if (tile.mode === 'ecowitt-weather') publishHomeWeather({ home23Root: this.home23Root, tileId: tile.id, failed: true });
           } catch { /* non-fatal */ }
         } finally {
           this.backgroundRefreshInFlight.delete(tile.id);
@@ -1187,6 +1214,15 @@ class Home23TileService {
     if (!tile) throw new Error(`Unknown tile: ${tileId}`);
     if (tile.kind !== 'custom') throw new Error(`Tile "${tileId}" is rendered client-side as a core tile`);
 
+    const primary = this.readHomeConfig().home?.primaryAgent;
+    if (tile.mode === 'ecowitt-weather' && this.agentName && primary && this.agentName !== primary) {
+      // A secondary dashboard reads the primary's bounded home snapshot. It
+      // neither fetches Ecowitt nor changes shared availability on a UI request.
+      let station = readHomeWorldContext({ home23Root: this.home23Root }).weather;
+      if (station.tileId !== tile.id) station = { status: 'unavailable', readings: {}, observedAt: null, checkedAt: null };
+      return buildWeatherTilePayload(tileId, station);
+    }
+
     const cached = this.getCachedTileData(tileId, tile.refreshMs);
     if (cached) {
       publishTileLatency(tile, tile.mode || 'generic', Date.now() - requestStartedAt);
@@ -1206,54 +1242,34 @@ class Home23TileService {
       let staleError = null;
       try {
         weather = await fetchEcowittData(connection);
-        // Stash last-good weather so transient upstream failures don't make the
-        // sensor go stale. We keep it as long as we have any cached copy.
+        // Retain the observation for explicitly stale display on a later failure.
         this.lastGood.set(tile.id, { data: weather, at: Date.now() });
       } catch (err) {
         const fallback = this.lastGood.get(tile.id);
         if (fallback) {
-          // Always republish last-good weather on fetch failure so the
-          // tile.outside-weather sensor `ts` keeps advancing even when
-          // upstream (Ecowitt) has been unreachable for longer than 30 min.
-          // Tag the publish as stale + carry the upstream error so consumers
-          // can distinguish cached-but-fresh from cached-but-old.
+          // Keep the original station timestamp; a refresh failure cannot
+          // make the previous reading current again.
           weather = fallback.data;
           staleAgeSec = Math.round((Date.now() - fallback.at) / 1000);
           staleError = err.message;
           isStale = true;
           this.logger?.warn?.(`[home23-tiles] ${tile.id} fetch failed (${err.message}); republishing last-good weather aged ${staleAgeSec}s`);
         } else {
+          publishHomeWeather({ home23Root: this.home23Root, tileId: tile.id, failed: true });
           throw err;
         }
       }
-      const summary = weather?.outdoor?.temperature != null
-        ? `${weather.outdoor.temperature}°F${weather.outdoor.humidity != null ? ' · ' + weather.outdoor.humidity + '%RH' : ''}`
-        : 'no readings';
-      const meta = isStale
-        ? { ok: false, stale: true, ageSeconds: staleAgeSec, error: staleError }
-        : {};
+      const station = weatherSnapshot({ tileId: tile.id, weather, failed: isStale });
+      const presentation = buildWeatherTilePayload(tileId, station);
+      const summary = presentation.content.value;
+      const meta = { ok: station.status === 'fresh', stale: station.status === 'stale',
+        observedAt: station.observedAt, checkedAt: station.checkedAt,
+        ...(station.observedAt ? { ts: station.observedAt } : {}),
+        ageSeconds: station.observedAt ? Math.max(0, Math.round((Date.now() - Date.parse(station.observedAt)) / 1000)) : null,
+        error: staleError };
+      publishHomeWeather({ home23Root: this.home23Root, tileId: tile.id, weather, failed: isStale });
       publishTileSensor(tile, 'ecowitt-weather', weather, summary, meta);
-      payload = {
-        tileId,
-        fetchedAt: new Date().toISOString(),
-        content: {
-          status: 'Weather',
-          value: weather.outdoor.temperature != null ? `${weather.outdoor.temperature}°F` : '—',
-          subtitle: [
-            weather.outdoor.feelsLike != null ? `Feels like ${weather.outdoor.feelsLike}°F` : null,
-            weather.outdoor.humidity != null ? `${weather.outdoor.humidity}% humidity` : null,
-          ].filter(Boolean).join(' · ') || 'No outdoor readings',
-          metrics: [
-            { label: 'Wind', value: weather.wind.speed != null ? `${weather.wind.speed} mph` : '—' },
-            { label: 'Gust', value: weather.wind.gust != null ? `${weather.wind.gust} mph` : '—' },
-            { label: 'Pressure', value: weather.pressure.relative != null ? `${weather.pressure.relative} inHg` : '—' },
-            { label: 'UV', value: weather.solar.uv != null ? String(weather.solar.uv) : '—' },
-            { label: 'Indoor', value: weather.indoor.temperature != null ? `${weather.indoor.temperature}°F` : '—' },
-            { label: 'Indoor Humidity', value: weather.indoor.humidity != null ? `${weather.indoor.humidity}%` : '—' },
-          ],
-        },
-        actions: [],
-      };
+      payload = presentation;
     } else if (tile.mode === 'huum-sauna') {
       const sauna = await fetchHuumStatus(connection);
       const temporalContext = this.getTemporalContext ? this.getTemporalContext() : null;

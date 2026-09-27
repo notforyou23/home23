@@ -8,6 +8,12 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { hostname } from 'node:os';
+import { createRequire } from 'node:module';
+import type { HomeWorldContext } from '../../shared/home-world-context.cjs';
+const { readHomeWorldContext, formatHomeWorldContext } = createRequire(import.meta.url)('../../shared/home-world-context.cjs') as {
+  readHomeWorldContext: (options: { home23Root?: string; timezone?: string; now?: Date }) => HomeWorldContext;
+  formatHomeWorldContext: (context: HomeWorldContext) => string;
+};
 import type { ContextManagerRef, PromptSourceInfo } from './types.js';
 import type { IdentityLayerConfig } from '../types.js';
 import { buildSystemPrompt } from '../agents/system-prompt.js';
@@ -89,6 +95,10 @@ export class ContextManager implements ContextManagerRef {
       this.rebuild(p);
     }
     return this.systemPrompt;
+  }
+
+  getWorldContext(now = new Date()): string {
+    return formatHomeWorldContext(readHomeWorldContext({ home23Root: this.config.projectRoot ?? process.env.HOME23_ROOT, timezone: this.config.timezone, now }));
   }
 
   invalidate(): void {

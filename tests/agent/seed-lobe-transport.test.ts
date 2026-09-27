@@ -48,7 +48,10 @@ test('a local Seed lobe uses the selected keyless Ollama endpoint and records ac
     assert.equal(request.headers.get('authorization'), null);
     const body = await request.json() as { model: string; messages: Array<{ content: string }>; stream: boolean };
     assert.equal(body.model, 'gpt-local');
-    assert.equal(body.messages[0]?.content, 'Consider my garden.');
+    assert.match(body.messages[0]?.content ?? '', /^Consider my garden\./);
+    assert.match(body.messages[0]?.content ?? '', /CURRENT HOME CONTEXT/);
+    assert.match(body.messages[0]?.content ?? '', /home timezone unavailable/);
+    assert.match(body.messages[0]?.content ?? '', /Home weather: unavailable/);
     assert.equal(body.stream, false);
     return new Response(JSON.stringify({ message: { content: '{"estimates":[]}' }, prompt_eval_count: 31, eval_count: 12 }),
       { status: 200, headers: { 'content-type': 'application/json' } });

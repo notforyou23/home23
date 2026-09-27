@@ -8,18 +8,27 @@
 
 import { PollChannel } from '../base/poll-channel.js';
 import { ChannelClass, makeObservation } from '../contract.js';
+import worldContext from '../../../../shared/home-world-context.cjs';
 
 export class WeatherChannel extends PollChannel {
-  constructor({ intervalMs = 5 * 60 * 1000, fetchWeather, id = 'domain.weather' } = {}) {
+  constructor({ intervalMs = 5 * 60 * 1000, fetchWeather, home23Root, now = () => new Date(), id = 'domain.weather' } = {}) {
     super({ id, class: ChannelClass.DOMAIN, intervalMs });
-    this.fetchWeather = typeof fetchWeather === 'function' ? fetchWeather : async () => null;
+    this.now = now;
+    this.fetchWeather = typeof fetchWeather === 'function' ? fetchWeather
+      : async () => worldContext.readHomeWorldContext({ home23Root, now: this.now() }).weather;
   }
 
   async poll() {
     try {
       const w = await this.fetchWeather();
-      if (!w) return [{ __zeroContext: true, at: new Date().toISOString() }];
-      return [{ ...w, at: w.at || new Date().toISOString() }];
+      const now = this.now();
+      if (!w || w.status === 'unavailable') return [{ __zeroContext: true, at: now.toISOString() }];
+      const observedAt = w.observedAt || w.at;
+      const age = now.getTime() - Date.parse(observedAt);
+      if (w.status === 'stale' || !Number.isFinite(age) || age > 20 * 60 * 1000 || age < -60_000) {
+        return [{ ...w, __zeroContext: true, stale: true, observedAt, at: now.toISOString() }];
+      }
+      return [{ ...w, observedAt, at: observedAt }];
     } catch (err) {
       return [{ __error: err?.message || String(err), at: new Date().toISOString() }];
     }

@@ -128,6 +128,7 @@ test('DeepDive prompt bounds machine observations to host operations', () => {
     { nodes: [], edges: [], seedCount: 0 },
     {
       now: '2026-05-01T18:35:00.000Z',
+      homeContext: '[CURRENT HOME CONTEXT] Local time: Friday 2:35 PM. Home Ecowitt station: fresh; 18 °C.',
       jtrTime: { phase: 'afternoon', dayType: 'weekday', dayName: 'Friday', activeRhythms: ['deep-work'] },
       loopDuration: { continuousRunMs: 15 * 60 * 1000, lastConversationMs: 60 * 60 * 1000 },
     },
@@ -140,6 +141,7 @@ test('DeepDive prompt bounds machine observations to host operations', () => {
   assert.match(instructions, /not as a diagnosis of jtr's life/);
   assert.match(instructions, /Do not infer what jtr is doing/);
   assert.match(input, /bounded Home23 operational telemetry/);
+  assert.match(input, /CURRENT HOME CONTEXT.*Friday 2:35 PM.*Ecowitt station: fresh; 18 °C/);
   assert.doesNotMatch(input, /Jtr's time/);
   assert.doesNotMatch(input, /Recent conversation with jtr/);
   assert.doesNotMatch(input, /Focus on what it means for jtr's world/);

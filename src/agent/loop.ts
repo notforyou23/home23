@@ -1529,6 +1529,10 @@ export class AgentLoop {
       // are kept separate so the static prefix hits cache on every call.
       const staticSystemPrompt = turnRuntime?.delegatedContext?.systemPrompt ?? this.contextManager.getSystemPrompt(runtimeProvider);
       let rawSystemPrompt = staticSystemPrompt + attachmentContext([...storedHistory, userMsg]);
+      // Dynamic suffix keeps the static identity cacheable while every turn,
+      // including helpers and resumed/delegated turns, sees the actual clock.
+      const worldContext = this.contextManager.getWorldContext?.(new Date());
+      if (worldContext) rawSystemPrompt += `\n\n${worldContext}`;
       if (turnRuntime?.coordinationOrigin && runContext.coordinationChannelOperation && !turnRuntime.delegatedContext) {
         const project = await runContext.coordinationChannelOperation({
           origin: turnRuntime.coordinationOrigin, invocationId: `project-context:${activeTurnId}`,

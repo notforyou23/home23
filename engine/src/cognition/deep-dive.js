@@ -304,9 +304,11 @@ ${observation
 ${peerNodes.slice(0, 25).map(n => `- [${n.id}${n.cluster != null ? ` · c${n.cluster}` : ''}] ${materialLabel(n)} ${(n.concept || '').slice(0, 220)}`).join('\n')}`
       : '';
 
+    const homeContextBlock = temporalContext?.homeContext || '';
     const temporalBlock = t && !isOperationalObservation ? `## When it is
 - Jtr's time: ${t.phase} ${t.dayType} (${t.dayName}), rhythm: ${(t.activeRhythms || []).join(', ') || 'none'}${t.workweekPhase ? ` · ${t.workweekPhase}` : ''}
-- Absolute: ${temporalContext.now}
+- Local clock: ${t.localTime || 'unavailable'}
+- Absolute UTC: ${temporalContext.now}
 - Loop awake: ${humanDuration(temporalContext.loopDuration?.continuousRunMs)} · last conversation: ${humanDuration(temporalContext.loopDuration?.lastConversationMs)} ago` : '';
 
     const selectedConversation = candidate.conversation
@@ -346,7 +348,7 @@ ${(priorPass.critique?.gaps || []).map(g => `- ${g}`).join('\n') || '(none)'}
 
 Address these gaps concretely. If the prior thought was drifting into meta-commentary about graph topology rather than engaging with jtr's actual content, re-ground on the material above. If they expose that the thought is actually restatement or shallow, say so.` : '';
 
-    const input = [observationBlock, seedBlock, peerBlock, temporalBlock, conversationBlock, livedBlock, revisionBlock, discoveryFooter]
+    const input = [observationBlock, seedBlock, peerBlock, homeContextBlock, temporalBlock, conversationBlock, livedBlock, revisionBlock, discoveryFooter]
       .filter(Boolean)
       .join('\n\n') + (isRevision
         ? '\n\nThink again — addressing the gaps above. Focus on the content, not the discovery machinery.'
