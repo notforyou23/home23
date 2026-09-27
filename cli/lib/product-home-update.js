@@ -193,6 +193,31 @@ export async function reconcileAbortedHomeUpdate({ homeRoot, operationId, client
     return { reconciled: true, operationId, status: projectStatus(home, recovered, clientBuild) };
   });
 }
+/** Explicit local recovery for a dead download that never produced a prepared
+ * update or a cutover journal. Keep its receipt and partial files intact. */
+export async function abandonHomeUpdateDownload({ homeRoot, operationId, clientBuild } = {}) {
+  const home = installedHome(homeRoot);
+  return withAdmission(home, async () => {
+    const operation = loadOperation(home, operationId);
+    const { readUpdateJournal } = await import('./product-update-apply.js');
+    const { readProductManifest } = await import('./product-payload.js');
+    if (latestOperation(home)?.id !== operation.id || operation.action !== 'update' || alive(operation.pid)
+        || !['failed', 'interrupted'].includes(publicOperation(operation).phase)
+        || operation.prepared != null || operation.runtimeCompleted || operation.applicationCompleted || operation.requiresLocalRecovery
+        || readUpdateJournal(home.root) !== null || readProductManifest(home.root).packageId !== home.receipt.packageId
+        || typeof operation.release?.packageId !== 'string' || !operation.release.packageId || operation.release.packageId === home.receipt.packageId) {
+      throw fail('update_abandon_refused', 'This update cannot be abandoned as an unfinished download. Open Home23 on the Mac running your home for recovery.');
+    }
+    if (operation.errorCode === 'update_abandoned' && operation.requiresNewRelease && operation.blockedPackageId === operation.release.packageId) {
+      return { abandoned: true, operationId, status: projectStatus(home, operation, clientBuild) };
+    }
+    const abandoned = { ...operation, phase: 'failed', pid: null, updatedAt: now(), errorCode: 'update_abandoned', reasonCodes: ['abandoned_by_owner'],
+      requiresNewRelease: true, blockedPackageId: operation.release.packageId,
+      message: 'The previous download was stopped before changing your home. Check for a newer Home23 release.' };
+    save(join(home.directory, `${operation.id}.json`), abandoned);
+    return { abandoned: true, operationId, status: projectStatus(home, abandoned, clientBuild) };
+  });
+}
 /** Called only by the local embedded helper after installation/selection. */
 export function registerProductApplication({ homeRoot, applicationPath } = {}) {
   const home = installedHome(homeRoot);

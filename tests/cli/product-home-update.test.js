@@ -3,7 +3,7 @@ import test from 'node:test';
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
-import { homeUpdateStatus, pruneUpdateDelivery, reconcileAbortedHomeUpdate, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
+import { abandonHomeUpdateDownload, homeUpdateStatus, pruneUpdateDelivery, reconcileAbortedHomeUpdate, requestHomeUpdate, runHomeUpdateOperation, updateDeliveryPaths } from '../../cli/lib/product-home-update.js';
 import { writeProductManifest } from '../../cli/lib/product-payload.js';
 import { launchIndependentUpdateWorker } from '../../cli/lib/product-home-update-launcher.mjs';
 
@@ -92,6 +92,63 @@ test('local abort reconciliation refuses active, mismatched, un-restored, admitt
     if (change.journal) f.write(f.journalPath, { ...f.journal, ...change.journal });
     const file = join(f.home, `runtime/home-update/${f.id}.json`), before = readFileSync(file, 'utf8');
     await assert.rejects(reconcileAbortedHomeUpdate({ homeRoot: f.home, operationId: f.id }), { code: 'update_reconciliation_refused' });
+    assert.equal(readFileSync(file, 'utf8'), before);
+  }
+});
+
+async function failedDownloadFixture(t) {
+  const f = await recoveredFixture(t);
+  rmSync(f.journalPath);
+  f.setOperation({ ...f.operation(f.id), phase: 'failed', prepared: null, errorCode: 'ECONNREFUSED' });
+  return f;
+}
+
+test('abandoning a dead pre-cutover download preserves its files and permits a fresh release check', async t => {
+  const f = await failedDownloadFixture(t), args = { homeRoot: f.home, operationId: f.id, clientBuild: 180 };
+  const download = join(f.parent, '.home.home23-delivery', `download-${f.id}`);
+  mkdirSync(download, { recursive: true, mode: 0o700 });
+  const partial = join(download, 'runtime.tar.partial'), claim = join(download, 'signed-release-claim.json');
+  writeFileSync(partial, 'retained partial bytes'); f.write(claim, { signature: 'retained signed claim' });
+  const installBefore = readFileSync(join(f.home, '.home23-install.json'), 'utf8');
+  const result = await abandonHomeUpdateDownload(args);
+  assert.equal(result.abandoned, true);
+  assert.equal(result.status.operation.errorCode, 'update_abandoned');
+  assert.equal(result.status.operation.canResume, false);
+  assert.deepEqual(homeUpdateStatus(args).allowedActions, ['check']);
+  assert.equal(readFileSync(partial, 'utf8'), 'retained partial bytes');
+  assert.deepEqual(JSON.parse(readFileSync(claim, 'utf8')), { signature: 'retained signed claim' });
+  assert.equal(readFileSync(join(f.home, '.home23-install.json'), 'utf8'), installBefore);
+  const saved = readFileSync(join(f.home, `runtime/home-update/${f.id}.json`), 'utf8');
+  await abandonHomeUpdateDownload(args);
+  assert.equal(readFileSync(join(f.home, `runtime/home-update/${f.id}.json`), 'utf8'), saved);
+  const fresh = await requestHomeUpdate(input(f.home, 'check', 'after-abandon'), noLaunch);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: fresh.operation.id }, {
+    channel: { checkConfiguredRelease: async () => ({ status: 'available', release: { ...release, packageId: 'corrected-package' } }) }, updater: unusedUpdater, appUpdater: unusedAppUpdater,
+  });
+  assert.deepEqual(homeUpdateStatus(args).allowedActions, ['check', 'update']);
+  assert.equal(homeUpdateStatus(args).availableRelease.packageId, 'corrected-package');
+  assert.equal(readFileSync(partial, 'utf8'), 'retained partial bytes');
+});
+
+test('abandoning a download refuses live, prepared, journaled, changed, or non-latest operations without writing', async t => {
+  const cases = [
+    { operation: { pid: process.pid } }, { operation: { phase: 'downloading', updatedAt: new Date().toISOString() } },
+    { operation: { prepared: { packageId: release.packageId } } }, { operation: { runtimeCompleted: true } },
+    { operation: { applicationCompleted: true } }, { operation: { requiresLocalRecovery: true } },
+    { journal: true }, { changedReceipt: true }, { operation: { action: 'check' } },
+    { operation: { release: null } }, { differentLatest: true },
+  ];
+  for (const change of cases) {
+    const f = await failedDownloadFixture(t);
+    if (change.operation) f.setOperation({ ...f.operation(f.id), ...change.operation });
+    if (change.journal) f.write(f.journalPath, f.journal);
+    if (change.changedReceipt) f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: 'changed' });
+    if (change.differentLatest) {
+      const otherId = '12345678-1234-1234-1234-123456789abc';
+      f.setOperation({ ...f.operation(f.id), id: otherId }); f.write(join(f.home, 'runtime/home-update/latest.json'), { id: otherId });
+    }
+    const file = join(f.home, `runtime/home-update/${f.id}.json`), before = readFileSync(file, 'utf8');
+    await assert.rejects(abandonHomeUpdateDownload({ homeRoot: f.home, operationId: f.id }), { code: 'update_abandon_refused' });
     assert.equal(readFileSync(file, 'utf8'), before);
   }
 });
