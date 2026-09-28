@@ -773,13 +773,13 @@ function residentModelAliases(
 /** Resident-owned endpoint. It can access the AgentLoop and TurnStore, but no coordination DB. */
 export class ResidentTurnUdsServer {
   readonly #store:TurnStore; readonly #responses=new Map<string,Promise<AgentResponse>>(); readonly #server:ResidentUdsServer;
-  readonly #modelAliases:Readonly<ModelAliases>;
+  get #modelAliases():Readonly<ModelAliases> { return residentModelAliases(this.options.modelAliases,this.options.agent); }
   readonly #returnedArtifactRoots:readonly {path:string;generatedImageOnly:boolean}[];
   readonly #completionAbort=new AbortController();
   readonly #planned = new Map<string, { controller: AbortController; launch: () => void; launched: boolean }>();
   constructor(private readonly options:ResidentTurnUdsServerOptions){
     this.#store=new TurnStore(options.history);
-    this.#modelAliases=residentModelAliases(options.modelAliases,options.agent);
+    residentModelAliases(options.modelAliases,options.agent);
     const workspacePath=options.agent.getWorkspacePath?.();
     this.#returnedArtifactRoots=typeof workspacePath==="string"&&isAbsolute(workspacePath)&&!workspacePath.includes("\0")
       ? Object.freeze([

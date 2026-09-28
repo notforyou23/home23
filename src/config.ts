@@ -5,12 +5,13 @@
  * Deep merge — agent values override home defaults, secrets overlay on top.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { isAbsolute, resolve, join } from 'node:path';
 import yaml from 'js-yaml';
 import type { HomeConfig, IdentityLayerConfig, EmbeddedAgentConfig } from './types.js';
 import { validateReasoningEffortConfig } from './agent/reasoning-effort.js';
+import type { ModelAliases } from './agent/model-resolution.js';
 
 const PACKAGED_HOME23_ROOT = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
@@ -164,4 +165,48 @@ export function getAgentDir(agentName: string): string {
 
 export function getAgentScratchDir(agentName: string): string {
   return getAgentPaths(agentName).scratchDir;
+}
+
+/** Read the selected home's editable aliases at request/turn boundaries. Only
+ * these public routing fields reload; in-flight turns keep their resolved pair.
+ * No provider credentials or agent identity are reloaded by a catalog read. */
+export function createModelAliasReader(homeRoot = getHome23Root(), agentName?: string): () => ModelAliases {
+  const homePath = join(homeRoot, 'config', 'home.yaml');
+  const agentPath = agentName ? getAgentPaths(agentName, homeRoot).configPath : undefined;
+  let revision: string | undefined;
+  let aliases: ModelAliases = {};
+  function stamp(file: string, optional = false): string {
+    try {
+      const info = statSync(file);
+      return `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+    } catch (error) {
+      if (optional && (error as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
+      throw error;
+    }
+  }
+  return () => {
+    const current = stamp(homePath) + (agentPath ? `|${stamp(agentPath, true)}` : '');
+    if (current === revision) return aliases;
+    const home = loadYaml(homePath);
+    const config = agentPath ? deepMerge(home, loadYaml(agentPath)) : home;
+    const candidate = (config.models as { aliases?: ModelAliases } | undefined)?.aliases ?? {};
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new Error('Home model aliases must be an object');
+    }
+    const next: ModelAliases = Object.create(null);
+    for (const [alias, value] of Object.entries(candidate)) {
+      if (!alias || alias.length > 256 || /[\0\r\n]/u.test(alias)
+          || !value || typeof value.provider !== 'string' || !value.provider
+          || typeof value.model !== 'string' || !value.model
+          || /[\0\r\n]/u.test(value.provider + value.model)) {
+        throw new Error('Home model alias must have a valid name, provider and model');
+      }
+      next[alias] = Object.freeze({ provider: value.provider, model: value.model,
+        ...(value.reasoningEffort ? { reasoningEffort: value.reasoningEffort } : {}) });
+    }
+    validateReasoningEffortConfig({ models: { aliases: next } });
+    aliases = Object.freeze(next);
+    revision = current;
+    return aliases;
+  };
 }

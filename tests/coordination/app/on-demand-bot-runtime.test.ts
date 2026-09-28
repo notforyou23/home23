@@ -425,6 +425,17 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
   }
   assert.equal(activeWork, 0);
   assert.equal(model.requests.length, 1, "completed durable turn must be replayed, not asked twice");
+  // A cached/warm helper must see edits to the home's catalog too.
+  const savedHome = readFileSync(join(configDirectory, "home.yaml"), "utf8");
+  const editedHome = JSON.parse(savedHome);
+  editedHome.models.aliases.fresh = { provider: "ollama-local", model: "fixture-local-model" };
+  writeFileSync(join(configDirectory, "home.yaml"), JSON.stringify(editedHome));
+  const freshChoices = await firstService.selectionOptions({ context: owner, channelId: CHANNEL_ID });
+  assert.equal(freshChoices.models.find(row => row.alias === "fresh")?.model, "fixture-local-model");
+  writeFileSync(join(configDirectory, "home.yaml"), savedHome);
+  const removedChoices = await firstService.selectionOptions({ context: owner, channelId: CHANNEL_ID });
+  assert.equal(removedChoices.models.some(row => row.alias === "fresh"), false);
+
   const page = await canonicalMessages.listMessages({
     context: owner,
     channelId: CHANNEL_ID,

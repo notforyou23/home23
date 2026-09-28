@@ -27,6 +27,6 @@ export async function startResidentCoordinationHarness(input:{agent:Pick<AgentLo
   const coordinatorClient=coordinatorSocketPath
     ? new ResidentUdsClient({socketPath:coordinatorSocketPath,serverInstanceId:coordinatorServerInstanceId,credential})
     : undefined;
-  const server=new ResidentTurnUdsServer({socketPath,serverInstanceId,credential,residentSlug:slug,executionControl:input.executionControl,agent:input.agent,history:input.history,modelAliases:input.modelAliases??{},...(attachmentRoot?{attachmentRoot}:{}),...(coordinatorClient?{coordinationClient:coordinatorClient}:{}),...(input.exactToolRuntime?{exactToolRuntime:input.exactToolRuntime}:{})});
+  const server=new ResidentTurnUdsServer({socketPath,serverInstanceId,credential,residentSlug:slug,executionControl:input.executionControl,agent:input.agent,history:input.history,get modelAliases(){return input.modelAliases??{};},...(attachmentRoot?{attachmentRoot}:{}),...(coordinatorClient?{coordinationClient:coordinatorClient}:{}),...(input.exactToolRuntime?{exactToolRuntime:input.exactToolRuntime}:{})});
   await server.start();return server;
 }

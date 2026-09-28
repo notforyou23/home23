@@ -1772,7 +1772,7 @@ function createSettingsRouter(home23Root, options = {}) {
     const roleModels = engineRoles && typeof engineRoles === 'object' ? engineRoles : {};
     const chatChanged = !!chat;
     const engineRolesChanged = engineRoles !== undefined;
-    const catalogChanged = !!providerModels;
+    const catalogChanged = providerModels !== undefined || aliases !== undefined;
     let chatAuthorityChanged = false;
     let authorityChanged = catalogChanged;
     let restartedHarness = false;
@@ -1885,7 +1885,7 @@ function createSettingsRouter(home23Root, options = {}) {
         homeConfig.models.aliases = aliases;
         homeConfigDirty = true;
       }
-      if (catalogChanged) {
+      if (providerModels !== undefined) {
         if (!homeConfig.providers) homeConfig.providers = {};
         for (const [provName, models] of Object.entries(providerModels)) {
           if (!homeConfig.providers[provName]) homeConfig.providers[provName] = {};

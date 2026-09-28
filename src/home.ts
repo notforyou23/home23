@@ -29,7 +29,7 @@ const execAsync = promisify(exec);
 setDefaultResultOrder('ipv4first');
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { getAgentDir, loadConfig } from './config.js';
+import { createModelAliasReader, getAgentDir, loadConfig } from './config.js';
 import { CompactionManager } from './agent/compaction.js';
 import { TelegramAdapter } from './channels/telegram.js';
 import { DiscordAdapter } from './channels/discord.js';
@@ -43,7 +43,7 @@ import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
 import { startResidentCoordinationHarness } from './coordination-adapter/index.js';
 import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
-import { resolveModelOverride, type ModelAliases, type ModelOverride } from './agent/model-resolution.js';
+import { resolveModelOverride, type ModelOverride } from './agent/model-resolution.js';
 import { resolveProviderKey } from './agent/provider-credentials.js';
 import { executeTrackedTurn, createTrackedAgentRunner } from './agent/turn-entrypoint.js';
 import { assertCanStartSpeaking } from './agent/foreground-admission.js';
@@ -378,7 +378,7 @@ async function main(): Promise<void> {
   const subAgentTracker: SubAgentTracker = { active: 0, maxConcurrent: config.agent?.maxSubAgents ?? 8, queue: [] };
 
   // Model aliases — loaded from config
-  const MODEL_ALIASES: ModelAliases = config.models?.aliases ?? {};
+  const readModelAliases = createModelAliasReader(HOME23_ROOT, AGENT_NAME);
 
   // ── Telegram adapter ref (captured during adapter creation) ──
   let telegramAdapterRef: TelegramAdapter | null = null;
@@ -420,7 +420,7 @@ async function main(): Promise<void> {
     tempDir,
     contextManager,
     subAgentTracker,
-    modelAliases: MODEL_ALIASES,
+    get modelAliases() { return readModelAliases(); },
     restrictedToolSource: registry,
     chatId: '',
     home23DeliveryEnabled: config.channels?.home23?.enabled === true,
@@ -575,7 +575,7 @@ async function main(): Promise<void> {
   const residentCoordinationHarness = await startResidentCoordinationHarness({
     agent,
     history,
-    modelAliases: MODEL_ALIASES,
+    get modelAliases() { return readModelAliases(); },
     exactToolRuntime: { registry, context: toolContext },
     executionControl: { available: () => executionControlsReady, execute: request => {
       if (!executionControlsReady) throw new Error("Execution controls are starting");
@@ -612,7 +612,7 @@ async function main(): Promise<void> {
     enginePort: DASHBOARD_PORT,
     runtimeDir: RUNTIME_DIR,
     workspacePath,
-    modelAliases: MODEL_ALIASES,
+    get modelAliases() { return readModelAliases(); },
     compaction,
   };
   const commandHandler = new CommandHandler(commandCtx);
@@ -942,7 +942,7 @@ async function main(): Promise<void> {
           // instead of running on the wrong brain.
           let cronModelOverride: ModelOverride | undefined;
           if (job.payload.model) {
-            const resolved = resolveModelOverride(job.payload.model, MODEL_ALIASES);
+            const resolved = resolveModelOverride(job.payload.model, readModelAliases());
             if (!resolved) {
               const durationMs = Date.now() - startMs;
               return { status: 'error', error: `agentTurn model "${job.payload.model}" is not a known alias or routable model`, durationMs };
@@ -1035,7 +1035,7 @@ async function main(): Promise<void> {
           const outcome = await runCronBrainQueryJob(
             joined ? brainOperations.withWorkingThread(`${joined.parentWorkId}:cron:${caller?.parentToolCallId ?? execution!.runId}:${job.id}`) : brainOperations,
             job.payload,
-            MODEL_ALIASES,
+            readModelAliases(),
             {signal:caller?.abortSignal},
           );
           const durationMs = Date.now() - startMs;
@@ -2119,7 +2119,7 @@ async function main(): Promise<void> {
     agent,
     history,
     token: bridgeToken || undefined,
-    modelAliases: MODEL_ALIASES,
+    get modelAliases() { return readModelAliases(); },
     instanceDir: INSTANCE_DIR,
   };
   bridgeApp.post('/api/chat/turn', createTurnStartHandler(chatTurnConfig));

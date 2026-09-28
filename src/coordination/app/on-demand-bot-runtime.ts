@@ -44,7 +44,7 @@ import {
   returnedArtifactMediaType,
 } from "../../returned-artifacts.js";
 import { resolveProviderKey } from "../../agent/provider-credentials.js";
-import { loadHomeConfig, loadConfig, getHome23Root } from "../../config.js";
+import { createModelAliasReader, loadHomeConfig, loadConfig, getHome23Root } from "../../config.js";
 import { TurnStore } from "../../chat/turn-store.js";
 import { isTurnEnvelope, type TurnEnvelope } from "../../chat/turn-types.js";
 import type {
@@ -339,6 +339,7 @@ function providerDefinition(
 }
 
 function defaultModelConfiguration(): OnDemandBotModelConfiguration {
+  const readModelAliases = createModelAliasReader();
   const config = loadHomeConfig();
   const primary = (config as unknown as { home?: { primaryAgent?: string } }).home?.primaryAgent;
   // Service configuration is shared; authored resident identity layers are never copied.
@@ -364,7 +365,7 @@ function defaultModelConfiguration(): OnDemandBotModelConfiguration {
     defaultModel,
     defaultProvider,
     defaultReasoningEffort: config.chat.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-    modelAliases: Object.freeze({ ...(config.models?.aliases ?? {}) }),
+    get modelAliases() { return readModelAliases(); },
     ...(config.models?.reasoningEffort
       ? { modelReasoningEfforts: { ...config.models.reasoningEffort } }
       : {}),
@@ -915,7 +916,7 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
           tempDir,
           contextManager,
           subAgentTracker: { active: 0, maxConcurrent: config.services?.agent?.maxSubAgents ?? 8, queue: [] },
-          modelAliases: { ...config.modelAliases },
+          get modelAliases() { return config.modelAliases; },
           restrictedToolSource: registry,
           chatId: "",
           telegramAdapter: null,
