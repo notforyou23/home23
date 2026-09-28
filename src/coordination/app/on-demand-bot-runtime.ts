@@ -21,7 +21,7 @@ import { ContextManager } from "../../agent/context.js";
 import { ConversationHistory } from "../../agent/history.js";
 import { AgentLoop } from "../../agent/loop.js";
 import {
-  resolveModelOverride,
+  resolveCatalogModelOverride,
   type ModelAliases,
 } from "../../agent/model-resolution.js";
 import {
@@ -563,7 +563,7 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
   } {
     const selectedModel = requested.modelAlias === null
       ? undefined
-      : resolveModelOverride(requested.modelAlias, this.config.modelAliases) ?? undefined;
+      : resolveCatalogModelOverride(requested.modelAlias, this.config.modelAliases) ?? undefined;
     if (requested.modelAlias !== null && !selectedModel) {
       throw new Error("requested on-demand Bot model is unavailable");
     }

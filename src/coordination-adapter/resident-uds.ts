@@ -37,7 +37,7 @@ import {
 } from "../agent/reasoning-effort.js";
 import type { AgentLoop } from "../agent/loop.js";
 import {
-  resolveModelOverride,
+  resolveCatalogModelOverride,
   type ModelAliases,
 } from "../agent/model-resolution.js";
 import { TurnStore } from "../chat/turn-store.js";
@@ -846,7 +846,7 @@ export class ResidentTurnUdsServer {
     const runtime = this.options.exactToolRuntime;
     if (!runtime?.registry.get(planned.toolName) || classifyForegroundTool(planned.toolName) !== 'require_work') throw new ResidentProtocolError('request_invalid', 'planned tool is unavailable');
     assertWorkDestination(destination,provenance);
-    const modelOverride = requested.modelAlias === null ? undefined : resolveModelOverride(requested.modelAlias, this.#modelAliases);
+    const modelOverride = requested.modelAlias === null ? undefined : resolveCatalogModelOverride(requested.modelAlias, this.#modelAliases);
     const actualModel = modelOverride?.model ?? this.options.agent.getModel();
     const actualProvider = modelOverride?.provider ?? this.options.agent.getProvider();
     const actualEffort = requested.reasoningEffort ?? modelOverride?.reasoningEffort ?? this.options.agent.getReasoningEffort();
@@ -1011,7 +1011,7 @@ export class ResidentTurnUdsServer {
       const recoverPlanned = Boolean(started && p.plannedRecoveryBeforeStart === true && p.plannedExecution && !this.#planned.has(turnId));
       if(started&&!this.options.agent.isRunning(chatId)&&!this.#planned.has(turnId)&&!recoverPlanned)throw new ResidentProtocolError("request_invalid","persisted resident turn requires coordinator recovery");
       if(!started || recoverPlanned){
-        const modelOverride=requested.modelAlias===null?undefined:resolveModelOverride(requested.modelAlias,this.#modelAliases);
+        const modelOverride=requested.modelAlias===null?undefined:resolveCatalogModelOverride(requested.modelAlias,this.#modelAliases);
         if(requested.modelAlias!==null&&!modelOverride){
           throw new ResidentProtocolError("request_invalid","requested resident model is unavailable");
         }

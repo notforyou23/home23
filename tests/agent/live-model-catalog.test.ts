@@ -9,7 +9,7 @@ import express from 'express';
 import yaml from 'js-yaml';
 import { createModelAliasReader } from '../../src/config.js';
 import { createModelsHandler } from '../../src/routes/chat-turn.js';
-import { resolveModelOverride } from '../../src/agent/model-resolution.js';
+import { resolveCatalogModelOverride, resolveModelOverride } from '../../src/agent/model-resolution.js';
 import { ConversationHistory } from '../../src/agent/history.js';
 import { ResidentTurnUdsServer, ResidentUdsAgentPort } from '../../src/coordination-adapter/index.js';
 import { createResidentCredential } from '../../src/coordination/resident-protocol/index.js';
@@ -77,6 +77,7 @@ test('saving a house catalog updates an already running resident and bridge with
   assert.equal(resolveModelOverride('future',readAliases()),null);
   assert.deepEqual(pinnedBeforeEdit,{provider:'openai-codex',model:'gpt-fixture-base'});
   assert.equal(restarts,0);
+  assert.equal(resolveCatalogModelOverride('gpt-fixture-next',readAliases()),null, 'A removed picker entry must never fall back to another provider');
   const prior=readFileSync(homePath,'utf8');
   const invalid=await fetch(base+'/settings/models',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({agent:'jerry',aliases:{}})});
   assert.equal(invalid.status,400);

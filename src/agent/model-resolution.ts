@@ -53,3 +53,10 @@ export function resolveModelOverride(model: string, aliases?: ModelAliases): Mod
   const provider = inferProviderFromModel(model);
   return provider === 'unknown' ? null : { model, provider };
 }
+
+/** A picker selection names an exact catalog entry. If it was removed while
+ * the request was in flight, fail instead of guessing a different provider. */
+export function resolveCatalogModelOverride(alias: string, aliases: Readonly<ModelAliases>): ModelOverride | null {
+  if (!Object.hasOwn(aliases, alias)) return null;
+  return resolveModelOverride(alias, aliases);
+}
