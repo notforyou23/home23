@@ -168,6 +168,7 @@ export class SqliteCommunicationEventRepository {
     limit: number;
     requestId: string;
     conversationId?: string;
+    workId?: string;
   }): CommunicationEventHistoryResult {
     if (!Number.isSafeInteger(input.afterSequence) || input.afterSequence < 0) {
       throw new TypeError("communication event cursor must be a nonnegative safe integer");
@@ -178,6 +179,10 @@ export class SqliteCommunicationEventRepository {
     assertCoordinationId("request", input.requestId);
     if (input.conversationId !== undefined) {
       assertCoordinationId("conversation", input.conversationId);
+    }
+    if (input.workId !== undefined) {
+      assertCoordinationId("work", input.workId);
+      if (input.conversationId === undefined) throw new TypeError("work history requires a conversation");
     }
     const boundary = this.database.readOne<BoundaryRow>(
       `SELECT
@@ -208,12 +213,40 @@ export class SqliteCommunicationEventRepository {
       : " AND json_extract(payload_json, '$.communication.conversationId') = ?";
     if (input.conversationId !== undefined) parameters.push(input.conversationId);
     parameters.push(input.limit + 1);
-    const rows = this.database.readAll<CommunicationRow>(
+    const rows = input.workId === undefined ? this.database.readAll<CommunicationRow>(
       `SELECT sequence, payload_json AS payloadJson, payload_digest AS payloadDigest
        FROM events
        WHERE sequence > ? AND sequence <= ? AND type = '${COMMUNICATION_EVENT_TYPE}'${conversation}
        ORDER BY sequence ASC LIMIT ?`,
       ...parameters,
+    ) : this.database.readAll<CommunicationRow>(
+      // Work is durably created before its communication. Its creation event
+      // bounds the indexed conversation scan; older retained history without
+      // that event falls back to the full range. Unowned turn-linked events
+      // use the turn index and may precede creation. Explicit other Work never
+      // crosses into this result. No new index or schema migration is needed.
+      `WITH owned AS MATERIALIZED (
+         SELECT sequence, payload_json, payload_digest FROM events
+         WHERE type = '${COMMUNICATION_EVENT_TYPE}' AND sequence >= coalesce((
+           SELECT sequence FROM events WHERE aggregate_id = ? AND aggregate_kind = 'work'
+             AND aggregate_version = 1 AND type = 'turn.updated' ORDER BY sequence LIMIT 1
+         ), 0) AND sequence <= ?
+           AND json_extract(payload_json, '$.communication.conversationId') = ?
+           AND json_extract(payload_json, '$.communication.workId') = ?
+       ), scoped AS (
+         SELECT sequence, payload_json, payload_digest FROM owned WHERE sequence > ?
+         UNION ALL
+         SELECT e.sequence, e.payload_json, e.payload_digest
+         FROM events e INDEXED BY communication_events_turn_sequence
+         WHERE e.type = '${COMMUNICATION_EVENT_TYPE}' AND e.sequence > ? AND e.sequence <= ?
+           AND json_extract(e.payload_json, '$.communication.turnId') IN (
+             SELECT DISTINCT json_extract(payload_json, '$.communication.turnId') FROM owned
+           ) AND json_extract(e.payload_json, '$.communication.conversationId') = ?
+           AND json_extract(e.payload_json, '$.communication.workId') IS NULL
+       ) SELECT sequence, payload_json AS payloadJson, payload_digest AS payloadDigest
+         FROM scoped ORDER BY sequence ASC LIMIT ?`,
+      input.workId, boundary.currentSequence, input.conversationId!, input.workId,
+      input.afterSequence, input.afterSequence, boundary.currentSequence, input.conversationId!, input.limit + 1,
     );
     const hasMore = rows.length > input.limit;
     const pageRows = hasMore ? rows.slice(0, input.limit) : rows;

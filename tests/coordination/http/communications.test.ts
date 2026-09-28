@@ -28,6 +28,7 @@ test("authorized communication history exposes the canonical envelope and explic
       eventId: `cevt_${UUID}`,
       conversationId: `cnv_${UUID}`,
       channelId: `chn_${UUID}`,
+      workId: `wrk_${UUID}`,
       turnId: "turn_http_1",
       actor: {
         principalId: `bot_${UUID}`,
@@ -92,6 +93,15 @@ test("authorized communication history exposes the canonical envelope and explic
   assert.equal(body.events[0].payload.text, "exact delta");
   assert.deepEqual(body.events[0].futureEnvelope, { retained: true });
   assert.equal(body.events[0].additionalFields, undefined);
+
+  const scoped = await fetch(
+    `${address.origin}/api/v1/communications/events?after=0&limit=10&conversationId=cnv_${UUID}&workId=wrk_0198d95f-6c00-7000-8000-000000000022`,
+    { headers },
+  );
+  assert.equal(scoped.status, 200);
+  const scopedBody = await scoped.json() as any;
+  assert.deepEqual(scopedBody.events, []);
+  assert.equal(scopedBody.throughSequence, body.throughSequence);
 
   const ahead = await fetch(
     `${address.origin}/api/v1/communications/events?after=2&limit=10`,

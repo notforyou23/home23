@@ -445,6 +445,9 @@ export function createCoordinationRouter(input: {
       ...(request.query.conversationId === undefined
         ? {}
         : { conversationId: pathParameter(request.query.conversationId as string) }),
+      ...(request.query.workId === undefined
+        ? {}
+        : { workId: pathParameter(request.query.workId as string) }),
     });
     if (result.kind === "reset") {
       response.status(409).json({ error: result.error });

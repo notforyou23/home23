@@ -27,6 +27,55 @@ const REQUEST_ID = `req_${UUID}`;
 const CORRELATION_ID = `cor_${UUID}`;
 const EVENT_ID = `cevt_${UUID}`;
 
+test("Work history excludes neighboring assignments and retains unowned turn-linked evidence across pages", (t) => {
+  const database = openCoordinationDatabase({ path: temporaryDatabase(t) });
+  t.after(() => database.close());
+  const repository = new SqliteCommunicationEventRepository(database);
+  const target = `wrk_${UUID}`, other = `wrk_${UUID_2}`;
+  const add = (key: string, event: Partial<AppendCommunicationEventInput["event"]>) => repository.append(appendInput({
+    eventId: stableCommunicationEventId(key, "2026-08-27T12:00:00.000Z"), ...event,
+  })).event;
+  add("other", { workId: other, turnId: "other-turn" });
+  const direct = add("target", { workId: target, turnId: "target-turn" });
+  const linked = add("linked", { workId: null, turnId: "target-turn" });
+  add("explicit-other", { workId: other, turnId: "target-turn" });
+  add("unlinked", { workId: null, turnId: "other-turn" });
+  const last = add("other-conversation", { workId: target, conversationId: `cnv_${UUID_2}` });
+  const first = repository.history({ afterSequence: 0, limit: 1, requestId: REQUEST_ID,
+    conversationId: CONVERSATION_ID, workId: target });
+  assert.equal(first.kind, "events");
+  if (first.kind !== "events") return;
+  assert.deepEqual(first.events.map(event => event.eventId), [direct.eventId]);
+  assert.equal(first.hasMore, true);
+  const second = repository.history({ afterSequence: first.throughSequence, limit: 1, requestId: REQUEST_ID,
+    conversationId: CONVERSATION_ID, workId: target });
+  assert.equal(second.kind, "events");
+  if (second.kind !== "events") return;
+  assert.deepEqual(second.events.map(event => event.eventId), [linked.eventId]);
+  assert.equal(second.hasMore, false);
+  assert.equal(second.throughSequence, last.eventSequence);
+  assert.throws(() => repository.history({ afterSequence: 0, limit: 10, requestId: REQUEST_ID, workId: target }),
+    /requires a conversation/);
+});
+
+test("Work creation bounds owned history without dropping older turn-linked events", (t) => {
+  const database = openCoordinationDatabase({ path: temporaryDatabase(t) });
+  t.after(() => database.close());
+  const repository = new SqliteCommunicationEventRepository(database);
+  const linked = repository.append(appendInput({ workId: null })).event;
+  database.mutateWithEvent(() => ({ value: null, event: {
+    type: "turn.updated", aggregateKind: "work", aggregateId: `wrk_${UUID}`, aggregateVersion: 1,
+    channelId: CHANNEL_ID, actorPrincipalId: BOT_ID, requestId: REQUEST_ID, correlationId: CORRELATION_ID,
+    payload: { state: "queued" }, createdAt: "2026-08-27T12:00:01.000Z",
+  } }));
+  const owned = repository.append(appendInput({ eventId: `cevt_${UUID_2}` })).event;
+  const page = repository.history({ afterSequence: 0, limit: 10, requestId: REQUEST_ID,
+    conversationId: CONVERSATION_ID, workId: `wrk_${UUID}` });
+  assert.equal(page.kind, "events");
+  if (page.kind !== "events") return;
+  assert.deepEqual(page.events.map(event => event.eventId), [linked.eventId, owned.eventId]);
+});
+
 function temporaryDatabase(t: test.TestContext): string {
   const directory = mkdtempSync(join(tmpdir(), "home23-communications-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

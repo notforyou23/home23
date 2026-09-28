@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 func fail(_ message: String) -> Never {
@@ -16,10 +17,17 @@ func matching(_ bundleID: String, _ path: URL) -> [NSRunningApplication] {
         $0.bundleURL?.standardizedFileURL.path == path.path
     }
 }
+func hasExited(_ process: NSRunningApplication) -> Bool {
+    if process.isTerminated { return true }
+    // AppKit can retain isTerminated=false after a background login item has
+    // exited. Require the OS to confirm that exact PID no longer exists; never
+    // replace an app merely because it disappeared from the workspace list.
+    return kill(process.processIdentifier, 0) == -1 && errno == ESRCH
+}
 func waitForExit(_ processes: [NSRunningApplication]) {
     let deadline = Date().addingTimeInterval(15)
     while Date() < deadline {
-        if processes.allSatisfy({ $0.isTerminated }) { return }
+        if processes.allSatisfy(hasExited) { return }
         RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
     }
     fail("A previous Home23 process did not exit; app was not replaced")
@@ -41,7 +49,7 @@ func launch(_ url: URL, id: String) {
         RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
     }
     if let error = launchError { fail("Home23 launch failed: \(error.localizedDescription)") }
-    guard let process = launched, !process.isTerminated,
+    guard let process = launched, !hasExited(process),
           process.bundleIdentifier == id,
           process.bundleURL?.standardizedFileURL.path == url.path,
           let info = Bundle(url: url)?.infoDictionary,
