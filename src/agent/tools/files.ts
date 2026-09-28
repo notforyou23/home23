@@ -2,8 +2,11 @@
  * File tools — read, write, edit, list, search files.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
-import { basename, dirname, resolve, relative, isAbsolute } from 'node:path';
+import {
+  readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, statSync, accessSync,
+  constants as fsConstants, promises as fsPromises, type Dirent,
+} from 'node:fs';
+import { basename, dirname, resolve, relative, isAbsolute, delimiter, join, sep } from 'node:path';
 import { exec } from 'node:child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
@@ -244,6 +247,92 @@ export const editFileTool: ToolDefinition = {
   },
 };
 
+// The Home23 Host's product PATH omits Homebrew, so an owner-installed ripgrep
+// is only found by looking at the usual install locations after PATH.
+const OWNER_RIPGREP_CANDIDATES = ['/opt/homebrew/bin/rg', '/usr/local/bin/rg', '/opt/local/bin/rg'];
+// Trees the no-ripgrep fallbacks skip so they stay fast on a whole home.
+const FALLBACK_SKIP_DIRS = ['.git', 'node_modules'];
+const LIST_LIMIT = 200;
+
+/** Quote a value as a single POSIX shell word: nothing inside is expanded. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** The first executable `rg` on PATH, else at an owner-install location, else null. */
+export function resolveRipgrep(
+  pathEnv: string = unprivilegedChildEnv().PATH ?? '',
+  candidates: readonly string[] = OWNER_RIPGREP_CANDIDATES,
+): string | null {
+  const onPath = pathEnv.split(delimiter).filter(Boolean).map((dir) => join(dir, 'rg'));
+  for (const candidate of [...onPath, ...candidates]) {
+    try {
+      if (!statSync(candidate).isFile()) continue;
+      accessSync(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // absent or not executable
+    }
+  }
+  return null;
+}
+
+/**
+ * The search_files pipeline. Without ripgrep it uses grep's extended regex (so
+ * rg-style `a|b` alternation still matches), skipping binary files and
+ * FALLBACK_SKIP_DIRS. Each branch caps its own output with `head`.
+ */
+export function buildSearchCommand(
+  rgPath: string | null,
+  pattern: string,
+  searchPath: string,
+  fileGlob: string | undefined,
+  maxResults: number,
+): string {
+  if (rgPath) {
+    const glob = fileGlob ? ` --glob ${shellQuote(fileGlob)}` : '';
+    return `${shellQuote(rgPath)} -n --max-count ${maxResults}${glob} -- ${shellQuote(pattern)} ${shellQuote(searchPath)} | head -${maxResults}`;
+  }
+  const include = fileGlob ? ` --include=${shellQuote(fileGlob)}` : '';
+  const skip = FALLBACK_SKIP_DIRS.map((dir) => ` --exclude-dir=${dir}`).join('');
+  return `grep -rnIE${skip}${include} -- ${shellQuote(pattern)} ${shellQuote(searchPath)} | head -${maxResults}`;
+}
+
+/**
+ * list_files without ripgrep. Like `rg --files --glob`, a pattern without '/'
+ * matches file names at any depth, only files under `cwd` are listed (a '../'
+ * or absolute pattern cannot reach past the granted folder), FALLBACK_SKIP_DIRS
+ * are skipped, and listing stops at `limit` paths.
+ */
+export async function listFilesWithGlob(pattern: string, cwd: string, limit: number): Promise<string[]> {
+  const files: string[] = [];
+  const skipped = (entry: Dirent | string) => FALLBACK_SKIP_DIRS.includes(typeof entry === 'string' ? basename(entry) : entry.name);
+  for await (const entry of fsPromises.glob(pattern.includes('/') ? pattern : `**/${pattern}`, {
+    cwd,
+    withFileTypes: true,
+    exclude: skipped,
+  })) {
+    if (!entry.isFile()) continue;
+    const within = relative(cwd, entry.parentPath);
+    if (within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) continue;
+    if (within.split(sep).some((segment) => FALLBACK_SKIP_DIRS.includes(segment))) continue;
+    files.push(join(entry.parentPath, entry.name));
+    if (files.length >= limit) break;
+  }
+  return files;
+}
+
+function listingResult(files: string[]): ToolResult {
+  if (files.length === 0) return { content: 'No files matched.' };
+  const listed = files.join('\n') + (files.length >= LIST_LIMIT ? `\n(truncated at ${LIST_LIMIT} paths)` : '');
+  return {
+    content: clipToolOutput(
+      listed,
+      `Narrow the glob or cwd; ${files.length} path(s) matched. This listing may be incomplete.`,
+    ),
+  };
+}
+
 export const listFilesTool: ToolDefinition = {
   name: 'list_files',
   description: 'List files matching a glob pattern inside granted filesystem roots (default: Home23 install + instance). Returns file paths. Defaults to your workspace.',
@@ -260,25 +349,26 @@ export const listFilesTool: ToolDefinition = {
     const cwd = (input.cwd as string) || ctx.workspacePath;
     const outside = refuseReadOutsideRoots(cwd, authorityFor(ctx));
     if (outside) return outside;
-    // Use rg --files which properly supports ** recursive globs (find -path does not)
-    const cmd = `rg --files --glob ${JSON.stringify(pattern)} ${JSON.stringify(cwd)} 2>/dev/null | head -200`;
+    const rg = resolveRipgrep();
+    if (!rg) {
+      try {
+        return listingResult(await listFilesWithGlob(pattern, cwd, LIST_LIMIT));
+      } catch (err) {
+        return { content: `list_files failed: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
+      }
+    }
+    // rg --files supports ** recursive globs (find -path does not). rg matches
+    // a glob containing '/' against paths relative to its working directory,
+    // not a root argument, so run it inside cwd and make the results absolute.
+    const cmd = `${shellQuote(rg)} --files --glob ${shellQuote(pattern)} 2>/dev/null | head -${LIST_LIMIT}`;
     return new Promise((resolvePromise) => {
       exec(cmd, {
+        cwd,
         timeout: 15_000,
         maxBuffer: 1024 * 512,
         env: unprivilegedChildEnv(),
       }, (_error, stdout) => {
-        const files = stdout.trim().split('\n').filter(Boolean);
-        if (files.length === 0) resolvePromise({ content: 'No files matched.' });
-        else {
-          const listed = files.join('\n') + (files.length >= 200 ? '\n(truncated at 200 paths from rg)' : '');
-          resolvePromise({
-            content: clipToolOutput(
-              listed,
-              `Narrow the glob or cwd; ${files.length} path(s) matched. This listing may be incomplete.`,
-            ),
-          });
-        }
+        resolvePromise(listingResult(stdout.trim().split('\n').filter(Boolean).map((file) => join(cwd, file))));
       });
     });
   },
@@ -305,23 +395,14 @@ export const searchFilesTool: ToolDefinition = {
     const fileGlob = input.glob as string | undefined;
     const maxResults = Math.max(1, Math.min(500, Number(input.max_results) || 50));
 
-    // Use rg if available, else fall back to grep. Each branch is a separate
-    // pipeline with its OWN `head -N` — previously the shell precedence
-    // `rg ... || grep ... | head -N` meant head only capped the fallback,
-    // and rg could blow past exec's maxBuffer, making the callback fire
-    // with empty stdout and the agent seeing a silent "No matches found".
+    // Choose the tool up front. A pipeline's status is `head`'s, so the old
+    // `{ rg … | head; } || { grep …; }` never fell back when rg was missing
+    // from PATH (as under the Host) and every search came back "No matches".
     //
-    // We also intentionally DO NOT swallow stderr — if rg fails (bad regex,
-    // permission issues) we surface the message so the agent can correct
+    // We also intentionally DO NOT swallow stderr — if the search fails (bad
+    // regex, permission issues) we surface the message so the agent can correct
     // itself instead of retrying variants of the same broken search.
-    const globRg = fileGlob ? `--glob ${JSON.stringify(fileGlob)}` : '';
-    const includeGrep = fileGlob ? `--include=${JSON.stringify(fileGlob)}` : '';
-    const rgCmd = `rg -n --max-count ${maxResults} ${globRg} -- ${JSON.stringify(pattern)} ${JSON.stringify(searchPath)} | head -${maxResults}`;
-    const grepCmd = `grep -rn ${JSON.stringify(pattern)} ${JSON.stringify(searchPath)} ${includeGrep} | head -${maxResults}`;
-    // `{ rg; } || { grep; }` runs rg's pipeline; only if rg exits non-zero does grep run.
-    // `head` exiting early (SIGPIPE once it has N lines) counts as rg exit ≠ 0 too, but
-    // in that case stdout already contains N matches so the fallback is a no-op.
-    const cmd = `{ ${rgCmd}; } || { ${grepCmd}; }`;
+    const cmd = buildSearchCommand(resolveRipgrep(), pattern, searchPath, fileGlob, maxResults);
 
     return new Promise((resolvePromise) => {
       exec(cmd, {
