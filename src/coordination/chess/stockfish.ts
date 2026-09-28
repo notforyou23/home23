@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
-import { delimiter, isAbsolute, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { Chess } from 'chess.js';
 
 export interface StockfishAnalysisInput {
@@ -31,13 +31,17 @@ const EXIT_GRACE_MS = 100;
 const MAX_OUTPUT = 1_048_576;
 const MAX_LINE = 16_384;
 
-function executable(): string | undefined {
-  const override = process.env.HOME23_STOCKFISH_PATH;
-  const candidates = override !== undefined
+export function stockfishCandidates(env = process.env, nodePath = process.execPath): string[] {
+  const override = env.HOME23_STOCKFISH_PATH;
+  const name = process.platform === 'win32' ? 'stockfish.exe' : 'stockfish';
+  return override !== undefined
     ? (override.trim() ? [resolve(override)] : [])
-    : (process.env.PATH ?? '').split(delimiter).filter(isAbsolute)
-      .map(directory => join(directory, process.platform === 'win32' ? 'stockfish.exe' : 'stockfish'));
-  return candidates.find(candidate => {
+    : [join(dirname(nodePath), name), ...(env.PATH ?? '').split(delimiter).filter(isAbsolute)
+      .map(directory => join(directory, name))];
+}
+
+function executable(): string | undefined {
+  return stockfishCandidates().find(candidate => {
     try { accessSync(candidate, constants.X_OK); return statSync(candidate).isFile(); }
     catch { return false; }
   });

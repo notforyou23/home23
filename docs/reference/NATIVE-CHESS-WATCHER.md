@@ -82,3 +82,19 @@ The service config is a regular mode-0600 JSON file:
 `serve` preserves running, paused and stopped modes across restarts. A stopped service stays reachable for status without polling; it cannot resume. Running sessions validate fresh board identity/history before replaying a saved pending admission. A replaced Chess process pauses rather than silently attaching to another game.
 
 Bot, color and new-game changes require only configuration and a scoped service restart, **not** backend or Apple rebuilds. Pause the old session, inspect the actual board, create a fresh binding and session directory, update the service config, and restart the named launch agent. Never retarget a session with pending work. Old state and receipts remain intact. Restarting with an edited binding in the same session is refused.
+
+
+## Product engine distribution
+
+Apple Silicon Home23 packages ship the pinned official Stockfish 17.1 engine at
+`bin/stockfish`, alongside product Node. The adapter resolves that sibling before
+PATH, so launchd/PM2 and a clean Mac need no Homebrew or development-directory
+binary. An explicit `HOME23_STOCKFISH_PATH` still takes precedence (including an
+empty value deliberately disabling discovery).
+
+`scripts/product/stockfish.mjs` verifies the official archive and executable hashes
+before copying. The release signer signs the engine with the other native runtime
+leaves. Corresponding upstream source, build scripts and GPL are retained under
+`notices/Stockfish`. The package build requires a real UCI/ready response; failed
+or missing downloads fail packaging instead of silently removing Chess. Other
+platforms retain their existing configured/PATH engine support.

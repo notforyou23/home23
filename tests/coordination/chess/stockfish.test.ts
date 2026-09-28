@@ -5,7 +5,13 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { Chess, DEFAULT_POSITION } from 'chess.js';
-import { StockfishEngine, StockfishError } from '../../../src/coordination/chess/stockfish.js';
+import { StockfishEngine, StockfishError, stockfishCandidates } from '../../../src/coordination/chess/stockfish.js';
+
+test('packaged engine stays discoverable with a clean service PATH; explicit override retains authority', () => {
+  assert.equal(stockfishCandidates({ PATH: '/usr/bin:/bin' }, '/House/bin/node')[0], '/House/bin/stockfish');
+  assert.deepEqual(stockfishCandidates({ HOME23_STOCKFISH_PATH: '/chosen/engine', PATH: '/usr/bin' }), ['/chosen/engine']);
+  assert.deepEqual(stockfishCandidates({ HOME23_STOCKFISH_PATH: '' }), []);
+});
 
 function fixture(t: test.TestContext, mode = 'normal') {
   const directory = mkdtempSync(join(process.env.HOME23_STOCKFISH_TEST_TMPDIR ?? tmpdir(), 'stockfish test '));

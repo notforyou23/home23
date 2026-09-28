@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { inventoryProductPayload, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
+import { bundleStockfish } from './stockfish.mjs';
 
 const run = (file, args, options = {}) => execFileSync(file, args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options });
 const inside = (parent, child) => child === parent || child.startsWith(parent + path.sep);
@@ -154,6 +155,7 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
   fs.copyFileSync(nodePath, path.join(bin, 'node')); fs.chmodSync(path.join(bin, 'node'), 0o755);
   const notices = path.join(outputPath, 'notices'); fs.mkdirSync(notices, { mode: 0o755 });
   fs.copyFileSync(nodeLicense, path.join(notices, 'NODE-LICENSE'));
+  bundleStockfish({ outputPath, cachePath, ...metadata });
   fs.writeFileSync(path.join(notices, 'README.txt'), 'Home23 Host runtime\n\nNode license and bundled dependency notices: NODE-LICENSE.\nJavaScript dependencies retain their upstream package metadata and license files in each node_modules package.\nThe product manifest is an integrity inventory, not a publisher signature.\n');
   const tools = path.join(outputPath, 'tools'); fs.mkdirSync(tools, { mode: 0o755 });
   for (const name of ['package.json', 'package-lock.json']) fs.copyFileSync(path.join(app, 'scripts', 'product', 'runtime-tools', name), path.join(tools, name));
