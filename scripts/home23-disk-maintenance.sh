@@ -21,6 +21,9 @@ THRESHOLD_GIB="${HOME23_DISK_GUARD_THRESHOLD_GIB:-10}"
 MIN_AGE_HOURS=24
 MAX_REMOVALS=2
 KEEP_NEWEST=2
+# A finished backup, as the engine names it (older ones lack -<pid>-<uuid>).
+# Excludes the engine's .tmp staging folders, which hold a manifest before rename.
+GENERATED_BACKUP='^backup-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}\.[0-9]{3}Z(-[0-9]+-[a-f0-9-]{36})?$'
 LOG_DIR="$ROOT/logs"
 LOG_FILE="$LOG_DIR/disk-maintenance.log"
 mkdir -p "$LOG_DIR"
@@ -35,6 +38,7 @@ if [[ ! "$THRESHOLD_GIB" =~ ^[0-9]+$ ]]; then
   log "ERROR threshold must be whole GiB: $THRESHOLD_GIB"
   exit 1
 fi
+THRESHOLD_GIB=$((10#$THRESHOLD_GIB))
 free_kb="$(df -kP "$DATA_MOUNT" | awk 'NR==2 {print $4}')"
 if [[ ! "$free_kb" =~ ^[0-9]+$ ]]; then
   log "ERROR unable to read free space for $DATA_MOUNT"
@@ -55,14 +59,18 @@ for brain in "${BRAIN_ROOTS[@]}"; do
   backup_dir="$brain/backups"
   [[ -d "$backup_dir" ]] || continue
   # Resolve a relocated (symlinked) backups folder so find sees its contents.
-  real_dir="$(cd -P "$backup_dir" && pwd -P)"
+  real_dir="$(cd -P "$backup_dir" 2>/dev/null && pwd -P)" || {
+    log "SKIP backups=$backup_dir reason=unresolvable"
+    continue
+  }
   if [[ "$(device_of "$real_dir")" != "$data_device" ]]; then
     log "SKIP backups=$backup_dir reason=other-volume"
     continue
   fi
-  # Only backup directories with a manifest count; names sort oldest first.
+  # Only finished backups with a manifest count; names sort oldest first.
   backups=()
   while IFS= read -r candidate; do
+    [[ "${candidate##*/}" =~ $GENERATED_BACKUP ]] || continue
     [[ -f "$candidate/backup-manifest.json" ]] && backups+=("$candidate")
   done < <(find "$real_dir" -mindepth 1 -maxdepth 1 -type d -name 'backup-*' -print | sort)
   prunable=$((${#backups[@]} - KEEP_NEWEST))

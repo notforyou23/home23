@@ -10,7 +10,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -122,6 +122,66 @@ test("never removes backups newer than 24 hours or without a manifest", () => {
     runGuard(root);
     assert.ok(existsSync(unfinished), "a backup without a manifest was removed");
     for (const dir of recent) assert.ok(existsSync(dir), `${path.basename(dir)} is under 24 hours old`);
+  });
+});
+
+test("never counts the engine's .tmp staging folders as backups", () => {
+  withTempRoot((root) => {
+    const backups = backupsDirFor(root, "forrest");
+    const published = makeBackup(backups, "backup-2026-09-01T05-07-26.982Z-24105-50daffc0-3e12-4d56-beda-2134ee52dbe0");
+    // The engine writes backup-manifest.json into its staging folder before the rename.
+    const staging = ["10", "11"].map((day) =>
+      makeBackup(backups, `backup-2026-09-${day}T00-00-00.000Z-4242-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.tmp`));
+    runGuard(root);
+    runGuard(root);
+    assert.ok(existsSync(published), "the only published backup was removed");
+    for (const dir of staging) assert.ok(existsSync(dir), "the guard must leave engine staging folders to the engine");
+  });
+});
+
+test("prunes by timestamp across old and current backup names under a path with spaces", () => {
+  const parent = mkdtempSync(path.join(os.tmpdir(), "home23 disk guard "));
+  try {
+    const root = path.join(parent, "Home23 Host", "Home");
+    const backups = backupsDirFor(root, "jerry");
+    const oldest = makeBackup(backups, "backup-2026-08-23T08-53-18.365Z");
+    const middle = makeBackup(backups, "backup-2026-08-23T08-53-18.365Z-60042-f61880b1-51e2-499e-acbc-146b952270e3");
+    const newest = makeBackup(backups, "backup-2026-09-01T05-07-26.982Z-24105-50daffc0-3e12-4d56-beda-2134ee52dbe0");
+    runGuard(root);
+    assert.equal(existsSync(oldest), false);
+    assert.ok(existsSync(middle));
+    assert.ok(existsSync(newest));
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("skips a backups folder it cannot open and still guards the other brain", (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip("root ignores directory permissions");
+    return;
+  }
+  withTempRoot((root) => {
+    const locked = backupsDirFor(root, "jerry");
+    const backups = backupsDirFor(root, "forrest");
+    const oldest = makeBackup(backups, "backup-2026-09-01T00-00-00.000Z");
+    makeBackup(backups, "backup-2026-09-02T00-00-00.000Z");
+    makeBackup(backups, "backup-2026-09-03T00-00-00.000Z");
+    chmodSync(locked, 0o000);
+    try {
+      const output = runGuard(root);
+      assert.match(output, /SKIP .*unresolvable/);
+      assert.equal(existsSync(oldest), false, "forrest was not guarded after jerry's folder failed");
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  });
+});
+
+test("reads a zero-padded threshold as decimal", () => {
+  withTempRoot((root) => {
+    const output = runGuard(root, { thresholdGib: "08" });
+    assert.match(output, /threshold=8GiB/);
   });
 });
 
