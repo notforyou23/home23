@@ -113,7 +113,7 @@ export function generateEcosystem(home23Root, options = {}) {
   // port. The harness self-limits graceful shutdown at 15s (ShutdownGuard),
   // so 30s here is pure backstop for a hard-blocked event loop.
   lines.push(`const HARNESS_KILL_TIMEOUT_MS = 30000;`);
-  lines.push(`const PM2_INHERITANCE_BLOCKLIST = ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'];`);
+  lines.push(`const PM2_INHERITANCE_BLOCKLIST = ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY', 'HOME23_BRAIN_BACKUP_DIR'];`);
   lines.push(`for (const key of PM2_INHERITANCE_BLOCKLIST) delete process.env[key];`);
   lines.push(`for (const key of Object.keys(process.env)) {`);
   lines.push(`  if (key.startsWith('HOME23_COORDINATION_')) delete process.env[key];`);
@@ -125,6 +125,10 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`}`);
   lines.push(``);
   lines.push(`const homeConfig = loadYaml(path.join(HOME23, 'config', 'home.yaml'));`);
+  lines.push(`const brainBackupDir = homeConfig.backups?.brain?.directory;`);
+  lines.push(`if (brainBackupDir !== undefined && (typeof brainBackupDir !== 'string' || !path.isAbsolute(brainBackupDir))) {`);
+  lines.push(`  throw new Error('backups.brain.directory must be an absolute path');`);
+  lines.push(`}`);
   lines.push(`const secrets = loadYaml(path.join(HOME23, 'config', 'secrets.yaml'));`);
   lines.push(`const brainOperationsCapabilityKey = ${JSON.stringify(brainOperationsCapabilityKey)};`);
   lines.push(`const memoryAuthorityAttestationKey = ${JSON.stringify(memoryAuthorityAttestationKey)};`);
@@ -356,7 +360,7 @@ export function generateEcosystem(home23Root, options = {}) {
     // No HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY here — see the note above the
     // dashboard app. The engine performs no brain operations; it reads the key
     // nowhere.
-    lines.push(`      env: { ...commonEnv, ...${JSON.stringify(engineEnv)}, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, ...${JSON.stringify(engineEnv)}, HOME23_BRAIN_BACKUP_DIR: brainBackupDir || '', HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Dashboard
@@ -774,7 +778,7 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      cwd: HOME23,`);
     lines.push(`      filter_env: ['HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-    lines.push(`      min_uptime: 10000, max_restarts: 5, restart_delay: 2000,`);
+    lines.push(`      min_uptime: 0, exp_backoff_restart_delay: 2000,`);
     lines.push(`      out_file: path.join(HOME23, 'logs', 'embedder-out.log'),`);
     lines.push(`      error_file: path.join(HOME23, 'logs', 'embedder-err.log'),`);
     lines.push(`      env: {`);
@@ -812,6 +816,20 @@ export function generateEcosystem(home23Root, options = {}) {
 
   lines.push(`  ],`);
   lines.push(`};`);
+  lines.push(``);
+  // PM2 6 counts exits shorter than min_uptime toward max_restarts and then
+  // leaves the app errored. Persistent services must survive a boot dependency
+  // that takes longer than five attempts to become available. A zero threshold
+  // disables that unstable-exit count; a bounded delay prevents a hot loop.
+  // Disabled/one-shot entries keep their explicit autorestart behavior.
+  lines.push(`for (const app of module.exports.apps) {`);
+  lines.push(`  if (app.autorestart !== true) continue;`);
+  lines.push(`  app.min_uptime = 0;`);
+  lines.push(`  delete app.max_restarts;`);
+  lines.push(`  if (app.restart_delay === undefined && app.exp_backoff_restart_delay === undefined) {`);
+  lines.push(`    app.exp_backoff_restart_delay = 2000;`);
+  lines.push(`  }`);
+  lines.push(`}`);
   lines.push(``);
 
   // Also generate agents manifest for the dashboard UI

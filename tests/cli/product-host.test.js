@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:http';
 import { choosePortPlan, ownerAccountHome, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
-import { ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses, supervisorListening } from '../../cli/lib/product-host.js';
+import { definitionMatchesProcess, ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses, supervisorListening } from '../../cli/lib/product-host.js';
 import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writerStopOrder } from '../../cli/lib/product-update-inventory.js';
@@ -43,6 +43,20 @@ async function prepared(t, options = {}) {
 }
 function definitions(homeRoot) { return ownedProcessNames('milo').map(name => ({ name, script: 'dist/home.js', cwd: path.join(homeRoot, 'app'), env: {}, node_args: '--expose-gc', args: [] })); }
 function row(homeRoot, name, status = 'online') { return { name, pid: 123, pm2_env: { status, pm_cwd: path.join(homeRoot, 'app'), pm_exec_path: path.join(homeRoot, 'bin/node'), args: [path.join(homeRoot, 'app/dist/home.js')] } }; }
+
+test('Start detects a registered five-restart policy as stale', t => {
+  const homeRoot = home(t);
+  const app = productDefinitions(definitions(homeRoot), homeRoot, 'milo')[0];
+  const registered = { name: app.name, pm2_env: {
+    ...app.env, pm_cwd: app.cwd, pm_exec_path: path.resolve(app.cwd, app.script), args: app.args,
+    min_uptime: 10000, max_restarts: 5, restart_delay: 2000,
+  } };
+  assert.equal(definitionMatchesProcess(app, registered), false);
+  registered.pm2_env.min_uptime = 0;
+  registered.pm2_env.restart_delay = 0;
+  registered.pm2_env.exp_backoff_restart_delay = 2000;
+  assert.equal(definitionMatchesProcess(app, registered), true);
+});
 
 test('environment removes host credentials and PM2 metadata and uses short private sockets', t => {
   const homeRoot = home(t);
@@ -90,7 +104,7 @@ test('model endpoint excludes credentials and unsupported transports', () => {
   assert.throws(() => providerEndpoint('file:///tmp/model'), /HTTP/);
 });
 
-test('definitions resolve the exact bundled Node without PM2 shell rewriting and retain bounded recovery', t => {
+test('definitions resolve bundled Node and keep retrying through transient boot failures', t => {
   const homeRoot = home(t);
   const result = productDefinitions([...definitions(homeRoot), { name: 'home23-screenlogic' }], homeRoot, 'milo');
   // A resident without an instance config runs with substrate off: coordination,
@@ -98,11 +112,27 @@ test('definitions resolve the exact bundled Node without PM2 shell rewriting and
   assert.equal(result.length, 6);
   assert.deepEqual(result.map(app => app.name), ownedProcessNames('milo', { home23Root: homeRoot }));
   assert.ok(result.every(app => app.interpreter === 'none' && path.resolve(app.cwd, app.script) === path.join(homeRoot, 'bin/node')
-    && !/\s/.test(app.script) && app.autorestart && app.max_restarts === 5));
+    && !/\s/.test(app.script) && app.autorestart && app.min_uptime === 0
+    && app.max_restarts === undefined && app.exp_backoff_restart_delay === 2000));
   assert.ok(result.every(app => app.args.includes(path.join(homeRoot, 'app/dist/home.js'))));
   const rows = safeProcesses([row(homeRoot, 'home23-milo'), row('/some/other/home', 'home23-milo-dash')], homeRoot, ownedProcessNames('milo'));
   assert.equal(rows[0].owned, true); assert.equal(rows[1].owned, false);
   assert.throws(() => productDefinitions([{ ...definitions(homeRoot)[0], script: '/usr/bin/env' }], homeRoot, 'milo'), /escapes/);
+});
+
+test('Host preserves Seed lock-release delay while disabling retry exhaustion', t => {
+  const homeRoot = home(t);
+  const instance = path.join(homeRoot, 'app/instances/milo');
+  fs.mkdirSync(instance, { recursive: true });
+  fs.writeFileSync(path.join(instance, 'config.yaml'), 'substrate:\n  enabled: true\n');
+  const apps = ownedProcessNames('milo', { home23Root: homeRoot }).map(name => ({
+    name, script: 'dist/home.js', cwd: path.join(homeRoot, 'app'), env: {},
+    ...(name === 'home23-milo-seed' ? { restart_delay: 15000 } : {}),
+  }));
+  const seed = productDefinitions(apps, homeRoot, 'milo').find(app => app.name === 'home23-milo-seed');
+  assert.equal(seed.min_uptime, 0);
+  assert.equal(seed.restart_delay, 15000);
+  assert.equal(seed.exp_backoff_restart_delay, undefined);
 });
 
 test('an online supervisor without signed resident availability cannot report ready', async t => {
@@ -335,7 +365,7 @@ test('Start re-registers a known process whose saved PM2 definition differs from
   const config = path.join(homeRoot, 'runtime', 'ecosystem.config.json');
   const apps = productDefinitions(definitions(homeRoot).map(app => ({ ...app, env: { HOME23_COORDINATION_RESIDENT_OUTCOMES_REPLAY: 'false' } })), homeRoot, 'milo');
   // PM2 keeps a started app's script, cwd, args and env flat on pm2_env.
-  const registered = (app, overrides = {}) => ({ name: app.name, pid: 0, pm2_env: { ...app.env, status: 'stopped', pm_cwd: app.cwd, pm_exec_path: path.resolve(app.cwd, app.script), args: [...app.args], ...overrides } });
+  const registered = (app, overrides = {}) => ({ name: app.name, pid: 0, pm2_env: { ...app.env, status: 'stopped', pm_cwd: app.cwd, pm_exec_path: path.resolve(app.cwd, app.script), args: [...app.args], min_uptime: app.min_uptime, restart_delay: app.restart_delay || 0, exp_backoff_restart_delay: app.exp_backoff_restart_delay || 0, ...overrides } });
   const [unchanged, staleEnv, staleArgs, staleCwd, ...unregistered] = apps;
   const rows = [
     registered(unchanged),
