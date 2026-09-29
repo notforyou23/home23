@@ -61,7 +61,14 @@ function inferInstallationContext(canonicalBrainDir) {
   };
 }
 
-function listBackups(brainDir, root = backupsRoot(brainDir)) {
+function configuredBackupsRoot(brainDir) {
+  const base = process.env.HOME23_BRAIN_BACKUP_DIR;
+  if (!base) return backupsRoot(brainDir);
+  const { requesterAgent } = inferInstallationContext(fs.realpathSync(brainDir));
+  return backupsRoot(brainDir, base, requesterAgent);
+}
+
+function listBackups(brainDir, root = configuredBackupsRoot(brainDir)) {
   if (!fs.existsSync(root)) return [];
   return fs.readdirSync(root)
     .filter(name => GENERATED_BACKUP_NAME.test(name)

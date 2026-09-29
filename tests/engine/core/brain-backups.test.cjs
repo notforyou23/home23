@@ -438,6 +438,14 @@ test('external backup destination separates residents, applies retention there, 
     assert.equal(second.created, true);
     const destination = path.join(backupBaseDir, agent, 'backups');
     assert.deepEqual(listBackups(brainDir, destination).map((entry) => entry.name), [second.backupName]);
+    const previous = process.env.HOME23_BRAIN_BACKUP_DIR;
+    process.env.HOME23_BRAIN_BACKUP_DIR = backupBaseDir;
+    try {
+      assert.deepEqual(listBackups(brainDir).map((entry) => entry.name), [second.backupName]);
+    } finally {
+      if (previous === undefined) delete process.env.HOME23_BRAIN_BACKUP_DIR;
+      else process.env.HOME23_BRAIN_BACKUP_DIR = previous;
+    }
     assert.equal(fs.existsSync(path.join(brainDir, 'backups')), false);
   }
 });
