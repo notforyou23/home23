@@ -420,3 +420,65 @@ test('failed backup cleanup never removes a replacement at its temporary path', 
     if (displacedPath) await fs.promises.rm(displacedPath, { recursive: true, force: true });
   }
 });
+
+test('external backup destination separates residents, applies retention there, and preserves local backups', async () => {
+  const home23Root = mkdtempSync(path.join(tmpdir(), 'brain-backup-external-home-'));
+  const backupBaseDir = fs.realpathSync(mkdtempSync(path.join(tmpdir(), 'brain backup external volume - ')));
+  for (const agent of ['jerry', 'forrest']) {
+    const brainDir = path.join(home23Root, 'instances', agent, 'brain');
+    mkdirSync(brainDir, { recursive: true });
+    seedRequiredFiles(brainDir);
+    const first = await maybeBackup(brainDir, {
+      force: true, backupBaseDir, retention: 1, minFreeBytes: 0,
+    });
+    assert.equal(first.created, true);
+    const second = await maybeBackup(brainDir, {
+      force: true, backupBaseDir, retention: 1, minFreeBytes: 0,
+    });
+    assert.equal(second.created, true);
+    const destination = path.join(backupBaseDir, agent, 'backups');
+    assert.deepEqual(listBackups(brainDir, destination).map((entry) => entry.name), [second.backupName]);
+    assert.equal(fs.existsSync(path.join(brainDir, 'backups')), false);
+  }
+});
+
+test('external backup refuses missing volume and symlinked destination without writing locally', async () => {
+  const { home23Root, brainDir } = createHomeFixture('brain-backup-external-guard-');
+  seedRequiredFiles(brainDir);
+  const missing = path.join(home23Root, 'missing volume', 'backups');
+  await assert.rejects(() => maybeBackup(brainDir, {
+    force: true, backupBaseDir: missing, minFreeBytes: 0,
+  }), { code: 'ENOENT' });
+  const target = mkdtempSync(path.join(tmpdir(), 'brain-backup-target-'));
+  const link = path.join(home23Root, 'linked-backups');
+  fs.symlinkSync(target, link);
+  await assert.rejects(() => maybeBackup(brainDir, {
+    force: true, backupBaseDir: link, minFreeBytes: 0,
+  }), /canonical directory/);
+  assert.equal(fs.existsSync(path.join(brainDir, 'backups')), false);
+  assert.deepEqual(fs.readdirSync(target), []);
+});
+
+test('native backup on an external destination opens as a coherent restore source', async () => {
+  const { home23Root, brainDir } = createHomeFixture('brain-backup-external-restore-');
+  const backupBaseDir = fs.realpathSync(mkdtempSync(path.join(tmpdir(), 'brain restore volume - ')));
+  writeFileSync(path.join(brainDir, 'state.json.gz'), 'state\n');
+  writeFileSync(path.join(brainDir, 'brain-snapshot.json'), '{"nodeCount":1}\n');
+  await writeMemorySidecars(brainDir, {
+    nodes: [{ id: 'external-restore-canary', concept: 'external restore canary' }],
+    edges: [],
+  });
+  const result = await maybeBackup(brainDir, {
+    force: true, backupBaseDir, home23Root, requesterAgent: 'target', minFreeBytes: 0,
+  });
+  assert.equal(result.created, true);
+  const backupPath = path.join(backupBaseDir, 'target', 'backups', result.backupName);
+  const restored = await openMemorySource(backupPath);
+  try {
+    assert.equal(restored.getEvidence().sourceHealth, 'healthy');
+    const found = await restored.searchKeyword({ query: 'external restore canary', topK: 3 });
+    assert.deepEqual(found.results.map(row => row.id), ['external-restore-canary']);
+  } finally {
+    await restored.close();
+  }
+});

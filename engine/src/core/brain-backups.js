@@ -32,9 +32,12 @@ const DEFAULT_RETENTION = 2;
 const DEFAULT_INTERVAL_HOURS = 6;
 const DEFAULT_MIN_FREE_BYTES = 4 * 1024 ** 3;
 const SOURCE_CHANGED = 'BACKUP_SOURCE_CHANGED';
+const GENERATED_BACKUP_NAME = /^backup-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.\d{3}Z-\d+-[a-f0-9-]{36}$/;
 
-function backupsRoot(brainDir) {
-  return path.join(brainDir, BACKUPS_DIR);
+function backupsRoot(brainDir, backupBaseDir, requesterAgent) {
+  return backupBaseDir
+    ? path.join(backupBaseDir, requesterAgent, BACKUPS_DIR)
+    : path.join(brainDir, BACKUPS_DIR);
 }
 
 function inferInstallationContext(canonicalBrainDir) {
@@ -58,17 +61,18 @@ function inferInstallationContext(canonicalBrainDir) {
   };
 }
 
-function listBackups(brainDir) {
-  const root = backupsRoot(brainDir);
+function listBackups(brainDir, root = backupsRoot(brainDir)) {
   if (!fs.existsSync(root)) return [];
   return fs.readdirSync(root)
-    .filter(name => name.startsWith('backup-') && !name.includes('.tmp'))
+    .filter(name => GENERATED_BACKUP_NAME.test(name)
+      && fs.lstatSync(path.join(root, name)).isDirectory()
+      && !fs.lstatSync(path.join(root, name)).isSymbolicLink())
     .map(name => ({ name, path: path.join(root, name) }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function mostRecentBackupTime(brainDir) {
-  const list = listBackups(brainDir);
+function mostRecentBackupTime(brainDir, root) {
+  const list = listBackups(brainDir, root);
   if (list.length === 0) return 0;
   const last = list[list.length - 1];
   try {
@@ -758,7 +762,8 @@ async function copySourceFile(sourceSet, file, destination) {
  *
  * @param {string} brainDir
  * @param {{ intervalHours?: number, retention?: number, logger?: any, force?: boolean,
- *   home23Root?: string, requesterAgent?: string, minFreeBytes?: number }} opts
+ *   home23Root?: string, requesterAgent?: string, minFreeBytes?: number,
+ *   backupBaseDir?: string }} opts
  * @returns {Promise<{ created: boolean, reason?: string, backupName?: string, pruned?: number }>}
  */
 async function maybeBackup(brainDir, opts = {}) {
@@ -770,14 +775,45 @@ async function maybeBackup(brainDir, opts = {}) {
     minFreeBytes = DEFAULT_MIN_FREE_BYTES,
   } = opts;
   validateMinFreeBytes(minFreeBytes);
+  if (!Number.isInteger(retention) || retention < 1) {
+    throw new TypeError('retention must be a positive integer');
+  }
   const inferred = inferInstallationContext(await fsp.realpath(brainDir));
   const home23Root = opts.home23Root === undefined ? inferred.home23Root : opts.home23Root;
   const requesterAgent = opts.requesterAgent === undefined
     ? inferred.requesterAgent
     : opts.requesterAgent;
+  if (typeof requesterAgent !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(requesterAgent)
+      || requesterAgent === '.' || requesterAgent === '..') {
+    throw new TypeError('requesterAgent must be a safe directory name');
+  }
 
-  const root = backupsRoot(brainDir);
-  fs.mkdirSync(root, { recursive: true });
+  const backupBaseDir = opts.backupBaseDir;
+  if (backupBaseDir !== undefined) {
+    if (typeof backupBaseDir !== 'string' || !path.isAbsolute(backupBaseDir)
+        || path.resolve(backupBaseDir) !== backupBaseDir) {
+      throw new TypeError('backupBaseDir must be a canonical absolute directory');
+    }
+    // The configured volume must already be mounted. Never create its parent
+    // tree on the internal disk when an external volume is unavailable.
+    const baseStat = await fsp.lstat(backupBaseDir);
+    if (!baseStat.isDirectory() || baseStat.isSymbolicLink()
+        || await fsp.realpath(backupBaseDir) !== backupBaseDir) {
+      throw new Error('backupBaseDir must be an existing canonical directory');
+    }
+    const agentDir = path.join(backupBaseDir, requesterAgent);
+    await fsp.mkdir(agentDir, { recursive: false, mode: 0o700 }).catch((error) => {
+      if (error.code !== 'EEXIST') throw error;
+    });
+    const agentStat = await fsp.lstat(agentDir);
+    if (!agentStat.isDirectory() || agentStat.isSymbolicLink()) {
+      throw new Error('resident backup directory is unsafe');
+    }
+  }
+  const root = backupsRoot(brainDir, backupBaseDir, requesterAgent);
+  await fsp.mkdir(root, { recursive: false, mode: 0o700 }).catch((error) => {
+    if (error.code !== 'EEXIST') throw error;
+  });
   const rootStat = await fsp.lstat(root, { bigint: true });
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
     throw new Error('backups root must be a regular directory');
@@ -785,7 +821,7 @@ async function maybeBackup(brainDir, opts = {}) {
   const rootIdentity = directoryIdentity(rootStat);
 
   if (!force) {
-    const lastMs = mostRecentBackupTime(brainDir);
+    const lastMs = mostRecentBackupTime(brainDir, root);
     const sinceMs = Date.now() - lastMs;
     if (lastMs > 0 && sinceMs < intervalHours * 3600 * 1000) {
       return { created: false, reason: 'within-interval' };
@@ -875,12 +911,14 @@ async function maybeBackup(brainDir, opts = {}) {
     }
 
     let pruned = 0;
-    const all = listBackups(brainDir);
+    const all = listBackups(brainDir, root);
     if (all.length > retention) {
       for (const old of all.slice(0, all.length - retention)) {
         try {
-          await fsp.rm(old.path, { recursive: true, force: true });
-          pruned += 1;
+          const oldStat = await fsp.lstat(old.path, { bigint: true });
+          if (await removeOwnedTemporaryDirectory({
+            root, rootIdentity, tmpDir: old.path, tmpIdentity: directoryIdentity(oldStat),
+          })) pruned += 1;
         } catch (error) {
           logger?.warn?.('[brain-backup] prune failed', { backup: old.name, error: error.message });
         }
