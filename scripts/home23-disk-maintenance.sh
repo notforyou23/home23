@@ -31,6 +31,16 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG_FI
 # where %d is a free-inode count rather than a device.
 device_of() { stat -c %d "$1" 2>/dev/null || stat -f %d "$1"; }
 
+# The engine publishes a final generated name only after writing its manifest.
+# Manual copies and unfinished .tmp directories are never cleanup candidates.
+generated_backup='^backup-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}\.[0-9]{3}Z-[0-9]+-[a-f0-9-]{36}$'
+safe_backup_root() {
+  [[ ! -L "$ROOT/instances" && ! -L "${brain%/brain}" && ! -L "$brain" && ! -L "$backup_dir" && -d "$backup_dir" ]]
+}
+completed_backup() {
+  [[ "${1##*/}" =~ $generated_backup && ! -L "$1" && -d "$1" && ! -L "$1/backup-manifest.json" && -f "$1/backup-manifest.json" ]]
+}
+
 if [[ ! "$THRESHOLD_GIB" =~ ^[0-9]+$ ]]; then
   log "ERROR threshold must be whole GiB: $THRESHOLD_GIB"
   exit 1
@@ -53,23 +63,26 @@ data_device="$(device_of "$DATA_MOUNT")"
 removed=0
 for brain in "${BRAIN_ROOTS[@]}"; do
   backup_dir="$brain/backups"
-  [[ -d "$backup_dir" ]] || continue
-  # Resolve a relocated (symlinked) backups folder so find sees its contents.
-  real_dir="$(cd -P "$backup_dir" && pwd -P)"
-  if [[ "$(device_of "$real_dir")" != "$data_device" ]]; then
+  # The engine owns retention at external destinations. Never follow links to
+  # relocated brains or backups, even when they share the pressured volume.
+  safe_backup_root || continue
+  if [[ "$(device_of "$backup_dir")" != "$data_device" ]]; then
     log "SKIP backups=$backup_dir reason=other-volume"
     continue
   fi
-  # Only backup directories with a manifest count; names sort oldest first.
+  # Globbed timestamped names sort oldest first. Protect the newest completed
+  # backups before checking age, including when every backup is old.
   backups=()
-  while IFS= read -r candidate; do
-    [[ -f "$candidate/backup-manifest.json" ]] && backups+=("$candidate")
-  done < <(find "$real_dir" -mindepth 1 -maxdepth 1 -type d -name 'backup-*' -print | sort)
+  for candidate in "$backup_dir"/backup-*; do
+    completed_backup "$candidate" && backups+=("$candidate")
+  done
   prunable=$((${#backups[@]} - KEEP_NEWEST))
   for (( i = 0; i < prunable; i++ )); do
     (( removed >= MAX_REMOVALS )) && break 2
     candidate="${backups[$i]}"
-    [[ -n "$(find "$candidate" -maxdepth 0 -mmin +$((MIN_AGE_HOURS * 60)) -print)" ]] || continue
+    safe_backup_root || break
+    completed_backup "$candidate" || continue
+    [[ -n "$(find "$candidate" -maxdepth 0 -type d -mmin +$((MIN_AGE_HOURS * 60)) -print)" ]] || continue
     rm -rf -- "$candidate"
     log "REMOVED generated_backup=$candidate"
     removed=$((removed + 1))
