@@ -15,6 +15,34 @@ function relevant(result, target) {
   return result.reasons.filter(item => item.path === target).map(item => item.code);
 }
 
+test('an external brain backup output does not block a software update, including paths with spaces', async t => {
+  const root = home(t);
+  const config = path.join(root, 'app/config/home.yaml');
+  const outside = '/Volumes/External Drive/Home23 Brain Backups';
+  fs.mkdirSync(path.dirname(config), { recursive: true });
+  for (const value of [outside, JSON.stringify(outside), `'${outside}'`]) {
+    fs.writeFileSync(config, `backups:\n  brain:\n    directory: ${value}\n`);
+    assert.deepEqual(relevant(await inspectUpdateInventory(root), 'app/config/home.yaml'), [], value);
+  }
+});
+
+test('an unrelated setting naming the backup folder remains an external reference', async t => {
+  const root = home(t);
+  const config = path.join(root, 'app/config/home.yaml');
+  const outside = '/Volumes/External Drive/Home23 Brain Backups';
+  fs.mkdirSync(path.dirname(config), { recursive: true });
+  fs.writeFileSync(config, `backups:\n  brain:\n    directory: ${outside}\nimports:\n  source: ${outside}\n`);
+  const found = (await inspectUpdateInventory(root)).reasons.filter(item => item.code === 'external_reference');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].path, 'app/config/home.yaml');
+  assert.equal(found[0].field, 'imports.source');
+  assert.equal(found[0].target, '/Volumes/External');
+  fs.writeFileSync(config, `other:\n  brain:\n    directory: ${outside}\n`);
+  assert.deepEqual(relevant(await inspectUpdateInventory(root), 'app/config/home.yaml'), ['external_reference']);
+  fs.writeFileSync(config, `backups:\n  brain:\n    directory: ${outside}\n    directory: ${outside}\n`);
+  assert.deepEqual(relevant(await inspectUpdateInventory(root), 'app/config/home.yaml'), ['external_reference', 'external_reference']);
+});
+
 test('writer inventory includes optional Host roles without accepting saved arbitrary names', async t => {
   const root = home(t);
   const statePath = path.join(root, '.home23-host.json');

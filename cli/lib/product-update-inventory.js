@@ -128,6 +128,50 @@ function absoluteTokens(text) {
   for (const match of text.matchAll(pattern)) found.push(match[1].replace(/[,}]+$/, ''));
   return found;
 }
+/** Backup snapshots are output, not a dependency of the running home. Mask
+ * only this unambiguous scalar before the ordinary external-reference scan.
+ * The retained updater has no YAML dependency, so unfamiliar forms stay
+ * visible to the conservative scanner instead of being guessed at. */
+function withoutBrainBackupDirectory(text) {
+  const lines = text.split(/\r?\n/);
+  const child = (parent, name) => {
+    const start = parent < 0 ? 0 : parent + 1;
+    let end = lines.length;
+    if (parent >= 0) {
+      const parentIndent = indentOf(lines[parent]);
+      end = lines.findIndex((line, at) => at >= start && line.trim() && !line.trimStart().startsWith('#') && indentOf(line) <= parentIndent);
+      if (end < 0) end = lines.length;
+    }
+    const entries = [];
+    for (let at = start; at < end; at++) {
+      const line = lines[at];
+      if (!line.trim() || line.trimStart().startsWith('#')) continue;
+      if (parent < 0 && indentOf(line) !== 0) continue;
+      entries.push({ at, indent: indentOf(line) });
+    }
+    const depth = parent < 0 ? 0 : entries.reduce((min, entry) => Math.min(min, entry.indent), Infinity);
+    const key = new RegExp(`^ {${depth}}(?:${name}|"${name}"|'${name}')\\s*:(?=\\s|$)`);
+    const matches = entries.filter(entry => entry.indent === depth && key.test(lines[entry.at]));
+    return matches.length === 1 ? matches[0].at : -1;
+  };
+  const backups = child(-1, 'backups');
+  if (backups < 0 || !/^\s*(?:backups|"backups"|'backups')\s*:\s*(?:#.*)?$/.test(lines[backups])) return text;
+  const brain = child(backups, 'brain');
+  if (brain < 0 || !/^\s*(?:brain|"brain"|'brain')\s*:\s*(?:#.*)?$/.test(lines[brain])) return text;
+  const directory = child(brain, 'directory');
+  if (directory < 0) return text;
+  const value = lines[directory].replace(/^\s*(?:directory|"directory"|'directory')\s*:\s*/, '').trim();
+  const plain = value.replace(/\s+#.*$/, '');
+  const quoted = /^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/.exec(value);
+  const single = /^'((?:[^']|'')*)'\s*(?:#.*)?$/.exec(value);
+  let scalar = plain;
+  if (quoted) { try { scalar = JSON.parse(`"${quoted[1]}"`); } catch { return text; } }
+  else if (single) scalar = single[1].replaceAll("''", "'");
+  else if (!plain.startsWith('/') || /:(?:\s|$)/.test(plain)) return text;
+  if (!isAbsolute(scalar)) return text;
+  lines[directory] = '';
+  return lines.join('\n');
+}
 function escapeRegex(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 /** YAML folds paths at spaces, so a token may be only the first fragment of this home. */
 function refersToHome(text, home, token) {
@@ -423,9 +467,10 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
       && JSON.stringify(continuing) === JSON.stringify(adoptedContinuation)
       ? JSON.stringify({ ...state, continuationServices: undefined })
       : readFileSync(file, 'utf8');
-    for (const token of absoluteTokens(text)) {
-      if (!allowedExternal(root, token) && !refersToHome(text, root, token)
-        && !adoptedReferences.has(`${relative}\0${token}`)) external.push({ path: relative, field: settingFor(relative, text, token),
+    const inspectedText = relative === 'app/config/home.yaml' ? withoutBrainBackupDirectory(text) : text;
+    for (const token of absoluteTokens(inspectedText)) {
+      if (!allowedExternal(root, token) && !refersToHome(inspectedText, root, token)
+        && !adoptedReferences.has(`${relative}\0${token}`)) external.push({ path: relative, field: settingFor(relative, inspectedText, token),
         target: relative.endsWith('secrets.yaml') ? '[redacted]' : token });
     }
   }
