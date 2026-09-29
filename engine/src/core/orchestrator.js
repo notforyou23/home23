@@ -7891,6 +7891,7 @@ class Orchestrator {
       (async () => {
         try {
           const { maybeBackup } = require('./brain-backups');
+          const backupBaseDir = process.env.HOME23_BRAIN_BACKUP_DIR || undefined;
           // Backups are ~800MB each (compressed memory sidecars). On a near-full
           // data volume, hourly x5 retention = ~4GB/agent and repeatedly broke the
           // disk_free_ok 10GiB floor (2026-06-04). Reduced to every 6h, keep 2, then
@@ -7911,7 +7912,7 @@ class Orchestrator {
               || (require('fs').existsSync(macDataVolume) ? macDataVolume : (this.logsDir || '/'));
             const st = await fs.statfs(dataMount);
             const freeGiB = (Number(st.bavail) * Number(st.bsize)) / 1024 / 1024 / 1024;
-            if (freeGiB < 14) {
+            if (!backupBaseDir && freeGiB < 14) {
               this.logger?.warn?.('[brain-backup] skipped: low disk headroom', {
                 freeGiB: Number(freeGiB.toFixed(2)),
                 minHeadroomGiB: 14,
@@ -7926,6 +7927,7 @@ class Orchestrator {
             retention: 1,
             logger: this.logger,
             minFreeBytes: 50 * 1024 ** 3,
+            backupBaseDir,
           });
           // Only the creation log is noisy enough to surface; 'within-interval'
           // skips are normal.
