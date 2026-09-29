@@ -233,7 +233,9 @@ function failedProcess(row) {
  * Whether PM2's saved record for a process still equals the generated app.
  * PM2 resolves `script` against `cwd` into pm_exec_path and keeps every app
  * env value flat on pm2_env (objects stringified, other types kept), so the
- * comparison covers executable, cwd, args and each env key the app defines.
+ * comparison covers executable, cwd, args, restart policy and each env key
+ * the app defines. Start re-registers a stale retry policy when admitting a
+ * stopped service; an already online home is left running.
  */
 export function definitionMatchesProcess(app, row) {
   if (!app || !row) return false;
@@ -241,6 +243,9 @@ export function definitionMatchesProcess(app, row) {
   const executable = isAbsolute(app.script || '') ? app.script : resolve(app.cwd, app.script || '');
   if (env.pm_exec_path !== executable || env.pm_cwd !== app.cwd) return false;
   if (JSON.stringify(Array.isArray(env.args) ? env.args : []) !== JSON.stringify(Array.isArray(app.args) ? app.args : [])) return false;
+  if (Number(env.min_uptime) !== Number(app.min_uptime)) return false;
+  if (Number(env.restart_delay || 0) !== Number(app.restart_delay || 0)) return false;
+  if (Number(env.exp_backoff_restart_delay || 0) !== Number(app.exp_backoff_restart_delay || 0)) return false;
   return Object.entries(app.env || {}).every(([key, value]) => env[key] !== undefined && String(env[key]) === String(value));
 }
 function withoutStartupProfiling(args) {
@@ -283,7 +288,14 @@ export function productDefinitions(apps, homeRoot, nameOrNames, { encoderRequire
     const executable = relative(cwd, nodePath);
     if (!executable || /\s/.test(executable) || resolve(cwd, executable) !== nodePath) throw new Error('Cannot safely resolve the bundled Home23 executable.');
     return { ...definition, script: executable, interpreter: 'none', node_args: [], args: [...withoutStartupProfiling(nodeArgs), script, ...args], cwd,
-      autostart: true, autorestart: true, min_uptime: 10000, max_restarts: 5, restart_delay: 2000,
+      // PM2 counts short exits toward max_restarts and otherwise leaves a home
+      // errored after a transient boot dependency fails five times. Zero
+      // min_uptime disables that terminal count; retain the generated delay
+      // for Seed's lock release and use bounded backoff for other services.
+      autostart: true, autorestart: true, min_uptime: 0,
+      restart_delay: definition.restart_delay,
+      exp_backoff_restart_delay: definition.restart_delay === undefined
+        ? (definition.exp_backoff_restart_delay ?? 2000) : undefined,
       env: { ...definition.env, ...baseEnv },
       // No profiling flags or dumps are required to run a user's home.
       filter_env: definition.filter_env || [],
@@ -359,7 +371,7 @@ function driver(homeRoot, dependencies, state) {
         if (!executable || /\s/.test(executable) || resolve(service.cwd, executable) !== service.executable) throw new Error(`Continuing executable cannot be safely launched: ${service.name}`);
         return { name: service.name, script: executable, interpreter: 'none', args: service.args,
           cwd: service.cwd, env: { ...env, ...service.env }, autostart: true, autorestart: true,
-          min_uptime: 10000, max_restarts: 5, restart_delay: 2000 };
+          min_uptime: 0, exp_backoff_restart_delay: 2000 };
       });
       return [...standard, ...continuation];
     },

@@ -38,6 +38,28 @@ test('consumer package ecosystem omits the standalone Evobrew process', t => {
   const apps = require(join(root, 'ecosystem.config.cjs')).apps;
   assert.ok(!apps.some(app => app.name === 'home23-evobrew'));
   assert.ok(apps.some(app => app.name === 'home23-jerry'));
+  assert.equal(apps.find(app => app.name === 'home23-jerry').env.HOME23_BRAIN_BACKUP_DIR, '');
+});
+
+test('persistent ecosystem services retry without an unstable-exit ceiling', t => {
+  const root = generate({ embedder: { owned: true, port: 21495 } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = require(join(root, 'ecosystem.config.cjs')).apps;
+  const persistent = apps.filter(app => app.autorestart === true);
+  assert.ok(persistent.some(app => app.name === 'home23-embedder'));
+  assert.ok(persistent.some(app => app.name === 'home23-jerry-harness'));
+  assert.ok(persistent.every(app => app.min_uptime === 0 && app.max_restarts === undefined));
+  assert.ok(persistent.every(app => app.restart_delay > 0 || app.exp_backoff_restart_delay > 0));
+  assert.equal(apps.find(app => app.name === 'home23-coordination').autorestart, false);
+  assert.equal(apps.find(app => app.name === 'home23-watchdog').autorestart, false);
+});
+
+test('configured brain backup directory reaches only engine processes', t => {
+  const root = generate({ backups: { brain: { directory: '/Volumes/Backup Home/brain' } } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = require(join(root, 'ecosystem.config.cjs')).apps;
+  assert.equal(apps.find(app => app.name === 'home23-jerry').env.HOME23_BRAIN_BACKUP_DIR, '/Volumes/Backup Home/brain');
+  assert.equal(apps.find(app => app.name === 'home23-jerry-harness').env.HOME23_BRAIN_BACKUP_DIR, undefined);
 });
 
 function engineEnv(root) {
