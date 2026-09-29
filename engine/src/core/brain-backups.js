@@ -808,6 +808,16 @@ async function maybeBackup(brainDir, opts = {}) {
         || await fsp.realpath(backupBaseDir) !== backupBaseDir) {
       throw new Error('backupBaseDir must be an existing canonical directory');
     }
+    if (process.platform === 'darwin' && backupBaseDir.startsWith('/Volumes/')) {
+      const volumeName = path.relative('/Volumes', backupBaseDir).split(path.sep)[0];
+      const [volumesStat, volumeStat] = await Promise.all([
+        fsp.stat('/Volumes', { bigint: true }),
+        fsp.stat(path.join('/Volumes', volumeName), { bigint: true }),
+      ]);
+      if (volumesStat.dev === volumeStat.dev) {
+        throw new Error('configured backup volume is not mounted');
+      }
+    }
     const agentDir = path.join(backupBaseDir, requesterAgent);
     await fsp.mkdir(agentDir, { recursive: false, mode: 0o700 }).catch((error) => {
       if (error.code !== 'EEXIST') throw error;
