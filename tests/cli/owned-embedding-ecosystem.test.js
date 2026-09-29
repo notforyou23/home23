@@ -48,7 +48,7 @@ test('persistent ecosystem services retry without an unstable-exit ceiling', t =
   const persistent = apps.filter(app => app.autorestart === true);
   assert.ok(persistent.some(app => app.name === 'home23-embedder'));
   assert.ok(persistent.some(app => app.name === 'home23-jerry-harness'));
-  assert.ok(persistent.every(app => app.min_uptime === 0 && app.max_restarts === undefined));
+  assert.ok(persistent.every(app => app.min_uptime === 100 && app.max_restarts === undefined));
   assert.ok(persistent.every(app => app.restart_delay > 0 || app.exp_backoff_restart_delay > 0));
   assert.equal(apps.find(app => app.name === 'home23-coordination').autorestart, false);
   assert.equal(apps.find(app => app.name === 'home23-watchdog').autorestart, false);

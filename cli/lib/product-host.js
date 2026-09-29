@@ -289,10 +289,10 @@ export function productDefinitions(apps, homeRoot, nameOrNames, { encoderRequire
     if (!executable || /\s/.test(executable) || resolve(cwd, executable) !== nodePath) throw new Error('Cannot safely resolve the bundled Home23 executable.');
     return { ...definition, script: executable, interpreter: 'none', node_args: [], args: [...withoutStartupProfiling(nodeArgs), script, ...args], cwd,
       // PM2 counts short exits toward max_restarts and otherwise leaves a home
-      // errored after a transient boot dependency fails five times. Zero
-      // min_uptime disables that terminal count; retain the generated delay
-      // for Seed's lock release and use bounded backoff for other services.
-      autostart: true, autorestart: true, min_uptime: 0,
+      // errored after a transient boot dependency fails five times. PM2's
+      // minimum accepted uptime is 100ms; delayed retries move rapid failures
+      // past its unstable-exit window. Preserve Seed's lock-release delay.
+      autostart: true, autorestart: true, min_uptime: 100,
       restart_delay: definition.restart_delay,
       exp_backoff_restart_delay: definition.restart_delay === undefined
         ? (definition.exp_backoff_restart_delay ?? 2000) : undefined,
@@ -371,7 +371,7 @@ function driver(homeRoot, dependencies, state) {
         if (!executable || /\s/.test(executable) || resolve(service.cwd, executable) !== service.executable) throw new Error(`Continuing executable cannot be safely launched: ${service.name}`);
         return { name: service.name, script: executable, interpreter: 'none', args: service.args,
           cwd: service.cwd, env: { ...env, ...service.env }, autostart: true, autorestart: true,
-          min_uptime: 0, exp_backoff_restart_delay: 2000 };
+          min_uptime: 100, exp_backoff_restart_delay: 2000 };
       });
       return [...standard, ...continuation];
     },

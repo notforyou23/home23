@@ -778,7 +778,7 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      cwd: HOME23,`);
     lines.push(`      filter_env: ['HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-    lines.push(`      min_uptime: 0, exp_backoff_restart_delay: 2000,`);
+    lines.push(`      min_uptime: 100, exp_backoff_restart_delay: 2000,`);
     lines.push(`      out_file: path.join(HOME23, 'logs', 'embedder-out.log'),`);
     lines.push(`      error_file: path.join(HOME23, 'logs', 'embedder-err.log'),`);
     lines.push(`      env: {`);
@@ -819,12 +819,14 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(``);
   // PM2 6 counts exits shorter than min_uptime toward max_restarts and then
   // leaves the app errored. Persistent services must survive a boot dependency
-  // that takes longer than five attempts to become available. A zero threshold
-  // disables that unstable-exit count; a bounded delay prevents a hot loop.
+  // that takes longer than five attempts to become available. PM2 validates
+  // min_uptime >= 100ms. Every persistent retry delay is at least 200ms, so
+  // backoff carries rapid failures past PM2's unstable-exit window before its
+  // default 16-restart ceiling can be reached.
   // Disabled/one-shot entries keep their explicit autorestart behavior.
   lines.push(`for (const app of module.exports.apps) {`);
   lines.push(`  if (app.autorestart !== true) continue;`);
-  lines.push(`  app.min_uptime = 0;`);
+  lines.push(`  app.min_uptime = 100;`);
   lines.push(`  delete app.max_restarts;`);
   lines.push(`  if (app.restart_delay === undefined && app.exp_backoff_restart_delay === undefined) {`);
   lines.push(`    app.exp_backoff_restart_delay = 2000;`);

@@ -52,7 +52,7 @@ test('Start detects a registered five-restart policy as stale', t => {
     min_uptime: 10000, max_restarts: 5, restart_delay: 2000,
   } };
   assert.equal(definitionMatchesProcess(app, registered), false);
-  registered.pm2_env.min_uptime = 0;
+  registered.pm2_env.min_uptime = 100;
   registered.pm2_env.restart_delay = 0;
   registered.pm2_env.exp_backoff_restart_delay = 2000;
   assert.equal(definitionMatchesProcess(app, registered), true);
@@ -112,7 +112,7 @@ test('definitions resolve bundled Node and keep retrying through transient boot 
   assert.equal(result.length, 6);
   assert.deepEqual(result.map(app => app.name), ownedProcessNames('milo', { home23Root: homeRoot }));
   assert.ok(result.every(app => app.interpreter === 'none' && path.resolve(app.cwd, app.script) === path.join(homeRoot, 'bin/node')
-    && !/\s/.test(app.script) && app.autorestart && app.min_uptime === 0
+    && !/\s/.test(app.script) && app.autorestart && app.min_uptime === 100
     && app.max_restarts === undefined && app.exp_backoff_restart_delay === 2000));
   assert.ok(result.every(app => app.args.includes(path.join(homeRoot, 'app/dist/home.js'))));
   const rows = safeProcesses([row(homeRoot, 'home23-milo'), row('/some/other/home', 'home23-milo-dash')], homeRoot, ownedProcessNames('milo'));
@@ -130,7 +130,7 @@ test('Host preserves Seed lock-release delay while disabling retry exhaustion', 
     ...(name === 'home23-milo-seed' ? { restart_delay: 15000 } : {}),
   }));
   const seed = productDefinitions(apps, homeRoot, 'milo').find(app => app.name === 'home23-milo-seed');
-  assert.equal(seed.min_uptime, 0);
+  assert.equal(seed.min_uptime, 100);
   assert.equal(seed.restart_delay, 15000);
   assert.equal(seed.exp_backoff_restart_delay, undefined);
 });
