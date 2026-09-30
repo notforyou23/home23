@@ -450,6 +450,17 @@ function makeSweepProvider(unifiedClient, onRequest) {
   };
 }
 
+// This adapter feeds a resident's critique, which reads at most 2,000 answer
+// characters. Shared PGS keeps its research synthesis contract; the resident
+// needs a connection brief instead of the inherited research commit exercise.
+const RESIDENT_CONNECTION_INSTRUCTIONS = `You are the connection phase of a persistent resident's thinking pipeline.
+
+Read the supplied thought and graph-partition findings. Look for a grounded connection, useful contrast, worthwhile question, or clearer uncertainty that adds to the thought. An association may be tentative; explain its support and limits.
+
+Return concise Markdown, normally within 2,000 characters. Use up to three ## headings, one per useful connection or perspective, with a short explanation underneath. Cite the exact supplied node IDs as "Node <id>" in the explanation. When connecting two nodes, cite both together and explain the relationship. Do not invent node IDs or personal facts.
+
+There is no minimum number of connections. If none adds useful understanding, say so briefly in a plain paragraph. Limited partition coverage is not proof that something is absent from the person's life or the wider graph. Do not turn the findings into an exhaustive survey, entity classification, experiment plan, or task assignment. Decisions about action and owner contact belong to the later critique.`;
+
 function makeSynthesisProvider(unifiedClient, onRequest) {
   return {
     async generate(opts = {}) {
@@ -460,7 +471,7 @@ function makeSynthesisProvider(unifiedClient, onRequest) {
       const response = await generateWithSignal(unifiedClient, {
         component: 'pgsSynthesis',
         purpose: 'synthesize',
-        instructions: `${opts.instructions || ''}\nPreserve memory authority and correction labels in your answer. Explore associations without turning narrative, history, superseded claims, or closed incidents into verified current facts. Distinguish a tentative connection from supporting evidence.`,
+        instructions: `${RESIDENT_CONNECTION_INSTRUCTIONS}\nPreserve memory authority and correction labels in your answer. Explore associations without turning narrative, history, superseded claims, or closed incidents into verified current facts. Distinguish a tentative connection from supporting evidence.`,
         messages,
         maxTokens: opts.maxTokens || 3000,
         temperature: 0.4,

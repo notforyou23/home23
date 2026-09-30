@@ -44,6 +44,10 @@ The primary resident requires live agency and explicit `agency.initiative.enable
 
 Instance model overlays retain validated reasoning effort. The orchestrator retains initiative proposal and context hooks across deferred ThinkingMachine creation and binds them before the first cycle. An initialized driver alone is insufficient evidence of that connection.
 
+The resident's graph synthesis reads the thought and completed partition findings to return a concise connection brief for critique, preserving correction labels, source citations and uncertainty. Limited coverage cannot establish absence. No useful connection is a valid result. The ordinary research synthesis retains its existing contract. Brevity guidance is part of the resident prompt, not an unverified provider output cap.
+
+Background Codex requests settle at their completed terminal event. Incomplete, failed or missing-terminal streams cannot promote partial text into a successful result. Private timing receipts correlate each request with its outcome and phases without logging supplied material or credentials.
+
 By default, graph connection gives sweeps and synthesis separate bounded windows within a 165-second absolute deadline. Expiry cancels the actual Codex request and stream, prevents later stages or failover, and discards late results. Providers that cannot cancel immediately retain their outstanding capacity until they settle; another connection cannot multiply that work. Adaptive limits belong to one execution and do not mutate shared configuration.
 
 Existing homes need a reviewed configuration delta and forward boundary before activation. Software deployment preserves resident identity, history, credentials, encoder choice and integrations. It uses the ordinary verified product update route, with a concrete quiet Work/cron boundary and recovery evidence; source overlays and process labels are not acceptance.

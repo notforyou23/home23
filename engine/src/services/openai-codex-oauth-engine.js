@@ -1,4 +1,5 @@
 const os = require('os');
+const { randomUUID } = require('node:crypto');
 const { responsesReasoning } = require('../../../shared/responses-reasoning.cjs');
 const {
   awaitWithCancellation, cancelReadableStreamReader, rethrowCancellation, throwIfAborted,
@@ -226,6 +227,15 @@ function extractTextFromResponse(response) {
   return textParts.join('\n');
 }
 
+function codexUsageMetadata(usage) {
+  const metadata = {};
+  for (const key of ['input_tokens', 'output_tokens', 'total_tokens']) {
+    const value = usage?.[key];
+    if (Number.isSafeInteger(value) && value >= 0) metadata[key] = value;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : null;
+}
+
 function getCodexHeaders(credentials) {
   return {
     Authorization: `Bearer ${credentials.accessToken}`,
@@ -295,94 +305,138 @@ class OpenAICodexClient {
     }
 
     const url = `${String(this.baseURL).replace(/\/+$/, '')}/codex/responses`;
+    const requestId = randomUUID();
+    const startedAt = performance.now();
+    const elapsed = () => Math.round(performance.now() - startedAt);
     this.logger?.info?.('[OpenAI-Codex] Request', {
+      requestId,
       authMode: credentials.authMode,
       model,
+      reasoningEffort: body.reasoning?.effort || null,
       inputItems: Array.isArray(body.input) ? body.input.length : null,
       hasTools: tools.length > 0,
     });
 
-    const response = await awaitWithCancellation(() => fetch(url, {
-      method: 'POST',
-      headers: getCodexHeaders(credentials),
-      body: JSON.stringify(body),
-      signal,
-    }), signal);
-
-    if (!response.ok) {
-      const errorText = await awaitWithCancellation(() => response.text(), signal).catch(error => {
-        rethrowCancellation(error, signal);
-        return '';
-      });
-      throw new Error(`OpenAI Codex ${response.status}: ${errorText.slice(0, 300)}`);
-    }
-    if (!response.body) {
-      throw new Error('OpenAI Codex response missing body');
-    }
-
     let aggregatedText = '';
     let reasoningSummary = '';
     let finalUsage = {};
-    const reader = response.body.getReader();
+    let reader = null;
+    let headersMs = null;
     const decoder = new TextDecoder();
     let buffer = '';
+    let terminalEvent = null;
+    let firstEventMs = null;
+    let firstTextMs = null;
+    let terminalMs = null;
+    let eventsReceived = 0;
 
     let readerFailure;
+    let failed = false;
+    let cancelled = false;
     try {
-      while (true) {
+      const response = await awaitWithCancellation(() => fetch(url, {
+        method: 'POST',
+        headers: getCodexHeaders(credentials),
+        body: JSON.stringify(body),
+        signal,
+      }), signal);
+      headersMs = elapsed();
+
+      if (!response.ok) {
+        const errorText = await awaitWithCancellation(() => response.text(), signal).catch(error => {
+          rethrowCancellation(error, signal);
+          return '';
+        });
+        throw new Error(`OpenAI Codex ${response.status}: ${errorText.slice(0, 300)}`);
+      }
+      if (!response.body) {
+        throw new Error('OpenAI Codex response missing body');
+      }
+      reader = response.body.getReader();
+
+      while (!terminalEvent) {
         const { done, value } = await awaitWithCancellation(() => reader.read(), signal);
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        let idx = buffer.indexOf('\n\n');
-        while (idx !== -1) {
-          const chunk = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          const dataLines = chunk.split('\n')
+        let separator = /\r?\n\r?\n/.exec(buffer);
+        while (separator && !terminalEvent) {
+          const chunk = buffer.slice(0, separator.index);
+          buffer = buffer.slice(separator.index + separator[0].length);
+          const data = chunk.split(/\r?\n/)
             .filter(line => line.startsWith('data:'))
-            .map(line => line.slice(5).trim());
-
-          for (const data of dataLines) {
-            if (!data || data === '[DONE]') continue;
+            .map(line => line.slice(5).trim()).join('\n');
+          if (data) {
+            if (data === '[DONE]') throw new Error('OpenAI Codex stream ended before response.completed');
             let event;
             try {
               event = JSON.parse(data);
             } catch {
+              separator = /\r?\n\r?\n/.exec(buffer);
               continue;
             }
+            eventsReceived++;
+            firstEventMs ??= elapsed();
 
             switch (event.type) {
               case 'response.output_text.delta':
                 aggregatedText += event.delta || '';
+                if (event.delta) firstTextMs ??= elapsed();
                 break;
               case 'response.output_text.done':
                 if (event.text) aggregatedText = event.text;
+                if (event.text) firstTextMs ??= elapsed();
                 break;
               case 'response.reasoning_summary_text.delta':
                 reasoningSummary += event.delta || '';
                 break;
               case 'response.completed':
+                terminalEvent = event.type;
+                terminalMs = elapsed();
                 finalUsage = event.response?.usage || finalUsage;
                 if (!aggregatedText && event.response) {
                   aggregatedText = extractTextFromResponse(event.response);
                 }
+                if (aggregatedText) firstTextMs ??= elapsed();
                 break;
+              case 'response.incomplete': {
+                terminalEvent = event.type;
+                terminalMs = elapsed();
+                const reason = event.response?.incomplete_details?.reason;
+                throw new Error(`OpenAI Codex response incomplete${reason ? ': ' + String(reason).slice(0, 100) : ''}`);
+              }
               case 'response.failed':
+                terminalEvent = event.type;
+                terminalMs = elapsed();
                 throw new Error(event.response?.error?.message || 'OpenAI Codex response failed');
               case 'error':
                 throw new Error(event.message || event.code || 'OpenAI Codex stream error');
             }
           }
-          idx = buffer.indexOf('\n\n');
+          separator = /\r?\n\r?\n/.exec(buffer);
         }
       }
+      // A completed response owns settlement. EOF without it cannot turn a
+      // truncated answer or reasoning summary into a successful graph result.
+      if (!terminalEvent) throw new Error('OpenAI Codex stream ended before response.completed');
     } catch (error) {
+      failed = true;
+      cancelled = signal?.aborted || error?.name === 'AbortError';
       readerFailure = signal?.aborted ? signal.reason : error;
       rethrowCancellation(error, signal);
       throw error;
     } finally {
-      if (readerFailure) cancelReadableStreamReader(reader, readerFailure);
-      try { reader.releaseLock?.(); } catch {}
+      // Providers may keep SSE open after a terminal event. Release promptly;
+      // cancellation itself may also remain pending and must not block Work.
+      if (failed || terminalEvent) cancelReadableStreamReader(reader, readerFailure);
+      try { reader?.releaseLock?.(); } catch {}
+      this.logger?.info?.('[OpenAI-Codex] Response settled', {
+        requestId, model, reasoningEffort: body.reasoning?.effort || null,
+        outcome: signal?.aborted || cancelled ? 'cancelled' : failed ? 'failed' : 'completed',
+        headersMs, firstEventMs, firstTextMs, terminalMs,
+        durationMs: elapsed(), terminalEvent, eventsReceived,
+        usage: terminalEvent === 'response.completed' ? codexUsageMetadata(finalUsage) : null,
+      });
     }
     throwIfAborted(signal);
 
