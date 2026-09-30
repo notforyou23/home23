@@ -7,6 +7,8 @@ import type { M11Database } from "../work/index.js";
 import type { WorkRecord } from "../work/index.js";
 import { readInheritedWorkInstructionMessageIds } from "../work/service.js";
 import { assertCoordinationId } from "../ids/index.js";
+import { canonicalJson, sha256 } from '../work/canonical.js';
+import type { ScheduledChannelTurn } from './scheduled-turns.js';
 import {
   directMessageManifest,
   type DirectMessageContextPort,
@@ -38,8 +40,11 @@ interface RecoveryMessageRow {
   authorPrincipalId: string;
   authorDisplayName: string;
   text: string | null;
+  kind: string;
+  clientMessageId: string | null;
   createdAt: string;
 }
+type ScheduledRootWork = Pick<WorkRecord, 'id' | 'kind' | 'principalId' | 'targetPrincipalId' | 'channelId' | 'originMessageId' | 'roundId' | 'idempotencyKeyDigest'>;
 
 type AttachmentMaterializer = (
   attachments: readonly AttachmentSummary[],
@@ -165,6 +170,85 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     return Object.freeze({ channelId: input.channelId, ...binding });
   }
 
+  private scheduledAdmission(input: { runId: string; principalId: string; channelId: string; messageId: string; residentBinding: string }) {
+    if (!/^sched-run-[a-f0-9-]{36}$/.test(input.runId)) throw new MessagingError('request_invalid');
+    const row = this.database.readOne<{payload: string; actorPrincipalId: string; channelId: string}>(`SELECT payload_json AS payload,
+      actor_principal_id AS actorPrincipalId, channel_id AS channelId FROM events
+      WHERE aggregate_kind='scheduled_channel_run' AND aggregate_id=? AND aggregate_version=1`, input.runId);
+    if (!row) throw new MessagingError('request_invalid');
+    const {messageId, botId, deadlineAtMs: _, ...turn} = JSON.parse(row.payload) as ScheduledChannelTurn & {messageId: string; botId: string; deadlineAtMs?: number};
+    if (row.actorPrincipalId !== input.principalId || row.channelId !== input.channelId ||
+        turn.runId !== input.runId || botId !== input.principalId || turn.channelId !== input.channelId || messageId !== input.messageId ||
+        typeof turn.prompt !== 'string' || !turn.prompt.trim() || (turn.targetBotId && turn.targetBotId !== botId) ||
+        !this.database.readOne(`SELECT b.id FROM bots b JOIN conversation_handles h ON h.id=b.conversation_id
+          JOIN channels c ON c.id=h.channel_id
+          JOIN channel_members owner ON owner.channel_id=c.id AND owner.principal_id='user_owner' AND owner.kind='owner' AND owner.active=1
+          JOIN channel_members member ON member.channel_id=c.id AND member.principal_id=b.principal_id AND member.kind='bot' AND member.active=1
+          WHERE c.id=? AND c.kind='direct' AND c.lifecycle='active' AND b.principal_id=? AND b.resident_binding=?
+            AND b.lifecycle='active' AND b.continuing_identity=1 AND b.durable_mailbox=1 ${ROUTABLE_DIRECT_TARGET_SQL}`,
+          input.channelId,input.principalId,input.residentBinding)) throw new MessagingError('invalid_relation');
+    return Object.freeze(turn);
+  }
+
+  async resolveScheduledTurn(input: Parameters<NonNullable<DirectMessageContextPort['resolveScheduledTurn']>>[0]) {
+    if (input.context.identity.kind !== 'resident' || input.idempotencyKey !== `scheduled:${input.runId}`) throw new MessagingError('request_invalid');
+    const turn = this.scheduledAdmission({runId: input.runId, principalId: input.context.principalId, channelId: input.channelId,
+      messageId: input.messageId, residentBinding: input.context.identity.resident.credential.residentSlug});
+    if (turn.prompt !== input.prompt || canonicalJson({modelAlias: turn.modelAlias ?? null, reasoningEffort: turn.reasoningEffort ?? null}) !==
+        canonicalJson(input.turnSelection)) throw new MessagingError('idempotency_conflict');
+    return turn;
+  }
+
+  scheduledTurnForRoot(work: ScheduledRootWork): ScheduledChannelTurn | undefined {
+    if (work.kind !== 'resident_turn' || work.principalId !== work.targetPrincipalId || !work.originMessageId || work.roundId !== null) return undefined;
+    const origin = this.database.readOne<{kind: string; text: string | null; clientMessageId: string | null; authorPrincipalId: string; authorKind: string; channelId: string}>(
+      `SELECT kind,body_text AS text,client_message_id AS clientMessageId,author_principal_id AS authorPrincipalId,
+        author_kind AS authorKind,channel_id AS channelId FROM messages WHERE id=?`, work.originMessageId);
+    if (origin?.kind !== 'system' || !origin.clientMessageId?.startsWith('scheduled:')) return undefined;
+    const runId = origin.clientMessageId.slice('scheduled:'.length);
+    if (work.idempotencyKeyDigest !== sha256(`scheduled:${runId}`)) return undefined;
+    const binding = this.database.readOne<{residentBinding: string}>('SELECT resident_binding AS residentBinding FROM bots WHERE principal_id=?', work.targetPrincipalId);
+    if (!binding || origin.text !== null || origin.authorKind !== 'bot' || origin.authorPrincipalId !== work.principalId || origin.channelId !== work.channelId)
+      throw new MessagingError('invalid_relation');
+    const turn = this.scheduledAdmission({runId, principalId: work.principalId, channelId: work.channelId,
+      messageId: work.originMessageId, residentBinding: binding.residentBinding});
+    const selection = this.database.readOne<{modelAlias: string | null; reasoningEffort: string | null}>(`SELECT requested_model_alias AS modelAlias,
+      requested_reasoning_effort AS reasoningEffort FROM work_turn_selections WHERE work_id=?`, work.id);
+    if (!selection || canonicalJson(selection) !== canonicalJson({modelAlias: turn.modelAlias ?? null, reasoningEffort: turn.reasoningEffort ?? null}))
+      throw new MessagingError('invalid_relation');
+    return turn;
+  }
+
+  private scheduledRoot(work: ScheduledRootWork, instructionLineageValidated: boolean): ScheduledRootWork {
+    // recover() already validates immutable planned requests, parent fences and
+    // exact manifest inheritance through readInheritedWorkInstructionMessageIds.
+    // Locate that same root by primary keys; a shared marker alone is insufficient.
+    let current = work;
+    if (!instructionLineageValidated && work.kind === 'resident_work_thread') {
+      const source = this.database.readOne<WorkRecord>(`SELECT id,kind,principal_id AS principalId,target_principal_id AS targetPrincipalId,
+        channel_id AS channelId,origin_message_id AS originMessageId,round_id AS roundId,context_manifest_id AS contextManifestId,
+        idempotency_key_digest AS idempotencyKeyDigest,request_digest AS requestDigest,max_automatic_offers AS maxAutomaticOffers
+        FROM works WHERE id=?`, work.id);
+      if (!source) throw new MessagingError('invalid_relation');
+      try { readInheritedWorkInstructionMessageIds(this.database, source); }
+      catch { throw new MessagingError('invalid_relation'); }
+    }
+    const visited = new Set<string>();
+    for (let depth = 0; depth < 64; depth++) {
+      if (visited.has(current.id)) throw new MessagingError('invalid_relation');
+      visited.add(current.id);
+      if (current.kind !== 'resident_work_thread') return current;
+      const parent = this.database.readOne<ScheduledRootWork>(`SELECT w.id,w.kind,w.principal_id AS principalId,w.target_principal_id AS targetPrincipalId,
+        w.channel_id AS channelId,w.origin_message_id AS originMessageId,w.round_id AS roundId,w.idempotency_key_digest AS idempotencyKeyDigest
+        FROM work_planned_invocations p JOIN works w ON w.id=p.parent_work_id WHERE p.work_id=?`, current.id);
+      if (!parent || parent.channelId !== current.channelId || parent.principalId !== current.principalId ||
+          parent.targetPrincipalId !== current.targetPrincipalId || parent.originMessageId !== current.originMessageId || parent.roundId !== current.roundId)
+        throw new MessagingError('invalid_relation');
+      current = parent;
+    }
+    throw new MessagingError('invalid_relation');
+  }
+
   async prepare(input: Parameters<DirectMessageContextPort["prepare"]>[0]) {
     const binding = this.database.readOne<DirectBindingRow>(
       `SELECT h.id AS conversationId, b.id AS targetBotId, b.name AS targetBotDisplayName,
@@ -179,6 +263,16 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       input.channelId,
     );
     if (!binding) throw new MessagingError("unknown_channel");
+    let scheduledTurn: ScheduledChannelTurn | undefined;
+    if (input.scheduledRunId !== undefined) {
+      if (input.context.identity.kind !== 'resident' || input.instructionMessageIds !== undefined || input.attachmentIds.length ||
+          input.originMessage.kind !== 'system' || input.originMessage.text !== null ||
+          input.originMessage.clientMessageId !== `scheduled:${input.scheduledRunId}` ||
+          input.originMessage.author.principalId !== input.context.principalId || binding.targetPrincipalId !== input.context.principalId)
+        throw new MessagingError('invalid_relation');
+      scheduledTurn = this.scheduledAdmission({runId: input.scheduledRunId, principalId: input.context.principalId,
+        channelId: input.channelId, messageId: input.originMessage.id, residentBinding: input.context.identity.resident.credential.residentSlug});
+    }
     const page = await this.messages.listMessages({ context: input.context, channelId: input.channelId, limit: 100 });
     const projectedOrigin = page.messages.find((message) => message.id === input.originMessage.id);
     if (
@@ -225,7 +319,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     });
     // A trusted speech partition may span multiple canonical owner rows. All other
     // requests remain historical context and never become instructions implicitly.
-    const instruction = selected?.map(row => row.text).join("\n") ?? projectedOrigin.text ?? "";
+    const instruction = scheduledTurn?.prompt ?? selected?.map(row => row.text).join("\n") ?? projectedOrigin.text ?? "";
     const historyBackfill: readonly DirectMessageHistoryEntry[] = Object.freeze(transcript
       .filter((message) => !(instructionMessageIds ?? [input.originMessage.id]).includes(message.id))
       .map((message) => Object.freeze({
@@ -245,6 +339,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       targetPrincipalId: binding.targetPrincipalId,
       residentBinding: binding.residentBinding,
       instruction,
+      ...(scheduledTurn === undefined ? {} : { scheduledTurn }),
       ...(instructionMessageIds === undefined ? {} : { instructionMessageIds }),
       historyBackfill: binding.residentBinding.startsWith("bot-") ? historyBackfill : boundHistoricalContext(historyBackfill),
       attachments,
@@ -321,6 +416,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       `SELECT m.id, m.channel_sequence AS sequence,
               m.author_principal_id AS authorPrincipalId,
               m.author_display_name AS authorDisplayName,
+              m.kind AS kind, m.client_message_id AS clientMessageId,
               CASE WHEN EXISTS (
                 SELECT 1 FROM messages tombstone WHERE tombstone.tombstones_message_id = m.id
               ) THEN NULL ELSE m.body_text END AS text,
@@ -348,8 +444,9 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     // Review descendants inherit a later, coordinator-saved context snapshot.
     // Bind it through canonical parent lineage; do not relax ordinary foreground recovery.
     let reviewSnapshot: { instruction: string; originalOwnerRequest?: string; instructionMessageIds?: readonly string[]; manifest: { messageIds: string[]; digests: { context: string; source: string }; watermarks: { channelSequence: number; eventSequence: number } }; channelId: string; targetPrincipalId: string } | undefined;
+    let reviewSourceWorkId: string | undefined;
     if (this.database.readOne("SELECT name FROM sqlite_master WHERE type='table' AND name='resident_outcomes'")) {
-      const saved = this.database.readOne<{ prepared: string }>(`
+      const saved = this.database.readOne<{ prepared: string; sourceWorkId: string }>(`
         WITH RECURSIVE lineage(id, depth) AS (
           SELECT ?, 0 UNION ALL
           SELECT p.parent_work_id, l.depth + 1 FROM lineage l
@@ -357,7 +454,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
           JOIN works parent ON parent.id = p.parent_work_id
           WHERE l.depth < 64 AND parent.channel_id = ? AND parent.target_principal_id = ?
             AND parent.principal_id = ? AND parent.origin_message_id = ?
-        ) SELECT o.prepared_json AS prepared FROM lineage l
+        ) SELECT o.prepared_json AS prepared,o.source_work_id AS sourceWorkId FROM lineage l
           JOIN resident_outcomes o ON o.review_work_id = l.id
           WHERE o.prepared_json IS NOT NULL ORDER BY l.depth LIMIT 1`,
         work.id, work.channelId, work.targetPrincipalId, work.principalId, work.originMessageId);
@@ -374,6 +471,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
             value.manifest.messageIds.length !== messageIds.length ||
             !value.manifest.messageIds.every((id: string) => messageIds.includes(id))) throw new MessagingError('invalid_relation');
         reviewSnapshot = value;
+        reviewSourceWorkId = saved.sourceWorkId;
       }
     }
     let recordedInstructionMessageIds: readonly string[] | undefined;
@@ -424,7 +522,25 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     const attachments = await this.materialize(attachmentRows);
     const transcript = rows.filter((message) => message.text !== null);
     const origin = rows.find(row => row.id === work.originMessageId)!;
-    const instruction = reviewSnapshot?.instruction ?? selected?.map(row => row.text).join("\n") ?? origin.text ?? "";
+    let scheduledTurn: ScheduledChannelTurn | undefined;
+    if (origin.kind === 'system' && origin.clientMessageId?.startsWith('scheduled:')) {
+      if (origin.text !== null || origin.authorPrincipalId !== work.principalId || work.principalId !== work.targetPrincipalId ||
+          instructionMessageIds !== undefined || artifactIds.length) throw new MessagingError('invalid_relation');
+      scheduledTurn = this.scheduledAdmission({runId: origin.clientMessageId.slice('scheduled:'.length), principalId: work.principalId,
+        channelId: work.channelId, messageId: work.originMessageId, residentBinding: binding.residentBinding});
+      let root: ScheduledRootWork = work;
+      if (reviewSourceWorkId) {
+        const source = this.database.readOne<ScheduledRootWork>(`SELECT id,kind,principal_id AS principalId,target_principal_id AS targetPrincipalId,
+          channel_id AS channelId,origin_message_id AS originMessageId,round_id AS roundId,idempotency_key_digest AS idempotencyKeyDigest FROM works WHERE id=?`, reviewSourceWorkId);
+        if (!source || source.channelId !== work.channelId || source.principalId !== work.principalId || source.targetPrincipalId !== work.targetPrincipalId ||
+            source.originMessageId !== work.originMessageId || source.roundId !== work.roundId) throw new MessagingError('invalid_relation');
+        root = source;
+      }
+      root = this.scheduledRoot(root, root.id === work.id);
+      const rootTurn = this.scheduledTurnForRoot(root);
+      if (!rootTurn || canonicalJson(rootTurn) !== canonicalJson(scheduledTurn)) throw new MessagingError('invalid_relation');
+    }
+    const instruction = reviewSnapshot?.instruction ?? scheduledTurn?.prompt ?? selected?.map(row => row.text).join("\n") ?? origin.text ?? "";
     const historyBackfill: readonly DirectMessageHistoryEntry[] = Object.freeze(transcript
       .filter((message) => !(instructionMessageIds ?? [work.originMessageId]).includes(message.id))
       .map((message) => Object.freeze({
@@ -446,6 +562,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
         targetPrincipalId: binding.targetPrincipalId,
         residentBinding: binding.residentBinding,
         instruction,
+        ...(scheduledTurn === undefined ? {} : { scheduledTurn }),
         ...(reviewSnapshot?.originalOwnerRequest === undefined ? {} : { originalOwnerRequest: reviewSnapshot.originalOwnerRequest }),
         ...(instructionMessageIds === undefined ? {} : { instructionMessageIds }),
         historyBackfill: binding.residentBinding.startsWith("bot-") ? historyBackfill : boundHistoricalContext(historyBackfill),

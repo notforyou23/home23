@@ -24,7 +24,7 @@ const until = async (predicate: () => Promise<boolean>, label: string) => {
 
 /** Real signed ingress, exclusive Core writer, durable AgentLoop turn, ordinary
  * Work/Stop routes and restart. All provider traffic stays on local fixture. */
-for (const crashDuringRun of [false, true]) test(`primary resident initiative survives ${crashDuringRun ? 'a killed Core during execution' : 'lost acknowledgement and completed restart'} and obeys ordinary owner Stop`, { timeout: 25_000 }, async t => {
+for (const [crashDuringRun, legacyReplay] of [[false, true], [true, true], [false, false]] as const) test(`primary resident initiative survives ${crashDuringRun ? 'a killed Core during execution' : 'lost acknowledgement and completed restart'} and obeys ordinary owner Stop${legacyReplay ? '' : ' while legacy replay is paused'}`, { timeout: 25_000 }, async t => {
   const root = mkdtempSync(join(tmpdir(), 'h23-initiate-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const runtime = join(root, 'coordination'); const workspacePath = join(root, 'workspace'); mkdirSync(runtime); mkdirSync(workspacePath);
@@ -54,6 +54,7 @@ for (const crashDuringRun of [false, true]) test(`primary resident initiative su
     HOME23_COORDINATION_RESIDENT_KEY_VERSION: '1', HOME23_COORDINATION_RESIDENT_KEY: key, HOME23_COORDINATION_SOCKET_PATH: coordinatorSocket } });
   assert.ok(harness); t.after(() => harness.close());
   const config = { enabled: true, host: '127.0.0.1' as const, port: 0, databasePath, socketPath: coordinatorSocket,
+    residentOutcomes: { replay: legacyReplay },
     botRootDirectory: join(root, 'bots'), capabilityToken: 'c'.repeat(64), home: { ...home, primaryResident: 'milo' },
     flags: { ...disabledCoordinationFeatureFlags(), 'coordination.process.enabled': true, 'coordination.public_api.enabled': true },
     residents: { milo: { enabled: true, socketPath: residentSocket, serverInstanceId: 'home23-milo-harness', clientInstanceId: 'home23-milo-harness', keyVersion: 1, key } } };

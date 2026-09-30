@@ -40,6 +40,20 @@ const coz = { id: 'bot_coz', principalId: 'bot_coz', name: 'Coz', purpose: 'Prim
 const scout = { id: 'bot_scout', principalId: 'bot_scout', name: 'Scout', purpose: 'Helper.', lifecycle: 'active', conversationId: 'conversation_scout', residentBinding: 'bot-scout-1', availability: 'available' };
 const direct = (bot) => ({ id: `channel_${bot.name.toLowerCase()}`, conversationId: bot.conversationId, kind: 'direct', title: bot.name, purpose: '', members: [{ kind: 'owner', principalId: 'user_owner' }, { kind: 'bot', principalId: bot.principalId }] });
 
+test('private scheduled system origins produce no empty bubble while the canonical reply remains visible', () => {
+  const js = read('connected-agents.js');
+  const start = js.indexOf('function messageHtml(');
+  const end = js.indexOf('\n  function inspectorURL(', start);
+  assert.ok(start !== -1 && end > start);
+  const context = { esc: value => String(value ?? ''), fmtTime: () => '', quickGlanceHtml: () => '' };
+  vm.runInNewContext(`${js.slice(start, end)}\nthis.renderMessage = messageHtml;`, context);
+  const marker = { id: 'scheduled_origin', author: { kind: 'bot', displayName: 'Coz' }, kind: 'system', text: null, attachments: [] };
+  assert.equal(context.renderMessage(marker), '');
+  assert.match(context.renderMessage({ ...marker, id: 'scheduled_reply', kind: 'result', text: 'The saved follow-up is complete.' }), /The saved follow-up is complete\./);
+  assert.match(context.renderMessage({ ...marker, text: 'A visible system notice.' }), /A visible system notice\./);
+  assert.match(context.renderMessage({ ...marker, attachments: [{ id: 'attachment_receipt', name: 'Receipt' }] }), /attachment_receipt/);
+});
+
 test('retained Connected Agents assets preserve their contract alongside the current dashboard', () => {
   const html = read('connected-agents.html');
   const js = read('connected-agents.js');

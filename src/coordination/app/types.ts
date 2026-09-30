@@ -136,6 +136,8 @@ export interface CoordinationMessageSubmissionPort {
     body: CoordinationMessageSubmissionRequest;
     /** Trusted canonical owner speech partition; never accepted from the public body. */
     instructionMessageIds?: readonly string[];
+    /** Core-only scheduled journal reference; the reference itself grants no authority. */
+    scheduledRunId?: string;
   }): Promise<Readonly<Record<string, unknown> & { response?: Promise<unknown> }>>;
   selectionOptions?(input: {
     botId?: string;

@@ -5,6 +5,8 @@ import type { CoordinationMessageSubmissionPort } from './types.js';
 import { generateCoordinationId } from '../ids/index.js';
 import { canonicalJson } from '../work/canonical.js';
 import { parseReasoningEffort } from '../../agent/reasoning-effort.js';
+import { ResidentProtocolError } from '../resident-protocol/index.js';
+import { sha256 } from '../work/canonical.js';
 
 export interface ScheduledChannelTurn {
   runId: string; jobId: string; channelId: string; prompt: string;
@@ -45,7 +47,10 @@ export function createScheduledChannelTurns(options: {
   }
   const children = (value: Admission) => db.readAll<{id:string;state:string;text:string|null;messageId:string|null}>(
     `SELECT w.id,w.state,m.body_text AS text,m.id AS messageId FROM works w LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
-     WHERE w.kind IN ('channel.bot_turn','bot_turn') AND w.origin_message_id=? AND w.channel_id=? AND w.target_principal_id=?`, value.messageId,value.channelId,value.targetBotId ?? value.botId);
+     WHERE (w.kind IN ('channel.bot_turn','bot_turn') OR
+       (w.kind='resident_turn' AND w.principal_id=? AND w.idempotency_key_digest=?))
+       AND w.origin_message_id=? AND w.channel_id=? AND w.target_principal_id=?`,
+       value.botId,sha256(`scheduled:${value.runId}`),value.messageId,value.channelId,value.targetBotId ?? value.botId);
   function enforceDeadline(value: Admission) {
     if (value.deadlineAtMs === undefined || (options.now?.() ?? Date.now()) < value.deadlineAtMs) return;
     const rows = children(value);
@@ -83,13 +88,15 @@ export function createScheduledChannelTurns(options: {
     if (pending.has(value.runId)) return;
     if (options.canDispatch && !options.canDispatch(value)) { record(value, 2, 'Scheduled turn superseded'); tracked.delete(value.runId); return; }
     const done = options.beginWork();
-    const promise = options.submit.submitMessage({context:options.context(value.botId),channelId:value.channelId,idempotencyKey:`scheduled:${value.runId}`,
+    const promise = options.submit.submitMessage({context:options.context(value.botId),channelId:value.channelId,idempotencyKey:`scheduled:${value.runId}`,scheduledRunId:value.runId,
       body:{messageId:value.messageId,clientMessageId:value.messageId,text:value.prompt,attachmentIds:[],mentions:[value.targetBotId ?? value.botId],replyToMessageId:null,
         modelAlias:value.modelAlias??null,reasoningEffort:value.reasoningEffort?(parseReasoningEffort(value.reasoningEffort)??null):null}})
       .then(result=>{void result.response?.catch(()=>undefined);})
       .catch(error=>{
         // Busy admission and lost observations retain the exact journaled request for retry.
-        if (['turn_in_progress','server_busy','deadline_exceeded','connection_lost','request_rate_limited'].includes(String(error?.code))) return;
+        const permanent = ['request_invalid','idempotency_conflict','identity_context_mismatch','invalid_relation','invalid_membership',
+          'invalid_mention','message_id_conflict','channel_archived','nonmember','scope_denied','unknown_channel','unknown_principal'].includes(String(error?.code));
+        if (!permanent || error?.retryable === true) return;
         if(!failure(value.runId)) record(value,2,error instanceof Error?error.message:String(error));
         tracked.delete(value.runId);
       })
@@ -98,25 +105,45 @@ export function createScheduledChannelTurns(options: {
   }
   return {
     async run(raw: unknown, botId?: string) {
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid scheduled channel run');
+      const reject = (message: string): never => { throw new ResidentProtocolError('request_invalid', message); };
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) reject('Invalid scheduled channel run');
       const input = raw as ScheduledChannelTurn;
       if (typeof input.runId!=='string'||!/^sched-run-[a-f0-9-]{36}$/.test(input.runId)||typeof input.jobId!=='string'||!input.jobId||input.jobId.length>200||
         typeof input.channelId!=='string'||typeof input.prompt!=='string'||!input.prompt.trim()||Buffer.byteLength(input.prompt)>64000||
         (input.modelAlias!==undefined&&typeof input.modelAlias!=='string')||
-        (input.targetBotId!==undefined&&(typeof input.targetBotId!=='string'||!input.targetBotId.startsWith('bot_')||input.targetBotId.length>128))) throw new Error('Invalid scheduled channel run');
-      if (input.timeoutMs!==undefined && (!Number.isSafeInteger(input.timeoutMs)||input.timeoutMs<1||input.timeoutMs>2147483647||!options.expireWork)) throw new Error('Invalid scheduled execution deadline');
-      if (input.reasoningEffort!==undefined) parseReasoningEffort(input.reasoningEffort);
+        (input.targetBotId!==undefined&&(typeof input.targetBotId!=='string'||!input.targetBotId.startsWith('bot_')||input.targetBotId.length>128))) reject('Invalid scheduled channel run');
+      if (input.timeoutMs!==undefined && (!Number.isSafeInteger(input.timeoutMs)||input.timeoutMs<1||input.timeoutMs>2147483647||!options.expireWork)) reject('Invalid scheduled execution deadline');
+      if (input.reasoningEffort!==undefined) {
+        try { if (!parseReasoningEffort(input.reasoningEffort)) reject('Invalid scheduled reasoning effort'); }
+        catch { reject('Invalid scheduled reasoning effort'); }
+      }
       const normalized: ScheduledChannelTurn={runId:input.runId,jobId:input.jobId,channelId:input.channelId,prompt:input.prompt,
         ...(input.targetBotId?{targetBotId:input.targetBotId}:{}),...(input.modelAlias?{modelAlias:input.modelAlias}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{}),...(input.timeoutMs?{timeoutMs:input.timeoutMs}:{})};
       let prior = admitted(input.runId); let value: Admission;
       if (!prior) {
         const context=options.context(botId);
-        const channel=await options.channels.getChannel({context,channelId:input.channelId});
-        if((channel.kind!=='group' && context.identity.kind!=='on_demand_bot')||channel.lifecycle!=='active'||!channel.members.some(member=>member.principalId===context.principalId))
-          throw new Error('Scheduled channel must be active and contain the scheduling agent');
+        let channel;
+        try { channel=await options.channels.getChannel({context,channelId:input.channelId}); }
+        catch (error) {
+          if (['unknown_channel','nonmember','scope_denied','request_invalid','identity_context_mismatch'].includes(String((error as {code?: string})?.code))) reject('Scheduled channel is unavailable to the scheduling agent');
+          throw error;
+        }
+        if(channel.lifecycle!=='active'||!channel.members.some(member=>member.principalId===context.principalId))
+          reject('Scheduled channel must be active and contain the scheduling agent');
+        if (channel.kind === 'direct' && context.identity.kind !== 'on_demand_bot') {
+          if (context.identity.kind !== 'resident' || (input.targetBotId && input.targetBotId !== context.principalId) ||
+              !db.readOne(`SELECT b.id FROM bots b JOIN conversation_handles h ON h.id=b.conversation_id
+                JOIN channels c ON c.id=h.channel_id
+                JOIN channel_members owner ON owner.channel_id=c.id AND owner.principal_id='user_owner' AND owner.kind='owner' AND owner.active=1
+                JOIN channel_members member ON member.channel_id=c.id AND member.principal_id=b.principal_id AND member.kind='bot' AND member.active=1
+                WHERE c.id=? AND c.kind='direct' AND c.lifecycle='active' AND b.principal_id=? AND b.resident_binding=? AND b.lifecycle='active'
+                  AND b.continuing_identity=1 AND b.durable_mailbox=1`,
+                input.channelId,context.principalId,context.identity.kind==='resident'?context.identity.resident.credential.residentSlug:''))
+            reject('Scheduled direct turn must use the resident’s active owner conversation');
+        } else if (channel.kind !== 'group' && context.identity.kind !== 'on_demand_bot') reject('Unsupported scheduled channel');
         if (input.targetBotId && (!db.readOne("SELECT id FROM bots WHERE id=? AND principal_id=? AND lifecycle='active'",input.targetBotId,input.targetBotId)||
           !channel.members.some(member=>member.principalId===input.targetBotId)))
-          throw new Error('Scheduled target must be an active bot member of the channel');
+          reject('Scheduled target must be an active bot member of the channel');
         value={...normalized,messageId:generateCoordinationId('message'),botId:context.principalId,...(input.timeoutMs?{deadlineAtMs:(options.now?.()??Date.now())+input.timeoutMs}:{})};
         // getChannel yields; another retry may have completed admission meanwhile.
         prior=admitted(input.runId);
@@ -124,9 +151,9 @@ export function createScheduledChannelTurns(options: {
       }
       if(prior) {
         value=JSON.parse(prior.payload);
-        if(value.botId!==options.context(botId).principalId) throw new Error('Scheduled run belongs to another agent');
+        if(value.botId!==options.context(botId).principalId) reject('Scheduled run belongs to another agent');
         const {messageId:_,botId:__,deadlineAtMs:___,...original}=value;
-        if(canonicalJson(original)!==canonicalJson(normalized)) throw new Error('Scheduled run replay changed');
+        if(canonicalJson(original)!==canonicalJson(normalized)) reject('Scheduled run replay changed');
       }
       dispatch(value!); return status(value!);
     },

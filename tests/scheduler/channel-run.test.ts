@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runScheduledChannelTurn } from '../../src/scheduler/channel-run.js';
+import { ResidentProtocolError } from '../../src/coordination/resident-protocol/errors.js';
 const input={runId:'sched-run-fixture',jobId:'editorial',channelId:'topic',prompt:'Prepare newsletter'};
 test('canonical scheduler persists before dispatch and waits for the final result',async()=>{
   let persisted=false;let calls=0;
@@ -12,6 +13,17 @@ test('canonical scheduler persists before dispatch and waits for the final resul
 test('lost admission response remains pending and never invokes a local fallback',async()=>{
   const result=await runScheduledChannelTurn(input,{runId:input.runId,persistCanonicalTurn:()=>{}},async()=>{throw new Error('lost response');});
   assert.equal(result.canonicalRunPending,true);assert.equal(result.semanticStatus,'unknown');
+});
+test('explicit permanent scheduled rejection settles, while busy and unknown rejection remain pending', async () => {
+  const execute = (error: unknown) => runScheduledChannelTurn(input, {runId: input.runId, persistCanonicalTurn: () => {}}, async () => {throw error;});
+  const rejected = await execute(new ResidentProtocolError('request_invalid', 'Foreign direct conversation'));
+  assert.equal(rejected.status, 'error'); assert.equal(rejected.semanticStatus, 'failed');
+  assert.equal(rejected.canonicalRunPending, undefined); assert.match(rejected.error!, /rejected: Foreign direct/);
+  for (const error of [new ResidentProtocolError('server_busy', 'Busy', {retryable: true}),
+    new ResidentProtocolError('internal_error', 'Unknown admission', {retryable: true}),
+    Object.assign(new Error('Unverified rejection'), {code: 'request_invalid'})]) {
+    const pending = await execute(error); assert.equal(pending.canonicalRunPending, true); assert.equal(pending.semanticStatus, 'unknown');
+  }
 });
 
 test('a completed refusal is delivered but never counted as the editorial objective satisfied',async()=>{

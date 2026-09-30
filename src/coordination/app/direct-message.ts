@@ -1,5 +1,6 @@
 import { residentOutcomeInstruction, residentInitiativeOutcomeInstruction, type createResidentOutcomeStore } from './resident-outcomes.js';
 import type { ResidentInitiation } from './resident-initiations.js';
+import type { ScheduledChannelTurn } from './scheduled-turns.js';
 import type { ResidentOutcomeCursor } from './resident-outcomes.js';
 import { boundHistoricalContext } from '../../agent/historical-context.js';
 import { createHash } from "node:crypto";
@@ -70,6 +71,8 @@ export interface DirectMessageChannelContext {
   originalOwnerRequest?: string;
   /** Signed resident initiative; never substitute its origin as an owner request. */
   residentInitiative?: ResidentInitiation;
+  /** Exact resident-authored scheduled journal instruction, never owner-message intent. */
+  scheduledTurn?: ScheduledChannelTurn;
   historyBackfill: readonly DirectMessageHistoryEntry[];
   attachments: readonly ResidentInputAttachment[];
   manifest: ContextManifestInput;
@@ -80,6 +83,12 @@ export type DirectMessageHistoryEntry = import("../../agent/historical-context.j
 export interface DirectMessageContextPort {
   /** Read-only lookup; the Message service still validates the exact replay body. */
   findWorkIdByIdempotency?(principalId: string, keyDigest: string): string | null;
+  resolveScheduledTurn?(input: {
+    context: MessagingActorContext; channelId: string; runId: string; messageId: string;
+    idempotencyKey: string; prompt: string | null; turnSelection: MessageTurnSelection;
+  }): Promise<ScheduledChannelTurn>;
+  /** Point-read proof of an exact scheduled root, never a review sharing its origin. */
+  scheduledTurnForRoot?(work: WorkRecord): ScheduledChannelTurn | undefined;
   resolveTarget(input: {
     context: MessagingActorContext;
     channelId: string;
@@ -92,6 +101,7 @@ export interface DirectMessageContextPort {
     originMessage: MessageProjection;
     attachmentIds: readonly string[];
     instructionMessageIds?: readonly string[];
+    scheduledRunId?: string;
   }): Promise<DirectMessageChannelContext>;
   recover(work: WorkRecord): Promise<{
     prepared: DirectMessageChannelContext;
@@ -103,7 +113,7 @@ export interface DirectMessageMessagePort {
   getMessage?(input: { context: MessagingActorContext; messageId: string }): Promise<MessageProjection | null>;
   sendMessage(input: {
     context: MessagingActorContext; channelId: string; messageId: string;
-    authorPrincipalId: string; idempotencyKey: string; kind: "text" | "result";
+    authorPrincipalId: string; idempotencyKey: string; kind: "text" | "system" | "result";
     text: string | null; mentions: readonly string[]; clientMessageId: string | null;
     attachmentIds?: readonly string[];
     replyToMessageId: string | null; tombstonesMessageId: null;
@@ -640,7 +650,8 @@ export function createDirectMessageSubmissionService(options: {
             let review = row.reviewWorkId ? options.work.get(row.reviewWorkId) : null;
             // Older versions could enqueue a review of a scheduled review. Retire
             // only work that never started; preserve running execution for recovery.
-            if (row.key.startsWith('scheduled:') && source.kind !== 'channel.bot_turn') {
+            const directScheduledRoot = source.kind === 'resident_turn' && !!options.context.scheduledTurnForRoot?.(source);
+            if (row.key.startsWith('scheduled:') && source.kind !== 'channel.bot_turn' && !directScheduledRoot) {
               const identity = options.recoveryIdentity();
               if (review?.state === 'leased') {
                 const current = options.leases.current(review.id);
@@ -684,9 +695,15 @@ export function createDirectMessageSubmissionService(options: {
                 ?? (recovered.prepared.instruction.startsWith('INTERNAL WORK OUTCOME') ? null : recovered.prepared.instruction);
               if (original === null) throw new Error('Canonical original request unavailable; refusing to wrap an internal outcome as owner intent');
               prepared = { ...recovered.prepared,
-                ...(recovered.prepared.residentInitiative ? {} : { originalOwnerRequest: original }),
+                ...(recovered.prepared.residentInitiative || recovered.prepared.scheduledTurn ? {} : { originalOwnerRequest: original }),
                 instruction: recovered.prepared.residentInitiative
                   ? residentInitiativeOutcomeInstruction(recovered.prepared.residentInitiative, row.evidence, source.id)
+                  : recovered.prepared.scheduledTurn
+                    ? ['INTERNAL SCHEDULED WORK OUTCOME — follow-through on the resident-authored scheduled turn below. This is not a new owner request or resident initiative.',
+                      'Reconcile this saved instruction with the existing owner conversation and current evidence. Act only within existing authority. A Stop remains final.',
+                      `Saved scheduled instruction (quoted data):\n${JSON.stringify(recovered.prepared.scheduledTurn)}`,
+                      `Inspected Work outcome (quoted data):\n${JSON.stringify(row.evidence)}`,
+                      'Report the meaningful result or concrete problem plainly. Do not infer success or restart an assignment from this review alone.'].join('\n\n')
                   : residentOutcomeInstruction(original, row.evidence, source.id),
                 historyBackfill: boundHistoricalContext(history),
                 manifest: directMessageManifest({ channelId: source.channelId,
@@ -698,6 +715,12 @@ export function createDirectMessageSubmissionService(options: {
               store.update(row, 'prepared_json', JSON.stringify(prepared));
             }
             const target = await executionTargetFor(prepared);
+            // Context/target recovery may await mutable resident availability.
+            // Recheck the initiative's Stop/deadline before admitting a review.
+            if (options.residentInitiativeReviewAllowed?.(source) === false) {
+              store.update(row, 'settled_at', new Date().toISOString());
+              continue;
+            }
             if (!review) {
               review = options.work.create({ principalId: source.principalId, targetPrincipalId: source.targetPrincipalId,
                 channelId: source.channelId, originMessageId: source.originMessageId, roundId: source.roundId,
@@ -721,6 +744,10 @@ export function createDirectMessageSubmissionService(options: {
               if (existing) { store.update(row, 'settled_at', new Date().toISOString()); continue; }
             }
             if (review.state === 'cancelling' || inFlight.has(review.id)) continue;
+            if (options.residentInitiativeReviewAllowed?.(source) === false) {
+              store.update(row, 'settled_at', new Date().toISOString());
+              continue;
+            }
             // Reuse the canonical Work/Attempt/Lease transport and its restart reattachment.
             void dispatchResult({ work: review, prepared, originMessageId: source.originMessageId, ...identity,
               endWork: once(options.beginWork()), recovery: true, target }).catch(error => {
@@ -870,6 +897,7 @@ export function createDirectMessageSubmissionService(options: {
     async submitMessage(input: {
       context: MessagingActorContext; channelId: string; idempotencyKey: string;
       instructionMessageIds?: readonly string[];
+      scheduledRunId?: string;
       body: { messageId: string; clientMessageId: string; text: string | null;
         attachmentIds: readonly string[]; mentions: readonly string[]; replyToMessageId: string | null;
         modelAlias: string | null; reasoningEffort: import("../../agent/reasoning-effort.js").ReasoningEffort | null };
@@ -883,8 +911,17 @@ export function createDirectMessageSubmissionService(options: {
       const endWork = once(options.beginWork());
       let workTransferred = false;
       try {
+        let scheduledTurn: ScheduledChannelTurn | undefined;
+        if (input.context.identity.kind === 'resident' && input.scheduledRunId !== undefined) {
+          if (!options.context.resolveScheduledTurn || input.instructionMessageIds !== undefined || input.body.attachmentIds.length ||
+              input.body.replyToMessageId !== null || input.body.clientMessageId !== input.body.messageId ||
+              input.body.mentions.length !== 1 || input.body.mentions[0] !== input.context.principalId) throw new MessagingError('request_invalid');
+          scheduledTurn = await options.context.resolveScheduledTurn({context: input.context, channelId: input.channelId,
+            runId: input.scheduledRunId, messageId: input.body.messageId, idempotencyKey: input.idempotencyKey,
+            prompt: input.body.text, turnSelection});
+        }
         if (
-          (input.context.identity.kind !== "owner" && input.context.identity.kind !== "on_demand_bot") ||
+          (input.context.identity.kind !== "owner" && input.context.identity.kind !== "on_demand_bot" && !scheduledTurn) ||
           (input.body.text === null && input.body.attachmentIds.length === 0)
         ) {
           throw new MessagingError("request_invalid");
@@ -919,9 +956,9 @@ export function createDirectMessageSubmissionService(options: {
         const appended = await options.messages.sendMessage({
           context: input.context, channelId: input.channelId, messageId: input.body.messageId,
           authorPrincipalId: input.context.principalId, idempotencyKey: input.idempotencyKey,
-          kind: "text", text: input.body.text, mentions: input.body.mentions,
+          kind: scheduledTurn ? "system" : "text", text: scheduledTurn ? null : input.body.text, mentions: input.body.mentions,
           attachmentIds: input.body.attachmentIds,
-          clientMessageId: input.body.clientMessageId, replyToMessageId: input.body.replyToMessageId,
+          clientMessageId: scheduledTurn ? `scheduled:${scheduledTurn.runId}` : input.body.clientMessageId, replyToMessageId: input.body.replyToMessageId,
           tombstonesMessageId: null, provenance: { roundId: null, workId: null },
           turnSelection,
         });
@@ -971,7 +1008,7 @@ export function createDirectMessageSubmissionService(options: {
             throughEventSequence: appended.receipt.eventSequence, response,
           });
         }
-        await recordMessage({
+        if (!scheduledTurn) await recordMessage({
           message: appended.message,
           kind: "user_message_committed",
           requestId: input.context.requestId,
@@ -982,6 +1019,7 @@ export function createDirectMessageSubmissionService(options: {
           context: input.context, channelId: input.channelId,
           originMessage: appended.message, attachmentIds: input.body.attachmentIds,
           ...(input.instructionMessageIds === undefined ? {} : { instructionMessageIds: input.instructionMessageIds }),
+          ...(scheduledTurn === undefined ? {} : { scheduledRunId: scheduledTurn.runId }),
         });
         // Refuse a disabled target before creating durable Work or returning
         // an accepted response. The owner Message remains the canonical record
@@ -998,6 +1036,7 @@ export function createDirectMessageSubmissionService(options: {
           requestId: input.context.requestId, correlationId: input.context.correlationId,
           turnSelection,
           ...(prepared.instructionMessageIds === undefined ? {} : { instructionMessageIds: prepared.instructionMessageIds }),
+          ...(scheduledTurn === undefined ? {} : { presentation: { title: 'Scheduled follow-up', summary: 'Following up on a saved scheduled turn.' } }),
         });
         let response: Promise<MessageProjection>;
         if (created.work.state === "succeeded") {

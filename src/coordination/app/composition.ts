@@ -1064,7 +1064,10 @@ export function createCoordinationProcess(
         messages,
         materializeAttachments,
       );
-      const outcomeStore = createResidentOutcomeStore(database);
+      const outcomeStore = createResidentOutcomeStore(database, {
+        replay: config.residentOutcomes?.replay,
+        primaryResident,
+      });
       // Recover missed terminal Work before accepting HTTP requests. A full
       // historical query must never run on the connected Core timer thread.
       outcomeStore.discover({ startup: true });
@@ -1643,11 +1646,9 @@ export function createCoordinationProcess(
         try { residentInitiations?.reconcile(); } catch (error) { console.error('[resident-initiations]', error); }
         try { reconcileJoinedStops(); } catch(error) { console.error('[joined-stop]',error); }
         void reconcileBotInvocations?.().catch(error => console.error('[bot-invocations]', error));
-        // A home may pause replay while a follow-through repair is pending; the
-        // durable outcome rows remain and replay resumes when the pause lifts.
-        if (config.residentOutcomes?.replay !== false) {
-          void processResidentOutcomes?.().catch(error => console.error('[resident-outcomes]', error));
-        }
+        // The store preserves a home's ordinary replay pause while allowing
+        // its journaled primary resident initiatives to verify their outcomes.
+        void processResidentOutcomes?.().catch(error => console.error('[resident-outcomes]', error));
       }, 2_000);
       outcomeTimer.unref?.();
       if (residentInitializers.length > 0) {

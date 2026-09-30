@@ -27,6 +27,32 @@ import type { ResidentRun } from '../../../src/coordination-adapter/index.js';
 import { RESIDENT_OUTCOMES_MIGRATION_SQL } from '../../../src/coordination/migrations/0014-resident-outcomes.js';
 import { createResidentOutcomeStore, workTerminalEvidence, residentOutcomeInstruction } from '../../../src/coordination/app/resident-outcomes.js';
 
+test('normal replay discovers only the exact journal-bound scheduled direct root, while paused replay leaves its backlog untouched', t => {
+ const f=setup();t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+ f.database.raw.prepare('UPDATE resident_outcome_policy SET enabled_at=?').run(AT);
+ const runId='sched-run-0198d95f-6c00-7000-8000-000000001920',messageId=fixtureId('message',1920);
+ const identity={requestId:fixtureId('request',1920),correlationId:fixtureId('correlation',1920)};
+ f.database.mutateWithEvent(tx=>{tx.run(`INSERT INTO messages(id,channel_id,channel_sequence,author_principal_id,author_kind,author_display_name,kind,body_text,client_message_id,stored_visibility,created_at)
+   VALUES (?,?,2,?,'bot','Jerry','system',NULL,?,'visible',?)`,messageId,CHANNEL_ID,BOT_ID,`scheduled:${runId}`,AT);
+  return {value:undefined,event:{type:'message.appended',aggregateKind:'message',aggregateId:messageId,aggregateVersion:1,channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,...identity,payload:{},createdAt:AT}};});
+ f.database.mutateWithEvent(()=>({value:undefined,event:{type:'activity.updated',aggregateKind:'scheduled_channel_run',aggregateId:runId,aggregateVersion:1,
+  channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,...identity,payload:{runId,jobId:'saved-promise',channelId:CHANNEL_ID,botId:BOT_ID,messageId,prompt:'Inspect the saved reflection and report only what matters.'},createdAt:AT}}));
+ const root=f.work.create({principalId:BOT_ID,targetPrincipalId:BOT_ID,channelId:CHANNEL_ID,originMessageId:messageId,roundId:null,kind:'resident_turn',
+  idempotencyKey:`scheduled:${runId}`,manifest:manifestInput({messageIds:[messageId],watermarks:{channelSequence:2,eventSequence:0}}),maxAutomaticOffers:1,...identity}).work;
+ const review=f.work.create({principalId:BOT_ID,targetPrincipalId:BOT_ID,channelId:CHANNEL_ID,originMessageId:messageId,roundId:null,kind:'resident_turn',
+  idempotencyKey:`resident-outcome:scheduled:${root.id}`,manifest:manifestInput({messageIds:[messageId],watermarks:{channelSequence:2,eventSequence:0}}),maxAutomaticOffers:1,...identity}).work;
+ for(const workId of [root.id,review.id])f.work.cancelQueued({workId,actorPrincipalId:BOT_ID,reasonCode:'fixture_stop',sourceReference:'fixture:scheduled-proof',timestamp:AT,...identity});
+ const paused=createResidentOutcomeStore(f.database,{replay:false,primaryResident:'jerry'}),policy=f.database.readOne('SELECT * FROM resident_outcome_policy');
+ paused.discover({startup:true});assert.deepEqual(paused.pendingPage(null,4),[]);assert.equal(paused.pending().length,0);
+ const store=createResidentOutcomeStore(f.database);for(let n=0;n<5;n++)store.discover({startup:n===0});
+ assert.deepEqual(store.pending().map(row=>row.key),[`scheduled:${root.id}`]);
+ const evidence=JSON.parse(store.pending()[0].evidence);assert.equal(evidence.assignment.runId,runId);assert.equal(evidence.assignment.prompt,'Inspect the saved reflection and report only what matters.');
+ assert.equal(evidence.assignment.botId,BOT_ID);assert.equal(evidence.status,'cancelled');
+ const before=f.database.readAll('SELECT * FROM resident_outcomes');
+ createResidentOutcomeStore(f.database,{replay:false,primaryResident:'jerry'}).discover({startup:true});
+ assert.deepEqual(f.database.readAll('SELECT * FROM resident_outcomes'),before);assert.deepEqual(f.database.readOne('SELECT * FROM resident_outcome_policy'),policy);
+});
+
 test('idle outcome discovery does not rescan terminal Work and scheduled runs', t => {
  const f=setup();t.after(()=>f.database.close());f.database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
  const original=f.database.readAll.bind(f.database);

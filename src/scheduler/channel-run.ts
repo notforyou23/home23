@@ -19,6 +19,11 @@ export async function runScheduledChannelTurn(input: ScheduledChannelTurn, execu
       await delay();
     }
   } catch(error) {
+    if ((error as {code?: string; retryable?: boolean})?.code === 'request_invalid' &&
+        (error as {retryable?: boolean}).retryable === false) {
+      return {status:'error',error:`Scheduled channel run rejected: ${error instanceof Error?error.message:String(error)}`,
+        durationMs:Date.now()-start,semanticStatus:'failed'};
+    }
     return {status:'error',error:`Scheduled channel run awaits reconciliation: ${error instanceof Error?error.message:String(error)}`,
       canonicalRunPending:true,durationMs:Date.now()-start,semanticStatus:'unknown'};
   }

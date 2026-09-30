@@ -878,6 +878,7 @@
     if (state.inspectorVisible) renderInspector();
   }
   function messageHtml(m, turns = []) {
+    if (m.author?.kind === "bot" && m.kind === "system" && m.text == null && !(m.attachments || []).length) return "";
     const owner = m.author?.kind === "owner";
     const attachments = (m.attachments || [])
       .map(

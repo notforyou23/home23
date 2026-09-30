@@ -4,6 +4,8 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { CronScheduler, type CronJob, type JobResult } from '../../src/scheduler/cron.ts';
+import { runScheduledChannelTurn } from '../../src/scheduler/channel-run.js';
+import { ResidentProtocolError } from '../../src/coordination/resident-protocol/errors.js';
 
 function readJsonl(path: string): any[] {
   if (!existsSync(path)) return [];
@@ -544,6 +546,30 @@ test('a pending canonical one-shot survives scheduler restart with its exact res
   assert.equal(resumed,1);
   assert.equal(JSON.parse(readFileSync(join(dir,'cron-jobs.json'),'utf8'))[0].state.activeChannelRun,undefined);
   assert.equal(readJsonl(join(dir,'cron-runs','job-1.jsonl')).length,1);
+});
+
+test('a permanently rejected canonical one-shot has one durable failure receipt and does not reattach after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-rejected-schedule-'));
+  const config = {timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs'};
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([makeDueJob({schedule: {kind: 'at', at: new Date(Date.now() - 1_000).toISOString()},
+    payload: {kind: 'agentTurn', channelId: 'chn_foreign', message: 'Saved follow-up'}})]));
+  let attempts = 0; let originalRun = '';
+  const handler: ConstructorParameters<typeof CronScheduler>[1] = async (job, execution) => {
+    attempts++; originalRun = execution!.runId;
+    return runScheduledChannelTurn({runId: execution!.runId, jobId: job.id, channelId: 'chn_foreign', prompt: 'Saved follow-up'}, execution!,
+      async () => {throw new ResidentProtocolError('request_invalid', 'Not the scheduling resident’s conversation');});
+  };
+  let scheduler = new CronScheduler(config, handler, dir);
+  await (scheduler as any).tick(); scheduler.stop();
+  await new Promise(resolve => setImmediate(resolve));
+  const saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'))[0];
+  assert.equal(saved.enabled, false); assert.equal(saved.state.activeChannelRun, undefined);
+  assert.equal(saved.state.lastStatus, 'error'); assert.equal(saved.state.consecutiveErrors, 1);
+  const receipts = readJsonl(join(dir, 'cron-runs', 'job-1.jsonl'));
+  assert.equal(receipts.length, 1); assert.equal(receipts[0].runId, originalRun); assert.equal(receipts[0].status, 'error');
+  assert.match(receipts[0].error, /rejected/);
+  scheduler = new CronScheduler(config, handler, dir); await (scheduler as any).tick(); scheduler.stop();
+  assert.equal(attempts, 1); assert.equal(readJsonl(join(dir, 'cron-runs', 'job-1.jsonl')).length, 1);
 });
 
 test('a never-settling job cannot freeze later scheduler ticks', async () => {
