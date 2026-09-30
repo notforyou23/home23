@@ -30,6 +30,9 @@ let goodLifeOverlayState = {
 };
 let residentHomeLatestState = null;
 let humanHomeRefreshPromise = null;
+let humanHomeRefreshScope = null;
+let humanHomeRefreshRevision = 0;
+const humanHomeVoices = new Map();
 let osControlPlaneState = { needsYou: [], inFlight: [], verified: [] };
 let osControlPlanePendingAction = null;
 let osControlPlaneRefreshPromise = null;
@@ -219,6 +222,7 @@ function refreshDashboardIdentityUI() {
   const currentName = primaryAgent.displayName || primaryAgent.name || 'Agent';
   if (headerAgent) headerAgent.textContent = currentName;
   document.title = `Home23 — ${currentName}`;
+  setText('human-jerry-remark', humanHomeVoices.get(humanHomeVoiceScope())?.text || currentName);
 }
 
 // ── Engine Pulse State ──
@@ -254,11 +258,7 @@ function refreshDashboardAfterLateAgentDiscovery() {
   refreshDashboardScopeUI();
   connectEnginePulse();
   if (currentTab === 'home' && primaryAgent) {
-    void loadVibeTile(primaryAgent, {
-      imageId: 'home-vibe-image',
-      captionId: 'home-vibe-caption',
-      galleryHrefId: 'home-vibe-gallery-link',
-    }).catch(() => {});
+    void loadHumanHomeSurface().catch(renderHumanHomeError);
   }
 }
 
@@ -2256,7 +2256,10 @@ function settledValue(result) {
 }
 
 async function loadHumanHomeSurface() {
-  if (humanHomeRefreshPromise) return humanHomeRefreshPromise;
+  const residentKey = humanHomeVoiceScope();
+  if (humanHomeRefreshPromise && humanHomeRefreshScope === residentKey) return humanHomeRefreshPromise;
+  humanHomeRefreshScope = residentKey;
+  const refreshRevision = ++humanHomeRefreshRevision;
 
   humanHomeRefreshPromise = (async () => {
     updateClocks();
@@ -2269,7 +2272,8 @@ async function loadHumanHomeSurface() {
     }
 
     const tasks = [];
-    const latest = {};
+    const latest = { residentKey, refreshRevision };
+    renderLatestJerryVoice(latest);
     scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/outside-weather/data', { timeoutMs: 8000 }), (data) => {
       renderHumanSensor('weather', data, 'Weather', 'Outside sensor');
     }, () => {
@@ -2334,7 +2338,7 @@ async function loadHumanHomeSurface() {
     });
     await Promise.allSettled(tasks);
   })().finally(() => {
-    humanHomeRefreshPromise = null;
+    if (refreshRevision === humanHomeRefreshRevision) humanHomeRefreshPromise = null;
   });
 
   return humanHomeRefreshPromise;
@@ -2770,6 +2774,7 @@ function renderHumanGoodLifeUnavailable() {
 }
 
 function renderLatestJerryVoice(latest) {
+  if (latest.residentKey !== humanHomeVoiceScope() || latest.refreshRevision !== humanHomeRefreshRevision) return;
   renderJerryVoiceTile(
     latest.pulse,
     latest.homeSummary,
@@ -2780,15 +2785,19 @@ function renderLatestJerryVoice(latest) {
   );
 }
 
+function humanHomeVoiceScope() {
+  return `${dashboardBaseUrl()}\0${primaryAgent?.name || ''}`;
+}
+
 function renderJerryVoiceTile(pulsePayload, homeSummary, statePayload, agencyPayload, problemsPayload, goodLifePayload) {
   const cycle = statePayload?.cycleCount;
   const mode = agencyPayload?.state?.mode || agencyPayload?.mode;
   const bootcamp = agencyPayload?.state?.bootcamp?.enabled ?? agencyPayload?.bootcamp?.enabled;
-  const remark = pulsePayload?.remark;
-  const thought = homeSummary?.lastThoughtText
-    || statePayload?.thoughts?.[0]?.content
-    || statePayload?.recentThoughts?.[0]?.content;
-  const thoughtAt = remark?.ts || homeSummary?.lastThoughtAt || null;
+  const residentKey = humanHomeVoiceScope();
+  const incoming = pulsePayload?.remark;
+  if (typeof incoming?.text === 'string' && incoming.text.trim()) humanHomeVoices.set(residentKey, incoming);
+  const remark = humanHomeVoices.get(residentKey);
+  const thoughtAt = remark?.ts || null;
   const thoughtDate = thoughtAt ? new Date(thoughtAt) : null;
   const nodeCount = extractNodeCount(statePayload) ?? extractNodeCount(homeSummary);
   const problemCounts = problemsPayload?.snapshot?.counts || problemsPayload?.counts || null;
@@ -2824,9 +2833,9 @@ function renderJerryVoiceTile(pulsePayload, homeSummary, statePayload, agencyPay
     bootcamp === true ? 'bootcamp on' : null,
     jerryContextLine(remark, homeSummary),
   ].filter(Boolean);
-  const voice = remark?.text
-    || humanizeJerryFallback(thought, homeSummary)
-    || 'I am here, watching the house breathe. Nothing needs your hands yet.';
+  // Only the resident's authored house note belongs in this headline. Keep it
+  // through partial refreshes; private thoughts remain available to inspectors.
+  const voice = remark?.text || currentAgentLabel('Agent');
   // Label the hero with THIS dashboard's agent (Forrest on :5012, Jerry on :5002),
   // not a hardcoded house-primary name — the pulse/state APIs are already per-dashboard.
   const agentLabel = String(currentAgentLabel('Agent')).toUpperCase();
@@ -2834,17 +2843,6 @@ function renderJerryVoiceTile(pulsePayload, homeSummary, statePayload, agencyPay
   setText('human-jerry-status', footerParts.join(' · '));
   setText('human-jerry-remark', voice);
   setText('human-jerry-context', contextParts.join(' · '));
-}
-
-function humanizeJerryFallback(thought, homeSummary) {
-  if (!thought) return '';
-  const text = String(thought).replace(/\s+/g, ' ').trim();
-  if (!text) return '';
-  if (/^sleep cycle/i.test(text)) {
-    const energy = Math.round(Number(homeSummary?.cognitiveState?.energy || 0) * 100);
-    return `I am in low-power housekeeping mode, sorting the shelves while energy comes back${energy ? ` (${energy}%)` : ''}.`;
-  }
-  return text.slice(0, 260);
 }
 
 function jerryContextLine(remark, homeSummary) {
@@ -2857,7 +2855,7 @@ function jerryContextLine(remark, homeSummary) {
 
 function renderHumanHomeError(err) {
   setText('human-jerry-status', 'offline');
-  setText('human-jerry-remark', `Home surface did not load: ${err?.message || err}`);
+  setText('human-jerry-remark', humanHomeVoices.get(humanHomeVoiceScope())?.text || currentAgentLabel('Agent'));
 }
 
 function renderHomeBriefs(payload) {

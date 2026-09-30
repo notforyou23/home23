@@ -6,6 +6,159 @@ import vm from 'node:vm';
 
 const HOME23_ROOT = process.cwd();
 
+function loadHomeVoiceRuntime() {
+  const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.html'), 'utf8');
+  const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map((match) => [match[1], {
+    textContent: '', innerHTML: '', value: '', style: {}, classList: { add() {}, remove() {}, toggle() {} },
+  }]));
+  assert.ok(elements.has('human-jerry-remark'), 'the production Home H1 must exist');
+  const history = [];
+  let headline = html.match(/id="human-jerry-remark">([^<]*)<\/h1>/)[1];
+  Object.defineProperty(elements.get('human-jerry-remark'), 'textContent', {
+    get: () => headline,
+    set: (value) => { headline = value; history.push(value); },
+  });
+  const requests = [];
+  const context = vm.createContext({
+    console, Response, AbortSignal, Intl, URLSearchParams, setTimeout, clearTimeout,
+    window: { location: { hostname: 'localhost', port: '5002', hash: '' }, addEventListener() {} },
+    document: { getElementById: (id) => elements.get(id) || null, querySelectorAll: () => [], addEventListener() {} },
+    fetch: (url) => new Promise((resolve, reject) => {
+      requests.push({ url, port: context.window.location.port,
+        resolve: (data) => resolve(new Response(JSON.stringify(data))), reject });
+    }),
+  });
+  // Load the actual browser methods without starting timers or external I/O.
+  vm.runInContext(js.replace(/\ninit\(\);\s*$/, '\n'), context);
+  vm.runInContext(`updateClocks = () => {};
+    loadVibeTile = async () => {};
+    renderHumanSensor = renderHumanSauna = renderHumanIssues = renderOsControlPlane =
+      renderHumanGoodLife = renderHumanGoodLifeUnavailable = renderHomeBriefs = () => {};`, context);
+  return {
+    context, history, headline: () => headline,
+    select(name, port = '5002') {
+      context.selected = { name: name.toLowerCase(), displayName: name, dashboardPort: Number(port) };
+      context.window.location.port = port;
+      vm.runInContext('primaryAgent = selected; agents = [selected]; refreshDashboardIdentityUI();', context);
+    },
+    refresh: () => vm.runInContext('loadHumanHomeSurface()', context),
+    error: () => vm.runInContext("renderHumanHomeError(new Error('refresh failed'))", context),
+    request(suffix, port = '5002') {
+      const index = requests.findIndex((request) => request.url.endsWith(suffix)
+        && request.url.startsWith(`http://localhost:${port}/`));
+      assert.notEqual(index, -1, `missing production request ${port}${suffix}`);
+      return requests.splice(index, 1)[0];
+    },
+    requestCount: () => requests.length,
+    settleOthers(port) {
+      for (const request of [...requests]) if (!port || request.port === port) {
+        requests.splice(requests.indexOf(request), 1); request.resolve({});
+      }
+    },
+  };
+}
+
+const flushHomeResponses = () => new Promise((resolve) => setImmediate(resolve));
+const houseNote = (text) => ({ remark: { id: 'pulse-real', ts: new Date().toISOString(), text, model: 'resident-voice' } });
+
+test('Home headline never flashes a private thought when summary arrives before the authored house note', async () => {
+  const runtime = loadHomeVoiceRuntime();
+  runtime.select('Jerry');
+  const refresh = runtime.refresh();
+  const pulse = runtime.request('/api/pulse/latest');
+  runtime.request('/api/home/summary').resolve({ lastThoughtText: 'RAM sample: 23 GB, sample again', lastThoughtRole: 'journal_freshness' });
+  await flushHomeResponses();
+  assert.equal(runtime.headline(), 'Jerry');
+  pulse.resolve(houseNote('The rehearsal thread has a useful new turn.'));
+  runtime.settleOthers(); await refresh;
+  assert.equal(runtime.headline(), 'The rehearsal thread has a useful new turn.');
+  assert.equal(runtime.history.some((text) => /RAM|sample again|I am here/.test(text)), false);
+});
+
+test('Home keeps the same resident house note during pending, partial, and failed refresh', async () => {
+  const runtime = loadHomeVoiceRuntime();
+  runtime.select('Jerry');
+  const first = runtime.refresh();
+  runtime.request('/api/pulse/latest').resolve(houseNote('The small repair is checked and finished.'));
+  runtime.settleOthers(); await first;
+  const second = runtime.refresh();
+  const pulse = runtime.request('/api/pulse/latest');
+  assert.equal(runtime.headline(), 'The small repair is checked and finished.');
+  runtime.request('/api/state').resolve({ thoughts: [{ content: 'private CPU counters' }], cycleCount: 42 });
+  runtime.request('/api/home/summary').resolve({ lastThoughtText: 'private RAM counters' });
+  await flushHomeResponses();
+  assert.equal(runtime.headline(), 'The small repair is checked and finished.');
+  pulse.reject(new Error('pulse unavailable'));
+  runtime.settleOthers(); await second;
+  runtime.error();
+  assert.equal(runtime.headline(), 'The small repair is checked and finished.');
+  const third = runtime.refresh();
+  runtime.request('/api/pulse/latest').resolve({ remark: { text: '   ' } });
+  runtime.settleOthers(); await third;
+  assert.equal(runtime.headline(), 'The small repair is checked and finished.');
+});
+
+test('Home without a real house note uses resident identity for missing and failed pulse responses', async () => {
+  const runtime = loadHomeVoiceRuntime();
+  runtime.select('Jerry');
+  const first = runtime.refresh();
+  runtime.request('/api/pulse/latest').resolve({ remark: null });
+  runtime.request('/api/home/summary').resolve({ lastThoughtText: 'private guardrail receipt' });
+  runtime.settleOthers(); await first;
+  assert.equal(runtime.headline(), 'Jerry');
+  const second = runtime.refresh();
+  runtime.request('/api/pulse/latest').reject(new Error('pulse unavailable'));
+  runtime.settleOthers(); await second;
+  runtime.error();
+  assert.equal(runtime.headline(), 'Jerry');
+});
+
+test('Home resets to the selected resident identity and ignores a prior resident pending voice', async () => {
+  const runtime = loadHomeVoiceRuntime();
+  runtime.select('Jerry');
+  const initial = runtime.refresh();
+  runtime.request('/api/pulse/latest').resolve(houseNote('Jerry has a checked result.'));
+  runtime.settleOthers(); await initial;
+  const first = runtime.refresh();
+  const oldPulse = runtime.request('/api/pulse/latest');
+  runtime.select('Forrest', '5012');
+  assert.equal(runtime.headline(), 'Forrest');
+  const second = runtime.refresh();
+  const newPulse = runtime.request('/api/pulse/latest', '5012');
+  oldPulse.resolve(houseNote('Jerry has a different result.'));
+  runtime.settleOthers('5002'); await first;
+  assert.equal(runtime.headline(), 'Forrest');
+  const requestCount = runtime.requestCount();
+  const joined = runtime.refresh();
+  assert.equal(runtime.requestCount(), requestCount, 'old completion must not clear the selected resident refresh');
+  newPulse.resolve(houseNote('Forrest has an inspected result.'));
+  runtime.settleOthers(); await Promise.all([first, second]);
+  await joined;
+  assert.equal(runtime.headline(), 'Forrest has an inspected result.');
+  assert.equal(runtime.history.includes('Jerry has a different result.'), false);
+  runtime.select('Jerry');
+  assert.equal(runtime.headline(), 'Jerry has a checked result.', 'returning to a resident restores only its accepted note');
+});
+
+test('a late old Jerry response cannot replace the newer note after Jerry to Forrest to Jerry', async () => {
+  const runtime = loadHomeVoiceRuntime();
+  runtime.select('Jerry');
+  const first = runtime.refresh(), oldJerry = runtime.request('/api/pulse/latest');
+  runtime.select('Forrest', '5012');
+  const second = runtime.refresh(), forrest = runtime.request('/api/pulse/latest', '5012');
+  runtime.select('Jerry');
+  const third = runtime.refresh(), newJerry = runtime.request('/api/pulse/latest');
+  newJerry.resolve(houseNote('Jerry has the newer inspected result.'));
+  await flushHomeResponses();
+  oldJerry.resolve(houseNote('Jerry has an obsolete result.'));
+  forrest.resolve(houseNote('Forrest has a separate result.'));
+  runtime.settleOthers(); await Promise.all([first, second, third]);
+  assert.equal(runtime.headline(), 'Jerry has the newer inspected result.');
+  assert.equal(runtime.history.includes('Jerry has an obsolete result.'), false);
+  assert.equal(runtime.history.includes('Forrest has a separate result.'), false);
+});
+
 function loadGoodLifeHostPressureRenderer() {
   const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.js'), 'utf8');
   const start = js.indexOf('function formatGoodLifeGb(');
