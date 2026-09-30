@@ -29,6 +29,7 @@ const { SessionManager, MemoryStorage } = require('./session.js');
 const { openPinnedPGSStore } = require('./pinned-store.js');
 const { runPinnedOperation } = require('./pinned-operation.js');
 const { requireCompleteProviderResult } = require('../../lib/provider-completion.js');
+const { awaitWithCancellation, throwIfAborted, rethrowCancellation } = require('../../lib/provider-execution.js');
 
 class PGSEngine {
   /**
@@ -98,6 +99,8 @@ class PGSEngine {
    * @param {boolean} [options.fullSweep=false] - Bypass routing, sweep all partitions
    * @param {number} [options.sweepFraction] - Fraction of routed partitions to sweep (0.1-1.0)
    * @param {Function} [options.onEvent] - Per-query event listener
+   * @param {AbortSignal} [options.signal] - Cancellation for this execution
+   * @param {object} [options.config] - Per-execution configuration overrides
    * @returns {Promise<{answer: string, metadata: object}>}
    */
   async execute(query, graph, options = {}) {
@@ -106,18 +109,23 @@ class PGSEngine {
       sessionId = 'default',
       fullSweep = false,
       sweepFraction,
-      onEvent
+      onEvent,
+      signal
     } = options;
 
-    const config = { ...this.config };
+    throwIfAborted(signal);
+    const config = { ...this.config, ...(options.config || {}) };
     if (sweepFraction !== undefined) {
       config.sweepFraction = sweepFraction;
     }
 
     const startTime = Date.now();
     const emit = (event) => {
+      throwIfAborted(signal);
       if (onEvent) onEvent(event);
+      throwIfAborted(signal);
       if (this.globalOnEvent) this.globalOnEvent(event);
+      throwIfAborted(signal);
     };
 
     const nodes = graph.nodes || [];
@@ -131,7 +139,8 @@ class PGSEngine {
     emit({ type: 'partitioning', nodeCount: nodes.length, edgeCount: edges.length });
 
     // Phase 0: Partition (cached)
-    const partitions = await this._getOrCreatePartitions(graph, config);
+    const partitions = await awaitWithCancellation(() => this._getOrCreatePartitions(graph, config, signal), signal);
+    throwIfAborted(signal);
     emit({ type: 'partitioning', partitionCount: partitions.length });
 
     // Phase 1: Route query to relevant partitions
@@ -139,15 +148,18 @@ class PGSEngine {
     let queryEmbedding = null;
     if (this.embeddingProvider) {
       try {
-        queryEmbedding = await this.embeddingProvider.embed(query);
-      } catch {
+        queryEmbedding = await awaitWithCancellation(() => this.embeddingProvider.embed(query, { signal }), signal);
+      } catch (error) {
+        rethrowCancellation(error, signal);
         // Embedding failed — routing will degrade to all partitions
       }
     }
+    throwIfAborted(signal);
     const allRoutedPartitions = routeQuery(query, queryEmbedding, partitions, config);
 
     // Session tracking & mode handling
-    const session = await this.sessions.load(sessionId);
+    const session = await awaitWithCancellation(() => this.sessions.load(sessionId), signal);
+    throwIfAborted(signal);
     const searchedIds = new Set(session?.searchedPartitionIds || []);
 
     let partitionsToSweep;
@@ -219,8 +231,9 @@ class PGSEngine {
 
     const sweepResults = await sweepPartitions(
       query, partitionsToSweep, nodeMap, edges, partitions,
-      this.sweepProvider, config, emit
+      this.sweepProvider, config, emit, signal
     );
+    throwIfAborted(signal);
 
     const successfulSweeps = sweepResults
       .filter(r => r.status === 'fulfilled' && r.value)
@@ -228,13 +241,17 @@ class PGSEngine {
 
     // Persist session
     const newSearchedIds = new Set([...searchedIds, ...partitionsToSweep.map(p => p.id)]);
-    await this.sessions.save(sessionId, {
-      query,
-      mode,
-      searchedPartitionIds: [...newSearchedIds],
-      totalPartitions: partitions.length,
-      timestamp: new Date().toISOString()
-    });
+    await awaitWithCancellation(() => {
+      throwIfAborted(signal);
+      return this.sessions.save(sessionId, {
+        query,
+        mode,
+        searchedPartitionIds: [...newSearchedIds],
+        totalPartitions: partitions.length,
+        timestamp: new Date().toISOString()
+      });
+    }, signal);
+    throwIfAborted(signal);
 
     if (successfulSweeps.length === 0) {
       throw new Error('All sweeps failed. Check your LLM provider configuration.');
@@ -248,8 +265,10 @@ class PGSEngine {
       totalEdges: edges.length,
       totalPartitions: partitions.length,
       selectedPartitions: partitionsToSweep.length,
-      onChunk: options.onChunk
+      onChunk: options.onChunk,
+      signal,
     }, config);
+    throwIfAborted(signal);
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
@@ -465,7 +484,8 @@ class PGSEngine {
    * Get or create partitions with caching.
    * @private
    */
-  async _getOrCreatePartitions(graph, config) {
+  async _getOrCreatePartitions(graph, config, signal) {
+    throwIfAborted(signal);
     const hash = PGSEngine.computeGraphHash(graph);
 
     // Check in-memory cache
@@ -475,7 +495,8 @@ class PGSEngine {
 
     // Check storage cache
     try {
-      const cached = await this.sessions.storage.read(`partitions:${hash}`);
+      const cached = await awaitWithCancellation(() => this.sessions.storage.read(`partitions:${hash}`), signal);
+      throwIfAborted(signal);
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed.partitions) {
@@ -483,26 +504,34 @@ class PGSEngine {
           return parsed.partitions;
         }
       }
-    } catch {
+    } catch (error) {
+      rethrowCancellation(error, signal);
       // Cache miss — will recompute
     }
 
     // Compute partitions
+    throwIfAborted(signal);
     const partitions = this.partition(graph);
+    throwIfAborted(signal);
 
     // Cache
     this._partitionCache.set(hash, partitions);
     try {
-      await this.sessions.storage.write(`partitions:${hash}`, JSON.stringify({
-        version: 1,
-        created: new Date().toISOString(),
-        graphHash: hash,
-        partitions
-      }));
-    } catch {
+      await awaitWithCancellation(() => {
+        throwIfAborted(signal);
+        return this.sessions.storage.write(`partitions:${hash}`, JSON.stringify({
+          version: 1,
+          created: new Date().toISOString(),
+          graphHash: hash,
+          partitions
+        }));
+      }, signal);
+    } catch (error) {
+      rethrowCancellation(error, signal);
       // Cache write failure is non-fatal
     }
 
+    throwIfAborted(signal);
     return partitions;
   }
 }

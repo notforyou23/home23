@@ -128,3 +128,24 @@ test('openai-codex moves system and developer messages into instructions', async
     global.fetch = oldFetch;
   }
 });
+
+test('openai-codex cancellation prevents an auth-looking failure from refreshing and retrying', async () => {
+  const oldEnv = { ...process.env };
+  const controller = new AbortController();
+  const reason = new Error('401 unauthorized after PGS expiry');
+  let calls = 0;
+  try {
+    process.env.OPENAI_CODEX_AUTH_TOKEN = futureJwt();
+    const { OpenAICodexClient } = loadFresh();
+    const client = new OpenAICodexClient();
+    client._generateAttempt = async () => {
+      calls++;
+      controller.abort(reason);
+      throw reason;
+    };
+    await assert.rejects(client.generate({ query: 'Connect material', signal: controller.signal }), error => error === reason);
+    assert.equal(calls, 1);
+  } finally {
+    process.env = oldEnv;
+  }
+});

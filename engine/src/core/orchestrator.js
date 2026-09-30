@@ -331,6 +331,10 @@ class Orchestrator {
       onCycleComplete: null,
       onCriticVerdict: null,
     };
+    this.residentInitiativeHooks = {
+      onProposal: null,
+      getContext: null,
+    };
     this.motorCortex = null;
     
     // Sleep session tracking (cycle-based)
@@ -397,6 +401,16 @@ class Orchestrator {
     this.thinkingMachine?.setPublishHooks(this.step24Hooks);
   }
 
+  setResidentInitiativeHooks(hooks = {}) {
+    this.residentInitiativeHooks = {
+      onProposal: typeof hooks.onProposal === 'function' ? hooks.onProposal : null,
+      getContext: typeof hooks.getContext === 'function' ? hooks.getContext : null,
+    };
+    this.thinkingMachine?.setResidentInitiativeHandler(
+      this.residentInitiativeHooks.onProposal, this.residentInitiativeHooks.getContext,
+    );
+  }
+
   createConversationSalience(options = {}) {
     const workspacePath = options.workspacePath ?? process.env.COSMO_WORKSPACE_PATH;
     const brainDir = options.brainDir || process.env.COSMO_RUNTIME_DIR
@@ -408,7 +422,7 @@ class Orchestrator {
   }
 
   createThinkingMachine(options) {
-    return new ThinkingMachine({
+    const machine = new ThinkingMachine({
       ...options,
       getTemporalContext: () => this.buildCurrentTemporalContext(),
       getConversationContext: () => this.conversationSalience?.getRecentContext() || null,
@@ -418,6 +432,15 @@ class Orchestrator {
       sendOwnerOutreach: (request, attentionIntent) => this.sendOwnerOutreach(request, attentionIntent),
       retryFeedback: () => this.retryCognitionFeedback(),
     });
+    // start() creates this pipeline after index.js has bound the resident
+    // driver. Retain those hooks across the deferred creation boundary.
+    machine.setResidentInitiativeHandler(
+      this.residentInitiativeHooks?.onProposal, this.residentInitiativeHooks?.getContext,
+    );
+    if (typeof machine.onResidentInitiative === 'function' && typeof machine.getResidentInitiativeContext === 'function') {
+      this.logger?.info?.('[thinking-machine] resident initiative hooks bound', { proposal: true, context: true });
+    }
+    return machine;
   }
 
   async sendOwnerOutreach(request, attentionIntent) {

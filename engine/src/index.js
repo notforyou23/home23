@@ -826,10 +826,10 @@ async function main() {
         });
         residentInitiationDriver.initialize();
         agencyKernel.ensureState();
-        orchestrator.thinkingMachine?.setResidentInitiativeHandler(
-          (proposal, context) => residentInitiationDriver.propose(proposal, context),
-          () => residentInitiationDriver.getContext(),
-        );
+        orchestrator.setResidentInitiativeHooks({
+          onProposal: (proposal, context) => residentInitiationDriver.propose(proposal, context),
+          getContext: () => residentInitiationDriver.getContext(),
+        });
       }
       const { reconcileCanonicalWork } = await import('./agency/canonical-work.js');
       const canonicalWorkPath = path.join(home23RepoRoot, 'instances', '.house', 'coordination', 'resident-contact', `${agentNameForAgency}.work.json`);

@@ -8,6 +8,7 @@
  */
 
 'use strict';
+const { awaitWithCancellation, throwIfAborted } = require('../../lib/provider-execution.js');
 
 const {
   buildSynthesisCommitBlock,
@@ -47,6 +48,8 @@ Structure your response clearly with sections. Cite partition IDs and node IDs w
  * @returns {Promise<string>} Synthesis result text
  */
 async function synthesize(query, sweepResults, llmProvider, context, config) {
+  const { signal } = context;
+  throwIfAborted(signal);
   const { synthesisMaxTokens } = config;
   const { totalNodes, totalEdges, totalPartitions, selectedPartitions, onChunk } = context;
 
@@ -66,13 +69,18 @@ async function synthesize(query, sweepResults, llmProvider, context, config) {
   const instructions = buildSynthesisPrompt(sweepResults.length, context.synthesis || config.synthesis);
   const input = `${synthesisContext}\n\nOriginal Query: ${query}`;
 
-  const response = await llmProvider.generate({
+  const response = await awaitWithCancellation(() => llmProvider.generate({
     instructions,
     input,
     maxTokens: synthesisMaxTokens,
     reasoningEffort: 'high',
-    onChunk
-  });
+    onChunk: signal && onChunk ? (chunk) => {
+      throwIfAborted(signal);
+      return onChunk(chunk);
+    } : onChunk,
+    signal,
+  }), signal);
+  throwIfAborted(signal);
 
   return response.content || response.message?.content || '';
 }

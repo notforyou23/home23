@@ -3,6 +3,7 @@ const { MCPClient } = require('./mcp-client');
 const { ChatCompletionsClient } = require('./chat-completions-client');
 const { getOpenAICodexClient } = require('../services/openai-codex-oauth-engine');
 const { resolveProviderKey, isAuthError, refreshManagedOAuth } = require('./provider-credentials');
+const { abortableDelay, rethrowCancellation, throwIfAborted } = require('../../../shared/research-runtime/lib/provider-execution.js');
 
 function loadOpenAI() {
   try {
@@ -514,6 +515,7 @@ class UnifiedClient extends GPT5Client {
     const chain = Array.isArray(fallbacks) ? fallbacks : [fallbacks];
 
     for (let i = 0; i < chain.length; i++) {
+      throwIfAborted(options.signal);
       const fb = chain[i];
       try {
         // Check rate limits before trying
@@ -544,6 +546,7 @@ class UnifiedClient extends GPT5Client {
           return await this.generateWithChatClient(this.ollamaCloudClient, 'ollama-cloud', fb, options);
         }
       } catch (error) {
+        rethrowCancellation(error, options.signal);
         this.logger?.warn('Fallback failed', { provider: fb.provider, model: fb.model, step: i + 1, error: error.message });
         continue;
       }
@@ -558,6 +561,7 @@ class UnifiedClient extends GPT5Client {
    * This ensures default behavior = exact GPT5Client behavior
    */
   async generate(options = {}, maxRetries = 1) {
+    throwIfAborted(options.signal);
     // Get model assignment from config (returns null if none configured)
     const assignment = this.getModelAssignment(options.component, options.purpose);
     
@@ -594,6 +598,7 @@ class UnifiedClient extends GPT5Client {
     let lastError = null;
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      throwIfAborted(options.signal);
       try {
         if (assignment.provider === 'xai') {
           return await this.generateXAI(assignment, options);
@@ -613,6 +618,7 @@ class UnifiedClient extends GPT5Client {
           throw new Error(`Unknown provider: ${assignment.provider}`);
         }
       } catch (error) {
+        rethrowCancellation(error, options.signal);
         lastError = error;
         
         this.logger?.error('Alternative provider failed', {
@@ -627,7 +633,7 @@ class UnifiedClient extends GPT5Client {
         if (attempt < maxRetries - 1) {
           const backoff = Math.pow(2, attempt) * 1000;
           this.logger?.info(`Retrying after ${backoff}ms`);
-          await new Promise(resolve => setTimeout(resolve, backoff));
+          await abortableDelay(backoff, options.signal);
           continue;
         }
       }
@@ -639,6 +645,7 @@ class UnifiedClient extends GPT5Client {
       try {
         return await this.resolveFallbackChain(assignment.fallback, options);
       } catch (fallbackError) {
+        rethrowCancellation(fallbackError, options.signal);
         this.logger?.error('All fallbacks exhausted', { error: fallbackError.message });
         throw fallbackError;
       }
@@ -870,6 +877,7 @@ class UnifiedClient extends GPT5Client {
    * Different API structure - Messages API
    */
   async generateAnthropic(assignment, options) {
+    throwIfAborted(options.signal);
     this._ensureAnthropicClient();
     if (!this.anthropic) {
       throw new Error('Anthropic provider not initialized');
@@ -877,11 +885,13 @@ class UnifiedClient extends GPT5Client {
     try {
       return await this.generateAnthropicCompatible(this.anthropic, 'Anthropic', assignment, options);
     } catch (error) {
+      rethrowCancellation(error, options.signal);
       // One force-fresh retry on auth failure: the token may have rotated in
       // secrets.yaml after this client was built. Never loop.
       if (!isAuthError(error)) throw error;
       this.logger?.warn?.('Anthropic auth failure — refreshing Home23 credentials for one retry', { error: error.message });
       await refreshManagedOAuth('anthropic', { staleAccessToken: this._anthropicCredential });
+      throwIfAborted(options.signal);
       this._ensureAnthropicClient(true);
       return await this.generateAnthropicCompatible(this.anthropic, 'Anthropic', assignment, options);
     }
@@ -895,6 +905,7 @@ class UnifiedClient extends GPT5Client {
   }
 
   async generateAnthropicCompatible(client, providerName, assignment, options) {
+    throwIfAborted(options.signal);
 
     const {
       instructions = '',

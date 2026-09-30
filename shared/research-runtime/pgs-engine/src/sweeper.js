@@ -7,6 +7,7 @@
  */
 
 'use strict';
+const { awaitWithCancellation, throwIfAborted, rethrowCancellation } = require('../../lib/provider-execution.js');
 
 // Maximum characters of node content per sweep (safety cap, ~125K tokens)
 const MAX_CONTEXT_CHARS = 500000;
@@ -53,7 +54,8 @@ Explicitly state what was searched for and NOT found in this partition. "This pa
  * @param {Function} [onEvent] - Event callback
  * @returns {Promise<Array<{status: string, value: object|null}>>}
  */
-async function sweepPartitions(query, selectedPartitions, nodeMap, edges, allPartitions, llmProvider, config, onEvent) {
+async function sweepPartitions(query, selectedPartitions, nodeMap, edges, allPartitions, llmProvider, config, onEvent, signal) {
+  throwIfAborted(signal);
   const { maxConcurrentSweeps } = config;
   const results = [];
   const batches = [];
@@ -72,6 +74,7 @@ async function sweepPartitions(query, selectedPartitions, nodeMap, edges, allPar
   let completedCount = 0;
 
   for (const batch of batches) {
+    throwIfAborted(signal);
     const batchPromises = batch.map(async (partition) => {
       const idx = partitionIndexMap.get(partition.id);
       const summary = (partition.summary || `Partition ${partition.id}`).substring(0, 60);
@@ -87,7 +90,8 @@ async function sweepPartitions(query, selectedPartitions, nodeMap, edges, allPar
           message: `Sweeping: ${summary} (${partition.nodeCount} nodes)`
         });
 
-        const result = await sweepPartition(query, partition, nodeMap, edges, allPartitions, llmProvider, config);
+        const result = await sweepPartition(query, partition, nodeMap, edges, allPartitions, llmProvider, config, signal);
+        throwIfAborted(signal);
         completedCount++;
 
         emit({
@@ -102,6 +106,7 @@ async function sweepPartitions(query, selectedPartitions, nodeMap, edges, allPar
 
         return result;
       } catch (error) {
+        rethrowCancellation(error, signal);
         completedCount++;
 
         emit({
@@ -120,6 +125,7 @@ async function sweepPartitions(query, selectedPartitions, nodeMap, edges, allPar
     });
 
     const batchResults = await Promise.allSettled(batchPromises);
+    throwIfAborted(signal);
     results.push(...batchResults);
   }
 
@@ -138,7 +144,8 @@ async function sweepPartitions(query, selectedPartitions, nodeMap, edges, allPar
  * @param {object} config - PGS config with sweepMaxTokens
  * @returns {Promise<object>} Sweep result
  */
-async function sweepPartition(query, partition, nodeMap, edges, allPartitions, llmProvider, config) {
+async function sweepPartition(query, partition, nodeMap, edges, allPartitions, llmProvider, config, signal) {
+  throwIfAborted(signal);
   const { sweepMaxTokens } = config;
 
   // Build full-fidelity context for this partition
@@ -178,12 +185,14 @@ async function sweepPartition(query, partition, nodeMap, edges, allPartitions, l
   const instructions = buildSweepPrompt(partitionNodes.length, allPartitions.length);
   const input = `${nodeContext}\n${adjacentContext}\n\nQuery: ${query}`;
 
-  const response = await llmProvider.generate({
+  const response = await awaitWithCancellation(() => llmProvider.generate({
     instructions,
     input,
     maxTokens: sweepMaxTokens,
-    reasoningEffort: 'medium'
-  });
+    reasoningEffort: 'medium',
+    signal,
+  }), signal);
+  throwIfAborted(signal);
 
   const content = response.content || response.message?.content || '';
 

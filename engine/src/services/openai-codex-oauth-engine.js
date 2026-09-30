@@ -1,6 +1,9 @@
 const os = require('os');
 const { responsesReasoning } = require('../../../shared/responses-reasoning.cjs');
 const {
+  awaitWithCancellation, cancelReadableStreamReader, rethrowCancellation, throwIfAborted,
+} = require('../../../shared/research-runtime/lib/provider-execution.js');
+const {
   resolveProviderKey,
   isAuthError,
   managedOAuthCredentials,
@@ -247,25 +250,29 @@ class OpenAICodexClient {
   }
 
   async generate(options = {}) {
-    const credentials = await getOpenAICodexCredentialsAtUse(this.config);
+    throwIfAborted(options.signal);
+    const credentials = await awaitWithCancellation(() => getOpenAICodexCredentialsAtUse(this.config), options.signal);
     try {
       return await this._generateAttempt(options, credentials);
     } catch (error) {
+      rethrowCancellation(error, options.signal);
       // One force-fresh retry on auth failure: the token may have rotated in
       // secrets.yaml after the last resolver read. Never loop.
       if (!isAuthError(error)) throw error;
       this.logger?.warn?.('[OpenAI-Codex] Auth failure — refreshing Home23 credentials for one retry', {
         error: error.message,
       });
-      const refreshed = await getOpenAICodexCredentialsAtUse(this.config, {
+      const refreshed = await awaitWithCancellation(() => getOpenAICodexCredentialsAtUse(this.config, {
         force: true,
         staleAccessToken: credentials.accessToken,
-      });
+      }), options.signal);
       return await this._generateAttempt(options, refreshed);
     }
   }
 
   async _generateAttempt(options = {}, credentials) {
+    const { signal } = options;
+    throwIfAborted(signal);
     const model = options.model || this.config.providers?.['openai-codex']?.defaultModel || 'gpt-5.5';
     const tools = buildCodexTools(options.tools || []);
     const body = {
@@ -295,14 +302,18 @@ class OpenAICodexClient {
       hasTools: tools.length > 0,
     });
 
-    const response = await fetch(url, {
+    const response = await awaitWithCancellation(() => fetch(url, {
       method: 'POST',
       headers: getCodexHeaders(credentials),
       body: JSON.stringify(body),
-    });
+      signal,
+    }), signal);
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
+      const errorText = await awaitWithCancellation(() => response.text(), signal).catch(error => {
+        rethrowCancellation(error, signal);
+        return '';
+      });
       throw new Error(`OpenAI Codex ${response.status}: ${errorText.slice(0, 300)}`);
     }
     if (!response.body) {
@@ -316,53 +327,64 @@ class OpenAICodexClient {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    let readerFailure;
+    try {
+      while (true) {
+        const { done, value } = await awaitWithCancellation(() => reader.read(), signal);
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-      let idx = buffer.indexOf('\n\n');
-      while (idx !== -1) {
-        const chunk = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        const dataLines = chunk.split('\n')
-          .filter(line => line.startsWith('data:'))
-          .map(line => line.slice(5).trim());
+        let idx = buffer.indexOf('\n\n');
+        while (idx !== -1) {
+          const chunk = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          const dataLines = chunk.split('\n')
+            .filter(line => line.startsWith('data:'))
+            .map(line => line.slice(5).trim());
 
-        for (const data of dataLines) {
-          if (!data || data === '[DONE]') continue;
-          let event;
-          try {
-            event = JSON.parse(data);
-          } catch {
-            continue;
+          for (const data of dataLines) {
+            if (!data || data === '[DONE]') continue;
+            let event;
+            try {
+              event = JSON.parse(data);
+            } catch {
+              continue;
+            }
+
+            switch (event.type) {
+              case 'response.output_text.delta':
+                aggregatedText += event.delta || '';
+                break;
+              case 'response.output_text.done':
+                if (event.text) aggregatedText = event.text;
+                break;
+              case 'response.reasoning_summary_text.delta':
+                reasoningSummary += event.delta || '';
+                break;
+              case 'response.completed':
+                finalUsage = event.response?.usage || finalUsage;
+                if (!aggregatedText && event.response) {
+                  aggregatedText = extractTextFromResponse(event.response);
+                }
+                break;
+              case 'response.failed':
+                throw new Error(event.response?.error?.message || 'OpenAI Codex response failed');
+              case 'error':
+                throw new Error(event.message || event.code || 'OpenAI Codex stream error');
+            }
           }
-
-          switch (event.type) {
-            case 'response.output_text.delta':
-              aggregatedText += event.delta || '';
-              break;
-            case 'response.output_text.done':
-              if (event.text) aggregatedText = event.text;
-              break;
-            case 'response.reasoning_summary_text.delta':
-              reasoningSummary += event.delta || '';
-              break;
-            case 'response.completed':
-              finalUsage = event.response?.usage || finalUsage;
-              if (!aggregatedText && event.response) {
-                aggregatedText = extractTextFromResponse(event.response);
-              }
-              break;
-            case 'response.failed':
-              throw new Error(event.response?.error?.message || 'OpenAI Codex response failed');
-            case 'error':
-              throw new Error(event.message || event.code || 'OpenAI Codex stream error');
-          }
+          idx = buffer.indexOf('\n\n');
         }
-        idx = buffer.indexOf('\n\n');
       }
+    } catch (error) {
+      readerFailure = signal?.aborted ? signal.reason : error;
+      rethrowCancellation(error, signal);
+      throw error;
+    } finally {
+      if (readerFailure) cancelReadableStreamReader(reader, readerFailure);
+      try { reader.releaseLock?.(); } catch {}
     }
+    throwIfAborted(signal);
 
     if (!aggregatedText && reasoningSummary) {
       aggregatedText = reasoningSummary;

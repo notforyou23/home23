@@ -4,6 +4,8 @@ const yaml = require('js-yaml');
 const {
   resolveAgentInstancePaths,
 } = require('../../../shared/agent-instance-paths.cjs');
+// Same literals as Home23 assignments and the shared Responses transport.
+const REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 /**
  * Configuration Loader
@@ -203,7 +205,7 @@ class ConfigLoader {
   /**
    * Apply per-slot modelAssignments overrides from the instance config. These
    * take precedence over the blunt `engine.thought` shortcut and let the user
-   * pick a provider+model+fallback chain for each individual assignment key
+   * pick a provider+model+effort+fallback chain for each individual assignment key
    * (e.g. quantumReasoner.branches, agents.research, coordinator).
    *
    * Instance config shape:
@@ -231,6 +233,15 @@ class ConfigLoader {
         provider: entry.provider || current.provider,
         model: entry.model || current.model,
       };
+      if (Object.hasOwn(entry, 'reasoningEffort')) {
+        if (REASONING_EFFORTS.has(entry.reasoningEffort)) {
+          merged.reasoningEffort = entry.reasoningEffort;
+        } else {
+          // Instance overlays are best-effort. Preserve a working effort and
+          // make the rejected override visible without dropping other slots.
+          console.warn(`[config] ${key} reasoningEffort override not applied — unsupported value`);
+        }
+      }
       if (Array.isArray(entry.fallback)) {
         merged.fallback = entry.fallback
           .filter(f => f && typeof f === 'object' && f.provider && f.model)

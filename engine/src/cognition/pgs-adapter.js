@@ -7,7 +7,7 @@
  * Responsibilities:
  *   - Wrap UnifiedClient as PGS's sweepProvider / synthesisProvider
  *   - Convert Home23 NetworkMemory graph shape → PGS-expected shape
- *   - Enforce token budget and 90s timeout
+ *   - Bound sweep and synthesis within one absolute execution deadline
  *   - Availability detection (graceful unavailable if pgs-engine can't load)
  *   - NEVER throws — always returns { available, note, ... }
  */
@@ -16,11 +16,16 @@
 
 const path = require('path');
 const { createMemoryAuthorityResolver, projectMemoryAuthority } = require('../../../shared/memory-authority.cjs');
+const { awaitWithCancellation, throwIfAborted } = require('../../../shared/research-runtime/lib/provider-execution.js');
 
 const DEFAULT_BUDGET = {
   maxTokensIn: 10000,
   maxTokensOut: 3000,
-  timeoutMs: 45000,         // tight — timeouts are death on big brains
+  // Sweeps and frontier synthesis are successive stages. The final stage must
+  // not inherit only the few seconds left from a sweep-sized total deadline.
+  timeoutMs: 165000,
+  sweepTimeoutMs: 45000,
+  synthesisTimeoutMs: 120000,
   maxPartitions: 8,
   maxEdgeCandidates: 10,
 };
@@ -66,6 +71,8 @@ class PGSAdapter {
     this.available = false;
     this.PGSEngine = null;
     this.engine = null;
+    this._executionInFlight = false;
+    this._providerCalls = new Set();
     this.stats = {
       callCount: 0,
       successCount: 0,
@@ -87,8 +94,8 @@ class PGSAdapter {
       const pgsModule = require(pgsModulePath);
       this.PGSEngine = pgsModule.PGSEngine;
       this.engine = new this.PGSEngine({
-        sweepProvider: makeSweepProvider(this.unifiedClient),
-        synthesisProvider: makeSynthesisProvider(this.unifiedClient),
+        sweepProvider: makeSweepProvider(this.unifiedClient, request => this._trackProviderCall(request)),
+        synthesisProvider: makeSynthesisProvider(this.unifiedClient, request => this._trackProviderCall(request)),
         config: {
           minCommunitySize: 5,          // smaller communities OK for brain-sized graphs
           minNodesForPgs: 10,           // below this, not worth partitioning
@@ -130,10 +137,16 @@ class PGSAdapter {
       usage: { inputTokens: 0, outputTokens: 0, durationMs: Date.now() - started, partitionsTouched: 0 },
       note,
     });
+    const timeoutMs = boundedTimeout(budget.timeoutMs, DEFAULT_BUDGET.timeoutMs);
 
     if (!this.available || !this.engine) {
       this.stats.unavailableCount++;
       return emptyResult('unavailable');
+    }
+    // A provider that cannot cancel its transport may settle after connect has
+    // returned a timeout. Do not multiply that still-outstanding work.
+    if (this._executionInFlight || this._providerCalls.size > 0) {
+      return emptyResult('busy');
     }
 
     // Pre-flight skip: isolated candidates have nothing for PGS to connect.
@@ -167,13 +180,6 @@ class PGSAdapter {
       return emptyResult('no_graph');
     }
 
-    // Apply adaptive config to the engine before calling. Adapter is
-    // single-threaded per agent, so mutating .config is safe.
-    const prevCfg = { ...this.engine.config };
-    this.engine.config.maxSweepPartitions = adaptive.maxSweepPartitions;
-    this.engine.config.sweepMaxTokens = adaptive.sweepMaxTokens;
-    this.engine.config.synthesisMaxTokens = adaptive.synthesisMaxTokens;
-
     this.logger.info?.('[pgs-adapter] starting', {
       graphSize,
       seedEdgeCount,
@@ -181,18 +187,43 @@ class PGSAdapter {
       scopedEdges: graph.edges.length,
       maxSweepPartitions: adaptive.maxSweepPartitions,
       sweepMaxTokens: adaptive.sweepMaxTokens,
-      timeoutMs: budget.timeoutMs,
+      timeoutMs,
     });
 
     // Build query from the thought. PGS takes natural-language queries.
     const query = this._buildQuery(args.thought, args.temporalContext);
 
-    // Execute with timeout race
+    // Each stage is bounded by the remaining absolute deadline. Expiry aborts
+    // the provider and prevents later stages; it does not just discard a race.
+    const controller = new AbortController();
+    const deadlineAt = started + timeoutMs;
+    const timeoutError = new Error('pgs_timeout');
+    let timer;
+    const boundStage = (stageTimeoutMs) => {
+      clearTimeout(timer);
+      if (controller.signal.aborted) return;
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs <= 0) controller.abort(timeoutError);
+      else timer = setTimeout(() => controller.abort(timeoutError), Math.min(remainingMs, stageTimeoutMs));
+    };
+    this._executionInFlight = true;
+    boundStage(boundedTimeout(budget.sweepTimeoutMs, DEFAULT_BUDGET.sweepTimeoutMs));
     try {
-      const result = await Promise.race([
-        this.engine.execute(query, graph, { mode: 'full' }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('pgs_timeout')), budget.timeoutMs)),
-      ]);
+      const result = await awaitWithCancellation(() => this.engine.execute(query, graph, {
+        mode: 'full',
+        signal: controller.signal,
+        config: {
+          maxSweepPartitions: adaptive.maxSweepPartitions,
+          sweepMaxTokens: adaptive.sweepMaxTokens,
+          synthesisMaxTokens: adaptive.synthesisMaxTokens,
+        },
+        onEvent: (event) => {
+          if (event.type === 'synthesizing') {
+            boundStage(boundedTimeout(budget.synthesisTimeoutMs, DEFAULT_BUDGET.synthesisTimeoutMs));
+          }
+        },
+      }), controller.signal);
+      throwIfAborted(controller.signal);
 
       // Extract candidate edges + perspectives + notes from the synthesized answer.
       // PGS returns a string answer; we parse it heuristically for downstream use.
@@ -219,12 +250,21 @@ class PGSAdapter {
     } catch (err) {
       if (err?.message === 'pgs_timeout') {
         this.stats.timeoutCount++;
-        this.logger.warn?.('[pgs-adapter] timeout', { timeoutMs: budget.timeoutMs });
+        this.logger.warn?.('[pgs-adapter] timeout', { timeoutMs });
         return emptyResult('timeout');
       }
       this.logger.warn?.('[pgs-adapter] execute failed', { error: err?.message });
       return emptyResult('error');
+    } finally {
+      clearTimeout(timer);
+      this._executionInFlight = false;
     }
+  }
+
+  _trackProviderCall(request) {
+    this._providerCalls.add(request);
+    const settled = () => this._providerCalls.delete(request);
+    request.then(settled, settled);
   }
 
   getStats() {
@@ -369,21 +409,39 @@ function sampleByDegree(memory, cap) {
  * UnifiedClient already normalizes to {content, ...}; we just need to translate
  * the parameter shape.
  */
-function makeSweepProvider(unifiedClient) {
+function boundedTimeout(value, fallback) {
+  return Number.isSafeInteger(value) && value > 0
+    ? Math.min(value, 300000) : fallback;
+}
+
+async function generateWithSignal(unifiedClient, options, onRequest) {
+  throwIfAborted(options.signal);
+  const request = Promise.resolve().then(() => {
+    throwIfAborted(options.signal);
+    return unifiedClient.generate(options);
+  });
+  onRequest?.(request);
+  const response = await awaitWithCancellation(() => request, options.signal);
+  throwIfAborted(options.signal);
+  return response;
+}
+
+function makeSweepProvider(unifiedClient, onRequest) {
   return {
     async generate(opts = {}) {
       const messages = [];
       if (opts.input) {
         messages.push({ role: 'user', content: String(opts.input) });
       }
-      const response = await unifiedClient.generate({
+      const response = await generateWithSignal(unifiedClient, {
         component: 'pgsSweep',
         purpose: 'partition',
         instructions: `${opts.instructions || ''}\nPreserve memory authority and correction labels in your answer. Explore associations without turning narrative, history, superseded claims, or closed incidents into verified current facts. Distinguish a tentative connection from supporting evidence.`,
         messages,
         maxTokens: opts.maxTokens || 2000,
         temperature: 0.3,
-      });
+        signal: opts.signal,
+      }, onRequest);
       return {
         content: response?.content || '',
         message: { content: response?.content || '' },  // PGS occasionally reads .message.content
@@ -392,21 +450,22 @@ function makeSweepProvider(unifiedClient) {
   };
 }
 
-function makeSynthesisProvider(unifiedClient) {
+function makeSynthesisProvider(unifiedClient, onRequest) {
   return {
     async generate(opts = {}) {
       const messages = [];
       if (opts.input) {
         messages.push({ role: 'user', content: String(opts.input) });
       }
-      const response = await unifiedClient.generate({
+      const response = await generateWithSignal(unifiedClient, {
         component: 'pgsSynthesis',
         purpose: 'synthesize',
         instructions: `${opts.instructions || ''}\nPreserve memory authority and correction labels in your answer. Explore associations without turning narrative, history, superseded claims, or closed incidents into verified current facts. Distinguish a tentative connection from supporting evidence.`,
         messages,
         maxTokens: opts.maxTokens || 3000,
         temperature: 0.4,
-      });
+        signal: opts.signal,
+      }, onRequest);
       return {
         content: response?.content || '',
         message: { content: response?.content || '' },
