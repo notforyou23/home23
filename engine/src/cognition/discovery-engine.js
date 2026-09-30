@@ -265,18 +265,23 @@ class DiscoveryEngine {
       const index = criticalIndex >= 0 ? criticalIndex : materialFairness ? exploratoryIndex : 0;
       const selected = remaining[index];
       const routineMachine = remaining.filter(isRoutineMachineCandidate);
+      const routineHeartbeat = remaining.filter(isRoutineHeartbeatCandidate);
+      const materialBeforeMachine = isMaterialInquiry(selected) && routineMachine.some(candidate => candidate.score >= selected.score);
+      const materialBeforeHeartbeat = isMaterialInquiry(selected) && routineHeartbeat.some(candidate => candidate.score >= selected.score);
       const streakBefore = this.consecutiveOperational;
       const selection = {
         eligibleCount: remaining.length,
         materialInquiryCount: remaining.filter(isMaterialInquiry).length,
         routineMachineCount: routineMachine.length,
+        routineHeartbeatCount: routineHeartbeat.length,
         criticalObservationCount: remaining.filter(candidate => isCriticalObservation(candidate.observation)).length,
         highestEligibleScore: highestFiniteScore(remaining),
         materialScoreFloor,
         selectedRankScore: Number.isFinite(rankScore(selected)) ? rankScore(selected) : null,
         reason: criticalIndex >= 0 ? 'critical_observation' : materialFairness ? 'material_fairness'
-          : isMaterialInquiry(selected) && routineMachine.some(candidate => candidate.score >= selected.score)
-            ? 'material_before_routine_machine' : 'ranked_score',
+          : materialBeforeMachine && materialBeforeHeartbeat ? 'material_before_routine_machine_and_heartbeat'
+          : materialBeforeMachine ? 'material_before_routine_machine'
+          : materialBeforeHeartbeat ? 'material_before_routine_heartbeat' : 'ranked_score',
         nonMaterialStreakBefore: streakBefore,
       };
       const [candidate] = remaining.splice(index, 1);
@@ -964,17 +969,37 @@ function isRoutineMachineCandidate(candidate) {
     && !isCriticalObservation(candidate.observation);
 }
 
+function isRoutineHeartbeatCandidate(candidate) {
+  const observation = candidate.observation;
+  if (candidate.attentionKind !== 'operational' || observation?.channelId !== 'work.heartbeat'
+    || observation.flag !== 'COLLECTED' || observation.verifierId !== 'heartbeat') return false;
+  const payload = observation.payload;
+  // Only the current informational producer's exact tick/time shape qualifies.
+  // Additional state or unfamiliar metadata keeps the existing Work ranking.
+  if (!payload || Object.getPrototypeOf(payload) !== Object.prototype
+    || Reflect.ownKeys(payload).length !== 2 || !Object.hasOwn(payload, 'tick') || !Object.hasOwn(payload, 'at')) return false;
+  const { tick, at } = payload;
+  if (!Number.isSafeInteger(tick) || tick < 1 || observation.sourceRef !== `hb:${tick}`
+    || typeof at !== 'string' || observation.producedAt !== at) return false;
+  const time = Date.parse(at);
+  return Number.isFinite(time) && new Date(time).toISOString() === at;
+}
+
+function isRoutineTelemetryCandidate(candidate) {
+  return isRoutineMachineCandidate(candidate) || isRoutineHeartbeatCandidate(candidate);
+}
+
 function rankAttentionCandidates(candidates) {
   // Contact and exploration currently score at least 0.65. Use the actual
   // eligible finite scores so a lower-scored inquiry retains the same boundary.
   // This changes selection rank only; confidence and raw scores stay intact.
   const materialScores = candidates.filter(isMaterialInquiry).map(candidate => candidate.score).filter(Number.isFinite);
   const materialScoreFloor = materialScores.length ? Math.min(...materialScores) : null;
-  const rankScore = candidate => materialScoreFloor !== null && isRoutineMachineCandidate(candidate)
+  const rankScore = candidate => materialScoreFloor !== null && isRoutineTelemetryCandidate(candidate)
     ? Math.min(candidate.score, materialScoreFloor) : candidate.score;
   candidates.sort((a, b) => rankScore(b) - rankScore(a)
     // At the ceiling, material must precede routine telemetry even on a tie.
-    || (materialScoreFloor !== null ? Number(isRoutineMachineCandidate(a)) - Number(isRoutineMachineCandidate(b)) : 0));
+    || (materialScoreFloor !== null ? Number(isRoutineTelemetryCandidate(a)) - Number(isRoutineTelemetryCandidate(b)) : 0));
   return { materialScoreFloor, rankScore };
 }
 

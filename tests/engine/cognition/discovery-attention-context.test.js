@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { HeartbeatChannel } from '../../../engine/src/channels/work/heartbeat-channel.js';
 
 const require = createRequire(import.meta.url);
 const { ConversationSalience } = require('../../../engine/src/cognition/conversation-salience');
@@ -152,6 +153,138 @@ const ordinaryMachineSamples = [
 function observation(channelId, payload, sourceRef = `${channelId}:sample`, confidence = 1) {
   return { channelId, payload, sourceRef, confidence, flag: 'COLLECTED', producedAt: new Date().toISOString() };
 }
+
+async function heartbeatObservation(channel = new HeartbeatChannel({ getEngineState: () => ({ at: new Date().toISOString() }) })) {
+  const [raw] = await channel.poll();
+  return channel.verify(channel.parse(raw));
+}
+
+test('verified informational heartbeat yields to eligible owner contact with accurate selection metadata', async t => {
+  const { salience } = fixture(t, [contact(0, 'jtr', 'Which musical phrases remain recognizable through a changed instrument?')]);
+  const discovery = new DiscoveryEngine({ memory: graph([]), getConversationSalience: () => salience, logger });
+  const heartbeat = await heartbeatObservation();
+  assert.deepEqual(Object.keys(heartbeat.payload).sort(), ['at', 'tick'], 'use the actual installed producer shape');
+  discovery._enqueue(discovery._probeConversation()[0]);
+  discovery.injectObservation(heartbeat);
+  assert.equal(discovery.peek()[0].signal, 'conversation');
+  const [inquiry, fallback] = discovery.pop(2);
+  assert.equal(inquiry.signal, 'conversation');
+  assert.deepEqual(inquiry.attentionSelection, { eligibleCount: 2, materialInquiryCount: 1,
+    routineMachineCount: 0, routineHeartbeatCount: 1, criticalObservationCount: 0,
+    highestEligibleScore: 1.35, materialScoreFloor: 1.25, selectedRankScore: 1.25,
+    reason: 'material_before_routine_heartbeat', nonMaterialStreakBefore: 0, nonMaterialStreakAfter: 0 });
+  assert.deepEqual(fallback.observation, heartbeat, 'the source observation remains intact');
+  assert.equal(fallback.score, 1.35);
+  assert.equal(fallback.observation.confidence, 0.9);
+  assert.equal(fallback.attentionSelection.materialScoreFloor, null);
+  assert.equal(fallback.attentionSelection.selectedRankScore, fallback.score);
+});
+
+test('changing informational heartbeat ticks yield to remembered inquiry at its actual finite score', async () => {
+  const memory = graph(Array.from({ length: 3 }, (_, i) => ({ id: `heartbeat-interest-${i}`,
+    concept: `A remembered musical question ${i}.`, created: '1970-01-01T00:00:00.000Z' })));
+  const discovery = new DiscoveryEngine({ memory, logger });
+  const channel = new HeartbeatChannel({ getEngineState: () => ({ at: new Date().toISOString() }) });
+  for (let i = 0; i < 3; i++) {
+    const material = discovery._probeExploration().find(candidate => candidate.nodeIds[0] === `heartbeat-interest-${i}`);
+    const score = i === 0 ? material.score : i === 1 ? 0.025 : 0;
+    if (i === 0) assert.ok(score >= 0.65 && score < 0.651);
+    discovery._enqueue({ ...material, score });
+    assert.equal(discovery.injectObservation(await heartbeatObservation(channel)), true);
+    const [selected] = discovery.pop();
+    assert.equal(selected.key, material.key, `changing tick ${i + 1}`);
+    assert.equal(selected.score, score);
+    assert.equal(selected.attentionSelection.materialScoreFloor, score);
+    assert.equal(selected.attentionSelection.routineHeartbeatCount, i + 1);
+    assert.equal(selected.attentionSelection.routineMachineCount, 0);
+    assert.equal(discovery.consecutiveOperational, 0);
+  }
+  const fallback = discovery.pop(3);
+  assert.deepEqual(fallback.map(candidate => candidate.observation.sourceRef), ['hb:1', 'hb:2', 'hb:3']);
+  assert.ok(fallback.every(candidate => candidate.score === 1.35 && candidate.attentionSelection.materialScoreFloor === null));
+});
+
+test('informational heartbeat retains raw-score fallback when no material is eligible', async () => {
+  const discovery = new DiscoveryEngine({ memory: graph([]), logger });
+  discovery._enqueue({ key: 'other-ops', signal: 'anomaly', score: 0.9, nodeIds: [] });
+  discovery.injectObservation(await heartbeatObservation());
+  discovery.consecutiveOperational = 5;
+  const [selected] = discovery.pop();
+  assert.equal(selected.observation.channelId, 'work.heartbeat');
+  assert.equal(selected.score, 1.35);
+  assert.equal(selected.attentionSelection.selectedRankScore, 1.35);
+  assert.equal(selected.attentionSelection.materialScoreFloor, null);
+  assert.equal(selected.attentionSelection.routineMachineCount, 0);
+  assert.equal(selected.attentionSelection.routineHeartbeatCount, 1);
+  assert.equal(selected.attentionSelection.reason, 'ranked_score');
+  assert.equal(discovery.pop()[0].key, 'other-ops');
+});
+
+test('heartbeat with additional Work state or unfamiliar fields retains priority and material fairness', async t => {
+  for (const state of [{ work: { id: 'fixture-work', status: 'running' } }, { unfamiliarState: null }]) {
+    const { salience } = fixture(t, [contact(0, 'jtr', 'A musical question worth remembering.')]);
+    const discovery = new DiscoveryEngine({ memory: graph([]), getConversationSalience: () => salience, logger });
+    discovery._enqueue(discovery._probeConversation()[0]);
+    const channel = new HeartbeatChannel({ getEngineState: () => state });
+    discovery.injectObservation(await heartbeatObservation(channel));
+    const [selected] = discovery.pop();
+    assert.equal(selected.observation.channelId, 'work.heartbeat');
+    assert.equal(selected.score, 1.35);
+    assert.equal(selected.attentionSelection.routineHeartbeatCount, 0);
+    assert.equal(selected.attentionSelection.routineMachineCount, 0);
+    assert.equal(selected.attentionSelection.reason, 'ranked_score');
+    const [inquiry] = discovery.pop();
+    assert.equal(inquiry.signal, 'conversation');
+    assert.equal(inquiry.attentionSelection.reason, 'material_fairness');
+  }
+});
+
+test('invalid or unfamiliar heartbeat shapes and other Work channels retain existing ranking', async () => {
+  const heartbeat = await heartbeatObservation();
+  const invalid = [
+    { ...heartbeat, payload: { tick: 0, at: heartbeat.payload.at } },
+    { ...heartbeat, payload: { tick: -1, at: heartbeat.payload.at } },
+    { ...heartbeat, payload: { tick: 1.5, at: heartbeat.payload.at } },
+    { ...heartbeat, payload: { tick: '1', at: heartbeat.payload.at } },
+    { ...heartbeat, payload: { tick: Number.MAX_SAFE_INTEGER + 1, at: heartbeat.payload.at } },
+    { ...heartbeat, payload: { tick: 1, at: 'not-a-date' }, producedAt: 'not-a-date' },
+    { ...heartbeat, payload: { tick: 1, at: '2026-09-30' }, producedAt: '2026-09-30' },
+    { ...heartbeat, payload: { tick: 1 } }, { ...heartbeat, payload: null },
+    { ...heartbeat, payload: [1, heartbeat.payload.at] },
+    { ...heartbeat, producedAt: '2026-09-30T00:00:00.000Z' },
+    { ...heartbeat, sourceRef: 'hb:other' }, { ...heartbeat, verifierId: null },
+    { ...heartbeat, verifierId: 'other' }, { ...heartbeat, flag: 'UNCERTIFIED' },
+    ...['work.agenda', 'work.worker-runs', 'work.live-problems', 'work.queue'].map(channelId => ({ ...heartbeat, channelId })),
+  ];
+  for (const source of invalid) {
+    const discovery = new DiscoveryEngine({ memory: graph([]), logger });
+    discovery._enqueue({ key: 'owner-inquiry', signal: 'conversation', attentionKind: 'exploration', score: 1.25, nodeIds: [] });
+    discovery.injectObservation(source);
+    const [selected] = discovery.pop();
+    assert.equal(selected.observation?.sourceRef, source.sourceRef);
+    assert.equal(selected.score, 1.35);
+    assert.equal(selected.attentionSelection.routineHeartbeatCount, 0);
+    assert.equal(selected.attentionSelection.routineMachineCount, 0);
+    assert.equal(selected.attentionSelection.reason, 'ranked_score');
+  }
+});
+
+test('corroborated critical evidence precedes informational heartbeat and waiting owner inquiry', async () => {
+  const discovery = new DiscoveryEngine({ memory: graph([]), logger });
+  discovery._enqueue({ key: 'owner-inquiry', signal: 'conversation', attentionKind: 'exploration', score: 1.25, nodeIds: [] });
+  discovery.injectObservation(await heartbeatObservation());
+  discovery.injectObservation(observation('machine.memory', { pressureFreePct: 3, memoryPressure: { available: true } }, 'memory:critical', 0.1));
+  const [critical] = discovery.pop();
+  assert.equal(critical.observation.channelId, 'machine.memory');
+  assert.equal(critical.attentionSelection.criticalObservationCount, 1);
+  assert.equal(critical.attentionSelection.routineMachineCount, 0);
+  assert.equal(critical.attentionSelection.routineHeartbeatCount, 1);
+  assert.equal(critical.attentionSelection.reason, 'critical_observation');
+  const [inquiry] = discovery.pop();
+  assert.equal(inquiry.key, 'owner-inquiry');
+  assert.equal(inquiry.attentionSelection.reason, 'material_fairness');
+  assert.equal(discovery.pop()[0].observation.channelId, 'work.heartbeat');
+});
 
 test('ordinary machine telemetry yields immediately to eligible owner contact without changing confidence or raw scores', t => {
   for (const [channelId, payload] of ordinaryMachineSamples) {
@@ -309,6 +442,8 @@ test('ThoughtEmerged records a bounded noncontent snapshot of actual eligible at
   discovery._enqueue(discovery._probeConversation()[0]);
   discovery.injectObservation(observation('machine.cpu', { cpuCount: 10, loadAvg: [6.13] }));
   discovery.injectObservation(observation('machine.disk', { usagePct: 34 }, 'disk:private-fixture', 0.95));
+  const heartbeat = new HeartbeatChannel({ getEngineState: () => ({ at: new Date().toISOString() }) });
+  discovery.injectObservation(await heartbeatObservation(heartbeat));
   const [candidate] = discovery.pop();
   const ledger = [];
   const machine = new ThinkingMachine({ unifiedClient: {}, memory, discoveryEngine: discovery, logger,
@@ -316,7 +451,10 @@ test('ThoughtEmerged records a bounded noncontent snapshot of actual eligible at
   let dives = 0;
   machine.deepDive = { async think() {
     dives++;
-    if (dives === 1) discovery.injectObservation(observation('machine.swap', { swap: { usedPct: 95 } }, 'swap:after-selection'));
+    if (dives === 1) {
+      discovery.injectObservation(observation('machine.swap', { swap: { usedPct: 95 } }, 'swap:after-selection'));
+      discovery.injectObservation(await heartbeatObservation(heartbeat));
+    }
     return { text: 'PRIVATE THOUGHT FIXTURE: compare the musical phrase with its remembered context.', referencedNodes: [], usage: {} };
   } };
   machine.pgsAdapter = { async connect() { return { available: false, perspectives: [], candidateEdges: [], connectionNotes: [], usage: {} }; } };
@@ -327,13 +465,13 @@ test('ThoughtEmerged records a bounded noncontent snapshot of actual eligible at
   await machine._runCycle(candidate);
   const events = ledger.filter(event => event.eventType === 'ThoughtEmerged');
   assert.equal(events.length, 2);
-  const expected = { eligibleCount: 3, materialInquiryCount: 1, routineMachineCount: 2, criticalObservationCount: 0,
-    highestEligibleScore: 1.5, materialScoreFloor: 1.25, selectedRankScore: 1.25, reason: 'material_before_routine_machine',
+  const expected = { eligibleCount: 4, materialInquiryCount: 1, routineMachineCount: 2, routineHeartbeatCount: 1, criticalObservationCount: 0,
+    highestEligibleScore: 1.5, materialScoreFloor: 1.25, selectedRankScore: 1.25, reason: 'material_before_routine_machine_and_heartbeat',
     nonMaterialStreakBefore: 0, nonMaterialStreakAfter: 0 };
   for (const { payload } of events) {
     assert.equal(payload.candidate.signal, 'conversation');
     assert.deepEqual(payload.attentionSelection, expected);
-    assert.doesNotMatch(JSON.stringify(payload.attentionSelection), /PRIVATE|disk:|swap:|usagePct|oxygen/);
+    assert.doesNotMatch(JSON.stringify(payload.attentionSelection), /PRIVATE|disk:|swap:|hb:|tick|usagePct|oxygen/);
   }
   assert.ok(discovery.queue.size > expected.eligibleCount - 1, 'new observations do not rewrite the selection snapshot');
 });
