@@ -16,7 +16,7 @@ import yaml from 'js-yaml';
 import type { AssemblyResult, EventEnvelope } from '../types.js';
 import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
-import { budgetIdentityContent } from './identity-budget.js';
+import { budgetIdentityContent, boundaryTruncate } from './identity-budget.js';
 import { composeSeedSituation } from '../substrate/seed-context.js';
 import { composeLivedRecent } from '../substrate/lived-recent.js';
 import { composeLivedFacts } from '../substrate/lived-facts.js';
@@ -42,6 +42,8 @@ export interface TriggeredSurfaceConfig {
 
 // ─── Constants ──────────────────────────────────────────
 const CONTEXT_BUDGET = 6000;
+export const AUTHORED_SURFACE_MAX_CHARS = 16_000;
+export const SITUATIONAL_AWARENESS_MAX_CHARS = 40_000;
 const BRAIN_SEARCH_LIMIT = 8;
 const BRAIN_SEARCH_TIMEOUT_MS = 8_000;
 const STALENESS_HOURS = 24;
@@ -178,16 +180,34 @@ export function shouldLoadOperationalSurface(input: OperationalSurfaceGateInput)
 
 // ─── Surface Loading ────────────────────────────────────
 
-function loadSurface(workspacePath: string, filename: string, budget: number, authored = false): string | null {
+interface AwarenessCap {
+  source: string; rawChars: number; loadedChars: number; ceiling: number; reason: 'file_ceiling' | 'total_ceiling';
+}
+type OnAwarenessCap = (cap: AwarenessCap) => void;
+
+function loadSurface(workspacePath: string, filename: string, budget: number, authored = false,
+  onCap?: OnAwarenessCap,
+): string | null {
   const filePath = join(workspacePath, filename);
   if (!existsSync(filePath)) return null;
-  const content = readFileSync(filePath, 'utf-8').trim();
+  const raw = readFileSync(filePath, 'utf-8');
+  const content = raw.trim();
   if (!content) return null;
   // Section-aware budgeting (Step 30): never a blind mid-sentence slice. Before,
   // this did content.slice(0, budget), so a 10k DOCTRINE.md was silently cut to
   // 2.5k mid-content — the same bug fixed for SOUL in the identity path.
-  return authored || ['PERSONAL.md', 'DOCTRINE.md'].includes(basename(filename))
-    ? content : budgetIdentityContent(basename(filename), content, budget, 'head').text;
+  if (authored || ['PERSONAL.md', 'DOCTRINE.md'].includes(basename(filename))) {
+    if (raw.length <= AUTHORED_SURFACE_MAX_CHARS) return content;
+    const marker = (offset: number) => `[context-cap: ${filename} is ${raw.length} chars; loaded first ${offset} chars; continue with self_read file=${JSON.stringify(filename)} offset=${offset}]`;
+    // Work in the original JS string, so offset is exact even with leading
+    // whitespace or Unicode; self_read uses the same character offsets.
+    const head = boundaryTruncate(raw, AUTHORED_SURFACE_MAX_CHARS - marker(AUTHORED_SURFACE_MAX_CHARS).length - 1);
+    const capped = `${head}\n${marker(head.length)}`;
+    onCap?.({ source: filename, rawChars: raw.length, loadedChars: head.length,
+      ceiling: AUTHORED_SURFACE_MAX_CHARS, reason: 'file_ceiling' });
+    return capped;
+  }
+  return budgetIdentityContent(basename(filename), content, budget, 'head').text;
 }
 
 /**
@@ -205,10 +225,11 @@ function loadTriggeredSurfaces(
   matchText: string,
   turnText?: string,
   embed?: (t: string) => number[] | null,
-): Array<{ label: string; text: string }> {
+  onCap?: OnAwarenessCap,
+): Array<{ label: string; text: string; file: string }> {
   if (!surfaces || surfaces.length === 0) return [];
   const hay = matchText.toLowerCase();
-  const out: Array<{ label: string; text: string }> = [];
+  const out: Array<{ label: string; text: string; file: string }> = [];
   for (const surface of surfaces) {
     const cues = [...(surface.keywords ?? []), ...(surface.domains ?? [])]
       .map(c => c.toLowerCase().trim())
@@ -230,9 +251,9 @@ function loadTriggeredSurfaces(
     }
     if (!fired) continue;
 
-    const content = loadSurface(workspacePath, surface.file, surface.budget ?? 2500, true);
+    const content = loadSurface(workspacePath, surface.file, surface.budget ?? 2500, true, onCap);
     if (!content) continue;
-    out.push({ label, text: content });
+    out.push({ label, text: content, file: surface.file });
   }
   return out;
 }
@@ -243,9 +264,10 @@ interface SalienceItem {
   text: string;
   score: number;
   source: string;
+  file?: string;
 }
 
-function rankBySalience(items: SalienceItem[], budget: number): string[] {
+function rankBySalience(items: SalienceItem[], budget: number, totalBudget: number, onCap: OnAwarenessCap): string[] {
   items.sort((a, b) => {
     if (a.source === 'trigger' && b.source !== 'trigger') return -1;
     if (b.source === 'trigger' && a.source !== 'trigger') return 1;
@@ -254,12 +276,25 @@ function rankBySalience(items: SalienceItem[], budget: number): string[] {
 
   const selected: string[] = [];
   let totalChars = 0;
+  let evidenceChars = 0;
 
   for (const item of items) {
     const authored = item.source.startsWith('trigger-surface:') || ['surface:PERSONAL', 'surface:DOCTRINE', 'surface:SUBSTRATE', 'surface:RECENT@seed', 'surface:FACTS@seed'].includes(item.source);
-    if (!authored && totalChars + item.text.length > budget) continue;
-    selected.push(item.text);
-    totalChars += item.text.length;
+    if (!authored && evidenceChars + item.text.length > budget) continue;
+    let text = item.text;
+    const separator = selected.length ? 1 : 0;
+    if (totalChars + separator + text.length > totalBudget) {
+      const recovery = item.file ? `continue with self_read file=${JSON.stringify(item.file)} offset=0`
+        : 'read this surface from its source before relying on omitted context';
+      text = `\nRelevant context (${item.file ?? item.source}):\n[context-cap: omitted by the ${SITUATIONAL_AWARENESS_MAX_CHARS}-char situational-awareness ceiling; ${recovery}]`;
+      const fits = totalChars + separator + text.length <= totalBudget;
+      onCap({ source: item.file ?? item.source, rawChars: item.text.length, loadedChars: fits && authored ? text.length : 0,
+        ceiling: SITUATIONAL_AWARENESS_MAX_CHARS, reason: 'total_ceiling' });
+      if (!authored || !fits) continue;
+    }
+    selected.push(text);
+    totalChars += separator + text.length;
+    if (!authored) evidenceChars += item.text.length;
   }
 
   return selected;
@@ -580,6 +615,20 @@ export async function assembleContext(
   signal?: AbortSignal,
 ): Promise<AssemblyResult> {
   const events: EventEnvelope[] = [];
+  const onCap: OnAwarenessCap = cap => {
+    events.push({ event_id: randomUUID(), event_type: 'SituationalAwarenessCapped', session_id: config.sessionId,
+      timestamp: new Date().toISOString(), actor: 'assembly', payload: { ...cap } });
+    console.warn(`[context-assembly] context-cap: ${cap.source} ${cap.rawChars} -> ${cap.loadedChars} chars (${cap.reason})`);
+  };
+  const boundedBlock = (block: string): string => {
+    if (block.length <= SITUATIONAL_AWARENESS_MAX_CHARS) return block;
+    const marker = `[context-cap: situational awareness exceeds ${SITUATIONAL_AWARENESS_MAX_CHARS} chars; read omitted context from its sources]`;
+    const footer = '\n[/SITUATIONAL AWARENESS]';
+    const head = boundaryTruncate(block, SITUATIONAL_AWARENESS_MAX_CHARS - marker.length - footer.length - 1);
+    onCap({ source: 'situational-awareness', rawChars: block.length, loadedChars: head.length,
+      ceiling: SITUATIONAL_AWARENESS_MAX_CHARS, reason: 'total_ceiling' });
+    return `${head}\n${marker}${footer}`;
+  };
   const isFirstTurn = recentTurns.length === 0;
 
   if (isFirstTurn) {
@@ -807,7 +856,7 @@ export async function assembleContext(
       }
     }
 
-    const content = loadSurface(config.workspacePath, surface.file, surface.budget);
+    const content = loadSurface(config.workspacePath, surface.file, surface.budget, false, onCap);
     if (!content) continue;
 
     const verified = verifyFreshness(surface.name, content, surface.isFact);
@@ -816,6 +865,7 @@ export async function assembleContext(
       text: `\nRelevant context (${surface.name}):\n${verified}`,
       score: surface.alwaysBoost ? 0.95 : 0.7,
       source: `surface:${surface.name}`,
+      file: surface.file,
     });
   }
 
@@ -845,12 +895,13 @@ export async function assembleContext(
   // only when the turn is about it — attention allocation, social maintenance,
   // carry-forward — so it reaches the agent when relevant without bloating turns.
   const triggerMatchText = `${userText} ${recentTurns.slice(-3).map(t => t.content ?? '').join(' ')}`;
-  for (const ts of loadTriggeredSurfaces(config.workspacePath, config.triggeredSurfaces, triggerMatchText, userText, config.semanticEmbed)) {
+  for (const ts of loadTriggeredSurfaces(config.workspacePath, config.triggeredSurfaces, triggerMatchText, userText, config.semanticEmbed, onCap)) {
     surfacesLoaded.push(ts.label);
     salienceItems.push({
       text: `\nRelevant context (${ts.label}):\n${ts.text}`,
       score: 0.92, // deliberately requested by the turn's cues → high salience
       source: `trigger-surface:${ts.label}`,
+      file: ts.file,
     });
   }
 
@@ -964,8 +1015,6 @@ export async function assembleContext(
 
   // ── Step 3: Assemble with salience ranking ──
   if (degraded) {
-    if (ledger) { ledger.emit(events); }
-    const localEvidence = rankBySalience(salienceItems, CONTEXT_BUDGET - 700);
     const pieces: string[] = contextRetrievalTimedOut
       ? [
           '[SITUATIONAL AWARENESS: automatic brain context enrichment skipped for latency this turn]',
@@ -981,11 +1030,16 @@ export async function assembleContext(
             'Retry the operation or inspect brain_status; success is not yet established.',
         ];
     if (operatorObligationSection) pieces.push(operatorObligationSection);
+    const footer = '[/SITUATIONAL AWARENESS]';
+    const localEvidence = rankBySalience(salienceItems, CONTEXT_BUDGET - 700,
+      Math.max(0, SITUATIONAL_AWARENESS_MAX_CHARS - pieces.join('\n').length - footer.length - 2), onCap);
     if (localEvidence.length > 0) pieces.push(localEvidence.join('\n'));
-    pieces.push('[/SITUATIONAL AWARENESS]');
+    pieces.push(footer);
+    const block = boundedBlock(pieces.join('\n'));
+    if (ledger) { ledger.emit(events); }
 
     return {
-      block: pieces.join('\n'),
+      block,
       degraded: true,
       brainCueCount: brainCues.length,
       triggerCount: triggerMatches.length,
@@ -996,29 +1050,6 @@ export async function assembleContext(
       retrievalError,
     };
   }
-
-  const rankedParts = rankBySalience(salienceItems, CONTEXT_BUDGET);
-
-  if (rankedParts.length === 0) {
-    if (ledger) { ledger.emit(events); }
-    return {
-      block: operatorObligationSection
-        ? `[SITUATIONAL AWARENESS]\n\n${operatorObligationSection}\n\n[/SITUATIONAL AWARENESS]`
-        : '',
-      degraded: false,
-      brainCueCount: brainCues.length,
-      triggerCount: triggerMatches.length,
-      surfacesLoaded,
-      events,
-      sourceHealth,
-      matchOutcome,
-      retrievalError,
-    };
-  }
-
-  const brainSection = brainCues.length > 0
-    ? `Brain cues:\n${rankedParts.filter(p => !p.startsWith('\nRelevant context')).join('\n')}\n`
-    : '';
 
   const hybridRetrievalSection = successfulHybridRetrieval
     ? '[RETRIEVAL NOTE: successful hybrid brain retrieval]\n' +
@@ -1037,15 +1068,31 @@ export async function assembleContext(
         '[/RETRIEVAL NOTE]\n\n'
       : '';
 
+  const prefix = `[SITUATIONAL AWARENESS]\n\n${operatorObligationSection ? `${operatorObligationSection}\n\n` : ''}${
+    brainCues.length > 0
+      ? '[CONTINUITY ENRICHMENT] This block includes automatic pre-turn brain cues. Do not treat them as brain_search results.\n\n'
+      : ''
+  }${hybridRetrievalSection}`;
+  const footer = '\n\n[/SITUATIONAL AWARENESS]';
+  const brainHeading = brainCues.length > 0 ? 'Brain cues:\n' : '';
+  const rankedParts = rankBySalience(salienceItems, CONTEXT_BUDGET,
+    Math.max(0, SITUATIONAL_AWARENESS_MAX_CHARS - prefix.length - footer.length - brainHeading.length - 1), onCap);
+
+  if (rankedParts.length === 0) {
+    const block = boundedBlock(operatorObligationSection
+      ? `[SITUATIONAL AWARENESS]\n\n${operatorObligationSection}${footer}` : '');
+    if (ledger) { ledger.emit(events); }
+    return { block, degraded: false, brainCueCount: brainCues.length, triggerCount: triggerMatches.length,
+      surfacesLoaded, events, sourceHealth, matchOutcome, retrievalError };
+  }
+
+  const brainSection = brainCues.length > 0
+    ? `${brainHeading}${rankedParts.filter(p => !p.startsWith('\nRelevant context')).join('\n')}\n` : '';
   const surfaceSection = rankedParts
     .filter(p => p.startsWith('\nRelevant context'))
     .join('\n');
 
-  const block = `[SITUATIONAL AWARENESS]\n\n${operatorObligationSection ? `${operatorObligationSection}\n\n` : ''}${
-    brainCues.length > 0
-      ? '[CONTINUITY ENRICHMENT] This block includes automatic pre-turn brain cues. Do not treat them as brain_search results.\n\n'
-      : ''
-  }${hybridRetrievalSection}${brainSection}${surfaceSection}\n\n[/SITUATIONAL AWARENESS]`;
+  const block = boundedBlock(`${prefix}${brainSection}${surfaceSection}${footer}`);
 
   if (ledger) { ledger.emit(events); }
   return {

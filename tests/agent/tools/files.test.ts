@@ -15,6 +15,7 @@ import {
 } from '../../../src/agent/tools/files.js';
 import * as fileTools from '../../../src/agent/tools/files.js';
 import type { ToolContext } from '../../../src/agent/types.js';
+import { compileProjectWriteRoots } from '../../../src/agent/tools/project-write-roots.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -120,6 +121,92 @@ test('refuseWorkspaceEscape helper rejects /tmp and accepts workspace files', ()
   assert.equal(bad!.metadata?.code, WORKSPACE_ESCAPE_REFUSED);
   const good = refuseWorkspaceEscape(path.join(workspace, 'stress/hello.mjs'), workspace);
   assert.equal(good, null);
+});
+
+function makeProjectWorkspace() {
+  const made = makeWorkspace();
+  const instance = path.dirname(made.workspace);
+  const projects = path.join(instance, 'projects');
+  mkdirSync(path.join(projects, 'topic/bin'), { recursive: true });
+  made.ctx.instanceDir = instance;
+  made.ctx.projectWriteRoots = compileProjectWriteRoots({ projectWriteRoots: [
+    { path: 'projects', deny: ['projects/topic/bin', 'projects/topic/HOLD.md'] },
+    { path: 'projects/topic' },
+  ] }, instance);
+  return { ...made, instance, projects };
+}
+
+test('write_file and edit_file use an explicit resident project grant outside the current workspace', async () => {
+  const { ctx, projects } = makeProjectWorkspace();
+  const file = path.join(projects, 'topic/state/STATE.json');
+  assert.equal((await writeFileTool.execute({ path: file, content: '{"active_topic":null}' }, ctx)).is_error, undefined);
+  const edit = await fileTools.editFileTool.execute({ path: file, old_string: 'null', new_string: '"listening"' }, ctx);
+  assert.equal(edit.is_error, undefined, edit.content);
+  assert.equal(readFileSync(file, 'utf8'), '{"active_topic":"listening"}');
+  ctx.projectWriteRoots = undefined;
+  assert.equal((await writeFileTool.execute({ path: file, content: 'no grant' }, ctx)).is_error, true);
+});
+
+test('project denials precede all allow roots, including overlapping grants and symlink aliases', async () => {
+  const { ctx, projects } = makeProjectWorkspace();
+  const denied = path.join(projects, 'topic/bin/run.sh');
+  writeFileSync(denied, 'protected');
+  symlinkSync(path.join(projects, 'topic/bin'), path.join(projects, 'alias'));
+  for (const file of [denied, path.join(projects, 'alias/run.sh'), path.join(projects, 'topic/HOLD.md')]) {
+    const write = await writeFileTool.execute({ path: file, content: 'changed' }, ctx);
+    assert.equal(write.is_error, true); assert.match(write.content, /denied project path/);
+  }
+  const edit = await fileTools.editFileTool.execute({ path: denied, old_string: 'protected', new_string: 'changed' }, ctx);
+  assert.equal(edit.is_error, true);
+  ctx.workspacePath = path.join(projects, 'topic/bin');
+  assert.equal((await writeFileTool.execute({ path: 'run.sh', content: 'workspace bypass' }, ctx)).is_error, true);
+  assert.equal(readFileSync(denied, 'utf8'), 'protected');
+});
+
+test('project writes refuse symlink escapes and traversal to other resident state', async () => {
+  const { ctx, root, projects, instance } = makeProjectWorkspace();
+  const outside = path.join(root, 'outside.txt');
+  writeFileSync(outside, 'protected');
+  symlinkSync(outside, path.join(projects, 'escape.txt'));
+  for (const file of [path.join(projects, 'escape.txt'), path.join(projects, '../brain/private.md'),
+    path.join(instance, '../forrest/projects/private.md')]) {
+    const write = await writeFileTool.execute({ path: file, content: 'changed' }, ctx);
+    assert.equal(write.is_error, true); assert.match(write.content, /allowed roots/);
+  }
+  assert.equal(readFileSync(outside, 'utf8'), 'protected');
+});
+
+test('project grants refuse relative instances paths instead of creating workspace shadow copies', async () => {
+  const { ctx, workspace } = makeProjectWorkspace();
+  for (const file of ['instances/scout/projects/topic/STATE.json', './instances/scout/projects/topic/STATE.json',
+    'workspace/instances/scout/projects/topic/STATE.json']) {
+    const write = await writeFileTool.execute({ path: file, content: 'shadow' }, ctx);
+    assert.equal(write.is_error, true); assert.match(write.content, /shadow tree/);
+  }
+  assert.equal(existsSync(path.join(workspace, 'instances')), false);
+  ctx.projectWriteRoots = undefined;
+  const file = 'instances/scout/projects/topic/STATE.json';
+  assert.equal((await writeFileTool.execute({ path: file, content: 'legacy workspace file' }, ctx)).is_error, undefined);
+});
+
+test('a compiled project grant fails closed if its root becomes a symlink', async () => {
+  const { ctx, projects, root } = makeProjectWorkspace();
+  const outside = path.join(root, 'other-projects');
+  mkdirSync(outside);
+  rmSync(projects, { recursive: true });
+  symlinkSync(outside, projects);
+  const result = await writeFileTool.execute({ path: path.join(projects, 'new.md'), content: 'changed' }, ctx);
+  assert.equal(result.is_error, true); assert.match(result.content, /root changed|invalid project/);
+  assert.equal(existsSync(path.join(outside, 'new.md')), false);
+});
+
+test('a dangling symlink in a project root cannot create a new file outside the grant', async () => {
+  const { ctx, projects, root } = makeProjectWorkspace();
+  const outside = path.join(root, 'not-created.md');
+  const link = path.join(projects, 'dangling.md');
+  symlinkSync(outside, link);
+  const result = await writeFileTool.execute({ path: link, content: 'escaped' }, ctx);
+  assert.equal(result.is_error, true); assert.equal(existsSync(outside), false);
 });
 
 // The Home23 Host runs residents with PATH = <home>/bin:<pm2 bin>:/usr/bin:/bin:/usr/sbin:/sbin,

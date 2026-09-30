@@ -184,6 +184,18 @@ shell:
   machineAccess: false
   roots: []
 
+# Optional resident file-tool write grants, configured in instances/<resident>/config.yaml.
+# Paths (including deny entries) are relative to that resident's instance directory.
+# Roots must already exist under projects/ and contain no symlink components.
+# These grants cover the resident's own turns, including shared-channel messages
+# from other participants; delegated turns do not inherit them. Shell scope is separate.
+# files:
+#   projectWriteRoots:
+#     - path: projects
+#       deny:
+#         - projects/example/bin
+#         - projects/example/EDITORIAL_DIRECTION.md
+
 chat:
   defaultProvider: ollama-cloud
   defaultModel: kimi-k3:cloud

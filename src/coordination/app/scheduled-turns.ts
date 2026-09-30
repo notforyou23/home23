@@ -7,6 +7,9 @@ import { canonicalJson } from '../work/canonical.js';
 import { parseReasoningEffort } from '../../agent/reasoning-effort.js';
 import { ResidentProtocolError } from '../resident-protocol/index.js';
 import { sha256 } from '../work/canonical.js';
+import type { AssignmentConclusion } from './resident-assignments.js';
+
+export type ScheduledAssignmentConclusion = Pick<AssignmentConclusion, 'state' | 'summary'>;
 
 export interface ScheduledChannelTurn {
   runId: string; jobId: string; channelId: string; prompt: string;
@@ -25,6 +28,7 @@ export function createScheduledChannelTurns(options: {
   context(botId?: string): MessagingActorContext; beginWork(): () => void;
   expireWork?(workId: string): void; now?(): number;
   canDispatch?(input: ScheduledChannelTurn): boolean;
+  conclusion?(workId: string): ScheduledAssignmentConclusion | null;
 }) {
   const db = options.database;
   const pending = new Map<string,Promise<void>>();
@@ -63,7 +67,12 @@ export function createScheduledChannelTurns(options: {
     const rows = children(value);
     if (rows.length && rows.every(row=>terminal.has(row.state))) {
       if (rows.some(row=>row.state!=='succeeded')) return {state: rows.some(row=>row.state==='cancelled')?'cancelled':'failed',error:failure(value.runId)?String(JSON.parse(failure(value.runId)!.payload).error):'Scheduled channel Work did not complete.',workIds:rows.map(row=>row.id)};
-      if (rows.every(row=>row.messageId)) return {state:'succeeded',text:rows.map(row=>row.text??'').join('\n\n'),workIds:rows.map(row=>row.id)};
+      if (rows.every(row=>row.messageId)) {
+        const conclusion = rows.map(row => options.conclusion?.(row.id))
+          .find(value => value?.state === 'blocked' || value?.state === 'cancelled');
+        return {state:'succeeded',text:rows.map(row=>row.text??'').join('\n\n'),workIds:rows.map(row=>row.id),
+          ...(conclusion ? { conclusion } : {})};
+      }
     }
     const failed = failure(value.runId);
     if (!rows.length && failed && !pending.has(value.runId)) return {state:'failed',error:String(JSON.parse(failed.payload).error)};

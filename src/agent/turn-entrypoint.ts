@@ -85,6 +85,7 @@ export function createTrackedAgentRunner(agent: Parameters<typeof executeTracked
       ?? createSeededToolRegistry(tools);
     ctx.abortSignal?.throwIfAborted();
     const run = await agent.runWithTurn(ctx.chatId, userMessage, {
+      delegatedTurn: true,
       modelOverride: options?.modelOverride,
       effort: options?.effort,
       onEvent: ctx.onEvent,

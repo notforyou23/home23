@@ -12,6 +12,7 @@ import yaml from 'js-yaml';
 import type { HomeConfig, IdentityLayerConfig, EmbeddedAgentConfig } from './types.js';
 import { validateReasoningEffortConfig } from './agent/reasoning-effort.js';
 import type { ModelAliases } from './agent/model-resolution.js';
+import { compileProjectWriteRoots } from './agent/tools/project-write-roots.js';
 
 const PACKAGED_HOME23_ROOT = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
@@ -121,6 +122,7 @@ export function loadConfig(agentName: string): HomeConfig {
   config = deepMerge(config, secrets);
 
   validateReasoningEffortConfig(config);
+  compileProjectWriteRoots(config.files, getAgentPaths(agentName, home23Root).instanceRoot);
 
   // Layer 4: Per-agent secrets (agents.<name>.telegram.botToken → channels.telegram.botToken)
   const agentSecrets = (secrets as Record<string, unknown>).agents as Record<string, unknown> | undefined;

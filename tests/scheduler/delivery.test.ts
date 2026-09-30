@@ -15,6 +15,7 @@ import { DeliveryManager } from '../../src/scheduler/delivery.ts';
 import { AttentionGate } from '../../src/agent/attention/attention-gate.ts';
 import type { ChannelAdapter, OutgoingResponse } from '../../src/channels/router.ts';
 import type { CronJob } from '../../src/scheduler/cron.ts';
+import { runScheduledChannelTurn, deliverScheduledChannelFailure } from '../../src/scheduler/channel-run.js';
 
 function makeJob(overrides: Partial<CronJob> = {}): CronJob {
   return {
@@ -30,6 +31,20 @@ function makeJob(overrides: Partial<CronJob> = {}): CronJob {
     ...overrides,
   };
 }
+
+test('failures delivery sends a blocked channel-run conclusion and records confirmed delivery', async () => {
+  const sent: OutgoingResponse[] = [];
+  const adapter: ChannelAdapter = { name: 'telegram', async start() {}, async stop() {}, async send(response) { sent.push(response); } };
+  const manager = new DeliveryManager(new Map([['telegram', adapter]]));
+  const job = makeJob({ delivery: { mode: 'failures', channel: 'telegram', to: '123456789' } });
+  const conclusion = { state: 'blocked', summary: 'STATE.json is outside the allowed project roots' };
+  const result = await runScheduledChannelTurn({ runId: 'sched-run-fixture', jobId: job.id, channelId: 'topic', prompt: 'Run the cycle' },
+    { runId: 'sched-run-fixture', persistCanonicalTurn: () => {} }, async () => ({ state: 'succeeded', text: 'Blocked', conclusion }));
+  const delivered = await deliverScheduledChannelFailure(result, result => manager.deliver(job, result));
+  assert.equal(sent.length, 1); assert.match(sent[0].text, /reported blocked: STATE.json/);
+  assert.deepEqual(delivered.outcomeLayers?.task?.evidence?.conclusion, conclusion);
+  assert.equal(delivered.deliveryOutcome?.status, 'delivered');
+});
 
 test('summary delivery sends the job response excerpt when a successful job produced human-facing content', async () => {
   const sent: OutgoingResponse[] = [];

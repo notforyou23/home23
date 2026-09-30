@@ -161,6 +161,11 @@ export interface HomeConfig {
 
   providers?: Record<string, unknown>;
 
+  files?: {
+    /** Resident file-tool grants; paths and denials are relative to instanceDir. */
+    projectWriteRoots?: Array<{ path: string; deny?: string[] }>;
+  };
+
   shell?: {
     /** Full host filesystem access, explicitly selected by the owner. */
     machineAccess?: boolean;

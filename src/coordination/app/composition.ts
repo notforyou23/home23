@@ -1260,6 +1260,7 @@ export function createCoordinationProcess(
     });
     reconcileBotInvocations = botInvocations.reconcile;
     const scheduledTurns = createScheduledChannelTurns({database, channels, submit: messageSubmission, beginWork: lifecycle.beginWork,
+      conclusion: workId => residentAssignments.latest(workId),
       canDispatch: input => !input.jobId.startsWith('native-chess:') || !!database.readOne(
         "SELECT i.id FROM chess_turn_intents i JOIN chess_games g ON g.id=i.game_id AND g.version=i.game_version AND g.status='active' WHERE i.run_id=? AND i.status IN ('queued','dispatched')", input.runId),
       expireWork: workId => {

@@ -14,7 +14,7 @@
  * receives ONLY these tools. Registry wiring happens separately.
  */
 
-import { mkdirSync, readdirSync, statSync, writeFileSync, renameSync, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, readdirSync, statSync, lstatSync, writeFileSync, renameSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 
@@ -38,7 +38,7 @@ interface CompiledRoots {
   maxWriteBytes: number;
 }
 
-function isWithin(root: string, candidate: string): boolean {
+export function isWithinFileRoot(root: string, candidate: string): boolean {
   const rel = path.relative(root, candidate);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
@@ -76,7 +76,7 @@ function compileRoots(config: RestrictedFileToolsConfig): CompiledRoots {
  * deepest existing ancestor is realpathed and the (nonexistent, therefore
  * symlink-free) remainder is rejoined.
  */
-function canonicalize(declared: string, allowMissingSuffix: boolean): string {
+export function canonicalizeFilePath(declared: string, allowMissingSuffix: boolean): string {
   if (!declared || declared.includes('\0')) throw new Error('path must be a non-empty string');
   const normalized = path.resolve(declared);
   try {
@@ -86,7 +86,12 @@ function canonicalize(declared: string, allowMissingSuffix: boolean): string {
   }
   let ancestor = normalized;
   const missing: string[] = [];
-  while (!existsSync(ancestor)) {
+  for (;;) {
+    // A dangling symlink exists to lstat: realpath must reject it instead of
+    // treating it as a missing leaf that a write could create outside the root.
+    try { lstatSync(ancestor); break; } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
     const parent = path.dirname(ancestor);
     if (parent === ancestor) throw new Error(`no existing ancestor for ${normalized}`);
     missing.unshift(path.basename(ancestor));
@@ -100,15 +105,15 @@ async function authorize(
 ): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
   let resolved: string;
   try {
-    resolved = canonicalize(declared, mode === 'write');
+    resolved = canonicalizeFilePath(declared, mode === 'write');
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
   for (const d of roots.deny) {
-    if (isWithin(d, resolved)) return { ok: false, reason: `denied path: ${resolved} is under ${d}` };
+    if (isWithinFileRoot(d, resolved)) return { ok: false, reason: `denied path: ${resolved} is under ${d}` };
   }
   const allowed = mode === 'write' ? roots.write : roots.read;
-  if (!allowed.some((root) => isWithin(root, resolved))) {
+  if (!allowed.some((root) => isWithinFileRoot(root, resolved))) {
     return { ok: false, reason: `outside ${mode} roots: ${resolved}` };
   }
   return { ok: true, path: resolved };

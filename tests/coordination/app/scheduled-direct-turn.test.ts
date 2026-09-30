@@ -4,6 +4,7 @@ import { ResidentCoordinationAdapter, createM11ResidentCoordinationPort } from '
 import type { ResidentAgentPort } from '../../../src/coordination-adapter/index.js';
 import { createDirectMessageSubmissionService, SqliteDirectMessageContext } from '../../../src/coordination/app/index.js';
 import { createScheduledChannelTurns } from '../../../src/coordination/app/scheduled-turns.js';
+import { runScheduledChannelTurn } from '../../../src/scheduler/channel-run.js';
 import { createForegroundDetachmentConsumer } from '../../../src/coordination/app/foreground-detachments.js';
 import type { CoordinationTurnOrigin } from '../../../src/agent/types.js';
 import { SqliteMessagingRepository, SqliteBotConversationBindingAdapter } from '../../../src/coordination/channels/index.js';
@@ -76,6 +77,19 @@ function fixture(t: test.TestContext) {
     beginWork: () => () => {}, expireWork: () => {}, now: () => 1_000};
   return {database, messages, work, leases, context, direct, options, instructions, origins, finish};
 }
+
+test('a direct scheduled turn returns a blocked assignment as a failed scheduler run', async t => {
+  const f = fixture(t);
+  const conclusion = { state: 'blocked' as const, summary: 'Project state write refused' };
+  const scheduled = createScheduledChannelTurns({ ...f.options, conclusion: () => conclusion });
+  await scheduled.run(input); await until(() => f.instructions.length === 1);
+  f.finish({ text: 'I could not save the reflection.', model: 'fixture', toolCallCount: 0, durationMs: 1 });
+  await until(() => f.work.get(f.origins[0].workId)!.state === 'succeeded');
+  await until(() => f.database.readAll("SELECT id FROM messages WHERE kind='result' AND work_id=?", f.origins[0].workId).length === 1);
+  const result = await runScheduledChannelTurn(input, { runId, persistCanonicalTurn: () => {} }, turn => scheduled.run(turn));
+  assert.equal(result.status, 'error'); assert.equal(result.semanticStatus, 'failed');
+  assert.deepEqual(result.outcomeLayers?.task?.evidence?.conclusion, conclusion);
+});
 
 test('resident morning follow-up uses its own direct canonical Work and private instruction across reattachment', async t => {
   const f = fixture(t); let scheduled = createScheduledChannelTurns(f.options);

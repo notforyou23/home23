@@ -13,7 +13,9 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { assembleContext } from '../../src/agent/context-assembly.js';
+import { assembleContext, AUTHORED_SURFACE_MAX_CHARS, SITUATIONAL_AWARENESS_MAX_CHARS } from '../../src/agent/context-assembly.js';
+import { selfReadTool } from '../../src/agent/tools/identity.js';
+import { EventLedger } from '../../src/agent/event-ledger.js';
 import type { TriggeredSurfaceConfig } from '../../src/agent/context-assembly.js';
 
 function ws(files: Record<string, string>): string {
@@ -97,6 +99,62 @@ test('a missing triggered-surface file is a silent no-op', async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('an oversized carry-forward surface loads a bounded head with an exact self_read offset', async () => {
+  const content = '\n\n# Carry forward\n' + 'Listen carefully 🙂. Preserve the source and read the continuation.\n\n'.repeat(4000) + 'TAIL_SENTINEL';
+  const dir = ws({ 'CARRY_FORWARD.md': content });
+  try {
+    const result = await assemble(dir, 'carry forward', [{ file: 'CARRY_FORWARD.md', keywords: ['carry forward'] }]);
+    assert.ok(result.block.length < AUTHORED_SURFACE_MAX_CHARS + 200);
+    assert.doesNotMatch(result.block, /TAIL_SENTINEL/);
+    const marker = result.block.match(/\[context-cap: CARRY_FORWARD.md is (\d+) chars; loaded first (\d+) chars; continue with self_read file="CARRY_FORWARD.md" offset=(\d+)\]/);
+    assert.ok(marker); assert.equal(Number(marker[1]), content.length); assert.equal(marker[2], marker[3]);
+    const offset = Number(marker[3]);
+    assert.ok(offset > 0 && offset < AUTHORED_SURFACE_MAX_CHARS);
+    const start = result.block.indexOf('Relevant context (CARRY_FORWARD):\n') + 'Relevant context (CARRY_FORWARD):\n'.length;
+    assert.equal(result.block.slice(start, marker.index! - 1), content.slice(0, offset));
+    const continued = await selfReadTool.execute({ file: 'CARRY_FORWARD.md', offset, limit: 200 }, { workspacePath: dir } as never);
+    assert.ok(continued.content.startsWith(content.slice(offset, offset + 200)));
+    assert.ok(result.events.some(event => event.event_type === 'SituationalAwarenessCapped' && event.payload.reason === 'file_ceiling'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const degraded of [false, true]) test(`authored surfaces share the total ceiling and keep source pointers (${degraded ? 'degraded' : 'healthy'})`, async () => {
+  const files = Object.fromEntries(Array.from({ length: 4 }, (_, i) => [`NOTE_${i}.md`, `# Note ${i}\n` + 'source evidence '.repeat(900)]));
+  const dir = ws(files);
+  try {
+    const ledger = new EventLedger(path.join(dir, 'brain'));
+    const result = await assembleContext('carry forward', 'cap-fixture', [{ role: 'user', content: 'prior' }], {
+      workspacePath: dir, brainDir: path.join(dir, 'brain'), enginePort: 5002, sessionId: 'cap-fixture',
+      signal: new AbortController().signal, semanticEmbed: () => null,
+      contextSearch: degraded ? async () => { throw new Error('fixture unavailable'); } : emptySearch,
+      triggeredSurfaces: Object.keys(files).map(file => ({ file, keywords: ['carry forward'] })),
+    }, ledger);
+    assert.equal(result.degraded, degraded);
+    assert.ok(result.block.length <= SITUATIONAL_AWARENESS_MAX_CHARS);
+    assert.ok(result.block.endsWith('[/SITUATIONAL AWARENESS]'));
+    assert.match(result.block, /Relevant context \(NOTE_2.md\):\n\[context-cap: omitted/);
+    assert.match(result.block, /self_read file="NOTE_2.md" offset=0/);
+    const caps = result.events.filter(event => event.event_type === 'SituationalAwarenessCapped');
+    assert.equal(caps.length, 2); assert.ok(caps.every(event => event.payload.reason === 'total_ceiling'));
+    assert.deepEqual(ledger.readByType('SituationalAwarenessCapped').map(event => ({ id: event.event_id, payload: event.payload })),
+      caps.map(event => ({ id: event.event_id, payload: event.payload })), 'ranking caps reach the ledger on both paths');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('authored surfaces do not consume the separate retrieved-evidence budget', async () => {
+  const dir = ws({ 'PERSONAL.md': '# Personal\n' + 'friendship '.repeat(800), 'DOCTRINE.md': '# Doctrine\n' + 'care '.repeat(1700) });
+  try {
+    const result = await assembleContext('review the evidence', 'budget-fixture', [], {
+      workspacePath: dir, brainDir: path.join(dir, 'brain'), enginePort: 5002, sessionId: 'budget-fixture',
+      signal: new AbortController().signal, contextSearch: async () => ({ results: [{ concept: 'RETRIEVED_SENTINEL', similarity: 0.1 }],
+        sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'hit' } }), semanticEmbed: () => null,
+    });
+    assert.match(result.block, /RETRIEVED_SENTINEL/);
+    assert.match(result.block, /Relevant context \(PERSONAL\)/);
+    assert.match(result.block, /Relevant context \(DOCTRINE\)/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('triggered authored doctrine survives both the file target and aggregate context limit', async () => {

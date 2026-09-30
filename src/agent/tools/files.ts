@@ -12,6 +12,8 @@ import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
 import { refuseResidentWrite } from './tracked-source-guard.js';
 import { clipToolOutput } from './clip-output.js';
+import { canonicalizeFilePath, isWithinFileRoot } from './restricted-files.js';
+import type { ProjectWriteRoot } from './project-write-roots.js';
 import {
   refuseReadOutsideRoots,
   resolveShellFsAuthority,
@@ -48,38 +50,6 @@ export function resolvePath(inputPath: string, workspacePath: string): string {
   return resolve(workspacePath, relativeInput);
 }
 
-function isWithin(root: string, candidate: string): boolean {
-  const rel = relative(root, candidate);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
-}
-
-/**
- * Canonicalize a declared path for confinement checks.
- * Symlinks are resolved so an escape link fails the workspace prefix check.
- * For writes, missing trailing components are allowed: the deepest existing
- * ancestor is realpathed and the remainder rejoined.
- */
-function canonicalizeForConfine(declared: string, allowMissingLeaf: boolean): string {
-  if (!declared || declared.includes('\0')) {
-    throw new Error('path must be a non-empty string');
-  }
-  const normalized = resolve(declared);
-  try {
-    return realpathSync(normalized);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !allowMissingLeaf) throw error;
-  }
-  let ancestor = normalized;
-  const missing: string[] = [];
-  while (!existsSync(ancestor)) {
-    const parent = dirname(ancestor);
-    if (parent === ancestor) throw new Error(`no existing ancestor for ${normalized}`);
-    missing.unshift(basename(ancestor));
-    ancestor = parent;
-  }
-  return resolve(realpathSync(ancestor), ...missing);
-}
-
 /**
  * Refuse mutating file-tool paths that escape the resident workspace.
  * Shared by write_file / edit_file (and ready for delete/move).
@@ -87,7 +57,7 @@ function canonicalizeForConfine(declared: string, allowMissingLeaf: boolean): st
 export function refuseWorkspaceEscape(
   targetPath: string,
   workspacePath: string,
-  options: { allowMissingLeaf?: boolean } = {},
+  options: { allowMissingLeaf?: boolean; projectWriteRoots?: readonly ProjectWriteRoot[]; inputPath?: string } = {},
 ): ToolResult | null {
   if (!targetPath) {
     return {
@@ -118,7 +88,7 @@ export function refuseWorkspaceEscape(
 
   let canonical: string;
   try {
-    canonical = canonicalizeForConfine(targetPath, options.allowMissingLeaf ?? true);
+    canonical = canonicalizeFilePath(targetPath, options.allowMissingLeaf ?? true);
   } catch (error) {
     return {
       content: `write refused: ${error instanceof Error ? error.message : String(error)}`,
@@ -127,9 +97,42 @@ export function refuseWorkspaceEscape(
     };
   }
 
-  if (!isWithin(workspaceRoot, canonical)) {
+  const projects = options.projectWriteRoots ?? [];
+  const roots = [workspaceRoot, ...projects.map(root => root.path)];
+  const refuse = (reason: string): ToolResult => ({
+    content: `write refused: ${reason}; allowed roots: ${roots.join(', ')}`,
+    is_error: true,
+    metadata: { code: WORKSPACE_ESCAPE_REFUSED },
+  });
+  if (projects.length) {
+    if (options.inputPath !== undefined && !isAbsolute(options.inputPath)) {
+      const first = options.inputPath.replace(/\\/g, '/').split('/').find(segment => segment && segment !== '.');
+      const resolvedFirst = relative(resolve(workspacePath), resolve(targetPath)).split(sep)[0];
+      if (first === 'instances' || resolvedFirst === 'instances') {
+        return refuse('relative instances/... paths would create a shadow tree; use an absolute project path');
+      }
+    }
+    try {
+      // Revalidate grants and deny aliases at write time, before any allow rule.
+      for (const root of projects) {
+        if (realpathSync(root.path) !== root.path || !statSync(root.path).isDirectory()) {
+          return refuse(`project root changed or is a symlink: ${root.path}`);
+        }
+        for (const denied of root.deny) {
+          if (isWithinFileRoot(denied, resolve(targetPath)) ||
+              isWithinFileRoot(canonicalizeFilePath(denied, true), canonical)) {
+            return refuse(`denied project path: ${denied}`);
+          }
+        }
+      }
+    } catch (error) {
+      return refuse(`invalid project write roots: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (!roots.some(root => isWithinFileRoot(root, canonical))) {
     return {
-      content: `write refused: path escapes workspace (${workspaceRoot}): ${canonical}`,
+      content: projects.length ? `write refused: path escapes allowed roots (${roots.join(', ')}): ${canonical}`
+        : `write refused: path escapes workspace (${workspaceRoot}): ${canonical}`,
       is_error: true,
       metadata: { code: WORKSPACE_ESCAPE_REFUSED },
     };
@@ -180,18 +183,20 @@ export const readFileTool: ToolDefinition = {
 
 export const writeFileTool: ToolDefinition = {
   name: 'write_file',
-  description: 'Create or overwrite a file inside your workspace. Creates parent directories if needed. Path can be absolute or relative to your workspace. Paths outside the workspace are refused. Tracked repo source is refused; local house state under the workspace is allowed.',
+  description: 'Create or overwrite a file inside your workspace or explicitly granted resident project roots, respecting denied paths. Creates parent directories if needed. Paths can be absolute or relative to your workspace; use absolute paths for project roots. Tracked repo source is refused.',
   input_schema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Path to the file (absolute under workspace, or relative to your workspace)' },
+      path: { type: 'string', description: 'Path to the file (absolute under workspace or a granted project root, or relative to workspace)' },
       content: { type: 'string', description: 'Content to write' },
     },
     required: ['path', 'content'],
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const path = resolvePath(input.path as string, ctx.workspacePath);
-    const escaped = refuseWorkspaceEscape(path, ctx.workspacePath, { allowMissingLeaf: true });
+    const escaped = refuseWorkspaceEscape(path, ctx.workspacePath, {
+      allowMissingLeaf: true, projectWriteRoots: ctx.projectWriteRoots, inputPath: input.path as string,
+    });
     if (escaped) return escaped;
     const refused = refuseResidentWrite(path, ctx.projectRoot, ctx.instanceDir);
     if (refused) return refused;
@@ -208,11 +213,11 @@ export const writeFileTool: ToolDefinition = {
 
 export const editFileTool: ToolDefinition = {
   name: 'edit_file',
-  description: 'Replace a string in an existing file inside your workspace. The old_string must appear exactly once (or use replace_all). Path can be absolute or relative to your workspace. Paths outside the workspace are refused. Tracked repo source is refused; local house state under the workspace is allowed.',
+  description: 'Replace a string in an existing file inside your workspace or explicitly granted resident project roots, respecting denied paths. The old_string must appear exactly once (or use replace_all). Use absolute paths for project roots. Tracked repo source is refused.',
   input_schema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Path to the file (absolute under workspace, or relative to your workspace)' },
+      path: { type: 'string', description: 'Path to the file (absolute under workspace or a granted project root, or relative to workspace)' },
       old_string: { type: 'string', description: 'The exact text to find and replace' },
       new_string: { type: 'string', description: 'The replacement text' },
       replace_all: { type: 'boolean', description: 'Replace all occurrences (default: false)' },
@@ -221,7 +226,9 @@ export const editFileTool: ToolDefinition = {
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const path = resolvePath(input.path as string, ctx.workspacePath);
-    const escaped = refuseWorkspaceEscape(path, ctx.workspacePath, { allowMissingLeaf: false });
+    const escaped = refuseWorkspaceEscape(path, ctx.workspacePath, {
+      allowMissingLeaf: false, projectWriteRoots: ctx.projectWriteRoots, inputPath: input.path as string,
+    });
     if (escaped) return escaped;
     const refused = refuseResidentWrite(path, ctx.projectRoot, ctx.instanceDir);
     if (refused) return refused;

@@ -3,7 +3,7 @@ import { Home23Adapter } from './channels/home23.js';
 import { createOwnerOutreachSender, createOwnerOutreachHandler } from './channels/owner-outreach.js';
 import { createResidentInitiativeHandler, createResidentInitiativeStatusHandler } from './channels/resident-initiative.js';
 import { createSeedOperatorOutreach } from './substrate/operator-outreach.js';
-import { runScheduledChannelTurn } from './scheduler/channel-run.js';
+import { runScheduledChannelTurn, deliverScheduledChannelFailure } from './scheduler/channel-run.js';
 /**
  * Home23 — Agent Harness Entry Point
  *
@@ -65,6 +65,7 @@ import { createAsyncWorkRouter } from './routes/async-work.js';
 import { AttentionGate, type OutboundSignal } from './agent/attention/attention-gate.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
 import { resolveShellFsAuthority } from './agent/tools/shell-fs-authority.js';
+import { compileProjectWriteRoots } from './agent/tools/project-write-roots.js';
 import { BrainOperationsClient } from './agent/brain-operations/client.js';
 import {
   preserveCronBrainQueryDeliveryFailure,
@@ -396,6 +397,7 @@ async function main(): Promise<void> {
 
   // ── Tool Context (pre-wired, agent loop + scheduler added below) ──
   const shellCfg = config.shell;
+  const projectWriteRoots = compileProjectWriteRoots(config.files, INSTANCE_DIR);
   const shellFsAuthority = resolveShellFsAuthority(shellCfg, {
     projectRoot: PROJECT_ROOT,
     instanceDir: INSTANCE_DIR,
@@ -413,6 +415,7 @@ async function main(): Promise<void> {
     projectRoot: PROJECT_ROOT,
     instanceDir: INSTANCE_DIR,
     shellFsAuthority,
+    projectWriteRoots,
     enginePort: DASHBOARD_PORT,
     agentName,
     cosmo23BaseUrl,
@@ -876,6 +879,16 @@ async function main(): Promise<void> {
     jobResult.deliveryOutcome = outcome;
     return outcome;
   };
+  const runCronChannelTurn = async (job: CronJob,
+    input: import('./coordination/app/scheduled-turns.js').ScheduledChannelTurn,
+    execution: import('./scheduler/cron.js').JobExecutionContext,
+  ): Promise<JobResult> => {
+    const result = await runScheduledChannelTurn(input, execution, input => {
+      if (!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
+      return residentCoordinationHarness.scheduledTurn(input);
+    });
+    return deliverScheduledChannelFailure(result, result => deliverCronJobResult(job, result, execution.runId));
+  };
   let scheduler: CronScheduler | null = null;
 
   if (config.scheduler) {
@@ -891,10 +904,7 @@ async function main(): Promise<void> {
           if (isHomeVibe && (!homeVibeConfig || job.id !== HOME_VIBE_JOB_ID || joined || job.payload.channelId)) {
             throw new Error('Home Vibe publication is not configured for this isolated resident job');
           }
-          if (!joined && execution?.canonicalTurn) return runScheduledChannelTurn(execution.canonicalTurn,execution,input=>{
-            if(!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
-            return residentCoordinationHarness.scheduledTurn(input);
-          });
+          if (!joined && execution?.canonicalTurn) return runCronChannelTurn(job, execution.canonicalTurn, execution);
           // Full AgentLoop — 19 tools, isolated chat history per job
           const timeoutMs = (job.payload.timeoutSeconds ?? 21_600) * 1000;
 
@@ -928,12 +938,9 @@ async function main(): Promise<void> {
             return { status: 'error', error: 'agentTurn payload has neither message nor readable messagePath', durationMs };
           }
 
-          if (!joined && job.payload.channelId && execution) return runScheduledChannelTurn({runId:execution.runId,jobId:job.id,
+          if (!joined && job.payload.channelId && execution) return runCronChannelTurn(job, {runId:execution.runId,jobId:job.id,
             channelId:job.payload.channelId,prompt:resolvedMessage,timeoutMs,...(job.payload.model?{modelAlias:job.payload.model}:{}),
-            ...(job.payload.effort?{reasoningEffort:job.payload.effort}:{})},execution,input=>{
-              if(!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
-              return residentCoordinationHarness.scheduledTurn(input);
-            });
+            ...(job.payload.effort?{reasoningEffort:job.payload.effort}:{})}, execution);
           if (job.payload.sessionHistory === 'fresh') {
             agent.getHistory().rotate(cronChatId);
           }

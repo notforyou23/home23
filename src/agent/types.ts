@@ -82,6 +82,8 @@ export interface TurnRuntimeContext {
     phase: string | null;
   }) => void;
   delegatedContext?: { systemPrompt: string; workspacePath: string };
+  delegatedTurn?: boolean;
+  delegationOrigin?: DelegationTurnOrigin;
   /** Immutable per-turn registry override. Absent means the loop's shared registry. */
   registry?: ToolRegistry;
   /** Exact canonical origin/destination, present only on a resident coordination turn. */
@@ -145,6 +147,8 @@ export interface ToolContext {
   };
   /** Absolute instance directory (instances/<agent>), used for default shell roots. */
   instanceDir?: string;
+  /** Owner-configured project grants for resident turns only, never delegated turns. */
+  projectWriteRoots?: readonly import('./tools/project-write-roots.js').ProjectWriteRoot[];
   enginePort: number;
   agentName: string;                  // HOME23_AGENT
   cosmo23BaseUrl: string;             // http://localhost:43210

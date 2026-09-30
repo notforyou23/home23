@@ -128,7 +128,7 @@ function splitSections(content: string): Section[] {
 }
 
 /** Truncate a single over-budget block at a paragraph/sentence/word boundary — never mid-word. */
-function boundaryTruncate(text: string, limit: number): string {
+export function boundaryTruncate(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const window = text.slice(0, limit);
   const para = window.lastIndexOf('\n\n');

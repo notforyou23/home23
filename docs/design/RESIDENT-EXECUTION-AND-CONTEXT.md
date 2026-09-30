@@ -8,7 +8,7 @@ Review descendants recover the coordinator's saved context through their canonic
 
 ## Authored context
 
-Configured authored identity and startup files load complete. Character targets indicate maintenance needs; they do not authorize omission of an owner decision or a sentence cutoff. Generated telemetry and retrieved evidence retain their separate bounded handling and retrieval mechanisms. Full loading is a fallback against losing instructions, not an excuse for continually growing identity files.
+Configured authored identity and startup files load complete. Character targets indicate maintenance needs; they do not authorize omission of an owner decision or a sentence cutoff. Generated telemetry and retrieved evidence retain their separate bounded handling and retrieval mechanisms. Situational-awareness files, including generated carry-forward notes admitted through triggered surfaces, have a 16,000-character reader ceiling and share a 40,000-character assembly ceiling, with visible caps and source-reading pointers. Full loading is a fallback against losing instructions, not an excuse for continually growing identity files.
 
 Run `npm run identity:audit -- /absolute/instance/workspace` when maintaining an agent. Inspect every configured identity and startup file: size, modification date, headings and source hash. A file's modification date does not prove its facts are current. Review current owner decisions and actual sources when reconciling contradictory statements.
 

@@ -12,6 +12,7 @@ import { extractShellWriteTargets, refuseShellWrite } from '../../../src/agent/t
 import { inspectResidentWrite, TRACKED_SOURCE_REFUSED } from '../../../src/agent/tools/tracked-source-guard.js';
 import { shellTool } from '../../../src/agent/tools/shell.js';
 import type { ToolContext } from '../../../src/agent/types.js';
+import { compileProjectWriteRoots } from '../../../src/agent/tools/project-write-roots.js';
 
 function git(cwd: string, args: string[]): void {
   execFileSync('git', args, { cwd, stdio: ['ignore', 'ignore', 'pipe'] });
@@ -88,6 +89,21 @@ test('write_file and edit_file refuse tracked source without touching it', async
   assert.equal(edit.is_error, true);
   assert.match(edit.content, /escapes workspace|tracked repo source/);
   assert.equal(readFileSync(tracked, 'utf-8'), before);
+});
+
+test('resident project grants leave the tracked-source guard active even inside the current workspace', async () => {
+  const { root, ctx } = houseFixture();
+  const instance = path.join(root, 'instances/jerry');
+  mkdirSync(path.join(instance, 'projects'));
+  ctx.projectWriteRoots = compileProjectWriteRoots({ projectWriteRoots: [{ path: 'projects' }] }, instance);
+  ctx.workspacePath = path.join(root, 'src');
+  const file = path.join(root, 'src/agent/tools/web.ts');
+  const before = readFileSync(file, 'utf8');
+  for (const result of [await writeFileTool.execute({ path: file, content: 'changed' }, ctx),
+    await editFileTool.execute({ path: file, old_string: 'localhost', new_string: 'changed' }, ctx)]) {
+    assert.equal(result.is_error, true); assert.equal(result.metadata?.code, TRACKED_SOURCE_REFUSED);
+  }
+  assert.equal(readFileSync(file, 'utf8'), before);
 });
 
 test('write_file updates workspace house state and refuses escapes', async () => {

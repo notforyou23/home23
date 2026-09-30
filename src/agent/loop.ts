@@ -1,4 +1,5 @@
 import { attachmentContext } from "./input-attachments.js";
+import { projectWriteRootsPrompt } from './tools/project-write-roots.js';
 import { projectContinuityPrompt, type ProjectContinuity } from '../coordination/projects/continuity.js';
 import { parseHistoricalContext, historicalContextBlock, type HistoricalContextEntry } from './historical-context.js';
 import { cacheableSystemPrompt, cacheUsage, promptCacheKey } from './prompt-cache.js';
@@ -1026,6 +1027,7 @@ export class AgentLoop {
       firstTokenTimeoutMs?: number;
       registry?: ToolRegistry;
       delegatedContext?: { systemPrompt: string; workspacePath: string };
+      delegatedTurn?: boolean;
       effort?: ReasoningEffort;
       coordinationOrigin?: import('./types.js').CoordinationTurnOrigin;
       coordinationDelivery?: import('./types.js').CoordinationTurnDeliveryContext;
@@ -1205,6 +1207,8 @@ export class AgentLoop {
       ...(historyBackfill.length ? { historyBackfill } : {}),
       ...(opts.coordinationWorkDestination ? { coordinationWorkDestination: opts.coordinationWorkDestination } : {}),
       ...(opts.parentWorkId ? { parentWorkId: opts.parentWorkId } : {}),
+      ...(opts.delegationOrigin ? { delegationOrigin: opts.delegationOrigin } : {}),
+      ...(opts.delegatedTurn ? { delegatedTurn: true } : {}),
       ...(opts.delegatedContext ? { delegatedContext: Object.freeze({ ...opts.delegatedContext }) } : {}),
     });
     let firstTokenWatchdog: unknown = null;
@@ -1417,6 +1421,8 @@ export class AgentLoop {
       authenticatedUserMessage: undefined,
       channelId: turnRuntime?.coordinationOrigin?.channelId ?? this.toolContext.channelId,
       workspacePath: turnRuntime?.delegatedContext?.workspacePath ?? this.toolContext.workspacePath,
+      projectWriteRoots: turnRuntime?.delegatedTurn || turnRuntime?.delegatedContext || turnRuntime?.delegationOrigin
+        ? undefined : this.toolContext.projectWriteRoots,
       memoryObjectStore: this.memoryStore,
       relationshipLedger: this.relationshipLedger,
       parentWorkId: turnRuntime?.coordinationWorkDestination?.parentWorkId
@@ -1547,6 +1553,8 @@ export class AgentLoop {
         }
       }
 
+      const projectFilePrompt = projectWriteRootsPrompt(runContext.projectWriteRoots);
+      if (projectFilePrompt) rawSystemPrompt += `\n\n${projectFilePrompt}`;
 
       // ── Session Bootstrap (situational + temporal awareness) ──
       // Fresh session OR resumed after idle-gap → inject the files listed in
