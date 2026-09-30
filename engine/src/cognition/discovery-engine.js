@@ -241,26 +241,50 @@ class DiscoveryEngine {
    * Returns [] if queue empty.
    */
   pop(n = 1) {
-    const ranked = Array.from(this.queue.values()).sort((a, b) => b.score - a.score);
+    const queued = Array.from(this.queue.values());
     const out = [];
-    for (const candidate of ranked) {
+    for (const candidate of queued) {
       if (this._recentlyConsumed(candidate)) this.queue.delete(candidate.key);
     }
-    const remaining = ranked.filter(candidate => this.queue.has(candidate.key));
+    let remaining = queued.filter(candidate => this.queue.has(candidate.key));
     while (out.length < n && remaining.length) {
+      // A prior selection in this drain may have consumed equivalent evidence.
+      remaining = remaining.filter(candidate => {
+        if (!this._recentlyConsumed(candidate)) return true;
+        this.queue.delete(candidate.key);
+        return false;
+      });
+      if (!remaining.length) break;
+      const { materialScoreFloor, rankScore } = rankAttentionCandidates(remaining);
       // A fresh health/weather sample is valuable evidence, but cannot itself
       // satisfy the opportunity for remembered material or owner contact. With
       // scores above contact, CPU↔health otherwise resets this streak forever.
       const exploratoryIndex = remaining.findIndex(isMaterialInquiry);
       const criticalIndex = remaining.findIndex(candidate => isCriticalObservation(candidate.observation));
-      const index = criticalIndex >= 0 ? criticalIndex
-        : this.consecutiveOperational >= this.config.maxConsecutiveOperational && exploratoryIndex >= 0
-          ? exploratoryIndex : 0;
+      const materialFairness = this.consecutiveOperational >= this.config.maxConsecutiveOperational && exploratoryIndex >= 0;
+      const index = criticalIndex >= 0 ? criticalIndex : materialFairness ? exploratoryIndex : 0;
+      const selected = remaining[index];
+      const routineMachine = remaining.filter(isRoutineMachineCandidate);
+      const streakBefore = this.consecutiveOperational;
+      const selection = {
+        eligibleCount: remaining.length,
+        materialInquiryCount: remaining.filter(isMaterialInquiry).length,
+        routineMachineCount: routineMachine.length,
+        criticalObservationCount: remaining.filter(candidate => isCriticalObservation(candidate.observation)).length,
+        highestEligibleScore: highestFiniteScore(remaining),
+        materialScoreFloor,
+        selectedRankScore: Number.isFinite(rankScore(selected)) ? rankScore(selected) : null,
+        reason: criticalIndex >= 0 ? 'critical_observation' : materialFairness ? 'material_fairness'
+          : isMaterialInquiry(selected) && routineMachine.some(candidate => candidate.score >= selected.score)
+            ? 'material_before_routine_machine' : 'ranked_score',
+        nonMaterialStreakBefore: streakBefore,
+      };
       const [candidate] = remaining.splice(index, 1);
       this.queue.delete(candidate.key);
       if (this._recentlyConsumed(candidate)) continue;
       out.push(candidate);
       this.consecutiveOperational = isMaterialInquiry(candidate) ? 0 : this.consecutiveOperational + 1;
+      candidate.attentionSelection = { ...selection, nonMaterialStreakAfter: this.consecutiveOperational };
       const fingerprint = this._evidenceFingerprint(candidate);
       this.consumedEvidence.set(fingerprint, Date.now());
       this.consumedSubjects.set(fingerprint, this._evidenceSubject(candidate));
@@ -280,7 +304,9 @@ class DiscoveryEngine {
    * Peek without draining. For observability.
    */
   peek(n = 10) {
-    return Array.from(this.queue.values()).sort((a, b) => b.score - a.score).slice(0, n);
+    const candidates = Array.from(this.queue.values());
+    rankAttentionCandidates(candidates);
+    return candidates.slice(0, n);
   }
 
   getStats() {
@@ -930,6 +956,31 @@ function humanAge(ms) {
 
 function isMaterialInquiry(candidate) {
   return candidate.attentionKind === 'exploration' && !candidate.observation;
+}
+
+function isRoutineMachineCandidate(candidate) {
+  return candidate.attentionKind === 'operational'
+    && /^machine\./.test(candidate.observation?.channelId || '')
+    && !isCriticalObservation(candidate.observation);
+}
+
+function rankAttentionCandidates(candidates) {
+  // Contact and exploration currently score at least 0.65. Use the actual
+  // eligible finite scores so a lower-scored inquiry retains the same boundary.
+  // This changes selection rank only; confidence and raw scores stay intact.
+  const materialScores = candidates.filter(isMaterialInquiry).map(candidate => candidate.score).filter(Number.isFinite);
+  const materialScoreFloor = materialScores.length ? Math.min(...materialScores) : null;
+  const rankScore = candidate => materialScoreFloor !== null && isRoutineMachineCandidate(candidate)
+    ? Math.min(candidate.score, materialScoreFloor) : candidate.score;
+  candidates.sort((a, b) => rankScore(b) - rankScore(a)
+    // At the ceiling, material must precede routine telemetry even on a tie.
+    || (materialScoreFloor !== null ? Number(isRoutineMachineCandidate(a)) - Number(isRoutineMachineCandidate(b)) : 0));
+  return { materialScoreFloor, rankScore };
+}
+
+function highestFiniteScore(candidates) {
+  const scores = candidates.map(candidate => candidate.score).filter(Number.isFinite);
+  return scores.length ? Math.max(...scores) : null;
 }
 
 function isCriticalObservation(observation) {

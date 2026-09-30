@@ -248,6 +248,7 @@ class ThinkingMachine {
       // Event: ThoughtEmerged (raw output of deep-dive, pre-critique)
       this._emit('ThoughtEmerged', cycleSessionId, {
         candidate: { signal: candidate.signal, score: candidate.score, clusterId: candidate.clusterId, rationale: candidate.rationale },
+        ...(candidate.attentionSelection ? { attentionSelection: candidate.attentionSelection } : {}),
         textLength: dive.text?.length || 0,
         referencedNodes: dive.referencedNodes,
         neighborhoodSize: dive.usage?.neighborhoodSize,
@@ -347,6 +348,7 @@ class ThinkingMachine {
         // Event: ThoughtEmerged (revised)
         this._emit('ThoughtEmerged', cycleSessionId, {
           candidate: { signal: candidate.signal, score: candidate.score, clusterId: candidate.clusterId },
+          ...(candidate.attentionSelection ? { attentionSelection: candidate.attentionSelection } : {}),
           textLength: dive.text?.length || 0,
           referencedNodes: dive.referencedNodes,
           pipelinePhase: 'deep-dive-revision',
