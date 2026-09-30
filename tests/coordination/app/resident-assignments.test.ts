@@ -17,6 +17,7 @@ import { INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL } from '../../../src/coordin
 import { AT, BOT_ID, CHANNEL_ID, MESSAGE_ID, OWNER_ID, M11TestDatabase, createFixtureIdGenerator, fixtureId, manifestInput } from '../work/test-fixture.js';
 import type { CoordinationTurnOrigin } from '../../../src/agent/types.js';
 import type { MessagingActorContext } from '../../../src/coordination/channels/types.js';
+import type { ResidentInitiationAdmission } from '../../../src/coordination/app/resident-initiations.js';
 
 function fixture(t: { after(fn: () => void): void }) {
   const database = M11TestDatabase.temporary();
@@ -55,6 +56,87 @@ function fixture(t: { after(fn: () => void): void }) {
   };
   const assignments = createResidentAssignments(database);
   return { database, work, origin, context, consumer, admit, cancel, finish, assignments };
+}
+
+function bindInitiative(f: ReturnType<typeof fixture>, id: string, purpose: ResidentInitiationAdmission['request']['purpose']) {
+  const admission: ResidentInitiationAdmission = {
+    request: { initiationId: `initiative-${id}`, pursuitId: 'verify-repair', snapshotDigest: 'b'.repeat(64),
+      purpose, nextMove: 'Inspect the repair against the saved evidence.',
+      stopCondition: 'Stop after inspecting the repair and recording the result.',
+      evidenceRefs: ['receipt:repair'], timeoutMs: 60_000 },
+    requestDigest: 'c'.repeat(64), residentSlug: 'jerry', principalId: BOT_ID, channelId: CHANNEL_ID,
+    originMessageId: MESSAGE_ID, requestId: fixtureId('request', 96), correlationId: fixtureId('correlation', 96),
+    deadlineAtMs: Date.parse(AT) + 60_000, workId: id,
+  };
+  f.database.mutateWithEvent(() => ({ value: undefined, event: { type: 'activity.updated',
+    aggregateKind: 'resident_initiation_work', aggregateId: id, aggregateVersion: 1,
+    channelId: CHANNEL_ID, actorPrincipalId: BOT_ID, requestId: admission.requestId,
+    correlationId: admission.correlationId, payload: admission, createdAt: AT } }));
+}
+
+test('successful resident action remains unresolved before outcome discovery and closes only with an evidence assessment', async t => {
+  const f = fixture(t), id = f.admit('unassessed-action');
+  bindInitiative(f, id, 'action');
+  f.finish(id);
+  const directory = mkdtempSync(join(tmpdir(), 'resident-action-assessment-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const projectedState = () => JSON.parse(readFileSync(join(directory, 'jerry.work.json'), 'utf8'))
+    .assignments.find((row: { id: string }) => row.id === id).assignmentState;
+  assert.equal(f.database.readOne('SELECT outcome_key FROM resident_outcomes WHERE source_work_id=?', id), undefined);
+  assert.equal(f.work.get(id)?.state, 'succeeded', 'execution success remains separate from assignment assessment');
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'needs_review');
+  assert.equal(f.assignments.list(BOT_ID).find(row => row.id === id)?.assignmentState, 'needs_review',
+    'the action remains in the accountability list before outcome discovery');
+  assert.equal(f.assignments.listForProjectionPage(BOT_ID).assignments.find(row => row.id === id)?.assignmentState, 'needs_review');
+  projectResidentWork(f.database, directory, ['jerry']);
+  assert.equal(projectedState(), 'needs_review');
+  await projectResidentWorkIncrementally(f.database, directory, ['jerry']);
+  assert.equal(projectedState(), 'needs_review');
+  f.database.reopen();
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'needs_review', 'the unresolved state survives restart');
+  visibleResult(f, id);
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'needs_review', 'a delivered action result is not an assessment');
+  const outcomes = createResidentOutcomeStore(f.database);
+  outcomes.enqueue(`initiative:${id}`, id, { status: 'succeeded', result: 'Candidate repair inspected' });
+  const review = f.work.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
+    originMessageId: MESSAGE_ID, roundId: null, kind: 'resident_turn', idempotencyKey: 'resident-action-review',
+    manifest: manifestInput(), maxAutomaticOffers: 1, requestId: fixtureId('request', 97), correlationId: fixtureId('correlation', 97) }).work;
+  outcomes.update(outcomes.pending()[0], 'review_work_id', review.id);
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'active');
+  f.finish(review.id);
+  outcomes.update(outcomes.pending()[0], 'settled_at', AT);
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'returned', 'successful settled review establishes delivery, not completion');
+  assert.equal(f.assignments.listForProjection(BOT_ID).find(row => row.id === id)?.assignmentState, 'returned');
+  assert.throws(() => f.assignments.report(f.context, f.origin, { work_id: id, state: 'complete',
+    summary: 'Repair checked' }, 'action-without-evidence'), /Completion requires inspected evidence references/);
+  assert.equal(f.assignments.latest(id), null);
+  f.assignments.report(f.context, f.origin, { work_id: id, state: 'complete', summary: 'Repair checked',
+    evidence: ['receipt:independent-verification'] }, 'action-assessed');
+  assert.equal(f.assignments.presentationState(id, 'succeeded'), 'complete');
+  assert.equal(f.assignments.list(BOT_ID).some(row => row.id === id), false);
+  assert.equal(f.assignments.list(BOT_ID, true).find(row => row.id === id)?.assignmentState, 'complete');
+  await projectResidentWorkIncrementally(f.database, directory, ['jerry']);
+  assert.equal(projectedState(), 'complete');
+});
+
+for (const purpose of ['question', 'exploration'] as const) {
+  test(`successful resident ${purpose} keeps execution completion without an assignment assessment label`, async t => {
+    const f = fixture(t), id = f.admit(`inquiry-${purpose}`);
+    bindInitiative(f, id, purpose);
+    f.finish(id);
+    assert.equal(f.assignments.presentationState(id, 'succeeded'), 'complete');
+    const listed = f.assignments.list(BOT_ID, true).find(row => row.id === id)!;
+    assert.equal(listed.purpose, purpose);
+    assert.equal('assignmentState' in listed, false);
+    const directory = mkdtempSync(join(tmpdir(), 'resident-inquiry-assessment-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    await projectResidentWorkIncrementally(f.database, directory, ['jerry']);
+    const projected = JSON.parse(readFileSync(join(directory, 'jerry.work.json'), 'utf8'))
+      .assignments.find((row: { id: string }) => row.id === id);
+    assert.equal(projected.state, 'succeeded');
+    assert.equal(projected.purpose, purpose);
+    assert.equal('assignmentState' in projected, false);
+  });
 }
 
 for (const reviewResult of ['succeeded', 'failed'] as const) {
@@ -520,6 +602,7 @@ test('resident projection seeks current roots without scanning message or event 
   const f = fixture(t);
   f.database.raw.exec(INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL);
   const id = f.admit('projection-plan');
+  bindInitiative(f, id, 'action');
   f.finish(id);
   createResidentOutcomeStore(f.database).enqueue(`work:${id}`, id, { status: 'succeeded' });
   const original = f.database.readAll.bind(f.database);
@@ -534,7 +617,9 @@ test('resident projection seeks current roots without scanning message or event 
     'latest assignment event must use its aggregate index');
   assert.ok(plans.some(detail => detail.includes('SEARCH m USING INDEX messages_work_channel_kind')),
     'visible result must use the Work message index');
-  assert.equal(plans.some(detail => /SCAN (?:e|latest|m)(?:\s|$)/.test(detail)), false,
+  assert.ok(plans.some(detail => detail.includes('SEARCH initiation USING INDEX')),
+    'initiative purpose must seek the exact aggregate event');
+  assert.equal(plans.some(detail => /SCAN (?:e|latest|m|initiation)(?:\s|$)/.test(detail)), false,
     `projection scanned event or message history: ${plans.join('; ')}`);
 });
 

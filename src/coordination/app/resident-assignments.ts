@@ -41,7 +41,8 @@ export function createResidentAssignments(database: M11Database) {
     return record ? { ...JSON.parse(record.payload), eventSequence: record.sequence } : null;
   }
   function presentationState(workId: string, executionState: string, conclusion = latest(workId)): string {
-    if (database.readOne("SELECT sequence FROM events WHERE aggregate_kind='resident_initiation_stop' AND aggregate_id=? AND aggregate_version=1", root(workId))) return 'cancelled';
+    const assignmentId = root(workId);
+    if (database.readOne("SELECT sequence FROM events WHERE aggregate_kind='resident_initiation_stop' AND aggregate_id=? AND aggregate_version=1", assignmentId)) return 'cancelled';
     if (conclusion && conclusion.state !== 'blocked') return conclusion.state;
     const outcome = hasOutcomeStore && database.readOne<{ key: string; reviewState: string | null; settledAt: string | null }>(`SELECT o.outcome_key AS key,review.state AS reviewState,o.settled_at AS settledAt FROM resident_outcomes o
       LEFT JOIN works review ON review.id=o.review_work_id
@@ -70,8 +71,11 @@ export function createResidentAssignments(database: M11Database) {
       LIMIT 1`, workId)) return 'returned';
     // Settlement confirms delivery of the review, not its assessed outcome.
     if (outcome && outcome.settledAt !== null && outcome.reviewState === 'succeeded') return 'returned';
+    // An action requires an accepted assessment even before outcome discovery.
     // Preserve ordinary completed executions that never required follow-through.
-    return outcome ? 'needs_review' : 'complete';
+    return outcome || database.readOne(`SELECT sequence FROM events WHERE aggregate_kind='resident_initiation_work'
+      AND aggregate_id=? AND aggregate_version=1 AND json_extract(payload_json,'$.request.purpose')='action'`, assignmentId)
+      ? 'needs_review' : 'complete';
   }
   function assertOpen(workId: string) {
     if (database.readOne("SELECT sequence FROM events WHERE aggregate_kind='resident_initiation_stop' AND aggregate_id=? AND aggregate_version=1", root(workId))) throw new Error('Resident initiative was stopped by the owner; a late result cannot restart it');
@@ -266,7 +270,10 @@ export function createResidentAssignments(database: M11Database) {
       w.origin_message_id AS originMessageId,coalesce(p.title,substr(m.body_text,1,160),'Assignment') AS title,
       coalesce(p.summary,m.body_text) AS summary,m.body_text AS originalRequest,w.created_at AS createdAt,
       w.terminal_reason AS terminalReason,
-      EXISTS(SELECT 1 FROM events stopped WHERE stopped.aggregate_kind='resident_initiation_stop' AND stopped.aggregate_id=w.id AND stopped.aggregate_version=1) AS stoppedByOwner
+      EXISTS(SELECT 1 FROM events stopped WHERE stopped.aggregate_kind='resident_initiation_stop' AND stopped.aggregate_id=w.id AND stopped.aggregate_version=1) AS stoppedByOwner,
+      EXISTS(SELECT 1 FROM events initiation WHERE initiation.aggregate_kind='resident_initiation_work'
+        AND initiation.aggregate_id=w.id AND initiation.aggregate_version=1
+        AND json_extract(initiation.payload_json,'$.request.purpose')='action') AS actionInitiative
       FROM works w LEFT JOIN work_thread_presentations p ON p.work_id=w.id
       LEFT JOIN messages m ON m.id=w.origin_message_id WHERE w.id IN (SELECT value FROM json_each(?))`, rootIds);
     const works = new Map(workRows.map(row => [String(row.id), row]));
@@ -321,9 +328,9 @@ export function createResidentAssignments(database: M11Database) {
       } else if (work.state === 'cancelled' || work.state === 'failed') assignmentState = String(work.state);
       else if (work.state !== 'succeeded' || reviewing) assignmentState = 'active';
       else if (outcome && (delivered.has(id) || (outcome.settledAt !== null && outcome.reviewState === 'succeeded'))) assignmentState = 'returned';
-      else assignmentState = outcome ? 'needs_review' : 'complete';
+      else assignmentState = outcome || work.actionInitiative ? 'needs_review' : 'complete';
       if (work.stoppedByOwner) assignmentState = 'cancelled';
-      const { stoppedByOwner: _, ...presentation } = work;
+      const { stoppedByOwner: _, actionInitiative: _actionInitiative, ...presentation } = work;
       return [{ ...presentation, assignmentState, conclusion }];
     });
     return { assignments, cursor, candidateCount: candidates.length, scannedCount: batch.length };
