@@ -3,6 +3,7 @@ import type { MessagingActorContext } from '../channels/types.js';
 import type { M11Database } from '../work/types.js';
 import { canonicalJson } from '../work/canonical.js';
 import { WorkError } from '../work/errors.js';
+import type { ResidentInitiationAdmission } from './resident-initiations.js';
 
 export type AssignmentState = 'active' | 'blocked' | 'complete' | 'cancelled';
 export interface AssignmentConclusion {
@@ -28,7 +29,8 @@ export function createResidentAssignments(database: M11Database) {
       if (!parent) return current;
       const upstream = hasOutcomeStore ? database.readOne<{ source: string }>('SELECT source_work_id AS source FROM resident_outcomes WHERE review_work_id=?', parent.id) : undefined;
       if (upstream) { current = upstream.source; continue; }
-      if (database.readOne('SELECT work_id FROM work_planned_invocations WHERE work_id=?', parent.id)) { current = parent.id; continue; }
+      if (database.readOne('SELECT work_id FROM work_planned_invocations WHERE work_id=?', parent.id) ||
+          database.readOne("SELECT sequence FROM events WHERE aggregate_kind='resident_initiation_work' AND aggregate_id=? AND aggregate_version=1", parent.id)) { current = parent.id; continue; }
       return current;
     }
     throw new Error('Assignment lineage exceeds supported depth');
@@ -39,6 +41,7 @@ export function createResidentAssignments(database: M11Database) {
     return record ? { ...JSON.parse(record.payload), eventSequence: record.sequence } : null;
   }
   function presentationState(workId: string, executionState: string, conclusion = latest(workId)): string {
+    if (database.readOne("SELECT sequence FROM events WHERE aggregate_kind='resident_initiation_stop' AND aggregate_id=? AND aggregate_version=1", root(workId))) return 'cancelled';
     if (conclusion && conclusion.state !== 'blocked') return conclusion.state;
     const outcome = hasOutcomeStore && database.readOne<{ key: string; reviewState: string | null; settledAt: string | null }>(`SELECT o.outcome_key AS key,review.state AS reviewState,o.settled_at AS settledAt FROM resident_outcomes o
       LEFT JOIN works review ON review.id=o.review_work_id
@@ -71,6 +74,7 @@ export function createResidentAssignments(database: M11Database) {
     return outcome ? 'needs_review' : 'complete';
   }
   function assertOpen(workId: string) {
+    if (database.readOne("SELECT sequence FROM events WHERE aggregate_kind='resident_initiation_stop' AND aggregate_id=? AND aggregate_version=1", root(workId))) throw new Error('Resident initiative was stopped by the owner; a late result cannot restart it');
     const conclusion = latest(workId);
     if (conclusion && conclusion.state !== 'active') throw new Error(`Assignment is ${conclusion.state}; assess the current direction with work_report_outcome before another launch`);
     const stopped = database.readOne<{ state: string; sequence: number }>(`SELECT w.state,
@@ -101,6 +105,9 @@ export function createResidentAssignments(database: M11Database) {
     if (!work || work.principal !== context.principalId) throw new Error('Assignment is outside this resident scope');
     const state = args.state as AssignmentState;
     if (!['active','blocked','complete','cancelled'].includes(state)) invalid('state must be active, blocked, complete, or cancelled');
+    if (state !== 'cancelled' && database.readOne("SELECT sequence FROM events WHERE aggregate_kind='resident_initiation_stop' AND aggregate_id=? AND aggregate_version=1", workId)) {
+      throw new Error('Resident initiative was stopped by the owner; a late assessment cannot overwrite Stop');
+    }
     const summary = args.summary;
     if (typeof summary !== 'string' || !summary.trim() || summary.length > 4000) throw new WorkError('invalid_request', 'summary must be a non-empty string of at most 4000 characters');
     const strings = (field: string, value: unknown, maximum: number): string[] => {
@@ -183,7 +190,13 @@ export function createResidentAssignments(database: M11Database) {
         LEFT JOIN messages m ON m.id=w.origin_message_id WHERE w.id=?`, id)!;
       const assignmentState = presentationState(id, String(work.state), conclusion);
       if (!includeClosed && ['complete', 'cancelled', 'failed'].includes(assignmentState)) continue;
-      result.push({ ...work, assignmentState, conclusion });
+      const initiative = database.readOne<{ payload: string }>("SELECT payload_json AS payload FROM events WHERE aggregate_kind='resident_initiation_work' AND aggregate_id=? AND aggregate_version=1", id);
+      if (initiative) {
+        const value = JSON.parse(initiative.payload) as ResidentInitiationAdmission;
+        const { originalRequest: _, ...rest } = work;
+        result.push({ ...rest, origin: 'resident_initiative', purpose: value.request.purpose, residentMove: value.request.nextMove,
+          initiative: value.request, ...(value.request.purpose === 'action' ? { assignmentState, conclusion } : {}) });
+      } else result.push({ ...work, assignmentState, conclusion });
       if (result.length >= limit) break;
     }
     return result;
@@ -223,8 +236,8 @@ export function createResidentAssignments(database: M11Database) {
       : '';
     const next = hasOutcomeStore
       ? `coalesce(review.source_work_id,parent_review.source_work_id,
-           CASE WHEN upstream.work_id IS NOT NULL THEN plan.parent_work_id END)`
-      : `CASE WHEN upstream.work_id IS NOT NULL THEN plan.parent_work_id END`;
+           CASE WHEN upstream.work_id IS NOT NULL OR initiation.sequence IS NOT NULL THEN plan.parent_work_id END)`
+      : `CASE WHEN upstream.work_id IS NOT NULL OR initiation.sequence IS NOT NULL THEN plan.parent_work_id END`;
     const lineage = database.readAll<{ seed: string; id: string; depth: number; path: string; next: string | null }>(`WITH RECURSIVE
       lineage(seed,id,depth,path) AS (
         SELECT value,value,0,'|' || value || '|' FROM json_each(?)
@@ -234,12 +247,14 @@ export function createResidentAssignments(database: M11Database) {
         LEFT JOIN work_planned_invocations plan ON plan.work_id=l.id
         ${reviewJoin}
         LEFT JOIN work_planned_invocations upstream ON upstream.work_id=plan.parent_work_id
+        LEFT JOIN events initiation ON initiation.aggregate_kind='resident_initiation_work' AND initiation.aggregate_id=plan.parent_work_id AND initiation.aggregate_version=1
         WHERE l.depth<64 AND ${next} IS NOT NULL
           AND instr(l.path,'|' || ${next} || '|')=0
       ) SELECT l.seed,l.id,l.depth,l.path,${next} AS next FROM lineage l
         LEFT JOIN work_planned_invocations plan ON plan.work_id=l.id
         ${reviewJoin}
-        LEFT JOIN work_planned_invocations upstream ON upstream.work_id=plan.parent_work_id`, ids);
+        LEFT JOIN work_planned_invocations upstream ON upstream.work_id=plan.parent_work_id
+        LEFT JOIN events initiation ON initiation.aggregate_kind='resident_initiation_work' AND initiation.aggregate_id=plan.parent_work_id AND initiation.aggregate_version=1`, ids);
     const final = new Map<string, typeof lineage[number]>();
     for (const row of lineage) if (!final.has(row.seed) || row.depth > final.get(row.seed)!.depth) final.set(row.seed, row);
     for (const row of final.values()) {
@@ -250,7 +265,9 @@ export function createResidentAssignments(database: M11Database) {
     const workRows = database.readAll<Record<string, unknown>>(`SELECT w.id,w.channel_id AS channelId,w.state,
       w.origin_message_id AS originMessageId,coalesce(p.title,substr(m.body_text,1,160),'Assignment') AS title,
       coalesce(p.summary,m.body_text) AS summary,m.body_text AS originalRequest,w.created_at AS createdAt,
-      w.terminal_reason AS terminalReason FROM works w LEFT JOIN work_thread_presentations p ON p.work_id=w.id
+      w.terminal_reason AS terminalReason,
+      EXISTS(SELECT 1 FROM events stopped WHERE stopped.aggregate_kind='resident_initiation_stop' AND stopped.aggregate_id=w.id AND stopped.aggregate_version=1) AS stoppedByOwner
+      FROM works w LEFT JOIN work_thread_presentations p ON p.work_id=w.id
       LEFT JOIN messages m ON m.id=w.origin_message_id WHERE w.id IN (SELECT value FROM json_each(?))`, rootIds);
     const works = new Map(workRows.map(row => [String(row.id), row]));
     // Drive from the bounded roots. Starting at events can scan every
@@ -305,7 +322,9 @@ export function createResidentAssignments(database: M11Database) {
       else if (work.state !== 'succeeded' || reviewing) assignmentState = 'active';
       else if (outcome && (delivered.has(id) || (outcome.settledAt !== null && outcome.reviewState === 'succeeded'))) assignmentState = 'returned';
       else assignmentState = outcome ? 'needs_review' : 'complete';
-      return [{ ...work, assignmentState, conclusion }];
+      if (work.stoppedByOwner) assignmentState = 'cancelled';
+      const { stoppedByOwner: _, ...presentation } = work;
+      return [{ ...presentation, assignmentState, conclusion }];
     });
     return { assignments, cursor, candidateCount: candidates.length, scannedCount: batch.length };
   }

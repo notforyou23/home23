@@ -1,4 +1,5 @@
 const os = require('os');
+const { responsesReasoning } = require('../../../shared/responses-reasoning.cjs');
 const {
   resolveProviderKey,
   isAuthError,
@@ -273,6 +274,8 @@ class OpenAICodexClient {
       stream: true,
       input: buildCodexInputItems(options),
     };
+    const reasoning = responsesReasoning(model, options.reasoningEffort);
+    if (reasoning) body.reasoning = reasoning;
 
     const instructions = extractCodexInstructionText(options);
     body.instructions = typeof instructions === 'string' && instructions.trim()

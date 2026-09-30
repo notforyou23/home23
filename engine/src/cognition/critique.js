@@ -99,7 +99,8 @@ Output format (STRICT — JSON inside a markdown code block, no prose outside):
   "agendaCandidates": [
     { "content": "<1-2 sentence actionable item>", "kind": "decision" | "question" | "idea", "topicTags": ["..."] }
   ],
-  "ownerOutreach": null | { "category": "question" | "insight" | "action", "text": "<message in the resident's voice>", "reason": "<why this is worth contacting the owner now>", "evidenceRefs": ["<exact supplied reference>"] }
+  "ownerOutreach": null | { "category": "question" | "insight" | "action", "text": "<message in the resident's voice>", "reason": "<why this is worth contacting the owner now>", "evidenceRefs": ["<exact supplied reference>"], "attention": { "kind": "problem" | "recovery" | "progress" | "decision" | "connection", "consequence": "<specific grounded consequence making contact worthwhile>", "evidenceRefs": ["<subset of this message's exact references supporting that consequence>"] } },
+  "residentInitiative": null | { "purpose": "action" | "exploration" | "question", "scope": "private_research" | "private_artifact" | "verification", "why": "<why this specific move is worthwhile now>", "nextMove": "<one bounded move with a named subject or artifact>", "stopCondition": "<what ends this move, including uncertainty or unavailable evidence>", "evidenceRefs": ["<exact supplied reference>"] }
 }
 \`\`\`
 
@@ -121,6 +122,11 @@ Rules:
 - ownerOutreach is a separate, optional conversational act, independent of tasks, predictions, and agendaCandidates. Only on an explicit keep, propose a question worth asking, an insight worth sharing, or a concrete next action to discuss. Do not require every thought to be sent. Silence remains available.
 - Outreach must use the actual conversation/material and exact references supplied below, with a concrete reason to contact the owner. Preserve uncertainty and historical/source labels. Never present a failed, superseded, or unverified hypothesis as a current fact. A tentative connection may be shared as a tentative connection. An action proposal is not a claim of completed work.
 - Do not repeat an earlier outreach without new relevant evidence or owner contact. If the source does not support a useful message, set ownerOutreach to null. Never invent a source reference. MUST be null on revise or discard.
+- For machine-derived outreach, attention is required: identify an actual actionable problem, meaningful recovery, verified progress, owner decision, or a meaningful connection to attributed owner context. A changed telemetry bucket makes a condition eligible for attention; it does not itself justify interrupting the owner. Normal RAM/CPU snapshots, fresh timestamps, routine sampling wishes, and repeating a proposed diagnostic are not consequences. Carry authorized diagnostics through the action path. Never invent impact on the owner's experience from machine numbers. A grounded connection needs actual contextual evidence in addition to telemetry.
+- Use the durable attention history below as well as recent outreach. Owner corrections change subsequent judgment and conduct; a new correction/contact reference is not permission to repeat the corrected topic. Recovery from an acknowledged problem can be worth sharing; a routine reassurance without a prior meaningful problem is not. For other subjects attention is optional; worthwhile questions and tentative discoveries need not imitate an operational emergency.
+
+- residentInitiative is optional and only valid on keep. Choose one useful bounded move when the supplied material gives it a concrete reason now. This path supports private research, a reversible private artifact, or verification through existing authorized tools. A named musical question, a useful practice draft, or investigating a specific unfinished responsibility can qualify. Interests need not pretend to be machine faults. Do not duplicate an agenda diagnostic or an existing execution. A plain connection or insight does not require initiative or a task.
+- These scopes describe intent and grant no authority. Do not propose publication, external messages, purchases, destructive changes, production changes, credential access, or personal/medical decisions through this path. Quote exact supplied evidence, preserve uncertainty, reconcile owner corrections, declare a useful stopping point, and allow null. Do not propose routine sampling or repeat the same move just because a timestamp changed.
 
 Do not pad. Do not restate the thought. Output the JSON block and nothing else.`;
 
@@ -174,11 +180,13 @@ IMPORTANT: do not penalize the thought for lacking cross-partition connections. 
     const outreachBlock = `## Permitted outreach evidence references\n${(args.outreachEvidenceRefs || []).join('\n') || '(none; do not propose outreach)'}`;
     const recentOutreachBlock = (args.recentOutreach || []).length
       ? `## Recent owner outreach (delivery state, not proof it was read)\n${args.recentOutreach.map(item => `${item.status}: ${item.text}\nBasis: ${(item.evidenceRefs || []).join(', ')}`).join('\n\n')}` : '';
+    const attentionBlock = args.ownerAttentionContext ? `## Durable owner attention history and current condition\n${args.ownerAttentionContext}` : '';
+    const initiativeBlock = args.residentInitiativeContext ? `## Resident moves already admitted (execution state, not proof of the desired outcome)\n${args.residentInitiativeContext}\nContinue existing responsibility through its Work outcome path; do not create a new initiative by rewording the move or stop condition.` : '';
 
     const thoughtBlock = `## Thought to evaluate
 ${args.thought || '(empty thought)'}`;
 
-    const input = [candidateBlock, temporalBlock, conversationBlock, materialBlock, livedBlock, thoughtBlock, pgsBlock, priorBlock, outreachBlock, recentOutreachBlock]
+    const input = [candidateBlock, temporalBlock, conversationBlock, materialBlock, livedBlock, thoughtBlock, pgsBlock, priorBlock, outreachBlock, recentOutreachBlock, attentionBlock, initiativeBlock]
       .filter(Boolean)
       .join('\n\n') + '\n\nEvaluate. Output the JSON verdict block only.';
 
@@ -227,7 +235,9 @@ ${args.thought || '(empty thought)'}`;
 
     const { normalizeOwnerOutreach } = require('./owner-outreach');
     const ownerOutreach = verdict === 'keep' ? normalizeOwnerOutreach(parsed?.ownerOutreach, args.outreachEvidenceRefs) : null;
-    return { verdict, confidence, gaps: finalGaps, rationale, agendaCandidates, ownerOutreach, raw: rawText, model: response?.model || null };
+    const { normalizeResidentInitiative } = require('./resident-initiative');
+    const residentInitiative = verdict === 'keep' ? normalizeResidentInitiative(parsed?.residentInitiative, args.outreachEvidenceRefs) : null;
+    return { verdict, confidence, gaps: finalGaps, rationale, agendaCandidates, ownerOutreach, residentInitiative, raw: rawText, model: response?.model || null };
   }
 
   _normalizeVerdict(v) {

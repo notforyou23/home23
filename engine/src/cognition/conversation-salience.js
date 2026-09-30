@@ -32,6 +32,7 @@ const DEFAULT_CONFIG = {
   minTokenLength: 3,                 // token must be at least 3 chars (drop "the","and")
   reloadIntervalMs: 60 * 1000,       // re-read sidecar every 60s (cheap)
   maxReadBytes: 256 * 1024,          // bounded sidecar tail, never load the lifetime transcript
+  canonicalMaxReadBytes: 1024 * 1024,
   minClusterScore: 0.05,             // below this, cluster isn't considered salient
 };
 
@@ -137,9 +138,20 @@ class ConversationSalience {
   /** Actual conversational material, with the sidecar's authorship labels intact. */
   getRecentEntries(now = new Date()) {
     const canonical = readRecentConversationEntries(this.conversationStreamPath, {
-      now, maxAgeMs: this.config.maxAgeMs, maxEntries: 24,
+      now, maxAgeMs: this.config.maxAgeMs,
+      // Inspect a bounded contact tail before selecting context. The resident's
+      // own repeated reports must not push the owner's correction out of view.
+      maxEntries: Math.max(this.config.maxEntries, 200), maxReadBytes: this.config.canonicalMaxReadBytes,
     });
-    if (canonical.length) return canonical;
+    if (canonical.length) {
+      const owners = canonical.filter(isOwnerContact).slice(-this.config.maxEntries);
+      const ownerIds = new Set(owners.map(entry => entry.eventId));
+      const others = canonical.filter(entry => !ownerIds.has(entry.eventId) && !isOwnerContact(entry))
+        .slice(-Math.max(0, this.config.maxEntries - owners.length));
+      // slice(-0) would include the entire tail when owners fill the budget.
+      return [...owners, ...(owners.length < this.config.maxEntries ? others : [])]
+        .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    }
     this._maybeReload();
     const nowMs = now.getTime();
     return this.recentEntries.filter(entry => {
@@ -151,20 +163,55 @@ class ConversationSalience {
   }
 
   getRecentContext(now = new Date()) {
+    return this._boundedContext(this.getRecentEntries(now));
+  }
+
+  /** Owner contact starts an inquiry. Our own replies remain context, without
+   * manufacturing another fresh contact every time we speak. Compiled history
+   * stays explicitly historical and never gains canonical owner authorship. */
+  getAttentionEntries(now = new Date()) {
+    const sessions = new Map();
+    for (const entry of this.getRecentEntries(now)) {
+      if (!sessions.has(entry.chatId)) sessions.set(entry.chatId, []);
+      sessions.get(entry.chatId).push(entry);
+    }
+    const out = [];
+    for (const entries of sessions.values()) {
+      const starters = entries.filter(entry => entry.source !== 'seed_contact' || isOwnerContact(entry));
+      if (!starters.length) continue;
+      const latest = starters.at(-1);
+      out.push({ ...latest, summary: this._boundedContext(entries, false),
+        attentionSummary: this._boundedContext(starters, false) });
+    }
+    return out.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+  }
+
+  _boundedContext(entries, includeChannels = true) {
+    const latestOwner = entries.findLast(isOwnerContact);
+    if (latestOwner && String(latestOwner.summary).length > 12000) return omittedContact(latestOwner);
+    const ordered = entries.map((entry, index) => ({ entry, index })).reverse();
+    // Give contact the context budget first; keep chronology in the final view.
+    ordered.sort((a, b) => Number(isOwnerContact(b.entry)) - Number(isOwnerContact(a.entry)));
     const selected = [];
     let chars = 0;
-    for (const entry of this.getRecentEntries(now).slice().reverse()) {
-      const text = `[Conversation channel ${String(entry.chatId || 'unknown').slice(0, 120)}]\n${entry.summary}`;
+    for (const { entry, index } of ordered) {
+      const text = includeChannels
+        ? `[Conversation channel ${String(entry.chatId || 'unknown').slice(0, 120)}]\n${entry.summary}` : entry.summary;
       if (text.length > 12000) {
-        // Never silently replace an oversized new correction with older speech.
-        selected.unshift(`[Contact omitted from this bounded view: ${String(entry.eventId || entry.ts).slice(0, 160)}; ${String(entry.summary).split('\n')[0].slice(0, 300)}; ${text.length} characters. Its content is unavailable here; do not infer it or treat older context as the latest contact.]`);
-        break;
+        if (entry === entries.at(-1)) {
+          const omission = omittedContact(entry);
+          if (chars + omission.length + 2 <= 12000) {
+            selected.push({ index, text: omission });
+            chars += omission.length + 2;
+          }
+        }
+        continue;
       }
-      if (chars + text.length > 12000) break; // keep complete, attributed turns
-      selected.unshift(text);
+      if (chars + text.length + 2 > 12000) continue; // keep complete, attributed turns
+      selected.push({ index, text });
       chars += text.length + 2;
     }
-    return selected.join('\n\n') || null;
+    return selected.sort((a, b) => a.index - b.index).map(row => row.text).join('\n\n') || null;
   }
 
   /** Select the matching memories, not whichever nodes were inserted first. */
@@ -305,6 +352,16 @@ class ConversationSalience {
     for (const t of small) if (big.has(t)) count++;
     return count;
   }
+}
+
+function isOwnerContact(entry) {
+  // Canonical authorship is retained by the contact reader. The fallback is
+  // only for attributed compiled/test excerpts, never arbitrary seed contact.
+  return entry?.voice === 'jtr' || (entry?.source !== 'seed_contact' && /^\[Owner\b/.test(String(entry?.summary)));
+}
+
+function omittedContact(entry) {
+  return `[Contact omitted from this bounded view: ${String(entry.eventId || entry.ts).slice(0, 160)}; ${String(entry.summary).split('\n')[0].slice(0, 300)}; ${String(entry.summary).length} characters. Its content is unavailable here; do not infer it or treat older context as the latest contact.]`;
 }
 
 module.exports = { ConversationSalience };

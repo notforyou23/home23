@@ -45,6 +45,7 @@ async function fixture(t) {
   };
   const graph = { nodes: new Map([['guitar', { id: 'guitar', concept: 'A guitar lesson treats silence as an invitation.', tag: 'historical' }]]), edges: new Map(), clusters: new Map() };
   const messages = []; const events = []; const prompts = []; let actions = 0;
+  let thoughtText = 'The guitar lesson and your melody suggest that silence can make room for another voice, though I do not know how it feels to you.';
   let verdict = {
     verdict: 'keep', confidence: 0.9, gaps: [], rationale: 'A grounded question for the owner, not an operational obligation.', agendaCandidates: [],
     ownerOutreach: { category: 'question', text: 'Does that open space in the melody feel like an invitation to answer?', reason: 'Your comment about the guitar melody connects to the old lesson about silence.', evidenceRefs: ['message:real-contact', 'memory:guitar'] },
@@ -53,7 +54,7 @@ async function fixture(t) {
     const machine = orchestrator.createThinkingMachine({
       unifiedClient: { generate: async args => {
         prompts.push(args);
-        return { content: args.component === 'critique' ? JSON.stringify(verdict) : 'The guitar lesson and your melody suggest that silence can make room for another voice, though I do not know how it feels to you.' };
+        return { content: args.component === 'critique' ? JSON.stringify(verdict) : thoughtText };
       } },
       memory: graph, discoveryEngine: { pop: () => [] }, logger,
       emitThought: thought => messages.push(thought),
@@ -70,7 +71,7 @@ async function fixture(t) {
   };
   const candidate = { signal: 'exploration', score: 0.9, nodeIds: ['guitar'], rationale: 'A remembered guitar lesson connects to current conversation.' };
   return { brainDir, orchestrator, requests, messages, events, prompts, candidate, makeMachine, actions: () => actions,
-    setVerdict: next => { verdict = next; }, getVerdict: () => verdict, setResponse: next => { response = next; } };
+    setVerdict: next => { verdict = next; }, setThought: next => { thoughtText = next; }, getVerdict: () => verdict, setResponse: next => { response = next; } };
 }
 
 test('actual factory sends explicit kept outreach to the authenticated resident bridge without agenda work', async t => {
@@ -94,9 +95,49 @@ test('actual factory sends explicit kept outreach to the authenticated resident 
   await machine._runCycle(f.candidate);
   assert.equal(f.requests.length, 1, 'same accepted message and evidence do not get sent each cycle');
   assert.equal(f.messages[1].ownerOutreach.status, 'suppressed');
-  // Restart retries have the same ID; the harness owns durable deduplication.
+  // Judgment survives restart; only an unaccepted durable intent gets retried.
   await f.makeMachine()._runCycle(f.candidate);
-  assert.equal(f.requests[1].body.deliveryId, f.requests[0].body.deliveryId);
+  assert.equal(f.requests.length, 1);
+});
+
+test('actual factory suppresses unchanged RAM commentary despite new timestamps, wording, ring eviction and restart', async t => {
+  const f = await fixture(t);
+  const machine = f.makeMachine();
+  const original = f.getVerdict();
+  const sample = (at, pressureFreePct = 48) => ({
+    signal: 'observation-delta', score: 0.95, nodeIds: [], rationale: 'bus observation machine.memory',
+    observation: { channelId: 'machine.memory', flag: 'COLLECTED', sourceRef: `mem:${at}`, producedAt: at,
+      payload: { at, rawFreePct: 1.8, pressureFreePct, memoryPressure: { available: true, source: 'memory_pressure -Q', freePct: pressureFreePct } } },
+  });
+  const send = async (active, candidate, text, attention = null) => {
+    f.setVerdict({ ...original, ownerOutreach: { category: 'insight', text,
+      reason: 'A new sample of the computer memory condition is available.', evidenceRefs: [candidate.observation.sourceRef], ...(attention ? { attention } : {}) } });
+    await active._runCycle(candidate);
+  };
+  await send(machine, sample('2026-09-27T15:00:00Z'), 'Memory pressure is normal; I would sample RAM again.');
+  await send(machine, sample('2026-09-27T16:00:00Z'), 'Another reading shows little raw free RAM, but pressure still looks normal.');
+  assert.equal(f.requests.length, 0, 'a timestamp and paraphrase cannot make normal RAM worth an interruption');
+  assert.equal(f.messages.at(-1).ownerOutreach.status, 'suppressed');
+  machine.recentThoughts = [];
+  await send(machine, sample('2026-09-28T16:00:00Z', 49), 'RAM is still reclaimable; I can take a fresh look.');
+  await send(f.makeMachine(), sample('2026-09-29T16:00:00Z', 47), 'A new timestamp arrived with the same memory condition.');
+  assert.equal(f.requests.length, 0, 'unchanged conditions remain suppressed beyond the recent thought ring and process lifetime');
+  const critical = sample('2026-09-29T17:00:00Z', 4);
+  await send(f.makeMachine(), critical, 'Memory pressure has become critical; this is a changed problem.',
+    { kind: 'problem', consequence: 'Verified reclaimable memory is critically constrained for the running resident operations.', evidenceRefs: [critical.observation.sourceRef] });
+  assert.equal(f.requests.length, 1, 'genuinely changed critical memory pressure with a grounded consequence remains eligible');
+  f.orchestrator.conversationSalience.getRecentContext = () => '[Owner Jason]: Stop telling me routine RAM readings. These repeated sampling messages are clutter.';
+  const unchanged = sample('2026-09-29T17:20:00Z', 4.5);
+  await send(f.makeMachine(), unchanged, 'RAM is still low; I would take another sample now.',
+    { kind: 'problem', consequence: 'Verified reclaimable memory remains constrained for the resident operations.', evidenceRefs: [unchanged.observation.sourceRef] });
+  assert.equal(f.requests.length, 1, 'owner correction does not reset the same condition into permission for another notice');
+  assert.match(f.prompts.at(-1).instructions, /Owner corrections change subsequent judgment and conduct/);
+  assert.match(f.prompts.at(-1).messages[0].content, /Stop telling me routine RAM readings/);
+  assert.match(f.prompts.at(-1).messages[0].content, /Previous admitted contact/);
+  const recovered = sample('2026-09-29T18:00:00Z', 48);
+  await send(f.makeMachine(), recovered, 'Memory pressure recovered after the critical period.',
+    { kind: 'recovery', consequence: 'Reclaimable memory headroom recovered from the previously reported operational constraint.', evidenceRefs: [recovered.observation.sourceRef] });
+  assert.equal(f.requests.length, 2, 'recovery from the acknowledged problem remains eligible');
 });
 
 test('discard, explicit no outreach, and unsupported references never contact the owner', async t => {
@@ -113,18 +154,60 @@ test('discard, explicit no outreach, and unsupported references never contact th
   assert.equal(f.messages.every(thought => !thought.ownerOutreach), true);
 });
 
+test('actual factory preserves watch/context questions and novel nonmachine discoveries without agenda work', async t => {
+  const f = await fixture(t);
+  f.orchestrator.conversationSalience.getRecentContext = () => '[Owner Jason]: I have a cold this week.';
+  const watch = { signal: 'observation-delta', score: 0.9, nodeIds: [], rationale: 'Verified watch data outside the usual tracked metric.',
+    observation: { channelId: 'domain.health', flag: 'COLLECTED', sourceRef: 'health:watch-reading',
+      payload: { metric: 'oxygenSaturation', source: 'Apple Watch', producedAt: '2026-09-27T15:30:00Z' } } };
+  f.setThought('The watch observation and your mention of a cold make a bounded check-in worthwhile, without interpreting the reading medically.');
+  f.setVerdict({ ...f.getVerdict(), ownerOutreach: { category: 'question', text: 'You mentioned a cold, and the watch has an unusual reading. How are you feeling?',
+    reason: 'A new watch observation connects to what you actually told me about this week.', evidenceRefs: ['health:watch-reading', 'message:real-contact'] } });
+  await f.makeMachine()._runCycle(watch);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.messages.at(-1).ownerOutreach.attentionDecision.reason, 'grounded_nonmachine_contact');
+  f.setThought('A remembered guitar lesson opens a different useful question about the melody.');
+  f.setVerdict({ ...f.getVerdict(), ownerOutreach: { category: 'insight', text: 'That guitar lesson gives me another way to hear the space in your melody.',
+    reason: 'The remembered lesson gives a tentative musical connection worth sharing.', evidenceRefs: ['memory:guitar'] } });
+  await f.makeMachine()._runCycle(f.candidate);
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.actions(), 0);
+});
+
+test('actual factory refuses unavailable telemetry and corrupt durable judgment without pretending conditions are normal', async t => {
+  const f = await fixture(t);
+  const observation = { channelId: 'machine.memory', flag: 'COLLECTED', sourceRef: 'mem:unavailable',
+    payload: { pressureFreePct: null, memoryPressure: { available: false, source: 'memory_pressure -Q' } } };
+  f.setVerdict({ ...f.getVerdict(), ownerOutreach: { category: 'insight', text: 'There is a memory problem.', reason: 'A telemetry condition has reportedly changed.',
+    evidenceRefs: [observation.sourceRef], attention: { kind: 'problem', consequence: 'This supposedly indicates a changed operational memory problem.', evidenceRefs: [observation.sourceRef] } } });
+  await f.makeMachine()._runCycle({ signal: 'observation-delta', score: 0.9, nodeIds: [], observation });
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.messages.at(-1).ownerOutreach.attentionDecision.status, 'unavailable');
+  assert.equal(f.messages.at(-1).ownerOutreach.detail, 'machine_condition_unavailable');
+  fs.writeFileSync(path.join(f.brainDir, 'owner-attention.json'), '{broken');
+  f.setVerdict({ ...f.getVerdict(), ownerOutreach: { category: 'question', text: 'Does the guitar lesson still make space for another voice?',
+    reason: 'A remembered lesson connects to your actual melody.', evidenceRefs: ['memory:guitar'] } });
+  await f.makeMachine()._runCycle(f.candidate);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.messages.at(-1).ownerOutreach.detail, 'attention_state_unavailable');
+});
+
 test('queued and failed delivery remain honest and a missing resident port cannot fall back to another home', async t => {
   const f = await fixture(t);
   f.setResponse({ statusCode: 200, body: { status: 'queued' } });
   await f.makeMachine()._runCycle(f.candidate);
   assert.equal(f.messages[0].ownerOutreach.status, 'queued');
   assert.equal(f.messages[0].ownerOutreach.notification, 'not_confirmed');
+  f.setThought('Another grounded question about a second phrase from the guitar lesson.');
+  f.setVerdict({ ...f.getVerdict(), ownerOutreach: { ...f.getVerdict().ownerOutreach, text: 'Does the next phrase suggest a different answer to that melody?' } });
   f.setResponse({ statusCode: 503, body: { error: 'unavailable' } });
   await f.makeMachine()._runCycle(f.candidate);
   assert.equal(f.messages[1].ownerOutreach.status, 'pending');
   assert.equal(f.messages[1].ownerOutreach.transport, 'not_accepted');
   assert.match(f.messages[1].ownerOutreach.detail, /503/);
   delete process.env.BRIDGE_PORT;
+  f.setThought('A third grounded question about the lesson and silence.');
+  f.setVerdict({ ...f.getVerdict(), ownerOutreach: { ...f.getVerdict().ownerOutreach, text: 'Would silence carry the melody better than another answer here?' } });
   await f.makeMachine()._runCycle(f.candidate);
   assert.equal(f.requests.length, 2);
   assert.match(f.messages[2].ownerOutreach.detail, /bridge port unavailable/);

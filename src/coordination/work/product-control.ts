@@ -7,6 +7,7 @@ import { WorkError } from "./errors.js";
 import type { M11Database, WorkRecord } from "./types.js";
 import type { createWorkService } from "./service.js";
 import { createResidentAssignments } from '../app/resident-assignments.js';
+import { readResidentInitiationForWork } from '../app/resident-initiations.js';
 
 type WorkService = ReturnType<typeof createWorkService>;
 
@@ -40,6 +41,8 @@ export interface ProductWorkProjection {
   state: "queued" | "running" | "stopping" | "succeeded" | "failed" | "cancelled";
   assignmentState?: string;
   assignmentSummary?: string | null;
+  origin?: 'resident_initiative';
+  purpose?: 'action' | 'exploration' | 'question';
   cancelAvailable: boolean;
   retryAvailable: boolean;
   createdAt: string;
@@ -86,6 +89,7 @@ interface WorkPresentationRow {
   finalResultMessageId: string | null;
   durableTitle: string | null;
   durableSummary: string | null;
+  initiativePurpose: ProductWorkProjection['purpose'] | null;
 }
 
 function safeWorkText(value: string | null, maximum: number): string {
@@ -125,11 +129,13 @@ const PRESENTATION_SELECT = `SELECT h.id AS conversationId,
               ORDER BY result.channel_sequence ASC, result.id ASC LIMIT 1
             ) AS finalResultMessageId,
             w.id AS workId,
-            product.work_id AS presentationWorkId
+            product.work_id AS presentationWorkId,
+            json_extract(initiative.payload_json,'$.request.purpose') AS initiativePurpose
        FROM works w
        JOIN conversation_handles h ON h.channel_id = w.channel_id
        JOIN bots bot ON bot.principal_id = w.target_principal_id
        LEFT JOIN work_thread_presentations product ON product.work_id = w.id
+       LEFT JOIN events initiative ON initiative.aggregate_kind='resident_initiation_work' AND initiative.aggregate_id=w.id AND initiative.aggregate_version=1
        LEFT JOIN messages origin ON origin.id = w.origin_message_id`;
 
 const MISSING_PRESENTATION = "durable Work is missing its conversation or accountable resident";
@@ -267,7 +273,8 @@ function buildProjection(
     title,
     summary: summary || title,
     state,
-    ...(assignments ? {
+    ...(shown.initiativePurpose ? { origin: 'resident_initiative' as const, purpose: shown.initiativePurpose } : {}),
+    ...(assignments && (!shown.initiativePurpose || shown.initiativePurpose === 'action') ? {
       assignmentState: assignments.presentationState(work.id, work.state, assessment),
       assignmentSummary: assessment?.summary ?? null,
     } : {}),
@@ -384,6 +391,16 @@ export function createProductWorkControl(options: {
     get({ context, workId }) { return projection(options.database, load(workId, context)); },
     cancel({ context, workId, idempotencyKey }) {
       const work = load(workId, context);
+      if (context.identity.kind === 'owner' && ['queued', 'leased', 'running', 'cancelling', 'cancelled'].includes(work.state) &&
+          readResidentInitiationForWork(options.database, work.id)) {
+        const rootId = createResidentAssignments(options.database).root(work.id);
+        if (!options.database.readOne("SELECT sequence FROM events WHERE aggregate_kind='resident_initiation_stop' AND aggregate_id=? AND aggregate_version=1", rootId)) {
+          options.database.mutateWithEvent(() => ({ value: undefined, event: { type: 'activity.updated', aggregateKind: 'resident_initiation_stop',
+            aggregateId: rootId, aggregateVersion: 1, channelId: work.channelId, actorPrincipalId: context.principalId,
+            requestId: context.requestId, correlationId: context.correlationId,
+            payload: { rootWorkId: rootId, stoppedWorkId: work.id, stoppedBy: context.principalId }, createdAt: canonicalTimestamp(now()) } }));
+        }
+      }
       if (isWorkingThread(options.database,work)) {
         if (work.state === "cancelled") {
           return { outcome: "cancelled", replayed: true, work: projection(options.database, work) };

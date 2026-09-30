@@ -43,8 +43,11 @@ export function reconcileCanonicalWork(kernel, sourcePath, resident) {
   let changed = 0;
   const assignments = [];
   for (const assignment of snapshot.assignments) {
-    if (typeof assignment.id !== 'string' || !assignment.id.startsWith('wrk_') || typeof assignment.title !== 'string'
-        || !['active','needs_review','blocked','complete','failed','returned','cancelled'].includes(assignment.assignmentState)) throw new Error('Invalid canonical assignment');
+    if (typeof assignment.id !== 'string' || !assignment.id.startsWith('wrk_') || typeof assignment.title !== 'string') throw new Error('Invalid canonical assignment');
+    // An inquiry has a real execution container but is not an owner assignment
+    // or an agency task. Its result remains in canonical conversation/Work.
+    if (assignment.origin === 'resident_initiative' && ['exploration', 'question'].includes(assignment.purpose)) continue;
+    if (!['active','needs_review','blocked','complete','failed','returned','cancelled'].includes(assignment.assignmentState)) throw new Error('Invalid canonical assignment');
     const id = `coordination:${assignment.id}`;
     const digest = createHash('sha256').update(JSON.stringify(assignment)).digest('hex');
     const existing = kernel.store.getTask(id);
@@ -56,6 +59,8 @@ export function reconcileCanonicalWork(kernel, sourcePath, resident) {
     const handoff = { source: 'coordination', canonicalDigest: digest, workId: assignment.id,
       channelId: assignment.channelId, originMessageId: assignment.originMessageId,
       originalRequest: assignment.originalRequest, executionState: assignment.state,
+      ...(assignment.origin === 'resident_initiative' ? { origin: assignment.origin, purpose: assignment.purpose,
+        residentMove: assignment.residentMove } : {}),
       assignmentState: assignment.assignmentState, conclusion: assignment.conclusion };
     if (!existing) kernel.recordTask({ id, summary: assignment.title, status: closed ? 'closed' : 'open', authorityLevel,
       actionKind: 'canonical_assignment', handoff, evidence, at: assignment.createdAt,

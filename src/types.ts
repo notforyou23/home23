@@ -224,6 +224,12 @@ export interface HomeConfig {
     approvals?: string[];
     charterPath?: string;
     residentTickMs?: number;
+    initiative?: {
+      enabled?: boolean;
+      timeoutMs?: number;
+      modelAlias?: string;
+      reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    };
     cronBootcamp?: {
       startupAudit?: boolean;
       retireEnabled?: boolean;

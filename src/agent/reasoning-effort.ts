@@ -1,3 +1,7 @@
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const sharedReasoning = require('../../shared/responses-reasoning.cjs');
+
 export const REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
@@ -5,7 +9,7 @@ export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'medium';
 
 export function supportsResponsesReasoning(model: string): boolean {
-  return /gpt-5\.6(?:$|[-:.])/.test(model) || model === 'gpt-6-astra';
+  return sharedReasoning.supportsResponsesReasoning(model);
 }
 
 const REASONING_EFFORT_SET = new Set<string>(REASONING_EFFORTS);

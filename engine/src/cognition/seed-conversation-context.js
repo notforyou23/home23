@@ -54,7 +54,7 @@ function readRecentConversationEntries(streamPath, options = {}) {
       label = turn.role === 'user' ? 'Owner (legacy conversation)' : 'Resident (legacy conversation)';
     } else continue;
     const eventId = turn.contactId || `${turn.sourceRef}:${turn.ts}:${turn.role}`;
-    entries.set(eventId, { ts: turn.ts, chatId: turn.session, eventId, source: 'seed_contact',
+    entries.set(eventId, { ts: turn.ts, chatId: turn.session, eventId, source: 'seed_contact', role: turn.role, voice: turn.voice,
       summary: `[${label}; ${turn.ts}]\n${turn.text}` });
   }
   return [...entries.values()].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).slice(-maxEntries);

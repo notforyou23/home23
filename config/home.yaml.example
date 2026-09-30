@@ -300,6 +300,13 @@ agency:
   mode: live
   charterPath: agency/charter.yaml
   residentTickMs: 60000
+  # Primary resident only. Existing homes deliberately opt in after preparing
+  # the forward boundary; paused residents and old pursuits are not resumed.
+  initiative:
+    enabled: false
+    timeoutMs: 300000
+    # modelAlias: <a current house model alias>
+    reasoningEffort: high
 
 # Coding-backend bridge (Step 29) — durable coding jobs delegated to headless
 # Codex / Cursor CLIs. Usually set per-agent in instances/<name>/config.yaml.

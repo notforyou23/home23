@@ -1,4 +1,5 @@
-import { residentOutcomeInstruction, type createResidentOutcomeStore } from './resident-outcomes.js';
+import { residentOutcomeInstruction, residentInitiativeOutcomeInstruction, type createResidentOutcomeStore } from './resident-outcomes.js';
+import type { ResidentInitiation } from './resident-initiations.js';
 import type { ResidentOutcomeCursor } from './resident-outcomes.js';
 import { boundHistoricalContext } from '../../agent/historical-context.js';
 import { createHash } from "node:crypto";
@@ -67,6 +68,8 @@ export interface DirectMessageChannelContext {
   instructionMessageIds?: readonly string[];
   /** Original canonical request, never a recursively wrapped runtime prompt. */
   originalOwnerRequest?: string;
+  /** Signed resident initiative; never substitute its origin as an owner request. */
+  residentInitiative?: ResidentInitiation;
   historyBackfill: readonly DirectMessageHistoryEntry[];
   attachments: readonly ResidentInputAttachment[];
   manifest: ContextManifestInput;
@@ -261,6 +264,9 @@ export function createDirectMessageSubmissionService(options: {
    * its outcome durable without rebuilding an unroutable context every tick. */
   outcomeTargetCanRecover?(work: WorkRecord): boolean;
   recoverWorkingContext?(work: WorkRecord): ReturnType<DirectMessageContextPort["recover"]>;
+  recoverInitiativeContext?(work: WorkRecord): Promise<Awaited<ReturnType<DirectMessageContextPort["recover"]>> | null>;
+  residentInitiativeForWork?(work: WorkRecord): ResidentInitiation | undefined;
+  residentInitiativeReviewAllowed?(work: WorkRecord): boolean;
   resolveResident(residentBinding: string): DirectMessageResidentTarget | undefined;
   resolveExecutionTarget?(target: DirectMessageTargetDescriptor):
     DirectMessageExecutionTarget | undefined |
@@ -274,7 +280,7 @@ export function createDirectMessageSubmissionService(options: {
   beginWork(): () => void;
   recoveryIdentity(): { requestId: string; correlationId: string };
 }) {
-  const inFlight = new Map<string, Promise<MessageProjection>>();
+  const inFlight = new Map<string, Promise<MessageProjection | null>>();
   let outcomeTickRunning = false;
   let outcomeCursor: ResidentOutcomeCursor | null = null;
   const outcomeRetryAfter = new Map<string, number>();
@@ -317,11 +323,21 @@ export function createDirectMessageSubmissionService(options: {
     });
   };
 
-  function dispatch(input: {
+  type DispatchInput = {
     work: WorkRecord; prepared: DirectMessageChannelContext; originMessageId: string;
     requestId: string; correlationId: string; endWork: () => void; recovery: boolean;
     target: DirectMessageExecutionTarget;
-  }): Promise<MessageProjection> {
+  };
+  function dispatch(input: DispatchInput): Promise<MessageProjection> {
+    const response = dispatchResult(input).then(message => {
+      if (message === null) throw new Error('An ordinary direct-message turn cannot suppress its answer');
+      return message;
+    });
+    void response.catch(() => undefined); // startup recovery may dispatch without awaiting its response
+    return response;
+  }
+  /** Only private initiative outcome reviews may finish without a new Message. */
+  function dispatchResult(input: DispatchInput): Promise<MessageProjection | null> {
     const existing = inFlight.get(input.work.id);
     if (existing) {
       input.endWork();
@@ -476,7 +492,30 @@ export function createDirectMessageSubmissionService(options: {
       if (terminalReceipt.status !== "succeeded") {
         throw new Error(`direct-message Work ended ${terminalReceipt.status}`);
       }
-      const resultText = agentResponse.text.trim() ? agentResponse.text : null;
+      let resultText = agentResponse.text.trim() ? agentResponse.text : null;
+      const review = input.prepared.residentInitiative && options.outcomes?.forReview(input.work.id);
+      if (review) {
+        const source = options.work.get(review.sourceWorkId);
+        const initiative = source && options.residentInitiativeForWork?.(source);
+        if (initiative && options.residentInitiativeReviewAllowed?.(source!) === false) {
+          options.outcomes!.settleWithoutOwnerContact(review, 'initiative_closed');
+          return null;
+        }
+        // AgentLoop normalizes a provider's empty final answer to this text.
+        // Treat it as quiet only at the private journaled-review boundary;
+        // ordinary owner answers keep their existing validation and delivery.
+        if (initiative && (resultText === null || resultText.trim() === '(no response)') && terminalReceipt.artifactIds.length === 0) {
+          const delivered = source && options.messages.getMessage ? await options.messages.getMessage({ context: target.context({
+            principalId: input.prepared.targetPrincipalId, requestId: input.requestId, correlationId: input.correlationId }), messageId: responseMessageId(source.id) }) : null;
+          if (source?.state === 'succeeded' && delivered?.visibility === 'visible' && delivered.kind === 'result' &&
+              delivered.channelId === source.channelId && delivered.author.principalId === source.targetPrincipalId && delivered.provenance.workId === source.id &&
+              ((delivered.text?.trim() && delivered.text.trim() !== '(no response)') || delivered.attachments.length > 0) && options.outcomes!.canSettleQuietly(source.id)) {
+            options.outcomes!.settleWithoutOwnerContact(review, 'already_delivered_result_sufficient', delivered.id);
+            return null;
+          }
+          resultText = 'I could not confirm that this initiative is ready to close. Its saved work remains available for inspection.';
+        }
+      }
       if (resultText === null && terminalReceipt.artifactIds.length === 0) {
         throw new Error("successful direct-message Work produced no answer");
       }
@@ -559,8 +598,12 @@ export function createDirectMessageSubmissionService(options: {
     const outcome = options.outcomes?.forReview(work.id);
     if (outcome?.prepared) return { prepared: JSON.parse(outcome.prepared) as DirectMessageChannelContext,
       originMessageId: work.originMessageId! };
-    return (work.kind === "resident_work_thread" || work.kind === "channel.bot_turn") && options.recoverWorkingContext
-      ? options.recoverWorkingContext(work) : options.context.recover(work);
+    const initiative = await options.recoverInitiativeContext?.(work);
+    if (initiative) return initiative;
+    const recovered = await ((work.kind === "resident_work_thread" || work.kind === "channel.bot_turn") && options.recoverWorkingContext
+      ? options.recoverWorkingContext(work) : options.context.recover(work));
+    const provenance = options.residentInitiativeForWork?.(work);
+    return provenance ? { ...recovered, prepared: { ...recovered.prepared, residentInitiative: provenance } } : recovered;
   };
   return Object.freeze({
     async processResidentOutcomes(): Promise<void> {
@@ -586,6 +629,10 @@ export function createDirectMessageSubmissionService(options: {
           try {
             const source = options.work.get(row.sourceWorkId);
             if (!source || !source.originMessageId) continue;
+            if (options.residentInitiativeReviewAllowed?.(source) === false) {
+              store.update(row, 'settled_at', new Date().toISOString());
+              continue;
+            }
             if (options.outcomeTargetCanRecover && !options.outcomeTargetCanRecover(source)) {
               outcomeRetryAfter.set(row.key, now + 5 * 60_000);
               continue;
@@ -637,8 +684,10 @@ export function createDirectMessageSubmissionService(options: {
                 ?? (recovered.prepared.instruction.startsWith('INTERNAL WORK OUTCOME') ? null : recovered.prepared.instruction);
               if (original === null) throw new Error('Canonical original request unavailable; refusing to wrap an internal outcome as owner intent');
               prepared = { ...recovered.prepared,
-                originalOwnerRequest: original,
-                instruction: residentOutcomeInstruction(original, row.evidence, source.id),
+                ...(recovered.prepared.residentInitiative ? {} : { originalOwnerRequest: original }),
+                instruction: recovered.prepared.residentInitiative
+                  ? residentInitiativeOutcomeInstruction(recovered.prepared.residentInitiative, row.evidence, source.id)
+                  : residentOutcomeInstruction(original, row.evidence, source.id),
                 historyBackfill: boundHistoricalContext(history),
                 manifest: directMessageManifest({ channelId: source.channelId,
                   messageIds: [...new Set([...(instructionMessageIds ?? [source.originMessageId]), ...page.messages.map(m => m.id)])],
@@ -673,7 +722,7 @@ export function createDirectMessageSubmissionService(options: {
             }
             if (review.state === 'cancelling' || inFlight.has(review.id)) continue;
             // Reuse the canonical Work/Attempt/Lease transport and its restart reattachment.
-            void dispatch({ work: review, prepared, originMessageId: source.originMessageId, ...identity,
+            void dispatchResult({ work: review, prepared, originMessageId: source.originMessageId, ...identity,
               endWork: once(options.beginWork()), recovery: true, target }).catch(error => {
                 console.warn('[resident-outcomes] review dispatch failed:', review!.id, error instanceof Error ? error.message : String(error));
               });
@@ -695,6 +744,9 @@ export function createDirectMessageSubmissionService(options: {
       const work = options.work.get(workId);
       if (!work || work.kind !== "resident_work_thread") throw new Error("Working Thread not found");
       if (["cancelled", "failed", "cancelling"].includes(work.state)) return;
+      // A stopped/expired initiative is cancelled by its bounded Core sweep.
+      // Do not resume a queued/running descendant before that sweep arrives.
+      if (work.state !== 'succeeded' && options.residentInitiativeReviewAllowed?.(work) === false) return;
       const recovered = await recoverContext(work);
       const target = await executionTargetFor(recovered.prepared);
       const identity = options.recoveryIdentity();
@@ -706,6 +758,50 @@ export function createDirectMessageSubmissionService(options: {
     },
     async awaitSettlement(workId: string): Promise<void> {
       await inFlight.get(workId)?.catch(() => undefined);
+    },
+    /** Internal signed admission only. It does not relax public submitMessage's
+     * owner/on-demand identity boundary or reinterpret an owner message. */
+    async initiateResidentTurn(input: {
+      context: MessagingActorContext; prepared: DirectMessageChannelContext; originMessageId: string;
+      idempotencyKey: string; purpose: ResidentInitiation['purpose'];
+      turnSelection: MessageTurnSelection;
+      beforeDispatch(work: WorkRecord): void;
+    }) {
+      assertAuthority();
+      const { prepared, context } = input;
+      if (context.identity.kind !== 'resident' || context.principalId !== prepared.targetPrincipalId ||
+          !prepared.residentInitiative || prepared.residentInitiative.purpose !== input.purpose ||
+          prepared.residentBinding !== context.identity.resident.credential.residentSlug ||
+          !prepared.manifest.messageIds.includes(input.originMessageId)) throw new MessagingError('request_invalid');
+      const target = await executionTargetFor(prepared);
+      if (target.workKind !== 'resident_turn') throw new MessagingError('request_invalid');
+      const priorWorkId = options.context.findWorkIdByIdempotency?.(context.principalId, sha256(input.idempotencyKey));
+      const prior = priorWorkId ? options.work.get(priorWorkId) : null;
+      if (!prior && (input.turnSelection.modelAlias !== null || input.turnSelection.reasoningEffort !== null)) {
+        const catalog = await target.models.modelCatalog({ requestId: context.requestId, correlationId: context.correlationId });
+        if (!catalogAcceptsTurnSelection(catalog, input.turnSelection)) throw new MessagingError('request_invalid');
+      }
+      const created = options.work.create({ principalId: context.principalId, targetPrincipalId: prepared.targetPrincipalId,
+        channelId: prepared.channelId, originMessageId: input.originMessageId, roundId: null,
+        kind: 'resident_turn', idempotencyKey: input.idempotencyKey, manifest: prepared.manifest, maxAutomaticOffers: 1,
+        requestId: context.requestId, correlationId: context.correlationId, turnSelection: input.turnSelection,
+        presentation: { title: prepared.residentInitiative.nextMove.slice(0, 88), summary: prepared.residentInitiative.nextMove.slice(0, 280) } });
+      input.beforeDispatch(created.work); // journal the original identity/Work before any execution
+      let response: Promise<MessageProjection>;
+      if (['failed', 'cancelled', 'cancelling'].includes(created.work.state)) {
+        response = Promise.reject(new Error('Stopped or failed resident initiative cannot restart'));
+      } else if (created.work.state === 'succeeded' && options.messages.getMessage) {
+        response = options.messages.getMessage({ context, messageId: responseMessageId(created.work.id) }).then(message => {
+          if (!message) throw new Error('Successful resident initiative has no canonical result');
+          return message;
+        });
+      } else {
+        response = dispatch({ work: created.work, prepared, originMessageId: input.originMessageId,
+          requestId: context.requestId, correlationId: context.correlationId, endWork: once(options.beginWork()),
+          recovery: created.replayed || created.work.state !== 'queued', target });
+      }
+      void response.catch(() => undefined);
+      return { work: created.work, response, replayed: created.replayed };
     },
     async selectionOptions(input: {
       context: MessagingActorContext;
@@ -740,6 +836,7 @@ export function createDirectMessageSubmissionService(options: {
       let refused = 0;
       for (const work of recoverable) {
         if (options.outcomes?.forReview(work.id)) continue; // Queue serializes follow-through with foreground work.
+        if (work.state !== 'succeeded' && options.residentInitiativeReviewAllowed?.(work) === false) continue;
         try {
           const recovered = await recoverContext(work);
           const target = await executionTargetFor(recovered.prepared);

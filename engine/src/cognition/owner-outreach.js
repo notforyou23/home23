@@ -29,7 +29,18 @@ function normalizeOwnerOutreach(value, allowedRefs = []) {
   if (!Array.isArray(value.evidenceRefs) || !value.evidenceRefs.length || value.evidenceRefs.length > 12) return null;
   const allowed = new Set(allowedRefs);
   if (value.evidenceRefs.some(ref => typeof ref !== 'string' || !allowed.has(ref))) return null;
-  return { category: value.category, text, reason, evidenceRefs: [...new Set(value.evidenceRefs)] };
+  const result = { category: value.category, text, reason, evidenceRefs: [...new Set(value.evidenceRefs)] };
+  if (value.attention != null) {
+    const attention = value.attention;
+    if (!attention || typeof attention !== 'object'
+      || !['problem', 'recovery', 'progress', 'decision', 'connection'].includes(attention.kind)
+      || typeof attention.consequence !== 'string' || attention.consequence.trim().length < 10
+      || attention.consequence.length > 1000 || attention.consequence.includes('\0')
+      || !Array.isArray(attention.evidenceRefs) || !attention.evidenceRefs.length || attention.evidenceRefs.length > 12
+      || attention.evidenceRefs.some(ref => !result.evidenceRefs.includes(ref))) return null;
+    result.attention = { kind: attention.kind, consequence: attention.consequence.trim(), evidenceRefs: [...new Set(attention.evidenceRefs)] };
+  }
+  return result;
 }
 
 module.exports = { outreachEvidenceRefs, normalizeOwnerOutreach };

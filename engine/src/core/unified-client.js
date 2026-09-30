@@ -666,6 +666,7 @@ class UnifiedClient extends GPT5Client {
     return await this.getOpenAICodexGPT5Client().generate({
       ...options,
       model: assignment.model || options.model,
+      reasoningEffort: options.reasoningEffort ?? assignment.reasoningEffort,
     });
   }
 
@@ -1193,6 +1194,7 @@ class UnifiedClient extends GPT5Client {
     return {
       provider: assignment.provider || 'openai',
       model: assignment.model,
+      reasoningEffort: assignment.reasoningEffort,
       fallback: assignment.fallback || null
     };
   }

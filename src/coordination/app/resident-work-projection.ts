@@ -2,10 +2,26 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { join } from 'node:path';
 import type { M11Database } from '../work/types.js';
 import { createResidentAssignments } from './resident-assignments.js';
+import type { ResidentInitiationAdmission } from './resident-initiations.js';
 
 const PROJECTION_EVENT_KINDS = new Set([
-  'work', 'message', 'resident_assignment', 'resident_outcome', 'work_thread_presentation',
+  'work', 'message', 'resident_assignment', 'resident_outcome', 'work_thread_presentation', 'resident_initiation_work', 'resident_initiation_stop',
 ]);
+
+function initiativeProvenance(database: M11Database, rows: Array<Record<string, unknown>>) {
+  if (!rows.length) return rows;
+  const admitted = new Map(database.readAll<{ id: string; payload: string }>(`SELECT ids.value AS id,e.payload_json AS payload
+    FROM json_each(?) ids JOIN events e ON e.aggregate_kind='resident_initiation_work' AND e.aggregate_id=ids.value AND e.aggregate_version=1`,
+    JSON.stringify(rows.map(row => row.id))).map(row => [row.id, JSON.parse(row.payload) as ResidentInitiationAdmission]));
+  return rows.map(row => {
+    const value = admitted.get(String(row.id));
+    if (!value) return row;
+    const { originalRequest: _, assignmentState, ...rest } = row;
+    return { ...rest, origin: 'resident_initiative', purpose: value.request.purpose,
+      residentMove: value.request.nextMove, initiative: value.request,
+      ...(value.request.purpose === 'action' ? { assignmentState } : {}) };
+  });
+}
 
 /** Read only the event primary key and kind. A quiet house avoids rereading
  * historical Work and message bodies; a busy journal yields between pages. */
@@ -34,7 +50,7 @@ export function projectResidentWork(database: M11Database, directory: string, re
     if (!bot) continue;
     const path = join(directory, `${resident}.work.json`);
     const value = JSON.stringify({ schema: 'home23.resident.work.v1', resident,
-      assignments: assignments.listForProjection(bot.id) });
+      assignments: initiativeProvenance(database, assignments.listForProjection(bot.id)) });
     writeSnapshot(directory, path, value);
   }
 }
@@ -66,7 +82,7 @@ export async function projectResidentWorkIncrementally(database: M11Database, di
       cursor = page.cursor;
     }
     const path = join(directory, `${resident}.work.json`);
-    writeSnapshot(directory, path, JSON.stringify({ schema: 'home23.resident.work.v1', resident, assignments: snapshot }));
+    writeSnapshot(directory, path, JSON.stringify({ schema: 'home23.resident.work.v1', resident, assignments: initiativeProvenance(database, snapshot) }));
   }
 }
 

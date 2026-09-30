@@ -21,10 +21,11 @@ import { projectResidentWorkIncrementally, residentWorkProjectionChangesSince } 
 import { createResidentAssignments } from './resident-assignments.js';
 import { dirname, join, resolve } from 'node:path';
 import { createScheduledChannelTurns } from './scheduled-turns.js';
+import { createResidentInitiations } from './resident-initiations.js';
 import { createBotInvocationService } from './bot-invocations.js';
 import { resolveMessagingActor } from '../channels/access.js';
 import { createChannelOperationConsumer } from './channel-operations.js';
-import { createResidentOutcomeStore, workTerminalEvidence } from './resident-outcomes.js';
+import { createResidentOutcomeStore, initiativeReviewCommunication, workTerminalEvidence } from './resident-outcomes.js';
 import { createWorkingThreadStop } from "./working-thread-stop.js";
 import { createForegroundDetachmentConsumer } from "./foreground-detachments.js";
 import { residentFence } from "../../coordination-adapter/resident-uds.js";
@@ -514,6 +515,8 @@ export function createCoordinationProcess(
     ? createSqliteActivityReadService({ database, events, messages })
     : undefined;
   const communications = new SqliteCommunicationEventRepository(database);
+  const appendCommunication = communications.append.bind(communications);
+  communications.append = input => appendCommunication(initiativeReviewCommunication(database, input));
   const notificationConfiguration =
     config.flags["coordination.public_api.enabled"] === true
       ? config.push
@@ -853,6 +856,7 @@ export function createCoordinationProcess(
   let awaitWorkingSettlement: ((workId: string) => Promise<void>) | undefined;
   const residentAdapters = new Map<string, ResidentCoordinationAdapter>();
   let directMessageContext: SqliteDirectMessageContext | undefined;
+  let residentInitiations: ReturnType<typeof createResidentInitiations> | undefined;
   let groupMessageContext: SqliteGroupChannelMessageContext | undefined;
   if (isCanonicalMessagesAuthority(currentAuthority("messages"))) {
     const residentTargets = new Map<string, DirectMessageResidentTarget>();
@@ -1070,6 +1074,9 @@ export function createCoordinationProcess(
         communications,
         ...(deviceNotifications === undefined ? {} : { notifications: deviceNotifications }),
         context: directMessageContext,
+        recoverInitiativeContext: source => residentInitiations?.recover(source) ?? Promise.resolve(null),
+        residentInitiativeForWork: source => residentInitiations?.provenance(source),
+        residentInitiativeReviewAllowed: source => residentInitiations?.reviewAllowed(source) ?? true,
         recoverWorkingContext: async (child) => {
           if (child.roundId === null) return directMessageContext!.recover(child);
           if (!groupMessageContext) throw new Error("Working Thread group context unavailable");
@@ -1095,6 +1102,17 @@ export function createCoordinationProcess(
         beginWork: lifecycle.beginWork,
         recoveryIdentity: () => ({ requestId: generateCoordinationId("request"), correlationId: generateCoordinationId("correlation") }),
       });
+      residentInitiations = createResidentInitiations({ database, primaryResident, messages, context: directMessageContext,
+        submit: directSubmission, work, resolveResident: slug => completionTargets.get(slug),
+        expireWork: workId => {
+          const current = work.get(workId);
+          const resident = completionTargets.get(primaryResident);
+          if (!current || !resident) return;
+          const context = resident.context({ principalId: current.targetPrincipalId,
+            requestId: generateCoordinationId('request'), correlationId: generateCoordinationId('correlation') });
+          const result = workControl.cancel({ workId, idempotencyKey: `resident-initiation-deadline:${workId}`, context });
+          if (result.outcome === 'cancellation_requested' && queueJoinedStop(workId)) reconcileJoinedStops();
+        } });
       dispatchWorkingThread = directSubmission.dispatchWorkingThread;
       processResidentOutcomes = directSubmission.processResidentOutcomes;
       awaitWorkingSettlement = directSubmission.awaitSettlement;
@@ -1372,7 +1390,7 @@ export function createCoordinationProcess(
       credentials: completionCredentials,
       validateFence: (fence, request) => {
         if (request.method !== "POST") return false;
-        if (request.path === COORDINATION_COMPLETION_PATH || request.path === "/internal/v1/scheduled-turns" || request.path === "/internal/v1/resident-notifications") return fence === null;
+        if (request.path === COORDINATION_COMPLETION_PATH || request.path === "/internal/v1/scheduled-turns" || request.path === "/internal/v1/resident-notifications" || request.path === '/internal/v1/resident-initiations' || request.path === '/internal/v1/resident-initiations/status') return fence === null;
         if (request.path !== detachmentPath && request.path !== `${detachmentPath}/start` && request.path !== "/internal/v1/channel-operations") return false;
         const payload = request.payload as unknown as { parentOrigin?: CoordinationTurnOrigin; origin?: CoordinationTurnOrigin };
         const origin = request.path === detachmentPath ? payload?.parentOrigin : payload?.origin;
@@ -1383,6 +1401,15 @@ export function createCoordinationProcess(
         if (request.method === "POST" && request.path === "/internal/v1/resident-notifications") {
           const done = lifecycle.beginWork();
           return notifyResident(context.credential, request.payload).finally(done);
+        }
+        if (request.method === 'POST' && request.path === '/internal/v1/resident-initiations') {
+          if (!residentInitiations || lifecycle.state() !== 'accepting') throw new MessagingError('authority_unavailable');
+          const done = lifecycle.beginWork();
+          return residentInitiations.run(context.credential, request.payload).then(value => JSON.parse(JSON.stringify(value))).finally(done);
+        }
+        if (request.method === 'POST' && request.path === '/internal/v1/resident-initiations/status') {
+          if (!residentInitiations || lifecycle.state() !== 'accepting') throw new MessagingError('authority_unavailable');
+          return JSON.parse(JSON.stringify(residentInitiations.status(context.credential, request.payload)));
         }
         if (request.method === "POST" && request.path === "/internal/v1/scheduled-turns") {
           const resident = completionTargets.get(primaryResident);
@@ -1613,6 +1640,7 @@ export function createCoordinationProcess(
         void residentExecutionFeedback.pump().catch(error => console.error('[resident-execution-feedback]', error));
         void reconcileChessTurns?.().catch(error => console.error('[native-chess]', error));
         try { reconcileScheduledTurns?.(); } catch (error) { console.error('[scheduled-turns]', error); }
+        try { residentInitiations?.reconcile(); } catch (error) { console.error('[resident-initiations]', error); }
         try { reconcileJoinedStops(); } catch(error) { console.error('[joined-stop]',error); }
         void reconcileBotInvocations?.().catch(error => console.error('[bot-invocations]', error));
         // A home may pause replay while a follow-through repair is pending; the

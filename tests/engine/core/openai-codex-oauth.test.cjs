@@ -107,7 +107,8 @@ test('openai-codex moves system and developer messages into instructions', async
     const client = new OpenAICodexClient({}, { info() {} });
 
     await client.generate({
-      model: 'gpt-5.5',
+      model: 'gpt-6.1-sol',
+      reasoningEffort: 'high',
       instructions: 'Base instruction.',
       messages: [
         { role: 'system', content: 'System instruction.' },
@@ -120,6 +121,7 @@ test('openai-codex moves system and developer messages into instructions', async
     assert.match(captured.body.instructions, /Base instruction/);
     assert.match(captured.body.instructions, /System instruction/);
     assert.match(captured.body.instructions, /Developer instruction/);
+    assert.deepEqual(captured.body.reasoning, { effort: 'high', summary: 'auto' });
     assert.deepEqual(captured.body.input.map(item => item.role), ['user']);
   } finally {
     process.env = oldEnv;

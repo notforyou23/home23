@@ -1,6 +1,7 @@
 import { createExecutionControlPort } from "./agent/execution-control.js";
 import { Home23Adapter } from './channels/home23.js';
 import { createOwnerOutreachSender, createOwnerOutreachHandler } from './channels/owner-outreach.js';
+import { createResidentInitiativeHandler, createResidentInitiativeStatusHandler } from './channels/resident-initiative.js';
 import { createSeedOperatorOutreach } from './substrate/operator-outreach.js';
 import { runScheduledChannelTurn } from './scheduler/channel-run.js';
 /**
@@ -1820,6 +1821,20 @@ async function main(): Promise<void> {
     send: async input => {
       if (!toolContext.contactOwner) throw new Error('Home23 owner conversation unavailable');
       return toolContext.contactOwner(input);
+    },
+  }));
+  bridgeApp.post('/api/resident-initiative', createResidentInitiativeHandler({
+    token: bridgeToken || '',
+    initiate: async input => {
+      if (!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
+      return residentCoordinationHarness.initiateResidentTurn(input);
+    },
+  }));
+  bridgeApp.post('/api/resident-initiative/status', createResidentInitiativeStatusHandler({
+    token: bridgeToken || '',
+    status: async input => {
+      if (!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
+      return residentCoordinationHarness.residentInitiationStatus(input);
     },
   }));
   bridgeApp.post('/api/notify', async (req: any, res: any) => {

@@ -823,6 +823,18 @@ export class ResidentTurnUdsServer {
     return (await client.request({method:'POST',path:'/internal/v1/scheduled-turns',payload:JSON.parse(JSON.stringify(input)),fence:null,
       deadlineAtMs:(this.options.now?.() ?? Date.now())+4000,signal:this.#completionAbort.signal})).payload;
   }
+  async initiateResidentTurn(input: import('../coordination/app/resident-initiations.js').ResidentInitiation) {
+    const client = this.options.coordinationClient ?? this.options.coordinationCompletionClient;
+    if (!client) throw new ResidentProtocolError('connection_lost', 'signed coordinator connection unavailable');
+    return (await client.request({ method: 'POST', path: '/internal/v1/resident-initiations', payload: JSON.parse(JSON.stringify(input)), fence: null,
+      deadlineAtMs: (this.options.now?.() ?? Date.now()) + 4000, signal: this.#completionAbort.signal })).payload;
+  }
+  async residentInitiationStatus(input: { initiationId: string }) {
+    const client = this.options.coordinationClient ?? this.options.coordinationCompletionClient;
+    if (!client) throw new ResidentProtocolError('connection_lost', 'signed coordinator connection unavailable');
+    return (await client.request({ method: 'POST', path: '/internal/v1/resident-initiations/status', payload: { ...input }, fence: null,
+      deadlineAtMs: (this.options.now?.() ?? Date.now()) + 4000, signal: this.#completionAbort.signal })).payload;
+  }
   async channelOperation(input: { origin: CoordinationTurnOrigin; invocationId: string; args: Record<string, unknown> }) {
     assertResidentBinding(input.origin, this.options.residentSlug, this.options.serverInstanceId);
     return this.#requestCoordinator('/internal/v1/channel-operations', {

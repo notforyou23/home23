@@ -9,6 +9,7 @@ import {
   reasoningEffortsForModel,
   resolveConfiguredReasoningEffort,
   responsesReasoningConfig,
+  supportsResponsesReasoning,
   validateReasoningEffortConfig,
 } from '../../src/agent/reasoning-effort.js';
 import { resolveModelOverride } from '../../src/agent/model-resolution.js';
@@ -39,6 +40,11 @@ test('model alias resolution carries an alias effort override', () => {
   }), {
     model: 'gpt-5.6-sol', provider: 'openai-codex', reasoningEffort: 'xhigh',
   });
+});
+
+test('verified frontier model keeps reasoning selection on the shared chat and background path', () => {
+  assert.equal(supportsResponsesReasoning('gpt-6.1-sol'), true);
+  assert.equal(supportsResponsesReasoning('unknown-model'), false);
 });
 
 test('model-specific configuration overrides the chat default', () => {

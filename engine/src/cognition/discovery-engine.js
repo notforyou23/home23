@@ -39,7 +39,7 @@ const DEFAULT_CONFIG = {
   probeIntervalMs: 30 * 1000,     // 30s between probes
   consumedEvidenceCooldownMs: 6 * 60 * 60 * 1000,
   maxConsumedEvidence: 512,
-  maxConsecutiveOperational: 1, // when meaningful exploratory material is waiting
+  maxConsecutiveOperational: 1, // recurring observations yield when real contact/material is waiting
   queueCapacity: 100,              // max candidates in the ranked queue
   // Signal thresholds — tunable from config later
   novelty: {
@@ -248,14 +248,19 @@ class DiscoveryEngine {
     }
     const remaining = ranked.filter(candidate => this.queue.has(candidate.key));
     while (out.length < n && remaining.length) {
-      const exploratoryIndex = remaining.findIndex(candidate => candidate.attentionKind === 'exploration');
-      const index = this.consecutiveOperational >= this.config.maxConsecutiveOperational && exploratoryIndex >= 0
-        ? exploratoryIndex : 0;
+      // A fresh health/weather sample is valuable evidence, but cannot itself
+      // satisfy the opportunity for remembered material or owner contact. With
+      // scores above contact, CPU↔health otherwise resets this streak forever.
+      const exploratoryIndex = remaining.findIndex(isMaterialInquiry);
+      const criticalIndex = remaining.findIndex(candidate => isCriticalObservation(candidate.observation));
+      const index = criticalIndex >= 0 ? criticalIndex
+        : this.consecutiveOperational >= this.config.maxConsecutiveOperational && exploratoryIndex >= 0
+          ? exploratoryIndex : 0;
       const [candidate] = remaining.splice(index, 1);
       this.queue.delete(candidate.key);
       if (this._recentlyConsumed(candidate)) continue;
       out.push(candidate);
-      this.consecutiveOperational = candidate.attentionKind === 'exploration' ? 0 : this.consecutiveOperational + 1;
+      this.consecutiveOperational = isMaterialInquiry(candidate) ? 0 : this.consecutiveOperational + 1;
       const fingerprint = this._evidenceFingerprint(candidate);
       this.consumedEvidence.set(fingerprint, Date.now());
       this.consumedSubjects.set(fingerprint, this._evidenceSubject(candidate));
@@ -551,8 +556,9 @@ class DiscoveryEngine {
   _probeConversation() {
     const scorer = this.getConversationSalience?.();
     if (typeof scorer?.getRecentEntries !== 'function') return [];
+    const attentionEntries = typeof scorer.getAttentionEntries === 'function' ? scorer.getAttentionEntries() : null;
     const sessions = new Map();
-    for (const entry of scorer.getRecentEntries()) {
+    for (const entry of attentionEntries || scorer.getRecentEntries()) {
       const prior = sessions.get(entry.chatId);
       const summaries = [...(prior?.summaries || []), entry.summary];
       let chars = summaries.reduce((total, text) => total + text.length + 2, 0);
@@ -561,12 +567,13 @@ class DiscoveryEngine {
     }
     const out = [...sessions.values()].filter(entry => entry.summaries.length).map(entry => {
       const summary = entry.summaries.join('\n\n');
+      const attentionSummary = entry.attentionSummary || summary;
       return {
         key: `conversation:${entry.chatId}:${entry.eventId || entry.ts}`,
         signal: 'conversation', attentionKind: 'exploration', clusterId: null,
         nodeIds: typeof scorer.relevantNodeIds === 'function'
-          ? scorer.relevantNodeIds(this.memory, summary, 8) : [],
-        conversation: { ts: entry.ts, chatId: entry.chatId, source: entry.source, eventId: entry.eventId, summary },
+          ? scorer.relevantNodeIds(this.memory, attentionSummary, 8) : [],
+        conversation: { ts: entry.ts, chatId: entry.chatId, source: entry.source, eventId: entry.eventId, summary, attentionSummary },
         score: entry.source === 'seed_contact' ? 1.25 : 0.9, importance: 1,
         rationale: entry.source === 'seed_contact'
           ? 'Canonical contact can start an inquiry even without an existing graph match'
@@ -587,7 +594,8 @@ class DiscoveryEngine {
     const evidence = candidate.observation
       ? [candidate.observation.channelId, candidate.observation.flag, candidate.observation.payload]
       : candidate.conversation
-        ? [candidate.conversation.chatId, candidate.conversation.ts, candidate.conversation.summary, material]
+        ? [candidate.conversation.chatId, candidate.conversation.ts,
+          candidate.conversation.attentionSummary || candidate.conversation.summary, material]
         : material.length ? material : [candidate.key];
     return crypto.createHash('sha256').update(JSON.stringify(evidence)).digest('hex');
   }
@@ -883,7 +891,9 @@ class DiscoveryEngine {
     if (this.queue.size <= this.config.queueCapacity) return;
     // Drop lowest-scoring first
     const sorted = Array.from(this.queue.values()).sort((a, b) => b.score - a.score);
-    const reserved = sorted.filter(candidate => candidate.attentionKind === 'exploration').slice(0, Math.min(8, this.config.queueCapacity));
+    const critical = sorted.filter(candidate => isCriticalObservation(candidate.observation)).slice(0, this.config.queueCapacity);
+    const reserved = [...critical, ...sorted.filter(isMaterialInquiry)
+      .slice(0, Math.min(8, this.config.queueCapacity - critical.length))];
     const reservedKeys = new Set(reserved.map(candidate => candidate.key));
     const keep = [...reserved, ...sorted.filter(candidate => !reservedKeys.has(candidate.key)).slice(0, this.config.queueCapacity - reserved.length)];
     this.queue = new Map(keep.map(c => [c.key, c]));
@@ -916,6 +926,27 @@ function humanAge(ms) {
   if (ms < 60 * 60 * 1000) return `${Math.round(ms / (60 * 1000))}m`;
   if (ms < 24 * 60 * 60 * 1000) return `${Math.round(ms / (60 * 60 * 1000))}h`;
   return `${Math.round(ms / (24 * 60 * 60 * 1000))}d`;
+}
+
+function isMaterialInquiry(candidate) {
+  return candidate.attentionKind === 'exploration' && !candidate.observation;
+}
+
+function isCriticalObservation(observation) {
+  if (observation?.flag !== 'COLLECTED') return false;
+  const payload = observation.payload || {};
+  if (observation.channelId === 'machine.memory') {
+    // Critical priority requires reclaimable pressure/headroom evidence. Raw
+    // free RAM alone must not bypass the same fairness that noisy RAM caused.
+    const capacity = payload.pressureFreePct ?? payload.memoryPressure?.freePct;
+    if (payload.memoryPressure?.available === false || typeof capacity !== 'number'
+      || !Number.isFinite(capacity) || capacity < 0 || capacity > 100) return false;
+  }
+  if (observation.channelId === 'machine.cpu'
+    && (typeof payload.loadAvg?.[0] !== 'number' || !Number.isFinite(payload.loadAvg[0]) || payload.loadAvg[0] < 0
+      || !Number.isSafeInteger(payload.cpuCount) || payload.cpuCount < 1)) return false;
+  return ['memory:critical', 'memory:severe', 'cpu:saturated', 'cpu:overcommitted']
+    .includes(semanticObservationBucket(observation));
 }
 
 function semanticObservationBucket(obs) {
@@ -997,4 +1028,4 @@ function deepMerge(target, source) {
   return out;
 }
 
-module.exports = { DiscoveryEngine };
+module.exports = { DiscoveryEngine, semanticObservationBucket };

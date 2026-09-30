@@ -414,19 +414,29 @@ class Orchestrator {
       getConversationContext: () => this.conversationSalience?.getRecentContext() || null,
       getConversationEvidenceRefs: () => (this.conversationSalience?.getRecentEntries() || [])
         .filter(entry => entry.source === 'seed_contact' && entry.eventId).map(entry => entry.eventId),
-      sendOwnerOutreach: request => this.sendOwnerOutreach(request),
+      ownerOutreachPolicy: this.getOwnerOutreachPolicy(),
+      sendOwnerOutreach: (request, attentionIntent) => this.sendOwnerOutreach(request, attentionIntent),
       retryFeedback: () => this.retryCognitionFeedback(),
     });
   }
 
-  async sendOwnerOutreach(request) {
-    return this.getOwnerOutreachOutbox().send(request);
+  async sendOwnerOutreach(request, attentionIntent) {
+    return this.getOwnerOutreachOutbox().send(request, attentionIntent);
+  }
+
+  getOwnerOutreachPolicy() {
+    if (!this.ownerOutreachPolicy) {
+      const { OwnerOutreachPolicy } = require('../cognition/owner-outreach-policy');
+      this.ownerOutreachPolicy = new OwnerOutreachPolicy({ brainDir: this.logsDir });
+    }
+    return this.ownerOutreachPolicy;
   }
 
   getOwnerOutreachOutbox() {
     if (!this.ownerOutreachOutbox) {
       const { OwnerOutreachOutbox } = require('../cognition/owner-outreach-outbox');
-      this.ownerOutreachOutbox = new OwnerOutreachOutbox(this.logsDir, request => this.deliverOwnerOutreach(request));
+      this.ownerOutreachOutbox = new OwnerOutreachOutbox(this.logsDir, request => this.deliverOwnerOutreach(request),
+        { policy: this.getOwnerOutreachPolicy() });
     }
     return this.ownerOutreachOutbox;
   }
@@ -463,6 +473,27 @@ class Orchestrator {
       ...(typeof result.channelId === 'string' ? { channelId: result.channelId } : {}),
       ...(Array.isArray(result.messageIds) ? { messageIds: result.messageIds.filter(id => typeof id === 'string').slice(0, 16) } : {}),
     };
+  }
+
+  async deliverResidentInitiation(request) {
+    return this.requestResidentInitiation('/api/resident-initiative', request);
+  }
+
+  async getResidentInitiationStatus(request) {
+    return this.requestResidentInitiation('/api/resident-initiative/status', request);
+  }
+
+  async requestResidentInitiation(route, request) {
+    const port = Number(process.env.BRIDGE_PORT);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('resident bridge port unavailable');
+    const token = resolveLiveProblemsBridgeToken();
+    if (!token) throw new Error('resident initiative bridge authentication unavailable');
+    const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(request), signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error(`resident initiative HTTP ${response.status}`);
+    return response.json();
   }
 
   /**

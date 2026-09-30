@@ -732,6 +732,7 @@ async function main() {
   let closer = null;
   let decayWorker = null;
   let agencyKernel = null;
+  let residentInitiationDriver = null;
   let agencyTickTimer = null;
   try {
     // Step 24 config lives in config/home.yaml under `osEngine` — the engine
@@ -752,10 +753,12 @@ async function main() {
     };
     let osEngineCfg = {};
     let agencyCfg = {};
+    let primaryResidentName = null;
     try {
       const raw = yaml.load(fs.readFileSync(homeYamlPath, 'utf8')) || {};
       osEngineCfg = raw.osEngine || {};
       agencyCfg = raw.agency || {};
+      primaryResidentName = typeof raw.home?.primaryAgent === 'string' ? raw.home.primaryAgent : null;
       // Overlay per-agent instance config.yaml if present.
       const agentName = process.env.HOME23_AGENT || config.agent?.name;
       if (agentName) {
@@ -796,6 +799,7 @@ async function main() {
       brainDir: runtimeRoot,
       agentName: agentNameForAgency,
       charterPath: agencyCharterPath,
+      initializeState: !(agencyCfg.initiative?.enabled === true && agentNameForAgency === primaryResidentName),
       config: {
         ...agencyCfg,
         enabled: agencyCfg.enabled !== false,
@@ -809,15 +813,35 @@ async function main() {
       logger.info('[agency] artifact registry receipts wired to resident spine');
     }
     if (agencyKernel.config.enabled) {
+      if (agencyCfg.initiative?.enabled === true && agentNameForAgency === primaryResidentName) {
+        const { ResidentInitiationDriver } = await import('./agency/resident-initiation.js');
+        residentInitiationDriver = new ResidentInitiationDriver({
+          kernel: agencyKernel, brainDir: runtimeRoot,
+          isPrimaryResident: () => agentNameForAgency === primaryResidentName,
+          sendInitiation: request => orchestrator.deliverResidentInitiation(request),
+          getInitiationStatus: request => orchestrator.getResidentInitiationStatus(request),
+          timeoutMs: agencyCfg.initiative.timeoutMs ?? 300_000,
+          modelAlias: agencyCfg.initiative.modelAlias,
+          reasoningEffort: agencyCfg.initiative.reasoningEffort,
+        });
+        residentInitiationDriver.initialize();
+        agencyKernel.ensureState();
+        orchestrator.thinkingMachine?.setResidentInitiativeHandler(
+          (proposal, context) => residentInitiationDriver.propose(proposal, context),
+          () => residentInitiationDriver.getContext(),
+        );
+      }
       const { reconcileCanonicalWork } = await import('./agency/canonical-work.js');
       const canonicalWorkPath = path.join(home23RepoRoot, 'instances', '.house', 'coordination', 'resident-contact', `${agentNameForAgency}.work.json`);
       let agencyTickRunning = false;
       const runAgencyTick = () => {
         if (agencyTickRunning) return;
         agencyTickRunning = true;
-        Promise.resolve().then(() => {
+        Promise.resolve().then(async () => {
           reconcileCanonicalWork(agencyKernel, canonicalWorkPath, agentNameForAgency);
-          return agencyKernel.tick({ reason: 'resident_engine_tick' });
+          const result = await agencyKernel.tick({ reason: 'resident_engine_tick' });
+          if (residentInitiationDriver) await residentInitiationDriver.consume(result);
+          return result;
         }).catch((err) => {
           logger.warn?.('[agency] resident tick failed:', err?.message || err);
         }).finally(() => { agencyTickRunning = false; });

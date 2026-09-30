@@ -61,7 +61,7 @@ test('UnifiedClient routes openai-codex assignments through OAuth, not OPENAI_AP
     const { UnifiedClient } = require('../../../engine/src/core/unified-client');
     const client = new UnifiedClient({
       modelAssignments: {
-        'agents.research': { provider: 'openai-codex', model: 'gpt-5.4' }
+        'agents.research': { provider: 'openai-codex', model: 'gpt-6.1-sol', reasoningEffort: 'high' }
       }
     }, console);
 
@@ -75,7 +75,8 @@ test('UnifiedClient routes openai-codex assignments through OAuth, not OPENAI_AP
     assert.equal(captured.url, 'https://chatgpt.com/backend-api/codex/responses');
     assert.equal(captured.headers.Authorization, `Bearer ${token}`);
     assert.ok(captured.headers['chatgpt-account-id']);
-    assert.equal(captured.body.model, 'gpt-5.4');
+    assert.equal(captured.body.model, 'gpt-6.1-sol');
+    assert.deepEqual(captured.body.reasoning, { effort: 'high', summary: 'auto' });
     assert.equal(typeof captured.body.instructions, 'string');
     assert.ok(captured.body.instructions.length > 0);
     assert.equal(Object.hasOwn(captured.body, 'max_output_tokens'), false);

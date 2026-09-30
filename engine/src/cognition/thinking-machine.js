@@ -63,6 +63,7 @@ class ThinkingMachine {
     this.getConversationContext = opts.getConversationContext || opts.config?.getConversationContext || (() => null);
     this.getConversationEvidenceRefs = opts.getConversationEvidenceRefs || (() => []);
     this.sendOwnerOutreach = opts.sendOwnerOutreach || null;
+    this.ownerOutreachPolicy = opts.ownerOutreachPolicy || null;
     this.retryFeedback = opts.retryFeedback || null;
     this.emitThought = opts.emitThought || null;
     this.logThought = opts.logThought || null;
@@ -124,6 +125,11 @@ class ThinkingMachine {
   setPublishHooks(hooks = {}) {
     this.onCycleComplete = typeof hooks.onCycleComplete === 'function' ? hooks.onCycleComplete : null;
     this.onCriticVerdict = typeof hooks.onCriticVerdict === 'function' ? hooks.onCriticVerdict : null;
+  }
+
+  setResidentInitiativeHandler(handler, getContext) {
+    this.onResidentInitiative = typeof handler === 'function' ? handler : null;
+    this.getResidentInitiativeContext = typeof getContext === 'function' ? getContext : null;
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────────────
@@ -231,6 +237,12 @@ class ThinkingMachine {
       catch (error) { this.logger.warn?.('[thinking-machine] conversation context unavailable', { error: error.message }); }
       try { conversationEvidenceRefs = this.getConversationEvidenceRefs(); } catch { /* no invented evidence */ }
       const cycleContext = { conversationContext };
+      let residentInitiativeContext = null;
+      try { residentInitiativeContext = this.getResidentInitiativeContext?.() || null; }
+      catch { residentInitiativeContext = 'Recent initiative history is unavailable. Do not start a potentially duplicate responsibility.'; }
+      const attentionState = this.ownerOutreachPolicy?.observe(candidate, this.memory);
+      const ownerAttentionContext = this.ownerOutreachPolicy?.context(candidate, this.memory)
+        || (attentionState?.status === 'unavailable' ? 'Durable owner attention state unavailable; contact must wait for recoverable judgment.' : null);
       let dive = await this.deepDive.think(candidate, temporalContext, null, cycleContext);
 
       // Event: ThoughtEmerged (raw output of deep-dive, pre-critique)
@@ -289,6 +301,8 @@ class ThinkingMachine {
           livedContext: dive.livedContext || null,
           outreachEvidenceRefs: outreachEvidenceRefs(this.memory, candidate, dive, conversationEvidenceRefs),
           recentOutreach: this.recentThoughts.map(entry => entry.ownerOutreach).filter(Boolean).slice(0, 5),
+          ownerAttentionContext,
+          residentInitiativeContext,
         });
         passes.push(pass);
 
@@ -386,6 +400,20 @@ class ThinkingMachine {
 
       // Route by verdict: keep → emit + log; discard → silence (write to discarded.jsonl only)
       if (finalVerdict.verdict === 'keep') {
+        if (finalVerdict.residentInitiative && this.onResidentInitiative) {
+          try {
+            const result = await this.onResidentInitiative(finalVerdict.residentInitiative, {
+              cycleSessionId, evidenceRefs: outreachEvidenceRefs(this.memory, candidate, dive, conversationEvidenceRefs),
+              observation: candidate.observation,
+            });
+            this._emit('ResidentInitiativeProposed', cycleSessionId, {
+              purpose: finalVerdict.residentInitiative.purpose,
+              pursuitId: result?.pursuit?.id || null, disposition: result?.decision?.route || result?.state || 'unavailable',
+            });
+          } catch (error) {
+            this.logger.warn?.('[thinking-machine] resident initiative admission failed', { error: error?.message });
+          }
+        }
         // Event: MemoryCandidateCreated (kept thought enters promotion pipeline)
         this._emit('MemoryCandidateCreated', cycleSessionId, {
           source: 'thinking-machine',
@@ -550,20 +578,18 @@ class ThinkingMachine {
           const deliveryId = `outreach:${thoughtId}`;
           let result;
           try {
-            const duplicate = this.recentThoughts.some(entry => {
-              const prior = entry.ownerOutreach;
-              return prior && ['committed', 'queued', 'pending'].includes(prior.status)
-                && prior.text.replace(/\s+/g, ' ').trim() === outreach.text.replace(/\s+/g, ' ').trim()
-                && JSON.stringify([...prior.evidenceRefs].sort()) === JSON.stringify([...outreach.evidenceRefs].sort());
-            });
-            if (duplicate) {
-              result = { status: 'suppressed', detail: 'same outreach already accepted with the same evidence' };
+            const attentionIntent = this.ownerOutreachPolicy?.buildIntent(outreach, { candidate, memory: this.memory, deliveryId });
+            const attentionDecision = this.ownerOutreachPolicy?.preview(attentionIntent)
+              || { allow: false, status: 'unavailable', reason: 'attention_policy_unavailable' };
+            if (!attentionDecision.allow) {
+              result = { status: 'suppressed', detail: attentionDecision.reason, attentionDecision };
             } else {
               if (!this.sendOwnerOutreach) throw new Error('owner outreach transport unavailable');
               result = await this.sendOwnerOutreach({
                 text: outreach.text, reason: outreach.reason, evidenceRefs: outreach.evidenceRefs, deliveryId,
-              });
-              if (!['committed', 'queued', 'pending'].includes(result?.status)) throw new Error('owner outreach returned no durable delivery state');
+              }, attentionIntent);
+              if (!['committed', 'queued', 'pending', 'suppressed'].includes(result?.status)) throw new Error('owner outreach returned no durable delivery state');
+              result = { ...result, attentionDecision: result.attentionDecision || attentionDecision };
             }
           } catch (error) {
             result = { status: 'failed', detail: String(error.message || error).slice(0, 500) };

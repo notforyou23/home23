@@ -251,7 +251,7 @@ function isSelfAttestedClose(pursuit, evidence = []) {
 }
 
 export class AgencyKernel {
-  constructor({ brainDir, agentName = 'jerry', config = {}, charterPath = null, logger = console } = {}) {
+  constructor({ brainDir, agentName = 'jerry', config = {}, charterPath = null, logger = console, initializeState = true } = {}) {
     if (!brainDir) throw new Error('AgencyKernel requires brainDir');
     this.agentName = agentName;
     this.charter = loadAgencyCharter({ charterPath, config, agentName });
@@ -276,7 +276,7 @@ export class AgencyKernel {
     this.consequences = new ConsequenceEngine({ charter: this.charter });
     this.editor = new AgencyEditor({ charter: this.charter });
     this.truth = new SourceTruthHierarchy({ hierarchy: this.charter.sourceTruthHierarchy });
-    this.ensureState();
+    if (initializeState) this.ensureState();
   }
 
   stateLedgerStamp() {
@@ -788,8 +788,8 @@ export class AgencyKernel {
     const maxActive = Number(this.charter.attention.maxActivePursuits || 5);
     const maxWatch = Number(this.charter.attention.maxWatchItems || 20);
     const maxDeferred = Number(this.charter.attention.maxDeferredItems || 200);
-    const active = this.store.listPursuits({ status: 'active', limit: 10000 });
-    const watch = this.store.listPursuits({ status: 'watch', limit: 10000 });
+    const active = this.store.listPursuits({ status: 'active', limit: 10000 }).filter(pursuit => !this.residentInitiativeDormantFilter?.(pursuit));
+    const watch = this.store.listPursuits({ status: 'watch', limit: 10000 }).filter(pursuit => !this.residentInitiativeDormantFilter?.(pursuit));
     const deferred = this.store.listPursuits({ status: 'deferred', limit: 10000 });
     for (const pursuit of active.slice(maxActive)) {
       this.store.updatePursuit(pursuit.id, { status: 'deferred' }, {
@@ -848,7 +848,35 @@ export class AgencyKernel {
     return this.serializeIntake(() => this.intakeSerial(input));
   }
 
-  async intakeSerial(input = {}) {
+  // Called only by the local initiative driver. Its persisted forward boundary
+  // distinguishes dormant history from current attention without executing or
+  // deleting that history. This callback is never a serialized API grant.
+  intakeResidentInitiative(input, { isHistorical } = {}) {
+    if (!this.config.enabled || this.config.mode !== 'live') return Promise.resolve({ state: 'inactive' });
+    if (typeof isHistorical !== 'function' || input?.source !== 'resident.thinking'
+        || input?.kind !== 'resident_initiative'
+        || !['action', 'exploration', 'question'].includes(input.purpose)
+        || !['private_research', 'private_artifact', 'verification'].includes(input.scope)
+        || input.authorityLevel !== (input.purpose === 'action' ? 'L2' : 'L1')) {
+      return Promise.resolve({ state: 'declined', reason: 'invalid_resident_initiative' });
+    }
+    this.setResidentInitiativeBoundary(isHistorical);
+    return this.serializeIntake(() => {
+      const budget = this.attentionBudget();
+      const current = this.store.listPursuits({ status: ['active', 'watch'], limit: 10000 })
+        .filter(pursuit => !isHistorical(pursuit));
+      budget.activeCount = current.filter(pursuit => pursuit.status === 'active').length;
+      budget.watchCount = current.filter(pursuit => pursuit.status === 'watch').length;
+      return this.intakeSerial(input, { budget });
+    });
+  }
+
+  setResidentInitiativeBoundary(isDormant) {
+    if (typeof isDormant !== 'function') throw new TypeError('Resident initiative boundary requires a local predicate');
+    this.residentInitiativeDormantFilter = isDormant;
+  }
+
+  async intakeSerial(input = {}, { budget = this.attentionBudget() } = {}) {
     const candidate = this.router.normalize(input);
     const existing = this.store.findSimilar(candidate);
     if (isRedundantGoodLifePolicyPulse(candidate, existing)) {
@@ -864,7 +892,7 @@ export class AgencyKernel {
         state: this.ensureState(),
       };
     }
-    const decision = this.selector.select(candidate, { existing, budget: this.attentionBudget() });
+    const decision = this.selector.select(candidate, { existing, budget });
     const inboxEntry = {
       ...candidate,
       decision,
@@ -933,8 +961,8 @@ export class AgencyKernel {
 
   attentionBudget() {
     return {
-      activeCount: this.store.listPursuits({ status: 'active', limit: 10000 }).length,
-      watchCount: this.store.listPursuits({ status: 'watch', limit: 10000 }).length,
+      activeCount: this.store.listPursuits({ status: 'active', limit: 10000 }).filter(pursuit => !this.residentInitiativeDormantFilter?.(pursuit)).length,
+      watchCount: this.store.listPursuits({ status: 'watch', limit: 10000 }).filter(pursuit => !this.residentInitiativeDormantFilter?.(pursuit)).length,
       maxActivePursuits: this.charter.attention.maxActivePursuits,
       maxWatchItems: this.charter.attention.maxWatchItems,
     };
