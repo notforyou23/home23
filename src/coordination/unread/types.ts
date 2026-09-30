@@ -19,7 +19,7 @@ export interface UnreadProjection {
 export interface InboxLatestMessage {
   id: string;
   sequence: number;
-  preview: string | null;
+  preview: string;
   authorPrincipalId: string;
   createdAt: string;
 }

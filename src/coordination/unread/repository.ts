@@ -40,6 +40,20 @@ interface InboxChannelRow {
   updatedAt: string;
 }
 
+type UnreadReader = Pick<MessagingDatabase, "readOne"> | Pick<CoordinationTransaction, "readOne">;
+
+/** Internal turn origins remain canonical evidence, not inbox messages. */
+function inboxMessagePredicate(reader: UnreadReader): string {
+  const hasArtifacts = reader.readOne<{ present: number }>(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'message_artifacts'",
+  )?.present === 1;
+  const noAttachments = hasArtifacts
+    ? "NOT EXISTS (SELECT 1 FROM message_artifacts link WHERE link.message_id = m.id)"
+    : "1";
+  return `NOT (m.author_kind = 'bot' AND m.kind = 'system'
+    AND m.body_text IS NULL AND m.tombstones_message_id IS NULL AND ${noAttachments})`;
+}
+
 function unreadResultRef(
   unread: UnreadProjection,
   eventReference: MessagingEventReference,
@@ -235,6 +249,7 @@ export class SqliteUnreadRepository implements UnreadRepository {
   ): Promise<readonly InboxConversation[]> {
     assertStoredActorBinding(this.database, actor);
     const principalId = actor.principalId;
+    const messagePredicate = inboxMessagePredicate(this.database);
     const channels = this.database.readAll<InboxChannelRow>(
       `SELECT c.id,
               h.id AS conversationId,
@@ -252,11 +267,11 @@ export class SqliteUnreadRepository implements UnreadRepository {
       principalId,
     );
     return Object.freeze(channels.map((channel) => {
-      const unread = this.readUnread(this.database, channel.id, principalId);
+      const unread = this.readUnread(this.database, channel.id, principalId, messagePredicate);
       const latest = this.database.readOne<{
         id: string;
         sequence: number;
-        preview: string | null;
+        preview: string;
         authorPrincipalId: string;
         createdAt: string;
       }>(
@@ -265,11 +280,13 @@ export class SqliteUnreadRepository implements UnreadRepository {
                 CASE WHEN EXISTS (
                   SELECT 1 FROM messages tombstone
                   WHERE tombstone.tombstones_message_id = m.id
-                ) THEN NULL ELSE substr(m.body_text, 1, 160) END AS preview,
+                ) THEN '' ELSE coalesce(substr(m.body_text, 1, 160), '') END AS preview,
                 m.author_principal_id AS authorPrincipalId,
                 m.created_at AS createdAt
          FROM messages m
          WHERE m.channel_id = ?
+           AND m.stored_visibility = 'visible'
+           AND ${messagePredicate}
          ORDER BY m.channel_sequence DESC
          LIMIT 1`,
         channel.id,
@@ -346,17 +363,19 @@ export class SqliteUnreadRepository implements UnreadRepository {
 
   /** Internal delivery projection; the caller must first validate its registered session. */
   badgeCountForPrincipal(principalId: string): number {
+    const messagePredicate = inboxMessagePredicate(this.database);
     const channels = this.database.readAll<{ id: string }>(
       `SELECT c.id FROM channels c JOIN channel_members member ON member.channel_id=c.id
        WHERE member.principal_id=? AND member.active=1 AND c.lifecycle='active'`, principalId);
     return channels.reduce((total, channel) => Math.min(99_999,
-      total + Math.min(99_999, this.readUnread(this.database, channel.id, principalId).unreadCount)), 0);
+      total + Math.min(99_999, this.readUnread(this.database, channel.id, principalId, messagePredicate).unreadCount)), 0);
   }
 
   private readUnread(
-    reader: Pick<MessagingDatabase, "readOne"> | Pick<CoordinationTransaction, "readOne">,
+    reader: UnreadReader,
     channelId: string,
     principalId: string,
+    messagePredicate = inboxMessagePredicate(reader),
   ): UnreadProjection {
     const channel = reader.readOne<UnreadChannelRow>(
       `SELECT h.id AS conversationId,
@@ -390,6 +409,7 @@ export class SqliteUnreadRepository implements UnreadRepository {
          AND m.channel_sequence > ?
          AND m.author_principal_id <> ?
          AND m.stored_visibility = 'visible'
+         AND ${messagePredicate}
          AND NOT EXISTS (
            SELECT 1 FROM messages tombstone
            WHERE tombstone.tombstones_message_id = m.id

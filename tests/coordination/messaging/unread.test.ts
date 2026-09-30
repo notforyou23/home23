@@ -3,9 +3,13 @@ import test from "node:test";
 
 import {
   MessagingError,
+  SqliteMessagingRepository,
   createChannelService,
 } from "../../../src/coordination/channels/index.js";
 import { createMessageService } from "../../../src/coordination/messages/index.js";
+import { ARTIFACT_SCHEMA_DELTA_SQL } from "../../../src/coordination/artifacts/schema-delta.js";
+import { SqliteArtifactRepository } from "../../../src/coordination/artifacts/repository.js";
+import { resolveArtifactActor } from "../../../src/coordination/artifacts/access.js";
 import { SqliteUnreadRepository, createUnreadService } from "../../../src/coordination/unread/index.js";
 
 import {
@@ -24,6 +28,102 @@ const channelKey = (suffix: number) =>
   `m08-unread-channel-${String(suffix).padStart(6, "0")}`;
 const readKey = (suffix: number) =>
   `m08-unread-cursor-${String(suffix).padStart(6, "0")}`;
+
+for (const hasArtifacts of [false, true]) {
+  test(`Inbox hides empty internal origins and preserves nullable-body messages (artifacts=${hasArtifacts})`, async (t) => {
+    const fixture = await createMessagingFixture();
+    t.after(fixture.close);
+    if (hasArtifacts) fixture.database.raw.exec(ARTIFACT_SCHEMA_DELTA_SQL);
+    const channels = createChannelService({ repository: fixture.repository, participantDirectory: fixture.directory,
+      cursorSigningKey: Buffer.alloc(32, 0x23), now: () => fixture.clock.value });
+    const messages = createMessageService({ repository: fixture.repository, participantDirectory: fixture.directory,
+      now: () => fixture.clock.value });
+    const unread = createUnreadService({ repository: fixture.repository, participantDirectory: fixture.directory,
+      now: () => fixture.clock.value });
+    const direct = await channels.createDirectConversation({ context: ownerContext(701),
+      memberBotIds: [fixture.bots.jerry.principalId], pinned: false, idempotencyKey: channelKey(701) });
+    const send = async (suffix: number, kind: "system" | "result", text: string | null,
+      tombstonesMessageId: string | null = null) => messages.sendMessage({
+      context: residentContext(fixture.bots.jerry, "jerry", suffix), channelId: direct.channel.id,
+      messageId: fixtureId("message", suffix), authorPrincipalId: fixture.bots.jerry.principalId,
+      idempotencyKey: sendKey(suffix), kind, text, mentions: [], clientMessageId: null,
+      replyToMessageId: null, tombstonesMessageId, provenance: { roundId: null, workId: null },
+    });
+    const row = async () => (await unread.listInbox({ context: ownerContext(710, ["product:read"]) }))[0]!;
+    const badges = new SqliteUnreadRepository(fixture.database);
+
+    await send(702, "result", "Actual resident reply");
+    await send(703, "system", null);
+    const internalOnly = await row();
+    assert.equal(internalOnly.latestMessage?.id, fixtureId("message", 702));
+    assert.equal(internalOnly.latestMessage?.preview, "Actual resident reply");
+    assert.equal(internalOnly.unread.count, 1);
+    assert.equal(badges.badgeCountForPrincipal(OWNER_ID), 1);
+    assert.equal((await unread.getUnread({ context: ownerContext(711, ["product:read"]),
+      channelId: direct.channel.id })).latestSequence, 2, "canonical cursor still includes the internal origin");
+
+    if (hasArtifacts) {
+      fixture.database.raw.prepare("UPDATE bots SET required_capabilities_json = ? WHERE id = ?")
+        .run('["messages","attachments"]', fixture.bots.jerry.id);
+      const registration = residentContext(fixture.bots.jerry, "jerry", 707);
+      assert.equal(registration.identity.kind, "resident");
+      if (registration.identity.kind !== "resident") throw new Error("resident fixture identity required");
+      await fixture.directory.registerResident({ context: registration.identity.resident, botBinding: "jerry",
+        protocolVersion: 1, capabilities: ["messages", "attachments"] });
+      fixture.database.raw.prepare(`INSERT INTO artifacts (id, owner_principal_id, state, original_name,
+        declared_content_type, detected_content_type, byte_count, sha256, storage_kind, created_at, version)
+        VALUES (?, ?, 'ready', 'note.txt', 'text/plain', 'text/plain', 1, ?, 'content_addressed', ?, 1)`)
+        .run("art_0198d95f-6c00-7000-8000-000000000703", fixture.bots.jerry.principalId,
+          "a".repeat(64), fixture.clock.value.toISOString());
+      const attachmentMessages = createMessageService({
+        repository: new SqliteMessagingRepository(fixture.database, { ...fixture.repositoryOptions,
+          artifactMessageLink: new SqliteArtifactRepository(fixture.database) }),
+        participantDirectory: fixture.directory, now: () => fixture.clock.value,
+        resolveAttachmentActor: (context) => resolveArtifactActor(context, fixture.directory),
+      });
+      const context = residentContext(fixture.bots.jerry, "jerry", 706);
+      await attachmentMessages.sendMessage({ context,
+        channelId: direct.channel.id, messageId: fixtureId("message", 706), authorPrincipalId: fixture.bots.jerry.principalId,
+        idempotencyKey: sendKey(706), kind: "system", text: null, mentions: [],
+        attachmentIds: ["art_0198d95f-6c00-7000-8000-000000000703"], clientMessageId: null,
+        replyToMessageId: null, tombstonesMessageId: null, provenance: { roundId: null, workId: null } });
+      const attachment = await row();
+      assert.equal(attachment.latestMessage?.id, fixtureId("message", 706));
+      assert.equal(attachment.latestMessage?.preview, "");
+      assert.equal(attachment.unread.count, 2, "an attachment-only message remains unread");
+    }
+
+    await send(704, "system", "Visible system notice");
+    assert.equal((await row()).latestMessage?.preview, "Visible system notice");
+    await send(705, "system", null, fixtureId("message", 702));
+    const tombstone = await row();
+    assert.equal(tombstone.latestMessage?.id, fixtureId("message", 705));
+    assert.equal(tombstone.latestMessage?.preview, "", "tombstone has a String preview without deleted content");
+    assert.equal(tombstone.unread.count, hasArtifacts ? 3 : 2);
+    assert.equal(badges.badgeCountForPrincipal(OWNER_ID), tombstone.unread.count);
+  });
+}
+
+test("Inbox with only internal origins has no latest message or unread badge", async (t) => {
+  const fixture = await createMessagingFixture();
+  t.after(fixture.close);
+  const channels = createChannelService({ repository: fixture.repository, participantDirectory: fixture.directory,
+    cursorSigningKey: Buffer.alloc(32, 0x23), now: () => fixture.clock.value });
+  const messages = createMessageService({ repository: fixture.repository, participantDirectory: fixture.directory,
+    now: () => fixture.clock.value });
+  const unread = createUnreadService({ repository: fixture.repository, participantDirectory: fixture.directory,
+    now: () => fixture.clock.value });
+  const direct = await channels.createDirectConversation({ context: ownerContext(721),
+    memberBotIds: [fixture.bots.jerry.principalId], pinned: false, idempotencyKey: channelKey(721) });
+  await messages.sendMessage({ context: residentContext(fixture.bots.jerry, "jerry", 722),
+    channelId: direct.channel.id, messageId: fixtureId("message", 722), authorPrincipalId: fixture.bots.jerry.principalId,
+    idempotencyKey: sendKey(722), kind: "system", text: null, mentions: [], clientMessageId: "scheduled:original-run",
+    replyToMessageId: null, tombstonesMessageId: null, provenance: { roundId: null, workId: null } });
+  const [conversation] = await unread.listInbox({ context: ownerContext(723, ["product:read"]) });
+  assert.equal(conversation!.latestMessage, null);
+  assert.equal(conversation!.unread.count, 0);
+  assert.equal(new SqliteUnreadRepository(fixture.database).badgeCountForPrincipal(OWNER_ID), 0);
+});
 
 test("read cursors advance monotonically and unread matches committed authorship", async (t) => {
   const fixture = await createMessagingFixture();
