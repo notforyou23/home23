@@ -44,6 +44,8 @@ The primary resident requires live agency and explicit `agency.initiative.enable
 
 Instance model overlays retain validated reasoning effort. The orchestrator retains initiative proposal and context hooks across deferred ThinkingMachine creation and binds them before the first cycle. An initialized driver alone is insufficient evidence of that connection.
 
+Graph lookup and bounded neighborhood traversal resolve node and edge identities consistently, including existing numeric node IDs. References must resolve to the supplied memory material. A focused graph below the existing minimum skips without a provider call.
+
 The resident's graph synthesis reads the thought and completed partition findings to return a concise connection brief for critique, preserving correction labels, source citations and uncertainty. Limited coverage cannot establish absence. No useful connection is a valid result. The ordinary research synthesis retains its existing contract. Brevity guidance is part of the resident prompt, not an unverified provider output cap.
 
 Background Codex requests settle at their completed terminal event. Incomplete, failed or missing-terminal streams cannot promote partial text into a successful result. Private timing receipts correlate each request with its outcome and phases without logging supplied material or credentials.

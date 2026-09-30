@@ -11,6 +11,7 @@
 'use strict';
 
 const { projectMemoryAuthority, createMemoryAuthorityResolver } = require('../../../shared/memory-authority.cjs');
+const { resolveGraphNodeId, graphEdgeEndpoints } = require('./graph-identity');
 
 const DEFAULT_CONFIG = {
   neighborhoodHops: 2,        // how many graph hops around candidate to include
@@ -56,7 +57,8 @@ class DeepDive {
     const started = Date.now();
 
     // 1. Gather broad graph context around the candidate's referenced nodes
-    const seedNodeIds = candidate.nodeIds || [];
+    const seedNodeIds = Array.from(new Set((candidate.nodeIds || [])
+      .map(id => resolveGraphNodeId(this.memory, id)).filter(id => id !== undefined)));
     const neighborhood = this._gatherNeighborhood(seedNodeIds);
 
     // 2. Build prompt: candidate + neighborhood + conversation + temporal + revision framing
@@ -112,7 +114,7 @@ class DeepDive {
     const edges = [];
 
     // Validate seed nodes exist
-    const validSeeds = seedNodeIds.filter(id => this.memory.nodes.has(id));
+    const validSeeds = seedNodeIds.map(id => resolveGraphNodeId(this.memory, id)).filter(id => id !== undefined);
     for (const id of validSeeds) {
       visited.add(id);
     }
@@ -121,8 +123,10 @@ class DeepDive {
     let frontier = new Set(visited);
     for (let h = 0; h < this.config.neighborhoodHops; h++) {
       const next = new Set();
-      for (const edgeKey of this.memory.edges.keys()) {
-        const [a, b] = edgeKey.split('->');
+      for (const [edgeKey, edge] of this.memory.edges) {
+        const endpoints = graphEdgeEndpoints(this.memory, edgeKey, edge);
+        if (!endpoints) continue;
+        const [a, b] = endpoints;
         if (frontier.has(a) && !visited.has(b)) next.add(b);
         if (frontier.has(b) && !visited.has(a)) next.add(a);
       }
@@ -196,7 +200,9 @@ class DeepDive {
 
     // Collect internal edges
     for (const [edgeKey, edge] of this.memory.edges.entries()) {
-      const [a, b] = edgeKey.split('->');
+      const endpoints = graphEdgeEndpoints(this.memory, edgeKey, edge);
+      if (!endpoints) continue;
+      const [a, b] = endpoints;
       if (visited.has(a) && visited.has(b)) {
         edges.push({ source: a, target: b, weight: edge.weight });
       }
@@ -280,7 +286,8 @@ Memory authority labels describe source strength, not the value of an idea. Narr
     // Primary node content — this is jtr's world, what jerry should actually think about.
     // We lead with this, NOT with discovery's structural metadata, so the thought
     // focuses on content (what this is) rather than topology (why discovery picked it).
-    const seedIdSet = new Set(candidate.nodeIds || []);
+    const seedIdSet = new Set((candidate.nodeIds || [])
+      .map(id => resolveGraphNodeId(this.memory, id)).filter(id => id !== undefined));
     const seedNodes = neighborhood.nodes.filter(n => seedIdSet.has(n.id));
     const peerNodes = neighborhood.nodes.filter(n => !seedIdSet.has(n.id));
     const observation = candidate.observation || null;
@@ -368,11 +375,12 @@ Address these gaps concretely. If the prior thought was drifting into meta-comme
 
   _extractReferencedNodes(text, contextNodes) {
     const refs = new Set();
-    const validIds = new Set(contextNodes.map(n => String(n.id)));
+    const context = { nodes: new Map(contextNodes.map(n => [n.id, n])) };
     const rx = /\b(?:node|n)[\s:]?(\w{2,})/gi;
     let m;
     while ((m = rx.exec(text)) !== null) {
-      if (validIds.has(m[1])) refs.add(m[1]);
+      const id = resolveGraphNodeId(context, m[1]);
+      if (id !== undefined) refs.add(id);
     }
     return Array.from(refs);
   }

@@ -15,6 +15,7 @@
 'use strict';
 
 const path = require('path');
+const { resolveGraphNodeId, graphEdgeEndpoints } = require('./graph-identity');
 const { createMemoryAuthorityResolver, projectMemoryAuthority } = require('../../../shared/memory-authority.cjs');
 const { awaitWithCancellation, throwIfAborted } = require('../../../shared/research-runtime/lib/provider-execution.js');
 
@@ -152,7 +153,8 @@ class PGSAdapter {
     // Pre-flight skip: isolated candidates have nothing for PGS to connect.
     // Running sweeps on them is pure waste — they'll just produce absence
     // reports that critique ignores. Save the LLM calls.
-    const referenced = args.referencedNodes || [];
+    const referenced = Array.from(new Set((Array.isArray(args.referencedNodes) ? args.referencedNodes : [])
+      .map(id => resolveGraphNodeId(this.memory, id)).filter(id => id !== undefined)));
     const seedEdgeCount = this._countSeedEdges(referenced);
     if (referenced.length === 0 || seedEdgeCount < 2) {
       this.stats.skippedIsolatedCount = (this.stats.skippedIsolatedCount || 0) + 1;
@@ -178,6 +180,10 @@ class PGSAdapter {
 
     if (!graph.nodes.length) {
       return emptyResult('no_graph');
+    }
+    if (graph.nodes.length < this.engine.config.minNodesForPgs) {
+      this.stats.skippedSmallGraphCount = (this.stats.skippedSmallGraphCount || 0) + 1;
+      return emptyResult('skipped_small_graph');
     }
 
     this.logger.info?.('[pgs-adapter] starting', {
@@ -285,10 +291,12 @@ class PGSAdapter {
   _countSeedEdges(seedIds) {
     if (!Array.isArray(seedIds) || seedIds.length === 0) return 0;
     if (!this.memory?.edges) return 0;
-    const seeds = new Set(seedIds.map(String));
+    const seeds = new Set(seedIds.map(id => resolveGraphNodeId(this.memory, id)).filter(id => id !== undefined));
     let count = 0;
-    for (const edgeKey of this.memory.edges.keys()) {
-      const [a, b] = edgeKey.split('->');
+    for (const [edgeKey, edge] of this.memory.edges) {
+      const endpoints = graphEdgeEndpoints(this.memory, edgeKey, edge);
+      if (!endpoints) continue;
+      const [a, b] = endpoints;
       if (seeds.has(a) || seeds.has(b)) {
         count++;
         if (count >= 10) return count;  // early-out — we only need to know if ≥ 2
@@ -358,7 +366,9 @@ function toPgsGraph(memory, focusNodes, opts = {}) {
 
   const edges = [];
   for (const [edgeKey, edge] of memory.edges.entries()) {
-    const [src, tgt] = edgeKey.split('->');
+    const endpoints = graphEdgeEndpoints(memory, edgeKey, edge);
+    if (!endpoints) continue;
+    const [src, tgt] = endpoints;
     if (!allowedNodeIds.has(src) || !allowedNodeIds.has(tgt)) continue;
     edges.push({
       source: src,
@@ -371,12 +381,14 @@ function toPgsGraph(memory, focusNodes, opts = {}) {
 }
 
 function traverseHops(memory, seedIds, hops, cap) {
-  const visited = new Set(seedIds.filter(id => memory.nodes.has(id)));
+  const visited = new Set(seedIds.map(id => resolveGraphNodeId(memory, id)).filter(id => id !== undefined));
   let frontier = new Set(visited);
   for (let h = 0; h < hops; h++) {
     const next = new Set();
-    for (const edgeKey of memory.edges.keys()) {
-      const [src, tgt] = edgeKey.split('->');
+    for (const [edgeKey, edge] of memory.edges) {
+      const endpoints = graphEdgeEndpoints(memory, edgeKey, edge);
+      if (!endpoints) continue;
+      const [src, tgt] = endpoints;
       if (frontier.has(src) && !visited.has(tgt)) next.add(tgt);
       if (frontier.has(tgt) && !visited.has(src)) next.add(src);
     }
@@ -392,8 +404,10 @@ function traverseHops(memory, seedIds, hops, cap) {
 
 function sampleByDegree(memory, cap) {
   const degrees = new Map();
-  for (const edgeKey of memory.edges.keys()) {
-    const [a, b] = edgeKey.split('->');
+  for (const [edgeKey, edge] of memory.edges) {
+    const endpoints = graphEdgeEndpoints(memory, edgeKey, edge);
+    if (!endpoints) continue;
+    const [a, b] = endpoints;
     degrees.set(a, (degrees.get(a) || 0) + 1);
     degrees.set(b, (degrees.get(b) || 0) + 1);
   }
@@ -505,18 +519,19 @@ function extractConnections(answer, graph, budget) {
 
   // Parse node-id citations of the form "Node 12345" or "node 12345"
   const nodeIdRegex = /\bNode[s]?\s+(\w+)/gi;
-  const validNodeIds = new Set(graph.nodes.map(n => String(n.id)));
+  const context = { nodes: new Map(graph.nodes.map(n => [n.id, n])) };
   const citedNodes = new Set();
   let m;
   while ((m = nodeIdRegex.exec(answer)) !== null) {
-    if (validNodeIds.has(m[1])) citedNodes.add(m[1]);
+    const id = resolveGraphNodeId(context, m[1]);
+    if (id !== undefined) citedNodes.add(id);
   }
 
   // Connection-note regex: sentences explicitly linking two node IDs.
   const pairRegex = /Node[s]?\s+(\w+)[^.]*?(Node[s]?\s+(\w+))/gi;
   while ((m = pairRegex.exec(answer)) !== null) {
-    const a = m[1], b = m[3];
-    if (validNodeIds.has(a) && validNodeIds.has(b) && a !== b) {
+    const a = resolveGraphNodeId(context, m[1]), b = resolveGraphNodeId(context, m[3]);
+    if (a !== undefined && b !== undefined && a !== b) {
       const sentenceStart = answer.lastIndexOf('.', m.index) + 1;
       const sentenceEnd = answer.indexOf('.', m.index);
       const text = answer.slice(sentenceStart, sentenceEnd > 0 ? sentenceEnd : m.index + 200).trim();
