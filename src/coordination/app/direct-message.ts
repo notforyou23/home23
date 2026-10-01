@@ -463,6 +463,8 @@ export function createDirectMessageSubmissionService(options: {
         } : {}),
         chatId: `coordination:${input.prepared.channelId}:${input.work.id}`,
         instruction: input.prepared.instruction, origin,
+        contextPurpose: input.prepared.scheduledTurn || input.prepared.residentInitiative || planned || input.recovery
+          ? "work" : "conversation",
         historyBackfill: boundHistoricalContext(input.prepared.historyBackfill
           .filter(entry => entry.messageId !== input.originMessageId)),
         attachments: input.prepared.attachments,

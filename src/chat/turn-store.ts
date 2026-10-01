@@ -25,6 +25,7 @@ export class TurnStore {
     first_token_deadline_at?: string;
     reasoning_effort?: ReasoningEffort;
     coordination_origin?: import('../agent/types.js').CoordinationTurnOrigin;
+    context_purpose?: import('../agent/context-enrichment.js').TurnContextPurpose;
     delegation_origin?: import('../agent/types.js').DelegationTurnOrigin;
   } = {}): TurnEnvelope {
     const env: TurnEnvelope = {
@@ -42,6 +43,7 @@ export class TurnStore {
       provider,
       reasoning_effort: extras.reasoning_effort,
       coordination_origin: extras.coordination_origin,
+      context_purpose: extras.context_purpose,
       delegation_origin: extras.delegation_origin,
     };
     this.history.appendRecord(chatId, env);

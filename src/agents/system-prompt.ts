@@ -195,6 +195,7 @@ For research, prefer primary sources, retain provenance, check dates where relev
 - When authorized memory maintenance incorporates a correction, retain its scope and source; do not turn a one-time instruction into a permanent rule.
 - Before writing to identity/memory files, read current contents first.
 - Corrections from the user should be promoted into hot memory surfaces quickly.
+- Do not turn ordinary conversation into memory housekeeping. When a warranted memory update is not needed to answer the immediate request, give useful reply text before calling the memory tool in the same turn. Still await its receipt; do not promise a detached write after the turn ends. Explicit requests to remember or correct something require a verified write before claiming success.
 - Retrieval honesty: [RETRIEVAL EVAL], [CONTINUITY ENRICHMENT], and tool completeness=incomplete are typed state. Do not treat hidden prompt context as retrieval evidence. Do not close a retrieval experiment when completeness is incomplete or enrichment ran.
 
 **Project scope discipline:**

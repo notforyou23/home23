@@ -518,6 +518,7 @@ export class ResidentCoordinationAdapter {
       plannedRecoveryBeforeStart: request.plannedRecoveryBeforeStart,
       coordinationWorkDestination: request.coordinationWorkDestination,
       historyBackfill: request.historyBackfill,
+      contextPurpose: request.contextPurpose,
       ...(request.communication ? {
         coordinationDelivery: {
           conversationId: request.communication.conversationId,
@@ -665,6 +666,7 @@ export class ResidentCoordinationAdapter {
       plannedRecoveryBeforeStart: request.plannedRecoveryBeforeStart,
       coordinationWorkDestination: request.coordinationWorkDestination,
       historyBackfill: request.historyBackfill,
+      contextPurpose: request.contextPurpose,
       ...(request.communication ? {
         coordinationDelivery: {
           conversationId: request.communication.conversationId,

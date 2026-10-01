@@ -16,6 +16,7 @@ import yaml from 'js-yaml';
 import type { AssemblyResult, EventEnvelope } from '../types.js';
 import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
+import { pendingAutomaticContextDisclosure, type TurnContextEnrichment } from './context-enrichment.js';
 import { budgetIdentityContent, boundaryTruncate } from './identity-budget.js';
 import { composeSeedSituation } from '../substrate/seed-context.js';
 import { composeLivedRecent } from '../substrate/lived-recent.js';
@@ -63,6 +64,8 @@ interface AssemblyConfig {
   sessionId: string;
   signal: AbortSignal;
   brainSearchTimeoutMs?: number;
+  /** Responsive conversations own a background lookup; work keeps the blocking route. */
+  contextEnrichment?: TurnContextEnrichment;
   contextSearch: (
     request: { query: string; topK: number },
     signal: AbortSignal,
@@ -648,6 +651,7 @@ export async function assembleContext(
   let searchQuery = '';
   let sourceHealth = 'unknown';
   let matchOutcome = 'unknown';
+  let retrievalPending = false;
   let retrievalError: string | null = null;
   let contextRetrievalTimedOut = false;
   let successfulHybridRetrieval = false;
@@ -667,13 +671,12 @@ export async function assembleContext(
     searchQuery = `${userText} ${contextSnippet}`.trim().slice(0, 500);
 
     config.signal.throwIfAborted();
-    const retrievalSignal = AbortSignal.any([
-      config.signal,
-      AbortSignal.timeout(config.brainSearchTimeoutMs ?? BRAIN_SEARCH_TIMEOUT_MS),
-    ]);
-    const retrieval = await config.contextSearch(
-      { query: searchQuery, topK: BRAIN_SEARCH_LIMIT }, retrievalSignal,
-    );
+    const request = { query: searchQuery, topK: BRAIN_SEARCH_LIMIT };
+    const retrieval = config.contextEnrichment
+      ? await config.contextEnrichment.initial(request)
+      : await config.contextSearch(request, AbortSignal.any([
+          config.signal, AbortSignal.timeout(config.brainSearchTimeoutMs ?? BRAIN_SEARCH_TIMEOUT_MS),
+        ]));
     config.signal.throwIfAborted();
     brainCues = Array.isArray(retrieval.results)
       ? retrieval.results as BrainSearchResult[]
@@ -703,7 +706,8 @@ export async function assembleContext(
       && matchOutcome === 'matches'
       && brainCues.length > 0
       && retrievalFallback?.completeness === 'incomplete';
-    degraded = sourceHealth !== 'healthy' && !successfulHybridRetrieval && !successfulFastRetrieval;
+    retrievalPending = Boolean(config.contextEnrichment) && matchOutcome === 'pending';
+    degraded = !retrievalPending && sourceHealth !== 'healthy' && !successfulHybridRetrieval && !successfulFastRetrieval;
     retrievalMs = Math.round(performance.now() - retrievalStartedAt);
     }
   } catch (err) {
@@ -806,6 +810,7 @@ export async function assembleContext(
           ? 'successful_fast'
           : null,
       retrievalMs,
+      retrievalPending,
       stage: 'fast',
     },
   });
@@ -1009,6 +1014,7 @@ export async function assembleContext(
           ? 'successful_fast'
           : null,
       retrievalMs,
+      retrievalPending,
       stage: 'fast',
     },
   });
@@ -1068,7 +1074,7 @@ export async function assembleContext(
         '[/RETRIEVAL NOTE]\n\n'
       : '';
 
-  const prefix = `[SITUATIONAL AWARENESS]\n\n${operatorObligationSection ? `${operatorObligationSection}\n\n` : ''}${
+  const prefix = `[SITUATIONAL AWARENESS]\n\n${retrievalPending ? `${pendingAutomaticContextDisclosure()}\n\n` : ''}${operatorObligationSection ? `${operatorObligationSection}\n\n` : ''}${
     brainCues.length > 0
       ? '[CONTINUITY ENRICHMENT] This block includes automatic pre-turn brain cues. Do not treat them as brain_search results.\n\n'
       : ''
@@ -1079,8 +1085,7 @@ export async function assembleContext(
     Math.max(0, SITUATIONAL_AWARENESS_MAX_CHARS - prefix.length - footer.length - brainHeading.length - 1), onCap);
 
   if (rankedParts.length === 0) {
-    const block = boundedBlock(operatorObligationSection
-      ? `[SITUATIONAL AWARENESS]\n\n${operatorObligationSection}${footer}` : '');
+    const block = boundedBlock(operatorObligationSection || retrievalPending ? `${prefix}${footer}` : '');
     if (ledger) { ledger.emit(events); }
     return { block, degraded: false, brainCueCount: brainCues.length, triggerCount: triggerMatches.length,
       surfacesLoaded, events, sourceHealth, matchOutcome, retrievalError };

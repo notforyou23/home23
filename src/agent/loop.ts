@@ -38,6 +38,7 @@ import type { CompactionManager } from './compaction.js';
 import type { MediaAttachment } from '../types.js';
 import { getCodexCredentials, getCodexHeaders } from './codex-auth.js';
 import { assembleContext } from './context-assembly.js';
+import { AUTOMATIC_RECALL_MAX_CHARS, TurnContextEnrichment, parseTurnContextPurpose, usesResponsiveContext, type TurnContextPurpose } from './context-enrichment.js';
 import { isSpeakingConversationRun, isForegroundConversation } from './foreground-admission.js';
 import { collectCanonicalWorkContext, collectForegroundTurnContext } from './foreground-work-view.js';
 import {
@@ -1032,6 +1033,7 @@ export class AgentLoop {
       coordinationOrigin?: import('./types.js').CoordinationTurnOrigin;
       coordinationDelivery?: import('./types.js').CoordinationTurnDeliveryContext;
       historyBackfill?: readonly HistoricalContextEntry[];
+      contextPurpose?: TurnContextPurpose;
       coordinationWorkDestination?: import('../work/types.js').CoordinationWorkDestination;
       parentWorkId?: string;
       delegationOrigin?: import('./types.js').DelegationTurnOrigin;
@@ -1040,6 +1042,7 @@ export class AgentLoop {
     } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
     const historyBackfill = parseHistoricalContext(opts.historyBackfill, opts.coordinationOrigin?.originMessageId);
+    const contextPurpose = parseTurnContextPurpose(opts.contextPurpose);
     const turnId = opts.turnId ?? newTurnId();
     const startedAtMs = this.turnTiming.now();
     const inactivityMs = opts.inactivityMs ?? opts.maxDurationMs ?? DEFAULT_TURN_TIMEOUT_MS;
@@ -1205,6 +1208,7 @@ export class AgentLoop {
       ...(opts.coordinationOrigin ? { coordinationOrigin: opts.coordinationOrigin } : {}),
       ...(opts.coordinationDelivery ? { coordinationDelivery: opts.coordinationDelivery } : {}),
       ...(historyBackfill.length ? { historyBackfill } : {}),
+      ...(contextPurpose ? { contextPurpose } : {}),
       ...(opts.coordinationWorkDestination ? { coordinationWorkDestination: opts.coordinationWorkDestination } : {}),
       ...(opts.parentWorkId ? { parentWorkId: opts.parentWorkId } : {}),
       ...(opts.delegationOrigin ? { delegationOrigin: opts.delegationOrigin } : {}),
@@ -1236,6 +1240,7 @@ export class AgentLoop {
         first_token_deadline_at,
         reasoning_effort: runtime.reasoningEffort,
         coordination_origin: opts.coordinationOrigin,
+        context_purpose: contextPurpose,
         delegation_origin: opts.delegationOrigin,
       });
       await opts.onDurableStart?.({
@@ -1438,6 +1443,8 @@ export class AgentLoop {
       turnRuntime: turnRuntime ?? null,
     };
 
+    let automaticContextEnrichment: TurnContextEnrichment | undefined;
+
     // Start typing indicator (via toolContext.telegramAdapter)
     const adapter = this.toolContext.telegramAdapter;
     let typingInterval: ReturnType<typeof setInterval> | null = null;
@@ -1586,6 +1593,11 @@ export class AgentLoop {
             }));
 
           const retrievalEval = isRetrievalEvalTurn(userText);
+          if (!retrievalEval && usesResponsiveContext(chatId, turnRuntime) && runContext.turnRuntime) {
+            automaticContextEnrichment = new TurnContextEnrichment(
+              (request, signal) => runContext.turnRuntime!.brainOperations.searchContext(request, signal), ac.signal,
+            );
+          }
           const assembly = await assembleContext(
             userText,
             chatId,
@@ -1603,6 +1615,7 @@ export class AgentLoop {
               substrateStateDir: this.situationalAwareness?.substrate?.stateDir,
               substrateBudget: this.situationalAwareness?.substrate?.budget,
               skipBrainEnrichment: retrievalEval,
+              contextEnrichment: automaticContextEnrichment,
             },
             this.eventLedger,
             ac.signal,
@@ -1702,8 +1715,16 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
       const taskNotes = registry.get('task_context') ? this.history.taskContext?.briefing(chatId) : '';
       if (taskNotes) rawSystemPrompt += `\n\n${taskNotes}`;
+      const historicalContext = historicalContextBlock(turnRuntime?.historyBackfill ?? []);
+      if (historicalContext) rawSystemPrompt += `\n\n${historicalContext}`;
+      // Reserve the bounded supplement before compaction; late recall cannot bypass the window budget.
+      const enrichmentReserve = automaticContextEnrichment?.canSupplement ? AUTOMATIC_RECALL_MAX_CHARS + 2 : 0;
+      this.eventLedger.record('TurnContextPrepared', chatId, { turnId: activeTurnId,
+        elapsedMs: Date.now() - startMs, systemChars: rawSystemPrompt.length, enrichmentReserve,
+        contextPurpose: turnRuntime?.contextPurpose ?? 'legacy',
+        automaticRecall: automaticContextEnrichment?.status ?? 'blocking_or_isolated' });
       const pressure = this.compaction?.measure({
-        historyChars: this.history.estimateChars(storedHistory), systemChars: rawSystemPrompt.length,
+        historyChars: this.history.estimateChars(storedHistory), systemChars: rawSystemPrompt.length + enrichmentReserve,
         toolSchemaChars: Math.max(JSON.stringify(registry.getAnthropicTools()).length, JSON.stringify(registry.getOpenAITools()).length),
         incomingChars: this.history.estimateChars([userMsg]), outputTokens: this.maxTokens,
         historyBudget: this.history.budget, model: runtimeModel, provider: runtimeProvider,
@@ -1744,13 +1765,10 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
         }
       }
 
-      const historicalContext = historicalContextBlock(turnRuntime?.historyBackfill ?? []);
-      if (historicalContext) rawSystemPrompt += `\n\n${historicalContext}`;
-
       // Cache only the stable system prefix explicitly. Dynamic evidence keeps
       // its existing authority and position; changing it invalidates later cache.
       const dynamicTail = rawSystemPrompt.slice(staticSystemPrompt.length);
-      const systemPrompt = cacheableSystemPrompt(runtimeProvider, staticSystemPrompt, dynamicTail,
+      let systemPrompt = cacheableSystemPrompt(runtimeProvider, staticSystemPrompt, dynamicTail,
         runtimeIsOAuth ? getClaudeCodeSystemPrompt() : undefined);
 
       // Build messages for Anthropic API
@@ -1758,6 +1776,21 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
         role: m.role as 'user' | 'assistant',
         content: m.content,
       }));
+
+      // A completed lookup may join the next request, never the request already streaming.
+      const consumeAutomaticEnrichment = (items?: Array<Record<string, unknown>>): void => {
+        const enrichment = automaticContextEnrichment?.take();
+        if (!enrichment) return;
+        rawSystemPrompt += `\n\n${enrichment.block}`;
+        systemPrompt = cacheableSystemPrompt(runtimeProvider, staticSystemPrompt,
+          rawSystemPrompt.slice(staticSystemPrompt.length), runtimeIsOAuth ? getClaudeCodeSystemPrompt() : undefined);
+        if (items?.[0]?.role === 'system') {
+          items[0].content = typeof systemPrompt === 'string' ? systemPrompt : systemPrompt.map(block => block.text).join('\n');
+        }
+        this.eventLedger.record('AutomaticContextEnrichmentConsumed', chatId, { turnId: activeTurnId,
+          retrievalMs: enrichment.elapsedMs, cueCount: enrichment.cueCount, chars: enrichment.block.length,
+          elapsedMs: Date.now() - startMs });
+      };
 
       // Get tool definitions
       const tools = registry.getAnthropicTools();
@@ -1927,6 +1960,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               this.consumeOperatorSteer(chatId, turnMessages, (text) => {
                 apiMessages.push({ role: 'user', content: text });
               }, onEvent, activeTurnId);
+              consumeAutomaticEnrichment(apiMessages);
               maintainModelWindow(apiMessages);
 
               // ── Convert apiMessages → Responses API input ──
@@ -2377,6 +2411,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 });
               }, onEvent, activeTurnId);
 
+              consumeAutomaticEnrichment(xaiInputItems);
               maintainModelWindow(xaiInputItems);
               const xaiBody = {
                 model: runtimeModel,
@@ -2689,6 +2724,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             this.consumeOperatorSteer(chatId, turnMessages, (text) => {
               apiMessages.push({ role: 'user', content: text });
             }, onEvent, activeTurnId);
+            consumeAutomaticEnrichment(apiMessages);
             maintainModelWindow(apiMessages);
 
             // ── Make the API call ──
@@ -2891,6 +2927,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           // SDK: messages.stream() returns an iterable of server-sent events plus
           // a finalMessage() method that yields the fully-accumulated Message.
           const omitSamplingParams = isAnthropicSamplingDeprecatedModel(runtimeModel);
+          consumeAutomaticEnrichment();
           maintainModelWindow(messages, false);
           const requestParams: Record<string, unknown> = {
             model: runtimeModel,
@@ -3183,6 +3220,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
       if (err instanceof Error && err.stack) console.error('[agent] Stack:', err.stack);
       throw err;
     } finally {
+      automaticContextEnrichment?.close();
       this.authenticatedUserTurns.delete(`turn:${activeTurnId}:user`);
       this.unregisterActiveRun(chatId, activeTurnId, ac);
       if (typingInterval) clearInterval(typingInterval);

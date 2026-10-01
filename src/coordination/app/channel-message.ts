@@ -427,6 +427,7 @@ export function createGroupChannelMessageService(options: {
     requestId: string;
     correlationId: string;
     recovery: boolean;
+    freshConversation: boolean;
   }): Promise<WorkExecution> {
     const existing = workInFlight.get(input.work.id);
     if (existing) return existing;
@@ -503,6 +504,8 @@ export function createGroupChannelMessageService(options: {
         } : {}),
         chatId: `coordination:${input.prepared.channelId}:${currentWork.id}`,
         instruction: content.instruction,
+        contextPurpose: input.freshConversation && !options.joinedInvocation?.(input.prepared.originMessageId)
+          && options.context.isScheduledOrigin?.(input.prepared) === false ? "conversation" as const : "work" as const,
         historyBackfill: content.historyBackfill,
         attachments: input.prepared.attachments,
         origin,
@@ -625,6 +628,7 @@ export function createGroupChannelMessageService(options: {
         requestId: input.requestId,
         correlationId: input.correlationId,
         recovery: input.recovery || work.state !== "queued",
+        freshConversation: !input.recovery && work.state === "queued",
       });
     };
     if (input.responseOrder === "sequential") {
@@ -710,6 +714,7 @@ export function createGroupChannelMessageService(options: {
         requestId: input.requestId,
         correlationId: input.correlationId,
         recovery,
+        freshConversation: !input.recovery && currentWork.state === "queued",
       }));
     }
     return Object.freeze(results);

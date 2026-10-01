@@ -1,3 +1,4 @@
+import type { TurnContextPurpose } from '../agent/context-enrichment.js';
 import type { HistoricalContextEntry } from '../agent/historical-context.js';
 import type { PlannedToolExecution } from './foreground-detachment-contract.js';
 import type { CoordinationWorkDestination } from '../work/types.js';
@@ -20,6 +21,7 @@ export interface ResidentWorkRequest {
   chatId: string;
   instruction: string;
   historyBackfill?: readonly HistoricalContextEntry[];
+  contextPurpose?: TurnContextPurpose;
   plannedExecution?: PlannedToolExecution;
   plannedRecoveryBeforeStart?: true;
   coordinationWorkDestination?: CoordinationWorkDestination;
@@ -172,6 +174,7 @@ export interface ResidentAgentPort {
       coordinationOrigin: CoordinationTurnOrigin;
       coordinationDelivery?: CoordinationTurnDeliveryContext;
       historyBackfill?: readonly HistoricalContextEntry[];
+      contextPurpose?: TurnContextPurpose;
       coordinationRequest?: { requestId: string; correlationId: string };
       turnSelection: ResidentTurnSelectionRequest;
       attachments?: readonly ResidentInputAttachment[];

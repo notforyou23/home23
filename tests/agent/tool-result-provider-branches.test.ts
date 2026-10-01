@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentLoop } from '../../src/agent/loop.js';
 import { ConversationHistory } from '../../src/agent/history.js';
+import { deferred } from '../helpers/manual-clock.js';
 
 const TOOL_NAME = 'typed_failure_tool';
 const PROVIDERS = [
@@ -54,8 +55,9 @@ function messageStream(
   };
 }
 
-function makeBrainOperations() {
+function makeBrainOperations(searchContext?: (request: unknown, signal: AbortSignal) => Promise<Record<string, unknown>>) {
   const base = {
+    searchContext,
     withActivityHandler(onActivity: (activity: unknown) => void) {
       return Object.freeze({ ...base, onActivity });
     },
@@ -66,6 +68,7 @@ function makeBrainOperations() {
 async function runProvider(
   provider: typeof PROVIDERS[number],
   options: {
+    lateEnrichment?: boolean;
     emptyCodexFinalOnce?: boolean;
     oauth?: boolean;
     outputItemCodexFinal?: boolean;
@@ -84,6 +87,7 @@ async function runProvider(
   const root = join(tmpdir(), `tool-result-${provider}-${process.pid}-${Math.random()}`);
   mkdirSync(join(root, 'workspace'), { recursive: true });
   const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  const enrichmentReady = deferred<Record<string, unknown>>();
   const contexts: Array<Record<string, unknown>> = [];
   const providerRequests: Array<Record<string, unknown>> = [];
   const toolEvents: Array<Record<string, unknown>> = [];
@@ -110,6 +114,11 @@ async function runProvider(
     execute: async (_input: Record<string, unknown>, context: Record<string, unknown>) => {
       if (options.codexTerminalProbe) options.codexTerminalProbe.toolExecutions += 1;
       contexts.push(context);
+      if (options.lateEnrichment) {
+        enrichmentReady.resolve({ results: [{ concept: 'LATE-REQUESTER-BOUND-FACT', similarity: 0.9 }],
+          sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'matches' } });
+        await new Promise(resolve => setImmediate(resolve));
+      }
       return { content: 'typed failure', is_error: true };
     },
   };
@@ -150,7 +159,7 @@ async function runProvider(
     contextManager: contextManager as never,
     history,
     toolContext: {
-      brainOperations: makeBrainOperations(),
+      brainOperations: makeBrainOperations(options.lateEnrichment ? async () => enrichmentReady.promise : undefined),
       turnRuntime: null,
     } as never,
     workspacePath: join(root, 'workspace'),
@@ -948,5 +957,17 @@ for (const provider of ['minimax', 'ollama-cloud', 'xai'] as const) {
     }
     assert.equal(result.cacheEvents.length, 2);
     if (provider !== 'minimax') assert.ok(result.cacheEvents.every(event => event.read === null));
+  });
+}
+
+for (const provider of PROVIDERS) {
+  test(`${provider} consumes pending automatic recall only at the next provider boundary`, async () => {
+    const result = await runProvider(provider, { lateEnrichment: true });
+    assert.equal(result.providerRequests.length, 2);
+    assert.match(JSON.stringify(result.providerRequests[0]), /AUTOMATIC RECALL: pending/);
+    assert.doesNotMatch(JSON.stringify(result.providerRequests[0]), /LATE-REQUESTER-BOUND-FACT/);
+    assert.match(JSON.stringify(result.providerRequests[1]), /LATE-REQUESTER-BOUND-FACT/);
+    assert.match(JSON.stringify(result.providerRequests[1]), /not instructions or brain_search results/);
+    assert.match(JSON.stringify(result.nativeToolResult), /typed failure/);
   });
 }

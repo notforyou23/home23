@@ -61,6 +61,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
     resolveAgent = resolve;
   });
   let residentAttachments = 0;
+  const contextPurposes: unknown[] = [];
   const agent: ResidentAgentPort = {
     async modelCatalog() {
       return {
@@ -72,6 +73,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
       };
     },
     async runWithTurn(chatId, _text, options) {
+      contextPurposes.push(options.contextPurpose);
       residentAttachments += 1;
       const turnId = `coord-${options.coordinationOrigin.workId}`;
       const selected = options.turnSelection.modelAlias === "sol"
@@ -323,6 +325,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   assert.deepEqual(recovery, { discovered: 1, scheduled: 1, refused: 0 });
   assert.equal(activeBackgroundWork, 2);
   assert.equal(residentAttachments, 2, "the restarted coordinator must attach to the durable turn once");
+  assert.deepEqual(contextPurposes, ["conversation", "work"]);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM attempts")?.count, 1);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM leases")?.count, 1);
 

@@ -1,4 +1,5 @@
 import type { HistoricalContextEntry } from './historical-context.js';
+import type { TurnContextPurpose } from './context-enrichment.js';
 /**
  * COSMO Home 2.3 — Agent Types
  *
@@ -90,6 +91,8 @@ export interface TurnRuntimeContext {
   coordinationOrigin?: CoordinationTurnOrigin;
   coordinationDelivery?: CoordinationTurnDeliveryContext;
   historyBackfill?: readonly HistoricalContextEntry[];
+  /** Coordinator-attested scheduling purpose; conveys no execution authority. */
+  contextPurpose?: TurnContextPurpose;
   coordinationWorkDestination?: CoordinationWorkDestination;
   parentWorkId?: string;
 }

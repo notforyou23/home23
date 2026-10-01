@@ -55,6 +55,7 @@ function fixture(t: test.TestContext) {
     async modelCatalog() { return {models: [], defaultModel: 'gpt-5.6-terra', defaultProvider: 'openai-codex', defaultReasoningEffort: 'medium', reasoningEfforts: ['medium']}; },
     async runWithTurn(chatId, text, options) {
       assert.equal(database.readAll("SELECT sequence FROM events WHERE aggregate_kind='scheduled_channel_run' AND aggregate_id=? AND aggregate_version=1", runId).length, 1);
+      assert.equal(options.contextPurpose, 'work');
       instructions.push(text);
       origins.push(options.coordinationOrigin);
       const turnId = `coord-${options.coordinationOrigin.workId}`;

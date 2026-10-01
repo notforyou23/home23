@@ -52,6 +52,8 @@ export interface TurnEnvelope {
   delegation_origin?: import('../agent/types.js').DelegationTurnOrigin;
   /** Coordination provenance only; never contains prompts or resident private state. */
   coordination_origin?: import('../agent/types.js').CoordinationTurnOrigin;
+  /** Scheduling evidence only; never an owner identity or execution grant. */
+  context_purpose?: import('../agent/context-enrichment.js').TurnContextPurpose;
 }
 
 export interface TurnEvent {

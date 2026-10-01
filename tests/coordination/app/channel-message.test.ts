@@ -167,6 +167,7 @@ function harness(input: {
   preparedAttachments?: readonly ResidentInputAttachment[];
   recoveryFailure?: { phase: "recoverPlan" | "recover" | "resumeAdmission"; error: Error };
   turnSelectionDrift?: boolean;
+  scheduledOrigin?: boolean;
   durableRefusals?: false | "throwing";
 }) {
   const targets = BOT_IDS.map((botId, index) => Object.freeze({
@@ -236,6 +237,7 @@ function harness(input: {
     sent.push({ kind: "result", message: projected });
   }
   const context: GroupChannelMessageContextPort = {
+    isScheduledOrigin: () => input.scheduledOrigin === true,
     loadOrigin: async () => ({ message: owner, attachmentIds: [], eventSequence: 1 }),
     prepare: async () => exactPrepared,
     prepareSequentialTurn: async ({ plan, targetBotId }) => {
@@ -995,3 +997,14 @@ test("legacy message replay without an admission starts the missing group Round 
     assert.equal(testHarness.residentRequests().length, 2);
   }
 });
+
+for (const responseOrder of ["parallel", "sequential"] as const) for (const scheduledOrigin of [false, true]) {
+  test(`group channel ${responseOrder} selects conversation waiting only for a fresh unscheduled origin (${scheduledOrigin})`, async t => {
+    const testHarness = harness({ responses: [{ text: 'Jerry replied.', model: 'fixture', toolCallCount: 0, durationMs: 1 },
+      { text: 'Forrest replied.', model: 'fixture', toolCallCount: 0, durationMs: 1 }], scheduledOrigin, initialWorkCount: 0, responseOrder });
+    const accepted = await testHarness.service.submitMessage({ context: testHarness.context,
+      channelId: CHANNEL_ID, idempotencyKey: `context-purpose-${scheduledOrigin}-0001`, body: submissionBody() });
+    await accepted.response;
+    for (const request of testHarness.residentRequests()) assert.equal(request.contextPurpose, scheduledOrigin ? 'work' : 'conversation');
+  });
+}
