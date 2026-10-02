@@ -5,6 +5,23 @@ document for the v2 paradigm; the historical build record is the commit
 trail (`substrate/` first landed as the frontier build contract's five cuts,
 then the surfacing organs, then sleep).
 
+### Current implementation notes (2026-09-30)
+
+The dated milestone above is historical, not a live status check for a current
+installation. Later source adds Seed-owned concern and commitments
+([`concern.ts`](../../substrate/src/concern.ts)), with endogenous occasions
+materialized by the runner. Non-empty concern is included in the state hash and
+checkpoint manifest v3; legacy v1/v2 manifests remain supported.
+
+Adapter delivery is at-least-once: the runner commits each adapter's contiguous
+processed prefix at the end of a tick. Uncommitted source events may be delivered
+again. Separately, resident startup requires an exact checkpoint boundary and
+refuses uncheckpointed receipts that need recovery; at-least-once delivery is not
+a promise of automatic recovery from every crash. See
+[`runner.ts`](../../substrate/src/runner.ts),
+[`checkpoint.ts`](../../substrate/src/checkpoint.ts) and
+[`Seed.restore`](../../substrate/src/seed.ts).
+
 ## Motivation
 
 v1 kept an agent's continuity in curated files (RECENT.md, TOPOLOGY.md,
@@ -30,7 +47,7 @@ A Seed is one individual. Its whole existence is a state directory:
 seed-01/
   seed-ledger.jsonl     # THE LIFE — append-only, hash-chained, fail-closed
   checkpoints/          # v2 manifests: cells + development + resources
-  adapter-cursor.*.json # per-source read positions (exactly-once diet)
+  adapter-cursor.*.json # per-source read positions (at-least-once diet)
   .runner.lock          # never two live instances (authoritative pid)
 ```
 

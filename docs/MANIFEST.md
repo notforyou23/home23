@@ -101,41 +101,13 @@ Bundled AI IDE for brain exploration, code editing, and agent interaction.
 - README.md, INSTALL.md, QUICKSTART.md, CLAUDE.md, AGENTS.md, LICENSE
 - index.js
 
-## cosmo23/ — Research Engine (COSMO 2.3)
+## Cosmo — External Research Application
 
-Full research engine with 9-tab UI, multi-phase research runs, and brain integration.
-
-### Source directories
-- `engine/src/` — Core engine (cognition, dashboard, agents, ingestion)
-- `engine/scripts/` — Engine utility scripts
-- `engine/tests/` — Engine test suite
-- `engine/mcp/` — MCP integration
-- `engine/docs/` — Engine documentation
-- `engine/brain-studio/` — Brain visualization tool
-- `engine/brain-studio-new/` — Updated brain visualization
-- `engine/lib/` — Engine libraries
-- `engine/prompts/` — Engine prompts
-- `engine/tools/` — Engine tools
-- `engine/data/` — Engine data files
-- `engine/config/` — Engine config
-- `lib/` — Shared libraries
-- `server/` — HTTP server
-- `launcher/` — Process launcher
-- `public/` — Frontend UI
-- `ide/` — IDE integration
-- `pgs-engine/` — PGS engine component
-
-### Root files
-- package.json, package-lock.json
-- .env.example, .gitignore
-- README.md, CLAUDE.md, AGENTS.md
-- prisma/schema.prisma
-
-### Engine root files
-- engine/package.json, engine/package-lock.json
-- engine/.gitignore, engine/.mocharc.json
-- engine/Dockerfile, engine/docker-compose.yml
-- engine/.env.example
+Cosmo is independently installed and no longer ships in a `cosmo23/` directory.
+Home23 retains its cognitive engine and the Home23-owned support modules in
+`shared/research-runtime/`. It connects to Cosmo through the configured URL and
+does not install, start, restart, watchdog or update the external application.
+See [Cosmo separation](reference/COSMO-SEPARATION.md) for runtime and test ownership.
 
 ## docs/ — Documentation
 
