@@ -1025,7 +1025,22 @@ export class ResidentTurnUdsServer {
         selection:selectionJson(requested,{provider:started?.provider??null,model:started?.model??null,reasoningEffort:started?.reasoning_effort??null}),
       };
       const recoverPlanned = Boolean(started && p.plannedRecoveryBeforeStart === true && p.plannedExecution && !this.#planned.has(turnId));
-      if(started&&!this.options.agent.isRunning(chatId)&&!this.#planned.has(turnId)&&!recoverPlanned)throw new ResidentProtocolError("request_invalid","persisted resident turn requires coordinator recovery");
+      if(started&&!this.options.agent.isRunning(chatId)&&!this.#responses.has(turnId)&&!this.#planned.has(turnId)&&!recoverPlanned){
+        // Planned actions retain the coordinator's explicit replay policy.
+        if(p.plannedExecution!==undefined)throw new ResidentProtocolError("request_invalid","persisted resident turn requires coordinator recovery");
+        // This exact fenced start has no executor in the current process. Never
+        // replay a potentially side-effecting chat turn. A durable interrupted
+        // terminal lets ordinary reattachment settle its canonical Work receipt
+        // instead of leaving it running forever after rejecting the start.
+        const snapshot=this.#store.replaySnapshot(chatId,turnId);
+        const interrupted=this.#store.writeEnd(chatId,turnId,"orphaned",{
+          last_seq:snapshot.events.reduce((maximum,event)=>Math.max(maximum,event.seq),0),
+          error_code:"resident_interrupted",
+          error_message:"This response was interrupted when its resident restarted.",
+        });
+        return{turnId,chatId,persistedAt:interrupted.ended_at??started.started_at,recovered:true,
+          selection:selectionJson(requested,{provider:started.provider??null,model:started.model??null,reasoningEffort:started.reasoning_effort??null})};
+      }
       if(!started || recoverPlanned){
         const modelOverride=requested.modelAlias===null?undefined:resolveCatalogModelOverride(requested.modelAlias,this.#modelAliases);
         if(requested.modelAlias!==null&&!modelOverride){
