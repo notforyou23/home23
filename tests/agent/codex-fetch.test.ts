@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fetchCodexResponse } from '../../src/agent/codex-fetch.js';
 import { nativeChessTool } from '../../src/agent/tools/channels.js';
 import { AgentLoop } from '../../src/agent/loop.js';
 import { ConversationHistory } from '../../src/agent/history.js';
+import { createSeededToolRegistry } from '../../src/agent/tools/index.js';
 
 const network = (code = 'ECONNRESET') => new TypeError('secret request body token URL', {
   cause: new AggregateError([Object.assign(new Error('secret nested credentials'), { code })], 'secret aggregate'),
@@ -78,9 +79,9 @@ test('HTTP responses and partial stream failures are never retried', async () =>
   });
 });
 
-function makeAgent(root: string, tools: unknown[] = []) {
+function makeAgent(root: string, tools: unknown[] = [], model = 'gpt-5.6-sol') {
   mkdirSync(join(root, 'workspace'));
-  const agent = new AgentLoop({ apiKey: 'test-key', model: 'gpt-5.6-sol', provider: 'openai-codex',
+  const agent = new AgentLoop({ apiKey: 'test-key', model, provider: 'openai-codex',
     registry: { getAnthropicTools: () => [], getOpenAITools: () => tools, get: () => undefined, execute: async () => assert.fail('no tool replay') } as never,
     contextManager: { getSystemPrompt: () => 'Test.', getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
     history: new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent'), toolContext: {} as never, workspacePath: join(root, 'workspace'),
@@ -155,6 +156,130 @@ test('actual Codex loop refreshes the exact rejected credential once', async () 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+function overloaded(events: Record<string, unknown>[] = []): Response {
+  return new Response([...events, { type: 'response.failed', response: {
+    status: 'failed', error: { code: 'server_is_overloaded', message: 'Busy, try later.' },
+  } }].map(e => `data: ${JSON.stringify(e)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+}
+
+for (const scenario of ['http', 'stream', 'exhausted'] as const) test(`Codex overload ${scenario} recovery is bounded and preserves the exact request`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-overload-')); const requests: string[] = [];
+  try {
+    await withFetch((async (_url, init) => {
+      requests.push(String(init!.body));
+      if (scenario !== 'exhausted' && requests.length > 1) return successful();
+      return scenario === 'http' ? Response.json({ error: { code: 'server_is_overloaded', message: 'Busy.' } }, { status: 503 }) : overloaded();
+    }) as typeof fetch, async () => {
+      const run = await makeAgent(root, [], 'gpt-6.1-sol').runWithTurn('overload', 'Finish this unit.', { effort: 'high' });
+      if (scenario === 'exhausted') await assert.rejects(run.response, /server_is_overloaded/);
+      else assert.equal((await run.response).text, 'Done.');
+      assert.equal(requests.length, scenario === 'exhausted' ? 3 : 2);
+      assert.ok(requests.every(body => body === requests[0]));
+      assert.equal(JSON.parse(requests[0]).model, 'gpt-6.1-sol');
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const staged of ['answer', 'tool', 'arguments'] as const) test(`Codex overload after staged ${staged} does not replay output or tools`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-overload-staged-')); let requests = 0;
+  const event = staged === 'answer' ? { type: 'response.output_text.delta', delta: 'Partial answer.' }
+    : staged === 'arguments' ? { type: 'response.function_call_arguments.delta', delta: '{' }
+      : { type: 'response.output_item.done', item: { type: 'function_call', call_id: 'never', name: 'write_file', arguments: '{}' } };
+  try {
+    await withFetch((async () => { requests++; return overloaded([event]); }) as typeof fetch, async () => {
+      const run = await makeAgent(root).runWithTurn('partial', 'Finish this unit.');
+      await assert.rejects(run.response, /server_is_overloaded/);
+      assert.equal(requests, 1);
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Codex overload recovery after a completed tool keeps its receipt and executes that tool once', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-overload-tool-')); const requests: any[] = []; let writes = 0;
+  try {
+    await withFetch((async (_url, init) => {
+      requests.push(JSON.parse(String(init!.body)));
+      if (requests.length === 1) return new Response('data: '+JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [
+        { type: 'function_call', call_id: 'write-one', name: 'save_unit', arguments: '{}' },
+      ] } })+'\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      if (requests.length === 2) return overloaded();
+      return successful();
+    }) as typeof fetch, async () => {
+      const agent = makeAgent(root);
+      (agent as any).registry = createSeededToolRegistry([{ name: 'save_unit', description: 'Save the checked unit.', input_schema: { type: 'object', properties: {} },
+        async execute() { writes++; writeFileSync(join(root, 'workspace/unit.md'), 'Checked source and bounded conclusion.', { flag: 'wx' });
+          return { content: 'unit saved; verified receipt 123' }; },
+      }]);
+      const run = await agent.runWithTurn('unit', 'Save the unit and confirm its receipt.');
+      assert.equal((await run.response).text, 'Done.');
+      assert.equal(writes, 1);
+      assert.equal(readFileSync(join(root, 'workspace/unit.md'), 'utf8'), 'Checked source and bounded conclusion.');
+      assert.equal(requests.length, 3);
+      assert.deepEqual(requests[1], requests[2]);
+      assert.match(JSON.stringify(requests[2].input), /unit saved; verified receipt 123/);
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('stopping during Codex overload backoff does not send another request', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-overload-abort-')); let requests = 0;
+  try {
+    await withFetch((async () => { requests++; return overloaded(); }) as typeof fetch, async () => {
+      const agent = makeAgent(root);
+      const run = await agent.runWithTurn('abort-retry', 'Finish this unit.', { onEvent: event => {
+        if (event.type === 'status' && event.status === 'provider_retry') agent.stop('abort-retry');
+      } });
+      await run.response.catch(() => undefined);
+      assert.equal(requests, 1);
+      const final = readFileSync(join(root, 'conversations/test-agent__abort-retry.jsonl'), 'utf8').trim().split('\n')
+        .map(line => JSON.parse(line)).filter(row => row.type === 'turn' && row.turn_id === run.turnId).at(-1);
+      assert.equal(final.status, 'stopped');
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Codex overload retry allowance belongs to the whole turn across tool rounds', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-overload-budget-')); let requests = 0; let completedTools = 0;
+  try {
+    await withFetch((async () => {
+      requests++;
+      if (requests === 2 || requests === 4) return new Response('data: ' + JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [
+        { type: 'function_call', call_id: `receipt-${requests}`, name: 'record_step', arguments: '{}' },
+      ] } }) + '\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      return overloaded();
+    }) as typeof fetch, async () => {
+      const agent = makeAgent(root, [], 'gpt-6.1-sol');
+      (agent as any).registry = createSeededToolRegistry([{ name: 'record_step', description: 'Record one checked step.', input_schema: { type: 'object', properties: {} },
+        async execute() { completedTools++; return { content: `checked receipt ${completedTools}` }; },
+      }]);
+      const run = await agent.runWithTurn('turn-budget', 'Continue the checked steps.');
+      await assert.rejects(run.response, /server_is_overloaded/);
+      assert.equal(requests, 5, 'a later tool round must not receive a fresh retry allowance');
+      assert.equal(completedTools, 2, 'each completed tool remains executed exactly once');
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Codex overload retry releases an open failed stream without waiting on its cancellation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-overload-stream-cleanup-')); let requests = 0; let cancelled = 0;
+  try {
+    await withFetch((async () => {
+      if (++requests > 1) return successful();
+      return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({
+          type: 'response.failed', response: { error: { code: 'server_is_overloaded' } },
+        }) + '\n\n')); },
+        cancel() { cancelled++; return new Promise(() => {}); },
+      }), { headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch, async () => {
+      const run = await makeAgent(root, [], 'gpt-6.1-sol').runWithTurn('stream-cleanup', 'Finish the checked step.');
+      assert.equal((await run.response).text, 'Done.');
+      assert.equal(requests, 2);
+      assert.equal(cancelled, 1);
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 // Exercise the actual request boundary, not a copied schema converter.

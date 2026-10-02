@@ -11,6 +11,18 @@ const DIAGNOSTIC_CODES = new Set([...TRANSIENT_CODES,
 ]);
 const DIAGNOSTIC_NAMES = new Set(['Error', 'TypeError', 'AggregateError', 'AbortError', 'TimeoutError']);
 
+/** Only a typed overload response permits retrying a provider request. Generic
+ * server errors, incomplete streams and ambiguous partial output do not. */
+export function isCodexOverload(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object'
+    && (error as { code?: unknown }).code === 'server_is_overloaded');
+}
+
+export async function waitForCodexOverloadRetry(signal: AbortSignal, attempt: number): Promise<void> {
+  if (!Number.isInteger(attempt) || attempt < 1 || attempt > 2) throw new Error('Codex overload retry limit reached');
+  await delay(attempt * 1000, undefined, { signal });
+}
+
 /** Only fixed allowlisted tokens escape; never copy error messages or request data. */
 function diagnostic(error: unknown): { names: string[]; codes: string[] } {
   const names = new Set<string>();

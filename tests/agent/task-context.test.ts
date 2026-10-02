@@ -116,6 +116,97 @@ test('unmatched or current tool calls are never compacted away', t => {
   assert.equal(JSON.stringify(items), original);
 });
 
+for (const dialect of ['openai', 'anthropic', 'responses']) test(`recovered ${dialect} pages keep their original evidence ID across repeated pressure`, t => {
+  const { history } = fixture(t);
+  const source = 'A verified source passage. '.repeat(600);
+  const id = history.taskContext.save('chat', 'tool', source);
+  const page = JSON.stringify(history.taskContext.read('chat', id, 700, 12000));
+  const args = { action: 'read', id, offset: 700, limit: 12000 };
+  // Search gives the public observable evidence set without relying on its directory layout.
+  const evidenceBefore = history.taskContext.search('chat', 'verified source').matches.map(m => m.id);
+  for (let pass = 0; pass < 4; pass++) {
+    let pair: any[];
+    if (dialect === 'openai') pair = [{ role: 'assistant', tool_calls: [{ id: 'read', function: { name: 'task_context', arguments: JSON.stringify(args) } }] }, { role: 'tool', tool_call_id: 'read', content: page }];
+    else if (dialect === 'anthropic') pair = [{ role: 'assistant', content: [{ type: 'tool_use', id: 'read', name: 'task_context', input: args }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read', content: page }] }];
+    else pair = [{ type: 'function_call', call_id: 'read', name: 'task_context', arguments: JSON.stringify(args) }, { type: 'function_call_output', call_id: 'read', output: page }];
+    const tail = Array.from({ length: 4 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `recent ${i}` }));
+    const items = [{ role: 'user', content: 'Complete the unit; preserve source uncertainty.' }, ...pair, ...tail];
+    assert.equal(relieveToolPressure(items, 8000, history.taskContext, 'chat').archived, 1);
+    assert.match(JSON.stringify(items[1]), new RegExp(id));
+    assert.match(JSON.stringify(items[1]), /offset[ =:]700/);
+    assert.deepEqual(items.slice(-4), tail);
+    assert.deepEqual(history.taskContext.search('chat', 'verified source').matches.map(m => m.id), evidenceBefore,
+      'rereading must not create searchable transcript copies of the same source');
+    assert.equal(history.taskContext.read('chat', id, 700, 12000).text, source.slice(700, 12700));
+  }
+});
+
+test('task-context search pagination is not invalidated by its own transcript events', async t => {
+  const { history } = fixture(t);
+  for (let i = 0; i < 45; i++) history.taskContext.save('chat', 'tool', `needle original receipt ${i}`);
+  history.append('chat', [{ role: 'user', content: 'Study the original receipts.' }]);
+  const ctx = { chatId: 'chat', conversationHistory: history } as never;
+  const first = JSON.parse((await taskContextTool.execute({ action: 'search', query: 'needle' }, ctx)).content);
+  assert.ok(first.nextCursor);
+  history.appendRecord('chat', { type: 'event', kind: 'tool_result', data: { tool: 'task_context', result: JSON.stringify(first) } });
+  const second = JSON.parse((await taskContextTool.execute({ action: 'search', query: 'needle', cursor: first.nextCursor }, ctx)).content);
+  assert.equal(second.reason, undefined, 'lookup events must not become newly indexed copies of retrieved evidence');
+  assert.equal(second.matches.length, 10);
+});
+
+test('mixed recovery exchanges retain fresh results without copying recovered pages', t => {
+  const { history } = fixture(t);
+  const source = 'Original retained source passage. '.repeat(400);
+  const id = history.taskContext.save('chat', 'tool', source);
+  const items: any[] = [{ role: 'assistant', tool_calls: [
+    { id: 'read', function: { name: 'task_context', arguments: JSON.stringify({ action: 'read', id, limit: 12000 }) } },
+    { id: 'fresh', function: { name: 'web_browse', arguments: '{}' } },
+  ] }, { role: 'tool', tool_call_id: 'read', content: JSON.stringify(history.taskContext.read('chat', id, 0, 12000)) },
+  { role: 'tool', tool_call_id: 'fresh', content: 'Fresh verified source with exact qualification. '.repeat(100) },
+  ...Array.from({ length: 4 }, () => ({ role: 'user', content: 'Continue the unit.' }))];
+  relieveToolPressure(items, 8000, history.taskContext, 'chat');
+  const retainedId = String(items[0].content).match(/retained as (ctx_[a-f0-9]{64})/)![1];
+  const retained = history.taskContext.read('chat', retainedId, 0, 16000).text;
+  assert.match(retained, /Fresh verified source with exact qualification/);
+  assert.match(retained, new RegExp(id));
+  assert.doesNotMatch(retained, /Original retained source passage/);
+  assert.equal(history.taskContext.read('chat', id, 0, 16000).text, source);
+});
+
+test('unavailable recovery sources never become valid pressure-relief references', t => {
+  const { history } = fixture(t);
+  const privateId = history.taskContext.save('other', 'tool', 'Private source. '.repeat(400));
+  const page = history.taskContext.read('other', privateId, 0, 4000);
+  const items: any[] = [{ role: 'assistant', tool_calls: [
+    { id: 'read', function: { name: 'task_context', arguments: JSON.stringify({ action: 'read', id: privateId, limit: 4000 }) } },
+  ] }, { role: 'tool', tool_call_id: 'read', content: JSON.stringify(page) },
+  ...Array.from({ length: 4 }, () => ({ role: 'user', content: 'Keep task isolation.' }))];
+  relieveToolPressure(items, 1000, history.taskContext, 'chat');
+  assert.doesNotMatch(String(items[0].content), new RegExp(privateId));
+  assert.throws(() => history.taskContext.read('chat', privateId), /not available/);
+});
+
+for (const dialect of ['openai', 'anthropic'] as const) test(`${dialect} recovery preserves new assistant conclusions beside a recovered page`, t => {
+  const { history } = fixture(t);
+  const source = 'Original retained source passage. '.repeat(400);
+  const id = history.taskContext.save('chat', 'tool', source);
+  const args = { action: 'read', id, limit: 12000 };
+  const page = JSON.stringify(history.taskContext.read('chat', id, 0, 12000));
+  const conclusion = 'New conclusion: the source leaves the timing uncertain.';
+  const pair: any[] = dialect === 'openai'
+    ? [{ role: 'assistant', content: conclusion, tool_calls: [{ id: 'read', function: { name: 'task_context', arguments: JSON.stringify(args) } }] },
+        { role: 'tool', tool_call_id: 'read', content: page }]
+    : [{ role: 'assistant', content: [{ type: 'text', text: conclusion }, { type: 'tool_use', id: 'read', name: 'task_context', input: args }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read', content: page }] }];
+  const items = [...pair, ...Array.from({ length: 4 }, () => ({ role: 'user', content: 'Continue.' }))];
+  relieveToolPressure(items, 8000, history.taskContext, 'chat');
+  const retainedId = JSON.stringify(items[0]).match(/retained as (ctx_[a-f0-9]{64})/)![1];
+  const retained = history.taskContext.read('chat', retainedId, 0, 16000).text;
+  assert.match(retained, /New conclusion: the source leaves the timing uncertain/);
+  assert.match(retained, new RegExp(id));
+  assert.doesNotMatch(retained, /Original retained source passage/);
+});
+
 
 test('image transport size is excluded from the estimate without changing the image', () => {
   const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,' + 'A'.repeat(2000000) } };

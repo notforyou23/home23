@@ -6,6 +6,14 @@ New coding jobs targeting the installation resolve its maintained backend source
 
 Review descendants recover the coordinator's saved context through their canonical parent lineage. Ordinary foreground recovery remains strict. Snapshot digests, channel membership, target identity, message availability and deletion checks remain enforced. A failed recovery is not successful completion.
 
+## Retained task evidence and provider recovery
+
+Original tool receipts enter task-scoped storage when the tool completes; original messages enter it when history is compacted. Searching those entries does not index the search's own growing event transcript. A lookup must not invalidate its own pagination or manufacture searchable copies of recovered material.
+
+Under context pressure, a recovered page keeps its original evidence ID and exact page offsets. It is not wrapped in another transcript containing the same page. Mixed exchanges retain their new tool results plus direct references to recovered pages; original source files and the canonical conversation journal remain intact. References are checked against the current task's immutable evidence before they become shortcuts. Model-written notes remain fallible working aids rather than new instructions or proof of completion.
+
+The Codex loop permits at most two typed `server_is_overloaded` retries across a turn, with one- and two-second backoffs on the existing cancellation/deadline signal. Each retry uses the same provider request and model. It does not repeat completed tools, extend the turn's lease or claim success. A failed stream with visible answer text, staged function calls/arguments or non-reasoning terminal output is not retried. Unknown failures and incomplete streams retain their terminal failure behavior.
+
 ## Authored context
 
 Configured authored identity and startup files load complete. Character targets indicate maintenance needs; they do not authorize omission of an owner decision or a sentence cutoff. Generated telemetry and retrieved evidence retain their separate bounded handling and retrieval mechanisms. Situational-awareness files, including generated carry-forward notes admitted through triggered surfaces, have a 16,000-character reader ceiling and share a 40,000-character assembly ceiling, with visible caps and source-reading pointers. Full loading is a fallback against losing instructions, not an excuse for continually growing identity files.

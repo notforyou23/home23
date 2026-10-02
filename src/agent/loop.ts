@@ -56,7 +56,7 @@ import { TurnStore } from '../chat/turn-store.js';
 import { turnBus } from '../chat/turn-bus.js';
 import { newTurnId, type TurnEvent } from '../chat/turn-types.js';
 import { combineRequestSignals } from './abort-signals.js';
-import { fetchCodexResponse } from './codex-fetch.js';
+import { fetchCodexResponse, isCodexOverload, waitForCodexOverloadRetry } from './codex-fetch.js';
 import { inferProviderFromModel } from './model-resolution.js';
 import {
   DEFAULT_REASONING_EFFORT,
@@ -1880,6 +1880,17 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             if (!initialCreds) throw new Error('openai-codex credentials not found — connect OpenAI Codex in Home23 Setup or Settings > Providers');
             let creds = initialCreds;
             let codexAuthRefreshSpent = false;
+            let codexOverloadRetries = 0;
+            const recoverCodexOverload = async (): Promise<boolean> => {
+              if (codexOverloadRetries >= 2 || ac.signal.aborted) return false;
+              codexOverloadRetries++;
+              console.warn(`[agent] codex typed overload; retry ${codexOverloadRetries}/2 without replaying tools`);
+              onEvent?.({ type: 'status', status: 'provider_retry', message: 'The provider is busy; retrying this request.', sourceEventType: 'runtime.codex_overload_retry' });
+              // Backoff belongs to the existing turn signal and does not renew
+              // its activity lease, hard deadline or execution authority.
+              await waitForCodexOverloadRetry(ac.signal, codexOverloadRetries);
+              return true;
+            };
 
             const sysText = typeof systemPrompt === 'string'
               ? systemPrompt
@@ -2056,137 +2067,165 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 return response;
               };
 
-              let res = await postCodex(buildCodexBody());
-              if (!res.ok) {
-                const errText = await res.text().catch(() => '');
-                if (!omitReasoning && reasoning && isCodexReasoningRejected(errText)) {
-                  omitReasoning = true;
-                  console.warn('[agent] codex reasoning rejected — retrying once without reasoning summary');
-                  res = await postCodex(buildCodexBody());
-                }
-                if (!res.ok) {
-                  const retryText = omitReasoning ? await res.text().catch(() => '') : errText;
-                  throw new Error(`codex HTTP ${res.status}: ${retryText.slice(0, 300)}`);
-                }
-              }
-              if (!res.body) throw new Error('codex response missing body');
-
-              // ── Parse SSE stream ──
+              let codexBody = buildCodexBody();
+              let res = await postCodex(codexBody);
               let textContent = '';
               let streamedAnswer = false;
-              const thinkingState = createReasoningStreamState();
               type FunctionCallItem = { call_id: string; name: string; arguments: string };
               const functionCallItems: FunctionCallItem[] = [];
               let terminalEvent: Record<string, unknown> | null = null;
-              const flushThinking = (): void => {
-                const evidence = takeReasoningEvidence(thinkingState);
-                if (onEvent) {
-                  for (const item of evidence) onEvent({ type: 'thinking', ...item });
-                }
-                thinkingState.pendingThinking = '';
-              };
-
-              for await (const event of parseSSE(res.body)) {
-                const evType = event.type as string | undefined;
-                if (typeof evType === 'string' && (
-                  (evType.endsWith('.delta') && typeof event.delta === 'string' && event.delta.length > 0)
-                  || evType === 'response.output_item.done' || evType === 'response.completed'
-                )) {
-                  turnRuntime?.onProviderActivity?.(++codexProgressSequence);
-                }
-                if (evType === 'response.completed'
-                    || evType === 'response.failed'
-                    || evType === 'response.incomplete') {
-                  terminalEvent = event;
-                  break;
-                }
-                const reasoningKind = applyReasoningStreamEvent(event, thinkingState);
-                if (reasoningKind === 'delta') {
-                  if (shouldFlushThinkingBuffer(thinkingState.pendingThinking)) flushThinking();
-                  continue;
-                }
-                if (reasoningKind === 'done') {
-                  flushThinking();
-                  continue;
-                }
-                if (evType === 'response.output_text.delta') {
-                  flushThinking();
-                  const delta = (event.delta as string) ?? '';
-                  textContent += delta;
-                  if (onEvent && delta) {
-                    streamedAnswer = true;
-                    onEvent({
-                      type: 'response_chunk', chunk: delta,
-                      sourceEventType: evType, providerEvent: event,
-                    });
+              for (;;) {
+                if (!res.ok) {
+                  const errText = await res.text().catch(() => '');
+                  if (!omitReasoning && reasoning && isCodexReasoningRejected(errText)) {
+                    omitReasoning = true;
+                    console.warn('[agent] codex reasoning rejected — retrying once without reasoning summary');
+                    codexBody = buildCodexBody();
+                    res = await postCodex(codexBody);
+                    continue;
                   }
-                } else if (evType === 'response.output_text.done') {
-                  flushThinking();
-                  textContent = (event.text as string) ?? textContent;
-                } else if (evType === 'response.output_item.done') {
-                  const item = event.item as Record<string, unknown> | undefined;
-                  applyReasoningOutputItem(item, thinkingState);
-                  flushThinking();
-                  if (item?.type === 'message') {
-                    const content = Array.isArray(item.content)
-                      ? item.content as Array<Record<string, unknown>>
-                      : [];
-                    const completedText = content
-                      .filter(part => part.type === 'output_text' && typeof part.text === 'string')
-                      .map(part => part.text as string)
-                      .join('\n');
-                    if (completedText) textContent = completedText;
-                  } else if (item?.type === 'function_call') {
-                    functionCallItems.push({
-                      call_id: item.call_id as string,
-                      name: item.name as string,
-                      arguments: (item.arguments as string) ?? '{}',
-                    });
+                  let error: unknown;
+                  try { error = JSON.parse(errText).error; } catch { /* untyped failures are not replayable */ }
+                  if (isCodexOverload(error) && await recoverCodexOverload()) {
+                    res = await postCodex(codexBody);
+                    continue;
+                  }
+                  throw new Error(`codex HTTP ${res.status}: ${errText.slice(0, 300)}`);
+                }
+                if (!res.body) throw new Error('codex response missing body');
+
+                // ── Parse one attempt; never replay staged output or tool calls ──
+                const thinkingState = createReasoningStreamState();
+                let stagedOutput = false;
+                const flushThinking = (): void => {
+                  const evidence = takeReasoningEvidence(thinkingState);
+                  if (onEvent) {
+                    for (const item of evidence) onEvent({ type: 'thinking', ...item });
+                  }
+                  thinkingState.pendingThinking = '';
+                };
+
+                for await (const event of parseSSE(res.body)) {
+                  const evType = event.type as string | undefined;
+                  const stagedItem = event.item as { type?: string } | undefined;
+                  if (evType?.startsWith('response.function_call_arguments.')
+                      || stagedItem?.type === 'function_call') stagedOutput = true;
+                  if (typeof evType === 'string' && (
+                    (evType.endsWith('.delta') && typeof event.delta === 'string' && event.delta.length > 0)
+                    || evType === 'response.output_item.done' || evType === 'response.completed'
+                  )) {
+                    turnRuntime?.onProviderActivity?.(++codexProgressSequence);
+                  }
+                  if (evType === 'response.completed'
+                      || evType === 'response.failed'
+                      || evType === 'response.incomplete') {
+                    terminalEvent = event;
+                    break;
+                  }
+                  const reasoningKind = applyReasoningStreamEvent(event, thinkingState);
+                  if (reasoningKind === 'delta') {
+                    if (shouldFlushThinkingBuffer(thinkingState.pendingThinking)) flushThinking();
+                    continue;
+                  }
+                  if (reasoningKind === 'done') {
+                    flushThinking();
+                    continue;
+                  }
+                  if (evType === 'response.output_text.delta') {
+                    flushThinking();
+                    const delta = (event.delta as string) ?? '';
+                    if (delta) stagedOutput = true;
+                    textContent += delta;
+                    if (onEvent && delta) {
+                      streamedAnswer = true;
+                      onEvent({
+                        type: 'response_chunk', chunk: delta,
+                        sourceEventType: evType, providerEvent: event,
+                      });
+                    }
+                  } else if (evType === 'response.output_text.done') {
+                    flushThinking();
+                    textContent = (event.text as string) ?? textContent;
+                    if (textContent) stagedOutput = true;
+                  } else if (evType === 'response.output_item.done') {
+                    const item = event.item as Record<string, unknown> | undefined;
+                    applyReasoningOutputItem(item, thinkingState);
+                    flushThinking();
+                    if (item?.type === 'message') {
+                      const content = Array.isArray(item.content)
+                        ? item.content as Array<Record<string, unknown>>
+                        : [];
+                      const completedText = content
+                        .filter(part => part.type === 'output_text' && typeof part.text === 'string')
+                        .map(part => part.text as string)
+                        .join('\n');
+                      if (completedText) textContent = completedText;
+                      if (completedText) stagedOutput = true;
+                    } else if (item?.type === 'function_call') {
+                      functionCallItems.push({
+                        call_id: item.call_id as string,
+                        name: item.name as string,
+                        arguments: (item.arguments as string) ?? '{}',
+                      });
+                    }
                   }
                 }
-              }
-              flushThinking();
+                flushThinking();
 
-              if (!terminalEvent) {
-                throw Object.assign(
-                  new Error('openai-codex response stream ended before response.completed'),
-                  { code: 'provider_incomplete' },
-                );
-              }
-              if (terminalEvent.type === 'response.failed') {
-                const response = terminalEvent.response && typeof terminalEvent.response === 'object'
-                  ? terminalEvent.response as Record<string, unknown>
-                  : undefined;
-                const rawError = response?.error ?? terminalEvent.error;
-                const error = rawError && typeof rawError === 'object'
-                  ? rawError as Record<string, unknown>
-                  : undefined;
-                const detail = [
-                  typeof error?.code === 'string' ? error.code : '',
-                  typeof error?.message === 'string'
-                    ? error.message.slice(0, 300)
-                    : (typeof rawError === 'string' ? rawError.slice(0, 300) : ''),
-                ].filter(Boolean).join(': ');
-                throw Object.assign(
-                  new Error(`openai-codex response failed${detail ? `: ${detail}` : ''}`),
-                  { code: 'provider_failed' },
-                );
-              }
-              if (terminalEvent.type === 'response.incomplete') {
-                const response = terminalEvent.response && typeof terminalEvent.response === 'object'
-                  ? terminalEvent.response as Record<string, unknown>
-                  : undefined;
-                const rawDetails = response?.incomplete_details ?? terminalEvent.incomplete_details;
-                const details = rawDetails && typeof rawDetails === 'object'
-                  ? rawDetails as Record<string, unknown>
-                  : undefined;
-                const reason = typeof details?.reason === 'string'
-                  ? details.reason.slice(0, 300)
-                  : (typeof rawDetails === 'string' ? rawDetails.slice(0, 300) : '');
-                throw Object.assign(
-                  new Error(`openai-codex response incomplete${reason ? `: ${reason}` : ''}`),
-                  { code: 'provider_incomplete' },
-                );
+                if (!terminalEvent) {
+                  throw Object.assign(
+                    new Error('openai-codex response stream ended before response.completed'),
+                    { code: 'provider_incomplete' },
+                  );
+                }
+                if (terminalEvent.type === 'response.failed') {
+                  const response = terminalEvent.response && typeof terminalEvent.response === 'object'
+                    ? terminalEvent.response as Record<string, unknown>
+                    : undefined;
+                  const rawError = response?.error ?? terminalEvent.error;
+                  const error = rawError && typeof rawError === 'object'
+                    ? rawError as Record<string, unknown>
+                    : undefined;
+                  const output = Array.isArray(response?.output) ? response.output as Array<Record<string, unknown>> : [];
+                  const terminalHasOutput = output.some(item => item.type !== 'reasoning');
+                  if (!stagedOutput && !terminalHasOutput && !textContent && !functionCallItems.length
+                      && isCodexOverload(error) && await recoverCodexOverload()) {
+                    // The failed SSE attempt can leave trailing frames unread.
+                    // Release its transport without letting stream cleanup hold
+                    // the turn or its existing cancellation boundary hostage.
+                    void res.body.cancel().catch(() => undefined);
+                    terminalEvent = null;
+                    res = await postCodex(codexBody);
+                    continue;
+                  }
+                  const detail = [
+                    typeof error?.code === 'string' ? error.code : '',
+                    typeof error?.message === 'string'
+                      ? error.message.slice(0, 300)
+                      : (typeof rawError === 'string' ? rawError.slice(0, 300) : ''),
+                  ].filter(Boolean).join(': ');
+                  throw Object.assign(
+                    new Error(`openai-codex response failed${detail ? `: ${detail}` : ''}`),
+                    { code: 'provider_failed' },
+                  );
+                }
+                if (terminalEvent.type === 'response.incomplete') {
+                  const response = terminalEvent.response && typeof terminalEvent.response === 'object'
+                    ? terminalEvent.response as Record<string, unknown>
+                    : undefined;
+                  const rawDetails = response?.incomplete_details ?? terminalEvent.incomplete_details;
+                  const details = rawDetails && typeof rawDetails === 'object'
+                    ? rawDetails as Record<string, unknown>
+                    : undefined;
+                  const reason = typeof details?.reason === 'string'
+                    ? details.reason.slice(0, 300)
+                    : (typeof rawDetails === 'string' ? rawDetails.slice(0, 300) : '');
+                  throw Object.assign(
+                    new Error(`openai-codex response incomplete${reason ? `: ${reason}` : ''}`),
+                    { code: 'provider_incomplete' },
+                  );
+                }
+                break;
               }
 
               // The Responses stream is allowed to carry the authoritative

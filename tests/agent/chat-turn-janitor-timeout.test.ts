@@ -8,6 +8,7 @@ import { ConversationHistory } from '../../src/agent/history.js';
 import { TurnStore } from '../../src/chat/turn-store.js';
 import type { ToolContext, TurnRuntimeContext } from '../../src/agent/types.js';
 import { ManualClock, deferred, flushMicrotasks } from '../helpers/manual-clock.js';
+import { measureContextPressure, type ContextPressureInput } from '../../src/agent/context-pressure.js';
 
 function makeBrainOperations() {
   const base = {
@@ -1233,7 +1234,11 @@ test('pending Codex credentials receive the exact turn signal and settle on hard
 
 test('pending compaction receives the exact turn signal and settles on hard cancellation', async () => {
   const root = join(tmpdir(), `chat-turn-compaction-signal-${process.pid}-${Math.random()}`);
-  const { agent } = makeAgent(root);
+  const { agent, toolContext } = makeAgent(root);
+  Object.assign(toolContext.brainOperations, {
+    searchContext: async () => ({ results: [], sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'no_matches' } }),
+    getActiveResearchRun: async () => ({ active: false }),
+  });
   const clock = installManualClock(agent);
   let compactCalls = 0;
   let compactSignal: AbortSignal | undefined;
@@ -1243,7 +1248,9 @@ test('pending compaction receives the exact turn signal and settles on hard canc
   let responseSettled = false;
 
   (agent as any).compaction = {
-    needsCompaction: () => true,
+    measure: (input: ContextPressureInput) => ({ ...measureContextPressure(input, {
+      triggerThreshold: 0.8, targetFraction: 0.55, reserveChars: 8192, modelContextTokens: {},
+    }), shouldCompact: true }),
     compact: (
       _chatId: string,
       _records: unknown[],
@@ -1284,7 +1291,8 @@ test('pending compaction receives the exact turn signal and settles on hard canc
       () => { responseSettled = true; },
     );
     response.catch(() => {});
-    await compactionStarted.promise;
+    await Promise.race([compactionStarted.promise,
+      started.response.then(() => assert.fail('turn finished before reaching compaction'))]);
     assert.equal(compactCalls, 1);
 
     const controller = (agent as any).activeRuns

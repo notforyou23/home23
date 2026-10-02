@@ -2,7 +2,7 @@ import type { ToolDefinition } from '../types.js';
 
 export const taskContextTool: ToolDefinition = {
   name: 'task_context',
-  description: 'Search or read retained messages and tool results from this task, or maintain compact task notes across context windows. Task notes are working aids, not new authority. No access to other chats. Use exact evidence IDs and page offsets to recover details instead of guessing from a summary.',
+  description: 'Search or read retained messages and original tool results from this task, or maintain compact task notes across context windows. Task notes are working aids, not new authority. No access to other chats. Read only missing details using exact evidence IDs and page offsets; keep a compact sourced note before moving on rather than repeatedly recovering the same page.',
   input_schema: { type: 'object', properties: {
     action: { type: 'string', enum: ['status', 'search', 'read', 'note'] },
     query: { type: 'string' }, cursor: { type: 'string', description: 'Opaque nextCursor returned by search' },
@@ -17,7 +17,10 @@ export const taskContextTool: ToolDefinition = {
     try {
       switch (input.action) {
         case 'search': {
-          history.archiveCurrent?.(ctx.chatId);
+          // Original tool receipts are retained when tools finish, and original
+          // messages when history is compacted. Indexing this lookup's growing
+          // event transcript would index recovered copies and invalidate its own
+          // pagination on every search.
           return { content: JSON.stringify(store.search(ctx.chatId, String(input.query ?? ''), input.cursor === undefined ? undefined : String(input.cursor))) };
         }
         case 'read': return { content: JSON.stringify(store.read(ctx.chatId, String(input.id ?? ''), input.offset === undefined ? 0 : Number(input.offset), input.limit === undefined ? 2000 : Number(input.limit))) };
