@@ -50,6 +50,9 @@ export interface JobState {
   lastDecisionReason?: string;
   /** Circuit breaker: withhold until this time, then auto-revive (not permanent silence). */
   circuitOpenUntilMs?: number;
+  /** Set when a run is dispatched, cleared when its result is recorded. A value
+   * surviving a restart means the run was interrupted and never recorded. */
+  inFlightSinceMs?: number;
 }
 
 export interface CronJob {
@@ -343,9 +346,9 @@ export class CronScheduler {
     const initialTickDelayMs = Math.max(0, this.config.initialTickDelayMs ?? 60_000);
     console.log(`[scheduler] Started — ${this.jobs.size} job(s) loaded, first tick in ${initialTickDelayMs}ms, then every ${tickIntervalMs}ms`);
 
-    const rescheduled = this.rescheduleOverdueJobsOnStartup(Date.now());
-    if (rescheduled > 0) {
-      console.log(`[scheduler] Rescheduled ${rescheduled} overdue job(s) on startup; missed runs will not stampede the harness`);
+    const startup = this.reconcileJobsOnStartup(Date.now());
+    if (startup.interrupted > 0 || startup.rescheduled > 0 || startup.keptDue > 0) {
+      console.log(`[scheduler] Startup reconcile: ${startup.interrupted} interrupted run(s) recorded, ${startup.keptDue} missed firing(s) kept due for catch-up, ${startup.rescheduled} job(s) moved to their next firing`);
     }
 
     this.initialTickTimer = setTimeout(() => {
@@ -374,23 +377,113 @@ export class CronScheduler {
     console.log('[scheduler] Stopped');
   }
 
-  private rescheduleOverdueJobsOnStartup(now: number): number {
+  /**
+   * Startup reconciliation. Three things can be wrong after a restart:
+   *  - a run was dispatched and never recorded (the process died mid-run);
+   *  - a job's firing fell inside the downtime;
+   *  - several firings fell inside the downtime.
+   * Each is handled explicitly and recorded, so a missed run is never silent.
+   * The first tick's capacity limits (jobs per tick, one agent turn) bound the
+   * catch-up load; moving every overdue job to its next firing is not needed
+   * to avoid a stampede and it used to lose daily runs whenever a restart
+   * straddled their minute.
+   */
+  private reconcileJobsOnStartup(now: number): { interrupted: number; keptDue: number; rescheduled: number } {
+    let interrupted = 0;
+    let keptDue = 0;
     let rescheduled = 0;
+    let dirty = false;
     for (const job of this.jobs.values()) {
+      if (job.state.inFlightSinceMs && !job.state.activeChannelRun) {
+        const dispatchedAt = new Date(job.state.inFlightSinceMs).toISOString();
+        delete job.state.inFlightSinceMs;
+        const redispatch = job.enabled && job.schedule.kind === 'cron' && now < job.state.nextRunAtMs;
+        const reason = `run dispatched at ${dispatchedAt} was interrupted by a scheduler restart before its result was recorded` +
+          (redispatch ? '; re-dispatched because its next firing has not arrived' : '');
+        this.recordStartupReceipt(job, now, 'skip', reason, { status: 'error', error: `interrupted: ${reason}`, durationMs: Math.max(0, now - Date.parse(dispatchedAt)) }, false);
+        if (redispatch) job.state.nextRunAtMs = now;
+        interrupted++;
+        dirty = true;
+      }
       if (!job.enabled || now < job.state.nextRunAtMs) continue;
+      if (job.schedule.kind === 'cron') {
+        const following = nextMatch(job.schedule.expr, new Date(job.state.nextRunAtMs), job.schedule.tz || 'America/New_York').getTime();
+        if (now < following) {
+          // Exactly one firing fell inside the downtime: leave it due so the
+          // first tick runs it as a catch-up.
+          keptDue++;
+          continue;
+        }
+      }
       if (job.schedule.kind === 'at') {
         job.enabled = false;
       }
+      const missedAt = new Date(job.state.nextRunAtMs).toISOString();
       job.state.nextRunAtMs = this.computeNextRun(job);
-      job.state.lastDecisionAtMs = now;
-      job.state.lastDecisionAction = 'defer';
-      job.state.lastDecisionReason = 'missed during scheduler downtime; rescheduled on startup';
+      if (job.schedule.kind === 'every') {
+        // Frequent interval jobs simply resume at their next slot; a receipt per
+        // restart would be noise.
+        job.state.lastDecisionAtMs = now;
+        job.state.lastDecisionAction = 'defer';
+        job.state.lastDecisionReason = 'missed during scheduler downtime; rescheduled on startup';
+      } else {
+        const reason = `firing due ${missedAt} missed during scheduler downtime; rescheduled on startup to ${new Date(job.state.nextRunAtMs).toISOString()}`;
+        this.recordStartupReceipt(job, now, 'skip', reason, { status: 'error', error: `skip: ${reason}`, durationMs: 0 }, true);
+      }
       rescheduled++;
+      dirty = true;
     }
-    if (rescheduled > 0) {
+    if (dirty) {
       this.saveJobs();
     }
-    return rescheduled;
+    return { interrupted, keptDue, rescheduled };
+  }
+
+  /** Durable decision + run-log receipt for something the scheduler decided at
+   * startup without running the job. Does not touch the error circuit: downtime
+   * is not the job's fault. */
+  private recordStartupReceipt(job: CronJob, now: number, action: JobDecisionAction, reason: string, result: JobResult, withheld: boolean): void {
+    const dueAtMs = Number(job.state?.nextRunAtMs);
+    const decision: JobDecision = {
+      schema: 'home23.scheduler.job-decision.v1',
+      decisionId: `sched-dec-${randomUUID().slice(0, 12)}`,
+      jobId: job.id,
+      jobName: job.name,
+      decidedAt: new Date(now).toISOString(),
+      source: 'scheduled',
+      action,
+      reason,
+      durableState: 'withheld_after_decision',
+      willExecute: false,
+      scheduleKind: job.schedule.kind,
+      payloadKind: job.payload.kind,
+      dueAt: Number.isFinite(dueAtMs) ? new Date(dueAtMs).toISOString() : null,
+      overdueMs: Number.isFinite(dueAtMs) ? Math.max(0, now - dueAtMs) : 0,
+      consecutiveErrors: job.state.consecutiveErrors,
+      inputFreshness: { status: 'unknown', reason: 'startup reconciliation, not an input check' },
+      sourceIssue: 82,
+      resourceContract: this.buildResourceContract(job),
+    };
+    this.appendDecisionLog(decision);
+    job.state.lastDecisionAtMs = now;
+    job.state.lastDecisionAction = action;
+    job.state.lastDecisionReason = reason;
+    job.state.lastStatus = result.status;
+    const runId = `sched-run-${randomUUID().slice(0, 12)}`;
+    const outcome = this.buildOutcomeReceipt(job, result, { runId, recordedAtMs: now, decision, withheld, statePersisted: true });
+    job.state.lastSemanticStatus = outcome.semanticStatus;
+    this.appendRunLog(job.id, {
+      runId,
+      jobId: job.id,
+      timestamp: decision.decidedAt,
+      status: result.status,
+      error: result.error,
+      durationMs: result.durationMs,
+      withheld,
+      decision,
+      outcome,
+    });
+    console.warn(`[scheduler] Job ${job.id} ${action} at startup: ${reason}`);
   }
 
   // ─── Job Management ────────────────────────────────────
@@ -507,7 +600,13 @@ export class CronScheduler {
     const dueJobs: CronJob[] = [];
 
     for (const job of this.jobs.values()) {
-      if (job.state.activeChannelRun || (job.enabled && now >= job.state.nextRunAtMs)) {
+      const due = job.enabled && now >= job.state.nextRunAtMs;
+      // A run that is still executing in this process has nothing new to decide
+      // unless its schedule has come due again. Re-deciding it every tick used
+      // to write a withheld receipt, a decision and the whole jobs file every
+      // 30 seconds for the length of a long channel run.
+      if (this.activeJobs.has(job.id) && !due) continue;
+      if (job.state.activeChannelRun || due) {
         dueJobs.push(job);
       }
     }
@@ -566,6 +665,7 @@ export class CronScheduler {
         job.state.lastDecisionAtMs = now;
         job.state.lastDecisionAction = decision.action;
         job.state.lastDecisionReason = decision.reason;
+        job.state.inFlightSinceMs = now;
         runnable.push({ job, decision });
         if (job.payload.kind === 'agentTurn') {
           scheduledAgentTurns++;
@@ -623,6 +723,7 @@ export class CronScheduler {
     if (active && result.canonicalRunPending) return result;
     if (active) delete job.state.activeChannelRun;
     // Update job state
+    delete job.state.inFlightSinceMs;
     job.state.lastRunAtMs = startMs;
     job.state.lastStatus = result.status;
     job.state.lastDurationMs = result.durationMs;
@@ -773,7 +874,10 @@ export class CronScheduler {
 
   private deferBackgroundJob(job: CronJob, now: number): JobDecision {
     const dueAtMs = Number(job.state?.nextRunAtMs);
-    const nextReviewAtMs = now + 5 * 60 * 1000;
+    // Review off the five-minute grid. A five-minute review landed on the same
+    // tick as the five-minute foreground samplers every time, so nightly
+    // background jobs were deferred for an hour or more.
+    const nextReviewAtMs = now + 90 * 1000;
     return {
       schema: 'home23.scheduler.job-decision.v1',
       decisionId: `sched-dec-${randomUUID().slice(0, 12)}`,

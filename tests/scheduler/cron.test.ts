@@ -630,3 +630,177 @@ test('a recurring due instance is withheld while the same job remains in flight'
   assert.equal(receipt.status, 'ok');
   assert.equal(receipt.outcome.semanticStatus, 'withheld');
 });
+
+// ─── Missed and failed scheduled runs (2026-10-05 investigation) ───────────
+
+function schedulerFor(dir: string, handler: (job: CronJob) => Promise<JobResult>, extra: Record<string, unknown> = {}): CronScheduler {
+  return new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs', initialTickDelayMs: 60_000, ...extra } as any, handler, dir);
+}
+
+test('an in-flight durable channel run is not re-decided on every tick', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-inflight-channel-'));
+  const job = makeDueJob({
+    id: 'channel-job',
+    name: 'Channel job',
+    schedule: { kind: 'cron', expr: '7 */6 * * *', tz: 'America/New_York' },
+    payload: { kind: 'agentTurn', message: 'field report', channelId: 'chn_1', timeoutSeconds: 3600 },
+    state: { nextRunAtMs: Date.now() + 6 * 60 * 60 * 1000, consecutiveErrors: 0, activeChannelRun: { runId: 'sched-run-11111111-1111-1111-1111-111111111111', startedAtMs: Date.now() - 60_000 } },
+  } as Partial<CronJob>);
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  let calls = 0;
+  const scheduler = schedulerFor(dir, async () => { calls++; return await new Promise<JobResult>(() => {}); });
+
+  await (scheduler as any).tick(); // reattaches the durable run
+  await (scheduler as any).tick(); // still in flight and not due: nothing to decide
+  await (scheduler as any).tick();
+
+  assert.equal(calls, 1);
+  const decisions = readJsonl(join(dir, 'cron-decisions.jsonl'));
+  assert.equal(decisions.length, 1, 'only the reattach decision is recorded');
+  assert.equal(decisions[0].action, 'run');
+  assert.equal(readJsonl(join(dir, 'cron-runs', 'channel-job.jsonl')).length, 0, 'no withheld receipts while the run is in flight');
+  const saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'))[0];
+  assert.equal(saved.state.lastDecisionAction, 'run');
+});
+
+test('a cron job that missed one firing during downtime stays due and runs as catch-up on the first tick', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-startup-catchup-'));
+  const dueAt = Date.now() - 20 * 60 * 1000; // restart straddled the 06:00 firing; it is 06:20 now
+  const job = makeDueJob({
+    id: 'daily',
+    name: 'Daily insight card',
+    schedule: { kind: 'cron', expr: '0 6 * * *', tz: 'America/New_York' },
+    state: { nextRunAtMs: dueAt, consecutiveErrors: 0 },
+  } as Partial<CronJob>);
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  let calls = 0;
+  const scheduler = schedulerFor(dir, async () => { calls++; return { status: 'ok', durationMs: 1 }; });
+
+  scheduler.start();
+  scheduler.stop();
+  assert.equal(calls, 0, 'startup itself never runs jobs');
+  let saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'))[0];
+  assert.equal(saved.state.nextRunAtMs, dueAt, 'a single missed firing is kept due');
+
+  await (scheduler as any).tick();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(calls, 1);
+  const decisions = readJsonl(join(dir, 'cron-decisions.jsonl'));
+  assert.equal(decisions[0].action, 'run');
+  assert.equal(decisions[0].willExecute, true);
+  saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'))[0];
+  assert.ok(saved.state.nextRunAtMs > Date.now());
+});
+
+test('a cron job that missed several firings during downtime is rescheduled with a visible receipt', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-startup-skip-'));
+  const dueAt = Date.now() - 3 * 60 * 60 * 1000; // hourly job, three firings missed
+  const job = makeDueJob({
+    id: 'hourly',
+    name: 'Hourly sync',
+    schedule: { kind: 'cron', expr: '0 * * * *', tz: 'America/New_York' },
+    state: { nextRunAtMs: dueAt, consecutiveErrors: 0 },
+  } as Partial<CronJob>);
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  const scheduler = schedulerFor(dir, async () => ({ status: 'ok', durationMs: 1 }));
+
+  scheduler.start();
+  scheduler.stop();
+
+  const saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'))[0];
+  assert.ok(saved.state.nextRunAtMs > Date.now(), 'moved to the next firing');
+  assert.equal(saved.state.lastDecisionAction, 'skip');
+  assert.equal(saved.state.consecutiveErrors, 0, 'downtime is not the job\'s fault');
+  const decisions = readJsonl(join(dir, 'cron-decisions.jsonl'));
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].action, 'skip');
+  assert.equal(decisions[0].willExecute, false);
+  assert.match(decisions[0].reason, /missed during scheduler downtime/);
+  const receipt = readJsonl(join(dir, 'cron-runs', 'hourly.jsonl'));
+  assert.equal(receipt.length, 1);
+  assert.equal(receipt[0].withheld, true);
+  assert.equal(receipt[0].status, 'error');
+  assert.match(receipt[0].error, /missed during scheduler downtime/);
+});
+
+test('a run interrupted by a harness restart is recorded and re-dispatched when its slot has not passed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-interrupted-'));
+  const dispatchedAt = Date.now() - 50 * 60 * 1000; // 21:00 briefing dispatched, harness killed at 21:50
+  const job = makeDueJob({
+    id: 'evening',
+    name: 'Evening briefing',
+    schedule: { kind: 'cron', expr: '0 21 * * *', tz: 'America/New_York' },
+    payload: { kind: 'agentTurn', message: 'brief me', timeoutSeconds: 600 },
+    state: {
+      nextRunAtMs: Date.now() + 23 * 60 * 60 * 1000, // tick already advanced it to tomorrow
+      consecutiveErrors: 0,
+      lastRunAtMs: dispatchedAt - 24 * 60 * 60 * 1000,
+      lastStatus: 'ok',
+      lastDecisionAtMs: dispatchedAt,
+      lastDecisionAction: 'run',
+      lastDecisionReason: 'job due and eligible',
+      inFlightSinceMs: dispatchedAt,
+    },
+  } as Partial<CronJob>);
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  let calls = 0;
+  const scheduler = schedulerFor(dir, async () => { calls++; return { status: 'ok', response: 'brief', durationMs: 1 }; });
+
+  scheduler.start();
+  scheduler.stop();
+
+  const receipts = readJsonl(join(dir, 'cron-runs', 'evening.jsonl'));
+  assert.equal(receipts.length, 1, 'the lost run gets a receipt');
+  assert.equal(receipts[0].status, 'error');
+  assert.match(receipts[0].error, /interrupted/i);
+  let saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'))[0];
+  assert.equal(saved.state.inFlightSinceMs, undefined);
+  assert.equal(saved.state.consecutiveErrors, 0, 'a restart is not the job\'s fault');
+  assert.ok(saved.state.nextRunAtMs <= Date.now(), 'made due again because the next slot has not arrived');
+
+  await (scheduler as any).tick();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(calls, 1, 'the interrupted briefing is re-run');
+  saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'))[0];
+  assert.equal(saved.state.lastStatus, 'ok');
+  assert.equal(saved.state.inFlightSinceMs, undefined, 'marker cleared after completion');
+});
+
+test('dispatch marks the job in flight durably and completion clears the mark', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-inflight-mark-'));
+  const job = makeDueJob({ id: 'marked', name: 'Marked job' } as Partial<CronJob>);
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  let release: ((result: JobResult) => void) | null = null;
+  const scheduler = schedulerFor(dir, async () => await new Promise<JobResult>((resolve) => { release = resolve; }));
+
+  await (scheduler as any).tick();
+  let saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'))[0];
+  assert.ok(typeof saved.state.inFlightSinceMs === 'number', 'persisted before the handler settles');
+
+  release!({ status: 'ok', durationMs: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'))[0];
+  assert.equal(saved.state.inFlightSinceMs, undefined);
+  assert.equal(saved.state.lastStatus, 'ok');
+});
+
+test('background deferral is reviewed off the five-minute grid so it cannot lock-step behind frequent foreground jobs', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-background-grid-'));
+  const sampler = makeDueJob({ id: 'sampler', name: 'Process memory sampler', schedule: { kind: 'every', everyMs: 5 * 60 * 1000 } } as Partial<CronJob>);
+  const nightly = makeDueJob({
+    id: 'nightly',
+    name: 'Conversation backfill',
+    queueClass: 'background',
+    schedule: { kind: 'cron', expr: '15 3 * * *', tz: 'America/New_York' },
+  } as Partial<CronJob>);
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([sampler, nightly], null, 2));
+  const scheduler = schedulerFor(dir, async () => ({ status: 'ok', durationMs: 1 }));
+
+  const before = Date.now();
+  await (scheduler as any).tick();
+
+  const saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8')).find((j: CronJob) => j.id === 'nightly');
+  const review = saved.state.nextRunAtMs - before;
+  assert.ok(review >= 60_000, `review ${review}ms must respect the one-minute floor`);
+  assert.ok(review < 4 * 60 * 1000, `review ${review}ms must land before the sampler's next five-minute firing`);
+});

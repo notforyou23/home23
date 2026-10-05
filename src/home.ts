@@ -38,6 +38,7 @@ import { IMessageAdapter } from './channels/imessage.js';
 import { WebhookServer } from './channels/webhooks.js';
 import { SessionRouter, type IncomingMessage, type OutgoingResponse, type ChannelAdapter } from './channels/router.js';
 import { CronScheduler, type CronJob, type JobResult } from './scheduler/cron.js';
+import { describeExecFailure } from './scheduler/exec-failure.js';
 import { DeliveryManager } from './scheduler/delivery.js';
 import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
@@ -1085,7 +1086,10 @@ async function main(): Promise<void> {
         return { status: 'error', error: 'Unknown payload kind', durationMs };
       } catch (err) {
         const durationMs = Date.now() - startMs;
-        const errorMsg = err instanceof Error ? err.message : String(err);
+        // exec failures: name the exit code and the script's own output, not just the command line.
+        const errorMsg = job.payload.kind === 'exec'
+          ? describeExecFailure(err, job.payload.command, (job.payload.timeoutSeconds ?? 60) * 1000)
+          : err instanceof Error ? err.message : String(err);
         if (job.payload.kind === 'agentTurn' && job.payload.publication === 'homeVibe' && homeVibeConfig) {
           try { failHomeVibe(homeVibeFeedPath, homeVibeConfig, errorMsg); }
           catch (feedError) { console.error('[home-vibe] Could not record failure:', feedError); }
