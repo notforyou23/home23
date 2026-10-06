@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmdirSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import type {
   CheckpointInfo,
@@ -65,8 +65,27 @@ function branchExists(repoRoot: string, branch: string): boolean {
   }
 }
 
+/** The worktree scaffold is only ever created inside a Git work tree root.
+ * A packaged Home23 installation is not one; a stray `.home23-worktrees`
+ * there is unclassified state that blocks the ordinary home update. */
+function assertWorktreeRoot(repoRoot: string): string {
+  const detected = detectGitRepo(repoRoot);
+  if (!detected) throw new Error(`refusing to create a job worktree: ${repoRoot} is not a Git work tree`);
+  const root = realpathSync(repoRoot);
+  if (realpathSync(detected.repoRoot) !== root) {
+    throw new Error(`refusing to create a job worktree: ${repoRoot} is not a Git work tree root (${detected.repoRoot})`);
+  }
+  try {
+    return git(root, ['rev-parse', '--verify', 'HEAD']);
+  } catch (err) {
+    throw new Error(`refusing to create a job worktree: ${repoRoot} has no HEAD commit (${execReason(err)})`);
+  }
+}
+
 export function createJobWorktree(opts: { repoRoot: string; slug: string }): WorktreeInfo {
+  const baseCommit = assertWorktreeRoot(opts.repoRoot);
   const baseDir = path.join(opts.repoRoot, '.home23-worktrees');
+  const createdBase = !existsSync(baseDir);
   mkdirSync(baseDir, { recursive: true });
   let slug = sanitizeSlug(opts.slug);
   if (branchExists(opts.repoRoot, `home23-agent/${slug}`) || existsSync(path.join(baseDir, slug))) {
@@ -74,8 +93,13 @@ export function createJobWorktree(opts: { repoRoot: string; slug: string }): Wor
   }
   const branch = `home23-agent/${slug}`;
   const dir = path.join(baseDir, slug);
-  const baseCommit = git(opts.repoRoot, ['rev-parse', 'HEAD']);
-  git(opts.repoRoot, ['worktree', 'add', dir, '-b', branch]);
+  try {
+    git(opts.repoRoot, ['worktree', 'add', dir, '-b', branch]);
+  } catch (err) {
+    // Never leave an empty scaffold behind a failed creation.
+    if (createdBase) { try { rmdirSync(baseDir); } catch { /* not empty: leave it */ } }
+    throw new Error(`job worktree creation failed for ${dir}: ${execReason(err)}`);
+  }
   const dependencyProvisioning = provisionWorktreeDependencies(opts.repoRoot, dir);
   return { repoRoot: opts.repoRoot, path: dir, branch, baseCommit, dependencyProvisioning };
 }

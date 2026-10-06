@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync, existsSync, realpathSync as fs_realpath } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -51,5 +51,33 @@ test('a crash before PID persistence never frees a potentially spawned child wor
     const deadPid = Number(execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }));
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), harnessPid: deadPid }));
     assert.throws(() => acquireWorkspaceLease(root, root, path.join(root, 'other.json')), /reserved/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('leases live under instances/.house, never beside the app root the product updater classifies', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'h23-lease-'));
+  try {
+    const lease = acquireWorkspaceLease(root, root, path.join(root, 'job.json'));
+    assert.ok(lease.directory.startsWith(path.join(fs_realpath(root), 'instances', '.house', 'coding-leases') + path.sep),
+      `lease directory ${lease.directory} must sit under instances/.house/coding-leases`);
+    assert.equal(existsSync(path.join(root, '.home23-worktrees')), false, 'a lease must not create .home23-worktrees under the project root');
+    releaseWorkspaceLease(lease);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an empty legacy .home23-worktrees/.leases left by an older release is removed on the next lease', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'h23-lease-'));
+  try {
+    mkdirSync(path.join(root, '.home23-worktrees', '.leases'), { recursive: true });
+    const lease = acquireWorkspaceLease(root, root, path.join(root, 'job.json'));
+    assert.equal(existsSync(path.join(root, '.home23-worktrees')), false, 'empty legacy lease scaffold is cleaned up');
+    releaseWorkspaceLease(lease);
+
+    // A legacy tree that still holds anything is never removed.
+    mkdirSync(path.join(root, '.home23-worktrees', '.leases', 'abc'), { recursive: true });
+    writeFileSync(path.join(root, '.home23-worktrees', '.leases', 'abc', 'owner.json'), '{}');
+    const second = acquireWorkspaceLease(root, root, path.join(root, 'two.json'));
+    assert.ok(existsSync(path.join(root, '.home23-worktrees', '.leases', 'abc', 'owner.json')));
+    releaseWorkspaceLease(second);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

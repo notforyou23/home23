@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import lockfile from 'proper-lockfile';
 import { detectGitRepo } from './worktrees.js';
@@ -12,13 +12,31 @@ function alive(pid: number): boolean {
   }
 }
 
+/** Shared lease root for every coding bridge of one Home23 root. It lives under
+ * the house state directory: in a product home the project root is the packaged
+ * app, and anything created beside the package there is unclassified state that
+ * blocks the ordinary home update. */
+export function workspaceLeaseDirectory(projectRoot: string): string {
+  return path.join(realpathSync(projectRoot), 'instances', '.house', 'coding-leases');
+}
+
+/** Releases before 2026-10-06 kept leases at <projectRoot>/.home23-worktrees/.leases.
+ * Remove that scaffold once it holds nothing; a tree with any content is left for review. */
+function removeEmptyLegacyLeaseScaffold(projectRoot: string): void {
+  const base = path.join(projectRoot, '.home23-worktrees');
+  for (const directory of [path.join(base, '.leases'), base]) {
+    try { rmdirSync(directory); } catch { return; }
+  }
+}
+
 /** Atomic reservation shared by all coding bridges using this Home23 root.
  * No time-based expiry: a detached child may outlive its harness. Unknown
  * ownership fails closed; never remove a lease merely because it is old. */
 export function acquireWorkspaceLease(projectRoot: string, cwd: string, jobFile: string): WorkspaceLease {
   const workspace = realpathSync(detectGitRepo(cwd)?.repoRoot ?? cwd);
-  const leases = path.join(realpathSync(projectRoot), '.home23-worktrees', '.leases');
+  const leases = workspaceLeaseDirectory(projectRoot);
   mkdirSync(leases, { recursive: true });
+  removeEmptyLegacyLeaseScaffold(realpathSync(projectRoot));
   const unlock = lockfile.lockSync(leases, { realpath: true });
   try {
     const directory = path.join(leases, createHash('sha256').update(workspace).digest('hex'));

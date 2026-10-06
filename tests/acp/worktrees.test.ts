@@ -334,3 +334,34 @@ test('removeWorktree tears down a read-only provisioned dependency tree', (t) =>
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+test('createJobWorktree refuses a root that is not a Git work tree and leaves nothing behind', (t) => {
+  if (!gitAvailable()) return t.skip('git unavailable');
+  const plain = realpathSync(mkdtempSync(path.join(tmpdir(), 'home23-acp-norepo-')));
+  try {
+    if (detectGitRepo(plain)) return t.skip('temp dir is nested inside a repository');
+    assert.throws(() => createJobWorktree({ repoRoot: plain, slug: 'stray' }), /not a Git work tree/);
+    assert.equal(existsSync(path.join(plain, '.home23-worktrees')), false, 'no worktree scaffold may be created under a non-repository root');
+  } finally {
+    rmSync(plain, { recursive: true, force: true });
+  }
+});
+
+test('createJobWorktree refuses a subdirectory of a repository and a repository without commits, without leftovers', (t) => {
+  if (!gitAvailable()) return t.skip('git unavailable');
+  const repo = makeRepo();
+  const empty = realpathSync(mkdtempSync(path.join(tmpdir(), 'home23-acp-emptyrepo-')));
+  try {
+    const sub = path.join(repo, 'src');
+    mkdirSync(sub);
+    assert.throws(() => createJobWorktree({ repoRoot: sub, slug: 'sub' }), /not a Git work tree root/);
+    assert.equal(existsSync(path.join(sub, '.home23-worktrees')), false);
+
+    git(empty, ['init', '-q']);
+    assert.throws(() => createJobWorktree({ repoRoot: empty, slug: 'unborn' }), /HEAD/);
+    assert.equal(existsSync(path.join(empty, '.home23-worktrees')), false, 'a failed creation leaves no empty scaffold');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
