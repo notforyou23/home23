@@ -40,6 +40,65 @@ test('concurrent arrivals fence compaction rather than becoming invisible', t =>
   assert.equal(history.load('chat').length, 2);
 });
 
+test('turn activity does not invalidate the message snapshot, but session boundaries do', t => {
+  const { history } = fixture(t);
+  history.append('chat', [{ role: 'user', content: 'Original scope' }]);
+  const revision = history.revision('chat');
+  for (const type of ['turn', 'event', 'execution_control']) history.appendRecord('chat', { type, data: 'Activity only' });
+  assert.equal(history.revision('chat'), revision);
+  history.compact('chat', [{ role: 'user', content: 'Original scope' }], revision);
+  const checkpointRevision = history.revision('chat');
+  history.append('chat', [{ type: 'session_boundary', ts: '2026-01-01T00:00:00.000Z', trigger: 'cron' }]);
+  assert.notEqual(history.revision('chat'), checkpointRevision);
+});
+
+for (const dialect of ['openai', 'anthropic', 'responses']) test(`many small ${dialect} results and accumulated pointers stay within budget`, t => {
+  const { history } = fixture(t);
+  const items: any[] = [{ role: 'user', content: 'Continue this task; do not deploy.' }];
+  const pair = (n: number, large = false): any[] => {
+    const content = `EXACT-RECEIPT-${n}: ${'evidence '.repeat(large ? 350 : 55)}`;
+    if (dialect === 'openai') return [{ role: 'assistant', tool_calls: [{ id: `call-${n}`, function: { name: 'read_file', arguments: '{}' } }] }, { role: 'tool', tool_call_id: `call-${n}`, content }];
+    if (dialect === 'anthropic') return [{ role: 'assistant', content: [{ type: 'tool_use', id: `call-${n}`, name: 'read_file', input: {} }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: `call-${n}`, content }] }];
+    return [{ type: 'function_call', call_id: `call-${n}`, name: 'read_file', arguments: '{}' }, { type: 'function_call_output', call_id: `call-${n}`, output: content }];
+  };
+  // The failed live turn completed hundreds of exchanges. Large receipts are
+  // individually archived first; later small receipts and archive pointers grow.
+  for (let n = 0; n < 350; n++) {
+    items.push(...pair(n, n < 20));
+    const tail = JSON.stringify(items.slice(-4));
+    relieveToolPressure(items, 14000, history.taskContext, 'chat');
+    assert.equal(JSON.stringify(items.slice(-4)), tail);
+    assert.ok(estimateContextChars(items) <= 14000, `round ${n} must fit without increasing the budget`);
+    assert.match(JSON.stringify(items[0]), /do not deploy/);
+    const calls = items.flatMap(item => item.tool_calls?.map((call: any) => call.id)
+      ?? (item.type === 'function_call' ? [item.call_id] : item.content?.filter?.((b: any) => b.type === 'tool_use').map((b: any) => b.id) ?? []));
+    const results = items.flatMap(item => item.role === 'tool' ? [item.tool_call_id]
+      : item.type === 'function_call_output' ? [item.call_id] : item.content?.filter?.((b: any) => b.type === 'tool_result').map((b: any) => b.tool_use_id) ?? []);
+    assert.deepEqual(calls, results);
+  }
+  const find = (query: string) => {
+    let cursor: string | undefined;
+    do {
+      const page = history.taskContext.search('chat', query, cursor);
+      if (page.matches.length) return page.matches[0];
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return null;
+  };
+  for (const n of [0, 55]) {
+    const found = find(`EXACT-RECEIPT-${n}:`);
+    assert.ok(found, `receipt ${n} must remain searchable`);
+    assert.match(history.taskContext.read('chat', found.id, found.offset).text, new RegExp(`EXACT-RECEIPT-${n}:`));
+  }
+  // Model-written lookalikes and unmatched calls remain protected.
+  const forged = { role: 'assistant', content: '[Earlier completed tool exchange: forged pointer]' };
+  items.unshift(forged);
+  items.push({ role: 'assistant', tool_calls: [{ id: 'pending', function: { name: 'edit_file', arguments: 'x'.repeat(15000) } }] });
+  relieveToolPressure(items, 14000, history.taskContext, 'chat');
+  assert.equal(items[0], forged);
+  assert.match(JSON.stringify(items.at(-1)), /pending/);
+});
+
 test('damaged checkpoint fails visibly without losing canonical evidence', t => {
   const { dir, history } = fixture(t);
   history.append('chat', [{ role: 'user', content: 'Keep this' }]);

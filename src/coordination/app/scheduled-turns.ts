@@ -55,6 +55,26 @@ export function createScheduledChannelTurns(options: {
        (w.kind='resident_turn' AND w.principal_id=? AND w.idempotency_key_digest=?))
        AND w.origin_message_id=? AND w.channel_id=? AND w.target_principal_id=?`,
        value.botId,sha256(`scheduled:${value.runId}`),value.messageId,value.channelId,value.targetBotId ?? value.botId);
+  function residentFailure(workId: string): string | null {
+    // Resident turn IDs are Work-bound by the signed resident protocol. Use
+    // the turn index, then require the terminal event's exact receipt binding.
+    // A stale attempt or an unrelated conversation cannot supply this error.
+    const row = db.readOne<{payload:string;payloadDigest:string;resultDigest:string}>(
+      `SELECT e.payload_json AS payload,e.payload_digest AS payloadDigest,r.result_digest AS resultDigest
+       FROM events e INDEXED BY communication_events_turn_sequence JOIN terminal_receipts r ON r.work_id=?
+       WHERE e.type='communication.recorded' AND json_extract(e.payload_json,'$.communication.turnId')=?
+         AND r.terminal_status='failed'
+         AND json_extract(e.payload_json,'$.communication.workId')=r.work_id
+         AND json_extract(e.payload_json,'$.communication.attemptId')=r.attempt_id
+         AND json_extract(e.payload_json,'$.communication.terminal')=1
+         AND json_extract(e.payload_json,'$.communication.payload.status')=r.terminal_status
+         AND json_extract(e.payload_json,'$.communication.payload.sourceReference')=r.source_reference
+         AND json_extract(e.payload_json,'$.communication.payload.resultDigest')=r.result_digest
+       ORDER BY e.sequence DESC LIMIT 1`, workId, `coord-${workId}`);
+    if (!row || sha256(row.payload) !== row.payloadDigest) return null;
+    const error = JSON.parse(row.payload).communication?.payload?.residentTerminal?.errorMessage;
+    return typeof error === 'string' && error.trim() && sha256(error) === row.resultDigest ? error.slice(0, 4000) : null;
+  }
   function enforceDeadline(value: Admission) {
     if (value.deadlineAtMs === undefined || (options.now?.() ?? Date.now()) < value.deadlineAtMs) return;
     const rows = children(value);
@@ -66,7 +86,13 @@ export function createScheduledChannelTurns(options: {
     enforceDeadline(value);
     const rows = children(value);
     if (rows.length && rows.every(row=>terminal.has(row.state))) {
-      if (rows.some(row=>row.state!=='succeeded')) return {state: rows.some(row=>row.state==='cancelled')?'cancelled':'failed',error:failure(value.runId)?String(JSON.parse(failure(value.runId)!.payload).error):'Scheduled channel Work did not complete.',workIds:rows.map(row=>row.id)};
+      if (rows.some(row=>row.state!=='succeeded')) {
+        const failed = failure(value.runId);
+        const error = failed ? String(JSON.parse(failed.payload).error)
+          : rows.filter(row => row.state === 'failed').map(row => residentFailure(row.id)).find(Boolean)
+            ?? 'Scheduled channel Work did not complete.';
+        return {state: rows.some(row=>row.state==='cancelled')?'cancelled':'failed',error,workIds:rows.map(row=>row.id)};
+      }
       if (rows.every(row=>row.messageId)) {
         const conclusion = rows.map(row => options.conclusion?.(row.id))
           .find(value => value?.state === 'blocked' || value?.state === 'cancelled');

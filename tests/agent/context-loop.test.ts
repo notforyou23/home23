@@ -10,16 +10,16 @@ import { createSeededToolRegistry } from '../../src/agent/tools/index.js';
 import { taskContextTool } from '../../src/agent/tools/task-context.js';
 import { steerQueue } from '../../src/agent/steer-queue.js';
 
-for (const scenario of ['checkpoint', 'tool-growth', 'interruption', 'overhead'] as const) {
+for (const scenario of ['checkpoint', 'checkpoint-gap', 'tool-growth', 'interruption', 'overhead'] as const) {
   test(`actual AgentLoop context management: ${scenario}`, async t => {
     const root = mkdtempSync(join(tmpdir(), 'context-loop-'));
     mkdirSync(join(root, 'workspace'));
     const history = new ConversationHistory(join(root, 'history'), scenario === 'overhead' ? 1000 : 26000, 'test');
     const chatId = `context-${scenario}`;
-    if (scenario === 'checkpoint') {
+    if (scenario.startsWith('checkpoint')) {
       for (let i = 0; i < 12; i++) history.append(chatId, [
-        { role: 'user', content: `Original instruction ${i}: do not deploy. ${'evidence '.repeat(450)}` },
-        { role: 'assistant', content: `Observed ${i}; unfinished.` },
+        { role: 'user', ts: '2026-01-01T00:00:00.000Z', content: `Original instruction ${i}: do not deploy. ${'evidence '.repeat(450)}` },
+        { role: 'assistant', ts: scenario === 'checkpoint-gap' ? '2026-01-01T00:00:00.000Z' : new Date().toISOString(), content: `Observed ${i}; unfinished.` },
       ]);
     }
     history.taskContext.note(chatId, 'next', 'Keep the no-deployment constraint; check the final result.');
@@ -58,6 +58,7 @@ for (const scenario of ['checkpoint', 'tool-growth', 'interruption', 'overhead']
       const body = JSON.parse(String(init?.body));
       if (String(body.messages?.[0]?.content).startsWith('Summarize conversation evidence')) {
         summaries++;
+        history.appendRecord(chatId, { type: 'event', kind: 'status', data: { message: 'Summarizing' } });
         return Response.json({ choices: [{ message: { content: 'User authorized local verification only. Do not deploy. Work remains unfinished.' } }] });
       }
       requests.push(body.messages);
@@ -95,7 +96,7 @@ for (const scenario of ['checkpoint', 'tool-growth', 'interruption', 'overhead']
     assert.equal(result.text, 'done');
     assert.equal(history.load(chatId).filter((m: any) => String(m.content).includes('CURRENT-REQUEST')).length, 1);
     assert.match(JSON.stringify(requests[0]), /Keep the no-deployment constraint/);
-    if (scenario === 'checkpoint') {
+    if (scenario.startsWith('checkpoint')) {
       assert.ok(summaries > 0);
       assert.ok(JSON.stringify(history.loadRaw(chatId)).includes('Original instruction 0'));
       assert.ok(history.taskContext.search(chatId, 'Original instruction 0').matches.length);

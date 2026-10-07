@@ -1458,7 +1458,7 @@ export class AgentLoop {
     try {
       // Load conversation history
       const storedHistory = this.history.load(chatId);
-      const historyRevision = this.history.revision?.(chatId);
+      let historyRevision = this.history.revision?.(chatId);
 
       // Insert session boundary if gap > 30 minutes since last message
       const SESSION_GAP_MS = this.sessionGapMs;
@@ -1481,6 +1481,11 @@ export class AgentLoop {
       }
 
       if (needsBoundary) {
+        // Transcript compilation can yield. A real message arriving meanwhile
+        // invalidates this snapshot; our own synchronous boundary does not.
+        if (historyRevision !== undefined && this.history.revision(chatId) !== historyRevision) {
+          throw new Error('History changed while preparing the session; original history retained');
+        }
         const boundary: SessionBoundary = {
           type: 'session_boundary',
           ts: now.toISOString(),
@@ -1488,6 +1493,7 @@ export class AgentLoop {
         };
         this.history.append(chatId, [boundary]);
         storedHistory.push(boundary);
+        historyRevision = this.history.revision?.(chatId);
       }
 
       // Build user content blocks

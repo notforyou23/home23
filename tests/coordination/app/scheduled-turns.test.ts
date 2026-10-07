@@ -4,7 +4,53 @@ import {createScheduledChannelTurns} from '../../../src/coordination/app/schedul
 import {createWorkService} from '../../../src/coordination/work/index.js';
 import { createResidentAssignments } from '../../../src/coordination/app/resident-assignments.js';
 import { createLeaseService } from '../../../src/coordination/leases/index.js';
+import { sha256 } from '../../../src/coordination/work/canonical.js';
+import { COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL } from '../../../src/coordination/migrations/0008-communication-evidence-indexes.js';
 import {M11TestDatabase,AT,BOT_ID,CHANNEL_ID,createFixtureIdGenerator,fixtureId,manifestInput} from '../work/test-fixture.js';
+
+for (const evidence of ['bound', 'stale-attempt', 'wrong-error'] as const) test(`failed scheduled Work reports only receipt-bound resident evidence: ${evidence}`, async t => {
+  const database = M11TestDatabase.temporary(); t.after(() => database.close());
+  database.raw.exec(COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL);
+  const work = createWorkService({ database, generateId: createFixtureIdGenerator(), now: () => new Date(AT) });
+  const options = { database, channels: { getChannel: async () => ({ kind: 'group', lifecycle: 'active', members: [{ principalId: BOT_ID }] }) } as any,
+    context: () => ({ principalId: BOT_ID }) as any, beginWork: () => () => {}, submit: { submitMessage: async (input: any) => {
+      database.mutateWithEvent(tx => {
+        tx.run(`INSERT INTO messages (id,channel_id,channel_sequence,author_principal_id,author_kind,author_display_name,kind,body_text,stored_visibility,created_at)
+          VALUES (?,?,2,?,'bot','Jerry','text',?,'visible',?)`, input.body.messageId, CHANNEL_ID, BOT_ID, input.body.text, AT);
+        return { value: undefined, event: { type: 'message.appended', aggregateKind: 'message', aggregateId: input.body.messageId,
+          aggregateVersion: 1, channelId: CHANNEL_ID, actorPrincipalId: BOT_ID, requestId: fixtureId('request', 77), correlationId: fixtureId('correlation', 77), payload: {}, createdAt: AT } };
+      });
+      work.create({ principalId: BOT_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID, originMessageId: input.body.messageId,
+        roundId: null, kind: 'channel.bot_turn', idempotencyKey: input.idempotencyKey, maxAutomaticOffers: 1,
+        manifest: manifestInput({ messageIds: [input.body.messageId], watermarks: { channelSequence: 2, eventSequence: 100 } }),
+        requestId: fixtureId('request', 78), correlationId: fixtureId('correlation', 78) });
+      return {};
+    } } };
+  const input = { runId: 'sched-run-0198d95f-6c00-7000-8000-000000000028', jobId: 'editorial', channelId: CHANNEL_ID, prompt: 'Run the cycle' };
+  let service = createScheduledChannelTurns(options);
+  await service.run(input); await new Promise(resolve => setImmediate(resolve));
+  const workId = (await service.run(input)).workIds![0];
+  assert.ok(workId, 'the admitted run must create canonical Work');
+  const identity = { requestId: fixtureId('request', 81), correlationId: fixtureId('correlation', 81) };
+  const leases = createLeaseService({ database, generateId: createFixtureIdGenerator(2000), now: () => new Date(AT), leaseTtlMs: 60_000 });
+  const offer = leases.offer({ workId, holderPrincipalId: BOT_ID, holderInstanceId: 'resident-fixture', authorityReference: 'resident:fixture', automatic: true, ...identity });
+  const binding = { workId, attemptId: offer.attempt.id, leaseId: offer.lease.id, holderPrincipalId: BOT_ID, holderInstanceId: 'resident-fixture', fencingToken: offer.fencingToken, ...identity };
+  leases.accept(binding); leases.start(binding);
+  const error = 'Context pressure exceeds the safe request budget; task evidence retained.';
+  leases.terminalize({ ...binding, receipt: { status: 'failed', sourceReference: 'resident:fixture', resultDigest: sha256(error), artifactIds: [], timestamp: AT } });
+  database.mutateWithEvent(() => ({ value: undefined, event: { type: 'communication.recorded', aggregateKind: 'communication', aggregateId: CHANNEL_ID,
+    aggregateVersion: 1, channelId: CHANNEL_ID, actorPrincipalId: BOT_ID, ...identity, createdAt: AT,
+    payload: { communication: { turnId: `coord-${workId}`, workId, attemptId: evidence === 'stale-attempt' ? fixtureId('attempt', 999) : binding.attemptId, terminal: true,
+      payload: { status: 'failed', sourceReference: 'resident:fixture', resultDigest: sha256(error),
+        residentTerminal: { errorMessage: evidence === 'wrong-error' ? 'Unverified reason' : error } } } } } }));
+  database.reopen(); service = createScheduledChannelTurns(options);
+  const result = await service.run(input);
+  assert.equal(result.state, 'failed');
+  assert.equal(result.error, evidence === 'bound' ? error : 'Scheduled channel Work did not complete.');
+  const plan = database.readAll<{detail:string}>(`EXPLAIN QUERY PLAN SELECT sequence FROM events
+    WHERE type='communication.recorded' AND json_extract(payload_json,'$.communication.turnId')=? ORDER BY sequence DESC LIMIT 1`, `coord-${workId}`);
+  assert.match(plan.map(row => row.detail).join('\n'), /communication_events_turn_sequence/);
+});
 
 for (const state of ['blocked', 'cancelled'] as const) test(`scheduled group Work retains the resident's ${state} conclusion across restart`, async t => {
   const database = M11TestDatabase.temporary(); t.after(() => database.close());

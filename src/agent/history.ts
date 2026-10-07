@@ -392,7 +392,20 @@ export class ConversationHistory {
 
   revision(chatId: string): string {
     const file = this.filePath(chatId);
-    return digest((existsSync(file) ? readFileSync(file, 'utf8') : '') + '\0' + (existsSync(`${file}.context.json`) ? readFileSync(`${file}.context.json`, 'utf8') : ''));
+    // Execution envelopes and activity events are not model history. Their
+    // appends must not invalidate a message snapshot during summarization.
+    // Messages, session boundaries, checkpoint changes and malformed records
+    // still fence the commit, including concurrent operator corrections.
+    const source = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const messages = source.split('\n').filter(line => {
+      if (!line.trim()) return false;
+      try {
+        const record = JSON.parse(line);
+        return !record || typeof record !== 'object' ||
+          (!['turn', 'event', 'execution_control'].includes(record.type) && !('executionControl' in record));
+      } catch { return true; }
+    }).join('\n');
+    return digest(messages + '\0' + (existsSync(`${file}.context.json`) ? readFileSync(`${file}.context.json`, 'utf8') : ''));
   }
 
   archiveCurrent(chatId: string): string[] {
