@@ -26,6 +26,10 @@
 'use strict';
 
 const crypto = require('crypto');
+const { performance } = require('node:perf_hooks');
+
+const SUPERSEDED_PROBE = Symbol('superseded discovery probe');
+const AUTHORITY_SCAN_SLICE_MS = 8;
 
 const {
   classifyMemoryDomain,
@@ -132,6 +136,8 @@ class DiscoveryEngine {
     // Probe state
     this.probeTimer = null;
     this.running = false;
+    this._probeEpoch = 0;
+    this._probeInFlight = false;
     this.stats = {
       probeCount: 0,
       lastProbeAt: null,
@@ -143,6 +149,7 @@ class DiscoveryEngine {
       queueDepth: 0,
       totalCandidatesProduced: 0,
       errors: 0,
+      supersededProbes: 0,
     };
   }
 
@@ -165,6 +172,8 @@ class DiscoveryEngine {
   }
 
   stop() {
+    // Invalidate even a directly invoked probe that has not started a timer.
+    this._probeEpoch++;
     if (!this.running) return;
     this.running = false;
     if (this.probeTimer) {
@@ -177,9 +186,12 @@ class DiscoveryEngine {
   // ─── Probe orchestration ─────────────────────────────────────────────
 
   async _runProbe() {
+    if (this._probeInFlight) return;
+    this._probeInFlight = true;
     const start = Date.now();
     try {
-      this._probeAuthorityContext = this._buildAuthorityContext();
+      const revision = this._captureProbeRevision();
+      this._probeAuthorityContext = await this._buildAuthorityContextForProbe(revision);
       // Per-signal cap prevents one probe from dominating the queue.
       // Without this, a noisy signal (e.g., novelty with 3k+ fresh nodes)
       // crowds everything else out, or a cheap-but-overfiring signal
@@ -187,16 +199,17 @@ class DiscoveryEngine {
       const SIGNAL_CAP = this.config.perSignalCap || 8;
       const cap = (arr) => arr.filter(candidate => !this._recentlyConsumed(candidate)).sort((a, b) => b.score - a.score).slice(0, SIGNAL_CAP);
 
-      const all = [
-        ...cap(this._probeAnomaly()),
-        ...cap(this._probeNovelty()),
-        ...cap(this._probeOrphan()),
-        ...cap(this._probeDrift()),
-        ...cap(this._probeStagnation()),
-        ...cap(this._probeSalience()),
-        ...cap(this._probeConversation()),
-        ...cap(this._probeExploration()),
-      ];
+      const all = [];
+      for (const probe of [
+        this._probeAnomaly, this._probeNovelty, this._probeOrphan, this._probeDrift,
+        this._probeStagnation, this._probeSalience, this._probeConversation, this._probeExploration,
+      ]) {
+        await this._yieldProbe(revision);
+        all.push(...cap(probe.call(this)));
+      }
+      // Queue admission is atomic: a changed graph or shutdown cannot publish
+      // candidates assembled from authority belonging to an earlier revision.
+      await this._yieldProbe(revision);
 
       for (const cand of all) {
         this._enqueue(cand);
@@ -209,10 +222,31 @@ class DiscoveryEngine {
       this.stats.queueDepth = this.queue.size;
       this.stats.totalCandidatesProduced += all.length;
     } catch (err) {
-      this._onProbeError(err);
+      if (err === SUPERSEDED_PROBE) this.stats.supersededProbes++;
+      else this._onProbeError(err);
     } finally {
       this._probeAuthorityContext = null;
+      this._probeInFlight = false;
     }
+  }
+
+  _captureProbeRevision() {
+    // Persistence tracks accepted graph writes; the cluster wrapper also
+    // tracks in-place node/edge writes that do not mark persistence dirty.
+    return {
+      epoch: this._probeEpoch,
+      generation: this.memory.persistenceGeneration,
+      clusterVersion: this.memory.__cluster?.versionClock,
+      nodes: this.memory.nodes, nodeCount: this.memory.nodes?.size,
+      edges: this.memory.edges, edgeCount: this.memory.edges?.size,
+      clusters: this.memory.clusters, clusterCount: this.memory.clusters?.size,
+    };
+  }
+
+  async _yieldProbe(revision) {
+    await new Promise(resolve => setImmediate(resolve));
+    const current = this._captureProbeRevision();
+    if (Object.keys(revision).some(key => revision[key] !== current[key])) throw SUPERSEDED_PROBE;
   }
 
   // ─── Shared helper: drop stale node IDs ─────────────────────────────
@@ -554,7 +588,10 @@ class DiscoveryEngine {
   // This path never promotes narrative, history, or an intake into current-state authority.
   _probeExploration() {
     const { eligibleIds } = this._authorityContext();
-    const resolver = createMemoryAuthorityResolver({ intent: 'general', authorityCandidates: this.memory.nodes.values() });
+    // Both intents retain closure/correction events; current_state drops the
+    // settled claims that this path already rejects through their evidence.
+    const resolver = this._probeAuthorityContext?.resolver
+      || createMemoryAuthorityResolver({ intent: 'general', authorityCandidates: this.memory.nodes.values() });
     const out = [];
     const limit = Math.max(1, this.config.perSignalCap || 8);
     for (const sourceNode of this.memory.nodes.values()) {
@@ -690,6 +727,9 @@ class DiscoveryEngine {
   }
 
   _authorityEligibleIds(nodeIds, resolver = null) {
+    if (resolver && resolver === this._probeAuthorityContext?.resolver) {
+      return this._liveIds(nodeIds).filter(id => this._probeAuthorityContext.eligibleIds.has(id));
+    }
     const liveNodes = this._liveIds(nodeIds)
       .map((id) => this.memory?.nodes?.get?.(id))
       .filter(Boolean);
@@ -697,27 +737,54 @@ class DiscoveryEngine {
       intent: 'current_state',
       authorityCandidates: this.memory?.nodes?.values?.() || [],
     });
-    return liveNodes.filter((node) => {
-      if (!authorityResolver.apply([node], { includeNodePayload: false }).length
-          || classifyMemoryDomain(node) !== 'current_ops') return false;
-      return ['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
-        .includes(classifyClaimAuthority(node));
-    }).map((node) => node.id);
+    return liveNodes.filter(node => this._isAuthorityEligible(node, authorityResolver)).map(node => node.id);
+  }
+
+  _isAuthorityEligible(node, resolver) {
+    if (!resolver.apply([node], { includeNodePayload: false }).length
+        || classifyMemoryDomain(node) !== 'current_ops') return false;
+    return ['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
+      .includes(classifyClaimAuthority(node));
+  }
+
+  *_authorityContextScan() {
+    const resolver = createMemoryAuthorityResolver({
+      intent: 'current_state',
+    });
+    for (const node of this.memory?.nodes?.values?.() || []) {
+      resolver.observe(node);
+      yield;
+    }
+    const eligibleIds = new Set();
+    for (const node of this.memory?.nodes?.values?.() || []) {
+      if (this._isAuthorityEligible(node, resolver)) eligibleIds.add(node.id);
+      yield;
+    }
+    return { resolver, eligibleIds };
   }
 
   _buildAuthorityContext() {
-    const resolver = createMemoryAuthorityResolver({
-      intent: 'current_state',
-      authorityCandidates: this.memory?.nodes?.values?.() || [],
-    });
-    const eligibleIds = new Set();
-    for (const node of this.memory?.nodes?.values?.() || []) {
-      const resolved = resolver.apply([node], { includeNodePayload: false })[0];
-      if (!resolved || classifyMemoryDomain(node) !== 'current_ops') continue;
-      if (['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
-        .includes(classifyClaimAuthority(node))) eligibleIds.add(node.id);
+    const scan = this._authorityContextScan();
+    let step;
+    do { step = scan.next(); } while (!step.done);
+    return step.value;
+  }
+
+  async _buildAuthorityContextForProbe(revision) {
+    const scan = this._authorityContextScan();
+    let sliceStart = performance.now();
+    try {
+      for (;;) {
+        const step = scan.next();
+        if (step.done) return step.value;
+        if (performance.now() - sliceStart >= AUTHORITY_SCAN_SLICE_MS) {
+          await this._yieldProbe(revision);
+          sliceStart = performance.now();
+        }
+      }
+    } finally {
+      scan.return();
     }
-    return { resolver, eligibleIds };
   }
 
   _authorityContext() {
