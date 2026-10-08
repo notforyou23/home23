@@ -330,6 +330,10 @@ function validateCommittedSynthesisState(state) {
       || typeof state.provider !== 'string'
       || typeof state.model !== 'string'
       || typeof state.generatedAt !== 'string'
+      || (state.sourceGeneration !== undefined && (typeof state.sourceGeneration !== 'string' || !state.sourceGeneration))
+      || (state.startedAt !== undefined && (typeof state.startedAt !== 'string'
+        || !Number.isFinite(Date.parse(state.startedAt))
+        || new Date(state.startedAt).toISOString() !== state.startedAt))
       || !new RegExp(`^generation-${state.sourceRevision}-[a-f0-9]{24}$`)
         .test(state.generationMarker || '')
       || !/^sha256:[a-f0-9]{64}$/.test(state.brainStateSha256 || '')) {
@@ -700,6 +704,8 @@ class SynthesisAgent {
       operationId,
       trigger: normalizedTrigger,
       sourceRevision: sourcePin.revision,
+      sourceGeneration: descriptor.generation,
+      startedAt: new Date(startedAt).toISOString(),
       provider,
       model,
       durationMs,
@@ -735,10 +741,23 @@ class SynthesisAgent {
       brainStateSha256,
     });
     const claim = Object.freeze({ version: 1, ...result });
-    const committed = await sourcePin.compareAndSwap(async () => {
+    const publish = typeof sourcePin.publishDerivedState === 'function'
+      ? sourcePin.publishDerivedState.bind(sourcePin) : sourcePin.compareAndSwap.bind(sourcePin);
+    const committed = await publish(async () => {
       throwIfAborted(signal);
       await this._checkpoint('insideCompareAndSwap', { signal, sourcePin, brainState });
       throwIfAborted(signal);
+      const previous = await readCommittedSynthesisState({
+        brainDir: this.brainDir, maxBytes: this.limits.maxBrainStateBytes, signal,
+      });
+      const sameGeneration = previous && (!previous.sourceGeneration
+        || previous.sourceGeneration === descriptor.generation);
+      if (sameGeneration && (previous.sourceRevision > sourcePin.revision
+          || (previous.sourceRevision === sourcePin.revision
+            && previous.operationId !== operationId
+            && Date.parse(previous.startedAt || previous.generatedAt) >= startedAt))) {
+        throw typed('source_changed', 'Newer synthesis state already committed', true);
+      }
       await this._checkpoint('beforeCompletionClaim', { signal, sourcePin, brainState, claim });
       const persistedClaim = await claimCompletion(claim);
       let normalizedClaim;

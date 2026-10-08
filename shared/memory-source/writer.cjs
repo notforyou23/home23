@@ -829,6 +829,48 @@ async function compareAndSwapSourceRevision(brainDir, update = {}) {
   }
 }
 
+// A derived artifact describes the immutable pinned revision; it does not
+// mutate that source. Ordinary appends may advance the same generation while
+// the provider works. Keep strict source CAS above unchanged. The trusted
+// publisher must authorize the exact original pin and prevent artifact
+// supersession inside this lock before making its durable completion claim.
+async function publishDerivedSourceState(brainDir, update = {}) {
+  const pinned = update.pinnedDescriptor;
+  if (!pinned || pinned.version !== 1
+      || typeof pinned.generation !== 'string' || !pinned.generation
+      || !Number.isSafeInteger(pinned.cutoffRevision) || pinned.cutoffRevision < 0
+      || typeof update.expectedDigest !== 'string'
+      || !/^sha256:[a-f0-9]{64}$/.test(update.expectedDigest)
+      || sourceDescriptorDigest(pinned) !== update.expectedDigest
+      || typeof update.authorize !== 'function' || typeof update.commit !== 'function') {
+    throw memorySourceError('invalid_request', 'authorized pinned derived publication required');
+  }
+  throwIfAborted(update.signal);
+  let completedOutcome = null;
+  try {
+    return await withMemorySourceLock(brainDir, {
+      lockRoot: update.lockRoot, signal: update.signal, _testHooks: update._testHooks,
+    }, async () => {
+      throwIfAborted(update.signal);
+      const canonicalRoot = await fsp.realpath(brainDir);
+      const manifest = await readManifest(brainDir);
+      if (!manifest || canonicalRoot !== pinned.canonicalRoot
+          || manifest.generation !== pinned.generation
+          || manifest.currentRevision < pinned.cutoffRevision) {
+        return { committed: false, reason: 'source_changed', manifest };
+      }
+      await update.authorize();
+      throwIfAborted(update.signal);
+      const value = await update.commit();
+      completedOutcome = { committed: true, manifest, value };
+      return completedOutcome;
+    });
+  } catch (error) {
+    if (completedOutcome && error?.sourceLockReleased === true) return completedOutcome;
+    throw error;
+  }
+}
+
 // writeJsonlGzAtomic stages `<base file>.<pid>.<ms>.<hex>.tmp`, outside the
 // source lock, and removes it on any failure it survives. Only a killed
 // process leaves one, but at base size (~300 MB for Forrest) each orphan
@@ -909,6 +951,7 @@ module.exports = {
   rewriteMemoryBaseFromSnapshot,
   advanceAnnBuiltFromRevision,
   compareAndSwapSourceRevision,
+  publishDerivedSourceState,
   removeStaleBaseStaging,
   retireUnpinnedSources,
   normalizeCapturedView,
