@@ -18,7 +18,12 @@ const RUNTIME_FIELDS = ['pm_id', 'status', 'pm_uptime', 'created_at', 'restart_t
 function registrationDefinition(row) {
   const env = structuredClone(row.pm2_env);
   for (const key of RUNTIME_FIELDS) delete env[key];
-  if (env.env) delete env.env.unique_id;
+  if (env.env) {
+    delete env.env.unique_id;
+    // PM2 mirrors this computed status into env and coerces its string value
+    // during stopped-record prepare. It is runtime metadata, not desired config.
+    delete env.env.vizion_running;
+  }
   // prepare's stopped standalone path represents one record without a replica
   // count. Duplicate names/multi-instance registrations are never admitted.
   if (env.instances === undefined) env.instances = 1;

@@ -138,7 +138,7 @@ test('loaded inactive label or a different launchd PID cannot admit a reparented
   }
 });
 
-async function migrationFixture(t) {
+async function migrationFixture(t, runtimeEnv = {}) {
   const root = fixture(t), m = machine(root); m.live = true;
   fs.writeFileSync(path.join(m.plan.env.PM2_HOME, 'pm2.pid'), '4242');
   const state = { schema: 'home23.host.v1', homeRoot: root, profile: { name: 'milo' }, desiredRunning: true, phase: 'starting', encoderRequired: false };
@@ -146,7 +146,7 @@ async function migrationFixture(t) {
   const journalPath = path.join(path.dirname(root), '.Home.home23-update/journal.json');
   fs.mkdirSync(path.dirname(journalPath), { mode: 0o700 });
   privateJSON(journalPath, { id: 'update-fixture', homeRoot: root, ownerToken: 'fixture-token', phase: 'verifying', candidateStarted: false });
-  const env = { pm_cwd: path.join(root, 'app'), pm_exec_path: path.join(root, 'bin/node'), args: [path.join(root, 'app/fixture-role.cjs')], exec_interpreter: 'none', kill_timeout: 230000, listen_timeout: 34000, env: { PRIVATE_VALUE: 'preserve-without-printing' } };
+  const env = { pm_cwd: path.join(root, 'app'), pm_exec_path: path.join(root, 'bin/node'), args: [path.join(root, 'app/fixture-role.cjs')], exec_interpreter: 'none', kill_timeout: 230000, listen_timeout: 34000, env: { PRIVATE_VALUE: 'preserve-without-printing', ...runtimeEnv } };
   const registrations = [{ name: 'home23-milo', pm2_env: { ...env, status: 'online' } }, { name: 'home23-milo-dash', pm2_env: { ...env, status: 'stopped' } }];
   let rows = structuredClone(registrations);
   const commands = [], signals = [];
@@ -357,4 +357,40 @@ test('readiness excludes bound paused role probes but still verifies every activ
   };
   assert.equal((await probeReadiness(root, state, safeProcesses(rows, root, ownedProcessNames('milo')), { request })).ready, true);
   assert.ok(seen.some(url => url.endsWith('/health'))); assert.ok(!seen.some(url => url.endsWith('/process.json')));
+});
+
+function coerceRestoredVizionMarker(f, changeDesired = false) {
+  const restore = f.m.deps.restore, command = f.m.deps.command, signal = f.m.deps.signal;
+  f.m.deps.signal = (...args) => { signal(...args); f.clearRows(); };
+  let restored = false;
+  f.m.deps.restore = async (...args) => { await restore(...args); restored = true; };
+  f.m.deps.command = async args => {
+    const result = await command(args);
+    if (!restored || args[0] !== 'jlist') return result;
+    const rows = JSON.parse(result.stdout);
+    for (const row of rows) {
+      row.pm2_env.env.vizion_running = false;
+      if (changeDesired) row.pm2_env.env.PRIVATE_VALUE = 'unexpected-desired-edit';
+    }
+    return { stdout: JSON.stringify(rows) };
+  };
+}
+
+test('PM2 restored computed vizion marker coercion preserves admission and same-operation resume', async t => {
+  const f = await migrationFixture(t, { vizion_running: 'false' });
+  coerceRestoredVizionMarker(f);
+  const first = await adoptProductSupervisor(f.root, f.admission, f.m.deps);
+  assert.equal(first.ownership, 'launchd');
+  assert.equal(JSON.parse(fs.readFileSync(first.snapshotPath)).registrations[0].pm2_env.env.vizion_running, 'false');
+  const resumed = await adoptProductSupervisor(f.root, f.admission, f.m.deps);
+  assert.equal(resumed.pid, first.pid);
+  assert.equal(f.signals.length, 1);
+  assert.deepEqual(resumed.pausedNames, ['home23-milo-dash']);
+});
+
+test('computed marker coercion never permits a changed desired environment', async t => {
+  const f = await migrationFixture(t, { vizion_running: 'false' });
+  coerceRestoredVizionMarker(f, true);
+  await assert.rejects(adoptProductSupervisor(f.root, f.admission, f.m.deps), { code: 'host_supervisor_ambiguous' });
+  assert.equal(JSON.parse(fs.readFileSync(f.m.plan.migration)).phase, 'old_exited');
 });
