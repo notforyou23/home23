@@ -4985,13 +4985,22 @@ class Orchestrator {
    * Run Meta-Coordinator strategic review
    */
   async runMetaCoordinatorReview() {
+    let memory;
+    try {
+      memory = typeof this.memory.exportGraphAsync === 'function'
+        ? await this.memory.exportGraphAsync() : this.memory.exportGraph();
+    } catch (error) {
+      if (error?.code !== 'source_changed') throw error;
+      this.logger.info('Coordinator review deferred: memory changed during its snapshot.');
+      return;
+    }
     // Prepare complete state snapshot for coordinator
     const phase2bState = {
       cycleCount: this.cycleCount,
       journal: this.journal,
       goals: this.goals.export(),
       goalsSystem: this.goals,
-      memory: this.memory.exportGraph(),
+      memory,
       roles: this.roles.getRoles(),
       reflection: this.reflection.export(),
       oscillator: this.oscillator.getStats(),
