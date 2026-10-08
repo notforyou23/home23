@@ -36,6 +36,42 @@ async function check(f) {
     { channel: checkedChannel, updater: unusedUpdater, appUpdater: unusedAppUpdater });
 }
 
+test('unsafe supervisor ownership blocks native termination after the runtime commits', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'unsafe-supervisor'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId }, runtimeCompleted: true });
+  f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+  let appCalls = 0;
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: checkedChannel, updater: unusedUpdater,
+    verifySupervisorOwnership: async () => { throw Object.assign(new Error('unsafe legacy ownership'), { code: 'host_supervisor_adoption_required' }); },
+    appUpdater: { applyPreparedMacApplication: async () => { appCalls++; return { status: 'reopened' }; } },
+    verifyReady: async () => ({ running: true }),
+  });
+  assert.equal(appCalls, 0);
+  assert.equal(f.operation(accepted.operation.id).phase, 'failed');
+  assert.equal(f.operation(accepted.operation.id).errorCode, 'host_supervisor_adoption_required');
+});
+
+test('native replacement must preserve the independent supervisor PID', async t => {
+  for (const samePid of [true, false]) {
+    const f = fixture(t); await check(f);
+    const accepted = await requestHomeUpdate(input(f.home, 'update', 'supervisor-boundary'), noLaunch);
+    f.setOperation({ ...f.operation(accepted.operation.id), prepared: { release, packageId: release.packageId }, runtimeCompleted: true });
+    f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+    const order = []; let checks = 0;
+    await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+      channel: checkedChannel, updater: unusedUpdater,
+      verifySupervisorOwnership: async () => { order.push('ownership'); return { ownership: 'launchd', pid: ++checks === 1 || samePid ? 42 : 43 }; },
+      appUpdater: { applyPreparedMacApplication: async () => { order.push('app'); return { status: 'reopened' }; } },
+      verifyReady: async () => { order.push('ready'); return { running: true }; },
+    });
+    assert.deepEqual(order, samePid ? ['ownership', 'app', 'ownership', 'ready'] : ['ownership', 'app', 'ownership']);
+    assert.equal(f.operation(accepted.operation.id).phase, samePid ? 'completed' : 'failed');
+    if (!samePid) assert.equal(f.operation(accepted.operation.id).errorCode, 'host_supervisor_changed');
+  }
+});
+
 test('a failed Mac stage can check a corrected release without changing its running home or failed receipt', async t => {
   const f = fixture(t); await check(f);
   const accepted = await requestHomeUpdate(input(f.home, 'update', 'mac-failure'), noLaunch);

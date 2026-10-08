@@ -11,13 +11,14 @@ import { acquireInstallLock, isOsMetadataPath, isStateBearingSoftwarePath, PRODU
 import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
 import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath, residentEngines, writerStopOrder } from './product-update-inventory.js';
+import { captureSupervisorForUpdate, adoptSupervisorForUpdate } from './product-supervisor-admission.js';
 
 const executeFile = promisify(execFile);
 const SCHEMA = 'home23.product-update.v1';
 const INSTALL_SCHEMA = 'home23.product-install.v1';
 const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
 const RANK = { claimed: 0, quiesced: 1, checkpointed: 2, retained: 3, applying: 4, selected: 5, verifying: 6, writers_admitted: 7, accepted: 8, committed: 9, aborted: 9, rolled_back: 9, recovery_required: 9 };
-const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update-preview.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs'];
+const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update-preview.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs', 'product-supervisor-admission.js'];
 const DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const CHECKPOINT_COPIES = 4;
 // A cold candidate can outlive Start's own readiness wait while it catches up.
@@ -780,6 +781,10 @@ async function mutate(journal, dependencies, verify) {
     let processes = await (dependencies.listProcesses || defaultListProcesses)(home);
     let classified = classifyProcesses(processes, names);
     if (classified.unknown.length) return { done: deferred(home, 'unknown_writer', 'An unexpected process is using this home. Wait for it to exit before updating.', journal) };
+    if (!Object.hasOwn(journal, 'supervisorAdmission')) {
+      const supervisorAdmission = await (dependencies.captureSupervisor || captureSupervisorForUpdate)(home, journal.stagedPayload);
+      journal = await commitPhase(file, { ...journal, supervisorAdmission }, dependencies);
+    }
     if (classified.busy.length) {
       if (!journal.admit) return { done: deferred(home, 'busy', 'This home is still working. Retry when it is quiet, or explicitly admit maintenance. Nothing was forced to stop.', journal) };
       // Durable before the first stop: a controller killed mid-stop resumes
@@ -932,7 +937,13 @@ async function finish(journal, dependencies, verify) {
       try { if (verify(home, { allowRuntimeState: true, fresh: true }).packageId !== journal.toPackageId) packageOk = false; }
       catch { packageOk = false; }
       if (!packageOk) rollbackReason = 'The selected package did not verify while writers were still fenced.';
-      else if (journal.desiredRunning) journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies);
+      else {
+        if (!journal.supervisorMigration) {
+          const supervisorMigration = await (dependencies.adoptSupervisor || adoptSupervisorForUpdate)(home, journal);
+          journal = await commitPhase(file, { ...journal, supervisorMigration }, dependencies);
+        }
+        if (journal.desiredRunning) journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies);
+      }
     } finally { if (release) await release(); }
     if (rollbackReason) return rollback(rollbackReason);
     if (['recovery_required', 'rolled_back'].includes(journal.phase)) return publicResult(journal);
