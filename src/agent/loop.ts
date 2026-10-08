@@ -34,6 +34,7 @@ import { ActivityLease, MAX_TIMER_DELAY_MS, type LeaseExpiryReason } from './act
 import { executeAndFormatTool } from './tool-result.js';
 import { MemoryManager } from './memory.js';
 import { relieveToolPressure } from './context-window.js';
+import { mergeCompletedResponsesOutput } from './responses-continuity.js';
 import type { CompactionManager } from './compaction.js';
 import type { MediaAttachment } from '../types.js';
 import { getCodexCredentials, getCodexHeaders } from './codex-auth.js';
@@ -2259,15 +2260,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 : [];
               // The terminal object is authoritative when present. Streaming
               // items fill omitted terminal items without replaying duplicates.
-              const responseOutput = [...completedOutput];
-              for (const item of completedOutputItems) {
-                const present = responseOutput.some(existing => existing.type === item.type && (
-                  typeof item.id === 'string' ? existing.id === item.id
-                    : typeof item.call_id === 'string' ? existing.call_id === item.call_id
-                      : JSON.stringify(existing) === JSON.stringify(item)
-                ));
-                if (!present) responseOutput.push(item);
-              }
+              const responseOutput = mergeCompletedResponsesOutput(completedOutput, completedOutputItems);
               for (const item of completedOutput) {
                 if (item.type === 'message' && !textContent) {
                   const content = Array.isArray(item.content)
@@ -2292,11 +2285,11 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               const respMsg: ResponseMessage = {
                 role: 'assistant',
                 content: textContent || null,
-                tool_calls: functionCallItems.length > 0
-                  ? functionCallItems.map(fc => ({
-                      id: fc.call_id,
+                tool_calls: responseOutput.some(item => item.type === 'function_call')
+                  ? responseOutput.filter(item => item.type === 'function_call').map(fc => ({
+                      id: fc.call_id as string,
                       type: 'function' as const,
-                      function: { name: fc.name, arguments: fc.arguments },
+                      function: { name: fc.name as string, arguments: fc.arguments as string },
                     }))
                   : undefined,
               };

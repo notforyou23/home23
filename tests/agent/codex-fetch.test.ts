@@ -90,7 +90,7 @@ function makeAgent(root: string, tools: unknown[] = [], model = 'gpt-5.6-sol') {
   return agent;
 }
 
-for (const terminalOnly of [false, true]) test(`Codex replays complete reasoning and function items across tool rounds (${terminalOnly ? 'terminal' : 'stream'})`, async () => {
+for (const transport of ['stream', 'terminal', 'partial-terminal', 'missing-terminal-id'] as const) test(`Codex replays complete reasoning and function items across tool rounds (${transport})`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'codex-reasoning-continuity-'));
   const requests: any[] = []; let writes = 0;
   const output = (round: number) => [
@@ -106,15 +106,19 @@ for (const terminalOnly of [false, true]) test(`Codex replays complete reasoning
       for (let prior = 1; prior < round; prior++) {
         const items = body.input;
         assert.deepEqual(items.filter((x: any) => x.id === `rs_${prior}`), [output(prior)[0]]);
-        assert.deepEqual(items.filter((x: any) => x.call_id === `call_${prior}` && x.type === 'function_call'), [output(prior)[1]]);
+        const expectedCall = { ...output(prior)[1] };
+        if (transport === 'missing-terminal-id') delete (expectedCall as any).id;
+        assert.deepEqual(items.filter((x: any) => x.call_id === `call_${prior}` && x.type === 'function_call'), [expectedCall]);
         const index = items.findIndex((x: any) => x.id === `rs_${prior}`);
-        assert.equal(items[index + 1].id, `fc_${prior}`);
+        assert.equal(items[index + 1].call_id, `call_${prior}`);
         assert.deepEqual(items[index + 2], { type: 'function_call_output', call_id: `call_${prior}`, output: `receipt-${prior}` });
       }
       if (round > 1) assert.ok(body.include?.includes('reasoning.encrypted_content'));
       if (round === 3) return successful();
-      const events = terminalOnly ? [] : output(round).map(item => ({ type: 'response.output_item.done', item }));
-      events.push({ type: 'response.completed', response: { status: 'completed', output: output(round) } } as any);
+      const events = transport === 'terminal' ? [] : output(round).map(item => ({ type: 'response.output_item.done', item }));
+      const terminalOutput = transport === 'partial-terminal' ? [output(round)[1]] : output(round);
+      if (transport === 'missing-terminal-id') delete (terminalOutput[1] as any).id;
+      events.push({ type: 'response.completed', response: { status: 'completed', output: terminalOutput } } as any);
       return new Response(events.map(x => 'data: ' + JSON.stringify(x) + '\n\n').join(''), { headers: { 'content-type': 'text/event-stream' } });
     }) as typeof fetch, async () => {
       const agent = makeAgent(root, [], 'gpt-6.1-sol');
