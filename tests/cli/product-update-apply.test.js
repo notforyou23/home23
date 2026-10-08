@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
@@ -9,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { installProductPayload, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { previewProductUpdate } from '../../cli/lib/product-update.js';
-import { applyProductUpdate, productRecoveryFor, quiesceWriters, readUpdateJournal, recoverProductUpdate, resumeProductUpdate, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
+import { applyProductUpdate, productRecoveryFor, quiesceWriters, readUpdateJournal, recoverProductUpdate, resumeProductUpdate, reconcileQuiescedWorkspaceChanges, softwareUnits, updateBlocksStart, updateDirectoryFor } from '../../cli/lib/product-update-apply.js';
 import { candidateCoordinationSchema, inspectCoordinationDatabase, inspectUpdateInventory, SUPPORTED_COORDINATION_MIGRATION_CHECKSUM, SUPPORTED_COORDINATION_SCHEMA, SUPPORTED_COORDINATION_SCHEMA_CHECKSUM, SUPPORTED_COORDINATION_SCHEMAS, ownedWriterNames, writerStopOrder } from '../../cli/lib/product-update-inventory.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cli/lib/product-update-stage.js';
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
@@ -2581,4 +2582,61 @@ test('post-selection reuseVerifiedStage resume does not require the download sta
   });
   assert.equal(resumed.status, 'committed');
   assert.equal(packageId(fixture.home), fixture.next.packageId);
+});
+
+const ownerWorkspacePath = 'app/instances/milo/workspace/context.md';
+const digestOwnerFile = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+async function ownerWorkspaceFixture(t) {
+  const f = homeFixture(t), file = path.join(f.home, ownerWorkspacePath);
+  fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'original context');
+  const previousSHA256 = digestOwnerFile(file);
+  const result = await applyProductUpdate({ homeRoot: f.home, candidatePayload: f.candidate, staging: f.staging }, {
+    ...quiet, afterPhase: async journal => { if (journal.phase === 'selected') fs.writeFileSync(file, 'newer owner context'); },
+  });
+  assert.equal(result.status, 'recovery_required');
+  const journal = readUpdateJournal(f.home);
+  return { ...f, file, journal, input: { homeRoot: f.home, journalId: journal.id, packageId: f.next.packageId, actor: 'owner-fixture',
+    changes: [{ path: ownerWorkspacePath, previousSHA256, currentSHA256: digestOwnerFile(file) }] } };
+}
+test('owner workspace reconciliation preserves newer content and original checkpoint then resumes normally', async t => {
+  const f = await ownerWorkspaceFixture(t), originalJournal = fs.readFileSync(path.join(updateDirectoryFor(f.home), 'journal.json'));
+  const result = await reconcileQuiescedWorkspaceChanges(f.input, quiet);
+  assert.equal(result.status, 'workspace_reconciled'); assert.equal(result.writersAdmitted, false);
+  assert.equal(result.originalCheckpointFullyUnchanged, false);
+  assert.deepEqual(fs.readFileSync(path.join(updateDirectoryFor(f.home), result.originalJournalBackup)), originalJournal);
+  assert.equal(fs.readFileSync(f.file, 'utf8'), 'newer owner context');
+  const reconciled = readUpdateJournal(f.home);
+  assert.equal(reconciled.ownerWorkspaceReconciliation.files[0].previousSHA256, f.input.changes[0].previousSHA256);
+  assert.equal((await resumeProductUpdate({ homeRoot: f.home }, quiet)).status, 'committed');
+  assert.equal(fs.readFileSync(f.file, 'utf8'), 'newer owner context');
+});
+test('owner workspace reconciliation refuses unlisted additions, deletions and changed credentials without changing journal', async t => {
+  for (const kind of ['added', 'deleted', 'credentials']) {
+    const f = await ownerWorkspaceFixture(t), journalFile = path.join(updateDirectoryFor(f.home), 'journal.json');
+    if (kind === 'added') fs.writeFileSync(path.join(f.home, 'app/instances/milo/workspace/other.md'), 'new');
+    if (kind === 'deleted') fs.unlinkSync(path.join(f.home, 'app/config/home.yaml'));
+    if (kind === 'credentials') fs.writeFileSync(path.join(f.home, 'app/config/secrets.yaml'), 'unlisted edit');
+    const before = fs.readFileSync(journalFile);
+    await assert.rejects(reconcileQuiescedWorkspaceChanges(f.input, quiet), { code: 'owner_state_reconciliation_refused' });
+    assert.deepEqual(fs.readFileSync(journalFile), before);
+  }
+});
+test('owner workspace reconciliation refuses stale reviewed content, path escape and non-workspace files', async t => {
+  for (const kind of ['stale', 'escape', 'credentials', 'symlink']) {
+    const f = await ownerWorkspaceFixture(t), before = fs.readFileSync(path.join(updateDirectoryFor(f.home), 'journal.json'));
+    if (kind === 'stale') fs.appendFileSync(f.file, ' changed again');
+    if (kind === 'escape') f.input.changes[0].path = 'app/instances/milo/workspace/../../config/secrets.yaml';
+    if (kind === 'credentials') f.input.changes[0].path = 'app/config/secrets.yaml';
+    if (kind === 'symlink') { fs.renameSync(f.file, f.file + '.saved'); fs.symlinkSync(f.file + '.saved', f.file); }
+    await assert.rejects(reconcileQuiescedWorkspaceChanges(f.input, quiet));
+    assert.deepEqual(fs.readFileSync(path.join(updateDirectoryFor(f.home), 'journal.json')), before);
+  }
+});
+test('owner workspace reconciliation cannot pass an active process or admitted writer boundary', async t => {
+  const f = await ownerWorkspaceFixture(t);
+  await assert.rejects(reconcileQuiescedWorkspaceChanges(f.input, { ...quiet, listProcesses: async () => [{ name: 'home23-milo', status: 'online' }] }), { code: 'owner_state_reconciliation_refused' });
+  await assert.rejects(reconcileQuiescedWorkspaceChanges(f.input, { ...quiet, listProcesses: async () => [{ name: 'foreign-role', status: 'stopped' }] }), { code: 'owner_state_reconciliation_refused' });
+  const journalFile = path.join(updateDirectoryFor(f.home), 'journal.json');
+  fs.writeFileSync(journalFile, JSON.stringify({ ...f.journal, writersAdmitted: true }));
+  await assert.rejects(reconcileQuiescedWorkspaceChanges(f.input, quiet), { code: 'owner_state_reconciliation_refused' });
 });

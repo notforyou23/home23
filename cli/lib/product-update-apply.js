@@ -1185,6 +1185,83 @@ export async function resumeProductUpdate({ homeRoot } = {}, dependencies = {}) 
     return withReusedStageLock(journal, verify, () => runTransaction(journal, dependencies, verify));
   });
 }
+
+/** Local owner recovery: retain explicitly named newer workspace files while
+ * preserving the original checkpoint. This never changes a state file, admits
+ * a writer, or accepts an unlisted change. The normal resume verifies again. */
+export async function reconcileQuiescedWorkspaceChanges({ homeRoot, journalId, packageId, changes, actor } = {}, dependencies = {}) {
+  const home = absoluteHome(homeRoot), file = journalPath(home);
+  const requireSafe = (condition, message) => {
+    if (!condition) throw Object.assign(new Error(message), { code: 'owner_state_reconciliation_refused' });
+  };
+  requireSafe(typeof actor === 'string' && /^[A-Za-z0-9_.-]{1,80}$/.test(actor), 'Name the local recovery actor.');
+  requireSafe(Array.isArray(changes) && changes.length > 0 && changes.length <= 16
+    && new Set(changes.map(change => change?.path)).size === changes.length, 'Name an exact bounded set of workspace changes.');
+  requireSafe(typeof dependencies.listProcesses === 'function', 'Recovery requires a guarded, non-spawning process inventory.');
+  return locked(home, dependencies, async () => {
+    const journal = readUpdateJournal(home);
+    requireSafe(journal?.id === journalId && journal.toPackageId === packageId, 'The selected update admission changed.');
+    requireSafe(journal.phase === 'recovery_required' && ['selected', 'verifying'].includes(journal.recoveryFrom)
+      && journal.identityPreserved === false && journal.candidateStarted === false
+      && !journal.writersAdmitted && journal.acceptedWork === false, 'Only fenced pre-writer identity recovery can accept workspace edits.');
+    requireSafe(journal.checkpointDatabase?.integrity === 'ok', 'The original database checkpoint must be verified.');
+    requireSafe(!journal.ownerWorkspaceReconciliation, 'This update already has an owner workspace reconciliation.');
+    const release = await (dependencies.acquireHostLock || defaultAcquireHostLock)(home, journal);
+    requireSafe(release !== null, 'Another lifecycle operation holds this home.');
+    try {
+      const originalJournalSHA256 = hashFile(file);
+      requireSafe(readProductManifest(home).packageId === packageId
+        && readPrivateJSON(join(home, '.home23-install.json'))?.packageId === packageId, 'The selected software identity changed.');
+      const processes = await dependencies.listProcesses(home);
+      const names = new Set(journal.supervisorAdmission?.registrations?.map(row => row.name) || journal.writerNames || []);
+      requireSafe(Array.isArray(processes) && processes.every(row => names.has(row.name) && row.status === 'stopped'), 'All owned processes must remain stopped; no unknown registrations are accepted.');
+      const identity = { ...journal.identity }, metadata = { ...journal.identityMetadata }, accepted = [];
+      for (const change of changes) {
+        const relative = change?.path;
+        requireSafe(typeof relative === 'string' && /^app\/instances\/[^/.]+\/workspace\/.+/.test(relative)
+          && !relative.includes('\\') && !relative.includes('\0')
+          && relative.split('/').every(part => part && part !== '.' && part !== '..'), 'Only confined existing resident workspace files can be reconciled.');
+        requireSafe(/^[a-f0-9]{64}$/.test(change.previousSHA256 || '') && /^[a-f0-9]{64}$/.test(change.currentSHA256 || '')
+          && identity[relative] === change.previousSHA256 && change.previousSHA256 !== change.currentSHA256, 'Workspace digests must bind the original checkpoint and the exact newer file.');
+        let cursor = home;
+        for (const part of relative.split('/')) {
+          cursor = join(cursor, part);
+          const stat = lstatSync(cursor);
+          requireSafe(!stat.isSymbolicLink() && stat.uid === process.getuid(), 'The workspace path must remain owned and must not traverse a link.');
+        }
+        const stat = lstatSync(cursor, { bigint: true });
+        requireSafe(stat.isFile(), 'Workspace reconciliation cannot create or remove files.');
+        const fingerprint = await checkpointFingerprint(cursor, { source: true });
+        requireSafe(fingerprint.sha256 === change.currentSHA256, 'The newer workspace file changed after review.');
+        const currentMetadata = fileMetadata(lstatSync(cursor, { bigint: true }));
+        requireSafe(sameMetadata(lstatSync(cursor, { bigint: true }), fingerprint.metadata), 'The workspace file changed during verification.');
+        identity[relative] = fingerprint.sha256;
+        metadata[relative] = currentMetadata;
+        accepted.push({ path: relative, previousSHA256: change.previousSHA256, currentSHA256: fingerprint.sha256 });
+      }
+      // Exact inventory equality also refuses newly added or missing files.
+      requireSafe(await sameIdentity(home, identity, metadata), 'An unlisted state change appeared; the original checkpoint is retained.');
+      requireSafe(hashFile(file) === originalJournalSHA256, 'The update journal changed during reconciliation.');
+      const backupName = `journal.owner-workspace-${randomUUID()}.before.json`;
+      const backup = join(updateDirectoryFor(home), backupName);
+      copyFileSync(file, backup, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE);
+      chmodSync(backup, 0o600);
+      const fd = openSync(backup, 'r');
+      try { fsyncSync(fd); } finally { closeSync(fd); }
+      fsyncDirectory(updateDirectoryFor(home));
+      requireSafe(hashFile(backup) === originalJournalSHA256 && hashFile(file) === originalJournalSHA256,
+        'The original journal backup did not verify.');
+      const reconciliation = { actor, at: new Date().toISOString(), originalJournalSHA256, originalJournalBackup: backupName,
+        originalCheckpointFullyUnchanged: false, workspaceFilesRetained: true, files: accepted,
+        previousRecovery: { phase: journal.phase, from: journal.recoveryFrom, reasons: journal.reasons || [] } };
+      const next = await commitPhase(file, { ...journal, phase: journal.recoveryFrom, identity, identityMetadata: metadata,
+        ownerWorkspaceReconciliation: reconciliation, identityPreserved: undefined, recoveryFrom: undefined, reasons: [] }, dependencies);
+      return { status: 'workspace_reconciled', journalId: next.id, packageId, originalCheckpointFullyUnchanged: false,
+        originalJournalBackup: backupName, workspaceFilesRetained: true, acceptedFiles: accepted.length,
+        writersAdmitted: false, candidateStarted: false };
+    } finally { await release(); }
+  });
+}
 /** The owner's recover: close a fenced journal whose software never changed
  * (or was verified back) and return the home to its running state on the
  * version it already has. It never retries the update. */
