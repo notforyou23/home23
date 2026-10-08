@@ -122,8 +122,21 @@ function publicOperation(operation) {
 function releaseView(release) {
   return release ? { version: release.version ?? 'Home23', build: release.appBuild ?? release.build ?? null, packageId: release.packageId ?? null } : null;
 }
+function committedMacFailure(home, operation) {
+  return operation?.action === 'update' && ['failed', 'interrupted'].includes(operation.phase)
+    && operation.runtimeCompleted === true && operation.applicationCompleted !== true
+    && !operation.requiresLocalRecovery && !operation.requiresNewRelease && !alive(operation.pid)
+    && typeof operation.prepared?.packageId === 'string' && home.receipt.packageId === operation.prepared.packageId;
+}
+function unfinishedMacUpdate(home, operation) {
+  if (committedMacFailure(home, operation)) return operation;
+  if (!operation?.unfinishedMacOperationId) return null;
+  const previous = loadOperation(home, operation.unfinishedMacOperationId);
+  return committedMacFailure(home, previous) ? previous : null;
+}
 function projectStatus(home, operation, clientBuild) {
-  const visible = publicOperation(operation), registered = registration(home);
+  let visible = publicOperation(operation);
+  const registered = registration(home), unfinishedMac = unfinishedMacUpdate(home, operation);
   const offered = operation?.release ?? null;
   const refusedOffer = operation?.action === 'check' && operation.phase === 'completed'
     && typeof offered?.packageId === 'string' && offered.packageId === operation.blockedPackageId;
@@ -146,9 +159,14 @@ function projectStatus(home, operation, clientBuild) {
     // A committed home with only its Mac application unfinished may need a
     // corrected release. Keep its failed receipt and offer a separate check;
     // runtime recovery and a worker still finishing remain fenced above/below.
-    if (operation.runtimeCompleted === true && operation.applicationCompleted !== true
-        && !alive(operation.pid) && typeof operation.prepared?.packageId === 'string'
-        && home.receipt.packageId === operation.prepared.packageId) allowedActions.push('check');
+    if (committedMacFailure(home, operation)) allowedActions.push('check');
+  }
+  else if (unfinishedMac && operation?.action === 'check'
+      && !(state === 'available' && compatible && offered?.packageId !== home.receipt.packageId)) {
+    // A check is a separate receipt, but it cannot declare the whole product
+    // current while the previous Mac stage still needs Resume.
+    visible = publicOperation(unfinishedMac);
+    state = 'failed'; allowedActions = ['resume', 'check']; message = visible.message;
   }
   else if (refusedOffer) { state = 'incompatible'; allowedActions = ['check']; message = 'This release was already refused for this home. Check again when a newer Home23 release is available.'; }
   else if (state === 'available' && compatible) allowedActions.push('update');
@@ -390,16 +408,19 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
     const status = projectStatus(home, operation, clientBuild);
     if (!status.allowedActions.includes(action)) throw fail('home_update_busy', status.message);
     if (action === 'resume' || action === 'recover') {
+      if (action === 'resume' && status.operation?.id !== operation?.id) operation = loadOperation(home, status.operation.id);
       if (!operation || alive(operation.pid)) throw fail('home_update_busy', 'The previous update is still running.');
       // The earlier failure's error fields must not describe this new attempt.
       const previous = { ...operation };
       delete previous.errorCode; delete previous.reasonCodes;
       operation = { ...previous, runAction: action, clientBuild: clientBuild ?? operation.clientBuild, attempt: operation.attempt + 1, phase: 'queued', pid: null, updatedAt: now(), message: 'Resuming Home23 update.' };
     } else {
+      const unfinishedMacOperationId = action === 'check' ? unfinishedMacUpdate(home, operation)?.id : null;
       operation = { schema: SCHEMA, id: randomUUID(), homeRoot: home.root, action, runAction: action, attempt: 1,
         clientBuild: clientBuild ?? null, phase: 'queued', progress: null, pid: null, startedAt: now(), updatedAt: now(),
         message: action === 'check' ? 'Checking for updates…' : 'Preparing your Home23 update…',
         blockedPackageId: operation?.blockedPackageId ?? null,
+        ...(unfinishedMacOperationId ? { unfinishedMacOperationId } : {}),
         release: action === 'update' ? operation?.release : null };
     }
     save(join(home.directory, `${operation.id}.json`), operation);

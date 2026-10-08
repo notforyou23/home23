@@ -72,6 +72,32 @@ test('checking after a Mac failure retains active-worker and runtime-recovery fe
   }
 });
 
+test('a current release check keeps an unfinished Mac update visible and resumable across repeated checks', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'unfinished-mac'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), phase: 'failed', pid: null,
+    runtimeCompleted: true, applicationCompleted: false, prepared: { packageId: release.packageId, release },
+    message: 'Your home software is updated. Resume to finish the Mac application and reconnect.', errorCode: 'application_incomplete' });
+  f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+  const old = readFileSync(join(f.home, `runtime/home-update/${accepted.operation.id}.json`), 'utf8');
+  for (const suffix of ['current-mac', 'current-mac-again']) {
+    const fresh = await requestHomeUpdate(input(f.home, 'check', suffix), noLaunch);
+    await runHomeUpdateOperation({ homeRoot: f.home, operationId: fresh.operation.id }, {
+      channel: { checkConfiguredRelease: async () => ({ status: 'current', release }) },
+      updater: unusedUpdater, appUpdater: unusedAppUpdater,
+    });
+    const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+    assert.equal(status.state, 'failed');
+    assert.deepEqual(status.allowedActions, ['resume', 'check']);
+    assert.match(status.message, /finish the Mac application/);
+    assert.equal(readFileSync(join(f.home, `runtime/home-update/${accepted.operation.id}.json`), 'utf8'), old);
+  }
+  const resumed = await requestHomeUpdate(input(f.home, 'resume', 'resume-after-current'), noLaunch);
+  assert.equal(resumed.operation.id, accepted.operation.id);
+  assert.equal(f.operation(accepted.operation.id).attempt, 2);
+  assert.equal(f.operation(accepted.operation.id).runtimeCompleted, true);
+});
+
 async function recoveredFixture(t) {
   const f = fixture(t), payload = join(f.parent, 'payload');
   for (const relative of ['bin/node', 'app/cli/home23.js', 'app/cli/lib/product-payload.js', 'app/scripts/product/host.mjs', 'tools/node_modules/pm2/bin/pm2']) {
