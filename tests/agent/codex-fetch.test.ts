@@ -90,6 +90,68 @@ function makeAgent(root: string, tools: unknown[] = [], model = 'gpt-5.6-sol') {
   return agent;
 }
 
+for (const terminalOnly of [false, true]) test(`Codex replays complete reasoning and function items across tool rounds (${terminalOnly ? 'terminal' : 'stream'})`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-reasoning-continuity-'));
+  const requests: any[] = []; let writes = 0;
+  const output = (round: number) => [
+    { type: 'reasoning', id: `rs_${round}`, summary: [{ type: 'summary_text', text: `Verified step ${round}` }],
+      encrypted_content: `opaque-state-${round}`, status: 'completed' },
+    { type: 'function_call', id: `fc_${round}`, call_id: `call_${round}`, name: 'record_step', arguments: '{}', status: 'completed' },
+  ];
+  try {
+    await withFetch((async (_url, init) => {
+      const body = JSON.parse(String(init!.body)); requests.push(body);
+      const round = requests.length;
+      assert.equal(body.store, false);
+      for (let prior = 1; prior < round; prior++) {
+        const items = body.input;
+        assert.deepEqual(items.filter((x: any) => x.id === `rs_${prior}`), [output(prior)[0]]);
+        assert.deepEqual(items.filter((x: any) => x.call_id === `call_${prior}` && x.type === 'function_call'), [output(prior)[1]]);
+        const index = items.findIndex((x: any) => x.id === `rs_${prior}`);
+        assert.equal(items[index + 1].id, `fc_${prior}`);
+        assert.deepEqual(items[index + 2], { type: 'function_call_output', call_id: `call_${prior}`, output: `receipt-${prior}` });
+      }
+      if (round > 1) assert.ok(body.include?.includes('reasoning.encrypted_content'));
+      if (round === 3) return successful();
+      const events = terminalOnly ? [] : output(round).map(item => ({ type: 'response.output_item.done', item }));
+      events.push({ type: 'response.completed', response: { status: 'completed', output: output(round) } } as any);
+      return new Response(events.map(x => 'data: ' + JSON.stringify(x) + '\n\n').join(''), { headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch, async () => {
+      const agent = makeAgent(root, [], 'gpt-6.1-sol');
+      (agent as any).registry = createSeededToolRegistry([{ name: 'record_step', description: 'Record one checked step.', input_schema: { type: 'object', properties: {} },
+        async execute() { return { content: `receipt-${++writes}` }; },
+      }]);
+      const run = await agent.runWithTurn('continuity', 'Complete two steps and confirm.');
+      assert.equal((await run.response).text, 'Done.');
+      assert.equal(writes, 2); assert.equal(requests.length, 3);
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Codex never replays opaque reasoning from a failed overloaded attempt', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-failed-reasoning-')); let requests = 0; let writes = 0;
+  try {
+    await withFetch((async (_url, init) => {
+      const body = JSON.parse(String(init!.body)); requests++;
+      assert.doesNotMatch(JSON.stringify(body.input), /failed-opaque-state/);
+      if (requests === 1) return overloaded([{ type: 'response.output_item.done',
+        item: { type: 'reasoning', id: 'rs_failed', summary: [], encrypted_content: 'failed-opaque-state' } }]);
+      if (requests === 2) return new Response('data: ' + JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [
+        { type: 'reasoning', id: 'rs_good', summary: [], encrypted_content: 'good-opaque-state' },
+        { type: 'function_call', call_id: 'good-call', name: 'record_step', arguments: '{}' },
+      ] } }) + '\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      assert.match(JSON.stringify(body.input), /good-opaque-state/); return successful();
+    }) as typeof fetch, async () => {
+      const agent = makeAgent(root, [], 'gpt-6.1-sol');
+      (agent as any).registry = createSeededToolRegistry([{ name: 'record_step', description: 'Record one checked step.', input_schema: { type: 'object', properties: {} },
+        async execute() { writes++; return { content: 'verified receipt' }; },
+      }]);
+      const run = await agent.runWithTurn('failed-attempt', 'Complete the verified step.');
+      assert.equal((await run.response).text, 'Done.'); assert.equal(writes, 1); assert.equal(requests, 3);
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('actual Codex loop retries pre-response transport, preserves reasoning fallback and durable sanitized failure', async () => {
   for (const scenario of ['retry', 'reasoning', 'exhausted'] as const) {
     const root = mkdtempSync(join(tmpdir(), 'codex-fetch-route-')); const bodies: any[] = [];

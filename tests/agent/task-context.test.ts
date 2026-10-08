@@ -15,6 +15,30 @@ function fixture(t: { after(fn: () => void): void }) {
   return { dir, history: new ConversationHistory(dir, 400000, 'test') };
 }
 
+test('Codex window relief preserves current opaque reasoning and archives older completed output exactly', t => {
+  const { history } = fixture(t);
+  const items: any[] = [{ role: 'user', content: 'Original step; complete its receipt before advancing.' }];
+  for (let n = 0; n < 40; n++) {
+    items.push({ role: 'assistant', content: null,
+      tool_calls: [{ id: `call-${n}`, function: { name: 'read_file', arguments: '{}' } }],
+      response_output: [{ type: 'reasoning', id: `rs-${n}`, encrypted_content: `opaque-state-${n}:` + 'x'.repeat(2000), summary: [] },
+        { type: 'function_call', id: `fc-${n}`, call_id: `call-${n}`, name: 'read_file', arguments: '{}' }] },
+      { role: 'tool', tool_call_id: `call-${n}`, content: `verified receipt ${n}` });
+    const tail = JSON.stringify(items.slice(-4));
+    relieveToolPressure(items, 14000, history.taskContext, 'chat');
+    assert.equal(JSON.stringify(items.slice(-4)), tail);
+    assert.ok(estimateContextChars(items) <= 14000);
+    assert.match(JSON.stringify(items[0]), /Original step/);
+  }
+  assert.match(JSON.stringify(items), /opaque-state-39/);
+  const match = history.taskContext.search('chat', 'opaque-state-0').matches[0];
+  assert.ok(match, 'older opaque reasoning remains recoverable in exact task evidence');
+  const archived = history.taskContext.read('chat', match.id, Math.max(0, match.offset - 500), 8000).text;
+  assert.match(archived, /opaque-state-0/);
+  assert.match(archived, /call-0/);
+  assert.match(archived, /verified receipt 0/);
+});
+
 test('compaction preserves canonical history, turn records, searchable evidence and reloadable active view', t => {
   const { dir, history } = fixture(t);
   history.append('chat', [{ role: 'user', content: 'Original constraint: do not deploy.' }, { role: 'assistant', content: 'Plan only.' }]);

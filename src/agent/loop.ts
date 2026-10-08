@@ -1999,6 +1999,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                       : [{ type: 'input_text', text: (content as string | null | undefined) ?? '' }],
                   });
                 } else if (role === 'assistant') {
+                  // Stateless Codex calls must receive the complete prior
+                  // output, including opaque reasoning, in its original order.
+                  if (Array.isArray(msg.response_output)) {
+                    inputItems.push(...msg.response_output as Array<Record<string, unknown>>);
+                    continue;
+                  }
                   // Emit text message first if content is non-empty
                   if (content) {
                     inputItems.push({
@@ -2041,6 +2047,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 tool_choice: codexTools.length > 0 ? 'auto' : undefined,
                 stream: true,
                 store: false,
+                include: ['reasoning.encrypted_content'],
                 ...(!omitReasoning && reasoning ? { reasoning } : {}),
               });
 
@@ -2079,6 +2086,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               let streamedAnswer = false;
               type FunctionCallItem = { call_id: string; name: string; arguments: string };
               const functionCallItems: FunctionCallItem[] = [];
+              const completedOutputItems: Array<Record<string, unknown>> = [];
               let terminalEvent: Record<string, unknown> | null = null;
               for (;;) {
                 if (!res.ok) {
@@ -2157,6 +2165,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                     const item = event.item as Record<string, unknown> | undefined;
                     applyReasoningOutputItem(item, thinkingState);
                     flushThinking();
+                    if (item) completedOutputItems.push(item);
                     if (item?.type === 'message') {
                       const content = Array.isArray(item.content)
                         ? item.content as Array<Record<string, unknown>>
@@ -2200,6 +2209,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                     // Release its transport without letting stream cleanup hold
                     // the turn or its existing cancellation boundary hostage.
                     void res.body.cancel().catch(() => undefined);
+                    completedOutputItems.length = 0;
                     terminalEvent = null;
                     res = await postCodex(codexBody);
                     continue;
@@ -2247,6 +2257,17 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               const completedOutput = Array.isArray(completedResponse?.output)
                 ? completedResponse.output as Array<Record<string, unknown>>
                 : [];
+              // The terminal object is authoritative when present. Streaming
+              // items fill omitted terminal items without replaying duplicates.
+              const responseOutput = [...completedOutput];
+              for (const item of completedOutputItems) {
+                const present = responseOutput.some(existing => existing.type === item.type && (
+                  typeof item.id === 'string' ? existing.id === item.id
+                    : typeof item.call_id === 'string' ? existing.call_id === item.call_id
+                      : JSON.stringify(existing) === JSON.stringify(item)
+                ));
+                if (!present) responseOutput.push(item);
+              }
               for (const item of completedOutput) {
                 if (item.type === 'message' && !textContent) {
                   const content = Array.isArray(item.content)
@@ -2337,6 +2358,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 role: 'assistant',
                 content: respMsg.content || null,
                 tool_calls: toolCalls,
+                response_output: responseOutput,
               });
 
               for (const tc of toolCalls) {

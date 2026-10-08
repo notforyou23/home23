@@ -44,7 +44,8 @@ function retainRecoveryReferences(exchange: any[], calls: Map<string, Call>, sto
   const otherContent = exchange.some(item => item.role === 'assistant' && (
     typeof item.content === 'string' ? item.content.length > 0
       : Array.isArray(item.content) && item.content.some((block: any) => block.type !== 'tool_use')
-  ));
+  )) || exchange.some(item => Array.isArray(item.response_output)
+    && item.response_output.some((output: any) => output.type !== 'function_call'));
   return { retained, references: [...new Set(references)], onlyRecovery: recovered.size > 0 && recovered.size === calls.size && !otherContent };
 }
 
