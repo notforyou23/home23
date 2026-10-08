@@ -60,6 +60,7 @@ async function fixture(t, {
   accessMode = ownerAgent === requesterAgent ? 'own' : 'read-only',
   legacy = false,
   statusTransform = (record) => record,
+  operationId = `brop_cas_${ownerAgent}_${operationType}`,
 } = {}) {
   const home23Root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-memory-source-cas-'));
   t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
@@ -68,7 +69,6 @@ async function fixture(t, {
   else await makeManifestBrain(brainDir);
   const canonicalRoot = await fsp.realpath(brainDir);
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent });
-  const operationId = `brop_cas_${ownerAgent}_${operationType}`;
   const pinned = await provider.pin(canonicalRoot, operationId);
   const operationRoot = path.join(
     home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations', 'operations', operationId,
@@ -178,6 +178,90 @@ test('stale pinned revision returns source_changed without invoking the mutation
     reason: 'source_changed',
   });
   assert.equal(commits, 0);
+});
+
+test('own synthesis publishes its pinned derived revision after ordinary memory append without weakening source CAS', async (t) => {
+  const fx = await fixture(t);
+  await appendMemoryRevision(fx.brainDir, { nodes: [{ id: 'n2', concept: 'concurrent growth' }] }, {
+    lockRoot: path.join(fx.home23Root, 'runtime', 'brain-source-locks'),
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  let sourceMutations = 0;
+  const strict = await fx.source.compareAndSwap(() => { sourceMutations += 1; });
+  assert.equal(strict.committed, false);
+  assert.equal(sourceMutations, 0);
+  let publications = 0;
+  const result = await fx.source.publishDerivedState(async () => {
+    publications += 1;
+    await fsp.writeFile(path.join(fx.brainDir, 'brain-state.json'), JSON.stringify({ sourceRevision: 2 }));
+    return 'derived';
+  });
+  assert.equal(result.committed, true);
+  assert.equal(result.manifest.currentRevision, 3);
+  assert.equal(result.value, 'derived');
+  assert.equal(publications, 1);
+  assert.equal(JSON.parse(await fsp.readFile(path.join(fx.brainDir, 'brain-state.json'))).sourceRevision, 2);
+});
+
+test('derived synthesis publication refuses a replaced source generation', async (t) => {
+  const fx = await fixture(t);
+  const file = path.join(fx.brainDir, 'memory-manifest.json');
+  const manifest = JSON.parse(await fsp.readFile(file));
+  manifest.generation = 'replacement-generation';
+  await fsp.writeFile(file, JSON.stringify(manifest));
+  let publications = 0;
+  const result = await fx.source.publishDerivedState(() => { publications += 1; });
+  assert.equal(result.committed, false);
+  assert.equal(result.reason, 'source_changed');
+  assert.equal(publications, 0);
+});
+
+test('derived synthesis publication retains exact operation authority, lifecycle and own-brain restrictions', async (t) => {
+  for (const [label, options] of [
+    ['query', { operationType: 'query' }],
+    ['cross brain', { ownerAgent: 'forrest' }],
+    ['legacy projection', { legacy: true }],
+    ['terminal', { statusTransform: r => ({ ...r, state: 'failed' }) }],
+    ['forged digest', { statusTransform: r => ({ ...r, sourcePinDigest: 'sha256:' + '0'.repeat(64) }) }],
+  ]) {
+    await t.test(label, async subtest => {
+      const fx = await fixture(subtest, options);
+      let publications = 0;
+      await assert.rejects(() => fx.source.publishDerivedState(() => { publications += 1; }), error =>
+        ['access_denied', 'source_changed'].includes(error.code));
+      assert.equal(publications, 0);
+    });
+  }
+  const fx = await fixture(t);
+  await fx.source.release();
+  await assert.rejects(() => fx.source.publishDerivedState(() => {}), { code: 'source_stale' });
+});
+
+test('real pinned synthesis finishes after concurrent growth and preserves its original source revision', async (t) => {
+  const fx = await fixture(t, { operationId: `brop_${'C'.repeat(32)}` });
+  const { SynthesisAgent, readCommittedSynthesisState } = require('../../engine/src/synthesis/synthesis-agent.js');
+  const workspacePath = path.join(fx.home23Root, 'instances/jerry/workspace');
+  await fsp.mkdir(workspacePath, { recursive: true });
+  let calls = 0;
+  const agent = new SynthesisAgent({ brainDir: fx.brainDir, workspacePath, providerAdapter: {
+    provider: 'minimax', model: 'MiniMax-M3', capabilities: { maxOutputTokens: 32768, providerStallMs: 900000 },
+    async generate() {
+      calls += 1;
+      await appendMemoryRevision(fx.brainDir, { nodes: [{ id: 'n2', concept: 'growth during provider work' }] }, {
+        lockRoot: path.join(fx.home23Root, 'runtime', 'brain-source-locks'), summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+      });
+      return { content: JSON.stringify({ selfUnderstanding: { summary: 'Pinned source.', currentObsessions: [], relationship: 'Support.' }, consolidatedInsights: [], recentActivity: [] }), terminalReceived: true, finishReason: 'stop', hadError: false };
+    },
+  }});
+  let claims = 0;
+  const result = await agent.runOperation({ operationId: fx.operationId, sourcePin: fx.source, claimCompletion: async claim => { claims += 1; return claim; } });
+  const state = await readCommittedSynthesisState({ brainDir: fx.brainDir });
+  assert.equal(calls, 1);
+  assert.equal(claims, 1);
+  assert.equal(state.sourceRevision, 2);
+  assert.equal(state.sourceGeneration, 'g1');
+  assert.equal(state.operationId, result.operationId);
+  assert.equal(state.brainStateSha256, result.brainStateSha256);
 });
 
 test('read-only, cross-brain, legacy, and escaped-boundary sources cannot mutate', async (t) => {

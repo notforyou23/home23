@@ -1217,7 +1217,7 @@ function attachPinnedSourceMutation(source, {
   let releaseRequested = false;
   let activeMutation = null;
 
-  async function compareAndSwap(commit) {
+  async function publish(commit, derived = false) {
     if (typeof commit !== 'function') {
       throw memorySourceError('invalid_request', 'source CAS commit callback required');
     }
@@ -1239,9 +1239,11 @@ function attachPinnedSourceMutation(source, {
       if (!ownBrainRoot || releaseRequested) {
         throw memorySourceError('access_denied', 'own brain source is unavailable');
       }
-      const { compareAndSwapSourceRevision } = require('./writer.cjs');
-      return compareAndSwapSourceRevision(descriptor.canonicalRoot, {
+      const { compareAndSwapSourceRevision, publishDerivedSourceState } = require('./writer.cjs');
+      const publisher = derived ? publishDerivedSourceState : compareAndSwapSourceRevision;
+      return publisher(descriptor.canonicalRoot, {
         lockRoot: providerContext.lockRoot,
+        ...(derived ? { pinnedDescriptor: descriptor } : {}),
         expectedGeneration: descriptor.generation,
         expectedRevision: descriptor.cutoffRevision,
         expectedDigest,
@@ -1268,7 +1270,8 @@ function attachPinnedSourceMutation(source, {
   }
 
   return {
-    compareAndSwap,
+    compareAndSwap: commit => publish(commit),
+    publishDerivedState: commit => publish(commit, true),
     requestRelease() { releaseRequested = true; },
     async waitForMutation() {
       if (activeMutation) await activeMutation.catch(() => {});
@@ -1482,6 +1485,7 @@ async function openPinnedSource(descriptor, expectations = {}) {
   return Object.assign(source, {
     descriptor,
     compareAndSwap: mutation.compareAndSwap,
+    publishDerivedState: mutation.publishDerivedState,
     async release() {
       releasePromise ||= (async () => {
         try {

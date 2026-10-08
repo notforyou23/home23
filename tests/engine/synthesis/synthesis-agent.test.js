@@ -48,6 +48,16 @@ function completeContent(extra = {}) {
   });
 }
 
+function priorCommittedBytes() {
+  const state = {
+    generationMarker: 'generation-50-' + 'a'.repeat(24),
+    sourceRevision: 50, operationId: `brop_${'Z'.repeat(32)}`,
+    provider: 'minimax', model: 'MiniMax-M3',
+    generatedAt: new Date(GENERATED_AT_MS - 1000).toISOString(),
+  };
+  return canonicalJson({ ...state, brainStateSha256: 'sha256:' + createHash('sha256').update(canonicalJson(state)).digest('hex') }) + '\n';
+}
+
 async function fixture(t, options = {}) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-synthesis-'));
   const brainDir = path.join(root, 'instances', 'jerry', 'brain');
@@ -240,6 +250,39 @@ test('source change prevents the durable write and publishes no prospective mark
   assert.equal(fx.releaseCalls, 0);
 });
 
+test('synthesis uses own derived publication and rejects overwriting a newer committed revision', async (t) => {
+  const fx = await fixture(t, { revision: 52 });
+  fx.sourcePin.publishDerivedState = fx.sourcePin.compareAndSwap;
+  fx.sourcePin.compareAndSwap = () => { throw new Error('Strict source mutation must not publish derived state'); };
+  await fx.agent.runOperation({ operationId: OPERATION_ID, sourcePin: fx.sourcePin, claimCompletion: fx.claimCompletion });
+  const previous = await fsp.readFile(path.join(fx.brainDir, 'brain-state.json'), 'utf8');
+  fx.sourcePin.revision = 51;
+  fx.sourcePin.descriptor.cutoffRevision = 51;
+  await assert.rejects(() => fx.agent.runOperation({ operationId: `brop_${'B'.repeat(32)}`, sourcePin: fx.sourcePin, claimCompletion: fx.claimCompletion }), { code: 'source_changed' });
+  assert.equal(await fsp.readFile(path.join(fx.brainDir, 'brain-state.json'), 'utf8'), previous);
+  assert.equal(fx.claims.length, 1);
+});
+
+test('an older synthesis attempt cannot overwrite a newer attempt at the same source revision', async (t) => {
+  let now = GENERATED_AT_MS + 1000;
+  const fx = await fixture(t, { now: () => now });
+  await fx.agent.runOperation({ operationId: OPERATION_ID, sourcePin: fx.sourcePin, claimCompletion: fx.claimCompletion });
+  const previous = await fsp.readFile(path.join(fx.brainDir, 'brain-state.json'), 'utf8');
+  now = GENERATED_AT_MS;
+  await assert.rejects(() => fx.agent.runOperation({ operationId: `brop_${'B'.repeat(32)}`, sourcePin: fx.sourcePin, claimCompletion: fx.claimCompletion }), { code: 'source_changed' });
+  assert.equal(await fsp.readFile(path.join(fx.brainDir, 'brain-state.json'), 'utf8'), previous);
+  assert.equal(fx.claims.length, 1);
+});
+
+test('malformed existing synthesis state is preserved and prevents a new completion claim', async (t) => {
+  const fx = await fixture(t);
+  const previous = '{"generationMarker":"unverifiable"}\n';
+  await fsp.writeFile(path.join(fx.brainDir, 'brain-state.json'), previous);
+  await assert.rejects(() => fx.agent.runOperation({ operationId: OPERATION_ID, sourcePin: fx.sourcePin, claimCompletion: fx.claimCompletion }), { code: 'synthesis_state_invalid' });
+  assert.equal(await fsp.readFile(path.join(fx.brainDir, 'brain-state.json'), 'utf8'), previous);
+  assert.equal(fx.claims.length, 0);
+});
+
 test('exact cancellation identity is preserved at source, provider, JSON, and CAS boundaries', async (t) => {
   for (const boundary of ['summarize', 'provider', 'json', 'cas']) {
     const controller = new AbortController();
@@ -282,7 +325,7 @@ test('cancellation immediately before the completion claim wins without publishi
       beforeCompletionClaim() { controller.abort(reason); },
     },
   });
-  const prior = '{"generationMarker":"prior-byte-exact"}\n';
+  const prior = priorCommittedBytes();
   const statePath = path.join(fx.brainDir, 'brain-state.json');
   await fsp.writeFile(statePath, prior);
 
@@ -308,7 +351,7 @@ test('claim-first cancellation cannot roll back or mask the committed synthesis 
       controller.abort(reason);
     },
   });
-  const prior = '{"generationMarker":"prior-byte-exact"}\n';
+  const prior = priorCommittedBytes();
   const statePath = path.join(fx.brainDir, 'brain-state.json');
   await fsp.writeFile(statePath, prior);
 
