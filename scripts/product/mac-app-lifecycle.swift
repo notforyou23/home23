@@ -2,9 +2,9 @@ import AppKit
 import Darwin
 import Foundation
 
-func fail(_ message: String) -> Never {
+func fail(_ message: String, status: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
-    exit(1)
+    exit(status)
 }
 
 guard CommandLine.arguments.count == 4 else { fail("Usage: mac-app-lifecycle.swift terminate|launch APP_PATH BUILD") }
@@ -45,12 +45,34 @@ func launch(_ url: URL, id: String) {
         launchError = error
     }
     let deadline = Date().addingTimeInterval(20)
-    while launched == nil && launchError == nil && Date() < deadline {
+    var finishedAt: Date?
+    while Date() < deadline {
+        if let process = launched {
+            if hasExited(process) {
+                // A launchd PID can exit while Gatekeeper is still scanning
+                // the bundle (for example during container-cache maintenance).
+                // Keep those bytes at their path; this is not permission to
+                // restore another bundle or retry an unclassified exit.
+                fail("Home23 exited before application startup finished", status: 75)
+            }
+            if process.isFinishedLaunching {
+                if finishedAt == nil { finishedAt = Date() }
+                if Date().timeIntervalSince(finishedAt!) >= 1 { break }
+            } else { finishedAt = nil }
+        }
+        if launchError != nil { break }
         RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
     }
-    if let error = launchError { fail("Home23 launch failed: \(error.localizedDescription)") }
-    guard let process = launched, !hasExited(process),
-          process.bundleIdentifier == id,
+    if let error = launchError {
+        // A failed callback can arrive before the OS finishes its policy
+        // assessment. Preserve the replacement and let Resume reassess it.
+        fail("Home23 launch did not finish: \(error.localizedDescription)", status: 75)
+    }
+    guard let process = launched, process.isFinishedLaunching, !hasExited(process),
+          let finished = finishedAt, Date().timeIntervalSince(finished) >= 1 else {
+        fail("Home23 application startup is still pending", status: 75)
+    }
+    guard process.bundleIdentifier == id,
           process.bundleURL?.standardizedFileURL.path == url.path,
           let info = Bundle(url: url)?.infoDictionary,
           String(describing: info["CFBundleVersion"] ?? "") == build else {

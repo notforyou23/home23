@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { verifyProductPayload } from './product-payload.js';
 
 function fail(code, message) { const error = new Error(message); error.code = code; return error; }
-function run(file, args) { return execFileSync(file, args, { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 }); }
+function run(file, args, options = {}) { return execFileSync(file, args, { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, ...options }); }
 function appInfo(app) {
   const plist = join(app, 'Contents/Info.plist');
   if (!existsSync(plist)) throw fail('app_invalid', 'Application metadata is missing');
@@ -217,10 +217,21 @@ export function applyPreparedMacApplication({ installedAppPath, preparedAppPath,
       inspect({ appPath: installed, release, full: false });
     }
     if (relaunch) {
-      launchEvidence = execute(worker, ['launch', installed, String(release.appBuild)]).trim();
+      // Scan the final path before launch, while its bytes are stable. spctl's
+      // distribution assessment does not populate this execution-policy scan.
+      try { execute('/usr/bin/gktool', ['scan', installed], { timeout: 90_000 }); }
+      catch { throw fail('application_assessment_failed', 'The Mac application needs to finish its macOS security assessment. Both application versions are preserved.'); }
+      try { launchEvidence = execute(worker, ['launch', installed, String(release.appBuild)]).trim(); }
+      catch (error) {
+        if (error.status === 75) throw fail('application_launch_pending', 'The replacement Mac application has not finished starting. Both application versions are preserved.');
+        throw error;
+      }
       state = { ...state, phase: 'reopened', launchEvidence }; saveClaim(claim, state);
     }
   } catch (error) {
+    // Never restore different bytes at a path macOS may still be assessing.
+    // Resume keeps the same installed bundle and retained previous version.
+    if (['application_assessment_failed', 'application_launch_pending'].includes(error.code)) throw error;
     if (existsSync(previous)) {
       try {
         if (existsSync(installed)) {

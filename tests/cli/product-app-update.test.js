@@ -90,6 +90,39 @@ test('a failed swap removes no retained copy', t => {
   assert.equal(readFileSync(join(f.installed, 'marker'), 'utf8'), 'old');
 });
 
+test('an interrupted launch keeps the replacement stable for Gatekeeper and permits safe resume', t => {
+  const f = fixture(t), calls = [];
+  const pending = { ...f.dependencies, run: (tool, args) => {
+    calls.push({ tool, args });
+    if (args[0] === 'launch') throw Object.assign(new Error('replacement exited before starting'), { status: 75 });
+    return '';
+  } };
+  assert.throws(() => applyPreparedMacApplication(f.input, pending), { code: 'application_launch_pending' });
+  assert.equal(readFileSync(join(f.installed, 'marker'), 'utf8'), 'new');
+  assert.equal(readFileSync(join(f.previous, 'marker'), 'utf8'), 'old');
+  assert.equal(existsSync(f.prepared), false);
+  assert.equal(JSON.parse(readFileSync(f.claim, 'utf8')).phase, 'installedReplaced');
+  assert.equal(calls.filter(call => call.args[0] === 'terminate').length, 1);
+  assert.equal(calls.filter(call => call.args[0] === 'launch').length, 1);
+  assert.equal(calls.find(call => call.tool === '/usr/bin/gktool').args[1], f.installed);
+  const result = applyPreparedMacApplication(f.input, f.dependencies);
+  assert.equal(result.status, 'reopened');
+});
+
+test('a pending or rejected installed Gatekeeper scan does not launch or restore another bundle at its path', t => {
+  const f = fixture(t), calls = [];
+  const blocked = { ...f.dependencies, run: (tool, args) => {
+    calls.push({ tool, args });
+    if (tool === '/usr/bin/gktool') throw Object.assign(new Error('Software has been altered'), { status: 70 });
+    return '';
+  } };
+  assert.throws(() => applyPreparedMacApplication(f.input, blocked), { code: 'application_assessment_failed' });
+  assert.equal(readFileSync(join(f.installed, 'marker'), 'utf8'), 'new');
+  assert.equal(readFileSync(join(f.previous, 'marker'), 'utf8'), 'old');
+  assert.equal(JSON.parse(readFileSync(f.claim, 'utf8')).phase, 'installedReplaced');
+  assert.equal(calls.filter(call => call.args[0] === 'launch').length, 0);
+});
+
 test('the retained copy is named after the installed build unless a claim recorded it', { skip: process.platform !== 'darwin' }, t => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'home23-app-previous-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
