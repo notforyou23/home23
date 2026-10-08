@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import type { SchedulerConfig } from '../types.js';
 import { parseReasoningEffort } from '../agent/reasoning-effort.js';
 import type { DeliveryOutcome } from './delivery.js';
+import type { DerivedStateFreshnessContract } from './derived-state-verification.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -23,7 +24,7 @@ export type ScheduleSpec =
   | { kind: 'at'; at: string };
 
 export type JobPayload =
-  | { kind: 'agentTurn'; channelId?: string; message?: string; messagePath?: string; model?: string; effort?: import('../agent/reasoning-effort.js').ReasoningEffort; timeoutSeconds?: number; sessionHistory?: 'persistent' | 'fresh'; publication?: 'homeVibe' }
+  | { kind: 'agentTurn'; channelId?: string; message?: string; messagePath?: string; model?: string; effort?: import('../agent/reasoning-effort.js').ReasoningEffort; timeoutSeconds?: number; sessionHistory?: 'persistent' | 'fresh'; publication?: 'homeVibe'; artifactContract?: DerivedStateFreshnessContract }
   | { kind: 'exec'; channelId?: string; command: string; timeoutSeconds?: number; cwd?: string }
   | { kind: 'query'; channelId?: string; message: string; mode?: string; model?: string; timeoutSeconds?: number }
   | { kind: 'systemEvent'; text: string };
