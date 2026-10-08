@@ -13,6 +13,10 @@ const {
   normalizeRetrievalIntent,
   createMemoryAuthorityResolver,
 } = require('../../../shared/memory-authority.cjs');
+const { performance } = require('node:perf_hooks');
+
+const SCAN_SLICE_MS = 8;
+const SCAN_SLICE_NODES = 256;
 
 function safeSnippet(text, maxLen = 120) {
   if (!text || typeof text !== 'string') return null;
@@ -38,30 +42,63 @@ async function getActiveClusterSummary(memoryGraph, maxClusters = 5, maxNodesPer
   try {
     if (!memoryGraph) return null;
 
-    // Support both Map-based (NetworkMemory) and object-based graphs.
-    const nodesIterable = memoryGraph.nodes instanceof Map
-      ? Array.from(memoryGraph.nodes.values())
-      : Object.values(memoryGraph.nodes || {});
-
-    if (!Array.isArray(nodesIterable) || nodesIterable.length === 0) return null;
-
+    const sourceNodes = memoryGraph.nodes;
+    if (!sourceNodes) return null;
+    const isMap = sourceNodes instanceof Map;
+    // Capture identities before yielding, including nodes not yet visited.
+    // This copies references only; it never enumerates a node's payload.
+    const tokens = isMap ? Array.from(sourceNodes.entries()) : Object.entries(sourceNodes);
+    const size = tokens.length;
+    if (size === 0) return null;
+    const generation = memoryGraph.persistenceGeneration;
+    const cluster = memoryGraph.__cluster;
+    const clusterVersion = cluster?.versionClock;
+    const assertCurrent = () => {
+      if (memoryGraph.nodes !== sourceNodes
+          || !Object.is(memoryGraph.persistenceGeneration, generation)
+          || !Object.is(cluster?.versionClock, clusterVersion)
+          || (isMap && sourceNodes.size !== size)) {
+        throw new Error('active_cluster_summary_source_changed');
+      }
+    };
+    let sliceStartedAt = performance.now();
+    let sliceNodes = 0;
+    const sliceEnded = () => ++sliceNodes >= SCAN_SLICE_NODES
+      || performance.now() - sliceStartedAt >= SCAN_SLICE_MS;
+    const yieldScan = async () => {
+      await new Promise(resolve => setImmediate(resolve));
+      assertCurrent();
+      sliceStartedAt = performance.now();
+      sliceNodes = 0;
+    };
     const intent = normalizeRetrievalIntent(options.intent || 'current_state');
-    const authorityEligible = createMemoryAuthorityResolver({
-      intent,
-      authorityCandidates: nodesIterable,
-    }).apply(nodesIterable);
-    const nodes = authorityEligible
-      .filter(n => n && (n.concept || n.summary || n.keyPhrase || n.tag))
-      .filter((n) => intent !== 'current_state' || (
-        classifyMemoryDomain(n) === 'current_ops'
-        && ['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
-          .includes(classifyClaimAuthority(n))
-      ))
-      .map(n => {
+    const resolver = createMemoryAuthorityResolver({ intent });
+    // Observe the complete graph before resolving candidates: a correction or
+    // closure near the end must still suppress an earlier claim. Retain only
+    // identity tokens, not copies of embedding or other unused payloads.
+    for (const [key, node] of tokens) {
+      if ((isMap ? sourceNodes.get(key) : sourceNodes[key]) !== node) {
+        throw new Error('active_cluster_summary_source_changed');
+      }
+      resolver.observe(node);
+      if (sliceEnded()) await yieldScan();
+    }
+    const nodes = [];
+    for (const [key, n] of tokens) {
+      if ((isMap ? sourceNodes.get(key) : sourceNodes[key]) !== n) {
+        throw new Error('active_cluster_summary_source_changed');
+      }
+      if (n && (n.concept || n.summary || n.keyPhrase || n.tag)
+          && resolver.apply([n], { includeNodePayload: false }).length > 0
+          && (intent !== 'current_state' || (
+            classifyMemoryDomain(n) === 'current_ops'
+            && ['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
+              .includes(classifyClaimAuthority(n))
+          ))) {
         const accessed = toTs(n.accessed || n.lastAccessed || n.updatedAt);
         const created = toTs(n.created || n.createdAt);
         const recency = accessed || created;
-        return {
+        if (recency > 0) nodes.push({
           id: n.id,
           cluster: n.cluster ?? 'general',
           tag: n.tag,
@@ -76,9 +113,10 @@ async function getActiveClusterSummary(memoryGraph, maxClusters = 5, maxNodesPer
             nowMs: options.nowMs,
           }),
           semanticTime: getSemanticTimeMs(n),
-        };
-      })
-      .filter(n => n.recency > 0);
+        });
+      }
+      if (sliceEnded()) await yieldScan();
+    }
 
     if (nodes.length === 0) return null;
 
@@ -134,6 +172,16 @@ async function getActiveClusterSummary(memoryGraph, maxClusters = 5, maxNodesPer
       lines.push(`- Cluster ${clusterId}${label}: ${items.map(i => `"${i}"`).join(', ')}`);
     }
 
+    // A plain Map can replace an already visited node without changing size.
+    // This final identity-only check is synchronous: a replacement cannot slip
+    // behind an already checked token while publishing the finished summary.
+    for (const [key, node] of tokens) {
+      if ((isMap ? sourceNodes.get(key) : sourceNodes[key]) !== node) {
+        throw new Error('active_cluster_summary_source_changed');
+      }
+    }
+    assertCurrent();
+    if (!isMap && Object.keys(sourceNodes).length !== size) return null;
     if (lines.length === 0) return null;
 
     return `Recent active knowledge clusters:\n${lines.join('\n')}`;
