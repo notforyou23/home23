@@ -38,6 +38,26 @@ function correctionProfile(ref) {
   };
 }
 
+test('a full discovery probe keeps embedding payloads lazy and preserves candidate authority', async () => {
+  const current = authoritativeNode('current', {
+    tag: 'state_snapshot', asserted_at: new Date().toISOString(),
+    provenance: verified('current'), evidence: { evidence_links: ['verifier:current'] },
+  });
+  const report = node('report', { tag: 'synthesis_report' });
+  for (const source of [current, report]) {
+    Object.defineProperty(source, 'embedding', {
+      enumerable: true,
+      get() { throw new Error('Discovery loaded an unused embedding'); },
+    });
+  }
+  const memory = { nodes: new Map([[current.id, current], [report.id, report]]), edges: new Map(), clusters: new Map() };
+  const discovery = new DiscoveryEngine({ memory, logger: { info() {}, warn() {} } });
+  await discovery._runProbe();
+  assert.equal(discovery.stats.errors, 0);
+  assert.deepEqual(discovery.peek().filter(c => c.signal === 'novelty').flatMap(c => c.nodeIds), ['current']);
+  assert.deepEqual(discovery.peek().filter(c => c.signal === 'exploration').flatMap(c => c.nodeIds), ['report']);
+});
+
 test('discovery novelty applies the same authority policy as retrieval', () => {
   const current = authoritativeNode('current', {
     tag: 'state_snapshot', asserted_at: new Date().toISOString(),

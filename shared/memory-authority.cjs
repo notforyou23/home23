@@ -562,6 +562,9 @@ function createMemoryAuthorityResolver({
 
   const apply = (candidates = [], operationOptions = {}) => {
     const currentState = normalizedIntent === 'current_state';
+    // Background eligibility scans need the resolution evidence, not embeddings
+    // or other lazily loaded node payloads. Authority still uses the full source.
+    const payload = (node) => operationOptions.includeNodePayload === false ? { id: node.id } : node;
     const output = [];
     for (const node of candidates) {
       if (!node || typeof node !== 'object') continue;
@@ -576,7 +579,7 @@ function createMemoryAuthorityResolver({
           && lower(node?.authorityClass || node?.authority_class) === 'jtr_correction');
       if (verifiedClosure) {
         output.push({
-          ...node,
+          ...payload(node),
           authorityRelations: relations,
           resolutionEvidence: {
             resolves: relations.refs.filter((ref) => /^(?:goal|incident|source):/.test(ref)),
@@ -587,7 +590,7 @@ function createMemoryAuthorityResolver({
       }
       if (correction && relations.supersedes.length > 0) {
         output.push({
-          ...node,
+          ...payload(node),
           authorityRelations: relations,
           correctionEvidence: { supersedes: relations.supersedes, correctedAt: time || null },
         });
@@ -604,7 +607,7 @@ function createMemoryAuthorityResolver({
       const newerCorrection = supersession && (!time || supersession.time > time);
       if (currentState && (newerClosure || newerCorrection)) continue;
       output.push({
-        ...node,
+        ...payload(node),
         authorityRelations: relations,
         ...(newerClosure ? {
           closureEvidence: { closureNodeId: closure.nodeId, closedAt: closure.time || null },

@@ -559,16 +559,16 @@ class DiscoveryEngine {
     const limit = Math.max(1, this.config.perSignalCap || 8);
     for (const sourceNode of this.memory.nodes.values()) {
       if (eligibleIds.has(sourceNode.id)) continue;
-      const node = resolver.apply([sourceNode])[0];
-      if (!node || eligibleIds.has(node.id) || typeof node.concept !== 'string' || !node.concept.trim()) continue;
+      const resolution = resolver.apply([sourceNode], { includeNodePayload: false })[0];
+      if (!resolution || eligibleIds.has(sourceNode.id) || typeof sourceNode.concept !== 'string' || !sourceNode.concept.trim()) continue;
       // Superseded claims can be retrieved as counterevidence in a neighborhood,
       // but do not independently restart a settled line of thought.
-      if (node.supersessionEvidence || node.closureEvidence) continue;
-      const ageMs = Math.max(0, Date.now() - (Date.parse(node.created) || 0));
+      if (resolution.supersessionEvidence || resolution.closureEvidence) continue;
+      const ageMs = Math.max(0, Date.now() - (Date.parse(sourceNode.created) || 0));
       const freshness = 1 / (1 + ageMs / (7 * 86400000));
       const candidate = {
-        key: `material:${node.id}`, signal: 'exploration', attentionKind: 'exploration',
-        clusterId: node.cluster ?? null, nodeIds: [node.id],
+        key: `material:${sourceNode.id}`, signal: 'exploration', attentionKind: 'exploration',
+        clusterId: sourceNode.cluster ?? null, nodeIds: [sourceNode.id],
         score: 0.65 + 0.5 * freshness, importance: 0.65 + 0.5 * freshness,
         rationale: 'Remembered material available for inquiry, not asserted current operational truth',
         discoveredAt: new Date().toISOString(),
@@ -697,8 +697,9 @@ class DiscoveryEngine {
       intent: 'current_state',
       authorityCandidates: this.memory?.nodes?.values?.() || [],
     });
-    return authorityResolver.apply(liveNodes).filter((node) => {
-      if (!node || classifyMemoryDomain(node) !== 'current_ops') return false;
+    return liveNodes.filter((node) => {
+      if (!authorityResolver.apply([node], { includeNodePayload: false }).length
+          || classifyMemoryDomain(node) !== 'current_ops') return false;
       return ['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
         .includes(classifyClaimAuthority(node));
     }).map((node) => node.id);
@@ -711,10 +712,10 @@ class DiscoveryEngine {
     });
     const eligibleIds = new Set();
     for (const node of this.memory?.nodes?.values?.() || []) {
-      const resolved = resolver.apply([node])[0];
-      if (!resolved || classifyMemoryDomain(resolved) !== 'current_ops') continue;
+      const resolved = resolver.apply([node], { includeNodePayload: false })[0];
+      if (!resolved || classifyMemoryDomain(node) !== 'current_ops') continue;
       if (['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
-        .includes(classifyClaimAuthority(resolved))) eligibleIds.add(resolved.id);
+        .includes(classifyClaimAuthority(node))) eligibleIds.add(node.id);
     }
     return { resolver, eligibleIds };
   }

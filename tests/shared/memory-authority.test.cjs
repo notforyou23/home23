@@ -32,6 +32,20 @@ const {
 
 const NOW = Date.parse('2026-07-14T16:00:00.000Z');
 
+test('relation-only authority resolution does not load unrelated node payloads', () => {
+  const material = { id: 'material', concept: 'Remembered material', tag: 'synthesis_report' };
+  Object.defineProperty(material, 'embedding', {
+    enumerable: true,
+    get() { throw new Error('Embedding payload should remain lazy'); },
+  });
+  const resolver = createMemoryAuthorityResolver({ authorityCandidates: [material] });
+  const [resolved] = resolver.apply([material], { includeNodePayload: false });
+  assert.equal(resolved.id, 'material');
+  assert.equal(Object.hasOwn(resolved, 'embedding'), false);
+  assert.equal(Object.hasOwn(resolved, 'concept'), false);
+  assert.ok(resolved.authorityRelations);
+});
+
 test('authority profile exposes exactly the four retrieval domains and six public claim classes', () => {
   const current = {
     concept: 'Live dashboard probe succeeded.',
@@ -358,11 +372,23 @@ test('shared authority resolver suppresses linked stale alarms and superseded cl
   assert.deepEqual(current[0].resolutionEvidence.resolves, ['incident:brain-route']);
   assert.deepEqual(current[1].correctionEvidence.supersedes, ['node:claim-old']);
 
+  const resolutionEvidence = (nodes) => nodes.map(({ id, authorityRelations,
+    resolutionEvidence, correctionEvidence, closureEvidence, supersessionEvidence }) => ({
+    id, authorityRelations, resolutionEvidence, correctionEvidence, closureEvidence, supersessionEvidence,
+  }));
+  assert.deepEqual(resolutionEvidence(resolver.apply([alarm, closure, staleClaim, correction],
+    { includeNodePayload: false })), resolutionEvidence(current));
+
   const history = createMemoryAuthorityResolver({
     intent: 'history', authorityCandidates: [alarm, closure, staleClaim, correction],
   }).apply([alarm, closure, staleClaim, correction]);
   assert.equal(history.find((node) => node.id === 'alarm-old').closureEvidence.closureNodeId, 'closure-new');
   assert.equal(history.find((node) => node.id === 'claim-old').supersessionEvidence.correctionNodeId, 'correction-new');
+  const historicalResolver = createMemoryAuthorityResolver({
+    intent: 'history', authorityCandidates: [alarm, closure, staleClaim, correction],
+  });
+  assert.deepEqual(resolutionEvidence(historicalResolver.apply([alarm, closure, staleClaim, correction],
+    { includeNodePayload: false })), resolutionEvidence(history));
 });
 
 test('relation projection is bounded and accepts only explicit correction targets', () => {
