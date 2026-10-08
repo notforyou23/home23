@@ -24,6 +24,27 @@
 
 const fs = require('fs');
 const path = require('path');
+const { performance } = require('node:perf_hooks');
+
+function finishScan(scan) {
+  let step;
+  do { step = scan.next(); } while (!step.done);
+  return step.value;
+}
+
+async function finishScanCooperatively(scan, yieldControl = () => new Promise(resolve => setImmediate(resolve))) {
+  let sliceStart = performance.now();
+  try {
+    for (;;) {
+      const step = scan.next();
+      if (step.done) { await yieldControl(); return step.value; }
+      if (performance.now() - sliceStart >= 8) {
+        await yieldControl();
+        sliceStart = performance.now();
+      }
+    }
+  } finally { scan.return(); }
+}
 const { readRecentConversationEntries } = require('./seed-conversation-context');
 
 const DEFAULT_CONFIG = {
@@ -73,6 +94,14 @@ class ConversationSalience {
    * @param {Date} [now=new Date()]
    */
   scoreClusters(memory, now = new Date()) {
+    return finishScan(this._scoreClustersScan(memory, now));
+  }
+
+  scoreClustersAsync(memory, now = new Date(), yieldControl) {
+    return finishScanCooperatively(this._scoreClustersScan(memory, now), yieldControl);
+  }
+
+  *_scoreClustersScan(memory, now) {
     const entries = this.getRecentEntries(now);
     if (entries.length === 0) return new Map();
 
@@ -96,7 +125,8 @@ class ConversationSalience {
     // Score each cluster by weighted Jaccard-like overlap
     const scores = new Map();
     for (const [clusterId, nodeSet] of memory.clusters.entries()) {
-      const clusterTokens = this._clusterTokens(memory, nodeSet);
+      yield;
+      const clusterTokens = yield* this._clusterTokensScan(memory, nodeSet);
       if (clusterTokens.size === 0) continue;
 
       let weightedOverlap = 0;
@@ -133,6 +163,21 @@ class ConversationSalience {
         rationale: `recent conversation (last ${this.getRecentEntries(now).length} contact records) proximal to cluster ${clusterId} — score ${score.toFixed(3)}`,
       };
     });
+  }
+
+  async topSalientClustersAsync(memory, n = 5, now = new Date(), yieldControl) {
+    const scores = await this.scoreClustersAsync(memory, now, yieldControl);
+    const sorted = Array.from(scores.entries()).sort((a, b) => b[1] - a[1]).slice(0, n);
+    const out = [];
+    for (const [clusterId, score] of sorted) {
+      const nodeSet = memory.clusters.get(clusterId) || new Set();
+      out.push({
+        clusterId, score,
+        nodeIds: await this.relevantNodeIdsAsync(memory, this.getRecentContext(now), 10, nodeSet, yieldControl),
+        rationale: `recent conversation (last ${this.getRecentEntries(now).length} contact records) proximal to cluster ${clusterId} — score ${score.toFixed(3)}`,
+      });
+    }
+    return out;
   }
 
   /** Actual conversational material, with the sidecar's authorship labels intact. */
@@ -216,13 +261,24 @@ class ConversationSalience {
 
   /** Select the matching memories, not whichever nodes were inserted first. */
   relevantNodeIds(memory, text, limit = 10, nodeIds = null) {
+    return finishScan(this._relevantNodeIdsScan(memory, text, limit, nodeIds, true));
+  }
+
+  relevantNodeIdsAsync(memory, text, limit = 10, nodeIds = null, yieldControl) {
+    // The probe's revision fence guards every yield. Do not populate the
+    // synchronous cache with a scan that can be superseded by a graph write.
+    return finishScanCooperatively(this._relevantNodeIdsScan(memory, text, limit, nodeIds, false), yieldControl);
+  }
+
+  *_relevantNodeIdsScan(memory, text, limit, nodeIds, useCache) {
     const cacheKey = `${limit}:${text}`;
-    const cached = !nodeIds && this.nodeMatchCache.get(cacheKey);
+    const cached = useCache && !nodeIds && this.nodeMatchCache.get(cacheKey);
     if (cached && cached.memory === memory && cached.size === memory.nodes.size && Date.now() - cached.at < 60000) return cached.ids;
     const query = this._tokenize(text);
     if (!query.size) return [];
     const matches = [];
     for (const id of nodeIds || memory.nodes.keys()) {
+      yield;
       const node = memory.nodes.get(id);
       if (!node?.concept) continue;
       const tokens = this._tokenize(String(node.concept).slice(0, 4000));
@@ -232,7 +288,7 @@ class ConversationSalience {
     }
     matches.sort((a, b) => b.score - a.score || String(a.id).localeCompare(String(b.id)));
     const ids = matches.slice(0, limit).map(match => match.id);
-    if (!nodeIds) {
+    if (useCache && !nodeIds) {
       this.nodeMatchCache.set(cacheKey, { memory, size: memory.nodes.size, at: Date.now(), ids });
       while (this.nodeMatchCache.size > 12) this.nodeMatchCache.delete(this.nodeMatchCache.keys().next().value);
     }
@@ -331,10 +387,15 @@ class ConversationSalience {
   }
 
   _clusterTokens(memory, nodeSet) {
+    return finishScan(this._clusterTokensScan(memory, nodeSet));
+  }
+
+  *_clusterTokensScan(memory, nodeSet) {
     // Concatenate concept text for cluster's nodes (cap at 30 nodes for speed)
     const tokens = new Set();
     let processed = 0;
     for (const nodeId of nodeSet) {
+      yield;
       if (processed >= 30) break;
       const node = memory.nodes.get(nodeId);
       if (!node || !node.concept) continue;

@@ -202,10 +202,13 @@ class DiscoveryEngine {
       const all = [];
       for (const probe of [
         this._probeAnomaly, this._probeNovelty, this._probeOrphan, this._probeDrift,
-        this._probeStagnation, this._probeSalience, this._probeConversation, this._probeExploration,
+        this._probeStagnation,
+        () => this._probeSalienceAsync(revision),
+        () => this._probeConversationAsync(revision),
+        this._probeExploration,
       ]) {
         await this._yieldProbe(revision);
-        all.push(...cap(probe.call(this)));
+        all.push(...cap(await probe.call(this)));
       }
       // Queue admission is atomic: a changed graph or shutdown cannot publish
       // candidates assembled from authority belonging to an earlier revision.
@@ -558,6 +561,27 @@ class DiscoveryEngine {
       this.logger?.warn?.('[discovery] salience probe failed', { error: err?.message });
       return [];
     }
+    return this._salienceCandidates(tops);
+  }
+
+  async _probeSalienceAsync(revision) {
+    const scorer = this.getConversationSalience?.();
+    this.stats.candidatesByeSignal.salience = 0;
+    if (!scorer || typeof scorer.topSalientClusters !== 'function') return [];
+    let tops;
+    try {
+      tops = typeof scorer.topSalientClustersAsync === 'function'
+        ? await scorer.topSalientClustersAsync(this.memory, 5, new Date(), () => this._yieldProbe(revision))
+        : scorer.topSalientClusters(this.memory, 5);
+    } catch (err) {
+      if (err === SUPERSEDED_PROBE) throw err;
+      this.logger?.warn?.('[discovery] salience probe failed', { error: err?.message });
+      return [];
+    }
+    return this._salienceCandidates(tops);
+  }
+
+  _salienceCandidates(tops) {
     if (!Array.isArray(tops) || tops.length === 0) return [];
 
     const out = [];
@@ -621,9 +645,7 @@ class DiscoveryEngine {
     })) }));
   }
 
-  _probeConversation() {
-    const scorer = this.getConversationSalience?.();
-    if (typeof scorer?.getRecentEntries !== 'function') return [];
+  _conversationEntries(scorer) {
     const attentionEntries = typeof scorer.getAttentionEntries === 'function' ? scorer.getAttentionEntries() : null;
     const sessions = new Map();
     for (const entry of attentionEntries || scorer.getRecentEntries()) {
@@ -633,24 +655,52 @@ class DiscoveryEngine {
       while (chars > 12000 && summaries.length) chars -= summaries.shift().length + 2;
       sessions.set(entry.chatId, { ...entry, summaries });
     }
-    const out = [...sessions.values()].filter(entry => entry.summaries.length).map(entry => {
-      const summary = entry.summaries.join('\n\n');
-      const attentionSummary = entry.attentionSummary || summary;
-      return {
-        key: `conversation:${entry.chatId}:${entry.eventId || entry.ts}`,
-        signal: 'conversation', attentionKind: 'exploration', clusterId: null,
-        nodeIds: typeof scorer.relevantNodeIds === 'function'
-          ? scorer.relevantNodeIds(this.memory, attentionSummary, 8) : [],
-        conversation: { ts: entry.ts, chatId: entry.chatId, source: entry.source, eventId: entry.eventId, summary, attentionSummary },
-        score: entry.source === 'seed_contact' ? 1.25 : 0.9, importance: 1,
-        rationale: entry.source === 'seed_contact'
-          ? 'Canonical contact can start an inquiry even without an existing graph match'
-          : 'Compiled conversation history; timestamp is not evidence of current contact',
-        discoveredAt: new Date().toISOString(),
-      };
+    return [...sessions.values()].filter(entry => entry.summaries.length);
+  }
+
+  _conversationCandidate(entry, nodeIds) {
+    const summary = entry.summaries.join('\n\n');
+    const attentionSummary = entry.attentionSummary || summary;
+    return {
+      key: `conversation:${entry.chatId}:${entry.eventId || entry.ts}`,
+      signal: 'conversation', attentionKind: 'exploration', clusterId: null,
+      nodeIds,
+      conversation: { ts: entry.ts, chatId: entry.chatId, source: entry.source, eventId: entry.eventId, summary, attentionSummary },
+      score: entry.source === 'seed_contact' ? 1.25 : 0.9, importance: 1,
+      rationale: entry.source === 'seed_contact'
+        ? 'Canonical contact can start an inquiry even without an existing graph match'
+        : 'Compiled conversation history; timestamp is not evidence of current contact',
+      discoveredAt: new Date().toISOString(),
+    };
+  }
+
+  _probeConversation() {
+    const scorer = this.getConversationSalience?.();
+    if (typeof scorer?.getRecentEntries !== 'function') return [];
+    const out = this._conversationEntries(scorer).map(entry => {
+      const attentionSummary = entry.attentionSummary || entry.summaries.join('\n\n');
+      const nodeIds = typeof scorer.relevantNodeIds === 'function'
+        ? scorer.relevantNodeIds(this.memory, attentionSummary, 8) : [];
+      return this._conversationCandidate(entry, nodeIds);
     });
     this.stats.candidatesByeSignal.conversation = out.length;
     return out.reverse(); // the newest contact first when scores tie
+  }
+
+  async _probeConversationAsync(revision) {
+    const scorer = this.getConversationSalience?.();
+    if (typeof scorer?.getRecentEntries !== 'function') return [];
+    const out = [];
+    for (const entry of this._conversationEntries(scorer)) {
+      const attentionSummary = entry.attentionSummary || entry.summaries.join('\n\n');
+      const nodeIds = typeof scorer.relevantNodeIdsAsync === 'function'
+        ? await scorer.relevantNodeIdsAsync(this.memory, attentionSummary, 8, null, () => this._yieldProbe(revision))
+        : typeof scorer.relevantNodeIds === 'function'
+          ? scorer.relevantNodeIds(this.memory, attentionSummary, 8) : [];
+      out.push(this._conversationCandidate(entry, nodeIds));
+    }
+    this.stats.candidatesByeSignal.conversation = out.length;
+    return out.reverse();
   }
 
   _evidenceFingerprint(candidate) {
