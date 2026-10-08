@@ -761,7 +761,8 @@ class Orchestrator {
       this.memory,
       this.logger,
       this.config.architecture?.goals?.curator || {},
-      this.evaluation // Pass evaluation framework
+      this.evaluation, // Pass evaluation framework
+      { isActive: () => this.running }
     );
 
     try {

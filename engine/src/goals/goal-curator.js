@@ -1,5 +1,6 @@
 const { UnifiedClient } = require('../core/unified-client');
 const { randomUUID } = require('node:crypto');
+const { performance } = require('node:perf_hooks');
 const {
   attestMemoryAuthorityIfAvailable,
 } = require('../../../shared/memory-authority-attestation.cjs');
@@ -25,12 +26,13 @@ const { isUserRequestedGoalSource, goalSourceLabel } = require('./intrinsic-goal
  * - Provide health monitoring and status to main loop
  */
 class GoalCurator {
-  constructor(goals, memory, logger, config = {}, evaluation = null) {
+  constructor(goals, memory, logger, config = {}, evaluation = null, lifecycle = {}) {
     this.goals = goals;
     this.memory = memory;
     this.logger = logger;
     this.config = config;
     this.evaluation = evaluation;
+    this.isActive = lifecycle.isActive || (() => true);
 
     // LLM client (supports both OpenAI and local LLMs)
     this.gpt5 = new UnifiedClient(config, logger);
@@ -50,7 +52,8 @@ class GoalCurator {
       campaignsCreated: 0,
       goalsReorganized: 0,
       synthesisPerformed: 0,
-      narrativesCompleted: 0
+      narrativesCompleted: 0,
+      bridgeScansSuperseded: 0
     };
   }
 
@@ -744,16 +747,55 @@ Format as JSON array:
    * Bridge goals to memory
    */
   async bridgeGoalsToMemory(orphanedGoals) {
-    for (const goal of orphanedGoals.slice(0, 10)) { // Process 10 per cycle
-      // Find related memory nodes (simple text matching for now)
-      const relatedNodes = this.findRelatedMemoryNodes(goal);
-      
-      if (relatedNodes.length > 0) {
-        this.memoryBridges.set(goal.id, relatedNodes.map(n => n.id));
-        
+    if (!this.isActive()) return;
+    const targets = orphanedGoals.slice(0, 10).map(goal => ({
+      goal, id: goal.id, description: goal.description,
+      words: new Set(goal.description.toLowerCase().match(/\b\w{4,}\b/g) || []),
+      related: [],
+    }));
+    if (!targets.length) return;
+    const nodes = this.memory.nodes;
+    const nodeCount = nodes.size;
+    const generation = this.memory.persistenceGeneration;
+    const clusterVersion = this.memory.__cluster?.versionClock;
+    const current = () => this.isActive()
+      && this.memory.nodes === nodes && nodes.size === nodeCount
+      && this.memory.persistenceGeneration === generation
+      && this.memory.__cluster?.versionClock === clusterVersion
+      && targets.every(({goal,id,description}) => goal.id === id && goal.description === description);
+    const yieldAndCheck = async () => {
+      await new Promise(resolve => setImmediate(resolve));
+      if (current()) return true;
+      this.stats.bridgeScansSuperseded = (this.stats.bridgeScansSuperseded || 0) + 1;
+      return false;
+    };
+    // Tokenize each node once for this batch, rather than scanning and
+    // tokenizing the entire brain separately for every goal.
+    let sliceStart = performance.now();
+    for (const node of nodes.values()) {
+      const content = node.concept || '';
+      const words = new Set(content.toLowerCase().match(/\b\w{4,}\b/g) || []);
+      for (const target of targets) {
+        const relevance = this._relevanceFromWords(words, target.words);
+        if (relevance <= 0.3) continue;
+        target.related.push({node,relevance});
+        // Stable ties retain graph iteration order, as in the original sort.
+        target.related.sort((a,b) => b.relevance - a.relevance);
+        if (target.related.length > 3) target.related.pop();
+      }
+      if (performance.now() - sliceStart >= 8) {
+        if (!await yieldAndCheck()) return;
+        sliceStart = performance.now();
+      }
+    }
+    if (!await yieldAndCheck()) return;
+    // Publish bridges only after the whole batch passes its revision fence.
+    for (const {id,related} of targets) {
+      if (related.length > 0) {
+        this.memoryBridges.set(id, related.map(({node}) => node.id));
         this.logger?.debug('🌉 Goal bridged to memory', {
-          goalId: goal.id,
-          memoryNodes: relatedNodes.length
+          goalId: id,
+          memoryNodes: related.length
         });
       }
     }
@@ -785,6 +827,10 @@ Format as JSON array:
     if (!content) return 0;
     
     const contentWords = new Set(content.toLowerCase().match(/\b\w{4,}\b/g) || []);
+    return this._relevanceFromWords(contentWords, goalWords);
+  }
+
+  _relevanceFromWords(contentWords, goalWords) {
     const intersection = new Set([...goalWords].filter(x => contentWords.has(x)));
     return intersection.size / Math.max(goalWords.size, 1);
   }
