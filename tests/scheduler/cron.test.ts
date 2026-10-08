@@ -32,6 +32,44 @@ function makeDueJob(overrides: Partial<CronJob> = {}): CronJob {
   };
 }
 
+test('reattached channel work retains its original firing and whole elapsed duration', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-original-firing-'));
+  const config = { timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' };
+  const dueAt = Date.now() - 1_000;
+  const job = makeDueJob({ payload: { kind: 'agentTurn', channelId: 'chn_1', message: 'one step' },
+    state: { nextRunAtMs: dueAt, consecutiveErrors: 0 } });
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job]));
+  let scheduler = new CronScheduler(config, async () => ({ status: 'error', canonicalRunPending: true, durationMs: 1 }), dir);
+  await (scheduler as any).tick(); await new Promise(resolve => setImmediate(resolve)); scheduler.stop();
+  const first = readJsonl(join(dir, 'cron-decisions.jsonl'))[0];
+  const saved = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'));
+  saved[0].state.activeChannelRun.startedAtMs = Date.now() - 60_000;
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify(saved));
+  scheduler = new CronScheduler(config, async () => ({ status: 'error', error: 'deadline', durationMs: 13 }), dir);
+  await (scheduler as any).tick(); await new Promise(resolve => setImmediate(resolve)); scheduler.stop();
+  const rows = readJsonl(join(dir, 'cron-runs', job.id + '.jsonl'));
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].decision, first);
+  assert.equal(rows[0].decision.dueAt, new Date(dueAt).toISOString());
+  assert.ok(rows[0].durationMs >= 60_000);
+  assert.equal(scheduler.getJob(job.id)!.state.lastDurationMs, rows[0].durationMs);
+});
+
+test('legacy active channel work never invents a firing from the next scheduled time', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-legacy-firing-'));
+  const job = makeDueJob({ payload: { kind: 'agentTurn', channelId: 'chn_1', message: 'one step' },
+    state: { nextRunAtMs: Date.now() + 3_600_000, consecutiveErrors: 0,
+      activeChannelRun: { runId: 'sched-run-legacy', startedAtMs: Date.now() - 60_000 } } });
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job]));
+  const scheduler = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' },
+    async () => ({ status: 'ok', durationMs: 2 }), dir);
+  await (scheduler as any).tick(); await new Promise(resolve => setImmediate(resolve)); scheduler.stop();
+  const row = readJsonl(join(dir, 'cron-runs', job.id + '.jsonl'))[0];
+  assert.equal(row.decision.dueAt, null);
+  assert.match(row.decision.reason, /original firing unavailable/);
+  assert.ok(row.durationMs >= 60_000);
+});
+
 test('due cron jobs write a preflight decision receipt before the handler runs', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-cron-decision-'));
   const decisionsPath = join(dir, 'cron-decisions.jsonl');

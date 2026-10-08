@@ -37,7 +37,7 @@ export interface DeliveryConfig {
 }
 
 export interface JobState {
-  activeChannelRun?: { runId: string; startedAtMs: number; input?: import('../coordination/app/scheduled-turns.js').ScheduledChannelTurn };
+  activeChannelRun?: { runId: string; startedAtMs: number; decision?: JobDecision; input?: import('../coordination/app/scheduled-turns.js').ScheduledChannelTurn };
   nextRunAtMs: number;
   lastRunAtMs?: number;
   lastStatus?: 'ok' | 'error';
@@ -630,7 +630,13 @@ export class CronScheduler {
           continue;
         }
         const decision = job.state.activeChannelRun
-          ? { ...this.decideJobPreflight(job, now, 'scheduled'), action: 'run' as const, reason: 'reattach durable scheduled channel run', willExecute: true, durableState: 'allowed_after_decision' as const }
+          ? { ...this.decideJobPreflight(job, now, 'scheduled'), action: 'run' as const,
+              dueAt: job.state.activeChannelRun.decision?.dueAt ?? null,
+              overdueMs: job.state.activeChannelRun.decision?.dueAt
+                ? Math.max(0, now - Date.parse(job.state.activeChannelRun.decision.dueAt)) : 0,
+              reason: job.state.activeChannelRun.decision ? 'reattach durable scheduled channel run'
+                : 'reattach durable scheduled channel run; original firing unavailable',
+              willExecute: true, durableState: 'allowed_after_decision' as const }
           : hasForegroundDue && this.queueClass(job) === 'background'
           ? this.deferBackgroundJob(job, now)
           : this.decideJobPreflight(job, now, 'scheduled');
@@ -656,7 +662,7 @@ export class CronScheduler {
         this.appendDecisionLog(decision);
 
         if ('channelId' in job.payload && job.payload.channelId && !job.state.activeChannelRun) {
-          job.state.activeChannelRun = {runId: `sched-run-${randomUUID()}`, startedAtMs: now};
+          job.state.activeChannelRun = {runId: `sched-run-${randomUUID()}`, startedAtMs: now, decision};
         }
         if (job.schedule.kind === 'at') {
           job.enabled = false;
@@ -665,7 +671,7 @@ export class CronScheduler {
         job.state.lastDecisionAtMs = now;
         job.state.lastDecisionAction = decision.action;
         job.state.lastDecisionReason = decision.reason;
-        job.state.inFlightSinceMs = now;
+        job.state.inFlightSinceMs = job.state.activeChannelRun?.startedAtMs ?? now;
         runnable.push({ job, decision });
         if (job.payload.kind === 'agentTurn') {
           scheduledAgentTurns++;
@@ -691,9 +697,11 @@ export class CronScheduler {
     caller?.abortSignal?.throwIfAborted();
     this.activeJobs.add(job.id);
     if (!caller && 'channelId' in job.payload && job.payload.channelId && !job.state.activeChannelRun) {
-      job.state.activeChannelRun={runId:`sched-run-${randomUUID()}`,startedAtMs:Date.now()};
+      job.state.activeChannelRun={runId:`sched-run-${randomUUID()}`,startedAtMs:Date.now(),decision};
     }
     const active = !caller ? job.state.activeChannelRun : undefined;
+    // A reattachment decision describes polling, not a new calendar firing.
+    if (active?.decision) decision = active.decision;
     if (active && !this.saveJobs()) { this.activeJobs.delete(job.id); return {status:'error',error:'Cannot persist scheduled channel run before dispatch',durationMs:0,canonicalRunPending:true}; }
     const startMs = active?.startedAtMs ?? Date.now();
     const runId = active?.runId ?? `sched-run-${randomUUID()}`;
@@ -719,6 +727,7 @@ export class CronScheduler {
       };
     }
 
+    if (active) result = { ...result, durationMs: Math.max(0, Date.now() - startMs) };
     try {
     if (active && result.canonicalRunPending) return result;
     if (active) delete job.state.activeChannelRun;
