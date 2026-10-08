@@ -36,6 +36,42 @@ async function check(f) {
     { channel: checkedChannel, updater: unusedUpdater, appUpdater: unusedAppUpdater });
 }
 
+test('a failed Mac stage can check a corrected release without changing its running home or failed receipt', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'mac-failure'), noLaunch);
+  f.setOperation({ ...f.operation(accepted.operation.id), phase: 'failed', pid: null,
+    runtimeCompleted: true, applicationCompleted: false, prepared: { packageId: release.packageId, release },
+    errorCode: 'application_incomplete' });
+  f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+  const record = join(f.home, `runtime/home-update/${accepted.operation.id}.json`);
+  const before = readFileSync(record, 'utf8');
+  const installBefore = readFileSync(join(f.home, '.home23-install.json'), 'utf8');
+  assert.deepEqual(homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 }).allowedActions, ['resume', 'check']);
+  const fresh = await requestHomeUpdate(input(f.home, 'check', 'corrected-mac'), noLaunch);
+  assert.notEqual(fresh.operation.id, accepted.operation.id);
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: fresh.operation.id }, {
+    channel: { checkConfiguredRelease: async () => ({ status: 'available', release: { ...release, packageId: 'corrected-package' } }) },
+    updater: unusedUpdater, appUpdater: unusedAppUpdater,
+  });
+  assert.equal(homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 }).availableRelease.packageId, 'corrected-package');
+  assert.equal(readFileSync(record, 'utf8'), before);
+  assert.equal(readFileSync(join(f.home, '.home23-install.json'), 'utf8'), installBefore);
+});
+
+test('checking after a Mac failure retains active-worker and runtime-recovery fences', async t => {
+  for (const change of [{ runtimeCompleted: false }, { applicationCompleted: true },
+    { pid: process.pid }, { prepared: null }, { prepared: { packageId: 'other-package' } },
+    { requiresLocalRecovery: true, retryable: true, recoverable: true }]) {
+    const f = fixture(t); await check(f);
+    const accepted = await requestHomeUpdate(input(f.home, 'update', 'fenced-mac'), noLaunch);
+    f.setOperation({ ...f.operation(accepted.operation.id), phase: 'failed', pid: null,
+      runtimeCompleted: true, applicationCompleted: false, prepared: { packageId: release.packageId, release }, ...change });
+    f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: release.packageId });
+    assert.ok(!homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 }).allowedActions.includes('check'));
+    await assert.rejects(requestHomeUpdate(input(f.home, 'check', 'fenced-new-check'), noLaunch), { code: 'home_update_busy' });
+  }
+});
+
 async function recoveredFixture(t) {
   const f = fixture(t), payload = join(f.parent, 'payload');
   for (const relative of ['bin/node', 'app/cli/home23.js', 'app/cli/lib/product-payload.js', 'app/scripts/product/host.mjs', 'tools/node_modules/pm2/bin/pm2']) {

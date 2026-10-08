@@ -141,7 +141,15 @@ function projectStatus(home, operation, clientBuild) {
     allowedActions = [...(operation.recoverable === true ? ['recover'] : []), ...(visible.canResume ? ['resume'] : [])];
   }
   else if (operation?.requiresNewRelease) { state = 'failed'; allowedActions = ['check']; message = visible.message; }
-  else if (visible?.canResume) { state = 'failed'; allowedActions = ['resume']; message = visible.message; }
+  else if (visible?.canResume) {
+    state = 'failed'; allowedActions = ['resume']; message = visible.message;
+    // A committed home with only its Mac application unfinished may need a
+    // corrected release. Keep its failed receipt and offer a separate check;
+    // runtime recovery and a worker still finishing remain fenced above/below.
+    if (operation.runtimeCompleted === true && operation.applicationCompleted !== true
+        && !alive(operation.pid) && typeof operation.prepared?.packageId === 'string'
+        && home.receipt.packageId === operation.prepared.packageId) allowedActions.push('check');
+  }
   else if (refusedOffer) { state = 'incompatible'; allowedActions = ['check']; message = 'This release was already refused for this home. Check again when a newer Home23 release is available.'; }
   else if (state === 'available' && compatible) allowedActions.push('update');
   if (appUpdateRequired && state !== 'running' && !refusedOffer) { state = 'incompatible'; allowedActions = allowedActions.filter(action => action === 'check'); message = 'Update Home23 on this device before updating your home.'; }
