@@ -2640,3 +2640,19 @@ test('owner workspace reconciliation cannot pass an active process or admitted w
   fs.writeFileSync(journalFile, JSON.stringify({ ...f.journal, writersAdmitted: true }));
   await assert.rejects(reconcileQuiescedWorkspaceChanges(f.input, quiet), { code: 'owner_state_reconciliation_refused' });
 });
+
+test('owner workspace reconciliation retains an explicitly named new file and refreshes verified remount metadata', async t => {
+  const f = await ownerWorkspaceFixture(t), added = 'app/instances/milo/workspace/new-note.md';
+  fs.writeFileSync(path.join(f.home, added), 'new owner note');
+  f.input.changes.push({ path: added, previousSHA256: null, currentSHA256: digestOwnerFile(path.join(f.home, added)) });
+  const journalFile = path.join(updateDirectoryFor(f.home), 'journal.json'), before = readUpdateJournal(f.home);
+  for (const meta of Object.values(before.identityMetadata)) meta.dev = '99999999';
+  fs.writeFileSync(journalFile, JSON.stringify(before));
+  const result = await reconcileQuiescedWorkspaceChanges(f.input, quiet);
+  assert.equal(result.acceptedFiles, 2);
+  const reconciled = readUpdateJournal(f.home);
+  assert.equal(reconciled.ownerWorkspaceReconciliation.files[1].previousSHA256, null);
+  assert.equal(reconciled.identityMetadata['app/config/secrets.yaml'].dev, String(fs.statSync(path.join(f.home, 'app/config/secrets.yaml'), { bigint: true }).dev));
+  assert.equal((await resumeProductUpdate({ homeRoot: f.home }, quiet)).status, 'committed');
+  assert.equal(fs.readFileSync(path.join(f.home, added), 'utf8'), 'new owner note');
+});

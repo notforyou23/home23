@@ -218,7 +218,7 @@ function sameMetadata(stat, expected) {
   const current = fileMetadata(stat);
   return Object.keys(current).every(key => /^\d+$/.test(expected[key]) && expected[key] === current[key]);
 }
-async function sameIdentity(home, expected, metadata) {
+async function sameIdentity(home, expected, metadata, refreshMetadata = null) {
   const current = identityFiles(home);
   const keys = Object.keys(expected || {});
   if (keys.length !== current.length || current.some(relative => !Object.hasOwn(expected, relative))) return false;
@@ -230,7 +230,13 @@ async function sameIdentity(home, expected, metadata) {
     // size, mode, and nanosecond change times. A matching tuple avoids another
     // full read; changed files and older journals still require a fresh hash.
     if (sameMetadata(stat, metadata?.[relative])) continue;
-    try { if ((await checkpointFingerprint(file, { source: true })).sha256 !== expected[relative]) return false; }
+    try {
+      const fingerprint = await checkpointFingerprint(file, { source: true });
+      if (fingerprint.sha256 !== expected[relative]) return false;
+      // A remounted volume may have a new device number. Refresh that cache
+      // only after the full file digest matches; never infer preserved content.
+      if (refreshMetadata) refreshMetadata[relative] = fingerprint.metadata;
+    }
     catch { return false; }
   }
   return true;
@@ -1221,8 +1227,10 @@ export async function reconcileQuiescedWorkspaceChanges({ homeRoot, journalId, p
         requireSafe(typeof relative === 'string' && /^app\/instances\/[^/.]+\/workspace\/.+/.test(relative)
           && !relative.includes('\\') && !relative.includes('\0')
           && relative.split('/').every(part => part && part !== '.' && part !== '..'), 'Only confined existing resident workspace files can be reconciled.');
-        requireSafe(/^[a-f0-9]{64}$/.test(change.previousSHA256 || '') && /^[a-f0-9]{64}$/.test(change.currentSHA256 || '')
-          && identity[relative] === change.previousSHA256 && change.previousSHA256 !== change.currentSHA256, 'Workspace digests must bind the original checkpoint and the exact newer file.');
+        const namedAddition = change.previousSHA256 === null && !Object.hasOwn(identity, relative);
+        requireSafe((namedAddition || (/^[a-f0-9]{64}$/.test(change.previousSHA256 || '') && identity[relative] === change.previousSHA256))
+          && /^[a-f0-9]{64}$/.test(change.currentSHA256 || '') && change.previousSHA256 !== change.currentSHA256,
+          'Workspace digests must bind an explicit new file or the original checkpoint and exact newer content.');
         let cursor = home;
         for (const part of relative.split('/')) {
           cursor = join(cursor, part);
@@ -1230,7 +1238,7 @@ export async function reconcileQuiescedWorkspaceChanges({ homeRoot, journalId, p
           requireSafe(!stat.isSymbolicLink() && stat.uid === process.getuid(), 'The workspace path must remain owned and must not traverse a link.');
         }
         const stat = lstatSync(cursor, { bigint: true });
-        requireSafe(stat.isFile(), 'Workspace reconciliation cannot create or remove files.');
+        requireSafe(stat.isFile(), 'Workspace reconciliation only retains existing regular files.');
         const fingerprint = await checkpointFingerprint(cursor, { source: true });
         requireSafe(fingerprint.sha256 === change.currentSHA256, 'The newer workspace file changed after review.');
         const currentMetadata = fileMetadata(lstatSync(cursor, { bigint: true }));
@@ -1240,7 +1248,7 @@ export async function reconcileQuiescedWorkspaceChanges({ homeRoot, journalId, p
         accepted.push({ path: relative, previousSHA256: change.previousSHA256, currentSHA256: fingerprint.sha256 });
       }
       // Exact inventory equality also refuses newly added or missing files.
-      requireSafe(await sameIdentity(home, identity, metadata), 'An unlisted state change appeared; the original checkpoint is retained.');
+      requireSafe(await sameIdentity(home, identity, metadata, metadata), 'An unlisted state change appeared; the original checkpoint is retained.');
       requireSafe(hashFile(file) === originalJournalSHA256, 'The update journal changed during reconciliation.');
       const backupName = `journal.owner-workspace-${randomUUID()}.before.json`;
       const backup = join(updateDirectoryFor(home), backupName);
