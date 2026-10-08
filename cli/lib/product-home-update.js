@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { absoluteHome, ownerAccountHome, privateDirectory, readPrivateJSON, productEnvironment } from './product-environment.js';
 import { launchIndependentUpdateWorker } from './product-home-update-launcher.mjs';
+import { verifySupervisorBeforeApplication } from './product-supervisor-admission.js';
 import { promisify } from 'node:util';
 
 const SCHEMA = 'home23.home-update.v1';
@@ -572,11 +573,17 @@ export async function runHomeUpdateOperation({ homeRoot, operationId, requireWor
       persist({ runtimeCompleted: true });
     }
     if (!operation.applicationCompleted) {
-      persist({ phase: 'updating', message: 'Updating the Home23 application on your Mac.' });
+      const inspectSupervisor = dependencies.verifySupervisorOwnership || verifySupervisorBeforeApplication;
+      const supervisorBefore = await inspectSupervisor(home.root);
+      persist({ supervisorBeforeApplication: supervisorBefore, phase: 'updating', message: 'Updating the Home23 application on your Mac.' });
       const result = await appUpdater.applyPreparedMacApplication({ installedAppPath: prepared.installedAppPath,
         preparedAppPath: prepared.preparedAppPath, lifecyclePath: prepared.lifecyclePath, release: prepared.release, relaunch: true });
       if (result.status !== 'reopened') throw fail('application_incomplete', 'The home updated; the Mac application still needs to finish updating.');
-      persist({ applicationCompleted: true });
+      const supervisorAfter = await inspectSupervisor(home.root);
+      if (supervisorBefore?.ownership === 'launchd' && (supervisorAfter?.ownership !== 'launchd' || supervisorAfter.pid !== supervisorBefore.pid)) {
+        throw fail('host_supervisor_changed', 'The home supervisor restarted during the Mac application update. Resume after the home reconnects.');
+      }
+      persist({ applicationCompleted: true, supervisorAfterApplication: supervisorAfter });
       save(home.registration, { ...registered, version: prepared.release.version, build: prepared.appBuild, updatedAt: now() });
     }
     persist({ phase: 'reconnecting', message: 'Reconnecting to your home…' });

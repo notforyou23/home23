@@ -697,6 +697,58 @@ test('stoppedForUpdate is durable before owned writers are stopped', async t => 
   assert.equal(result.status, 'committed');
 });
 
+test('supervisor admission is durable before quiesce and adoption precedes accepting work', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const admission = { ownership: 'legacy', expectedPid: 42, generation: '42:birth', registrations: [
+    { name: 'home23-milo', pm2_env: { status: 'online' } },
+    { name: 'home23-milo-dash', pm2_env: { status: 'stopped', kill_timeout: 30000 } },
+  ] };
+  let online = true; const order = [];
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    captureSupervisor: async () => { order.push('capture'); return admission; },
+    quiesce: async () => {
+      assert.deepEqual(readUpdateJournal(fixture.home).supervisorAdmission, admission);
+      order.push('quiesce'); online = false; return [];
+    },
+    adoptSupervisor: async (_home, journal) => {
+      assert.notEqual(journal.writersAdmitted, true); assert.equal(journal.acceptedWork, false);
+      assert.equal(journal.candidateStarted, false); assert.ok(['selected', 'verifying'].includes(journal.phase));
+      assert.deepEqual(journal.supervisorAdmission, admission);
+      order.push('adopt'); return { ownership: 'launchd', pausedNames: ['home23-milo-dash'] };
+    },
+    start: async (_home, journal) => {
+      assert.deepEqual(journal.supervisorMigration.pausedNames, ['home23-milo-dash']);
+      order.push('start'); return { ok: true, status: 'ready' };
+    },
+  });
+  assert.equal(result.status, 'committed');
+  assert.deepEqual(order, ['capture', 'quiesce', 'adopt', 'start']);
+});
+
+test('interrupted supervisor adoption resumes the original snapshot before starting writers', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  const admission = { ownership: 'legacy', expectedPid: 42, registrations: [] };
+  let captures = 0, starts = 0, interrupted = true;
+  const dependencies = { ...quiet,
+    captureSupervisor: async () => { captures++; return admission; },
+    adoptSupervisor: async (_home, journal) => {
+      assert.deepEqual(journal.supervisorAdmission, admission);
+      assert.equal(journal.acceptedWork, false);
+      if (interrupted) throw new Error('migration-interrupted');
+      return { ownership: 'launchd', pid: 43, pausedNames: [] };
+    },
+    start: async () => { starts++; return { ok: true, status: 'ready' }; },
+  };
+  await assert.rejects(applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, dependencies), /migration-interrupted/);
+  assert.notEqual(readUpdateJournal(fixture.home).writersAdmitted, true);
+  assert.equal(starts, 0); interrupted = false;
+  assert.equal((await resumeProductUpdate({ homeRoot: fixture.home }, dependencies)).status, 'committed');
+  assert.equal(captures, 1); assert.equal(starts, 1);
+});
+
 test('a controller killed during the quiesce still restores the running home on a later pre-switch abort', async t => {
   const fixture = homeFixture(t, { desiredRunning: true });
   const databaseFile = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
