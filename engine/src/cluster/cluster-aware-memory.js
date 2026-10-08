@@ -480,12 +480,19 @@ class ClusterAwareMemory {
     return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
   }
 
+  _advanceVersionClock() {
+    this.versionClock += 1;
+    // Retrieval yields can overlap direct edits through the instrumented graph.
+    // Keep that read fence separate from persistence dirty-set bookkeeping.
+    this.localMemory._retrievalMutationVersion = (this.localMemory._retrievalMutationVersion || 0) + 1;
+  }
+
   recordNodeMutation(nodeId) {
     if (nodeId === undefined || nodeId === null || (typeof nodeId === 'number' && Number.isNaN(nodeId))) return;
     if (this.suppressTracking) return;
     this.trackedNodes.add(nodeId);
     this.deletedNodes.delete(nodeId);
-    this.versionClock += 1;
+    this._advanceVersionClock();
     this.lastDiffTimestamp = Date.now();
   }
 
@@ -494,7 +501,7 @@ class ClusterAwareMemory {
     if (this.suppressTracking) return;
     this.trackedNodes.delete(nodeId);
     this.deletedNodes.add(nodeId);
-    this.versionClock += 1;
+    this._advanceVersionClock();
     this.lastDiffTimestamp = Date.now();
   }
 
@@ -502,7 +509,7 @@ class ClusterAwareMemory {
     if (this.suppressTracking) return;
     this.trackedEdges.add(edgeKey);
     this.deletedEdges.delete(edgeKey);
-    this.versionClock += 1;
+    this._advanceVersionClock();
     this.lastDiffTimestamp = Date.now();
   }
 
@@ -510,7 +517,7 @@ class ClusterAwareMemory {
     if (this.suppressTracking) return;
     this.trackedEdges.delete(edgeKey);
     this.deletedEdges.add(edgeKey);
-    this.versionClock += 1;
+    this._advanceVersionClock();
     this.lastDiffTimestamp = Date.now();
   }
 
@@ -519,7 +526,7 @@ class ClusterAwareMemory {
     if (!this.localMemory.clusters?.has(clusterId)) return;
     this.trackedClusters.add(clusterId);
     this.deletedClusters.delete(clusterId);
-    this.versionClock += 1;
+    this._advanceVersionClock();
     this.lastDiffTimestamp = Date.now();
   }
 
@@ -527,7 +534,7 @@ class ClusterAwareMemory {
     if (this.suppressTracking) return;
     this.trackedClusters.delete(clusterId);
     this.deletedClusters.add(clusterId);
-    this.versionClock += 1;
+    this._advanceVersionClock();
     this.lastDiffTimestamp = Date.now();
   }
 
