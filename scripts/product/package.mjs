@@ -205,7 +205,10 @@ export function buildProductPayload({ sourceRoot, commit = 'HEAD', outputPath, n
     const embedder=createRequire(process.cwd()+'/scripts/embedder/package.json');
     embedder('onnxruntime-node');
     if (typeof embedder('@huggingface/transformers').pipeline !== 'function') throw new Error('Packaged transformers failed to load');
-  `], { cwd: app, env, stdio: 'inherit', timeout: 30000 });
+  // Match the signed-runtime gate's bounded allowance. A first cold load on
+  // an external build volume can exceed 30 seconds; every module still loads
+  // and executes the same checks before packaging can succeed.
+  `], { cwd: app, env, stdio: 'inherit', timeout: 90000 });
   run(path.join(bin, 'node'), ['--import', 'tsx', '--input-type=module', '-e',
     'import("./src/coordination/contracts/contract-pack.ts")'],
     { cwd: app, env, stdio: 'inherit', timeout: 30000 });
