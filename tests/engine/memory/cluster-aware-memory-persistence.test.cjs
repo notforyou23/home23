@@ -1054,10 +1054,13 @@ test('Home23 summarizer consolidation and garbage collection publish through mut
   base.markPersistenceCleanIfGeneration(base.persistenceGeneration);
   const gcGeneration = base.persistenceGeneration;
 
-  assert.equal(summarizer.garbageCollect(base, 0.01, 1), 0);
+  // Keep newly consolidated fixture nodes live independently of test speed.
+  // The explicitly low-value node has an old access timestamp and must retire.
+  const maxAge = 24 * 60 * 60 * 1000;
+  assert.equal(summarizer.garbageCollect(base, 0.01, maxAge), 0);
   assert.equal(base.nodes.has('garbage-node'), true);
   summarizer.config.memory = { enableGarbageCollection: true };
-  assert.equal(summarizer.garbageCollect(base, 0.01, 1), 1);
+  assert.equal(summarizer.garbageCollect(base, 0.01, maxAge), 1);
   assert.equal(base.nodes.has('garbage-node'), false);
   assert.equal(base.edges.has('garbage-node->summary-source-9'), false);
   assert.equal(base.deletedNodeIds.has('garbage-node'), true);
