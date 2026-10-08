@@ -79,3 +79,23 @@ test("drain waits for in-flight Work and rejects new Work while draining", async
   assert.equal(lifecycle.activeWork(), 0);
   assert.equal(lifecycle.state(), "stopped");
 });
+
+
+test("the draining signal fires once while reentrant drain remains single-flight", async () => {
+  const lifecycle = createCoordinationLifecycle();
+  const release = lifecycle.beginRequest();
+  let signalled = 0;
+  let fromSignal: Promise<void> | undefined;
+  lifecycle.drainingSignal.addEventListener("abort", () => {
+    signalled++;
+    assert.equal(lifecycle.state(), "draining");
+    fromSignal = lifecycle.drain();
+    release();
+  });
+  const draining = lifecycle.drain();
+  assert.equal(lifecycle.drainingSignal.aborted, true);
+  assert.equal(fromSignal, draining);
+  await draining;
+  await lifecycle.drain();
+  assert.equal(signalled, 1);
+});

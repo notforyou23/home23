@@ -15,6 +15,7 @@ export interface ResumableSsePumpOptions {
   now?: () => number;
   batchSize?: number;
   requestId: string;
+  signal?: AbortSignal;
 }
 
 export type SseReplayResult =
@@ -27,6 +28,7 @@ export class ResumableSsePump {
   private readonly now: () => number;
   private readonly batchSize: number;
   private readonly requestId: string;
+  private readonly signal: AbortSignal | undefined;
   private lastWriteAt: number;
   private writeTail: Promise<void> = Promise.resolve();
 
@@ -36,6 +38,7 @@ export class ResumableSsePump {
     this.now = options.now ?? Date.now;
     this.batchSize = options.batchSize ?? 100;
     this.requestId = options.requestId;
+    this.signal = options.signal;
     if (!Number.isSafeInteger(this.batchSize) || this.batchSize < 1 || this.batchSize > 1_000) {
       throw new TypeError("SSE batch size must be an integer from 1 through 1000");
     }
@@ -46,6 +49,7 @@ export class ResumableSsePump {
     let cursor = afterSequence;
     let eventsWritten = 0;
     for (;;) {
+      this.signal?.throwIfAborted();
       const batch = this.repository.resumeAfter(
         cursor,
         this.batchSize,
@@ -53,6 +57,7 @@ export class ResumableSsePump {
       );
       if (batch.kind === "reset") return batch;
       for (const event of batch.events) {
+        this.signal?.throwIfAborted();
         await this.write(encodeSseEvent(event));
         cursor = event.sequence;
         eventsWritten += 1;
@@ -89,6 +94,7 @@ export class ResumableSsePump {
   }
 
   private async writeNow(chunk: string): Promise<void> {
+    this.signal?.throwIfAborted();
     const writable = this.sink.write(chunk);
     this.lastWriteAt = this.now();
     if (!writable) await this.sink.waitForDrain();

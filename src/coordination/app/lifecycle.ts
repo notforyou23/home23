@@ -15,6 +15,8 @@ export class CoordinationLifecycleDrainingError extends Error {
 }
 
 export interface CoordinationLifecycle {
+  /** Abort replayable streams as soon as draining begins. Ordinary work still finishes. */
+  readonly drainingSignal: AbortSignal;
   state(): CoordinationLifecycleState;
   activeRequests(): number;
   activeWork(): number;
@@ -31,6 +33,7 @@ export function createCoordinationLifecycle(
   let activeWork = 0;
   let resolveIdle: (() => void) | null = null;
   let drainPromise: Promise<void> | null = null;
+  const draining = new AbortController();
 
   function beginActivity(kind: "request" | "work"): () => void {
     if (lifecycleState !== "accepting") {
@@ -92,11 +95,13 @@ export function createCoordinationLifecycle(
     if (!drainPromise) {
       lifecycleState = "draining";
       drainPromise = performDrain();
+      draining.abort(new CoordinationLifecycleDrainingError());
     }
     return drainPromise;
   }
 
   return Object.freeze({
+    drainingSignal: draining.signal,
     state: () => lifecycleState,
     activeRequests: () => activeRequests,
     activeWork: () => activeWork,

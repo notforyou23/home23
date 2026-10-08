@@ -402,32 +402,56 @@ export function createCoordinationRouter(input: {
       throw new CoordinationHttpError("request_invalid", 400, false);
     }
     const metadata = requireCoordinationMetadata(response);
-    const pump = new ResumableSsePump({
-      repository: application.services.events,
-      requestId: metadata.requestId,
-      sink: {
-        write: (chunk) => response.write(chunk),
-        waitForDrain: async () => { await once(response, "drain"); },
-      },
-    });
-    response.setHeader("content-type", "text/event-stream; charset=utf-8");
-    response.setHeader("cache-control", "no-cache, no-transform");
-    response.setHeader("connection", "keep-alive");
-    const result = await pump.replay(afterSequence);
-    if (result.kind === "reset") {
-      if (!response.headersSent) response.status(409).json(result);
-      else response.end();
-      return;
+    const stream = new AbortController();
+    const stopStream = () => {
+      stream.abort();
+      response.destroy();
+    };
+    request.once("aborted", stopStream);
+    response.once("close", stopStream);
+    lifecycle.drainingSignal.addEventListener("abort", stopStream, { once: true });
+    try {
+      if (lifecycle.drainingSignal.aborted || request.aborted || response.destroyed) {
+        stopStream();
+        return;
+      }
+      const pump = new ResumableSsePump({
+        repository: application.services.events,
+        requestId: metadata.requestId,
+        signal: stream.signal,
+        sink: {
+          write: (chunk) => {
+            stream.signal.throwIfAborted();
+            return response.write(chunk);
+          },
+          waitForDrain: async () => { await once(response, "drain", { signal: stream.signal }); },
+        },
+      });
+      response.setHeader("content-type", "text/event-stream; charset=utf-8");
+      response.setHeader("cache-control", "no-cache, no-transform");
+      response.setHeader("connection", "keep-alive");
+      const result = await pump.replay(afterSequence);
+      if (result.kind === "reset") {
+        if (!response.headersSent) response.status(409).json(result);
+        else response.end();
+        return;
+      }
+      response.flushHeaders();
+      let cursor = result.throughSequence;
+      while (!stream.signal.aborted && lifecycle.state() === "accepting" && await waitForEventPoll(request, response)) {
+        const replay = await pump.replay(cursor);
+        if (replay.kind === "reset") break;
+        cursor = replay.throughSequence;
+        await pump.heartbeatIfDue();
+      }
+      if (!response.writableEnded && !response.destroyed) response.end();
+    } catch (error) {
+      if (!stream.signal.aborted) throw error;
+    } finally {
+      request.off("aborted", stopStream);
+      response.off("close", stopStream);
+      lifecycle.drainingSignal.removeEventListener("abort", stopStream);
     }
-    response.flushHeaders();
-    let cursor = result.throughSequence;
-    while (lifecycle.state() === "accepting" && await waitForEventPoll(request, response)) {
-      const replay = await pump.replay(cursor);
-      if (replay.kind === "reset") break;
-      cursor = replay.throughSequence;
-      await pump.heartbeatIfDue();
-    }
-    if (!response.writableEnded && !response.destroyed) response.end();
   }));
 
   router.get("/api/v1/communications/events", productRead, asyncRoute(async (request, response) => {

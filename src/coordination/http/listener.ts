@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { isIP } from "node:net";
 import type { AddressInfo } from "node:net";
+import type { Socket } from "node:net";
 
 import {
   createCoordinationLifecycle,
@@ -71,13 +72,28 @@ export function createCoordinationHttpServer(input: {
     throw new TypeError("coordination listener port must be an integer from 0 through 65535");
   }
   const lifecycle = input.lifecycle ?? createCoordinationLifecycle();
-  const server = createServer(createCoordinationRouter({
+  const router = createCoordinationRouter({
     application: input.application,
     lifecycle,
-  }));
+  });
+  // Node's idle-connection cleanup does not cover an unfinished first request.
+  // Once headers arrive, the router owns the request and lets normal work finish.
+  const pendingRequests = new Set<Socket>();
+  const server = createServer((request, response) => {
+    pendingRequests.delete(request.socket);
+    router(request, response);
+  });
   let serverState: CoordinationHttpServerState = "idle";
   let startPromise: Promise<CoordinationHttpAddress> | null = null;
   let drainPromise: Promise<void> | null = null;
+  server.on("connection", (socket) => {
+    if (serverState === "draining" || serverState === "stopped") {
+      socket.destroy();
+      return;
+    }
+    pendingRequests.add(socket);
+    socket.once("close", () => pendingRequests.delete(socket));
+  });
 
   function start(): Promise<CoordinationHttpAddress> {
     if (serverState === "starting" || serverState === "listening") {
@@ -111,6 +127,7 @@ export function createCoordinationHttpServer(input: {
     return new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
       server.closeIdleConnections?.();
+      for (const socket of pendingRequests) socket.destroy();
     });
   }
 
