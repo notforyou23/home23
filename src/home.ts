@@ -4,6 +4,7 @@ import { createOwnerOutreachSender, createOwnerOutreachHandler } from './channel
 import { createResidentInitiativeHandler, createResidentInitiativeStatusHandler } from './channels/resident-initiative.js';
 import { createSeedOperatorOutreach } from './substrate/operator-outreach.js';
 import { runScheduledChannelTurn, deliverScheduledChannelFailure } from './scheduler/channel-run.js';
+import { verifyScheduledArtifactResult } from './scheduler/artifact-result.js';
 /**
  * Home23 — Agent Harness Entry Point
  *
@@ -888,7 +889,8 @@ async function main(): Promise<void> {
       if (!residentCoordinationHarness) throw new Error('Signed resident coordinator connection unavailable');
       return residentCoordinationHarness.scheduledTurn(input);
     });
-    return deliverScheduledChannelFailure(result, result => deliverCronJobResult(job, result, execution.runId));
+    const verified = await verifyScheduledArtifactResult(BRAIN_DIR, job.payload, result);
+    return deliverScheduledChannelFailure(verified, result => deliverCronJobResult(job, result, execution.runId));
   };
   let scheduler: CronScheduler | null = null;
 
@@ -992,6 +994,7 @@ async function main(): Promise<void> {
             }
             jobResult = { status: 'ok', response: result.text, durationMs, media: result.media,
               ...(isHomeVibe ? { semanticStatus: 'satisfied' as const, artifacts: [homeVibeFeedPath] } : {}) };
+            jobResult = await verifyScheduledArtifactResult(BRAIN_DIR, job.payload, jobResult);
             if (joined) return jobResult;
             const deliveryOutcome = await deliverCronJobResult(job, jobResult, execution?.runId);
             if (deliveryOutcome.retryEligible) {
