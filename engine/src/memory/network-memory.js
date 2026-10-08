@@ -2071,7 +2071,7 @@ class NetworkMemory {
       if (keywordIndex && this.keywordIndexState !== keywordIndex) changed();
       keywordIndex = this.keywordIndexState;
     };
-    return { nodeEntries, assertCurrent, bindKeywordIndex, visits: 0, sliceStarted: performance.now() };
+    return { nodeEntries, edgeEntries, assertCurrent, bindKeywordIndex, visits: 0, sliceStarted: performance.now() };
   }
 
   _retrievalSliceEnded(fence) {
@@ -3269,60 +3269,53 @@ class NetworkMemory {
     };
   }
 
-  /**
-   * Export network for visualization
-   * FIXED: Properly handles both numeric and string IDs
-   */
+  _exportGraphNode(n) {
+    return {
+      id: n.id,
+      concept: n.concept,
+      tag: n.tag,
+      embedding: this.serializeEmbedding(n.embedding),
+      embedding_status: n.embedding_status,
+      weight: n.weight,
+      activation: n.activation,
+      cluster: n.cluster,
+      accessCount: n.accessCount,
+      created: n.created,
+      accessed: n.accessed,
+      type: n.type,
+      tags: n.tags,
+      metadata: n.metadata,
+      source_class: n.source_class,
+      salienceWeight: n.salienceWeight,
+      provenance: n.provenance,
+      evidence: n.evidence,
+      asserted_at: n.asserted_at,
+      asserted_cycle: n.asserted_cycle,
+      superseded_by: n.superseded_by,
+      confidence_decay: n.confidence_decay,
+      status: n.status,
+      consolidatedAt: n.consolidatedAt
+    };
+  }
+
+  _exportGraphEdge(key, edge) {
+    let source, target;
+    if (edge.source !== undefined && edge.target !== undefined) {
+      source = edge.source;
+      target = edge.target;
+    } else {
+      // Preserve numeric and string identities from legacy edge keys.
+      const parts = key.split('->');
+      source = isNaN(parts[0]) ? parts[0] : Number(parts[0]);
+      target = isNaN(parts[1]) ? parts[1] : Number(parts[1]);
+    }
+    return { source, target, weight: edge.weight, type: edge.type, created: edge.created, accessed: edge.accessed };
+  }
+
   exportGraph() {
     return {
-      nodes: Array.from(this.nodes.values()).map(n => ({
-        id: n.id,
-        concept: n.concept,
-        tag: n.tag,
-        embedding: this.serializeEmbedding(n.embedding), // CRITICAL: Include embeddings for memory persistence
-        embedding_status: n.embedding_status,
-        weight: n.weight,
-        activation: n.activation,
-        cluster: n.cluster,
-        accessCount: n.accessCount,
-        created: n.created,
-        accessed: n.accessed,
-        type: n.type,
-        tags: n.tags,
-        metadata: n.metadata,
-        source_class: n.source_class,
-        salienceWeight: n.salienceWeight,
-        provenance: n.provenance,
-        evidence: n.evidence,
-        asserted_at: n.asserted_at,
-        asserted_cycle: n.asserted_cycle,
-        superseded_by: n.superseded_by,
-        confidence_decay: n.confidence_decay,
-        status: n.status,
-        consolidatedAt: n.consolidatedAt  // Track consolidation status for fork/merge optimization
-      })),
-      edges: Array.from(this.edges.entries()).map(([key, edge]) => {
-        // CRITICAL FIX: Use explicit source/target from edge object (supports string IDs)
-        // Fall back to parsing key for backward compatibility with old states
-        let source, target;
-        if (edge.source !== undefined && edge.target !== undefined) {
-          source = edge.source;
-          target = edge.target;
-        } else {
-          // Legacy: parse from key and preserve type (numeric or string)
-          const parts = key.split('->');
-          source = isNaN(parts[0]) ? parts[0] : Number(parts[0]);
-          target = isNaN(parts[1]) ? parts[1] : Number(parts[1]);
-        }
-        return {
-          source,
-          target,
-          weight: edge.weight,
-          type: edge.type,
-          created: edge.created,
-          accessed: edge.accessed
-        };
-      }),
+      nodes: Array.from(this.nodes.values()).map(n => this._exportGraphNode(n)),
+      edges: Array.from(this.edges.entries()).map(([key, edge]) => this._exportGraphEdge(key, edge)),
       clusters: Array.from(this.clusters.entries()).map(([id, nodes]) => ({
         id,
         size: nodes.size,
@@ -3331,6 +3324,38 @@ class NetworkMemory {
       nextNodeId: this.nextNodeId,
       nextClusterId: this.nextClusterId
     };
+  }
+
+  /** Complete review snapshot, with bounded event-loop slices and no partial view. */
+  async exportGraphAsync() {
+    return this._withRetrievalRetry(async () => {
+      const fence = this._captureRetrievalFence();
+      const clusters = this.clusters;
+      const clusterEntries = Array.from(clusters, ([id, members]) => [id, members, Array.from(members)]);
+      const graph = { nodes: [], edges: [], clusters: [], nextNodeId: this.nextNodeId, nextClusterId: this.nextClusterId };
+      for (const [, node] of fence.nodeEntries) {
+        graph.nodes.push(this._exportGraphNode(node));
+        if (this._retrievalSliceEnded(fence)) await this._yieldRetrieval(fence);
+      }
+      for (const [key, edge] of fence.edgeEntries) {
+        graph.edges.push(this._exportGraphEdge(key, edge));
+        if (this._retrievalSliceEnded(fence)) await this._yieldRetrieval(fence);
+      }
+      for (const [id, , members] of clusterEntries) {
+        graph.clusters.push({ id, size: members.length, nodes: members });
+        if (this._retrievalSliceEnded(fence)) await this._yieldRetrieval(fence);
+      }
+      fence.assertCurrent(true);
+      const changed = () => { throw Object.assign(new Error('memory changed during graph export'), { code: 'source_changed', retryable: true }); };
+      if (this.clusters !== clusters || clusters.size !== clusterEntries.length ||
+          this.nextNodeId !== graph.nextNodeId || this.nextClusterId !== graph.nextClusterId) changed();
+      for (const [id, original, members] of clusterEntries) {
+        if (clusters.get(id) !== original || original.size !== members.length) changed();
+        let index = 0;
+        for (const member of original) if (member !== members[index++]) changed();
+      }
+      return graph;
+    });
   }
 
   exportPersistenceShell() {
