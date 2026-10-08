@@ -43,8 +43,9 @@ export async function adoptSupervisorForUpdate(home, journal, dependencies = {})
       registrations: admission.registrations });
   }
   if (status.ownership === 'absent' && admission.ownership === 'absent') {
-    if (!journal.desiredRunning) return { ownership: 'absent', running: false };
-    return supervisor.ensureProductSupervisor(home);
+    if (!journal.desiredRunning) return { ownership: 'absent', running: false, updateId: journal.id, pausedNames: [] };
+    const independent = await supervisor.ensureProductSupervisor(home);
+    return { ownership: independent.ownership, pid: independent.pid, generation: independent.generation, updateId: journal.id, pausedNames: [] };
   }
   throw fail('host_supervisor_ambiguous', 'The admitted supervisor ownership changed.');
 }

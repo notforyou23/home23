@@ -91,5 +91,15 @@ test('a stopped empty home and Linux do not require a daemon during the app boun
   assert.deepEqual(await adoptSupervisorForUpdate(f.home, { desiredRunning: false, supervisorAdmission: { ownership: 'absent' } }, {
     platform: 'darwin', supervisor: { inspectProductSupervisor: async () => ({ ownership: 'absent' }),
       ensureProductSupervisor: async () => { throw new Error('must remain stopped'); } },
-  }), { ownership: 'absent', running: false });
+  }), { ownership: 'absent', running: false, updateId: undefined, pausedNames: [] });
+});
+
+test('cold running admission establishes ownership without inventing a previous registration generation', async t => {
+  const f = fixture(t), journal = { id: 'cold-update', desiredRunning: true, supervisorAdmission: { ownership: 'absent', registrations: [] } };
+  const result = await adoptSupervisorForUpdate(f.home, journal, { platform: 'darwin', supervisor: {
+    inspectProductSupervisor: async () => ({ ownership: 'absent' }),
+    ensureProductSupervisor: async () => ({ ownership: 'launchd', pid: 43, generation: '43:birth' }),
+  } });
+  assert.deepEqual(result, { ownership: 'launchd', pid: 43, generation: '43:birth', updateId: 'cold-update', pausedNames: [] });
+  assert.equal(journal.supervisorAdmission.expectedPid, undefined);
 });
