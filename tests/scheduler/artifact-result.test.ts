@@ -24,6 +24,15 @@ test('jobs without an explicit artifact contract preserve their existing outcome
   assert.equal(await verifyScheduledArtifactResult('/missing', { kind: 'systemEvent', text: 'hello' }, result), result);
 });
 
+for (const contract of [null, false, 0, '']) test(`explicit invalid contract ${JSON.stringify(contract)} cannot bypass verification`, async () => {
+  const result = await verifyScheduledArtifactResult('/missing', { ...payload, artifactContract: contract } as any,
+    { status: 'ok', durationMs: 1, semanticStatus: 'satisfied', artifacts: ['/unverified-output'] });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.semanticStatus, 'failed');
+  assert.equal(result.outcomeLayers?.artifact?.evidence?.condition, 'invalid_contract');
+  assert.deepEqual(result.artifacts ?? [], []);
+});
+
 test('a mechanically successful refresh with no artifact records semantic failure durably', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-artifact-receipt-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

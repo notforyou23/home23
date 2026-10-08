@@ -7,7 +7,7 @@ export async function verifyScheduledArtifactResult(
   payload: JobPayload,
   result: JobResult,
 ): Promise<JobResult> {
-  if (payload.kind !== 'agentTurn' || !payload.artifactContract
+  if (payload.kind !== 'agentTurn' || payload.artifactContract === undefined
     || result.canonicalRunPending || result.status !== 'ok' || result.semanticStatus === 'failed') return result;
   const verified = await verifyOwnBrainDerivedStateFreshness(ownBrainDir, payload.artifactContract);
   return {
