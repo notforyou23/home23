@@ -4,13 +4,13 @@ import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { connect } from 'node:net';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { readMoveFence } from './product-backup.js';
 import { detectForeignBindings } from './product-foreign-bindings.js';
 import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
 import { inspectMemorySeal, inspectProductMemory } from './product-memory.js';
 import { writerStopOrder } from './product-update-inventory.js';
+import { ensureProductSupervisor, productSupervisorCommand, supervisorSocketListening as supervisorListening } from './product-supervisor.js';
 import {
   OWNED_EMBEDDER_PROCESS, OWNED_PROFILE_ID, OWNED_RECIPE_HASH,
   beginSemanticPrepare, encoderRequiredFor, ensureOwnedEncoderStopped, probeOwnedReady, semanticStatusView,
@@ -27,6 +27,50 @@ const statePath = root => join(root, '.home23-host.json');
 const receiptPath = root => join(root, '.home23-install.json');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/** Pause authority comes from the current update's bound migration snapshot,
+ * never from caller-supplied process names. Status can read this metadata. */
+async function updatePausedNames(homeRoot, state, ownerToken) {
+  const { readUpdateJournal } = await import('./product-update-apply.js');
+  const journal = readUpdateJournal(homeRoot);
+  if (!journal?.supervisorMigration) return [];
+  if (ownerToken && ownerToken !== journal.ownerToken) throw supervisorAmbiguous('The paused-role update owner does not match.');
+  const migration = journal.supervisorMigration;
+  const names = ownedProcessNamesForState(state);
+  const admission = journal.supervisorAdmission;
+  if (admission) {
+    const rows = admission.registrations;
+    const paused = migration.pausedNames;
+    if (admission.ownership === 'absent') {
+      const emptyPaused = paused === undefined && migration.ownership === 'absent' ? [] : paused;
+      const expectedOwnership = state.desiredRunning === true ? 'launchd' : 'absent';
+      if (!Array.isArray(rows) || rows.length || !Array.isArray(emptyPaused) || emptyPaused.length ||
+          migration.ownership !== expectedOwnership || (migration.updateId && migration.updateId !== journal.id) ||
+          (expectedOwnership === 'absent' && migration.running !== false) ||
+          (expectedOwnership === 'launchd' && (!Number.isSafeInteger(migration.pid) || migration.pid <= 0 || typeof migration.generation !== 'string'))) {
+        throw supervisorAmbiguous('An empty supervisor admission differs from this home\'s running intent.');
+      }
+      return [];
+    }
+    if (migration.ownership !== 'launchd' || (migration.updateId && migration.updateId !== journal.id) ||
+        !Number.isSafeInteger(admission.expectedPid) || admission.expectedPid <= 0 || typeof admission.generation !== 'string' ||
+        !Array.isArray(rows) || new Set(rows.map(r => r.name)).size !== rows.length || rows.some(r => !names.includes(r.name)) ||
+        !safeProcesses(rows, homeRoot, names, continuationServicesForState(state)).every(r => r.owned && ['online', 'stopped', 'errored'].includes(r.status)) ||
+        !Array.isArray(paused) || JSON.stringify(paused) !== JSON.stringify(rows.filter(r => ['stopped', 'errored'].includes(r.pm2_env.status)).map(r => r.name))) {
+      throw supervisorAmbiguous('Paused-role admission differs from this update\'s captured registrations.');
+    }
+    return paused;
+  }
+  const expectedPath = join(homeRoot, 'runtime/pm2/supervisor-migration.json');
+  if (migration.snapshotPath !== expectedPath || migration.updateId !== journal.id) throw supervisorAmbiguous('The paused-role migration belongs to a different update.');
+  const saved = readPrivateJSON(expectedPath);
+  const paused = migration.pausedNames;
+  if (!saved || saved.updateId !== journal.id || saved.phase !== 'registered' || !Array.isArray(paused) ||
+      new Set(paused).size !== paused.length || paused.some(name => !names.includes(name)) ||
+      JSON.stringify(paused) !== JSON.stringify(saved.registrations.filter(row => ['stopped', 'errored'].includes(row.pm2_env.status)).map(row => row.name))) {
+    throw supervisorAmbiguous('Paused-role metadata differs from the captured supervisor.');
+  }
+  return paused;
+}
 /** Host install root → app root where instances/<name>/config.yaml lives. */
 function appRootFor(homeRoot) {
   if (!homeRoot) return undefined;
@@ -305,17 +349,7 @@ export function productDefinitions(apps, homeRoot, nameOrNames, { encoderRequire
 /** Whether a supervisor accepts connections on a unix socket: true when it
  * connects, false when the socket is absent or refused, null when it neither
  * answers nor refuses. A connection attempt never starts a daemon. */
-export function supervisorListening(path, timeoutMs = 2000) {
-  return new Promise(resolve => {
-    const socket = connect(path);
-    let timer = null;
-    const done = value => { clearTimeout(timer); socket.destroy(); resolve(value); };
-    timer = setTimeout(() => done(null), timeoutMs);
-    socket.once('connect', () => done(true));
-    // EINVAL: a path longer than a socket address, where no daemon can listen.
-    socket.once('error', error => done(['ENOENT', 'ENOTDIR', 'ECONNREFUSED', 'ENOTSOCK', 'EINVAL'].includes(error.code) ? false : null));
-  });
-}
+export { supervisorListening };
 const supervisorAmbiguous = message => Object.assign(new Error(message), { code: 'host_supervisor_ambiguous' });
 function driver(homeRoot, dependencies, state) {
   const encoderRequired = encoderRequiredFor(state);
@@ -324,6 +358,14 @@ function driver(homeRoot, dependencies, state) {
   const pm2Path = join(homeRoot, 'tools', 'node_modules', 'pm2', 'bin', 'pm2');
   const execute = dependencies.execute || executeFile;
   async function pm2(args) {
+    if ((dependencies.platform || process.platform) === 'darwin') {
+      // Status cannot establish ownership. Mutations require a foreground
+      // launchd supervisor; an unowned existing daemon needs admitted adoption.
+      if (['start', 'restart'].includes(args[0]) && (!dependencies.execute || dependencies.ensureProductSupervisor)) {
+        await (dependencies.ensureProductSupervisor || ensureProductSupervisor)(homeRoot);
+      }
+      if (!dependencies.execute) return productSupervisorCommand(homeRoot, args, { environmentOptions: { encoderRequired, embedderPort: state?.ports?.embedder } });
+    }
     try { return await execute(nodePath, [pm2Path, ...args], { cwd: join(homeRoot, 'app'), env, timeout: args[0] === 'stop' ? 240000 : 45000, maxBuffer: 8 * 1024 * 1024 }); }
     catch (error) {
       if (args[0] === 'stop' && String(args[1] || '').includes('embedder')) return { stdout: '' };
@@ -505,17 +547,18 @@ export function residentPortsFor(state, residentName) {
 export async function probeReadiness(homeRoot, state, processes, { createSession = false, request = requestJSON } = {}) {
   const residents = hostResidentNames(state);
   const primary = state.profile?.name && residents.includes(state.profile.name) ? state.profile.name : residents[0];
-  const owned = ownedProcessNamesForState(state);
+  const paused = await updatePausedNames(homeRoot, state);
+  const owned = ownedProcessNamesForState(state).filter(name => !paused.includes(name));
   const missing = owned.filter(name => !processes.some(row => row.name === name && row.status === 'online' && row.owned));
   if (missing.length) return { ready: false, issues: missing.map(name => `${name} is not running from this installation.`) };
-  if (encoderRequiredFor(state)) {
+  if (encoderRequiredFor(state) && owned.includes(OWNED_EMBEDDER_PROCESS)) {
     const ready = await probeOwnedReady(state.ports.embedder);
     if (!ready.warm) return { ready: false, issues: ['The owned semantic encoder is not warm yet.'] };
   }
   const localURL = `http://127.0.0.1:${state.ports.coordination}`;
   const issues = [];
   let recoveryRequired = false;
-  try {
+  try { if (owned.includes('home23-coordination')) {
     const capabilities = await request(localURL + '/api/v1/capabilities');
     if (!capabilities.pairingAvailable || !capabilities.capabilities?.bootstrap || !capabilities.capabilities?.messageSubmission) throw new Error('Home23 chat and pairing are not available yet.');
     let session = await hostSession(homeRoot, localURL, { create: createSession, resumeInitialPairing: state.desiredRunning === true, request });
@@ -529,17 +572,19 @@ export async function probeReadiness(homeRoot, state, processes, { createSession
     }
     const bot = bootstrap.snapshot?.bots?.find(bot => bot.id === state.birth?.coordination?.botId);
     if (bootstrap.home?.id !== state.birth?.home?.id) throw new Error('The local API belongs to a different home.');
-    if (!bot || !['available', 'busy'].includes(bot.availability) || !bot.conversationId) throw new Error('The resident has not completed signed registration and become available.');
+    if (owned.includes(`home23-${primary}`) && (!bot || !['available', 'busy'].includes(bot.availability) || !bot.conversationId)) throw new Error('The resident has not completed signed registration and become available.');
+  }
   } catch (error) { recoveryRequired = error.code === 'host_session_recovery_required'; issues.push(error.message); }
   const checks = [];
   for (const name of residents) {
+    if (!owned.includes(`home23-${name}`) && !owned.includes(`home23-${name}-dash`)) continue;
     const ports = residentPortsFor(state, name);
     if (!ports || !Number.isInteger(ports.engine) || !Number.isInteger(ports.dashboard)) {
       issues.push(`Resident ${name} has no engine/dashboard ports to probe.`);
       continue;
     }
-    checks.push([`Resident engine (${name})`, `http://127.0.0.1:${ports.engine}/health`, 'json', name, 'engine']);
-    checks.push([`Resident dashboard (${name})`, `http://127.0.0.1:${ports.dashboard}/home23/process.json`, 'json', name, 'dashboard']);
+    if (owned.includes(`home23-${name}`)) checks.push([`Resident engine (${name})`, `http://127.0.0.1:${ports.engine}/health`, 'json', name, 'engine']);
+    if (owned.includes(`home23-${name}-dash`)) checks.push([`Resident dashboard (${name})`, `http://127.0.0.1:${ports.dashboard}/home23/process.json`, 'json', name, 'dashboard']);
   }
   if (owned.includes('home23-seed-observatory')) {
     checks.push(['Seed observatory', `http://127.0.0.1:${state.ports.observatory}/healthz`, 'text']);
@@ -612,6 +657,7 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
     return { ...output, ok: false, status: 'unavailable', processes: [], error: { code: error.code, message: error.message } };
   }
   const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state), continuationServicesForState(state));
+  output.pausedProcessNames = await updatePausedNames(homeRoot, state);
   if (state.phase === 'creating') return { ...output, status: 'creating', processes };
   if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
   let readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
@@ -877,7 +923,9 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       return { ...await status(homeRoot, dependencies), ok: false, status: 'prepared',
         error: { code: 'host_semantic_prepare_required', message: 'Semantic memory is still preparing. Resume preparation before starting this home. Your saved home stays in place.' } };
     }
-    const allRunning = names.every(name => processes.some(row => row.name === name && row.status === 'online'));
+    const paused = action === 'start' ? await updatePausedNames(homeRoot, state, input.updateOwnerToken) : [];
+    const startNames = names.filter(name => !paused.includes(name));
+    const allRunning = startNames.every(name => processes.some(row => row.name === name && row.status === 'online'));
     if (!processes.some(row => row.status === 'online')) await withReservedPorts(state.ports, async () => {}, {
       encoderRequired: encoderRequiredFor(state), continuingBindings: Boolean(state.networkBindings),
       residentPorts: state.networkBindings?.residents,
@@ -892,7 +940,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       const definitions = dependencies.definitions ? await dependencies.definitions(residents) : await processDriver.definitions(residents);
       const config = join(homeRoot, 'runtime', 'ecosystem.config.json');
       privateJSON(config, { apps: definitions });
-      const startOrder = encoderRequiredFor(state) ? [OWNED_EMBEDDER_PROCESS, ...names.filter(name => name !== OWNED_EMBEDDER_PROCESS)] : names;
+      const startOrder = encoderRequiredFor(state) && startNames.includes(OWNED_EMBEDDER_PROCESS) ? [OWNED_EMBEDDER_PROCESS, ...startNames.filter(name => name !== OWNED_EMBEDDER_PROCESS)] : startNames;
       for (const name of startOrder) {
         const current = processes.find(row => row.name === name);
         if (current?.status === 'online') continue;
