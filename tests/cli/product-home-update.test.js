@@ -355,9 +355,14 @@ test('independent updater survives a recursive kill of its still-running request
   assert.ok(!descendants.includes(pid), 'The updater must leave Core ancestry before admission');
   for (const target of [...descendants, parent.pid]) { try { process.kill(target, 'SIGTERM'); } catch {} }
   await once(parent, 'exit');
-  await new Promise(resolve => setTimeout(resolve, 100));
-  assert.doesNotThrow(() => process.kill(pid, 0));
-  assert.ok(Number(readFileSync(heartbeat, 'utf8')) > before, 'The independent worker continues after the requester tree is killed');
+  const deadline = Date.now() + 3_000;
+  let after = before;
+  while (after <= before && Date.now() < deadline) {
+    assert.doesNotThrow(() => process.kill(pid, 0));
+    await new Promise(resolve => setTimeout(resolve, 25));
+    after = Number(readFileSync(heartbeat, 'utf8'));
+  }
+  assert.ok(after > before, 'The independent worker continues after the requester tree is killed');
 });
 
 test('failed independence verification kills the unadmitted worker', async t => {
