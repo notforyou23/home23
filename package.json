@@ -47,6 +47,7 @@
     "start:test-agent": "bash scripts/start-agent.sh test-agent",
     "test:substrate": "node --import tsx --test --test-concurrency=1 substrate/tests/*.test.ts",
     "seed:status": "node --import tsx substrate/bin/seed-status.ts",
+    "seed:recover-tail": "node --import tsx substrate/bin/seed-recover-tail.ts",
     "test:harness": "node --import tsx --test --test-concurrency=1 tests/engine/agents/planning-prompt.test.js tests/agent/memory-compaction.test.ts tests/agent/task-context.test.ts tests/agent/context-loop.test.ts tests/agent/loop-project-write-roots.test.ts tests/acp/*.test.ts tests/agent/tools/coding.test.ts tests/agent/tools/subagent-isolation.test.ts tests/agent/turn-entrypoints.test.ts tests/agent/turn-entrypoint-callers.test.ts tests/agent/delegation-harness.test.ts tests/work/*.test.ts tests/workers/*.test.ts tests/agent/tools/registry-boundary.test.ts tests/agent/chat-turn-model-override.test.ts tests/agent/turn-activity-lease.test.ts tests/agent/prompt-contract.test.ts tests/agent/prompt-cache.test.ts tests/agent/tool-result-provider-branches.test.ts",
     "test:context": "node --import tsx --test --test-concurrency=1 tests/agent/task-context.test.ts tests/agent/context-loop.test.ts tests/agent/memory-compaction.test.ts tests/agent/history-image-persistence.test.ts tests/agent/chat-history-reconstruction.test.ts",
     "release:status": "node scripts/release/status.mjs",
