@@ -1,7 +1,9 @@
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
-import { appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import rotation from '../../../shared/jsonl-rotation.cjs';
+
+const { normalizeRotationOptions, rotateJsonlSync } = rotation;
 
 function nowIso() {
   return new Date().toISOString();
@@ -135,10 +137,11 @@ function compactPursuit(pursuit) {
 }
 
 export class PursuitStore {
-  constructor({ brainDir, agentName = 'jerry' } = {}) {
+  constructor({ brainDir, agentName = 'jerry', persistence } = {}) {
     if (!brainDir) throw new Error('PursuitStore requires brainDir');
     this.brainDir = brainDir;
     this.agentName = agentName;
+    this.persistence = normalizeRotationOptions(persistence);
     this.dir = join(brainDir, 'agency');
     this.statePath = join(this.dir, 'state.json');
     this.inboxPath = join(this.dir, 'inbox.jsonl');
@@ -153,6 +156,7 @@ export class PursuitStore {
     this.inboxCountCache = null;
     this.taskIndexCache = null;
     this.inboxWriteChain = Promise.resolve();
+    this.pendingInboxWrites = new Set();
     mkdirSync(this.dir, { recursive: true });
     for (const file of [this.inboxPath, this.pursuitsPath, this.receiptsPath, this.consequencesPath, this.scratchPath, this.truthPath, this.tasksPath, this.memoryCandidatesPath]) {
       if (!existsSync(file)) closeSync(openSync(file, 'a'));
@@ -160,18 +164,42 @@ export class PursuitStore {
   }
 
   appendInbox(entry) {
-    appendFileSync(this.inboxPath, `${JSON.stringify(entry)}\n`);
+    // A synchronous caller cannot await the promise chain. Commit its queued
+    // predecessors first; their promise callbacks then only acknowledge them.
+    for (const pending of this.pendingInboxWrites) this._commitInboxWrite(pending);
+    const pending = { line: `${JSON.stringify(entry)}\n` };
+    this._commitInboxWrite(pending);
+    if (pending.error) throw pending.error;
     return entry;
   }
 
   async appendInboxAsync(entry) {
-    const line = `${JSON.stringify(entry)}\n`;
-    const committed = this.inboxWriteChain.then(() => appendFile(this.inboxPath, line));
+    const pending = { line: `${JSON.stringify(entry)}\n` };
+    this.pendingInboxWrites.add(pending);
+    const committed = this.inboxWriteChain.then(() => {
+      this._commitInboxWrite(pending);
+      if (pending.error) throw pending.error;
+    });
     // Keep the queue usable after a failed write; the caller still receives
     // that failure and must not acknowledge this entry.
     this.inboxWriteChain = committed.catch(() => {});
     await committed;
     return entry;
+  }
+
+  _commitInboxWrite(pending) {
+    if (pending.done) return;
+    try {
+      if (rotateJsonlSync(this.inboxPath, this.persistence, Buffer.byteLength(pending.line))) {
+        this.inboxCountCache = null;
+      }
+      appendFileSync(this.inboxPath, pending.line);
+    } catch (error) {
+      pending.error = error;
+    } finally {
+      pending.done = true;
+      this.pendingInboxWrites.delete(pending);
+    }
   }
 
   appendReceipt(entry) {

@@ -650,6 +650,10 @@ capabilities:
   useFrontierGate: true
   defaultMode: observe
 feeder:
+  queueCompaction:
+    enabled: true
+    minBytes: 67108864
+    archive: true
   enabled: true
   maxFileBytes: 5242880
   chunking:

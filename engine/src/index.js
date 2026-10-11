@@ -789,7 +789,12 @@ async function main() {
     const { DecayWorker } = await import('./cognition/decay-worker.mjs');
     const { NotifyChannel } = await import('./channels/notify/notify-channel.js');
     const channelsDir = path.join(runtimeRoot, 'channels');
-    channelBus = new ChannelBus({ persistenceDir: channelsDir, logger });
+    channelBus = new ChannelBus({
+      persistenceDir: channelsDir,
+      persistence: osEngineCfg.channels?.persistence,
+      channelPolicy: osEngineCfg.crystallization?.channelPolicy,
+      logger,
+    });
     const { AgencyKernel } = await import('./agency/resident-kernel.js');
     const agentNameForAgency = process.env.HOME23_AGENT || config.agent?.name || 'jerry';
     const agencyCharterPath = agencyCfg.charterPath
@@ -907,7 +912,11 @@ async function main() {
     // MemoryIngest writes with proper-lockfile so the harness MemoryObjectStore
     // can coexist as a reader/writer on the same file.
     const { MemoryIngest } = require('./channels/memory-ingest.cjs');
-    const memoryIngest = new MemoryIngest({ brainDir: runtimeRoot, logger });
+    const memoryIngest = new MemoryIngest({
+      brainDir: runtimeRoot,
+      channelPolicy: osEngineCfg.crystallization?.channelPolicy,
+      logger,
+    });
     await memoryIngest.compactActiveStore({ reason: 'startup' });
     channelBus.on('crystallize', async ({ observation, draft }) => {
       try { await memoryIngest.writeFromObservation(observation, draft); }
@@ -1009,7 +1018,12 @@ async function main() {
       const { CronsChannel }         = await import('./channels/work/crons-channel.js');
       const { HeartbeatChannel }     = await import('./channels/work/heartbeat-channel.js');
       channelBus.register(new AgendaChannel({ path: path.join(runtimeRoot, 'agenda.jsonl') }));
-      channelBus.register(new LiveProblemsChannel({ path: path.join(runtimeRoot, 'live-problems.json'), intervalMs: 30 * 1000 }));
+      channelBus.register(new LiveProblemsChannel({
+        path: path.join(runtimeRoot, 'live-problems.json'),
+        intervalMs: 30 * 1000,
+        heartbeatMs: osEngineCfg.crystallization?.channelPolicy?.liveProblemsHeartbeatMs,
+        maxEntries: osEngineCfg.crystallization?.channelPolicy?.liveProblemsMaxEntries,
+      }));
       channelBus.register(new WorkerRunsChannel({ path: path.join(repoRoot, 'instances', 'jerry', 'brain', 'worker-runs.jsonl'), intervalMs: 30 * 1000 }));
       channelBus.register(new GoalsChannel({ goalsDir: path.join(runtimeRoot, 'goals') }));
       channelBus.register(new CronsChannel({ path: path.join(conversationsDir, 'cron-jobs.json'), intervalMs: 60 * 1000 }));

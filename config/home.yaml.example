@@ -229,6 +229,10 @@ situationalAwareness:
 
 osEngine:
   channels:
+    persistence:
+      enabled: true
+      maxBytes: 67108864
+      keep: 3
     machine:
       enabled: true
     os:
@@ -265,6 +269,12 @@ osEngine:
     flagRequired: true
     zeroContextAsLegal: true
   crystallization:
+    channelPolicy:
+      enabled: true
+      deny: ['machine.*', 'neighbor.*', 'os.pm2']
+      liveProblemsStateChangesOnly: true
+      liveProblemsMaxEntries: 10000
+      liveProblemsHeartbeatMs: 1800000
     backpressure:
       cyclesWithoutReceiptThreshold: 10
     confidenceCaps:
@@ -309,6 +319,10 @@ osEngine:
 
 agency:
   enabled: true
+  inboxPersistence:
+    enabled: true
+    maxBytes: 67108864
+    keep: 3
   mode: live
   charterPath: agency/charter.yaml
   residentTickMs: 60000

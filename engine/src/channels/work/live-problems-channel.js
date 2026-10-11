@@ -1,7 +1,8 @@
 /**
  * LiveProblemsChannel — polls brain/live-problems.json and emits an
  * observation whenever a problem's lifecycle changes (state, remediation step
- * or escalation). updatedAt moves on every verifier check, so keying on it
+ * or escalation), plus periodic unchanged-state heartbeats. updatedAt moves
+ * on every verifier check, so keying on it
  * archived one snapshot per check: 133k records for 1.2k real transitions.
  * Crystallizes each transition as a work_event so the brain sees its own
  * problem lifecycle.
@@ -12,12 +13,27 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { PollChannel } from '../base/poll-channel.js';
 import { ChannelClass, makeObservation } from '../contract.js';
+import observationPolicy from '../../../../shared/channel-observation-policy.cjs';
+
+const { normalizeLiveProblemPolicy, shouldWriteLiveProblem, rememberLiveProblem, liveProblemObservedAt } = observationPolicy;
+
+function problemKey(problem) {
+  return problem.id || `${problem.state}:${problem.firstSeenAt}`;
+}
+
+function lifecycleSignature(problem) {
+  return JSON.stringify([problem.state ?? null, problem.stepIndex ?? null, Boolean(problem.escalated)]);
+}
 
 export class LiveProblemsChannel extends PollChannel {
-  constructor({ path, intervalMs = 30 * 1000, id = 'work.live-problems' }) {
+  constructor({ path, intervalMs = 30 * 1000, id = 'work.live-problems', heartbeatMs, maxEntries }) {
     super({ id, class: ChannelClass.WORK, intervalMs });
     this.path = path;
     this._seen = new Map();
+    this._liveProblemPolicy = normalizeLiveProblemPolicy({
+      liveProblemsHeartbeatMs: heartbeatMs,
+      liveProblemsMaxEntries: maxEntries,
+    });
     this._primed = false;
   }
 
@@ -26,13 +42,18 @@ export class LiveProblemsChannel extends PollChannel {
     let data;
     try { data = JSON.parse(readFileSync(this.path, 'utf8')); } catch { return []; }
     const problems = Array.isArray(data?.problems) ? data.problems : [];
+    const present = new Set(problems.map(problemKey));
+    for (const key of this._seen.keys()) {
+      if (!present.has(key)) this._seen.delete(key);
+    }
     const out = [];
+    const now = Date.now();
     for (const p of problems) {
-      const key = p.id || `${p.state}:${p.firstSeenAt}`;
-      const lifecycle = JSON.stringify([p.state ?? null, p.stepIndex ?? null, Boolean(p.escalated)]);
-      const prev = this._seen.get(key);
-      if (prev !== lifecycle) {
-        this._seen.set(key, lifecycle);
+      const key = problemKey(p);
+      const lifecycle = lifecycleSignature(p);
+      const state = { key, signature: lifecycle };
+      if (shouldWriteLiveProblem(this._seen, state, this._liveProblemPolicy, now)) {
+        rememberLiveProblem(this._seen, state, this._liveProblemPolicy, now);
         if (this._primed) out.push(p);
       }
     }
@@ -49,10 +70,15 @@ export class LiveProblemsChannel extends PollChannel {
   }
 
   verify(parsed) {
-    return makeObservation({
+    const observation = makeObservation({
       channelId: this.id, sourceRef: parsed.sourceRef, payload: parsed.payload,
       flag: 'COLLECTED', confidence: 0.9, producedAt: parsed.producedAt, verifierId: 'live-problems:poll',
     });
+    const seen = this._seen.get(problemKey(parsed.payload));
+    if (seen?.signature === lifecycleSignature(parsed.payload)) {
+      seen.persistedAt = liveProblemObservedAt(observation);
+    }
+    return observation;
   }
 
   crystallize(obs) {

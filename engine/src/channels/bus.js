@@ -11,6 +11,7 @@
  * Persistence: if persistenceDir is provided, each channel's raw stream is
  * appended to `<class>.<id>.jsonl` under that dir. MemoryObjects are the
  * distilled output downstream; the JSONL sidecar is the audit record.
+ * Appends rotate bounded gzip segments and omit unchanged live-problem state.
  *
  * See docs/design/STEP24-OS-ENGINE-REDESIGN.md §The Universal Channel Bus.
  */
@@ -22,16 +23,26 @@ import { mkdirSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureTraceId, makeObservation, validateObservation } from './contract.js';
+import rotation from '../../../shared/jsonl-rotation.cjs';
+import observationPolicy from '../../../shared/channel-observation-policy.cjs';
+
+const { normalizeRotationOptions, rotateJsonl } = rotation;
+const { liveProblemState, normalizeLiveProblemPolicy, shouldWriteLiveProblem, rememberLiveProblem, liveProblemObservedAt } = observationPolicy;
 
 export class ChannelBus extends EventEmitter {
-  constructor({ persistenceDir, logger } = {}) {
+  constructor({ persistenceDir, persistence, channelPolicy = {}, logger } = {}) {
     super();
     this.setMaxListeners(50);
     this.channels = [];
     this.persistenceDir = persistenceDir || null;
+    this.persistence = normalizeRotationOptions(persistence);
+    this.channelPolicy = channelPolicy || {};
+    this._liveProblemPolicy = normalizeLiveProblemPolicy(this.channelPolicy);
     this.logger = logger || console;
     this._running = false;
     this._pendingPersist = new Set();
+    this._persistChains = new Map();
+    this._persistedProblemStates = new Map();
   }
 
   register(channel) {
@@ -116,9 +127,22 @@ export class ChannelBus extends EventEmitter {
       ? `${channel.id}.jsonl`
       : `${channel.class}.${channel.id}.jsonl`;
     const path = join(this.persistenceDir, fileName);
-    const operation = appendFile(path, JSON.stringify(obs) + '\n')
+    const line = JSON.stringify(obs) + '\n';
+    const operation = (this._persistChains.get(path) || Promise.resolve()).then(async () => {
+      const state = this.channelPolicy.enabled !== false && this.channelPolicy.liveProblemsStateChangesOnly !== false
+        ? liveProblemState(obs) : null;
+      const now = liveProblemObservedAt(obs);
+      if (state && !shouldWriteLiveProblem(this._persistedProblemStates, state, this._liveProblemPolicy, now)) return;
+      await rotateJsonl(path, this.persistence, Buffer.byteLength(line));
+      await appendFile(path, line);
+      if (state) rememberLiveProblem(this._persistedProblemStates, state, this._liveProblemPolicy, now);
+    })
       .catch(err => { this._logWarn(`persist failed for ${channel.id}`, err); })
-      .finally(() => { this._pendingPersist.delete(operation); });
+      .finally(() => {
+        this._pendingPersist.delete(operation);
+        if (this._persistChains.get(path) === operation) this._persistChains.delete(path);
+      });
+    this._persistChains.set(path, operation);
     this._pendingPersist.add(operation);
     await operation;
   }

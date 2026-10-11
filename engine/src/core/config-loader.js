@@ -289,6 +289,10 @@ class ConfigLoader {
         ...(baseFeeder.converter || {}),
         ...(feederOverrides.converter || {}),
       },
+      queueCompaction: {
+        ...(baseFeeder.queueCompaction || {}),
+        ...(feederOverrides.queueCompaction || {}),
+      },
     };
 
     if (Array.isArray(feederOverrides.additionalWatchPaths)) {
@@ -307,6 +311,7 @@ class ConfigLoader {
     if (feederOverrides.flush && typeof feederOverrides.flush === 'object') applied.push('feeder.flush');
     if (feederOverrides.compiler && typeof feederOverrides.compiler === 'object') applied.push('feeder.compiler');
     if (feederOverrides.converter && typeof feederOverrides.converter === 'object') applied.push('feeder.converter');
+    if (feederOverrides.queueCompaction && typeof feederOverrides.queueCompaction === 'object') applied.push('feeder.queueCompaction');
 
     const prior = this.config._instanceFeederOverridesApplied || [];
     this.config._instanceFeederOverridesApplied = prior.concat(applied);

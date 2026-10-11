@@ -261,7 +261,7 @@ export class AgencyKernel {
       residentTickMs: config.residentTickMs || this.charter.attention?.residentTickMs || 60_000,
     };
     this.logger = logger;
-    this.store = new PursuitStore({ brainDir, agentName });
+    this.store = new PursuitStore({ brainDir, agentName, persistence: config.inboxPersistence });
     // Keep pursuit selection, inbox durability, and the resulting state change
     // in one ordered intake transaction across both public intake paths.
     this.intakeQueue = Promise.resolve();
