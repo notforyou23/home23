@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
 const FORMAT_VERSION = 1;
 const READ_CHUNK_BYTES = 1024 * 1024;
@@ -13,11 +14,19 @@ const RECORD_INTEGRITY_V1 = 'record_sha256_v1';
 const RECORD_INTEGRITY_V2 = 'record_sha256_v2';
 
 class DurableIngestionQueue {
-  constructor({ runPath, logger = null }) {
+  constructor({ runPath, logger = null, compaction = {} }) {
     if (!path.isAbsolute(runPath)) throw new Error('ingestion_queue_run_path_must_be_absolute');
     assertNotSymlink(runPath);
     this.runPath = runPath;
     this.logger = logger;
+    this.compaction = {
+      enabled: compaction?.enabled !== false,
+      minBytes: compaction?.minBytes ?? 64 * 1024 * 1024,
+      archive: compaction?.archive !== false,
+    };
+    if (!Number.isSafeInteger(this.compaction.minBytes) || this.compaction.minBytes < 0) {
+      throw new Error('ingestion_queue_compaction_min_bytes_invalid');
+    }
     this.sourcePath = path.join(runPath, 'ingestion-pending.jsonl');
     this.queuePath = path.join(runPath, 'ingestion-queue');
     this.eventsPath = path.join(this.queuePath, 'events.jsonl');
@@ -28,6 +37,9 @@ class DurableIngestionQueue {
     this.deadLetterPath = path.join(this.queuePath, 'dead-letter.jsonl');
     this.statusPath = path.join(this.queuePath, 'status.json');
     this.statusTmpPath = `${this.statusPath}.tmp`;
+    this.compactionPath = path.join(this.queuePath, 'compaction.json');
+    this.compactionTmpPath = `${this.compactionPath}.tmp`;
+    this.compactedEventsPath = `${this.eventsPath}.compact.tmp`;
     this._ackKey = crypto.randomBytes(32);
 
     assertNotSymlink(this.sourcePath, { allowMissing: true });
@@ -36,11 +48,13 @@ class DurableIngestionQueue {
     for (const internalPath of [
       this.eventsPath, this.statePath, this.stateTmpPath, this.migrationPath,
       this.corruptTailPath, this.deadLetterPath, this.statusPath, this.statusTmpPath,
+      this.compactionPath, this.compactionTmpPath, this.compactedEventsPath,
     ]) assertNotSymlink(internalPath, { allowMissing: true });
     if (!fs.existsSync(this.eventsPath)) durableCreateEmpty(this.eventsPath);
     this._recoverJournal();
     this._recoverDeadLetterTail();
     this.state = this._loadState();
+    this._ackJournalIdentity = fileIdentity(this.eventsPath);
     this._latest = new Map();
     this._committedGenerations = new Set();
     this._generationMetadata = new Map();
@@ -64,6 +78,7 @@ class DurableIngestionQueue {
     if (!Array.isArray(items) || items.some((entry) => !entry || entry.filePath !== filePath)) {
       throw new Error('ingestion_queue_upsert_items_must_match_file_path');
     }
+    this._finishCompactionRecovery();
     const generation = crypto.randomUUID();
     const records = items.map((entry) => ({
       v: FORMAT_VERSION, type: 'item', filePath, generation, item: entry,
@@ -92,6 +107,7 @@ class DurableIngestionQueue {
 
   removeFile(filePath) {
     assertFilePath(filePath);
+    this._finishCompactionRecovery();
     const generation = crypto.randomUUID();
     appendDurableRecord(this.eventsPath, withRecordIntegrity({
       v: FORMAT_VERSION, type: 'remove', filePath, generation,
@@ -107,6 +123,7 @@ class DurableIngestionQueue {
     if (!Array.isArray(items) || !Array.isArray(deliveries) || items.length !== deliveries.length) {
       throw new Error('ingestion_queue_retry_shape_invalid');
     }
+    this._finishCompactionRecovery();
     const retryId = crypto.createHash('sha256')
       .update(JSON.stringify(deliveries.map(({ source, start, end }) => [source, start, end])))
       .digest('hex');
@@ -186,6 +203,7 @@ class DurableIngestionQueue {
     if (!Number.isSafeInteger(maxRecords) || maxRecords <= 0) {
       throw new Error('ingestion_queue_migration_limit_invalid');
     }
+    this._finishCompactionRecovery();
     let migration = readSmallJson(this.migrationPath, { v: FORMAT_VERSION, offset: 0, complete: false });
     if (!fs.existsSync(this.sourcePath)) {
       return { complete: true, migratedRecords: 0, offset: migration.offset || 0 };
@@ -312,6 +330,7 @@ class DurableIngestionQueue {
   }
 
   commit(token) {
+    this._finishCompactionRecovery();
     if (!token || token.v !== FORMAT_VERSION
       || token.startBaseOffset !== this.state.baseOffset
       || token.startEventOffset !== this.state.eventOffset
@@ -335,6 +354,13 @@ class DurableIngestionQueue {
     }
     this.state = nextState;
     this._saveStatus();
+    try {
+      this._compactConsumedJournal();
+    } catch (error) {
+      // The acknowledgement is already durable. A failed compaction must
+      // not turn it into a failed delivery; its marker protects recovery.
+      this.logger?.warn?.('Ingestion queue compaction deferred after failure', { error: error.message });
+    }
   }
 
   readAll() {
@@ -362,6 +388,26 @@ class DurableIngestionQueue {
     try { parsed = JSON.parse(fs.readFileSync(this.statePath, 'utf8')); } catch { /* new queue */ }
     const sourceBytes = fileSize(this.sourcePath);
     const eventBytes = fileSize(this.eventsPath);
+    if (fs.existsSync(this.compactionPath)) {
+      const marker = readSmallJson(this.compactionPath, null);
+      if (!marker || marker.v !== FORMAT_VERSION
+        || marker.checksum !== compactionChecksum(marker)
+        || !validOffset(marker.state?.baseOffset, sourceBytes)
+        || marker.state?.eventOffset !== marker.original?.size
+        || marker.state?.checksum !== stateChecksum(marker.state.baseOffset, marker.state.eventOffset)
+        || marker.replacement?.size !== 0) {
+        throw new Error('ingestion_queue_compaction_marker_invalid');
+      }
+      const identity = fileIdentity(this.eventsPath);
+      const replaced = sameFileIdentity(identity, marker.replacement);
+      if (!replaced && !sameFileIdentity(identity, marker.original)) {
+        throw new Error('ingestion_queue_compaction_journal_changed');
+      }
+      this._compactionRecovery = { replaced };
+      return replaced
+        ? { v: FORMAT_VERSION, baseOffset: marker.state.baseOffset, eventOffset: 0 }
+        : marker.state;
+    }
     if (!parsed || parsed.v !== FORMAT_VERSION
       || !validOffset(parsed.baseOffset, sourceBytes)
       || !validOffset(parsed.eventOffset, eventBytes)
@@ -369,6 +415,107 @@ class DurableIngestionQueue {
       return { v: FORMAT_VERSION, baseOffset: 0, eventOffset: 0 };
     }
     return parsed;
+  }
+
+  _finishCompactionRecovery() {
+    if (!fs.existsSync(this.compactionPath)) {
+      this._compactionRecovery = null;
+      return;
+    }
+    this.state = this._loadState();
+    if (this._compactionRecovery?.replaced) {
+      const identity = fileIdentity(this.eventsPath);
+      if (identity.dev !== this._ackJournalIdentity.dev || identity.ino !== this._ackJournalIdentity.ino) {
+        this._ackKey = crypto.randomBytes(32);
+        this._ackJournalIdentity = identity;
+      }
+      this._clearJournalAuthority();
+      this._scanJournalAuthority();
+      this._recountPending();
+    }
+    this._saveState();
+    if (fs.existsSync(this.compactedEventsPath)) fs.unlinkSync(this.compactedEventsPath);
+    fs.unlinkSync(this.compactionPath);
+    fsyncDirectory(this.queuePath);
+    this._compactionRecovery = null;
+  }
+
+  _clearJournalAuthority() {
+    this._latest.clear();
+    this._committedGenerations.clear();
+    this._generationMetadata.clear();
+    this._committedRetryIds.clear();
+    this._retryMetadata.clear();
+    this._legacyMetadata.clear();
+  }
+
+  _compactConsumedJournal() {
+    const eventBytes = fileSize(this.eventsPath);
+    if (!this.compaction.enabled || eventBytes === 0 || eventBytes < this.compaction.minBytes
+      || this._pendingCount !== 0) return false;
+    if (this._findJournalCorruption() !== null) return false;
+    const authority = this._scanJournalAuthority({ strict: true });
+    this._recountPending();
+    if (authority.uncommitted || authority.invalid || this._pendingCount !== 0) return false;
+    if (this.state.baseOffset !== fileSize(this.sourcePath) || this.state.eventOffset !== eventBytes) {
+      // An exact-sized final batch stops at its item, before transaction
+      // control records. A reader proving the suffix has no active items
+      // can acknowledge that suffix without skipping a pending delivery.
+      const suffix = this.peekBatch(1);
+      if (suffix.items.length !== 0 || suffix.token.baseOffset !== fileSize(this.sourcePath)
+        || suffix.token.eventOffset !== eventBytes) return false;
+      const nextState = {
+        v: FORMAT_VERSION, baseOffset: suffix.token.baseOffset, eventOffset: suffix.token.eventOffset,
+      };
+      this._saveState(nextState);
+      this.state = nextState;
+    }
+    for (const latest of this._latest.values()) {
+      if (latest.type === 'replace' && (!this._committedGenerations.has(latest.generation)
+        || !this._generationMetadata.has(latest.generation))) return false;
+    }
+    for (const [retryId, files] of this._retryMetadata) {
+      if (!this._committedRetryIds.has(retryId)) return false;
+      for (const metadata of Object.values(files)) {
+        if (metadata.authorityGeneration !== null
+          && !this._committedGenerations.has(metadata.authorityGeneration)) return false;
+      }
+    }
+    for (const metadata of this._legacyMetadata.values()) {
+      if (!validOffsetRange(metadata.sourceStart, metadata.sourceEnd, this.state.baseOffset)) return false;
+    }
+    // Dead-letter identities live in their own durable log, not the journal.
+    const persistedDeadLetters = new Set();
+    for (const record of readJsonLines(this.deadLetterPath, 0, this.logger, { strict: true })) {
+      if (typeof record.value?.deadLetterId === 'string') persistedDeadLetters.add(record.value.deadLetterId);
+    }
+    for (const id of this._deadLetterIds) if (!persistedDeadLetters.has(id)) return false;
+
+    if (this.compaction.archive) archiveJournal(this.eventsPath, this.queuePath);
+    // An orphan staging file from a crash before the marker is safe to
+    // remove here, after a new acknowledgement inside the owning process.
+    if (fs.existsSync(this.compactedEventsPath)) fs.unlinkSync(this.compactedEventsPath);
+    durableCreateEmpty(this.compactedEventsPath);
+    const marker = {
+      v: FORMAT_VERSION,
+      state: { ...this.state, checksum: stateChecksum(this.state.baseOffset, this.state.eventOffset) },
+      original: fileIdentity(this.eventsPath),
+      replacement: fileIdentity(this.compactedEventsPath),
+    };
+    writeSmallJsonAtomic(this.compactionPath, { ...marker, checksum: compactionChecksum(marker) });
+    this._compactionRecovery = { replaced: false };
+    fs.renameSync(this.compactedEventsPath, this.eventsPath);
+    this._compactionRecovery = { replaced: true };
+    this.state = { v: FORMAT_VERSION, baseOffset: this.state.baseOffset, eventOffset: 0 };
+    this._ackKey = crypto.randomBytes(32);
+    this._ackJournalIdentity = fileIdentity(this.eventsPath);
+    this._clearJournalAuthority();
+    fsyncDirectory(this.queuePath);
+    this._saveState();
+    fs.unlinkSync(this.compactionPath);
+    fsyncDirectory(this.queuePath);
+    this._compactionRecovery = null;
+    return true;
   }
 
   _saveState(state = this.state) {
@@ -395,11 +542,12 @@ class DurableIngestionQueue {
     });
   }
 
-  _scanJournalAuthority() {
+  _scanJournalAuthority({ strict = false } = {}) {
     const begins = new Map();
     const retryBegins = new Map();
     const legacyBegins = new Map();
-    for (const record of readJsonLines(this.eventsPath, 0, this.logger)) {
+    let invalid = false;
+    for (const record of readJsonLines(this.eventsPath, 0, this.logger, { strict })) {
       const value = record.value;
       if (value?.v !== FORMAT_VERSION) continue;
       if (value.type === 'replace_begin' && typeof value.generation === 'string') {
@@ -416,6 +564,9 @@ class DurableIngestionQueue {
           this._committedGenerations.add(value.generation);
           this._latest.set(value.filePath, { type: 'replace', generation: value.generation });
           this._generationMetadata.set(value.generation, begin.metadata);
+          begins.delete(value.generation);
+        } else {
+          invalid = true;
         }
       } else if (value.type === 'remove' && typeof value.generation === 'string') {
         if (typeof value.filePath !== 'string') continue;
@@ -427,6 +578,9 @@ class DurableIngestionQueue {
         if (begin && begin.count === value.count) {
           this._committedRetryIds.add(value.retryId);
           this._retryMetadata.set(value.retryId, begin.files);
+          retryBegins.delete(value.retryId);
+        } else {
+          invalid = true;
         }
       } else if (value.type === 'legacy_begin' && typeof value.generation === 'string') {
         legacyBegins.set(value.generation, {
@@ -446,9 +600,13 @@ class DurableIngestionQueue {
             sourceEnd: begin.sourceEnd,
             relationships: begin.metadata.relationships,
           });
+          legacyBegins.delete(value.generation);
+        } else {
+          invalid = true;
         }
       }
     }
+    return { uncommitted: begins.size + retryBegins.size + legacyBegins.size > 0, invalid };
   }
 
   _loadDeadLetterIds() {
@@ -532,6 +690,11 @@ class DurableIngestionQueue {
 
   _recoverJournal() {
     this._recoverIncompleteByteTail();
+    const corruptStart = this._findJournalCorruption();
+    if (corruptStart !== null) this._quarantineJournalFrom(corruptStart);
+  }
+
+  _findJournalCorruption() {
     let open = null;
     let corruptStart = null;
     let v2JournalStarted = false;
@@ -606,7 +769,7 @@ class DurableIngestionQueue {
       corruptStart = open?.start ?? error.offset ?? 0;
     }
     if (corruptStart === null && open) corruptStart = open.start;
-    if (corruptStart !== null) this._quarantineJournalFrom(corruptStart);
+    return corruptStart;
   }
 
   _recoverIncompleteByteTail() {
@@ -898,6 +1061,42 @@ function stateChecksum(baseOffset, eventOffset) {
     .digest('hex');
 }
 
+function compactionChecksum(marker) {
+  const { checksum: _checksum, ...unsigned } = marker;
+  return crypto.createHash('sha256').update(JSON.stringify(unsigned)).digest('hex');
+}
+
+function archiveJournal(eventsPath, queuePath) {
+  let timestamp = Date.now();
+  let archivePath = `${eventsPath}.${timestamp}.gz`;
+  while (fs.existsSync(archivePath) || fs.existsSync(`${archivePath}.tmp`)) {
+    timestamp += 1;
+    archivePath = `${eventsPath}.${timestamp}.gz`;
+  }
+  const tmpPath = `${archivePath}.tmp`;
+  const sourceFd = fs.openSync(eventsPath, 'r');
+  let archiveFd = null;
+  try {
+    archiveFd = fs.openSync(tmpPath, 'wx', 0o600);
+    const chunk = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+    let position = 0;
+    while (true) {
+      const bytesRead = fs.readSync(sourceFd, chunk, 0, chunk.length, position);
+      if (bytesRead === 0) break;
+      // Concatenated gzip members are standard gzip and bound memory use
+      // even when an old journal is larger than V8's string limit.
+      writeFullSync(archiveFd, zlib.gzipSync(chunk.subarray(0, bytesRead)));
+      position += bytesRead;
+    }
+    fs.fsyncSync(archiveFd);
+  } finally {
+    fs.closeSync(sourceFd);
+    if (archiveFd !== null) fs.closeSync(archiveFd);
+  }
+  fs.renameSync(tmpPath, archivePath);
+  fsyncDirectory(queuePath);
+}
+
 function fileSize(filePath) {
   try { return fs.statSync(filePath).size; } catch { return 0; }
 }
@@ -1072,10 +1271,12 @@ const INTERNAL_NAMES = new Set([
   'ingestion-queue', 'events.jsonl', 'state.json', 'state.json.tmp', 'migration.json',
   'migration.json.tmp', 'corrupt-tail.bin',
   'dead-letter.jsonl', 'status.json', 'status.json.tmp',
+  'compaction.json', 'compaction.json.tmp', 'events.jsonl.compact.tmp',
 ]);
 
 function isIngestionQueueInternalFile(name) {
-  return INTERNAL_NAMES.has(name) || name.startsWith('ingestion-queue.');
+  return INTERNAL_NAMES.has(name) || name.startsWith('ingestion-queue.')
+    || /^events\.jsonl\.\d+\.gz(?:\.tmp)?$/.test(name);
 }
 
 function normalizeGenerationMetadata(value) {

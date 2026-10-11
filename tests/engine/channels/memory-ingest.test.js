@@ -136,7 +136,7 @@ test('MemoryIngest classifies source role and doctrine posture before reuse', as
 
 test('MemoryIngest prevents affect-shaped telemetry from becoming personal fact', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mi-affect-rails-'));
-  const ingest = new MemoryIngest({ brainDir: dir });
+  const ingest = new MemoryIngest({ brainDir: dir, channelPolicy: { enabled: false } });
 
   const mo = await ingest.writeFromObservation({
     channelId: 'machine.process',
@@ -293,7 +293,7 @@ test('MemoryIngest records substrate reinforcement when a source route repeats',
 
 test('MemoryIngest records authority routing so stale memories cannot pose as live truth', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mi-authority-'));
-  const ingest = new MemoryIngest({ brainDir: dir });
+  const ingest = new MemoryIngest({ brainDir: dir, channelPolicy: { enabled: false } });
   const now = new Date().toISOString();
 
   const current = await ingest.writeFromObservation({
@@ -342,7 +342,7 @@ test('MemoryIngest records authority routing so stale memories cannot pose as li
 
 test('MemoryIngest grants verified current state only when live verifier evidence is present', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mi-node-provenance-'));
-  const ingest = new MemoryIngest({ brainDir: dir });
+  const ingest = new MemoryIngest({ brainDir: dir, channelPolicy: { enabled: false } });
   const now = new Date().toISOString();
   const draft = {
     method: 'sensor_primary', type: 'observation', topic: 'machine', tags: ['machine', 'process'],
@@ -377,7 +377,7 @@ test('MemoryIngest grants verified current state only when live verifier evidenc
 
 test('MemoryIngest keeps generated reports narrative and bounds jtr corrections to semantic authority', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mi-generated-provenance-'));
-  const ingest = new MemoryIngest({ brainDir: dir });
+  const ingest = new MemoryIngest({ brainDir: dir, channelPolicy: { enabled: false } });
   const now = new Date().toISOString();
 
   const generated = await ingest.writeFromObservation({
@@ -423,7 +423,7 @@ test('MemoryIngest caps zero-context audit confidence hard', async () => {
 
 test('MemoryIngest preserves cross-agent origin on memory object and receipt', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mi-origin-'));
-  const ingest = new MemoryIngest({ brainDir: dir });
+  const ingest = new MemoryIngest({ brainDir: dir, channelPolicy: { enabled: false } });
   const obs = {
     channelId: 'neighbor.forrest',
     sourceRef: 'neighbor:forrest:2026-04-24T12:00:00Z',

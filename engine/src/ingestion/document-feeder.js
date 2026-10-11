@@ -110,7 +110,8 @@ class DocumentFeeder {
       embeddingFn: this.embeddingFn,
       config: {
         batchSize: this.config.flush?.batchSize || 20,
-        intervalSeconds: this.config.flush?.intervalSeconds || 300
+        intervalSeconds: this.config.flush?.intervalSeconds || 300,
+        queueCompaction: this.config.queueCompaction,
       },
       logger: this.logger,
       onGenerationLost: (filePath, label) => this._reingestLostGeneration(filePath, label),

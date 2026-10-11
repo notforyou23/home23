@@ -39,6 +39,23 @@ class FailingPollChan extends FakeChan {
   }
 }
 
+function waitForObservations(bus, count) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      bus.off('observation', received);
+      reject(new Error(`Timed out waiting for ${count} observations`));
+    }, 5000);
+    let seen = 0;
+    function received() {
+      if (++seen < count) return;
+      clearTimeout(timeout);
+      bus.off('observation', received);
+      resolve();
+    }
+    bus.on('observation', received);
+  });
+}
+
 test('ChannelBus accepts registration and starts channels', async () => {
   const bus = new ChannelBus({ persistenceDir: null });
   const ch = new FakeChan();
@@ -61,9 +78,9 @@ test('ChannelBus fans in observations and emits crystallize events', async () =>
   const drafts = [];
   bus.on('observation', (o) => obs.push(o));
   bus.on('crystallize', (e) => drafts.push(e));
+  const received = waitForObservations(bus, 2);
   await bus.start();
-  await new Promise((r) => setTimeout(r, 40));
-  await bus.stop();
+  try { await received; } finally { await bus.stop(); }
   assert.ok(obs.length >= 2);
   assert.equal(obs[0].channelId, 'fake.one');
   assert.equal(obs[0].flag, 'COLLECTED');
@@ -83,9 +100,9 @@ test('ChannelBus persists observations to per-channel JSONL', async () => {
     visibleAtEmit.push(existsSync(expectedPath)
       && readFileSync(expectedPath, 'utf8').includes(`"sourceRef":"${obs.sourceRef}"`));
   });
+  const received = waitForObservations(bus, 2);
   await bus.start();
-  await new Promise((r) => setTimeout(r, 40));
-  await bus.stop();
+  try { await received; } finally { await bus.stop(); }
   assert.ok(existsSync(expectedPath));
   const lines = readFileSync(expectedPath, 'utf8').trim().split('\n');
   assert.ok(lines.length >= 1);
@@ -127,9 +144,9 @@ test('ChannelBus turns poll failures into UNKNOWN observations instead of parse 
   const obs = [];
   bus.on('observation', (o) => obs.push(o));
 
+  const received = waitForObservations(bus, 1);
   await bus.start();
-  await new Promise((r) => setTimeout(r, 30));
-  await bus.stop();
+  try { await received; } finally { await bus.stop(); }
 
   assert.ok(obs.length >= 1);
   assert.equal(obs[0].channelId, 'machine.process');

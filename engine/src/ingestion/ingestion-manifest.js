@@ -15,7 +15,7 @@ class IngestionManifest {
    * @param {string} opts.runPath - Run directory path
    * @param {object} opts.memory - Live NetworkMemory instance
    * @param {function} opts.embeddingFn - async (text) => float[] | null
-   * @param {object} opts.config - { batchSize, intervalSeconds }
+   * @param {object} opts.config - { batchSize, intervalSeconds, queueCompaction }
    * @param {object} opts.logger
    * @param {function} [opts.onGenerationLost] - (filePath, label) after a
    *   generation whose chunk nodes left the graph was reset for re-reading
@@ -44,7 +44,7 @@ class IngestionManifest {
     this._legacyPendingPath = path.join(runPath, 'ingestion-pending.json');
     this._manifest = this._loadJson(this._manifestPath, {});
     this._migrateLegacyArrayIfPresent();
-    this._queue = new DurableIngestionQueue({ runPath, logger });
+    this._queue = new DurableIngestionQueue({ runPath, logger, compaction: config.queueCompaction });
     this._compatPending = null;
 
     this._flushInProgress = false;

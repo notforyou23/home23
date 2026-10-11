@@ -19,6 +19,7 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const lockfile = require('proper-lockfile');
 const { isGeneratedMemoryMethod } = require('../../../shared/memory-authority.cjs');
+const { liveProblemState, normalizeLiveProblemPolicy, shouldWriteLiveProblem, rememberLiveProblem, liveProblemObservedAt } = require('../../../shared/channel-observation-policy.cjs');
 
 const CHANNEL_CAPS = Object.freeze({
   sensor_primary:     0.95,
@@ -30,6 +31,11 @@ const CHANNEL_CAPS = Object.freeze({
   good_life:          0.88,
 });
 const DEFAULT_MAX_OBJECTS = 2500;
+const DEFAULT_CHANNEL_POLICY = Object.freeze({
+  enabled: true,
+  deny: Object.freeze(['machine.*', 'neighbor.*', 'os.pm2']),
+  liveProblemsStateChangesOnly: true,
+});
 
 function applyChannelCap(method, confidence) {
   const cap = CHANNEL_CAPS[method];
@@ -132,7 +138,7 @@ function classifyMemorySource(obs = {}, draft = {}) {
 }
 
 class MemoryIngest {
-  constructor({ brainDir, logger, maxObjects = null }) {
+  constructor({ brainDir, logger, maxObjects = null, channelPolicy = {} }) {
     if (!brainDir) throw new Error('MemoryIngest requires brainDir');
     this.brainDir = brainDir;
     this.logger = logger || console;
@@ -142,6 +148,13 @@ class MemoryIngest {
     this.maxObjects = maxObjects !== null && maxObjects !== undefined && Number.isFinite(Number(maxObjects))
       ? Number(maxObjects)
       : Number(process.env.HOME23_MEMORY_OBJECTS_ACTIVE_LIMIT || DEFAULT_MAX_OBJECTS);
+    this.channelPolicy = {
+      ...DEFAULT_CHANNEL_POLICY,
+      ...(channelPolicy && typeof channelPolicy === 'object' ? channelPolicy : {}),
+      deny: Array.isArray(channelPolicy?.deny) ? channelPolicy.deny : DEFAULT_CHANNEL_POLICY.deny,
+    };
+    this._liveProblemStates = new Map();
+    this._liveProblemPolicy = normalizeLiveProblemPolicy(this.channelPolicy);
     this._opChain = Promise.resolve();
     this._lockOptions = {
       stale: 30_000,
@@ -353,10 +366,25 @@ class MemoryIngest {
 
   async writeFromObservation(obs, draft) {
     if (!obs || !obs.channelId) throw new Error('writeFromObservation requires obs with channelId');
+    if (this.channelPolicy.enabled !== false && this.channelPolicy.deny.some((pattern) => {
+      const channelId = String(obs.channelId).toLowerCase();
+      const denied = String(pattern).toLowerCase();
+      return denied.endsWith('*') ? channelId.startsWith(denied.slice(0, -1)) : channelId === denied;
+    })) return null;
     obs = ensureTraceId(obs);
     if (!draft) draft = { method: 'build_event', type: 'observation', topic: obs.channelId, tags: [] };
 
-    return this._withSerial(() => this._writeFromObservationLocked(obs, draft));
+    return this._withSerial(async () => {
+      const problemState = this.channelPolicy.enabled !== false
+        && this.channelPolicy.liveProblemsStateChangesOnly !== false
+        ? liveProblemState(obs)
+        : null;
+      const now = liveProblemObservedAt(obs);
+      if (problemState && !shouldWriteLiveProblem(this._liveProblemStates, problemState, this._liveProblemPolicy, now)) return null;
+      const written = await this._writeFromObservationLocked(obs, draft);
+      if (written && problemState) rememberLiveProblem(this._liveProblemStates, problemState, this._liveProblemPolicy, now);
+      return written;
+    });
   }
 
   async _writeFromObservationLocked(obs, draft) {
@@ -820,4 +848,4 @@ function safeStringify(v) {
   try { return JSON.stringify(v); } catch { return String(v); }
 }
 
-module.exports = { MemoryIngest, applyChannelCap, CHANNEL_CAPS };
+module.exports = { MemoryIngest, applyChannelCap, CHANNEL_CAPS, DEFAULT_CHANNEL_POLICY };

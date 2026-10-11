@@ -5,12 +5,14 @@ const path = require('node:path');
 const test = require('node:test');
 const { MemoryIngest } = require('../../../engine/src/channels/memory-ingest.cjs');
 
-test('MemoryIngest defaults to an active object cap when no explicit max is set', () => {
+test('MemoryIngest defaults to an active object cap when no explicit max is set', (t) => {
+  const brainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-ingest-default-'));
+  t.after(() => fs.rmSync(brainDir, { recursive: true, force: true }));
   const previous = process.env.HOME23_MEMORY_OBJECTS_ACTIVE_LIMIT;
   delete process.env.HOME23_MEMORY_OBJECTS_ACTIVE_LIMIT;
   try {
     const ingest = new MemoryIngest({
-      brainDir: '/tmp/unused',
+      brainDir,
       logger: { warn() {} },
     });
     assert.equal(ingest.maxObjects, 2500);
@@ -20,9 +22,11 @@ test('MemoryIngest defaults to an active object cap when no explicit max is set'
   }
 });
 
-test('MemoryIngest compacts oversized active store into append-only archive', () => {
+test('MemoryIngest compacts oversized active store into append-only archive', (t) => {
+  const brainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-ingest-cap-'));
+  t.after(() => fs.rmSync(brainDir, { recursive: true, force: true }));
   const ingest = new MemoryIngest({
-    brainDir: '/tmp/unused',
+    brainDir,
     logger: { warn() {} },
     maxObjects: 3,
   });
