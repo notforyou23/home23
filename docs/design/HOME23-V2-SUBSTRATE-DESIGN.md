@@ -158,6 +158,14 @@ row is allowed to be FILE out of neglect.
 - **Persistence is sacred** — standalone load test on a state copy before
   any resident restart after state-adjacent changes; chain must verify and
   restore exact.
+- **Valid crash tails are replayed, never discarded** — fence the resident
+  writer, then use `npm run seed:recover-tail -- <stateDir> --source
+  <type>:<absolute-path> ...` for a read-only verification pass. The command
+  replays against an isolated branch and requires every category and state
+  hash to match the existing receipts. `--apply --backup-dir <new-directory>`
+  appends a checkpoint boundary only after that proof; it refuses broken
+  chains, missing source evidence, replay divergence, live locks, and an
+  existing backup target. It never truncates or rewrites the ledger.
 - **Degraded-honest everywhere** — absence over fabrication; the organ owns
   a function only while it is actually alive.
 - **No manufactured life** — organic events only; teaching channels are the
