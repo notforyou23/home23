@@ -5,6 +5,7 @@ const { createInterface } = require('readline');
 const { UnifiedClient } = require('../core/unified-client');
 const { TemplateReportGenerator } = require('./template-generator');
 const { StrategicGoalsTracker } = require('./strategic-goals-tracker');
+const { StrategicGoalGate } = require('./strategic-goal-gate');
 const { InsightsParser } = require('./insights-parser');
 const { getAgentTimeout } = require('../config/agent-timeouts');
 const { parseWithFallback } = require('../core/json-repair');
@@ -55,6 +56,8 @@ class MetaCoordinator {
     
     // Strategic Goals Tracker - closes the execution loop
     this.strategicTracker = new StrategicGoalsTracker(logger);
+    this.strategicGoalGate = new StrategicGoalGate(this.config, logger);
+    this.strategicGoalReview = null;
     
     // Insights Parser - extracts actionable next steps from curated insights
     this.insightsParser = new InsightsParser(logger);
@@ -524,6 +527,9 @@ class MetaCoordinator {
       this.logger.info('');
     }
 
+    const previousGoalReview = this.strategicGoalReview;
+    const goalReview = this.strategicGoalGate.beginReview(cycleCount);
+    this.strategicGoalReview = goalReview;
     try {
       // Phase 1: Analyze Phase 2B cognitive outputs
       this.logger.info('🔍 Phase 1: Analyzing cognitive outputs...');
@@ -650,7 +656,7 @@ class MetaCoordinator {
           });
         }
 
-        const injectedGoals = await this.injectUrgentGoals(decisions.urgentGoals, liveGoalsSystem);
+        const injectedGoals = await this.injectUrgentGoals(decisions.urgentGoals, liveGoalsSystem, goalReview);
 
         if (injectedGoals.length > 0) {
           this.logger.info('✅ Urgent goals injected into goal system', {
@@ -673,7 +679,7 @@ class MetaCoordinator {
       
       // NEW: Process previous curated insights and convert high-priority next steps to goals
       if (liveGoalsSystem && this.lastReviewCycle > 0) {
-        await this.processInsightsIntoGoals(this.lastReviewCycle, liveGoalsSystem, cycleCount);
+        await this.processInsightsIntoGoals(this.lastReviewCycle, liveGoalsSystem, cycleCount, goalReview);
       }
 
       // Store review results
@@ -772,6 +778,9 @@ class MetaCoordinator {
         stack: error.stack
       });
       return null;
+    } finally {
+      this.strategicGoalGate.finishReview(goalReview);
+      this.strategicGoalReview = previousGoalReview;
     }
   }
 
@@ -2687,16 +2696,32 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
     };
   }
 
+  /** Read owner obligations without reconciling or writing agency state. */
+  getPendingOwnerRequests() {
+    // Derive from receipts without calling state()/ensureState(), which write
+    // agency state. Historical questions() includes resolved owner questions.
+    try {
+      const obligations = this.fullConfig._osEngine?.agencyKernel?.deriveObligations?.();
+      return Array.isArray(obligations) ? obligations : [];
+    } catch (error) {
+      this.logger.debug('Pending owner requests unavailable; strategic gate assumes none', { error: error.message });
+      return [];
+    }
+  }
+
   /**
-   * Inject urgent goals based on deliverables gaps
-   * Creates actual goals in the goal system (not just missions)
-   * These goals persist and can be tracked through normal lifecycle
-   * 
+   * Inject urgent goals based on deliverables gaps.
+   * Goals persist and can be tracked through their normal lifecycle.
    * @param {Array} urgentGoalSpecs - Goal specifications from strategic decisions
    * @param {Object} goalsSystem - Reference to goals system for injection
+   * @param {Object|null} review - Shared admission allowance for this review
    */
-  async injectUrgentGoals(urgentGoalSpecs, goalsSystem) {
+  async injectUrgentGoals(urgentGoalSpecs, goalsSystem, review = this.strategicGoalReview) {
     const injectedGoals = [];
+    const standaloneReview = !review;
+    review ||= this.strategicGoalGate.beginReview(`injection-${Date.now()}`);
+    const pendingOwnerRequests = this.strategicGoalGate.config.enabled !== false
+      && this.strategicGoalGate.config.metaLoopEnabled !== false ? this.getPendingOwnerRequests() : [];
 
     // Block agent types that require code/file execution — irrelevant for ambient thinking brains.
     // These types are appropriate for dev-environment COSMO, not family/reflection deployments.
@@ -2743,6 +2768,9 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
     
     for (const spec of filteredSpecs) {
       try {
+        // Evaluate sequentially: accepted earlier goals must count toward this
+        // batch's novelty checks and review/hour allowances.
+        if (!this.strategicGoalGate.evaluate(spec, goalsSystem, review, { pendingOwnerRequests }).allowed) continue;
         // Format goal data to match what IntrinsicGoalSystem.addGoal() expects
         const goalData = {
           description: spec.description,
@@ -2777,6 +2805,7 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
           
           if (createdGoal) {
             injectedGoals.push(createdGoal);
+            this.strategicGoalGate.recordCreated(createdGoal, review);
             
             this.logger.info('📌 Strategic goal injected from gap detection', {
               goalId: createdGoal.id,
@@ -2804,6 +2833,7 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
       }
     }
     
+    if (standaloneReview) this.strategicGoalGate.finishReview(review);
     return injectedGoals;
   }
   
@@ -2811,7 +2841,7 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
    * Process curated insights reports and convert high-priority next steps to goals
    * Reads previous review cycle's insights report and extracts actionable recommendations
    */
-  async processInsightsIntoGoals(previousReviewCycle, goalsSystem, currentCycle) {
+  async processInsightsIntoGoals(previousReviewCycle, goalsSystem, currentCycle, review = this.strategicGoalReview) {
     try {
       // Find the most recent insights report (may be from previous or earlier cycle)
       const insightsReports = await this.findInsightsReports();
@@ -2857,7 +2887,10 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
       );
       
       // Check for duplicates with existing goals and recently created urgent goals
-      const deduplicatedSpecs = this.deduplicateInsightGoals(goalSpecs, goalsSystem);
+      // The gate checks terminal history too and logs each rejected candidate.
+      // Preserve the legacy insight filter when the new gate is disabled.
+      const deduplicatedSpecs = this.strategicGoalGate.config.enabled === false
+        ? this.deduplicateInsightGoals(goalSpecs, goalsSystem) : goalSpecs;
       
       if (deduplicatedSpecs.length === 0) {
         this.logger.info('💎 All insight next steps already covered by existing goals');
@@ -2870,7 +2903,7 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
       });
       
       // Inject as goals (similar to urgent goals)
-      const injectedGoals = await this.injectUrgentGoals(deduplicatedSpecs, goalsSystem);
+      const injectedGoals = await this.injectUrgentGoals(deduplicatedSpecs, goalsSystem, review);
       
       if (injectedGoals.length > 0) {
         this.logger.info('✅ Insights converted to tracked goals', {
