@@ -481,6 +481,22 @@ modelAssignments:
         model: kimi-k3:cloud
 coordinator:
   enabled: true
+  # Slash-separated keyword phrases are alternatives within a blocked family.
+  blockedGoalTopics:
+    - 'Substack canonical-pointer notes approval template scope / nine notes template / nine-note scope / canonical owner request / authorized pointer text'
+    - 'approval request / decision record / byte-count threshold pending owner approval / duplicate request consolidation'
+  strategicGoalGate:
+    enabled: true
+    dedupeEnabled: true
+    ownerClosedEnabled: true
+    blockedTopicsEnabled: true
+    metaLoopEnabled: true
+    rateLimitEnabled: true
+    similarityThreshold: 0.5
+    topicSimilarityThreshold: 0.5
+    lookbackDays: 14
+    maxPerReview: 2
+    maxPerHour: 4
   reviewCyclePeriod: 50
   emergencyReviewMinCycles: 10
   model: gpt-5.5

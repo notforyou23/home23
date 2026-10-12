@@ -36,11 +36,21 @@ class StrategicGoalsTracker {
    * Register urgent goals created during a review
    */
   registerUrgentGoals(reviewCycle, urgentGoalSpecs, createdGoals) {
-    const cycleGoals = new Set();
+    // Urgent decisions and curated insights can both register in one review.
+    const cycleGoals = this.reviewCycles.get(reviewCycle) || new Set();
     
     for (let i = 0; i < createdGoals.length; i++) {
       const goal = createdGoals[i];
-      const spec = urgentGoalSpecs[i];
+      // Admission filters can suppress any earlier specification in the batch.
+      const spec = urgentGoalSpecs.find(candidate => candidate.description === goal.description
+        && (!goal.metadata?.agentTypeHint || candidate.agentType === goal.metadata.agentTypeHint)
+        && (!goal.metadata?.rationale || (candidate.rationale || 'Critical deliverables gap detected') === goal.metadata.rationale)) || {
+        description: goal.description,
+        agentType: goal.metadata?.agentTypeHint,
+        priority: goal.priority,
+        urgency: goal.metadata?.urgency,
+        rationale: goal.metadata?.rationale,
+      };
       
       const tracking = {
         goalId: goal.id,
@@ -433,4 +443,3 @@ class StrategicGoalsTracker {
 }
 
 module.exports = { StrategicGoalsTracker };
-
