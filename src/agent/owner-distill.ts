@@ -31,17 +31,23 @@ export interface OwnerDistillerOptions {
 
 /** Never open/migrate Core as a writer. Old projections omit channel kind. */
 export function ownerChannelKindReader(databasePath: string): (id: string) => string | undefined {
+  // Core holds the database in EXCLUSIVE locking mode, so while it runs every
+  // other open fails with SQLITE_BUSY. Fail fast and back off per channel so a
+  // pass never stalls the harness event loop on a lock that cannot clear.
   const kinds = new Map<string, string>();
+  const failedAt = new Map<string, number>();
   return id => {
     if (kinds.has(id)) return kinds.get(id);
+    const failed = failedAt.get(id);
+    if (failed !== undefined && Date.now() - failed < 10 * 60_000) return undefined;
     let database: Database.Database | undefined;
     try {
-      database = new Database(databasePath, { readonly: true, fileMustExist: true, timeout: 2000 });
+      database = new Database(databasePath, { readonly: true, fileMustExist: true, timeout: 0 });
       const kind = (database.prepare('SELECT kind FROM channels WHERE id=?').get(id) as { kind: string } | undefined)?.kind;
       // Known kinds are stable. Missing/locked Core must remain retryable next pass.
-      if (typeof kind === 'string') kinds.set(id, kind);
+      if (typeof kind === 'string') kinds.set(id, kind); else failedAt.set(id, Date.now());
       return kind;
-    } catch { return undefined; }
+    } catch { failedAt.set(id, Date.now()); return undefined; }
     finally { try { database?.close(); } catch { /* Lookup and cleanup never throw. */ } }
   };
 }
@@ -104,8 +110,8 @@ function contactTurn(record: Record<string, any>, opts: OwnerDistillerOptions,
     if (typeof ref !== 'string' || !ref.startsWith('coordination.message:')
       || record.contactId !== `message:${ref.slice('coordination.message:'.length)}`) return null;
     if (record.schema && (record.messageId !== ref.slice('coordination.message:'.length))) return null;
-    if (!kinds.has(id)) kinds.set(id, record.channelKind ?? opts.channelKind?.(id));
-    const kind = record.channelKind ?? kinds.get(id);
+    const kind = record.channelKind ?? kinds.get(id) ?? (kinds.has(id) ? undefined : opts.channelKind?.(id));
+    if (!kinds.has(id) || kinds.get(id) === undefined) kinds.set(id, kind);
     if (kind !== 'direct') {
       if (kind === undefined) unresolvedChannels.add(record.session);
       return null;
@@ -123,6 +129,19 @@ function contactTurn(record: Record<string, any>, opts: OwnerDistillerOptions,
   }
   if (!ref || ref.length > 240 || record.session.length > 180) return null;
   return { role: record.role, text, ts: record.ts, session: record.session, messageRef: ref, owner, canonical };
+}
+
+/** Channel id of a well-formed canonical line that carries kind metadata. */
+function projectionKindChannel(record: Record<string, any>): string | undefined {
+  if (typeof record.channelKind !== 'string' || typeof record.session !== 'string'
+    || !record.session.startsWith('coordination:')) return undefined;
+  const id = record.session.slice('coordination:'.length);
+  const ref = record.sourceRef;
+  if (!id || (record.channelId && record.channelId !== id) || typeof ref !== 'string'
+    || !ref.startsWith('coordination.message:')
+    || record.contactId !== `message:${ref.slice('coordination.message:'.length)}`
+    || (record.schema && record.messageId !== ref.slice('coordination.message:'.length))) return undefined;
+  return id;
 }
 
 export function ownerSessions(turns: OwnerContactTurn[], gapMs: number): OwnerSession[] {
@@ -205,6 +224,8 @@ export class OwnerSessionDistiller {
     const turns: OwnerContactTurn[] = [];
     const kinds = new Map<string, string | undefined>();
     const unresolvedChannels = new Set<string>();
+    const projectionKinds = new Map<string, string>();
+    const candidates: Record<string, any>[] = [];
     const stream = createReadStream(this.opts.sourcePath, { encoding: 'utf8', signal });
     let pending = '';
     try {
@@ -218,11 +239,16 @@ export class OwnerSessionDistiller {
           let record;
           try { record = JSON.parse(line); } catch { throw new Error('Invalid owner contact JSON'); }
           if (!record || typeof record !== 'object') throw new Error('Invalid owner contact record');
+          const kindedId = projectionKindChannel(record);
+          if (kindedId) {
+            const known = projectionKinds.get(kindedId);
+            // Disagreeing metadata for one channel is never trusted as direct.
+            projectionKinds.set(kindedId, known && known !== record.channelKind ? 'conflict' : record.channelKind);
+          }
           const time = typeof record.ts === 'string' ? Date.parse(record.ts) : NaN;
           if (!Number.isFinite(time) || typeof record.session !== 'string' || time < cursor.since || time > now
             || time <= (cursor.through[record.session] ?? 0)) continue;
-          const turn = contactTurn(record, this.opts, kinds, unresolvedChannels);
-          if (turn) turns.push(turn);
+          candidates.push(record);
         }
       }
       // A writer may be appending the last line. Its uncommitted tail waits.
@@ -230,6 +256,13 @@ export class OwnerSessionDistiller {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { sessions: 0, saved: 0 };
       throw error;
     } finally { stream.destroy(); }
+    // Legacy projection lines lack channel kind. Any kinded line for the same
+    // channel anywhere in the file resolves them without touching Core.
+    for (const [id, kind] of projectionKinds) kinds.set(id, kind);
+    for (const record of candidates) {
+      const turn = contactTurn(record, this.opts, kinds, unresolvedChannels);
+      if (turn) turns.push(turn);
+    }
     const gap = bounded(cfg?.sessionGapMinutes, 30, 1, 1440) * 60_000;
     // Do not advance a channel past unresolved older turns, even if newer
     // projection lines include their kind. Other channels can still progress.

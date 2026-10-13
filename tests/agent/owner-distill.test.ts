@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import Database from 'better-sqlite3';
-import { spawn } from 'node:child_process';
 import { runInNewContext } from 'node:vm';
 import { OwnerSessionDistiller, OWNER_DISTILL_INTERVAL_MS, normalizeOwnerQuote, containsOwnerSecret,
   ownerChannelKindReader, type OwnerDistillerOptions } from '../../src/agent/owner-distill.js';
@@ -79,7 +78,7 @@ test('groups, peers, scheduled inputs, workers and unknown provenance are exclud
   const f = fixture(t, [
     contact('home-device', 'I live in New York.', 70, { deviceId: 'paired-home' }),
     contact('mobile', 'I have two dogs.', 69, { deviceId: 'paired-iphone' }),
-    contact('group', 'I live in Paris.', 65, { channelKind: 'group' }),
+    contact('group', 'I live in Paris.', 65, { channelKind: 'group', channelId: 'group-1', session: 'coordination:group-1' }),
     contact('scheduled', 'I live in Paris.', 64, { scheduled: true }),
     contact('runtime', 'I live in Paris.', 63, { runtime: true }),
     contact('worker', 'I live in Paris.', 62, { worker: true }),
@@ -107,7 +106,9 @@ test('already shipped canonical contact uses read-only channel kind lookup', asy
   assert.equal(await readonlyDistiller.pass().then(r => r.saved), 1);
 });
 
-test('channel kind lookup caches known kinds for its lifetime and retries unavailable Core', t => {
+test('channel kind lookup caches failures for ten minutes and known kinds for its lifetime', t => {
+  let now = NOW;
+  t.mock.method(Date, 'now', () => now);
   const f = fixture(t, [], []);
   const dbPath = join(f.root, 'core.sqlite3');
   const lookup = ownerChannelKindReader(dbPath);
@@ -116,34 +117,52 @@ test('channel kind lookup caches known kinds for its lifetime and retries unavai
   const db = new Database(dbPath);
   t.after(() => db.close());
   db.exec("CREATE TABLE channels(id TEXT, kind TEXT); INSERT INTO channels VALUES('direct-1','direct')");
-  assert.equal(lookup('direct-1'), 'direct', 'an unavailable lookup remains retryable');
+  assert.equal(lookup('direct-1'), undefined, 'an unavailable lookup is negatively cached');
+  now += 10 * 60_000;
+  assert.equal(lookup('direct-1'), 'direct', 'an unavailable lookup becomes retryable after ten minutes');
   db.exec("UPDATE channels SET kind='group' WHERE id='direct-1'");
   assert.equal(lookup('direct-1'), 'direct', 'a known kind is cached for this reader lifetime');
   assert.equal(ownerChannelKindReader(dbPath)('direct-1'), 'group');
 });
 
-test('channel kind lookup waits through a short Core lock and never writes', async t => {
+test('locked Core fails fast and attempts each unresolved channel once across passes until cache expiry', async t => {
+  let now = NOW;
+  t.mock.method(Date, 'now', () => now);
   const f = fixture(t, [], []);
   const dbPath = join(f.root, 'core.sqlite3');
   const db = new Database(dbPath);
-  db.exec("CREATE TABLE channels(id TEXT, kind TEXT); INSERT INTO channels VALUES('direct-1','direct')");
-  db.close();
-  const locker = spawn(process.execPath, ['-e', `
-    const Database = require('better-sqlite3');
-    const db = new Database(process.argv[1]);
-    db.exec('BEGIN EXCLUSIVE');
-    process.stdout.write('locked');
-    setTimeout(() => { db.exec('COMMIT'); db.close(); }, 250);
-  `, dbPath], { stdio: ['ignore', 'pipe', 'pipe'] });
-  t.after(() => { if (locker.exitCode === null) locker.kill(); });
-  await new Promise<void>((resolve, reject) => {
-    locker.stdout.once('data', () => resolve());
-    locker.once('error', reject);
-    locker.once('exit', code => { if (code !== 0) reject(new Error('Core lock fixture failed')); });
+  t.after(() => { if (db.open) db.close(); });
+  db.exec("CREATE TABLE channels(id TEXT, kind TEXT); INSERT INTO channels VALUES('direct-1','direct'), ('direct-2','direct')");
+  db.exec('PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE; COMMIT');
+  const prepare = Database.prototype.prepare;
+  const timeouts: number[] = [];
+  t.mock.method(Database.prototype, 'prepare', function (this: Database.Database, sql: string) {
+    timeouts.push(this.pragma('busy_timeout', { simple: true }) as number);
+    return prepare.call(this, sql);
   });
-  assert.equal(ownerChannelKindReader(dbPath)('direct-1'), 'direct');
+  writeFileSync(f.sourcePath, [contact('one', 'I have two dogs.', 150, { channelKind: undefined }),
+    contact('two', 'I live in New York.', 60, { channelKind: undefined }),
+    contact('other', 'Independent channel.', 60, { channelKind: undefined, channelId: 'direct-2', session: 'coordination:direct-2' })]
+    .map(record => JSON.stringify(record)).join('\n') + '\n');
+  const distiller = new OwnerSessionDistiller({ brainDir: f.brainDir, sourcePath: f.sourcePath, now: () => now,
+    channelKind: ownerChannelKindReader(dbPath), generate: async () => '' });
+  t.after(() => distiller.stop());
+  assert.deepEqual(await distiller.pass(), { sessions: 0, saved: 0 });
+  assert.deepEqual(timeouts, [0, 0], 'each channel lookup disables synchronous busy waiting');
+  for (let pass = 0; pass < 3; pass++) assert.deepEqual(await distiller.pass(), { sessions: 0, saved: 0 });
+  assert.equal(timeouts.length, 2, 'failures stay cached across passes, independently per channel');
+  now += 10 * 60_000 - 1;
+  await distiller.pass();
+  assert.equal(timeouts.length, 2);
+  now++;
+  await distiller.pass();
+  assert.equal(timeouts.length, 4, 'expired failures permit one new attempt per channel');
+  assert.equal(existsSync(join(f.brainDir, 'owner-distill-cursor.json')), false);
+  db.close();
+  now += 10 * 60_000;
+  assert.deepEqual(await distiller.pass(), { sessions: 3, saved: 0 }, 'pending sessions survive until Core is available');
   const readonly = new Database(dbPath, { readonly: true });
-  assert.deepEqual(readonly.prepare('SELECT * FROM channels').all(), [{ id: 'direct-1', kind: 'direct' }]);
+  assert.deepEqual(readonly.prepare('SELECT * FROM channels').all(), [{ id: 'direct-1', kind: 'direct' }, { id: 'direct-2', kind: 'direct' }]);
   readonly.close();
 });
 
@@ -161,37 +180,78 @@ test('live-shaped stream and old projection records resolve direct kind into fin
   }
 });
 
-test('unavailable channel kind fails closed and retains unresolved sessions for retry', async t => {
-  let available = false;
+test('a later kinded projection line resolves earlier legacy turns in the same channel without Core', async t => {
+  let lookups = 0;
   const f = fixture(t, [contact('old', 'I have two dogs.', 150, { channelKind: undefined }),
     contact('new', 'I live in New York.', 60)], async request => request.prompt.includes('coordination.message:old')
       ? item('Jason has two dogs.', 'I have two dogs.', 'old')
       : item('Jason lives in New York.', 'I live in New York.', 'new'),
-  { channelKind: () => available ? 'direct' : undefined });
-  assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 });
-  assert.equal(f.prompts.length, 0);
-  assert.equal(existsSync(join(f.brainDir, 'owner-distill-cursor.json')), false);
-  available = true;
+  { channelKind: () => { lookups++; return undefined; } });
   assert.deepEqual(await f.distiller.pass(), { sessions: 2, saved: 2 });
   assert.equal(f.objects().length, 2);
+  assert.equal(lookups, 0, 'projection metadata takes precedence over a locked Core');
 });
 
-test('unavailable kind only defers its channel, including turns after an existing cursor', async t => {
-  let available = false;
+test('kind discovery scans already processed projection lines before applying the cursor', async t => {
   const f = fixture(t, [contact('done', 'Earlier session.', 240)], ['']);
   assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 0 });
   appendFileSync(f.sourcePath, [contact('old', 'I have two dogs.', 150, { channelKind: undefined }),
-    contact('new', 'I live in New York.', 60),
+    contact('new', 'I live in New York.', 60, { channelKind: undefined }),
     contact('other', 'Independent channel.', 60, { channelId: 'direct-2', session: 'coordination:direct-2' })]
     .map(record => JSON.stringify(record)).join('\n') + '\n');
   const distiller = new OwnerSessionDistiller({ brainDir: f.brainDir, sourcePath: f.sourcePath, now: () => NOW,
-    channelKind: () => available ? 'direct' : undefined, generate: async () => '' });
-  assert.deepEqual(await distiller.pass(), { sessions: 1, saved: 0 });
+    channelKind: () => { assert.fail('the processed line still supplies channel kind'); }, generate: async () => '' });
+  assert.deepEqual(await distiller.pass(), { sessions: 3, saved: 0 });
   const cursor = JSON.parse(readFileSync(join(f.brainDir, 'owner-distill-cursor.json'), 'utf8'));
-  assert.equal(cursor.through['coordination:direct-1'], Date.parse(at(240)));
+  assert.equal(cursor.through['coordination:direct-1'], Date.parse(at(60)));
   assert.equal(cursor.through['coordination:direct-2'], Date.parse(at(60)));
-  available = true;
-  assert.deepEqual(await distiller.pass(), { sessions: 2, saved: 0 });
+  assert.deepEqual(await distiller.pass(), { sessions: 0, saved: 0 });
+});
+
+test('kind discovery includes contact outside the fourteen-day evidence window and peer voice', async t => {
+  const f = fixture(t, [contact('metadata', 'Peer context.', 15 * 24 * 60, { voice: 'peer',
+    actor: { principalId: 'peer', kind: 'bot' } }), contact('one', 'I have two dogs.', 60, { channelKind: undefined })],
+  [item('Jason has two dogs.', 'I have two dogs.', 'one')], { channelKind: () => { assert.fail('metadata needs no Core lookup'); } });
+  assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 1 });
+  assert.ok(!f.prompts[0]!.includes('coordination.message:metadata'));
+});
+
+test('unresolved channels stay pending while other channels progress and later projection metadata unlocks them', async t => {
+  const f = fixture(t, [contact('old', 'I have two dogs.', 150, { channelKind: undefined }),
+    contact('new', 'I live in New York.', 60, { channelKind: undefined }),
+    contact('other', 'Independent channel.', 60, { channelId: 'direct-2', session: 'coordination:direct-2' })], [''],
+  { channelKind: () => undefined });
+  assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 0 });
+  const cursor = JSON.parse(readFileSync(join(f.brainDir, 'owner-distill-cursor.json'), 'utf8'));
+  assert.equal(cursor.through['coordination:direct-1'], undefined);
+  assert.equal(cursor.through['coordination:direct-2'], Date.parse(at(60)));
+  assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 });
+  appendFileSync(f.sourcePath, JSON.stringify(contact('kind', 'A current reply.', 1, { role: 'assistant', voice: 'self',
+    actor: { principalId: 'resident', kind: 'bot' } })) + '\n');
+  assert.deepEqual(await f.distiller.pass(), { sessions: 2, saved: 0 });
+});
+
+test('projection kind metadata cannot cross channels or use malformed canonical identity', async t => {
+  const f = fixture(t, [contact('one', 'I have two dogs.', 60, { channelKind: undefined }),
+    contact('mismatch', 'Wrong channel.', 1, { channelId: 'direct-2' }),
+    contact('bad-ref', 'Wrong identity.', 1, { contactId: 'message:another' }),
+    contact('other', 'Independent channel.', 60, { channelId: 'direct-2', session: 'coordination:direct-2' })], [''],
+  { channelKind: () => undefined });
+  assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 0 });
+  assert.ok(!f.prompts[0]!.includes('coordination.message:one'));
+  const cursor = JSON.parse(readFileSync(join(f.brainDir, 'owner-distill-cursor.json'), 'utf8'));
+  assert.equal(cursor.through['coordination:direct-1'], undefined);
+});
+
+test('group and conflicting projection kinds never qualify legacy owner turns', async t => {
+  for (const conflict of [false, true]) {
+    const f = fixture(t, [contact('one', 'I have two dogs.', 60, { channelKind: undefined }),
+      ...(conflict ? [contact('direct', 'Direct metadata.', 15 * 24 * 60)] : []),
+      contact('group', 'Group metadata.', 1, { channelKind: 'group' })], [], { channelKind: () => 'direct' });
+    assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 });
+    assert.equal(f.prompts.length, 0);
+    assert.equal(existsSync(join(f.brainDir, 'owner-distill-cursor.json')), false);
+  }
 });
 
 test('cursor preserves progress when switching between the known stream and projection sources', async t => {
@@ -470,4 +530,21 @@ test('harness schedules background start and fifteen-minute passes, without repl
   disabled.distiller.start(); assert.equal((disabled.distiller as any).timer, undefined);
   assert.deepEqual(await disabled.distiller.pass(), { sessions: 0, saved: 0 });
   assert.equal(disabled.prompts.length, 0);
+});
+
+test('kind reader fails fast against an EXCLUSIVE-locked Core and backs off per channel', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'owner-kind-lock-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'core.sqlite3');
+  const core = new Database(path);
+  t.after(() => core.close());
+  core.pragma('journal_mode = WAL');
+  core.exec("CREATE TABLE channels (id TEXT PRIMARY KEY, kind TEXT); INSERT INTO channels VALUES ('direct-1','direct')");
+  core.pragma('locking_mode = EXCLUSIVE');
+  core.exec("INSERT INTO channels VALUES ('lock','group')"); // first write takes and holds the exclusive lock
+  const read = ownerChannelKindReader(path);
+  const started = Date.now();
+  assert.equal(read('direct-1'), undefined);
+  assert.equal(read('direct-1'), undefined); // backed off: no second open
+  assert.ok(Date.now() - started < 500, 'locked Core must not stall the harness');
 });
