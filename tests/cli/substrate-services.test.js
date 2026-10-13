@@ -229,6 +229,81 @@ test('no resident seeds declared, none emitted', (t) => {
   assert.equal(loadApps(root).some((a) => a.name === 'home23-clay-seed'), false);
 });
 
+test('declared Seeds subscribe to house conversations by default, including agents without a Seed', (t) => {
+  const root = makeInstall({ substrate: { enabled: false }, home: { substrate: { seeds: [{
+    name: 'clay', stateDir: 'instances/clay/seed-01', env: { SEED_SOURCE: 'instances/jerry/brain/event-ledger.jsonl' },
+  }] } } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = loadApps(root);
+  const clay = apps.find(app => app.name === 'home23-clay-seed');
+  const shipper = apps.find(app => app.name === 'home23-jerry-shipper');
+  assert.ok(shipper, 'subscribed contact gets a supervised shipper even without an agent Seed');
+  assert.deepEqual(JSON.parse(clay.env.SEED_OWNER_CONVERSATION_SOURCES), [shipper.env.SHIPPER_STREAM_PATH]);
+});
+
+test('declared conversation subscription can select house agents or explicitly opt out', (t) => {
+  const root = makeInstall({ home: { substrate: { seeds: [
+    { name: 'clay', stateDir: 'instances/clay/seed-01', ownerConversations: ['jerry', 'jerry'] },
+    { name: 'quiet', stateDir: 'instances/quiet/seed-01', ownerConversations: false },
+  ] } } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = loadApps(root);
+  const clay = apps.find(app => app.name === 'home23-clay-seed');
+  assert.deepEqual(JSON.parse(clay.env.SEED_OWNER_CONVERSATION_SOURCES), [join(root, 'instances/jerry/substrate/conversation-stream.jsonl')]);
+  assert.equal(apps.find(app => app.name === 'home23-quiet-seed').env.SEED_OWNER_CONVERSATION_SOURCES, undefined);
+});
+
+test('subscription names must refer to configured house agents', (t) => {
+  const root = makeInstall({ home: { substrate: { seeds: [{
+    name: 'clay', stateDir: 'instances/clay/seed-01', ownerConversations: ['../unknown'],
+  }] } } }, { generate: false });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.throws(() => generateEcosystem(root, { quiet: true }), /ownerConversations.*configured house agent/);
+});
+
+test('house and per-agent conversation opt-outs preserve explicit control', (t) => {
+  const root = makeInstall({ home: { substrate: { ownerConversations: false, seeds: [{
+    name: 'clay', stateDir: 'instances/clay/seed-01',
+  }] } } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = loadApps(root);
+  assert.equal(apps.find(app => app.name === 'home23-clay-seed').env.SEED_OWNER_CONVERSATION_SOURCES, undefined);
+  assert.equal(apps.find(app => app.name === 'home23-jerry-seed').env.SEED_CONVERSATION_SOURCE, undefined);
+  assert.equal(apps.find(app => app.name === 'home23-jerry-shipper'), undefined);
+});
+
+test('explicit individual subscription overrides the house default and includes every selected agent', t => {
+  const root = makeInstall({ substrate: { enabled: true, ownerConversations: true }, home: { substrate: {
+    ownerConversations: false, seeds: [{ name: 'clay', stateDir: 'instances/clay/seed-01', ownerConversations: true,
+      env: { SEED_CONVERSATION_SOURCE: 'instances/jerry/substrate/conversation-stream.jsonl' } }],
+  } } }, { generate: false });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'instances/forrest'), { recursive: true });
+  writeFileSync(join(root, 'instances/forrest/config.yaml'), yaml.dump({ agent: { displayName: 'Forrest' } }));
+  generateEcosystem(root, { quiet: true });
+  const apps = loadApps(root);
+  const clay = apps.find(app => app.name === 'home23-clay-seed');
+  assert.deepEqual(JSON.parse(clay.env.SEED_OWNER_CONVERSATION_SOURCES), [
+    join(root, 'instances/forrest/substrate/conversation-stream.jsonl'),
+    join(root, 'instances/jerry/substrate/conversation-stream.jsonl'),
+  ]);
+  assert.equal(clay.env.SEED_CONVERSATION_SOURCE, join(root, 'instances/jerry/substrate/conversation-stream.jsonl'));
+  assert.ok(apps.find(app => app.name === 'home23-forrest-shipper'));
+  assert.equal(apps.find(app => app.name === 'home23-jerry-seed').env.SEED_CONVERSATION_SOURCE,
+    join(root, 'instances/jerry/substrate/conversation-stream.jsonl'));
+});
+
+test('an agent may stop its own Seed subscription while another declared Seed keeps the feed', t => {
+  const root = makeInstall({ substrate: { enabled: true, ownerConversations: false }, home: { substrate: {
+    seeds: [{ name: 'clay', stateDir: 'instances/clay/seed-01' }],
+  } } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = loadApps(root);
+  assert.equal(apps.find(app => app.name === 'home23-jerry-seed').env.SEED_CONVERSATION_SOURCE, undefined);
+  assert.ok(apps.find(app => app.name === 'home23-jerry-shipper'));
+  assert.ok(apps.find(app => app.name === 'home23-clay-seed').env.SEED_OWNER_CONVERSATION_SOURCES);
+});
+
 test('no shippers declared, none emitted', (t) => {
   const root = makeInstall();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -281,6 +356,16 @@ test('house-sense stays off unless asked for', (t) => {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   assert.equal(loadApps(root).find((a) => a.name === 'home23-jerry-house-sense'), undefined,
     'a seed-running agent does not automatically sense the house');
+});
+
+test('house sensing rate and cooldown can be configured without editing generated process definitions', t => {
+  const root = makeInstall({ substrate: { enabled: true, houseSense: true,
+    houseSenseMaxPerHour: 0, houseSenseEntityCooldownMs: 600000, houseSensePollMs: 30000 } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sense = loadApps(root).find(app => app.name === 'home23-jerry-house-sense');
+  assert.equal(sense.env.HOUSE_MAX_PER_HOUR, '0', 'an explicit zero cap is preserved');
+  assert.equal(sense.env.HOUSE_ENTITY_COOLDOWN_MS, '600000');
+  assert.equal(sense.env.HOUSE_POLL_MS, '30000');
 });
 
 test('a declared broker carries a remote resident, with the address only in config', (t) => {

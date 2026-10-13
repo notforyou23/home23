@@ -32,7 +32,7 @@ export interface SituationalAwarenessConfig {
    * with its carried situations, earned trust, and open expectations. The
    * stateDir may be a live mirror; reads are torn-tolerant and read-only. */
   substrate?: {
-    stateDir: string;
+    stateDir?: string;
     budget?: number;
   };
 }

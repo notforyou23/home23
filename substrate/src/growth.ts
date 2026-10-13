@@ -24,6 +24,22 @@ import { routeEvent, routingFromAnatomy } from './cells.js';
 import { emptyCellPlasticState } from './plasticity.js';
 import type { DevelopmentalState } from './plasticity.js';
 
+export const OWNER_VOICE_CELL_ID = 'contact.owner.voice';
+export const WORK_CORRECTION_CELL_ID = 'work.corrections';
+
+/** Explicit operator growth, independent of traffic-share pressure floors.
+ * Add fresh channels while retaining every existing cell and learned delta.
+ * Old episodes are never redistributed or rewritten. */
+export function ownerVoiceAnatomy(anatomy: readonly AnatomyCellSpec[]): AnatomyCellSpec[] {
+  if (anatomy.some(c => c.role === 'owner')) return anatomy.map(c => ({ ...c }));
+  if (anatomy.some(c => c.id === OWNER_VOICE_CELL_ID || c.id === WORK_CORRECTION_CELL_ID)) {
+    throw new Error('owner voice growth conflicts with existing cell ids');
+  }
+  return [...anatomy.map(c => ({ ...c })),
+    { id: OWNER_VOICE_CELL_ID, role: 'owner' },
+    { id: WORK_CORRECTION_CELL_ID, role: 'correction' }];
+}
+
 // ─── Pressure floors (all named; sized for repeated pressure, not noise) ─────
 
 /** Minimum transitions in the window before ANY detector may speak. */

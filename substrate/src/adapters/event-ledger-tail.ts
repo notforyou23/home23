@@ -33,6 +33,7 @@ import { createHash } from 'node:crypto';
 import type { SourceAdapter, SourceEvent, EventCategory, SourceAuthority } from '../types.js';
 import { sanitizeSemanticVector } from '../semantic-projection.js';
 import { admitSourceEvent, withSemanticProvenance } from '../semantic-provenance.js';
+import { isOwnerConversationEvent } from '../cells.js';
 
 const DEFAULT_READ_WINDOW_BYTES = 1024 * 1024; // 1MB per pull
 const DEFAULT_OVERSIZED_LINE_MAX = 8 * 1024 * 1024; // single-line hard cap
@@ -135,7 +136,7 @@ export interface TailedSourceEvent extends SourceEvent {
   endOffset: number;
 }
 
-export type TailSourceType = 'harness-ledger' | 'relationship-ledger' | 'worker-runs' | 'conversation-stream' | 'house-stream' | 'dream-stream';
+export type TailSourceType = 'harness-ledger' | 'relationship-ledger' | 'worker-runs' | 'conversation-stream' | 'owner-conversation-stream' | 'house-stream' | 'dream-stream';
 
 export interface EventLedgerTailOptions {
   /** Absolute path of the JSONL stream to tail (read-only). */
@@ -369,7 +370,10 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     let mapped: TailedSourceEvent | null;
     if (this.sourceType === 'relationship-ledger') mapped = this.mapRelationshipLine(parsed, line, endOffset);
     else if (this.sourceType === 'worker-runs') mapped = this.mapWorkerRunLine(parsed, line, endOffset);
-    else if (this.sourceType === 'conversation-stream') mapped = this.mapConversationLine(parsed, line, endOffset);
+    else if (this.sourceType === 'conversation-stream' || this.sourceType === 'owner-conversation-stream') {
+      mapped = this.mapConversationLine(parsed, line, endOffset);
+      if (this.sourceType === 'owner-conversation-stream' && mapped !== null && !isOwnerConversationEvent(mapped)) mapped = null;
+    }
     else if (this.sourceType === 'house-stream') mapped = this.mapHouseLine(parsed, line, endOffset);
     else if (this.sourceType === 'dream-stream') mapped = this.mapDreamLine(parsed, line, endOffset);
     else mapped = this.mapHarnessLine(parsed as HarnessEntry, line, endOffset);
@@ -464,8 +468,9 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     const voice = canonical ? parsed['voice'] : role === 'user' ? 'jtr' : 'self';
     if (voice !== 'jtr' && voice !== 'self' && voice !== 'peer') return null;
     if (canonical && (typeof parsed['contactId'] !== 'string' || typeof parsed['sourceRef'] !== 'string')) return null;
+    const eventId = `conv_${createHash('sha256').update(canonical ? String(parsed['contactId']) : line, 'utf-8').digest('hex').slice(0, 16)}`;
     return {
-      eventId: `conv_${createHash('sha256').update(canonical ? String(parsed['contactId']) : line, 'utf-8').digest('hex').slice(0, 16)}`,
+      eventId,
       category: 'observation',
       sourceAuthority: this.authority,
       sourceRef: `conversation.${voice}:${canonical ? String(parsed['sourceRef']) : session}`,
@@ -474,6 +479,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
         role,
         session,
         head: text.trim(),
+        messageId: canonical && String(parsed['contactId']).startsWith('message:') ? String(parsed['contactId']).slice('message:'.length) : eventId,
         ...(canonical ? { contactId: parsed['contactId'], sourceRef: parsed['sourceRef'], actor: parsed['actor'] } : {}),
       },
       producedAt: ts,

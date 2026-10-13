@@ -23,7 +23,8 @@
  *   SHIPPER_MAX_AGE_DAYS      — ignore files older than this (default 14)
  */
 
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fetchRawEmbedding } from '../src/embed-fetch.js';
 import { createConversationShipper } from '../src/conversation-shipper.js';
 import { projectEmbedding, EMBED_DIM } from '../src/semantic-projection.js';
@@ -50,7 +51,8 @@ function embedTurn(text: string): number[] | null {
 
 function main(): void {
   console.log(`[conversation-shipper] dir=${conversationsDir} → ${streamPath} poll=${pollMs}ms backfill=${backfillBytes}B maxAge=${maxAgeDays}d`);
-  if (!existsSync(streamPath as string)) appendFileSync(streamPath as string, '');
+  mkdirSync(dirname(streamPath as string), { recursive: true, mode: 0o700 });
+  if (!existsSync(streamPath as string)) appendFileSync(streamPath as string, '', { mode: 0o600 });
   const shipper = createConversationShipper({
     conversationsDir: conversationsDir as string, streamPath: streamPath as string, cursorPath,
     coordinationSource: process.env['SHIPPER_COORDINATION_SOURCE'], backfillBytes, maxAgeDays, embed: embedTurn,

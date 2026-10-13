@@ -216,6 +216,12 @@ export interface HomeConfig {
       domains?: string[];
       budget?: number;
     }>;
+    /** Read-only Seed surfaces. Enabled agents derive stateDir from their
+     * instance when it is absent; explicit mirrors retain their path. */
+    substrate?: {
+      stateDir?: string;
+      budget?: number;
+    };
   };
 
   // OS-engine redesign (Step 24). Universal channel bus + verification gate +

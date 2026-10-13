@@ -23,7 +23,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -113,4 +113,47 @@ test('importing the module starts NO shipper', async () => {
   assert.equal(r.code, 0);
   assert.match(r.stdout, /IMPORTED/);
   assert.doesNotMatch(r.stdout, /\[conversation-shipper\] dir=/, 'main() ran on import');
+});
+
+test('resident entry ships the Core owner twin once and excludes unattributed Telegram groups', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shipper-entry-diet-'));
+  const core = join(dir, 'core.jsonl');
+  const stream = join(dir, 'stream.jsonl');
+  const ts = '2026-09-10T18:00:00.000Z';
+  const legacy = (content: string) => JSON.stringify({ role: 'user', content, ts }) + '\n';
+  // Short fixture words bypass perception without calling any encoder.
+  writeFileSync(join(dir, 'jerry__ios_chat.jsonl'), legacy('yes'));
+  writeFileSync(join(dir, 'jerry__-10012345.jsonl'), legacy('who'));
+  writeFileSync(join(dir, 'jerry__12345.jsonl'), legacy('how'));
+  writeFileSync(core, JSON.stringify({ schema: 'home23.resident.contact.v1', role: 'user', voice: 'jtr',
+    messageId: 'owner-message', channelId: 'owner-chat', content: 'yes', ts,
+    contactId: 'message:owner-message', sourceRef: 'coordination.message:owner-message',
+    session: 'coordination:owner-chat', actor: { principalId: 'owner', kind: 'owner', displayName: 'Owner' },
+  }) + '\n');
+  const result = await observe(SHIPPER, { SHIPPER_CONVERSATIONS_DIR: dir, SHIPPER_COORDINATION_SOURCE: core,
+    SHIPPER_STREAM_PATH: stream, SHIPPER_BACKFILL_BYTES: '4096' }, 4000);
+  assert.equal(result.alive, true, result.stderr);
+  const turns = readFileSync(stream, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].contactId, 'message:owner-message');
+  assert.deepEqual(turns.map(turn => turn.text), ['yes', 'how']);
+});
+
+test('a subscribed agent without Seed or legacy directories ships its Core contact', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'shipper-new-subscription-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const core = join(dir, 'core.jsonl');
+  const stream = join(dir, 'substrate', 'conversation-stream.jsonl');
+  writeFileSync(core, JSON.stringify({ schema: 'home23.resident.contact.v1', role: 'user', voice: 'jtr',
+    messageId: 'new-source-owner', channelId: 'owner-chat', content: 'yes', ts: '2026-10-13T14:00:00.000Z',
+    contactId: 'message:new-source-owner', sourceRef: 'coordination.message:new-source-owner',
+    session: 'coordination:owner-chat', actor: { principalId: 'owner', kind: 'owner', displayName: 'Owner' },
+  }) + '\n');
+  const result = await observe(SHIPPER, { SHIPPER_CONVERSATIONS_DIR: join(dir, 'conversations'),
+    SHIPPER_COORDINATION_SOURCE: core, SHIPPER_STREAM_PATH: stream }, 1500);
+  assert.equal(result.alive, true, result.stderr);
+  assert.doesNotMatch(result.stderr, /pass failed/);
+  const turns = readFileSync(stream, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].contactId, 'message:new-source-owner');
 });

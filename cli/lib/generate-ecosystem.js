@@ -74,6 +74,27 @@ export function generateEcosystem(home23Root, options = {}) {
   }
 
   const homeConfig = loadYaml(join(home23Root, 'config', 'home.yaml'));
+  const substrateConfig = homeConfig.substrate || {};
+  const declaredSeeds = (Array.isArray(substrateConfig.seeds) ? substrateConfig.seeds : [])
+    .filter(seed => seed && seed.name && seed.stateDir);
+  const conversationDefault = substrateConfig.ownerConversations !== false;
+  const agentConversationEnabled = agent => (agent.config.substrate?.ownerConversations ?? conversationDefault) !== false;
+  const conversationStream = agent => join(agent.paths.instanceRoot, 'substrate', 'conversation-stream.jsonl');
+  const declaredConversations = new Map(declaredSeeds.map(seed => {
+    const subscription = seed.ownerConversations ?? conversationDefault;
+    if (subscription !== true && subscription !== false && !Array.isArray(subscription)) {
+      throw new Error('Seed ownerConversations must be true, false or an array of configured house agent names');
+    }
+    const names = subscription === true ? agents.map(agent => agent.name)
+      : subscription === false ? [] : [...new Set(subscription)];
+    const sources = names.map(name => {
+      const agent = agents.find(entry => entry.name === name);
+      if (!agent) throw new Error('Seed ownerConversations must name a configured house agent');
+      return agent;
+    });
+    return [seed, sources];
+  }));
+  const subscribedAgents = new Set([...declaredConversations.values()].flat().map(agent => agent.name));
   const primaryAgent = resolvePrimaryAgent(agents, homeConfig);
   const orderedAgents = [...agents].sort((a, b) => {
     const aPrimary = a.name === primaryAgent ? 1 : 0;
@@ -459,6 +480,7 @@ export function generateEcosystem(home23Root, options = {}) {
         if (value !== undefined) birthEnv[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
       }
       birthEnv.SEED_LOBE_TIMEOUT_MS = String(lobeTimeout);
+      if (agentConversationEnabled(agent)) birthEnv.SEED_CONVERSATION_SOURCE = conversationStream(agent);
       lines.push(`    {`);
       lines.push(`      name: 'home23-${agent.name}-seed',`);
       lines.push(`      script: 'substrate/bin/seed-runner.ts',`);
@@ -475,7 +497,7 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      kill_timeout: ${killTimeout},`);
       lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'seed-out.log'))},`);
       lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'seed-err.log'))},`);
-      lines.push(`      env: { ...commonEnv, ...${JSON.stringify(engineEnv)}, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'event-ledger.jsonl'))}, SEED_RELATIONSHIP_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'relationship-ledger.events.jsonl'))}, SEED_WORKER_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'worker-runs.jsonl'))}, SEED_CONVERSATION_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'conversation-stream.jsonl'))}, SEED_HOUSE_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'house-stream.jsonl'))}, SEED_MEMORY_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'memory-objects.events.jsonl'))}, SEED_DREAM_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'dream-events.jsonl'))}, SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: ${JSON.stringify(lobeModel)}, SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}', ...${JSON.stringify(birthEnv)} },`);
+      lines.push(`      env: { ...commonEnv, ...${JSON.stringify(engineEnv)}, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'event-ledger.jsonl'))}, SEED_RELATIONSHIP_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'relationship-ledger.events.jsonl'))}, SEED_WORKER_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'worker-runs.jsonl'))}, SEED_HOUSE_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'house-stream.jsonl'))}, SEED_MEMORY_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'memory-objects.events.jsonl'))}, SEED_DREAM_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'dream-events.jsonl'))}, SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: ${JSON.stringify(lobeModel)}, SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}', ...${JSON.stringify(birthEnv)} },`);
       lines.push(`    },`);
     }
   }
@@ -486,36 +508,40 @@ export function generateEcosystem(home23Root, options = {}) {
   // Each writes EXACTLY the stream its seed reads — both sides are derived from
   // the same expression below, so they cannot drift apart.
   for (const agent of agents) {
-    if (agent.config?.substrate?.enabled !== true) continue;
-    const sub = agent.config.substrate;
+    const hasSeed = agent.config?.substrate?.enabled === true;
+    const hasConversationFeed = (hasSeed && agentConversationEnabled(agent)) || subscribedAgents.has(agent.name);
+    if (!hasSeed && !hasConversationFeed) continue;
+    const sub = agent.config.substrate ?? {};
     const streamPath = JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'conversation-stream.jsonl'));
     const backfillBytes = Number(sub.conversationBackfillBytes) > 0
       ? Number(sub.conversationBackfillBytes) : 524288;
 
-    lines.push(``);
-    lines.push(`    // ── ${agent.name} conversation shipper (feeds the seed) ──`);
-    lines.push(`    {`);
-    lines.push(`      name: 'home23-${agent.name}-shipper',`);
-    lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'conversation-shipper.ts'),`);
-    lines.push(`      cwd: HOME23,`);
-    lines.push(`      interpreter: 'node',`);
-    lines.push(`      node_args: '--import tsx',`);
-    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
-    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-    lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'conversation-shipper-out.log'))},`);
-    lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'conversation-shipper-err.log'))},`);
-    lines.push(`      env: {`);
-    lines.push(`        SHIPPER_CONVERSATIONS_DIR: ${JSON.stringify(agent.paths.conversationsDir)},`);
-    lines.push(`        ...seedEmbeddingEnv,`);
-    lines.push(`        SHIPPER_COORDINATION_SOURCE: path.join(HOME23, 'instances', '.house', 'coordination', 'resident-contact', ${JSON.stringify(agent.name + '.jsonl')}),`);
-    lines.push(`        SHIPPER_STREAM_PATH: ${streamPath},`);
-    lines.push(`        SHIPPER_BACKFILL_BYTES: '${backfillBytes}',`);
-    lines.push(`      },`);
-    lines.push(`    },`);
+    if (hasConversationFeed) {
+      lines.push(``);
+      lines.push(`    // ── ${agent.name} conversation shipper (feeds the seed) ──`);
+      lines.push(`    {`);
+      lines.push(`      name: 'home23-${agent.name}-shipper',`);
+      lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'conversation-shipper.ts'),`);
+      lines.push(`      cwd: HOME23,`);
+      lines.push(`      interpreter: 'node',`);
+      lines.push(`      node_args: '--import tsx',`);
+      lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+      lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+      lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'conversation-shipper-out.log'))},`);
+      lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'conversation-shipper-err.log'))},`);
+      lines.push(`      env: {`);
+      lines.push(`        SHIPPER_CONVERSATIONS_DIR: ${JSON.stringify(agent.paths.conversationsDir)},`);
+      lines.push(`        ...seedEmbeddingEnv,`);
+      lines.push(`        SHIPPER_COORDINATION_SOURCE: path.join(HOME23, 'instances', '.house', 'coordination', 'resident-contact', ${JSON.stringify(agent.name + '.jsonl')}),`);
+      lines.push(`        SHIPPER_STREAM_PATH: ${streamPath},`);
+      lines.push(`        SHIPPER_BACKFILL_BYTES: '${backfillBytes}',`);
+      lines.push(`      },`);
+      lines.push(`    },`);
+    }
 
     // House sensing is opt-in: only an agent wired into the home has a house
     // to sense. Its stream is the seed's SEED_HOUSE_SOURCE, same derivation.
-    if (sub.houseSense === true) {
+    if (hasSeed && sub.houseSense === true) {
       lines.push(``);
       lines.push(`    // ── ${agent.name} house sense (feeds the seed the home) ──`);
       lines.push(`    {`);
@@ -531,6 +557,16 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      env: {`);
       lines.push(`        SHIPPER_STREAM_PATH: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'house-stream.jsonl'))},`);
       lines.push(`        ...seedEmbeddingEnv,`);
+      for (const [key, field, minimum] of [
+        ['HOUSE_MAX_PER_HOUR', 'houseSenseMaxPerHour', 0],
+        ['HOUSE_ENTITY_COOLDOWN_MS', 'houseSenseEntityCooldownMs', 0],
+        ['HOUSE_POLL_MS', 'houseSensePollMs', 1],
+      ]) {
+        if (sub[field] === undefined) continue;
+        const value = Number(sub[field]);
+        if (!Number.isSafeInteger(value) || value < minimum) throw new Error(`${field} must be an integer >= ${minimum}`);
+        lines.push(`        ${key}: ${JSON.stringify(String(value))},`);
+      }
       lines.push(`      },`);
       lines.push(`    },`);
     }
@@ -546,7 +582,6 @@ export function generateEcosystem(home23Root, options = {}) {
   // Everything machine-specific (a Pi address, an SSH key, a dated field-trip
   // directory) stays in config and in the scripts themselves under
   // instances/, which is gitignored. The public repo keeps none of it.
-  const substrateConfig = homeConfig.substrate || {};
   const seedAgents = agents.filter(agent => agent.config?.substrate?.enabled === true);
 
   if (seedAgents.length > 0) {
@@ -613,9 +648,10 @@ export function generateEcosystem(home23Root, options = {}) {
   // him and no probe knew he existed. Declared here he comes back with the
   // house; his chain probe (organ-probes.ts) makes a second hole visible in
   // under an hour.
-  for (const seed of Array.isArray(substrateConfig.seeds) ? substrateConfig.seeds : []) {
-    if (!seed || !seed.name || !seed.stateDir) continue;
+  for (const seed of declaredSeeds) {
     const seedEnv = { SEED_STATE_DIR: seed.stateDir, ...(seed.env && typeof seed.env === 'object' ? seed.env : {}) };
+    const conversations = declaredConversations.get(seed);
+    if (conversations.length > 0) seedEnv.SEED_OWNER_CONVERSATION_SOURCES = JSON.stringify(conversations.map(conversationStream));
     seedEnv.SEED_LOBE = seedEnv.SEED_LOBE ?? '';
     const lobeTimeout = seedLobeTimeout(seedEnv.SEED_LOBE, seedEnv.SEED_LOBE_TIMEOUT_MS);
     seedEnv.SEED_LOBE_TIMEOUT_MS = String(lobeTimeout);

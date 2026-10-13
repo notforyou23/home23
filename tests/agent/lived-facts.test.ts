@@ -106,3 +106,63 @@ test('unknown, duplicate and self-generated refs cannot manufacture support; exp
   writeFileSync(file, JSON.stringify(snapshot));
   assert.equal(composeLivedFacts(dir), null, 'only one independently supported non-expired conclusion remains');
 });
+
+test('typed owner claims retain witnessed support after the owner ref window turns over', t => {
+  const dir = makeSeedDir(t);
+  const ownerEvidence = ['message-one', 'message-two'].map(refId => ({
+    refId: `conv_${refId}`, messageId: refId, principal: 'owner', sourceAuthority: 'seed.adapter', sourceRef: 'conversation.jtr:session-owner',
+    flag: 'COLLECTED', observedAt: '2026-08-07T09:00:00.000Z', head: 'I want the garden work done before winter.',
+  }));
+  writeFixture(dir, [
+    { claim: 'The owner wants garden work completed before winter', claimKind: 'owner.wants', confidence: .9,
+      evidenceRefs: ['message-one', 'message-two'], ownerEvidence, createdAt: AGED },
+    { claim: 'The owner decided to finish the garden before winter', claimKind: 'owner.decided', confidence: .86,
+      evidenceRefs: ['message-one', 'message-two'], ownerEvidence, createdAt: AGED },
+  ]);
+  const file = join(dir, 'checkpoints/ckpt_aaaa0001_t.json');
+  const snapshot = JSON.parse(readFileSync(file, 'utf8'));
+  snapshot.cells[0].id = 'contact.owner.voice';
+  snapshot.cells[0].realityRefs = Array.from({ length: 32 }, (_, n) => ({
+    refId: `new-${n}`, sourceAuthority: 'seed.adapter', sourceRef: 'conversation.jtr:session-new', flag: 'COLLECTED',
+    observedAt: '2026-08-09T10:00:00.000Z', head: 'A later owner turn.',
+  }));
+  writeFileSync(file, JSON.stringify(snapshot));
+  const facts = composeLivedFacts(dir);
+  assert.ok(facts?.includes('owner.wants'), 'the factual surface names the claim type');
+  assert.ok(facts?.includes('completed before winter'));
+  assert.ok(facts?.includes('owner.decided'));
+  assert.ok(facts?.includes('message-one'), 'typed claims preserve message-id provenance');
+});
+
+test('owner claims cannot use assistant or sensor witnesses as owner support', t => {
+  const dir = makeSeedDir(t);
+  const ownerEvidence = ['a', 'b'].map(refId => ({
+    refId: `conv_${refId}`, messageId: refId, principal: 'owner', sourceAuthority: 'seed.adapter', sourceRef: 'conversation.self:session',
+    flag: 'COLLECTED', observedAt: '2026-08-07T09:00:00.000Z', head: 'The resident said this.',
+  }));
+  writeFixture(dir, [
+    { claim: 'An owner claim with assistant evidence', claimKind: 'owner.said', confidence: .95,
+      evidenceRefs: ['a', 'b'], ownerEvidence, createdAt: AGED },
+    { claim: 'Another owner claim with sensor evidence', claimKind: 'owner.wants', confidence: .95,
+      evidenceRefs: ['a', 'b'], createdAt: AGED },
+  ]);
+  assert.equal(composeLivedFacts(dir), null);
+});
+
+test('a single supported owner decision is reported immediately and expiry uses lived event time', t => {
+  const dir = makeSeedDir(t);
+  writeFixture(dir, [{ claim: 'The owner decided to plant native flowers', claimKind: 'owner.decided', confidence: .9,
+    createdAt: '2026-08-09T08:00:00.000Z', expiresAt: '2026-08-10T00:00:00.000Z', evidenceRefs: ['decision-message'],
+    ownerEvidence: [{ refId: 'conv_decision', messageId: 'decision-message', principal: 'owner',
+      sourceAuthority: 'seed.adapter', sourceRef: 'conversation.jtr:session', flag: 'COLLECTED',
+      observedAt: '2026-08-09T07:00:00.000Z', head: 'I decided to plant native flowers.' }],
+  }]);
+  writeFileSync(join(dir, 'seed-ledger.jsonl'), [
+    { seq: 999, category: 'lobe', issuedAt: '2026-10-13T00:00:00.000Z', payload: { asOf: '2026-08-09T08:00:00.000Z' } },
+    { seq: 1000, category: 'checkpoint', issuedAt: '2026-10-13T01:00:00.000Z', payload: {} },
+  ].map(line => JSON.stringify(line)).join('\n') + '\n');
+  assert.match(composeLivedFacts(dir) ?? '', /owner\.decided: The owner decided to plant native flowers/);
+  writeFileSync(join(dir, 'seed-ledger.jsonl'), JSON.stringify({ seq: 1000, category: 'transition',
+    issuedAt: '2026-10-13T00:00:00.000Z', payload: { producedAt: '2026-08-11T00:00:00.000Z' } }) + '\n');
+  assert.equal(composeLivedFacts(dir), null, 'a later lived event expires the claim');
+});

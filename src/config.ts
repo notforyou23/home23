@@ -141,6 +141,17 @@ export function loadConfig(agentName: string): HomeConfig {
   }
 
   const typedConfig = config as unknown as HomeConfig;
+  // The runner and the harness use the same resolved instance root. This
+  // also works for externally stored instances; workspace siblings need not
+  // belong to the selected installation. Explicit read-only mirrors win.
+  const seedConfig = config.substrate as { enabled?: boolean } | undefined;
+  if (seedConfig?.enabled === true && !typedConfig.situationalAwareness?.substrate?.stateDir) {
+    const awareness = typedConfig.situationalAwareness ?? {};
+    typedConfig.situationalAwareness = { ...awareness, substrate: {
+      ...awareness.substrate,
+      stateDir: join(getAgentPaths(agentName, home23Root).instanceRoot, 'substrate', 'seed-01'),
+    } };
+  }
   const derivedLayers = normalizeEmbeddedAgentLayers(typedConfig.chat?.embeddedAgent);
   if (typedConfig.chat && (!typedConfig.chat.identityLayers || typedConfig.chat.identityLayers.length === 0)) {
     typedConfig.chat.identityLayers = derivedLayers ??

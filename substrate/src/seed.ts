@@ -29,7 +29,7 @@ import type {
   SourceAuthority,
   WorkspaceOutcome,
 } from './types.js';
-import { CapabilityDeniedError } from './types.js';
+import { CapabilityDeniedError, ResourceBudgetExceededError } from './types.js';
 import { SeedLedger } from './ledger.js';
 import { CheckpointManager, computeStateHash } from './checkpoint.js';
 import { CapabilityMembrane } from './membrane.js';
@@ -50,7 +50,7 @@ import type { Reservoir } from './metabolism.js';
 import { generateReservoir, eventDeltaSeconds, METABOLISM_VERSION } from './metabolism.js';
 import { CONTINUOUS_STATE_DIM } from './types.js';
 import { evaluateWorkspace } from './workspace.js';
-import { evaluateGrowthPressure, proposalKey, crystallizeClusterPrefix, evaluateSelfApplicationGates } from './growth.js';
+import { evaluateGrowthPressure, proposalKey, crystallizeClusterPrefix, evaluateSelfApplicationGates, ownerVoiceAnatomy } from './growth.js';
 import type { GrowthProposal, GrowthOp, PriorCrystallizeProposal } from './growth.js';
 import type { DevelopmentalState } from './plasticity.js';
 import {
@@ -370,7 +370,7 @@ export class SeedProcess {
     // still records that it was grown).
     for (const spec of anatomy) {
       if (!cells.has(spec.id)) {
-        cells.set(spec.id, makeInitialCell(spec.id, manifest.createdAt));
+        cells.set(spec.id, makeInitialCell(spec.id, manifest.createdAt, spec.role));
       }
     }
 
@@ -528,7 +528,7 @@ export class SeedProcess {
     }
     const asOf = this.lastTransitionAt;
     for (const id of newCellIds) {
-      this.cells.set(id, makeInitialCell(id, asOf));
+      this.cells.set(id, makeInitialCell(id, asOf, proposal.proposedAnatomy.find(spec => spec.id === id)?.role));
       const grant = proposal.seedAffinities[id];
       if (grant !== undefined) {
         const plastic = stagedDev[id] ?? emptyCellPlasticState();
@@ -563,6 +563,41 @@ export class SeedProcess {
     this.accounting.setLedgerBytes(this.ledger.bytes);
     this.checkpoint();
     return { newCellIds, removedCellIds, removedDevelopmentMagnitude, actSeq: record.seq };
+  }
+
+  /** An explicit, receipted opt-in to hearing future owner turns separately.
+   * It preserves old cells, refs and development; new cells start empty at
+   * the operator-supplied event time. No past transition is re-routed. */
+  enableOwnerVoice(authorizedBy: string, asOf: string): { newCellIds: string[]; actSeq: number; alreadyEnabled: boolean } {
+    this.membrane.assert('local.state.write');
+    this.membrane.assert('local.ledger.append');
+    if (typeof authorizedBy !== 'string' || !authorizedBy.trim()) throw new Error('owner voice growth requires nonempty authorization');
+    if (typeof asOf !== 'string' || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(asOf)
+      || !Number.isFinite(Date.parse(asOf))) throw new Error('owner voice growth requires explicit ISO event time');
+    if (this.anatomy.some(c => c.role === 'owner')) return { newCellIds: [], actSeq: this.ledger.currentSeq, alreadyEnabled: true };
+    // Growth requires its checkpoint to finish. Reserve both receipts and
+    // the checkpoint allowance before appending any anatomy change.
+    this.membrane.assert('local.checkpoint.write');
+    this.accounting.assertCheckpointBudget();
+    this.accounting.assertEventBudget(2);
+    const next = ownerVoiceAnatomy(this.anatomy);
+    const newSpecs = next.filter(c => !this.cells.has(c.id));
+    const staged = makeInitialCells(asOf, newSpecs);
+    for (const [id, cell] of staged) this.accounting.assertCellStateBudget(id, estimateCellBytes(cell));
+    const { record } = this.commitReceipted(staged, {
+      category: 'act', sourceAuthority: 'seed.internal', sourceRef: 'growth.owner-voice-application',
+      payload: { growthApplication: true, operatorApplication: true, rule: 'owner-voice.v1',
+        authorizedBy: authorizedBy.trim(), asOf, newCellIds: newSpecs.map(c => c.id), removedCellIds: [],
+        beforeAnatomy: this.anatomy.map(c => ({ ...c })), resultingAnatomy: next },
+    });
+    this.anatomy = next;
+    this.routing = routingFromAnatomy(next);
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+    for (const [id, cell] of staged) this.accounting.setCellStateBytes(id, estimateCellBytes(cell));
+    this.checkpoint();
+    return { newCellIds: newSpecs.map(c => c.id), actSeq: record.seq, alreadyEnabled: false };
   }
 
   /**
@@ -959,7 +994,7 @@ export class SeedProcess {
     // The organ is born: a fresh cell — it must EARN its state through life.
     this.membrane.assert('local.state.write');
     this.membrane.assert('local.ledger.append');
-    this.cells.set(newCellSpec.id, makeInitialCell(newCellSpec.id, asOf));
+    this.cells.set(newCellSpec.id, makeInitialCell(newCellSpec.id, asOf, newCellSpec.role));
     const beforeAnatomy = this.anatomy.map((a) => ({ ...a }));
     this.anatomy = proposal.proposedAnatomy.map((a) => ({ ...a }));
     this.routing = routingFromAnatomy(this.anatomy);
@@ -1085,6 +1120,17 @@ export class SeedProcess {
       cloneCell,
       guard,
       { version: 1, occurrence: String(this.ledger.currentSeq + 1) },
+      (candidate) => {
+        // Exact collected statements can be large. Reject only the witness
+        // that exceeds the cell ceiling; unrelated deltas remain applicable.
+        try {
+          this.accounting.assertCellStateBudget(candidate.id, estimateCellBytes(candidate));
+          return null;
+        } catch (error) {
+          if (!(error instanceof ResourceBudgetExceededError)) throw error;
+          return `owner claim state budget refused for ${candidate.id}: ${error.message}`;
+        }
+      },
     );
     const rejected = [...validated.rejected, ...failed];
 
@@ -1634,6 +1680,12 @@ export class SeedProcess {
     return cs === undefined ? undefined : new Float32Array(cs);
   }
 
+  /** Read the receipted anatomy without copying cell state or evidence. */
+  hasOwnerVoice(): boolean {
+    this.membrane.assert('local.state.read');
+    return this.anatomy.some(cell => cell.role === 'owner');
+  }
+
   /** A deep COPY of a cell's full state (for inspection). Mutating the returned
    * object cannot touch the Seed — state changes only through receipted
    * transitions. */
@@ -1677,6 +1729,9 @@ export class SeedProcess {
     const serializedCells = Array.from(this.cells.entries()).map(([id, c]) =>
       serializeCell(replacements.get(id) ?? c),
     );
+    for (const [id, cell] of replacements) {
+      if (!this.cells.has(id)) serializedCells.push(serializeCell(cell));
+    }
     const concern = stagedConcern ?? this.concern;
     return computeStateHash({
       cells: serializedCells,
@@ -1745,7 +1800,7 @@ function extractGenesis(ledger: SeedLedger): {
       (a): a is AnatomyCellSpec =>
         typeof a === 'object' && a !== null
         && typeof (a as AnatomyCellSpec).id === 'string'
-        && ['correction', 'observation', 'consequence', 'interpretation', 'periphery'].includes((a as AnatomyCellSpec).role),
+        && ['correction', 'observation', 'consequence', 'interpretation', 'periphery', 'owner'].includes((a as AnatomyCellSpec).role),
     );
     if (parsed.length > 0) anatomy = parsed;
   }

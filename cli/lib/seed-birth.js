@@ -17,12 +17,24 @@ const RECEIPT_FILE = 'birth-receipt.json';
 const RECEIPT_SCHEMA = 'home23.seed-birth.v1';
 
 export const FRESH_SEED_ANATOMY = Object.freeze([
-  Object.freeze({ id: 'contact.owner', role: 'correction' }),
+  Object.freeze({ id: 'contact.owner.voice', role: 'owner' }),
+  Object.freeze({ id: 'work.corrections', role: 'correction' }),
   Object.freeze({ id: 'frontier.becoming', role: 'interpretation' }),
   Object.freeze({ id: 'work.projects', role: 'consequence' }),
   Object.freeze({ id: 'world.home', role: 'observation' }),
   Object.freeze({ id: 'periphery.open-field', role: 'periphery' }),
 ]);
+
+// A prepared birth is resumable across a source update. Its original receipt
+// and anatomy remain authoritative; adding owner contact requires the separate
+// receipted growth operation, even when the resident has not started yet.
+const LEGACY_SEED_ANATOMY = [
+  { id: 'contact.owner', role: 'correction' },
+  { id: 'frontier.becoming', role: 'interpretation' },
+  { id: 'work.projects', role: 'consequence' },
+  { id: 'world.home', role: 'observation' },
+  { id: 'periphery.open-field', role: 'periphery' },
+];
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -85,16 +97,19 @@ export async function prepareSeedBirth(root, { name, ownerName, purpose, provide
       throw new Error(`Seed state already exists without a birth receipt: ${stateDir}`);
     }
     const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
-    if (receipt.schema !== RECEIPT_SCHEMA || receipt.inputDigest !== inputDigest) {
+    const ledger = new SeedLedger(stateDir);
+    const genesis = ledger.readAll()[0];
+    const birthSubstrate = JSON.stringify(genesis?.payload?.anatomy) === JSON.stringify(LEGACY_SEED_ANATOMY)
+      ? { ...substrate, anatomy: LEGACY_SEED_ANATOMY.map(cell => ({ ...cell })) } : substrate;
+    const birthDigest = birthSubstrate === substrate ? inputDigest : hash(JSON.stringify({ identity, substrate: birthSubstrate }));
+    if (receipt.schema !== RECEIPT_SCHEMA || receipt.inputDigest !== birthDigest) {
       throw new Error('Existing Seed birth does not match this home creation request');
     }
-    const ledger = new SeedLedger(stateDir);
     const chain = ledger.verifyChain();
-    const genesis = ledger.readAll()[0];
     if (!chain.ok || genesis?.category !== 'genesis'
       || genesis.payload.seedId !== receipt.seedId || genesis.payload.name !== name
       || genesis.payload.selfFormation !== true
-      || JSON.stringify(genesis.payload.anatomy) !== JSON.stringify(substrate.anatomy)
+      || JSON.stringify(genesis.payload.anatomy) !== JSON.stringify(birthSubstrate.anatomy)
       || ledger.cursorAt(1) !== receipt.genesisHash) {
       throw new Error('Existing Seed birth lineage failed verification');
     }
@@ -109,7 +124,7 @@ export async function prepareSeedBirth(root, { name, ownerName, purpose, provide
     }
     const restored = SeedProcess.restore(stateDir, receipt.checkpointId);
     if (restored.getState().seedId !== receipt.seedId) throw new Error('Existing Seed birth identity mismatch');
-    return { substrate, receipt, stateDir };
+    return { substrate: birthSubstrate, receipt, stateDir };
   }
 
   if (existsSync(stateDir)) return readBirth();

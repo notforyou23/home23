@@ -30,6 +30,7 @@ import type {
   IntentionTension,
   ModelReceipt,
   RevisionEvidence,
+  RealityRef,
 } from './types.js';
 import { parseHorizon } from './concern.js';
 import { RESOLUTION_WRONG_MIN } from './plasticity.js';
@@ -96,6 +97,17 @@ function boundedString(v: unknown): v is string {
 
 function boundedConfidence(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
+}
+
+function ownerClaimKind(value: unknown): value is NonNullable<Estimate['claimKind']> {
+  return value === 'owner.said' || value === 'owner.wants' || value === 'owner.decided';
+}
+
+function collectedOwnerRef(ref: RealityRef): boolean {
+  return ref.principal === 'owner' && ref.sourceAuthority === 'home23.event-ledger'
+    && ref.sourceRef.startsWith('conversation.jtr:') && ref.flag === 'COLLECTED'
+    && typeof ref.messageId === 'string' && ref.messageId.length > 0
+    && typeof ref.head === 'string' && ref.head.trim().length > 0;
 }
 
 /**
@@ -259,6 +271,9 @@ export function applyLobeDeltas(
    * refusal. Absent → nothing has been asked, nothing is gated. */
   resolutionGuard?: (predictionId: string) => string | null,
   feedbackAdmission?: PredictionFeedbackAdmission,
+  /** Live admission checks a proposed owner witness against the configured
+   * cell ceiling. Receipt replay does not repeat environment-dependent gates. */
+  ownerClaimBudget?: (candidate: SituationCell) => string | null,
 ): { staged: Map<string, SituationCell>; applied: ProposedStateDelta[]; failed: RejectedProposal[] } {
   const staged = new Map<string, SituationCell>();
   const applied: ProposedStateDelta[] = [];
@@ -279,31 +294,67 @@ export function applyLobeDeltas(
     if (cell === undefined) { failed.push({ kind: 'stateDelta', reason: `cell ${d.cellId} not found` }); continue; }
 
     if (d.field === 'estimates.append') {
-      const body = d.delta as { claim?: unknown; confidence?: unknown; evidenceRefs?: unknown; revisesPredictionIds?: unknown; revisionReason?: unknown; feedbackVersion?: unknown; revisionEvidence?: RevisionEvidence };
+      const body = d.delta as { claim?: unknown; confidence?: unknown; evidenceRefs?: unknown; revisesPredictionIds?: unknown; revisionReason?: unknown; feedbackVersion?: unknown; revisionEvidence?: RevisionEvidence;
+        claimKind?: unknown; ownerEvidence?: RealityRef[]; ownerClaimVersion?: unknown };
       if (!boundedString(body?.claim) || !boundedConfidence(body?.confidence)) {
         failed.push({ kind: 'stateDelta', reason: 'estimates.append malformed' });
         continue;
       }
+      let ownerEvidence: RealityRef[] | undefined;
+      // Historical operational deltas retain their exact interpretation.
+      let evidenceRefs = Array.isArray(body.evidenceRefs)
+        ? body.evidenceRefs.filter((r): r is string => typeof r === 'string').slice(0, 8) : [];
+      if (body.claimKind !== undefined) {
+        if (!ownerClaimKind(body.claimKind) || cell.contactRole !== 'owner' || evidenceRefs.length === 0) {
+          failed.push({ kind: 'stateDelta', reason: 'owner claim requires typed kind, owner cell and owner message evidence' });
+          continue;
+        }
+        // The lobe cannot provide its own witness. Live admission captures
+        // only actual collected refs; receipt replay uses that captured set.
+        const available = feedbackAdmission !== undefined ? cell.realityRefs
+          : body.ownerClaimVersion === 1 && Array.isArray(body.ownerEvidence) ? body.ownerEvidence : [];
+        ownerEvidence = [];
+        for (const id of stringRefs(body.evidenceRefs)) {
+          const ref = available.find(r => collectedOwnerRef(r) && (r.messageId === id || r.refId === id)
+            && Date.parse(r.observedAt) <= Date.parse(asOf));
+          if (!ref) { ownerEvidence = undefined; break; }
+          if (!ownerEvidence.some(r => r.messageId === ref.messageId)) ownerEvidence.push({ ...ref });
+        }
+        if (!ownerEvidence || ownerEvidence.length === 0) {
+          failed.push({ kind: 'stateDelta', reason: 'owner claim evidence must name collected owner messages' });
+          continue;
+        }
+        evidenceRefs = ownerEvidence.map(r => r.messageId as string);
+      }
       const evidence = feedbackAdmission !== undefined
         ? revisionEvidence(cell, { claim: body.claim, createdAt: asOf,
           evidenceRefs: stringRefs(body.evidenceRefs), revisesPredictionIds: stringRefs(body.revisesPredictionIds),
+          ...(ownerClaimKind(body.claimKind) ? { claimKind: body.claimKind } : {}),
           ...(boundedString(body.revisionReason) ? { revisionReason: body.revisionReason.trim() } : {}) }, asOf)
         : body.feedbackVersion === 1 ? body.revisionEvidence : undefined;
       const estimate: Estimate = {
         estimateId: deterministicId('est', d.cellId, body.claim),
         claim: body.claim,
         confidence: body.confidence,
-        evidenceRefs: Array.isArray(body.evidenceRefs) ? body.evidenceRefs.filter((r): r is string => typeof r === 'string').slice(0, 8) : [],
+        evidenceRefs,
         createdAt: asOf,
+        ...(ownerEvidence !== undefined && ownerClaimKind(body.claimKind) ? { claimKind: body.claimKind, ownerEvidence } : {}),
         ...(evidence !== undefined ? { revisionEvidence: evidence } : {}),
         ...(feedbackAdmission !== undefined || body.feedbackVersion === 1 ? {
           revisesPredictionIds: stringRefs(body.revisesPredictionIds),
           ...(boundedString(body.revisionReason) ? { revisionReason: body.revisionReason.trim() } : {}),
         } : {}),
       };
-      cell.estimates = [...cell.estimates.slice(-(MAX_ESTIMATES_PER_CELL - 1)), estimate];
+      const estimates = [...cell.estimates.slice(-(MAX_ESTIMATES_PER_CELL - 1)), estimate];
+      const ownerBudgetRefusal = ownerEvidence !== undefined ? ownerClaimBudget?.({ ...cell, estimates }) : null;
+      if (ownerBudgetRefusal) {
+        failed.push({ kind: 'stateDelta', reason: ownerBudgetRefusal });
+        continue;
+      }
+      cell.estimates = estimates;
       applied.push(feedbackAdmission !== undefined ? { ...d, delta: {
         claim: estimate.claim, confidence: estimate.confidence, evidenceRefs: estimate.evidenceRefs,
+        ...(estimate.claimKind !== undefined ? { claimKind: estimate.claimKind, ownerEvidence: estimate.ownerEvidence, ownerClaimVersion: 1 } : {}),
         revisesPredictionIds: estimate.revisesPredictionIds,
         ...(estimate.revisionEvidence !== undefined ? { revisionEvidence: estimate.revisionEvidence } : {}),
         ...(estimate.revisionReason ? { revisionReason: estimate.revisionReason } : {}), feedbackVersion: 1,
@@ -601,7 +652,12 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     'magnitude (0..1), direction}. intentions.resolve delta: {tensionId, reason}. predictions.resolve delta: {predictionId, error}.',
     'uncertainty.adjust delta: {value in [-0.2, 0.2]}.',
     'Claims are bounded at 500 chars. You are proposing typed state changes to a',
-    'governed process — you are not writing memory, narrative, or identity.',
+    'governed process. Operational estimates and owner claims use the same typed admission path.',
+    'For owner contact refs, use estimates.append with claimKind owner.said, owner.wants, or owner.decided.',
+    'Preserve what the owner actually expressed: said reports a statement, wants a stated preference, decided an explicit choice.',
+    'Cite original messageId values from the owner refs in evidenceRefs. The Seed captures their exact words at admission.',
+    'Owner claims belong only to the admitted owner contact cell. Assistant, peer and machine text cannot support them.',
+    'Do not infer owner identity, desire or decisions beyond the quoted evidence. Other cells retain ordinary operational estimates.',
     'ONLY stateDeltas integrate into belief, intention, or prediction state.',
     'The observations/interpretations/predictions arrays remain advisory context',
     'recorded in the receipt. Use predictions.append only for a testable forecast',

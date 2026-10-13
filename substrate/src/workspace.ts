@@ -36,6 +36,10 @@ export const INHIBITION_DAMP = 0.85;
 /** Reality refs carried into a packet per admitted cell (most recent last). */
 const PACKET_REFS_PER_CELL = 8;
 
+/** A new, principal-attributed owner turn earns a finite hearing even when
+ * the reservoir's content readout is tiny. Admission spends this grant. */
+export const OWNER_CONTACT_ADMISSION_FLOOR = 0.65;
+
 /**
  * Deterministic admission score. Pressure is the CURRENCY of admission —
  * multiplicative, so a cell with spent pressure cannot hold the stage on
@@ -55,7 +59,7 @@ export function admissionScore(cell: SituationCell, plastic?: CellPlasticState):
     cell.workspacePressure * modulation
     + 0.25 * openTension
     - 0.25 * effective.inhibitionLevel;
-  return Math.max(0, Math.min(1, score));
+  return Math.max(cell.contactRole === 'owner' && cell.ownerContactPending ? OWNER_CONTACT_ADMISSION_FLOOR : 0, Math.min(1, score));
 }
 
 export function scoreCells(
@@ -182,6 +186,7 @@ export function evaluateWorkspace(
     if (s.admitted) {
       const staged = cloneCell(cell);
       staged.workspacePressure = staged.workspacePressure * ADMISSION_RELEASE;
+      if (staged.contactRole === 'owner') staged.ownerContactPending = false;
       mutations.set(s.cellId, staged);
       admittedCells.push(staged);
     } else if (cell.workspacePressure > 0.01) {
