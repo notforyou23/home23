@@ -21,8 +21,6 @@
  *   SEED_RELATIONSHIP_SOURCE — relationship-ledger events JSONL (optional)
  *   SEED_WORKER_SOURCE  — worker-runs JSONL (optional)
  *   SEED_CONVERSATION_SOURCE — this resident's shipped conversation JSONL
- *   SEED_OWNER_CONVERSATION_SOURCES — JSON array of other house conversation
- *                         streams; these subscriptions admit owner turns only
  *   SEED_EXTRA_BACKFILL_BYTES — backfill for extra sources (default 8192)
  *   SEED_ANATOMY        — JSON array of {id, role} for a BIRTH (ignored on
  *                         restore; anatomy is identity, recorded in genesis)
@@ -39,7 +37,6 @@
 import { SeedRunner } from '../src/runner.js';
 import { EchoLobe, ModelLobe } from '../src/lobe.js';
 import type { LobeAdapter } from '../src/lobe.js';
-import { resolveConversationSources } from '../src/conversation-sources.js';
 
 const stateDir = process.env['SEED_STATE_DIR'];
 const sourcePath = process.env['SEED_SOURCE'];
@@ -109,7 +106,10 @@ async function main(): Promise<void> {
   }
   // The life itself: the agent's real conversations with his person, shipped
   // by substrate/bin/conversation-shipper.ts with words + perceived vectors.
-  extraSources.push(...resolveConversationSources(process.env, extraBackfill));
+  const conversationSource = process.env['SEED_CONVERSATION_SOURCE'];
+  if (conversationSource !== undefined && conversationSource !== '') {
+    extraSources.push({ sourcePath: conversationSource, sourceType: 'conversation-stream', id: 'conversation', backfillBytes: extraBackfill });
+  }
   // The home as senses: lived house transitions (substrate/bin/house-sense.ts).
   const houseSource = process.env['SEED_HOUSE_SOURCE'];
   if (houseSource !== undefined && houseSource !== '') {

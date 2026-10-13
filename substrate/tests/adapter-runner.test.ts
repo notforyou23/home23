@@ -420,33 +420,6 @@ test('conversation mapper: both voices observed, words + meaning ride the event'
   assert.match(events[1]?.sourceRef ?? '', /^conversation\.self:/, 'agent-generic self voice');
 });
 
-test('owner subscription mapper keeps original message evidence and excludes unattributed or non-owner turns', t => {
-  const srcDir = makeDir(t, 'owner-conv-src');
-  const stateDir = makeDir(t, 'owner-conv-state');
-  const sourcePath = join(srcDir, 'conversation-stream.jsonl');
-  const base = { ts: '2026-10-13T14:00:00.000Z', role: 'user', voice: 'jtr', text: 'I want Clay to hear me.',
-    contactId: 'message:original-owner-message', sourceRef: 'coordination.message:original-owner-message',
-    actor: { kind: 'owner', principalId: 'owner:test' } };
-  const lines = [
-    { ...base, role: 'assistant', voice: 'self', contactId: 'message:assistant' },
-    { ...base, voice: 'peer', actor: { kind: 'bot', principalId: 'bot:test' }, contactId: 'message:peer' },
-    base,
-    { ...base, actor: undefined, contactId: 'message:unsigned' },
-    { ts: base.ts, role: 'user', text: 'Unattributed group contact.', session: 'river__-10012345' },
-  ];
-  const before = lines.map(line => JSON.stringify(line)).join('\n') + '\n';
-  writeFileSync(sourcePath, before);
-  const adapter = new EventLedgerTailAdapter({ sourcePath, cursorDir: stateDir,
-    sourceType: 'owner-conversation-stream', fromEnd: false });
-  const events = adapter.pullSync();
-  assert.equal(events.length, 1);
-  assert.equal(events[0]!.payload['messageId'], 'original-owner-message');
-  assert.equal(events[0]!.sourceRef, 'conversation.jtr:coordination.message:original-owner-message');
-  adapter.commit(events[0]!.endOffset);
-  assert.equal(adapter.pullSync().length, 0, 'excluded records cannot stall the subscription cursor');
-  assert.equal(readFileSync(sourcePath, 'utf8'), before, 'subscription is read-only over contact evidence');
-});
-
 test('house mapper: home transitions arrive as observed contact with words', (t) => {
   const srcDir = makeDir(t, 'house-src');
   const stateDir = makeDir(t, 'house-state');

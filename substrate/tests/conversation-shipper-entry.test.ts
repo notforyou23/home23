@@ -139,8 +139,8 @@ test('resident entry ships the Core owner twin once and excludes unattributed Te
   assert.deepEqual(turns.map(turn => turn.text), ['yes', 'how']);
 });
 
-test('a subscribed agent without Seed or legacy directories ships its Core contact', async t => {
-  const dir = mkdtempSync(join(tmpdir(), 'shipper-new-subscription-'));
+test('a resident shipper prepares its own stream directory for Core contact', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'shipper-new-stream-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const core = join(dir, 'core.jsonl');
   const stream = join(dir, 'substrate', 'conversation-stream.jsonl');

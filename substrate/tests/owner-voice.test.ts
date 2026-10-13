@@ -84,33 +84,18 @@ test('typed owner claims retain captured message evidence and reject machine or 
   assert.match(forged.failed[0]?.reason ?? '', /owner.*evidence/i, 'live admission ignores a forged model snapshot');
 });
 
-test('owner-only conversation subscription filters self and peers and retains original message ids', t => {
-  const path = join(dir(t), 'conversation.jsonl');
-  const base = { ts: '2026-10-13T12:00:00.000Z', role: 'user', text: 'Please hear the owner.', session: 'coordination:c1' };
-  const lines = [
-    { ...base, voice: 'jtr', contactId: 'message:m1', sourceRef: 'coordination.message:m1', actor: { kind: 'owner', principalId: 'owner' } },
-    { ...base, role: 'assistant', voice: 'self', contactId: 'message:m2', sourceRef: 'coordination.message:m2', actor: { kind: 'bot', principalId: 'self' } },
-    { ...base, voice: 'peer', contactId: 'message:m3', sourceRef: 'coordination.message:m3', actor: { kind: 'bot', principalId: 'peer' } },
-  ];
-  writeFileSync(path, lines.map(line => JSON.stringify(line)).join('\n') + '\n');
-  const adapter = new EventLedgerTailAdapter({ sourcePath: path, cursorDir: dir(t), sourceType: 'owner-conversation-stream', fromEnd: false });
-  const events = adapter.pullSync();
-  assert.equal(events.length, 1);
-  assert.equal(events[0]?.payload['messageId'], 'm1');
-});
-
 test('legacy-only direct owner contact survives shipper, adapter and owner routing; groups and missing canonical actors do not', t => {
   const path = dir(t);
   const conversationsDir = join(path, 'conversations');
   mkdirSync(conversationsDir);
   const turn = { role: 'user', content: 'Please keep this direct conversation.', ts: '2026-10-13T12:00:00.000Z' };
-  writeFileSync(join(conversationsDir, 'clay__12345.jsonl'), JSON.stringify(turn) + '\n');
-  writeFileSync(join(conversationsDir, 'clay__-12345.jsonl'), JSON.stringify({ ...turn, content: 'Group text lacks owner attribution.' }) + '\n');
+  writeFileSync(join(conversationsDir, 'jerry__12345.jsonl'), JSON.stringify(turn) + '\n');
+  writeFileSync(join(conversationsDir, 'jerry__-12345.jsonl'), JSON.stringify({ ...turn, content: 'Group text lacks owner attribution.' }) + '\n');
   const streamPath = join(path, 'stream.jsonl');
   const shipper = createConversationShipper({ conversationsDir, streamPath, cursorPath: join(path, 'shipper-cursor.json'),
     backfillBytes: 4096, maxAgeDays: 30, embed: () => null });
   assert.equal(shipper.pass(), 1);
-  const adapter = new EventLedgerTailAdapter({ sourcePath: streamPath, cursorDir: dir(t), sourceType: 'owner-conversation-stream', fromEnd: false });
+  const adapter = new EventLedgerTailAdapter({ sourcePath: streamPath, cursorDir: dir(t), sourceType: 'conversation-stream', fromEnd: false });
   const events = adapter.pullSync();
   assert.equal(events.length, 1);
   assert.equal(routeEvent(events[0]!, anatomy.map(a => a.id), undefined, routingFromAnatomy(anatomy)), 'contact.owner.voice');

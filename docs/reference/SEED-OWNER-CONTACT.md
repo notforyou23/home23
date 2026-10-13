@@ -45,13 +45,10 @@ uncheckpointed receipts. It never removes a stale lock. Repeating a completed
 opt-in adds no second growth episode. Conflicting existing cell IDs require
 operator review; the command does not rename or delete cells to force growth.
 
-## Conversation subscriptions and house sensing
+## Conversation contact and house sensing
 
-House Seed conversation feeds default on through `substrate.ownerConversations`.
-An agent can opt out in its own substrate configuration. Declared Seeds can
-choose `true` (every configured house agent), `false`, or a list of agent names.
-Additional resident streams admit only owner turns. Explicit
-`SEED_CONVERSATION_SOURCE` continues to provide that resident's full contact.
+An agent with `substrate.enabled` receives its own conversation stream.
+Declared Seeds read the source paths explicitly configured in their `env`.
 See [the configuration example](../../config/home.yaml.example).
 
 The shipper collapses legacy/Core twins by role, text, and timestamp. Negative

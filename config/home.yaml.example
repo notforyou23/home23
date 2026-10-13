@@ -488,21 +488,6 @@ skills:
 # automatically, and substrate.houseSense on the agent adds house sensing.
 # Only things that cannot be derived are declared below.
 substrate:
-  # House Seed conversation subscriptions default on. An agent can override
-  # this under its substrate.ownerConversations (true/false). A declared Seed
-  # can also select configured agent names; its additional feeds admit only
-  # owner-principal turns, never other residents' replies as owner speech.
-  ownerConversations: true
-  seeds: []
-  #  - name: clay
-  #    stateDir: instances/clay/seed-01
-  #    ownerConversations: [jerry, forrest] # true = every configured house agent
-  #    env:
-  #      SEED_SOURCE: instances/jerry/brain/event-ledger.jsonl
-  # Use ownerConversations: false to opt out. Individual settings override
-  # the house default. Explicit SEED_CONVERSATION_SOURCE remains supported;
-  # the runner deduplicates an identical generated source before tailing it.
-  # Paths come from each agent's configured instance storage, not names alone.
   # Existing Seed anatomy needs the separate opt-in growth operation before
   # owner turns receive a dedicated contact cell; config never rewrites life.
   # See docs/reference/SEED-OWNER-CONTACT.md for the receipted operator command.
@@ -510,7 +495,7 @@ substrate:
   # defaults are 20 events/hour, a 300000 ms entity cooldown, and 15000 ms poll.
   # Override with houseSenseMaxPerHour, houseSenseEntityCooldownMs,
   # houseSensePollMs under that agent's substrate config. Zero events/hour
-  # suppresses house contact without suppressing owner conversation feeds.
+  # suppresses house contact without suppressing the agent's conversation feed.
   observatory:
     # The terrarium — a read-only page over every individual's chain.
     # Emitted only when at least one agent runs a seed.

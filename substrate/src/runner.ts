@@ -91,7 +91,6 @@ export interface TickReport {
 export class SeedRunner {
   private seed: SeedProcess | null = null;
   private adapters: EventLedgerTailAdapter[] = [];
-  private ownerOnlyAdapters = new Set<EventLedgerTailAdapter>();
   /** Accepted contact identities come from transition receipts, never source
    * cursors. A mirror arriving later (or a lost cursor) cannot relive contact. */
   private acceptedOwnerContactIds = new Set<string>();
@@ -192,8 +191,6 @@ export class SeedRunner {
           }),
         ),
       ];
-      this.ownerOnlyAdapters = new Set(this.adapters.filter((_, index) =>
-        index > 0 && this.opts.extraSources?.[index - 1]?.sourceType === 'owner-conversation-stream'));
       this.acceptedOwnerContactIds = new Set(new SeedLedger(this.opts.stateDir).readAll()
         .filter(record => record.category === 'transition' && record.sourceAuthority === 'home23.event-ledger'
           && record.payload['originalCategory'] === 'observation'
@@ -216,7 +213,6 @@ export class SeedRunner {
       // stop receipt. Release only the lock acquired for this attempt.
       this.seed = null;
       this.adapters = [];
-      this.ownerOnlyAdapters.clear();
       this.acceptedOwnerContactIds.clear();
       if (this.lockPath !== null) {
         try { unlinkSync(this.lockPath); } catch { /* already gone */ }
@@ -318,10 +314,7 @@ export class SeedRunner {
     // Occurrences belong to their adapter and file position. The same event
     // id on another adapter is not acknowledgment of its unprocessed line.
     const processed = new Map(this.adapters.map(adapter => [adapter, new Set<number>()]));
-    const ownerLane = this.seed.hasOwnerVoice();
-    // A declared owner subscription opts the runner into canonical identity
-    // across all conversation adapters, including its explicit own feed.
-    const dedupeOwnerContact = ownerLane || this.ownerOnlyAdapters.size > 0;
+    const dedupeOwnerContact = this.seed.hasOwnerVoice();
 
     for (const { adapter, event } of merged) {
       if (this.stopRequested) break;
@@ -572,7 +565,6 @@ export class SeedRunner {
     } finally {
       this.seed = null;
       this.adapters = [];
-      this.ownerOnlyAdapters.clear();
       this.acceptedOwnerContactIds.clear();
       if (this.lockPath !== null) {
         try { unlinkSync(this.lockPath); } catch { /* already gone */ }

@@ -15,7 +15,7 @@ function ownerLine(id: string, minute = 0): string {
 }
 
 function fixture(t: { after(fn: () => void): void }, opts: Partial<SeedRunnerOptions> = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'owner-subscription-dedupe-'));
+  const root = mkdtempSync(join(tmpdir(), 'owner-contact-dedupe-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, 'state');
   const sourcePath = join(root, 'events.jsonl');
@@ -24,9 +24,13 @@ function fixture(t: { after(fn: () => void): void }, opts: Partial<SeedRunnerOpt
   for (const path of [sourcePath, left, right]) writeFileSync(path, '');
   const options: SeedRunnerOptions = { stateDir, sourcePath, fromEnd: false,
     workspaceEveryN: 1000, checkpointEveryN: 1000,
+    anatomy: [
+      { id: 'contact.owner.voice', role: 'owner' }, { id: 'world.home', role: 'observation' },
+      { id: 'periphery.open-field', role: 'periphery' },
+    ],
     extraSources: [
-      { id: 'a-left', sourcePath: left, sourceType: 'owner-conversation-stream' },
-      { id: 'b-right', sourcePath: right, sourceType: 'owner-conversation-stream' },
+      { id: 'a-left', sourcePath: left, sourceType: 'conversation-stream' },
+      { id: 'b-right', sourcePath: right, sourceType: 'conversation-stream' },
     ], ...opts };
   return { root, stateDir, sourcePath, left, right, options };
 }
@@ -104,22 +108,6 @@ test('an unsuccessful owner transition is not remembered as accepted contact', a
   } finally { seed.transition = transition; runner.stop(); }
 });
 
-test('an existing ownerless Seed with an explicit own feed deduplicates its new owner-only subscription', async t => {
-  const f = fixture(t);
-  f.options.extraSources![0]!.sourceType = 'conversation-stream';
-  writeFileSync(f.left, ownerLine('mixed'));
-  writeFileSync(f.right, ownerLine('mixed'));
-  const runner = new SeedRunner(f.options);
-  runner.start();
-  try {
-    assert.equal((await runner.tick()).transitioned, 1, 'the own-feed occurrence sorts first and still records canonical identity');
-    appendFileSync(f.left, ownerLine('delayed', 1));
-    assert.equal((await runner.tick()).transitioned, 1);
-    appendFileSync(f.right, ownerLine('delayed', 1));
-    assert.equal((await runner.tick()).transitioned, 0, 'a delayed owner-only twin cannot become a second contact');
-  } finally { runner.stop(); }
-});
-
 test('an opted-in owner lane deduplicates own conversation feeds, while legacy generic conversations keep replay semantics', async t => {
   const f = fixture(t);
   writeFileSync(f.left, ownerLine('own'));
@@ -132,7 +120,7 @@ test('an opted-in owner lane deduplicates own conversation feeds, while legacy g
   runner.start();
   try { assert.equal((await runner.tick()).transitioned, 1); }
   finally { runner.stop(); }
-  const legacy = fixture(t, { extraSources: ownSources });
+  const legacy = fixture(t, { extraSources: ownSources, anatomy: undefined });
   const legacyRunner = new SeedRunner(legacy.options);
   legacyRunner.start();
   try { assert.equal((await legacyRunner.tick()).transitioned, 2, 'existing generic contact changes only after explicit opt-in'); }

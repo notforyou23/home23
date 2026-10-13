@@ -35,7 +35,7 @@ function canonical(messageId: string, content = 'recycle paper tomorrow morning 
     role: 'user', voice: 'jtr', content, ts };
 }
 
-test('Core-only subscriptions do not require a legacy conversation directory', t => {
+test('resident Core contact ships before the legacy conversation directory exists', t => {
   const root = mkdtempSync(join(tmpdir(), 'shipper-core-only-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const coordinationSource = join(root, 'core.jsonl');
