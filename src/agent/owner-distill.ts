@@ -20,6 +20,8 @@ export interface OwnerSession { id: string; channel: string; turns: OwnerContact
 interface Cursor { schema: string; source: string; since: number; through: Record<string, number> }
 export interface OwnerDistillerOptions {
   brainDir: string; sourcePath: string; config?: OwnerDistillConfig;
+  /** The other projection/stream path for this resident; preserve cursor progress on a switch. */
+  alternateSourcePath?: string;
   ownerTelegramId?: string | number;
   channelKind?: (id: string) => string | undefined;
   generate: (request: { system: string; prompt: string; maxTokens: number; signal: AbortSignal }) => Promise<string>;
@@ -29,13 +31,18 @@ export interface OwnerDistillerOptions {
 
 /** Never open/migrate Core as a writer. Old projections omit channel kind. */
 export function ownerChannelKindReader(databasePath: string): (id: string) => string | undefined {
+  const kinds = new Map<string, string>();
   return id => {
+    if (kinds.has(id)) return kinds.get(id);
     let database: Database.Database | undefined;
     try {
-      database = new Database(databasePath, { readonly: true, fileMustExist: true, timeout: 0 });
-      return (database.prepare('SELECT kind FROM channels WHERE id=?').get(id) as { kind: string } | undefined)?.kind;
+      database = new Database(databasePath, { readonly: true, fileMustExist: true, timeout: 2000 });
+      const kind = (database.prepare('SELECT kind FROM channels WHERE id=?').get(id) as { kind: string } | undefined)?.kind;
+      // Known kinds are stable. Missing/locked Core must remain retryable next pass.
+      if (typeof kind === 'string') kinds.set(id, kind);
+      return kind;
     } catch { return undefined; }
-    finally { database?.close(); }
+    finally { try { database?.close(); } catch { /* Lookup and cleanup never throw. */ } }
   };
 }
 
@@ -76,7 +83,7 @@ function bounded(value: number | undefined, fallback: number, min: number, max: 
 }
 
 function contactTurn(record: Record<string, any>, opts: OwnerDistillerOptions,
-  kinds: Map<string, string | undefined>): OwnerContactTurn | null {
+  kinds: Map<string, string | undefined>, unresolvedChannels: Set<string>): OwnerContactTurn | null {
   const canonical = record.schema === 'home23.resident.contact.v1' || String(record.sourceRef ?? '').startsWith('coordination.message:');
   const text = record.text ?? record.content;
   if (!['user', 'assistant'].includes(record.role) || typeof text !== 'string' || !text.trim()
@@ -88,8 +95,6 @@ function contactTurn(record: Record<string, any>, opts: OwnerDistillerOptions,
   if (canonical) {
     const id = record.session.startsWith('coordination:') ? record.session.slice('coordination:'.length) : '';
     if (!id || (record.channelId && record.channelId !== id)) return null;
-    if (!kinds.has(id)) kinds.set(id, record.channelKind ?? opts.channelKind?.(id));
-    if ((record.channelKind ?? kinds.get(id)) !== 'direct') return null;
     const actor = record.actor;
     if (!actor || !['owner', 'bot'].includes(actor.kind) || typeof actor.principalId !== 'string') return null;
     // Core authenticates the principal. Its paired Home device is owner voice (Q9).
@@ -99,6 +104,12 @@ function contactTurn(record: Record<string, any>, opts: OwnerDistillerOptions,
     if (typeof ref !== 'string' || !ref.startsWith('coordination.message:')
       || record.contactId !== `message:${ref.slice('coordination.message:'.length)}`) return null;
     if (record.schema && (record.messageId !== ref.slice('coordination.message:'.length))) return null;
+    if (!kinds.has(id)) kinds.set(id, record.channelKind ?? opts.channelKind?.(id));
+    const kind = record.channelKind ?? kinds.get(id);
+    if (kind !== 'direct') {
+      if (kind === undefined) unresolvedChannels.add(record.session);
+      return null;
+    }
   } else {
     // Legacy group files have negative Telegram IDs. Only known direct contact
     // sources qualify; cron/task/worker files never earn owner attribution.
@@ -186,10 +197,14 @@ export class OwnerSessionDistiller {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Unreadable owner distill cursor');
       cursor = { schema: CURSOR_SCHEMA, source: this.opts.sourcePath, since: now - 14 * DAY, through: {} };
     }
-    if (cursor.schema !== CURSOR_SCHEMA || cursor.source !== this.opts.sourcePath || !Number.isFinite(cursor.since)
+    if (cursor.schema !== CURSOR_SCHEMA
+      || (cursor.source !== this.opts.sourcePath && (!this.opts.alternateSourcePath || cursor.source !== this.opts.alternateSourcePath))
+      || !Number.isFinite(cursor.since)
       || !cursor.through || Object.values(cursor.through).some(t => !Number.isFinite(t))) throw new Error('Invalid owner distill cursor');
+    cursor.source = this.opts.sourcePath;
     const turns: OwnerContactTurn[] = [];
     const kinds = new Map<string, string | undefined>();
+    const unresolvedChannels = new Set<string>();
     const stream = createReadStream(this.opts.sourcePath, { encoding: 'utf8', signal });
     let pending = '';
     try {
@@ -203,9 +218,11 @@ export class OwnerSessionDistiller {
           let record;
           try { record = JSON.parse(line); } catch { throw new Error('Invalid owner contact JSON'); }
           if (!record || typeof record !== 'object') throw new Error('Invalid owner contact record');
-          const turn = contactTurn(record, this.opts, kinds);
-          if (turn && Date.parse(turn.ts) >= cursor.since && Date.parse(turn.ts) <= now
-            && Date.parse(turn.ts) > (cursor.through[turn.session] ?? 0)) turns.push(turn);
+          const time = typeof record.ts === 'string' ? Date.parse(record.ts) : NaN;
+          if (!Number.isFinite(time) || typeof record.session !== 'string' || time < cursor.since || time > now
+            || time <= (cursor.through[record.session] ?? 0)) continue;
+          const turn = contactTurn(record, this.opts, kinds, unresolvedChannels);
+          if (turn) turns.push(turn);
         }
       }
       // A writer may be appending the last line. Its uncommitted tail waits.
@@ -214,7 +231,10 @@ export class OwnerSessionDistiller {
       throw error;
     } finally { stream.destroy(); }
     const gap = bounded(cfg?.sessionGapMinutes, 30, 1, 1440) * 60_000;
-    const sessions = ownerSessions(turns, gap).filter(s => s.end <= now - gap && s.end > (cursor.through[s.channel] ?? 0))
+    // Do not advance a channel past unresolved older turns, even if newer
+    // projection lines include their kind. Other channels can still progress.
+    const sessions = ownerSessions(turns.filter(t => !unresolvedChannels.has(t.session)), gap)
+      .filter(s => s.end <= now - gap && s.end > (cursor.through[s.channel] ?? 0))
       .slice(0, bounded(cfg?.maxSessionsPerPass, 8, 1, 100));
     let saved = 0;
     for (const session of sessions) {

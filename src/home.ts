@@ -35,7 +35,6 @@ import { createModelAliasReader, getAgentDir, loadConfig } from './config.js';
 import { CompactionManager } from './agent/compaction.js';
 import { OwnerSessionDistiller, ownerChannelKindReader } from './agent/memory.js';
 import { generateText } from './agent/text-generation.js';
-import { resolveSubstrateStateDir } from './agent/session-bootstrap.js';
 import { TelegramAdapter } from './channels/telegram.js';
 import { DiscordAdapter } from './channels/discord.js';
 import { IMessageAdapter } from './channels/imessage.js';
@@ -583,11 +582,13 @@ async function main(): Promise<void> {
   // Finished-session learning has its own lifecycle; it never runs in a reply.
   const coordinationDatabasePath = process.env.HOME23_COORDINATION_DB_PATH
     ?? join(HOME23_ROOT, 'instances', '.house', 'coordination', 'home23-coordination.sqlite3');
+  const ownerContactProjectionPath = join(dirname(coordinationDatabasePath), 'resident-contact', `${AGENT_NAME}.jsonl`);
+  const ownerContactStreamPath = join(INSTANCE_DIR, 'substrate', 'conversation-stream.jsonl');
+  const ownerContactSourcePath = existsSync(ownerContactProjectionPath) ? ownerContactProjectionPath : ownerContactStreamPath;
   const ownerDistiller = new OwnerSessionDistiller({
     brainDir: BRAIN_DIR,
-    sourcePath: resolveSubstrateStateDir(workspacePath, config.situationalAwareness)
-      ? join(INSTANCE_DIR, 'substrate', 'conversation-stream.jsonl')
-      : join(dirname(coordinationDatabasePath), 'resident-contact', `${AGENT_NAME}.jsonl`),
+    sourcePath: ownerContactSourcePath,
+    alternateSourcePath: ownerContactSourcePath === ownerContactProjectionPath ? ownerContactStreamPath : ownerContactProjectionPath,
     config: config.chat.ownerDistill,
     ownerTelegramId: config.agent?.owner?.telegramId,
     channelKind: ownerChannelKindReader(coordinationDatabasePath),

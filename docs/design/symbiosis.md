@@ -259,10 +259,13 @@ flowchart TB
 
 ### The distillation contract
 
-- **Input:** finished sessions from the canonical contact stream the Seed and
-  engine already read, `instances/<agent>/substrate/conversation-stream.jsonl`.
-  A resident without a Seed reads Core's projection,
-  `instances/.house/coordination/resident-contact/<agent>.jsonl`. A session is
+- **Input:** finished sessions from Core's projection,
+  `instances/.house/coordination/resident-contact/<agent>.jsonl`, for every
+  resident when it exists. If absent, use
+  `instances/<agent>/substrate/conversation-stream.jsonl`. Switching between
+  these sources preserves cursor progress. Older records without channel kind
+  use a read-only Core lookup with a short busy timeout and cached known kinds.
+  An unavailable kind defers that channel without advancing its cursor. A session is
   a run of contact with no message for the session gap (30 minutes by default),
   measured on message timestamps. Duplicate copies of a turn are collapsed first.
 - **Evidence:** only the owner's own turns. Resident turns are context. Group

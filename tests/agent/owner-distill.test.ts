@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import Database from 'better-sqlite3';
+import { spawn } from 'node:child_process';
+import { runInNewContext } from 'node:vm';
 import { OwnerSessionDistiller, OWNER_DISTILL_INTERVAL_MS, normalizeOwnerQuote, containsOwnerSecret,
   ownerChannelKindReader, type OwnerDistillerOptions } from '../../src/agent/owner-distill.js';
 
@@ -103,6 +105,142 @@ test('already shipped canonical contact uses read-only channel kind lookup', asy
   assert.equal(lookup('missing'), undefined);
   assert.equal(ownerChannelKindReader(join(f.root, 'missing.sqlite3'))('one'), undefined);
   assert.equal(await readonlyDistiller.pass().then(r => r.saved), 1);
+});
+
+test('channel kind lookup caches known kinds for its lifetime and retries unavailable Core', t => {
+  const f = fixture(t, [], []);
+  const dbPath = join(f.root, 'core.sqlite3');
+  const lookup = ownerChannelKindReader(dbPath);
+  assert.equal(lookup('direct-1'), undefined);
+  assert.equal(existsSync(dbPath), false, 'a read must not create Core');
+  const db = new Database(dbPath);
+  t.after(() => db.close());
+  db.exec("CREATE TABLE channels(id TEXT, kind TEXT); INSERT INTO channels VALUES('direct-1','direct')");
+  assert.equal(lookup('direct-1'), 'direct', 'an unavailable lookup remains retryable');
+  db.exec("UPDATE channels SET kind='group' WHERE id='direct-1'");
+  assert.equal(lookup('direct-1'), 'direct', 'a known kind is cached for this reader lifetime');
+  assert.equal(ownerChannelKindReader(dbPath)('direct-1'), 'group');
+});
+
+test('channel kind lookup waits through a short Core lock and never writes', async t => {
+  const f = fixture(t, [], []);
+  const dbPath = join(f.root, 'core.sqlite3');
+  const db = new Database(dbPath);
+  db.exec("CREATE TABLE channels(id TEXT, kind TEXT); INSERT INTO channels VALUES('direct-1','direct')");
+  db.close();
+  const locker = spawn(process.execPath, ['-e', `
+    const Database = require('better-sqlite3');
+    const db = new Database(process.argv[1]);
+    db.exec('BEGIN EXCLUSIVE');
+    process.stdout.write('locked');
+    setTimeout(() => { db.exec('COMMIT'); db.close(); }, 250);
+  `, dbPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { if (locker.exitCode === null) locker.kill(); });
+  await new Promise<void>((resolve, reject) => {
+    locker.stdout.once('data', () => resolve());
+    locker.once('error', reject);
+    locker.once('exit', code => { if (code !== 0) reject(new Error('Core lock fixture failed')); });
+  });
+  assert.equal(ownerChannelKindReader(dbPath)('direct-1'), 'direct');
+  const readonly = new Database(dbPath, { readonly: true });
+  assert.deepEqual(readonly.prepare('SELECT * FROM channels').all(), [{ id: 'direct-1', kind: 'direct' }]);
+  readonly.close();
+});
+
+test('live-shaped stream and old projection records resolve direct kind into finished sessions', async t => {
+  for (const projection of [false, true]) {
+    const owner = contact('one', 'I have two dogs.', 60, { channelKind: undefined });
+    const resident = contact('reply', 'I remember.', 59, { channelKind: undefined, role: 'assistant', voice: 'self',
+      actor: { principalId: 'resident', kind: 'bot', displayName: 'Jerry' } });
+    const records = [owner, resident].map(({ schema, channelId, messageId, content, ...record }) => projection
+      ? { schema, channelId, messageId, content, ...record }
+      : { ...record, text: content, semantic_recipe_id: 'fixture-recipe', semantic_absence: 'unavailable' });
+    const f = fixture(t, records, [item('Jason has two dogs.', 'I have two dogs.', 'one')], { channelKind: () => 'direct' });
+    assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 1 });
+    assert.ok(f.prompts[0]!.includes('"voice":"resident"'));
+  }
+});
+
+test('unavailable channel kind fails closed and retains unresolved sessions for retry', async t => {
+  let available = false;
+  const f = fixture(t, [contact('old', 'I have two dogs.', 150, { channelKind: undefined }),
+    contact('new', 'I live in New York.', 60)], async request => request.prompt.includes('coordination.message:old')
+      ? item('Jason has two dogs.', 'I have two dogs.', 'old')
+      : item('Jason lives in New York.', 'I live in New York.', 'new'),
+  { channelKind: () => available ? 'direct' : undefined });
+  assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 });
+  assert.equal(f.prompts.length, 0);
+  assert.equal(existsSync(join(f.brainDir, 'owner-distill-cursor.json')), false);
+  available = true;
+  assert.deepEqual(await f.distiller.pass(), { sessions: 2, saved: 2 });
+  assert.equal(f.objects().length, 2);
+});
+
+test('unavailable kind only defers its channel, including turns after an existing cursor', async t => {
+  let available = false;
+  const f = fixture(t, [contact('done', 'Earlier session.', 240)], ['']);
+  assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 0 });
+  appendFileSync(f.sourcePath, [contact('old', 'I have two dogs.', 150, { channelKind: undefined }),
+    contact('new', 'I live in New York.', 60),
+    contact('other', 'Independent channel.', 60, { channelId: 'direct-2', session: 'coordination:direct-2' })]
+    .map(record => JSON.stringify(record)).join('\n') + '\n');
+  const distiller = new OwnerSessionDistiller({ brainDir: f.brainDir, sourcePath: f.sourcePath, now: () => NOW,
+    channelKind: () => available ? 'direct' : undefined, generate: async () => '' });
+  assert.deepEqual(await distiller.pass(), { sessions: 1, saved: 0 });
+  const cursor = JSON.parse(readFileSync(join(f.brainDir, 'owner-distill-cursor.json'), 'utf8'));
+  assert.equal(cursor.through['coordination:direct-1'], Date.parse(at(240)));
+  assert.equal(cursor.through['coordination:direct-2'], Date.parse(at(60)));
+  available = true;
+  assert.deepEqual(await distiller.pass(), { sessions: 2, saved: 0 });
+});
+
+test('cursor preserves progress when switching between the known stream and projection sources', async t => {
+  const f = fixture(t, [contact('done', 'Earlier session.', 120)], ['']);
+  await f.distiller.pass();
+  const projectionPath = join(f.root, 'projection.jsonl');
+  writeFileSync(projectionPath, [contact('done', 'Earlier session.', 120), contact('next', 'I have two dogs.', 60)]
+    .map(record => JSON.stringify(record)).join('\n') + '\n');
+  const projection = new OwnerSessionDistiller({ brainDir: f.brainDir, sourcePath: projectionPath,
+    alternateSourcePath: f.sourcePath, now: () => NOW, generate: async () => item('Jason has two dogs.', 'I have two dogs.', 'next') });
+  assert.deepEqual(await projection.pass(), { sessions: 1, saved: 1 });
+  const cursor = JSON.parse(readFileSync(join(f.brainDir, 'owner-distill-cursor.json'), 'utf8'));
+  assert.equal(cursor.source, projectionPath);
+  assert.equal(cursor.since, NOW - 14 * 86_400_000);
+  appendFileSync(f.sourcePath, JSON.stringify(contact('later', 'Last session.', 31)) + '\n');
+  const fallback = new OwnerSessionDistiller({ brainDir: f.brainDir, sourcePath: f.sourcePath,
+    alternateSourcePath: projectionPath, now: () => NOW, generate: async () => '' });
+  assert.deepEqual(await fallback.pass(), { sessions: 1, saved: 0 });
+  assert.equal(JSON.parse(readFileSync(join(f.brainDir, 'owner-distill-cursor.json'), 'utf8')).source, f.sourcePath);
+  const unrelated = new OwnerSessionDistiller({ brainDir: f.brainDir, sourcePath: projectionPath,
+    now: () => NOW, generate: async () => '' });
+  await assert.rejects(unrelated.pass(), /cursor/);
+});
+
+test('home harness prefers Core projection for Seed and non-Seed residents; absent projection falls back to stream', t => {
+  const f = fixture(t, [], []);
+  const harness = readFileSync(new URL('../../src/home.ts', import.meta.url), 'utf8');
+  const start = harness.indexOf('const coordinationDatabasePath =');
+  const end = harness.indexOf('ownerDistiller.start();', start);
+  assert.ok(start >= 0 && end > start);
+  // Execute only the distiller wiring, without launching the harness or its services.
+  const wiring = harness.slice(start, end);
+  const instanceDir = join(f.root, 'instances', 'jerry');
+  const projectionPath = join(f.root, 'instances', '.house', 'coordination', 'resident-contact', 'jerry.jsonl');
+  const streamPath = join(instanceDir, 'substrate', 'conversation-stream.jsonl');
+  mkdirSync(dirname(projectionPath), { recursive: true });
+  mkdirSync(dirname(streamPath), { recursive: true });
+  writeFileSync(streamPath, '');
+  const choose = (hasSeed: boolean) => runInNewContext(`${wiring}\nownerDistiller.opts.sourcePath`, {
+    OwnerSessionDistiller: class { constructor(public opts: OwnerDistillerOptions) {} },
+    ownerChannelKindReader, join, dirname, existsSync, process: { env: {} },
+    HOME23_ROOT: f.root, INSTANCE_DIR: instanceDir, AGENT_NAME: 'jerry', BRAIN_DIR: f.brainDir,
+    workspacePath: join(instanceDir, 'workspace'), config: { chat: {}, agent: {} },
+    resolveSubstrateStateDir: () => hasSeed ? dirname(streamPath) : undefined,
+  });
+  writeFileSync(projectionPath, '');
+  for (const hasSeed of [true, false]) assert.equal(choose(hasSeed), projectionPath);
+  rmSync(projectionPath);
+  for (const hasSeed of [true, false]) assert.equal(choose(hasSeed), streamPath);
 });
 
 test('Seed contact-stream shape preserves canonical owner voice and excludes canonical group contact', async t => {
