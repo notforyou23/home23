@@ -164,12 +164,21 @@ function stateFor(root) {
   if (!state) return state;
   if (state.homeRoot !== root) throw new Error('This Home23 state belongs to another installation.');
   if (state.schema === 'home23.host.v2') {
+    const extension = state.semanticExtension;
+    if (extension && (extension.schema !== 'home23.semantic-extension.v1'
+      || extension.recipeId !== OWNED_RECIPE_HASH || extension.port !== state.ports?.embedder
+      || state.encoderRequired !== true || !Number.isInteger(extension.port) || extension.port < 20000 || extension.port > 60999
+      || Object.entries(state.ports).some(([key, port]) => key !== 'embedder' && port === extension.port)
+      || Object.values(state.residentMap || {}).some(resident => Object.values(resident.ports || {}).includes(extension.port)))) {
+      throw new Error('The semantic port extension differs from this home.');
+    }
+    const sealedPorts = extension ? Object.fromEntries(Object.entries(state.ports).filter(([key]) => key !== 'embedder')) : state.ports;
     // Adoption may write v2 with encoderRequired false and residentMap.
     if (state.networkBindings) {
       const receipt = readPrivateJSON(join(root, 'runtime/adoption-preservation.json'));
       if (state.networkBindings.schema !== 'home23.adoption-network-bindings.v1'
         || JSON.stringify(receipt?.networkBindings || null) !== JSON.stringify(state.networkBindings)
-        || JSON.stringify(state.ports) !== JSON.stringify(state.networkBindings.shared)
+        || JSON.stringify(sealedPorts) !== JSON.stringify(state.networkBindings.shared)
         || Object.keys(state.residentMap || {}).sort().join('|') !== Object.keys(state.networkBindings.residents || {}).sort().join('|')
         || Object.entries(state.networkBindings.residents || {}).some(([name, ports]) =>
           JSON.stringify(state.residentMap?.[name]?.ports || null) !== JSON.stringify(ports))) {
@@ -184,6 +193,7 @@ function stateFor(root) {
   validatePortPlan(state.ports);
   return state;
 }
+export { stateFor as readHostState };
 
 /** Resident names from Host state. Prefers residentMap key order; never invents names. */
 export function hostResidentNames(state) {
@@ -765,7 +775,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     return { ok: true, status: existsSync(receiptPath(homeRoot)) ? 'installed' : 'absent', homeRoot,
       providers: Object.entries(authority.executionCatalog.providers).filter(([id]) => PROVIDERS.has(id)).map(([id, provider]) => ({ id, name: provider.label || id, models: provider.models.filter(model => model.kind === 'chat').map(model => ({ id: model.id, name: model.label || model.id })) })) };
   }
-  if (action === 'status' || action === 'start' || action === 'create' || action === 'semantic-prepare') {
+  if (action === 'status' || action === 'start' || action === 'create' || action === 'semantic-prepare' || action === 'semantic-enable' || action === 'semantic-disable') {
     const { readUpdateJournal, updateBlocksStart } = await import('./product-update-apply.js');
     let journal = null;
     try { journal = readUpdateJournal(homeRoot); }
@@ -784,7 +794,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       return { ok: false, status: 'recovery_required', homeRoot, error: { code: 'update_recovery_required', message: 'Resume the unfinished Home23 update before starting this home.' } };
     }
   }
-  if (!['install', 'create', 'start', 'stop', 'semantic-prepare', 'oauth-start', 'oauth-complete', 'oauth-status', 'oauth-cancel', 'oauth-logout'].includes(action)) throw new Error('Unknown Home23 Host action.');
+  if (!['install', 'create', 'start', 'stop', 'semantic-prepare', 'semantic-enable', 'semantic-disable', 'oauth-start', 'oauth-complete', 'oauth-status', 'oauth-cancel', 'oauth-logout'].includes(action)) throw new Error('Unknown Home23 Host action.');
   if (action === 'install') {
     if (typeof payloadPath !== 'string' || !isAbsolute(payloadPath)) throw new Error('Choose the absolute bundled Home23 payload directory.');
     const { installProductPayload } = await import('./product-payload.js');
@@ -792,6 +802,18 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     return { ok: true, status: 'installed', homeRoot, packageId: receipt.packageId };
   }
   if (!existsSync(receiptPath(homeRoot))) throw new Error('Install the Home23 runtime before creating or starting a home.');
+  if (action === 'semantic-enable' || action === 'semantic-disable') {
+    await validateInstallation(homeRoot);
+    const { runSemanticAction } = await import('./product-semantic-enable.js');
+    return runSemanticAction(action, { homeRoot, dryRun: input.dryRun === true }, dependencies);
+  }
+  if (action === 'start' || action === 'semantic-prepare') {
+    const semanticEnable = readPrivateJSON(join(homeRoot, 'runtime/semantic-enable.json'));
+    if (semanticEnable && !['enabled', 'disabled'].includes(semanticEnable.phase)) {
+      return { ok: false, status: 'recovery_required', homeRoot,
+        error: { code: 'host_semantic_rollback_required', message: 'Run semantic-disable to finish the interrupted encoder transition before starting this home.' } };
+    }
+  }
   productEnvironment(homeRoot, { prepare: true });
   const oauthAction = action.startsWith('oauth-');
   const { acquireHostLock } = await import('./product-backup.js');

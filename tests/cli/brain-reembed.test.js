@@ -9,6 +9,8 @@ import { reembedBrain, runBrainReembedCommand } from '../../cli/lib/brain-reembe
 
 const require = createRequire(import.meta.url);
 const TARGET = 'gemini:gemini-embedding-2:3';
+const { OWNED_EMBEDDING_PROFILE, OWNED_EMBEDDING_RECIPE_ID, LEGACY_EMBEDDING_RECIPE_ID } = require('../../shared/semantic-encoder-contract.cjs');
+const OWNED_TARGET = `owned-onnx:${OWNED_EMBEDDING_PROFILE}:768`;
 async function fixture(t, { directory = false, sidecars = false, tuples = false } = {}) {
   const root = await fs.mkdtemp(path.join(tmpdir(), 'home23-reembed-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -150,6 +152,83 @@ test('command dispatch parses explicit config pricing and reports JSON estimates
   assert.equal(receipt.pricePerMillion, 0.40); assert.equal(receipt.estimatedSeconds, 2);
   await assert.rejects(runBrainReembedCommand(f.root, [f.source, '--output'], f.deps), /Missing value/);
   await assert.rejects(runBrainReembedCommand(f.root, [f.source, '--unknown'], f.deps), /Unknown/);
+});
+
+test('owned ONNX copy and swap use the sidecar protocol without changing source vectors', async t => {
+  const f = await fixture(t, { directory: true, sidecars: true });
+  const original = await fs.readFile(path.join(f.source, 'memory-nodes.jsonl.gz'));
+  const config = path.join(f.root, 'owned-embedding.yaml');
+  await fs.writeFile(config, `provider: home23-owned\nmodel: ${OWNED_EMBEDDING_PROFILE}\ndimensions: 768\nendpoint: http://127.0.0.1:24005/api/embeddings\nbatchSize: 2\n`);
+  const requests = [];
+  const deps = { ...f.deps, createProvider: undefined, providerDeps: {
+    fetch: async (url, request) => {
+      const body = JSON.parse(request.body);
+      requests.push({ url, body });
+      return { ok: true, json: async () => ({ data: body.input.map((_text, index) => ({ index, embedding: [3, 4, ...Array(766).fill(0)] })) }) };
+    },
+  } };
+  const options = { homeRoot: f.root, config, output: f.output };
+  assert.equal((await reembedBrain(f.source, options, deps)).targetId, OWNED_TARGET);
+  assert.deepEqual(requests, []);
+  const receipt = await reembedBrain(f.source, { ...options, run: true }, deps);
+  assert.equal(receipt.targetId, OWNED_TARGET);
+  assert.deepEqual(await fs.readFile(path.join(f.source, 'memory-nodes.jsonl.gz')), original);
+  assert.deepEqual(requests.map(row => row.url), ['http://127.0.0.1:24005/v1/embeddings']);
+  assert.equal(requests[0].body.model, OWNED_EMBEDDING_PROFILE);
+  const rows = gunzipSync(await fs.readFile(path.join(f.output, 'memory-nodes.jsonl.gz'))).toString().trim().split('\n').map(JSON.parse);
+  assert.equal(rows[0].embedder_id, OWNED_TARGET);
+  assert.equal(rows[0].embedding_recipe_id, OWNED_EMBEDDING_RECIPE_ID);
+  assert.equal(rows[0].embedding_encoder, OWNED_EMBEDDING_PROFILE);
+  assert.ok(Math.abs(rows[0].embedding[0] - 0.6) < 1e-12);
+  assert.ok(Math.abs(rows[0].embedding[1] - 0.8) < 1e-12);
+  const swapped = await reembedBrain(f.source, { ...options, swap: true }, deps);
+  assert.equal(swapped.status, 'swapped');
+  assert.deepEqual(await fs.readFile(path.join(swapped.backup, 'memory-nodes.jsonl.gz')), original);
+  const activated = JSON.parse(gunzipSync(await fs.readFile(path.join(f.source, 'state.json.gz'))));
+  assert.equal(activated.memory.metadata.embedderId, OWNED_TARGET);
+});
+
+test('Host-root settings resolve its owned catalog, while explicit memory settings take precedence', async t => {
+  const f = await fixture(t);
+  await fs.mkdir(path.join(f.root, 'app/config'), { recursive: true });
+  await fs.mkdir(path.join(f.root, 'app/configs'), { recursive: true });
+  await fs.writeFile(path.join(f.root, 'app/configs/base-engine.yaml'), 'architecture:\n  memory:\n    embedding:\n      provider: ollama\n      model: nomic-embed-text\n      dimensions: 768\n');
+  const homeFile = path.join(f.root, 'app/config/home.yaml');
+  const catalog = `embeddings:\n  providers:\n    - provider: home23-owned\n      model: ${OWNED_EMBEDDING_PROFILE}\n      dimensions: 768\n      endpoint: http://127.0.0.1:24005/api/embeddings\n`;
+  await fs.writeFile(homeFile, catalog);
+  assert.equal((await reembedBrain(f.source, { homeRoot: f.root }, f.deps)).targetId, OWNED_TARGET);
+  await fs.writeFile(homeFile, catalog + 'architecture:\n  memory:\n    embedding:\n      provider: gemini\n      model: gemini-embedding-2\n      dimensions: 3\n');
+  assert.equal((await reembedBrain(f.source, { homeRoot: f.root }, f.deps)).targetId, TARGET);
+});
+
+test('re-embed refuses mixed provider ids, unstamped owned vectors, and conflicting owned recipes before requests', async t => {
+  for (const corruption of ['missing-id', 'different-id', 'different-recipe']) {
+    const f = await fixture(t);
+    const source = JSON.parse(await fs.readFile(f.source, 'utf8'));
+    source.metadata.embedderId = OWNED_TARGET;
+    for (const node of source.nodes) {
+      node.embedder_id = OWNED_TARGET;
+      node.embedding_recipe_id = OWNED_EMBEDDING_RECIPE_ID;
+    }
+    if (corruption === 'missing-id') delete source.nodes[1].embedder_id;
+    if (corruption === 'different-id') source.nodes[1].embedder_id = 'ollama:nomic-embed-text:768';
+    if (corruption === 'different-recipe') source.nodes[1].embedding_recipe_id = LEGACY_EMBEDDING_RECIPE_ID;
+    await fs.writeFile(f.source, JSON.stringify(source));
+    await assert.rejects(reembedBrain(f.source, { ...f.options, run: true }, f.deps), /mixed/);
+    assert.deepEqual(f.calls, []);
+    await assert.rejects(fs.stat(f.output), { code: 'ENOENT' });
+  }
+});
+
+test('CLI accepts an explicit owned sidecar address override', async t => {
+  const f = await fixture(t);
+  let configured;
+  const deps = { ...f.deps, stdout: { write() {} }, createProvider: config => {
+    configured = config;
+    return { id: OWNED_TARGET, embedBatch: async texts => texts.map(() => [1, ...Array(767).fill(0)]) };
+  } };
+  await runBrainReembedCommand(f.root, [f.source, '--provider', 'owned-onnx', '--model', OWNED_EMBEDDING_PROFILE, '--dimensions', '768', '--base-url', 'http://127.0.0.1:24005/v1', '--output', f.output, '--run'], deps);
+  assert.equal(configured.baseUrl, 'http://127.0.0.1:24005/v1');
 });
 
 test('revisioned manifest graph uses committed deltas and becomes a clean independent sidecar graph', async t => {

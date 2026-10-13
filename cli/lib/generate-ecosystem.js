@@ -138,7 +138,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  if (!url) {`);
   lines.push(`    if (providerName === 'openai') return 'https://api.openai.com/v1';`);
   lines.push(`    if (providerName === 'ollama-cloud') return homeConfig.providers?.['ollama-cloud']?.baseUrl || 'https://ollama.com/v1';`);
-  lines.push(`    if (providerName === 'home23-owned') return '';`);
+  lines.push(`    if (['home23-owned', 'owned-onnx'].includes(providerName)) return '';`);
   lines.push(`    return \`\${ollamaLocalUrl}/v1\`;`);
   lines.push(`  }`);
   lines.push(`  url = url.replace(/\\/+$/, '');`);
@@ -155,7 +155,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  const model = selected.model || (providerName === 'openai' ? 'text-embedding-3-small' : 'nomic-embed-text');`);
   lines.push(`  const dimensions = selected.dimensions || (providerName === 'openai' ? 1536 : 768);`);
   lines.push(`  const envFallback = providerName === 'openai' ? process.env.OPENAI_API_KEY : providerName === 'ollama-cloud' ? process.env.OLLAMA_CLOUD_API_KEY : '';`);
-  lines.push(`  const apiKey = providerName === 'ollama-local' ? 'ollama' : providerName === 'home23-owned' ? 'owned' : (secrets.providers?.[providerName]?.apiKey || envFallback || '');`);
+  lines.push(`  const apiKey = providerName === 'ollama-local' ? 'ollama' : ['home23-owned', 'owned-onnx'].includes(providerName) ? 'owned' : (secrets.providers?.[providerName]?.apiKey || envFallback || '');`);
   lines.push(`  const recipeId = typeof selected.recipeId === 'string' && selected.recipeId.trim() ? selected.recipeId.trim() : '';`);
   lines.push(`  return { providerName, baseURL, apiKey, model, dimensions: String(dimensions), recipeId };`);
   lines.push(`}`);

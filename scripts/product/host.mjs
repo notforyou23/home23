@@ -11,7 +11,7 @@ const args = process.argv.slice(2);
 const action = args.shift();
 let homeRoot;
 const sensitive = [];
-const USAGE = 'Usage: host.mjs device-connect-status|device-connect|home-update-status|home-update-action|register-application|adoption-plan|adopt|preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|backup-recover|move|install|catalog|status|create|oauth-start|oauth-complete|oauth-status|oauth-cancel|oauth-logout|semantic-prepare|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--provider ABS] [--preservation-plan ABS --plan-sha256 HEX] [--application ABS] [--client-build INT] [--admit]';
+const USAGE = 'Usage: host.mjs device-connect-status|device-connect|home-update-status|home-update-action|register-application|adoption-plan|adopt|preview|stage|update|update-resume|update-recovery|install-staged|check-update|stage-release|download-release|backup|backup-inspect|backup-recover|move|install|catalog|status|create|oauth-start|oauth-complete|oauth-status|oauth-cancel|oauth-logout|semantic-prepare|semantic-enable|semantic-disable|start|stop --home ABS [--payload ABS] [--staging ABS] [--feed ABS] [--trust-key ABS] [--archive ABS] [--key ABS] [--inspection ABS] [--destination ABS] [--provider ABS] [--preservation-plan ABS --plan-sha256 HEX] [--application ABS] [--client-build INT] [--admit] [--dry-run]';
 
 function adoptionReply(result) {
   const { plan, inventory, ...rest } = result;
@@ -95,6 +95,11 @@ try {
   const options = {};
   while (args.length) {
     const key = args.shift();
+    if (key === '--dry-run') {
+      if (!['semantic-enable', 'semantic-disable'].includes(action) || options.dryRun) throw new Error('--dry-run is only supported by semantic-enable and semantic-disable.');
+      options.dryRun = true;
+      continue;
+    }
     if (key === '--admit') {
       if (!['update', 'install-staged'].includes(action) || options.admit) throw new Error(USAGE);
       options.admit = true;
@@ -113,6 +118,7 @@ try {
   if (options['--client-build'] && action !== 'home-update-status') throw new Error('--client-build is only supported by home-update-status.');
   if ((options['--preservation-plan'] || options['--plan-sha256']) && !['adoption-plan', 'adopt'].includes(action)) throw new Error('The preservation plan is only supported by adoption commands.');
   let input = {};
+  if (options.dryRun) input.dryRun = true;
   if (action === 'stage' || action === 'update') input.staging = options['--staging'];
   if (options.admit) input.admit = true;
   if (action === 'device-connect-status' || action === 'device-connect') {

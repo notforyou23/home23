@@ -1873,6 +1873,10 @@ async function saveQuerySettings() {
 
 // ── System ──
 
+// Keep provider provenance beside the rendered row, including fields the form
+// does not edit. Removing/reordering rows must not attach another row's recipe.
+const systemEmbeddingMetadata = new WeakMap();
+
 async function loadSystem() {
   try {
     const [res, readiness] = await Promise.all([
@@ -1944,15 +1948,19 @@ function renderSystem(data) {
           <option value="ollama-local" ${p.provider === 'ollama-local' ? 'selected' : ''}>Ollama Local</option>
           <option value="ollama-cloud" ${p.provider === 'ollama-cloud' ? 'selected' : ''}>Ollama Cloud</option>
           <option value="openai" ${p.provider === 'openai' ? 'selected' : ''}>OpenAI</option>
+          <option value="${p.provider === 'owned-onnx' ? 'owned-onnx' : 'home23-owned'}" ${['home23-owned', 'owned-onnx'].includes(p.provider) ? 'selected' : ''}>Home23 Owned ONNX</option>
         </select>
-        <input type="text" data-emb-model value="${p.model || ''}" placeholder="model" style="flex:1;min-width:120px;font-size:12px;">
-        <input type="text" data-emb-endpoint value="${p.endpoint || ''}" placeholder="endpoint URL (optional)" style="flex:1;min-width:160px;font-size:12px;">
+        <input type="text" data-emb-model value="${escapeHtml(p.model || '')}" placeholder="model" style="flex:1;min-width:120px;font-size:12px;">
+        <input type="text" data-emb-endpoint value="${escapeHtml(p.endpoint || '')}" placeholder="endpoint URL (optional)" style="flex:1;min-width:160px;font-size:12px;">
         <input type="number" data-emb-dims value="${p.dimensions || 768}" style="width:70px;font-size:12px;" title="Dimensions">
         <span style="color:var(--text-muted);font-size:11px;">dims</span>
         <button class="h23s-btn-danger" onclick="this.closest('[data-emb-entry]').remove()" style="padding:2px 8px;font-size:11px;">x</button>
       </div>
     </div>
   `).join('') || '<p class="h23s-panel-desc" style="margin:0;">No embedding providers configured.</p>';
+  embList.querySelectorAll('[data-emb-entry]').forEach((row, index) => {
+    systemEmbeddingMetadata.set(row, { ...embProviders[index] });
+  });
 
   document.getElementById('btn-add-embedding').onclick = () => {
     const div = document.createElement('div');
@@ -1966,6 +1974,7 @@ function renderSystem(data) {
           <option value="ollama-local">Ollama Local</option>
           <option value="ollama-cloud">Ollama Cloud</option>
           <option value="openai">OpenAI</option>
+          <option value="home23-owned">Home23 Owned ONNX</option>
         </select>
         <input type="text" data-emb-model value="nomic-embed-text" placeholder="model" style="flex:1;min-width:120px;font-size:12px;">
         <input type="text" data-emb-endpoint value="" placeholder="endpoint URL" style="flex:1;min-width:160px;font-size:12px;">
@@ -1987,7 +1996,11 @@ async function saveSystem() {
     const endpoint = el.querySelector('[data-emb-endpoint]')?.value?.trim();
     const dimensions = parseInt(el.querySelector('[data-emb-dims]')?.value) || 768;
     if (!provider || !model) return null;
-    const entry = { provider, model, dimensions };
+    const previous = systemEmbeddingMetadata.get(el);
+    const unchangedIdentity = previous?.provider === provider && previous?.model === model
+      && Number(previous?.dimensions || 768) === dimensions;
+    const entry = { ...(unchangedIdentity ? previous : {}), provider, model, dimensions };
+    delete entry.endpoint;
     if (endpoint) entry.endpoint = endpoint;
     return entry;
   }).filter(Boolean);

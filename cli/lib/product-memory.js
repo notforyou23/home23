@@ -43,13 +43,18 @@ export async function inspectMemorySeal(homeRoot, residents) {
   return { ok: reasons.length === 0, reasons };
 }
 
-export async function inspectProductMemory(homeRoot, { request = readModels } = {}) {
+export async function inspectProductMemory(homeRoot, { request = readModels, probe = probeOwnedReady } = {}) {
   const path = join(homeRoot, 'app/config/home.yaml');
   if (!existsSync(path)) return { semanticStatus: 'unconfigured', warnings: [] };
   const config = yaml.load(readFileSync(path, 'utf8')) || {};
   const selected = config.embeddings?.providers?.find(item => item?.provider && item?.model);
   const warnings = [];
   const detections = new Map();
+  const readyProbes = new Map();
+  const readyAt = port => {
+    if (!readyProbes.has(port)) readyProbes.set(port, probe(port));
+    return readyProbes.get(port);
+  };
   async function detected(endpoint, model) {
     const key = `${endpoint}\0${model}`;
     if (!detections.has(key)) detections.set(key, (async () => {
@@ -70,7 +75,7 @@ export async function inspectProductMemory(homeRoot, { request = readModels } = 
     const endpoint = selected.endpoint || config.substrate?.embedding?.endpoint || '';
     let port;
     try { port = Number(new URL(endpoint).port); } catch { port = config.embedder?.port; }
-    const ready = await probeOwnedReady(port);
+    const ready = await readyAt(port);
     if (ready.warm && ready.recipeId === OWNED_RECIPE_HASH) semanticStatus = 'ready';
     else warnings.push('Semantic memory is still preparing or unavailable. Conversations and text memory are retained. Resume preparation in Home23 Host — you do not install embedding tools yourself.');
   } else if (selected?.provider === 'ollama-local') {
@@ -84,12 +89,15 @@ export async function inspectProductMemory(homeRoot, { request = readModels } = 
   const env = seedEmbedding.resolveSeedEmbeddingEnv(config);
   const seedEndpoint = env.SEED_EMBED_ENDPOINT || 'http://127.0.0.1:11434/api/embeddings';
   const seedModel = env.SEED_EMBED_MODEL || 'nomic-embed-text';
+  const seedOwned = seedModel === OWNED_PROFILE_ID || seedModel === OWNED_RECIPE_HASH;
   let seedDetected = false;
-  if (seedModel === OWNED_PROFILE_ID || selected?.provider === 'home23-owned') {
-    seedDetected = semanticStatus === 'ready';
+  if (seedOwned) {
+    let seedPort;
+    try { seedPort = Number(new URL(seedEndpoint).port); } catch { /* unavailable */ }
+    seedDetected = (await readyAt(seedPort)).warm;
   } else {
     seedDetected = await detected(seedEndpoint, seedModel);
     if (!seedDetected && semanticStatus !== 'not_detected') warnings.push('The Seed contact encoder needs its credential-free local embedding model. Its event history is retained while that model is unavailable.');
   }
-  return { semanticStatus, seedSemanticStatus: seedDetected ? (semanticStatus === 'ready' ? 'ready' : 'model_detected') : 'not_detected', warnings };
+  return { semanticStatus, seedSemanticStatus: seedDetected ? (seedOwned ? 'ready' : 'model_detected') : 'not_detected', warnings };
 }

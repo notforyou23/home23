@@ -9,6 +9,11 @@ const require = createRequire(import.meta.url);
 const { NetworkMemory } = require('../../../engine/src/memory/network-memory.js');
 const { ConfigLoader } = require('../../../engine/src/core/config-loader.js');
 const { IngestionManifest } = require('../../../engine/src/ingestion/ingestion-manifest.js');
+const { OWNED_EMBEDDER_ID } = require('../../../engine/src/memory/embedding-provider.js');
+const {
+  OWNED_EMBEDDING_PROFILE, OWNED_EMBEDDING_RECIPE_ID,
+  LEGACY_EMBEDDING_PROFILE, LEGACY_EMBEDDING_RECIPE_ID,
+} = require('../../../shared/semantic-encoder-contract.cjs');
 const yaml = require('js-yaml');
 const legacy = 'ollama:nomic-embed-text:768';
 const target = 'gemini:gemini-embedding-2:2';
@@ -19,11 +24,31 @@ function memory() {
     smallWorld: {}, decay: { minimumWeight: 0.1 },
     spreading: { maxDepth: 2, activationThreshold: 0.01, decayFactor: 0.8 },
   }, logger, {
+    secrets: {},
     env: { GEMINI_API_KEY: 'fake-test-key' },
     fetch: async () => ({ ok: true, json: async () => ({ embeddings: [{ values: [3, 4] }] }) }),
   });
   result.tokenizer = null;
   return result;
+}
+
+function ownedMemory({ fromEnvironment = false, recipeId } = {}) {
+  const graph = new NetworkMemory({
+    embedding: fromEnvironment ? {} : {
+      provider: 'owned-onnx', model: OWNED_EMBEDDING_PROFILE, dimensions: 768,
+      baseUrl: 'http://127.0.0.1:23111/v1', ...(recipeId ? { recipeId } : {}),
+    },
+    smallWorld: {}, decay: { minimumWeight: 0.1 },
+    spreading: { maxDepth: 2, activationThreshold: 0.01, decayFactor: 0.8 },
+  }, logger, {
+    env: fromEnvironment ? {
+      EMBEDDING_PROVIDER: 'home23-owned', EMBEDDING_MODEL: OWNED_EMBEDDING_PROFILE,
+      EMBEDDING_DIMENSIONS: '768', EMBEDDING_BASE_URL: 'http://127.0.0.1:23111/v1',
+    } : {},
+    fetch: async () => { assert.fail('These admission tests must not request embeddings'); },
+  });
+  graph.tokenizer = null;
+  return graph;
 }
 
 test('public defaults retain Ollama nomic-embed-text with 768 dimensions', async () => {
@@ -118,6 +143,102 @@ test('owned re-embedded vectors retain recipe compatibility without legacy Seed 
   const node = { embedder_id: graph.metadata.embedderId };
   assert.equal(graph.nodeEmbeddingRecipeId(node), recipe.hash);
   assert.equal(graph.embeddingsComparable([1, 0], [1, 0], recipe.hash, graph.nodeEmbeddingRecipeId(node)), true);
+});
+
+test('Host owned alias keeps the owned recipe when inherited legacy Seed recipe is present', () => {
+  const graph = memory();
+  graph.config.embedding = { provider: 'home23-owned', model: 'owned-nomic-v1.5-onnx-fp32-mean-noprefix', dimensions: 768 };
+  graph.embeddingDeps.env = { EMBEDDING_PROVIDER: 'ollama-local', EMBEDDING_MODEL: 'nomic-embed-text' };
+  const previous = process.env.EMBEDDING_RECIPE_ID;
+  process.env.EMBEDDING_RECIPE_ID = 'legacy-ollama-nomic-unprefixed';
+  try {
+    assert.equal(graph.activeMemoryRecipe().profile, 'owned-nomic-v1.5-onnx-fp32-mean-noprefix');
+  } finally {
+    if (previous === undefined) delete process.env.EMBEDDING_RECIPE_ID;
+    else process.env.EMBEDDING_RECIPE_ID = previous;
+  }
+});
+
+test('an environment-selected owned brain refuses unstamped add, import, and replacement vectors', async () => {
+  const graph = ownedMemory({ fromEnvironment: true });
+  const vector = new Array(768).fill(1);
+  assert.equal(graph.resolvedEmbeddingConfig().provider, 'owned-onnx');
+  assert.equal(graph.config.embedding.provider, undefined);
+  await assert.rejects(() => graph.addNode({ concept: 'unattributed imported vector', embedding: vector }), { code: 'EMBEDDER_ID_MISMATCH' });
+  assert.throws(() => graph.importGraphChanges({ nodes: [{ id: 1, concept: 'unattributed vector', embedding: vector }] }), { code: 'EMBEDDER_ID_MISMATCH' });
+  assert.equal(graph.nodes.size, 0);
+  const node = await graph.addNode({ concept: 'owned vector', embedding: vector, embedder_id: OWNED_EMBEDDER_ID });
+  const before = Array.from(node.embedding);
+  assert.throws(() => graph.patchNode(node.id, { embedding: vector }), { code: 'EMBEDDER_ID_MISMATCH' });
+  assert.deepEqual(Array.from(node.embedding), before);
+  assert.equal(node.embedder_id, OWNED_EMBEDDER_ID);
+});
+
+test('owned vector admission rejects explicit conflicting recipe stamps despite a matching embedder identity', async () => {
+  const graph = ownedMemory(), vector = new Array(768).fill(1);
+  for (const fields of [
+    { embedding_recipe_id: LEGACY_EMBEDDING_RECIPE_ID },
+    { embeddingRecipeId: LEGACY_EMBEDDING_PROFILE },
+    { embedding_encoder: LEGACY_EMBEDDING_PROFILE },
+    { embedding_recipe_id: OWNED_EMBEDDING_RECIPE_ID, embeddingRecipeId: LEGACY_EMBEDDING_RECIPE_ID },
+    { embedding_recipe_id: 'unknown-encoder-recipe' },
+  ]) {
+    const incoming = { id: 1, concept: 'conflicting recipe', embedding: vector, embedder_id: OWNED_EMBEDDER_ID, ...fields };
+    await assert.rejects(() => graph.addNode(incoming), { code: 'EMBEDDER_ID_MISMATCH' });
+    assert.throws(() => graph.importGraphChanges({ nodes: [incoming] }), { code: 'EMBEDDER_ID_MISMATCH' });
+    assert.equal(graph.nodes.size, 0);
+  }
+});
+
+test('owned recipe aliases are accepted and recipe-only patches cannot relabel existing owned vectors', async () => {
+  const graph = ownedMemory(), vector = new Array(768).fill(1);
+  const node = await graph.addNode({
+    concept: 'owned recipe alias', embedding: vector, embedder_id: OWNED_EMBEDDER_ID,
+    embedding_recipe_id: OWNED_EMBEDDING_PROFILE, embeddingRecipeId: OWNED_EMBEDDING_RECIPE_ID,
+    embedding_encoder: OWNED_EMBEDDING_PROFILE,
+  });
+  assert.equal(node.embedding_recipe_id, OWNED_EMBEDDING_RECIPE_ID);
+  assert.equal(node.embedding_encoder, OWNED_EMBEDDING_PROFILE);
+  for (const field of ['embedding_recipe_id', 'embeddingRecipeId', 'embedding_encoder']) {
+    assert.throws(() => graph.patchNode(node.id, { [field]: LEGACY_EMBEDDING_PROFILE }), { code: 'EMBEDDER_ID_MISMATCH' });
+    assert.throws(() => graph.patchNode(node.id, {
+      embedding: vector, embedder_id: OWNED_EMBEDDER_ID, [field]: LEGACY_EMBEDDING_PROFILE,
+    }), { code: 'EMBEDDER_ID_MISMATCH' });
+  }
+  assert.equal(node.embedding_recipe_id, OWNED_EMBEDDING_RECIPE_ID);
+  assert.equal(node.embedding_encoder, OWNED_EMBEDDING_PROFILE);
+});
+
+test('the owned provider retains its fixed recipe despite a conflicting raw recipe configuration', async () => {
+  const graph = ownedMemory({ recipeId: LEGACY_EMBEDDING_RECIPE_ID });
+  assert.equal(graph.activeMemoryRecipe().hash, OWNED_EMBEDDING_RECIPE_ID);
+  const node = await graph.addNode({
+    concept: 'fixed owned provenance', embedding: new Array(768).fill(1), embedder_id: OWNED_EMBEDDER_ID,
+  });
+  assert.equal(node.embedding_recipe_id, OWNED_EMBEDDING_RECIPE_ID);
+  assert.equal(node.embedding_encoder, OWNED_EMBEDDING_PROFILE);
+});
+
+test('newly generated and regenerated owned vectors replace stale recipe fields on text-only records', async () => {
+  const graph = ownedMemory(), vector = new Array(768).fill(1);
+  graph.embed = async () => vector;
+  const node = await graph.addNode({
+    concept: 'text from the legacy brain', embedding_recipe_id: LEGACY_EMBEDDING_RECIPE_ID,
+    embedding_encoder: LEGACY_EMBEDDING_PROFILE,
+  });
+  assert.equal(node.embedder_id, OWNED_EMBEDDER_ID);
+  assert.equal(node.embedding_recipe_id, OWNED_EMBEDDING_RECIPE_ID);
+  assert.equal(node.embedding_encoder, OWNED_EMBEDDING_PROFILE);
+  graph.nodes.set(99, { id: 99, concept: 'missing vector', embedding: null,
+    embedder_id: OWNED_EMBEDDER_ID, embedding_recipe_id: LEGACY_EMBEDDING_RECIPE_ID,
+    embeddingRecipeId: LEGACY_EMBEDDING_PROFILE, embedding_encoder: LEGACY_EMBEDDING_PROFILE });
+  graph.embedBatch = async () => [vector];
+  assert.equal((await graph.regenerateMissingEmbeddings()).regenerated, 1);
+  const regenerated = graph.nodes.get(99);
+  assert.equal(regenerated.embedder_id, OWNED_EMBEDDER_ID);
+  assert.equal(regenerated.embedding_recipe_id, OWNED_EMBEDDING_RECIPE_ID);
+  assert.equal(regenerated.embedding_encoder, OWNED_EMBEDDING_PROFILE);
+  assert.equal(regenerated.embeddingRecipeId, undefined);
 });
 
 test('NetworkMemory uses the configured Ollama SDK endpoint instead of its legacy default factory', async () => {

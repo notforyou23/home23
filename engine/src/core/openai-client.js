@@ -58,7 +58,7 @@ let cachedEmbeddingClient;
 function resolveEmbeddingBaseUrl() {
   const configured = String(process.env.EMBEDDING_BASE_URL || '').trim();
   if (configured) return configured;
-  if ((process.env.EMBEDDING_PROVIDER || '') === 'home23-owned') {
+  if (['home23-owned', 'owned-onnx'].includes(process.env.EMBEDDING_PROVIDER || '')) {
     throw new Error('Owned encoder is missing EMBEDDING_BASE_URL');
   }
   return 'http://127.0.0.1:11434/v1';

@@ -67,6 +67,17 @@ function engineEnv(root) {
     .find((app) => app.name === 'home23-jerry').env;
 }
 
+test('owned-onnx catalog alias uses only its explicit sidecar address', t => {
+  const root = generate({ embeddings: { providers: [{ provider: 'owned-onnx', model: OWNED_PROFILE,
+    endpoint: 'http://127.0.0.1:21495/api/embeddings', recipeId: OWNED_RECIPE, dimensions: 768 }] } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(engineEnv(root).EMBEDDING_BASE_URL, 'http://127.0.0.1:21495/v1');
+  assert.equal(engineEnv(root).EMBEDDING_PROVIDER, 'owned-onnx');
+  const missing = generate({ embeddings: { providers: [{ provider: 'owned-onnx', model: OWNED_PROFILE, dimensions: 768 }] } });
+  t.after(() => rmSync(missing, { recursive: true, force: true }));
+  assert.equal(engineEnv(missing).EMBEDDING_BASE_URL, '');
+});
+
 test('configured owned home keeps embeddings off the Ollama default port', (t) => {
   const root = generate({
     providers: {

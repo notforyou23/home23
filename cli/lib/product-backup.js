@@ -30,6 +30,7 @@ import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor, val
 import { isOsMetadataPath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectCoordinationDatabase, isProductStatePath, isRebuildableStatePath, ownedWriterNames } from './product-update-inventory.js';
 import { detectForeignBindings } from './product-foreign-bindings.js';
+import semanticContract from '../../shared/semantic-encoder-contract.cjs';
 
 const executeFile = promisify(execFile);
 const BACKUP_SCHEMA = 'home23.backup.v1';
@@ -49,6 +50,9 @@ const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
 const HOST_LOCK_STALE_MS = 180000;
 const MOVE_FENCE_SCHEMA = 'home23.move-fence.v1';
 const RECOVER_JOURNAL_SCHEMA = 'home23.recover-journal.v1';
+const { OWNED_EMBEDDING_RECIPE_ID, isOwnedRecipe } = semanticContract;
+const SEMANTIC_JOURNAL_PATH = 'runtime/semantic-enable.json';
+const SEMANTIC_PROCESS_PATH = 'runtime/semantic-ecosystem.json';
 
 const exists = file => {
   try { lstatSync(file); return true; }
@@ -962,7 +966,8 @@ function isRebindMutablePath(relative, root = null) {
   if (isLifecycleLockPath(relative)) return true;
   if (relative === '.home23-host.json' || relative === '.home23-install.json') return true;
   if (relative === 'app/config/home.yaml' || relative === 'app/config/agents.json') return true;
-  if (relative === 'app/ecosystem.config.cjs' || relative === 'runtime/semantic-prep.json') return true;
+  if (relative === 'app/ecosystem.config.cjs' || relative === 'runtime/semantic-prep.json'
+    || relative === SEMANTIC_JOURNAL_PATH || relative === SEMANTIC_PROCESS_PATH) return true;
   if (relative === 'runtime/ecosystem.config.json') return true;
   if (/^app\/instances\/[^/]+\/(config|engine)\.yaml$/.test(relative)) return true;
   if (!rebindScanExcluded(relative) && embeddedRebindKind(relative, root ? join(root, relative) : null)) return true;
@@ -1568,7 +1573,26 @@ function treeContains(value, needle) {
   return false;
 }
 
-function assignHomePorts(home, destination, ports) {
+function usesOwnedEncoder(config, oldPorts) {
+  if (!config || typeof config !== 'object') return false;
+  if (['home23-owned', 'owned-onnx'].includes(config.provider) || isOwnedRecipe(config.recipeId) || isOwnedRecipe(config.model)) return true;
+  if (!Number.isInteger(oldPorts?.embedder)) return false;
+  try {
+    const endpoint = new URL(config.endpoint || config.baseUrl || config.baseURL);
+    return ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname) && Number(endpoint.port) === oldPorts.embedder;
+  } catch { return false; }
+}
+
+function assignMemoryEncoderPort(config, ports, oldPorts, original = config) {
+  const embedding = config?.architecture?.memory?.embedding;
+  if (embedding && Number.isInteger(ports?.embedder) && usesOwnedEncoder(original?.architecture?.memory?.embedding, oldPorts)) {
+    embedding.baseUrl = `http://127.0.0.1:${ports.embedder}/v1`;
+    if (Object.hasOwn(embedding, 'baseURL')) embedding.baseURL = embedding.baseUrl;
+    if (Object.hasOwn(embedding, 'endpoint')) embedding.endpoint = `http://127.0.0.1:${ports.embedder}/api/embeddings`;
+  }
+}
+
+function assignHomePorts(home, destination, ports, oldPorts = null, original = home) {
   if (!home || typeof home !== 'object' || !ports) return;
   if (home.coordination && typeof home.coordination === 'object') {
     home.coordination.socketDirectory = socketRootFor(destination);
@@ -1581,18 +1605,20 @@ function assignHomePorts(home, destination, ports) {
     if (home.substrate.observatory && typeof home.substrate.observatory === 'object' && Number.isInteger(ports.observatory)) {
       home.substrate.observatory.port = ports.observatory;
     }
-    if (home.substrate.embedding && typeof home.substrate.embedding === 'object' && Number.isInteger(ports.embedder)) {
+    if (usesOwnedEncoder(original?.substrate?.embedding, oldPorts) && Number.isInteger(ports.embedder)) {
       home.substrate.embedding.endpoint = `http://127.0.0.1:${ports.embedder}/api/embeddings`;
     }
   }
   if (home.embedder && typeof home.embedder === 'object' && Number.isInteger(ports.embedder)) home.embedder.port = ports.embedder;
   if (Array.isArray(home.embeddings?.providers) && Number.isInteger(ports.embedder)) {
-    for (const provider of home.embeddings.providers) {
-      if (provider && typeof provider === 'object' && typeof provider.endpoint === 'string' && provider.endpoint.includes('/api/embeddings')) {
+    for (const [index, provider] of home.embeddings.providers.entries()) {
+      if (usesOwnedEncoder(original?.embeddings?.providers?.[index], oldPorts)) {
         provider.endpoint = `http://127.0.0.1:${ports.embedder}/api/embeddings`;
+        if (Object.hasOwn(provider, 'baseUrl')) provider.baseUrl = `http://127.0.0.1:${ports.embedder}/v1`;
       }
     }
   }
+  assignMemoryEncoderPort(home, ports, oldPorts, original);
 }
 
 function assignInstancePorts(config, ports) {
@@ -1652,8 +1678,10 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     let document;
     try { document = yaml.load(readFileSync(entry.file, 'utf8')) || {}; }
     catch { fail('move_rebind_incomplete', `Destination configuration could not be read: ${relative(destination, entry.file)}`); }
+    const original = document;
     document = rewriteMachineStrings(document, source, destination, oldPorts, newPorts, adopted);
-    if (entry.kind === 'home') assignHomePorts(document, destination, newPorts);
+    if (entry.kind === 'home') assignHomePorts(document, destination, newPorts, oldPorts, original);
+    else assignMemoryEncoderPort(document, newPorts, oldPorts, original);
     if (entry.kind === 'instance') {
       const portsForResident = (residentPorts && entry.resident && residentPorts[entry.resident])
         ? residentPorts[entry.resident]
@@ -1728,6 +1756,7 @@ async function rebindMachineConfiguration(source, destination, oldPorts, newPort
     writePrivateJSON(file, config);
   }
   rebindSemanticPrep(source, destination, newPorts, adopted);
+  await rebindSemanticEnableRecords(source, destination, oldPorts, newPorts, { residentPorts, adopted, configurationRebound: true });
   rebindHomeUpdateRecords(source, destination, adopted);
   rebindAgentsManifest(source, destination, adopted, generated?.manifest);
   const savedProcesses = join(destination, 'runtime/ecosystem.config.json');
@@ -1975,17 +2004,12 @@ function writePrivateJSON(file, value) {
   renameSync(temporary, file);
 }
 
-function rebindSemanticPrep(source, destination, newPorts, adopted = false) {
-  const file = join(destination, 'runtime/semantic-prep.json');
-  if (!exists(file)) return;
-  let prep;
-  try { prep = JSON.parse(readFileSync(file, 'utf8')); }
-  catch { fail('move_rebind_incomplete', 'Destination semantic preparation could not be read.'); }
+function reboundSemanticPrep(prep, source, destination, port, adopted) {
   if (prep?.schema !== 'home23.semantic-prep.v1') fail('move_rebind_incomplete', 'Destination semantic preparation has an unknown schema.');
   const recipeId = prep.recipeId;
   prep.homeRoot = destination;
   prep.workerPid = 0;
-  if (Number.isInteger(newPorts?.embedder)) prep.port = newPorts.embedder;
+  if (Number.isInteger(port)) prep.port = port;
   if (typeof prep.cacheDir === 'string') prep.cacheDir = replaceHomePath(prep.cacheDir, source, destination, adopted);
   if (Array.isArray(prep.workerArgv)) {
     prep.workerArgv = prep.workerArgv.map(part => (typeof part === 'string' ? replaceHomePath(part, source, destination, adopted) : part));
@@ -1997,7 +2021,185 @@ function rebindSemanticPrep(source, destination, newPorts, adopted = false) {
   }
   if (recipeId) prep.recipeId = recipeId;
   if (treeContains(prep, source)) fail('move_rebind_incomplete', 'Destination semantic preparation still names the source home.');
+  return prep;
+}
+
+function rebindSemanticPrep(source, destination, newPorts, adopted = false) {
+  const file = join(destination, 'runtime/semantic-prep.json');
+  if (!exists(file)) return;
+  let prep;
+  try { prep = JSON.parse(readFileSync(file, 'utf8')); }
+  catch { fail('move_rebind_incomplete', 'Destination semantic preparation could not be read.'); }
+  prep = reboundSemanticPrep(prep, source, destination, newPorts?.embedder, adopted);
   writePrivateJSON(file, prep);
+}
+
+/** Only a separately admitted owned encoder may extend a sealed adoption plan. */
+export function validateSemanticPortExtension(host) {
+  const extension = host?.semanticExtension;
+  if (extension !== undefined) {
+    if (!extension || extension.schema !== 'home23.semantic-extension.v1'
+      || Object.keys(extension).some(key => !['schema', 'port', 'recipeId'].includes(key))
+      || extension.recipeId !== OWNED_EMBEDDING_RECIPE_ID || host.schema !== 'home23.host.v2' || host.encoderRequired !== true
+      || !Number.isInteger(extension.port) || extension.port < 20000 || extension.port > 60999
+      || host.ports?.embedder !== extension.port) fail('move_rebind_incomplete', 'The owned semantic port extension is invalid.');
+    const used = Object.entries(host.ports).filter(([key]) => key !== 'embedder').map(([, port]) => port);
+    for (const resident of Object.values(host.residentMap || {})) used.push(...Object.values(resident?.ports || {}));
+    for (const ports of Object.values(host.networkBindings?.residents || {})) used.push(...Object.values(ports || {}));
+    if (used.includes(extension.port)) fail('move_rebind_incomplete', 'The owned semantic port collides with a home or resident port.');
+  }
+  if (host?.networkBindings) {
+    const ports = { ...host.ports };
+    if (extension && !Object.hasOwn(host.networkBindings.shared || {}, 'embedder')) delete ports.embedder;
+    if (host.networkBindings.schema !== 'home23.adoption-network-bindings.v1'
+      || JSON.stringify(ports) !== JSON.stringify(host.networkBindings.shared)) {
+      fail('move_rebind_incomplete', 'Continuing-home network bindings changed.');
+    }
+  }
+  return extension?.port ?? null;
+}
+
+/** Moving an interrupted transition would detach its rollback from its process. */
+export function assertSemanticEnableSettled(homeRoot) {
+  const file = join(homeRoot, SEMANTIC_JOURNAL_PATH);
+  if (!exists(file)) return null;
+  assertNoSymlinkAncestors(homeRoot, SEMANTIC_JOURNAL_PATH);
+  let journal;
+  try { journal = readPrivateJSON(file); }
+  catch { fail('move_rebind_incomplete', 'Semantic rollback metadata could not be read.'); }
+  if (journal?.schema !== 'home23.semantic-enable.v1' || !Array.isArray(journal.files)
+    || typeof journal.homeRoot !== 'string' || !isAbsolute(journal.homeRoot) || journal.homeRoot.includes('\0')
+    || !Number.isInteger(journal.port) || journal.port < 20000 || journal.port > 60999) {
+    fail('move_rebind_incomplete', 'Semantic rollback metadata is invalid.');
+  }
+  if (!['enabled', 'disabled'].includes(journal.phase)) {
+    fail('move_semantic_transition_pending', 'Finish semantic-disable before moving or recovering an interrupted semantic enable.');
+  }
+  const paths = new Set();
+  for (const snapshot of journal.files) {
+    if (!snapshot || (typeof snapshot.before !== 'string' && snapshot.before !== null) || typeof snapshot.after !== 'string'
+      || paths.has(snapshot.path) || !(['.home23-host.json', 'app/config/home.yaml', 'runtime/semantic-prep.json'].includes(snapshot.path)
+        || /^app\/instances\/[a-z][a-z0-9-]{0,62}\/config\.yaml$/.test(snapshot.path))) {
+      fail('move_rebind_incomplete', 'Semantic rollback metadata contains an invalid snapshot.');
+    }
+    paths.add(snapshot.path);
+  }
+  if (!['.home23-host.json', 'app/config/home.yaml', 'runtime/semantic-prep.json'].every(path => paths.has(path))) {
+    fail('move_rebind_incomplete', 'Semantic rollback metadata is incomplete.');
+  }
+  return journal;
+}
+
+const SEMANTIC_HOST_KEYS = ['schema', 'encoderRequired', 'ports', 'semanticExtension'];
+function semanticSnapshotMatches(path, current, expected) {
+  if (current === expected) return true;
+  if (path !== '.home23-host.json' || current === null || expected === null) return false;
+  try {
+    const a = JSON.parse(current), b = JSON.parse(expected);
+    return SEMANTIC_HOST_KEYS.every(key => JSON.stringify(a[key]) === JSON.stringify(b[key]));
+  } catch { return false; }
+}
+
+/** Rebind rollback snapshots together with their actual destination files. No service calls. */
+export async function rebindSemanticEnableRecords(source, destination, oldPorts, newPorts, {
+  residentPorts = null, adopted = false, configurationRebound = false,
+} = {}) {
+  const journal = assertSemanticEnableSettled(destination);
+  if (!journal) return;
+  if (![source, destination].includes(journal.homeRoot)) fail('move_rebind_incomplete', 'Semantic rollback metadata belongs to another home.');
+  const port = Number.isInteger(newPorts?.embedder) ? newPorts.embedder : journal.port;
+  if (journal.phase === 'enabled' && !Number.isInteger(newPorts?.embedder)) {
+    fail('move_rebind_incomplete', 'Enabled semantic rollback metadata requires the destination embedder port.');
+  }
+  const { default: yaml } = await import('js-yaml');
+  const encode = value => `${JSON.stringify(value, null, 2)}\n`;
+  const snapshot = (file, text) => {
+    if (text === null) return null;
+    let value;
+    try { value = file.endsWith('.yaml') ? yaml.load(text) : JSON.parse(text); }
+    catch { fail('move_rebind_incomplete', 'A semantic rollback snapshot could not be read.'); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) fail('move_rebind_incomplete', 'A semantic rollback snapshot is not a configuration mapping.');
+    if (file === '.home23-host.json') {
+      const hadEncoderPort = Number.isInteger(value.ports?.embedder);
+      value = rewriteMachineStrings(value, source, destination, oldPorts, newPorts, adopted);
+      value.homeRoot = destination;
+      value.desiredRunning = false;
+      value.phase = 'stopped';
+      value.ports = { ...newPorts };
+      if (hadEncoderPort) value.ports.embedder = port;
+      else delete value.ports.embedder;
+      if (value.semanticExtension) value.semanticExtension.port = port;
+      if (residentPorts) for (const [name, ports] of Object.entries(residentPorts)) {
+        if (value.residentMap?.[name]) value.residentMap[name].ports = ports;
+      }
+      return encode(value);
+    }
+    if (file === 'runtime/semantic-prep.json') {
+      return encode(reboundSemanticPrep(value, source, destination, value.port === journal.port ? port : undefined, adopted));
+    }
+    const original = value;
+    value = rewriteMachineStrings(value, source, destination, oldPorts, newPorts, adopted);
+    if (file === 'app/config/home.yaml') assignHomePorts(value, destination, newPorts, oldPorts, original);
+    else {
+      assignMemoryEncoderPort(value, newPorts, oldPorts, original);
+      const resident = /^app\/instances\/([^/]+)\//.exec(file)?.[1];
+      assignInstancePorts(value, residentPorts?.[resident] || newPorts);
+    }
+    return yaml.dump(value, { lineWidth: 120, noRefs: true });
+  };
+  const rebound = { ...rewriteMachineStrings({ ...journal, files: [] }, source, destination, oldPorts, newPorts, adopted), homeRoot: destination, port };
+  const writes = [];
+  for (const original of journal.files) {
+    assertNoSymlinkAncestors(destination, original.path);
+    const file = join(destination, original.path);
+    const current = exists(file) ? readFileSync(file, 'utf8') : null;
+    const before = snapshot(original.path, original.before), after = snapshot(original.path, original.after);
+    const expected = journal.phase === 'enabled' ? original.after : original.before;
+    const projected = journal.phase === 'enabled' ? after : before;
+    const originalMatches = semanticSnapshotMatches(original.path, current, expected);
+    if (journal.phase === 'enabled' && !originalMatches && !semanticSnapshotMatches(original.path, current, projected)) {
+      fail('move_rebind_incomplete', `Semantic configuration changed since its rollback snapshot: ${original.path}.`);
+    }
+    const reboundCurrent = journal.phase === 'disabled'
+      ? configurationRebound ? current : snapshot(original.path, current)
+      : originalMatches ? snapshot(original.path, current) : current;
+    if (current !== reboundCurrent) writes.push({ file, text: reboundCurrent });
+    const entry = { ...original, before, after: journal.phase === 'enabled' ? reboundCurrent : after };
+    if (journal.phase === 'enabled' && original.path === '.home23-host.json' && entry.before !== null) {
+      // Preserve later lifecycle/nonencoder fields when rolling back at the new home.
+      const baseline = JSON.parse(entry.before), host = JSON.parse(reboundCurrent);
+      for (const key of SEMANTIC_HOST_KEYS) {
+        if (Object.hasOwn(baseline, key)) host[key] = baseline[key];
+        else delete host[key];
+      }
+      host.homeRoot = destination;
+      host.desiredRunning = false;
+      host.phase = 'stopped';
+      entry.before = encode(host);
+    }
+    rebound.files.push(entry);
+  }
+  const processFile = join(destination, SEMANTIC_PROCESS_PATH);
+  let processes = null;
+  if (exists(processFile)) {
+    assertNoSymlinkAncestors(destination, SEMANTIC_PROCESS_PATH);
+    try { processes = readPrivateJSON(processFile); } catch { fail('move_rebind_incomplete', 'Semantic process registration could not be read.'); }
+    if (!Array.isArray(processes?.apps) || processes.apps.length !== 1 || processes.apps[0]?.name !== 'home23-embedder') {
+      fail('move_rebind_incomplete', 'Semantic process registration has an unexpected process.');
+    }
+    processes = rewriteMachineStrings(processes, source, destination, oldPorts, newPorts, adopted);
+    processes.apps[0].env = { ...processes.apps[0].env, ...productEnvironment(destination, { encoderRequired: true, embedderPort: port }) };
+  }
+  if (treeContains(rebound, source) || treeContains(processes, source)) {
+    fail('move_rebind_incomplete', 'Semantic rollback metadata still names the source home.');
+  }
+  for (const { file, text } of writes) {
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, text, { mode: lstatSync(file).mode & 0o777 });
+    renameSync(temporary, file);
+  }
+  if (processes) writePrivateJSON(processFile, processes);
+  writePrivateJSON(join(destination, SEMANTIC_JOURNAL_PATH), rebound);
 }
 
 /** The update registration and operation records name the home root, the executor retained under
@@ -2114,6 +2316,8 @@ function rebindReceiptLinks(destination, links, source) {
 
 async function prepareRebindPlan(source, destination, { adopting = false } = {}) {
   const host = readHostState(destination);
+  assertSemanticEnableSettled(destination);
+  validateSemanticPortExtension(host);
   const recordedHomeRoot = (typeof host.homeRoot === 'string' && isAbsolute(host.homeRoot) && !host.homeRoot.includes('\0'))
     ? resolve(host.homeRoot)
     : null;
@@ -2136,10 +2340,6 @@ async function prepareRebindPlan(source, destination, { adopting = false } = {})
   }
   let ports = host.ports && typeof host.ports === 'object' ? { ...host.ports } : null;
   if (host.networkBindings) {
-    if (host.networkBindings.schema !== 'home23.adoption-network-bindings.v1'
-      || JSON.stringify(ports) !== JSON.stringify(host.networkBindings.shared)) {
-      fail('move_rebind_incomplete', 'Continuing-home network bindings changed.');
-    }
     validatePortPlan(ports, { encoderRequired: host.encoderRequired === true, continuingBindings: true });
     await withReservedPorts(ports, async () => {}, { encoderRequired: host.encoderRequired === true,
       continuingBindings: true, residentPorts: host.networkBindings.residents });
@@ -2173,6 +2373,8 @@ async function prepareRebindPlan(source, destination, { adopting = false } = {})
 async function rebindDestination(source, destination, options = {}) {
   const plan = options.plan && typeof options.plan === 'object' ? options.plan : null;
   const host = readHostState(destination);
+  assertSemanticEnableSettled(destination);
+  validateSemanticPortExtension(host);
   let rewriteFrom;
   let oldPorts = null;
   let ports;
@@ -2220,6 +2422,7 @@ async function rebindDestination(source, destination, options = {}) {
   host.desiredRunning = false;
   host.phase = 'stopped';
   host.ports = ports;
+  if (host.semanticExtension) host.semanticExtension = { ...host.semanticExtension, port: ports.embedder };
   if (residentPorts && host.residentMap && typeof host.residentMap === 'object' && !Array.isArray(host.residentMap)) {
     for (const name of Object.keys(residentPorts)) {
       host.residentMap[name] = { ...(host.residentMap[name] || {}), ports: residentPorts[name] };
@@ -2285,6 +2488,7 @@ export async function recoverInspectedHome({ inspectionRoot, payloadPath, archiv
   lock.hooks = { beforeChunk: dependencies.beforeChunk, onLockRefresh: dependencies.onLockRefresh, refreshMs: dependencies.lockRefreshMs };
   try {
     assertWritersIdle(await inventoryDestinationWriters(destination, dependencies));
+    assertSemanticEnableSettled(destination);
     if (retainedAuthorityDependencies(destination).some(item => !item.present)) {
       fail('backup_recover_external_authority_missing', 'A retained external authority is unavailable. Reconnect its exact path before recovery.');
     }
@@ -2471,6 +2675,8 @@ export async function moveHome({ sourceHome, destinationRoot, archivePath, keyPa
     const list = dependencies.listProcesses || listInstalledWriters;
     const scanForeign = dependencies.detectForeignBindings || detectForeignBindings;
     assertWritersStopped(source, await list(source));
+    assertSemanticEnableSettled(source);
+    validateSemanticPortExtension(readHostState(source));
     if (readMoveFence(source)) {
       if (readdirSync(destination).length === 0) fail('move_journal_invalid', 'The fenced move has no destination to finish.');
       installMovedRuntime(source, destination, lock);

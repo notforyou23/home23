@@ -86,7 +86,8 @@ function containsState(relative) {
   return isProductStatePath(relative) || PRODUCT_STATE_PATHS.some(entry => entry.path.startsWith(`${relative}/`));
 }
 export function isRebuildableStatePath(relative) {
-  return REBUILDABLE_PREFIXES.some(prefix => relative === prefix.slice(0, -1) || relative.startsWith(prefix));
+  return relative === 'runtime/semantic-ecosystem.json'
+    || REBUILDABLE_PREFIXES.some(prefix => relative === prefix.slice(0, -1) || relative.startsWith(prefix));
 }
 /** Reserved Host writer names, including optional agent roles. Never trust
  * arbitrary processNames from a saved Host record as stop authority. */

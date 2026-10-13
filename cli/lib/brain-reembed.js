@@ -10,8 +10,10 @@ import { tmpdir } from 'node:os';
 import { gzip, gunzip } from 'node:zlib';
 
 const require = createRequire(import.meta.url);
+const { OWNED_EMBEDDING_PROFILE, OWNED_EMBEDDING_RECIPE_ID, LEGACY_EMBEDDING_PROFILE, canonicalizeRecipeId } = require('../../shared/semantic-encoder-contract.cjs');
 const gzipAsync = promisify(gzip), gunzipAsync = promisify(gunzip), execFileAsync = promisify(execFile);
 const LEGACY_ID = 'ollama:nomic-embed-text:768';
+const OWNED_ID = `owned-onnx:${OWNED_EMBEDDING_PROFILE}:768`;
 const RECEIPT = 'reembed-receipt.json';
 const embeddingFields = ['embedding', 'embedding_status', 'embedding_recipe_id', 'embeddingRecipeId', 'embedding_encoder', 'embedder_id'];
 const graphFile = name => /^(?:state\.json(?:\.gz)?|memory-(?:nodes|edges|delta|manifest|ann)[.\-]|brain-snapshot\.json)/.test(name);
@@ -163,7 +165,15 @@ async function loadBrain(source) {
   });
   const recordedId = memory.metadata?.embedderId ?? LEGACY_ID;
   if (typeof recordedId !== 'string' || !recordedId) fail('Brain embedder id is invalid.');
-  for (const node of nodes) if (node.embedding && node.embedder_id && node.embedder_id !== recordedId) fail('Source contains mixed embedder ids.');
+  for (const node of nodes) {
+    if (!node.embedding) continue;
+    if ((node.embedder_id || LEGACY_ID) !== recordedId) fail('Source contains mixed embedder ids; unstamped vectors belong to the legacy provider.');
+    for (const field of ['embedding_recipe_id', 'embeddingRecipeId', 'embedding_encoder']) {
+      const recipe = canonicalizeRecipeId(node[field]);
+      if (recipe === OWNED_EMBEDDING_PROFILE && recordedId !== OWNED_ID
+          || recipe === LEGACY_EMBEDDING_PROFILE && recordedId === OWNED_ID) fail('Source contains mixed embedding recipes.');
+    }
+  }
   return { directory, document, memory, nodes, tuples, sidecars, stateName: path.basename(stateFile), recordedId };
 }
 const nodeText = node => typeof node.concept === 'string' ? node.concept : typeof node.text === 'string' ? node.text : typeof node.content === 'string' ? node.content : '';
@@ -179,6 +189,15 @@ function normalize(vector, dimensions) {
 function prepare(brain, targetId) {
   for (const node of brain.nodes) for (const field of embeddingFields) delete node[field];
   brain.memory.metadata = { ...brain.memory.metadata, embedderId: targetId };
+}
+function stampVector(node, vector, targetId) {
+  node.embedding = vector;
+  node.embedding_status = 'embedded';
+  node.embedder_id = targetId;
+  if (targetId === OWNED_ID) {
+    node.embedding_recipe_id = OWNED_EMBEDDING_RECIPE_ID;
+    node.embedding_encoder = OWNED_EMBEDDING_PROFILE;
+  }
 }
 async function saveBrain(brain, destination) {
   if (brain.directory) {
@@ -203,20 +222,35 @@ async function saveBrain(brain, destination) {
 
 async function settings(homeRoot, options, deps) {
   let raw = {};
+  let ownedEnvironment = {};
+  // Product commands receive the Host root; source/operator commands receive its app root.
+  const appRoot = await exists(path.join(homeRoot, 'app/config/home.yaml')) ? path.join(homeRoot, 'app') : homeRoot;
   const embeddingBlock = value => value.architecture?.memory?.embedding ?? value.memory?.embedding ?? value.embedding ?? {};
   if (!options.config) {
-    const baseFile = path.join(homeRoot, 'configs/base-engine.yaml');
+    const baseFile = path.join(appRoot, 'configs/base-engine.yaml');
     if (await exists(baseFile)) raw = embeddingBlock(require('js-yaml').load(await fs.readFile(baseFile, 'utf8')) || {});
   }
-  const configFile = options.config ? path.resolve(options.config) : path.join(homeRoot, 'config/home.yaml');
+  const configFile = options.config ? path.resolve(options.config) : path.join(appRoot, 'config/home.yaml');
   if (options.config || await exists(configFile)) {
     const yaml = require('js-yaml');
     const document = yaml.load(await fs.readFile(configFile, 'utf8')) || {};
     raw = { ...raw, ...(options.config && document.provider ? document : embeddingBlock(document)) };
+    if (!options.config) {
+      const selected = document.embeddings?.providers?.find(item => item?.provider && item?.model);
+      if (['home23-owned', 'owned-onnx'].includes(selected?.provider)) {
+        // Match the Host-generated encoder environment without reading credentials.
+        // Explicit memory providers still win through resolveEmbeddingConfig.
+        ownedEnvironment = {
+          EMBEDDING_PROVIDER: 'home23-owned', EMBEDDING_MODEL: selected.model,
+          EMBEDDING_DIMENSIONS: String(selected.dimensions ?? 768),
+          EMBEDDING_BASE_URL: selected.endpoint || selected.baseUrl || '',
+        };
+      }
+    }
   }
-  const overrides = Object.fromEntries(['provider', 'model', 'dimensions', 'batchSize'].filter(key => options[key] !== undefined).map(key => [key, options[key]]));
+  const overrides = Object.fromEntries(['provider', 'model', 'dimensions', 'batchSize', 'baseUrl'].filter(key => options[key] !== undefined).map(key => [key, options[key]]));
   const { resolveEmbeddingConfig, embeddingId } = require('../../engine/src/memory/embedding-provider.js');
-  const config = resolveEmbeddingConfig({ ...raw, ...overrides }, deps.env ?? process.env);
+  const config = resolveEmbeddingConfig({ ...raw, ...overrides }, { ...ownedEnvironment, ...(deps.env ?? process.env) });
   const pricePerMillion = Number(options.pricePerMillion ?? raw.pricePerMillion ?? config.pricePerMillionTokens ?? 0.20);
   const requestsPerMinute = Number(options.requestsPerMinute ?? config.requestsPerMinute ?? 60);
   if (!Number.isFinite(pricePerMillion) || pricePerMillion < 0) fail('Price per million tokens must be a nonnegative number.');
@@ -399,8 +433,7 @@ export async function reembedBrain(sourcePath, options = {}, deps = {}) {
     if (!Array.isArray(records) || !records.length || records.length > config.batchSize || batch.file !== `${covered}.json`) fail('Checkpoint batch sequence is invalid.');
     for (const { index, vector, id } of records) {
       if (id !== targetId || eligible[covered++] !== index) fail('Checkpoint contains invalid or mixed vector spaces.');
-      brain.nodes[index].embedding = normalize(vector, config.dimensions);
-      brain.nodes[index].embedding_status = 'embedded'; brain.nodes[index].embedder_id = targetId;
+      stampVector(brain.nodes[index], normalize(vector, config.dimensions), targetId);
     }
   }
   if (covered !== checkpoint.next || covered > eligible.length) fail('Checkpoint progress is invalid.');
@@ -422,7 +455,7 @@ export async function reembedBrain(sourcePath, options = {}, deps = {}) {
     const records = indices.map((index, position) => ({ index, id: targetId, vector: normalize(vectors[position], config.dimensions) }));
     const file = `${start}.json`, bytes = Buffer.from(JSON.stringify(records));
     await atomic(path.join(work, 'batches', file), bytes);
-    for (const { index, vector } of records) { brain.nodes[index].embedding = vector; brain.nodes[index].embedding_status = 'embedded'; brain.nodes[index].embedder_id = targetId; }
+    for (const { index, vector } of records) stampVector(brain.nodes[index], vector, targetId);
     checkpoint.batches.push({ file, hash: createHash('sha256').update(bytes).digest('hex') });
     checkpoint.next = start + indices.length;
     await writeJson(checkpointFile, checkpoint);
@@ -447,7 +480,7 @@ export async function reembedBrain(sourcePath, options = {}, deps = {}) {
 export async function runBrainReembedCommand(homeRoot, args, deps = {}) {
   const options = { homeRoot };
   let source;
-  const values = { '--output': 'output', '--config': 'config', '--price-per-million': 'pricePerMillion', '--requests-per-minute': 'requestsPerMinute', '--engine-pid-file': 'enginePidFile', '--provider': 'provider', '--model': 'model', '--dimensions': 'dimensions', '--batch-size': 'batchSize' };
+  const values = { '--output': 'output', '--config': 'config', '--price-per-million': 'pricePerMillion', '--requests-per-minute': 'requestsPerMinute', '--engine-pid-file': 'enginePidFile', '--provider': 'provider', '--model': 'model', '--dimensions': 'dimensions', '--batch-size': 'batchSize', '--base-url': 'baseUrl' };
   const flags = { '--dry-run': 'dryRun', '--run': 'run', '--resume': 'resume', '--swap': 'swap' };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];

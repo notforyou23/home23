@@ -24,11 +24,13 @@ test('owned encoder does not fall back to the Ollama default URL', () => {
   const previousEmbed = process.env.EMBEDDING_BASE_URL;
   const previousProvider = process.env.EMBEDDING_PROVIDER;
   delete process.env.EMBEDDING_BASE_URL;
-  process.env.EMBEDDING_PROVIDER = 'home23-owned';
-  assert.throws(
-    () => resolveEmbeddingBaseUrl(),
-    (error) => /owned encoder/i.test(error.message) && !String(error.message).includes('11434'),
-  );
+  for (const provider of ['home23-owned', 'owned-onnx']) {
+    process.env.EMBEDDING_PROVIDER = provider;
+    assert.throws(
+      () => resolveEmbeddingBaseUrl(),
+      (error) => /owned encoder/i.test(error.message) && !String(error.message).includes('11434'),
+    );
+  }
   process.env.EMBEDDING_BASE_URL = 'http://127.0.0.1:21495/v1';
   assert.equal(resolveEmbeddingBaseUrl(), 'http://127.0.0.1:21495/v1');
   if (previousEmbed === undefined) delete process.env.EMBEDDING_BASE_URL;

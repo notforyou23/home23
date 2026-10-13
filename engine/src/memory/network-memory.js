@@ -545,14 +545,28 @@ class NetworkMemory {
   assertIncomingEmbedding(node) {
     if (!node?.embedding) return;
     const recorded = this.assertEmbedderMatches();
-    // Unstamped imported vectors have legacy provenance. An explicit new
-    // provider cannot treat them as vectors from its own space.
-    const explicitProvider = this.config.embedding?.provider;
-    const incoming = node.embedder_id || (explicitProvider ? LEGACY_EMBEDDER_ID : recorded);
+    // Preserve implicit legacy callers, including their synthetic model aliases.
+    // An environment-selected provider still cannot claim an unstamped vector.
+    const legacyCaller = !this.config.embedding?.provider && this.resolvedEmbeddingConfig().provider === 'ollama';
+    const incoming = node.embedder_id || (legacyCaller ? recorded : LEGACY_EMBEDDER_ID);
     if (incoming !== recorded) {
       const error = new Error(`Incoming vector embedder ${incoming} differs from brain ${recorded}. Run node cli/home23.js brain re-embed; vectors cannot be mixed.`);
       error.code = 'EMBEDDER_ID_MISMATCH';
       throw error;
+    }
+    const activeRecipe = this.activeMemoryRecipe();
+    if (activeRecipe.known) {
+      for (const field of ['embedding_recipe_id', 'embeddingRecipeId', 'embedding_encoder']) {
+        const recipe = node[field];
+        if (recipe === undefined || recipe === null || recipe === '') continue;
+        const resolvedRecipe = typeof recipe === 'string' && recipe.trim() ? resolveMemoryRecipe(recipe) : null;
+        const recipeIdentity = resolvedRecipe?.known ? resolvedRecipe.hash : recipe;
+        if (typeof recipe !== 'string' || !recipesCompatibleForCompare(activeRecipe.hash, recipeIdentity)) {
+          const error = new Error('Incoming vector recipe differs from the brain encoder. Run node cli/home23.js brain re-embed; vectors cannot be mixed.');
+          error.code = 'EMBEDDER_ID_MISMATCH';
+          throw error;
+        }
+      }
     }
   }
 
@@ -563,9 +577,12 @@ class NetworkMemory {
   }
 
   getEmbeddingRecipeId() {
-    if (this.resolvedEmbeddingConfig().provider === 'gemini') return null;
-    if (this.config.embedding?.provider === 'owned-onnx') {
-      return this.config.embedding.recipeId || this.getEmbeddingModel();
+    const embedding = this.resolvedEmbeddingConfig();
+    if (embedding.provider === 'gemini') return null;
+    if (embedding.provider === 'owned-onnx') {
+      // The owned provider has one frozen recipe; arbitrary raw recipe fields
+      // must not relabel its generated vectors or inherit the Seed's recipe.
+      return embedding.model;
     }
     const recipe = process.env.EMBEDDING_RECIPE_ID || this.config.embedding?.recipeId || null;
     return typeof recipe === 'string' && recipe.trim() ? recipe.trim() : null;
@@ -788,11 +805,20 @@ class NetworkMemory {
     if (accepted.length > 0) {
       this.withPersistenceBarrier(() => {
         this.assertEmbedderMatches();
+        const recipe = this.activeMemoryRecipe();
         for (const { node, embedding } of accepted) {
           if (this.nodes.get(node.id) !== node) continue;
           node.embedding = embedding;
           node.embedding_status = 'embedded';
           node.embedder_id = this.metadata.embedderId;
+          if (recipe.known) {
+            node.embedding_recipe_id = recipe.hash;
+            node.embedding_encoder = recipe.profile;
+          } else {
+            delete node.embedding_recipe_id;
+            delete node.embedding_encoder;
+          }
+          delete node.embeddingRecipeId;
           this._markNodeDirtyUnsafe(node.id);
         }
       });
@@ -906,7 +932,9 @@ class NetworkMemory {
         };
 
     const memoryRecipe = embed
-      ? resolveMemoryRecipe(this.nodeEmbeddingRecipeId(inputNode) || this.getEmbeddingRecipeId() || this.getEmbeddingModel())
+      ? nodeEmbedding
+        ? resolveMemoryRecipe(this.nodeEmbeddingRecipeId(inputNode) || this.getEmbeddingRecipeId() || this.getEmbeddingModel())
+        : this.activeMemoryRecipe()
       : null;
     const knownRecipe = memoryRecipe?.known === true;
 
@@ -1209,9 +1237,15 @@ class NetworkMemory {
       if (!expectedMatches) continue;
 
       const patch = this._prepareNodePatch(entry.patch);
-      if (Object.prototype.hasOwnProperty.call(patch, 'embedder_id')
-          && !Object.prototype.hasOwnProperty.call(patch, 'embedding') && stored.embedding) {
+      const provenancePatched = ['embedder_id', 'embedding_recipe_id', 'embeddingRecipeId', 'embedding_encoder']
+        .some(field => Object.prototype.hasOwnProperty.call(patch, field));
+      if (provenancePatched && !Object.prototype.hasOwnProperty.call(patch, 'embedding') && stored.embedding) {
         this.assertIncomingEmbedding(stored);
+        this.assertIncomingEmbedding({ ...stored, ...patch });
+      } else if (patch.embedding) {
+        // A replacement vector must also match recipe fields retained by the
+        // patch, rather than keeping a conflicting stamp from the old node.
+        this.assertIncomingEmbedding({ ...stored, ...patch });
       }
       const updates = [];
       for (const key of Reflect.ownKeys(patch)) {

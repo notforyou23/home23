@@ -700,7 +700,7 @@ function createSettingsRouter(home23Root, options = {}) {
     if (!embedding.configured) {
       return res.status(400).json({
         ok: false,
-        error: 'No embedding provider is configured. Add Ollama Local, OpenAI, or Ollama Cloud embeddings first.',
+        error: 'No embedding provider is configured. Configure Ollama Local, OpenAI, Ollama Cloud, or the Host-owned ONNX encoder first.',
       });
     }
 
@@ -829,7 +829,7 @@ function createSettingsRouter(home23Root, options = {}) {
     return { ok: true };
   }
 
-  function getPrimaryEmbeddingProvider(homeConfig = loadHomeConfig(), secrets = loadSecrets()) {
+  function getPrimaryEmbeddingProvider(homeConfig = loadHomeConfig(), secrets) {
     const providers = Array.isArray(homeConfig.embeddings?.providers) ? homeConfig.embeddings.providers : [];
     const primary = providers.find((entry) => entry?.provider && entry?.model) || null;
     if (!primary) {
@@ -844,8 +844,8 @@ function createSettingsRouter(home23Root, options = {}) {
     }
 
     const provider = String(primary.provider || '').trim();
-    const needsKey = provider !== 'ollama-local';
-    const hasKey = !needsKey || !!secrets.providers?.[provider]?.apiKey;
+    const needsKey = !['ollama-local', 'home23-owned', 'owned-onnx'].includes(provider);
+    const hasKey = !needsKey || !!(secrets ?? loadSecrets()).providers?.[provider]?.apiKey;
     return {
       configured: hasKey,
       status: hasKey ? 'semantic_configured' : 'memory_lite',
@@ -857,6 +857,7 @@ function createSettingsRouter(home23Root, options = {}) {
       model: primary.model || '',
       dimensions: primary.dimensions || null,
       endpoint: primary.endpoint || null,
+      recipeId: primary.recipeId || null,
       needsKey,
     };
   }
@@ -2351,7 +2352,23 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       Object.assign(homeConfig.cosmo23.ports, cosmo23.ports);
     }
     if (embeddings?.providers) {
-      homeConfig.embeddings = { providers: embeddings.providers };
+      if (!Array.isArray(embeddings.providers)) {
+        return res.status(400).json({ ok: false, error: 'embeddings.providers must be an array' });
+      }
+      const previous = Array.isArray(homeConfig.embeddings?.providers) ? homeConfig.embeddings.providers : [];
+      homeConfig.embeddings = {
+        ...homeConfig.embeddings,
+        providers: embeddings.providers.map((entry, index) => {
+          const matches = (candidate) => candidate?.provider === entry?.provider
+            && candidate?.model === entry?.model
+            && Number(candidate?.dimensions || 768) === Number(entry?.dimensions || 768);
+          const existing = matches(previous[index]) ? previous[index] : previous.find(matches);
+          // Omitted editable fields can be cleared. Preserve only metadata
+          // belonging to the same provider/model/dimensions identity.
+          const { provider, model, dimensions, endpoint, ...metadata } = existing || {};
+          return { ...metadata, ...entry };
+        }),
+      };
     }
     if (chat) {
       if (!homeConfig.chat) homeConfig.chat = {};

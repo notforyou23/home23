@@ -36,15 +36,16 @@ function providerName(value) {
 
 /** Explicit memory provider selection must not inherit a Seed's model or endpoint. */
 function resolveEmbeddingConfig(raw = {}, env = process.env) {
-  const explicitProvider = raw.provider !== undefined && raw.provider !== '';
-  if (explicitProvider && !PROVIDERS.has(raw.provider)) {
+  const requestedProvider = raw.provider === 'home23-owned' ? 'owned-onnx' : raw.provider;
+  const explicitProvider = requestedProvider !== undefined && requestedProvider !== '';
+  if (explicitProvider && !PROVIDERS.has(requestedProvider)) {
     throw embeddingError('EMBEDDING_CONFIG_INVALID', 'Embedding provider must be ollama, gemini or owned-onnx.');
   }
-  const legacyDefault = !explicitProvider || raw.provider === 'ollama' && (!raw.model || raw.model === 'nomic-embed-text');
+  const legacyDefault = !explicitProvider || requestedProvider === 'ollama' && (!raw.model || raw.model === 'nomic-embed-text');
   const envProvider = providerName(env.EMBEDDING_PROVIDER);
   const provider = legacyDefault && env.EMBEDDING_PROVIDER
     ? PROVIDERS.has(envProvider) ? envProvider : 'ollama'
-    : raw.provider || 'ollama';
+    : requestedProvider || 'ollama';
   const useEmbeddingEnv = legacyDefault || envProvider === provider
     || (!env.EMBEDDING_PROVIDER && provider === 'ollama');
   const defaultModel = provider === 'gemini' ? 'gemini-embedding-2'
@@ -76,7 +77,7 @@ function resolveEmbeddingConfig(raw = {}, env = process.env) {
     throw embeddingError('EMBEDDING_CONFIG_INVALID', 'Embedding maxRetries must be an integer from 0 through 20.');
   }
   const inheritedBaseUrl = useEmbeddingEnv ? env.EMBEDDING_BASE_URL : undefined;
-  const baseUrl = raw.baseUrl || raw.baseURL || inheritedBaseUrl
+  const baseUrl = raw.baseUrl || raw.baseURL || (provider === 'owned-onnx' && raw.endpoint) || inheritedBaseUrl
     || (provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta'
       : provider === 'ollama' ? 'http://127.0.0.1:11434/v1' : env.HOME23_OWNED_EMBEDDING_BASE_URL || '');
   const ownedBaseUrl = raw.ownedBaseUrl || raw.fallbackBaseUrl || env.HOME23_OWNED_EMBEDDING_BASE_URL
@@ -278,11 +279,18 @@ function createEmbeddingProvider(raw = {}, deps = {}) {
   }
 
   async function ownedBatch(texts, baseUrl, signal) {
-    const base = checkedBaseUrl(baseUrl, true).replace(/\/v1$/, '');
+    const base = checkedBaseUrl(baseUrl, true).replace(/\/(?:v1(?:\/embeddings)?|api\/(?:embeddings|embed))$/, '');
+    if (new URL(base).pathname !== '/') {
+      throw safeError('EMBEDDING_CONFIG_INVALID', 'The owned embedder baseUrl must name its root, /v1, or embedding endpoint.');
+    }
     const response = await requestJson(`${base}/v1/embeddings`, {
       model: OWNED_EMBEDDING_PROFILE, input: texts.map(text => String(text ?? '')),
       encoding_format: 'float', dimensions: 768,
     }, undefined, signal);
+    if (response?.model !== undefined && ![OWNED_EMBEDDING_PROFILE, OWNED_EMBEDDING_RECIPE_ID].includes(response.model)
+        || response?.recipeId !== undefined && response.recipeId !== OWNED_EMBEDDING_RECIPE_ID) {
+      throw safeError('EMBEDDING_RESPONSE_INVALID', 'Owned embedder returned a different encoder identity.');
+    }
     const rows = response?.data;
     if (!Array.isArray(rows) || rows.length !== texts.length) {
       throw safeError('EMBEDDING_RESPONSE_INVALID', 'Owned embedder returned a different number of embeddings than requested.');

@@ -62,6 +62,15 @@ For ordinary source installations, `update` pulls the latest Home23 release and 
 
 First agent listens on 5001–5004 (engine, dash, MCP, harness bridge). The next agent gets 5011–5014.
 
+## Owned embeddings in an adopted Host home
+
+An adopted home can explicitly enable the supervised local ONNX encoder with
+`host.mjs semantic-enable --home ABS`; `--dry-run` previews the change.
+`semantic-disable` restores the saved configuration. Enabling the service and
+migrating each resident's brain are separate steps. Keep writers stopped until
+the configured provider matches every active brain; incompatible vectors are
+refused. See the [adopted-home rollout and rollback guide](docs/reference/ADOPTED-HOME-SEMANTICS.md).
+
 ## How a turn works
 
 Every mouth — dashboard, phone, Telegram — hits the agent's harness bridge. The engine does not speak that turn. The Seed lives beside it. After the turn, a shipper feeds the conversation onto the chain.
@@ -72,6 +81,7 @@ Never run two seed runners on one individual. A forked chain is archived, not re
 
 - [Product website, apps, browser access and delivery work](docs/design/PRODUCT-DELIVERY.md)
 - [Home23 Host companion](docs/design/HOST-COMPANION.md)
+- [Enable owned embeddings in an adopted home](docs/reference/ADOPTED-HOME-SEMANTICS.md)
 - [Onboarding](docs/ONBOARDING.md)
 - [v2 substrate](docs/design/HOME23-V2-SUBSTRATE-DESIGN.md)
 - [AGENTS.md](AGENTS.md) — public repo law

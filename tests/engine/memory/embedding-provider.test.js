@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   LEGACY_EMBEDDER_ID, OWNED_EMBEDDER_ID,
-  resolveEmbeddingConfig, embeddingId, createEmbeddingProvider,
+  resolveEmbeddingConfig, embeddingId, createEmbeddingProvider: createProvider,
 } = require('../../../engine/src/memory/embedding-provider.js');
 const {
   OWNED_EMBEDDING_PROFILE, OWNED_EMBEDDING_RECIPE_ID,
@@ -16,6 +16,10 @@ const ok = body => ({ ok: true, status: 200, json: async () => body });
 const geminiReply = count => ok({ embeddings: Array.from({ length: count }, () => ({ values: vector() })) });
 const geminiEnv = { GEMINI_API_KEY: 'a-private-test-key' };
 const geminiConfig = { provider: 'gemini', maxRetries: 0 };
+// Tests never consult installation credentials. The explicit file-reader test
+// below supplies its own in-memory fake rather than a filesystem path.
+const createEmbeddingProvider = (config, deps = {}) => createProvider(config,
+  deps.readFileSync ? deps : { secrets: {}, ...deps });
 
 test('default memory config keeps the Ollama model, dimensions, batch limit and no fallback', async () => {
   const config = resolveEmbeddingConfig({}, {});
@@ -407,6 +411,33 @@ test('owned recipe hash canonicalizes to its profile; remote and malformed sidec
     env: {}, fetch: async () => ok({ data: [{ index: 0, embedding: vector() }, { index: 0, embedding: vector() }] }),
   });
   await assert.rejects(duplicate.embedBatch(['first input', 'second input']), { code: 'EMBEDDING_RESPONSE_INVALID' });
+});
+
+test('Host owned provider alias and native endpoint use the same canonical vector space', async () => {
+  const urls = [];
+  const provider = createEmbeddingProvider({
+    provider: 'home23-owned', model: OWNED_EMBEDDING_RECIPE_ID,
+    endpoint: 'http://127.0.0.1:24005/api/embeddings',
+  }, {
+    env: { EMBEDDING_PROVIDER: 'ollama-local', EMBEDDING_MODEL: 'nomic-embed-text' },
+    fetch: async url => { urls.push(url); return ok({ data: [{ index: 0, embedding: vector() }] }); },
+  });
+  assert.equal(provider.id, OWNED_EMBEDDER_ID);
+  assert.deepEqual((await provider.embed('owned input', { recordedId: OWNED_EMBEDDER_ID })).slice(0, 2), [0.6, 0.8]);
+  assert.deepEqual(urls, ['http://127.0.0.1:24005/v1/embeddings']);
+});
+
+test('owned adapter rejects unrelated endpoint paths and a reported different encoder identity', async () => {
+  const wrongPath = createEmbeddingProvider({ provider: 'owned-onnx', baseUrl: 'http://127.0.0.1:24005/unrelated' }, {
+    env: {}, fetch: async () => { assert.fail('Invalid endpoint must be rejected before fetch.'); },
+  });
+  await assert.rejects(wrongPath.embed('input'), { code: 'EMBEDDING_CONFIG_INVALID' });
+  for (const identity of [{ model: 'nomic-embed-text' }, { recipeId: '5128b29c886857aeb89b148d2d9f2edf2c20f63de15a764342c2a18da640f71a' }]) {
+    const provider = createEmbeddingProvider({ provider: 'owned-onnx', baseUrl: 'http://127.0.0.1:24005/v1' }, {
+      env: {}, fetch: async () => ok({ ...identity, data: [{ index: 0, embedding: vector() }] }),
+    });
+    await assert.rejects(provider.embed('input'), { code: 'EMBEDDING_RESPONSE_INVALID' });
+  }
 });
 
 test('empty batch is inert and invalid config fails with bounded public errors', async () => {
