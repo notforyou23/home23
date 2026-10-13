@@ -39,6 +39,8 @@ import {
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import lockfile from 'proper-lockfile';
+import type { OwnerConversationInput } from '../types.js';
 import { embedTextSync } from '../substrate/embed-at-contact.js';
 import { buildWriterSemanticStamp } from '../substrate/semantic-writer-stamp.js';
 
@@ -61,6 +63,7 @@ export type PrivacyClass = 'internal' | 'personal' | 'sensitive';
 
 export type RelationshipGenerationMethod =
   | 'agent_note'
+  | 'owner_conversation'
   | 'jtr_correction'
   | 'curator'
   | 'manual';
@@ -149,6 +152,7 @@ const DEFAULT_MAX_ENTRIES = 500;
 // claim the certainty an authenticated jtr correction earns.
 const CONFIDENCE_CAPS: Record<RelationshipGenerationMethod, number> = {
   agent_note: 0.8,
+  owner_conversation: 0.8,
   curator: 0.7,
   manual: 0.8,
   jtr_correction: 0.95,
@@ -156,7 +160,7 @@ const CONFIDENCE_CAPS: Record<RelationshipGenerationMethod, number> = {
 const DEFAULT_CONFIDENCE = 0.7;
 
 const GENERATION_METHODS = new Set<RelationshipGenerationMethod>([
-  'agent_note', 'jtr_correction', 'curator', 'manual',
+  'agent_note', 'owner_conversation', 'jtr_correction', 'curator', 'manual',
 ]);
 const PRIVACY_CLASSES = new Set<PrivacyClass>(['internal', 'personal', 'sensitive']);
 const ENTRY_TYPES = new Set<RelationshipEntryType>([
@@ -259,6 +263,34 @@ export class RelationshipLedger {
     }
   }
 
+  /** Refresh long-lived readers after a background distiller writes. */
+  reload(): void {
+    if (!existsSync(this.ledgerPath)) { this.entries = []; return; }
+    let raw: { entries?: RelationshipEntry[] };
+    try { raw = JSON.parse(readFileSync(this.ledgerPath, 'utf8')) as { entries?: RelationshipEntry[] }; }
+    catch { throw new Error('Unreadable relationship-ledger.json'); }
+    if (!Array.isArray(raw.entries)) throw new Error('Invalid relationship-ledger.json: entries must be an array');
+    this.entries = raw.entries;
+  }
+
+  private mutateEntries<T>(mutation: () => T, nonBlocking = false): T {
+    if (!existsSync(this.ledgerPath)) {
+      try { writeFileSync(this.ledgerPath, JSON.stringify({ schema: LEDGER_SCHEMA, agent: this.agent, entries: [] }), { flag: 'wx' }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    }
+    let release: (() => void) | undefined;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try { release = lockfile.lockSync(this.ledgerPath, { stale: 30_000, update: 5_000 }); break; }
+      catch (error) {
+        if (nonBlocking || (error as NodeJS.ErrnoException).code !== 'ELOCKED' || attempt === 3) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+    }
+    if (!release) throw new Error('Could not lock relationship-ledger.json');
+    try { this.reload(); return mutation(); }
+    finally { release(); }
+  }
+
   // Atomic write: tmp file + rename, unlink-on-error (job-store idiom). The
   // ledger is curated and bounded (<= maxEntries), so pretty JSON is kept —
   // this file is the human inspection/correction surface, not a hot path.
@@ -345,6 +377,10 @@ export class RelationshipLedger {
   // ── create ───────────────────────────────────────────────
 
   addEntry(input: RelationshipEntryInput, ingress?: AuthenticatedCorrectionIngress): RelationshipEntry {
+    return this.mutateEntries(() => this.addEntryUnlocked(input, ingress));
+  }
+
+  private addEntryUnlocked(input: RelationshipEntryInput, ingress?: AuthenticatedCorrectionIngress): RelationshipEntry {
     if (!ENTRY_TYPES.has(input.type)) throw new Error(`Unknown relationship entry type: ${String(input.type)}`);
     const title = boundedText(input.title, MAX_TITLE);
     const statement = boundedText(input.statement, MAX_STATEMENT);
@@ -411,9 +447,77 @@ export class RelationshipLedger {
     return entry;
   }
 
+  /** Persist quote-gated owner evidence as an agent inference, never a correction. */
+  upsertOwnerConversation(input: OwnerConversationInput & {
+    type: 'decision' | 'preference' | 'aversion';
+  }): RelationshipEntry {
+    const statement = input.statement.trim();
+    const quote = input.quote.trim();
+    if (!['decision', 'preference', 'aversion'].includes(input.type)
+        || !statement || statement.length > MAX_STATEMENT || !quote || quote.length > 2000
+        || !input.messageRef || input.messageRef.length > MAX_REF
+        || !input.sessionId || input.sessionId.length > MAX_REF
+        || !Number.isFinite(Date.parse(input.occurredAt))) {
+      throw new Error('Invalid owner conversation evidence');
+    }
+    const occurredAt = new Date(input.occurredAt).toISOString();
+    const privacy = input.privacy === 'sensitive' || input.privacy === 'internal' ? input.privacy : 'personal';
+    const normalize = (text: string) => text.normalize('NFKC').toLowerCase()
+      .replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/\s+/g, ' ').trim();
+    return this.mutateEntries(() => {
+      const matches = this.entries.filter(entry => entry.type === input.type
+        && entry.provenance.generation_method === 'owner_conversation'
+        && normalize(entry.statement) === normalize(statement));
+      const existing = matches.find(entry => entry.status === 'active' && !entry.superseded_by?.length)
+        ?? matches.find(entry => entry.status === 'superseded' && entry.updatedAt >= occurredAt);
+      const replacementIds = boundedList(input.supersedes, MAX_REF_ITEMS, MAX_REF)
+        .filter(id => id !== existing?.id && this.entries.some(entry => entry.id === id
+          && entry.provenance.generation_method === 'owner_conversation' && entry.updatedAt <= occurredAt));
+      const recentRefs = (refs: string[], ref: string) => boundedList([
+        ...refs.filter(value => value !== ref).slice(-7), ref,
+      ], MAX_REF_ITEMS, MAX_REF);
+      const hasNewEvidence = !existing?.provenance.source_refs.includes(input.messageRef);
+      let entry: RelationshipEntry;
+      if (existing) {
+        entry = existing;
+        entry.provenance.source_refs = recentRefs(entry.provenance.source_refs, input.messageRef);
+        entry.provenance.session_refs = recentRefs(entry.provenance.session_refs, input.sessionId);
+        if (occurredAt >= entry.updatedAt) { entry.updatedAt = occurredAt; entry.evidence_note = quote; }
+        if (privacy === 'sensitive') entry.privacy_class = privacy;
+        entry.supersedes = boundedList([...(entry.supersedes ?? []), ...replacementIds], MAX_REF_ITEMS, MAX_REF);
+      } else {
+        entry = {
+          id: this.newId(occurredAt), type: input.type, title: statement.slice(0, MAX_TITLE), statement,
+          actor: 'agent', agent: this.agent, status: 'active', confidence: 0.8, privacy_class: privacy,
+          triggers: [], applies_to: ['owner'],
+          provenance: { source_refs: [input.messageRef], session_refs: [input.sessionId], generation_method: 'owner_conversation' },
+          evidence_note: quote, createdAt: occurredAt, updatedAt: occurredAt, reuse_count: 0,
+          ...(replacementIds.length ? { supersedes: replacementIds } : {}),
+        };
+        this.entries.push(entry);
+      }
+      for (const id of replacementIds) {
+        const previous = this.entries.find(candidate => candidate.id === id)!;
+        previous.status = 'superseded';
+        previous.superseded_by = boundedList([...(previous.superseded_by ?? []), entry.id], MAX_REF_ITEMS, MAX_REF);
+        previous.updatedAt = occurredAt > previous.updatedAt ? occurredAt : previous.updatedAt;
+      }
+      this.evict();
+      this.persist();
+      // Preserve the existing observation format without invoking an embedder
+      // from this background path. The durable ledger keeps the full evidence.
+      if (hasNewEvidence) this.emitEvent(existing ? 'entry_evidence_added' : 'entry_added', entry.id, {
+        type: entry.type, actor: entry.actor, method: 'owner_conversation', head: entry.statement,
+      });
+      for (const id of replacementIds) this.emitEvent('entry_superseded', id, { by: entry.id });
+      return entry;
+    }, true);
+  }
+
   // ── read ─────────────────────────────────────────────────
 
   getEntry(id: string): RelationshipEntry | undefined {
+    this.reload();
     return this.entries.find(e => e.id === id);
   }
 
@@ -422,6 +526,7 @@ export class RelationshipLedger {
     status?: RelationshipEntryStatus;
     includeRemoved?: boolean;
   } = {}): RelationshipEntry[] {
+    this.reload();
     let list = this.entries.slice();
     if (filter.type) list = list.filter(e => e.type === filter.type);
     if (filter.status) {
@@ -460,45 +565,51 @@ export class RelationshipLedger {
     newInput: RelationshipEntryInput,
     ingress?: AuthenticatedCorrectionIngress,
   ): RelationshipEntry {
-    const old = this.getEntry(oldId);
-    if (!old) throw new Error(`Unknown relationship entry: ${oldId}`);
-    const created = this.addEntry({
-      ...newInput,
-      supersedes: [oldId, ...(newInput.supersedes ?? [])],
-    }, ingress);
-    old.status = 'superseded';
-    old.superseded_by = [...(old.superseded_by ?? []), created.id];
-    old.updatedAt = this.now();
-    this.persist();
-    this.emitEvent('entry_superseded', oldId, { by: created.id });
-    return created;
+    return this.mutateEntries(() => {
+      const old = this.entries.find(entry => entry.id === oldId);
+      if (!old) throw new Error(`Unknown relationship entry: ${oldId}`);
+      const created = this.addEntryUnlocked({
+        ...newInput,
+        supersedes: [oldId, ...(newInput.supersedes ?? [])],
+      }, ingress);
+      old.status = 'superseded';
+      old.superseded_by = [...(old.superseded_by ?? []), created.id];
+      old.updatedAt = this.now();
+      this.persist();
+      this.emitEvent('entry_superseded', oldId, { by: created.id });
+      return created;
+    });
   }
 
   resolve(id: string): RelationshipEntry | undefined {
-    const entry = this.getEntry(id);
-    if (!entry) return undefined;
-    entry.status = 'resolved';
-    entry.resolved_at = this.now();
-    entry.updatedAt = entry.resolved_at;
-    this.persist();
-    this.emitEvent('entry_resolved', id, { type: entry.type });
-    return entry;
+    return this.mutateEntries(() => {
+      const entry = this.entries.find(candidate => candidate.id === id);
+      if (!entry) return undefined;
+      entry.status = 'resolved';
+      entry.resolved_at = this.now();
+      entry.updatedAt = entry.resolved_at;
+      this.persist();
+      this.emitEvent('entry_resolved', id, { type: entry.type });
+      return entry;
+    });
   }
 
   // Soft delete — provenance is preserved; the entry stays in the file so the
   // removal itself remains inspectable and jtr-reversible.
   remove(id: string, reason?: string): RelationshipEntry | undefined {
-    const entry = this.getEntry(id);
-    if (!entry) return undefined;
-    entry.status = 'removed';
-    entry.updatedAt = this.now();
-    if (reason) entry.evidence_note = boundedText(
-      `${entry.evidence_note ? entry.evidence_note + ' | ' : ''}removed: ${reason}`,
-      MAX_EVIDENCE_NOTE,
-    );
-    this.persist();
-    this.emitEvent('entry_removed', id, { reason: reason ? boundedText(reason, MAX_REF) : null });
-    return entry;
+    return this.mutateEntries(() => {
+      const entry = this.entries.find(candidate => candidate.id === id);
+      if (!entry) return undefined;
+      entry.status = 'removed';
+      entry.updatedAt = this.now();
+      if (reason) entry.evidence_note = boundedText(
+        `${entry.evidence_note ? entry.evidence_note + ' | ' : ''}removed: ${reason}`,
+        MAX_EVIDENCE_NOTE,
+      );
+      this.persist();
+      this.emitEvent('entry_removed', id, { reason: reason ? boundedText(reason, MAX_REF) : null });
+      return entry;
+    });
   }
 
   /** Convenience: supersede an entry with a jtr_correction-authored replacement. */
@@ -538,6 +649,7 @@ export class RelationshipLedger {
     nowMs?: number;
     excludePrivacy?: PrivacyClass[];
   }): RelationshipRetrieval {
+    this.reload();
     const budget = Number.isFinite(opts.budgetChars) ? Math.max(0, Math.floor(opts.budgetChars)) : 0;
     const excluded = new Set(opts.excludePrivacy ?? []);
     const nowMs = typeof opts.nowMs === 'number' && Number.isFinite(opts.nowMs)
@@ -577,16 +689,18 @@ export class RelationshipLedger {
   /** Record that these entries were actually surfaced into a prompt. Persists once. */
   markSurfaced(ids: string[]): void {
     if (!ids.length) return;
-    const wanted = new Set(ids);
-    let touched = false;
-    const surfacedAt = this.now();
-    for (const entry of this.entries) {
-      if (!wanted.has(entry.id)) continue;
-      entry.reuse_count += 1;
-      entry.last_surfaced = surfacedAt;
-      touched = true;
-    }
-    if (touched) this.persist();
+    this.mutateEntries(() => {
+      const wanted = new Set(ids);
+      let touched = false;
+      const surfacedAt = this.now();
+      for (const entry of this.entries) {
+        if (!wanted.has(entry.id)) continue;
+        entry.reuse_count += 1;
+        entry.last_surfaced = surfacedAt;
+        touched = true;
+      }
+      if (touched) this.persist();
+    });
   }
 
   /** The whole ledger, newest-first — the jtr-correctable inspection surface. */
@@ -597,6 +711,7 @@ export class RelationshipLedger {
     count: number;
     entries: RelationshipEntry[];
   } {
+    this.reload();
     return {
       schema: LEDGER_SCHEMA,
       agent: this.agent,
@@ -611,15 +726,17 @@ export class RelationshipLedger {
   private evict(): void {
     while (this.entries.length > this.maxEntries) {
       const closedIdx = oldestIndex(this.entries, e =>
-        e.status === 'resolved' || e.status === 'removed' || e.status === 'superseded');
+        e.provenance.generation_method !== 'owner_conversation'
+        && (e.status === 'resolved' || e.status === 'removed' || e.status === 'superseded'));
       if (closedIdx >= 0) { this.entries.splice(closedIdx, 1); continue; }
       const droppableIdx = oldestIndex(this.entries, e =>
-        e.status === 'active' && !PROTECTED_TYPES.has(e.type));
+        e.provenance.generation_method !== 'owner_conversation'
+        && e.status === 'active' && !PROTECTED_TYPES.has(e.type));
       if (droppableIdx >= 0) { this.entries.splice(droppableIdx, 1); continue; }
       // Only protected active entries remain — refuse to drop them.
       console.warn(
         `[relationship-ledger] ${this.entries.length} entries exceed maxEntries ${this.maxEntries}, ` +
-        `but all overflow candidates are active correction/promise/decision — keeping them.`,
+        `but all overflow candidates are protected — keeping them.`,
       );
       break;
     }

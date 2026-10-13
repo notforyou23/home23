@@ -10,8 +10,8 @@
  * a consistent "where am I, what's current, what's the map" wake-up ritual
  * grounded in live files — not cached identity.
  */
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { composeSeedNow } from '../substrate/seed-now.js';
 
 export interface SituationalAwarenessConfig {
@@ -39,6 +39,20 @@ export interface SituationalAwarenessConfig {
 
 const DEFAULT_READS = ['NOW.md', 'PLAYBOOK.md'];
 const DEFAULT_MAX_BYTES = 4000;
+
+/** Match the biography's Seed location without requiring an unwritten config setting. */
+export function resolveSubstrateStateDir(
+  workspacePath: string,
+  cfg?: SituationalAwarenessConfig,
+): string | undefined {
+  if (cfg?.substrate) return cfg.substrate.stateDir || undefined;
+  const derived = resolve(workspacePath, '..', 'substrate', 'seed-01');
+  try {
+    return statSync(derived).isDirectory() ? derived : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 const GENERATOR_CONTRACT = [
   '[GENERATOR CONTRACT]',
@@ -68,9 +82,10 @@ export function buildBootstrapBlock(
   // identity events since, freshest thought, open expectations) — with the
   // machine-snapshot files following as telemetry. Young/absent seed →
   // files-only, exactly as before.
-  if (cfg?.substrate?.stateDir) {
+  const substrateStateDir = resolveSubstrateStateDir(workspacePath, cfg);
+  if (substrateStateDir) {
     try {
-      const lived = composeSeedNow(cfg.substrate.stateDir);
+      const lived = composeSeedNow(substrateStateDir);
       if (lived) sections.push(`— NOW@seed (lived, from your chain) —\n${lived}`);
     } catch {
       // bootstrap never blocks a turn; absence over fabrication

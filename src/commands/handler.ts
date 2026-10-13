@@ -178,9 +178,6 @@ export class CommandHandler {
       }).join('\n\n');
       writeFileSync(snapshotPath, `---\nchatId: ${chatId}\ntrigger: /reset\ndate: ${new Date().toISOString()}\n---\n\n# Session Memory Snapshot\n\n${transcript}\n`, 'utf-8');
 
-      const model = this.ctx.agent.getModel();
-      const provider = this.ctx.agent.getProvider();
-      this.ctx.agent.getMemory().extractAndSave(chatId, messages, model, provider).catch(() => {});
     } catch { /* non-fatal */ }
   }
 

@@ -11,7 +11,8 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeSeedNow } from '../../src/substrate/seed-now.js';
-import { buildBootstrapBlock } from '../../src/agent/session-bootstrap.js';
+import { buildBootstrapBlock, resolveSubstrateStateDir } from '../../src/agent/session-bootstrap.js';
+import { assembleContext } from '../../src/agent/context-assembly.js';
 
 function makeSeedDir(t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), 'seed-now-'));
@@ -102,4 +103,25 @@ test('Seed continuity survives missing, stale, or malformed optional NOW telemet
   const malformed = buildBootstrapBlock(ws, config);
   assert.ok(malformed?.includes('NOW@seed (lived, from your chain)'), 'malformed cache preserves Seed');
   assert.ok(malformed?.includes('not a structured NOW cache'), 'workspace text cannot block bootstrap');
+});
+
+test('a born Seed is derived from the workspace sibling without a substrate setting', async t => {
+  const root = makeSeedDir(t);
+  const workspace = join(root, 'workspace');
+  const seed = join(root, 'substrate', 'seed-01');
+  mkdirSync(workspace);
+  assert.equal(resolveSubstrateStateDir(workspace), undefined, 'an absent Seed is not invented');
+  mkdirSync(seed, { recursive: true });
+  writeFixture(seed);
+  assert.equal(resolveSubstrateStateDir(workspace, { bootstrap: {} }), seed);
+  assert.equal(resolveSubstrateStateDir(workspace, { substrate: { stateDir: '/explicit/seed' } }), '/explicit/seed');
+  const block = buildBootstrapBlock(workspace, { bootstrap: { reads: [] } });
+  assert.match(block!, /NOW@seed \(lived, from your chain\)/);
+  const context = await assembleContext('How am I doing?', 'owner-chat', [], {
+    workspacePath: workspace, brainDir: join(root, 'brain'), enginePort: 5002, sessionId: 'owner-chat',
+    signal: new AbortController().signal, semanticEmbed: () => null,
+    contextSearch: async () => ({ results: [], sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'hit' } }),
+  });
+  assert.ok(context.surfacesLoaded.includes('RECENT@seed'), 'derived Seed reaches lived surfaces as well as bootstrap');
+  assert.match(context.block, /sauna tonight/);
 });

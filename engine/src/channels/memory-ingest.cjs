@@ -246,8 +246,12 @@ class MemoryIngest {
         return aMs - bMs;
       });
     const archiveCount = Math.max(0, sorted.length - this.maxObjects);
-    const archived = sorted.slice(0, archiveCount);
-    const kept = sorted.slice(archiveCount);
+    // The session distiller owns these durable facts and their supersession
+    // history. Capacity pressure must not remove either from their shared store.
+    const archived = sorted.filter((object) => !(object.lifecycle_layer === 'durable'
+      && object.provenance?.generation_method === 'owner_conversation')).slice(0, archiveCount);
+    const archivedObjects = new Set(archived);
+    const kept = sorted.filter((object) => !archivedObjects.has(object));
     for (const object of archived) onArchive?.(object);
     return { ...store, objects: kept };
   }

@@ -97,6 +97,21 @@ export interface EmbeddedAgentConfig {
   }>;
 }
 
+/** Background owner learning; disabling distillation preserves and renders prior knowledge. */
+export interface OwnerDistillConfig {
+  enabled?: boolean;             // default true
+  model?: string;                // models.aliases key; default resident chat model
+  sessionGapMinutes?: number;    // default 30
+  maxSessionsPerPass?: number;   // default 8
+  maxInputChars?: number;        // per-session model input budget
+  maxOutputTokens?: number;     // per-session model output budget
+  maxItemsPerSession?: number;
+  maxStatementChars?: number;
+  personalBudgetChars?: number; // default 2000, learned tail only
+  /** Sensitive items remain stored; default true renders them beside other owner knowledge. */
+  renderSensitive?: boolean;
+}
+
 export interface HomeConfig {
   home?: { name: string; version: string };
   bridge?: { token?: string };
@@ -129,6 +144,7 @@ export interface HomeConfig {
     historyBudget?: number;
     compaction?: Partial<import('./agent/compaction.js').CompactionConfig>;
     sessionGapMs?: number;
+    ownerDistill?: OwnerDistillConfig;
     memorySearch: { enabled: boolean; timeoutMs: number; topK: number };
     identityFiles: string[];
     identityLayers?: IdentityLayerConfig[];
@@ -216,6 +232,11 @@ export interface HomeConfig {
       domains?: string[];
       budget?: number;
     }>;
+    /** Optional override; otherwise an existing workspace sibling Seed is derived. */
+    substrate?: {
+      stateDir: string;
+      budget?: number;
+    };
   };
 
   // OS-engine redesign (Step 24). Universal channel bus + verification gate +
@@ -548,6 +569,17 @@ export interface MemoryObject {
   reuse_count: number;
   last_reactivated?: string;
   last_acted_on?: string;
+}
+
+/** Quote-gated conversation evidence, supplied only by the session distiller. */
+export interface OwnerConversationInput {
+  statement: string;
+  quote: string;
+  messageRef: string;
+  sessionId: string;
+  occurredAt: string;
+  privacy?: 'internal' | 'personal' | 'sensitive';
+  supersedes?: string[];
 }
 
 export interface ProblemThread {

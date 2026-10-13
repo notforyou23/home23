@@ -33,6 +33,75 @@ function baseObject(overrides: Record<string, unknown> = {}): any {
   };
 }
 
+test('owner facts are durable quote-grounded inferences; repeats add evidence and retain the newest date', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-owner-fact-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = new MemoryObjectStore(dir);
+  const first = store.upsertOwnerFact({
+    statement: 'Jason lives in Maine.', quote: 'I live in Maine.', messageRef: 'message:owner-1',
+    sessionId: 'owner-session-1', occurredAt: '2026-10-01T12:00:00.000Z', privacy: 'sensitive',
+  });
+  assert.equal(first.lifecycle_layer, 'durable');
+  assert.equal(first.status, 'approved');
+  assert.equal(first.privacy_class, 'sensitive');
+  assert.equal(first.provenance.generation_method, 'owner_conversation');
+  assert.equal(first.evidence.grounding_note, 'I live in Maine.');
+  assert.equal(first.provenance.node_profile?.authorityClass, 'narrative');
+  assert.equal(first.provenance.node_profile?.operationalAuthority, false);
+  assert.equal(first.provenance.node_profile?.attestation, undefined);
+  assert.equal(first.actor, 'agent');
+
+  const repeated = store.upsertOwnerFact({
+    statement: '  JASON lives  in Maine. ', quote: 'My home is in Maine.', messageRef: 'message:owner-2',
+    sessionId: 'owner-session-2', occurredAt: '2026-10-02T12:00:00.000Z',
+  });
+  assert.equal(repeated.memory_id, first.memory_id);
+  assert.deepEqual(repeated.provenance.source_refs, ['message:owner-1', 'message:owner-2']);
+  assert.deepEqual(repeated.evidence.evidence_links, ['message:owner-1', 'message:owner-2']);
+  assert.equal(repeated.created_at, '2026-10-01T12:00:00.000Z');
+  assert.equal(repeated.updated_at, '2026-10-02T12:00:00.000Z');
+  assert.equal(repeated.evidence.grounding_note, 'My home is in Maine.');
+  assert.equal(repeated.privacy_class, 'sensitive');
+  const backfill = store.upsertOwnerFact({
+    statement: 'Jason lives in Maine.', quote: 'I lived in Maine last month.', messageRef: 'message:older',
+    sessionId: 'owner-session-0', occurredAt: '2026-09-30T12:00:00.000Z',
+  });
+  assert.equal(backfill.updated_at, repeated.updated_at);
+  assert.equal(backfill.evidence.grounding_note, 'My home is in Maine.');
+  assert.equal(store.getObjectsByLayer('durable').length, 1);
+});
+
+test('owner fact supersession preserves history and cannot replace newer or unrelated objects', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-owner-fact-supersession-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = new MemoryObjectStore(dir);
+  const first = store.upsertOwnerFact({
+    statement: 'Jason lives in Maine.', quote: 'I live in Maine.', messageRef: 'message:1',
+    sessionId: 'session:1', occurredAt: '2026-10-01T12:00:00.000Z',
+  });
+  const unrelated = store.createObject(baseObject());
+  const newer = store.upsertOwnerFact({
+    statement: 'Jason lives in Vermont.', quote: 'I moved to Vermont.', messageRef: 'message:2',
+    sessionId: 'session:2', occurredAt: '2026-10-02T12:00:00.000Z', supersedes: [first.memory_id, unrelated.memory_id],
+  });
+  assert.equal(store.getObject(first.memory_id)?.status, 'superseded');
+  assert.deepEqual(store.getObject(first.memory_id)?.superseded_by, [newer.memory_id]);
+  assert.deepEqual(newer.supersedes, [first.memory_id]);
+  assert.equal(store.getObject(unrelated.memory_id)?.status, 'candidate');
+  const replayed = store.upsertOwnerFact({
+    statement: 'Jason lives in Maine.', quote: 'I live in Maine.', messageRef: 'message:1',
+    sessionId: 'session:1', occurredAt: '2026-10-01T12:00:00.000Z',
+  });
+  assert.equal(replayed.memory_id, first.memory_id);
+  assert.equal(replayed.status, 'superseded');
+  store.upsertOwnerFact({
+    statement: 'Jason lived in New York.', quote: 'I live in New York.', messageRef: 'message:older',
+    sessionId: 'session:0', occurredAt: '2026-09-30T12:00:00.000Z', supersedes: [newer.memory_id],
+  });
+  assert.equal(store.getObject(newer.memory_id)?.status, 'approved');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'memory-objects.json'), 'utf8')).objects.length, 4);
+});
+
 test('MemoryObjectStore preserves engine writes made after its cache was loaded', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-memory-object-shared-writer-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
