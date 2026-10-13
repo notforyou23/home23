@@ -13,7 +13,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
-import type { AssemblyResult, EventEnvelope } from '../types.js';
+import type { AssemblyResult, EventEnvelope, MemoryObject, OwnerDistillConfig } from '../types.js';
 import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
 import { pendingAutomaticContextDisclosure, type TurnContextEnrichment } from './context-enrichment.js';
@@ -23,6 +23,7 @@ import { composeLivedRecent } from '../substrate/lived-recent.js';
 import { composeLivedFacts } from '../substrate/lived-facts.js';
 import { semanticMatchScore } from '../substrate/semantic-match.js';
 import { activeAttentionRecipeId, admitsPairScore, resolveAttentionPolicy } from '../substrate/encoder-attention-policy.js';
+import { resolveSubstrateStateDir } from './session-bootstrap.js';
 
 const require = createRequire(import.meta.url);
 const { resolveAgentInstancePaths } = require('../../shared/agent-instance-paths.cjs');
@@ -81,6 +82,8 @@ interface AssemblyConfig {
    * carried-state block every turn when set. */
   substrateStateDir?: string;
   substrateBudget?: number;
+  /** Rendering policy is independent of whether background distillation is enabled. */
+  ownerDistill?: OwnerDistillConfig;
   /** When true, skip automatic pre-turn brain retrieval (retrieval-eval isolation). */
   skipBrainEnrichment?: boolean;
 }
@@ -211,6 +214,66 @@ function loadSurface(workspacePath: string, filename: string, budget: number, au
     return capped;
   }
   return budgetIdentityContent(basename(filename), content, budget, 'head').text;
+}
+
+/** Read the shared store fresh without mutating it or trusting a stale process cache. */
+export function composeLearnedOwnerFacts(
+  brainDir: string,
+  turnText: string,
+  config?: OwnerDistillConfig,
+  nowMs = Date.now(),
+): string | null {
+  try {
+    const document: unknown = JSON.parse(readFileSync(join(brainDir, 'memory-objects.json'), 'utf8'));
+    const rawObjects = (document as { objects?: unknown } | null)?.objects;
+    if (!Array.isArray(rawObjects)) return null;
+    const budget = Number.isFinite(config?.personalBudgetChars)
+      ? Math.max(0, Math.floor(config!.personalBudgetChars!)) : 2000;
+    const header = 'Learned from conversations';
+    if (budget <= header.length) return null;
+    const tokens = [...new Set(turnText.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])];
+    const facts = rawObjects.filter((value): value is MemoryObject => {
+      if (!value || typeof value !== 'object') return false;
+      const object = value as Partial<MemoryObject>;
+      return object.lifecycle_layer === 'durable' && object.status === 'approved'
+        && object.provenance?.generation_method === 'owner_conversation'
+        && typeof object.statement === 'string' && object.statement.trim().length > 0
+        && typeof object.title === 'string' && typeof object.updated_at === 'string'
+        && Number.isFinite(Date.parse(object.updated_at))
+        && Boolean(object.evidence?.grounding_note?.trim())
+        && Array.isArray(object.evidence?.evidence_links) && object.evidence.evidence_links.length > 0
+        && !(object.superseded_by?.length)
+        && (config?.renderSensitive !== false || object.privacy_class !== 'sensitive');
+    }).map(object => {
+      const statement = object.statement.replace(/\s+/g, ' ').trim();
+      const title = object.title.toLowerCase();
+      const scope = Array.isArray(object.scope?.applies_to) ? object.scope.applies_to : [];
+      let relevance = 0;
+      for (const token of tokens) {
+        if (scope.some(value => typeof value === 'string' && value.toLowerCase().includes(token))) relevance += 2;
+        else if (title.includes(token)) relevance += 1.5;
+        else if (statement.toLowerCase().includes(token)) relevance += 1;
+      }
+      const ageDays = Math.max(0, nowMs - Date.parse(object.updated_at)) / 86_400_000;
+      return { object, statement, score: relevance + 2 / (1 + ageDays / 14) };
+    }).sort((a, b) => b.score - a.score
+      || Date.parse(b.object.updated_at) - Date.parse(a.object.updated_at)
+      || a.object.memory_id.localeCompare(b.object.memory_id));
+
+    const lines: string[] = [];
+    let chars = header.length;
+    for (const fact of facts) {
+      const date = new Date(fact.object.updated_at).toISOString().slice(0, 10);
+      const line = `- You told me on ${date}: ${fact.statement}`;
+      if (chars + 1 + line.length > budget) continue;
+      lines.push(line);
+      chars += 1 + line.length;
+    }
+    return lines.length ? [header, ...lines].join('\n') : null;
+  } catch {
+    // Torn, malformed or unreadable shared state must not delay or fail a reply.
+    return null;
+  }
 }
 
 /**
@@ -633,6 +696,7 @@ export async function assembleContext(
     return `${head}\n${marker}${footer}`;
   };
   const isFirstTurn = recentTurns.length === 0;
+  const substrateStateDir = config.substrateStateDir ?? resolveSubstrateStateDir(config.workspacePath);
 
   if (isFirstTurn) {
     events.push({
@@ -848,8 +912,8 @@ export async function assembleContext(
     // (jerry's RECENT.md sat two weeks stale with nobody noticing). The
     // file remains only as degraded-honest fallback while the seed is
     // young or absent.
-    if (surface.name === 'RECENT' && config.substrateStateDir) {
-      const lived = composeLivedRecent(config.substrateStateDir, surface.budget);
+    if (surface.name === 'RECENT' && substrateStateDir) {
+      const lived = composeLivedRecent(substrateStateDir, surface.budget);
       if (lived) {
         surfacesLoaded.push('RECENT@seed');
         salienceItems.push({
@@ -861,7 +925,11 @@ export async function assembleContext(
       }
     }
 
-    const content = loadSurface(config.workspacePath, surface.file, surface.budget, false, onCap);
+    let content = loadSurface(config.workspacePath, surface.file, surface.budget, false, onCap);
+    if (surface.name === 'PERSONAL') {
+      const learned = composeLearnedOwnerFacts(config.brainDir, userText, config.ownerDistill);
+      content = [content, learned].filter(Boolean).join('\n\n') || null;
+    }
     if (!content) continue;
 
     const verified = verifyFreshness(surface.name, content, surface.isFact);
@@ -884,8 +952,8 @@ export async function assembleContext(
   // Same load conditions as the other non-alwaysBoost surfaces (K2 is law:
   // nothing new rides every turn).
   const factsShouldLoad = isFirstTurn || brainCues.length > 0 || triggerMatches.length > 0 || degraded;
-  if (config.substrateStateDir && factsShouldLoad) {
-    const livedFacts = composeLivedFacts(config.substrateStateDir);
+  if (substrateStateDir && factsShouldLoad) {
+    const livedFacts = composeLivedFacts(substrateStateDir);
     if (livedFacts) {
       surfacesLoaded.push('FACTS@seed');
       salienceItems.push({
@@ -978,8 +1046,8 @@ export async function assembleContext(
   // that touches carried state gets the lived facts it touches, under a
   // usage contract. Read-only; degraded-honest (missing/unreadable state or
   // a down embedder contributes nothing rather than something fake).
-  if (config.substrateStateDir) {
-    const seedSection = composeSeedSituation(config.substrateStateDir, {
+  if (substrateStateDir) {
+    const seedSection = composeSeedSituation(substrateStateDir, {
       budget: config.substrateBudget,
       turnText: userText,
       recipeId: activeAttentionRecipeId(),

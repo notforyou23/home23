@@ -204,6 +204,18 @@ chat:
   temperature: 0.7
   historyBudget: 400000
   sessionGapMs: 1800000
+  ownerDistill:
+    enabled: true
+    # model: fast  # Optional models.aliases key; defaults to the resident's chat model.
+    sessionGapMinutes: 30
+    maxSessionsPerPass: 8
+    maxInputChars: 32000
+    maxOutputTokens: 2000
+    maxItemsPerSession: 20
+    maxStatementChars: 500
+    personalBudgetChars: 2000
+    # Sensitive owner knowledge is stored and rendered by default. Secrets are refused.
+    renderSensitive: true
 
 query:
   defaultProvider: anthropic

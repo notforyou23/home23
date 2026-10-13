@@ -13,6 +13,7 @@ import {
   LEGACY_EMBEDDING_PROFILE,
   LEGACY_EMBEDDING_RECIPE_ID,
 } from '../../src/substrate/semantic-writer-stamp.js';
+import lockfile from 'proper-lockfile';
 
 function tmpBrain(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-rel-ledger-'));
@@ -38,6 +39,95 @@ function base(overrides: Partial<RelationshipEntryInput> = {}): RelationshipEntr
     ...overrides,
   };
 }
+
+test('owner conversation repeats retain evidence, refresh the date and never earn correction authority', (t) => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const ledger = new RelationshipLedger(brain, { now: clock(), idSuffix: counterSuffix() });
+  const first = ledger.upsertOwnerConversation({
+    type: 'preference', statement: 'Keep replies concise.', quote: 'Please keep your replies concise.',
+    messageRef: 'owner:1', sessionId: 'session:1', occurredAt: '2026-10-01T12:00:00.000Z', privacy: 'sensitive',
+  });
+  const repeated = ledger.upsertOwnerConversation({
+    type: 'preference', statement: ' KEEP replies  concise. ', quote: 'Keep replies concise, please.',
+    messageRef: 'owner:2', sessionId: 'session:2', occurredAt: '2026-10-02T12:00:00.000Z',
+  });
+  assert.equal(repeated.id, first.id);
+  assert.equal(repeated.actor, 'agent');
+  assert.equal(repeated.provenance.generation_method, 'owner_conversation');
+  assert.equal(repeated.confidence, 0.8);
+  assert.deepEqual(repeated.provenance.source_refs, ['owner:1', 'owner:2']);
+  assert.deepEqual(repeated.provenance.session_refs, ['session:1', 'session:2']);
+  assert.equal(repeated.evidence_note, 'Keep replies concise, please.');
+  assert.equal(repeated.privacy_class, 'sensitive');
+  assert.equal(repeated.createdAt, '2026-10-01T12:00:00.000Z');
+  assert.equal(repeated.updatedAt, '2026-10-02T12:00:00.000Z');
+  ledger.upsertOwnerConversation({
+    type: 'preference', statement: 'Keep replies concise.', quote: 'Concise replies, please.',
+    messageRef: 'owner:older', sessionId: 'session:0', occurredAt: '2026-09-30T12:00:00.000Z',
+  });
+  assert.equal(ledger.getEntry(first.id)?.updatedAt, repeated.updatedAt);
+  assert.equal(ledger.listEntries().length, 1);
+  assert.equal(ledger.retrieveForContext('replies', { budgetChars: 2000 }).entries.length, 1);
+  assert.equal(ledger.retrieveForContext('replies', { budgetChars: 2000, excludePrivacy: ['sensitive'] }).text, '');
+  const events = fs.readFileSync(path.join(brain, 'relationship-ledger.events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(events.every(event => !('semantic_vector' in event)));
+});
+
+test('owner relationship supersession keeps history under capacity pressure and respects evidence time', (t) => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const ledger = new RelationshipLedger(brain, { now: clock(), idSuffix: counterSuffix(), maxEntries: 1 });
+  const first = ledger.upsertOwnerConversation({
+    type: 'preference', statement: 'Use short replies.', quote: 'Use short replies.', messageRef: 'owner:1',
+    sessionId: 'session:1', occurredAt: '2026-10-01T12:00:00.000Z',
+  });
+  const newer = ledger.upsertOwnerConversation({
+    type: 'preference', statement: 'Explain the details.', quote: 'Explain the details now.', messageRef: 'owner:2',
+    sessionId: 'session:2', occurredAt: '2026-10-02T12:00:00.000Z', supersedes: [first.id],
+  });
+  assert.equal(ledger.getEntry(first.id)?.status, 'superseded');
+  assert.deepEqual(ledger.getEntry(first.id)?.superseded_by, [newer.id]);
+  assert.deepEqual(newer.supersedes, [first.id]);
+  const replayed = ledger.upsertOwnerConversation({
+    type: 'preference', statement: 'Use short replies.', quote: 'Use short replies.', messageRef: 'owner:1',
+    sessionId: 'session:1', occurredAt: '2026-10-01T12:00:00.000Z',
+  });
+  assert.equal(replayed.id, first.id);
+  assert.equal(replayed.status, 'superseded');
+  ledger.upsertOwnerConversation({
+    type: 'aversion', statement: 'Avoid long replies.', quote: 'Avoid long replies.', messageRef: 'owner:older',
+    sessionId: 'session:0', occurredAt: '2026-09-30T12:00:00.000Z', supersedes: [newer.id],
+  });
+  assert.equal(ledger.getEntry(newer.id)?.status, 'active');
+  assert.equal(ledger.toPublicJSON().count, 3);
+});
+
+test('long-lived relationship readers reload distiller writes and preserve them when marking surfaced', (t) => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const reader = new RelationshipLedger(brain, { now: clock(), idSuffix: counterSuffix() });
+  const existing = reader.addEntry(base());
+  const background = new RelationshipLedger(brain, { now: clock(), idSuffix: counterSuffix() });
+  const learned = background.upsertOwnerConversation({
+    type: 'decision', statement: 'Keep the old home.', quote: 'Keep the old home.', messageRef: 'owner:1',
+    sessionId: 'session:1', occurredAt: '2026-10-01T12:00:00.000Z',
+  });
+  assert.ok(reader.retrieveForContext('home', { budgetChars: 2000 }).entries.some(entry => entry.id === learned.id));
+  reader.markSurfaced([existing.id]);
+  assert.equal(background.getEntry(existing.id)?.reuse_count, 1);
+  assert.ok(background.getEntry(learned.id));
+  const ledgerPath = path.join(brain, 'relationship-ledger.json');
+  const release = lockfile.lockSync(ledgerPath);
+  try { assert.throws(() => reader.markSurfaced([existing.id]), /lock/i); }
+  finally { release(); }
+  fs.writeFileSync(ledgerPath, '{unreadable');
+  assert.throws(() => reader.upsertOwnerConversation({
+    type: 'decision', statement: 'Keep the old home.', quote: 'Keep the old home.', messageRef: 'owner:1',
+    sessionId: 'session:1', occurredAt: '2026-10-01T12:00:00.000Z',
+  }));
+  assert.equal(fs.readFileSync(ledgerPath, 'utf8'), '{unreadable');
+});
 
 test('addEntry clamps confidence to the method cap and forces actor=agent', (t) => {
   const brain = tmpBrain();

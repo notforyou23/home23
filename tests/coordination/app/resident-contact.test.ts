@@ -46,6 +46,7 @@ test('canonical owner contact reaches the existing Seed transition once across p
   assert.equal(existsSync(join(f.directory, 'forrest.jsonl')), false, 'Jerry contact stays private');
   const contact = JSON.parse(readFileSync(f.coordinationSource, 'utf8'));
   assert.equal(contact.actor.principalId, OWNER_ID);
+  assert.equal(contact.channelKind, 'direct');
   assert.equal(contact.content, 'not exposed');
   assert.equal(contact.ts, AT, 'recovery retains original event time');
   writeFileSync(join(f.directory, 'cursor.json'), '{"eventSequence":0}');
@@ -73,6 +74,47 @@ test('canonical owner contact reaches the existing Seed transition once across p
     assert.match(ledger, /conversation\.jtr:coordination\.message:/);
     assert.doesNotMatch(ledger, /INTERNAL WORK OUTCOME/);
   } finally { runner.stop(); }
+});
+
+test('canonical contact records group provenance for consumers to exclude group evidence', t => {
+  const f = fixture(t);
+  f.database.raw.prepare("UPDATE channels SET kind='group' WHERE id=?").run(CHANNEL_ID);
+  f.admit(); f.project().pump();
+  const contact = JSON.parse(readFileSync(f.coordinationSource, 'utf8'));
+  assert.equal(contact.channelKind, 'group');
+  assert.equal(contact.actor.principalId, OWNER_ID);
+  assert.equal(contact.voice, 'jtr');
+});
+
+test('the owner principal remains owner voice for paired Home and mobile devices', t => {
+  const f = fixture(t);
+  // Core attributes messages to the authenticated principal, rather than
+  // the device. Home and iPhone pairings both belong to that same owner.
+  const insertDevice = f.database.raw.prepare(`INSERT INTO devices
+    (id, principal_id, platform, name, app_build, status, created_at, last_seen_at, revoked_at)
+    VALUES (?, ?, ?, ?, 'fixture', 'active', ?, ?, NULL)`);
+  insertDevice.run('dev_home', OWNER_ID, 'macos', 'Home', AT, AT);
+  insertDevice.run('dev_mobile', OWNER_ID, 'ios', 'iPhone', AT, AT);
+  const principals = f.database.readAll<{ principalId: string }>(
+    "SELECT principal_id AS principalId FROM devices WHERE id IN ('dev_home','dev_mobile')");
+  assert.deepEqual(principals.map(device => device.principalId), [OWNER_ID, OWNER_ID]);
+  f.admit(); f.project().pump();
+  const contact = JSON.parse(readFileSync(f.coordinationSource, 'utf8'));
+  assert.equal(contact.actor.kind, 'owner');
+  assert.equal(contact.actor.principalId, OWNER_ID);
+  assert.equal(contact.voice, 'jtr');
+  assert.equal(contact.role, 'user');
+});
+
+test('replaying an older contact without channel kind preserves its original bytes', t => {
+  const f = fixture(t);
+  f.admit(); f.project().pump();
+  const { channelKind: _channelKind, ...olderContact } = JSON.parse(readFileSync(f.coordinationSource, 'utf8'));
+  const original = JSON.stringify(olderContact) + '\n';
+  writeFileSync(f.coordinationSource, original);
+  writeFileSync(join(f.directory, 'cursor.json'), '{"eventSequence":0}');
+  f.project().pump();
+  assert.equal(readFileSync(f.coordinationSource, 'utf8'), original);
 });
 
 test('scheduled instructions are not exported as owner contact', t => {

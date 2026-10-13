@@ -18,6 +18,7 @@ import type {
   NodeProvenanceProfile,
   MemoryAuthorityClass,
   MemoryRetrievalDomain,
+  OwnerConversationInput,
 } from '../types.js';
 
 const require = createRequire(import.meta.url);
@@ -33,6 +34,7 @@ const CONFIDENCE_CAPS: Record<string, number> = {
   reflection_synthesis: 0.6,
   document_ingestion: 0.7,
   conversation: 0.8,
+  owner_conversation: 0.8,
   agent_promote: 0.8,
   curator: 0.7,
   runtime_verified: 0.95,
@@ -229,7 +231,7 @@ export class MemoryObjectStore {
   // lock before every mutation: this instance's cache can predate engine writes.
   // The synchronous harness API cannot use proper-lockfile's async retries.
   // Bound lock contention to 60 ms, then fail closed for the caller to retry.
-  private mutateObjects<T>(mutation: (objects: MemoryObject[]) => T): T {
+  private mutateObjects<T>(mutation: (objects: MemoryObject[]) => T, nonBlocking = false): T {
     if (!existsSync(this.objectsPath)) {
       try { writeFileSync(this.objectsPath, '{"objects":[]}', { flag: 'wx' }); }
       catch (error) {
@@ -242,7 +244,7 @@ export class MemoryObjectStore {
         release = lockfile.lockSync(this.objectsPath, { stale: 30_000, update: 5_000 });
         break;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ELOCKED' || attempt === 3) throw error;
+        if (nonBlocking || (error as NodeJS.ErrnoException).code !== 'ELOCKED' || attempt === 3) throw error;
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
       }
     }
@@ -331,6 +333,84 @@ export class MemoryObjectStore {
 
   getObject(memoryId: string): MemoryObject | undefined {
     return this.objects.find(o => o.memory_id === memoryId);
+  }
+
+  /** Add already quote-gated evidence without granting correction authority. */
+  upsertOwnerFact(input: OwnerConversationInput): MemoryObject {
+    const statement = input.statement.trim();
+    const quote = input.quote.trim();
+    if (!statement || statement.length > 2000 || !quote || quote.length > 2000
+        || !input.messageRef || input.messageRef.length > 240
+        || !input.sessionId || input.sessionId.length > 240
+        || !Number.isFinite(Date.parse(input.occurredAt))) {
+      throw new Error('Invalid owner conversation evidence');
+    }
+    const occurredAt = new Date(input.occurredAt).toISOString();
+    const privacy = input.privacy === 'sensitive' || input.privacy === 'internal' ? input.privacy : 'personal';
+    const normalize = (text: string) => text.normalize('NFKC').toLowerCase()
+      .replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/\s+/g, ' ').trim();
+    return this.mutateObjects(objects => {
+      const matches = objects.filter(object => object.lifecycle_layer === 'durable'
+        && object.provenance.generation_method === 'owner_conversation'
+        && normalize(object.statement) === normalize(statement));
+      const existing = matches.find(object => object.status === 'approved' && !object.superseded_by?.length)
+        ?? matches.find(object => object.status === 'superseded' && object.updated_at >= occurredAt);
+      const recentRefs = (refs: string[], ref: string) => boundedProvenanceStrings([
+        ...refs.filter(value => value !== ref).slice(-7), ref,
+      ], 8);
+      const replacementIds = boundedProvenanceStrings(input.supersedes, 8)
+        .filter(id => id !== existing?.memory_id && objects.some(object => object.memory_id === id
+          && object.lifecycle_layer === 'durable'
+          && object.provenance.generation_method === 'owner_conversation'
+          && object.updated_at <= occurredAt));
+      let object: MemoryObject;
+      if (existing) {
+        object = existing;
+        object.provenance.source_refs = recentRefs(object.provenance.source_refs, input.messageRef);
+        object.provenance.session_refs = recentRefs(object.provenance.session_refs, input.sessionId);
+        object.evidence.evidence_links = recentRefs(object.evidence.evidence_links, input.messageRef);
+        if (occurredAt >= object.updated_at) {
+          object.updated_at = occurredAt;
+          object.evidence.grounding_note = quote;
+        }
+        if (privacy === 'sensitive') object.privacy_class = privacy;
+        object.supersedes = boundedProvenanceStrings([...(object.supersedes ?? []), ...replacementIds], 8);
+      } else {
+        const partial: Omit<MemoryObject, 'memory_id' | 'created_at' | 'updated_at' | 'reuse_count'> = {
+          type: 'observation', thread_id: 'owner-conversation', session_id: input.sessionId,
+          lifecycle_layer: 'durable', status: 'approved', title: statement.slice(0, 120), statement,
+          actor: 'agent',
+          provenance: { source_refs: [input.messageRef], session_refs: [input.sessionId], generation_method: 'owner_conversation',
+            node_profile: {
+              schema: 'home23.node-provenance.v1', authorityClass: 'narrative', retrievalDomain: 'project_history',
+              semanticTime: occurredAt, sourceRefs: [input.messageRef], evidenceRefs: [input.messageRef],
+              generationMethod: 'owner_conversation', scope: ['owner'], operationalAuthority: false,
+              requiresFreshVerification: true,
+            },
+          },
+          evidence: { evidence_links: [input.messageRef], grounding_strength: 'strong', grounding_note: quote },
+          confidence: { score: 0.8, basis: 'Quote-gated owner conversation; inference remains agent-authored' },
+          state_delta: { delta_class: 'belief_change', before: {}, after: {}, why: 'Owner conversation evidence' },
+          triggers: [], scope: { applies_to: ['owner'], excludes: [] }, review_state: 'self_reviewed',
+          staleness_policy: {}, privacy_class: privacy,
+          ...(replacementIds.length ? { supersedes: replacementIds } : {}),
+        };
+        object = { ...partial, memory_id: `mo_${randomUUID().slice(0, 12)}`,
+          created_at: occurredAt, updated_at: occurredAt, reuse_count: 0 };
+        objects.push(object);
+      }
+      object.provenance.node_profile = normalizeNodeProvenance({
+        ...object, provenance: { ...object.provenance,
+          node_profile: { ...object.provenance.node_profile!, semanticTime: object.updated_at } },
+      });
+      for (const id of replacementIds) {
+        const previous = objects.find(candidate => candidate.memory_id === id)!;
+        previous.status = 'superseded';
+        previous.superseded_by = boundedProvenanceStrings([...(previous.superseded_by ?? []), object.memory_id], 8);
+        previous.updated_at = occurredAt > previous.updated_at ? occurredAt : previous.updated_at;
+      }
+      return object;
+    }, true);
   }
 
   updateObject(memoryId: string, updates: Partial<MemoryObject>): MemoryObject | undefined {

@@ -3,7 +3,8 @@
  *
  * Two memory systems:
  *
- * A) extractAndSave   — session end: extract structured MemoryObjects via Claude
+ * OwnerSessionDistiller learns only from finished, quote-checked owner sessions.
+ * A) extractAndSave — legacy explicit compatibility API; no automatic callers
  * B) buildRecoveryBundle — post-compaction: reinject last 24h memory into system prompt
  */
 
@@ -20,6 +21,8 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { StoredMessage } from './history.js';
 import { generateText, inferTextGenerationProvider } from './text-generation.js';
+
+export { OwnerSessionDistiller, ownerChannelKindReader } from './owner-distill.js';
 
 const MEMORY_DIR_NAME = 'memory';
 const MAX_RECOVERY_CHARS = 2000;
@@ -57,7 +60,7 @@ export class MemoryManager {
 
   /**
    * Extract learnings from conversation history and persist.
-   * Fire-and-forget — never call with await in the hot path.
+   * @deprecated Automatic learning uses OwnerSessionDistiller; never call per reply.
    */
   async extractAndSave(
     chatId: string,

@@ -33,6 +33,8 @@ import type { BrainOperationsClient } from './brain-operations/client.js';
 import { ActivityLease, MAX_TIMER_DELAY_MS, type LeaseExpiryReason } from './activity-lease.js';
 import { executeAndFormatTool } from './tool-result.js';
 import { MemoryManager } from './memory.js';
+import { resolveSubstrateStateDir } from './session-bootstrap.js';
+import type { OwnerDistillConfig } from '../types.js';
 import { relieveToolPressure } from './context-window.js';
 import { mergeCompletedResponsesOutput } from './responses-continuity.js';
 import type { CompactionManager } from './compaction.js';
@@ -412,6 +414,7 @@ export class AgentLoop {
   };
   private pusher: import('../push/apns-pusher.js').ApnsPusher | null = null;
   private codexCredentialsProvider: typeof getCodexCredentials = getCodexCredentials;
+  private ownerDistill?: OwnerDistillConfig;
   private situationalAwareness?: import('./session-bootstrap.js').SituationalAwarenessConfig;
   private onSpeakingCleared: ((chatId: string) => void) | null = null;
 
@@ -433,6 +436,7 @@ export class AgentLoop {
     cacheDiagnostics?: CacheDiagnosticsConfig;
     sessionGapMs?: number;
     situationalAwareness?: import('./session-bootstrap.js').SituationalAwarenessConfig;
+    ownerDistill?: OwnerDistillConfig;
   }) {
     // OAuth tokens (sk-ant-oat*) need stealth headers + authToken param
     const runtimeClient = createAnthropicRuntimeClient(opts.apiKey, opts.baseURL);
@@ -466,6 +470,7 @@ export class AgentLoop {
     this.sessionGapMs = opts.sessionGapMs ?? 30 * 60 * 1000;
     this.workspacePath = opts.workspacePath;
     this.situationalAwareness = opts.situationalAwareness;
+    this.ownerDistill = opts.ownerDistill;
     this.eventLedger = new EventLedger(join(this.workspacePath, '..', 'brain'));
     const brainDir = join(this.workspacePath, '..', 'brain');
     // Correction authentication is ONE-SHOT and SHARED across both stores: one
@@ -1619,7 +1624,8 @@ export class AgentLoop {
                 runContext.turnRuntime!.brainOperations.searchContext(request, signal),
               triggerIndex: this.triggerIndex,
               triggeredSurfaces: this.situationalAwareness?.triggeredSurfaces,
-              substrateStateDir: this.situationalAwareness?.substrate?.stateDir,
+              substrateStateDir: resolveSubstrateStateDir(this.workspacePath, this.situationalAwareness),
+              ownerDistill: this.ownerDistill,
               substrateBudget: this.situationalAwareness?.substrate?.budget,
               skipBrainEnrichment: retrievalEval,
               contextEnrichment: automaticContextEnrichment,
@@ -1659,12 +1665,12 @@ export class AgentLoop {
           } else {
           // ── Relationship continuity (Step 30, Piece 2 · identity layer 2) ──
           // Selective, relevance-ranked, budget-bounded working-relationship
-          // context. Privacy: sensitive entries never enter the prompt. Failure
-          // here never blocks the turn.
+          // context. Owner policy renders sensitive entries unless configured
+          // otherwise. Failure here never blocks the turn.
           try {
             const rel = this.relationshipLedger.retrieveForContext(userText, {
               budgetChars: 1400,
-              excludePrivacy: ['sensitive'],
+              excludePrivacy: this.ownerDistill?.renderSensitive === false ? ['sensitive'] : [],
             });
             if (rel.text && rel.entries.length > 0) {
               relationshipCount = rel.entries.length;
@@ -2340,9 +2346,6 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 if (onEvent && answer && !streamedAnswer) onEvent({ type: 'response_chunk', chunk: answer });
                 turnMessages.push({ role: 'assistant', content: answer });
                 persistTurn();
-                if (messages.length > 10) {
-                  runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
-                }
                 return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
 
@@ -2641,9 +2644,6 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 }
                 turnMessages.push({ role: 'assistant', content: answer });
                 persistTurn();
-                if (messages.length > 10) {
-                  runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
-                }
                 return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
 
@@ -2882,9 +2882,6 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               if (onEvent && answer) onEvent({ type: 'response_chunk', chunk: answer });
               turnMessages.push({ role: 'assistant', content: answer });
               persistTurn();
-              if (messages.length > 10) {
-                runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
-              }
               return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
             }
 
@@ -3230,11 +3227,6 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           const assistantMsg: StoredMessage = { role: 'assistant', content: finalText || '(no response)' };
           turnMessages.push(assistantMsg);
           persistTurn();
-
-          // ── Memory: Extract and save (fire-and-forget) ───
-          if (messages.length > 10) {
-            runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
-          }
 
           return {
             text: finalText || '(no response)',

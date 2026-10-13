@@ -29,10 +29,12 @@ import { createRequire } from 'node:module';
 // resolves via callback, leaving the event loop free.
 const execAsync = promisify(exec);
 setDefaultResultOrder('ipv4first');
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createModelAliasReader, getAgentDir, loadConfig } from './config.js';
 import { CompactionManager } from './agent/compaction.js';
+import { OwnerSessionDistiller, ownerChannelKindReader } from './agent/memory.js';
+import { generateText } from './agent/text-generation.js';
 import { TelegramAdapter } from './channels/telegram.js';
 import { DiscordAdapter } from './channels/discord.js';
 import { IMessageAdapter } from './channels/imessage.js';
@@ -551,6 +553,7 @@ async function main(): Promise<void> {
     compaction,
     sessionGapMs: config.chat.sessionGapMs,
     situationalAwareness: config.situationalAwareness,
+    ownerDistill: config.chat.ownerDistill,
     cacheDiagnostics: CACHE_DIAGNOSTICS_ENABLED
       ? {
           enabled: true,
@@ -576,6 +579,33 @@ async function main(): Promise<void> {
     xai: { apiKey: resolveApiKey('xai'), baseURL: resolveBaseUrl('xai') },
     'ollama-cloud': { apiKey: resolveApiKey('ollama-cloud'), baseURL: resolveBaseUrl('ollama-cloud') },
   });
+  // Finished-session learning has its own lifecycle; it never runs in a reply.
+  const coordinationDatabasePath = process.env.HOME23_COORDINATION_DB_PATH
+    ?? join(HOME23_ROOT, 'instances', '.house', 'coordination', 'home23-coordination.sqlite3');
+  const ownerContactProjectionPath = join(dirname(coordinationDatabasePath), 'resident-contact', `${AGENT_NAME}.jsonl`);
+  const ownerContactStreamPath = join(INSTANCE_DIR, 'substrate', 'conversation-stream.jsonl');
+  const ownerContactSourcePath = existsSync(ownerContactProjectionPath) ? ownerContactProjectionPath : ownerContactStreamPath;
+  const ownerDistiller = new OwnerSessionDistiller({
+    brainDir: BRAIN_DIR,
+    sourcePath: ownerContactSourcePath,
+    alternateSourcePath: ownerContactSourcePath === ownerContactProjectionPath ? ownerContactStreamPath : ownerContactProjectionPath,
+    config: config.chat.ownerDistill,
+    ownerTelegramId: config.agent?.owner?.telegramId,
+    channelKind: ownerChannelKindReader(coordinationDatabasePath),
+    generate: async request => {
+      const selected = config.chat.ownerDistill?.model
+        ? resolveModelOverride(config.chat.ownerDistill.model, readModelAliases())
+        : { model: agent.getModel(), provider: agent.getProvider() };
+      if (!selected) throw new Error('Unknown owner distill model alias');
+      const provider = selected.provider ?? agent.getProvider();
+      return generateText({ ...request, model: selected.model, provider,
+        apiKey: resolveApiKey(provider), baseURL: resolveBaseUrl(provider),
+        temperature: 0.1, timeoutMs: 60_000 });
+    },
+    warn: message => console.warn(message),
+  });
+  ownerDistiller.start();
+
   let executionControlsReady = false;
   let executionControl: ReturnType<typeof createExecutionControlPort> | undefined;
   const residentCoordinationHarness = await startResidentCoordinationHarness({
@@ -2313,6 +2343,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string): Promise<void> => {
     if (!shutdownGuard.begin(signal)) return;
+    ownerDistiller.stop();
     await seedOperatorOutreach?.stop();
     clearInterval(chatTurnRecoveryInterval);
     agent.stopRecoverySweep();

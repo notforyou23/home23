@@ -44,6 +44,25 @@ test('MemoryIngest compacts oversized active store into append-only archive', (t
   assert.deepEqual(compacted.objects.map((object) => object.memory_id), ['mo-2', 'mo-3', 'mo-4']);
 });
 
+test('MemoryIngest preserves durable owner facts and superseded history when archiving overflow', (t) => {
+  const brainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-ingest-owner-facts-'));
+  t.after(() => fs.rmSync(brainDir, { recursive: true, force: true }));
+  const ingest = new MemoryIngest({ brainDir, logger: { warn() {} }, maxObjects: 2 });
+  const owner = (id, status) => ({
+    memory_id: id, created_at: '2026-05-01T00:00:00.000Z', lifecycle_layer: 'durable', status,
+    provenance: { generation_method: 'owner_conversation' },
+  });
+  const store = { objects: [owner('owner-old', 'superseded'), owner('owner-current', 'approved'),
+    { memory_id: 'bus-old', created_at: '2026-05-02T00:00:00.000Z' },
+    { memory_id: 'bus-new', created_at: '2026-05-03T00:00:00.000Z' }] };
+  const archived = [];
+  const compacted = ingest.compactActiveStoreForWrite(store, object => archived.push(object));
+  assert.deepEqual(archived.map(object => object.memory_id), ['bus-old', 'bus-new']);
+  assert.deepEqual(compacted.objects.map(object => object.memory_id), ['owner-old', 'owner-current']);
+  assert.deepEqual(ingest.compactActiveStoreForWrite({ objects: [...compacted.objects, owner('owner-third', 'approved')] }).objects
+    .map(object => object.memory_id), ['owner-old', 'owner-current', 'owner-third']);
+});
+
 test('MemoryIngest startup compaction rewrites active store and archives older objects', async () => {
   const brainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-ingest-compact-'));
   const ingest = new MemoryIngest({
