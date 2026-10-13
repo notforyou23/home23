@@ -164,8 +164,18 @@ architecture:
     type: graph
     topology: small-world
     embedding:
+      provider: ollama
       model: nomic-embed-text
       dimensions: 768
+      fallback: none
+      batchSize: 2048
+      # Gemini uses batchEmbedContents (at most 100 inputs per request).
+      # Key: providers.google.apiKey in secrets.yaml or GEMINI_API_KEY.
+      # Re-embed and explicitly swap a copy before changing this identity.
+      timeoutMs: 30000
+      maxRetries: 4
+      requestsPerMinute: 60
+      pricePerMillionTokens: 0.20 # Estimate only; provider billing may differ.
     decay:
       function: exponential
       baseFactor: 0.995

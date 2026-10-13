@@ -1,4 +1,5 @@
 const { getOpenAIClient, getEmbeddingClient } = require('../core/openai-client');
+const { createEmbeddingProvider, resolveEmbeddingConfig, embeddingId, LEGACY_EMBEDDER_ID } = require('./embedding-provider');
 const fs = require('node:fs');
 const { performance } = require('node:perf_hooks');
 const { ExtractiveSummarizer } = require('../utils/extractive-summarizer');
@@ -423,6 +424,9 @@ class NetworkMemory {
     this.config = config;
     this.logger = logger;
     this.getEmbeddingClient = deps.getEmbeddingClient || getEmbeddingClient;
+    this.embeddingDeps = { ...deps };
+    this.metadata = { embedderId: this.getConfiguredEmbedderId() };
+    this.embeddingIdentityEstablished = false;
     
     // Initialize extractive summarizer for memory compression
     this.extractiveSummarizer = new ExtractiveSummarizer(logger);
@@ -507,10 +511,62 @@ class NetworkMemory {
   }
 
   getEmbeddingModel() {
-    return process.env.EMBEDDING_MODEL || this.config.embedding?.model || 'nomic-embed-text';
+    return this.resolvedEmbeddingConfig().model;
+  }
+
+  resolvedEmbeddingConfig() {
+    return resolveEmbeddingConfig(this.config.embedding || {}, this.embeddingDeps.env || process.env);
+  }
+
+  getConfiguredEmbedderId() {
+    return embeddingId(this.resolvedEmbeddingConfig());
+  }
+
+  loadEmbeddingMetadata(metadata) {
+    this.metadata = { ...(metadata || {}), embedderId: metadata?.embedderId || LEGACY_EMBEDDER_ID };
+    this.embeddingIdentityEstablished = true;
+  }
+
+  assertEmbedderMatches() {
+    const configured = this.getConfiguredEmbedderId();
+    if (!this.embeddingIdentityEstablished && this.nodes.size === 0) {
+      this.metadata.embedderId = configured;
+    }
+    const recorded = this.metadata?.embedderId || LEGACY_EMBEDDER_ID;
+    if (configured !== recorded) {
+      const error = new Error(`Brain embedder ${recorded} differs from configured ${configured}. Refusing new vectors. Run node cli/home23.js brain re-embed before switching.`);
+      error.code = 'EMBEDDER_ID_MISMATCH';
+      throw error;
+    }
+    this.embeddingIdentityEstablished = true;
+    return recorded;
+  }
+
+  assertIncomingEmbedding(node) {
+    if (!node?.embedding) return;
+    const recorded = this.assertEmbedderMatches();
+    // Unstamped imported vectors have legacy provenance. An explicit new
+    // provider cannot treat them as vectors from its own space.
+    const explicitProvider = this.config.embedding?.provider;
+    const incoming = node.embedder_id || (explicitProvider ? LEGACY_EMBEDDER_ID : recorded);
+    if (incoming !== recorded) {
+      const error = new Error(`Incoming vector embedder ${incoming} differs from brain ${recorded}. Run node cli/home23.js brain re-embed; vectors cannot be mixed.`);
+      error.code = 'EMBEDDER_ID_MISMATCH';
+      throw error;
+    }
+  }
+
+  useConfiguredProvider() {
+    const config = this.resolvedEmbeddingConfig();
+    return config.provider !== 'ollama' || config.fallback !== 'none'
+      || Boolean(this.config.embedding?.baseUrl || this.config.embedding?.baseURL);
   }
 
   getEmbeddingRecipeId() {
+    if (this.resolvedEmbeddingConfig().provider === 'gemini') return null;
+    if (this.config.embedding?.provider === 'owned-onnx') {
+      return this.config.embedding.recipeId || this.getEmbeddingModel();
+    }
     const recipe = process.env.EMBEDDING_RECIPE_ID || this.config.embedding?.recipeId || null;
     return typeof recipe === 'string' && recipe.trim() ? recipe.trim() : null;
   }
@@ -522,6 +578,12 @@ class NetworkMemory {
 
   nodeEmbeddingRecipeId(node) {
     const recipe = node?.embedding_recipe_id || node?.embeddingRecipeId || null;
+    if (!recipe && node?.embedder_id && node.embedder_id === this.metadata.embedderId
+        && node.embedder_id === this.getConfiguredEmbedderId()) {
+      // Re-embedded copies use the graph identity as their provenance. Known
+      // owned recipes still participate in the existing recipe compare guard.
+      return this.activeMemoryRecipe().hash;
+    }
     return typeof recipe === 'string' && recipe.trim() ? recipe.trim() : null;
   }
 
@@ -530,20 +592,19 @@ class NetworkMemory {
     return recipesCompatibleForCompare(recipeA, recipeB);
   }
 
-  getEmbeddingDimensions() {
-    const envDims = Number.parseInt(process.env.EMBEDDING_DIMENSIONS || '', 10);
-    if (Number.isFinite(envDims) && envDims > 0) return envDims;
+  nodeEmbeddingMatchesBrain(node) {
+    // Keep legacy callers with synthetic/unknown model aliases compatible.
+    // Explicit configured providers and new provider spaces require identity.
+    if (!this.config.embedding?.provider && this.resolvedEmbeddingConfig().provider === 'ollama') return true;
+    return (node?.embedder_id || LEGACY_EMBEDDER_ID) === this.metadata.embedderId;
+  }
 
-    let dims = this.config.embedding?.dimensions;
-    if (typeof dims === 'object') {
-      dims = dims.default || 768;
-    }
-    // 768 = nomic-embed-text, the fleet default; the old 512 fallback
-    // disagreed with base-engine.yaml and every live EMBEDDING_DIMENSIONS.
-    return Number.isFinite(Number(dims)) ? Number(dims) : 768;
+  getEmbeddingDimensions() {
+    return this.resolvedEmbeddingConfig().dimensions;
   }
 
   isOllamaEmbeddingEndpoint() {
+    if (this.resolvedEmbeddingConfig().provider !== 'ollama') return false;
     return (process.env.EMBEDDING_PROVIDER || '').includes('ollama')
       || (process.env.EMBEDDING_BASE_URL || '').includes('11434');
   }
@@ -575,14 +636,17 @@ class NetworkMemory {
   }
 
   /**
-   * Generate embedding using OpenAI
+   * Generate a vector in the brain's recorded embedding space.
    * @param {string} text - Text to embed
-   * Note: All embeddings use same dimensions (512) for network consistency
    */
   async embed(text) {
+    const recordedId = this.assertEmbedderMatches();
     const originalText = String(text || '');
     try {
       const preparedText = this.prepareEmbeddingText(originalText);
+      if (this.useConfiguredProvider()) {
+        return await createEmbeddingProvider(this.config.embedding || {}, this.embeddingDeps).embed(preparedText, { recordedId });
+      }
       const client = this.getEmbeddingClient();
       const response = await client.embeddings.create(this.buildEmbeddingCreateParams(preparedText));
 
@@ -598,6 +662,7 @@ class NetworkMemory {
 
       return response.data[0].embedding;
     } catch (error) {
+      if (error.code === 'EMBEDDER_ID_MISMATCH') throw error;
       // If embedding fails even after truncation, try extractive summary as last resort
       if (originalText.length > 5000 && this.extractiveSummarizer) {
         this.logger?.warn?.('Embedding failed, trying extractive summary', { 
@@ -637,8 +702,19 @@ class NetworkMemory {
    */
   async embedBatch(texts) {
     if (!Array.isArray(texts) || texts.length === 0) return [];
+    const recordedId = this.assertEmbedderMatches();
+    if (this.useConfiguredProvider()) {
+      try {
+        return await createEmbeddingProvider(this.config.embedding || {}, this.embeddingDeps)
+          .embedBatch(texts.map(text => this.prepareEmbeddingText(text)), { recordedId });
+      } catch (error) {
+        if (error.code === 'EMBEDDER_ID_MISMATCH') throw error;
+        this.logger?.error?.('Embedding batch failed; vectors remain missing', { error: error.message });
+        return new Array(texts.length).fill(null);
+      }
+    }
     const output = new Array(texts.length).fill(null);
-    const batchSize = 2048;
+    const batchSize = this.resolvedEmbeddingConfig().batchSize;
     for (let offset = 0; offset < texts.length; offset += batchSize) {
       const original = texts.slice(offset, offset + batchSize);
       const input = original.map(text => this.prepareEmbeddingText(text));
@@ -662,6 +738,7 @@ class NetworkMemory {
           totalRequested: texts.length,
         });
       } catch (error) {
+        if (error.code === 'EMBEDDER_ID_MISMATCH') throw error;
         this.logger?.warn?.('Batch embedding failed; retrying inputs individually', {
           error: error.message,
           batchSize: input.length,
@@ -710,10 +787,12 @@ class NetworkMemory {
 
     if (accepted.length > 0) {
       this.withPersistenceBarrier(() => {
+        this.assertEmbedderMatches();
         for (const { node, embedding } of accepted) {
           if (this.nodes.get(node.id) !== node) continue;
           node.embedding = embedding;
           node.embedding_status = 'embedded';
+          node.embedder_id = this.metadata.embedderId;
           this._markNodeDirtyUnsafe(node.id);
         }
       });
@@ -733,6 +812,7 @@ class NetworkMemory {
    * Add new concept node
    */
   async addNode(concept, tag = 'general', embedding = null) {
+    this.assertEmbedderMatches();
     const suppliedNode = concept && typeof concept === 'object' && !Array.isArray(concept)
       ? concept
       : null;
@@ -773,6 +853,7 @@ class NetworkMemory {
         || (preserveIncomingAuthority ? null : (tag || 'general')))
       : (tag || 'general');
     const nodeEmbedding = incomingAuthorityAttested ? null : (inputNode?.embedding || embedding);
+    if (nodeEmbedding) this.assertIncomingEmbedding({ ...inputNode, embedding: nodeEmbedding });
 
     if (!conceptText.trim()) {
       this.logger?.warn?.('Skipping node with empty concept', { tag: nodeTag });
@@ -782,6 +863,7 @@ class NetworkMemory {
     // All nodes use same dimensions for network consistency when embeddings are
     // available. Memory Lite keeps the text node even when vectors are offline.
     const embed = this.normalizeEmbedding(nodeEmbedding || await this.embed(conceptText));
+    this.assertEmbedderMatches();
 
     if (!embed) {
       this.logger?.warn?.('Embedding unavailable; storing node in Memory Lite mode', {
@@ -836,6 +918,7 @@ class NetworkMemory {
       tag: nodeTag,
       embedding: embed || null,
       embedding_status: embed ? 'embedded' : 'missing',
+      ...(embed ? { embedder_id: this.metadata.embedderId } : {}),
       ...(knownRecipe ? { embedding_recipe_id: memoryRecipe.hash, embedding_encoder: memoryRecipe.profile } : {}),
       activation: incomingAuthorityAttested ? 0 : (inputNode?.activation ?? 0),
       cluster: incomingAuthorityAttested ? null : (inputNode?.cluster ?? null),
@@ -989,7 +1072,7 @@ class NetworkMemory {
         });
         continue;
       }
-      if (!this.embeddingsComparable(
+      if (!this.nodeEmbeddingMatchesBrain(node) || !this.nodeEmbeddingMatchesBrain(otherNode) || !this.embeddingsComparable(
         node.embedding,
         otherNode.embedding,
         this.nodeEmbeddingRecipeId(node),
@@ -1051,7 +1134,21 @@ class NetworkMemory {
         throw new TypeError(`node_patch_forbidden_key:${forbidden}`);
       }
     }
+    if (Object.prototype.hasOwnProperty.call(prepared, 'embedder_id')) {
+      const clearing = Object.prototype.hasOwnProperty.call(prepared, 'embedding')
+        && !prepared.embedding && prepared.embedder_id == null;
+      if (!clearing && prepared.embedder_id !== this.assertEmbedderMatches()) {
+        const error = new Error('A vector identity patch differs from the brain embedder. Run node cli/home23.js brain re-embed.');
+        error.code = 'EMBEDDER_ID_MISMATCH';
+        throw error;
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(prepared, 'embedding')) {
+      if (prepared.embedding) {
+        this.assertEmbedderMatches();
+        this.assertIncomingEmbedding(prepared);
+        prepared.embedder_id = this.metadata.embedderId;
+      }
       prepared.embedding = this.normalizeEmbedding(prepared.embedding);
     }
     for (const timestampField of ['created', 'accessed']) {
@@ -1112,6 +1209,10 @@ class NetworkMemory {
       if (!expectedMatches) continue;
 
       const patch = this._prepareNodePatch(entry.patch);
+      if (Object.prototype.hasOwnProperty.call(patch, 'embedder_id')
+          && !Object.prototype.hasOwnProperty.call(patch, 'embedding') && stored.embedding) {
+        this.assertIncomingEmbedding(stored);
+      }
       const updates = [];
       for (const key of Reflect.ownKeys(patch)) {
         const value = patch[key];
@@ -1168,6 +1269,7 @@ class NetworkMemory {
         value: nodeId,
       });
       if (Object.prototype.hasOwnProperty.call(node, 'embedding')) {
+        this.assertIncomingEmbedding(node);
         node.embedding = this.normalizeEmbedding(node.embedding);
       }
       for (const timestampField of ['created', 'accessed']) {
@@ -2228,7 +2330,14 @@ class NetworkMemory {
     
     const retrievalIntent = normalizeRetrievalIntent(options.intent || queryText);
     const retrievalOptions = { ...options, intent: retrievalIntent, query: queryText };
-    const queryEmbedding = await this.embed(queryText);
+    let queryEmbedding;
+    try {
+      queryEmbedding = await this.embed(queryText);
+    } catch (error) {
+      if (error.code !== 'EMBEDDER_ID_MISMATCH') throw error;
+      this.logger?.warn?.('Embedding space mismatch; using Memory Lite retrieval', { error: error.message });
+      queryEmbedding = null;
+    }
     const queryRecipeId = this.activeMemoryRecipe().hash;
     return this._withRetrievalRetry(() => this._queryWithEmbedding(
       queryText, topK, retrievalOptions, queryEmbedding, queryRecipeId,
@@ -2258,7 +2367,7 @@ class NetworkMemory {
         this.logger?.debug?.('Skipping node with null embedding during query', { nodeId: id });
         continue;
       }
-      if (!this.embeddingsComparable(queryEmbedding, node.embedding, queryRecipeId, this.nodeEmbeddingRecipeId(node))) {
+      if (!this.nodeEmbeddingMatchesBrain(node) || !this.embeddingsComparable(queryEmbedding, node.embedding, queryRecipeId, this.nodeEmbeddingRecipeId(node))) {
         this.logger?.debug?.('Skipping node with incompatible embedding recipe or dimension', { nodeId: id });
         continue;
       }
@@ -2635,7 +2744,7 @@ class NetworkMemory {
     const queryRecipeId = this.activeMemoryRecipe().hash;
     for (const node of this.nodes.values()) {
       if (!this.isStateSnapshotNode(node) || !node.embedding) continue;
-      if (!this.embeddingsComparable(queryEmbedding, node.embedding, queryRecipeId, this.nodeEmbeddingRecipeId(node))) continue;
+      if (!this.nodeEmbeddingMatchesBrain(node) || !this.embeddingsComparable(queryEmbedding, node.embedding, queryRecipeId, this.nodeEmbeddingRecipeId(node))) continue;
       const conceptLower = String(node.concept || '').toLowerCase();
       const overlap = queryWords.reduce((sum, word) => sum + (conceptLower.includes(word) ? 1 : 0), 0);
       const similarity = this.cosineSimilarity(queryEmbedding, node.embedding);
@@ -2774,7 +2883,7 @@ class NetworkMemory {
     for (const [id, node] of fence.nodeEntries) {
       if (this._retrievalSliceEnded(fence)) await this._yieldRetrieval(fence);
       if (!node.embedding) continue;
-      if (!this.embeddingsComparable(queryEmbedding, node.embedding, queryRecipeId, this.nodeEmbeddingRecipeId(node))) continue;
+      if (!this.nodeEmbeddingMatchesBrain(node) || !this.embeddingsComparable(queryEmbedding, node.embedding, queryRecipeId, this.nodeEmbeddingRecipeId(node))) continue;
       
       const similarity = this.cosineSimilarity(queryEmbedding, node.embedding);
       const retrievalScore = this.scoreTemporalRetrieval(node, similarity, {
@@ -3276,6 +3385,9 @@ class NetworkMemory {
       tag: n.tag,
       embedding: this.serializeEmbedding(n.embedding),
       embedding_status: n.embedding_status,
+      embedder_id: n.embedder_id,
+      embedding_recipe_id: n.embedding_recipe_id,
+      embedding_encoder: n.embedding_encoder,
       weight: n.weight,
       activation: n.activation,
       cluster: n.cluster,
@@ -3314,6 +3426,7 @@ class NetworkMemory {
 
   exportGraph() {
     return {
+      metadata: { ...this.metadata },
       nodes: Array.from(this.nodes.values()).map(n => this._exportGraphNode(n)),
       edges: Array.from(this.edges.entries()).map(([key, edge]) => this._exportGraphEdge(key, edge)),
       clusters: Array.from(this.clusters.entries()).map(([id, nodes]) => ({
@@ -3332,7 +3445,7 @@ class NetworkMemory {
       const fence = this._captureRetrievalFence();
       const clusters = this.clusters;
       const clusterEntries = Array.from(clusters, ([id, members]) => [id, members, Array.from(members)]);
-      const graph = { nodes: [], edges: [], clusters: [], nextNodeId: this.nextNodeId, nextClusterId: this.nextClusterId };
+      const graph = { metadata: { ...this.metadata }, nodes: [], edges: [], clusters: [], nextNodeId: this.nextNodeId, nextClusterId: this.nextClusterId };
       for (const [, node] of fence.nodeEntries) {
         graph.nodes.push(this._exportGraphNode(node));
         if (this._retrievalSliceEnded(fence)) await this._yieldRetrieval(fence);
@@ -3360,6 +3473,7 @@ class NetworkMemory {
 
   exportPersistenceShell() {
     return {
+      metadata: { ...this.metadata },
       nodes: [],
       edges: [],
       clusters: Array.from(this.clusters.entries()).map(([id, nodes]) => ({
@@ -3410,6 +3524,7 @@ class NetworkMemory {
       }
 
       return deepFreezeJson({
+        metadata: { ...this.metadata },
         nodes: nodeEntries,
         edges: edgeEntries,
         clusters: serializeLegacyClusterEntries(this.clusters, nodes),
@@ -3516,6 +3631,7 @@ class NetworkMemory {
       : derivedNextClusterId;
     return {
       nodes, edges, clusters, nextNodeId, nextClusterId, nodeIdFormat, nodeIdPrefix,
+      metadata: { ...(data.metadata || {}), embedderId: data.metadata?.embedderId || LEGACY_EMBEDDER_ID },
       keywordIndexState,
     };
   }
@@ -3523,6 +3639,7 @@ class NetworkMemory {
   _legacyLoadedStateMatchesUnsafe(prepared) {
     this._requirePersistenceBarrierUnsafe();
     if (this.nodes.size !== prepared.nodes.size || this.edges.size !== prepared.edges.size
+        || !jsonPersistenceValuesEqual(this.metadata, prepared.metadata)
         || this.clusters.size !== prepared.clusters.size
         || this.nextNodeId !== prepared.nextNodeId || this.nextClusterId !== prepared.nextClusterId
         || this.nodeIdFormat !== prepared.nodeIdFormat || this.nodeIdPrefix !== prepared.nodeIdPrefix) {
@@ -3584,6 +3701,7 @@ class NetworkMemory {
         this.nextClusterId = prepared.nextClusterId;
         this.nodeIdFormat = prepared.nodeIdFormat;
         this.nodeIdPrefix = prepared.nodeIdPrefix;
+        this.loadEmbeddingMetadata(prepared.metadata);
         this._advancePersistenceGenerationUnsafe();
         this._markPersistenceCleanUnsafe();
         return { loaded: true, generation: this.persistenceGeneration };

@@ -167,6 +167,22 @@ embeddings:
       model: nomic-embed-text
       dimensions: 768
 
+# Memory graph only. Seed/substrate encoding remains configured separately.
+# A saved brain accepts only its recorded provider:model:dimensions identity.
+# See docs/design/EMBEDDER-SWITCH.md before changing an existing brain.
+architecture:
+  memory:
+    embedding:
+      provider: ollama # ollama | gemini | owned-onnx
+      model: nomic-embed-text # gemini-embedding-2 for Gemini
+      dimensions: 768
+      fallback: none # owned-onnx refuses an incompatible vector space
+      batchSize: 2048 # Gemini caps batches at 100
+      timeoutMs: 30000
+      maxRetries: 4
+      requestsPerMinute: 60
+      pricePerMillionTokens: 0.20 # Estimate per 1M input tokens
+
 # Filesystem scope for resident tools (shell, read_file, list, search).
 # New homes begin with the Home23 install, resident instance, and folders selected
 # during setup. This tool-level guard reduces accidental access; it is not an OS sandbox.

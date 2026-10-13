@@ -200,6 +200,9 @@ class IngestionManifest {
       const deliveryByItem = new Map(batch.map((item, index) => [item, queuedBatch.token.deliveries[index]]));
 
       try {
+        // Refuse before replacing a file generation or admitting cached
+        // vectors. Durable queued vectors may predate an embedder switch.
+        this.memory.assertEmbedderMatches?.();
         // Phase 1: Generate embeddings for items that don't have them
         const readyItems = [];
         const remaining = [];
@@ -208,6 +211,11 @@ class IngestionManifest {
         const failedFiles = new Set();
 
         for (const item of batch) {
+          const recordedId = this.memory.metadata?.embedderId;
+          if (item.embedding && recordedId && (item.embedder_id || 'ollama:nomic-embed-text:768') !== recordedId) {
+            item.embedding = null;
+            delete item.embedder_id;
+          }
           if (item.embedding) {
             readyItems.push(item);
             continue;
@@ -222,6 +230,7 @@ class IngestionManifest {
           const embedding = await this._embedWithRetry(item.content);
           if (embedding) {
             item.embedding = embedding;
+            if (recordedId) item.embedder_id = recordedId;
             readyItems.push(item);
           } else {
             failedFiles.add(item.filePath);
@@ -292,7 +301,7 @@ class IngestionManifest {
           const existingNode = findMatchingFeederNode(this, item);
           const node = existingNode || await this.memory.addNode(
             this.memory?.nodes instanceof Map
-              ? { concept: item.content, tag: item.tag, embedding: item.embedding, metadata: initialMetadata }
+              ? { concept: item.content, tag: item.tag, embedding: item.embedding, embedder_id: item.embedder_id, metadata: initialMetadata }
               : item.content,
             item.tag,
             item.embedding

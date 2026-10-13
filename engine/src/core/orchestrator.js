@@ -8123,6 +8123,9 @@ class Orchestrator {
 
       // Load memory system from state
       if (state.memory) {
+        // An unstamped saved brain is legacy Ollama, even if configuration
+        // now selects another provider. Restore this before any repair runs.
+        this.memory.loadEmbeddingMetadata?.(state.memory.metadata);
         // Import memory nodes, edges, and clusters
         if (state.memory.nodes && state.memory.edges) {
           // Clear current memory
@@ -8483,6 +8486,7 @@ class Orchestrator {
             const updated = this.memory.patchNode(node.id, {
               embedding: normalizedEmbedding,
               embedding_status: 'embedded',
+              embedder_id: this.memory.metadata?.embedderId,
             }, { expectedNode: node });
             if (updated) done++;
             else skipped++;

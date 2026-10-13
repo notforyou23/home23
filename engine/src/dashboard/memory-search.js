@@ -38,6 +38,10 @@ const {
   resolveAgentInstancePaths,
 } = require('../../../shared/agent-instance-paths.cjs');
 const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache');
+const {
+  LEGACY_EMBEDDER_ID,
+  createEmbeddingProvider,
+} = require('../memory/embedding-provider');
 
 const MAX_EMBEDDING_DIMENSIONS = 8192;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -311,23 +315,41 @@ function normalizeOptionalTag(tag) {
   return tag;
 }
 
-function createDefaultEmbedQuery({ getClient } = {}) {
-  const resolveClient = getClient || (() => {
-    const { getEmbeddingClient } = require('../core/openai-client');
-    return getEmbeddingClient();
-  });
-  return async function embedQuery(query, { signal } = {}) {
-    throwIfAborted(signal);
-    const client = resolveClient();
-    const embeddingModel = process.env.EMBEDDING_MODEL || 'nomic-embed-text';
-    const createParams = { model: embeddingModel, input: String(query).slice(0, 2000) };
-    if (!(process.env.EMBEDDING_BASE_URL || '').includes('11434')) {
-      createParams.encoding_format = 'float';
+function createDefaultEmbedQuery({
+  getClient,
+  embeddingConfig,
+  home23Root,
+  providerDependencies = {},
+  createProvider = createEmbeddingProvider,
+} = {}) {
+  let provider = null;
+  const resolveProvider = () => {
+    if (provider) return provider;
+    let configured = embeddingConfig;
+    if (configured === undefined) {
+      const configPath = process.env.COSMO_CONFIG_PATH
+        || (home23Root && path.join(home23Root, 'configs', 'base-engine.yaml'));
+      if (configPath && nodeFs.existsSync(configPath)) {
+        const { ConfigLoader } = require('../core/config-loader');
+        configured = new ConfigLoader(configPath).load().architecture?.memory?.embedding;
+      }
     }
-    const response = await client.embeddings.create(createParams, signal ? { signal } : undefined);
-    throwIfAborted(signal);
-    return response?.data?.[0]?.embedding || null;
+    provider = createProvider(configured || {}, {
+      ...providerDependencies,
+      ...(getClient ? { getEmbeddingClient: getClient } : {}),
+    });
+    return provider;
   };
+  const embedQuery = async function embedQuery(query, { signal } = {}) {
+    throwIfAborted(signal);
+    const result = await resolveProvider().embed(String(query).slice(0, 2000), { signal });
+    throwIfAborted(signal);
+    return result || null;
+  };
+  // The identity belongs to the query transport, including its cached client.
+  // Readers must check it even when two providers produce equal dimensions.
+  Object.defineProperty(embedQuery, 'id', { get: () => resolveProvider().id });
+  return embedQuery;
 }
 
 function compactAnnLabel(label) {
@@ -1327,7 +1349,9 @@ function createMemorySearchService({
   home23Root,
   requesterAgent,
   resolveTargetContext,
-  embedQuery = createDefaultEmbedQuery(),
+  embeddingConfig,
+  embeddingProviderDependencies,
+  embedQuery = createDefaultEmbedQuery({ home23Root, embeddingConfig, providerDependencies: embeddingProviderDependencies }),
   loadAnn = createDefaultLoadAnn(),
   deltaOverlayCache = null,
   logger = console,
@@ -1421,10 +1445,12 @@ function createMemorySearchService({
     const annCovered = annRevisionEligible && (annFresh || Boolean(overlay
       && overlay.coveredThroughRevision === manifest.currentRevision));
     let queryEmbedding = null;
+    let queryEmbedderId = null;
     let fallback = null;
     const embeddingStartedAt = performance.now();
     try {
       const embedded = await embedQuery(query, { signal });
+      queryEmbedderId = embedQuery.id || embedQuery.embedderId || null;
       ({ embedding: queryEmbedding } = normalizeEmbedding(embedded));
       if (!queryEmbedding) {
         fallback = { route: 'logical-keyword-scan', reason: 'embedding_invalid', completeness: 'complete' };
@@ -1436,6 +1462,20 @@ function createMemorySearchService({
       fallback = { route: 'logical-keyword-scan', reason: 'embedding_unavailable', completeness: 'complete' };
     }
     const embeddingMs = performance.now() - embeddingStartedAt;
+    const recordedEmbedderId = source.metadata?.embedderId
+      || source.embeddingMetadata?.embedderId || summary.metadata?.embedderId || null;
+    const vectorIsCompatible = (node) => !queryEmbedderId
+      || (node?.embedder_id || LEGACY_EMBEDDER_ID) === queryEmbedderId;
+    if (queryEmbedding && queryEmbedderId && recordedEmbedderId
+        && queryEmbedderId !== recordedEmbedderId) {
+      queryEmbedding = null;
+      fallback = { route: 'logical-keyword-scan', reason: 'embedding_id_mismatch', completeness: 'complete' };
+    }
+    // Existing ANN generations do not record their embedder identity. Their
+    // dimensions alone cannot establish compatibility with Gemini or ONNX.
+    const annEmbeddingCompatible = !queryEmbedderId || queryEmbedderId === LEGACY_EMBEDDER_ID;
+    let incompatibleVectorCount = 0;
+    let compatibleVectorCount = 0;
 
     const candidateLimit = Math.min(1000, Math.max(100, limit * 4));
     const semantic = createBoundedCandidateHeap({
@@ -1521,7 +1561,12 @@ function createMemorySearchService({
         if (keywordMatches && !tagMatches) logicalScanFiltered += 1;
 
         let similarity = null;
+        if (includeSemantic && Array.isArray(node.embedding)) {
+          if (vectorIsCompatible(node)) compatibleVectorCount += 1;
+          else incompatibleVectorCount += 1;
+        }
         const semanticMatches = includeSemantic && tagMatches
+          && vectorIsCompatible(node)
           && Array.isArray(node.embedding)
           && node.embedding.length === queryEmbedding?.length
           && Number.isFinite(similarity = cosineSimilarity(queryEmbedding, node.embedding))
@@ -1589,7 +1634,9 @@ function createMemorySearchService({
     let overlayScoringMs = 0;
     const contextFast = request.mode === 'context' && request.exhaustive !== true;
     const embeddingOutage = fallback?.reason === 'embedding_unavailable'
-      || fallback?.reason === 'embedding_invalid';
+      || fallback?.reason === 'embedding_invalid'
+      || fallback?.reason === 'embedding_id_mismatch'
+      || !annEmbeddingCompatible;
     const allowLogicalScan = !contextFast || embeddingOutage;
     if (contextFast && embeddingOutage) {
       logicalScanVisitBudget = parseBoundedInteger(request.contextOutageScanVisitBudget, {
@@ -1606,7 +1653,7 @@ function createMemorySearchService({
       });
       logicalScanDeadlineAt = performance.now() + deadlineMs;
     }
-    const useAnn = queryEmbedding && annRevisionEligible && request.exhaustive !== true
+    const useAnn = queryEmbedding && annEmbeddingCompatible && annRevisionEligible && request.exhaustive !== true
       && (annCovered || contextFast);
     if (contextFast && !annCovered && !fallback) {
       fallback = {
@@ -1651,6 +1698,7 @@ function createMemorySearchService({
           throwIfAborted(signal);
           const node = hit.node || hit;
           if (!node) continue;
+          if (!vectorIsCompatible(node)) continue;
           if (overlay?.hasChangedNode(node.id)) continue;
           if (tag && node.tag !== tag) continue;
           const similarity = Number(hit.similarity);
@@ -1685,7 +1733,7 @@ function createMemorySearchService({
           for (const node of overlay.nodeUpserts()) {
             throwIfAborted(signal);
             if (tag && node.tag !== tag) continue;
-            if (Array.isArray(node.embedding) && node.embedding.length === queryEmbedding.length) {
+            if (vectorIsCompatible(node) && Array.isArray(node.embedding) && node.embedding.length === queryEmbedding.length) {
               const similarity = cosineSimilarity(queryEmbedding, node.embedding);
               if (similarity >= similarityThreshold) {
                 offerAuthorityResolved(semantic, {
@@ -1741,7 +1789,13 @@ function createMemorySearchService({
           completeness: contextFast ? 'incomplete' : 'complete',
         };
       }
-    } else if (request.exhaustive === true) {
+    } else if (queryEmbedding && !annEmbeddingCompatible && annAvailable) {
+      fallback = {
+        route: contextFast ? 'context-fast' : 'logical-source-scan',
+        reason: 'ann_embedding_id_unknown',
+        completeness: contextFast ? 'incomplete' : 'complete',
+      };
+    } else if (request.exhaustive === true && fallback?.reason !== 'embedding_id_mismatch') {
       fallback = {
         route: 'logical-source-scan',
         reason: 'exhaustive_requested',
@@ -1759,9 +1813,16 @@ function createMemorySearchService({
         || ['embedding_dimension_mismatch', 'ann_descriptor_unsupported',
           'ann_authority_context_unavailable',
           'ann_authority_projection_schema_mismatch',
+          'ann_embedding_id_unknown',
         ].includes(fallback?.reason) || annLabelCoverageIncomplete)) {
       semanticRoute = 'logical-source-scan';
       await runLogicalSourceScan({ includeSemantic: true });
+      if (incompatibleVectorCount > 0 && compatibleVectorCount === 0) {
+        fallback = {
+          route: 'logical-keyword-scan', reason: 'embedding_id_mismatch',
+          completeness: logicalScanExhausted ? 'incomplete' : 'complete',
+        };
+      }
     }
 
     const semanticCandidates = semantic.sorted().slice(0, limit);
