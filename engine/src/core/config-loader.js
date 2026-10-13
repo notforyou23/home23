@@ -345,6 +345,14 @@ class ConfigLoader {
     this.config.architecture = {
       ...baseArchitecture,
       ...architectureOverrides,
+      memory: {
+        ...(baseArchitecture.memory || {}),
+        ...(architectureOverrides.memory || {}),
+        embedding: {
+          ...(baseArchitecture.memory?.embedding || {}),
+          ...(architectureOverrides.memory?.embedding || {}),
+        },
+      },
     };
 
     const prior = this.config._instanceArchitectureOverridesApplied || [];
@@ -358,6 +366,17 @@ class ConfigLoader {
     try {
       const fileContents = fs.readFileSync(this.configPath, 'utf8');
       this.config = yaml.load(fileContents);
+
+      // Memory-graph configuration is independent of Seed encoding and of
+      // the legacy home.embeddings catalog used to generate process env.
+      const homeRoot = process.env.HOME23_ROOT || path.resolve(path.dirname(this.configPath), '..');
+      const homePath = path.join(homeRoot, 'config', 'home.yaml');
+      if (fs.existsSync(homePath)) {
+        const home = yaml.load(fs.readFileSync(homePath, 'utf8')) || {};
+        if (home.architecture?.memory?.embedding) {
+          this.applyInstanceArchitectureOverrides({ architecture: { memory: { embedding: home.architecture.memory.embedding } } });
+        }
+      }
 
       // Overlay per-agent engine model overrides from instances/<name>/config.yaml
       // (Home23 multi-agent layering) before validation so downstream consumers

@@ -41,6 +41,8 @@ Commands:
                           Prepare the signed internal brain-operation boundary
   brain-operations list --state nonterminal --all-requesters
                           Read-only preflight of durable active operations
+  brain re-embed <source> [--dry-run|--run|--swap] [--output <path>]
+                          Estimate, prepare a new vector copy, or activate it
   update                  Update to latest release
   update --check          Check for updates
   agent create <name>     Create a new agent instance
@@ -81,6 +83,9 @@ Commands:
   } else if (command === 'trust') {
     const { handleTrustCommand } = await import('./lib/trust-commands.js');
     await handleTrustCommand(args.slice(1), HOME23_ROOT);
+  } else if (command === 'brain' && subcommand === 're-embed') {
+    const { runBrainReembedCommand } = await import('./lib/brain-reembed.js');
+    await runBrainReembedCommand(HOME23_ROOT, args.slice(2));
   } else if (command === 'brain-operations') {
     const { runBrainOperationsCommand } = await import('./lib/brain-operations-command.js');
     const receipt = await runBrainOperationsCommand(HOME23_ROOT, args.slice(1));
