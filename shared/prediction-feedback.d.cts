@@ -8,6 +8,8 @@ export interface FeedbackClaim {
   revisesPredictionIds?: string[];
   revisionReason?: string;
   revisionEvidence?: RevisionEvidence;
+  claimKind?: 'owner.said' | 'owner.wants' | 'owner.decided';
+  ownerEvidence?: FeedbackRef[];
 }
 export interface FeedbackRef {
   refId?: string;
@@ -16,6 +18,8 @@ export interface FeedbackRef {
   flag?: string;
   observedAt?: string;
   head?: string;
+  messageId?: string;
+  principal?: 'owner';
   executionOutcome?: {
     schema: 'home23.execution-outcome.v1';
     executionKind: 'action' | 'work';

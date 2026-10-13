@@ -531,6 +531,16 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      env: {`);
       lines.push(`        SHIPPER_STREAM_PATH: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'house-stream.jsonl'))},`);
       lines.push(`        ...seedEmbeddingEnv,`);
+      for (const [key, field, minimum] of [
+        ['HOUSE_MAX_PER_HOUR', 'houseSenseMaxPerHour', 0],
+        ['HOUSE_ENTITY_COOLDOWN_MS', 'houseSenseEntityCooldownMs', 0],
+        ['HOUSE_POLL_MS', 'houseSensePollMs', 1],
+      ]) {
+        if (sub[field] === undefined) continue;
+        const value = Number(sub[field]);
+        if (!Number.isSafeInteger(value) || value < minimum) throw new Error(`${field} must be an integer >= ${minimum}`);
+        lines.push(`        ${key}: ${JSON.stringify(String(value))},`);
+      }
       lines.push(`      },`);
       lines.push(`    },`);
     }

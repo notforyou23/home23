@@ -21,6 +21,7 @@ import { readSeedCheckpoint, readSeedLedgerTail, type LedgerLine } from './seed-
 import { projectFeedbackState } from '../../shared/seed-feedback-view.cjs';
 import { getClaimFeedback } from '../../shared/prediction-feedback.cjs';
 import { thoughtsFromReceipt } from '../../shared/lived-thoughts.cjs';
+import { isOwnerClaim, ownerClaimMessageIds, latestLivedEventTime, livedEventTime } from './owner-claims.js';
 
 const DEFAULT_BUDGET = 3000;
 /** Chain-seq window treated as "recent" (~2 days of 5-min heartbeats). */
@@ -41,8 +42,7 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
   const headSeq = Math.max(checkpoint.ledgerSeq, ...tail.map((l) => l.seq));
   const windowStart = headSeq - WINDOW_SEQS;
   const window = tail.filter((l) => l.seq >= windowStart);
-  const first = window[0];
-  const windowOpensAt = typeof first?.payload?.['asOf'] === 'string' ? first.payload['asOf'] : first?.issuedAt;
+  const windowOpensAt = window.map(livedEventTime).find(time => time !== undefined);
 
   // ── Contact: his actual conversations, words attached (ref heads) ──
   const refs = checkpoint.cells
@@ -82,6 +82,18 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
   }
   const recentThoughts = thoughts.slice(-THOUGHT_LINES);
 
+  // Owner claims keep the message witnesses captured at typed admission, even
+  // after ordinary contact refs rotate. Name their interpretation honestly.
+  const latestEventAt = latestLivedEventTime(window);
+  const ownerClaims = checkpoint.cells.flatMap(cell => (cell.estimates ?? [])
+    .filter(estimate => isOwnerClaim(estimate) && !getClaimFeedback(cell, estimate).failedHypothesis
+      && (!estimate.expiresAt || !latestEventAt || estimate.expiresAt > latestEventAt))
+    .map(estimate => ({ cell: cell.id, estimate, messageIds: ownerClaimMessageIds(estimate) })))
+    .filter(item => item.messageIds.length > 0)
+    .sort((a, b) => String(a.estimate.createdAt).localeCompare(String(b.estimate.createdAt)))
+    .slice(-THOUGHT_LINES)
+    .map(({ cell, estimate, messageIds }) => `- [${cell}] ${estimate.claimKind}: ${estimate.claim} — reported owner claim, still revisable; messages: ${messageIds.join(', ')}`);
+
   // ── Reality's answers: predictions judged within the window's timeframe ──
   const answered: string[] = [];
   for (const cell of checkpoint.cells) {
@@ -115,14 +127,15 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
     ? [...byRule.entries()].map(([r, n]) => `${r} ×${n}`).join(', ')
     : null;
 
-  const itemCount = contact.length + teachings.length + recentThoughts.length + answered.length + body.length;
-  if (itemCount < MIN_ITEMS) return null;
+  const itemCount = contact.length + teachings.length + recentThoughts.length + ownerClaims.length + answered.length + body.length;
+  if (itemCount < MIN_ITEMS && ownerClaims.length === 0) return null;
 
   const sections: string[][] = [];
   sections.push([`RECENT — lived record, composed from the Seed's chain (seq ${Math.max(windowStart, 1)}–${headSeq}) at read time. Selected recent records, not exhaustive history; chain integrity alone does not establish freshness.`]);
   if (!checkpoint.feedbackView.complete) sections.push(["Feedback coverage is incomplete; active estimates and expectations are omitted."]);
   sections.push([`Contact retained from checkpoint seq ${snapshot.ledgerSeq}; later contact may exist.`]);
   if (contact.length > 0) sections.push(['Contact:', ...contact]);
+  if (ownerClaims.length > 0) sections.push(['Owner claims:', ...ownerClaims]);
   if (teachings.length > 0) sections.push(['Teachings taken:', ...teachings]);
   if (recentThoughts.length > 0) sections.push(['Thoughts he formed:', ...recentThoughts]);
   if (answered.length > 0) sections.push(["Reality's answers:", ...answered]);

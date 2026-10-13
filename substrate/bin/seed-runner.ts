@@ -20,6 +20,7 @@
  *   SEED_POLL_MS        — poll interval (default 2000)
  *   SEED_RELATIONSHIP_SOURCE — relationship-ledger events JSONL (optional)
  *   SEED_WORKER_SOURCE  — worker-runs JSONL (optional)
+ *   SEED_CONVERSATION_SOURCE — this resident's shipped conversation JSONL
  *   SEED_EXTRA_BACKFILL_BYTES — backfill for extra sources (default 8192)
  *   SEED_ANATOMY        — JSON array of {id, role} for a BIRTH (ignored on
  *                         restore; anatomy is identity, recorded in genesis)

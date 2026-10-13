@@ -229,6 +229,20 @@ test('no resident seeds declared, none emitted', (t) => {
   assert.equal(loadApps(root).some((a) => a.name === 'home23-clay-seed'), false);
 });
 
+test('a declared Seed keeps its configured event ledger without deriving agent conversation feeds', (t) => {
+  const root = makeInstall({ substrate: { enabled: false }, home: { substrate: { seeds: [{
+    name: 'declared', stateDir: 'instances/declared/seed-01',
+    env: { SEED_SOURCE: 'instances/jerry/brain/event-ledger.jsonl' },
+  }] } } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = loadApps(root);
+  const seed = apps.find(app => app.name === 'home23-declared-seed');
+  assert.equal(seed.env.SEED_SOURCE, join(root, 'instances/jerry/brain/event-ledger.jsonl'));
+  assert.equal(seed.env.SEED_CONVERSATION_SOURCE, undefined);
+  assert.equal(seed.env.SEED_OWNER_CONVERSATION_SOURCES, undefined);
+  assert.equal(apps.find(app => app.name === 'home23-jerry-shipper'), undefined);
+});
+
 test('no shippers declared, none emitted', (t) => {
   const root = makeInstall();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -281,6 +295,16 @@ test('house-sense stays off unless asked for', (t) => {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   assert.equal(loadApps(root).find((a) => a.name === 'home23-jerry-house-sense'), undefined,
     'a seed-running agent does not automatically sense the house');
+});
+
+test('house sensing rate and cooldown can be configured without editing generated process definitions', t => {
+  const root = makeInstall({ substrate: { enabled: true, houseSense: true,
+    houseSenseMaxPerHour: 0, houseSenseEntityCooldownMs: 600000, houseSensePollMs: 30000 } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sense = loadApps(root).find(app => app.name === 'home23-jerry-house-sense');
+  assert.equal(sense.env.HOUSE_MAX_PER_HOUR, '0', 'an explicit zero cap is preserved');
+  assert.equal(sense.env.HOUSE_ENTITY_COOLDOWN_MS, '600000');
+  assert.equal(sense.env.HOUSE_POLL_MS, '30000');
 });
 
 test('a declared broker carries a remote resident, with the address only in config', (t) => {

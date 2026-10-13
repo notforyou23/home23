@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
@@ -86,4 +86,32 @@ test('missing state returns null; advisory target preserves all selected section
   assert.equal(tiny, composeLivedRecent(dir), 'target must not discard teachings or later sections');
   assert.ok(tiny !== null);
   assert.ok(tiny.includes('composed from the Seed'), 'header survives budgeting');
+});
+
+test('RECENT names typed owner claims separately and preserves their message evidence', t => {
+  const dir = makeSeedDir(t);
+  writeFixture(dir);
+  const file = join(dir, 'checkpoints/ckpt_aaaa0001_test.json');
+  const checkpoint = JSON.parse(readFileSync(file, 'utf8'));
+  checkpoint.cells.push({
+    id: 'contact.owner.voice', generation: 1, workspacePressure: .5, energy: { current: 1 }, uncertainty: .2,
+    predictions: [], intentions: [], realityRefs: [], estimates: [{
+      claim: 'The owner wants plain technical explanations', claimKind: 'owner.wants', confidence: .85,
+      createdAt: '2026-08-08T18:00:00.000Z', expiresAt: '2026-08-09T00:00:00.000Z', evidenceRefs: ['owner-message'], ownerEvidence: [{
+        refId: 'conv_owner-message', messageId: 'owner-message', principal: 'owner', sourceRef: 'conversation.jtr:session',
+        sourceAuthority: 'seed.adapter', flag: 'COLLECTED', observedAt: '2026-08-08T17:00:00.000Z',
+        head: 'Use plain technical explanations.',
+      }],
+    }],
+  });
+  writeFileSync(file, JSON.stringify(checkpoint));
+  const ledgerPath = join(dir, 'seed-ledger.jsonl');
+  writeFileSync(ledgerPath, readFileSync(ledgerPath, 'utf8') + JSON.stringify({
+    seq: 1501, category: 'checkpoint', issuedAt: '2026-10-13T00:00:00.000Z', payload: {},
+  }) + '\n');
+  const recent = composeLivedRecent(dir);
+  assert.ok(recent?.includes('Owner claims:'));
+  assert.ok(recent?.includes('owner.wants: The owner wants plain technical explanations'));
+  assert.ok(recent?.includes('owner-message'));
+  assert.ok(recent?.includes('still revisable'));
 });

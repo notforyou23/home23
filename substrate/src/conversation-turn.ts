@@ -32,10 +32,11 @@ export interface ShippableTurn {
   actor?: { principalId: string; kind: 'owner' | 'bot'; displayName: string };
 }
 
-/** Harness task files contain private runtime instructions. Current app
- * contact comes from Core's canonical projection, never from those files. */
+/** Harness task files contain private runtime instructions. Telegram group
+ * files (negative chat ids) lack principal attribution, so their user lines
+ * cannot be treated as the owner's voice. Core contact retains attribution. */
 export function isLegacyConversationSession(name: string): boolean {
-  return /^[a-z0-9-]+__(ios_|dashboard-|mac_|tv_|-?\d+\.jsonl$)/.test(name) && name.endsWith('.jsonl');
+  return /^[a-z0-9-]+__(ios_|dashboard-|mac_|tv_|\d+\.jsonl$)/.test(name) && name.endsWith('.jsonl');
 }
 
 export function canonicalContactTurn(rec: Record<string, unknown>): ShippableTurn | null {

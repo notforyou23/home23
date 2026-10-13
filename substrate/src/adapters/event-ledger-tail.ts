@@ -464,8 +464,9 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     const voice = canonical ? parsed['voice'] : role === 'user' ? 'jtr' : 'self';
     if (voice !== 'jtr' && voice !== 'self' && voice !== 'peer') return null;
     if (canonical && (typeof parsed['contactId'] !== 'string' || typeof parsed['sourceRef'] !== 'string')) return null;
+    const eventId = `conv_${createHash('sha256').update(canonical ? String(parsed['contactId']) : line, 'utf-8').digest('hex').slice(0, 16)}`;
     return {
-      eventId: `conv_${createHash('sha256').update(canonical ? String(parsed['contactId']) : line, 'utf-8').digest('hex').slice(0, 16)}`,
+      eventId,
       category: 'observation',
       sourceAuthority: this.authority,
       sourceRef: `conversation.${voice}:${canonical ? String(parsed['sourceRef']) : session}`,
@@ -474,6 +475,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
         role,
         session,
         head: text.trim(),
+        messageId: canonical && String(parsed['contactId']).startsWith('message:') ? String(parsed['contactId']).slice('message:'.length) : eventId,
         ...(canonical ? { contactId: parsed['contactId'], sourceRef: parsed['sourceRef'], actor: parsed['actor'] } : {}),
       },
       producedAt: ts,

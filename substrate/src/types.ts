@@ -56,6 +56,10 @@ export interface RealityRef {
    * the life they are reasoning about instead of inferring rhythm from
    * reference metadata. Optional: telemetry refs stay wordless. */
   head?: string;
+  /** Original conversation message identity and principal, copied at intake.
+   * Legacy direct-message turns use their deterministic source event identity. */
+  messageId?: string;
+  principal?: 'owner';
   /** Typed canonical execution receipt, not narration or proof of task success. */
   executionOutcome?: {
     schema: 'home23.execution-outcome.v1';
@@ -86,6 +90,12 @@ export interface Estimate {
   revisesPredictionIds?: string[];
   revisionReason?: string;
   revisionEvidence?: RevisionEvidence;
+  /** Owner claims are qualified statements of what the owner expressed,
+   * never operational inference silently promoted to owner knowledge. */
+  claimKind?: 'owner.said' | 'owner.wants' | 'owner.decided';
+  /** Collected owner refs captured by the Seed at claim admission, so later
+   * ref-window turnover does not erase the claim's immutable evidence. */
+  ownerEvidence?: RealityRef[];
 }
 
 export interface IntentionTension {
@@ -169,6 +179,10 @@ export interface SituationCell {
   energy: CellEnergy;
   developmentalLineage: DeltaRef[];
   lastTransitionAt: string;
+  /** Granted only by birth anatomy or receipted operator growth. */
+  contactRole?: 'owner';
+  /** Each new owner contact earns one admission; workspace spends it. */
+  ownerContactPending?: boolean;
 }
 
 /** Serialized cell: Float32Array stored as base64 for JSON/checkpoint. */
@@ -186,7 +200,7 @@ export const CONTINUOUS_STATE_DIM = 64;
  * ledger genesis at birth; identity includes anatomy. */
 export interface AnatomyCellSpec {
   id: string;
-  role: 'correction' | 'observation' | 'consequence' | 'interpretation' | 'periphery';
+  role: 'correction' | 'observation' | 'consequence' | 'interpretation' | 'periphery' | 'owner';
 }
 
 /** The default anatomy (the first individual's shape). Births may pass their

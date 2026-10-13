@@ -232,9 +232,10 @@ export interface HomeConfig {
       domains?: string[];
       budget?: number;
     }>;
-    /** Optional override; otherwise an existing workspace sibling Seed is derived. */
+    /** Read-only Seed surfaces. Enabled agents derive stateDir from their
+     * instance when it is absent; explicit mirrors retain their path. */
     substrate?: {
-      stateDir: string;
+      stateDir?: string;
       budget?: number;
     };
   };

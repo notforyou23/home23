@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { appendFileSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { tsImport } from 'tsx/esm/api';
 import { prepareSeedBirth, FRESH_SEED_ANATOMY } from '../../cli/lib/seed-birth.js';
 
@@ -41,6 +42,9 @@ test('fresh creation makes a named, restorable Seed with its own anatomy and no 
   assert.equal(records[0].payload.name, 'river');
   assert.equal(records[0].payload.selfFormation, true);
   assert.deepEqual(records[0].payload.anatomy, FRESH_SEED_ANATOMY);
+  assert.ok(FRESH_SEED_ANATOMY.some(cell => cell.id === 'contact.owner.voice' && cell.role === 'owner'));
+  assert.ok(FRESH_SEED_ANATOMY.some(cell => cell.id === 'work.corrections' && cell.role === 'correction'));
+  assert.ok(!FRESH_SEED_ANATOMY.some(cell => cell.id.startsWith('contact.owner') && cell.role === 'correction'));
   assert.doesNotMatch(JSON.stringify(records), /jtr-jerry|shakedown|frontier\.substrate-os/);
   assert.equal(SeedProcess.restore(stateDir).getState().seedId, receipt.seedId);
   assert.equal(receipt.runtimeStarted, false);
@@ -60,6 +64,35 @@ test('retry preserves the exact lineage and all bytes, including life added afte
   assert.deepEqual(retried.receipt, first.receipt);
   assert.deepEqual(snapshot(first.stateDir), before);
   assert.equal(new SeedLedger(first.stateDir).readAll().filter((record) => record.category === 'genesis').length, 1);
+});
+
+test('a matching legacy prepared birth resumes unchanged and awaits opt-in growth', async t => {
+  const root = fixture(t);
+  const stateDir = join(root, 'instances/river/substrate/seed-01');
+  mkdirSync(stateDir, { recursive: true });
+  const anatomy = [
+    { id: 'contact.owner', role: 'correction' }, { id: 'frontier.becoming', role: 'interpretation' },
+    { id: 'work.projects', role: 'consequence' }, { id: 'world.home', role: 'observation' },
+    { id: 'periphery.open-field', role: 'periphery' },
+  ];
+  const substrate = { enabled: true, name: input.name, anatomy, selfFormation: true, lobe: 'model',
+    lobeProvider: input.provider, lobeModel: input.model, lobeMinIntervalMs: 600000 };
+  const hash = value => createHash('sha256').update(value).digest('hex');
+  const seed = SeedProcess.initialize(stateDir, undefined, { name: input.name, anatomy, selfFormation: true });
+  const checkpointId = seed.checkpoint();
+  const ledger = new SeedLedger(stateDir);
+  writeFileSync(join(stateDir, 'birth-receipt.json'), JSON.stringify({
+    schema: 'home23.seed-birth.v1', name: input.name, seedId: seed.getState().seedId,
+    inputDigest: hash(JSON.stringify({ identity: input, substrate })), genesisHash: ledger.cursorAt(1),
+    checkpointId, checkpointDigest: hash(readFileSync(join(stateDir, 'checkpoints', `${checkpointId}.json`))),
+    stateDir: 'substrate/seed-01', runtimeStarted: false, modelInvocations: 0,
+  }));
+  const before = snapshot(stateDir);
+  const retried = await prepareSeedBirth(root, input);
+  assert.deepEqual(retried.substrate, substrate, 'resumption does not create owner anatomy in an existing life');
+  assert.deepEqual(snapshot(stateDir), before);
+  await assert.rejects(prepareSeedBirth(root, { ...input, ownerName: 'Another owner' }), /does not match/);
+  assert.deepEqual(snapshot(stateDir), before);
 });
 
 test('the real runner consumes a prepared resident life and resumes that same lineage', async (t) => {

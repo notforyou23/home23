@@ -75,7 +75,11 @@ function getClaimFeedback(cell, candidate) {
     && Array.isArray(snapshot.refs) ? snapshot.refs : [];
   const availableRefs = [...new Map([...snapshotRefs, ...(cell?.realityRefs || [])]
     .filter(ref => ref && typeof ref.refId === 'string').map(ref => [ref.refId, ref])).values()];
-  const freshEvidenceRefs = availableRefs.filter(ref => refs.has(ref.refId) && isExternalEvidenceRef(ref) && evidenceTouchesClaim(ref, item)
+  const ownerClaim = ['owner.said', 'owner.wants', 'owner.decided'].includes(item.claimKind);
+  const citesRef = ref => refs.has(ref.refId) || (ownerClaim && ref.principal === 'owner'
+    && typeof ref.sourceRef === 'string' && ref.sourceRef.startsWith('conversation.jtr:')
+    && typeof ref.messageId === 'string' && refs.has(ref.messageId));
+  const freshEvidenceRefs = availableRefs.filter(ref => citesRef(ref) && isExternalEvidenceRef(ref) && evidenceTouchesClaim(ref, item)
     && Date.parse(ref.observedAt) > failedAt
     && (!Number.isFinite(createdAt) || Date.parse(ref.observedAt) <= createdAt)).map(ref => ref.refId);
   const hasSupportedRevision = failedPredictions.length > 0 && freshEvidenceRefs.length > 0

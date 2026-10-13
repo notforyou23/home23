@@ -238,6 +238,12 @@ situationalAwareness:
     reads:
       - NOW.md
       - PLAYBOOK.md
+  # With substrate.enabled on an agent, the harness derives this agent's
+  # instances/<name>/substrate/seed-01 path automatically. Set stateDir only
+  # for an explicit read-only mirror. RECENT@seed and FACTS@seed use it too.
+  # substrate:
+  #   stateDir: /absolute/path/to/read-only-seed-mirror
+  #   budget: 3000
 
 osEngine:
   channels:
@@ -494,6 +500,14 @@ skills:
 # automatically, and substrate.houseSense on the agent adds house sensing.
 # Only things that cannot be derived are declared below.
 substrate:
+  # Existing Seed anatomy needs the separate opt-in growth operation before
+  # owner turns receive a dedicated contact cell; config never rewrites life.
+  # See docs/reference/SEED-OWNER-CONTACT.md for the receipted operator command.
+  # Per-agent sensing stays opt-in: substrate.houseSense: true. Its quiet
+  # defaults are 20 events/hour, a 300000 ms entity cooldown, and 15000 ms poll.
+  # Override with houseSenseMaxPerHour, houseSenseEntityCooldownMs,
+  # houseSensePollMs under that agent's substrate config. Zero events/hour
+  # suppresses house contact without suppressing the agent's conversation feed.
   observatory:
     # The terrarium — a read-only page over every individual's chain.
     # Emitted only when at least one agent runs a seed.

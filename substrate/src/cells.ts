@@ -30,6 +30,7 @@ import type { Reservoir, Readouts } from './metabolism.js';
 import { encodeEvent, metabolicStep, computeReadouts } from './metabolism.js';
 import type { CellPlasticState, DevelopmentalState } from './plasticity.js';
 import { effectiveSalienceWeights, effectiveNoveltyWeights, sourcePrefix, trustFor } from './plasticity.js';
+import { isLegacyConversationSession } from './conversation-turn.js';
 
 // ─── Default dispositions per cell ───────────────────────────────────────────
 
@@ -47,7 +48,7 @@ function defaultDispositions(cellId: string): CellDispositions {
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
-export function makeInitialCell(id: string, now: string): SituationCell {
+export function makeInitialCell(id: string, now: string, role?: AnatomyCellSpec['role']): SituationCell {
   return {
     id,
     generation: 0,
@@ -66,13 +67,14 @@ export function makeInitialCell(id: string, now: string): SituationCell {
     energy: { current: 0.5, peak: 0.5 },
     developmentalLineage: [],
     lastTransitionAt: now,
+    ...(role === 'owner' ? { contactRole: 'owner' as const } : {}),
   };
 }
 
 export function makeInitialCells(now: string, anatomy: readonly AnatomyCellSpec[] = DEFAULT_ANATOMY): Map<string, SituationCell> {
   const cells = new Map<string, SituationCell>();
   for (const spec of anatomy) {
-    const cell = makeInitialCell(spec.id, now);
+    const cell = makeInitialCell(spec.id, now, spec.role);
     // Periphery keeps the strict default dispositions keyed off its id prefix;
     // non-prefix peripheries get them explicitly from their ROLE.
     if (spec.role === 'periphery' && !spec.id.startsWith('periphery.')) {
@@ -112,16 +114,22 @@ export function routeEvent(
   development?: DevelopmentalState,
   routing?: { byCategory: Record<string, string>; peripheryId: string },
 ): string {
-  if (event.targetCellId && cellIds.includes(event.targetCellId)) {
+  const table = routing ?? routingFromAnatomy(DEFAULT_ANATOMY);
+  const ownerId = table.byCategory['owner'];
+  // Owner contact is a principal channel, not a learned telemetry affinity.
+  // Once granted, neither house traffic nor machine corrections may enter it.
+  if (ownerId && isOwnerConversationEvent(event)) return ownerId;
+  if (ownerId && event.category === 'correction') return table.byCategory['correction'] ?? table.peripheryId;
+  if (event.targetCellId && cellIds.includes(event.targetCellId) && event.targetCellId !== ownerId) {
     return event.targetCellId;
   }
-  const table = routing ?? routingFromAnatomy(DEFAULT_ANATOMY);
   const staticTarget = table.byCategory[event.category] ?? table.peripheryId;
   if (development !== undefined) {
     const key = sourcePrefix(event);
     let bestId = staticTarget;
     let bestAffinity = development[staticTarget]?.routingAffinity[key] ?? 0;
     for (const id of [...cellIds].sort()) {
+      if (id === ownerId) continue;
       const affinity = development[id]?.routingAffinity[key] ?? 0;
       if (affinity >= 0.15 && affinity > bestAffinity + 0.05) {
         bestId = id;
@@ -131,6 +139,32 @@ export function routeEvent(
     return bestId;
   }
   return staticTarget;
+}
+
+/** The read-only conversation shipper is the authority for this channel.
+ * A canonical actor must be an owner; legacy direct contact has no actor. */
+export function isOwnerConversationEvent(event: SourceEvent): boolean {
+  if (event.category !== 'observation' || event.sourceAuthority !== 'home23.event-ledger'
+    || !event.sourceRef.startsWith('conversation.jtr:') || event.payload['role'] !== 'user') return false;
+  const actor = event.payload['actor'];
+  if (actor === undefined) {
+    const contactId = event.payload['contactId'];
+    const rawSource = event.payload['sourceRef'];
+    if (typeof contactId === 'string' && typeof rawSource === 'string' && rawSource.startsWith('legacy.conversation:')) {
+      const file = rawSource.slice('legacy.conversation:'.length);
+      return isLegacyConversationSession(file)
+        && contactId.startsWith(`legacy:${file}:`)
+        && /^[a-f0-9]{64}$/.test(contactId.slice(`legacy:${file}:`.length));
+    }
+    // Older stream lines predate the shipper's explicit contact identity.
+    const session = event.payload['session'];
+    return contactId === undefined && typeof session === 'string'
+      && isLegacyConversationSession(`${session}.jsonl`);
+  }
+  return typeof actor === 'object' && actor !== null
+    && (actor as Record<string, unknown>)['kind'] === 'owner'
+    && typeof (actor as Record<string, unknown>)['principalId'] === 'string'
+    && ((actor as Record<string, unknown>)['principalId'] as string).length > 0;
 }
 
 // ─── Continuous state update (Cut 2: reservoir metabolism, event-time) ───────
@@ -201,6 +235,7 @@ export function applyMetabolicTransition(
   // source), the ref carries it too — complete — so a recruited mind reads
   // the life, not just its reference metadata.
   const head = event.payload['head'];
+  const ownerContact = cell.contactRole === 'owner' && isOwnerConversationEvent(event);
   const outcome = event.payload;
   const executionOutcome: RealityRef['executionOutcome'] = event.sourceAuthority === 'home23.event-ledger'
     && outcome['schema'] === 'home23.execution-outcome.v1' && outcome['event_type'] === 'ExecutionOutcomeObserved'
@@ -221,11 +256,16 @@ export function applyMetabolicTransition(
     confidence: event.category === 'correction' ? 1 : 0.8,
     flag: 'COLLECTED',
     ...(typeof head === 'string' && head.length > 0 ? { head } : {}),
+    ...(ownerContact ? {
+      principal: 'owner' as const,
+      messageId: typeof event.payload['messageId'] === 'string' ? event.payload['messageId'] : event.eventId,
+    } : {}),
     ...(executionOutcome ? { executionOutcome } : {}),
   });
   if (cell.realityRefs.length > MAX_CELL_REALITY_REFS) {
     cell.realityRefs.splice(0, cell.realityRefs.length - MAX_CELL_REALITY_REFS);
   }
+  if (ownerContact) cell.ownerContactPending = true;
 
   cell.generation += 1;
   cell.status = cell.energy.current < 0.05 ? 'quiet' : 'living';

@@ -26,6 +26,7 @@ import { SeedProcess as Seed } from './seed.js';
 import { SeedLedger } from './ledger.js';
 import { RESIDENT_RESOURCE_BUDGET } from './resource.js';
 import { EventLedgerTailAdapter } from './adapters/event-ledger-tail.js';
+import { isOwnerConversationEvent } from './cells.js';
 import type { TailedSourceEvent, TailSourceType } from './adapters/event-ledger-tail.js';
 import type { LobeAdapter } from './lobe.js';
 import type { WorkspaceOutcome, AnatomyCellSpec } from './types.js';
@@ -90,6 +91,9 @@ export interface TickReport {
 export class SeedRunner {
   private seed: SeedProcess | null = null;
   private adapters: EventLedgerTailAdapter[] = [];
+  /** Accepted contact identities come from transition receipts, never source
+   * cursors. A mirror arriving later (or a lost cursor) cannot relive contact. */
+  private acceptedOwnerContactIds = new Set<string>();
   private transitionsSinceWorkspace = 0;
   private transitionsSinceCheckpoint = 0;
   private totalTransitions = 0;
@@ -187,6 +191,12 @@ export class SeedRunner {
           }),
         ),
       ];
+      this.acceptedOwnerContactIds = new Set(new SeedLedger(this.opts.stateDir).readAll()
+        .filter(record => record.category === 'transition' && record.sourceAuthority === 'home23.event-ledger'
+          && record.payload['originalCategory'] === 'observation'
+          && record.sourceRef.startsWith('conversation.jtr:coordination.message:')
+          && typeof record.payload['eventId'] === 'string' && /^conv_[a-f0-9]{16}$/.test(record.payload['eventId']))
+        .map(record => record.payload['eventId'] as string));
       for (const adapter of this.adapters) {
         this.log(`tailing [${adapter.id}] ${'sourcePath' in this.opts ? '' : ''}from offset ${adapter.currentOffset}`);
       }
@@ -203,6 +213,7 @@ export class SeedRunner {
       // stop receipt. Release only the lock acquired for this attempt.
       this.seed = null;
       this.adapters = [];
+      this.acceptedOwnerContactIds.clear();
       if (this.lockPath !== null) {
         try { unlinkSync(this.lockPath); } catch { /* already gone */ }
         this.lockPath = null;
@@ -300,13 +311,27 @@ export class SeedRunner {
         || a.adapter.id.localeCompare(b.adapter.id)
         || (a.event.endOffset - b.event.endOffset));
     report.pulled = merged.length;
-    const processed = new Set<string>();
+    // Occurrences belong to their adapter and file position. The same event
+    // id on another adapter is not acknowledgment of its unprocessed line.
+    const processed = new Map(this.adapters.map(adapter => [adapter, new Set<number>()]));
+    const dedupeOwnerContact = this.seed.hasOwnerVoice();
 
-    for (const { event } of merged) {
+    for (const { adapter, event } of merged) {
       if (this.stopRequested) break;
       if (this.opts.maxEvents !== undefined && this.totalTransitions >= this.opts.maxEvents) break;
+      const canonicalOwner = dedupeOwnerContact && isOwnerConversationEvent(event)
+        && typeof event.payload['contactId'] === 'string' && event.payload['contactId'].startsWith('message:')
+        && event.payload['contactId'].length > 'message:'.length;
+      if (canonicalOwner && this.acceptedOwnerContactIds.has(event.eventId)) {
+        processed.get(adapter)!.add(event.endOffset);
+        this.log(`contact duplicate skipped [${adapter.id}] ${event.eventId}`);
+        continue;
+      }
       const result = this.seed.transition(event);
-      processed.add(event.eventId);
+      // A failed receipt throws before either the contact identity or source
+      // occurrence is accepted. Retrying therefore still delivers the turn.
+      if (canonicalOwner) this.acceptedOwnerContactIds.add(event.eventId);
+      processed.get(adapter)!.add(event.endOffset);
       this.totalTransitions++;
       this.transitionsSinceWorkspace++;
       this.transitionsSinceCheckpoint++;
@@ -403,7 +428,7 @@ export class SeedRunner {
     for (const { adapter, events } of perAdapter) {
       let lastContiguous: number | null = null;
       for (const event of events) {
-        if (!processed.has(event.eventId)) break;
+        if (!processed.get(adapter)!.has(event.endOffset)) break;
         lastContiguous = event.endOffset;
       }
       if (lastContiguous !== null) adapter.commit(lastContiguous);
@@ -540,6 +565,7 @@ export class SeedRunner {
     } finally {
       this.seed = null;
       this.adapters = [];
+      this.acceptedOwnerContactIds.clear();
       if (this.lockPath !== null) {
         try { unlinkSync(this.lockPath); } catch { /* already gone */ }
         this.lockPath = null;
