@@ -2,6 +2,7 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, opendirSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { containsOwnerSecret, normalizeOwnerQuote, ownerSessions, type OwnerContactTurn } from './owner-distill.js';
+import { classifyOwnerConversation } from '../../shared/owner-conversation-policy.cjs';
 import type { OwnerConversationEvidence, OwnerConversationQuery } from './owner-conversation-recall.js';
 
 export const OWNER_TRANSCRIPT_LIMITS = Object.freeze({ bytesPerFile: 1_048_576, totalBytes: 8_388_608,
@@ -15,10 +16,11 @@ export interface OwnerTranscriptOptions {
 }
 interface RawBlock {
   sourceRef: string; channel: string; ts: string;
-  user?: OwnerContactTurn; assistants: OwnerContactTurn[];
+  user?: OwnerContactTurn; assistants: OwnerContactTurn[]; policyExcluded?: boolean;
 }
-interface AttributedContact extends OwnerContactTurn { direct: boolean }
-interface ParsedFile { contacts: AttributedContact[]; blocks: RawBlock[]; kinds: Record<string, string>; complete: boolean; cost: number }
+interface AttributedContact extends OwnerContactTurn { direct: boolean; policyExcluded?: boolean }
+interface ParsedFile { contacts: AttributedContact[]; blocks: RawBlock[]; kinds: Record<string, string>;
+  excludedRefs: string[]; complete: boolean; cost: number }
 const cache = new Map<string, { stamp: string; parsed: ParsedFile }>();
 let cacheChars = 0;
 const CACHE_CHARS = 4_194_304;
@@ -49,13 +51,19 @@ function canonical(record: Record<string, any>, allowUnkinded: boolean): Attribu
   const owner = record.role === 'user' && record.voice === 'jtr' && record.actor.kind === 'owner';
   if (!owner && !(record.role === 'assistant' && record.voice === 'self' && record.actor.kind === 'bot'
     && !text.startsWith('[scheduler]'))) return undefined;
+  // A valid actor identifies who spoke; it does not make a verification turn
+  // another owner observation. Preserve ordinary assistant context, while
+  // whole verification chats and flagged turns never resolve an owner pointer.
+  const policyExcluded = !classifyOwnerConversation({ ...record, sessionId: record.session,
+    text: owner ? text : '' }).ownerEvidence;
   return { role: record.role, text, ts: record.ts, session: record.session, messageRef: ref, owner, canonical: true,
-    direct: record.channelKind === 'direct' };
+    direct: record.channelKind === 'direct', ...(policyExcluded ? { policyExcluded: true } : {}) };
 }
 
 function parseFile(source: string, limit: number, clipped: boolean, allowUnkinded: boolean): ParsedFile {
   const contacts: AttributedContact[] = [];
   const blocks: RawBlock[] = [];
+  const excludedRefs: string[] = [];
   const kinds: Record<string, string> = {};
   let block: RawBlock | undefined;
   let count = 0;
@@ -75,7 +83,11 @@ function parseFile(source: string, limit: number, clipped: boolean, allowUnkinde
       kinds[record.session] = kinds[record.session] && kinds[record.session] !== record.channelKind ? 'conflict' : record.channelKind;
     }
     const contact = canonical(record, allowUnkinded);
-    if (contact) { contacts.push(contact); continue; }
+    if (contact) {
+      if (contact.policyExcluded) excludedRefs.push(contact.messageRef);
+      contacts.push(contact);
+      continue;
+    }
     if (record.type === 'turn' && record.status === 'pending') {
       block = undefined;
       const origin = record.coordination_origin;
@@ -83,8 +95,13 @@ function parseFile(source: string, limit: number, clipped: boolean, allowUnkinde
         || typeof origin.originMessageId !== 'string' || !/^msg_[\w-]+$/.test(origin.originMessageId)
         || typeof record.started_at !== 'string' || !Number.isFinite(Date.parse(record.started_at))
         || record.context_purpose !== 'conversation' || record.delegation_origin || record.scheduled || record.runtime || record.worker) continue;
+      const policyExcluded = !classifyOwnerConversation({ ...record, chatId: record.chatId ?? record.chat_id,
+        sessionId: `coordination:${origin.channelId}` }).ownerEvidence;
+      if (policyExcluded) {
+        excludedRefs.push(`coordination.message:${origin.originMessageId}`);
+      }
       block = { sourceRef: `coordination.message:${origin.originMessageId}`, channel: `coordination:${origin.channelId}`,
-        ts: record.started_at, assistants: [] };
+        ts: record.started_at, assistants: [], ...(policyExcluded ? { policyExcluded: true } : {}) };
       blocks.push(block);
       continue;
     }
@@ -97,6 +114,13 @@ function parseFile(source: string, limit: number, clipped: boolean, allowUnkinde
     const text = plainText(record.content);
     const ts = typeof record.ts === 'string' && Number.isFinite(Date.parse(record.ts)) ? record.ts : block.ts;
     if (!text || (record.role !== 'user' && record.role !== 'assistant') || text.startsWith('[scheduler]')) continue;
+    const policyExcluded = !classifyOwnerConversation({ ...record, sessionId: block.channel,
+      text: record.role === 'user' ? text : '' }).ownerEvidence;
+    if (record.role === 'user' && policyExcluded) {
+      excludedRefs.push(block.sourceRef);
+      block.policyExcluded = true;
+    }
+    if (record.role === 'assistant' && (policyExcluded || block.policyExcluded)) continue;
     const turn: OwnerContactTurn = { role: record.role, text, ts, session: block.channel,
       messageRef: record.role === 'user' ? block.sourceRef : `raw-owner-context:${block.sourceRef}:assistant:${block.assistants.length}`,
       owner: record.role === 'user', canonical: true };
@@ -105,7 +129,8 @@ function parseFile(source: string, limit: number, clipped: boolean, allowUnkinde
       if (!block.user) block.user = turn;
     } else if (block.assistants.length < 8) block.assistants.push(turn);
   }
-  return { contacts, blocks, kinds, complete, cost: JSON.stringify({ contacts, blocks, kinds }).length };
+  return { contacts, blocks, kinds, excludedRefs, complete,
+    cost: JSON.stringify({ contacts, blocks, kinds, excludedRefs }).length };
 }
 
 function limits(options: OwnerTranscriptOptions): typeof OWNER_TRANSCRIPT_LIMITS {
@@ -170,12 +195,29 @@ function clippedText(text: string, terms: string[], max: number): string {
   return `${start ? '…' : ''}${text.slice(start, start + max - 2)}…`;
 }
 
-interface Snapshot { contacts: AttributedContact[]; blocks: RawBlock[]; kinds: Record<string, string>; complete: boolean; available: boolean }
+interface Snapshot { contacts: AttributedContact[]; blocks: RawBlock[]; kinds: Record<string, string>;
+  excludedContacts: AttributedContact[]; excludedBlocks: RawBlock[]; complete: boolean; available: boolean }
+
+function snapshotResult(contacts: AttributedContact[], blocks: RawBlock[], kinds: Record<string, string>,
+  excludedRefs: Set<string>, complete: boolean, available: boolean): Snapshot {
+  const excludedOwnerContext = new Map<string, boolean>();
+  // Filter after merging files so a resident reply cannot escape its excluded
+  // owner turn merely because the copies are stored in separate projections.
+  const admitted = [...contacts].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).filter(turn => {
+    const excluded = excludedRefs.has(turn.messageRef);
+    if (turn.owner) excludedOwnerContext.set(turn.session, excluded);
+    return !excluded && !excludedOwnerContext.get(turn.session);
+  });
+  return { contacts: admitted, blocks: blocks.filter(block => !excludedRefs.has(block.sourceRef)), kinds,
+    excludedContacts: contacts.filter(turn => turn.owner && excludedRefs.has(turn.messageRef)),
+    excludedBlocks: blocks.filter(block => excludedRefs.has(block.sourceRef)), complete, available };
+}
 function loadSnapshot(options: OwnerTranscriptOptions): Snapshot {
   const caps = limits(options);
   const budget = { bytes: caps.totalBytes };
   const contacts: AttributedContact[] = [];
   const blocks: RawBlock[] = [];
+  const excludedRefs = new Set<string>();
   const kinds: Record<string, string> = {};
   const mergeKinds = (incoming: Record<string, string>) => {
     for (const [channel, kind] of Object.entries(incoming)) {
@@ -186,12 +228,16 @@ function loadSnapshot(options: OwnerTranscriptOptions): Snapshot {
   let available = false;
   const stream = readBounded(join(options.instanceDir, 'substrate', 'conversation-stream.jsonl'), budget,
     caps.bytesPerFile, caps.recordsPerFile, true);
-  if (stream) { available = true; contacts.push(...stream.contacts); mergeKinds(stream.kinds); complete &&= stream.complete; }
+  if (stream) {
+    available = true; contacts.push(...stream.contacts); mergeKinds(stream.kinds);
+    for (const ref of stream.excludedRefs) excludedRefs.add(ref);
+    complete &&= stream.complete;
+  }
   let directory: ReturnType<typeof opendirSync> | undefined;
   const files: Array<{ path: string; mtime: number }> = [];
   try {
     const dir = join(options.instanceDir, 'conversations');
-    if (lstatSync(dir).isSymbolicLink()) return { contacts, blocks, kinds, complete: false, available };
+    if (lstatSync(dir).isSymbolicLink()) return snapshotResult(contacts, blocks, kinds, excludedRefs, false, available);
     directory = opendirSync(dir);
     let entries = 0;
     let entry;
@@ -209,9 +255,13 @@ function loadSnapshot(options: OwnerTranscriptOptions): Snapshot {
     const parsed = readBounded(file.path, budget, caps.bytesPerFile, caps.recordsPerFile);
     if (!parsed) { complete = false; continue; }
     available = true;
-    contacts.push(...parsed.contacts); blocks.push(...parsed.blocks); mergeKinds(parsed.kinds); complete &&= parsed.complete;
+    contacts.push(...parsed.contacts); blocks.push(...parsed.blocks); mergeKinds(parsed.kinds);
+    for (const ref of parsed.excludedRefs) excludedRefs.add(ref);
+    complete &&= parsed.complete;
   }
-  return { contacts, blocks, kinds, complete, available };
+  // Canonical contact and raw history can hold different metadata for the same
+  // message. An excluded source cannot regain owner evidence from a thin copy.
+  return snapshotResult(contacts, blocks, kinds, excludedRefs, complete, available);
 }
 
 function enrichFromSnapshot(record: OwnerConversationEvidence, query: OwnerConversationQuery,
@@ -221,6 +271,16 @@ function enrichFromSnapshot(record: OwnerConversationEvidence, query: OwnerConve
   let complete = snapshot.complete;
   const refs = new Set(record.sourceRefs);
   const quote = normalizeOwnerQuote(record.quote);
+  const occurredAt = Date.parse(record.occurredAt);
+  const currentSource = (turn: AttributedContact) => turn.owner
+    && refs.has(turn.messageRef) && quote.length >= 3 && normalizeOwnerQuote(turn.text).includes(quote)
+    && Date.parse(turn.ts) === occurredAt && occurredAt <= query.nowMs;
+  const currentAdmitted = contacts.some(currentSource);
+  const verification = (): OwnerConversationEvidence => ({ ...record, conversationKind: 'verification',
+    transcript: undefined, transcriptResolution: 'unavailable' });
+  // A hashed session id cannot hide a flag on the exact cited owner source.
+  // Historical excluded refs alone do not classify a newer genuine occurrence.
+  if (!currentAdmitted && snapshot.excludedContacts.some(currentSource)) return verification();
   // The shipper preserves actor/message provenance but omits channelKind. A
   // quote-gated ledger citation certifies only its matching owner's channel;
   // unknown and explicitly grouped channels never qualify merely by filename.
@@ -235,10 +295,9 @@ function enrichFromSnapshot(record: OwnerConversationEvidence, query: OwnerConve
   const chosen = selectedSessions.flatMap(session => session.turns);
   const ownerRefs = new Map(chosen.filter(turn => turn.owner).map(turn => [turn.messageRef, turn]));
   const companionOwnerTimes = new Map<string, number>();
-  const occurredAt = Date.parse(record.occurredAt);
   const compatibleSources = new Map<string, number>();
   let rawQuoteAnchors = false;
-  for (const block of blocks) {
+  for (const block of [...blocks, ...snapshot.excludedBlocks]) {
     const pendingAt = Date.parse(block.ts);
     if (!block.user || ['group', 'conflict'].includes(snapshot.kinds[block.channel] ?? '')
       || !refs.has(block.sourceRef) || quote.length < 3 || !normalizeOwnerQuote(block.user.text).includes(quote)) continue;
@@ -251,6 +310,8 @@ function enrichFromSnapshot(record: OwnerConversationEvidence, query: OwnerConve
   }
   const closestSources = [...compatibleSources].sort((a, b) => a[1] - b[1]);
   const preservedSource = closestSources[0] && closestSources[0][1] !== closestSources[1]?.[1] ? closestSources[0][0] : undefined;
+  if (!currentAdmitted && preservedSource
+    && snapshot.excludedBlocks.some(block => block.sourceRef === preservedSource)) return verification();
   const unresolvedOccurrence = rawQuoteAnchors && !preservedSource;
   for (const block of blocks) {
     if (!block.user || ['group', 'conflict'].includes(snapshot.kinds[block.channel] ?? '')) continue;

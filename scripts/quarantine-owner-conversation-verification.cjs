@@ -14,6 +14,9 @@
  * Apply obtains the writers' proper-lockfile lock, backs up the exact original
  * bytes to an exclusive timestamped sibling (0600), then atomically replaces
  * the ledger. Active readers may need to reload the store independently.
+ * Reports include matched record ids and classification reason counts, never
+ * quotes or transcript content. A transcript-enriched search result still
+ * points to its original ledger or memory-object id; select that native store.
  * No runtime, graph, service, or process is discovered or modified.
  */
 
@@ -155,6 +158,7 @@ function planDocument(parsed, sinceMs) {
     scanned: parsed.document[parsed.key].length, ownerCandidates: 0, inWindow: 0,
     classified: { substantive: 0, verification: 0, recap: 0, mention: 0 },
     exclusions: 0, applied: 0, alreadyExcluded: 0, skippedBeforeSince: 0, skipped: 0,
+    matchedIds: [], exclusionReasons: {},
   };
   const records = parsed.document[parsed.key].map(entry => {
     if (entry.provenance.generation_method !== 'owner_conversation') {
@@ -168,6 +172,8 @@ function planDocument(parsed, sinceMs) {
     counts.classified[classification.kind]++;
     if (classification.kind !== 'verification') return entry;
     counts.exclusions++;
+    counts.matchedIds.push(parsed.key === 'entries' ? entry.id : entry.memory_id);
+    for (const reason of classification.reasons) counts.exclusionReasons[reason] = (counts.exclusionReasons[reason] ?? 0) + 1;
     return { ...entry, provenance: {
       ...entry.provenance, generation_method: 'agent_note', verification: true,
       owner_evidence: false, source_class: 'verification', conversation_kind: classification.kind,

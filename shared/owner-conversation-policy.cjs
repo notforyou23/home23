@@ -35,17 +35,13 @@ function classifyOwnerConversation(input = {}) {
   const text = typeof input.text === 'string' ? input.text.normalize('NFKC').toLowerCase() : '';
   // Testing an unrelated object and mentioning a memory elsewhere is ordinary
   // conversation. Require a direct resident recall/retrieval test instead.
-  const residentMemoryTest = /\b(?:test|testing|verify|verifying|check|checking)\s+(?:(?:your|the|my|our)\s+)?(?:retrieval|recall)\b/.test(text)
-    || /\b(?:test|testing|verify|verifying|check|checking)\s+(?:your|the (?:resident|agent|assistant)['’]s)\s+memor(?:y|ies)\b/.test(text)
-    || /\b(?:test|testing|verify|verifying|check|checking)\s+(?:whether|if|that|how well)\s+you\s+(?:(?:can|still|really|actually)\s+)*(?:remember|recall|retrieve)\b/.test(text);
-  const residentRecallRequest = /\bcan you find\s+(?:me\s+)?(?:(?:the|our|my|your)\s+)?(?:(?:original|earlier|previous|prior|old)\s+)?(?:conversation|chat|discussion)\b/.test(text)
-    || /\bcan you find\b[^.!?\n]{0,240}\b(?:in|from|using)\s+(?:your|our|my|the)\s+(?:memory|memories|brain|retrieval)\b/.test(text);
-  if (/\b(?:brain_search|retrieval[ _-]test)\b/.test(text)
-    || residentMemoryTest
-    || residentRecallRequest
-    // "Check the brain" is an operator recall prompt. Physical scans and
-    // quoted song titles are ordinary conversation, not a retrieval test.
-    || /(?:^|[.!?\n]\s*)(?:(?:please|can you|could you|let['’]s)\s+)?check (?:the|your) brain\b(?!\s+(?:scan|mri|ct|tissue|tumou?r|surgery|injury|activity|with the surgeon)\b)/.test(text)) {
+  const residentMemoryTest = /\b(?:test|testing|verify|verifying)\s+(?:(?:your|the|my|our)\s+)?(?:retrieval|recall)\b/.test(text)
+    || /\b(?:test|testing|verify|verifying)\s+(?:your|the (?:resident|agent|assistant)['’]s)\s+memor(?:y|ies)\b/.test(text)
+    || /\b(?:test|testing|verify|verifying)\s+(?:whether|if|that|how well)\s+you\s+(?:(?:can|still|really|actually)\s+)*(?:remember|recall|retrieve)\b/.test(text);
+  const postFixRetrievalTrial = /\bpost[ -]fix (?:check|test)\b[^.!?\n]{0,80}\b(?:try|test|exercise)\b[^.!?\n]{0,60}\b(?:resident|agent|assistant)['’]s\s+(?:retrieval|recall|memory)\b/.test(text);
+  // Ordinary recall and maintenance requests are owner conversation. Require
+  // explicit test content or verification provenance, including retest summaries.
+  if (/\bretrieval[ _-](?:re[ _-]?)?test\b/.test(text) || residentMemoryTest || postFixRetrievalTrial) {
     reasons.push('retrieval_meta_content');
   }
   if (reasons.length) return { kind: 'verification', verification: true, ownerEvidence: false, reasons: [...new Set(reasons)] };

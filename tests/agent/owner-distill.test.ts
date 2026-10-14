@@ -71,8 +71,7 @@ test('verification sessions and recall tests never distill into owner evidence',
     { text: 'I bought Trey and Billy tickets.', options: { verification: true } },
     { text: 'I bought Trey and Billy tickets.', options: { metadata: { source: 'non-owner' } } },
     { text: 'Test your recall of the Trey and Billy tickets.', options: {} },
-    { text: 'Can you find our original conversation about the tickets?', options: {} },
-    { text: 'Check the brain.', options: {} },
+    { text: 'Retrieval retest conversation repeated Trey Billy ticket memories.', options: {} },
   ];
   for (const [index, scenario] of scenarios.entries()) {
     await t.test(`excluded session ${index + 1}`, async t => {
@@ -85,6 +84,52 @@ test('verification sessions and recall tests never distill into owner evidence',
       assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 }, 'exclusions advance the cursor');
     });
   }
+});
+
+test('brain maintenance in a genuine owner turn is eligible for distillation', async t => {
+  const quote = 'Check the brain. We discussed the fixes this morning.';
+  const f = fixture(t, [contact('one', quote)], [item('Jason discussed the brain fixes this morning.', quote, 'one')]);
+  assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 1 });
+  assert.equal(f.objects()[0].provenance.generation_method, 'owner_conversation');
+});
+
+test('a verification turn excludes its reply without discarding later genuine owner knowledge in the same session', async t => {
+  const scenarios = [
+    { text: 'I bought synthetic test tickets.', options: { verification: true } },
+    { text: 'Test your recall of the synthetic ticket memories.', options: {} },
+    { text: 'I bought synthetic test tickets.', options: { chatId: 'home-verify-mixed-turn' } },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.text + JSON.stringify(scenario.options), async t => {
+      const genuine = 'I booked Friday lodging for the Trey and Billy tickets. Dinner is at seven after my guitar lesson.';
+      const f = fixture(t, [contact('verification', scenario.text, 65, scenario.options),
+        residentContact('verification-reply', 'SYNTHETIC_TEST_REPLY: recalled the synthetic ticket test.', 64),
+        contact('genuine', genuine, 60), residentContact('genuine-reply', 'I noted the Friday lodging and dinner time.', 59)],
+      [item('Jason booked Friday lodging and plans dinner at seven after guitar.', genuine, 'genuine')]);
+      const beforeBytes = readFileSync(f.sourcePath);
+      assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 1 });
+      assert.equal(f.objects()[0].evidence.grounding_note, genuine);
+      assert.deepEqual(f.objects()[0].provenance.source_refs, ['coordination.message:genuine']);
+      assert.equal(f.prompts.length, 1);
+      assert.ok(!f.prompts[0].includes('coordination.message:verification'));
+      assert.ok(!f.prompts[0].includes('SYNTHETIC_TEST_REPLY'));
+      assert.ok(f.prompts[0].includes('Friday lodging and dinner time'));
+      assert.deepEqual(readFileSync(f.sourcePath), beforeBytes);
+      assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 });
+      const cursor = JSON.parse(readFileSync(join(f.brainDir, 'owner-distill-cursor.json'), 'utf8'));
+      assert.equal(cursor.through['coordination:direct-1'], Date.parse(at(59)), 'cursor consumes the original complete session context');
+    });
+  }
+});
+
+test('an explicitly verification source channel remains wholly excluded even if its later text is substantive', async t => {
+  const channel = { channelId: 'home-verify-entire-chat', session: 'coordination:home-verify-entire-chat' };
+  const f = fixture(t, [contact('test', 'Check retrieval.', 65, channel),
+    contact('apparent-fact', 'I booked Friday lodging for Trey and Billy.', 60, channel)],
+  [item('Jason booked Friday lodging.', 'I booked Friday lodging for Trey and Billy.', 'apparent-fact')]);
+  assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 0 });
+  assert.equal(f.prompts.length, 0);
+  assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 });
 });
 
 test('substantive ticket lookup remains owner evidence and retains its source channel', async t => {

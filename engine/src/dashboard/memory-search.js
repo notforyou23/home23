@@ -1912,7 +1912,7 @@ function createMemorySearchService({
     } else if (request.exhaustive === true && fallback?.reason !== 'embedding_id_mismatch') {
       fallback = {
         route: 'logical-source-scan',
-        reason: 'exhaustive_requested',
+        reason: fallback?.reason || 'exhaustive_requested',
         completeness: 'complete',
       };
     } else if (queryEmbedding && !annCovered && allowLogicalScan) {
@@ -2041,7 +2041,14 @@ function createMemorySearchService({
     const mergedResults = mergeResults(semanticTop, keywordRows, limit, query);
     const mergeMs = performance.now() - mergeStartedAt;
     const baseEvidence = source.getEvidence();
-    const degradesSourceHealth = Boolean(fallback);
+    // Exact text can fall outside bounded ANN labels without an index fault.
+    // A requested exhaustive scan is also a normal retrieval route. Preserve
+    // degraded health for genuine index/encoder faults and incomplete scans.
+    const intentionalScan = ['exhaustive_requested', 'exact_phrase_missing',
+      'exact_canary_missing', 'semantic_noise_filtered'].includes(fallback?.reason)
+      && !annLabelCoverageIncomplete && !embeddingOutage && !overlayFailure;
+    const degradesSourceHealth = Boolean(fallback)
+      && (!intentionalScan || !completeCoverage || logicalScanExhausted);
     const sourceHealth = baseEvidence.sourceHealth === 'healthy' && degradesSourceHealth
       ? 'degraded'
       : baseEvidence.sourceHealth;

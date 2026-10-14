@@ -41,6 +41,40 @@ test('existing verification ledger entries cannot claim owner evidence before a 
   assert.equal(relationshipOwnerEvidence(record as any), null);
 });
 
+test('verification owner candidates are excluded from both topic and time-window recall', () => {
+  const original = { ...evidence, statement: 'Trey and Billy tickets.', quote: 'I bought Trey and Billy tickets.' };
+  for (const query of ['Trey Billy tickets', 'What did we talk about this morning?']) {
+    for (const record of [
+      { ...original, sessionRefs: ['home-verify-49-tickets'] },
+      { ...original, conversationKind: 'verification' as const },
+      { ...original, quote: "Retrieval retest conversation repeated Trey Billy ticket memories alongside owner's reports of further brain fixes" },
+    ]) assert.equal(ownerConversationMatch(record, ownerConversationQuery(query, NOW)), null);
+  }
+});
+
+test('a genuine owner request to check the brain remains recallable this morning', () => {
+  const record = { ...evidence, statement: 'We discussed brain fixes.', quote: 'Check the brain.' };
+  assert.notEqual(relationshipOwnerEvidence({ id: record.id, type: 'decision', status: 'active',
+    statement: record.statement, evidence_note: record.quote, privacy_class: record.privacyClass,
+    createdAt: record.createdAt, updatedAt: record.occurredAt,
+    provenance: { generation_method: 'owner_conversation', source_refs: record.sourceRefs, session_refs: record.sessionRefs },
+  } as any), null);
+  assert.notEqual(ownerConversationMatch(record, ownerConversationQuery('What did we talk about this morning?', NOW)), null);
+});
+
+test('assistant retrieval echoes cannot give a thin owner pointer a topic match', () => {
+  const record = { ...evidence, statement: 'Try it in practice.', quote: 'Yup. Give it a go…',
+    transcript: { excerpt: '[owner verbatim] Yup. Give it a go… [assistant clipped] I tested Trey Billy tickets.',
+      turns: [ { role: 'user' as const, text: 'Yup. Give it a go…', ts: evidence.occurredAt },
+        { role: 'assistant' as const, text: 'I tested Trey Billy tickets.', ts: evidence.occurredAt } ],
+      sourceRefs: evidence.sourceRefs, sessionIds: evidence.sessionRefs, complete: true } };
+  assert.equal(ownerConversationMatch(record, ownerConversationQuery('Trey Billy tickets', NOW)), null);
+  assert.notEqual(ownerConversationMatch(record, ownerConversationQuery('What did we talk about this morning?', NOW)), null);
+  record.transcript.turns[0]!.text = 'Melissa and I bought Trey and Billy tickets.';
+  assert.notEqual(ownerConversationMatch(record, ownerConversationQuery('Trey Billy tickets', NOW)), null,
+    'actual owner topic language in the resolved session remains searchable');
+});
+
 test('explicit time intent retains recency within the requested morning', () => {
   const query = ownerConversationQuery('this morning tickets', NOW);
   const record = { ...evidence, statement: 'Tickets from Ticketmaster.', quote: 'We bought tickets.' };

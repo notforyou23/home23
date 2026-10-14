@@ -161,7 +161,10 @@ export function ownerConversationMatch(record: OwnerConversationEvidence, query:
   const occurredAt = Date.parse(record.occurredAt);
   if (!query.valid || occurredAt > query.nowMs
       || (query.window && (occurredAt < query.window.start || occurredAt >= query.window.end))) return null;
-  const hay = normalized(`${record.statement} ${record.quote} ${record.transcript?.excerpt ?? ''}`);
+  // Assistant replies can quote previous brain_search results. They provide
+  // context for a morning recap, but cannot create a new owner topic observation.
+  const ownerText = record.transcript?.turns.filter(turn => turn.role === 'user').map(turn => turn.text).join('\n') ?? '';
+  const hay = normalized(`${record.statement} ${record.quote} ${ownerText}`);
   const words = new Set(hay.split(' '));
   const matches = query.terms.filter(term => words.has(term)).length;
   const phraseMatch = query.phrase.length >= 8 && hay.includes(query.phrase);
@@ -175,6 +178,7 @@ export function ownerConversationMatch(record: OwnerConversationEvidence, query:
   const classification = classifyOwnerConversation({ text: `${record.quote}\n${record.statement}`,
     sessionRefs: record.sessionRefs, sourceRefs: record.sourceRefs,
     metadata: { conversationKind: record.conversationKind } });
+  if (!classification.ownerEvidence) return null;
   const weight = { substantive: 1, recap: 0.5, mention: 0.35, verification: 0.05 }[classification.kind];
   return ((query.terms.length ? matches / query.terms.length : 0) + recency) * weight;
 }

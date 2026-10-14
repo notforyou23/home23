@@ -79,10 +79,13 @@ test('direct owner fact writes cannot bypass verification provenance and content
     sessionId: 'session:1', occurredAt: '2026-10-14T12:00:00.000Z' };
   for (const extra of [{ sessionId: 'home-verify-48' }, { chatId: 'recall-verification' },
     { metadata: { verification: true } }, { metadata: { source: 'non-owner' } },
-    { quote: 'Test your recall of my tickets.' }, { conversationText: 'Use brain_search to find the tickets.' }]) {
+    { quote: 'Test your recall of my tickets.' }, { conversationText: 'Run a retrieval retest using brain_search to find the tickets.' },
+    { statement: "For this post-fix check, try the resident's retrieval and memory in practice.", quote: 'Yup. Give it a go…' }]) {
     assert.throws(() => store.upsertOwnerFact({ ...input, ...extra }), /Verification conversations are not owner evidence/);
   }
   assert.equal(store.getObjectsByLayer('durable').length, 0);
+  const genuine = store.upsertOwnerFact({ ...input, conversationText: 'Use brain_search to find the tickets. Check the brain this morning.' });
+  assert.equal(genuine.provenance.generation_method, 'owner_conversation');
 });
 
 test('generic memory creates and updates demote verification claims from owner evidence', t => {
