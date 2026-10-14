@@ -116,3 +116,13 @@ test('keyword index follows add, patch, generic dirty, and remove mutations', as
   assert.equal(memory.removeNode(node.id), true);
   assert.equal(memory.queryByKeyword('sigma', 1, { markAccess: false }).length, 0);
 });
+
+test('three and four word keyword queries use posting unions despite an absent term', async () => {
+  const memory = makeMemory();
+  const node = await memory.addNode('The owner had a morning chat. This conversation was useful.', 'conversation');
+  memory.nodes.values = () => { throw new Error('unexpected full node scan'); };
+  for (const query of ['conversation morning chat', 'owner conversation morning chat', 'conversation morning chat absentterm']) {
+    assert.deepEqual(memory.queryByKeyword(query, 5, { markAccess: false }).map(row => row.id), [node.id]);
+    assert.deepEqual((await memory.query(query, 5, { markAccess: false })).map(row => row.id), [node.id]);
+  }
+});

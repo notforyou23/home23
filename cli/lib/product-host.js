@@ -7,10 +7,10 @@ import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { readMoveFence } from './product-backup.js';
 import { detectForeignBindings } from './product-foreign-bindings.js';
-import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
+import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts, withoutSupervisorEnvironment } from './product-environment.js';
 import { inspectMemorySeal, inspectProductMemory } from './product-memory.js';
 import { writerStopOrder } from './product-update-inventory.js';
-import { ensureProductSupervisor, productSupervisorCommand, supervisorSocketListening as supervisorListening } from './product-supervisor.js';
+import { ensureProductSupervisor, inspectProductSupervisor, productSupervisorCommand, supervisorSocketListening as supervisorListening } from './product-supervisor.js';
 import {
   OWNED_EMBEDDER_PROCESS, OWNED_PROFILE_ID, OWNED_RECIPE_HASH,
   beginSemanticPrepare, encoderRequiredFor, ensureOwnedEncoderStopped, probeOwnedReady, semanticStatusView,
@@ -350,9 +350,9 @@ export function productDefinitions(apps, homeRoot, nameOrNames, { encoderRequire
       restart_delay: definition.restart_delay,
       exp_backoff_restart_delay: definition.restart_delay === undefined
         ? (definition.exp_backoff_restart_delay ?? 2000) : undefined,
-      env: { ...definition.env, ...baseEnv },
+      env: withoutSupervisorEnvironment({ ...definition.env, ...baseEnv }),
       // No profiling flags or dumps are required to run a user's home.
-      filter_env: definition.filter_env || [],
+      filter_env: [...new Set([...(definition.filter_env || []), 'PM2_'])],
     };
   });
 }
@@ -401,6 +401,11 @@ function driver(homeRoot, dependencies, state) {
           if (await listening(join(env.PM2_HOME, 'rpc.sock')) !== false) {
             throw supervisorAmbiguous('A supervisor for this home is running on an unexpected socket. No processes were changed.');
           }
+          if ((dependencies.platform || process.platform) === 'darwin' && (!dependencies.execute || dependencies.inspectProductSupervisor)) {
+            const supervisor = await (dependencies.inspectProductSupervisor || inspectProductSupervisor)(homeRoot);
+            if (supervisor.ownership === 'exited') throw Object.assign(new Error('The launchd resident supervisor exited. Choose Start to reconnect safely.'),
+              { code: 'host_supervisor_exited', supervisorPid: supervisor.pid, lastExitCode: supervisor.lastExitCode });
+          }
           this.supervisorAbsent = true;
           return [];
         }
@@ -422,7 +427,7 @@ function driver(homeRoot, dependencies, state) {
         const executable = relative(service.cwd, service.executable);
         if (!executable || /\s/.test(executable) || resolve(service.cwd, executable) !== service.executable) throw new Error(`Continuing executable cannot be safely launched: ${service.name}`);
         return { name: service.name, script: executable, interpreter: 'none', args: service.args,
-          cwd: service.cwd, env: { ...env, ...service.env }, autostart: true, autorestart: true,
+          cwd: service.cwd, env: withoutSupervisorEnvironment({ ...env, ...service.env }), filter_env: ['PM2_'], autostart: true, autorestart: true,
           min_uptime: 100, exp_backoff_restart_delay: 2000 };
       });
       return [...standard, ...continuation];
@@ -663,8 +668,9 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
   catch (error) {
     // An unreadable supervisor is neither a stopped nor a running home. Say so,
     // so no client mistakes it for a home that needs Start.
-    if (error.code !== 'host_supervisor_ambiguous') throw error;
-    return { ...output, ok: false, status: 'unavailable', processes: [], error: { code: error.code, message: error.message } };
+    if (!['host_supervisor_ambiguous', 'host_supervisor_exited'].includes(error.code)) throw error;
+    return { ...output, ok: false, status: 'unavailable', processes: [], error: { code: error.code, message: error.message,
+      ...(error.code === 'host_supervisor_exited' ? { supervisorPid: error.supervisorPid, lastExitCode: error.lastExitCode } : {}) } };
   }
   const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state), continuationServicesForState(state));
   output.pausedProcessNames = await updatePausedNames(homeRoot, state);

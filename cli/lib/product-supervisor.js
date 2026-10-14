@@ -1,12 +1,13 @@
 /** A home-scoped foreground PM2 service, owned by the user's launchd domain. */
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { create as createDomain } from 'node:domain';
+import { appendFileSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { connect } from 'node:net';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { absoluteHome, privateJSON, productEnvironment, readPrivateJSON } from './product-environment.js';
+import { absoluteHome, privateJSON, productEnvironment, readPrivateJSON, withoutSupervisorEnvironment } from './product-environment.js';
 import { acquireInstallLock, readProductManifest } from './product-payload.js';
 import { writerStopOrder } from './product-update-inventory.js';
 
@@ -117,9 +118,11 @@ async function loaded(plan, deps) {
   // unknown output fails closed. Do not parse print's diagnostic-only format.
   const labels = [...String(stdout).matchAll(/^\t"Label" = "([^"\n]+)";$/gm)];
   const pids = [...String(stdout).matchAll(/^\t"PID" = ([1-9][0-9]*);$/gm)];
+  const exits = [...String(stdout).matchAll(/^\t"LastExitStatus" = (-?[0-9]+);$/gm)];
   if (labels.length !== 1 || labels[0][1] !== plan.label || pids.length > 1 ||
       (pids.length && !Number.isSafeInteger(Number(pids[0][1])))) throw ambiguous('The launchd job PID could not be verified.');
-  return { loaded: true, pid: pids.length ? Number(pids[0][1]) : null };
+  return { loaded: true, pid: pids.length ? Number(pids[0][1]) : null,
+    lastExitCode: exits.length === 1 ? Number(exits[0][1]) : null };
 }
 async function identity(plan, pid, deps) {
   if (deps.identity) return deps.identity(plan, pid);
@@ -170,6 +173,11 @@ export async function inspectProductSupervisor(homeRoot, deps = {}) {
       if (!claim || !jobLoaded || job.pid !== pid || owner?.token !== claim.token || owner?.pid !== pid) throw ambiguous('A supervisor PID is still alive without its canonical socket.');
     }
     if (jobLoaded && !claim) throw ambiguous('An unclaimed launchd service already uses this home\'s label.');
+    const owner = readPrivateJSON(plan.owner);
+    if (jobLoaded && !job.pid && claim && owner?.schema === 'home23.supervisor.owner.v1' && owner.token === claim.token &&
+        owner.homeRoot === homeRoot && owner.parentPid === 1 && Number.isSafeInteger(owner.pid) && owner.pid > 0 && !isAlive(owner.pid)) {
+      return { ownership: 'exited', plan, pid: owner.pid, lastExitCode: job.lastExitCode };
+    }
     return { ownership: jobLoaded ? 'starting' : 'absent', plan, pid };
   }
   if (!pid || !isAlive(pid) || await listening(plan.env.PM2_DAEMON_PUB_PORT) !== true) throw ambiguous('The answering supervisor has no verifiable PID and socket pair.');
@@ -216,6 +224,143 @@ export async function ensureProductSupervisor(homeRoot, deps = {}) {
   } finally { unlock(); }
 }
 
+/** Inspect detached home writers independently of PM2's surviving inventory.
+ * Executable/cwd evidence also detects children that change process.title. */
+export async function productHomeWriterPids(homeRoot, deps = {}) {
+  const plan = productSupervisorPlan(homeRoot);
+  const excludedPids = new Set([process.pid]);
+  if (deps.controllerPid !== undefined) {
+    if (!Number.isSafeInteger(deps.controllerPid) || deps.controllerPid <= 0 || deps.controllerPid !== process.ppid) {
+      throw ambiguous('The inventory controller is not this isolated client\'s direct parent.');
+    }
+    excludedPids.add(deps.controllerPid);
+  }
+  if (deps.runningHomePids) return deps.runningHomePids(plan);
+  const state = readPrivateJSON(join(plan.homeRoot, '.home23-host.json'));
+  const continuation = state?.continuationServices || [];
+  const retainedRoot = join(dirname(plan.homeRoot), `.${basename(plan.homeRoot)}.home23-update/previous`);
+  const retained = join(retainedRoot, 'bin/node');
+  const paths = new Set([plan.node, retained, ...continuation.flatMap(service => [service.executable, service.cwd])]);
+  const belongs = path => typeof path === 'string' && (path === plan.homeRoot || path.startsWith(`${plan.homeRoot}/`) ||
+    path === retainedRoot || path.startsWith(`${retainedRoot}/`) || paths.has(path));
+  const exec = deps.execute || execute;
+  let processOutput, filesOutput;
+  try {
+    [{ stdout: processOutput }, { stdout: filesOutput }] = await Promise.all([
+      exec('/bin/ps', ['-axo', 'pid=,command=']),
+      exec('/usr/sbin/lsof', ['-nP', '-a', '-u', String(plan.uid), '-d', 'cwd,txt', '-Fpn']),
+    ]);
+  } catch { throw ambiguous('The detached home writer inventory could not be verified. No supervisor was started.'); }
+  if (typeof processOutput !== 'string' || !processOutput.split('\n').some(line => new RegExp(`^\\s*${process.pid}\\s+`).test(line)) ||
+      typeof filesOutput !== 'string' || !filesOutput.split('\n').includes(`p${process.pid}`)) {
+    throw ambiguous('The detached home writer inventory is incomplete. No supervisor was started.');
+  }
+  const pids = new Set();
+  for (const line of String(processOutput).split('\n')) {
+    const match = /^\s*([1-9][0-9]*)\s+(.+)$/.exec(line);
+    const continuing = match && continuation.some(service => match[2] === service.executable || match[2].startsWith(`${service.executable} `));
+    if (match && !excludedPids.has(Number(match[1])) && (match[2].includes(`${plan.homeRoot}/`) || match[2].includes(`${retainedRoot}/`) || continuing)) pids.add(Number(match[1]));
+  }
+  let pid = null;
+  for (const line of String(filesOutput).split('\n')) {
+    if (/^p[1-9][0-9]*$/.test(line)) pid = Number(line.slice(1));
+    else if (line.startsWith('n') && pid && !excludedPids.has(pid) && belongs(line.slice(1).replace(/ \(deleted\)$/, ''))) pids.add(pid);
+  }
+  if ([...pids].some(pid => !Number.isSafeInteger(pid) || pid <= 0)) throw ambiguous('The detached home writer inventory returned an invalid PID.');
+  return [...pids];
+}
+
+/** Read-only inventory must not daemonize a prepared or stopped empty home. */
+export async function productSupervisorInventory(homeRoot, deps = {}) {
+  const plan = productSupervisorPlan(homeRoot);
+  let status;
+  if ((deps.platform || process.platform) === 'darwin') status = await inspectProductSupervisor(homeRoot, deps);
+  else {
+    const listening = deps.listening || supervisorSocketListening;
+    const canonical = await listening(plan.env.PM2_DAEMON_RPC_PORT);
+    if (canonical === null || await listening(join(plan.env.PM2_HOME, 'rpc.sock')) !== false) throw ambiguous('The private supervisor socket could not be verified.');
+    status = { ownership: canonical ? 'not_required' : 'absent' };
+  }
+  if (status.ownership === 'exited') throw Object.assign(fail('host_supervisor_exited', 'The launchd resident supervisor exited. No replacement daemon was created.'),
+    { supervisorPid: status.pid, lastExitCode: status.lastExitCode });
+  if (status.ownership === 'absent') {
+    const pids = await productHomeWriterPids(homeRoot, deps);
+    if (!Array.isArray(pids) || pids.some(pid => !Number.isSafeInteger(pid) || pid <= 0)) throw ambiguous('The detached home writer inventory could not be verified.');
+    if (pids.length) throw fail('host_supervisor_writers_active', 'No supervisor is answering while home processes remain alive. They were not duplicated or stopped.');
+    return { stdout: '[]', stderr: '' };
+  }
+  if (status.ownership === 'starting') throw fail('host_supervisor_start_pending', 'The launchd resident supervisor is still starting. No replacement daemon was created.');
+  return (deps.command || (args => productSupervisorCommand(homeRoot, args)))(['jlist', '--silent']);
+}
+
+/** Restart a proven dead resident only when no detached home writers remain.
+ * An empty PM2 inventory is not evidence: children can outlive their daemon. */
+export async function recoverProductSupervisor(homeRoot, admission, deps = {}) {
+  if ((deps.platform || process.platform) !== 'darwin') return { ownership: 'not_required' };
+  const plan = productSupervisorPlan(homeRoot);
+  const file = join(dirname(plan.homeRoot), `.${basename(plan.homeRoot)}.home23-update/journal.json`);
+  const admit = () => {
+    const journal = readPrivateJSON(file);
+    const preWriterRecovery = journal && !journal.supervisorMigration && ['selected', 'verifying'].includes(journal.phase) &&
+      journal.candidateStarted === false && journal.acceptedWork !== true && journal.writersAdmitted !== true &&
+      journal.supervisorAdmission?.ownership === 'launchd' && Number.isSafeInteger(journal.supervisorAdmission.expectedPid) &&
+      journal.supervisorAdmission.expectedPid > 0 && typeof journal.supervisorAdmission.generation === 'string';
+    if (!journal || journal.id !== admission?.updateId || journal.homeRoot !== plan.homeRoot || !admission.updateOwnerToken ||
+        journal.ownerToken !== admission.updateOwnerToken || !['selected', 'verifying', 'writers_admitted'].includes(journal.phase) ||
+        (journal.supervisorMigration?.ownership !== 'launchd' && !preWriterRecovery) || !Array.isArray(admission.registrations)) {
+      throw fail('host_supervisor_admission_required', 'Resident recovery requires this admitted update\'s owner and registration snapshot.');
+    }
+    if (JSON.stringify(journal.supervisorAdmission?.registrations) !== JSON.stringify(admission.registrations)) {
+      throw ambiguous('Resident recovery registrations differ from the current update admission.');
+    }
+    return journal;
+  };
+  const noWriters = async () => {
+    const pids = await productHomeWriterPids(homeRoot, deps);
+    if (!Array.isArray(pids) || pids.some(pid => !Number.isSafeInteger(pid) || pid <= 0)) throw ambiguous('The detached home writer inventory could not be verified.');
+    if (pids.length) throw fail('host_supervisor_writers_active', 'The resident exited while home processes remain alive. They were not duplicated or stopped.');
+  };
+  const { ownedProcessNamesForState, safeProcesses } = await import('./product-host.js');
+  const state = readPrivateJSON(join(homeRoot, '.home23-host.json'));
+  const names = ownedProcessNamesForState(state);
+  const valid = rows => Array.isArray(rows) && new Set(rows.map(row => row.name)).size === rows.length &&
+    rows.every(row => names.includes(row.name) && ['online', 'stopped', 'errored'].includes(row.pm2_env?.status)) &&
+    safeProcesses(rows, homeRoot, names, state.continuationServices || []).every(row => row.owned);
+  const unlock = acquireInstallLock(join(plan.env.PM2_HOME, '.supervisor-recovery.lock'));
+  try {
+    let journal = admit();
+    const previous = await inspectProductSupervisor(homeRoot, deps);
+    if (previous.ownership !== 'exited') throw ambiguous('Only a proven exited launchd resident can be restarted during update readiness.');
+    const matchesDeadAdmission = current => current.supervisorMigration?.ownership === 'launchd' ||
+      (current.supervisorAdmission.expectedPid === previous.pid &&
+        (admission.expectedPid === undefined || admission.expectedPid === previous.pid) &&
+        (admission.generation === undefined || admission.generation === current.supervisorAdmission.generation));
+    if (!matchesDeadAdmission(journal)) throw ambiguous('The exited resident does not match the pre-writer launchd admission.');
+    if (!valid(admission.registrations)) throw ambiguous('Resident recovery contains unowned or duplicate registrations.');
+    await noWriters();
+    journal = admit();
+    if (!matchesDeadAdmission(journal)) throw ambiguous('The exited resident admission changed before restart.');
+    const status = await ensureProductSupervisor(homeRoot, deps);
+    const command = deps.command || (args => productSupervisorCommand(homeRoot, args));
+    const list = async () => JSON.parse((await command(['jlist', '--silent'])).stdout);
+    let rows = await list();
+    if (!valid(rows) || rows.some(row => row.pid > 0 || row.pm2_env.status !== 'stopped')) {
+      throw ambiguous('The restarted resident contains active or unowned registrations. No roles were started.');
+    }
+    if (rows.length !== admission.registrations.length) {
+      await (deps.restore || restoreRegistrations)(homeRoot, admission.registrations);
+      rows = await list();
+    }
+    if (!valid(rows) || rows.length !== admission.registrations.length || rows.some(row => row.pid > 0 || row.pm2_env.status !== 'stopped' ||
+        !admission.registrations.some(saved => saved.name === row.name && registrationDefinition(saved) === registrationDefinition(row)))) {
+      throw ambiguous('Recovered stopped registrations differ from the admitted snapshot.');
+    }
+    return { ownership: status.ownership, updateId: admission.updateId, pid: status.pid, generation: status.generation,
+      previousPid: previous.pid, previousExitCode: previous.lastExitCode,
+      pausedNames: admission.registrations.filter(row => ['stopped', 'errored'].includes(row.pm2_env.status)).map(row => row.name) };
+  } finally { unlock(); }
+}
+
 /** The client guard makes a lost daemon connection fail instead of auto-spawning. */
 export async function productSupervisorCommand(homeRoot, args, deps = {}) {
   if (!Array.isArray(args) || !['jlist', 'start', 'restart', 'stop', 'delete'].includes(args[0]) || args.includes('all') || args.includes('--no-daemon')) throw ambiguous('Unsupported home supervisor command.');
@@ -230,7 +375,12 @@ export async function productSupervisorCommand(homeRoot, args, deps = {}) {
     cwd: join(plan.homeRoot, 'app'), env: productEnvironment(plan.homeRoot, deps.environmentOptions),
     timeout: args[0] === 'stop' ? 240000 : 45000, maxBuffer: 8 * 1024 * 1024,
   }); } catch (error) {
-    if (error.code === 75) throw ambiguous('The private supervisor connection was lost. This client did not create a daemon.');
+    if (error.code === 75) {
+      const status = await inspectProductSupervisor(homeRoot, deps);
+      if (status.ownership === 'exited') throw Object.assign(fail('host_supervisor_exited', 'The launchd resident supervisor exited. No replacement daemon was created.'),
+        { supervisorPid: status.pid, lastExitCode: status.lastExitCode });
+      throw ambiguous('The private supervisor connection was lost. This client did not create a daemon.');
+    }
     throw error;
   }
 }
@@ -316,15 +466,60 @@ export async function adoptProductSupervisor(homeRoot, admission, deps = {}) {
   } finally { unlock(); }
 }
 
-function forbidClientSpawn(require) {
+export function forbidClientSpawn(require, runtime = process) {
   const Client = require('./lib/Client.js');
   Client.prototype.launchDaemon = function(opts, cb) {
     // PM2's CLI can ignore its connection callback's error. End this isolated
     // client immediately rather than leaving timers alive or entering a retry.
-    console.error('host_supervisor_unavailable: this client cannot create a daemon.');
-    process.exit(75);
+    runtime.stderr.write('host_supervisor_unavailable: this client cannot create a daemon.\n');
+    runtime.exit(75);
   };
+  // PM2 also has an in-process no-daemon route; CLI flags must never enable it.
+  const start = Client.prototype.start;
+  Client.prototype.start = function(...args) { this.daemon_mode = true; return start.apply(this, args); };
   return Client;
+}
+
+/** PM2's normal start() resurrects itself through a detached `pm2 update`.
+ * A resident belongs to launchd instead, and fatal errors must remain visible. */
+export function startResidentDaemon(plan, require, { runtime = process, domainFactory = createDomain, log } = {}) {
+  const write = log || (event => appendFileSync(join(plan.env.PM2_HOME, 'pm2.log'), `${JSON.stringify({
+    at: new Date().toISOString(), component: 'home23.resident-supervisor', pid: runtime.pid, ...event,
+  })}\n`, { mode: 0o600 }));
+  // Error messages and stacks can contain supplied environment values. The
+  // receipt records error kind/code and source location without their values.
+  const errorDetail = error => {
+    const code = String(error?.code || ''), name = String(error?.name || 'Error');
+    const frame = String(error?.stack || '').split('\n')[1] || '';
+    return { errorName: /^[A-Za-z]*Error$/.test(name) ? name : 'Error', errorCode: /^[A-Z][A-Z0-9_]{0,79}$/.test(code) ? code : 'unknown',
+      location: /(?:file:\/\/)?(\/[^()\n]+:\d+:\d+)\)?$/.exec(frame)?.[1] || 'unavailable' };
+  };
+  const fatal = (reason, error) => { write({ event: 'fatal', reason, ...errorDetail(error) }); runtime.exit(1); };
+  runtime.once('exit', code => write({ event: 'exit', code }));
+  runtime.on('uncaughtException', error => fatal('uncaughtException', error));
+  runtime.on('unhandledRejection', error => fatal('unhandledRejection', error));
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGQUIT', 'SIGHUP']) runtime.on(signal, () => write({ event: 'signal', signal }));
+  const Daemon = require('./lib/Daemon.js'), God = require('./lib/God.js');
+  const daemon = new Daemon();
+  const refuseStop = (_options, cb) => {
+    write({ event: 'command-rejected', command: 'daemon-stop' });
+    if (typeof cb === 'function') cb(fail('host_supervisor_owner_stop_required', 'Only an explicit owner lifecycle stop may stop the resident supervisor.'));
+  };
+  daemon.close = refuseStop; // killMe must not terminate this launchd service.
+  God.notifyKillPM2 = refuseStop; // Also prevents PM2 disabling all auto-restarts.
+  const forkMode = God.forkMode;
+  if (typeof forkMode === 'function') God.forkMode = function(environment, cb) {
+    // PM2 --update-env merges the client's PM2 variables back into flat
+    // records, bypassing ecosystem filter_env. Scrub at the actual fork too.
+    for (const key of Object.keys(environment)) if (/^PM2_/i.test(key)) delete environment[key];
+    if (environment.env) environment.env = withoutSupervisorEnvironment(environment.env);
+    return forkMode.call(this, environment, cb);
+  };
+  const domain = domainFactory();
+  domain.once('error', error => fatal('daemon-domain-error', error));
+  write({ event: 'start', parentPid: runtime.ppid });
+  domain.run(() => daemon.innerStart());
+  return daemon;
 }
 async function restoreRegistrations(homeRoot, rows) {
   const plan = productSupervisorPlan(homeRoot);
@@ -342,9 +537,8 @@ async function worker() {
     const claim = claimFor(plan);
     if (!claim || value !== claim.token || process.ppid !== 1) throw ambiguous('Only launchd may create the resident daemon.');
     privateJSON(plan.owner, { schema: 'home23.supervisor.owner.v1', homeRoot, token: value, pid: process.pid, parentPid: process.ppid });
-    const Daemon = require('./lib/Daemon.js');
     process.title = `Home23 resident supervisor (${homeRoot})`;
-    new Daemon().start(); // Foreground: no PM2 client daemonization.
+    startResidentDaemon(plan, require); // Foreground, with launchd as the only lifecycle owner.
   } else if (mode === '--resident-client') {
     forbidClientSpawn(require);
     process.argv = [process.execPath, join(homeRoot, 'tools/node_modules/pm2/bin/pm2'), value, ...rest];

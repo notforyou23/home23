@@ -37,6 +37,7 @@ const { projectAnnLabel } = require('../../../shared/ann-label-contract.cjs');
 const {
   attestMemoryAuthority,
 } = require('../../../shared/memory-authority-attestation.cjs');
+const { OWNED_EMBEDDER_ID } = require('../../../engine/src/memory/embedding-provider');
 
 const AUTHORITY_KEY = '7'.repeat(64);
 const AUTHORITY_KEY_ID = createHash('sha256').update(AUTHORITY_KEY).digest('hex').slice(0, 16);
@@ -418,14 +419,161 @@ test('goal resolutions cannot crowd out owner recall on ANN, overlay, logical or
   }
 });
 
-test('unquoted phrase still scans when ANN hits are below the semantic noise floor', async () => {
+test('three and four word recall queries retain indexed lexical hits below the semantic noise floor', async (t) => {
+  for (const query of ['conversation morning chat', 'owner conversation morning chat', 'conversation morning chat absentterm']) {
+    await t.test(query, async () => {
+      const node = { id: 'owner-chat', concept: 'The owner had a morning chat. This conversation was useful.', embedding: [1, 0] };
+      const goal = { id: 'resolution', concept: query, tag: 'goal_resolution', embedding: [1, 0] };
+      const dir = await createBrain({ nodes: [node, goal] });
+      await markAnn(dir);
+      const labels = [node, goal].map(value => projectAnnLabel(value));
+      const { result, visits } = await countedSourceSearch({
+        dir, query, embedQuery: async () => [1, 0],
+        loadAnn: async () => ({ dimension: 2, labels,
+          search: () => [{ node: labels[0], similarity: 0.5 }, { node: labels[1], similarity: 0.99 }],
+        }),
+        request: { noiseFloor: 0.55 },
+      });
+      assert.deepEqual(result.results.map(row => row.id), ['owner-chat']);
+      assert.equal(visits, 0);
+      assert.equal(result.stats.retrievalMode, 'keyword-index-overlay');
+      assert.equal(result.evidence.fallback, null);
+      assert.equal(result.stats.noiseFiltered, true);
+      assert.equal(result.results[0].similarity, undefined);
+    });
+  }
+});
+
+test('three and four word recall queries use ANN label indexes during an encoder outage', async (t) => {
+  for (const query of ['conversation morning chat', 'owner conversation morning chat']) {
+    await t.test(query, async () => {
+      const node = { id: 'owner-chat', concept: 'The owner had a morning chat. This conversation was useful.', embedding: [1, 0] };
+      const dir = await createBrain({ nodes: [node] });
+      await markAnn(dir);
+      const { result, visits } = await countedSourceSearch({
+        dir, query, embedQuery: async () => { throw new Error('encoder offline'); },
+        loadAnn: async () => ({ dimension: 2, labels: [projectAnnLabel(node)],
+          search: () => assert.fail('keyword fallback must not query semantic ANN'),
+        }),
+      });
+      assert.deepEqual(result.results.map(row => row.id), ['owner-chat']);
+      assert.equal(visits, 0);
+      assert.equal(result.stats.retrievalMode, 'keyword-index-overlay');
+      assert.equal(result.evidence.fallback.reason, 'embedding_unavailable');
+      assert.equal(result.evidence.fallback.route, 'keyword-index-overlay');
+      assert.equal(result.evidence.completeCoverage, true);
+    });
+  }
+});
+
+test('three and four word recall uses compatible owned ANN with covered deltas', async (t) => {
+  for (const query of ['conversation morning chat', 'owner conversation morning chat']) {
+    await t.test(query, async () => {
+      const node = { id: 'owner-chat', concept: 'Owner discussed the morning conversation and chat.', embedding: [1, 0], embedder_id: OWNED_EMBEDDER_ID };
+      const dir = await createBrain({ nodes: [node] });
+      await markAnn(dir);
+      await appendRevision(dir, { nodes: [{ id: 'delta', concept: 'unrelated mineral note' }] },
+        { nodeCount: 2, edgeCount: 0, clusterCount: 1 });
+      const embedQuery = async () => [1, 0];
+      embedQuery.id = OWNED_EMBEDDER_ID;
+      const label = projectAnnLabel(node);
+      const { result, visits } = await countedSourceSearch({
+        dir, query, embedQuery,
+        loadAnn: async () => ({ dimension: 2, embedderId: OWNED_EMBEDDER_ID, labels: [label],
+          search: () => [{ node: label, similarity: 0.98 }],
+        }),
+        request: { noiseFloor: 0.55 },
+      });
+      assert.deepEqual(result.results.map(row => row.id), ['owner-chat']);
+      assert.equal(visits, 0);
+      assert.equal(result.stats.retrievalMode, 'semantic-ann-delta-overlay');
+      assert.equal(result.evidence.fallback, null);
+      assert.equal(result.evidence.indexCoverage.complete, true);
+    });
+  }
+});
+
+test('ordinary dashboard fallback has a fixed visit budget on a 55k-node source', async (t) => {
+  for (const encoderReady of [true, false]) {
+    await t.test(encoderReady ? 'missing ANN' : 'encoder outage', async () => {
+      let visits = 0;
+      const source = {
+        manifest: { formatVersion: 1, baseRevision: 1, currentRevision: 1 },
+        async summarize() { return { nodes: 55_000, edges: 0 }; },
+        async *iterateNodes() {
+          for (let id = 0; id < 55_000; id += 1) {
+            visits += 1;
+            yield { id, concept: `unrelated mineral ${id}`, embedding: [0, 1] };
+          }
+        },
+        getEvidence(input = {}) { return { sourceHealth: 'healthy', ...input }; },
+      };
+      const service = createMemorySearchService({
+        embedQuery: async () => {
+          if (!encoderReady) throw new Error('encoder offline');
+          return [1, 0];
+        },
+        logger: { warn() {} },
+      });
+      const result = await service.search({
+        sourcePin: source, identity: { operationId: 'bounded-dashboard-fallback' },
+        query: 'owner conversation morning chat',
+      });
+      assert.ok(visits <= 4001, `fallback visited ${visits} nodes`);
+      assert.equal(result.evidence.completeCoverage, false);
+      assert.equal(result.evidence.fallback.completeness, 'incomplete');
+      assert.equal(result.evidence.fallback.scan.exhausted, true);
+      assert.equal(result.evidence.fallback.scan.visitBudget, 4000);
+    });
+  }
+});
+
+test('55k compact ANN labels keep longer dashboard queries indexed without source reads', async (t) => {
+  const node = { id: 'owner-chat', concept: 'Owner discussed the morning conversation and chat.', embedder_id: OWNED_EMBEDDER_ID };
+  const labels = [...fillerNodes(54_999), node].map(value => projectAnnLabel(value));
+  const source = {
+    manifest: { formatVersion: 1, baseRevision: 1, currentRevision: 1,
+      ann: { indexFile: 'memory-ann.test.index', metaFile: 'memory-ann.test.meta.json', builtFromRevision: 1 },
+    },
+    async summarize() { return { nodes: labels.length, edges: 0 }; },
+    async *iterateNodes() { assert.fail('55k-node indexed query must not read source nodes'); },
+    getEvidence(input = {}) { return { sourceHealth: 'healthy', ...input }; },
+  };
+  for (const encoderReady of [true, false]) {
+    const embedQuery = async () => {
+      if (!encoderReady) throw new Error('encoder offline');
+      return [1, 0];
+    };
+    embedQuery.id = OWNED_EMBEDDER_ID;
+    const service = createMemorySearchService({
+      embedQuery,
+      loadAnn: async () => ({ dimension: 2, embedderId: OWNED_EMBEDDER_ID,
+        count: labels.length, skipped: 0, labels,
+        search: () => [{ node: labels.at(-1), similarity: 0.98 }],
+      }),
+      logger: { warn() {} },
+    });
+    for (const query of ['conversation morning chat', 'owner conversation morning chat']) {
+      const result = await service.search({
+        sourcePin: source, identity: { operationId: 'large-dashboard-indexed-search' }, query,
+      });
+      assert.deepEqual(result.results.map(row => row.id), ['owner-chat']);
+      assert.equal(result.stats.retrievalMode, encoderReady ? 'semantic-ann' : 'keyword-index-overlay');
+      assert.equal(result.evidence.completeCoverage, true);
+      t.diagnostic(`${encoderReady ? 'semantic' : 'keyword'} ${query}: ${result.evidence.stageTimingsMs.response} ms on ${labels.length} synthetic ANN labels`);
+    }
+    await service.close();
+  }
+});
+
+test('an explicitly quoted phrase scans when ANN hits are below the semantic noise floor', async () => {
   const phrase = 'Trey Billy Strings tickets';
   const exact = { id: 'exact', concept: `${'prefix '.repeat(100)} ${phrase}`, embedding: [0, 1] };
   const neighbor = { id: 'neighbor', concept: 'Trey concert plans', embedding: [1, 0] };
   const dir = await createBrain({ nodes: [exact, neighbor] });
   await markAnn(dir);
   const { result, visits } = await countedSourceSearch({
-    dir, query: phrase, embedQuery: async () => [1, 0],
+    dir, query: `"${phrase}"`, embedQuery: async () => [1, 0],
     loadAnn: async () => ({ dimension: 2, labels: [exact, neighbor].map(node => projectAnnLabel(node)),
       search: () => [{ node: projectAnnLabel(neighbor), similarity: 0.2 }],
     }),
@@ -1387,7 +1535,7 @@ test('native manifest logical fallback shares two passes across semantic and key
   }
 });
 
-test('native two-pass fallback resolves late relevant authority after more than 5000 unrelated events', async () => {
+test('explicit exhaustive two-pass fallback resolves late relevant authority after more than 5000 unrelated events', async () => {
   const unrelatedClosures = Array.from({ length: 5_000 }, (_, index) => ({
     id: `noise-closure-${index}`,
     concept: `archived receipt ${index} is closed`,
@@ -1527,6 +1675,7 @@ test('native two-pass fallback resolves late relevant authority after more than 
     sourcePin: source,
     identity: { operationId: 'late-authority-two-pass', requesterAgent: 'jerry' },
     query: 'late authority canary',
+    exhaustive: true,
     topK: 10,
     minSimilarity: 0.1,
     noiseFloor: 0.1,

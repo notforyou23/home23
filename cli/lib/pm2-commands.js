@@ -16,6 +16,9 @@ import {
   startEcosystemProcesses,
 } from './shared-service-start.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
+import pm2Client from '../../engine/src/system/pm2-client.cjs';
+
+const { runPm2Sync } = pm2Client;
 
 const require = createRequire(import.meta.url);
 const { assertHomeCreationReady } = require('../../shared/home-creation-state.cjs');
@@ -35,15 +38,6 @@ const SHARED_SERVICE_LABELS = new Map(
 );
 const SHARED_SERVICE_NAMES = new Set(ALL_SHARED_SERVICES.map((service) => service.name));
 const AUTOSTART_SUPPORT_PROCESS_NAMES = Object.freeze(['home23-chrome-cdp']);
-
-function exec(cmd, opts = {}) {
-  try {
-    return execSync(cmd, { encoding: 'utf8', stdio: 'pipe', ...opts });
-  } catch (err) {
-    if (err.stdout) return err.stdout;
-    throw err;
-  }
-}
 
 function hostResidentNamesFromDisk(home23Root) {
   try {
@@ -318,7 +312,7 @@ export async function runStop(home23Root, agentName) {
         const names = agentProcessNameCandidates(target, home23Root);
         for (const name of names) {
           try {
-            execSync(`pm2 stop ${name}`, { stdio: 'pipe' });
+            runPm2Sync(['stop', name], { stdio: 'pipe' });
             console.log(`  ${name}: stopped`);
           } catch {
             console.log(`  ${name}: not running`);
@@ -333,17 +327,17 @@ export async function runStop(home23Root, agentName) {
     console.log('Stopping all Home23 agents...');
     // Also stop evobrew
     try {
-      execSync('pm2 stop home23-evobrew', { stdio: 'pipe' });
+      runPm2Sync(['stop', 'home23-evobrew'], { stdio: 'pipe' });
       console.log('  home23-evobrew: stopped');
     } catch {
       // Not running
     }
     try {
-      execSync('pm2 stop home23-screenlogic', { stdio: 'pipe' });
+      runPm2Sync(['stop', 'home23-screenlogic'], { stdio: 'pipe' });
       console.log('  home23-screenlogic: stopped');
     } catch { /* not running */ }
     try {
-      execSync(`pm2 stop ${ecosystemPath}`, { cwd: home23Root, stdio: 'inherit' });
+      runPm2Sync(['stop', ecosystemPath], { cwd: home23Root, stdio: 'inherit' });
     } catch {
       // PM2 prints its own output
     }
@@ -353,7 +347,7 @@ export async function runStop(home23Root, agentName) {
 export async function runStatus() {
   // Get PM2 process list and filter to home23-*
   try {
-    const output = exec('pm2 jlist');
+    const output = runPm2Sync(['jlist'], { encoding: 'utf8', stdio: 'pipe' });
     const processes = JSON.parse(output);
     const home23Procs = processes.filter((p) => p.name.startsWith('home23-'));
 
@@ -377,13 +371,17 @@ export async function runStatus() {
       console.log(`  ${name} ${status} ${pid} ${mem} ${restarts}`);
     }
     console.log('');
-  } catch {
+  } catch (error) {
+    if (process.env.HOME23_PRODUCT_HOST === 'true') throw error;
     // Fall back to pm2 status
     execSync('pm2 status', { stdio: 'inherit' });
   }
 }
 
 export async function runLogs(home23Root, agentName) {
+  if (process.env.HOME23_PRODUCT_HOST === 'true') {
+    throw Object.assign(new Error('Read this home\'s runtime/pm2/logs files for product process logs.'), { code: 'host_supervisor_logs_unavailable' });
+  }
   if (agentName) {
     // Tail logs for all of the agent's processes. A bare `home23-<name>`
     // matches only the engine; the anchored regex covers -dash/-mcp/

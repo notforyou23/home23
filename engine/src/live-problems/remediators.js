@@ -11,10 +11,11 @@
  * was applied; the next verify tick decides whether it actually worked.
  */
 
-const { execFile, execFileSync, execSync, spawn } = require('child_process');
+const { execFileSync, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { runPm2, runPm2Sync, schedulePm2 } = require('../system/pm2-client.cjs');
 
 function transportErrorDetail(err) {
   const cause = err?.cause instanceof Error ? err.cause : null;
@@ -52,16 +53,7 @@ function isSelfProcess(name) {
 }
 
 function scheduleSelfRestart(name) {
-  const child = spawn('sh', [
-    '-c',
-    'sleep 1; exec pm2 restart "$1" --update-env',
-    'home23-self-restart',
-    name,
-  ], {
-    detached: true,
-    stdio: 'ignore',
-  });
-  child.unref();
+  schedulePm2(['restart', name, '--update-env']);
 }
 
 /**
@@ -191,10 +183,10 @@ const remediators = {
       }
     }
     try {
-      await new Promise((resolve, reject) => execFile('pm2', ['restart', name, '--update-env'], {
+      await runPm2(['restart', name, '--update-env'], {
         encoding: 'utf8',
         timeout: 15000,
-      }, (err) => err ? reject(err) : resolve()));
+      });
       return { outcome: 'success', detail: `restarted ${name}` };
     } catch (err) {
       return { outcome: 'failed', detail: `pm2 restart failed: ${err.message}` };
@@ -267,7 +259,8 @@ const remediators = {
       return { outcome: 'rejected', detail: `invalid catalog entry: ${name}` };
     }
     try {
-      execFileSync(cmd, args, {
+      const execute = cmd === 'pm2' ? (_cmd, argv, options) => runPm2Sync(argv, options) : execFileSync;
+      execute(cmd, args, {
         encoding: 'utf8',
         timeout: timeoutMs || 10000,
         stdio: 'pipe',

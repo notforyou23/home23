@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
+const { runPm2 } = require('../system/pm2-client.cjs');
 const topology = require('../system/home23-process-topology.js');
 const { isAgendaHandoffProblem } = require('../live-problems/store.js');
 
@@ -320,20 +320,14 @@ function summarizeCurrentPm2(list) {
 }
 
 async function readCurrentPm2List() {
-  return new Promise((resolve) => {
-    execFile('pm2', ['jlist'], {
+  try {
+    const { stdout } = await runPm2(['jlist'], {
       encoding: 'utf8',
       timeout: 10_000,
       maxBuffer: 10 * 1024 * 1024,
-    }, (error, stdout) => {
-      if (error) return resolve(null);
-      try {
-        resolve(JSON.parse(stdout));
-      } catch {
-        resolve(null);
-      }
     });
-  });
+    return JSON.parse(stdout);
+  } catch { return null; }
 }
 
 function normalizePm2RestartCount(value) {

@@ -8,6 +8,27 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const { DashboardServer, readJsonlTail } = require('../../../engine/src/dashboard/server.js');
 
+test('dashboard runtime snapshots use the guarded PM2 client', () => {
+  const client = require('../../../engine/src/system/pm2-client.cjs');
+  const original = client.runPm2Sync;
+  const calls = [];
+  client.runPm2Sync = (args, options) => {
+    calls.push({ args, options });
+    return JSON.stringify([{ name: 'home23-jerry', pid: 123,
+      pm2_env: { status: 'online', restart_time: 2 } }]);
+  };
+  try {
+    const server = Object.create(DashboardServer.prototype);
+    const snapshot = server.getHome23RuntimeProcessSnapshot();
+    assert.equal(snapshot['home23-jerry'].pid, 123);
+    assert.equal(snapshot['home23-jerry'].status, 'online');
+    assert.deepEqual(calls.map(call => call.args), [['jlist']]);
+    assert.equal(calls[0].options.timeout, 1500);
+  } finally {
+    client.runPm2Sync = original;
+  }
+});
+
 test('live-problems file resolves through requested agent context', () => {
   const server = Object.create(DashboardServer.prototype);
   server.getHome23AgentContext = (candidate) => ({

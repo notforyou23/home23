@@ -33,6 +33,10 @@ export async function adoptSupervisorForUpdate(home, journal, dependencies = {})
   const supervisor = dependencies.supervisor || await importSupervisor(home);
   const admission = journal.supervisorAdmission;
   const status = await supervisor.inspectProductSupervisor(home);
+  if (admission.ownership === 'launchd' && status.ownership === 'exited') {
+    return supervisor.recoverProductSupervisor(home, { updateOwnerToken: journal.ownerToken, updateId: journal.id,
+      expectedPid: admission.expectedPid, generation: admission.generation, registrations: admission.registrations }, dependencies);
+  }
   if (['legacy', 'launchd'].includes(admission.ownership)) {
     if ((status.ownership === admission.ownership) && (status.pid !== admission.expectedPid || status.generation !== admission.generation)) {
       throw fail('host_supervisor_ambiguous', 'The admitted supervisor generation changed before migration.');
@@ -48,6 +52,14 @@ export async function adoptSupervisorForUpdate(home, journal, dependencies = {})
     return { ownership: independent.ownership, pid: independent.pid, generation: independent.generation, updateId: journal.id, pausedNames: [] };
   }
   throw fail('host_supervisor_ambiguous', 'The admitted supervisor ownership changed.');
+}
+
+/** Readiness recovery is owner-bound and refuses detached live writers. */
+export async function recoverSupervisorForUpdate(home, journal, dependencies = {}) {
+  if ((dependencies.platform || process.platform) !== 'darwin' || !journal.supervisorAdmission || !existsSync(modulePath(home))) return null;
+  const supervisor = dependencies.supervisor || await importSupervisor(home);
+  return supervisor.recoverProductSupervisor(home, { updateOwnerToken: journal.ownerToken,
+    updateId: journal.id, registrations: journal.supervisorAdmission.registrations }, dependencies);
 }
 
 /** The app may only quit after its resident supervisor has independent ownership. */

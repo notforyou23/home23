@@ -478,3 +478,18 @@ test('npm pm2:start routes through the coordinated Home23 CLI', async () => {
     'node cli/home23.js stop && node cli/home23.js start',
   );
 });
+
+test('product shared-service commands use the installed guarded client without inherited PM2 environment', () => {
+  const calls = [];
+  startEcosystemProcesses({
+    home23Root: '/tmp/fixture-product/app',
+    names: ['home23-coordination'],
+    env: { HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: '/tmp/fixture-product/app', PM2_HOME: '/tmp/fixture-product/runtime/pm2' },
+    execFile: (...call) => calls.push(call),
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], process.execPath);
+  assert.equal(calls[0][1][3], '/tmp/fixture-product');
+  assert.deepEqual(JSON.parse(calls[0][1][4]), ['start', '/tmp/fixture-product/app/ecosystem.config.cjs', '--only', 'home23-coordination', '--update-env', '--silent']);
+  assert.equal(calls[0][2].env.PM2_HOME, undefined);
+});

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { captureSupervisorForUpdate, adoptSupervisorForUpdate, verifySupervisorBeforeApplication } from '../../cli/lib/product-supervisor-admission.js';
+import { captureSupervisorForUpdate, adoptSupervisorForUpdate, recoverSupervisorForUpdate, verifySupervisorBeforeApplication } from '../../cli/lib/product-supervisor-admission.js';
 
 function fixture(t) {
   const parent = mkdtempSync(join(tmpdir(), 'home23-supervisor-admission-'));
@@ -102,4 +102,36 @@ test('cold running admission establishes ownership without inventing a previous 
   } });
   assert.deepEqual(result, { ownership: 'launchd', pid: 43, generation: '43:birth', updateId: 'cold-update', pausedNames: [] });
   assert.equal(journal.supervisorAdmission.expectedPid, undefined);
+});
+
+test('readiness recovery passes the current update owner and full admission through the guarded resident operation', async t => {
+  const f = fixture(t), journal = { id: 'recover-update', ownerToken: 'recover-owner', supervisorAdmission: { registrations: f.rows } };
+  const receipt = { ownership: 'launchd', updateId: journal.id, pid: 43, generation: '43:birth', pausedNames: ['paused-role'] };
+  const result = await recoverSupervisorForUpdate(f.home, journal, { platform: 'darwin', supervisor: {
+    recoverProductSupervisor: async (home, admission) => {
+      assert.equal(home, f.home);
+      assert.deepEqual(admission, { updateId: journal.id, updateOwnerToken: journal.ownerToken, registrations: f.rows });
+      return receipt;
+    },
+  } });
+  assert.deepEqual(result, receipt);
+  assert.equal(await recoverSupervisorForUpdate(f.home, journal, { platform: 'linux' }), null);
+});
+
+test('a pre-writer launchd admission routes its exited owner through guarded recovery rather than refusing ownership', async t => {
+  const f = fixture(t), journal = { id: 'pre-writer-update', ownerToken: 'pre-writer-owner', phase: 'selected',
+    candidateStarted: false, acceptedWork: false, supervisorAdmission: { ownership: 'launchd', expectedPid: 43,
+      generation: '43:birth', registrations: f.rows } };
+  const receipt = { ownership: 'launchd', pid: 44, generation: '44:birth', updateId: journal.id, pausedNames: ['paused-role'] };
+  const result = await adoptSupervisorForUpdate(f.home, journal, { platform: 'darwin', supervisor: {
+    inspectProductSupervisor: async () => ({ ownership: 'exited', pid: 43, lastExitCode: 1 }),
+    recoverProductSupervisor: async (home, admission) => {
+      assert.equal(home, f.home);
+      assert.deepEqual(admission, { updateId: journal.id, updateOwnerToken: journal.ownerToken,
+        expectedPid: 43, generation: '43:birth', registrations: f.rows });
+      return receipt;
+    },
+    adoptProductSupervisor: async () => { throw new Error('An exited owner must not use the live-daemon shutdown path'); },
+  } });
+  assert.deepEqual(result, receipt);
 });

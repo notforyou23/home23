@@ -9,6 +9,7 @@
  */
 
 const { execFileSync } = require('child_process');
+const { runPm2Sync } = require('../../system/pm2-client.cjs');
 
 function getPsRssMB(pid) {
   if (!pid) return null;
@@ -53,7 +54,7 @@ function poll() {
   try {
     const agent = process.env.HOME23_AGENT || 'jerry';
     const targetName = `home23-${agent}`;
-    const raw = execFileSync('pm2', ['jlist'], {
+    const raw = runPm2Sync(['jlist'], {
       encoding: 'utf8',
       timeout: 5000,
       maxBuffer: 1024 * 1024 * 4,

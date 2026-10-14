@@ -13,8 +13,10 @@ import { promisify } from 'node:util';
 import { PollChannel } from '../base/poll-channel.js';
 import { ChannelClass, makeObservation } from '../contract.js';
 import topology from '../../system/home23-process-topology.js';
+import pm2Client from '../../system/pm2-client.cjs';
 
 const execFileAsync = promisify(execFile);
+const { runPm2 } = pm2Client;
 const { annotateHome23ProcessList } = topology;
 
 function normalizePm2RestartCount(value) {
@@ -96,7 +98,7 @@ async function defaultSample({ topN = 15 } = {}) {
 
 async function readPm2ByPid() {
   try {
-    const { stdout } = await execFileAsync('pm2', ['jlist'], {
+    const { stdout } = await runPm2(['jlist'], {
       encoding: 'utf8',
       timeout: 10_000,
       maxBuffer: 10 * 1024 * 1024,

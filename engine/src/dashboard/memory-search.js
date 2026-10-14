@@ -64,6 +64,8 @@ const MAX_HEAP_BYTES = 8 * 1024 * 1024;
 const CONTEXT_OUTAGE_SCAN_VISIT_BUDGET = 4000;
 // Cooperative: checked after each yielded node, not mid-read / mid-inflate.
 const CONTEXT_OUTAGE_SCAN_DEADLINE_MS = 1500;
+const SEARCH_FALLBACK_SCAN_VISIT_BUDGET = 4000;
+const SEARCH_FALLBACK_SCAN_DEADLINE_MS = 1500;
 const MAX_RECORD_BYTES = 256 * 1024;
 const MAX_ANN_METADATA_BYTES = 256 * 1024 * 1024;
 const MAX_ANN_METADATA_HEADER_BYTES = 1024 * 1024;
@@ -1525,7 +1527,10 @@ function createMemorySearchService({
     let logicalScanVisits = 0;
     let logicalScanExhausted = false;
     let logicalScanExhaustedBy = null;
-    let logicalScanVisitBudget = Number.POSITIVE_INFINITY;
+    let logicalScanVisitBudget = request.exhaustive === true
+      ? Number.POSITIVE_INFINITY : SEARCH_FALLBACK_SCAN_VISIT_BUDGET;
+    let logicalScanDeadlineMs = request.exhaustive === true
+      ? Number.POSITIVE_INFINITY : SEARCH_FALLBACK_SCAN_DEADLINE_MS;
     let logicalScanDeadlineAt = Number.POSITIVE_INFINITY;
     const consumeLogicalVisit = () => {
       // Runs only after iterateNodes yields. Pending disk/inflate waits are
@@ -1548,6 +1553,7 @@ function createMemorySearchService({
     const runLogicalSourceScan = async ({ includeSemantic = false } = {}) => {
       if (logicalScanComplete) return;
       const scanStartedAt = performance.now();
+      logicalScanDeadlineAt = scanStartedAt + logicalScanDeadlineMs;
       const logicalSemanticCandidates = createBoundedCandidateHeap({
         maxCount: candidateLimit,
         maxBytes: MAX_HEAP_BYTES,
@@ -1677,15 +1683,17 @@ function createMemorySearchService({
         min: 1,
         max: CONTEXT_OUTAGE_SCAN_VISIT_BUDGET,
       });
-      const deadlineMs = parseBoundedInteger(request.contextOutageScanDeadlineMs, {
+      logicalScanDeadlineMs = parseBoundedInteger(request.contextOutageScanDeadlineMs, {
         name: 'contextOutageScanDeadlineMs',
         defaultValue: CONTEXT_OUTAGE_SCAN_DEADLINE_MS,
         min: 0,
         max: 60_000,
       });
-      logicalScanDeadlineAt = performance.now() + deadlineMs;
     }
-    const useAnn = queryEmbedding && annEmbeddingCompatible && annRevisionEligible && request.exhaustive !== true
+    // ANN labels are also the bounded lexical index. An unavailable encoder
+    // must not prevent keyword retrieval from using the same covered index.
+    const useAnn = annRevisionEligible && request.exhaustive !== true
+      && (!queryEmbedding || annEmbeddingCompatible)
       && (annCovered || contextFast);
     if (contextFast && !annCovered && !fallback) {
       fallback = {
@@ -1696,15 +1704,17 @@ function createMemorySearchService({
     }
     if (useAnn) {
       const consumeAnn = async (ann) => {
-        if (!ann || Number(ann.dimension || ann.dim) !== queryEmbedding.length) return false;
-        if (queryEmbedderId && queryEmbedderId !== LEGACY_EMBEDDER_ID
+        if (!ann || (queryEmbedding && Number(ann.dimension || ann.dim) !== queryEmbedding.length)) return false;
+        if (queryEmbedding && queryEmbedderId && queryEmbedderId !== LEGACY_EMBEDDER_ID
             && ann.embedderId !== queryEmbedderId) {
           throw memorySourceError('ann_descriptor_unsupported',
             'ANN embedder identity does not match query', {
               status: 503, retryable: false, annFallbackReason: 'ann_embedding_id_unknown',
             });
         }
-        semanticRoute = annFresh ? 'semantic-ann' : 'semantic-ann-delta-overlay';
+        semanticRoute = queryEmbedding
+          ? (annFresh ? 'semantic-ann' : 'semantic-ann-delta-overlay')
+          : 'keyword-index-overlay';
         if (Array.isArray(ann.labels)) {
           annLabelsAvailable = ann.count === undefined || ann.skipped === 0
             || ann.includesSkippedLabels === true
@@ -1733,11 +1743,14 @@ function createMemorySearchService({
           }
         }
         const annStartedAt = performance.now();
-        for (const hit of await annSearchRows(ann, queryEmbedding, candidateLimit, { signal })) {
+        for (const hit of queryEmbedding ? await annSearchRows(ann, queryEmbedding, candidateLimit, { signal }) : []) {
           throwIfAborted(signal);
           const node = hit.node || hit;
           if (!node) continue;
-          if (!vectorIsCompatible(node)) continue;
+          // Compact ANN labels omit per-node vector metadata. The validated
+          // generation identity establishes their embedding space; treating a
+          // missing label stamp as legacy discards every owned-ONNX ANN hit.
+          if (queryEmbedderId && (node.embedder_id || ann.embedderId || LEGACY_EMBEDDER_ID) !== queryEmbedderId) continue;
           if (overlay?.hasChangedNode(node.id)) continue;
           if (tag && node.tag !== tag) continue;
           const similarity = Number(hit.similarity);
@@ -1772,7 +1785,7 @@ function createMemorySearchService({
           for (const node of overlay.nodeUpserts()) {
             throwIfAborted(signal);
             if (tag && node.tag !== tag) continue;
-            if (vectorIsCompatible(node) && Array.isArray(node.embedding) && node.embedding.length === queryEmbedding.length) {
+            if (queryEmbedding && vectorIsCompatible(node) && Array.isArray(node.embedding) && node.embedding.length === queryEmbedding.length) {
               const similarity = cosineSimilarity(queryEmbedding, node.embedding);
               if (similarity >= similarityThreshold) {
                 offerAuthorityResolved(semantic, {
@@ -1820,6 +1833,13 @@ function createMemorySearchService({
         };
       } finally {
         annLoadMs = performance.now() - annLoadStartedAt;
+      }
+      if (annUsed && embeddingOutage && fallback) {
+        fallback = {
+          ...fallback,
+          route: 'keyword-index-overlay',
+          completeness: annCovered ? 'complete' : 'incomplete',
+        };
       }
       if (!annUsed && !fallback) {
         fallback = {
@@ -1884,9 +1904,10 @@ function createMemorySearchService({
       const kind = row.matchKind || classifyLexicalMatch(row, query, keywordTokens).matchKind;
       return kind === 'exact_phrase' || kind === 'exact_id';
     });
-    // Ordinary multi-word queries can use good ANN hits without proving an
-    // exact phrase exists. Explicit quotes retain the logical exact check.
-    const needsPhraseScan = isExplicitPhraseQuery(query) || !annUsed || semanticTop.length === 0;
+    // Ordinary recall queries accept indexed lexical matches even when ANN
+    // hits are filtered as noise. Query length does not imply exact-phrase
+    // intent. Explicit quotes retain the bounded logical exact check.
+    const needsPhraseScan = isExplicitPhraseQuery(query);
     if (!contextFast && allowLogicalScan && phraseQuery && needsPhraseScan && !indexedHasExact && !fallback) {
       fallback = {
         route: 'logical-source-scan',
@@ -1911,7 +1932,7 @@ function createMemorySearchService({
         filtered: logicalScanFiltered,
         evidence: { completeCoverage: !logicalScanExhausted },
       };
-      if (embeddingOutage && fallback) {
+      if (fallback && (embeddingOutage || logicalScanExhausted)) {
         fallback = {
           ...fallback,
           completeness: logicalScanExhausted ? 'incomplete' : fallback.completeness,
@@ -1951,7 +1972,8 @@ function createMemorySearchService({
       ? 'degraded'
       : baseEvidence.sourceHealth;
     const retrievalMode = fallback
-      ? (fallback.route === 'context-fast' ? 'context-fast' : 'logical-source-scan')
+      ? (['context-fast', 'keyword-index-overlay'].includes(fallback.route)
+        ? fallback.route : 'logical-source-scan')
       : semanticTop.length > 0
         ? semanticRoute
         : (keywordUsesIndex ? 'keyword-index-overlay' : 'logical-source-scan');
@@ -2124,6 +2146,8 @@ module.exports = {
   MAX_RESPONSE_BYTES,
   CONTEXT_OUTAGE_SCAN_VISIT_BUDGET,
   CONTEXT_OUTAGE_SCAN_DEADLINE_MS,
+  SEARCH_FALLBACK_SCAN_VISIT_BUDGET,
+  SEARCH_FALLBACK_SCAN_DEADLINE_MS,
   createBoundedCandidateHeap,
   createAnnWorkerRuntime,
   createDefaultEmbedQuery,
