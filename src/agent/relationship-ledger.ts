@@ -561,8 +561,10 @@ export class RelationshipLedger {
     });
     const withheldMatching = matching.filter(e => exclude.has(e.privacy_class)).length;
     const visible = matching.filter(e => !exclude.has(e.privacy_class));
-    const tokens = tokenize(query);
-    visible.sort((a, b) => (scoreEntry(b, tokens, nowMs) - scoreEntry(a, tokens, nowMs))
+    const tokens = relationshipQueryTerms(query);
+    visible.sort((a, b) => (ownerQuery.window
+      ? Number(b.provenance.generation_method === 'owner_conversation') - Number(a.provenance.generation_method === 'owner_conversation') : 0)
+      || (scoreEntry(b, tokens, nowMs) - scoreEntry(a, tokens, nowMs))
       || byNewestFirst(a, b));
     return { entries: visible, withheldMatching };
   }
@@ -664,7 +666,7 @@ export class RelationshipLedger {
     const nowMs = typeof opts.nowMs === 'number' && Number.isFinite(opts.nowMs)
       ? opts.nowMs
       : Date.parse(this.now());
-    const tokens = tokenize(query);
+    const tokens = relationshipQueryTerms(query);
 
     // "active" here = non-removed, non-superseded (resolved threads/promises
     // still carry relationship context). Privacy exclusions applied up front.
@@ -776,6 +778,22 @@ function tokenize(query: string): string[] {
   ));
 }
 
+// These identify a recall request, not the subject of a durable correction.
+// A date narrows owner conversation evidence; it does not establish overlap
+// with an old relationship note that happens to contain the same numbers.
+const RELATIONSHIP_GENERIC_TERMS = new Set(('a an and are as at be been by can could did do does for from '
+  + 'had has have how i in is it me my of on or our please recall remember said say show tell that the their '
+  + 'them there these they this those to told us was we were what when where which who why will with would '
+  + 'you your am he she no owner conversation conversations morning afternoon evening today yesterday '
+  + 'brain talk talked discuss discussed re').split(' '));
+
+function relationshipQueryTerms(query: string): string[] {
+  const withoutDates = query
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+    .replace(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b/gi, ' ');
+  return tokenize(withoutDates).filter(term => !RELATIONSHIP_GENERIC_TERMS.has(term));
+}
+
 export function normalizeRelationshipText(text: string): string {
   return String(text || '')
     .toLowerCase()
@@ -786,40 +804,50 @@ export function normalizeRelationshipText(text: string): string {
     .trim();
 }
 
+function relationshipSearchText(entry: RelationshipEntry): string {
+  return normalizeRelationshipText([
+    entry.title,
+    entry.statement,
+    entry.why ?? '',
+    entry.evidence_note ?? '',
+    ...entry.triggers,
+    ...entry.applies_to,
+  ].join(' '));
+}
+
+/** Real meaningful term overlap, independent of entry kind and recency. */
+export function relationshipLexicalScore(entry: RelationshipEntry, query: string): number {
+  const tokens = relationshipQueryTerms(query);
+  if (!tokens.length) return 0;
+  const words = new Set(relationshipSearchText(entry).split(' '));
+  return tokens.filter(token => words.has(token)).length / tokens.length;
+}
+
 /** Token/phrase match for recall — a quoted identity sentence must still hit. */
 export function entryMatchesQuery(entry: RelationshipEntry, query: string): boolean {
   const q = query.trim();
   if (!q) return true;
-  const hay = normalizeRelationshipText([
-    entry.title,
-    entry.statement,
-    entry.why ?? '',
-    ...entry.triggers,
-    ...entry.applies_to,
-  ].join(' '));
-  const needle = normalizeRelationshipText(q);
-  if (needle.length >= 8 && hay.includes(needle)) return true;
-  const tokens = tokenize(q);
+  const tokens = relationshipQueryTerms(q);
   if (tokens.length === 0) return false;
-  if (tokens.length >= 3) {
-    for (let i = 0; i <= tokens.length - 3; i++) {
-      const window = tokens.slice(i, i + 3).join(' ');
-      if (hay.includes(window)) return true;
-    }
-  }
-  const hits = tokens.filter(t => hay.includes(t)).length;
+  const hay = relationshipSearchText(entry);
+  const needle = normalizeRelationshipText(q);
+  if (needle.length >= 8 && ` ${hay} `.includes(` ${needle} `)) return true;
+  const words = new Set(hay.split(' '));
+  const hits = tokens.filter(token => words.has(token)).length;
   return hits >= Math.min(3, Math.ceil(tokens.length * 0.4));
 }
 
 function scoreEntry(entry: RelationshipEntry, tokens: string[], nowMs: number): number {
   let relevance = 0;
-  const title = entry.title.toLowerCase();
-  const statement = entry.statement.toLowerCase();
+  const title = new Set(tokenize(entry.title));
+  const statement = new Set(tokenize(`${entry.statement} ${entry.why ?? ''} ${entry.evidence_note ?? ''}`));
+  const triggers = new Set(entry.triggers.flatMap(tokenize));
+  const appliesTo = new Set(entry.applies_to.flatMap(tokenize));
   for (const token of tokens) {
-    if (entry.triggers.some(t => t.includes(token))) relevance += 3;
-    else if (entry.applies_to.some(a => a.toLowerCase().includes(token))) relevance += 2;
-    else if (title.includes(token)) relevance += 1.5;
-    else if (statement.includes(token)) relevance += 1;
+    if (triggers.has(token)) relevance += 3;
+    else if (appliesTo.has(token)) relevance += 2;
+    else if (title.has(token)) relevance += 1.5;
+    else if (statement.has(token)) relevance += 1;
   }
   const ageMs = Math.max(0, nowMs - Date.parse(entry.updatedAt));
   const ageDays = ageMs / 86_400_000;

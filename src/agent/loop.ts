@@ -1436,6 +1436,7 @@ export class AgentLoop {
         ? undefined : this.toolContext.projectWriteRoots,
       memoryObjectStore: this.memoryStore,
       relationshipLedger: this.relationshipLedger,
+      ownerConversationSessionGapMinutes: this.ownerDistill?.sessionGapMinutes,
       parentWorkId: turnRuntime?.coordinationWorkDestination?.parentWorkId
         ?? turnRuntime?.parentWorkId
         ?? turnRuntime?.coordinationOrigin?.workId
