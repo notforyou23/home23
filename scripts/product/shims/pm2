@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+import { runProductPm2Shim } from '../../../cli/lib/product-pm2-shim.js';
+
+process.exitCode = await runProductPm2Shim(process.argv.slice(2));

@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 
 export const PORT_KEYS = ['coordination', 'engine', 'dashboard', 'mcp', 'bridge', 'evobrew', 'observatory'];
@@ -73,7 +73,9 @@ export function productEnvironment(homeRoot, { prepare = false, encoderRequired 
   if (prepare) for (const directory of [runtime, userHome, pm2Home, socketRoot, ...(encoderRequired ? [cache] : [])]) privateDirectory(directory);
   const env = {
     HOME: userHome, USER: `home23-${process.getuid?.() ?? 'user'}`, LOGNAME: `home23-${process.getuid?.() ?? 'user'}`,
-    PATH: `${join(homeRoot, 'bin')}:${join(homeRoot, 'tools', 'node_modules', 'pm2', 'bin')}:/usr/bin:/bin:/usr/sbin:/sbin`,
+    // Workspace scripts may invoke bare `pm2`. Only the read-only Host shim
+    // belongs on their PATH; the supervisor uses the packaged CLI directly.
+    PATH: `${join(homeRoot, 'app', 'scripts', 'product', 'shims')}:${join(homeRoot, 'bin')}:/usr/bin:/bin:/usr/sbin:/sbin`,
     TMPDIR: socketRoot, LANG: 'en_US.UTF-8', NODE_ENV: 'production',
     HOME23_ROOT: join(homeRoot, 'app'), HOME23_PRODUCT_HOST: 'true',
     // HOME is Home23's own (npm, Chrome profile, Caddy, Python caches,
@@ -98,6 +100,20 @@ export function productEnvironment(homeRoot, { prepare = false, encoderRequired 
 /** House processes cannot inherit the resident supervisor's control plane. */
 export function withoutSupervisorEnvironment(environment) {
   return Object.fromEntries(Object.entries(environment || {}).filter(([key]) => !/^PM2_/i.test(key)));
+}
+/** Preserved launch environments may carry an old PM2 PATH. Keep their custom
+ * tools, but retain this home's read-only shim and routing at every role fork. */
+export function productRoleEnvironment(homeRoot, environment = {}) {
+  homeRoot = absoluteHome(homeRoot);
+  const base = productEnvironment(homeRoot);
+  const shim = join(homeRoot, 'app', 'scripts', 'product', 'shims');
+  const node = join(homeRoot, 'bin');
+  const rawPm2 = join(homeRoot, 'tools', 'node_modules', 'pm2', 'bin');
+  const paths = (typeof environment.PATH === 'string' ? environment.PATH : base.PATH).split(delimiter);
+  const safePaths = paths.filter(directory => !(isAbsolute(directory) && resolve(directory) === rawPm2));
+  return { ...withoutSupervisorEnvironment(environment),
+    PATH: [...new Set([shim, node, ...safePaths])].join(delimiter),
+    HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: join(homeRoot, 'app') };
 }
 export function validatePortPlan(plan, { encoderRequired = false, continuingBindings = false } = {}) {
   const keys = portKeysFor({ encoderRequired });

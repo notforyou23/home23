@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { connect } from 'node:net';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { absoluteHome, privateJSON, productEnvironment, readPrivateJSON, withoutSupervisorEnvironment } from './product-environment.js';
+import { absoluteHome, privateJSON, productEnvironment, productRoleEnvironment, readPrivateJSON } from './product-environment.js';
 import { acquireInstallLock, readProductManifest } from './product-payload.js';
 import { writerStopOrder } from './product-update-inventory.js';
 
@@ -510,9 +510,11 @@ export function startResidentDaemon(plan, require, { runtime = process, domainFa
   const forkMode = God.forkMode;
   if (typeof forkMode === 'function') God.forkMode = function(environment, cb) {
     // PM2 --update-env merges the client's PM2 variables back into flat
-    // records, bypassing ecosystem filter_env. Scrub at the actual fork too.
+    // records, bypassing ecosystem filter_env. Saved registrations can also
+    // retain a raw PM2 PATH. Scrub and restore safe routing at the actual fork.
     for (const key of Object.keys(environment)) if (/^PM2_/i.test(key)) delete environment[key];
-    if (environment.env) environment.env = withoutSupervisorEnvironment(environment.env);
+    Object.assign(environment, productRoleEnvironment(plan.homeRoot, environment));
+    if (environment.env) environment.env = productRoleEnvironment(plan.homeRoot, environment.env);
     return forkMode.call(this, environment, cb);
   };
   const domain = domainFactory();

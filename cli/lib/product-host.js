@@ -4,10 +4,10 @@ import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { delimiter, isAbsolute, join, relative, resolve } from 'node:path';
 import { readMoveFence } from './product-backup.js';
 import { detectForeignBindings } from './product-foreign-bindings.js';
-import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts, withoutSupervisorEnvironment } from './product-environment.js';
+import { absoluteHome, choosePortPlan, privateJSON, productEnvironment, productRoleEnvironment, providerEndpoint, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts, withoutSupervisorEnvironment } from './product-environment.js';
 import { inspectMemorySeal, inspectProductMemory } from './product-memory.js';
 import { writerStopOrder } from './product-update-inventory.js';
 import { ensureProductSupervisor, inspectProductSupervisor, productSupervisorCommand, supervisorSocketListening as supervisorListening } from './product-supervisor.js';
@@ -275,9 +275,16 @@ export function safeProcesses(rows, homeRoot, names, continuationServices = []) 
     const args = Array.isArray(env.args) ? env.args : [];
     const ownScript = script === join(homeRoot, 'bin', 'node') && args.some(arg => typeof arg === 'string' && arg.startsWith(appRoot + '/'));
     const continuation = continuationServices.find(service => service.name === row.name);
+    // Updates must still own and quiesce an exact pre-shim registration. New
+    // definitions and resident forks always use the normalized environment.
+    const previousEnvironment = continuation && { ...withoutSupervisorEnvironment(continuation.env),
+      PATH: continuation.env.PATH ?? [join(homeRoot, 'bin'), join(homeRoot, 'tools/node_modules/pm2/bin'), '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(delimiter),
+      HOME23_PRODUCT_HOST: continuation.env.HOME23_PRODUCT_HOST ?? 'true',
+      HOME23_ROOT: continuation.env.HOME23_ROOT ?? appRoot };
+    const matchesEnvironment = expected => Object.entries(expected).every(([key, value]) => env[key] === value);
     const matchingContinuation = continuation && script === continuation.executable && env.pm_cwd === continuation.cwd
       && JSON.stringify(args) === JSON.stringify(continuation.args)
-      && Object.entries(continuation.env).every(([key, value]) => env[key] === value);
+      && (matchesEnvironment(previousEnvironment) || matchesEnvironment(productRoleEnvironment(homeRoot, continuation.env)));
     return { name: row.name, status: env.status || 'unknown', pid: row.pid || 0, restarts: env.restart_time || 0,
       owned: continuation ? Boolean(matchingContinuation)
         : ownScript && typeof env.pm_cwd === 'string' && (env.pm_cwd === appRoot || env.pm_cwd.startsWith(appRoot + '/')) };
@@ -430,7 +437,7 @@ function driver(homeRoot, dependencies, state) {
         const executable = relative(service.cwd, service.executable);
         if (!executable || /\s/.test(executable) || resolve(service.cwd, executable) !== service.executable) throw new Error(`Continuing executable cannot be safely launched: ${service.name}`);
         return { name: service.name, script: executable, interpreter: 'none', args: service.args,
-          cwd: service.cwd, env: withoutSupervisorEnvironment({ ...env, ...service.env }), filter_env: ['PM2_'], autostart: true, autorestart: true,
+          cwd: service.cwd, env: productRoleEnvironment(homeRoot, { ...env, ...service.env }), filter_env: ['PM2_'], autostart: true, autorestart: true,
           min_uptime: 100, exp_backoff_restart_delay: 2000 };
       });
       return [...standard, ...continuation];

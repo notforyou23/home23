@@ -18,7 +18,7 @@ import { assertWritersIdle, rebindAdoptedHome } from '../../cli/lib/product-back
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 import { acquireManagedStartLocks } from '../../cli/lib/pm2-commands.js';
 import { inspectUpdateInventory } from '../../cli/lib/product-update-inventory.js';
-import { withReservedPorts } from '../../cli/lib/product-environment.js';
+import { productRoleEnvironment, withReservedPorts } from '../../cli/lib/product-environment.js';
 import {
   runHostAction, hostResidentNames, ownedProcessNamesForState, probeReadiness, residentPortsFor, safeProcesses,
 } from '../../cli/lib/product-host.js';
@@ -623,7 +623,7 @@ test('reviewed continuation service binds exact stopped source and joins Host ow
   assert.equal(host.continuationServices[0].name, service.name);
   assert.ok(ownedProcessNamesForState(host).includes(service.name));
   const row = { name: service.name, pid: 41, pm2_env: { pm_exec_path: service.run.executable,
-    pm_cwd: service.run.cwd, args: service.run.args, ...service.run.env, status: 'online' } };
+    pm_cwd: service.run.cwd, args: service.run.args, ...productRoleEnvironment(destination, service.run.env), status: 'online' } };
   assert.equal(safeProcesses([row], destination, [service.name], host.continuationServices)[0].owned, true);
   assert.equal(safeProcesses([{ ...row, pm2_env: { ...row.pm2_env, args: [path.join(destination, 'app/different.js')] } }],
     destination, [service.name], host.continuationServices)[0].owned, false);
@@ -882,12 +882,12 @@ test('reviewed managed network bindings keep exact legacy ports through adoption
   assert.throws(() => planManagedSourceAdoption(source.home, { preservationPlan: changed }), /differs from source/);
 });
 
-test('listSourceWriters inventories source PATH pm2 with ambient PM2 sockets stripped', async t => {
+test('listSourceWriters invokes absolute source PM2 with ambient PM2 sockets stripped', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: {} } });
   const calls = [];
   const rows = await listSourceWriters(source.home, {
-    pm2Command: 'pm2-fixture',
+    pm2Command: '/fixture/pm2',
     env: managedSupervisorEnvironment({
       PATH: '/bin',
       PM2_HOME: path.join(source.home, 'runtime/pm2'),
@@ -902,7 +902,7 @@ test('listSourceWriters inventories source PATH pm2 with ambient PM2 sockets str
   });
   assert.deepEqual(rows, []);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].command, 'pm2-fixture');
+  assert.equal(calls[0].command, '/fixture/pm2');
   assert.deepEqual(calls[0].args, ['jlist', '--silent']);
   assert.equal(calls[0].env.PM2_HOME, undefined);
   assert.equal(calls[0].env.PM2_DAEMON_RPC_PORT, undefined);
@@ -926,6 +926,7 @@ test('listSourceWriters ignores processes that belong to another home', async t 
   const pack = fixture(t);
   const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: {} } });
   const rows = await listSourceWriters(source.home, {
+    pm2Command: '/fixture/pm2',
     executeFile: async () => ({
       stdout: JSON.stringify([
         { name: 'home23-jerry', pm2_env: { status: 'online', pm_cwd: '/Users/jtr/_JTR23_/release/home23/engine' } },
@@ -940,6 +941,7 @@ test('listSourceWriters refuses an active expected writer with no path metadata'
   const pack = fixture(t);
   const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: {} } });
   const rows = await listSourceWriters(source.home, {
+    pm2Command: '/fixture/pm2',
     expectedWriters: ['home23-ada'],
     executeFile: async () => ({
       stdout: JSON.stringify([
