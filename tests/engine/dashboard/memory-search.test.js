@@ -258,7 +258,7 @@ const HYDRO_NODE = {
 };
 
 async function countedSourceSearch({
-  dir, embedQuery, loadAnn, query, request = {}, onVisit = null,
+  dir, embedQuery, loadAnn, query, request = {}, onVisit = null, deltaOverlayCache = null,
 }) {
   const source = await openMemorySource(dir);
   let visits = 0;
@@ -275,7 +275,7 @@ async function countedSourceSearch({
     brainDir: dir,
     embedQuery,
     loadAnn,
-    deltaOverlayCache: createMemoryDeltaOverlayCache({ cacheRoot }),
+    deltaOverlayCache: deltaOverlayCache || createMemoryDeltaOverlayCache({ cacheRoot }),
     logger: { warn() {} },
   });
   try {
@@ -338,6 +338,153 @@ test('stale ANN cannot hide a new delta keyword canary', async () => {
   assert.equal(Number.isFinite(result.evidence.stageTimingsMs.keywordScoring), true);
   assert.equal(Number.isFinite(result.evidence.stageTimingsMs.merge), true);
   assert.equal(Number.isFinite(result.evidence.stageTimingsMs.response), true);
+});
+
+test('unquoted multi-word ANN hits avoid a logical scan with fresh or overlay-covered indexes', async (t) => {
+  for (const coverage of ['fresh', 'current', 'ahead']) {
+    await t.test(`${coverage} coverage`, async () => {
+      const withDelta = coverage !== 'fresh';
+      const node = { id: 'tickets', concept: 'Billy Strings and Trey concert tickets', embedding: [1, 0] };
+      const dir = await createBrain({ nodes: [node] });
+      const indexed = await markAnn(dir);
+      if (withDelta) {
+        await appendRevision(dir, { nodes: [{ id: 'new', concept: 'unrelated note' }] },
+          { nodeCount: 2, edgeCount: 0, clusterCount: 1 });
+      }
+      const { result, visits } = await countedSourceSearch({
+        dir,
+        query: 'Trey Billy Strings tickets',
+        embedQuery: async () => [1, 0],
+        loadAnn: async () => ({
+          dimension: 2, labels: [projectAnnLabel(node)],
+          search: () => [{ node: projectAnnLabel(node), similarity: 0.95 }],
+        }),
+        deltaOverlayCache: coverage === 'ahead' ? {
+          async refresh(options) {
+            const cache = createMemoryDeltaOverlayCache({ cacheRoot: await tempDir('home23-ahead-overlay-') });
+            const snapshot = await cache.refresh(options);
+            return { ...snapshot, coveredThroughRevision: snapshot.coveredThroughRevision + 1 };
+          },
+        } : null,
+      });
+      assert.deepEqual(result.results.map(row => row.id), ['tickets']);
+      assert.equal(visits, 0);
+      assert.equal(result.evidence.fallback, null);
+      assert.equal(result.evidence.sourceHealth, 'healthy');
+      assert.equal(result.evidence.retrievalMode, withDelta ? 'semantic-ann-delta-overlay' : 'semantic-ann');
+      assert.equal(result.evidence.indexWatermark.fresh, !withDelta);
+      assert.equal(result.evidence.indexCoverage.indexedRevision, indexed.currentRevision);
+      assert.equal(result.evidence.indexCoverage.coveredThroughRevision, result.evidence.indexCoverage.currentRevision);
+      if (withDelta) {
+        assert.ok(result.evidence.indexCoverage.indexedRevision < result.evidence.indexCoverage.currentRevision);
+      }
+    });
+  }
+});
+
+test('goal resolutions cannot crowd out owner recall on ANN, overlay, logical or encoder-outage routes', async (t) => {
+  for (const route of ['ann', 'overlay', 'logical', 'encoder-outage']) {
+    for (const mode of [undefined, 'context']) {
+      await t.test(`${route} ${mode || 'resident search'}`, async () => {
+        const resolutions = Array.from({ length: 110 }, (_, index) => ({
+          id: `resolution-${index}`, concept: '[GOAL_RESOLUTION] COMPLETED concert tickets',
+          ...[{ tag: 'goal_resolution' }, { type: 'goal_resolution' },
+            { metadata: { kind: 'goal_resolution' } }, { tags: ['goal_resolution'] }][index % 4],
+          embedding: [1, 0],
+        }));
+        const useful = { id: 'useful', concept: 'Billy Strings tickets for the concert', status: 'completed', embedding: [1, 0] };
+        const dir = await createBrain({ nodes: route === 'overlay' ? [useful] : [...resolutions, useful] });
+        if (route === 'ann' || route === 'overlay') await markAnn(dir);
+        if (route === 'overlay') {
+          await appendRevision(dir, { nodes: resolutions },
+            { nodeCount: resolutions.length + 1, edgeCount: 0, clusterCount: 1 });
+        }
+        const labels = (route === 'overlay' ? [useful] : [...resolutions, useful]).map(node => projectAnnLabel(node));
+        const result = await sourceSearch({
+          dir, query: 'concert tickets',
+          embedQuery: async () => {
+            if (route === 'encoder-outage') throw new Error('encoder offline');
+            return [1, 0];
+          },
+          loadAnn: async () => ({ dimension: 2, labels,
+            search: (_embedding, topK) => labels.slice(0, topK)
+              .map(node => ({ node, similarity: node.id === 'useful' ? 0.8 : 0.99 })),
+          }),
+          request: { mode, topK: 1, ...(route === 'logical' ? { exhaustive: true } : {}) },
+        });
+        assert.deepEqual(result.results.map(row => row.id), ['useful']);
+      });
+    }
+  }
+});
+
+test('unquoted phrase still scans when ANN hits are below the semantic noise floor', async () => {
+  const phrase = 'Trey Billy Strings tickets';
+  const exact = { id: 'exact', concept: `${'prefix '.repeat(100)} ${phrase}`, embedding: [0, 1] };
+  const neighbor = { id: 'neighbor', concept: 'Trey concert plans', embedding: [1, 0] };
+  const dir = await createBrain({ nodes: [exact, neighbor] });
+  await markAnn(dir);
+  const { result, visits } = await countedSourceSearch({
+    dir, query: phrase, embedQuery: async () => [1, 0],
+    loadAnn: async () => ({ dimension: 2, labels: [exact, neighbor].map(node => projectAnnLabel(node)),
+      search: () => [{ node: projectAnnLabel(neighbor), similarity: 0.2 }],
+    }),
+    request: { noiseFloor: 0.55 },
+  });
+  assert.equal(result.results[0].id, 'exact');
+  assert.equal(result.results[0].matchKind, 'exact_phrase');
+  assert.equal(result.evidence.fallback.reason, 'exact_phrase_missing');
+  assert.ok(visits > 0);
+});
+
+test('indexed exact IDs retain priority without a logical phrase scan', async () => {
+  const exact = { id: 'record-ticket-details-000001', concept: 'Tickets', embedding: [0, 1] };
+  const neighbor = { id: 'neighbor', concept: 'Concert plans', embedding: [1, 0] };
+  const dir = await createBrain({ nodes: [exact, neighbor] });
+  await markAnn(dir);
+  const { result, visits } = await countedSourceSearch({
+    dir, query: exact.id, embedQuery: async () => [1, 0],
+    loadAnn: async () => ({ dimension: 2, labels: [exact, neighbor].map(node => projectAnnLabel(node)),
+      search: () => [{ node: projectAnnLabel(neighbor), similarity: 0.99 }],
+    }),
+  });
+  assert.equal(result.results[0].id, exact.id);
+  assert.equal(result.results[0].matchKind, 'exact_id');
+  assert.equal(result.results[0].componentScores.kindBoost, 1000);
+  assert.equal(result.evidence.fallback, null);
+  assert.equal(visits, 0);
+});
+
+test('explicit goal_resolution tag searches return records without a match-kind boost', async (t) => {
+  for (const exhaustive of [false, true]) {
+    for (const query of ['concert tickets', 'resolution-id']) {
+      await t.test(`${exhaustive ? 'logical' : 'ANN'} ${query}`, async () => {
+        const node = { id: 'resolution-id', concept: '[GOAL_RESOLUTION] COMPLETED concert tickets',
+          tag: 'goal_resolution', embedding: [1, 0] };
+        const dir = await createBrain({ nodes: [node] });
+        await markAnn(dir);
+        const label = projectAnnLabel(node);
+        const result = await sourceSearch({ dir, query, embedQuery: async () => [1, 0],
+          loadAnn: async () => ({ dimension: 2, labels: [label], search: () => [{ node: label, similarity: 1 }] }),
+          request: { exhaustive, tag: 'goal_resolution' },
+        });
+        assert.deepEqual(result.results.map(row => row.id), ['resolution-id']);
+        assert.equal(result.results[0].componentScores.kindBoost, 0);
+        assert.equal(result.results[0].matchKind, query === 'resolution-id' ? 'exact_id' : 'exact_phrase');
+      });
+    }
+  }
+});
+
+test('bounded goal-resolution records receive no kind boost for any match kind', () => {
+  for (const marker of [{ tag: 'goal_resolution' }, { type: 'goal_resolution' }, { metadata: { kind: 'goal_resolution' } }]) {
+    for (const matchKind of ['exact_id', 'exact_phrase', 'relationship', 'keyword', 'semantic']) {
+      const row = projectBoundedSearchNode({ id: 'resolution', concept: 'receipt', ...marker, matchKind },
+        { retrievalScore: 0.5 });
+      assert.equal(row.componentScores.kindBoost, 0, `${JSON.stringify(marker)} ${matchKind}`);
+      assert.equal(projectBoundedSearchNode(row, { retrievalScore: 0.5 }).componentScores.kindBoost, 0);
+    }
+  }
 });
 
 test('fresh ANN search remains available when the requester overlay exceeds its retained cap', async () => {
@@ -984,9 +1131,8 @@ test('fresh ANN applies shared closure and correction authority before returning
     request: { topK: 10, intent: 'current_state' },
   });
 
-  assert.deepEqual(result.results.map((row) => row.id), ['correction-new', 'closure-new']);
+  assert.deepEqual(result.results.map((row) => row.id), ['correction-new']);
   assert.equal(result.results[0].correctionEvidence.supersedes[0], 'node:claim-old');
-  assert.equal(result.results[1].resolutionEvidence.resolves[0], 'incident:brain-route');
   assert.equal(result.stats.retrievalMode, 'semantic-ann');
   assert.equal(result.evidence.retrievalMode, 'semantic-ann');
   assert.ok(result.results.every((row) => row.retrievalMode === 'semantic-ann'));
@@ -1067,7 +1213,7 @@ test('bounded ANN label absence falls back to logical source before claiming no 
   assert.equal(result.evidence.fallback.reason, 'exact_canary_missing');
 });
 
-test('exact phrase outranks ANN neighbors and survives truncated labels', async () => {
+test('explicitly quoted exact phrase scans past ANN neighbors and truncated labels', async () => {
   const phrase = 'There is no he. I am Jerry. The seed, the lobe, this room—I am them.';
   const exact = {
     id: '331616',
@@ -1091,7 +1237,7 @@ test('exact phrase outranks ANN neighbors and survives truncated labels', async 
 
   const result = await sourceSearch({
     dir,
-    query: phrase,
+    query: `"${phrase}"`,
     embedQuery: async () => [1, 0],
     loadAnn: async () => ({
       dimension: 2,
@@ -1230,9 +1376,8 @@ test('native manifest logical fallback shares two passes across semantic and key
       intent: 'current_state',
     });
 
-    assert.deepEqual(result.results.map((row) => row.id), ['correction-new', 'closure-new']);
+    assert.deepEqual(result.results.map((row) => row.id), ['correction-new']);
     assert.equal(result.results[0].correctionEvidence.supersedes[0], 'node:claim-old');
-    assert.equal(result.results[1].resolutionEvidence.resolves.includes('incident:route-truth'), true);
     assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
     assert.equal(result.evidence.completeCoverage, true);
     assert.equal(nativePasses, 2);
@@ -1388,9 +1533,8 @@ test('native two-pass fallback resolves late relevant authority after more than 
     intent: 'current_state',
   });
 
-  assert.deepEqual(result.results.map((row) => row.id), ['late-correction', 'late-closure']);
+  assert.deepEqual(result.results.map((row) => row.id), ['late-correction']);
   assert.equal(result.results[0].correctionEvidence.supersedes[0], 'node:late-claim');
-  assert.equal(result.results[1].resolutionEvidence.resolves.includes('incident:late-authority'), true);
   assert.equal(passes, 2);
 });
 

@@ -3,6 +3,7 @@
 const {
   projectMemoryRelations,
   hasAuthenticatedAuthorityEvidence,
+  isGoalResolution,
 } = require('./memory-authority.cjs');
 
 const MAX_ANN_LABEL_BYTES = 256 * 1024;
@@ -113,6 +114,8 @@ function projectAnnLabel(label, {
     id: Buffer.from(label.id, 'utf8').toString('utf8'),
     concept: compactUtf8(label.concept, MAX_ANN_LABEL_CONCEPT_BYTES),
     tag: nullableString(label.tag, MAX_ANN_LABEL_TAG_BYTES),
+    // Keep this classification when the source marker lives outside its tag.
+    ...(isGoalResolution(label) ? { type: 'goal_resolution' } : {}),
     weight: nullableFiniteNumber(label.weight),
     activation: nullableFiniteNumber(label.activation),
     cluster: nullableCluster(label.cluster),

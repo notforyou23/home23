@@ -145,6 +145,8 @@ function projectionKindChannel(record: Record<string, any>): string | undefined 
 }
 
 export function ownerSessions(turns: OwnerContactTurn[], gapMs: number): OwnerSession[] {
+  // Scheduler deliveries are operational notices, not conversation or session activity.
+  turns = turns.filter(t => t.owner || !t.text.startsWith('[scheduler]'));
   // A canonical copy wins over its legacy twin. Distinct direct channels stay distinct.
   const fingerprint = (t: OwnerContactTurn) => `${t.role}\0${Date.parse(t.ts)}\0${normalizeOwnerQuote(t.text)}`;
   const canonicalTwins = new Set(turns.filter(t => t.canonical).map(fingerprint));
@@ -267,7 +269,13 @@ export class OwnerSessionDistiller {
     // Do not advance a channel past unresolved older turns, even if newer
     // projection lines include their kind. Other channels can still progress.
     const sessions = ownerSessions(turns.filter(t => !unresolvedChannels.has(t.session)), gap)
-      .filter(s => s.end <= now - gap && s.end > (cursor.through[s.channel] ?? 0))
+      .filter(s => {
+        // Resident-only follow-ups do not restart the owner's inactivity gap.
+        // Keep s.end at the last included turn so the cursor consumes its context too.
+        const lastOwner = [...s.turns].reverse().find(t => t.owner);
+        const finishedAt = lastOwner ? Date.parse(lastOwner.ts) : s.end;
+        return finishedAt <= now - gap && s.end > (cursor.through[s.channel] ?? 0);
+      })
       .slice(0, bounded(cfg?.maxSessionsPerPass, 8, 1, 100));
     let saved = 0;
     for (const session of sessions) {

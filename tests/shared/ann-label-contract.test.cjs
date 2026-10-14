@@ -3,6 +3,20 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { projectAnnLabel } = require('../../shared/ann-label-contract.cjs');
+const { isGoalResolution } = require('../../shared/memory-authority.cjs');
+
+test('ANN projection preserves standalone goal-resolution markers through label reloads', () => {
+  for (const marker of [{ tag: 'goal_resolution' }, { type: 'goal_resolution' },
+    { tags: ['goal_resolution'] }, { metadata: { kind: 'goal_resolution' } }]) {
+    const label = projectAnnLabel({ id: 'resolution', concept: 'receipt', ...marker });
+    assert.equal(isGoalResolution(label), true, JSON.stringify(marker));
+    assert.equal(isGoalResolution(projectAnnLabel(label, { trustedProjection: true })), true);
+    assert.equal(Object.hasOwn(label, 'metadata'), false);
+    assert.equal(Object.hasOwn(label, 'tags'), false);
+  }
+  const ordinary = projectAnnLabel({ id: 'closed', status: 'completed', type: 'incident' });
+  assert.equal(isGoalResolution(ordinary), false);
+});
 
 test('ANN label carries only bounded retrieval authority summaries', () => {
   const label = projectAnnLabel({

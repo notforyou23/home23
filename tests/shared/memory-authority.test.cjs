@@ -24,6 +24,7 @@ const {
   getSemanticTimeMs,
   projectMemoryAuthority,
   isGeneratedMemoryMethod,
+  isGoalResolution,
   projectMemoryRelations,
   createMemoryAuthorityResolver,
   isVerifiedMemoryClosure,
@@ -31,6 +32,45 @@ const {
 } = require('../../shared/memory-authority.cjs');
 
 const NOW = Date.parse('2026-07-14T16:00:00.000Z');
+
+test('goal resolution classifier recognizes explicit markers without hiding ordinary closed incidents', () => {
+  for (const node of [
+    { tag: 'goal_resolution' },
+    { type: 'goal_resolution' },
+    { tags: ['receipt', 'goal_resolution'] },
+    { metadata: { kind: 'goal_resolution' } },
+    { tag: ' GOAL_RESOLUTION ' },
+    { type: ' Goal_Resolution ' },
+    { tags: [' RECEIPT ', ' GOAL_RESOLUTION '] },
+    { metadata: { kind: ' GOAL_RESOLUTION ' } },
+  ]) {
+    assert.equal(isGoalResolution(node), true, JSON.stringify(node));
+    assert.equal(classifyMemoryDomain(node), 'closed_incidents');
+  }
+
+  for (const node of [
+    undefined,
+    null,
+    {},
+    { tag: 'goal_resolution_report' },
+    { concept: '[GOAL_RESOLUTION] COMPLETED goal: source import' },
+    { tag: 'incident', status: 'completed' },
+    { type: 'incident', metadata: { status: 'closed' } },
+    { metadata: { resolved_at: '2026-07-14T15:00:00.000Z' } },
+    { metadata: { resolutionType: 'completed' } },
+  ]) {
+    assert.equal(isGoalResolution(node), false, JSON.stringify(node));
+  }
+
+  for (const node of [
+    { status: 'completed' },
+    { metadata: { status: 'closed' } },
+    { metadata: { resolved_at: '2026-07-14T15:00:00.000Z' } },
+    { metadata: { resolutionType: 'completed' } },
+  ]) {
+    assert.equal(classifyMemoryDomain(node), 'closed_incidents', JSON.stringify(node));
+  }
+});
 
 test('relation-only authority resolution does not load unrelated node payloads', () => {
   const material = { id: 'material', concept: 'Remembered material', tag: 'synthesis_report' };

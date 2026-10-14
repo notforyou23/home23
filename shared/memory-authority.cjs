@@ -131,11 +131,16 @@ function provenanceAuthority(node) {
   return asRecord(asRecord(node?.provenance).authority);
 }
 
-function isResolution(node) {
-  const tags = new Set(tagsOf(node));
-  const status = lower(node?.status || node?.metadata?.status);
-  return tags.has('goal_resolution')
+function isGoalResolution(node) {
+  return lower(node?.tag) === 'goal_resolution'
+    || lower(node?.type) === 'goal_resolution'
     || lower(node?.metadata?.kind) === 'goal_resolution'
+    || (Array.isArray(node?.tags) && node.tags.some(tag => lower(tag) === 'goal_resolution'));
+}
+
+function isResolution(node) {
+  const status = lower(node?.status || node?.metadata?.status);
+  return isGoalResolution(node)
     || Boolean(node?.metadata?.resolved_at || node?.metadata?.resolutionType)
     || ['resolved', 'completed', 'archived', 'closed', 'superseded'].includes(status);
 }
@@ -747,6 +752,7 @@ module.exports = {
   normalizeRetrievalIntent,
   projectMemoryAuthority,
   isGeneratedMemoryMethod,
+  isGoalResolution,
   projectMemoryRelations,
   isVerifiedMemoryClosure,
   createMemoryAuthorityResolver,

@@ -12,6 +12,9 @@ const {
 } = require('../../../engine/src/dashboard/brain-operations/source-executors');
 const { createGraphExportExecutor } = require('../../../engine/src/dashboard/brain-operations/graph-export-executor');
 const { BrainOperationWorkerAdapter } = require('../../../engine/src/dashboard/brain-operations/worker-adapter');
+const { createMemorySearchService } = require('../../../engine/src/dashboard/memory-search');
+const { openMemorySource, readManifest, rewriteMemoryBase } = require('../../../shared/memory-source');
+const { projectAnnLabel } = require('../../../shared/ann-label-contract.cjs');
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -171,6 +174,77 @@ test('registerable source executors return standard envelopes', async () => {
       && event.phase === operationType
       && event.stage === 'source_operation_finished'), true);
   }
+});
+
+test('resident search excludes goal resolutions unless explicitly requested through the source executor', async (t) => {
+  const context = await baseContext();
+  context.target.canonicalRoot = await fsp.realpath(context.target.canonicalRoot);
+  context.operationType = 'search';
+  const nodes = [
+    {
+      id: 'ticket-details', tag: 'personal',
+      concept: 'Ticket details: Trey show presale and Billy Strings concert reservations.',
+      embedding: [1, 0],
+    },
+    {
+      id: 'goal-receipt', tag: 'goal_resolution', type: 'goal_resolution',
+      concept: '[GOAL_RESOLUTION] COMPLETED goal Trey Billy Strings tickets',
+      metadata: { kind: 'goal_resolution' }, embedding: [1, 0],
+    },
+  ];
+  await rewriteMemoryBase(context.target.canonicalRoot, {
+    nodes, edges: [], summary: { nodeCount: nodes.length, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot: path.join(context.scratchDir, 'brain-source-locks') });
+  const manifest = JSON.parse(JSON.stringify(await readManifest(context.target.canonicalRoot)));
+  manifest.ann = {
+    indexFile: 'memory-ann.test.index', metaFile: 'memory-ann.test.meta.json',
+    builtFromRevision: manifest.currentRevision,
+  };
+  await fsp.writeFile(path.join(context.target.canonicalRoot, manifest.ann.indexFile), 'index');
+  await fsp.writeFile(path.join(context.target.canonicalRoot, manifest.ann.metaFile), '{}');
+  await fsp.writeFile(path.join(context.target.canonicalRoot, 'memory-manifest.json'), JSON.stringify(manifest));
+  const source = await openMemorySource(context.target.canonicalRoot);
+  context.sourcePin = source;
+  let logicalScans = 0;
+  source.iterateNodes = async function* forbiddenLogicalScan() {
+    logicalScans += 1;
+    throw new Error('Resident search must use the available ANN hits');
+  };
+  const labels = nodes.map(node => projectAnnLabel(node));
+  const searchService = createMemorySearchService({
+    brainDir: context.target.canonicalRoot,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2, count: labels.length, skipped: 0, labels,
+      search: () => labels.map(node => ({ node, similarity: 0.9 })),
+    }),
+    logger: { warn() {} },
+  });
+  t.after(async () => {
+    await searchService.close();
+    await source.close();
+    await fsp.rm(context.target.canonicalRoot, { recursive: true, force: true });
+    await fsp.rm(context.scratchDir, { recursive: true, force: true });
+  });
+  const executors = createSourceOperationExecutors({ searchService });
+  const parameters = { query: 'Trey Billy Strings tickets', topK: 10 };
+  const recalled = await executors.get('search')({ ...context, parameters });
+  assert.equal(recalled.state, 'complete', JSON.stringify(recalled.error));
+  assert.deepEqual(recalled.result.results.map(row => row.id), ['ticket-details']);
+  assert.equal(recalled.sourceEvidence.identity.operationId, context.operationId);
+  assert.equal(recalled.sourceEvidence.sourceHealth, 'healthy');
+  assert.equal(recalled.sourceEvidence.retrievalMode, 'semantic-ann');
+  assert.equal(recalled.sourceEvidence.fallback, null);
+
+  const requested = await executors.get('search')({
+    ...context, parameters: { ...parameters, tag: 'goal_resolution' },
+  });
+  assert.equal(requested.state, 'complete', JSON.stringify(requested.error));
+  assert.deepEqual(requested.result.results.map(row => row.id), ['goal-receipt']);
+  assert.equal(requested.result.results[0].matchKind, 'exact_phrase');
+  assert.equal(requested.result.results[0].componentScores.kindBoost, 0);
+  assert.equal(requested.sourceEvidence.filters.tag, 'goal_resolution');
+  assert.equal(logicalScans, 0);
 });
 
 test('graph export source wrapper stages survive production worker validation', async (t) => {

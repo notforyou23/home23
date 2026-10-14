@@ -30,6 +30,7 @@ const {
   projectMemoryRelations,
   createMemoryAuthorityResolver,
   hasAuthenticatedAuthorityEvidence,
+  isGoalResolution,
 } = require('../../../shared/memory-authority.cjs');
 const {
   memoryAuthorityAttestationKeyId,
@@ -40,8 +41,22 @@ const {
 const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache');
 const {
   LEGACY_EMBEDDER_ID,
+  OWNED_EMBEDDER_ID,
   createEmbeddingProvider,
 } = require('../memory/embedding-provider');
+const {
+  OWNED_EMBEDDING_PROFILE,
+  OWNED_EMBEDDING_RECIPE_ID,
+} = require('../../../shared/semantic-encoder-contract.cjs');
+
+// ANN metadata records provider/model/recipeId. Map that to an embedder id so
+// an owned-ONNX index is accepted only for owned-ONNX queries.
+function annMetaEmbedderId(meta) {
+  if (meta?.provider === 'home23-owned' && meta?.model === OWNED_EMBEDDING_PROFILE
+      && meta?.recipeId === OWNED_EMBEDDING_RECIPE_ID) return OWNED_EMBEDDER_ID;
+  if (meta?.provider === 'home23-owned' || meta?.recipeId) return null;
+  return LEGACY_EMBEDDER_ID;
+}
 
 const MAX_EMBEDDING_DIMENSIONS = 8192;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -128,6 +143,7 @@ function projectBoundedSearchNode(node, {
       ? truncateString(node.concept, 32 * 1024)
       : (typeof node?.content === 'string' ? truncateString(node.content, 32 * 1024) : null),
     tag: node?.tag ?? null,
+    ...(isGoalResolution(node) ? { type: 'goal_resolution' } : {}),
     similarity: similarity === null ? undefined : roundScore(similarity),
     retrievalScore: publishedRetrievalScore === null ? undefined : publishedRetrievalScore,
     retrievalMode,
@@ -1110,6 +1126,7 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory, authorityKey
     }
     residentRuntime = nextRuntime;
     const loaded = {
+      embedderId: annMetaEmbedderId(meta),
       dimension,
       count,
       skipped,
@@ -1229,6 +1246,11 @@ function isPhraseQuery(query, tokens) {
   return false;
 }
 
+function isExplicitPhraseQuery(query) {
+  const raw = String(query || '').trim();
+  return /"[^"\n]+"|“[^”\n]+”/.test(raw) || /^'[^'\n]+'$/.test(raw);
+}
+
 function isIdentityQuery(query) {
   const q = normalizeLexical(query);
   return /\b(i am|im|who am i|identity|third person|first person|pronoun|costume|seed|lobe|this room|there is no he|i am them|i am jerry)\b/.test(q);
@@ -1263,7 +1285,7 @@ function decorateRank(row, query) {
   const similarity = Number(row.similarity);
   const lexical = Number(row.lexicalScore ?? 0);
   const penalty = sludgeMultiplier(row, isIdentityQuery(query));
-  const kindBoost = MATCH_KIND_BOOST[matchKind] || 0;
+  const kindBoost = isGoalResolution(row) ? 0 : (MATCH_KIND_BOOST[matchKind] || 0);
   const finalRankScore = roundScore((kindBoost + retrieval) * penalty);
   return {
     ...row,
@@ -1395,8 +1417,12 @@ function createMemorySearchService({
     const authorityResolver = createMemoryAuthorityResolver({
       intent: request.intent || query,
     });
+    const excludedFromRecall = (node) => (
+      (tag !== 'goal_resolution' && isGoalResolution(node))
+      || (request.mode === 'context' && isContextEnrichmentEcho(node))
+    );
     const offerAuthorityResolved = (heap, candidate, trustedProjection = false) => {
-      if (request.mode === 'context' && isContextEnrichmentEcho(candidate)) return;
+      if (excludedFromRecall(candidate)) return;
       const resolved = authorityResolver.apply([candidate], { trustedProjection })[0];
       if (!resolved) return;
       const { _trustedAuthorityProjection: _ignoredCallerTrust, ...plain } = resolved;
@@ -1442,8 +1468,10 @@ function createMemorySearchService({
       }
     }
     const overlayRefreshMs = performance.now() - overlayStartedAt;
+    // Overlay coverage is fresh-equivalent for retrieval; the raw ANN
+    // watermark still reports the revision actually indexed.
     const annCovered = annRevisionEligible && (annFresh || Boolean(overlay
-      && overlay.coveredThroughRevision === manifest.currentRevision));
+      && overlay.coveredThroughRevision >= manifest.currentRevision));
     let queryEmbedding = null;
     let queryEmbedderId = null;
     let fallback = null;
@@ -1473,7 +1501,10 @@ function createMemorySearchService({
     }
     // Existing ANN generations do not record their embedder identity. Their
     // dimensions alone cannot establish compatibility with Gemini or ONNX.
-    const annEmbeddingCompatible = !queryEmbedderId || queryEmbedderId === LEGACY_EMBEDDER_ID;
+    // Owned-ONNX generations record provider/model/recipeId; consumeAnn checks
+    // the loaded index identity against the query before using it.
+    const annEmbeddingCompatible = !queryEmbedderId || queryEmbedderId === LEGACY_EMBEDDER_ID
+      || queryEmbedderId === OWNED_EMBEDDER_ID;
     let incompatibleVectorCount = 0;
     let compatibleVectorCount = 0;
 
@@ -1553,6 +1584,8 @@ function createMemorySearchService({
       // bounded relation budget merely because they occur earlier on disk.
       for await (const node of source.iterateNodes({ signal })) {
         if (!consumeLogicalVisit()) break;
+        // Resolution events still participate in the second authority pass.
+        if (excludedFromRecall(node)) continue;
         const unfilteredKeywordRelevance = keywordRelevance(
           node, keywordTokens, query, null,
         );
@@ -1571,7 +1604,6 @@ function createMemorySearchService({
           && node.embedding.length === queryEmbedding?.length
           && Number.isFinite(similarity = cosineSimilarity(queryEmbedding, node.embedding))
           && similarity >= similarityThreshold;
-        if (request.mode === 'context' && isContextEnrichmentEcho(node)) continue;
         if (!semanticMatches && !(keywordMatches && tagMatches)) continue;
         if (semanticMatches) {
           logicalSemanticCandidates.offer(projectLogicalCandidate(node, similarity, similarity));
@@ -1665,6 +1697,13 @@ function createMemorySearchService({
     if (useAnn) {
       const consumeAnn = async (ann) => {
         if (!ann || Number(ann.dimension || ann.dim) !== queryEmbedding.length) return false;
+        if (queryEmbedderId && queryEmbedderId !== LEGACY_EMBEDDER_ID
+            && ann.embedderId !== queryEmbedderId) {
+          throw memorySourceError('ann_descriptor_unsupported',
+            'ANN embedder identity does not match query', {
+              status: 503, retryable: false, annFallbackReason: 'ann_embedding_id_unknown',
+            });
+        }
         semanticRoute = annFresh ? 'semantic-ann' : 'semantic-ann-delta-overlay';
         if (Array.isArray(ann.labels)) {
           annLabelsAvailable = ann.count === undefined || ann.skipped === 0
@@ -1845,7 +1884,10 @@ function createMemorySearchService({
       const kind = row.matchKind || classifyLexicalMatch(row, query, keywordTokens).matchKind;
       return kind === 'exact_phrase' || kind === 'exact_id';
     });
-    if (!contextFast && allowLogicalScan && phraseQuery && !indexedHasExact && !fallback) {
+    // Ordinary multi-word queries can use good ANN hits without proving an
+    // exact phrase exists. Explicit quotes retain the logical exact check.
+    const needsPhraseScan = isExplicitPhraseQuery(query) || !annUsed || semanticTop.length === 0;
+    if (!contextFast && allowLogicalScan && phraseQuery && needsPhraseScan && !indexedHasExact && !fallback) {
       fallback = {
         route: 'logical-source-scan',
         reason: 'exact_phrase_missing',
