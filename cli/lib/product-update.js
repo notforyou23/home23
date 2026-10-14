@@ -1,11 +1,11 @@
 /** Product installation preview and managed/source adoption. Preview stays read-only. */
 import { createHash } from 'node:crypto';
 import {
-  closeSync, copyFileSync, chmodSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync,
-  readlinkSync, readSync, realpathSync, renameSync, symlinkSync, writeFileSync,
+  accessSync, constants, closeSync, copyFileSync, chmodSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync,
+  readlinkSync, readSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
-import { basename, dirname, join, relative as relativePath, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative as relativePath, resolve, sep } from 'node:path';
 import { choosePortPlan, privateJSON, readPrivateJSON, validatePortPlan } from './product-environment.js';
 import { assertWritersIdle, rebindAdoptedHome, residentInstancePortSets } from './product-backup.js';
 import { projectFencedCoordination, readFencedCoordination } from './product-adoption.js';
@@ -23,7 +23,7 @@ const yaml = require('js-yaml');
 
 const CREATION_JOURNAL = 'instances/.house/creation.json';
 
-/** Same supervisor contract as the managed dashboard: PATH `pm2`, no product-private PM2 sockets. */
+/** Same global supervisor as the managed dashboard, without product-private PM2 sockets. */
 const MANAGED_PM2_ENV_BLOCKLIST = [
   'cron_restart',
   'watch',
@@ -56,6 +56,26 @@ function assertSourceSupervisorContext(environment = {}) {
   if (process.env.HOME23_PRODUCT_HOST === 'true' || environment.HOME23_PRODUCT_HOST === 'true') {
     throw Object.assign(new Error('Source supervisor inventory is unavailable from a product home.'), { code: 'process_inventory_unavailable' });
   }
+}
+
+function sourceSupervisorExecutable(environment, explicit) {
+  if (explicit !== undefined) {
+    if (typeof explicit !== 'string' || !isAbsolute(explicit)) throw new Error('Source PM2 requires an absolute executable path.');
+    return resolve(explicit);
+  }
+  // Source installations use global PM2. Resolve its existing selection using
+  // filesystem reads only; never delegate executable lookup to a child PATH or
+  // substitute a product home's bundled CLI.
+  for (const directory of String(environment.PATH || '').split(delimiter)) {
+    if (!isAbsolute(directory)) continue;
+    try {
+      const file = realpathSync(join(directory, 'pm2'));
+      if (!statSync(file).isFile()) continue;
+      accessSync(file, constants.X_OK);
+      return file;
+    } catch { /* This PATH directory does not contain an executable PM2. */ }
+  }
+  throw new Error('The source supervisor executable is unavailable.');
 }
 
 /**
@@ -956,13 +976,13 @@ function keepSourceWriter(row, home, expected) {
 
 /** Live process inventory for a managed/source home. Unavailable inventory refuses adoption. */
 export async function listSourceWriters(home, dependencies = {}) {
-  // Inventory the same supervisor the managed dashboard uses (PATH pm2 + clean env).
+  // Inventory the same global supervisor the managed dashboard uses, by absolute path.
   // Never point PM2 at a product-private daemon — an empty private jlist is not proof.
   const env = dependencies.env || managedSupervisorEnvironment();
-  const command = dependencies.pm2Command || 'pm2';
   const execute = dependencies.executeFile || executeFile;
   try {
     assertSourceSupervisorContext(env);
+    const command = sourceSupervisorExecutable(env, dependencies.pm2Command);
     const { stdout } = await execute(command, ['jlist', '--silent'], {
       cwd: home,
       env,
@@ -1017,8 +1037,10 @@ async function verifySourceServiceBindings(source, services, dependencies = {}) 
     if (dependencies.listSourceServiceBindings) rows = await dependencies.listSourceServiceBindings(source);
     else {
       assertSourceSupervisorContext(dependencies.env);
-      const { stdout } = await (dependencies.executeFile || executeFile)(dependencies.pm2Command || 'pm2', ['jlist', '--silent'], {
-        cwd: source, env: dependencies.env || managedSupervisorEnvironment(), timeout: 20000, maxBuffer: 8 * 1024 * 1024,
+      const env = dependencies.env || managedSupervisorEnvironment();
+      const command = sourceSupervisorExecutable(env, dependencies.pm2Command);
+      const { stdout } = await (dependencies.executeFile || executeFile)(command, ['jlist', '--silent'], {
+        cwd: source, env, timeout: 20000, maxBuffer: 8 * 1024 * 1024,
       });
       rows = JSON.parse(stdout);
     }

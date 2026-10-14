@@ -6,7 +6,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { runHostAction, ownedProcessNames, productDefinitions, probeReadiness, safeProcesses } from '../cli/lib/product-host.js';
-import { productEnvironment, privateJSON, socketRootFor, choosePortPlan } from '../cli/lib/product-environment.js';
+import { productEnvironment, productRoleEnvironment, privateJSON, socketRootFor, choosePortPlan } from '../cli/lib/product-environment.js';
 import { writeProductManifest, installProductPayload } from '../cli/lib/product-payload.js';
 import { adoptProductSupervisor, ensureProductSupervisor, forbidClientSpawn, inspectProductSupervisor, productHomeWriterPids, productSupervisorCommand, productSupervisorInventory, productSupervisorPlan, recoverProductSupervisor, startResidentDaemon, supervisorPlist } from '../cli/lib/product-supervisor.js';
 import { parsePlist } from '../cli/lib/product-foreign-bindings.js';
@@ -169,6 +169,41 @@ test('admitted migration preserves all definitions and paused roles, signals onl
   assert.equal(f.m.calls.filter(c => c[1] === 'bootstrap').length, 1);
   await adoptProductSupervisor(f.root, f.admission, f.m.deps);
   assert.equal(f.signals.length, 1);
+});
+
+test('update admission quiesces an exact legacy continuation environment without rewriting its saved binding', async t => {
+  const f = await migrationFixture(t), appRoot = path.join(f.root, 'app');
+  const service = { name: 'home23-custom', executable: path.join(f.root, 'bin/node'), cwd: appRoot,
+    args: [path.join(appRoot, 'custom.mjs')], stateRoots: [appRoot], startOnHomeStart: true,
+    env: { PATH: `${f.root}/bin:${f.root}/tools/node_modules/pm2/bin:/custom/tools:/usr/bin`,
+      HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: appRoot, KEEP: 'preserved' } };
+  privateJSON(path.join(f.root, '.home23-host.json'), { ...f.state, continuationServices: [service] });
+  const before = fs.readFileSync(path.join(f.root, '.home23-host.json'));
+  f.registrations.push({ name: service.name, pid: 4330, pm2_env: { ...service.env, status: 'online',
+    pm_exec_path: service.executable, pm_cwd: service.cwd, args: service.args } });
+  let rows = structuredClone(f.registrations);
+  f.m.deps.command = async args => {
+    f.commands.push(args);
+    if (args[0] === 'stop') {
+      const current = rows.find(row => row.name === args[1]);
+      current.pm2_env.status = 'stopped'; current.pid = 0;
+    }
+    return { stdout: JSON.stringify(rows) };
+  };
+  f.m.deps.restore = async (_root, saved) => { rows = structuredClone(saved).map(row => ({ ...row, pid: 0,
+    pm2_env: { ...row.pm2_env, status: 'stopped' } })); };
+  const result = await adoptProductSupervisor(f.root, f.admission, f.m.deps);
+  assert.equal(result.ownership, 'launchd');
+  assert.ok(f.commands.some(args => args[0] === 'stop' && args[1] === service.name));
+  const saved = JSON.parse(fs.readFileSync(result.snapshotPath));
+  assert.equal(saved.registrations.find(row => row.name === service.name).pm2_env.PATH, service.env.PATH);
+  assert.deepEqual(fs.readFileSync(path.join(f.root, '.home23-host.json')), before);
+  for (const [key, value] of [['PATH', '/foreign/tools'], ['HOME23_PRODUCT_HOST', 'false'], ['HOME23_ROOT', '/foreign/app'], ['KEEP', 'changed']]) {
+    const registrations = structuredClone(f.registrations);
+    registrations.find(row => row.name === service.name).pm2_env[key] = value;
+    await assert.rejects(adoptProductSupervisor(f.root, { ...f.admission, registrations }, f.m.deps), { code: 'host_supervisor_ambiguous' });
+  }
+  assert.deepEqual(f.signals, [[4242, 'SIGINT']]);
 });
 
 test('missing/stale admission, foreign roles and changed definitions cannot stop the daemon', async t => {
@@ -412,9 +447,17 @@ test('resident startup bypasses PM2 self-resurrection, rejects daemon shutdown a
   daemon.close({}, error => assert.equal(error.code, 'host_supervisor_owner_stop_required'));
   God.notifyKillPM2({}, error => assert.equal(error.code, 'host_supervisor_owner_stop_required'));
   assert.deepEqual(exits, []);
-  God.forkMode({ PM2_HOME: '/private/control', PM2_DAEMON_RPC_PORT: '/private/socket', HOME23_AGENT: 'milo', env: { PM2_HOME: '/private/control', KEEP: 'value' } });
+  const stalePath = `${root}/tools/node_modules/pm2/bin:/custom/tools:/usr/bin`;
+  God.forkMode({ PM2_HOME: '/private/control', PM2_DAEMON_RPC_PORT: '/private/socket', HOME23_AGENT: 'milo',
+    PATH: stalePath, HOME23_PRODUCT_HOST: 'false', HOME23_ROOT: '/different/app',
+    env: { PM2_HOME: '/private/control', KEEP: 'value', PATH: stalePath, HOME23_PRODUCT_HOST: 'false', HOME23_ROOT: '/different/app' } });
   assert.equal(forked.PM2_HOME, undefined); assert.equal(forked.PM2_DAEMON_RPC_PORT, undefined);
-  assert.deepEqual(forked.env, { KEEP: 'value' }); assert.equal(forked.HOME23_AGENT, 'milo');
+  assert.deepEqual(forked.env, productRoleEnvironment(root, { KEEP: 'value', PATH: stalePath }));
+  assert.equal(forked.HOME23_AGENT, 'milo');
+  assert.equal(forked.PATH, forked.env.PATH);
+  assert.equal(forked.PATH.split(path.delimiter)[0], path.join(root, 'app/scripts/product/shims'));
+  assert.equal(forked.PATH.includes(path.join(root, 'tools/node_modules/pm2/bin')), false);
+  assert.equal(forked.HOME23_PRODUCT_HOST, 'true'); assert.equal(forked.HOME23_ROOT, path.join(root, 'app'));
   runtime.emit('SIGTERM');
   runtime.emit('unhandledRejection', Object.assign(new Error('sensitive-message-not-logged'), { code: 'EPIPE' }));
   assert.ok(records.some(record => record.event === 'signal' && record.signal === 'SIGTERM'));

@@ -58,6 +58,75 @@ test('Start detects a registered five-restart policy as stale', t => {
   assert.equal(definitionMatchesProcess(app, registered), true);
 });
 
+test('online legacy continuation can stop and relaunch with the PM2 shim before preserved custom PATH directories', async t => {
+  const homeRoot = home(t), appRoot = path.join(homeRoot, 'app');
+  const service = { name: 'home23-custom', executable: path.join(homeRoot, 'bin/node'), cwd: appRoot,
+    args: [path.join(appRoot, 'custom.mjs')], stateRoots: [appRoot], startOnHomeStart: true,
+    env: { PATH: `${homeRoot}/tools/node_modules/pm2/bin:${homeRoot}/tools/node_modules/.bin:/custom/tools:/usr/bin`,
+      HOME23_PRODUCT_HOST: 'false', HOME23_ROOT: '/different/app', KEEP: 'preserved' } };
+  const state = { schema: 'home23.host.v1', homeRoot, profile: { name: 'milo' }, phase: 'stopped', desiredRunning: false,
+    ports: { coordination: 44000, engine: 44001, dashboard: 44002, mcp: 44003, bridge: 44004, evobrew: 44005, observatory: 44006 },
+    continuationServices: [service] };
+  privateJSON(path.join(homeRoot, '.home23-host.json'), state);
+  const savedService = structuredClone(service);
+  const rows = ownedProcessNames('milo', { home23Root: homeRoot }).map(name => row(homeRoot, name));
+  rows.push({ name: service.name, pid: 4320, pm2_env: { ...service.env, status: 'online',
+    pm_exec_path: service.executable, pm_cwd: service.cwd, args: service.args } });
+  assert.equal(safeProcesses(rows, homeRoot, [service.name], [service])[0].owned, true);
+  let launch;
+  const stopped = [];
+  const execute = async (_node, args) => {
+    if (args[0] === '-e') return { stdout: JSON.stringify(definitions(homeRoot)) };
+    if (args[1] === 'stop') {
+      stopped.push(args[2]);
+      const current = rows.find(item => item.name === args[2]);
+      current.pm2_env.status = 'stopped'; current.pid = 0;
+    }
+    if (args[1] === 'delete') rows.splice(rows.findIndex(item => item.name === args[2]), 1);
+    if (args[1] === 'start') {
+      launch = JSON.parse(fs.readFileSync(args[2])).apps.find(app => app.name === service.name);
+      rows.push({ name: service.name, pid: 4321, pm2_env: { ...launch.env, status: 'online',
+        pm_exec_path: service.executable, pm_cwd: launch.cwd, args: launch.args } });
+    }
+    return { stdout: JSON.stringify(rows) };
+  };
+  const dependencies = { execute, readinessWaitMs: 0, probeReadiness: async () => ({ ready: true, issues: [] }) };
+  const stoppedHome = await runHostAction('stop', { homeRoot }, dependencies);
+  assert.equal(stoppedHome.ok, true); assert.ok(stopped.includes(service.name));
+  // Model the standard roles already running in the later startup phase. The
+  // legacy continuation stays stopped until its new definition is admitted.
+  for (const current of rows.filter(item => item.name !== service.name)) current.pm2_env.status = 'online';
+  const result = await runHostAction('start', { homeRoot }, dependencies);
+  assert.equal(result.ok, true);
+  assert.deepEqual(launch.env.PATH.split(path.delimiter), [path.join(appRoot, 'scripts/product/shims'),
+    path.join(homeRoot, 'bin'), path.join(homeRoot, 'tools/node_modules/.bin'), '/custom/tools', '/usr/bin']);
+  assert.equal(launch.env.HOME23_PRODUCT_HOST, 'true'); assert.equal(launch.env.HOME23_ROOT, appRoot);
+  assert.equal(launch.env.KEEP, 'preserved');
+  const current = rows.find(item => item.name === service.name);
+  assert.equal(safeProcesses([current], homeRoot, [service.name], [service])[0].owned, true);
+  for (const key of ['PATH', 'HOME23_PRODUCT_HOST', 'HOME23_ROOT']) {
+    const changed = { ...current, pm2_env: { ...current.pm2_env, [key]: service.env[key] } };
+    assert.equal(safeProcesses([changed], homeRoot, [service.name], [service])[0].owned, false);
+  }
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(homeRoot, '.home23-host.json'))).continuationServices[0], savedService);
+  assert.deepEqual(service, savedService, 'launch normalization leaves the saved service unchanged');
+});
+
+test('legacy continuation ownership without saved routing rejects foreign routing and custom environment changes', t => {
+  const homeRoot = home(t), appRoot = path.join(homeRoot, 'app');
+  const service = { name: 'home23-custom', executable: path.join(homeRoot, 'bin/node'), cwd: appRoot,
+    args: [path.join(appRoot, 'custom.mjs')], env: { KEEP: 'preserved' } };
+  const previous = { ...service.env, PATH: `${homeRoot}/bin:${homeRoot}/tools/node_modules/pm2/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
+    HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: appRoot };
+  const current = { name: service.name, pid: 4320, pm2_env: { ...previous, status: 'online',
+    pm_exec_path: service.executable, pm_cwd: service.cwd, args: service.args } };
+  const owned = row => safeProcesses([row], homeRoot, [service.name], [service])[0].owned;
+  assert.equal(owned(current), true);
+  for (const [key, value] of [['PATH', '/foreign/tools'], ['HOME23_PRODUCT_HOST', 'false'], ['HOME23_ROOT', '/foreign/app'], ['KEEP', 'changed']]) {
+    assert.equal(owned({ ...current, pm2_env: { ...current.pm2_env, [key]: value } }), false);
+  }
+});
+
 test('environment removes host credentials and PM2 metadata and uses short private sockets', t => {
   const homeRoot = home(t);
   const env = productEnvironment(homeRoot, { prepare: true });
