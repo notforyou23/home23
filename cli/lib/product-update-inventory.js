@@ -436,8 +436,12 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   if (continuing.length && (!adoptedContinuation || JSON.stringify(continuing) !== JSON.stringify(adoptedContinuation))) {
     reasons.push(reason('continuation_receipt_mismatch', 'Continuing service bindings differ from the sealed adoption receipt.'));
   }
+  // Semantic enable may add an owned embedder port after adoption is sealed.
+  const sealedPorts = state?.semanticExtension?.schema === 'home23.semantic-extension.v1'
+    && state.semanticExtension.port === state.ports?.embedder
+    ? Object.fromEntries(Object.entries(state.ports || {}).filter(([key]) => key !== 'embedder')) : state?.ports;
   if (JSON.stringify(state?.networkBindings || null) !== JSON.stringify(adoptedNetwork)
-    || (adoptedNetwork && (JSON.stringify(state?.ports) !== JSON.stringify(adoptedNetwork.shared)
+    || (adoptedNetwork && (JSON.stringify(sealedPorts) !== JSON.stringify(adoptedNetwork.shared)
       || Object.keys(state?.residentMap || {}).sort().join('|') !== Object.keys(adoptedNetwork.residents || {}).sort().join('|')
       || Object.entries(adoptedNetwork.residents || {}).some(([name, ports]) =>
         JSON.stringify(state?.residentMap?.[name]?.ports || null) !== JSON.stringify(ports))))) {
