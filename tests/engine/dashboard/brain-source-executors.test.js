@@ -15,6 +15,7 @@ const { BrainOperationWorkerAdapter } = require('../../../engine/src/dashboard/b
 const { createMemorySearchService } = require('../../../engine/src/dashboard/memory-search');
 const { openMemorySource, readManifest, rewriteMemoryBase } = require('../../../shared/memory-source');
 const { projectAnnLabel } = require('../../../shared/ann-label-contract.cjs');
+const { OWNED_EMBEDDER_ID } = require('../../../engine/src/memory/embedding-provider');
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -174,6 +175,29 @@ test('registerable source executors return standard envelopes', async () => {
       && event.phase === operationType
       && event.stage === 'source_operation_finished'), true);
   }
+});
+
+test('resident source executor uses owned calibration and preserves explicit noise overrides', async t => {
+  const context = await baseContext();
+  t.after(async () => {
+    await fsp.rm(context.target.canonicalRoot, { recursive: true, force: true });
+    await fsp.rm(context.scratchDir, { recursive: true, force: true });
+  });
+  context.operationType = 'search';
+  context.sourcePin.iterateNodes = async function* () {
+    yield { id: 'recall', concept: 'telescope plans', embedding: [0.54, Math.sqrt(1 - 0.54 ** 2)], embedder_id: OWNED_EMBEDDER_ID };
+  };
+  const embedQuery = async () => [1, 0];
+  embedQuery.id = OWNED_EMBEDDER_ID;
+  const searchService = createMemorySearchService({ embedQuery, logger: { warn() {} } });
+  t.after(() => searchService.close());
+  const search = createSourceOperationExecutors({ searchService }).get('search');
+  const result = await search({ ...context, parameters: { query: 'astronomy' } });
+  assert.equal(result.state, 'complete');
+  assert.deepEqual(result.result.results.map(row => row.id), ['recall']);
+  const overridden = await search({ ...context, parameters: { query: 'astronomy', noiseFloor: 0.55 } });
+  assert.equal(overridden.state, 'complete');
+  assert.deepEqual(overridden.result.results, []);
 });
 
 test('resident search excludes goal resolutions unless explicitly requested through the source executor', async (t) => {

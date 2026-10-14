@@ -664,6 +664,33 @@ test('three and four word recall uses compatible owned ANN with covered deltas',
   }
 });
 
+test('owned noprefix relative noise calibration combines ANN and covered delta similarities', async (t) => {
+  const vectorAt = similarity => [similarity, Math.sqrt(1 - similarity ** 2)];
+  const indexed = { id: 'indexed-match', concept: 'telescope plans', confidence_decay: 0.1, embedding: vectorAt(0.47), embedder_id: OWNED_EMBEDDER_ID };
+  const dir = await createBrain({ nodes: [indexed] });
+  await markAnn(dir);
+  await appendRevision(dir, { nodes: [
+    { id: 'delta-best', concept: 'mountain observatory', confidence_decay: 0.1, embedding: vectorAt(0.54), embedder_id: OWNED_EMBEDDER_ID },
+    ...Array.from({ length: 120 }, (_, index) => ({
+      id: `delta-noise-${index}`, concept: 'mineral collection', embedding: vectorAt(0.42), embedder_id: OWNED_EMBEDDER_ID,
+    })),
+  ] }, { nodeCount: 122, edgeCount: 0, clusterCount: 1 });
+  const embedQuery = async () => [1, 0];
+  embedQuery.id = OWNED_EMBEDDER_ID;
+  const label = projectAnnLabel(indexed);
+  const { result, visits } = await countedSourceSearch({
+    dir, query: 'astronomy', embedQuery,
+    loadAnn: async () => ({ dimension: 2, embedderId: OWNED_EMBEDDER_ID, labels: [label],
+      search: () => [{ node: label, similarity: 0.47 }],
+    }),
+    request: { minSimilarity: undefined, noiseFloor: undefined },
+  });
+  assert.deepEqual(result.results.map(row => row.id).sort(), ['delta-best', 'indexed-match']);
+  assert.equal(visits, 0);
+  assert.equal(result.stats.retrievalMode, 'semantic-ann-delta-overlay');
+  assert.equal(result.evidence.fallback, null);
+});
+
 test('ordinary dashboard fallback has a fixed visit budget on a 55k-node source', async (t) => {
   for (const encoderReady of [true, false]) {
     await t.test(encoderReady ? 'missing ANN' : 'encoder outage', async () => {

@@ -11,6 +11,7 @@ const {
   createMemorySearchService,
 } = require('../../../engine/src/dashboard/memory-search');
 const { openMemorySource, rewriteMemoryBase, readManifest } = require('../../../shared/memory-source');
+const { OWNED_EMBEDDER_ID } = require('../../../engine/src/memory/embedding-provider');
 
 const LEGACY_ID = 'ollama:nomic-embed-text:768';
 const GEMINI_ID = 'gemini:gemini-embedding-2:768';
@@ -39,7 +40,7 @@ async function brain(t, nodes, { ann = false } = {}) {
   return { dir, source };
 }
 
-async function search(t, source, embedderId, { query = 'canary', loadAnn = async () => null, mode } = {}) {
+async function search(t, source, embedderId, { query = 'canary', loadAnn = async () => null, mode, request = {} } = {}) {
   const embedQuery = async () => vector();
   embedQuery.id = embedderId;
   const service = createMemorySearchService({ embedQuery, loadAnn, logger: { warn() {} } });
@@ -47,8 +48,139 @@ async function search(t, source, embedderId, { query = 'canary', loadAnn = async
   return service.search({
     sourcePin: source, identity: { operationId: 'query-embedding-test' },
     query, mode, topK: 10, minSimilarity: 0.1, noiseFloor: 0.1,
+    ...request,
   });
 }
+
+function scoredVector(similarity) {
+  return [similarity, Math.sqrt(1 - similarity ** 2), ...Array(766).fill(0)];
+}
+
+test('owned noprefix recall keeps relative semantic matches below the legacy noise floor', async t => {
+  for (const route of ['ann', 'logical']) {
+    await t.test(route, async t => {
+      const nodes = [
+        { id: 'best', concept: 'telescope plans', score: 0.54 },
+        { id: 'nearby', concept: 'mountain observatory', score: 0.47 },
+        { id: 'noise', concept: 'mineral collection', score: 0.42 },
+      ].map(node => ({ ...node, embedding: scoredVector(node.score), embedder_id: OWNED_EMBEDDER_ID }));
+      const { source } = await brain(t, nodes, { ann: route === 'ann' });
+      const result = await search(t, source, OWNED_EMBEDDER_ID, {
+        query: 'astronomy',
+        loadAnn: async () => ({ dimension: 768, embedderId: OWNED_EMBEDDER_ID, labels: nodes,
+          search: async () => nodes.map(node => ({ node, similarity: node.score })),
+        }),
+        request: { minSimilarity: undefined, noiseFloor: undefined },
+      });
+      assert.deepEqual(result.results.map(node => node.id), ['best', 'nearby']);
+      assert.equal(result.stats.noiseFiltered, false);
+    });
+  }
+});
+
+test('owned noprefix relative recall retains a low top match but rejects vectors below the absolute floor', async t => {
+  const nodes = [
+    { id: 'low-top', concept: 'telescope plans', embedding: scoredVector(0.43), embedder_id: OWNED_EMBEDDER_ID },
+    { id: 'below-floor', concept: 'mineral collection', embedding: scoredVector(0.39), embedder_id: OWNED_EMBEDDER_ID },
+  ];
+  const { source } = await brain(t, nodes);
+  const result = await search(t, source, OWNED_EMBEDDER_ID, {
+    query: 'astronomy', request: { minSimilarity: undefined, noiseFloor: undefined },
+  });
+  assert.deepEqual(result.results.map(node => node.id), ['low-top']);
+});
+
+test('owned noprefix relative gating uses raw similarity before authority ranking and topK truncation', async t => {
+  const nodes = [
+    { id: 'semantic-match', concept: 'telescope plans', confidence_decay: 0.1, embedding: scoredVector(0.54), embedder_id: OWNED_EMBEDDER_ID },
+    { id: 'ranked-noise', concept: 'mineral collection', tag: 'personal', embedding: scoredVector(0.42), embedder_id: OWNED_EMBEDDER_ID },
+  ];
+  const { source } = await brain(t, nodes);
+  const result = await search(t, source, OWNED_EMBEDDER_ID, {
+    query: 'astronomy', request: { topK: 1, minSimilarity: undefined, noiseFloor: undefined },
+  });
+  assert.deepEqual(result.results.map(node => node.id), ['semantic-match']);
+});
+
+test('owned noprefix bounded candidate retention cannot discard the raw top match behind high-ranked noise', async t => {
+  const nodes = [
+    { id: 'semantic-match', concept: 'telescope plans', confidence_decay: 0.1, embedding: scoredVector(0.54), embedder_id: OWNED_EMBEDDER_ID },
+    ...Array.from({ length: 120 }, (_, index) => ({
+      id: `noise-${index}`, concept: 'mineral collection', embedding: scoredVector(0.42), embedder_id: OWNED_EMBEDDER_ID,
+    })),
+  ];
+  const { source } = await brain(t, nodes);
+  const result = await search(t, source, OWNED_EMBEDDER_ID, {
+    query: 'astronomy', request: { topK: 1, minSimilarity: undefined, noiseFloor: undefined },
+  });
+  assert.deepEqual(result.results.map(node => node.id), ['semantic-match']);
+});
+
+test('owned noprefix recall preserves authority ranking among relative gate survivors', async t => {
+  const { source } = await brain(t, [
+    { id: 'raw-top', concept: 'telescope plans', confidence_decay: 0.1, embedding: scoredVector(0.54), embedder_id: OWNED_EMBEDDER_ID },
+    { id: 'trusted-nearby', concept: 'mountain observatory', embedding: scoredVector(0.48), embedder_id: OWNED_EMBEDDER_ID },
+  ]);
+  const result = await search(t, source, OWNED_EMBEDDER_ID, {
+    query: 'astronomy', request: { topK: 1, minSimilarity: undefined, noiseFloor: undefined },
+  });
+  assert.deepEqual(result.results.map(node => node.id), ['trusted-nearby']);
+});
+
+test('owned noprefix recall respects explicit similarity and noise thresholds', async t => {
+  const nodes = [
+    { id: 'best', concept: 'telescope plans', embedding: scoredVector(0.56), embedder_id: OWNED_EMBEDDER_ID },
+    { id: 'nearby', concept: 'mountain observatory', embedding: scoredVector(0.48), embedder_id: OWNED_EMBEDDER_ID },
+  ];
+  const { source } = await brain(t, nodes);
+  for (const request of [
+    { minSimilarity: undefined, noiseFloor: 0.55 },
+    { minSimilarity: 0.5, noiseFloor: undefined },
+  ]) {
+    const result = await search(t, source, OWNED_EMBEDDER_ID, { query: 'astronomy', request });
+    assert.deepEqual(result.results.map(node => node.id), ['best']);
+  }
+});
+
+test('owned noprefix recall applies its absolute floor with a lower dashboard candidate threshold', async t => {
+  const { source } = await brain(t, [
+    { id: 'below-floor', concept: 'mineral collection', embedding: scoredVector(0.39), embedder_id: OWNED_EMBEDDER_ID },
+  ]);
+  const result = await search(t, source, OWNED_EMBEDDER_ID, {
+    query: 'astronomy', request: { minSimilarity: 0.1, noiseFloor: undefined },
+  });
+  assert.deepEqual(result.results, []);
+});
+
+test('invalid noise thresholds use the model-specific semantic default', async t => {
+  for (const embedderId of [OWNED_EMBEDDER_ID, LEGACY_ID, GEMINI_ID]) {
+    const { source } = await brain(t, [
+      { id: 'best', concept: 'telescope plans', embedding: scoredVector(0.56), embedder_id: embedderId },
+      { id: 'nearby', concept: 'mountain observatory', embedding: scoredVector(0.48), embedder_id: embedderId },
+    ]);
+    for (const noiseFloor of ['invalid', NaN]) {
+      const result = await search(t, source, embedderId, {
+        query: 'astronomy', request: { minSimilarity: undefined, noiseFloor },
+      });
+      assert.deepEqual(result.results.map(node => node.id), embedderId === OWNED_EMBEDDER_ID
+        ? ['best', 'nearby'] : ['best']);
+    }
+  }
+});
+
+test('legacy and other provider recall keep their existing flat semantic noise floor', async t => {
+  for (const embedderId of [LEGACY_ID, GEMINI_ID, 'owned-onnx:another-profile:768']) {
+    const nodes = [
+      { id: 'best', concept: 'telescope plans', embedding: scoredVector(0.56), embedder_id: embedderId },
+      { id: 'nearby', concept: 'mountain observatory', embedding: scoredVector(0.48), embedder_id: embedderId },
+    ];
+    const { source } = await brain(t, nodes);
+    const result = await search(t, source, embedderId, {
+      query: 'astronomy', request: { minSimilarity: undefined, noiseFloor: undefined },
+    });
+    assert.deepEqual(result.results.map(node => node.id), ['best']);
+  }
+});
 
 test('dashboard Gemini query uses configured shared provider and normalized vectors', async () => {
   let request;
