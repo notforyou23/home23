@@ -176,7 +176,7 @@ function projectBoundedSearchNode(node, {
   const queryText = typeof node?.retrievalQuery === 'string' ? node.retrievalQuery : '';
   let tokens = [];
   try {
-    if (queryText) tokens = normalizeKeywordTokens(queryText);
+    if (queryText) tokens = normalizeSearchKeywordTokens(queryText);
   } catch {
     tokens = [];
   }
@@ -1196,12 +1196,21 @@ function matchKindRank(kind) {
   return MATCH_KIND_RANK[kind] || 0;
 }
 
+function normalizeNumberPunctuation(text) {
+  return text.replace(/(\p{N}),(?=\p{N})/gu, '$1');
+}
+
+function normalizeSearchKeywordTokens(query) {
+  return normalizeKeywordTokens(typeof query === 'string'
+    ? normalizeNumberPunctuation(query) : query);
+}
+
 function normalizeLexical(text) {
-  return String(text || '')
+  return normalizeNumberPunctuation(String(text || ''))
     .toLocaleLowerCase('en-US')
     .replace(/[\u2010-\u2015\u2212]/g, '-')
     .replace(/\u2026/g, '...')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/[^\p{L}\p{N}_]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -1215,6 +1224,17 @@ function lexicalHaystack(node) {
   ].filter((value) => value !== undefined && value !== null && value !== '').join(' '));
 }
 
+function quotedLexicalSegments(query) {
+  const raw = String(query || '').trim();
+  const segments = Array.from(raw.matchAll(/"([^"\n]+)"|“([^”\n]+)”/g),
+    (match) => normalizeLexical(match[1] || match[2]));
+  // Only whole-query single quotes are explicit, so apostrophes in ordinary
+  // recall text cannot accidentally create a phrase requirement.
+  const singleQuoted = raw.match(/^'([^'\n]+)'$/);
+  if (singleQuoted) segments.push(normalizeLexical(singleQuoted[1]));
+  return segments.filter(Boolean);
+}
+
 function classifyLexicalMatch(node, query, tokens) {
   if (!node) return { matchKind: 'none', lexicalScore: 0 };
   const haystack = lexicalHaystack(node);
@@ -1223,15 +1243,13 @@ function classifyLexicalMatch(node, query, tokens) {
   if (id && (String(query).trim() === id || needle === normalizeLexical(id))) {
     return { matchKind: 'exact_id', lexicalScore: 100 };
   }
-  if (needle.length >= 8 && haystack.includes(needle)) {
+  const quotedSegments = quotedLexicalSegments(query);
+  if (quotedSegments.length > 0
+      && quotedSegments.every((segment) => ` ${haystack} `.includes(` ${segment} `))) {
     return { matchKind: 'exact_phrase', lexicalScore: 80 };
   }
-  const quoted = String(query || '').match(/["“”']([^"“”']{8,})["“”']/g) || [];
-  for (const raw of quoted) {
-    const inner = normalizeLexical(String(raw).replace(/^["“”']|["“”']$/g, ''));
-    if (inner.length >= 8 && haystack.includes(inner)) {
-      return { matchKind: 'exact_phrase', lexicalScore: 80 };
-    }
+  if (quotedSegments.length === 0 && needle.length >= 8 && haystack.includes(needle)) {
+    return { matchKind: 'exact_phrase', lexicalScore: 80 };
   }
   if (!Array.isArray(tokens) || tokens.length === 0) return { matchKind: 'none', lexicalScore: 0 };
   const matched = tokens.filter((token) => haystack.includes(normalizeLexical(token)));
@@ -1249,8 +1267,7 @@ function isPhraseQuery(query, tokens) {
 }
 
 function isExplicitPhraseQuery(query) {
-  const raw = String(query || '').trim();
-  return /"[^"\n]+"|“[^”\n]+”/.test(raw) || /^'[^'\n]+'$/.test(raw);
+  return quotedLexicalSegments(query).length > 0;
 }
 
 function isIdentityQuery(query) {
@@ -1401,7 +1418,7 @@ function createMemorySearchService({
       identity,
     } = request;
     throwIfAborted(signal);
-    const keywordTokens = normalizeKeywordTokens(query);
+    const keywordTokens = normalizeSearchKeywordTokens(query);
     const tag = normalizeOptionalTag(requestedTag);
     const limit = parseBoundedInteger(topK, {
       name: 'topK',
@@ -1906,12 +1923,14 @@ function createMemorySearchService({
     });
     // Ordinary recall queries accept indexed lexical matches even when ANN
     // hits are filtered as noise. Query length does not imply exact-phrase
-    // intent. Explicit quotes retain the bounded logical exact check.
-    const needsPhraseScan = isExplicitPhraseQuery(query);
-    if (!contextFast && allowLogicalScan && phraseQuery && needsPhraseScan && !indexedHasExact && !fallback) {
+    // intent. Every explicit quoted segment must match an indexed row before
+    // its positive exact match can skip the bounded logical check.
+    const needsPhraseScan = isExplicitPhraseQuery(query) && !indexedHasExact;
+    if (!contextFast && allowLogicalScan && phraseQuery && needsPhraseScan
+        && (!fallback || fallback.route === 'keyword-index-overlay')) {
       fallback = {
         route: 'logical-source-scan',
-        reason: 'exact_phrase_missing',
+        reason: fallback?.reason || 'exact_phrase_missing',
         completeness: 'complete',
       };
     }
@@ -1921,7 +1940,8 @@ function createMemorySearchService({
     let keywordRows;
     const keywordUsesIndex = annUsed && annLabelsAvailable
       && request.exhaustive !== true
-      && (contextFast || !['exact_canary_missing', 'exact_phrase_missing'].includes(fallback?.reason));
+      && (contextFast || (!needsPhraseScan
+        && !['exact_canary_missing', 'exact_phrase_missing'].includes(fallback?.reason)));
     if (keywordUsesIndex) {
       keywordRows = indexedKeywordRows.slice(0, limit);
     } else if (allowLogicalScan) {
@@ -2086,7 +2106,7 @@ function createMemorySearchService({
 
   async function search(request = {}) {
     throwIfAborted(request.signal);
-    normalizeKeywordTokens(request.query);
+    normalizeSearchKeywordTokens(request.query);
     if (request.sourcePin) {
       if (!request.identity?.operationId) {
         throw memorySourceError('invalid_request', 'pinned operation identity required');

@@ -23,6 +23,7 @@ const {
   MAX_ANN_METADATA_BYTES,
   parseAnnMetadataChunks,
   projectBoundedSearchNode,
+  classifyLexicalMatch,
 } = require('../../../engine/src/dashboard/memory-search');
 const {
   createMemoryDeltaOverlayCache,
@@ -378,6 +379,176 @@ test('unquoted multi-word ANN hits avoid a logical scan with fresh or overlay-co
       assert.equal(result.evidence.indexCoverage.coveredThroughRevision, result.evidence.indexCoverage.currentRevision);
       if (withDelta) {
         assert.ok(result.evidence.indexCoverage.indexedRevision < result.evidence.indexCoverage.currentRevision);
+      }
+    });
+  }
+});
+
+test('each quoted segment is required for an exact lexical match', () => {
+  const query = '"Guernsey records" "Jim Irsay"';
+  const tokens = ['guernsey', 'records', 'jim', 'irsay'];
+  assert.equal(classifyLexicalMatch({ concept: 'Guernsey records mention Jim Irsay.' }, query, tokens).matchKind, 'exact_phrase');
+  assert.equal(classifyLexicalMatch({ concept: 'Guernsey records mention someone else.' }, query, tokens).matchKind, 'keyword');
+  assert.equal(classifyLexicalMatch({ concept: 'Tiger belongs to Jim Irsayton.' }, '"Tiger" "Irsay"', ['tiger', 'irsay']).matchKind, 'keyword');
+});
+
+test('two quoted terms use ANN labels and covered delta rows without a logical scan', async (t) => {
+  for (const route of ['ANN label', 'delta overlay']) {
+    await t.test(route, async () => {
+      const exact = { id: '281485', concept: "Tiger: Guernsey's auction records ($957,500 sale to Jim Irsay)", embedding: [0, 1] };
+      const tiger = { id: 'tiger-only', concept: 'Tiger guitar history', embedding: [1, 0] };
+      const irsay = { id: 'irsay-only', concept: 'Jim Irsay collection', embedding: [1, 0] };
+      const indexedNodes = route === 'ANN label' ? [exact, tiger, irsay] : [tiger, irsay];
+      const dir = await createBrain({ nodes: indexedNodes });
+      await markAnn(dir);
+      if (route === 'delta overlay') {
+        await appendRevision(dir, { nodes: [exact] }, { nodeCount: 3, edgeCount: 0, clusterCount: 1 });
+      }
+      const labels = indexedNodes.map(node => projectAnnLabel(node));
+      const { result, visits } = await countedSourceSearch({
+        dir, query: '"tIgEr" "iRsAy"', embedQuery: async () => [1, 0],
+        loadAnn: async () => ({ dimension: 2, labels,
+          search: () => [
+            { node: projectAnnLabel(tiger), similarity: 0.99 },
+            { node: projectAnnLabel(irsay), similarity: 0.98 },
+          ],
+        }),
+        request: { noiseFloor: 0.55 },
+      });
+      assert.equal(result.results[0]?.id, exact.id);
+      assert.equal(result.results[0]?.matchKind, 'exact_phrase');
+      assert.ok(result.results.slice(1).every(row => row.matchKind !== 'exact_phrase'));
+      assert.equal(visits, 0);
+      assert.equal(result.evidence.fallback, null);
+      assert.equal(result.evidence.sourceHealth, 'healthy');
+      assert.equal(result.evidence.completeCoverage, true);
+      assert.equal(result.evidence.indexCoverage.complete, true);
+    });
+  }
+});
+
+test('a quoted comma-number uses exact ANN label text without a logical scan', async (t) => {
+  for (const amount of ['957,500', '957500']) {
+    await t.test(amount, async () => {
+      const exact = { id: 'auction-price', concept: `Guernsey's auction sale to Jim Irsay was $${amount}.`, embedding: [0, 1] };
+      const neighbor = { id: 'other-price', concept: 'Catalogue 957 lists a different sale price', embedding: [1, 0] };
+      const dir = await createBrain({ nodes: [exact, neighbor] });
+      await markAnn(dir);
+      const { result, visits } = await countedSourceSearch({
+        dir, query: '"957,500"', embedQuery: async () => [1, 0],
+        loadAnn: async () => ({ dimension: 2, labels: [exact, neighbor].map(node => projectAnnLabel(node)),
+          search: () => [{ node: projectAnnLabel(neighbor), similarity: 0.99 }],
+        }),
+      });
+      assert.equal(result.results[0]?.id, exact.id);
+      assert.equal(result.results[0]?.matchKind, 'exact_phrase');
+      assert.equal(visits, 0);
+      assert.equal(result.evidence.fallback, null);
+      assert.equal(result.evidence.sourceHealth, 'healthy');
+      assert.equal(result.evidence.completeCoverage, true);
+    });
+  }
+});
+
+test('indexed keyword tokenization preserves comma-numbers and underscored identifiers', async (t) => {
+  for (const [query, exactText, partialText] of [
+    ['957,500', 'Auction sale $957,500', 'Catalogue 957 lists another sale'],
+    ['nfl_data_py', 'The nfl_data_py package', 'The nfl data py package'],
+  ]) {
+    await t.test(query, async () => {
+      assert.equal(classifyLexicalMatch({ concept: exactText }, query, [query]).lexicalScore > 0, true);
+      assert.equal(classifyLexicalMatch({ concept: partialText }, query, [query]).matchKind, 'none');
+      const exact = { id: 'exact-token', concept: exactText, embedding: [0, 1] };
+      const partial = { id: 'partial-token', concept: partialText, embedding: [1, 0] };
+      const dir = await createBrain({ nodes: [exact, partial] });
+      await markAnn(dir);
+      const { result, visits } = await countedSourceSearch({
+        dir, query, embedQuery: async () => [1, 0],
+        loadAnn: async () => ({ dimension: 2, labels: [exact, partial].map(node => projectAnnLabel(node)),
+          search: () => [{ node: projectAnnLabel(partial), similarity: 0.99 }],
+        }),
+      });
+      assert.equal(result.results.find(row => row.id === exact.id)?.lexicalScore > 0, true);
+      assert.equal(result.results.find(row => row.id === partial.id)?.lexicalScore, 0);
+      assert.equal(visits, 0);
+      assert.equal(result.evidence.fallback, null);
+    });
+  }
+});
+
+test('covered quoted ANN matches stay indexed during encoder outages', async (t) => {
+  for (const reason of ['embedding_unavailable', 'embedding_invalid']) {
+    await t.test(reason, async () => {
+      const exact = { id: 'quoted-exact', concept: 'Tiger sold to Jim Irsay', embedding: [0, 1] };
+      const partial = { id: 'tiger-only', concept: 'Tiger guitar history', embedding: [1, 0] };
+      const dir = await createBrain({ nodes: [exact, partial] });
+      await markAnn(dir);
+      const { result, visits } = await countedSourceSearch({
+        dir, query: '"Tiger" "Irsay"',
+        embedQuery: async () => {
+          if (reason === 'embedding_unavailable') throw new Error('encoder offline');
+          return [Number.NaN, 0];
+        },
+        loadAnn: async () => ({ dimension: 2, labels: [exact, partial].map(node => projectAnnLabel(node)),
+          search: () => assert.fail('encoder outage must use the keyword label index'),
+        }),
+      });
+      assert.equal(result.results[0]?.id, exact.id);
+      assert.equal(result.results[0]?.matchKind, 'exact_phrase');
+      assert.equal(visits, 0);
+      assert.equal(result.evidence.fallback.route, 'keyword-index-overlay');
+      assert.equal(result.evidence.fallback.reason, reason);
+      assert.equal(result.evidence.fallback.completeness, 'complete');
+      assert.equal(result.evidence.completeCoverage, true);
+      assert.equal(result.evidence.sourceHealth, 'degraded');
+    });
+  }
+});
+
+test('quoted terms absent from a shared ANN label retain the bounded logical fallback', async (t) => {
+  for (const encoder of ['ready', 'embedding_unavailable', 'embedding_invalid']) {
+    await t.test(encoder, async () => {
+      let visits = 0;
+      const tiger = { id: 'tiger-label', concept: 'Tiger guitar history' };
+      const irsay = { id: 'irsay-label', concept: 'Jim Irsay collection' };
+      const source = {
+        manifest: { formatVersion: 1, baseRevision: 1, currentRevision: 1,
+          ann: { indexFile: 'memory-ann.test.index', metaFile: 'memory-ann.test.meta.json', builtFromRevision: 1 },
+        },
+        async summarize() { return { nodes: 55_000, edges: 0 }; },
+        async *iterateNodes() {
+          for (let id = 0; id < 55_000; id += 1) {
+            visits += 1;
+            yield { id, concept: id === 54_999 ? 'Tiger sold to Jim Irsay' : `unrelated mineral ${id}`, embedding: [0, 1] };
+          }
+        },
+        getEvidence(input = {}) { return { sourceHealth: 'healthy', ...input }; },
+      };
+      const service = createMemorySearchService({
+        embedQuery: async () => {
+          if (encoder === 'embedding_unavailable') throw new Error('encoder offline');
+          return encoder === 'embedding_invalid' ? [Number.NaN, 0] : [1, 0];
+        },
+        loadAnn: async () => ({ dimension: 2, labels: [tiger, irsay],
+          search: () => [{ node: tiger, similarity: 0.99 }],
+        }),
+        logger: { warn() {} },
+      });
+      try {
+        const result = await service.search({
+          sourcePin: source, identity: { operationId: `bounded-quoted-fallback-${encoder}` }, query: '"Tiger" "Irsay"',
+        });
+        assert.ok(visits > 0 && visits <= 4001, `fallback visited ${visits} nodes`);
+        assert.equal(result.evidence.fallback.route, 'logical-source-scan');
+        assert.equal(result.evidence.fallback.reason, encoder === 'ready' ? 'exact_phrase_missing' : encoder);
+        assert.equal(result.evidence.fallback.scan.visitBudget, 4000);
+        assert.equal(result.evidence.fallback.scan.exhausted, true);
+        assert.equal(result.evidence.fallback.completeness, 'incomplete');
+        assert.equal(result.evidence.completeCoverage, false);
+        assert.equal(result.evidence.sourceHealth, 'degraded');
+        assert.ok(result.results.every(row => row.matchKind !== 'exact_phrase'));
+      } finally {
+        await service.close();
       }
     });
   }
