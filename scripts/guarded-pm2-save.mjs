@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 
-import { execFile as execFileCallback } from 'node:child_process';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { promisify } from 'node:util';
+import pm2Client from '../engine/src/system/pm2-client.cjs';
 import {
   assertOutputPath,
   assertReceiptContextDirectoryIdentity,
@@ -22,7 +21,8 @@ import {
   typedError,
 } from './lib/brain-acceptance-common.mjs';
 
-const execFile = promisify(execFileCallback);
+const { runPm2 } = pm2Client;
+
 const require = createRequire(import.meta.url);
 const lockfile = require('proper-lockfile');
 
@@ -1155,14 +1155,14 @@ function assertDumpEqualsLive(live, dump) {
 }
 
 async function defaultListProcesses() {
-  const { stdout } = await execFile('pm2', ['jlist'], {
+  const { stdout } = await runPm2(['jlist'], {
     encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
   });
   return JSON.parse(stdout);
 }
 
 async function defaultSave() {
-  await execFile('pm2', ['save'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+  await runPm2(['save'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
 }
 
 async function defaultAcquireSaveLock(dumpPath) {

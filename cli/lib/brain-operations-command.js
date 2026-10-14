@@ -1,9 +1,7 @@
-import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import {
   ensureBrainOperationsCapabilityKey,
   inspectBrainOperationsCapabilityState,
@@ -11,8 +9,10 @@ import {
   snapshotsEqual,
 } from './brain-operations-capability.js';
 import { generateEcosystem } from './generate-ecosystem.js';
+import pm2Client from '../../engine/src/system/pm2-client.cjs';
 
-const execFileAsync = promisify(execFile);
+const { runPm2 } = pm2Client;
+
 const require = createRequire(import.meta.url);
 const { deriveMemoryAuthorityAttestationKey } = require('../../shared/memory-authority-attestation.cjs');
 const { discoverAgentInstancePaths } = require('../../shared/agent-instance-paths.cjs');
@@ -79,7 +79,7 @@ async function assertCapabilityStillPrepared(home23Root, capabilityKey) {
 }
 
 async function listProcessesDefault() {
-  const { stdout } = await execFileAsync('pm2', ['jlist'], {
+  const { stdout } = await runPm2(['jlist'], {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
   });

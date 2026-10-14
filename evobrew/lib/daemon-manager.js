@@ -46,7 +46,16 @@ const LOG_RETENTION_DAYS = 7;
 // PLATFORM DETECTION
 // ============================================================================
 
+function assertStandalonePm2() {
+  if (process.env.HOME23_PRODUCT_HOST === 'true') {
+    throw Object.assign(new Error('Standalone Evobrew PM2 controls are unavailable in a product home. Use Home23 supervisor controls.'), {
+      code: 'host_supervisor_command_required'
+    });
+  }
+}
+
 function hasPm2() {
+  assertStandalonePm2();
   try {
     execSync('pm2 -v', { stdio: 'pipe' });
     return true;
@@ -56,6 +65,7 @@ function hasPm2() {
 }
 
 function pm2Exec(cmd) {
+  assertStandalonePm2();
   // Keep output quiet unless errors; return stdout
   return execSync(`pm2 ${cmd}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 }
@@ -666,6 +676,7 @@ function pm2EnvVars() {
 }
 
 async function installPm2() {
+  assertStandalonePm2();
   if (!hasPm2()) {
     throw new Error('PM2 not installed. Install with: npm install -g pm2');
   }
@@ -731,6 +742,7 @@ async function restartPm2() {
 }
 
 function getPm2Logs(lines = 50) {
+  assertStandalonePm2();
   if (!hasPm2()) return 'PM2 not installed';
   try {
     // Non-following logs (tail)
@@ -877,6 +889,7 @@ async function restartDaemon(options = {}) {
  * @returns {{installed: boolean, running: boolean, pid: number|null, uptime: number|null, port: number, platform: object}}
  */
 function getDaemonStatus() {
+  assertStandalonePm2();
   const platform = detectPlatform();
 
   // Try to get port from config

@@ -18,7 +18,7 @@ const SCHEMA = 'home23.product-update.v1';
 const INSTALL_SCHEMA = 'home23.product-install.v1';
 const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
 const RANK = { claimed: 0, quiesced: 1, checkpointed: 2, retained: 3, applying: 4, selected: 5, verifying: 6, writers_admitted: 7, accepted: 8, committed: 9, aborted: 9, rolled_back: 9, recovery_required: 9 };
-const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update-preview.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs', 'product-supervisor-admission.js'];
+const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update-preview.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-user-pm2.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs', 'product-supervisor-admission.js'];
 const DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const CHECKPOINT_COPIES = 4;
 // A cold candidate can outlive Start's own readiness wait while it catches up.

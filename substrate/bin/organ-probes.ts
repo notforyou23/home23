@@ -15,11 +15,11 @@
  */
 
 import { readFileSync, readdirSync, statSync, existsSync, openSync, readSync, closeSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { canonicalContactTurn, isLegacyConversationSession, shippableTurn } from '../src/conversation-turn.js';
 import { onPi, unreachableWhy } from '../src/pi-host.js';
 import { join, resolve } from 'node:path';
+const { runPm2Sync } = createRequire(import.meta.url)('../../engine/src/system/pm2-client.cjs');
 
 const ROOT = process.env['HOME23_PRODUCT_HOST'] === 'true'
   ? resolve(process.env['HOME23_ROOT'] ?? process.cwd())
@@ -101,7 +101,7 @@ export function judgePm2(apps: Pm2App[] | null, expected: string[]): ProbeResult
 
 export function readPm2Apps(): Pm2App[] | null {
   let apps: Pm2App[] | null = null;
-  try { apps = JSON.parse(execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString()) as Pm2App[]; } catch { apps = null; }
+  try { apps = JSON.parse(runPm2Sync(['jlist'], { timeout: 8_000 }).toString()) as Pm2App[]; } catch { apps = null; }
   return apps;
 }
 
@@ -466,7 +466,7 @@ export function judgeEngines(apps: Pm2App[] | null, names: string[] = ['home23-j
 
 function probeEngines(): ProbeResult[] {
   let apps: Pm2App[] | null = null;
-  try { apps = JSON.parse(execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString()) as Pm2App[]; } catch { apps = null; }
+  try { apps = JSON.parse(runPm2Sync(['jlist'], { timeout: 8_000 }).toString()) as Pm2App[]; } catch { apps = null; }
   return judgeEngines(apps);
 }
 

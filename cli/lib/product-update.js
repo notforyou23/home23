@@ -46,9 +46,16 @@ const MANAGED_PM2_ENV_BLOCKLIST = [
 ];
 
 export function managedSupervisorEnvironment(base = process.env) {
+  assertSourceSupervisorContext(base);
   const env = { ...base };
   for (const key of MANAGED_PM2_ENV_BLOCKLIST) delete env[key];
   return env;
+}
+
+function assertSourceSupervisorContext(environment = {}) {
+  if (process.env.HOME23_PRODUCT_HOST === 'true' || environment.HOME23_PRODUCT_HOST === 'true') {
+    throw Object.assign(new Error('Source supervisor inventory is unavailable from a product home.'), { code: 'process_inventory_unavailable' });
+  }
 }
 
 /**
@@ -955,6 +962,7 @@ export async function listSourceWriters(home, dependencies = {}) {
   const command = dependencies.pm2Command || 'pm2';
   const execute = dependencies.executeFile || executeFile;
   try {
+    assertSourceSupervisorContext(env);
     const { stdout } = await execute(command, ['jlist', '--silent'], {
       cwd: home,
       env,
@@ -1008,6 +1016,7 @@ async function verifySourceServiceBindings(source, services, dependencies = {}) 
   try {
     if (dependencies.listSourceServiceBindings) rows = await dependencies.listSourceServiceBindings(source);
     else {
+      assertSourceSupervisorContext(dependencies.env);
       const { stdout } = await (dependencies.executeFile || executeFile)(dependencies.pm2Command || 'pm2', ['jlist', '--silent'], {
         cwd: source, env: dependencies.env || managedSupervisorEnvironment(), timeout: 20000, maxBuffer: 8 * 1024 * 1024,
       });

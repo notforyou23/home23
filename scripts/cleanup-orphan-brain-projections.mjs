@@ -5,8 +5,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import pm2Client from '../engine/src/system/pm2-client.cjs';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+
+const { runPm2 } = pm2Client;
 
 const execFile = promisify(execFileCallback);
 const UUID_PATTERN = '[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}';
@@ -1979,7 +1982,7 @@ async function defaultInspectProcessOwner(owner) {
 }
 
 async function defaultPm2States() {
-  const { stdout } = await execFile('pm2', ['jlist'], {
+  const { stdout } = await runPm2(['jlist'], {
     encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
   });
   try {

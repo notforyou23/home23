@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { absoluteHome, readPrivateJSON, socketRootFor } from './product-environment.js';
 import { PRODUCT_STATE_PATHS, isOsMetadataPath, isProductStatePath } from './product-payload.js';
 import { compareUpdateContracts } from './product-update-plan.js';
+import { inspectUserPm2Artifacts } from './product-user-pm2.js';
 
 export const SUPPORTED_COORDINATION_SCHEMA = 21;
 export const SUPPORTED_COORDINATION_SCHEMA_CHECKSUM = 'ed59b3cd5a64230ee04d6adb92abe713dc2cdabe8af5721d67c167485a7ba5af';
@@ -66,6 +67,7 @@ const RECIPE_ASSET = 'app/scripts/embedder/schema/recipes.json';
 const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const COORDINATION_SOCKET = 'app/instances/.house/coordination/coord.sock';
 const PM2_SOCKETS = new Set(['runtime/pm2/pub.sock', 'runtime/pm2/rpc.sock']);
+const STRAY_PM2_SOCKETS = new Set(['runtime/user/.pm2/pub.sock', 'runtime/user/.pm2/rpc.sock']);
 const CHROME_SINGLETON_SOCKET = 'runtime/user/.home23/chrome-cdp/SingletonSocket';
 const CHROME_SOCKET_TARGET = /^\/var\/folders\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/T\/com\.google\.Chrome\.[A-Za-z0-9_-]+\/SingletonSocket$/;
 // app/config/agents.json is not scanned: every Start regenerates it from the
@@ -319,6 +321,8 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   const reasons = [];
   const warnings = [];
   const unknown = [];
+  const userPm2 = await inspectUserPm2Artifacts(root);
+  if (userPm2.rebuildable) warnings.push(reason('rebuildable_user_pm2', `The ${userPm2.status} unowned role-home PM2 endpoints are rebuildable runtime artifacts.`, { path: 'runtime/user/.pm2' }));
   let adoptedLinks = new Map();
   let adoptedReferences = new Set();
   let adoptedContinuation = null;
@@ -366,7 +370,7 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
       || dirent.isSocket() || dirent.isFIFO() || dirent.isBlockDevice() || dirent.isCharacterDevice());
     const stat = knownType ? dirent : lstatSync(absolute);
     const declared = manifestEntries.get(relative);
-    if (relative === COORDINATION_SOCKET || PM2_SOCKETS.has(relative)) {
+    if (relative === COORDINATION_SOCKET || PM2_SOCKETS.has(relative) || (userPm2.rebuildable && STRAY_PM2_SOCKETS.has(relative))) {
       // A live UDS is a rebuildable coordinator endpoint, never a backup file.
       // Other types at this exact path and sockets anywhere else still refuse.
       if (!stat.isSocket() || declared) reasons.push(reason('unknown_state', `Coordination endpoint ${relative} is not an owned runtime socket.`, { path: relative }));

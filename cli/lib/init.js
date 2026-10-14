@@ -43,7 +43,7 @@ function checkPrerequisites(execute) {
 
   // PM2
   try {
-    execute('pm2', ['--version'], { stdio: 'pipe' });
+    if (process.env.HOME23_PRODUCT_HOST !== 'true') execute('pm2', ['--version'], { stdio: 'pipe' });
   } catch {
     issues.push('PM2 not found — install with: npm install -g pm2');
   }

@@ -447,6 +447,21 @@ test('named ecosystem starts use exact PM2 targets with a sanitized environment'
   assert.equal(invocation.options.env.cron_restart, undefined);
 });
 
+test('product parent ecosystem starts keep supervisor routing when a caller replaces the environment', t => {
+  const keys = ['HOME23_PRODUCT_HOST', 'HOME23_ROOT'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  Object.assign(process.env, { HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: '/tmp/fixture-product/app' });
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  for (const env of [{}, { HOME23_PRODUCT_HOST: 'false' }]) {
+    let invocation;
+    startEcosystemProcesses({ home23Root: '/tmp/fixture-product/app', names: ['home23-jerry'], env,
+      execFile: (command, args, options) => { invocation = { command, args, options }; } });
+    assert.equal(invocation.command, process.execPath);
+    assert.equal(invocation.args[3], '/tmp/fixture-product');
+    assert.equal(invocation.options.env.HOME23_PRODUCT_HOST, 'true');
+  }
+});
+
 test('home23 start delegates one coordinated shared-service startup pass', async () => {
   const source = await readFile(new URL('../../cli/lib/pm2-commands.js', import.meta.url), 'utf8');
 

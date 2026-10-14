@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { execFile as execFileCallback, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
+import pm2Client from '../engine/src/system/pm2-client.cjs';
 import {
   failCli,
   integer,
@@ -18,7 +18,8 @@ import {
   writeJsonReceipt,
 } from './lib/brain-acceptance-common.mjs';
 
-const execFile = promisify(execFileCallback);
+const { runPm2 } = pm2Client;
+
 const MIB = 1024 * 1024;
 const MAX_RUNTIME_METRICS_BYTES = 64 * 1024;
 const MAX_RUNTIME_METRICS_CHUNKS = 1_024;
@@ -63,7 +64,7 @@ export function runtimeMetricsUrlForProcess(processName) {
 }
 
 async function defaultListPm2Processes() {
-  const { stdout } = await execFile('pm2', ['jlist'], {
+  const { stdout } = await runPm2(['jlist'], {
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
   });

@@ -1,3 +1,4 @@
+const { refuseProductPm2Shell } = require('../system/pm2-client.cjs');
 /**
  * AI Tools - Function Calling Implementation
  * Clean, modular, production-ready
@@ -727,6 +728,8 @@ class ToolExecutor {
   }
 
   async runCommand(command) {
+    const refused = refuseProductPm2Shell(command);
+    if (refused) return { output: refused.content, exitCode: 75, success: false };
     try {
       const output = execSync(command, {
         cwd: this.cwd,

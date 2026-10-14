@@ -28,11 +28,13 @@ const receiptPath = root => join(root, '.home23-install.json');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 /** Pause authority comes from the current update's bound migration snapshot,
- * never from caller-supplied process names. Status can read this metadata. */
+ * never from caller-supplied process names. Only explicit stopped-house intent
+ * clears per-role pauses; older journals preserve their validated pause lists. */
 async function updatePausedNames(homeRoot, state, ownerToken) {
   const { readUpdateJournal } = await import('./product-update-apply.js');
   const journal = readUpdateJournal(homeRoot);
   if (!journal?.supervisorMigration) return [];
+  if (journal.desiredRunning !== undefined && typeof journal.desiredRunning !== 'boolean') throw supervisorAmbiguous('The paused-role update has no verifiable running intent.');
   if (ownerToken && ownerToken !== journal.ownerToken) throw supervisorAmbiguous('The paused-role update owner does not match.');
   const migration = journal.supervisorMigration;
   const names = ownedProcessNamesForState(state);
@@ -42,7 +44,8 @@ async function updatePausedNames(homeRoot, state, ownerToken) {
     const paused = migration.pausedNames;
     if (admission.ownership === 'absent') {
       const emptyPaused = paused === undefined && migration.ownership === 'absent' ? [] : paused;
-      const expectedOwnership = state.desiredRunning === true ? 'launchd' : 'absent';
+      const desiredRunning = journal.desiredRunning ?? state.desiredRunning;
+      const expectedOwnership = desiredRunning === true ? 'launchd' : 'absent';
       if (!Array.isArray(rows) || rows.length || !Array.isArray(emptyPaused) || emptyPaused.length ||
           migration.ownership !== expectedOwnership || (migration.updateId && migration.updateId !== journal.id) ||
           (expectedOwnership === 'absent' && migration.running !== false) ||
@@ -58,7 +61,7 @@ async function updatePausedNames(homeRoot, state, ownerToken) {
         !Array.isArray(paused) || JSON.stringify(paused) !== JSON.stringify(rows.filter(r => ['stopped', 'errored'].includes(r.pm2_env.status)).map(r => r.name))) {
       throw supervisorAmbiguous('Paused-role admission differs from this update\'s captured registrations.');
     }
-    return paused;
+    return journal.desiredRunning === false ? [] : paused;
   }
   const expectedPath = join(homeRoot, 'runtime/pm2/supervisor-migration.json');
   if (migration.snapshotPath !== expectedPath || migration.updateId !== journal.id) throw supervisorAmbiguous('The paused-role migration belongs to a different update.');
@@ -69,7 +72,7 @@ async function updatePausedNames(homeRoot, state, ownerToken) {
       JSON.stringify(paused) !== JSON.stringify(saved.registrations.filter(row => ['stopped', 'errored'].includes(row.pm2_env.status)).map(row => row.name))) {
     throw supervisorAmbiguous('Paused-role metadata differs from the captured supervisor.');
   }
-  return paused;
+  return journal.desiredRunning === false ? [] : paused;
 }
 /** Host install root → app root where instances/<name>/config.yaml lives. */
 function appRootFor(homeRoot) {

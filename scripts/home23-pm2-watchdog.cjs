@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { runPm2Sync } = require('../engine/src/system/pm2-client.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const ECOSYSTEM_PATH = path.join(ROOT, 'ecosystem.config.cjs');
@@ -24,7 +25,6 @@ const PM2_ENV_BLOCKLIST = [
   'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY',
   'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY',
 ];
-const PM2_ENV_UNSET_ARGS = PM2_ENV_BLOCKLIST.flatMap((key) => ['-u', key]);
 
 function cleanCommandEnv(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -265,7 +265,7 @@ function planRepair(expected, inspection) {
 }
 
 function collectObserved(expected) {
-  const pm2Output = execFileSync('pm2', ['jlist'], {
+  const pm2Output = runPm2Sync(['jlist'], {
     encoding: 'utf8',
     env: cleanCommandEnv(),
     maxBuffer: 20 * 1024 * 1024,
@@ -365,7 +365,7 @@ async function repairContract(expected, plan, options = {}) {
   for (const name of plan.deleteNames) {
     actions.push({ action: 'pm2_delete', name });
     try {
-      execFileSync('pm2', ['delete', name], { cwd: expected.root, env: cleanCommandEnv(), stdio: 'pipe' });
+      runPm2Sync(['delete', name], { cwd: expected.root, env: cleanCommandEnv(), stdio: 'pipe' });
     } catch (err) {
       actions[actions.length - 1].error = commandError(err);
     }
@@ -375,7 +375,7 @@ async function repairContract(expected, plan, options = {}) {
     const action = { action: 'pm2_start', names: plan.startNames };
     actions.push(action);
     try {
-      execFileSync('env', [...PM2_ENV_UNSET_ARGS, 'pm2', 'start', expected.ecosystemPath, '--only', plan.startNames.join(','), '--update-env', '--silent'], {
+      runPm2Sync(['start', expected.ecosystemPath, '--only', plan.startNames.join(','), '--update-env', '--silent'], {
         cwd: expected.root,
         env: cleanCommandEnv(),
         stdio: 'pipe',
@@ -388,7 +388,7 @@ async function repairContract(expected, plan, options = {}) {
 
   if (options.save && actions.length > 0) {
     actions.push({ action: 'pm2_save' });
-    execFileSync('pm2', ['save'], { cwd: expected.root, env: cleanCommandEnv(), stdio: 'pipe' });
+    runPm2Sync(['save'], { cwd: expected.root, env: cleanCommandEnv(), stdio: 'pipe' });
   }
 
   return actions;

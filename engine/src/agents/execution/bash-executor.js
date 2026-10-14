@@ -1,3 +1,4 @@
+const { refuseProductPm2Shell } = require('../../system/pm2-client.cjs');
 const { spawn, execFile } = require('child_process');
 const path = require('path');
 const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
@@ -112,6 +113,8 @@ class BashExecutor {
   }
 
   async execute(command, cwdOverride = null, options = {}) {
+    const refused = refuseProductPm2Shell(command);
+    if (refused) return { output: refused.content, exitCode: 75, success: false };
     // Use override if provided, otherwise default to runtime/outputs
     const cwd = cwdOverride || path.resolve('runtime/outputs');
     const timeout = options.timeout || this.timeout;

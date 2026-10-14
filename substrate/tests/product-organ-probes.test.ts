@@ -1,16 +1,39 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
-import { localProbeRoster, probeLocalHome } from '../bin/organ-probes.js';
+import { localProbeRoster, probeLocalHome, readPm2Apps } from '../bin/organ-probes.js';
 
 const require = createRequire(import.meta.url);
 const { generateEcosystem } = require('../../cli/lib/generate-ecosystem.js');
 const { productDefinitions, ownedProcessNames } = require('../../cli/lib/product-host.js');
 const { productEnvironment } = require('../../cli/lib/product-environment.js');
+
+test('product substrate polling reaches its installed supervisor without creating a user PM2 home', t => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-product-organ-client-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const app = join(root, 'app'), marker = join(root, 'plain-pm2-called');
+  mkdirSync(join(app, 'cli/lib'), { recursive: true });
+  writeFileSync(join(app, 'package.json'), '{"type":"module"}');
+  writeFileSync(join(app, 'cli/lib/product-supervisor.js'), `
+    export async function productSupervisorCommand(home, args) {
+      if (home !== ${JSON.stringify(root)} || args[0] !== 'jlist') throw new Error('wrong route');
+      return { stdout: JSON.stringify([{ name: 'home23-milo', pm2_env: { status: 'online' } }]) };
+    }
+  `);
+  writeFileSync(join(root, 'pm2'), `#!/bin/sh\n: > '${marker}'\nexit 88\n`, { mode: 0o755 });
+  const keys = ['HOME23_PRODUCT_HOST', 'HOME23_ROOT', 'HOME', 'PATH', 'PM2_HOME'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  Object.assign(process.env, { HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: app, HOME: join(root, 'runtime/user'), PATH: root });
+  delete process.env.PM2_HOME;
+  assert.deepEqual(readPm2Apps(), [{ name: 'home23-milo', pm2_env: { status: 'online' } }]);
+  assert.equal(existsSync(marker), false);
+  assert.equal(existsSync(join(root, 'runtime/user/.pm2')), false);
+});
 
 test('installed probes follow only the declared local resident and report real chain/PM2 failures', () => {
   const home = mkdtempSync(join(tmpdir(), 'host-probe-'));

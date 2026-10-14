@@ -27,8 +27,14 @@ try {
 
 function pm2Invocation(args, options = {}, delayMs = 0) {
   const environment = options.env || process.env;
-  if (environment.HOME23_PRODUCT_HOST !== 'true') return { file: 'pm2', args, options };
-  const app = environment.HOME23_ROOT;
+  const productParent = process.env.HOME23_PRODUCT_HOST === 'true';
+  if (!productParent && environment.HOME23_PRODUCT_HOST !== 'true') return { file: 'pm2', args, options };
+  // Cleaning a child environment must not turn a product role into a source
+  // operator or redirect it to another home's supervisor.
+  if (productParent && environment.HOME23_ROOT && environment.HOME23_ROOT !== process.env.HOME23_ROOT) {
+    throw Object.assign(new Error('The product supervisor home differs from its parent.'), { code: 'host_supervisor_ambiguous' });
+  }
+  const app = productParent ? process.env.HOME23_ROOT : environment.HOME23_ROOT;
   if (typeof app !== 'string' || !isAbsolute(app) || resolve(app) !== join(dirname(resolve(app)), 'app')) {
     throw Object.assign(new Error('The product supervisor home is unavailable.'), { code: 'host_supervisor_unavailable' });
   }
@@ -40,8 +46,20 @@ function pm2Invocation(args, options = {}, delayMs = 0) {
   return {
     file: process.execPath,
     args: ['--input-type=module', '-e', PRODUCT_CLIENT, dirname(resolve(app)), JSON.stringify(args), String(delayMs)],
-    options: { ...options, env: { HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: resolve(app), LANG: 'en_US.UTF-8' } },
+    options: { ...options, shell: false, env: { HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: resolve(app), LANG: 'en_US.UTF-8' } },
   };
+}
+
+/** Opaque shell PM2 commands cannot safely retain the private client guard.
+ * Refuse known CLI/module invocations; log-file reads such as pm2.log remain
+ * available. This is a routing guard, not a shell security sandbox. */
+function refuseProductPm2Shell(command, environment = process.env) {
+  if (process.env.HOME23_PRODUCT_HOST !== 'true' && environment.HOME23_PRODUCT_HOST !== 'true') return null;
+  if (typeof command !== 'string') return null;
+  const executable = /(?:^|[^a-z0-9_.-])pm2(?:-runtime)?(?=$|[\s@'";|&()<>{}])|node_modules\/pm2(?:\/|$)/i;
+  const packageImport = /(?:require|import)\s*\(\s*['"]pm2\/|\b(?:from|import)\s+['"]pm2\/|--(?:import|require)(?:\s+|=)['"]?pm2\//i;
+  if (!executable.test(command) && !packageImport.test(command)) return null;
+  return { is_error: true, content: 'host_supervisor_command_required: PM2 shell commands are unavailable in a product home. Use the Home23 supervisor controls.' };
 }
 
 function runPm2Sync(args, options = {}, execute = (...callArgs) => childProcess.execFileSync(...callArgs)) {
@@ -63,4 +81,4 @@ function schedulePm2(args, { delayMs = 1000, ...options } = {}, execute = spawn)
   return child;
 }
 
-module.exports = { pm2Invocation, runPm2, runPm2Sync, schedulePm2 };
+module.exports = { pm2Invocation, runPm2, runPm2Sync, schedulePm2, refuseProductPm2Shell };

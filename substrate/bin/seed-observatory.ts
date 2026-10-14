@@ -20,7 +20,6 @@
 
 import { createServer } from 'node:http';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { nextCrossingAt } from '../src/concern.js';
 import type { Commitment } from '../src/concern.js';
@@ -32,6 +31,7 @@ import { composeLivedFacts } from '../../src/substrate/lived-facts.js';
 import { composeLivedIdentity, readSeedGenesis } from '../../src/substrate/lived-identity.js';
 import { createRequire } from 'node:module';
 const engineRequire = createRequire(import.meta.url);
+const { runPm2Sync } = engineRequire('../../engine/src/system/pm2-client.cjs');
 const { composeLivedState } = engineRequire('../../engine/src/substrate/seed-lived-state.js') as { composeLivedState: (dir: string) => string | null };
 
 interface IndividualSpec { name: string; stateDir: string; formsDir?: string; note?: string }
@@ -390,7 +390,7 @@ function vitalsHTML(): string {
   const parts: string[] = [];
   // PM2-supervised organs: errored/stopped is RED; flapping shows restarts.
   try {
-    const raw = execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString();
+    const raw = runPm2Sync(['jlist'], { timeout: 8_000 }).toString();
     const apps = JSON.parse(raw) as Array<{ name: string; pm2_env?: { status?: string; restart_time?: number } }>;
     for (const app of apps.filter((a) => a.name.startsWith('home23-')).sort((a, b) => a.name.localeCompare(b.name))) {
       const status = app.pm2_env?.status ?? '?';
