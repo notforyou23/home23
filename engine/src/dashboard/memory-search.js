@@ -30,6 +30,7 @@ const {
   projectMemoryRelations,
   createMemoryAuthorityResolver,
   hasAuthenticatedAuthorityEvidence,
+  isGoalResolution,
 } = require('../../../shared/memory-authority.cjs');
 const {
   memoryAuthorityAttestationKeyId,
@@ -142,6 +143,7 @@ function projectBoundedSearchNode(node, {
       ? truncateString(node.concept, 32 * 1024)
       : (typeof node?.content === 'string' ? truncateString(node.content, 32 * 1024) : null),
     tag: node?.tag ?? null,
+    ...(isGoalResolution(node) ? { type: 'goal_resolution' } : {}),
     similarity: similarity === null ? undefined : roundScore(similarity),
     retrievalScore: publishedRetrievalScore === null ? undefined : publishedRetrievalScore,
     retrievalMode,
@@ -1244,6 +1246,11 @@ function isPhraseQuery(query, tokens) {
   return false;
 }
 
+function isExplicitPhraseQuery(query) {
+  const raw = String(query || '').trim();
+  return /"[^"\n]+"|“[^”\n]+”/.test(raw) || /^'[^'\n]+'$/.test(raw);
+}
+
 function isIdentityQuery(query) {
   const q = normalizeLexical(query);
   return /\b(i am|im|who am i|identity|third person|first person|pronoun|costume|seed|lobe|this room|there is no he|i am them|i am jerry)\b/.test(q);
@@ -1278,7 +1285,7 @@ function decorateRank(row, query) {
   const similarity = Number(row.similarity);
   const lexical = Number(row.lexicalScore ?? 0);
   const penalty = sludgeMultiplier(row, isIdentityQuery(query));
-  const kindBoost = MATCH_KIND_BOOST[matchKind] || 0;
+  const kindBoost = isGoalResolution(row) ? 0 : (MATCH_KIND_BOOST[matchKind] || 0);
   const finalRankScore = roundScore((kindBoost + retrieval) * penalty);
   return {
     ...row,
@@ -1410,8 +1417,12 @@ function createMemorySearchService({
     const authorityResolver = createMemoryAuthorityResolver({
       intent: request.intent || query,
     });
+    const excludedFromRecall = (node) => (
+      (tag !== 'goal_resolution' && isGoalResolution(node))
+      || (request.mode === 'context' && isContextEnrichmentEcho(node))
+    );
     const offerAuthorityResolved = (heap, candidate, trustedProjection = false) => {
-      if (request.mode === 'context' && isContextEnrichmentEcho(candidate)) return;
+      if (excludedFromRecall(candidate)) return;
       const resolved = authorityResolver.apply([candidate], { trustedProjection })[0];
       if (!resolved) return;
       const { _trustedAuthorityProjection: _ignoredCallerTrust, ...plain } = resolved;
@@ -1457,8 +1468,10 @@ function createMemorySearchService({
       }
     }
     const overlayRefreshMs = performance.now() - overlayStartedAt;
+    // Overlay coverage is fresh-equivalent for retrieval; the raw ANN
+    // watermark still reports the revision actually indexed.
     const annCovered = annRevisionEligible && (annFresh || Boolean(overlay
-      && overlay.coveredThroughRevision === manifest.currentRevision));
+      && overlay.coveredThroughRevision >= manifest.currentRevision));
     let queryEmbedding = null;
     let queryEmbedderId = null;
     let fallback = null;
@@ -1571,6 +1584,8 @@ function createMemorySearchService({
       // bounded relation budget merely because they occur earlier on disk.
       for await (const node of source.iterateNodes({ signal })) {
         if (!consumeLogicalVisit()) break;
+        // Resolution events still participate in the second authority pass.
+        if (excludedFromRecall(node)) continue;
         const unfilteredKeywordRelevance = keywordRelevance(
           node, keywordTokens, query, null,
         );
@@ -1589,7 +1604,6 @@ function createMemorySearchService({
           && node.embedding.length === queryEmbedding?.length
           && Number.isFinite(similarity = cosineSimilarity(queryEmbedding, node.embedding))
           && similarity >= similarityThreshold;
-        if (request.mode === 'context' && isContextEnrichmentEcho(node)) continue;
         if (!semanticMatches && !(keywordMatches && tagMatches)) continue;
         if (semanticMatches) {
           logicalSemanticCandidates.offer(projectLogicalCandidate(node, similarity, similarity));
@@ -1870,7 +1884,10 @@ function createMemorySearchService({
       const kind = row.matchKind || classifyLexicalMatch(row, query, keywordTokens).matchKind;
       return kind === 'exact_phrase' || kind === 'exact_id';
     });
-    if (!contextFast && allowLogicalScan && phraseQuery && !indexedHasExact && !fallback) {
+    // Ordinary multi-word queries can use good ANN hits without proving an
+    // exact phrase exists. Explicit quotes retain the logical exact check.
+    const needsPhraseScan = isExplicitPhraseQuery(query) || !annUsed || semanticTop.length === 0;
+    if (!contextFast && allowLogicalScan && phraseQuery && needsPhraseScan && !indexedHasExact && !fallback) {
       fallback = {
         route: 'logical-source-scan',
         reason: 'exact_phrase_missing',
