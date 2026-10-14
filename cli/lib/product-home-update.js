@@ -538,13 +538,27 @@ export async function runHomeUpdateOperation({ homeRoot, operationId, requireWor
       // A resumed local recovery is re-classified below if it fences again.
       persist({ phase: 'updating', message: 'Updating your home. Home23 will reconnect automatically.',
         requiresLocalRecovery: undefined, recoverable: undefined, retryable: undefined });
-      const journal = updater.readUpdateJournal(home.root);
-      let result = journal && !['committed', 'rolled_back', 'aborted'].includes(journal.phase)
-        ? await updater.resumeProductUpdate({ homeRoot: home.root })
-        : readPrivateJSON(join(home.root, '.home23-install.json'))?.packageId === prepared.packageId
-          ? { ok: true, status: 'committed' }
-          : await updater.applyProductUpdate({ homeRoot: home.root, candidatePayload: prepared.candidatePayload, staging: prepared.staging,
-            reuseVerifiedStage: true, admit: true });
+      const classifyRecovery = () => {
+        const recovery = updater.readUpdateJournal(home.root);
+        if (!['claimed', 'recovery_required'].includes(recovery?.phase) || recovery.writersAdmitted) return null;
+        const product = updater.productRecoveryFor?.(home.root) ?? {};
+        persist({ requiresLocalRecovery: true, recoverable: product.restore === true, retryable: product.retry === true });
+        return localRecoveryFailure(product.restore === true, product.retry === true, safeReasonCodes(recovery.reasons));
+      };
+      let result;
+      try {
+        const journal = updater.readUpdateJournal(home.root);
+        result = journal && !['committed', 'rolled_back', 'aborted'].includes(journal.phase)
+          ? await updater.resumeProductUpdate({ homeRoot: home.root })
+          : readPrivateJSON(join(home.root, '.home23-install.json'))?.packageId === prepared.packageId
+            ? { ok: true, status: 'committed' }
+            : await updater.applyProductUpdate({ homeRoot: home.root, candidatePayload: prepared.candidatePayload, staging: prepared.staging,
+              reuseVerifiedStage: true, admit: true });
+      } catch (error) {
+        // Supervisor admission may throw after claiming, before any stop.
+        // Publish the updater's recovery decision even without a result.
+        throw classifyRecovery() ?? error;
+      }
       // A deferred, still-starting candidate has its new software admitted and
       // its services running; only readiness is outstanding. Resume that journal
       // here with bounded backoff instead of failing and waiting for the owner.
@@ -558,12 +572,8 @@ export async function runHomeUpdateOperation({ homeRoot, operationId, requireWor
         result = await updater.resumeProductUpdate({ homeRoot: home.root });
       }
       if (!result.ok || result.status !== 'committed') {
-        const recovery = updater.readUpdateJournal(home.root);
-        if (recovery?.phase === 'recovery_required' && !recovery.writersAdmitted) {
-          const product = updater.productRecoveryFor?.(home.root) ?? {};
-          persist({ requiresLocalRecovery: true, recoverable: product.restore === true, retryable: product.retry === true });
-          throw localRecoveryFailure(product.restore === true, product.retry === true, safeReasonCodes(recovery.reasons));
-        }
+        const recoveryFailure = classifyRecovery();
+        if (recoveryFailure) throw recoveryFailure;
         const refusal = preflightFailure(result);
         if (refusal?.reasonCodes.some(code => FRESH_RELEASE_REQUIRED.has(code)) && ['refused', 'aborted'].includes(result.status)) {
           persist({ requiresNewRelease: true, blockedPackageId: prepared.packageId });

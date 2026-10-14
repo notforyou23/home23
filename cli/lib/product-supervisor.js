@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { create as createDomain } from 'node:domain';
-import { appendFileSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { connect } from 'node:net';
 import { basename, dirname, join } from 'node:path';
@@ -90,6 +90,32 @@ export function supervisorPlist(plan, token) {
 <key>StandardErrorPath</key>${str(join(plan.env.PM2_HOME, 'pm2.log'))}
 </dict></plist>\n`;
 }
+// Product execution defaults can change between packages. Home identity and
+// private runtime/socket routing remain ownership evidence, even inside env.
+const OWNED_SUPERVISOR_ENV_VALUES = new Set(['USER', 'LOGNAME', 'PATH', 'LANG', 'NODE_ENV',
+  'HOME23_PRODUCT_HOST', 'HOME23_OWNER_HOME', 'PM2_SILENT', 'PM2_DISABLE_UPDATE']);
+function ownedSupervisorPlist(plan, token, contents) {
+  const expected = supervisorPlist(plan, token);
+  if (contents === expected) return true;
+  const marker = '<key>EnvironmentVariables</key><dict>';
+  const start = expected.indexOf(marker) + marker.length, end = expected.indexOf('</dict>', start);
+  const prefix = expected.slice(0, start), suffix = expected.slice(end);
+  if (!contents.startsWith(prefix) || !contents.endsWith(suffix)) return false;
+  let environment = contents.slice(start, contents.length - suffix.length);
+  for (const [key, value] of Object.entries(plan.env)) {
+    const opening = `<key>${xml(key)}</key><string>`;
+    if (!environment.startsWith(opening)) return false;
+    const closing = environment.indexOf('</string>', opening.length);
+    if (closing < 0) return false;
+    const actual = environment.slice(opening.length, closing);
+    // Match only renderer-produced string text. Unknown/duplicate keys, XML
+    // markup and any changes outside these owned values still fail closed.
+    if (!/^(?:[^<>&"'\u0000-\u0008\u000b\u000c\u000e-\u001f]|&(?:amp|lt|gt|quot|apos);)*$/u.test(actual) ||
+        (!OWNED_SUPERVISOR_ENV_VALUES.has(key) && actual !== xml(value))) return false;
+    environment = environment.slice(closing + '</string>'.length);
+  }
+  return environment === '';
+}
 function claimFor(plan) {
   const claim = readPrivateJSON(plan.claim);
   if (!claim) return null;
@@ -98,10 +124,28 @@ function claimFor(plan) {
     if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== plan.uid || (stat.mode & 0o077)) throw ambiguous('The supervisor plist must be an owner-private regular file.');
   }
   if (claim.schema !== 'home23.supervisor.launchd.v1' || claim.homeRoot !== plan.homeRoot || claim.service !== plan.service ||
-      !/^[a-f0-9-]{36}$/.test(claim.token || '') || (existsSync(plan.plist) && readFileSync(plan.plist, 'utf8') !== supervisorPlist(plan, claim.token))) {
+      !/^[a-f0-9-]{36}$/.test(claim.token || '') || (existsSync(plan.plist) && !ownedSupervisorPlist(plan, claim.token, readFileSync(plan.plist, 'utf8')))) {
     throw ambiguous('This home has a conflicting supervisor ownership claim. No service was changed.');
   }
   return claim;
+}
+/** Only lifecycle handoffs may refresh owned defaults; claim/status reads never write. */
+function renderOwnedSupervisorPlist(plan) {
+  const claim = claimFor(plan);
+  if (!claim) throw ambiguous('The supervisor ownership claim disappeared before handoff.');
+  const contents = supervisorPlist(plan, claim.token);
+  if (existsSync(plan.plist) && readFileSync(plan.plist, 'utf8') === contents) return;
+  const temporary = `${plan.plist}.${randomUUID()}.tmp`;
+  let fd;
+  try {
+    fd = openSync(temporary, 'wx', 0o600);
+    writeFileSync(fd, contents); fsyncSync(fd); closeSync(fd); fd = undefined;
+    renameSync(temporary, plan.plist);
+    fd = openSync(dirname(plan.plist), 'r'); fsyncSync(fd);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try { unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
 }
 function pidFor(plan) {
   try {
@@ -201,7 +245,10 @@ export async function ensureProductSupervisor(homeRoot, deps = {}) {
   const unlock = acquireInstallLock(join(plan.env.PM2_HOME, '.supervisor-ownership.lock'));
   try {
     let status = await inspectProductSupervisor(homeRoot, deps);
-    if (status.ownership === 'launchd' && status.executable === plan.node) return status;
+    if (status.ownership === 'launchd' && status.executable === plan.node) {
+      renderOwnedSupervisorPlist(plan);
+      return status;
+    }
     if (status.ownership === 'launchd') throw fail('host_supervisor_adoption_required', 'The admitted update must hand off the supervisor to the selected Node binary before Start.');
     if (status.ownership === 'legacy') throw fail('host_supervisor_adoption_required', 'This home\'s supervisor needs an admitted update to establish background ownership.');
     for (const file of [plan.node, plan.module, plan.daemon]) if (!existsSync(file)) throw ambiguous('The packaged resident supervisor is incomplete.');
@@ -210,10 +257,20 @@ export async function ensureProductSupervisor(homeRoot, deps = {}) {
       claim = { schema: 'home23.supervisor.launchd.v1', homeRoot: plan.homeRoot, service: plan.service, token: randomUUID() };
       privateJSON(plan.claim, claim);
     }
-    if (!existsSync(plan.plist)) writeFileSync(plan.plist, supervisorPlist(plan, claim.token), { mode: 0o600, flag: 'wx' });
+    renderOwnedSupervisorPlist(plan);
     const exec = deps.execute || execute;
     if (status.ownership === 'absent') await exec('/bin/launchctl', ['bootstrap', plan.domain, plan.plist]);
-    else await exec('/bin/launchctl', ['kickstart', plan.service]); // Never -k: no existing PID is killed.
+    else {
+      // kickstart reuses launchd's cached environment, even after a plist was
+      // refreshed while online. Reload only an owned job with no current PID.
+      const job = await loaded(plan, deps), pid = pidFor(plan);
+      if (job.pid !== null || (pid && (deps.alive || alive)(pid))) {
+        throw fail('host_supervisor_start_pending', 'The owned launchd supervisor is still starting. Its live PID was not replaced.');
+      }
+      if (claimFor(plan)?.token !== claim.token) throw ambiguous('The supervisor ownership claim changed before the inactive job handoff.');
+      if (job.loaded) await exec('/bin/launchctl', ['bootout', plan.service]);
+      await exec('/bin/launchctl', ['bootstrap', plan.domain, plan.plist]);
+    }
     const deadline = Date.now() + Math.min(deps.timeoutMs ?? 15000, 30000);
     do {
       status = await inspectProductSupervisor(homeRoot, deps);
@@ -427,6 +484,7 @@ export async function adoptProductSupervisor(homeRoot, admission, deps = {}) {
       saved = null;
     }
     if (status.ownership === 'launchd' && status.executable === plan.node && !saved) {
+      admit(); renderOwnedSupervisorPlist(plan);
       return { ownership: 'launchd', updateId: journal.id, pid: status.pid, pausedNames: admission.registrations.filter(r => ['stopped', 'errored'].includes(r.pm2_env.status)).map(r => r.name) };
     }
     if (!saved) {
