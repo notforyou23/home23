@@ -3,7 +3,8 @@
 /** Product children query their launchd supervisor through its guarded client.
  * They must never invoke the bundled PM2 CLI, which creates a daemon when a
  * connection is lost. Source installations retain their existing PATH PM2. */
-const { execFile, execFileSync, spawn } = require('node:child_process');
+const childProcess = require('node:child_process');
+const { execFile, spawn } = childProcess;
 const { promisify } = require('node:util');
 const { dirname, isAbsolute, join, resolve } = require('node:path');
 
@@ -43,7 +44,7 @@ function pm2Invocation(args, options = {}, delayMs = 0) {
   };
 }
 
-function runPm2Sync(args, options = {}, execute = execFileSync) {
+function runPm2Sync(args, options = {}, execute = (...callArgs) => childProcess.execFileSync(...callArgs)) {
   const command = pm2Invocation(args, options);
   return execute(command.file, command.args, command.options);
 }
