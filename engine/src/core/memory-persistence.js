@@ -24,6 +24,7 @@ const {
 // also keeps the counts of committed rows that failed the summary check, so
 // that brain's next rebase goes straight to the resident rewrite.
 const compactionBackoff = new Map();
+const annRebuildState = new Map();
 
 function defaultRebuildAnnIndex({ brainDir, home23Root }) {
   // The ANN meta binds to the manifest generation, and every base rewrite
@@ -31,8 +32,8 @@ function defaultRebuildAnnIndex({ brainDir, home23Root }) {
   // design. Before this hook, the index was rebuilt only by the 04:30 cron
   // and the 6-hourly rebases kept killing it within hours; both agents ran
   // in degraded keyword-scan fallback most of every day (2026-07-17).
-  // Every rewrite now brings its own rebuild. Deltas never trigger this:
-  // the overlay covers post-build appends.
+  // Every rewrite brings its own rebuild. Large post-index deltas also
+  // refresh the base ANN so the complete overlay stays bounded.
   const { spawn } = require('node:child_process');
   const builderPath = path.join(home23Root, 'engine', 'src', 'merge', 'build-ann-index.js');
   return new Promise((resolve, reject) => {
@@ -62,21 +63,53 @@ function scheduleAnnRebuild({
   rebuildAnn = defaultRebuildAnnIndex,
   schedule = queueMicrotask,
   logger = console,
+  reason = 'base rewrite',
+  generation = null,
+  cooldownMs = 60 * 60 * 1000,
+  now = Date.now,
 }) {
-  schedule(async () => {
-    try {
-      const receipt = await rebuildAnn({ brainDir, home23Root });
-      logger.info?.('ANN index rebuilt after base rewrite', {
-        brainDir,
-        status: receipt?.status,
-        indexed: receipt?.semanticCoverage?.indexed,
-      });
-    } catch (error) {
-      logger.warn?.('ANN rebuild after base rewrite failed — 04:30 cron remains the backstop', {
-        brainDir, error: error.message,
-      });
+  const key = path.resolve(brainDir);
+  let state = annRebuildState.get(key);
+  const request = { brainDir, home23Root, rebuildAnn, logger, reason, generation };
+  if (state?.pending) {
+    // A rewrite during an active build changes its generation. The builder
+    // cannot publish that obsolete index; run once more for the new source.
+    if (reason === 'base rewrite' && state.running && state.generation !== generation) {
+      state.requested = request;
+    } else if (!state.running && reason === 'base rewrite') {
+      state.requested = request;
     }
+    return false;
+  }
+  if (reason !== 'base rewrite' && state?.finishedAt !== undefined
+      && now() - state.finishedAt < cooldownMs) return false;
+  state = { pending: true, running: false, requested: request };
+  annRebuildState.set(key, state);
+  schedule(async () => {
+    while (state.requested) {
+      const active = state.requested;
+      state.requested = null;
+      state.running = true;
+      state.generation = active.generation;
+      try {
+        const receipt = await active.rebuildAnn({ brainDir: active.brainDir, home23Root: active.home23Root });
+        active.logger.info?.(`ANN index rebuilt after ${active.reason}`, {
+          brainDir: active.brainDir,
+          status: receipt?.status,
+          indexed: receipt?.semanticCoverage?.indexed,
+        });
+      } catch (error) {
+        active.logger.warn?.(`ANN rebuild after ${active.reason} failed — scheduled rebuild remains the backstop`, {
+          brainDir: active.brainDir, error: error.message,
+        });
+      } finally {
+        state.running = false;
+        state.finishedAt = now();
+      }
+    }
+    state.pending = false;
   });
+  return true;
 }
 
 function scheduleSourceRetirement({
@@ -243,6 +276,8 @@ async function persistMemoryRevision({
   fullRewriteIntervalMs = 6 * 60 * 60 * 1000,
   fullRewriteDeltaBytes = 512 * 1024 * 1024,
   fullRewriteDeltaCount = 250_000,
+  annRebuildDeltaCount = 5000,
+  annRebuildCooldownMs = 60 * 60 * 1000,
   compactionBackoffMs = 60 * 60 * 1000,
   staleStagingAgeMs = 15 * 60 * 1000,
   now = Date.now,
@@ -526,7 +561,7 @@ async function persistMemoryRevision({
       }
       if (published) {
         scheduleSourceRetirement({ brainDir, home23Root, lockRoot, retire, schedule, logger });
-        scheduleAnnRebuild({ brainDir, home23Root, rebuildAnn, schedule, logger });
+        scheduleAnnRebuild({ brainDir, home23Root, rebuildAnn, schedule, logger, generation: onDisk.generation, now });
       }
       throw failure;
     }
@@ -539,8 +574,25 @@ async function persistMemoryRevision({
   if (performedRewrite && result?.manifest) {
     compactionBackoff.delete(backoffKey);
     scheduleSourceRetirement({ brainDir, home23Root, lockRoot, retire, schedule, logger });
-    scheduleAnnRebuild({ brainDir, home23Root, rebuildAnn, schedule, logger });
+    scheduleAnnRebuild({ brainDir, home23Root, rebuildAnn, schedule, logger, generation: result.manifest.generation, now });
   }
+  const persistedManifest = result?.manifest;
+  const annRevision = persistedManifest?.ann?.builtFromRevision;
+  const indexedDeltaCount = Number.isSafeInteger(annRevision) && Number.isSafeInteger(persistedManifest?.currentRevision)
+    ? persistedManifest.currentRevision - annRevision : 0;
+  const deltaRebuildDue = !performedRewrite
+    && persistedManifest?.ann?.indexFile && persistedManifest?.ann?.metaFile
+    && Number.isSafeInteger(annRebuildDeltaCount) && annRebuildDeltaCount > 0
+    && Number.isFinite(annRebuildCooldownMs) && annRebuildCooldownMs >= 0
+    && annRevision >= persistedManifest.baseRevision
+    && indexedDeltaCount >= annRebuildDeltaCount;
+  const annRebuildScheduled = deltaRebuildDue && scheduleAnnRebuild({
+    brainDir, home23Root, rebuildAnn, schedule, logger,
+    generation: persistedManifest.generation,
+    reason: 'delta threshold',
+    cooldownMs: annRebuildCooldownMs,
+    now,
+  });
   return {
     ...result,
     mode: performedRewrite ? 'full' : (result.count > 0 ? 'delta' : (summaryRepair ? 'summary-repair' : 'reused')),
@@ -548,6 +600,7 @@ async function persistMemoryRevision({
     persistedGeneration: snapshot.generation,
     persistedChanges: snapshot.changes || null,
     persistedChangesCaptured: Boolean(snapshot.changes),
+    ...(deltaRebuildDue && { annRebuildScheduled: Boolean(annRebuildScheduled) }),
     ...(deferredDebt && !performedRewrite && { maintenanceDebt: deferredDebt }),
   };
 }

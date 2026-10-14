@@ -161,6 +161,22 @@ async function collect(iterator) {
   return rows;
 }
 
+test('keyword reader preserves original owner conversations before topK truncation', async t => {
+  const fixture = await createManifestFixture({
+    nodes: [
+      { id: 'z-original', tag: 'conversation_sessions', concept: 'Melissa and I bought Trey and Billy tickets at Ticketmaster for Divided Sky in Worcester.' },
+      { id: 'a-recap', tag: 'conversation_sessions', concept: 'Recap: Trey/Billy tickets.' },
+      { id: 'b-verification', tag: 'conversation_sessions', concept: 'Test your recall: Trey/Billy tickets with brain_search.' },
+    ], delta: [], baseRevision: 2, currentRevision: 2,
+    summary: { nodeCount: 3, edgeCount: 0, clusterCount: 1 },
+  });
+  t.after(() => fsp.rm(fixture.dir, { recursive: true, force: true }));
+  const source = await openMemorySource(fixture.dir);
+  t.after(() => source.close());
+  const result = await source.searchKeyword({ query: 'Trey/Billy tickets', topK: 1 });
+  assert.deepEqual(result.results.map(row => row.id), ['z-original']);
+});
+
 async function* records(count, createRecord) {
   for (let index = 0; index < count; index += 1) {
     yield createRecord(index);

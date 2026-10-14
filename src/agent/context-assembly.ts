@@ -24,6 +24,7 @@ import { composeLivedFacts } from '../substrate/lived-facts.js';
 import { semanticMatchScore } from '../substrate/semantic-match.js';
 import { activeAttentionRecipeId, admitsPairScore, resolveAttentionPolicy } from '../substrate/encoder-attention-policy.js';
 import { resolveSubstrateStateDir } from './session-bootstrap.js';
+import { classifyOwnerConversation, hasConversationTimeIntent } from '../../shared/owner-conversation-policy.cjs';
 
 const require = createRequire(import.meta.url);
 const { resolveAgentInstancePaths } = require('../../shared/agent-instance-paths.cjs');
@@ -232,6 +233,7 @@ export function composeLearnedOwnerFacts(
     const header = 'Learned from conversations';
     if (budget <= header.length) return null;
     const tokens = [...new Set(turnText.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])];
+    const timeIntent = hasConversationTimeIntent(turnText);
     const facts = rawObjects.filter((value): value is MemoryObject => {
       if (!value || typeof value !== 'object') return false;
       const object = value as Partial<MemoryObject>;
@@ -245,6 +247,19 @@ export function composeLearnedOwnerFacts(
         && !(object.superseded_by?.length)
         && (config?.renderSensitive !== false || object.privacy_class !== 'sensitive');
     }).map(object => {
+      // Legacy prompt facts can lack source/session refs. Classify their
+      // original quote and available provenance without changing that contract.
+      const raw = object as unknown as Record<string, unknown>;
+      const metadata = raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
+        ? raw.metadata as Record<string, unknown> : {};
+      const classification = classifyOwnerConversation({
+        ...object, metadata, provenance: object.provenance,
+        chatId: raw.chatId ?? raw.chat_id ?? metadata.chatId ?? metadata.chat_id,
+        sessionId: raw.sessionId ?? object.session_id ?? metadata.sessionId ?? metadata.session_id,
+        sessionRefs: object.provenance.session_refs,
+        sourceRefs: [...(object.provenance.source_refs ?? []), ...object.evidence.evidence_links],
+        text: `${object.evidence.grounding_note}\n${object.statement}`,
+      });
       const statement = object.statement.replace(/\s+/g, ' ').trim();
       const title = object.title.toLowerCase();
       const scope = Array.isArray(object.scope?.applies_to) ? object.scope.applies_to : [];
@@ -255,9 +270,13 @@ export function composeLearnedOwnerFacts(
         else if (statement.toLowerCase().includes(token)) relevance += 1;
       }
       const ageDays = Math.max(0, nowMs - Date.parse(object.updated_at)) / 86_400_000;
-      return { object, statement, score: relevance + 2 / (1 + ageDays / 14) };
-    }).sort((a, b) => b.score - a.score
-      || Date.parse(b.object.updated_at) - Date.parse(a.object.updated_at)
+      const recency = timeIntent ? 2 / (1 + ageDays / 14) : 0;
+      const weight = { substantive: 1, recap: 0.5, mention: 0.35, verification: 0.05 }[classification.kind];
+      const qualityTier = { substantive: 0, recap: 1, mention: 1, verification: 2 }[classification.kind];
+      return { object, statement, classification, qualityTier, score: (relevance + recency) * weight };
+    }).filter(fact => fact.classification.ownerEvidence)
+      .sort((a, b) => a.qualityTier - b.qualityTier || b.score - a.score
+      || (timeIntent ? Date.parse(b.object.updated_at) - Date.parse(a.object.updated_at) : 0)
       || a.object.memory_id.localeCompare(b.object.memory_id));
 
     const lines: string[] = [];

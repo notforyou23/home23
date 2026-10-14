@@ -25,7 +25,7 @@ const { Home23VibeService } = require('./home23-vibe/service');
 const { Home23BriefsService } = require('./home23-briefs');
 const { Home23TileService } = require('./home23-tiles');
 const { createHome23OAuthBroker } = require('../../../shared/home23-oauth.cjs');
-const { createMemorySearchService } = require('./memory-search');
+const { createDefaultLoadAnn, createMemorySearchService } = require('./memory-search');
 const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache');
 const {
   createBrainSourceRouter,
@@ -799,11 +799,13 @@ class DashboardServer {
     });
     this.initializeBrainOperations(options.brainOperations);
     this.initializeQueryNotebook(options.queryNotebook);
+    this.memoryAnnLoader = createDefaultLoadAnn();
     this.brainSourceService = createBrainSourceService({
       brainDir: this.logsDir,
       home23Root: this.getHome23Root(),
       requesterAgent: this.getHome23AgentName(),
       resolveTargetContext: (selector) => this.brainOperationsCoordinator.resolveTargetContext(selector),
+      loadAnn: this.memoryAnnLoader,
     });
     this.memorySearchService = createMemorySearchService({
       brainDir: this.logsDir,
@@ -811,6 +813,7 @@ class DashboardServer {
       requesterAgent: this.getHome23AgentName(),
       resolveTargetContext: (selector) => this.brainOperationsCoordinator.resolveTargetContext(selector),
       deltaOverlayCache: this.memoryDeltaOverlayCache,
+      loadAnn: this.memoryAnnLoader,
       logger: this.logger,
     });
     if (this.brainOperationsWorker?.registerLocalExecutor) {
@@ -11923,6 +11926,7 @@ You are empowered to explore and understand. The user trusts you to discover the
     await this.brainOperationsCoordinator?.stop?.();
     await this._brainOperationsReconciliationPromise?.catch?.(() => {});
     await this.brainOperationsWorker?.stop?.();
+    await this.memoryAnnLoader?.close?.();
   }
 
   async start() {

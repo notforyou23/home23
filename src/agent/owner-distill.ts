@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import type { OwnerDistillConfig, OwnerConversationInput } from '../types.js';
 import { MemoryObjectStore } from './memory-objects.js';
 import { RelationshipLedger } from './relationship-ledger.js';
+import { classifyOwnerConversation, type OwnerConversationClassification } from '../../shared/owner-conversation-policy.cjs';
 
 const DAY = 86_400_000;
 export const OWNER_DISTILL_INTERVAL_MS = 15 * 60_000;
@@ -15,6 +16,8 @@ const CURSOR_SCHEMA = 'home23.owner-distill.cursor.v1';
 export interface OwnerContactTurn {
   role: 'user' | 'assistant'; text: string; ts: string;
   session: string; messageRef: string; owner: boolean; canonical: boolean;
+  chatId?: string;
+  classification?: OwnerConversationClassification;
 }
 export interface OwnerSession { id: string; channel: string; turns: OwnerContactTurn[]; end: number }
 interface Cursor { schema: string; source: string; since: number; through: Record<string, number> }
@@ -128,7 +131,12 @@ function contactTurn(record: Record<string, any>, opts: OwnerDistillerOptions,
     owner = record.role === 'user';
   }
   if (!ref || ref.length > 240 || record.session.length > 180) return null;
-  return { role: record.role, text, ts: record.ts, session: record.session, messageRef: ref, owner, canonical };
+  const chatId = typeof record.chatId === 'string' ? record.chatId : record.channelId;
+  const classification = classifyOwnerConversation({ ...record, chatId, sessionId: record.session,
+    // Resident tool usage is context; only the owner's words can create owner evidence.
+    text: owner ? text : '' });
+  return { role: record.role, text, ts: record.ts, session: record.session, messageRef: ref, owner, canonical,
+    ...(typeof chatId === 'string' ? { chatId } : {}), classification };
 }
 
 /** Channel id of a well-formed canonical line that carries kind metadata. */
@@ -280,6 +288,16 @@ export class OwnerSessionDistiller {
     let saved = 0;
     for (const session of sessions) {
       signal.throwIfAborted();
+      const ownerContext = session.turns.filter(turn => turn.owner).map(turn => turn.text).join('\n');
+      const ownerEvidence = !session.turns.some(turn => turn.classification?.ownerEvidence === false)
+        && classifyOwnerConversation({ sessionId: session.channel, text: ownerContext }).ownerEvidence;
+      if (!ownerEvidence) {
+        // The raw contact stream remains intact. Consume this excluded session
+        // once without turning its quoted memories into new owner evidence.
+        cursor.through[session.channel] = session.end;
+        await this.saveCursor(cursorPath, cursor);
+        continue;
+      }
       const store = new MemoryObjectStore(this.opts.brainDir);
       const ledger = new RelationshipLedger(this.opts.brainDir);
       const existing = [
@@ -346,6 +364,7 @@ export class OwnerSessionDistiller {
           if (item.privacy !== undefined && !['internal', 'personal', 'sensitive'].includes(item.privacy)) continue;
           const input: OwnerConversationInput = { statement: item.statement.trim(), quote: item.quote.trim(),
             messageRef: evidence.messageRef, sessionId: session.id, occurredAt: evidence.ts,
+            chatId: evidence.chatId, sourceSessionId: session.channel, conversationText: ownerContext,
             privacy: item.privacy ?? 'personal', supersedes };
           await this.retryWrite(() => item.kind === 'fact' ? store.upsertOwnerFact(input)
             : ledger.upsertOwnerConversation({ ...input, type: item.kind }), signal);
@@ -353,12 +372,15 @@ export class OwnerSessionDistiller {
         }
       }
       cursor.through[session.channel] = session.end;
-      await mkdir(this.opts.brainDir, { recursive: true });
-      const tmp = `${cursorPath}.${randomUUID()}.tmp`;
-      await writeFile(tmp, JSON.stringify(cursor), { mode: 0o600 });
-      await rename(tmp, cursorPath);
+      await this.saveCursor(cursorPath, cursor);
     }
     return { sessions: sessions.length, saved };
+  }
+  private async saveCursor(cursorPath: string, cursor: Cursor): Promise<void> {
+    await mkdir(this.opts.brainDir, { recursive: true });
+    const tmp = `${cursorPath}.${randomUUID()}.tmp`;
+    await writeFile(tmp, JSON.stringify(cursor), { mode: 0o600 });
+    await rename(tmp, cursorPath);
   }
   private async retryWrite(write: () => unknown, signal: AbortSignal): Promise<void> {
     const deadline = Date.now() + 10_000;

@@ -155,6 +155,7 @@ function projectBoundedSearchNode(node, {
     salienceWeight: provenance.salienceWeight,
     retrievalDomain: retrievalAuthority.retrievalDomain,
     authorityClass: retrievalAuthority.authorityClass,
+    conversationKind: retrievalAuthority.conversationKind,
     semanticTime: retrievalAuthority.semanticTime,
     retrievalAuthority,
     authorityRelations: projectMemoryRelations(node, {
@@ -223,22 +224,18 @@ function createBoundedCandidateHeap({
   const rows = [];
   let retainedBytes = 0;
 
+  function compareRows(left, right) {
+    // Owned relative gating needs the raw top vector to survive this bound.
+    // Authority ranking is restored after its semantic noise gate.
+    if (retainBySimilarity) {
+      const similarity = Number(right.similarity || 0) - Number(left.similarity || 0);
+      if (similarity) return similarity;
+    }
+    return compareRankedResults(left, right);
+  }
+
   function sortRows() {
-    rows.sort((left, right) => {
-      // Owned relative gating needs the raw top vector to survive this bound.
-      // Authority ranking is restored after its semantic noise gate.
-      if (retainBySimilarity) {
-        const similarity = Number(right.similarity || 0) - Number(left.similarity || 0);
-        if (similarity) return similarity;
-      }
-      const kind = matchKindRank(right.matchKind) - matchKindRank(left.matchKind);
-      if (kind) return kind;
-      const authority = authorityTiebreak(right) - authorityTiebreak(left);
-      if (authority) return authority;
-      const score = publishedRetrievalScore(right) - publishedRetrievalScore(left)
-        || Number(right.finalRankScore ?? 0) - Number(left.finalRankScore ?? 0);
-      return score || String(left.id).localeCompare(String(right.id));
-    });
+    rows.sort(compareRows);
   }
 
   return {
@@ -256,6 +253,9 @@ function createBoundedCandidateHeap({
           retryable: false,
         });
       }
+      // The retained rows are already sorted. A full heap cannot retain a
+      // candidate below its last row, so avoid sorting that heap again.
+      if (rows.length >= maxCount && compareRows(row, rows[rows.length - 1]) >= 0) return;
       rows.push(row);
       retainedBytes += bytes;
       sortRows();
@@ -1368,13 +1368,33 @@ function publishedRetrievalScore(row) {
 }
 
 function sortRankedResults(rows) {
-  return [...rows].sort((left, right) => (
-    matchKindRank(right.matchKind) - matchKindRank(left.matchKind)
+  return [...rows].sort(compareRankedResults);
+}
+
+function compareRankedResults(left, right) {
+  // Exact identifiers retain lookup priority. Otherwise a phrase repeated in
+  // a test or recap must not bypass the conversation quality policy.
+  const leftExact = left.matchKind === 'exact_id';
+  const rightExact = right.matchKind === 'exact_id';
+  if (leftExact !== rightExact) return leftExact ? -1 : 1;
+  const leftKind = left.conversationKind || left.retrievalAuthority?.conversationKind;
+  const rightKind = right.conversationKind || right.retrievalAuthority?.conversationKind;
+  if (leftKind !== rightKind) {
+    const quality = conversationRank(leftKind) - conversationRank(rightKind);
+    if (quality) return quality;
+  }
+  return (matchKindRank(right.matchKind) - matchKindRank(left.matchKind)
     || authorityTiebreak(right) - authorityTiebreak(left)
     || publishedRetrievalScore(right) - publishedRetrievalScore(left)
     || Number(right.finalRankScore ?? 0) - Number(left.finalRankScore ?? 0)
     || String(left.id).localeCompare(String(right.id))
-  ));
+  );
+}
+
+function conversationRank(kind) {
+  if (kind === 'verification') return 2;
+  if (kind === 'recap' || kind === 'mention') return 1;
+  return 0;
 }
 
 function keywordRelevance(node, tokens, query, tag) {
@@ -1392,6 +1412,12 @@ function authorityScoredCandidate(node, baseScore, options) {
     retrievalBaseScore: baseScore,
     retrievalAuthority,
   };
+}
+
+function annHasCompleteLabels(ann) {
+  return Array.isArray(ann?.labels) && (ann.count === undefined || ann.skipped === 0
+    || ann.includesSkippedLabels === true
+    || ann.labels.length === Number(ann.count || 0) + Number(ann.skipped || 0));
 }
 
 function createMemorySearchService({
@@ -1747,9 +1773,7 @@ function createMemorySearchService({
           ? (annFresh ? 'semantic-ann' : 'semantic-ann-delta-overlay')
           : 'keyword-index-overlay';
         if (Array.isArray(ann.labels)) {
-          annLabelsAvailable = ann.count === undefined || ann.skipped === 0
-            || ann.includesSkippedLabels === true
-            || ann.labels.length === Number(ann.count || 0) + Number(ann.skipped || 0);
+          annLabelsAvailable = annHasCompleteLabels(ann);
           if (annLabelsAvailable) {
             for (const label of ann.labels) {
               throwIfAborted(signal);
@@ -1921,8 +1945,7 @@ function createMemorySearchService({
     // Authority scores still order the survivors. Filter before topK so an
     // authority boost cannot let semantic noise displace an eligible match.
     // An explicit noiseFloor retains the caller's flat threshold policy.
-    const rankedSemanticCandidates = relativeOwnedGate
-      ? sortRankedResults(semantic.sorted()) : semantic.sorted();
+    const rankedSemanticCandidates = sortRankedResults(semantic.sorted());
     const semanticCandidates = relativeOwnedGate
       ? rankedSemanticCandidates : rankedSemanticCandidates.slice(0, limit);
     const effectiveNoiseFloor = relativeOwnedGate
@@ -2204,6 +2227,7 @@ module.exports = {
   createDefaultEmbedQuery,
   createDefaultLoadAnn,
   createMemorySearchService,
+  annHasCompleteLabels,
   cosineSimilarity,
   parseAnnMetadataChunks,
   projectBoundedSearchNode,

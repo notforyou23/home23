@@ -7,6 +7,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 
+test('a current ANN watermark with known unusable index coverage reports unavailable', () => {
+  const evidence = createEvidence({ annBuiltFromRevision: 10, annFresh: true, sourceHealth: 'healthy',
+    indexCoverage: { complete: false, indexedRevision: 10, currentRevision: 10, coveredThroughRevision: null } });
+  assert.equal(evidence.indexWatermark.fresh, true, 'raw revision equality remains exact');
+  assert.equal(evidence.indexWatermark.status, 'unavailable');
+});
+
 const require = createRequire(import.meta.url);
 const {
   SOURCE_HEALTH,
@@ -267,6 +274,28 @@ test('normalizes the approved retrieval evidence envelope without dropping legac
     verification: 0,
     closure: 0,
   });
+});
+
+test('index status preserves the stale base watermark and names complete overlay coverage', () => {
+  const evidenceFor = (coverage, sourceHealth = 'healthy') => createEvidence({
+    sourceHealth,
+    annBuiltFromRevision: 40,
+    annFresh: false,
+    deltaRevision: 45,
+    indexCoverage: coverage,
+  });
+  const complete = { complete: true, currentRevision: 45, coveredThroughRevision: 45 };
+  const evidence = evidenceFor(complete);
+  assert.equal(evidence.indexWatermark.fresh, false);
+  assert.equal(evidence.indexWatermark.builtFromRevision, 40);
+  assert.equal(evidence.indexWatermark.status, 'covered via overlay');
+  for (const coverage of [
+    { ...complete, complete: false },
+    { ...complete, coveredThroughRevision: 44 },
+    { ...complete, currentRevision: null },
+  ]) assert.equal(evidenceFor(coverage).indexWatermark.status, 'not fresh');
+  assert.equal(evidenceFor(complete, 'unavailable').indexWatermark.status, 'unavailable');
+  assert.equal(createEvidence({ annBuiltFromRevision: 45, annFresh: true }).indexWatermark.status, 'fresh');
 });
 
 test('summarizes bounded per-node authority, domain, and source-chain evidence', () => {

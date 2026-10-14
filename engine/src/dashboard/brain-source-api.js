@@ -4,12 +4,56 @@ const express = require('express');
 const fsp = require('node:fs').promises;
 const {
   enrichEvidenceIdentity,
+  indexFreshnessStatus,
   listPgsPartitions,
   sampleMemoryGraph,
   throwIfAborted,
   withEphemeralMemorySource,
   memorySourceError,
+  rethrowAbort,
 } = require('../../../shared/memory-source');
+const { annHasCompleteLabels, createDefaultLoadAnn } = require('./memory-search');
+
+async function inspectIndexCoverage(source, { signal, loadAnn }) {
+  const manifest = source.manifest;
+  const baseEvidence = source.getEvidence();
+  const ann = manifest?.ann;
+  const available = manifest?.formatVersion === 1 && ann?.indexFile && ann?.metaFile;
+  const eligible = available && Number.isSafeInteger(ann.builtFromRevision)
+    && ann.builtFromRevision >= manifest.baseRevision
+    && ann.builtFromRevision <= manifest.currentRevision;
+  const covered = eligible && baseEvidence.sourceHealth === 'healthy'
+    && baseEvidence.deltaWatermark?.revision === manifest.currentRevision
+    && baseEvidence.deltaWatermark?.appliedRecords === manifest.activeDelta?.count;
+  let usable = false;
+  let unavailable = Boolean(available && !covered);
+  if (covered) {
+    try {
+      // Use the same pinned native-index and metadata validation as search.
+      // The dashboard shares this loader, so status reuses its resident cache.
+      usable = annHasCompleteLabels(await loadAnn(source, ann, { signal }));
+      unavailable = !usable;
+    } catch (error) {
+      rethrowAbort(error, signal);
+      unavailable = true;
+    }
+  }
+  const fresh = usable && ann.builtFromRevision === manifest.currentRevision;
+  const route = usable ? (fresh ? 'semantic-ann' : 'semantic-ann-delta-overlay') : 'none';
+  return {
+    unavailable,
+    retrievalMode: usable ? route : undefined,
+    indexCoverage: {
+      complete: usable,
+      indexedRevision: ann?.builtFromRevision ?? null,
+      currentRevision: manifest?.currentRevision ?? baseEvidence.deltaWatermark?.revision ?? null,
+      coveredThroughRevision: usable ? manifest.currentRevision : null,
+      deltaRecords: manifest?.activeDelta?.count ?? 0,
+      route,
+      completeness: usable ? 'complete' : 'unknown',
+    },
+  };
+}
 
 function requestAbortController(req, res) {
   const controller = new AbortController();
@@ -83,6 +127,7 @@ function createBrainSourceService({
   requesterAgent,
   resolveTargetContext,
   withEphemeralSource = withEphemeralMemorySource,
+  loadAnn = createDefaultLoadAnn(),
 } = {}) {
   async function withSource(sourcePin, { signal, identity }, callback) {
     if (sourcePin) {
@@ -130,11 +175,27 @@ function createBrainSourceService({
       throwIfAborted(signal);
       return withSource(sourcePin, { signal, identity }, async (source, context) => {
         const summary = await source.summarize({ signal });
-        const evidence = enrichEvidenceIdentity(source.getEvidence({
+        const index = await inspectIndexCoverage(source, { signal, loadAnn });
+        const rawEvidence = source.getEvidence({
           completeCoverage: true,
           authoritativeTotals: { nodes: summary.nodes, edges: summary.edges },
           returnedTotals: { nodes: 0, edges: 0 },
-        }), context.identity);
+          indexCoverage: index.indexCoverage,
+          retrievalMode: index.retrievalMode,
+        });
+        const evidence = enrichEvidenceIdentity({
+          ...rawEvidence,
+          indexWatermark: {
+            ...rawEvidence.indexWatermark,
+            status: indexFreshnessStatus({
+              ...rawEvidence.indexWatermark,
+              indexCoverage: index.indexCoverage,
+              unavailable: index.unavailable || rawEvidence.sourceHealth === 'unavailable',
+            }),
+          },
+          indexCoverage: index.indexCoverage,
+          ...(index.retrievalMode && { retrievalMode: index.retrievalMode }),
+        }, context.identity);
         return {
           ok: evidence.sourceHealth !== 'unavailable',
           summary,
@@ -142,6 +203,8 @@ function createBrainSourceService({
         };
       });
     },
+
+    async close() { await loadAnn.close?.(); },
 
     async graph(options = {}) {
       const { sourcePin = null, signal, identity, ...graphOptions } = options;

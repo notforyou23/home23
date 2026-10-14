@@ -405,6 +405,19 @@ function projectRetrievalEvidenceEnvelope(input = {}) {
   return result;
 }
 
+function indexFreshnessStatus({ builtFromRevision, fresh, indexCoverage, unavailable = false } = {}) {
+  if (unavailable) return 'unavailable';
+  if (fresh === true) return indexCoverage?.complete === false ? 'unavailable' : 'fresh';
+  const indexed = normalizeRevision(builtFromRevision);
+  const current = normalizeRevision(indexCoverage?.currentRevision);
+  const covered = normalizeRevision(indexCoverage?.coveredThroughRevision);
+  if (indexed !== null && current !== null && indexed <= current
+      && indexCoverage?.complete === true && covered === current) {
+    return 'covered via overlay';
+  }
+  return indexed === null ? 'unavailable' : 'not fresh';
+}
+
 function createEvidence(input = {}) {
   const evidence = {
     selectedAgent: input.selectedAgent || null,
@@ -424,6 +437,12 @@ function createEvidence(input = {}) {
     indexWatermark: {
       builtFromRevision: normalizeRevision(input.annBuiltFromRevision),
       fresh: input.annFresh === true,
+      status: indexFreshnessStatus({
+        builtFromRevision: input.annBuiltFromRevision,
+        fresh: input.annFresh,
+        indexCoverage: input.indexCoverage,
+        unavailable: input.sourceHealth === SOURCE_HEALTH.UNAVAILABLE,
+      }),
     },
     filters: input.filters || {},
     limits: input.limits || {},
@@ -497,6 +516,7 @@ module.exports = {
   createDiagnosticRing,
   classifyMatchOutcome,
   createEvidence,
+  indexFreshnessStatus,
   normalizeAuthoritySummary,
   createRetrievalAuthorityAccumulator,
   projectRetrievalEvidenceEnvelope,

@@ -3,6 +3,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { projectAnnLabel } = require('../../shared/ann-label-contract.cjs');
+
+test('ANN labels retain verification metadata after source provenance and long text are clipped', () => {
+  for (const source of [
+    { metadata: { chatId: 'home-verify-ticket-recall' } },
+    { concept: 'Trey Billy tickets '.repeat(100) + 'Test your recall.' },
+  ]) {
+    const label = projectAnnLabel({ id: 'test', tag: 'conversation_sessions', ...source });
+    assert.equal(label.conversationKind, 'verification');
+    assert.equal(projectAnnLabel(label, { trustedProjection: true }).conversationKind, 'verification');
+  }
+});
 const { isGoalResolution } = require('../../shared/memory-authority.cjs');
 
 test('ANN projection preserves standalone goal-resolution markers through label reloads', () => {

@@ -1,6 +1,7 @@
 /** Read-only recall of quote-gated owner knowledge, without copying it into the graph. */
 import type { MemoryObject } from '../types.js';
 import type { RelationshipEntry } from './relationship-ledger.js';
+import { classifyOwnerConversation, hasConversationTimeIntent } from '../../shared/owner-conversation-policy.cjs';
 export { createOwnerConversationEnricher, enrichOwnerConversationEvidence, OWNER_TRANSCRIPT_LIMITS,
   type OwnerTranscriptOptions } from './owner-conversation-transcripts.js';
 
@@ -15,6 +16,7 @@ export interface OwnerConversationEvidence {
   sessionRefs: string[];
   privacyClass: 'internal' | 'personal' | 'sensitive';
   status: 'active' | 'approved';
+  conversationKind?: 'substantive' | 'verification' | 'recap' | 'mention';
   transcript?: OwnerConversationTranscript;
   transcriptResolution?: 'resolved' | 'incomplete' | 'unavailable';
 }
@@ -34,6 +36,7 @@ export interface OwnerConversationQuery {
   window: { start: number; end: number } | null;
   valid: boolean;
   nowMs: number;
+  timeIntent: boolean;
 }
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
@@ -108,7 +111,7 @@ export function ownerConversationQuery(query: string, nowMs = Date.now()): Owner
   text = text.replace(/\bwhat\s+(?:did|have)\b.*?\b(?:talk(?:ed)?|discuss(?:ed)?)\b(?:\s+about)?/, ' ');
   const phrase = normalized(text);
   const terms = [...new Set(phrase.split(' ').filter(term => term.length >= 2 && !STOP_WORDS.has(term)))];
-  return { terms, phrase, recap, window, valid, nowMs };
+  return { terms, phrase, recap, window, valid, nowMs, timeIntent: Boolean(window) || hasConversationTimeIntent(query) };
 }
 
 function evidence(input: OwnerConversationEvidence): OwnerConversationEvidence | null {
@@ -123,11 +126,15 @@ function evidence(input: OwnerConversationEvidence): OwnerConversationEvidence |
 export function relationshipOwnerEvidence(entry: RelationshipEntry): OwnerConversationEvidence | null {
   if (entry.provenance?.generation_method !== 'owner_conversation' || entry.status !== 'active'
       || entry.superseded_by?.length) return null;
+  const classification = classifyOwnerConversation({ ...entry,
+    provenance: entry.provenance, sessionRefs: entry.provenance.session_refs,
+    sourceRefs: entry.provenance.source_refs, text: `${entry.evidence_note ?? ''}\n${entry.statement}` });
+  if (!classification.ownerEvidence) return null;
   return evidence({
     id: entry.id, kind: entry.type, statement: entry.statement, quote: entry.evidence_note ?? '',
     createdAt: entry.createdAt, occurredAt: entry.updatedAt,
     sourceRefs: entry.provenance.source_refs, sessionRefs: entry.provenance.session_refs,
-    privacyClass: entry.privacy_class, status: 'active',
+    privacyClass: entry.privacy_class, status: 'active', conversationKind: classification.kind,
   });
 }
 
@@ -136,11 +143,16 @@ export function factOwnerEvidence(object: MemoryObject): OwnerConversationEviden
       || object.status !== 'approved' || object.superseded_by?.length
       || !object.evidence?.evidence_links?.length
       || !object.privacy_class || !['internal', 'personal', 'sensitive'].includes(object.privacy_class)) return null;
+  const classification = classifyOwnerConversation({ ...object,
+    provenance: object.provenance, sessionRefs: object.provenance.session_refs,
+    sourceRefs: object.provenance.source_refs, text: `${object.evidence.grounding_note ?? ''}\n${object.statement}` });
+  if (!classification.ownerEvidence) return null;
   return evidence({
     id: object.memory_id, kind: 'fact', statement: object.statement, quote: object.evidence.grounding_note ?? '',
     createdAt: object.created_at, occurredAt: object.updated_at,
     sourceRefs: [...new Set([...(object.provenance.source_refs ?? []), ...object.evidence.evidence_links])],
     sessionRefs: object.provenance.session_refs, privacyClass: object.privacy_class, status: 'approved',
+    conversationKind: classification.kind,
   });
 }
 
@@ -157,8 +169,14 @@ export function ownerConversationMatch(record: OwnerConversationEvidence, query:
   // reach those pointers even when their thin quote omits the requested topic.
   if (!query.window && (query.terms.length ? !phraseMatch && matches < Math.min(3, Math.ceil(query.terms.length * 0.4))
     : !query.recap)) return null;
-  const recency = 1 / (1 + Math.max(0, query.nowMs - occurredAt) / (14 * 86_400_000));
-  return (query.terms.length ? matches / query.terms.length : 0) + recency;
+  const recency = query.timeIntent ? 1 / (1 + Math.max(0, query.nowMs - occurredAt) / (14 * 86_400_000)) : 0;
+  // Classify the cited owner quote first. A summary or assistant response can
+  // repeat a real fact without becoming another substantive owner observation.
+  const classification = classifyOwnerConversation({ text: `${record.quote}\n${record.statement}`,
+    sessionRefs: record.sessionRefs, sourceRefs: record.sourceRefs,
+    metadata: { conversationKind: record.conversationKind } });
+  const weight = { substantive: 1, recap: 0.5, mention: 0.35, verification: 0.05 }[classification.kind];
+  return ((query.terms.length ? matches / query.terms.length : 0) + recency) * weight;
 }
 
 function excerpt(text: string, terms: string[], max: number): string {

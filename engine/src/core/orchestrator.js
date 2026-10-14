@@ -7727,6 +7727,8 @@ class Orchestrator {
               home23Root: this.home23Root || path.resolve(__dirname, '../../..'),
               memory: this.memory,
               fullRewriteIntervalMs: this.config?.persistence?.memorySidecarFullRewriteIntervalMs,
+              annRebuildDeltaCount: this.config?.persistence?.memoryAnnRebuildDeltaCount,
+              annRebuildCooldownMs: this.config?.persistence?.memoryAnnRebuildCooldownMs,
               gzipLevel: this.config?.persistence?.memorySidecarGzipLevel,
               logger: this.logger,
             });

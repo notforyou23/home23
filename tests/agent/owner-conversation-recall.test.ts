@@ -5,13 +5,48 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { createOwnerConversationEnricher, enrichOwnerConversationEvidence, ownerConversationMatch, ownerConversationQuery,
-  ownerConversationSnippet, type OwnerConversationEvidence, type OwnerTranscriptOptions } from '../../src/agent/owner-conversation-recall.js';
+  ownerConversationSnippet, relationshipOwnerEvidence, type OwnerConversationEvidence, type OwnerTranscriptOptions } from '../../src/agent/owner-conversation-recall.js';
 
 const NOW = Date.parse('2026-10-14T18:00:00Z');
 const evidence: OwnerConversationEvidence = { id: 'rel_20261014T103624Z_fe27', kind: 'decision',
-  statement: 'Check current retrieval.', quote: 'Check the brain', createdAt: '2026-10-14T10:36:24Z',
+  statement: 'Check current retrieval.', quote: 'Keep the dinner plan', createdAt: '2026-10-14T10:36:24Z',
   occurredAt: '2026-10-14T10:36:24Z', sourceRefs: ['coordination.message:msg_check'],
   sessionRefs: ['owner-session:test'], privacyClass: 'personal', status: 'active' };
+
+test('timeless topic recall gives identical evidence identical scores regardless of age', () => {
+  const query = ownerConversationQuery('Trey Billy tickets', NOW);
+  const record = { ...evidence, statement: 'Trey and Billy tickets from Ticketmaster.',
+    quote: 'Melissa and I bought tickets for Divided Sky in Worcester and booked Friday lodging.' };
+  assert.equal(ownerConversationMatch({ ...record, occurredAt: '2026-08-01T13:00:00Z' }, query),
+    ownerConversationMatch({ ...record, occurredAt: '2026-10-14T13:00:00Z' }, query));
+});
+
+test('substantive ticket evidence outranks recaps, mentions and recall tests for a timeless query', () => {
+  const query = ownerConversationQuery('Trey Billy tickets', NOW);
+  const original = { ...evidence, statement: 'Trey and Billy tickets.',
+    quote: 'Melissa and I bought Trey and Billy tickets from Ticketmaster for Divided Sky in Worcester.',
+    occurredAt: '2026-08-01T13:00:00Z' };
+  const originalScore = ownerConversationMatch(original, query)!;
+  for (const quote of ['Recap of our earlier conversation about Trey and Billy tickets.',
+    'We previously mentioned Trey and Billy tickets.', 'Test your recall: can you find the Trey and Billy tickets?']) {
+    assert.ok(originalScore > ownerConversationMatch({ ...original, quote, occurredAt: '2026-10-14T13:00:00Z' }, query)!, quote);
+  }
+});
+
+test('existing verification ledger entries cannot claim owner evidence before a cleanup runs', () => {
+  const record = { id: 'legacy-test', type: 'decision', status: 'active', statement: 'Trey Billy tickets',
+    evidence_note: 'Test your recall of the tickets.', privacy_class: 'personal',
+    createdAt: '2026-10-14T10:36:24Z', updatedAt: '2026-10-14T10:36:24Z',
+    provenance: { generation_method: 'owner_conversation', source_refs: ['turn:test'], session_refs: ['home-verify-tickets'] } };
+  assert.equal(relationshipOwnerEvidence(record as any), null);
+});
+
+test('explicit time intent retains recency within the requested morning', () => {
+  const query = ownerConversationQuery('this morning tickets', NOW);
+  const record = { ...evidence, statement: 'Tickets from Ticketmaster.', quote: 'We bought tickets.' };
+  assert.ok(ownerConversationMatch({ ...record, occurredAt: '2026-10-14T15:00:00Z' }, query)!
+    > ownerConversationMatch({ ...record, occurredAt: '2026-10-14T12:00:00Z' }, query)!);
+});
 
 test('owner dates resolve in America/New_York independently of the harness timezone', () => {
   const previous = process.env.TZ;
@@ -55,7 +90,7 @@ function fixture(t: TestContext) {
   return { root, options, rawPath, streamPath };
 }
 function writeRecords(path: string, records: unknown[]) { writeFileSync(path, records.map(record => JSON.stringify(record)).join('\n') + '\n'); }
-function raw(message = 'msg_check', text = 'Check the brain. Dinner and brain surgery came up this morning.',
+function raw(message = 'msg_check', text = 'Keep the dinner plan. Dinner and brain surgery came up this morning.',
   overrides: Record<string, unknown> = {}) {
   return [{ type: 'turn', status: 'pending', turn_id: `turn_${message}`, chat_id: 'coordination:chn_owner:wrk_one',
     started_at: '2026-10-14T10:36:24Z', context_purpose: 'conversation',
@@ -76,7 +111,7 @@ test('thin ledger citation resolves actual raw owner and assistant language with
   const before = readFileSync(f.rawPath, 'utf8');
   const query = ownerConversationQuery('October 14 2026 morning conversation dinner brain surgery re embedded restarted clarity retrieval fixes', NOW);
   const enriched = enrichOwnerConversationEvidence(evidence, query, f.options);
-  assert.match(enriched.transcript!.excerpt, /\[owner verbatim\] Check the brain\. Dinner and brain surgery/);
+  assert.match(enriched.transcript!.excerpt, /\[owner verbatim\] Keep the dinner plan\. Dinner and brain surgery/);
   assert.match(enriched.transcript!.excerpt, /\[assistant clipped\] We re embedded and restarted retrieval/);
   assert.equal(enriched.transcript!.turns[0]!.text, raw()[1]!.content);
   assert.equal(ownerConversationSnippet(enriched, query), enriched.transcript!.excerpt);
@@ -92,7 +127,7 @@ test('a morning owner citation keeps same-turn assistant context when raw persis
   writeRecords(f.rawPath, records);
   const query = ownerConversationQuery('this morning dinner surgery retrieval', NOW);
   const result = enrichOwnerConversationEvidence({ ...evidence, occurredAt: '2026-10-14T15:59:00Z' }, query, f.options);
-  assert.match(result.transcript!.excerpt, /Check the brain\. Dinner and brain surgery/);
+  assert.match(result.transcript!.excerpt, /Keep the dinner plan\. Dinner and brain surgery/);
   assert.match(result.transcript!.excerpt, /\[assistant clipped\] We re embedded and restarted retrieval/);
   assert.equal(result.transcript!.turns.find(turn => turn.role === 'user')!.ts, '2026-10-14T15:59:00Z');
   assert.equal(result.transcript!.turns.find(turn => turn.role === 'assistant')!.ts, '2026-10-14T16:02:00Z');
@@ -101,7 +136,7 @@ test('a morning owner citation keeps same-turn assistant context when raw persis
 
 test('only the latest cited raw owner uses the preserved ledger occurrence; older refs keep their own window', t => {
   const f = fixture(t);
-  const older = raw('msg_old', 'Check the brain. Older owner sentinel.');
+  const older = raw('msg_old', 'Keep the dinner plan. Older owner sentinel.');
   Object.assign(older[0]!, { started_at: '2026-10-13T15:59:00Z' });
   Object.assign(older[1]!, { ts: '2026-10-13T16:02:00Z' });
   Object.assign(older[2]!, { ts: '2026-10-13T16:02:00Z', content: 'Older assistant sentinel.' });
@@ -113,13 +148,13 @@ test('only the latest cited raw owner uses the preserved ledger occurrence; olde
   const record = { ...evidence, occurredAt: '2026-10-14T15:59:00Z',
     sourceRefs: ['coordination.message:msg_old', 'coordination.message:msg_check'] };
   const result = enrichOwnerConversationEvidence(record, ownerConversationQuery('this morning', NOW), f.options);
-  assert.match(result.transcript!.excerpt, /Check the brain/);
+  assert.match(result.transcript!.excerpt, /Keep the dinner plan/);
   assert.doesNotMatch(JSON.stringify(result.transcript), /Older owner sentinel|Older assistant sentinel/);
 });
 
 test('an older replay appended after the current source does not change its preserved morning occurrence', t => {
   const f = fixture(t);
-  const older = raw('msg_old', 'Check the brain. Older replay sentinel.');
+  const older = raw('msg_old', 'Keep the dinner plan. Older replay sentinel.');
   Object.assign(older[0]!, { started_at: '2026-10-13T15:59:00Z' });
   Object.assign(older[1]!, { ts: '2026-10-13T16:02:00Z' });
   Object.assign(older[2]!, { ts: '2026-10-13T16:02:00Z', content: 'Older replay assistant sentinel.' });
@@ -131,7 +166,7 @@ test('an older replay appended after the current source does not change its pres
   const result = enrichOwnerConversationEvidence({ ...evidence, occurredAt: '2026-10-14T15:59:00Z',
     sourceRefs: ['coordination.message:msg_check', 'coordination.message:msg_old'] },
     ownerConversationQuery('this morning dinner surgery retrieval', NOW), f.options);
-  assert.match(result.transcript!.excerpt, /Check the brain\. Dinner and brain surgery/);
+  assert.match(result.transcript!.excerpt, /Keep the dinner plan\. Dinner and brain surgery/);
   assert.match(result.transcript!.excerpt, /\[assistant clipped\] We re embedded/);
   assert.equal(result.transcript!.turns.find(turn => turn.role === 'user')!.ts, '2026-10-14T15:59:00Z');
   assert.doesNotMatch(JSON.stringify(result.transcript), /Older replay sentinel|Older replay assistant sentinel/);
@@ -176,13 +211,13 @@ test('raw companion assistant replies after the owner window still exclude futur
   writeRecords(f.rawPath, records);
   const result = enrichOwnerConversationEvidence({ ...evidence, occurredAt: '2026-10-14T15:59:00Z' },
     ownerConversationQuery('this morning', NOW), f.options);
-  assert.match(result.transcript!.excerpt, /Check the brain/);
+  assert.match(result.transcript!.excerpt, /Keep the dinner plan/);
   assert.doesNotMatch(JSON.stringify(result.transcript), /Future assistant sentinel/);
 });
 
 test('canonical owner occurrence wins over raw completion and the ledger fallback date', t => {
   const f = fixture(t);
-  writeRecords(f.streamPath, [contact('msg_check', 'Check the brain. Dinner and brain surgery came up this morning.',
+  writeRecords(f.streamPath, [contact('msg_check', 'Keep the dinner plan. Dinner and brain surgery came up this morning.',
     'user', '2026-10-14T15:58:00Z')]);
   const records = raw();
   Object.assign(records[0]!, { started_at: '2026-10-14T15:59:00Z' });
@@ -197,9 +232,9 @@ test('canonical owner occurrence wins over raw completion and the ledger fallbac
 
 test('a raw owner citation beyond 8000 characters resolves before the verbatim excerpt is clipped', t => {
   const f = fixture(t);
-  writeRecords(f.rawPath, raw('msg_check', `${'Earlier owner context. '.repeat(500)}Check the brain. Dinner surgery retrieval restart.`));
+  writeRecords(f.rawPath, raw('msg_check', `${'Earlier owner context. '.repeat(500)}Keep the dinner plan. Dinner surgery retrieval restart.`));
   const result = enrichOwnerConversationEvidence(evidence, ownerConversationQuery('Oct 14 dinner surgery retrieval', NOW), f.options);
-  assert.match(result.transcript!.excerpt, /Check the brain\. Dinner surgery retrieval restart/);
+  assert.match(result.transcript!.excerpt, /Keep the dinner plan\. Dinner surgery retrieval restart/);
   assert.match(result.transcript!.excerpt, /\[assistant clipped\]/);
   assert.equal(result.transcriptResolution, 'incomplete');
   assert.ok(result.transcript!.turns.every(turn => turn.text.length <= 280));
@@ -208,7 +243,7 @@ test('a raw owner citation beyond 8000 characters resolves before the verbatim e
 test('canonical session hashes resolve full bounded owner sessions across per-Work transcript files', t => {
   const f = fixture(t);
   const sessionId = `owner-session:${createHash('sha256').update('coordination:chn_owner\0coordination.message:msg_check').digest('hex').slice(0, 32)}`;
-  writeRecords(f.streamPath, [contact('msg_check', 'Check the brain.'),
+  writeRecords(f.streamPath, [contact('msg_check', 'Keep the dinner plan.'),
     contact('msg_dinner', 'Dinner is at six. Brain surgery recovery is improving.', 'user', '2026-10-14T10:40:00Z'),
     contact('msg_reply', 'I remember the dinner plan.', 'assistant', '2026-10-14T10:41:00Z'),
     contact('msg_later', 'Unrelated afternoon sentinel.', 'user', '2026-10-14T17:00:00Z')]);
@@ -224,7 +259,7 @@ test('canonical session hashes resolve full bounded owner sessions across per-Wo
 
 test('actual shipped contacts without channelKind resolve only through their quote-gated owner citation', t => {
   const f = fixture(t);
-  writeRecords(f.streamPath, [contact('msg_check', 'Check the brain.', 'user', '2026-10-14T10:36:24Z', { channelKind: undefined }),
+  writeRecords(f.streamPath, [contact('msg_check', 'Keep the dinner plan.', 'user', '2026-10-14T10:36:24Z', { channelKind: undefined }),
     contact('msg_dinner', 'Dinner and surgery recovery.', 'user', '2026-10-14T10:40:00Z', { channelKind: undefined }),
     contact('msg_unattributed', 'Unknown direct-channel sentinel.', 'user', '2026-10-14T10:40:00Z',
       { channelKind: undefined, channelId: 'chn_unknown', session: 'coordination:chn_unknown' })]);
@@ -237,10 +272,10 @@ test('owner recall refuses raw scheduled, delegated, worker and unanchored role=
   const f = fixture(t);
   for (const overrides of [{ context_purpose: 'work' }, { delegation_origin: { kind: 'subagent' } },
     { scheduled: true }, { worker: true }, { runtime: true }, { context_purpose: undefined }]) {
-    writeRecords(f.rawPath, raw('msg_check', 'Check the brain. Excluded sentinel.', overrides));
+    writeRecords(f.rawPath, raw('msg_check', 'Keep the dinner plan. Excluded sentinel.', overrides));
     assert.equal(enrichOwnerConversationEvidence(evidence, ownerConversationQuery('Oct 14', NOW), f.options).transcript, undefined);
   }
-  writeRecords(f.rawPath, [...raw('msg_unknown', 'Check the brain. Wrong message sentinel.'),
+  writeRecords(f.rawPath, [...raw('msg_unknown', 'Keep the dinner plan. Wrong message sentinel.'),
     ...raw('msg_check', 'Unrelated content without the cited quote.')]);
   assert.equal(enrichOwnerConversationEvidence(evidence, ownerConversationQuery('Oct 14', NOW), f.options).transcript, undefined);
 });
@@ -261,7 +296,7 @@ test('a runtime session boundary between the pending envelope and owner language
   const records = raw();
   writeRecords(f.rawPath, [records[0], { type: 'session_boundary', ts: '2026-10-14T10:36:24Z', trigger: 'coordination' }, ...records.slice(1)]);
   const result = enrichOwnerConversationEvidence(evidence, ownerConversationQuery('Oct 14', NOW), f.options);
-  assert.match(result.transcript!.excerpt, /Check the brain/);
+  assert.match(result.transcript!.excerpt, /Keep the dinner plan/);
   assert.match(result.transcript!.excerpt, /\[assistant clipped\]/);
   assert.deepEqual(result.transcript!.sourceRefs, ['coordination.message:msg_check']);
   assert.equal(result.transcript!.turns.find(turn => turn.role === 'assistant')!.sourceRef, undefined);
@@ -269,7 +304,7 @@ test('a runtime session boundary between the pending envelope and owner language
 
 test('groups, peers, scheduler context, secret turns, wrong residents and symbolic links never enter recall', t => {
   const f = fixture(t);
-  writeRecords(f.rawPath, [contact('msg_check', 'Check the brain.'),
+  writeRecords(f.rawPath, [contact('msg_check', 'Keep the dinner plan.'),
     contact('group', 'Group sentinel.', 'user', undefined,
       { channelKind: 'group', channelId: 'chn_group', session: 'coordination:chn_group' }),
     contact('peer', 'Peer sentinel.', 'user', undefined, { voice: 'peer', actor: { kind: 'bot', principalId: 'peer' } }),
@@ -278,17 +313,17 @@ test('groups, peers, scheduler context, secret turns, wrong residents and symbol
     contact('subagent', 'Subagent sentinel.', 'assistant', undefined, { actor: { kind: 'subagent', principalId: 'subagent' } }),
     contact('scheduler', '[scheduler] scheduler sentinel.', 'assistant'),
     contact('credential', 'Password is artificial-test-secret-0123456.', 'user')]);
-  writeRecords(join(f.root, 'conversations', 'forrest__coordination_chn_owner.jsonl'), raw('msg_check', 'Check the brain. Wrong resident sentinel.'));
-  writeRecords(join(f.root, 'outside.jsonl'), raw('msg_check', 'Check the brain. Symlink sentinel.'));
+  writeRecords(join(f.root, 'conversations', 'forrest__coordination_chn_owner.jsonl'), raw('msg_check', 'Keep the dinner plan. Wrong resident sentinel.'));
+  writeRecords(join(f.root, 'outside.jsonl'), raw('msg_check', 'Keep the dinner plan. Symlink sentinel.'));
   symlinkSync(join(f.root, 'outside.jsonl'), join(f.root, 'conversations', 'jerry__coordination_chn_link.jsonl'));
   const result = enrichOwnerConversationEvidence(evidence, ownerConversationQuery('Oct 14', NOW), f.options);
-  assert.match(result.transcript!.excerpt, /Check the brain/);
+  assert.match(result.transcript!.excerpt, /Keep the dinner plan/);
   assert.doesNotMatch(JSON.stringify(result.transcript), /sentinel|artificial-test-secret/);
 });
 
 test('conflicting direct/group channel metadata fails closed for canonical and raw copies', t => {
   const f = fixture(t);
-  writeRecords(f.streamPath, [contact('msg_check', 'Check the brain.'),
+  writeRecords(f.streamPath, [contact('msg_check', 'Keep the dinner plan.'),
     contact('group', 'Group metadata.', 'user', undefined, { channelKind: 'group' })]);
   writeRecords(f.rawPath, raw());
   assert.equal(enrichOwnerConversationEvidence(evidence, ownerConversationQuery('Oct 14', NOW), f.options).transcript, undefined);
@@ -296,7 +331,7 @@ test('conflicting direct/group channel metadata fails closed for canonical and r
 
 test('excerpt reserves real assistant context when many long owner messages precede it', t => {
   const f = fixture(t);
-  writeRecords(f.streamPath, [contact('msg_check', `Check the brain. ${'Earlier context. '.repeat(40)}`),
+  writeRecords(f.streamPath, [contact('msg_check', `Keep the dinner plan. ${'Earlier context. '.repeat(40)}`),
     ...Array.from({ length: 5 }, (_, index) => contact(`msg_extra_${index}`, `${'Generic context. '.repeat(35)}Dinner surgery retrieval ${index}.`,
       'user', `2026-10-14T10:${38 + index}:00Z`)),
     contact('msg_reply', 'The retrieval restart improved clarity and dinner recall.', 'assistant', '2026-10-14T10:43:00Z')]);
@@ -313,7 +348,7 @@ test('one search snapshot bounds reads and stays consistent; a new search invali
   const query = ownerConversationQuery('Oct 14', NOW);
   const enrich = createOwnerConversationEnricher(f.options);
   const first = enrich(evidence, query);
-  writeRecords(f.rawPath, raw('msg_check', 'Check the brain. Updated dinner sentinel.'));
+  writeRecords(f.rawPath, raw('msg_check', 'Keep the dinner plan. Updated dinner sentinel.'));
   utimesSync(f.rawPath, new Date(NOW), new Date(NOW + 1_000));
   assert.equal(enrich(evidence, query).transcript!.excerpt, first.transcript!.excerpt, 'one search shares one read snapshot');
   assert.match(enrichOwnerConversationEvidence(evidence, query, f.options).transcript!.excerpt, /Updated dinner sentinel/);
@@ -334,10 +369,12 @@ test('byte, file, record and turn caps return bounded partial excerpts and ignor
 
 test('file and directory caps constrain a whole federation snapshot', t => {
   const f = fixture(t); writeRecords(f.rawPath, raw());
-  writeRecords(join(f.root, 'conversations', 'jerry__coordination_chn_other_wrk_two.jsonl'), raw('msg_unrelated', 'Unrelated sentinel.'));
+  const unrelated = join(f.root, 'conversations', 'jerry__coordination_chn_other_wrk_two.jsonl');
+  writeRecords(unrelated, raw('msg_unrelated', 'Unrelated sentinel.'));
+  utimesSync(unrelated, new Date(NOW - 1_000), new Date(NOW - 1_000));
   utimesSync(f.rawPath, new Date(NOW), new Date(NOW + 1_000));
   const result = enrichOwnerConversationEvidence(evidence, ownerConversationQuery('Oct 14', NOW), { ...f.options, limits: { files: 1 } });
-  assert.match(result.transcript!.excerpt, /Check the brain/);
+  assert.match(result.transcript!.excerpt, /Keep the dinner plan/);
   assert.equal(result.transcript!.complete, false);
   const capped = enrichOwnerConversationEvidence(evidence, ownerConversationQuery('Oct 14', NOW), { ...f.options, limits: { directoryEntries: 1 } });
   assert.ok(!capped.transcript || capped.transcript.complete === false);

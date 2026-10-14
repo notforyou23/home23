@@ -71,6 +71,39 @@ test('owner facts are durable quote-grounded inferences; repeats add evidence an
   assert.equal(store.getObjectsByLayer('durable').length, 1);
 });
 
+test('direct owner fact writes cannot bypass verification provenance and content gates', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-owner-fact-verification-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = new MemoryObjectStore(dir);
+  const input = { statement: 'Jason bought tickets.', quote: 'I bought tickets.', messageRef: 'message:1',
+    sessionId: 'session:1', occurredAt: '2026-10-14T12:00:00.000Z' };
+  for (const extra of [{ sessionId: 'home-verify-48' }, { chatId: 'recall-verification' },
+    { metadata: { verification: true } }, { metadata: { source: 'non-owner' } },
+    { quote: 'Test your recall of my tickets.' }, { conversationText: 'Use brain_search to find the tickets.' }]) {
+    assert.throws(() => store.upsertOwnerFact({ ...input, ...extra }), /Verification conversations are not owner evidence/);
+  }
+  assert.equal(store.getObjectsByLayer('durable').length, 0);
+});
+
+test('generic memory creates and updates demote verification claims from owner evidence', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-owner-fact-generic-verification-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = new MemoryObjectStore(dir);
+  const created = store.createObject(baseObject({
+    statement: 'Test your recall of the ticket conversation.',
+    provenance: { source_refs: ['message:1'], session_refs: ['session:1'], generation_method: 'owner_conversation' },
+  }));
+  assert.equal(created.provenance.generation_method, 'agent_note');
+  assert.equal(created.provenance.verification, true);
+  assert.equal(created.provenance.conversation_kind, 'verification');
+  const ordinary = store.createObject(baseObject());
+  const updated = store.updateObject(ordinary.memory_id, { provenance: {
+    source_refs: ['message:1'], session_refs: ['home-verify-48'], generation_method: 'owner_conversation',
+  } });
+  assert.equal(updated?.provenance.generation_method, 'agent_note');
+  assert.equal(updated?.provenance.verification, true);
+});
+
 test('owner fact supersession preserves history and cannot replace newer or unrelated objects', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-owner-fact-supersession-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -100,6 +133,42 @@ test('owner fact supersession preserves history and cannot replace newer or unre
   });
   assert.equal(store.getObject(newer.memory_id)?.status, 'approved');
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'memory-objects.json'), 'utf8')).objects.length, 4);
+});
+
+test('later recaps and mentions cannot refresh or replace substantive owner fact evidence', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-owner-fact-recap-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = new MemoryObjectStore(dir);
+  const input = { statement: 'Jason bought Trey and Billy tickets.', quote: 'I bought Trey and Billy tickets on Ticketmaster.',
+    messageRef: 'message:original', sessionId: 'session:original', occurredAt: '2026-10-01T12:00:00.000Z' };
+  const original = store.upsertOwnerFact(input);
+  // Include legacy records without explicit classification metadata.
+  const file = path.join(dir, 'memory-objects.json');
+  const document = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete document.objects[0].provenance.conversation_kind;
+  fs.writeFileSync(file, JSON.stringify(document));
+  const recap = store.upsertOwnerFact({ ...input, quote: 'Recap: Jason bought Trey and Billy tickets.',
+    messageRef: 'message:recap', sessionId: 'session:recap', occurredAt: '2026-10-14T12:00:00.000Z',
+    supersedes: [original.memory_id] });
+  const mention = store.upsertOwnerFact({ ...input, quote: 'We previously discussed Trey and Billy tickets.',
+    messageRef: 'message:mention', sessionId: 'session:mention', occurredAt: '2026-10-14T13:00:00.000Z',
+    supersedes: [original.memory_id] });
+  assert.notEqual(recap.memory_id, original.memory_id);
+  assert.notEqual(mention.memory_id, original.memory_id);
+  assert.notEqual(mention.memory_id, recap.memory_id);
+  assert.equal(store.getObject(original.memory_id)?.updated_at, input.occurredAt);
+  assert.equal(store.getObject(original.memory_id)?.status, 'approved');
+  assert.equal(recap.supersedes, undefined);
+  assert.equal(mention.supersedes, undefined);
+  assert.equal(store.getObject(original.memory_id)?.evidence.grounding_note, input.quote);
+  assert.deepEqual(store.getObject(original.memory_id)?.provenance.source_refs, ['message:original']);
+  assert.deepEqual(store.getObject(original.memory_id)?.provenance.session_refs, ['session:original']);
+  assert.equal(recap.provenance.conversation_kind, 'recap');
+  assert.equal(mention.provenance.conversation_kind, 'mention');
+  const repeated = store.upsertOwnerFact({ ...input, quote: 'Recap: Jason bought Trey and Billy tickets.',
+    messageRef: 'message:recap-again', sessionId: 'session:recap-again', occurredAt: '2026-10-14T14:00:00.000Z' });
+  assert.equal(repeated.memory_id, recap.memory_id, 'same-kind repeats still merge');
+  assert.equal(store.getObjectsByLayer('durable').length, 3);
 });
 
 test('MemoryObjectStore preserves engine writes made after its cache was loaded', (t) => {

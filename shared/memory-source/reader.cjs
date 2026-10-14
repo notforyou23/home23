@@ -65,6 +65,15 @@ function normalizeOptionalTag(tag) {
   return tag;
 }
 
+function compareKeywordResults(left, right) {
+  const tier = row => ({ substantive: 0, recap: 1, mention: 1, verification: 2 }[
+    row.retrievalAuthority?.conversationKind || 'substantive'
+  ] ?? 0);
+  return tier(left) - tier(right)
+    || Number(right.retrievalScore || 0) - Number(left.retrievalScore || 0)
+    || String(left.id).localeCompare(String(right.id));
+}
+
 function activeFiles(manifest) {
   return [
     manifest.activeBase.nodes.file,
@@ -575,16 +584,12 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
               ? { supersessionEvidence: resolvedNode.supersessionEvidence } : {}),
             retrievalAuthority,
           });
-          results.sort((left, right) => Number(right.retrievalScore || 0)
-            - Number(left.retrievalScore || 0)
-            || String(left.id).localeCompare(String(right.id)));
+          results.sort(compareKeywordResults);
           if (results.length > limit) results.pop();
         }
       }
       const resolvedResults = results
-        .sort((left, right) => Number(right.retrievalScore || 0)
-          - Number(left.retrievalScore || 0)
-          || String(left.id).localeCompare(String(right.id)))
+        .sort(compareKeywordResults)
         .slice(0, limit);
       const fallback = {
         route: 'logical-source-scan',

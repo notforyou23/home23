@@ -40,6 +40,7 @@ import {
 } from '../owner-conversation-recall.js';
 import { join } from 'node:path';
 import { clipToolOutput } from './clip-output.js';
+import { classifyOwnerConversation } from '../../../shared/owner-conversation-policy.cjs';
 
 const DEFAULT_BRAIN_QUERY_MODE = 'quick';
 const BRAIN_OPERATION_ID_PATTERN = '^brop_[A-Za-z0-9_-]{32}$';
@@ -314,6 +315,19 @@ function federateRelationshipHits(
   const hits = Array.isArray(value.results) ? [...value.results]
     : Array.isArray(value.hits) ? [...value.hits]
     : [];
+  const conversationKind = (hit: unknown) => {
+    const row = asRecord(hit) ?? {};
+    const owner = asRecord(row.ownerConversation);
+    const authority = asRecord(row.retrievalAuthority);
+    const conversational = ['conversation', 'conversation_sessions', 'owner_conversation', 'summary', 'consolidated'].includes(String(row.tag));
+    return classifyOwnerConversation({ ...row,
+      text: owner ? `${owner.quote ?? ''}\n${owner.statement ?? ''}` : conversational ? String(row.concept ?? '') : '',
+      sessionRefs: owner?.sessionRefs ?? row.sessionRefs,
+      sourceRefs: owner?.sourceRefs ?? row.sourceRefs,
+      metadata: { ...asRecord(row.metadata),
+        conversationKind: owner?.conversationKind ?? authority?.conversationKind ?? row.conversationKind },
+    }).kind;
+  };
   const existing = new Set(hits.map((hit) => String((asRecord(hit) ?? {}).id ?? '')));
   const ownerIds = new Set<string>();
   const ownerHits: OwnerConversationEvidence[] = [];
@@ -337,6 +351,7 @@ function federateRelationshipHits(
       id: record.id, concept: ownerConversationSnippet(record, ownerQuery),
       matchKind: ownerQuery.window ? 'owner_conversation_time' : 'owner_conversation_lexical',
       sourceDomain, finalRankScore: score, tag: 'owner_conversation',
+      conversationKind: record.conversationKind,
       ownerConversation: record,
       componentScores: { similarity: null, lexical: score, retrieval: null, identityPenalty: 1, kindBoost: 0 },
     });
@@ -365,11 +380,15 @@ function federateRelationshipHits(
           if (lexical === 0) continue;
           // Correction authority can break a relevance tie, never replace relevance.
           const kindBoost = entry.type === 'correction' ? 0.05 * lexical : 0;
+          const classification = classifyOwnerConversation({ ...entry, provenance: entry.provenance,
+            sessionRefs: entry.provenance?.session_refs, sourceRefs: entry.provenance?.source_refs,
+            text: `${entry.evidence_note ?? ''}\n${entry.statement}` });
+          const weight = { substantive: 1, recap: 0.5, mention: 0.35, verification: 0.05 }[classification.kind];
           existing.add(entry.id);
           hits.push({
             id: entry.id, concept: `${entry.title}: ${entry.statement}`,
             matchKind: 'relationship', sourceDomain: 'relationship',
-            finalRankScore: lexical + kindBoost, tag: entry.type,
+            finalRankScore: (lexical + kindBoost) * weight, tag: entry.type, conversationKind: classification.kind,
             componentScores: { similarity: null, lexical, retrieval: null, identityPenalty: 1, kindBoost },
           });
         }
@@ -392,6 +411,9 @@ function federateRelationshipHits(
   hits.sort((left, right) => {
     const a = asRecord(left) ?? {};
     const b = asRecord(right) ?? {};
+    const qualityRank = { substantive: 0, recap: 1, mention: 1, verification: 2 };
+    const qualityPriority = qualityRank[conversationKind(a)] - qualityRank[conversationKind(b)];
+    if (qualityPriority && a.matchKind !== 'exact_id' && b.matchKind !== 'exact_id') return qualityPriority;
     if (ownerQuery.window) {
       const ownerPriority = Number(Boolean(b.ownerConversation)) - Number(Boolean(a.ownerConversation));
       if (ownerPriority) return ownerPriority;

@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import lockfile from 'proper-lockfile';
+import { classifyOwnerConversation } from '../../shared/owner-conversation-policy.cjs';
 import type {
   MemoryObject,
   ProblemThread,
@@ -269,7 +270,13 @@ export class MemoryObjectStore {
   ): MemoryObject {
     return this.mutateObjects(objects => {
       const now = new Date().toISOString();
-      const generationMethod = boundedProvenanceScalar(partial.provenance.generation_method, 120) || 'unknown';
+      let generationMethod = boundedProvenanceScalar(partial.provenance.generation_method, 120) || 'unknown';
+      const classification = generationMethod === 'owner_conversation' ? classifyOwnerConversation({
+        sessionId: partial.session_id, sessionRefs: partial.provenance.session_refs,
+        sourceRefs: partial.provenance.source_refs, provenance: partial.provenance,
+        text: [partial.evidence.grounding_note, partial.statement].filter(Boolean).join('\n'),
+      }) : undefined;
+      if (classification?.ownerEvidence === false) generationMethod = 'agent_note';
       const correctionMessageRef = validatedCorrectionIngress(
         partial,
         this.correctionIngressValidator,
@@ -312,8 +319,11 @@ export class MemoryObjectStore {
           source_refs: sourceRefs,
           session_refs: sessionRefs,
           generation_method: generationMethod,
+          ...(classification ? { conversation_kind: classification.kind } : {}),
+          ...(classification?.verification ? { verification: true, source_class: 'verification' } : {}),
           ...(partial.provenance.origin ? { origin: normalizedOrigin(partial.provenance.origin) } : {}),
-          node_profile: normalizeNodeProvenance(partial, correctionMessageRef),
+          node_profile: normalizeNodeProvenance({ ...partial,
+            provenance: { ...partial.provenance, generation_method: generationMethod } }, correctionMessageRef),
         },
         evidence: {
           ...partial.evidence,
@@ -339,6 +349,10 @@ export class MemoryObjectStore {
   upsertOwnerFact(input: OwnerConversationInput): MemoryObject {
     const statement = input.statement.trim();
     const quote = input.quote.trim();
+    const classification = classifyOwnerConversation({ chatId: input.chatId, sessionId: input.sessionId,
+      sessionRefs: [input.sourceSessionId], metadata: input.metadata,
+      text: [input.conversationText, quote, statement].filter(Boolean).join('\n') });
+    if (!classification.ownerEvidence) throw new Error('Verification conversations are not owner evidence');
     if (!statement || statement.length > 2000 || !quote || quote.length > 2000
         || !input.messageRef || input.messageRef.length > 240
         || !input.sessionId || input.sessionId.length > 240
@@ -349,10 +363,16 @@ export class MemoryObjectStore {
     const privacy = input.privacy === 'sensitive' || input.privacy === 'internal' ? input.privacy : 'personal';
     const normalize = (text: string) => text.normalize('NFKC').toLowerCase()
       .replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/\s+/g, ' ').trim();
+    const conversationKind = (object: MemoryObject) => classifyOwnerConversation({ sessionId: object.session_id,
+      sessionRefs: object.provenance.session_refs, sourceRefs: object.provenance.source_refs,
+      provenance: object.provenance,
+      text: [object.evidence.grounding_note, object.statement].filter(Boolean).join('\n'),
+    }).kind;
     return this.mutateObjects(objects => {
       const matches = objects.filter(object => object.lifecycle_layer === 'durable'
         && object.provenance.generation_method === 'owner_conversation'
-        && normalize(object.statement) === normalize(statement));
+        && normalize(object.statement) === normalize(statement)
+        && conversationKind(object) === classification.kind);
       const existing = matches.find(object => object.status === 'approved' && !object.superseded_by?.length)
         ?? matches.find(object => object.status === 'superseded' && object.updated_at >= occurredAt);
       const recentRefs = (refs: string[], ref: string) => boundedProvenanceStrings([
@@ -362,12 +382,15 @@ export class MemoryObjectStore {
         .filter(id => id !== existing?.memory_id && objects.some(object => object.memory_id === id
           && object.lifecycle_layer === 'durable'
           && object.provenance.generation_method === 'owner_conversation'
+          && (classification.kind === 'substantive' || conversationKind(object) === classification.kind)
           && object.updated_at <= occurredAt));
       let object: MemoryObject;
       if (existing) {
         object = existing;
         object.provenance.source_refs = recentRefs(object.provenance.source_refs, input.messageRef);
-        object.provenance.session_refs = recentRefs(object.provenance.session_refs, input.sessionId);
+        for (const ref of [input.sessionId, input.sourceSessionId, input.chatId]) {
+          if (ref) object.provenance.session_refs = recentRefs(object.provenance.session_refs, ref);
+        }
         object.evidence.evidence_links = recentRefs(object.evidence.evidence_links, input.messageRef);
         if (occurredAt >= object.updated_at) {
           object.updated_at = occurredAt;
@@ -380,7 +403,9 @@ export class MemoryObjectStore {
           type: 'observation', thread_id: 'owner-conversation', session_id: input.sessionId,
           lifecycle_layer: 'durable', status: 'approved', title: statement.slice(0, 120), statement,
           actor: 'agent',
-          provenance: { source_refs: [input.messageRef], session_refs: [input.sessionId], generation_method: 'owner_conversation',
+          provenance: { source_refs: [input.messageRef],
+            session_refs: boundedProvenanceStrings([input.sessionId, input.sourceSessionId, input.chatId], 8),
+            generation_method: 'owner_conversation', conversation_kind: classification.kind,
             node_profile: {
               schema: 'home23.node-provenance.v1', authorityClass: 'narrative', retrievalDomain: 'project_history',
               semanticTime: occurredAt, sourceRefs: [input.messageRef], evidenceRefs: [input.messageRef],
@@ -429,9 +454,18 @@ export class MemoryObjectStore {
         scope: updates.scope ? { ...current.scope, ...updates.scope } : current.scope,
         updated_at: new Date().toISOString(),
       };
+      const classification = merged.provenance.generation_method === 'owner_conversation' ? classifyOwnerConversation({
+        sessionId: merged.session_id, sessionRefs: merged.provenance.session_refs,
+        sourceRefs: merged.provenance.source_refs, provenance: merged.provenance,
+        text: [merged.evidence.grounding_note, merged.statement].filter(Boolean).join('\n'),
+      }) : undefined;
+      if (classification?.ownerEvidence === false) {
+        merged.provenance = { ...merged.provenance, generation_method: 'agent_note',
+          conversation_kind: classification.kind, verification: true, source_class: 'verification' };
+      }
       const provenanceInputsChanged = Boolean(
         updates.provenance || updates.evidence || updates.scope
-        || updates.type || updates.session_id || updates.actor,
+        || updates.type || updates.session_id || updates.actor || classification?.verification,
       );
       if (provenanceInputsChanged) {
         const generationMethod = boundedProvenanceScalar(merged.provenance.generation_method, 120) || 'unknown';

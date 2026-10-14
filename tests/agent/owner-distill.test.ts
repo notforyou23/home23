@@ -64,6 +64,53 @@ test('quote gate normalizes whitespace, case and quote marks and writes grounded
   assert.notEqual(object.provenance.node_profile.authorityClass, 'verified_current_state');
 });
 
+test('verification sessions and recall tests never distill into owner evidence', async t => {
+  const scenarios = [
+    { text: 'I bought Trey and Billy tickets.', options: { chatId: 'home-verify-tickets' } },
+    { text: 'I bought Trey and Billy tickets.', options: { channelId: 'retrieval-test-tickets', session: 'coordination:retrieval-test-tickets' } },
+    { text: 'I bought Trey and Billy tickets.', options: { verification: true } },
+    { text: 'I bought Trey and Billy tickets.', options: { metadata: { source: 'non-owner' } } },
+    { text: 'Test your recall of the Trey and Billy tickets.', options: {} },
+    { text: 'Can you find our original conversation about the tickets?', options: {} },
+    { text: 'Check the brain.', options: {} },
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    await t.test(`excluded session ${index + 1}`, async t => {
+      const f = fixture(t, [contact('one', scenario.text, 60, scenario.options)],
+        [item('Jason bought Trey and Billy tickets.', scenario.text, 'one')]);
+      assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 0 });
+      assert.equal(f.objects().length, 0);
+      assert.equal(f.entries().length, 0);
+      assert.equal(f.prompts.length, 0, 'the evidence gate runs before model extraction');
+      assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 }, 'exclusions advance the cursor');
+    });
+  }
+});
+
+test('substantive ticket lookup remains owner evidence and retains its source channel', async t => {
+  const quote = 'Can you find Trey tickets on Ticketmaster? Melissa and I need Friday lodging in Worcester.';
+  const f = fixture(t, [contact('one', quote)], [item('Jason and Melissa need Friday lodging in Worcester.', quote, 'one')]);
+  assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 1 });
+  assert.ok(f.objects()[0].provenance.session_refs.includes('coordination:direct-1'));
+});
+
+test('unrelated testing and memory words in owner context do not exclude substantive ticket facts', async t => {
+  for (const text of [
+    'I need to test my ticket barcode. I remember that Melissa and I bought Trey and Billy tickets.',
+    'We should test the computer memory before the concert. I bought Trey and Billy tickets.',
+    'I verify Ticketmaster sent the receipt. Remember to book Friday lodging.',
+    'Can you find Trey tickets on Ticketmaster? I remember Melissa and I bought seats already.',
+  ]) {
+    await t.test(text, async t => {
+      const f = fixture(t, [contact('one', text)], [item('Jason has Trey and Billy tickets.', text, 'one')]);
+      assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 1 });
+      assert.equal(f.objects()[0].provenance.generation_method, 'owner_conversation');
+      assert.equal(f.objects()[0].evidence.grounding_note, text);
+      assert.equal(f.prompts.length, 1);
+    });
+  }
+});
+
 test('only owner voice in the same finished session can ground output', async t => {
   const resident = contact('resident', 'I live in Paris.', 59, { role: 'assistant', voice: 'self',
     actor: { principalId: 'resident', kind: 'bot', displayName: 'Jerry' } });

@@ -3,6 +3,7 @@
 const {
   verifyMemoryAuthorityAttestation,
 } = require('./memory-authority-attestation.cjs');
+const { classifyOwnerConversation, hasConversationTimeIntent } = require('./owner-conversation-policy.cjs');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_CHAIN_REFS = 8;
@@ -647,6 +648,24 @@ function projectedAuthorityClass(node, options = {}) {
   return stored;
 }
 
+/** Content heuristics apply to conversation memories, not code or tool documentation. */
+function classifyConversationMemory(node = {}) {
+  const metadata = asRecord(node.metadata);
+  const provenance = asRecord(node.provenance);
+  const conversational = /^(?:conversation|conversation_sessions|owner_conversation|chat|chat_session|summary|consolidated)$/.test(lower(node.tag))
+    || /^(?:conversation|owner_conversation)$/.test(lower(provenance.generation_method || metadata.generation_method))
+    || /^(?:conversation|owner_conversation)$/.test(lower(node.sourceClass || node.source_class));
+  return classifyOwnerConversation({
+    ...node,
+    chatId: node.chatId || node.chat_id || metadata.chatId || metadata.chat_id,
+    sessionId: node.sessionId || node.session_id || metadata.sessionId || metadata.session_id,
+    sessionRefs: provenance.session_refs || provenance.sessionRefs || metadata.sessionRefs,
+    sourceRefs: provenance.source_refs || provenance.sourceRefs,
+    metadata, provenance,
+    text: conversational ? String(node.concept || node.content || node.statement || '') : '',
+  });
+}
+
 function explainMemoryAuthorityScore(node, baseScore, options = {}) {
   const base = Number(baseScore) || 0;
   if (base <= 0) return { score: base, factors: [{ name: 'base', value: base }] };
@@ -678,7 +697,9 @@ function explainMemoryAuthorityScore(node, baseScore, options = {}) {
   const semanticTime = getSemanticTimeMs(node, options);
   const ageDays = semanticTime ? Math.max(0, (nowMs - semanticTime) / DAY_MS) : null;
   const freshness = ageDays === null ? 0.65 : Math.max(0.03, Math.pow(0.5, ageDays / halfLifeDays));
-  const freshnessBlend = domain === 'external_intake' ? freshness : 0.35 + (0.65 * freshness);
+  const timeIntent = intent === 'current_state' || hasConversationTimeIntent(options.query || options.intent);
+  const freshnessBlend = timeIntent ? (domain === 'external_intake' ? freshness : 0.35 + (0.65 * freshness)) : 1;
+  const conversation = classifyConversationMemory(node);
   const profile = authenticatedNodeProfile(node, options) || {};
   const needsFreshVerification = profile.requiresFreshVerification === true
     || (Array.isArray(provenanceAuthority(node).verificationBeforeReuse)
@@ -705,6 +726,10 @@ function explainMemoryAuthorityScore(node, baseScore, options = {}) {
     { name: 'confidence', value: confidence },
     { name: 'status', value: status },
   ];
+  if (conversation.kind !== 'substantive') {
+    factors.push({ name: `conversation:${conversation.kind}`,
+      value: { verification: 0.05, recap: 0.5, mention: 0.35 }[conversation.kind] });
+  }
   return {
     score: factors.reduce((score, factor) => score * factor.value, 1),
     factors,
@@ -722,11 +747,13 @@ function projectMemoryAuthority(node = {}, options = {}) {
   const operationalAuthority = authorityClass === 'verified_current_state';
   const requiresFreshVerification = profile.requiresFreshVerification === true
     || (!operationalAuthority && ['generated_doctrine', 'narrative'].includes(authorityClass));
+  const conversationKind = classifyConversationMemory(node).kind;
   const result = {
     schema: 'home23.memory-authority-profile.v1',
     domain: retrievalDomain,
     retrievalDomain,
     authorityClass,
+    ...(conversationKind !== 'substantive' ? { conversationKind } : {}),
     operationalAuthority,
     requiresFreshVerification,
     semanticTime: getSemanticTimeMs(node, options)
@@ -747,6 +774,7 @@ module.exports = {
   classifyClaimAuthority,
   projectSourceChain,
   scoreMemoryAuthority,
+  classifyConversationMemory,
   explainMemoryAuthorityScore,
   getSemanticTimeMs,
   normalizeRetrievalIntent,

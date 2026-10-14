@@ -527,6 +527,9 @@ export interface MemoryObject {
     source_refs: string[];
     session_refs: string[];
     generation_method: string;
+    conversation_kind?: 'substantive' | 'verification' | 'recap' | 'mention';
+    verification?: boolean;
+    source_class?: string;
     node_profile?: NodeProvenanceProfile;
     origin?: {
       agent?: string;
@@ -579,6 +582,12 @@ export interface OwnerConversationInput {
   messageRef: string;
   sessionId: string;
   occurredAt: string;
+  /** Original contact identity and provenance survive the distiller's hashed session id. */
+  chatId?: string;
+  sourceSessionId?: string;
+  metadata?: Record<string, unknown>;
+  /** Full owner context prevents a shortened quote from bypassing the meta gate. */
+  conversationText?: string;
   privacy?: 'internal' | 'personal' | 'sensitive';
   supersedes?: string[];
 }
