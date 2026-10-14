@@ -16,6 +16,10 @@ function contact(id: string, text: string, minutes = 60, options: Record<string,
     actor: { principalId: 'owner-1', kind: 'owner', displayName: 'Jason' }, voice: 'jtr', role: 'user',
     content: text, ts: at(minutes), ...options };
 }
+function residentContact(id: string, text: string, minutes: number) {
+  return contact(id, text, minutes, { role: 'assistant', voice: 'self',
+    actor: { principalId: 'resident', kind: 'bot', displayName: 'Jerry' } });
+}
 function item(statement: string, quote: string, id: string, extra: Record<string, unknown> = {}) {
   return JSON.stringify({ kind: 'fact', statement, quote, messageRef: `coordination.message:${id}`, privacy: 'personal', ...extra });
 }
@@ -353,6 +357,65 @@ test('finished sessions wait for timestamp gap and first pass excludes history o
   assert.equal(f.prompts.length, 1);
   assert.ok(!f.prompts[0]!.includes('coordination.message:old'));
   assert.ok(!f.prompts[0]!.includes('coordination.message:open'));
+});
+
+test('scheduler notices do not extend finished sessions or enter the transcript', async t => {
+  const f = fixture(t, [contact('owner', 'I have two dogs.', 60),
+    residentContact('reply', 'I remember Max and Ruby.', 59),
+    ...[40, 20, 1].map(minutes => residentContact(`notice-${minutes}`,
+      '[scheduler] Job "process-cpu-io-sampler" failed: Command timed out', minutes)),
+  ], [item('Jason has two dogs.', 'I have two dogs.', 'owner')]);
+  assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 1 });
+  assert.ok(f.prompts[0]!.includes('coordination.message:reply'), 'ordinary resident replies remain context');
+  assert.ok(!f.prompts[0]!.includes('[scheduler]'));
+  const cursor = JSON.parse(readFileSync(join(f.brainDir, 'owner-distill-cursor.json'), 'utf8'));
+  assert.equal(cursor.through['coordination:direct-1'], Date.parse(at(59)), 'cursor stops at the last included turn');
+  appendFileSync(f.sourcePath, JSON.stringify(residentContact('notice-next', '[scheduler] Job failed again', 0)) + '\n');
+  assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 });
+  assert.equal(f.prompts.length, 1, 'recurring notices never re-distill the completed session');
+});
+
+test('scheduler notices cannot bridge separate owner conversations and owner text keeps its marker', async t => {
+  const f = fixture(t, [contact('first', 'I live in New York.', 120),
+    residentContact('first-reply', 'I remember.', 119),
+    ...[100, 80, 60].map(minutes => residentContact(`notice-${minutes}`, '[scheduler] Job failed', minutes)),
+    contact('second', '[scheduler] is the error I saw. I have two dogs.', 40),
+    residentContact('second-reply', 'I remember your dogs.', 39),
+  ], [item('Jason lives in New York.', 'I live in New York.', 'first'),
+    item('Jason has two dogs.', 'I have two dogs.', 'second')]);
+  assert.deepEqual(await f.distiller.pass(), { sessions: 2, saved: 2 });
+  assert.ok(!f.prompts[0]!.includes('coordination.message:second'));
+  assert.ok(!f.prompts[1]!.includes('coordination.message:first'));
+  assert.ok(f.prompts[1]!.includes('[scheduler] is the error I saw.'));
+  for (const prompt of f.prompts) assert.ok(!prompt.includes('coordination.message:notice-'));
+  assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 });
+});
+
+test('trailing resident-only turns do not delay completion and the cursor retains their included end', async t => {
+  let now = NOW - 1;
+  const f = fixture(t, [contact('owner', 'I have two dogs.', 30),
+    residentContact('reply', 'I remember.', 29),
+    residentContact('follow-up', 'Max and Ruby are in my notes.', 10),
+    residentContact('last-reply', 'I will keep that in mind.', 1),
+  ], [item('Jason has two dogs.', 'I have two dogs.', 'owner'),
+    item('Jason lives in New York.', 'I live in New York.', 'later')], { now: () => now });
+  assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 }, 'owner inactivity must reach the full gap');
+  now = NOW;
+  assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 1 });
+  for (const id of ['reply', 'follow-up', 'last-reply']) assert.ok(f.prompts[0]!.includes(`coordination.message:${id}`));
+  const cursorPath = join(f.brainDir, 'owner-distill-cursor.json');
+  assert.equal(JSON.parse(readFileSync(cursorPath, 'utf8')).through['coordination:direct-1'], Date.parse(at(1)));
+  assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 });
+  appendFileSync(f.sourcePath, JSON.stringify(contact('later', 'I live in New York.', 0)) + '\n');
+  assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 }, 'later real owner contact waits for its own gap');
+  now += 30 * 60_000;
+  assert.deepEqual(await f.distiller.pass(), { sessions: 1, saved: 1 });
+  assert.equal(f.prompts.length, 2);
+  assert.ok(f.prompts[1]!.includes('coordination.message:later'));
+  assert.ok(!f.prompts[1]!.includes('coordination.message:owner'));
+  assert.ok(!f.prompts[1]!.includes('coordination.message:last-reply'));
+  assert.equal(JSON.parse(readFileSync(cursorPath, 'utf8')).through['coordination:direct-1'], NOW);
+  assert.deepEqual(await f.distiller.pass(), { sessions: 0, saved: 0 });
 });
 
 test('repeats refresh evidence and dates; cursor reruns and cursor-loss replay create no duplicates', async t => {
