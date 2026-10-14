@@ -462,6 +462,20 @@ export class MemoryObjectStore {
     return this.objects.filter(o => o.lifecycle_layer === layer);
   }
 
+  /** Read current background distiller writes without mutating or trusting this instance's cache. */
+  readOwnerConversationFacts(): MemoryObject[] {
+    let document: { objects?: MemoryObject[] };
+    try { document = JSON.parse(readFileSync(this.objectsPath, 'utf8')) as { objects?: MemoryObject[] }; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw new Error('Unreadable owner conversation facts');
+    }
+    if (!Array.isArray(document.objects)) throw new Error('Invalid owner conversation facts');
+    return document.objects.filter(object => object?.lifecycle_layer === 'durable'
+      && object.status === 'approved' && !object.superseded_by?.length
+      && object.provenance?.generation_method === 'owner_conversation');
+  }
+
   getDurableWithTriggers(): MemoryObject[] {
     return this.objects.filter(o => o.lifecycle_layer === 'durable' && o.triggers.length > 0);
   }

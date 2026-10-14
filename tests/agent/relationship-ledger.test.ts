@@ -103,6 +103,25 @@ test('owner relationship supersession keeps history under capacity pressure and 
   assert.equal(ledger.toPublicJSON().count, 3);
 });
 
+test('owner recall preserves leading dates and ignores recap participant names without inventing repeat dates', (t) => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const now = new Date(2026, 9, 15, 14).getTime();
+  const ledger = new RelationshipLedger(brain, { now: () => new Date(now).toISOString(), idSuffix: counterSuffix() });
+  const input = { type: 'decision' as const, statement: 'Keep the established home.', quote: 'Keep the old home.',
+    messageRef: 'coordination.message:oct14', sessionId: 'owner-session:oct14', occurredAt: new Date(2026, 9, 14, 9).toISOString() };
+  const oct14 = ledger.upsertOwnerConversation(input);
+  ledger.upsertOwnerConversation({ ...input, statement: 'An earlier unrelated topic.', messageRef: 'coordination.message:oct13',
+    occurredAt: new Date(2026, 9, 13, 9).toISOString() });
+  assert.deepEqual(ledger.searchEntries('On Oct 14, what did Jason and I talk about?').entries.map(e => e.id), [oct14.id]);
+  assert.deepEqual(ledger.searchEntries('What did Jason and I discuss yesterday morning?').entries.map(e => e.id), [oct14.id]);
+  assert.deepEqual(ledger.searchEntries('On 2026-02-30, what did we discuss?').entries, []);
+  ledger.upsertOwnerConversation({ ...input, messageRef: 'coordination.message:oct15',
+    occurredAt: new Date(2026, 9, 15, 9).toISOString() });
+  assert.deepEqual(ledger.searchEntries('Keep the established home on Oct 14').entries, [],
+    'the retained latest quote is Oct 15 evidence, not a reconstructed Oct 14 transcript');
+});
+
 test('long-lived relationship readers reload distiller writes and preserve them when marking surfaced', (t) => {
   const brain = tmpBrain();
   t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));

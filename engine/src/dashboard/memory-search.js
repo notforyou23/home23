@@ -59,6 +59,8 @@ function annMetaEmbedderId(meta) {
 }
 
 const MAX_EMBEDDING_DIMENSIONS = 8192;
+const OWNED_SEARCH_ABSOLUTE_FLOOR = 0.4;
+const OWNED_SEARCH_TOP_MARGIN = 0.1;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_HEAP_BYTES = 8 * 1024 * 1024;
 const CONTEXT_OUTAGE_SCAN_VISIT_BUDGET = 4000;
@@ -216,12 +218,19 @@ function createBoundedCandidateHeap({
   maxCount,
   maxBytes = MAX_HEAP_BYTES,
   maxRecordBytes = MAX_RECORD_BYTES,
+  retainBySimilarity = false,
 } = {}) {
   const rows = [];
   let retainedBytes = 0;
 
   function sortRows() {
     rows.sort((left, right) => {
+      // Owned relative gating needs the raw top vector to survive this bound.
+      // Authority ranking is restored after its semantic noise gate.
+      if (retainBySimilarity) {
+        const similarity = Number(right.similarity || 0) - Number(left.similarity || 0);
+        if (similarity) return similarity;
+      }
       const kind = matchKindRank(right.matchKind) - matchKindRank(left.matchKind);
       if (kind) return kind;
       const authority = authorityTiebreak(right) - authorityTiebreak(left);
@@ -1412,7 +1421,7 @@ function createMemorySearchService({
       query,
       topK = 10,
       minSimilarity = 0.4,
-      noiseFloor = 0.55,
+      noiseFloor,
       tag: requestedTag = null,
       signal,
       identity,
@@ -1427,7 +1436,8 @@ function createMemorySearchService({
       max: 100,
     });
     const similarityThreshold = Number.isFinite(Number(minSimilarity)) ? Number(minSimilarity) : 0.4;
-    const semanticNoiseFloor = Number.isFinite(Number(noiseFloor)) ? Number(noiseFloor) : 0.55;
+    const hasExplicitNoiseFloor = noiseFloor !== undefined && Number.isFinite(Number(noiseFloor));
+    const semanticNoiseFloor = hasExplicitNoiseFloor ? Number(noiseFloor) : 0.55;
     const authorityOptions = (node, trustedProjection = false) => ({
       query,
       intent: request.intent || query,
@@ -1524,6 +1534,8 @@ function createMemorySearchService({
     // the loaded index identity against the query before using it.
     const annEmbeddingCompatible = !queryEmbedderId || queryEmbedderId === LEGACY_EMBEDDER_ID
       || queryEmbedderId === OWNED_EMBEDDER_ID;
+    const relativeOwnedGate = queryEmbedderId === OWNED_EMBEDDER_ID
+      && !hasExplicitNoiseFloor;
     let incompatibleVectorCount = 0;
     let compatibleVectorCount = 0;
 
@@ -1532,6 +1544,7 @@ function createMemorySearchService({
       maxCount: candidateLimit,
       maxBytes: MAX_HEAP_BYTES,
       maxRecordBytes: MAX_RECORD_BYTES,
+      retainBySimilarity: relativeOwnedGate,
     });
     const boundedKeyword = createBoundedCandidateHeap({
       maxCount: candidateLimit,
@@ -1575,6 +1588,7 @@ function createMemorySearchService({
         maxCount: candidateLimit,
         maxBytes: MAX_HEAP_BYTES,
         maxRecordBytes: MAX_RECORD_BYTES,
+        retainBySimilarity: relativeOwnedGate,
       });
       const logicalKeywordCandidates = createBoundedCandidateHeap({
         maxCount: candidateLimit,
@@ -1901,8 +1915,25 @@ function createMemorySearchService({
       }
     }
 
-    const semanticCandidates = semantic.sorted().slice(0, limit);
-    const semanticTop = semanticCandidates.filter((row) => Number(row.similarity || 0) >= semanticNoiseFloor);
+    // The owned noprefix model's useful scores can sit below the historical
+    // Ollama floor. Gate that exact vector space relative to the strongest
+    // retained raw similarity, across ANN, deltas and logical scan candidates.
+    // Authority scores still order the survivors. Filter before topK so an
+    // authority boost cannot let semantic noise displace an eligible match.
+    // An explicit noiseFloor retains the caller's flat threshold policy.
+    const rankedSemanticCandidates = relativeOwnedGate
+      ? sortRankedResults(semantic.sorted()) : semantic.sorted();
+    const semanticCandidates = relativeOwnedGate
+      ? rankedSemanticCandidates : rankedSemanticCandidates.slice(0, limit);
+    const effectiveNoiseFloor = relativeOwnedGate
+      ? roundScore(Math.max(
+        OWNED_SEARCH_ABSOLUTE_FLOOR,
+        ...semanticCandidates.map(row => Number(row.similarity || 0) - OWNED_SEARCH_TOP_MARGIN),
+      ))
+      : semanticNoiseFloor;
+    const semanticTop = semanticCandidates
+      .filter(row => Number(row.similarity || 0) >= effectiveNoiseFloor)
+      .slice(0, limit);
     const indexedKeywordRows = boundedKeyword.sorted();
     if (summary.nodes > 0 && annUsed && annLabelsAvailable && semanticTop.length === 0
         && indexedKeywordRows.length === 0 && !fallback) {

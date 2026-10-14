@@ -7873,8 +7873,9 @@ Be specific, actionable, and maintain research continuity.`;
     const pickSearchParameters = (input = {}) => ({
       query: input.query || input.search || input.q,
       topK: input.topK ?? input.limit ?? 10,
-      minSimilarity: input.minSimilarity ?? 0.4,
-      noiseFloor: input.noiseFloor ?? 0.55,
+      // The search service selects semantic defaults for its query embedder.
+      ...(input.minSimilarity != null ? { minSimilarity: input.minSimilarity } : {}),
+      ...(input.noiseFloor != null ? { noiseFloor: input.noiseFloor } : {}),
       tag: input.tag || null,
       ...(input.mode === 'context' ? { mode: 'context' } : {}),
       ...(input.exhaustive === true ? { exhaustive: true } : {}),
@@ -7904,6 +7905,7 @@ Be specific, actionable, and maintain research continuity.`;
         query: req.query.query || req.query.search || req.query.q,
         topK: parseInt(req.query.limit || req.query.topK || '10', 10),
         minSimilarity: parseFloat(req.query.minSimilarity || '0.1'),
+        ...(req.query.noiseFloor !== undefined ? { noiseFloor: parseFloat(req.query.noiseFloor) } : {}),
         tag: req.query.tag || null,
       };
       handleMemorySearch(req, res);

@@ -43,6 +43,7 @@ import lockfile from 'proper-lockfile';
 import type { OwnerConversationInput } from '../types.js';
 import { embedTextSync } from '../substrate/embed-at-contact.js';
 import { buildWriterSemanticStamp } from '../substrate/semantic-writer-stamp.js';
+import { ownerConversationQuery, ownerConversationMatch, relationshipOwnerEvidence } from './owner-conversation-recall.js';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -545,14 +546,22 @@ export class RelationshipLedger {
     type?: RelationshipEntryType;
     status?: RelationshipEntryStatus;
     excludePrivacy?: PrivacyClass[];
+    generationMethod?: RelationshipGenerationMethod;
+    nowMs?: number;
   } = {}): { entries: RelationshipEntry[]; withheldMatching: number } {
     const exclude = new Set(opts.excludePrivacy ?? []);
-    const all = this.listEntries({ type: opts.type, status: opts.status ?? 'active' });
-    const matching = query.trim() ? all.filter(e => entryMatchesQuery(e, query)) : all;
+    const all = this.listEntries({ type: opts.type, status: opts.status ?? 'active' })
+      .filter(e => !opts.generationMethod || e.provenance.generation_method === opts.generationMethod);
+    const nowMs = opts.nowMs ?? Date.parse(this.now());
+    const ownerQuery = ownerConversationQuery(query, nowMs);
+    const matching = all.filter(e => {
+      if (e.provenance.generation_method !== 'owner_conversation') return !query.trim() || entryMatchesQuery(e, query);
+      const record = relationshipOwnerEvidence(e);
+      return record !== null && (!query.trim() || ownerConversationMatch(record, ownerQuery) !== null);
+    });
     const withheldMatching = matching.filter(e => exclude.has(e.privacy_class)).length;
     const visible = matching.filter(e => !exclude.has(e.privacy_class));
     const tokens = tokenize(query);
-    const nowMs = Date.parse(this.now());
     visible.sort((a, b) => (scoreEntry(b, tokens, nowMs) - scoreEntry(a, tokens, nowMs))
       || byNewestFirst(a, b));
     return { entries: visible, withheldMatching };
