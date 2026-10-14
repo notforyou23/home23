@@ -40,8 +40,22 @@ const {
 const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache');
 const {
   LEGACY_EMBEDDER_ID,
+  OWNED_EMBEDDER_ID,
   createEmbeddingProvider,
 } = require('../memory/embedding-provider');
+const {
+  OWNED_EMBEDDING_PROFILE,
+  OWNED_EMBEDDING_RECIPE_ID,
+} = require('../../../shared/semantic-encoder-contract.cjs');
+
+// ANN metadata records provider/model/recipeId. Map that to an embedder id so
+// an owned-ONNX index is accepted only for owned-ONNX queries.
+function annMetaEmbedderId(meta) {
+  if (meta?.provider === 'home23-owned' && meta?.model === OWNED_EMBEDDING_PROFILE
+      && meta?.recipeId === OWNED_EMBEDDING_RECIPE_ID) return OWNED_EMBEDDER_ID;
+  if (meta?.provider === 'home23-owned' || meta?.recipeId) return null;
+  return LEGACY_EMBEDDER_ID;
+}
 
 const MAX_EMBEDDING_DIMENSIONS = 8192;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -1110,6 +1124,7 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory, authorityKey
     }
     residentRuntime = nextRuntime;
     const loaded = {
+      embedderId: annMetaEmbedderId(meta),
       dimension,
       count,
       skipped,
@@ -1473,7 +1488,10 @@ function createMemorySearchService({
     }
     // Existing ANN generations do not record their embedder identity. Their
     // dimensions alone cannot establish compatibility with Gemini or ONNX.
-    const annEmbeddingCompatible = !queryEmbedderId || queryEmbedderId === LEGACY_EMBEDDER_ID;
+    // Owned-ONNX generations record provider/model/recipeId; consumeAnn checks
+    // the loaded index identity against the query before using it.
+    const annEmbeddingCompatible = !queryEmbedderId || queryEmbedderId === LEGACY_EMBEDDER_ID
+      || queryEmbedderId === OWNED_EMBEDDER_ID;
     let incompatibleVectorCount = 0;
     let compatibleVectorCount = 0;
 
@@ -1665,6 +1683,13 @@ function createMemorySearchService({
     if (useAnn) {
       const consumeAnn = async (ann) => {
         if (!ann || Number(ann.dimension || ann.dim) !== queryEmbedding.length) return false;
+        if (queryEmbedderId && queryEmbedderId !== LEGACY_EMBEDDER_ID
+            && ann.embedderId !== queryEmbedderId) {
+          throw memorySourceError('ann_descriptor_unsupported',
+            'ANN embedder identity does not match query', {
+              status: 503, retryable: false, annFallbackReason: 'ann_embedding_id_unknown',
+            });
+        }
         semanticRoute = annFresh ? 'semantic-ann' : 'semantic-ann-delta-overlay';
         if (Array.isArray(ann.labels)) {
           annLabelsAvailable = ann.count === undefined || ann.skipped === 0
