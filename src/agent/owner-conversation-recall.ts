@@ -1,6 +1,8 @@
 /** Read-only recall of quote-gated owner knowledge, without copying it into the graph. */
 import type { MemoryObject } from '../types.js';
 import type { RelationshipEntry } from './relationship-ledger.js';
+export { createOwnerConversationEnricher, enrichOwnerConversationEvidence, OWNER_TRANSCRIPT_LIMITS,
+  type OwnerTranscriptOptions } from './owner-conversation-transcripts.js';
 
 export interface OwnerConversationEvidence {
   id: string;
@@ -13,6 +15,16 @@ export interface OwnerConversationEvidence {
   sessionRefs: string[];
   privacyClass: 'internal' | 'personal' | 'sensitive';
   status: 'active' | 'approved';
+  transcript?: OwnerConversationTranscript;
+  transcriptResolution?: 'resolved' | 'incomplete' | 'unavailable';
+}
+
+export interface OwnerConversationTranscript {
+  excerpt: string;
+  turns: Array<{ role: 'user' | 'assistant'; text: string; ts: string; sourceRef?: string }>;
+  sourceRefs: string[];
+  sessionIds: string[];
+  complete: boolean;
 }
 
 export interface OwnerConversationQuery {
@@ -25,35 +37,59 @@ export interface OwnerConversationQuery {
 }
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+export const OWNER_CONVERSATION_TIMEZONE = 'America/New_York';
+const OWNER_CALENDAR = new Intl.DateTimeFormat('en-US', { timeZone: OWNER_CONVERSATION_TIMEZONE,
+  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 const STOP_WORDS = new Set(('a an and are as at be been by can could did do does for from had has have how i in is it '
   + 'me my of on or our please recall remember said say show tell that the their them there these they this those '
   + 'to told us was we were what when where which who why will with would you your owner conversation conversations '
-  + 'talk talked discuss discussed recap summarize summarise about').split(' '));
+  + 'talk talked discuss discussed recap summarize summarise about morning afternoon evening today yesterday').split(' '));
+
+function ownerCalendar(ms: number): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
+  const parts = Object.fromEntries(OWNER_CALENDAR.formatToParts(new Date(ms)).map(part => [part.type, part.value]));
+  return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day),
+    hour: Number(parts.hour), minute: Number(parts.minute), second: Number(parts.second) };
+}
+
+/** Convert a New York wall-clock boundary to UTC without depending on process TZ or a fixed UTC offset. */
+function ownerBoundary(year: number, month: number, date: number, hour: number): number {
+  const wall = Date.UTC(year, month, date, hour);
+  let candidate = wall;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const parts = ownerCalendar(candidate);
+    const actual = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+    const correction = wall - actual;
+    candidate += correction;
+    if (!correction) break;
+  }
+  return candidate;
+}
 
 function normalized(text: string): string {
   return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
-/** Day and part-of-day references use the harness process's local calendar, including DST. */
+/** Owner date intent always uses the owner's New York calendar, including DST. */
 export function ownerConversationQuery(query: string, nowMs = Date.now()): OwnerConversationQuery {
-  const now = new Date(nowMs);
+  const validNow = Number.isFinite(nowMs);
+  const now = ownerCalendar(validNow ? nowMs : 0);
   let text = query.toLowerCase();
   const recap = /\b(?:talk(?:ed)?|discuss(?:ed)?|conversations?|recap|summari[sz]e)\b/.test(text);
   let day: Date | null = null;
-  let valid = Number.isFinite(nowMs);
+  let valid = validNow;
   const iso = /\b(\d{4})-(\d{2})-(\d{2})\b/.exec(text);
   const named = /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b/.exec(text);
   if (iso || named) {
     const match = (iso ?? named)!;
-    const year = iso ? Number(match[1]) : Number(match[3] ?? now.getFullYear());
+    const year = iso ? Number(match[1]) : Number(match[3] ?? now.year);
     const month = iso ? Number(match[2]) - 1 : MONTHS.indexOf(match[1]!.slice(0, 3));
     const date = Number(iso ? match[3] : match[2]);
-    day = new Date(year, month, date);
-    valid = valid && day.getFullYear() === year && day.getMonth() === month && day.getDate() === date;
+    day = new Date(Date.UTC(year, month, date));
+    valid = valid && day.getUTCFullYear() === year && day.getUTCMonth() === month && day.getUTCDate() === date;
     text = text.replace(match[0], ' ');
   } else if (/\b(?:today|yesterday|this morning|this afternoon|this evening|tonight|last night)\b/.test(text)) {
     const yesterday = /\b(?:yesterday|last night)\b/.test(text);
-    day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (yesterday ? 1 : 0));
+    day = new Date(Date.UTC(now.year, now.month - 1, now.day - (yesterday ? 1 : 0)));
   }
   let window: OwnerConversationQuery['window'] = null;
   if (day && valid) {
@@ -61,8 +97,8 @@ export function ownerConversationQuery(query: string, nowMs = Date.now()): Owner
       : /\b(?:evening|tonight|last night)\b/.test(text) ? 18 : 0;
     const endHour = /\bmorning\b/.test(text) ? 12 : /\bafternoon\b/.test(text) ? 18 : 24;
     window = {
-      start: new Date(day.getFullYear(), day.getMonth(), day.getDate(), startHour).getTime(),
-      end: new Date(day.getFullYear(), day.getMonth(), day.getDate(), endHour).getTime(),
+      start: ownerBoundary(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), startHour),
+      end: ownerBoundary(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), endHour),
     };
   }
   text = text.replace(/\b(?:today|yesterday|this morning|this afternoon|this evening|tonight|last night)\b/g, ' ');
@@ -113,12 +149,14 @@ export function ownerConversationMatch(record: OwnerConversationEvidence, query:
   const occurredAt = Date.parse(record.occurredAt);
   if (!query.valid || occurredAt > query.nowMs
       || (query.window && (occurredAt < query.window.start || occurredAt >= query.window.end))) return null;
-  const hay = normalized(`${record.statement} ${record.quote}`);
+  const hay = normalized(`${record.statement} ${record.quote} ${record.transcript?.excerpt ?? ''}`);
   const words = new Set(hay.split(' '));
   const matches = query.terms.filter(term => words.has(term)).length;
   const phraseMatch = query.phrase.length >= 8 && hay.includes(query.phrase);
-  if (query.terms.length ? !phraseMatch && matches < Math.min(3, Math.ceil(query.terms.length * 0.4))
-    : !query.window && !query.recap) return null;
+  // Ledger heads are quote-gated pointers, not the transcript. Date intent must
+  // reach those pointers even when their thin quote omits the requested topic.
+  if (!query.window && (query.terms.length ? !phraseMatch && matches < Math.min(3, Math.ceil(query.terms.length * 0.4))
+    : !query.recap)) return null;
   const recency = 1 / (1 + Math.max(0, query.nowMs - occurredAt) / (14 * 86_400_000));
   return (query.terms.length ? matches / query.terms.length : 0) + recency;
 }
@@ -143,5 +181,6 @@ function excerpt(text: string, terms: string[], max: number): string {
 
 /** Keep matching quote text visible even when a long summary uses the snippet budget. */
 export function ownerConversationSnippet(record: OwnerConversationEvidence, query: OwnerConversationQuery): string {
+  if (record.transcript?.excerpt) return record.transcript.excerpt;
   return `${excerpt(record.statement, query.terms, 65)} — owner quote: ${excerpt(record.quote, query.terms, 90)}`;
 }

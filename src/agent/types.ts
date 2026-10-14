@@ -184,6 +184,8 @@ export interface ToolContext {
   memoryObjectStore?: MemoryObjectStore;
   /** Loop-owned curated working-relationship ledger (Step 30, Piece 2). */
   relationshipLedger?: RelationshipLedger | null;
+  /** Loop-owned owner-distill session boundary configuration, used for read-only recall. */
+  ownerConversationSessionGapMinutes?: number;
   telegramAdapter: TelegramAdapterRef | null;
   codingBridge?: CodingBridgeRef | null;
   workRegistry?: WorkRegistryRef | null;

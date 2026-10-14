@@ -58,7 +58,10 @@ function pgsRequest(extra: Record<string, unknown> = {}): Record<string, unknown
 
 function makeCtx(overrides: ContextOverrides = {}): ToolContext {
   const { brainOperations = {}, ...contextOverrides } = overrides;
-  const runtimeStubs = { ...brainOperations };
+  const runtimeStubs = {
+    resolveTarget: async () => ({ kind: 'resident', lifecycle: 'resident', ownerAgent: 'jerry', accessMode: 'own' }),
+    ...brainOperations,
+  };
   if (!runtimeStubs.launchQuery && runtimeStubs.query) {
     runtimeStubs.launchQuery = runtimeStubs.query;
   }
@@ -308,6 +311,7 @@ test('brain_search federates an internal relationship correction into the ranked
           type: 'correction',
           title: 'There is no he. I am Jerry.',
           statement: 'There is no he. I am Jerry. The seed, the lobe, this room—I am them.',
+          triggers: [], applies_to: [],
         }],
         withheldMatching: 0,
       }),
@@ -319,21 +323,229 @@ test('brain_search federates an internal relationship correction into the ranked
   assert.doesNotMatch(result.content, /sensitive medical|private health/);
 });
 
+test('Oct 14 morning owner recall outranks twelve Aug/Sep corrections from the deployed failure', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-owner-ranking-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-14T17:00:00Z'));
+  let instant = '2026-08-23T19:20:10Z';
+  const ledger = new RelationshipLedger(dir, { now: () => instant });
+  for (let index = 0; index < 12; index++) {
+    instant = index % 2 ? '2026-09-15T14:40:35Z' : '2026-08-23T19:20:10Z';
+    ledger.addEntry({ type: 'correction', title: `Old correction ${index}`,
+      statement: 'I told the owner in our morning conversation: talk to me before changing the brain.',
+      triggers: ['conversation', 'morning', 'owner', 'brain', 'talk'],
+      provenance: { generation_method: 'agent_note', session_refs: ['old-session'] } });
+  }
+  const owners = [['2026-10-14T10:36:24Z', 'Check the brain'],
+    ['2026-10-14T12:58:30Z', 'Yup. Give it a go…']].map(([occurredAt, quote], index) =>
+    ledger.upsertOwnerConversation({ type: 'decision', statement: `Thin owner head ${index}.`, quote: quote!,
+      occurredAt: occurredAt!, messageRef: `coordination.message:msg_oct14_${index}`, sessionId: 'owner-session:oct14' }));
+  const result = await brainSearchTool.execute({
+    query: 'October 14 2026 morning conversation dinner brain surgery re embedded restarted clarity retrieval fixes', limit: 12,
+  }, makeCtx({ relationshipLedger: ledger, brainOperations: {
+    resolveTarget: async () => ({ kind: 'resident', ownerAgent: 'jerry', accessMode: 'own', lifecycle: 'resident' }),
+    search: async () => ({ results: [], sourceEvidence: {
+      sourceHealth: 'healthy', retrievalMode: 'semantic-ann', completeCoverage: true } }),
+  } }));
+  assert.equal(result.is_error, undefined);
+  assert.equal(result.metadata?.hitCount, 2);
+  assert.deepEqual(new Set((result.metadata?.ownerConversationHits as any[]).map(hit => hit.id)), new Set(owners.map(hit => hit.id)));
+  assert.doesNotMatch(result.content, /Old correction|lexical=1\.000.*kindBoost=900/);
+  assert.equal((result.metadata?.ownerConversationFederation as any).timeZone, 'America/New_York');
+  assert.deepEqual((result.metadata?.ownerConversationFederation as any).window,
+    { start: '2026-10-14T04:00:00.000Z', end: '2026-10-14T16:00:00.000Z' });
+});
+
+test('quoted ISO owner dates use authorized time-window recall without invoking a degraded graph scan', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-owner-date-index-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-14T17:00:00Z'));
+  const ledger = new RelationshipLedger(dir);
+  ledger.upsertOwnerConversation({ type: 'decision', statement: 'Thin owner head.', quote: 'Check the brain',
+    occurredAt: '2026-10-14T10:36:24Z', messageRef: 'coordination.message:msg_oct14', sessionId: 'owner-session:oct14' });
+  let authorized = 0;
+  let scans = 0;
+  const ctx = makeCtx({ relationshipLedger: ledger, brainOperations: {
+    resolveTarget: async () => { authorized++; return { kind: 'resident', ownerAgent: 'jerry', accessMode: 'own', lifecycle: 'resident' }; },
+    search: async () => { scans++; return { results: [], sourceEvidence: {
+      sourceHealth: 'degraded', retrievalMode: 'logical-source-scan', completeCoverage: false } }; },
+  } });
+  const result = await brainSearchTool.execute({ query: '"2026-10-14" "owner" "brain"' }, ctx);
+  assert.equal(result.metadata?.hitCount, 1);
+  assert.equal(authorized, 1);
+  assert.equal(scans, 0);
+  assert.match(result.content, /retrievalMode=owner-conversation-time-window/);
+  assert.doesNotMatch(result.content, /degraded|logical-source-scan/);
+  assert.equal((result.metadata?.sourceEvidence as any).coverageScope, 'owner_conversation');
+  const refused = await brainSearchTool.execute({ query: '"2026-10-14" "owner" "brain"' }, makeCtx({
+    relationshipLedger: ledger, brainOperations: {
+      resolveTarget: async () => { throw Object.assign(new Error('target_not_available'), { code: 'target_not_available' }); },
+      search: async () => { throw new Error('must not scan after authorization fails'); },
+    },
+  }));
+  assert.equal(refused.is_error, true);
+  assert.doesNotMatch(refused.content, /Check the brain/);
+});
+
+test('relationship federation reports actual overlap and cannot bury an owner lexical match with a flat correction boost', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-owner-lexical-ranking-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-14T17:00:00Z'));
+  const ledger = new RelationshipLedger(dir, { now: () => '2026-09-15T14:40:35Z' });
+  ledger.addEntry({ type: 'correction', title: 'Old retrieval correction', statement: 'Fix retrieval clarity.',
+    provenance: { generation_method: 'agent_note', session_refs: ['old-session'] } });
+  ledger.upsertOwnerConversation({ type: 'decision', statement: 'Retrieval clarity fixes after surgery.', quote: 'Give the retrieval fixes a go.',
+    occurredAt: '2026-10-14T12:58:30Z', messageRef: 'coordination.message:msg_oct14', sessionId: 'owner-session:oct14' });
+  const result = await brainSearchTool.execute({ query: 'retrieval clarity surgery', limit: 2 }, makeCtx({ relationshipLedger: ledger,
+    brainOperations: { search: async () => ({ results: [] }) },
+  }));
+  assert.match(result.content, /1\. id=.*matchKind=owner_conversation_lexical/);
+  assert.match(result.content, /lexical=0\.667/);
+  assert.doesNotMatch(result.content, /kindBoost=900/);
+});
+
+test('dated local recall reports empty or unavailable scoped sources without scanning quoted dates', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-owner-empty-window-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-14T17:00:00Z'));
+  const ledger = new RelationshipLedger(dir);
+  const operations = { search: async () => { throw new Error('date must not reach graph scan'); } };
+  const empty = await brainSearchTool.execute({ query: '"2026-10-14" "owner" "brain"' }, makeCtx({
+    relationshipLedger: ledger, brainOperations: operations,
+  }));
+  assert.equal(empty.is_error, undefined);
+  assert.equal(empty.metadata?.hitCount, 0);
+  assert.equal((empty.metadata?.sourceEvidence as any).coverageScope, 'owner_conversation');
+  assert.equal((empty.metadata?.sourceEvidence as any).completeCoverage, true);
+  writeFileSync(join(dir, 'relationship-ledger.json'), '{invalid');
+  const unavailable = await brainSearchTool.execute({ query: '"2026-10-14" "owner" "brain"' }, makeCtx({
+    relationshipLedger: ledger, brainOperations: operations,
+  }));
+  assert.match(unavailable.content, /ownerConversationSources ledger=unavailable/);
+  assert.equal((unavailable.metadata?.sourceEvidence as any).completeCoverage, false);
+  assert.match(unavailable.content, /retrievalMode=owner-conversation-time-window/);
+});
+
+test('dated owner recall preserves sibling/opaque target boundaries and cancelled authorization', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-owner-date-scope-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-14T17:00:00Z'));
+  const ledger = new RelationshipLedger(dir);
+  ledger.upsertOwnerConversation({ type: 'decision', statement: 'Owner sentinel.', quote: 'Owner sentinel.',
+    occurredAt: '2026-10-14T12:00:00Z', messageRef: 'coordination.message:msg_scope', sessionId: 'owner-session:scope' });
+  for (const target of [{ agent: 'forrest' }, { brainId: 'opaque-research-brain' }]) {
+    const remote = await brainSearchTool.execute({ query: 'October 14 2026', target }, makeCtx({
+      relationshipLedger: ledger, brainOperations: {
+        resolveTarget: async () => { throw new Error('must use normal target-bound search'); },
+        search: async () => ({ results: [{ id: 'remote', concept: 'Authorized remote evidence.' }] }),
+      },
+    }));
+    assert.equal(remote.is_error, undefined);
+    assert.match(remote.content, /Authorized remote evidence/);
+    assert.doesNotMatch(remote.content, /Owner sentinel/);
+  }
+  const ctx = makeCtx({ relationshipLedger: ledger, brainOperations: {
+    resolveTarget: async () => {
+      ctx.turnRuntime!.abortController.abort(new Error('cancelled recall'));
+      return { kind: 'resident', lifecycle: 'resident', ownerAgent: 'jerry', accessMode: 'own' };
+    },
+  } });
+  const cancelled = await brainSearchTool.execute({ query: 'October 14 2026' }, ctx);
+  assert.equal(cancelled.is_error, true);
+  assert.doesNotMatch(cancelled.content, /Owner sentinel/);
+});
+
+test('thin Oct 14 owner hits carry read-only raw owner and assistant conversation excerpts through search and recovery', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-owner-transcript-search-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-14T17:00:00Z'));
+  const conversations = join(dir, 'conversations'); mkdirSync(conversations);
+  const ledger = new RelationshipLedger(join(dir, 'brain'));
+  const facts = new MemoryObjectStore(join(dir, 'brain'));
+  const quote = 'Check the brain';
+  const entry = ledger.upsertOwnerConversation({ type: 'decision', statement: 'Thin head.', quote,
+    occurredAt: '2026-10-14T10:36:24Z', messageRef: 'coordination.message:msg_check', sessionId: 'owner-session:oct14' });
+  facts.upsertOwnerFact({ statement: 'Thin fact head.', quote, occurredAt: '2026-10-14T10:36:24Z',
+    messageRef: 'coordination.message:msg_check', sessionId: 'owner-session:oct14' });
+  const ownerText = 'Check the brain.\nFor dinner, we discussed brain surgery, re embedded retrieval fixes, and restarted clarity.';
+  const rawPath = join(conversations, 'jerry__coordination_chn_owner_wrk_morning.jsonl');
+  const records = [
+    { type: 'turn', status: 'pending', started_at: '2026-10-14T10:36:24Z', context_purpose: 'conversation',
+      coordination_origin: { kind: 'coordination', channelId: 'chn_owner', originMessageId: 'msg_check' } },
+    { role: 'user', content: ownerText, ts: '2026-10-14T10:36:24Z' },
+    { role: 'assistant', content: [{ type: 'text', text: 'We re embedded the retrieval index and restarted after the surgery discussion.' }], ts: '2026-10-14T10:37:00Z' },
+    { type: 'turn', status: 'complete' },
+  ];
+  writeFileSync(rawPath, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+  const ledgerPath = join(dir, 'brain', 'relationship-ledger.json');
+  const before = [rawPath, ledgerPath].map(path => readFileSync(path, 'utf8'));
+  const query = 'October 14 2026 morning conversation dinner brain surgery re embedded restarted clarity retrieval fixes';
+  const ctx = makeCtx({ instanceDir: dir, relationshipLedger: ledger, memoryObjectStore: facts, brainOperations: {
+    search: async (request: any) => {
+      if (request.query.includes('October')) throw new Error('date recall must not invoke graph scan');
+      return { results: [] };
+    },
+    resumeOperation: async () => ({ ...completeOperation(CONTINUE_OPERATION_ID, ''), operationType: 'search',
+      acceptedAt: '2026-10-14T17:00:00Z', requestParameters: { query, topK: 12 }, parameters: { query, topK: 12 },
+      result: { results: [{ id: entry.id, concept: 'Thin indexed head.', finalRankScore: 950 },
+        { id: 'graph', concept: 'Older graph correction.', finalRankScore: 950 }] },
+      target: canonicalBrainTarget('jerry', 'own') }),
+  } });
+  const topicOnly = await brainSearchTool.execute({ query: 'dinner surgery restarted clarity' }, ctx);
+  assert.equal(topicOnly.metadata?.hitCount, 2, 'both ledger and fact pointers must match their cited transcript before topic filtering');
+  assert.match(topicOnly.content, /owner verbatim/);
+  for (const result of [await brainSearchTool.execute({ query, limit: 12 }, ctx),
+    await brainStatusTool.execute({ operationId: CONTINUE_OPERATION_ID, action: 'wait' }, ctx)]) {
+    assert.equal(result.is_error, undefined);
+    assert.match(result.content, /1\. id=.*matchKind=owner_conversation_time/);
+    assert.ok(result.content.includes(`[owner verbatim] ${ownerText}`), 'display must preserve the owner excerpt, including its newline');
+    assert.match(result.content, /\[assistant clipped\] We re embedded the retrieval index/);
+    assert.doesNotMatch(result.content, /Thin indexed head/);
+    assert.equal((result.metadata?.ownerConversationHits as any[]).length, 2);
+    assert.ok((result.metadata?.ownerConversationHits as any[])[0].transcript.turns.some((turn: any) => turn.role === 'assistant'));
+  }
+  assert.deepEqual([rawPath, ledgerPath].map(path => readFileSync(path, 'utf8')), before);
+});
+
+test('owner recall reconstructs sessions with the configured owner-distill gap', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-owner-configured-gap-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-14T18:00:00Z'));
+  const ledger = new RelationshipLedger(join(dir, 'brain'));
+  ledger.upsertOwnerConversation({ type: 'decision', statement: 'Thin head.', quote: 'Check the brain',
+    occurredAt: '2026-10-14T10:36:24Z', messageRef: 'coordination.message:msg_first', sessionId: 'owner-session:first' });
+  const streamDir = join(dir, 'substrate'); mkdirSync(streamDir);
+  const contact = (id: string, text: string, ts: string) => ({ schema: 'home23.resident.contact.v1',
+    contactId: `message:${id}`, sourceRef: `coordination.message:${id}`, messageId: id,
+    session: 'coordination:chn_owner', channelId: 'chn_owner', channelKind: 'direct', role: 'user', voice: 'jtr',
+    actor: { principalId: 'owner', kind: 'owner' }, content: text, ts });
+  writeFileSync(join(streamDir, 'conversation-stream.jsonl'), [
+    contact('msg_first', 'Check the brain', '2026-10-14T10:36:24Z'),
+    contact('msg_later', 'Separate session sentinel.', '2026-10-14T10:46:24Z'),
+  ].map(record => JSON.stringify(record)).join('\n') + '\n');
+  const result = await brainSearchTool.execute({ query: 'this morning' }, makeCtx({
+    instanceDir: dir, relationshipLedger: ledger, ownerConversationSessionGapMinutes: 5,
+  }));
+  assert.equal(result.is_error, undefined);
+  assert.match(result.content, /owner verbatim.*Check the brain/);
+  assert.doesNotMatch(result.content, /Separate session sentinel/);
+});
+
 test('brain_search recalls dated morning owner evidence and excludes unavailable or sensitive records', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-brain-owner-recall-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const now = new Date(2026, 9, 14, 14).getTime();
+  const now = Date.parse('2026-10-14T14:00:00-04:00');
   t.mock.method(Date, 'now', () => now);
-  const morning = new Date(2026, 9, 14, 9).toISOString();
+  const morning = new Date('2026-10-14T09:00:00-04:00').toISOString();
   const ledger = new RelationshipLedger(dir);
   const input = { quote: 'Keep the old home.', messageRef: 'coordination.message:morning',
     sessionId: 'owner-session:morning', occurredAt: morning };
   const kept = ledger.upsertOwnerConversation({ ...input, type: 'decision', statement: 'Preserve the established home.' });
   ledger.upsertOwnerConversation({ ...input, type: 'preference', statement: 'Private medical preference.', privacy: 'sensitive' });
   ledger.upsertOwnerConversation({ ...input, type: 'aversion', statement: 'Yesterday detail.',
-    occurredAt: new Date(2026, 9, 13, 9).toISOString() });
+    occurredAt: '2026-10-13T09:00:00-04:00' });
   ledger.upsertOwnerConversation({ ...input, type: 'preference', statement: 'Afternoon detail.',
-    occurredAt: new Date(2026, 9, 14, 13).toISOString() });
+    occurredAt: '2026-10-14T13:00:00-04:00' });
   const ledgerPath = join(dir, 'relationship-ledger.json');
   const document = JSON.parse(readFileSync(ledgerPath, 'utf8'));
   for (const [id, overrides] of [
@@ -364,12 +576,12 @@ test('brain_search recalls dated morning owner evidence and excludes unavailable
 test('brain_search reads fresh owner facts and returns a quote-only Oct 14 match with its evidence', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-brain-owner-facts-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  t.mock.method(Date, 'now', () => new Date(2026, 9, 15, 14).getTime());
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-15T14:00:00-04:00'));
   const reader = new MemoryObjectStore(dir);
   const writer = new MemoryObjectStore(dir);
   const fact = writer.upsertOwnerFact({ statement: 'Jason has a favorite live album.',
     quote: 'My favorite live album is Cornell Scarlet Fire.', messageRef: 'coordination.message:album',
-    sessionId: 'owner-session:oct14', occurredAt: new Date(2026, 9, 14, 9).toISOString() });
+    sessionId: 'owner-session:oct14', occurredAt: '2026-10-14T09:00:00-04:00' });
   writer.upsertOwnerFact({ statement: 'Sensitive sentinel.', quote: 'Sensitive sentinel.', privacy: 'sensitive',
     messageRef: 'coordination.message:private', sessionId: 'owner-session:oct14', occurredAt: fact.updated_at });
   const factPath = join(dir, 'memory-objects.json');
@@ -398,12 +610,12 @@ test('brain_search reads fresh owner facts and returns a quote-only Oct 14 match
 test('brain_search shows distinctive matching quote terms beyond an earlier generic match', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-brain-owner-excerpt-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  t.mock.method(Date, 'now', () => new Date(2026, 9, 15, 14).getTime());
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-15T14:00:00-04:00'));
   const store = new MemoryObjectStore(dir);
   store.upsertOwnerFact({ statement: 'Jason has a favorite album.',
     quote: `My favorite album is special. ${'Concert context. '.repeat(20)}Cornell Scarlet Fire.`,
     messageRef: 'coordination.message:long-quote', sessionId: 'owner-session:oct14',
-    occurredAt: new Date(2026, 9, 14, 9).toISOString() });
+    occurredAt: '2026-10-14T09:00:00-04:00' });
   const result = await brainSearchTool.execute({ query: 'favorite album Cornell Scarlet Fire on Oct 14' }, makeCtx({
     memoryObjectStore: store, brainOperations: { search: async () => ({ results: [] }) },
   }));
@@ -487,8 +699,8 @@ test('owner distill feeds decision and fact recall from synthetic Oct 14 contact
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const brainDir = join(dir, 'brain'); mkdirSync(brainDir);
   const sourcePath = join(dir, 'contact.jsonl');
-  const occurredAt = new Date(2026, 9, 14, 9).toISOString();
-  const now = new Date(2026, 9, 14, 14).getTime(); t.mock.method(Date, 'now', () => now);
+  const occurredAt = new Date('2026-10-14T09:00:00-04:00').toISOString();
+  const now = Date.parse('2026-10-14T14:00:00-04:00'); t.mock.method(Date, 'now', () => now);
   writeFileSync(sourcePath, JSON.stringify({ schema: 'home23.resident.contact.v1', contactId: 'message:oct14',
     sourceRef: 'coordination.message:oct14', channelId: 'direct-1', session: 'coordination:direct-1',
     messageId: 'oct14', channelKind: 'direct', actor: { principalId: 'owner', kind: 'owner', displayName: 'Jason' },
@@ -512,7 +724,8 @@ test('owner distill feeds decision and fact recall from synthetic Oct 14 contact
   assert.ok(quoted.content.includes(occurredAt));
   assert.match(quoted.content, /coordination.message:oct14/);
   assert.equal((await distiller.pass()).saved, 0);
-  assert.equal((await brainSearchTool.execute({ query: 'Cornell Scarlet Fire on Oct 14' }, ctx)).metadata?.hitCount, 1);
+  assert.equal((await brainSearchTool.execute({ query: 'Cornell Scarlet Fire on Oct 14' }, ctx)).metadata?.hitCount, 2,
+    'a dated session keeps its thin contextual head as well as the topic-matching fact');
   assert.deepEqual(readdirSync(brainDir).sort().map(name => [name, readFileSync(join(brainDir, name), 'utf8')]), contentsBeforeSearch,
     'distiller cursor replay and recall add no graph files and preserve the authoritative source bytes');
 });

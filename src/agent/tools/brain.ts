@@ -1,5 +1,5 @@
 /**
- * Brain tools — all access goes through the requester-bound durable operations client.
+ * Brain tools — requester-bound operations plus authorized, read-only owner recall.
  */
 
 import type {
@@ -27,15 +27,18 @@ import {
   unadmittedNotice,
 } from '../tool-result.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
-import type { RelationshipEntryType } from '../relationship-ledger.js';
+import { relationshipLexicalScore, type RelationshipEntryType } from '../relationship-ledger.js';
 import {
+  createOwnerConversationEnricher,
   factOwnerEvidence,
+  OWNER_CONVERSATION_TIMEZONE,
   ownerConversationMatch,
   ownerConversationQuery,
   ownerConversationSnippet,
   relationshipOwnerEvidence,
   type OwnerConversationEvidence,
 } from '../owner-conversation-recall.js';
+import { join } from 'node:path';
 import { clipToolOutput } from './clip-output.js';
 
 const DEFAULT_BRAIN_QUERY_MODE = 'quick';
@@ -229,6 +232,7 @@ function toolFailure(label: string, error: unknown): ToolResult {
 
 const JSON_CONTENT_CAP = 3500;
 const SEARCH_SNIPPET_CHARS = 180;
+const OWNER_SEARCH_SNIPPET_CHARS = 650;
 const SEARCH_CONTENT_BUDGET = 3500;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -278,14 +282,18 @@ function formatHitLine(hit: unknown, index: number): string {
     const refs = Array.isArray(owner.sourceRefs) ? owner.sourceRefs : [];
     parts.push(`   date=${String(owner.occurredAt)} sourceRef=${clipSnippet(String(refs.at(-1) ?? ''), 120)}`);
   }
-  parts.push(`   ${clipSnippet(String(concept))}`);
+  const snippet = owner
+    ? String(concept).length <= OWNER_SEARCH_SNIPPET_CHARS ? String(concept)
+      : `${String(concept).slice(0, OWNER_SEARCH_SNIPPET_CHARS - 1)}…`
+    : clipSnippet(String(concept));
+  parts.push(`   ${snippet}`);
   return parts.join('\n');
 }
 
 function federateRelationshipHits(
   value: Record<string, unknown>,
   ctx: ToolContext,
-  request: { query: string; topK: number; tag?: string; target?: { agent?: string; brainId?: string }; nowMs?: number },
+  request: { query: string; topK: number; tag?: string; target?: { agent?: string; brainId?: string }; nowMs?: number; ownerOnly?: boolean },
   canonicalOwn = true,
 ): Record<string, unknown> {
   if (['queued', 'running', 'failed', 'cancelled', 'interrupted'].includes(String(value.state))) return value;
@@ -294,6 +302,11 @@ function federateRelationshipHits(
   const { query, topK, tag } = request;
   const nowMs = request.nowMs ?? Date.now();
   const ownerQuery = ownerConversationQuery(query, nowMs);
+  const enrichOwner = createOwnerConversationEnricher({
+    instanceDir: ctx.instanceDir ?? join(ctx.projectRoot, 'instances', ctx.agentName), agentName: ctx.agentName,
+    sessionGapMs: Math.max(1, Math.min(1440, Number.isFinite(ctx.ownerConversationSessionGapMinutes)
+      ? Math.floor(ctx.ownerConversationSessionGapMinutes!) : 30)) * 60_000,
+  });
   const relationshipTypes = new Set(['thread', 'promise', 'correction', 'decision', 'preference',
     'aversion', 'shared_reference', 'miss_repair', 'why_it_mattered']);
   const ledgerApplicable = tag === undefined || tag === 'owner_conversation' || relationshipTypes.has(tag);
@@ -302,45 +315,62 @@ function federateRelationshipHits(
     : Array.isArray(value.hits) ? [...value.hits]
     : [];
   const existing = new Set(hits.map((hit) => String((asRecord(hit) ?? {}).id ?? '')));
+  const ownerIds = new Set<string>();
   const ownerHits: OwnerConversationEvidence[] = [];
   let ledgerWithheld = 0;
   let factsWithheld = 0;
   let ledgerHealth = ctx.relationshipLedger && ledgerApplicable ? 'healthy' : 'not_searched';
   let factsHealth = ctx.memoryObjectStore && factsApplicable ? 'healthy' : 'not_searched';
   const addOwnerHit = (record: OwnerConversationEvidence, sourceDomain: string) => {
-    if (record.privacyClass === 'sensitive' || existing.has(record.id)) return;
+    if (record.privacyClass === 'sensitive' || ownerIds.has(record.id)) return;
+    record = enrichOwner(record, ownerQuery);
     const score = ownerConversationMatch(record, ownerQuery);
     if (score === null) return;
+    // Upgrade an indexed copy of this pointer instead of keeping its thin head.
+    for (let index = hits.length - 1; index >= 0; index--) {
+      if (String(asRecord(hits[index])?.id ?? '') === record.id) hits.splice(index, 1);
+    }
+    ownerIds.add(record.id);
     existing.add(record.id);
     ownerHits.push(record);
     hits.push({
       id: record.id, concept: ownerConversationSnippet(record, ownerQuery),
-      matchKind: ownerQuery.window && !ownerQuery.terms.length ? 'owner_conversation_time' : 'owner_conversation_lexical',
-      sourceDomain, finalRankScore: 900 + score, tag: 'owner_conversation',
+      matchKind: ownerQuery.window ? 'owner_conversation_time' : 'owner_conversation_lexical',
+      sourceDomain, finalRankScore: score, tag: 'owner_conversation',
       ownerConversation: record,
-      componentScores: { similarity: null, lexical: score, retrieval: null, identityPenalty: 1, kindBoost: 900 },
+      componentScores: { similarity: null, lexical: score, retrieval: null, identityPenalty: 1, kindBoost: 0 },
     });
   };
   if (ctx.relationshipLedger && ledgerApplicable) {
     try {
       const found = ctx.relationshipLedger.searchEntries(query, {
         status: 'active', excludePrivacy: ['sensitive'], nowMs,
-        ...(tag === 'owner_conversation' ? { generationMethod: 'owner_conversation' as const } : {}),
+        ...(tag === 'owner_conversation' || request.ownerOnly ? { generationMethod: 'owner_conversation' as const } : {}),
         ...(tag && relationshipTypes.has(tag) ? { type: tag as RelationshipEntryType } : {}),
       });
       ledgerWithheld = found.withheldMatching;
-      for (const entry of found.entries) {
-        if (existing.has(entry.id)) continue;
+      // Thin owner heads cannot act as a lexical index of their source session.
+      // The ledger is bounded; resolve eligible owner pointers before topic matching.
+      const ownerCandidates = !ownerQuery.window ? ctx.relationshipLedger.searchEntries('', {
+        status: 'active', excludePrivacy: ['sensitive'], generationMethod: 'owner_conversation', nowMs,
+        ...(tag && relationshipTypes.has(tag) ? { type: tag as RelationshipEntryType } : {}),
+      }).entries : [];
+      for (const entry of [...found.entries, ...ownerCandidates]) {
         const record = relationshipOwnerEvidence(entry);
         if (record) {
           addOwnerHit(record, 'relationship');
         } else if (entry.provenance?.generation_method !== 'owner_conversation') {
+          if (existing.has(entry.id)) continue;
+          const lexical = relationshipLexicalScore(entry, query);
+          if (lexical === 0) continue;
+          // Correction authority can break a relevance tie, never replace relevance.
+          const kindBoost = entry.type === 'correction' ? 0.05 * lexical : 0;
           existing.add(entry.id);
           hits.push({
             id: entry.id, concept: `${entry.title}: ${entry.statement}`,
             matchKind: 'relationship', sourceDomain: 'relationship',
-            finalRankScore: 900 + (entry.type === 'correction' ? 50 : 0), tag: entry.type,
-            componentScores: { similarity: null, lexical: 1, retrieval: null, identityPenalty: 1, kindBoost: 900 },
+            finalRankScore: lexical + kindBoost, tag: entry.type,
+            componentScores: { similarity: null, lexical, retrieval: null, identityPenalty: 1, kindBoost },
           });
         }
       }
@@ -350,8 +380,11 @@ function federateRelationshipHits(
     try {
       for (const object of ctx.memoryObjectStore.readOwnerConversationFacts()) {
         const record = factOwnerEvidence(object);
-        if (!record || ownerConversationMatch(record, ownerQuery) === null) continue;
-        if (record.privacyClass === 'sensitive') { factsWithheld++; continue; }
+        if (!record) continue;
+        if (record.privacyClass === 'sensitive') {
+          if (ownerConversationMatch(record, ownerQuery) !== null) factsWithheld++;
+          continue;
+        }
         addOwnerHit(record, 'owner_facts');
       }
     } catch { factsHealth = 'unavailable'; }
@@ -359,11 +392,16 @@ function federateRelationshipHits(
   hits.sort((left, right) => {
     const a = asRecord(left) ?? {};
     const b = asRecord(right) ?? {};
+    if (ownerQuery.window) {
+      const ownerPriority = Number(Boolean(b.ownerConversation)) - Number(Boolean(a.ownerConversation));
+      if (ownerPriority) return ownerPriority;
+    }
     return Number(b.finalRankScore ?? b.retrievalScore ?? b.similarity ?? 0)
       - Number(a.finalRankScore ?? a.retrievalScore ?? a.similarity ?? 0);
   });
   const ranked = hits.slice(0, topK);
   const rankedIds = new Set(ranked.map(hit => String((asRecord(hit) ?? {}).id ?? '')));
+  const rankedOwners = ownerHits.filter(hit => rankedIds.has(hit.id));
   return {
     ...value,
     results: ranked,
@@ -371,10 +409,15 @@ function federateRelationshipHits(
       surfaced: ranked.filter(hit => asRecord(hit)?.sourceDomain === 'relationship').length,
       withheldMatching: ledgerWithheld,
     },
-    ownerConversationHits: ownerHits.filter(hit => rankedIds.has(hit.id)),
+    ownerConversationHits: rankedOwners,
     ownerConversationFederation: {
       ledgerHealth, factsHealth, withheldMatching: ledgerWithheld + factsWithheld,
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      transcripts: {
+        resolved: rankedOwners.filter(hit => hit.transcriptResolution === 'resolved').length,
+        incomplete: rankedOwners.filter(hit => hit.transcriptResolution === 'incomplete').length,
+        unavailable: rankedOwners.filter(hit => !hit.transcriptResolution || hit.transcriptResolution === 'unavailable').length,
+      },
+      timeZone: OWNER_CONVERSATION_TIMEZONE,
       timestampPolicy: 'latest_preserved_owner_evidence',
       ...(ownerQuery.window ? { window: {
         start: new Date(ownerQuery.window.start).toISOString(), end: new Date(ownerQuery.window.end).toISOString(),
@@ -403,7 +446,8 @@ export function formatBrainSearchContent(value: Record<string, unknown>): string
     : 'unknown';
   const federation = asRecord(value.relationshipFederation);
   const header = [
-    `brain_search: ${hits.length} hit(s). sourceHealth=${health} retrievalMode=${mode} completeness=${completeness}`,
+    `brain_search: ${hits.length} hit(s). sourceHealth=${health} retrievalMode=${mode} completeness=${completeness}`
+      + (typeof evidence.coverageScope === 'string' ? ` coverageScope=${evidence.coverageScope}` : ''),
     'Snippets are clipped. This is the ranked list, not a JSON dump. Re-query tighter; this tool is not pageable and has no offset.',
   ];
   if (completeness === 'incomplete') {
@@ -417,6 +461,10 @@ export function formatBrainSearchContent(value: Record<string, unknown>): string
   const ownerFederation = asRecord(value.ownerConversationFederation);
   if (ownerFederation) {
     header.push(`ownerConversationSources ledger=${String(ownerFederation.ledgerHealth)} facts=${String(ownerFederation.factsHealth)}`);
+    const transcripts = asRecord(ownerFederation.transcripts);
+    if (transcripts && hits.some(hit => asRecord(hit)?.ownerConversation)) {
+      header.push(`ownerConversationTranscripts resolved=${String(transcripts.resolved)} incomplete=${String(transcripts.incomplete)} unavailable=${String(transcripts.unavailable)}`);
+    }
   }
   const lines = [...header];
   let packed = 0;
@@ -599,6 +647,30 @@ async function executeBrainSearch(
     const tag = optionalTagWhenPresent(input);
     const query = requiredToolText(input, 'query', 12_000);
     const nowMs = Date.now();
+    const ownerQuery = ownerConversationQuery(query, nowMs);
+    const localTarget = !target || target.agent === ctx.agentName;
+    const localTag = tag === undefined || tag === 'owner_conversation' || tag === 'fact'
+      || ['thread', 'promise', 'correction', 'decision', 'preference', 'aversion',
+        'shared_reference', 'miss_repair', 'why_it_mattered'].includes(tag);
+    if (ownerQuery.valid && ownerQuery.window && localTarget && localTag
+        && (ctx.relationshipLedger || ctx.memoryObjectStore)) {
+      turn.signal.throwIfAborted();
+      const resolved = await turn.brainOperations.resolveTarget(target);
+      turn.signal.throwIfAborted();
+      const canonicalOwn = resolved.kind === 'resident' && resolved.lifecycle === 'resident'
+        && resolved.ownerAgent === ctx.agentName && resolved.accessMode === 'own';
+      if (canonicalOwn) {
+        const local = federateRelationshipHits({ results: [] }, ctx, { query, topK, tag, target, nowMs, ownerOnly: true });
+        const sources = asRecord(local.ownerConversationFederation)!;
+        const healthy = [sources.ledgerHealth, sources.factsHealth].every(state =>
+          state === 'healthy' || state === 'not_searched');
+        return searchToolResult({ ...local, sourceEvidence: {
+          sourceHealth: healthy ? 'healthy' : 'degraded',
+          retrievalMode: 'owner-conversation-time-window',
+          coverageScope: 'owner_conversation', completeCoverage: healthy,
+        } });
+      }
+    }
     const value = federateRelationshipHits(
       await turn.brainOperations.search({
         ...(target ? { target } : {}),

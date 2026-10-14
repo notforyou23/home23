@@ -6,6 +6,8 @@ import test from 'node:test';
 
 import {
   RelationshipLedger,
+  entryMatchesQuery,
+  relationshipLexicalScore,
   type RelationshipEntryInput,
   type AuthenticatedCorrectionIngress,
 } from '../../src/agent/relationship-ledger.js';
@@ -39,6 +41,80 @@ function base(overrides: Partial<RelationshipEntryInput> = {}): RelationshipEntr
     ...overrides,
   };
 }
+
+test('Oct 14 owner recall does not match every older correction through generic conversation cues', (t) => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  let instant = '2026-08-23T19:20:10.000Z';
+  const ledger = new RelationshipLedger(brain, { now: () => instant, idSuffix: counterSuffix() });
+  const corrections = Array.from({ length: 12 }, (_, index) => {
+    instant = index % 2 ? '2026-09-15T14:40:35.000Z' : '2026-08-23T19:20:10.000Z';
+    return ledger.addEntry(base({
+      type: 'correction', title: `Correction ${index}: preserve the established home`,
+      statement: 'I told the owner in our morning conversation: talk to me before changing the brain.',
+      triggers: ['conversation', 'morning', 'owner', 'brain', 'talk'],
+    }));
+  });
+  instant = '2026-10-14T14:30:00.000Z';
+  const owner = ledger.upsertOwnerConversation({
+    type: 'decision', statement: 'Check the brain.', quote: 'Check the brain',
+    occurredAt: '2026-10-14T10:36:24.000Z',
+    messageRef: 'coordination.message:msg_oct14', sessionId: 'owner-session:oct14',
+  });
+  const query = 'October 14 2026 morning conversation dinner brain surgery re embedded restarted clarity retrieval fixes';
+  for (const correction of corrections) {
+    assert.equal(entryMatchesQuery(correction, query), false, 'generic cues must not count as meaningful overlap');
+    assert.equal(entryMatchesQuery(correction, 'conversation morning owner brain me I talk'), false);
+    assert.equal(relationshipLexicalScore(correction, query), 0);
+    assert.equal(relationshipLexicalScore(correction, 'conversation morning owner brain me I talk'), 0);
+  }
+  assert.deepEqual(ledger.searchEntries(query).entries.map(entry => entry.id), [owner.id],
+    'thin owner heads remain candidates for transcript resolution in the requested morning');
+  assert.deepEqual(ledger.searchEntries('"2026-10-14" "owner" "brain"').entries.map(entry => entry.id), [owner.id]);
+});
+
+test('relationship lexical matching uses whole words while preserving meaningful correction phrases', (t) => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const ledger = new RelationshipLedger(brain, { now: clock(), idSuffix: counterSuffix() });
+  const correction = ledger.addEntry(base({
+    type: 'correction', title: 'Identity correction',
+    statement: 'There is no he. I am Jerry. The seed, the lobe, this room—I am them.',
+    triggers: ['remembered'],
+  }));
+  assert.equal(entryMatchesQuery(correction, 'There is no he. I am Jerry. The seed, the lobe, this room—I am them.'), true);
+  assert.equal(entryMatchesQuery(correction, 'embedded'), false);
+  assert.equal(entryMatchesQuery(correction, 'member'), false, 'a substring of remembered is not a term match');
+  assert.equal(relationshipLexicalScore(correction, 'Jerry seed dinner surgery'), 0.5,
+    'matched relationship entries carry their actual term coverage, not a constant 1.0');
+});
+
+test('owner time-window candidates precede genuinely matching corrections and retain privacy gates', (t) => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  let instant = '2026-09-15T14:40:35.000Z';
+  const ledger = new RelationshipLedger(brain, { now: () => instant, idSuffix: counterSuffix() });
+  const correction = ledger.addEntry(base({
+    type: 'correction', title: 'Surgery retrieval', statement: 'Review surgery retrieval before claiming results.',
+  }));
+  ledger.addEntry(base({
+    type: 'correction', title: 'Private surgery retrieval', statement: 'Private surgery retrieval.', privacy_class: 'sensitive',
+  }));
+  instant = '2026-10-14T14:30:00.000Z';
+  const owner = ledger.upsertOwnerConversation({
+    type: 'preference', statement: 'Check the brain.', quote: 'Check the brain',
+    occurredAt: '2026-10-14T10:36:24.000Z',
+    messageRef: 'coordination.message:msg_oct14', sessionId: 'owner-session:oct14',
+  });
+  const query = 'October 14 2026 morning conversation brain surgery clarity retrieval fixes';
+  const found = ledger.searchEntries(query, { excludePrivacy: ['sensitive'] });
+  assert.deepEqual(found.entries.map(entry => entry.id), [owner.id, correction.id]);
+  assert.equal(relationshipLexicalScore(correction, query), 0.5);
+  assert.equal(found.withheldMatching, 1);
+  assert.equal(ledger.searchEntries('conversation owner brain me I talk', { excludePrivacy: ['sensitive'] }).withheldMatching, 0);
+  ledger.remove(correction.id);
+  assert.ok(!ledger.searchEntries(query).entries.some(entry => entry.id === correction.id));
+});
 
 test('owner conversation repeats retain evidence, refresh the date and never earn correction authority', (t) => {
   const brain = tmpBrain();
@@ -106,18 +182,18 @@ test('owner relationship supersession keeps history under capacity pressure and 
 test('owner recall preserves leading dates and ignores recap participant names without inventing repeat dates', (t) => {
   const brain = tmpBrain();
   t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
-  const now = new Date(2026, 9, 15, 14).getTime();
+  const now = Date.parse('2026-10-15T14:00:00-04:00');
   const ledger = new RelationshipLedger(brain, { now: () => new Date(now).toISOString(), idSuffix: counterSuffix() });
   const input = { type: 'decision' as const, statement: 'Keep the established home.', quote: 'Keep the old home.',
-    messageRef: 'coordination.message:oct14', sessionId: 'owner-session:oct14', occurredAt: new Date(2026, 9, 14, 9).toISOString() };
+    messageRef: 'coordination.message:oct14', sessionId: 'owner-session:oct14', occurredAt: '2026-10-14T09:00:00-04:00' };
   const oct14 = ledger.upsertOwnerConversation(input);
   ledger.upsertOwnerConversation({ ...input, statement: 'An earlier unrelated topic.', messageRef: 'coordination.message:oct13',
-    occurredAt: new Date(2026, 9, 13, 9).toISOString() });
+    occurredAt: '2026-10-13T09:00:00-04:00' });
   assert.deepEqual(ledger.searchEntries('On Oct 14, what did Jason and I talk about?').entries.map(e => e.id), [oct14.id]);
   assert.deepEqual(ledger.searchEntries('What did Jason and I discuss yesterday morning?').entries.map(e => e.id), [oct14.id]);
   assert.deepEqual(ledger.searchEntries('On 2026-02-30, what did we discuss?').entries, []);
   ledger.upsertOwnerConversation({ ...input, messageRef: 'coordination.message:oct15',
-    occurredAt: new Date(2026, 9, 15, 9).toISOString() });
+    occurredAt: '2026-10-15T09:00:00-04:00' });
   assert.deepEqual(ledger.searchEntries('Keep the established home on Oct 14').entries, [],
     'the retained latest quote is Oct 15 evidence, not a reconstructed Oct 14 transcript');
 });
