@@ -16,6 +16,7 @@ import { adoptVerifiedStage, stageLockPath, stageProductPayload } from '../../cl
 import { acquireInstallLock } from '../../cli/lib/product-payload.js';
 import { acquireHostLock } from '../../cli/lib/product-backup.js';
 import { generateEcosystem } from '../../cli/lib/generate-ecosystem.js';
+import { OWNED_RECIPE_HASH } from '../../cli/lib/product-embedder.js';
 import instancePaths from '../../shared/agent-instance-paths.cjs';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -1493,6 +1494,51 @@ test('a sealed external continuation binding does not block the next update inve
   fs.writeFileSync(hostPath, JSON.stringify(host));
   const changed = await inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate: fixture.next });
   assert.ok(changed.reasons.some(item => item.code === 'continuation_receipt_mismatch'));
+});
+
+test('update inventory permits only a matching semantic extension beyond sealed adoption ports', async t => {
+  const fixture = homeFixture(t);
+  const shared = { coordination: 15000, engine: 15001, dashboard: 15002, mcp: 15003,
+    bridge: 15004, evobrew: 15005, observatory: 15006 };
+  const residents = { milo: { engine: 15001, dashboard: 15002, mcp: 15003, bridge: 15004 } };
+  const hostPath = path.join(fixture.home, '.home23-host.json');
+  const host = JSON.parse(fs.readFileSync(hostPath, 'utf8'));
+  host.ports = { ...shared };
+  host.encoderRequired = false;
+  host.residentMap = { milo: { ports: { ...residents.milo } } };
+  host.networkBindings = { schema: 'home23.adoption-network-bindings.v1', shared, residents };
+  fs.mkdirSync(path.join(fixture.home, 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(fixture.home, 'runtime/adoption-preservation.json'), JSON.stringify({
+    schema: 'home23.adoption-preservation-receipt.v1', links: [], continuationServices: [],
+    networkBindings: host.networkBindings,
+  }), { mode: 0o600 });
+  const inspect = async state => {
+    fs.writeFileSync(hostPath, JSON.stringify(state), { mode: 0o600 });
+    return inspectUpdateInventory(fixture.home, { installed: fixture.installed, candidate: fixture.next });
+  };
+  assert.deepEqual((await inspect(host)).reasons, []);
+
+  const enabled = { ...host, encoderRequired: true, ports: { ...shared, embedder: 23000 },
+    semanticExtension: { schema: 'home23.semantic-extension.v1', port: 23000, recipeId: OWNED_RECIPE_HASH } };
+  const allowed = await inspect(enabled);
+  assert.equal(allowed.complete, true, JSON.stringify(allowed.reasons));
+  assert.deepEqual(allowed.reasons, []);
+
+  for (const [name, change] of [
+    ['missing extension', state => { delete state.semanticExtension; }],
+    ['wrong extension schema', state => { state.semanticExtension.schema = 'home23.semantic-extension.v0'; }],
+    ['mismatched extension port', state => { state.semanticExtension.port = 23001; }],
+    ['changed shared port', state => { state.ports.coordination = 15020; }],
+    ['changed resident port', state => { state.residentMap.milo.ports.engine = 15021; }],
+  ]) {
+    await t.test(name, async () => {
+      const changed = structuredClone(enabled);
+      change(changed);
+      const refused = await inspect(changed);
+      assert.equal(refused.complete, false);
+      assert.deepEqual(refused.reasons.map(item => item.code), ['network_binding_receipt_mismatch']);
+    });
+  }
 });
 
 test('failed candidate health restores previous software and leaves state in place', async t => {
