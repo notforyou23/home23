@@ -157,6 +157,19 @@ test('skips non-PM2 local runs', () => {
   assert.equal(result.skipped, true);
 });
 
+test('startup validates inherited PM2 registration metadata without running a PM2 client', () => {
+  const result = validatePm2AgentIdentity({ root: ROOT, pid: 1234, env: {
+    pm_id: '2', name: 'home23-jerry-seed', HOME23_AGENT: 'jerry', INSTANCE_ID: 'home23-jerry-seed',
+    HOME23_PRODUCT_HOST: 'true',
+  } });
+  assert.equal(result.ok, true); assert.equal(result.skipped, false);
+  assert.equal(result.pm2Name, 'home23-jerry-seed');
+  assert.equal(validatePm2AgentIdentity({ root: ROOT, env: {} }).reason, 'pm2_process_not_found');
+  assert.throws(() => assertPm2AgentIdentity({ root: ROOT, env: {
+    pm_id: '2', name: 'home23-jerry-seed', HOME23_AGENT: 'forrest', INSTANCE_ID: 'home23-forrest-seed',
+  } }), /refusing startup/);
+});
+
 test('parses PM2 jlist JSON after daemon startup chatter', () => {
   const parsed = parsePm2JlistOutput('[PM2] Spawning PM2 daemon\n[{"name":"home23-jerry","pid":1234}]\n');
 

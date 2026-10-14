@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { listInstalledWriters } from '../../cli/lib/product-backup.js';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const hostEntry = path.join(rootDir, 'scripts/product/host.mjs');
@@ -20,6 +21,9 @@ function quietPm2(home) {
   const pm2 = path.join(home, 'tools/node_modules/pm2/bin/pm2');
   fs.mkdirSync(path.dirname(pm2), { recursive: true, mode: 0o755 });
   fs.writeFileSync(pm2, 'console.log("[]");\n', { mode: 0o644 });
+  const supervisor = path.join(home, 'app/cli/lib/product-supervisor.js');
+  fs.mkdirSync(path.dirname(supervisor), { recursive: true });
+  fs.writeFileSync(supervisor, 'export async function productSupervisorCommand() { return { stdout: "[]" }; }\n');
   fs.symlinkSync(nodeBin, path.join(home, 'bin/node'));
 }
 
@@ -75,6 +79,19 @@ function runHost(args, env = {}) {
     child.on('close', code => resolve({ code, stdout, stderr }));
   });
 }
+
+test('backup inventories writers through the guarded supervisor client', async t => {
+  const fixture = fixtureHome(t);
+  let calls = 0;
+  const rows = await listInstalledWriters(fixture.home, { supervisorCommand: async (home, args) => {
+    assert.equal(home, fixture.home);
+    assert.deepEqual(args, ['jlist', '--silent']);
+    calls += 1;
+    return { stdout: '[{"name":"home23-ada","pm2_env":{"status":"online"}}]' };
+  } });
+  assert.equal(calls, 1);
+  assert.deepEqual(rows, [{ name: 'home23-ada', status: 'online' }]);
+});
 
 test('host backup writes archive and separate recovery key without starting writers', async t => {
   const fixture = fixtureHome(t);

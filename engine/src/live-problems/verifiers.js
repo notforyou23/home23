@@ -20,14 +20,15 @@ const http = require('http');
 const https = require('https');
 const yaml = require('js-yaml');
 const { expandOwnerPath } = require('../../../shared/owner-home.cjs');
+const { runPm2, runPm2Sync } = require('../system/pm2-client.cjs');
 const execFileAsync = promisify(execFile);
 
 async function pm2Jlist(ctx, timeout) {
   const options = { encoding: 'utf8', timeout };
   // Existing verifier fixtures supply a synchronous stub. Production always
   // uses execFile so a delayed PM2 daemon cannot block the engine event loop.
-  if (ctx.execFileSync) return ctx.execFileSync('pm2', ['jlist'], options);
-  const result = await (ctx.execFileAsync || execFileAsync)('pm2', ['jlist'], options);
+  if (ctx.execFileSync) return runPm2Sync(['jlist'], options, ctx.execFileSync);
+  const result = await runPm2(['jlist'], options, ctx.execFileAsync || execFileAsync);
   return typeof result === 'string' ? result : result.stdout;
 }
 

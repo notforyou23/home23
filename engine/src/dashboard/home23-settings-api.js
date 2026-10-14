@@ -25,6 +25,7 @@ const {
 } = require('../../../shared/agent-instance-paths.cjs');
 const { buildHome23ModelAuthority } = require('./home23-model-catalog.js');
 const { assertHomeCreationReady } = require('../../../shared/home-creation-state.cjs');
+const { runPm2Sync } = require('../system/pm2-client.cjs');
 
 const REASONING_EFFORTS = Object.freeze(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
 const REASONING_EFFORT_SET = new Set(REASONING_EFFORTS);
@@ -341,9 +342,8 @@ function createSettingsRouter(home23Root, options = {}) {
   }
 
   function readPm2Jlist() {
-    const { execFileSync } = require('child_process');
     const { parsePm2JlistOutput } = require(path.join(home23Root, 'scripts', 'home23-pm2-watchdog.cjs'));
-    return parsePm2JlistOutput(execFileSync('pm2', ['jlist'], {
+    return parsePm2JlistOutput(runPm2Sync(['jlist'], {
       encoding: 'utf8',
       env: cleanPm2Env(),
       stdio: 'pipe',
@@ -368,7 +368,6 @@ function createSettingsRouter(home23Root, options = {}) {
 
   function restartOnlineEcosystemProcesses(targets) {
     assertNoSharedPm2Targets(targets);
-    const { execFileSync } = require('child_process');
     const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
     const online = listOnlinePm2ProcessNames();
     const activeTargets = targets.filter(name => online.has(name));
@@ -376,9 +375,9 @@ function createSettingsRouter(home23Root, options = {}) {
     if (activeTargets.length > 0) {
       const args = ['restart', ecosystemPath, '--only', activeTargets.join(','), '--update-env', '--silent'];
       try {
-        execFileSync('pm2', args, { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 45000 });
+        runPm2Sync(args, { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 45000 });
       } catch {
-        execFileSync('pm2', ['start', ecosystemPath, '--only', activeTargets.join(','), '--update-env', '--silent'], {
+        runPm2Sync(['start', ecosystemPath, '--only', activeTargets.join(','), '--update-env', '--silent'], {
           cwd: home23Root,
           env: cleanPm2Env(),
           stdio: 'pipe',
@@ -1086,8 +1085,7 @@ function createSettingsRouter(home23Root, options = {}) {
 
   function getAgentStatus(agentName) {
     try {
-      const { execSync } = require('child_process');
-      const output = execSync('pm2 jlist', { encoding: 'utf8', stdio: 'pipe' });
+      const output = runPm2Sync(['jlist'], { encoding: 'utf8', stdio: 'pipe' });
       const procs = JSON.parse(output);
       const expectedNames = new Set([
         `home23-${agentName}`,
@@ -1592,15 +1590,14 @@ function createSettingsRouter(home23Root, options = {}) {
     }
 
     try {
-      const { execSync } = require('child_process');
       // Full candidate set, not the triplet: leaving a substrate agent's
       // -seed process registered after its instance dir is removed turns it
       // into a permanent PM2 crash loop. home23Root lets the helper drop
       // names that are really a sibling agent's engine.
       const names = agentProcessNameCandidates(agentName, home23Root);
       for (const n of names) {
-        try { execSync(`pm2 stop ${n}`, { env: cleanPm2Env(), stdio: 'pipe' }); } catch { /* not running */ }
-        try { execSync(`pm2 delete ${n}`, { env: cleanPm2Env(), stdio: 'pipe' }); } catch { /* not in list */ }
+        try { runPm2Sync(['stop', n], { env: cleanPm2Env(), stdio: 'pipe' }); } catch { /* not running */ }
+        try { runPm2Sync(['delete', n], { env: cleanPm2Env(), stdio: 'pipe' }); } catch { /* not in list */ }
       }
     } catch { /* pm2 not available */ }
 
@@ -1643,7 +1640,7 @@ function createSettingsRouter(home23Root, options = {}) {
       await withManagedStartAdmission(names, async () => {
         const { coordinateSharedServiceStartup } = await import('../../../cli/lib/shared-service-start.js');
         await coordinateSharedServiceStartup({ home23Root });
-        require('node:child_process').execFileSync('pm2', ['start', ecosystemPath, '--only', names.join(','), '--update-env', '--silent'], { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 30000 });
+        runPm2Sync(['start', ecosystemPath, '--only', names.join(','), '--update-env', '--silent'], { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 30000 });
       });
       res.json({ ok: true, status: 'starting' });
     } catch (err) {
@@ -1687,7 +1684,6 @@ function createSettingsRouter(home23Root, options = {}) {
   router.post('/agents/:name/stop', (req, res) => {
     const agentName = req.params.name;
     try {
-      const { execSync } = require('child_process');
       // Batch the agent's processes into one pm2 stop call — pm2 stops them
       // in parallel internally, so the engine's ~1.6s kill_timeout is paid
       // once, not per process in series. The full candidate set (-mcp,
@@ -1704,13 +1700,13 @@ function createSettingsRouter(home23Root, options = {}) {
         const names = candidates.filter(name => registered.has(name));
         if (names.length > 0) {
           try {
-            execSync(`pm2 stop ${names.join(' ')}`, { env: cleanPm2Env(), stdio: 'pipe', timeout: 15000 });
+            runPm2Sync(['stop', ...names], { env: cleanPm2Env(), stdio: 'pipe', timeout: 15000 });
           } catch { /* pm2 non-zero after processing is fine */ }
         }
       } else {
         for (const name of candidates) {
           try {
-            execSync(`pm2 stop ${name}`, { env: cleanPm2Env(), stdio: 'pipe', timeout: 15000 });
+            runPm2Sync(['stop', name], { env: cleanPm2Env(), stdio: 'pipe', timeout: 15000 });
           } catch { /* not running or not registered */ }
         }
       }

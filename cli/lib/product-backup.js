@@ -26,7 +26,8 @@ import {
 } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts } from './product-environment.js';
+import { pathToFileURL } from 'node:url';
+import { choosePortPlan, productEnvironment, readPrivateJSON, socketRootFor, validatePortPlan, withReservedPorts, withoutSupervisorEnvironment } from './product-environment.js';
 import { isOsMetadataPath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectCoordinationDatabase, isProductStatePath, isRebuildableStatePath, ownedWriterNames } from './product-update-inventory.js';
 import { detectForeignBindings } from './product-foreign-bindings.js';
@@ -183,16 +184,12 @@ function assertSymlinkInside(homeRoot, relative) {
 }
 
 /** Same supervisor inventory as the update controller. A missing supervisor is not proof that writers are stopped. */
-export async function listInstalledWriters(home) {
-  const node = join(home, 'bin', 'node');
-  const pm2 = join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2');
-  if (!exists(node) || !exists(pm2)) {
-    fail('process_inventory_unavailable', 'Installed process inventory cannot be established. A missing supervisor is not proof that writers are stopped.');
-  }
+export async function listInstalledWriters(home, { supervisorCommand } = {}) {
   try {
-    const { stdout } = await executeFile(node, [pm2, 'jlist', '--silent'], {
-      cwd: join(home, 'app'), env: productEnvironment(home), timeout: 20000, maxBuffer: 8 * 1024 * 1024,
-    });
+    const supervisor = supervisorCommand ? null : await import(pathToFileURL(join(home, 'app/cli/lib/product-supervisor.js')).href);
+    const { stdout } = supervisorCommand ? await supervisorCommand(home, ['jlist', '--silent'])
+      : supervisor.productSupervisorInventory ? await supervisor.productSupervisorInventory(home)
+        : await supervisor.productSupervisorCommand(home, ['jlist', '--silent']);
     if (!String(stdout || '').trim()) return [];
     const rows = JSON.parse(stdout);
     if (!Array.isArray(rows)) fail('process_inventory_unavailable', 'Home process inventory is unavailable.');
@@ -2188,7 +2185,7 @@ export async function rebindSemanticEnableRecords(source, destination, oldPorts,
       fail('move_rebind_incomplete', 'Semantic process registration has an unexpected process.');
     }
     processes = rewriteMachineStrings(processes, source, destination, oldPorts, newPorts, adopted);
-    processes.apps[0].env = { ...processes.apps[0].env, ...productEnvironment(destination, { encoderRequired: true, embedderPort: port }) };
+    processes.apps[0].env = withoutSupervisorEnvironment({ ...processes.apps[0].env, ...productEnvironment(destination, { encoderRequired: true, embedderPort: port }) });
   }
   if (treeContains(rebound, source) || treeContains(processes, source)) {
     fail('move_rebind_incomplete', 'Semantic rollback metadata still names the source home.');

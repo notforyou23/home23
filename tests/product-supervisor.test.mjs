@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { spawnSync } from 'node:child_process';
 import { runHostAction, ownedProcessNames, productDefinitions, probeReadiness, safeProcesses } from '../cli/lib/product-host.js';
 import { productEnvironment, privateJSON, socketRootFor, choosePortPlan } from '../cli/lib/product-environment.js';
 import { writeProductManifest, installProductPayload } from '../cli/lib/product-payload.js';
-import { adoptProductSupervisor, ensureProductSupervisor, inspectProductSupervisor, productSupervisorCommand, productSupervisorPlan, supervisorPlist } from '../cli/lib/product-supervisor.js';
+import { adoptProductSupervisor, ensureProductSupervisor, forbidClientSpawn, inspectProductSupervisor, productHomeWriterPids, productSupervisorCommand, productSupervisorInventory, productSupervisorPlan, recoverProductSupervisor, startResidentDaemon, supervisorPlist } from '../cli/lib/product-supervisor.js';
 import { parsePlist } from '../cli/lib/product-foreign-bindings.js';
 
 function fixture(t) {
@@ -46,14 +48,14 @@ test('macOS Start admits launchd ownership before any mutating PM2 command', asy
 
 function machine(root) {
   const plan = productSupervisorPlan(root), calls = [];
-  let live = false, loaded = false, pid = 4242, wrongSocket = false, unknown = false, jobPid = 4242;
+  let live = false, loaded = false, pid = 4242, wrongSocket = false, unknown = false, jobPid = 4242, lastExitCode = null;
   const deps = {
     platform: 'darwin', identity: async () => 'fixture-generation', alive: p => live && p === pid,
     listening: async p => unknown ? null : p === path.join(plan.env.PM2_HOME, 'rpc.sock') ? wrongSocket : live && [plan.env.PM2_DAEMON_RPC_PORT, plan.env.PM2_DAEMON_PUB_PORT].includes(p),
     execute: async (file, args) => {
       calls.push([file, ...args]);
       assert.equal(file, '/bin/launchctl');
-      if (args[0] === 'list') { if (!loaded) throw Object.assign(new Error('absent'), { code: 113 }); return { stdout: `{\n\t"Label" = "${plan.label}";\n${live && jobPid ? `\t"PID" = ${jobPid};\n` : ''}};\n` }; }
+      if (args[0] === 'list') { if (!loaded) throw Object.assign(new Error('absent'), { code: 113 }); return { stdout: `{\n\t"Label" = "${plan.label}";\n${live && jobPid ? `\t"PID" = ${jobPid};\n` : ''}${lastExitCode === null ? '' : `\t"LastExitStatus" = ${lastExitCode};\n`}};\n` }; }
       assert.ok(['bootstrap', 'kickstart'].includes(args[0]));
       loaded = true; live = true;
       fs.writeFileSync(path.join(plan.env.PM2_HOME, 'pm2.pid'), String(pid));
@@ -62,7 +64,7 @@ function machine(root) {
       return { stdout: '' };
     },
   };
-  return { plan, calls, deps, get live() { return live; }, set live(v) { live = v; }, get loaded() { return loaded; }, set loaded(v) { loaded = v; }, set pid(v) { pid = v; }, set jobPid(v) { jobPid = v; }, set wrongSocket(v) { wrongSocket = v; }, set unknown(v) { unknown = v; } };
+  return { plan, calls, deps, get live() { return live; }, set live(v) { live = v; }, get loaded() { return loaded; }, set loaded(v) { loaded = v; }, set pid(v) { pid = v; }, set jobPid(v) { jobPid = v; }, set wrongSocket(v) { wrongSocket = v; }, set unknown(v) { unknown = v; }, set lastExitCode(v) { lastExitCode = v; } };
 }
 
 test('launchd config is home-specific, foreground, private, and excludes ambient credentials', t => {
@@ -393,4 +395,198 @@ test('computed marker coercion never permits a changed desired environment', asy
   coerceRestoredVizionMarker(f, true);
   await assert.rejects(adoptProductSupervisor(f.root, f.admission, f.m.deps), { code: 'host_supervisor_ambiguous' });
   assert.equal(JSON.parse(fs.readFileSync(f.m.plan.migration)).phase, 'old_exited');
+});
+
+test('resident startup bypasses PM2 self-resurrection, rejects daemon shutdown and strips child control variables', t => {
+  const root = fixture(t), runtime = new EventEmitter(), records = [], exits = [];
+  Object.assign(runtime, { pid: 4242, ppid: 1, exit: code => { exits.push(code); runtime.emit('exit', code); } });
+  let ordinaryStart = false, innerStart = false, forked;
+  class Daemon {
+    start() { ordinaryStart = true; throw new Error('PM2 must not own resident resurrection'); }
+    innerStart() { innerStart = true; }
+  }
+  const God = { notifyKillPM2() { throw new Error('must not disable restarts'); }, forkMode: env => { forked = env; } };
+  const require = name => name === './lib/Daemon.js' ? Daemon : God;
+  const daemon = startResidentDaemon(productSupervisorPlan(root), require, { runtime, log: entry => records.push(entry) });
+  assert.equal(ordinaryStart, false); assert.equal(innerStart, true);
+  daemon.close({}, error => assert.equal(error.code, 'host_supervisor_owner_stop_required'));
+  God.notifyKillPM2({}, error => assert.equal(error.code, 'host_supervisor_owner_stop_required'));
+  assert.deepEqual(exits, []);
+  God.forkMode({ PM2_HOME: '/private/control', PM2_DAEMON_RPC_PORT: '/private/socket', HOME23_AGENT: 'milo', env: { PM2_HOME: '/private/control', KEEP: 'value' } });
+  assert.equal(forked.PM2_HOME, undefined); assert.equal(forked.PM2_DAEMON_RPC_PORT, undefined);
+  assert.deepEqual(forked.env, { KEEP: 'value' }); assert.equal(forked.HOME23_AGENT, 'milo');
+  runtime.emit('SIGTERM');
+  runtime.emit('unhandledRejection', Object.assign(new Error('sensitive-message-not-logged'), { code: 'EPIPE' }));
+  assert.ok(records.some(record => record.event === 'signal' && record.signal === 'SIGTERM'));
+  assert.ok(records.some(record => record.event === 'fatal' && record.reason === 'unhandledRejection' && record.errorCode === 'EPIPE'));
+  assert.ok(records.some(record => record.event === 'exit' && record.code === 1));
+  assert.equal(JSON.stringify(records).includes('sensitive-message-not-logged'), false);
+});
+
+test('resident fatal domain errors persist their reason and exit code to pm2.log', t => {
+  const root = fixture(t), source = new URL('../cli/lib/product-supervisor.js', import.meta.url).href;
+  const script = `import {startResidentDaemon} from ${JSON.stringify(source)};
+    class Daemon { innerStart() { setImmediate(() => { throw Object.assign(new Error('private-argument'), {code:'EPIPE'}); }); } }
+    startResidentDaemon({env:{PM2_HOME:${JSON.stringify(path.join(root, 'runtime/pm2'))}}}, name => name === './lib/Daemon.js' ? Daemon : {});`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 1);
+  const raw = fs.readFileSync(path.join(root, 'runtime/pm2/pm2.log'), 'utf8');
+  const records = raw.trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(records.some(record => record.event === 'fatal' && record.reason === 'daemon-domain-error' && record.errorCode === 'EPIPE'));
+  assert.ok(records.some(record => record.event === 'exit' && record.code === 1));
+  assert.equal(raw.includes('private-argument'), false);
+});
+
+test('client guard blocks both detached and no-daemon PM2 creation', () => {
+  const exits = [], runtime = { stderr: { write() {} }, exit: code => exits.push(code) };
+  class Client { start(cb) { assert.equal(this.daemon_mode, true); this.launchDaemon(cb); } }
+  forbidClientSpawn(() => Client, runtime);
+  const client = new Client(); client.daemon_mode = false; client.start(() => {});
+  assert.deepEqual(exits, [75]);
+});
+
+test('house definitions exclude supervisor environment even when an app requests it', t => {
+  const root = fixture(t);
+  const apps = productDefinitions(ownedProcessNames('milo').map(name => ({ name, script: 'dist/home.js', filter_env: ['OLD_'],
+    env: { PM2_HOME: '/foreign/control', PM2_DAEMON_RPC_PORT: '/foreign/socket', KEEP: 'value' } })), root, 'milo');
+  assert.ok(apps.every(app => Object.keys(app.env).every(key => !key.startsWith('PM2_'))));
+  assert.ok(apps.every(app => app.filter_env.includes('PM2_') && app.filter_env.includes('OLD_')));
+  assert.ok(apps.every(app => app.env.KEEP === 'value' && app.env.HOME23_PRODUCT_HOST === 'true'));
+});
+
+test('Host status reports exited launchd ownership separately from an empty stopped home', async t => {
+  const root = fixture(t);
+  const ports = { coordination: 44000, engine: 44001, dashboard: 44002, mcp: 44003, bridge: 44004, evobrew: 44005, observatory: 44006 };
+  privateJSON(path.join(root, '.home23-host.json'), { schema: 'home23.host.v1', homeRoot: root, ports, profile: { name: 'milo' }, desiredRunning: true, encoderRequired: false });
+  const result = await runHostAction('status', { homeRoot: root }, { platform: 'darwin', supervisorListening: async () => false,
+    inspectProductSupervisor: async () => ({ ownership: 'exited', pid: 4242, lastExitCode: 1 }),
+    execute: async () => { throw new Error('An exited resident must not trigger any PM2 client'); } });
+  assert.equal(result.ok, false); assert.equal(result.status, 'unavailable');
+  assert.equal(result.error.code, 'host_supervisor_exited'); assert.equal(result.error.supervisorPid, 4242); assert.equal(result.error.lastExitCode, 1);
+});
+
+test('exited launchd resident inspection reports the dead owner and last exit without spawning', async t => {
+  const root = fixture(t), m = machine(root);
+  await ensureProductSupervisor(root, m.deps);
+  m.live = false; m.lastExitCode = 1;
+  const before = m.calls.length, status = await inspectProductSupervisor(root, m.deps);
+  assert.equal(status.ownership, 'exited'); assert.equal(status.pid, 4242); assert.equal(status.lastExitCode, 1);
+  assert.ok(m.calls.slice(before).every(call => call[1] === 'list'));
+  await assert.rejects(productSupervisorCommand(root, ['jlist'], { ...m.deps, execute: async (file, args) => {
+    if (file === m.plan.node) throw Object.assign(new Error('lost'), { code: 75 });
+    return m.deps.execute(file, args);
+  } }), error => error.code === 'host_supervisor_exited' && error.lastExitCode === 1);
+});
+
+async function recoveryFixture(t) {
+  const f = await migrationFixture(t);
+  const migration = await adoptProductSupervisor(f.root, f.admission, f.m.deps);
+  const journal = JSON.parse(fs.readFileSync(f.journalPath));
+  journal.supervisorAdmission = { ownership: 'legacy', ...f.admission };
+  journal.supervisorMigration = migration; journal.phase = 'writers_admitted'; journal.candidateStarted = true; journal.acceptedWork = true;
+  privateJSON(f.journalPath, journal);
+  f.m.live = false; f.m.pid = 8181; f.m.jobPid = 8181; f.m.lastExitCode = 1; f.clearRows();
+  f.m.deps.runningHomePids = async () => [];
+  return f;
+}
+
+test('admitted readiness recovers a dead launchd resident and only restores stopped registrations', async t => {
+  const f = await recoveryFixture(t), before = f.m.calls.length;
+  const result = await recoverProductSupervisor(f.root, f.admission, f.m.deps);
+  assert.equal(result.ownership, 'launchd'); assert.equal(result.pid, 8181);
+  assert.equal(result.previousPid, 4242); assert.equal(result.previousExitCode, 1);
+  assert.deepEqual(result.pausedNames, ['home23-milo-dash']);
+  assert.deepEqual(f.m.calls.slice(before).filter(call => call[1] === 'kickstart'), [['/bin/launchctl', 'kickstart', f.m.plan.service]]);
+  assert.equal(f.commands.some(command => ['start', 'restart', 'delete'].includes(command[0])), false);
+  assert.deepEqual(f.signals, [[4242, 'SIGINT']]);
+});
+
+test('resident readiness recovery refuses orphan writers, stale admission and an answering daemon', async t => {
+  for (const reason of ['orphans', 'owner', 'live']) {
+    const f = await recoveryFixture(t), before = f.m.calls.length;
+    if (reason === 'orphans') f.m.deps.runningHomePids = async () => [123];
+    if (reason === 'owner') f.admission.updateOwnerToken = 'another-owner';
+    if (reason === 'live') { f.m.pid = 4242; f.m.jobPid = 4242; f.m.live = true; }
+    await assert.rejects(recoverProductSupervisor(f.root, f.admission, f.m.deps), { code: reason === 'orphans' ? 'host_supervisor_writers_active'
+      : reason === 'owner' ? 'host_supervisor_admission_required' : 'host_supervisor_ambiguous' });
+    assert.ok(f.m.calls.slice(before).every(call => call[1] === 'list'));
+    assert.deepEqual(f.signals, [[4242, 'SIGINT']]);
+  }
+});
+
+test('read-only inventory accepts a proven absent empty home and refuses detached writers without a client or launchd change', async t => {
+  const root = fixture(t), m = machine(root);
+  let pids = [], clientCalls = 0;
+  const deps = { ...m.deps, runningHomePids: async () => pids, command: async () => { clientCalls++; throw new Error('Absent inventory must not run a client'); } };
+  assert.equal((await productSupervisorInventory(root, deps)).stdout, '[]');
+  assert.equal(clientCalls, 0); assert.ok(m.calls.every(call => call[1] === 'list'));
+  pids = [4242];
+  await assert.rejects(productSupervisorInventory(root, deps), { code: 'host_supervisor_writers_active' });
+  assert.equal(clientCalls, 0); assert.ok(m.calls.every(call => call[1] === 'list'));
+});
+
+test('read-only inventory uses only the guarded client for an answering supervisor and preserves exited errors', async t => {
+  const root = fixture(t), m = machine(root);
+  await ensureProductSupervisor(root, m.deps);
+  const args = [];
+  const deps = { ...m.deps, command: async command => { args.push(command); return { stdout: '[{"name":"fixture"}]' }; } };
+  assert.equal((await productSupervisorInventory(root, deps)).stdout, '[{"name":"fixture"}]');
+  assert.deepEqual(args, [['jlist', '--silent']]);
+  m.live = false; m.lastExitCode = 1;
+  await assert.rejects(productSupervisorInventory(root, deps), error => error.code === 'host_supervisor_exited' && error.lastExitCode === 1);
+  assert.equal(args.length, 1);
+});
+
+test('detached writer proof detects a renamed process through its bundled executable or home cwd', async t => {
+  const root = fixture(t), plan = productSupervisorPlan(root), calls = [];
+  const execute = async (file, args) => {
+    calls.push([file, ...args]);
+    if (file === '/bin/ps') return { stdout: `${process.pid} node controller\n4242 renamed-worker\n8181 renamed-helper\n` };
+    return { stdout: `p${process.pid}\nn/usr/bin/node\np4242\nn${plan.node}\np8181\nn${path.join(root, 'app')}\n` };
+  };
+  assert.deepEqual(await productHomeWriterPids(root, { execute }), [4242, 8181]);
+  assert.equal(calls.length, 2);
+  await assert.rejects(productHomeWriterPids(root, { execute: async () => ({ stdout: '' }) }), { code: 'host_supervisor_ambiguous' });
+});
+
+test('isolated inventory exempts only its verified direct controller parent and still detects other home writers', async t => {
+  const root = fixture(t), plan = productSupervisorPlan(root), orphanPid = Math.max(process.pid, process.ppid) + 100;
+  const execute = async file => file === '/bin/ps'
+    ? { stdout: `${process.pid} ${plan.node} isolated-inventory\n${process.ppid} ${plan.node} controller\n${orphanPid} renamed-worker\n` }
+    : { stdout: `p${process.pid}\nn${plan.node}\np${process.ppid}\nn${plan.node}\np${orphanPid}\nn${path.join(root, 'app')}\n` };
+  assert.deepEqual(await productHomeWriterPids(root, { execute, controllerPid: process.ppid }), [orphanPid]);
+  assert.deepEqual(await productHomeWriterPids(root, { execute }), [process.ppid, orphanPid]);
+  await assert.rejects(productHomeWriterPids(root, { execute, controllerPid: orphanPid }), { code: 'host_supervisor_ambiguous' });
+});
+
+test('pre-writer selected admission safely restarts its exact exited launchd owner without a migration receipt', async t => {
+  const f = await recoveryFixture(t), journal = JSON.parse(fs.readFileSync(f.journalPath)), signalsBefore = f.signals.length;
+  delete journal.supervisorMigration;
+  journal.phase = 'selected'; journal.candidateStarted = false; journal.acceptedWork = false; journal.writersAdmitted = false;
+  journal.supervisorAdmission = { ownership: 'launchd', ...f.admission };
+  privateJSON(f.journalPath, journal);
+  const result = await recoverProductSupervisor(f.root, f.admission, f.m.deps);
+  assert.equal(result.ownership, 'launchd'); assert.equal(result.pid, 8181); assert.equal(result.previousPid, 4242);
+  assert.deepEqual(result.pausedNames, ['home23-milo-dash']);
+  assert.equal(f.signals.length, signalsBefore);
+  assert.equal(f.m.calls.filter(call => call[1] === 'kickstart').length, 1);
+});
+
+test('pre-writer recovery rejects mismatched dead PIDs, legacy snapshots and admitted writers without a restart', async t => {
+  for (const reason of ['pid', 'legacy', 'started', 'writers']) {
+    const f = await recoveryFixture(t), journal = JSON.parse(fs.readFileSync(f.journalPath)), before = f.m.calls.length;
+    delete journal.supervisorMigration;
+    journal.phase = 'verifying'; journal.candidateStarted = false; journal.acceptedWork = false; journal.writersAdmitted = false;
+    journal.supervisorAdmission = { ownership: 'launchd', ...f.admission };
+    if (reason === 'pid') { journal.supervisorAdmission.expectedPid = 9999; f.admission.expectedPid = 9999; }
+    if (reason === 'legacy') journal.supervisorAdmission.ownership = 'legacy';
+    if (reason === 'started') journal.candidateStarted = true;
+    if (reason === 'writers') journal.writersAdmitted = true;
+    privateJSON(f.journalPath, journal);
+    await assert.rejects(recoverProductSupervisor(f.root, f.admission, f.m.deps), {
+      code: reason === 'pid' ? 'host_supervisor_ambiguous' : 'host_supervisor_admission_required',
+    });
+    assert.ok(f.m.calls.slice(before).every(call => call[1] === 'list'));
+    assert.deepEqual(f.signals, [[4242, 'SIGINT']]);
+  }
 });

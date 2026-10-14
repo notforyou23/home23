@@ -2097,8 +2097,8 @@ class DashboardServer {
 
   getHome23RuntimeProcessSnapshot() {
     try {
-      const { execFileSync } = require('child_process');
-      const raw = execFileSync('pm2', ['jlist'], {
+      const { runPm2Sync } = require('../system/pm2-client.cjs');
+      const raw = runPm2Sync(['jlist'], {
         encoding: 'utf8',
         timeout: 1500,
         stdio: ['ignore', 'pipe', 'ignore'],

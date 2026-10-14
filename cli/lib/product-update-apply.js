@@ -11,7 +11,7 @@ import { acquireInstallLock, isOsMetadataPath, isStateBearingSoftwarePath, PRODU
 import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
 import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath, residentEngines, writerStopOrder } from './product-update-inventory.js';
-import { captureSupervisorForUpdate, adoptSupervisorForUpdate } from './product-supervisor-admission.js';
+import { captureSupervisorForUpdate, adoptSupervisorForUpdate, recoverSupervisorForUpdate } from './product-supervisor-admission.js';
 
 const executeFile = promisify(execFile);
 const SCHEMA = 'home23.product-update.v1';
@@ -295,28 +295,46 @@ async function sameCanonical(home, journal) {
   // quick_check can block its live SQLite connection during cold startup.
   return true;
 }
-async function defaultListProcesses(home) {
-  const node = join(home, 'bin', 'node'), pm2 = join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2');
-  if (!exists(node) || !exists(pm2)) return [];
+// Selection replaces this module's path. Import it in a fresh process so an
+// old package's ESM cache cannot control the newly selected supervisor.
+const INSTALLED_SUPERVISOR_CLIENT = `
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+try {
+  const [home, mode, commands] = process.argv.slice(1);
+  const supervisor = await import(pathToFileURL(join(home, 'app/cli/lib/product-supervisor.js')).href);
+  const result = mode === 'inventory' && supervisor.productSupervisorInventory
+    ? await supervisor.productSupervisorInventory(home, { controllerPid: process.ppid })
+    : await supervisor.productSupervisorCommand(home, JSON.parse(commands));
+  process.stdout.write(result.stdout || '');
+} catch (error) {
+  console.error(error.code || 'host_supervisor_unavailable');
+  process.exitCode = 75;
+}
+`;
+async function installedSupervisorCommand(home, args, mode = 'command') {
+  return executeFile(join(home, 'bin/node'), ['--input-type=module', '-e', INSTALLED_SUPERVISOR_CLIENT, home, mode, JSON.stringify(args)], {
+    cwd: join(home, 'app'), env: productEnvironment(home), timeout: args[0] === 'stop' ? 240000 : 20000, maxBuffer: 8 * 1024 * 1024,
+  });
+}
+export async function defaultListProcesses(home, { supervisorCommand = (root, args) => installedSupervisorCommand(root, args, 'inventory') } = {}) {
   try {
-    const { stdout } = await executeFile(node, [pm2, 'jlist', '--silent'], { cwd: join(home, 'app'), env: productEnvironment(home), timeout: 20000, maxBuffer: 8 * 1024 * 1024 });
+    const { stdout } = await supervisorCommand(home, ['jlist', '--silent']);
     if (!String(stdout || '').trim()) return [];
     const rows = JSON.parse(stdout);
     if (!Array.isArray(rows)) throw new Error('invalid inventory');
     return rows.map(row => ({ name: row.name, status: row.pm2_env?.status || 'unknown' }));
   } catch (error) {
-    if (error.code === 'ENOENT') return [];
-    throw Object.assign(new Error('Home process inventory is unavailable. No package files were changed.'), { code: 'process_inventory_unavailable' });
+    throw Object.assign(new Error('Home process inventory is unavailable. No package files were changed.'), { code: 'process_inventory_unavailable', cause: error });
   }
 }
 /** Gracefully stops owned writers. Engines stop first and together: while one
  * waits for its agents it still remediates, and would restart a dashboard or
  * harness already stopped. With every engine down, nothing restarts the rest;
  * one more pass stops any writer that was restarted during the first. */
-export async function quiesceWriters(home, names, { exec = executeFile, list = defaultListProcesses } = {}) {
-  const node = join(home, 'bin', 'node'), pm2 = join(home, 'tools', 'node_modules', 'pm2', 'bin', 'pm2'), env = productEnvironment(home);
+export async function quiesceWriters(home, names, { supervisorCommand = installedSupervisorCommand, list = defaultListProcesses } = {}) {
   const stop = async name => {
-    try { await exec(node, [pm2, 'stop', name, '--silent'], { cwd: join(home, 'app'), env, timeout: 240000, maxBuffer: 8 * 1024 * 1024 }); }
+    try { await supervisorCommand(home, ['stop', name, '--silent']); }
     catch { /* An absent name is not a running writer. */ }
   };
   const order = writerStopOrder(names), engines = residentEngines(names);
@@ -374,13 +392,21 @@ function healthyAdmittedWriters(rows, writerNames) {
  * backoff until it reads ready or the deadline passes. A hard failure (a
  * process not online, a missing owned service, recovery required) returns at
  * once. `waiting` says the last probe still described a live, warming home. */
-async function awaitCandidateReadiness(home, journal, dependencies, { busy, list }) {
+async function awaitCandidateReadiness(home, journal, dependencies, { busy, list, recover }) {
   const clock = dependencies.clock || Date.now, wait = dependencies.sleep || sleep;
   const deadline = clock() + (dependencies.readinessWaitMs ?? READINESS_WAIT_MS);
   for (let attempt = 0; ; attempt++) {
-    let current = null, statusUnavailable = false;
+    let current = null, statusUnavailable = false, statusErrorCode;
     try { current = await (dependencies.status || defaultStatus)(home, journal); }
-    catch { statusUnavailable = true; }
+    catch (error) { statusUnavailable = true; statusErrorCode = error.code; }
+    if ((current?.error?.code || statusErrorCode) === 'host_supervisor_exited') {
+      try { await recover(); }
+      catch (error) {
+        return { kind: 'supervisor_exited', waiting: true,
+          errorCode: /^[a-z_]{1,80}$/.test(error.code || '') ? error.code : 'host_supervisor_exited' };
+      }
+      continue;
+    }
     const maskedStatusFailure = current?.ok === false && current?.status === 'recovery_required' &&
       current?.error?.code === 'update_recovery_required' && !current?.readiness && !current?.processes;
     // A Host that cannot read its supervisor reports 'unavailable', not a failed
@@ -388,8 +414,15 @@ async function awaitCandidateReadiness(home, journal, dependencies, { busy, list
     // recovery_required status that keeps only its error code.
     const supervisorUnreadable = current?.status === 'unavailable' || current?.error?.code === 'host_supervisor_ambiguous';
     const kind = statusUnavailable || !current || maskedStatusFailure || supervisorUnreadable ? 'unavailable' : candidateStatusKind(current);
-    const waiting = kind === 'starting' ? await busy()
-      : kind === 'unavailable' ? healthyAdmittedWriters(await list(home), journal.writerNames) : false;
+    let waiting;
+    try {
+      waiting = kind === 'starting' ? await busy()
+        : kind === 'unavailable' ? healthyAdmittedWriters(await list(home), journal.writerNames) : false;
+    } catch {
+      // A missing guarded inventory cannot prove writers failed or stopped.
+      // Preserve the admitted software/state and let a later resume re-probe.
+      return { kind: 'unavailable', waiting: true, inventoryUnavailable: true };
+    }
     const remaining = deadline - clock();
     if (!waiting || remaining <= 0) return { kind, waiting };
     await wait(Math.min(readinessInterval(attempt), remaining));
@@ -899,6 +932,32 @@ async function finish(journal, dependencies, verify) {
     await quiesce(home, journal.writerNames || [], dependencies);
     return !(await busy());
   };
+  const recover = async () => {
+    if (journal.supervisorRecoveryAttempts >= 1) throw Object.assign(new Error('The resident recovery attempt is already recorded.'), {
+      code: journal.supervisorRecoveryErrorCode || 'host_supervisor_exited',
+    });
+    journal = await commitPhase(file, { ...journal, supervisorRecoveryAttempts: 1 }, dependencies);
+    let migration;
+    try { migration = await (dependencies.recoverSupervisor || recoverSupervisorForUpdate)(home, journal); }
+    catch (error) {
+      const code = /^[a-z_]{1,80}$/.test(error.code || '') ? error.code : 'host_supervisor_exited';
+      journal = await commitPhase(file, { ...journal, supervisorRecoveryErrorCode: code }, dependencies);
+      throw error;
+    }
+    journal = await commitPhase(file, { ...journal, supervisorMigration: migration, supervisorRecoveryErrorCode: null }, dependencies);
+    let started = null, startError = null;
+    try { started = await (dependencies.start || defaultStart)(home, journal); }
+    catch (error) { startError = error; }
+    journal = await commitPhase(file, { ...journal, candidateStarted: true,
+      ...startObservation(started, startError), phase: 'writers_admitted' }, dependencies);
+  };
+  const readinessDeferral = observation => observation.kind === 'supervisor_exited'
+    ? deferred(home, observation.errorCode, 'The resident supervisor exited. Its recovery could not safely restart writers; the update remains admitted for a later resume.', journal)
+    : observation.kind === 'failed'
+      ? deferred(home, 'candidate_readiness_failed', 'The candidate reports a readiness failure, but its writer inventory is unavailable. The selected software and home state are preserved.', journal)
+    : deferred(home, observation.inventoryUnavailable ? 'host_supervisor_unavailable' : 'candidate_starting',
+      observation.inventoryUnavailable ? 'The home supervisor inventory is unavailable. The selected software and home state are preserved; resume after the supervisor is available.'
+        : 'This home is still starting. Its services remain running; resume the update after it becomes ready.', journal);
   async function rollback(reason) {
     if (journal.writersAdmitted || journal.acceptedWork || !(await fence())) {
       journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'recovery_required', message: 'Software was not restored because writers were admitted or could not be fenced. The data snapshot was not restored.' }] }, dependencies);
@@ -954,7 +1013,18 @@ async function finish(journal, dependencies, verify) {
     if (rollbackReason) return rollback(rollbackReason);
     if (['recovery_required', 'rolled_back'].includes(journal.phase)) return publicResult(journal);
   }
-  if (journal.desiredRunning && !(await busy())) {
+  let candidateBusy = false;
+  if (journal.desiredRunning) {
+    try { candidateBusy = await busy(); }
+    catch (error) {
+      if (!journal.writersAdmitted) throw error;
+      const observation = await awaitCandidateReadiness(home, journal, dependencies, { busy, list, recover });
+      if (observation.kind !== 'ready') return readinessDeferral(observation);
+      candidateBusy = true;
+      journal = await commitPhase(file, { ...journal, startOk: true, startStatus: 'ready', startErrorCode: null }, dependencies);
+    }
+  }
+  if (journal.desiredRunning && !candidateBusy) {
     // The installed Host allows this owner token only for an admitted phase.
     // Persist that phase before Start so the gate and the journal agree.
     journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies);
@@ -985,10 +1055,13 @@ async function finish(journal, dependencies, verify) {
     const withoutStartFailure = dependencies.verifyBehavior ? behavior :
       defaultBehavior({ home, journal: { ...journal, startOk: true }, identityPreserved, verify });
     if (withoutStartFailure.ok) {
-      const { kind, waiting } = await awaitCandidateReadiness(home, journal, dependencies, { busy, list });
+      const observation = await awaitCandidateReadiness(home, journal, dependencies, { busy, list, recover });
+      const { kind, waiting } = observation;
       if (kind === 'ready') {
         journal = await commitPhase(file, { ...journal, startOk: true, startStatus: 'ready', startErrorCode: null }, dependencies);
         behavior = withoutStartFailure;
+      } else if (kind === 'supervisor_exited' || observation.inventoryUnavailable) {
+        return readinessDeferral(observation);
       } else if (kind === 'starting' && waiting) {
         return deferred(home, 'candidate_starting', 'This home is still starting. Its services remain running; resume the update after it becomes ready.', journal);
       } else if (kind === 'unavailable' && waiting) {

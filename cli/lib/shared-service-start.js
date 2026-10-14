@@ -14,6 +14,9 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import yaml from 'js-yaml';
+import pm2Client from '../../engine/src/system/pm2-client.cjs';
+
+const { runPm2Sync } = pm2Client;
 
 export const SHARED_SERVICES = Object.freeze([
   Object.freeze({ name: 'home23-evobrew', label: 'Evobrew' }),
@@ -394,27 +397,30 @@ function runEcosystemProcessCommand(command, {
     throw new Error('PM2 process names must be lowercase alphanumeric with hyphens');
   }
 
-  const unsetArgs = PM2_ENV_BLOCKLIST.flatMap((key) => ['-u', key]);
-  execFile('env', [
-    ...unsetArgs,
-    'pm2',
+  const pm2Args = [
     command,
     join(home23Root, 'ecosystem.config.cjs'),
     '--only',
     exactNames.join(','),
     '--update-env',
     '--silent',
-  ], {
+  ];
+  const options = {
     cwd: home23Root,
     env: cleanCommandEnv(env),
     stdio,
     timeout: timeoutMs,
-  });
+  };
+  if (env.HOME23_PRODUCT_HOST === 'true') runPm2Sync(pm2Args, options, execFile);
+  else {
+    const unsetArgs = PM2_ENV_BLOCKLIST.flatMap((key) => ['-u', key]);
+    execFile('env', [...unsetArgs, 'pm2', ...pm2Args], options);
+  }
   return exactNames;
 }
 
 async function listProcessesDefault() {
-  return parsePm2List(execFileSync('pm2', ['jlist'], {
+  return parsePm2List(runPm2Sync(['jlist'], {
     encoding: 'utf8',
     env: cleanCommandEnv(),
     maxBuffer: 20 * 1024 * 1024,

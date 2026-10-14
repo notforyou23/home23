@@ -10,9 +10,7 @@
  * nobody checked restart_time.
  */
 
-const { execFile } = require('child_process');
-const { promisify } = require('util');
-const execFileAsync = promisify(execFile);
+const { runPm2 } = require('../../system/pm2-client.cjs');
 
 const RESTART_COUNT_THRESHOLD = 5;      // > 5 restarts total → warning
 const RECENT_RESTART_WINDOW_MS = 60 * 60 * 1000;  // restarted within 1h → warning
@@ -28,7 +26,7 @@ function normalizeRestartCount(value) {
 async function run(ctx) {
   let pm2List;
   try {
-    const { stdout: raw } = await execFileAsync('pm2', ['jlist'], {
+    const { stdout: raw } = await runPm2(['jlist'], {
       encoding: 'utf8',
       timeout: 5000,
       maxBuffer: 1024 * 1024 * 4,

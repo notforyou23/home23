@@ -2,7 +2,6 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const yaml = require('js-yaml');
 
 /**
@@ -30,15 +29,6 @@ function loadAgentPorts(root, agent) {
 
 function findPm2ProcessForPid(pm2List, pid) {
   return (pm2List || []).find((proc) => Number(proc.pid) === Number(pid)) || null;
-}
-
-function readPm2List() {
-  const output = execFileSync('pm2', ['jlist'], {
-    encoding: 'utf8',
-    maxBuffer: 20 * 1024 * 1024,
-    timeout: 8_000,
-  });
-  return parsePm2JlistOutput(output);
 }
 
 function parsePm2JlistOutput(output) {
@@ -111,7 +101,11 @@ function collectEnvMismatches(env, expected) {
 
 function validatePm2AgentIdentity({ root, env = process.env, pid = process.pid, pm2List } = {}) {
   const home23Root = root || path.resolve(__dirname, '..', '..');
-  const list = pm2List || readPm2List();
+  // PM2 supplies its immutable registration name and id to each managed
+  // child. Reading these also works during daemon loss; `pm2 jlist` would
+  // create a replacement daemon during this startup guard.
+  const list = pm2List || (/^\d+$/.test(String(env.pm_id ?? '')) && typeof env.name === 'string'
+    ? [{ name: env.name, pid }] : []);
   const proc = findPm2ProcessForPid(list, pid);
   if (!proc) return { ok: true, skipped: true, reason: 'pm2_process_not_found' };
 

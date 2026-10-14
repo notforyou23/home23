@@ -37,6 +37,9 @@ function tempRoot(t) {
 }
 function payload(dir, { sourceCommit, extra = {} } = {}) {
   const files = { 'bin/node': '#!/bin/sh\n', 'app/cli/home23.js': 'export {};\n', 'app/cli/lib/product-payload.js': 'export {};\n',
+    'app/cli/lib/product-supervisor.js': `export async function inspectProductSupervisor() { return { ownership: 'absent' }; }
+export async function productSupervisorCommand() { return { stdout: '[]' }; }
+export async function ensureProductSupervisor() { return { ownership: 'launchd' }; }\n`,
     'app/scripts/product/host.mjs': 'export {};\n', 'tools/node_modules/pm2/bin/pm2': 'pm2\n',
     'app/dist/coordination/migrations/index.js': 'migration-index\n', 'app/dist/coordination/migrations/0001-coordination-spine.js': 'migration-one\n',
     'app/dist/coordination/contracts/v1/pack-manifest.json': '{}\n', 'app/dist/coordination/contracts/v1/schema.json': '{}\n',
@@ -140,8 +143,8 @@ test('quiesce stops engines before their dashboards and re-stops a writer restar
   const stops = [];
   let lateRestart = false;
   const list = async () => [...status].map(([name, value]) => ({ name, status: value }));
-  const exec = async (_node, args) => {
-    const name = args[2];
+  const supervisorCommand = async (_home, args) => {
+    const name = args[1];
     stops.push(name);
     // A still-running engine's watchdog restarts its dashboard the moment it stops.
     if (name.endsWith('-dash') && status.get(name.slice(0, -5)) === 'online') { status.set(name, 'online'); return; }
@@ -149,7 +152,7 @@ test('quiesce stops engines before their dashboards and re-stops a writer restar
     if (lateRestart && name === 'home23-coordination') status.set('home23-jerry-harness', 'online');
     return {};
   };
-  const first = await quiesceWriters(home, names, { exec, list });
+  const first = await quiesceWriters(home, names, { supervisorCommand, list });
   assert.deepEqual(new Set(stops.slice(0, 2)), new Set(['home23-jerry', 'home23-forrest']));
   assert.equal(stops.at(-1), 'home23-coordination');
   assert.deepEqual(first.restopped, []);
@@ -157,10 +160,39 @@ test('quiesce stops engines before their dashboards and re-stops a writer restar
 
   for (const name of names) status.set(name, 'online');
   stops.length = 0; lateRestart = true;
-  const second = await quiesceWriters(home, names, { exec, list });
+  const second = await quiesceWriters(home, names, { supervisorCommand, list });
   assert.deepEqual(second.restopped, ['home23-jerry-harness']);
   assert.deepEqual(stops.slice(-1), ['home23-jerry-harness']);
   assert.equal(second.processes.some(row => row.status !== 'stopped'), false);
+});
+
+test('update inventory and writer fencing use the no-spawn supervisor client', async t => {
+  const home = tempRoot(t), calls = [];
+  const { defaultListProcesses } = await import('../../cli/lib/product-update-apply.js');
+  assert.equal(typeof defaultListProcesses, 'function');
+  const supervisorCommand = async (root, args) => {
+    assert.equal(root, home);
+    calls.push(args);
+    return { stdout: JSON.stringify([{ name: 'home23-milo', pm2_env: { status: 'stopped' } }]) };
+  };
+  assert.deepEqual(await defaultListProcesses(home, { supervisorCommand }), [{ name: 'home23-milo', status: 'stopped' }]);
+  await quiesceWriters(home, ['home23-milo'], { supervisorCommand, list: async () => [] });
+  assert.deepEqual(calls, [['jlist', '--silent'], ['stop', 'home23-milo', '--silent']]);
+});
+
+test('update inventory reads selected supervisor code afresh after a software switch', async t => {
+  const home = tempRoot(t);
+  fs.mkdirSync(path.join(home, 'bin'));
+  fs.symlinkSync(process.execPath, path.join(home, 'bin/node'));
+  const module = path.join(home, 'app/cli/lib/product-supervisor.js');
+  fs.mkdirSync(path.dirname(module), { recursive: true });
+  const writeVersion = name => fs.writeFileSync(module,
+    `export async function productSupervisorCommand() { return { stdout: '${JSON.stringify([{ name, pm2_env: { status: 'stopped' } }])}' }; }\n`);
+  const { defaultListProcesses } = await import('../../cli/lib/product-update-apply.js');
+  writeVersion('old-registration');
+  assert.equal((await defaultListProcesses(home))[0].name, 'old-registration');
+  writeVersion('selected-registration');
+  assert.equal((await defaultListProcesses(home))[0].name, 'selected-registration');
 });
 
 test('the reviewed v21 migration is the only accepted schema asset transition', async t => {
@@ -1830,6 +1862,54 @@ test('a Host that cannot read its supervisor defers healthy admitted writers wit
     assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
     assert.equal(fences, 0);
   }
+});
+
+test('an exited resident is recovered once through launchd before candidate readiness is accepted', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let starts = 0, recoveries = 0, fences = 0, lost = false;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => starts && !lost ? [{ name: 'home23-milo', status: 'online' }] : [],
+    start: async () => { starts += 1; lost = starts === 1; return lost
+      ? { ok: false, status: 'degraded', error: { code: 'host_supervisor_exited' } }
+      : { ok: true, status: 'ready', readiness: { ready: true } }; },
+    status: async () => lost ? { ok: false, status: 'unavailable', error: { code: 'host_supervisor_exited' } }
+      : { ok: true, status: 'ready', processes: [{ name: 'home23-milo', status: 'online', owned: true }], readiness: { ready: true } },
+    recoverSupervisor: async (home, journal) => {
+      assert.equal(home, fixture.home);
+      assert.equal(journal.phase, 'writers_admitted');
+      assert.equal(journal.ownerToken, readUpdateJournal(home).ownerToken);
+      recoveries += 1; lost = false;
+      return { ownership: 'launchd', updateId: journal.id, pid: 5678, generation: 'fixture', pausedNames: [] };
+    },
+    quiesce: async () => { fences += 1; return []; },
+  });
+  assert.equal(result.status, 'committed');
+  assert.equal(recoveries, 1);
+  assert.equal(starts, 2);
+  assert.equal(fences, 0);
+  assert.equal(readUpdateJournal(fixture.home).supervisorRecoveryAttempts, 1);
+});
+
+test('orphan writers after resident exit defer the update without spawning or fencing', async t => {
+  const fixture = homeFixture(t, { desiredRunning: true });
+  let started = false, recoveries = 0, fences = 0;
+  const dependencies = { ...quiet,
+    listProcesses: async () => { if (started) throw Object.assign(new Error('no inventory'), { code: 'process_inventory_unavailable' }); return []; },
+    start: async () => { started = true; return { ok: false, status: 'degraded' }; },
+    status: async () => ({ ok: false, status: 'unavailable', error: { code: 'host_supervisor_exited' } }),
+    recoverSupervisor: async () => { recoveries += 1; throw Object.assign(new Error('orphan writers'), { code: 'host_supervisor_writers_active' }); },
+    quiesce: async () => { fences += 1; return []; },
+  };
+  const first = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, dependencies);
+  assert.equal(first.status, 'deferred');
+  assert.equal(first.reasons[0].code, 'host_supervisor_writers_active');
+  assert.equal(readUpdateJournal(fixture.home).phase, 'writers_admitted');
+  const resumed = await resumeProductUpdate({ homeRoot: fixture.home }, dependencies);
+  assert.equal(resumed.status, 'deferred');
+  assert.equal(recoveries, 1);
+  assert.equal(fences, 0);
 });
 
 test('transient readiness probe timeouts re-probe with bounded backoff and commit without deferring', async t => {

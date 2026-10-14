@@ -95,6 +95,10 @@ export function productEnvironment(homeRoot, { prepare = false, encoderRequired 
   }
   return env;
 }
+/** House processes cannot inherit the resident supervisor's control plane. */
+export function withoutSupervisorEnvironment(environment) {
+  return Object.fromEntries(Object.entries(environment || {}).filter(([key]) => !/^PM2_/i.test(key)));
+}
 export function validatePortPlan(plan, { encoderRequired = false, continuingBindings = false } = {}) {
   const keys = portKeysFor({ encoderRequired });
   if (!plan || !keys.every(key => Number.isInteger(plan[key]) && plan[key] >= (continuingBindings ? 1024 : 20000) && plan[key] <= 60999)

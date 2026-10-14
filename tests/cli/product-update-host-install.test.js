@@ -109,6 +109,8 @@ test('install-staged reuses the verified stage path instead of a sibling -apply 
   function payload(dir, sourceCommit, extra = {}) {
     const files = {
       'bin/node': '#!/bin/sh\n', 'app/cli/home23.js': 'export {};\n', 'app/cli/lib/product-payload.js': 'export {};\n',
+      'app/cli/lib/product-supervisor.js': `export async function inspectProductSupervisor() { return { ownership: 'absent' }; }
+export async function productSupervisorCommand() { return { stdout: '[]' }; }\n`,
       'app/scripts/product/host.mjs': 'export {};\n', 'tools/node_modules/pm2/bin/pm2': 'pm2\n',
       'app/dist/coordination/migrations/index.js': 'migration-index\n',
       'app/dist/coordination/migrations/0001-coordination-spine.js': 'migration-one\n',
