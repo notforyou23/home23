@@ -336,7 +336,7 @@ test('Oct 14 morning owner recall outranks twelve Aug/Sep corrections from the d
       triggers: ['conversation', 'morning', 'owner', 'brain', 'talk'],
       provenance: { generation_method: 'agent_note', session_refs: ['old-session'] } });
   }
-  const owners = [['2026-10-14T10:36:24Z', 'Check the brain'],
+  const owners = [['2026-10-14T10:36:24Z', 'Keep the dinner plan'],
     ['2026-10-14T12:58:30Z', 'Yup. Give it a go…']].map(([occurredAt, quote], index) =>
     ledger.upsertOwnerConversation({ type: 'decision', statement: `Thin owner head ${index}.`, quote: quote!,
       occurredAt: occurredAt!, messageRef: `coordination.message:msg_oct14_${index}`, sessionId: 'owner-session:oct14' }));
@@ -361,7 +361,7 @@ test('quoted ISO owner dates use authorized time-window recall without invoking 
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   t.mock.method(Date, 'now', () => Date.parse('2026-10-14T17:00:00Z'));
   const ledger = new RelationshipLedger(dir);
-  ledger.upsertOwnerConversation({ type: 'decision', statement: 'Thin owner head.', quote: 'Check the brain',
+  ledger.upsertOwnerConversation({ type: 'decision', statement: 'Thin owner head.', quote: 'Keep the dinner plan',
     occurredAt: '2026-10-14T10:36:24Z', messageRef: 'coordination.message:msg_oct14', sessionId: 'owner-session:oct14' });
   let authorized = 0;
   let scans = 0;
@@ -384,7 +384,7 @@ test('quoted ISO owner dates use authorized time-window recall without invoking 
     },
   }));
   assert.equal(refused.is_error, true);
-  assert.doesNotMatch(refused.content, /Check the brain/);
+  assert.doesNotMatch(refused.content, /Keep the dinner plan/);
 });
 
 test('relationship federation reports actual overlap and cannot bury an owner lexical match with a flat correction boost', async t => {
@@ -402,6 +402,30 @@ test('relationship federation reports actual overlap and cannot bury an owner le
   assert.match(result.content, /1\. id=.*matchKind=owner_conversation_lexical/);
   assert.match(result.content, /lexical=0\.667/);
   assert.doesNotMatch(result.content, /kindBoost=900/);
+});
+
+test('brain_search keeps original tickets above owner recaps and verification graph or ledger mentions', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-ticket-echo-ranking-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-14T18:00:00Z'));
+  const ledger = new RelationshipLedger(dir);
+  const original = ledger.upsertOwnerConversation({ type: 'decision', statement: 'Trey and Billy tickets.',
+    quote: 'Melissa and I bought Trey and Billy tickets at Ticketmaster for Divided Sky in Worcester, with Friday lodging.',
+    occurredAt: '2026-08-01T13:00:00Z', messageRef: 'turn:original', sessionId: 'owner-session:concert' });
+  ledger.upsertOwnerConversation({ type: 'decision', statement: 'Trey and Billy tickets recap.',
+    quote: 'Recap of our conversation about Trey and Billy tickets.', occurredAt: '2026-10-14T13:00:00Z',
+    messageRef: 'turn:recap', sessionId: 'owner-session:recap' });
+  ledger.addEntry({ type: 'decision', title: 'Trey Billy tickets recall test', statement: 'Can you find Trey Billy tickets in our memory?',
+    provenance: { generation_method: 'owner_conversation', session_refs: ['home-verify-tickets'] },
+    evidence_note: 'Test your recall.' });
+  const ctx = makeCtx({ relationshipLedger: ledger, brainOperations: { search: async () => ({ results: [
+    { id: 'graph-test', concept: 'Test your recall with brain_search for Trey Billy tickets.', tag: 'conversation_sessions', finalRankScore: 900 },
+    { id: 'flagged-test', concept: 'Trey Billy tickets.', metadata: { verification: true }, finalRankScore: 901 },
+  ] }) } });
+  const result = await brainSearchTool.execute({ query: 'Trey/Billy tickets', limit: 5 }, ctx);
+  assert.match(result.content, new RegExp(`1\\. id=${original.id}`));
+  assert.equal((result.metadata?.ownerConversationHits as any[]).length, 2, 'verification is not federated as owner evidence');
+  assert.match(result.content, /graph-test/, 'verification stays retrievable with demotion');
 });
 
 test('dated local recall reports empty or unavailable scoped sources without scanning quoted dates', async t => {
@@ -462,12 +486,12 @@ test('thin Oct 14 owner hits carry read-only raw owner and assistant conversatio
   const conversations = join(dir, 'conversations'); mkdirSync(conversations);
   const ledger = new RelationshipLedger(join(dir, 'brain'));
   const facts = new MemoryObjectStore(join(dir, 'brain'));
-  const quote = 'Check the brain';
+  const quote = 'Keep the dinner plan';
   const entry = ledger.upsertOwnerConversation({ type: 'decision', statement: 'Thin head.', quote,
     occurredAt: '2026-10-14T10:36:24Z', messageRef: 'coordination.message:msg_check', sessionId: 'owner-session:oct14' });
   facts.upsertOwnerFact({ statement: 'Thin fact head.', quote, occurredAt: '2026-10-14T10:36:24Z',
     messageRef: 'coordination.message:msg_check', sessionId: 'owner-session:oct14' });
-  const ownerText = 'Check the brain.\nFor dinner, we discussed brain surgery, re embedded retrieval fixes, and restarted clarity.';
+  const ownerText = 'Keep the dinner plan.\nFor dinner, we discussed brain surgery, re embedded retrieval fixes, and restarted clarity.';
   const rawPath = join(conversations, 'jerry__coordination_chn_owner_wrk_morning.jsonl');
   const records = [
     { type: 'turn', status: 'pending', started_at: '2026-10-14T10:36:24Z', context_purpose: 'conversation',
@@ -512,7 +536,7 @@ test('owner recall reconstructs sessions with the configured owner-distill gap',
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   t.mock.method(Date, 'now', () => Date.parse('2026-10-14T18:00:00Z'));
   const ledger = new RelationshipLedger(join(dir, 'brain'));
-  ledger.upsertOwnerConversation({ type: 'decision', statement: 'Thin head.', quote: 'Check the brain',
+  ledger.upsertOwnerConversation({ type: 'decision', statement: 'Thin head.', quote: 'Keep the dinner plan',
     occurredAt: '2026-10-14T10:36:24Z', messageRef: 'coordination.message:msg_first', sessionId: 'owner-session:first' });
   const streamDir = join(dir, 'substrate'); mkdirSync(streamDir);
   const contact = (id: string, text: string, ts: string) => ({ schema: 'home23.resident.contact.v1',
@@ -520,14 +544,14 @@ test('owner recall reconstructs sessions with the configured owner-distill gap',
     session: 'coordination:chn_owner', channelId: 'chn_owner', channelKind: 'direct', role: 'user', voice: 'jtr',
     actor: { principalId: 'owner', kind: 'owner' }, content: text, ts });
   writeFileSync(join(streamDir, 'conversation-stream.jsonl'), [
-    contact('msg_first', 'Check the brain', '2026-10-14T10:36:24Z'),
+    contact('msg_first', 'Keep the dinner plan', '2026-10-14T10:36:24Z'),
     contact('msg_later', 'Separate session sentinel.', '2026-10-14T10:46:24Z'),
   ].map(record => JSON.stringify(record)).join('\n') + '\n');
   const result = await brainSearchTool.execute({ query: 'this morning' }, makeCtx({
     instanceDir: dir, relationshipLedger: ledger, ownerConversationSessionGapMinutes: 5,
   }));
   assert.equal(result.is_error, undefined);
-  assert.match(result.content, /owner verbatim.*Check the brain/);
+  assert.match(result.content, /owner verbatim.*Keep the dinner plan/);
   assert.doesNotMatch(result.content, /Separate session sentinel/);
 });
 

@@ -44,6 +44,7 @@ import type { OwnerConversationInput } from '../types.js';
 import { embedTextSync } from '../substrate/embed-at-contact.js';
 import { buildWriterSemanticStamp } from '../substrate/semantic-writer-stamp.js';
 import { ownerConversationQuery, ownerConversationMatch, relationshipOwnerEvidence } from './owner-conversation-recall.js';
+import { classifyOwnerConversation, hasConversationTimeIntent } from '../../shared/owner-conversation-policy.cjs';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -86,6 +87,9 @@ export interface RelationshipEntry {
     session_refs: string[];
     source_refs: string[];
     generation_method: RelationshipGenerationMethod;
+    conversation_kind?: 'substantive' | 'verification' | 'recap' | 'mention';
+    verification?: boolean;
+    source_class?: string;
   };
   evidence_note?: string;
   createdAt: string;
@@ -125,6 +129,9 @@ export interface RelationshipEntryInput {
     session_refs?: string[];
     source_refs?: string[];
     generation_method?: RelationshipGenerationMethod;
+    conversation_kind?: 'substantive' | 'verification' | 'recap' | 'mention';
+    verification?: boolean;
+    source_class?: string;
   };
   evidence_note?: string;
   status?: RelationshipEntryStatus;
@@ -400,6 +407,11 @@ export class RelationshipLedger {
       : 'agent_note';
     if (method === 'jtr_correction' && !correctionRef) method = 'agent_note';
     if (correctionRef) method = 'jtr_correction';
+    const classification = method === 'owner_conversation' ? classifyOwnerConversation({
+      sessionRefs: input.provenance?.session_refs, sourceRefs: input.provenance?.source_refs,
+      provenance: input.provenance, text: [input.evidence_note, statement].filter(Boolean).join('\n'),
+    }) : undefined;
+    if (classification?.ownerEvidence === false) method = 'agent_note';
 
     const createdAt = this.now();
     const sourceRefs = boundedList([
@@ -430,6 +442,8 @@ export class RelationshipLedger {
         session_refs: boundedList(input.provenance?.session_refs ?? [], MAX_REF_ITEMS, MAX_REF),
         source_refs: sourceRefs,
         generation_method: method,
+        ...(classification ? { conversation_kind: classification.kind } : {}),
+        ...(classification?.verification ? { verification: true, source_class: 'verification' } : {}),
       },
       ...(input.evidence_note ? { evidence_note: boundedText(input.evidence_note, MAX_EVIDENCE_NOTE) } : {}),
       createdAt,
@@ -454,6 +468,10 @@ export class RelationshipLedger {
   }): RelationshipEntry {
     const statement = input.statement.trim();
     const quote = input.quote.trim();
+    const classification = classifyOwnerConversation({ chatId: input.chatId, sessionId: input.sessionId,
+      sessionRefs: [input.sourceSessionId], metadata: input.metadata,
+      text: [input.conversationText, quote, statement].filter(Boolean).join('\n') });
+    if (!classification.ownerEvidence) throw new Error('Verification conversations are not owner evidence');
     if (!['decision', 'preference', 'aversion'].includes(input.type)
         || !statement || statement.length > MAX_STATEMENT || !quote || quote.length > 2000
         || !input.messageRef || input.messageRef.length > MAX_REF
@@ -465,15 +483,22 @@ export class RelationshipLedger {
     const privacy = input.privacy === 'sensitive' || input.privacy === 'internal' ? input.privacy : 'personal';
     const normalize = (text: string) => text.normalize('NFKC').toLowerCase()
       .replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/\s+/g, ' ').trim();
+    const conversationKind = (entry: RelationshipEntry) => classifyOwnerConversation({
+      sessionRefs: entry.provenance.session_refs, sourceRefs: entry.provenance.source_refs, provenance: entry.provenance,
+      text: [entry.evidence_note, entry.statement].filter(Boolean).join('\n'),
+    }).kind;
     return this.mutateEntries(() => {
       const matches = this.entries.filter(entry => entry.type === input.type
         && entry.provenance.generation_method === 'owner_conversation'
-        && normalize(entry.statement) === normalize(statement));
+        && normalize(entry.statement) === normalize(statement)
+        && conversationKind(entry) === classification.kind);
       const existing = matches.find(entry => entry.status === 'active' && !entry.superseded_by?.length)
         ?? matches.find(entry => entry.status === 'superseded' && entry.updatedAt >= occurredAt);
       const replacementIds = boundedList(input.supersedes, MAX_REF_ITEMS, MAX_REF)
         .filter(id => id !== existing?.id && this.entries.some(entry => entry.id === id
-          && entry.provenance.generation_method === 'owner_conversation' && entry.updatedAt <= occurredAt));
+          && entry.provenance.generation_method === 'owner_conversation'
+          && (classification.kind === 'substantive' || conversationKind(entry) === classification.kind)
+          && entry.updatedAt <= occurredAt));
       const recentRefs = (refs: string[], ref: string) => boundedList([
         ...refs.filter(value => value !== ref).slice(-7), ref,
       ], MAX_REF_ITEMS, MAX_REF);
@@ -482,7 +507,9 @@ export class RelationshipLedger {
       if (existing) {
         entry = existing;
         entry.provenance.source_refs = recentRefs(entry.provenance.source_refs, input.messageRef);
-        entry.provenance.session_refs = recentRefs(entry.provenance.session_refs, input.sessionId);
+        for (const ref of [input.sessionId, input.sourceSessionId, input.chatId]) {
+          if (ref) entry.provenance.session_refs = recentRefs(entry.provenance.session_refs, ref);
+        }
         if (occurredAt >= entry.updatedAt) { entry.updatedAt = occurredAt; entry.evidence_note = quote; }
         if (privacy === 'sensitive') entry.privacy_class = privacy;
         entry.supersedes = boundedList([...(entry.supersedes ?? []), ...replacementIds], MAX_REF_ITEMS, MAX_REF);
@@ -491,7 +518,9 @@ export class RelationshipLedger {
           id: this.newId(occurredAt), type: input.type, title: statement.slice(0, MAX_TITLE), statement,
           actor: 'agent', agent: this.agent, status: 'active', confidence: 0.8, privacy_class: privacy,
           triggers: [], applies_to: ['owner'],
-          provenance: { source_refs: [input.messageRef], session_refs: [input.sessionId], generation_method: 'owner_conversation' },
+          provenance: { source_refs: [input.messageRef],
+            session_refs: boundedList([input.sessionId, input.sourceSessionId, input.chatId].filter((ref): ref is string => Boolean(ref)), MAX_REF_ITEMS, MAX_REF),
+            generation_method: 'owner_conversation', conversation_kind: classification.kind },
           evidence_note: quote, createdAt: occurredAt, updatedAt: occurredAt, reuse_count: 0,
           ...(replacementIds.length ? { supersedes: replacementIds } : {}),
         };
@@ -549,8 +578,9 @@ export class RelationshipLedger {
     generationMethod?: RelationshipGenerationMethod;
     nowMs?: number;
   } = {}): { entries: RelationshipEntry[]; withheldMatching: number } {
+    this.reload();
     const exclude = new Set(opts.excludePrivacy ?? []);
-    const all = this.listEntries({ type: opts.type, status: opts.status ?? 'active' })
+    const all = this.entries.filter(e => e.status === (opts.status ?? 'active') && (!opts.type || e.type === opts.type))
       .filter(e => !opts.generationMethod || e.provenance.generation_method === opts.generationMethod);
     const nowMs = opts.nowMs ?? Date.parse(this.now());
     const ownerQuery = ownerConversationQuery(query, nowMs);
@@ -562,11 +592,7 @@ export class RelationshipLedger {
     const withheldMatching = matching.filter(e => exclude.has(e.privacy_class)).length;
     const visible = matching.filter(e => !exclude.has(e.privacy_class));
     const tokens = relationshipQueryTerms(query);
-    visible.sort((a, b) => (ownerQuery.window
-      ? Number(b.provenance.generation_method === 'owner_conversation') - Number(a.provenance.generation_method === 'owner_conversation') : 0)
-      || (scoreEntry(b, tokens, nowMs) - scoreEntry(a, tokens, nowMs))
-      || byNewestFirst(a, b));
-    return { entries: visible, withheldMatching };
+    return { entries: rankRelationshipEntries(visible, tokens, nowMs, ownerQuery.timeIntent, Boolean(ownerQuery.window)), withheldMatching };
   }
 
   // ── mutate (no path here elevates actor to 'jtr') ────────
@@ -645,7 +671,7 @@ export class RelationshipLedger {
   // ── selective retrieval (the sole render-to-prompt path) ─
 
   /**
-   * Rank active entries by relevance to `query` + recency + type weight, then
+   * Rank active entries by evidence quality, relevance and type weight, then
    * greedily pack whole entries into budgetChars and render one line each under
    * a `[RELATIONSHIP — <agent>]` header. Privacy is enforced here: status
    * removed/superseded is always excluded, and any privacy_class in
@@ -674,14 +700,12 @@ export class RelationshipLedger {
       .filter(e => e.status !== 'removed' && e.status !== 'superseded')
       .filter(e => !excluded.has(e.privacy_class));
 
-    const ranked = candidates
-      .map(e => ({ e, score: scoreEntry(e, tokens, nowMs) }))
-      .sort((a, b) => (b.score - a.score) || byNewestFirst(a.e, b.e));
+    const ranked = rankRelationshipEntries(candidates, tokens, nowMs, hasConversationTimeIntent(query));
 
     const header = renderHeader(this.agent);
     let used = header.length;
     const included: RelationshipEntry[] = [];
-    for (const { e } of ranked) {
+    for (const e of ranked) {
       const line = renderLine(e);
       const cost = 1 + line.length; // newline + line
       if (used + cost <= budget) {
@@ -837,7 +861,25 @@ export function entryMatchesQuery(entry: RelationshipEntry, query: string): bool
   return hits >= Math.min(3, Math.ceil(tokens.length * 0.4));
 }
 
-function scoreEntry(entry: RelationshipEntry, tokens: string[], nowMs: number): number {
+function rankRelationshipEntries(entries: RelationshipEntry[], tokens: string[], nowMs: number,
+  timeIntent: boolean, preferOwnerWindow = false): RelationshipEntry[] {
+  return entries.map(entry => {
+    const classification = classifyOwnerConversation({ ...entry, provenance: entry.provenance,
+      sessionRefs: entry.provenance.session_refs, sourceRefs: entry.provenance.source_refs,
+      text: [entry.evidence_note, entry.statement].filter(Boolean).join('\n') });
+    return { entry, classification,
+      tier: { substantive: 3, recap: 2, mention: 1, verification: 0 }[classification.kind],
+      score: scoreEntry(entry, tokens, nowMs, timeIntent)
+        * { substantive: 1, recap: 0.5, mention: 0.35, verification: 0.05 }[classification.kind] };
+  }).filter(({ entry, classification }) => entry.provenance.generation_method !== 'owner_conversation'
+    || classification.ownerEvidence)
+    .sort((a, b) => (preferOwnerWindow
+      ? Number(b.entry.provenance.generation_method === 'owner_conversation') - Number(a.entry.provenance.generation_method === 'owner_conversation') : 0)
+      || b.tier - a.tier || b.score - a.score || (timeIntent ? byNewestFirst(a.entry, b.entry) : 0))
+    .map(({ entry }) => entry);
+}
+
+function scoreEntry(entry: RelationshipEntry, tokens: string[], nowMs: number, timeIntent: boolean): number {
   let relevance = 0;
   const title = new Set(tokenize(entry.title));
   const statement = new Set(tokenize(`${entry.statement} ${entry.why ?? ''} ${entry.evidence_note ?? ''}`));
@@ -851,7 +893,7 @@ function scoreEntry(entry: RelationshipEntry, tokens: string[], nowMs: number): 
   }
   const ageMs = Math.max(0, nowMs - Date.parse(entry.updatedAt));
   const ageDays = ageMs / 86_400_000;
-  const recency = 1 / (1 + ageDays / 14); // (0,1], ~half-life at 14 days
+  const recency = timeIntent ? 1 / (1 + ageDays / 14) : 0; // ~half-life at 14 days for explicit time intent
   return relevance + (TYPE_WEIGHT[entry.type] ?? 1) + recency * 2;
 }
 

@@ -19,6 +19,7 @@ const {
   createDefaultEmbedQuery,
   createDefaultLoadAnn,
   createAnnWorkerRuntime,
+  createBoundedCandidateHeap,
   createMemorySearchService,
   MAX_ANN_METADATA_BYTES,
   parseAnnMetadataChunks,
@@ -244,6 +245,35 @@ async function sourceSearch({ dir, embedQuery, loadAnn, query = 'canary', reques
     await source.close();
   }
 }
+
+test('ANN plus delta ranks original ticket evidence above newer recall tests and exact-topic echoes', async t => {
+  const original = { id: 'original', concept: 'Melissa and I bought Trey and Billy tickets at Ticketmaster for Divided Sky in Worcester; Friday lodging is booked.',
+    tag: 'conversation_sessions', created: '2026-08-01T13:00:00Z', embedding: [1, 0] };
+  const dir = await createBrain({ nodes: [original] });
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const manifest = await markAnn(dir);
+  const echoes = [
+    { id: 'verification', concept: 'Test your recall: can you find Trey/Billy tickets with brain_search?' },
+    { id: 'recap', concept: 'Recap of our conversation: Trey/Billy tickets.' },
+    { id: 'mention', concept: 'We previously mentioned Trey/Billy tickets.' },
+  ].map(node => ({ ...node, tag: 'conversation_sessions', created: '2026-10-14T13:00:00Z', embedding: [1, 0] }));
+  await appendRevision(dir, { nodes: echoes },
+    { nodeCount: 4, edgeCount: 0, clusterCount: 1 });
+  const labels = [projectAnnLabel(original)];
+  for (const [topK, encoderReady] of [[4, true], [1, true], [1, false]]) {
+    const result = await sourceSearch({ dir, query: 'Trey/Billy tickets',
+      embedQuery: async () => { if (!encoderReady) throw new Error('synthetic encoder outage'); return [1, 0]; },
+      loadAnn: async () => ({ dimension: 2, builtFromRevision: manifest.currentRevision,
+        labels, search: () => labels.map(node => ({ node, similarity: 0.9 })) }), request: { topK } });
+    assert.equal(result.stats.retrievalMode, encoderReady ? 'semantic-ann-delta-overlay' : 'keyword-index-overlay');
+    assert.equal(result.evidence.indexWatermark.status, 'covered via overlay');
+    assert.equal(result.results[0].id, 'original', `topK=${topK} encoderReady=${encoderReady}`);
+    if (topK === 4) {
+      assert.equal(result.results.find(node => node.id === 'verification').retrievalAuthority.conversationKind, 'verification');
+      assert.equal(result.results.length, 4, 'demotion preserves recall of the test and recap records');
+    }
+  }
+});
 
 function fillerNodes(count, { prefix = 'filler', start = 0 } = {}) {
   return Array.from({ length: count }, (_, index) => ({
@@ -972,7 +1002,7 @@ test('ANN search applies authority ranking and exposes a bounded score explanati
   );
 });
 
-test('authenticated ANN narrative labels use semantic time without evidence promotion', async () => {
+test('timeless ANN narrative recall preserves semantic time without recency or evidence promotion', async () => {
   const dir = await createBrain({
     nodes: [
       { id: 'old', concept: 'archive narrative canary', embedding: [1, 0] },
@@ -1007,7 +1037,8 @@ test('authenticated ANN narrative labels use semantic time without evidence prom
   });
 
   const byId = new Map(result.results.map((row) => [row.id, row]));
-  assert.equal(result.results[0].id, 'recent');
+  assert.equal(byId.get('recent').semanticTime, '2026-07-14T15:59:00.000Z');
+  assert.equal(byId.get('old').semanticTime, '2024-01-01T00:00:00.000Z');
   assert.equal(byId.get('recent').authorityClass, 'narrative');
   assert.equal(byId.get('old').authorityClass, 'narrative');
   assert.deepEqual(byId.get('recent').retrievalAuthority.sourceChain, [
@@ -1015,7 +1046,7 @@ test('authenticated ANN narrative labels use semantic time without evidence prom
     { kind: 'source', ref: 'artifact:archive-canary' },
   ]);
   assert.equal(byId.get('recent').evidencePresent, false);
-  assert.ok(byId.get('recent').retrievalScore > byId.get('old').retrievalScore);
+  assert.equal(byId.get('recent').retrievalScore, byId.get('old').retrievalScore);
 });
 
 test('bounded candidate explanation reports the published authority score without double weighting', () => {
@@ -2489,6 +2520,22 @@ test('million-candidate heap acceptance remains bounded without a logical base s
   assert.equal(receipt.retainedBytes <= 32 * 1024 * 1024, true);
   assert.equal(receipt.baseScanCalls, 0);
   assert.equal(receipt.retrievalMode, 'semantic-ann-delta-overlay');
+});
+
+test('a full candidate heap admits substantive evidence ahead of stronger echoes and preserves exact ID lookup', () => {
+  for (const exactLookup of [false, true]) {
+    const heap = createBoundedCandidateHeap({ maxCount: 1 });
+    const verification = { id: 'verification', tag: 'conversation_sessions',
+      concept: 'Test your recall: Trey Billy tickets.', similarity: 0.9, retrievalScore: 900,
+      retrievalQuery: exactLookup ? 'verification' : 'Trey Billy tickets' };
+    const original = { id: 'original', tag: 'conversation_sessions',
+      concept: 'Melissa and I bought Trey and Billy tickets.', similarity: 0.8, retrievalScore: 0.1,
+      retrievalQuery: verification.retrievalQuery };
+    heap.offer(verification);
+    heap.offer(original);
+    heap.offer({ ...verification, id: 'another-test', retrievalScore: 1000 });
+    assert.deepEqual(heap.sorted().map(row => row.id), [exactLookup ? 'verification' : 'original']);
+  }
 });
 
 test('ANN metadata streaming rejects label-count amplification before heap exhaustion', () => {

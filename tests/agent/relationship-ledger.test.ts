@@ -42,6 +42,34 @@ function base(overrides: Partial<RelationshipEntryInput> = {}): RelationshipEntr
   };
 }
 
+test('direct owner relationship writes cannot bypass verification provenance and content gates', t => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const ledger = new RelationshipLedger(brain);
+  const input = { type: 'decision' as const, statement: 'Buy tickets.', quote: 'I will buy tickets.',
+    messageRef: 'message:1', sessionId: 'session:1', occurredAt: '2026-10-14T12:00:00.000Z' };
+  for (const extra of [{ sessionId: 'home-verify-48' }, { chatId: 'recall-verification' },
+    { metadata: { verification: true } }, { metadata: { source: 'non-owner' } },
+    { quote: 'Test your recall of my tickets.' }, { conversationText: 'Use brain_search to find the tickets.' }]) {
+    assert.throws(() => ledger.upsertOwnerConversation({ ...input, ...extra }), /Verification conversations are not owner evidence/);
+  }
+  assert.equal(ledger.listEntries().length, 0);
+});
+
+test('generic relationship creates demote verification claims from owner evidence', t => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const ledger = new RelationshipLedger(brain);
+  for (const input of [base({ statement: 'Test your recall of my tickets.',
+    provenance: { session_refs: ['session:1'], generation_method: 'owner_conversation' } }),
+    base({ provenance: { session_refs: ['home-verify-48'], generation_method: 'owner_conversation' } })]) {
+    const created = ledger.addEntry(input);
+    assert.equal(created.provenance.generation_method, 'agent_note');
+    assert.equal(created.provenance.verification, true);
+    assert.equal(created.provenance.conversation_kind, 'verification');
+  }
+});
+
 test('Oct 14 owner recall does not match every older correction through generic conversation cues', (t) => {
   const brain = tmpBrain();
   t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
@@ -57,7 +85,7 @@ test('Oct 14 owner recall does not match every older correction through generic 
   });
   instant = '2026-10-14T14:30:00.000Z';
   const owner = ledger.upsertOwnerConversation({
-    type: 'decision', statement: 'Check the brain.', quote: 'Check the brain',
+    type: 'decision', statement: 'Plan Friday lodging.', quote: 'Plan Friday lodging',
     occurredAt: '2026-10-14T10:36:24.000Z',
     messageRef: 'coordination.message:msg_oct14', sessionId: 'owner-session:oct14',
   });
@@ -102,7 +130,7 @@ test('owner time-window candidates precede genuinely matching corrections and re
   }));
   instant = '2026-10-14T14:30:00.000Z';
   const owner = ledger.upsertOwnerConversation({
-    type: 'preference', statement: 'Check the brain.', quote: 'Check the brain',
+    type: 'preference', statement: 'Plan Friday lodging.', quote: 'Plan Friday lodging',
     occurredAt: '2026-10-14T10:36:24.000Z',
     messageRef: 'coordination.message:msg_oct14', sessionId: 'owner-session:oct14',
   });
@@ -148,6 +176,100 @@ test('owner conversation repeats retain evidence, refresh the date and never ear
   assert.equal(ledger.retrieveForContext('replies', { budgetChars: 2000, excludePrivacy: ['sensitive'] }).text, '');
   const events = fs.readFileSync(path.join(brain, 'relationship-ledger.events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
   assert.ok(events.every(event => !('semantic_vector' in event)));
+});
+
+test('later recaps and mentions cannot refresh or replace substantive owner relationship evidence', t => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const ledger = new RelationshipLedger(brain);
+  const input = { type: 'decision' as const, statement: 'Plan Friday lodging for Trey and Billy.',
+    quote: 'Melissa and I need Friday lodging in Worcester.', messageRef: 'message:original',
+    sessionId: 'session:original', occurredAt: '2026-10-01T12:00:00.000Z' };
+  const original = ledger.upsertOwnerConversation(input);
+  // Include legacy records without explicit classification metadata.
+  const file = path.join(brain, 'relationship-ledger.json');
+  const document = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete document.entries[0].provenance.conversation_kind;
+  fs.writeFileSync(file, JSON.stringify(document));
+  const recap = ledger.upsertOwnerConversation({ ...input, quote: 'Recap: plan Friday lodging for Trey and Billy.',
+    messageRef: 'message:recap', sessionId: 'session:recap', occurredAt: '2026-10-14T12:00:00.000Z',
+    supersedes: [original.id] });
+  const mention = ledger.upsertOwnerConversation({ ...input, quote: 'We previously discussed Friday lodging for Trey and Billy.',
+    messageRef: 'message:mention', sessionId: 'session:mention', occurredAt: '2026-10-14T13:00:00.000Z',
+    supersedes: [original.id] });
+  assert.notEqual(recap.id, original.id);
+  assert.notEqual(mention.id, original.id);
+  assert.notEqual(mention.id, recap.id);
+  const preserved = ledger.getEntry(original.id)!;
+  assert.equal(preserved.updatedAt, input.occurredAt);
+  assert.equal(preserved.status, 'active');
+  assert.equal(recap.supersedes, undefined);
+  assert.equal(mention.supersedes, undefined);
+  assert.equal(preserved.evidence_note, input.quote);
+  assert.deepEqual(preserved.provenance.source_refs, ['message:original']);
+  assert.deepEqual(preserved.provenance.session_refs, ['session:original']);
+  assert.equal(recap.provenance.conversation_kind, 'recap');
+  assert.equal(mention.provenance.conversation_kind, 'mention');
+  const repeated = ledger.upsertOwnerConversation({ ...input, quote: 'Recap: plan Friday lodging for Trey and Billy.',
+    messageRef: 'message:recap-again', sessionId: 'session:recap-again', occurredAt: '2026-10-14T14:00:00.000Z' });
+  assert.equal(repeated.id, recap.id, 'same-kind repeats still merge');
+  assert.equal(ledger.listEntries().length, 3);
+});
+
+test('relationship context and search prefer original owner evidence over newer ticket recaps', t => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const nowMs = Date.parse('2026-10-14T16:00:00.000Z');
+  const ledger = new RelationshipLedger(brain, { now: () => new Date(nowMs).toISOString() });
+  const input = { type: 'decision' as const, statement: 'Buy Trey Billy tickets and plan Friday lodging.',
+    quote: 'I bought Trey Billy tickets on Ticketmaster.', messageRef: 'message:original',
+    sessionId: 'session:original', occurredAt: '2026-10-01T12:00:00.000Z' };
+  const original = ledger.upsertOwnerConversation(input);
+  const budgetChars = ledger.retrieveForContext('Trey Billy tickets', { budgetChars: 10_000, nowMs }).text.length;
+  const recap = ledger.upsertOwnerConversation({ ...input, quote: 'Recap: Buy Trey Billy tickets and plan Friday lodging.',
+    messageRef: 'message:recap', sessionId: 'session:recap', occurredAt: '2026-10-14T12:00:00.000Z' });
+  assert.deepEqual(ledger.searchEntries('Trey Billy tickets', { nowMs }).entries.map(entry => entry.id), [original.id, recap.id]);
+  const context = ledger.retrieveForContext('Trey Billy tickets', { budgetChars, nowMs });
+  assert.deepEqual(context.entries.map(entry => entry.id), [original.id]);
+});
+
+test('legacy verification owner entries are excluded from relationship context and downgraded notes stay demoted', t => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const ledger = new RelationshipLedger(brain, { now: () => '2026-10-14T16:00:00.000Z' });
+  const input = { type: 'decision' as const, title: 'Trey Billy tickets', statement: 'Trey Billy tickets on Ticketmaster.',
+    evidence_note: 'Test your recall of Trey Billy tickets.',
+    provenance: { generation_method: 'owner_conversation' as const, session_refs: ['home-verify-tickets'] } };
+  const demoted = ledger.addEntry(input);
+  const legacy = ledger.addEntry({ ...input, provenance: { ...input.provenance, session_refs: ['home-verify-legacy'] } });
+  const original = ledger.upsertOwnerConversation({ type: 'decision', statement: 'Trey Billy tickets on Ticketmaster.',
+    quote: 'I bought Trey Billy tickets on Ticketmaster.', messageRef: 'message:original',
+    sessionId: 'session:original', occurredAt: '2026-10-01T12:00:00.000Z' });
+  const file = path.join(brain, 'relationship-ledger.json');
+  const document = JSON.parse(fs.readFileSync(file, 'utf8'));
+  document.entries.find((entry: any) => entry.id === legacy.id).provenance.generation_method = 'owner_conversation';
+  fs.writeFileSync(file, JSON.stringify(document));
+  const context = ledger.retrieveForContext('Trey Billy tickets', { budgetChars: 10_000 });
+  assert.deepEqual(context.entries.map(entry => entry.id), [original.id, demoted.id]);
+  assert.ok(!ledger.searchEntries('Trey Billy tickets').entries.some(entry => entry.id === legacy.id));
+});
+
+test('relationship recency ranking and newest ties require explicit query time intent', t => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const nowMs = Date.parse('2026-10-14T16:00:00.000Z');
+  const ledger = new RelationshipLedger(brain, { now: () => new Date(nowMs).toISOString() });
+  const original = ledger.upsertOwnerConversation({ type: 'decision', statement: 'Trey Billy tickets choice A.',
+    quote: 'I chose Trey Billy tickets option A.', messageRef: 'message:a', sessionId: 'session:a',
+    occurredAt: '2026-10-01T12:00:00.000Z' });
+  const newer = ledger.upsertOwnerConversation({ type: 'decision', statement: 'Trey Billy tickets choice B.',
+    quote: 'I chose Trey Billy tickets option B.', messageRef: 'message:b', sessionId: 'session:b',
+    occurredAt: '2026-10-14T12:00:00.000Z' });
+  for (const query of ['Trey Billy tickets', 'latest Trey Billy tickets']) {
+    const expected = query.startsWith('latest') ? [newer.id, original.id] : [original.id, newer.id];
+    assert.deepEqual(ledger.searchEntries(query, { nowMs }).entries.map(entry => entry.id), expected);
+    assert.deepEqual(ledger.retrieveForContext(query, { budgetChars: 10_000, nowMs }).entries.map(entry => entry.id), expected);
+  }
 });
 
 test('owner relationship supersession keeps history under capacity pressure and respects evidence time', (t) => {

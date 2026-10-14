@@ -72,7 +72,7 @@ test('renderSensitive false changes rendering only; disabled learning still rend
   assert.equal(readFileSync(f.file, 'utf8'), before);
 });
 
-test('learned tail ranks relevance and recency and preserves whole statements within its budget', t => {
+test('learned tail ranks relevance and uses recency for time intent while preserving whole statements', t => {
   const f = fixture(t);
   writeFileSync(f.file, JSON.stringify({ objects: [
     fact('recent', 'My dog is named Sam.'),
@@ -84,10 +84,76 @@ test('learned tail ranks relevance and recency and preserves whole statements wi
   assert.match(relevant, /You told me on 2026-09-01: My health concern is recovery\./);
   assert.doesNotMatch(relevant, /named Sam|named Spot/);
   assert.ok(relevant.length <= 100);
-  const recent = composeLearnedOwnerFacts(f.brain, '', { personalBudgetChars: 100 }, now)!;
+  const recent = composeLearnedOwnerFacts(f.brain, 'this morning', { personalBudgetChars: 100 }, now)!;
   assert.match(recent, /named Sam/);
   assert.doesNotMatch(recent, /named Spot|health concern/);
   assert.equal(composeLearnedOwnerFacts(f.brain, 'health', { personalBudgetChars: 20 }, now), null);
+});
+
+test('learned owner facts exclude legacy verification metadata, chat IDs and meta grounding quotes', t => {
+  const f = fixture(t);
+  writeFileSync(f.file, JSON.stringify({ objects: [
+    fact('flag', 'FLAG_SENTINEL', { verification: true }),
+    fact('provenance-flag', 'PROVENANCE_SENTINEL', {
+      provenance: { generation_method: 'owner_conversation', verification: true },
+    }),
+    fact('non-owner', 'NON_OWNER_SENTINEL', { nonOwner: true }),
+    fact('metadata-flag', 'METADATA_SENTINEL', { metadata: { verification: true } }),
+    fact('chat', 'CHAT_SENTINEL', { chatId: 'home-verify-tickets' }),
+    fact('chat-alias', 'CHAT_ALIAS_SENTINEL', { chat_id: 'home-verify-tickets' }),
+    fact('session', 'SESSION_SENTINEL', { session_id: 'retrieval-test-tickets' }),
+    fact('session-alias', 'SESSION_ALIAS_SENTINEL', { sessionId: 'retrieval-test-tickets' }),
+    fact('ref', 'REFERENCE_SENTINEL', {
+      provenance: { generation_method: 'owner_conversation', source_refs: ['message:retrieval-verification-48'], session_refs: [] },
+    }),
+    fact('evidence-ref', 'EVIDENCE_REFERENCE_SENTINEL', {
+      evidence: { grounding_note: 'My tickets are in Worcester.', evidence_links: ['message:home-verify-ticket'] },
+    }),
+    fact('grounding', 'META_GROUNDING_SENTINEL: I bought Trey/Billy tickets.', {
+      evidence: { grounding_note: 'Test your recall using brain_search for the Trey/Billy tickets.', evidence_links: ['message:ordinary'] },
+    }),
+    fact('accepted', 'Can you find Trey tickets on Ticketmaster?'),
+  ] }));
+  const before = readFileSync(f.file, 'utf8');
+  const result = composeLearnedOwnerFacts(f.brain, 'Trey tickets')!;
+  assert.doesNotMatch(result, /SENTINEL/);
+  assert.match(result, /You told me on 2026-10-12: Can you find Trey tickets on Ticketmaster\?/);
+  assert.equal(readFileSync(f.file, 'utf8'), before);
+});
+
+test('timeless learned owner facts put original ticket evidence ahead of newer recap and mention quotes', t => {
+  const f = fixture(t);
+  const original = 'I bought Trey/Billy tickets through Ticketmaster for Divided Sky in Worcester.';
+  writeFileSync(f.file, JSON.stringify({ objects: [
+    fact('a-recap', 'Trey/Billy tickets for Divided Sky in Worcester.', {
+      updated_at: '2026-10-14T12:00:00Z',
+      evidence: { grounding_note: 'Recap: Trey/Billy tickets for Divided Sky in Worcester.', evidence_links: ['message:recap'] },
+    }),
+    fact('b-mention', 'Trey/Billy tickets for Divided Sky in Worcester.', {
+      updated_at: '2026-10-14T13:00:00Z',
+      evidence: { grounding_note: 'We previously mentioned Trey/Billy tickets in Worcester.', evidence_links: ['message:mention'] },
+    }),
+    fact('z-original', original, { updated_at: '2026-08-01T12:00:00Z' }),
+  ] }));
+  const result = composeLearnedOwnerFacts(f.brain, 'Trey/Billy tickets', { personalBudgetChars: 150 },
+    Date.parse('2026-10-14T14:00:00Z'))!;
+  assert.equal(result, `Learned from conversations\n- You told me on 2026-08-01: ${original}`);
+});
+
+test('timeless substantive facts use stable IDs instead of timestamps for equal relevance', t => {
+  const f = fixture(t);
+  const old = fact('a-old', 'My ticket choice is Worcester.', { updated_at: '2026-08-01T12:00:00Z' });
+  const recent = fact('z-recent', 'My ticket choice is Boston.', { updated_at: '2026-10-14T13:00:00Z' });
+  const now = Date.parse('2026-10-14T14:00:00Z');
+  for (const objects of [[recent, old], [old, recent]]) {
+    writeFileSync(f.file, JSON.stringify({ objects }));
+    const timeless = composeLearnedOwnerFacts(f.brain, 'ticket choice', { personalBudgetChars: 95 }, now)!;
+    assert.match(timeless, /Worcester/);
+    assert.doesNotMatch(timeless, /Boston/);
+    const timeIntent = composeLearnedOwnerFacts(f.brain, 'ticket choice this morning', { personalBudgetChars: 95 }, now)!;
+    assert.match(timeIntent, /Boston/);
+    assert.doesNotMatch(timeIntent, /Worcester/);
+  }
 });
 
 test('the default learned tail has a 2000-character budget', t => {

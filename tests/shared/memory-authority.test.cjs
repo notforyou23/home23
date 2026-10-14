@@ -33,6 +33,39 @@ const {
 
 const NOW = Date.parse('2026-07-14T16:00:00.000Z');
 
+test('timeless graph recall does not prefer identical recent conversation content', () => {
+  const original = { concept: 'Trey Billy tickets from Ticketmaster.', tag: 'conversation_sessions',
+    created: '2025-01-01T00:00:00Z' };
+  const recent = { ...original, created: '2026-07-14T15:00:00Z' };
+  assert.equal(scoreMemoryAuthority(original, 1, { query: 'Trey Billy tickets', nowMs: NOW }),
+    scoreMemoryAuthority(recent, 1, { query: 'Trey Billy tickets', nowMs: NOW }));
+  assert.ok(scoreMemoryAuthority(recent, 1, { query: 'latest Trey Billy tickets', nowMs: NOW })
+    > scoreMemoryAuthority(original, 1, { query: 'latest Trey Billy tickets', nowMs: NOW }));
+});
+
+test('conversation recaps, topic references and verification metadata reduce graph recall scores', () => {
+  const original = { concept: 'Melissa and I bought Trey Billy tickets at Ticketmaster for Worcester.',
+    tag: 'conversation_sessions', created: '2025-01-01T00:00:00Z' };
+  const options = { query: 'Trey Billy tickets', nowMs: NOW };
+  const score = scoreMemoryAuthority(original, 1, options);
+  for (const echo of [
+    { concept: 'Recap of our conversation about Trey Billy tickets.' },
+    { concept: 'We previously mentioned Trey Billy tickets.' },
+    { metadata: { chatId: 'home-verify-ticket-test' } },
+    { metadata: { verification: true } },
+  ]) {
+    assert.ok(score > scoreMemoryAuthority({ ...original, ...echo, created: '2026-07-14T15:00:00Z' }, 1, options));
+  }
+});
+
+test('generated conversation recap tags retain the demotion policy through projection', () => {
+  for (const tag of ['summary', 'consolidated']) {
+    const projected = projectMemoryAuthority({ tag, concept: 'Recap of our conversation: Trey/Billy tickets.' });
+    assert.equal(projected.conversationKind, 'recap');
+  }
+  assert.equal(projectMemoryAuthority({ tag: 'code', concept: 'brain_search implementation notes.' }).conversationKind, undefined);
+});
+
 test('goal resolution classifier recognizes explicit markers without hiding ordinary closed incidents', () => {
   for (const node of [
     { tag: 'goal_resolution' },
@@ -214,8 +247,8 @@ test('semantic time prefers resolution, source, assertion, and report time over 
   const recentAtSource = { ...base, metadata: { source_time: '2026-07-14T15:59:00.000Z' } };
 
   assert.ok(
-    scoreMemoryAuthority(recentAtSource, 1, { intent: 'history', nowMs: NOW })
-      > scoreMemoryAuthority(oldAtSource, 1, { intent: 'history', nowMs: NOW }) * 10,
+    scoreMemoryAuthority(recentAtSource, 1, { query: 'latest archive reports', intent: 'history', nowMs: NOW })
+      > scoreMemoryAuthority(oldAtSource, 1, { query: 'latest archive reports', intent: 'history', nowMs: NOW }) * 10,
   );
 });
 

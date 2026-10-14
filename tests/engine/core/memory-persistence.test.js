@@ -812,6 +812,117 @@ test('an ordinary delta save schedules NO ANN rebuild (overlay covers deltas)', 
   assert.equal(annCalls.length, 0, 'delta saves must not trigger ANN rebuilds');
 });
 
+function annThresholdSaveOptions(name, overrides = {}) {
+  const manifest = {
+    generation: `ann-threshold-${name}`,
+    baseRevision: 1,
+    currentRevision: 3,
+    baseWrittenAt: new Date().toISOString(),
+    ann: { indexFile: 'test.index', metaFile: 'test.meta.json', builtFromRevision: 1 },
+    activeDelta: { count: 2, committedBytes: 100 },
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  };
+  return {
+    brainDir: `/synthetic-ann-threshold-${name}`,
+    home23Root: '/synthetic-home23',
+    memory: fullViewMemory(),
+    annRebuildDeltaCount: 3,
+    logger: { info() {}, warn() {} },
+    writer: {
+      readManifest: async () => manifest,
+      appendMemoryRevision: async () => ({
+        manifest: { ...manifest, currentRevision: 4, activeDelta: { count: 3, committedBytes: 120 } }, count: 1,
+      }),
+      rewriteMemoryBase: async () => { throw new Error('full rewrite not expected'); },
+    },
+    ...overrides,
+  };
+}
+
+test('large deltas schedule one configurable ANN rebuild while ordinary and disabled thresholds do not', async () => {
+  for (const [name, threshold, expected] of [['below', 4, false], ['at', 3, true], ['disabled', 0, false]]) {
+    const scheduled = [];
+    const annCalls = [];
+    const result = await persistMemoryRevision(annThresholdSaveOptions(name, {
+      annRebuildDeltaCount: threshold,
+      schedule: fn => scheduled.push(fn),
+      rebuildAnnIndex: async options => { annCalls.push(options); return { status: 'fresh' }; },
+    }));
+    assert.equal(result.mode, 'delta');
+    assert.equal(Boolean(result.annRebuildScheduled), expected);
+    assert.equal(scheduled.length, expected ? 1 : 0);
+    for (const fn of scheduled) await fn();
+    assert.equal(annCalls.length, expected ? 1 : 0);
+    if (expected) assert.equal(annCalls[0].brainDir, '/synthetic-ann-threshold-at');
+  }
+});
+
+test('ANN threshold uses records since the indexed revision instead of the entire active delta', async () => {
+  const options = annThresholdSaveOptions('already-indexed');
+  const manifest = await options.writer.readManifest();
+  manifest.ann.builtFromRevision = 3;
+  const scheduled = [];
+  const result = await persistMemoryRevision({ ...options, schedule: fn => scheduled.push(fn) });
+  assert.equal(result.annRebuildScheduled, undefined);
+  assert.deepEqual(scheduled, []);
+});
+
+test('threshold rebuilds are deduplicated while pending and retry only after the configured cooldown', async () => {
+  const scheduled = [];
+  const warnings = [];
+  let clock = Date.now();
+  let builds = 0;
+  const options = annThresholdSaveOptions('dedupe', {
+    now: () => clock,
+    annRebuildCooldownMs: 1000,
+    schedule: fn => scheduled.push(fn),
+    logger: { info() {}, warn: (...args) => warnings.push(args) },
+    rebuildAnnIndex: async () => { builds += 1; throw new Error('synthetic builder failure'); },
+  });
+  assert.equal((await persistMemoryRevision(options)).annRebuildScheduled, true);
+  assert.equal((await persistMemoryRevision(options)).annRebuildScheduled, false);
+  assert.equal(scheduled.length, 1);
+  await scheduled.shift()();
+  assert.equal(builds, 1);
+  assert.equal(warnings.length, 1);
+  clock += 999;
+  assert.equal((await persistMemoryRevision(options)).annRebuildScheduled, false);
+  clock += 1;
+  assert.equal((await persistMemoryRevision(options)).annRebuildScheduled, true);
+  await scheduled.shift()();
+  assert.equal(builds, 2);
+});
+
+test('a base rewrite during an ANN rebuild schedules a serial rebuild for the new generation', async () => {
+  const scheduled = [];
+  const calls = [];
+  let releaseBuild;
+  const barrier = new Promise(resolve => { releaseBuild = resolve; });
+  const rebuildAnnIndex = async () => {
+    calls.push('build');
+    if (calls.length === 1) await barrier;
+    return { status: 'fresh' };
+  };
+  const options = annThresholdSaveOptions('generation-change', {
+    schedule: fn => scheduled.push(fn), rebuildAnnIndex,
+  });
+  await persistMemoryRevision(options);
+  const rebuilding = scheduled.shift()();
+  assert.equal(calls.length, 1);
+  await persistMemoryRevision({
+    ...options,
+    retireUnpinnedSources: async () => ({ retired: [] }),
+    writer: {
+      readManifest: async () => null,
+      rewriteMemoryBase: async () => ({ manifest: { generation: 'new-generation', currentRevision: 5 }, count: 1 }),
+    },
+  });
+  assert.equal(scheduled.length, 1, 'only source retirement is added while the ANN build is active');
+  releaseBuild();
+  await rebuilding;
+  assert.equal(calls.length, 2, 'the new base generation needs a second serial ANN build');
+});
+
 test('an ANN rebuild failure is loud but never breaks the save', async () => {
   const scheduled = [];
   const warnings = [];
@@ -1280,10 +1391,10 @@ test('fresh alias repair publishes canonical rows before a later overdue disk co
   assert.equal(compacted.manifest.activeBase.nodes.count, 1);
   assert.deepEqual((await loadMemoryRevision(fixture.brainDir, { home23Root: fixture.home23Root })).nodes, [canonical]);
   assert.equal(memory.cleanCalls, 0);
-  assert.equal(scheduled.length, 4);
+  assert.equal(scheduled.length, 3, 'two retirements share one pending ANN rebuild for the latest generation');
   const reused = await persistMemoryRevision(options);
   assert.equal(reused.mode, 'reused');
-  assert.equal(scheduled.length, 4);
+  assert.equal(scheduled.length, 3);
 });
 
 // Resident graph as the engine holds it: hydration may drop disk rows (the
