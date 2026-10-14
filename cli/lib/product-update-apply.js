@@ -1206,6 +1206,38 @@ async function withReusedStageLock(journal, verify, body) {
 const RETRYABLE = new Set(['writer_stop_incomplete', 'database_busy']);
 const RETRY_NEUTRAL = new Set(['running_restore_failed', 'recovered_by_owner']);
 const MAX_RECOVERY_REOPENS = 3;
+/** A claim made before the first stop receipt or any software switch. */
+function untouchedClaim(journal) {
+  return journal?.phase === 'claimed' && !journal.stoppedForUpdate && !journal.writersAdmitted
+    && !journal.acceptedWork && !journal.candidateStarted && !journal.stagedManifestSha256 && !journal.retention;
+}
+async function runningRolesOnline(home, journal, processes) {
+  const names = journal.writerNames || [], known = new Set(names);
+  // writerNames is stop authority, including optional roles absent from this
+  // home's configuration. Use Start's actual required roles when available.
+  let required;
+  if (exists(join(home, 'app/cli/lib/product-host.js'))) {
+    try {
+      const host = await import(pathToFileURL(join(home, 'app/cli/lib/product-host.js')).href);
+      if (typeof host.ownedProcessNamesForState === 'function') {
+        required = host.ownedProcessNamesForState(readPrivateJSON(join(home, '.home23-host.json')));
+      }
+    } catch { return false; }
+  }
+  if (!required) {
+    // Earlier installed Host modules may not expose their role projection.
+    // Require the core resident roles and encoder; optional registrations
+    // that are active must still be online, but absent roles do not need Start.
+    required = ['home23-coordination', ...residentEngines(names).flatMap(name => [name, `${name}-dash`, `${name}-harness`]),
+      ...(known.has('home23-embedder') ? ['home23-embedder'] : [])];
+  }
+  if (!Array.isArray(required) || !required.length) return false;
+  const expected = new Set(required);
+  return required.every(name => known.has(name)
+    && processes.some(row => row.name === name && row.status === 'online'))
+    && processes.every(row => !known.has(row.name) || row.status === 'online'
+      || (!expected.has(row.name) && !BUSY.has(row.status)));
+}
 /** What the product may do with a fenced journal whose writers were never
  * admitted. `restore` returns the home to service on its current version:
  * only while the installed software is still (or again, after a verified
@@ -1214,12 +1246,11 @@ const MAX_RECOVERY_REOPENS = 3;
  * after selection or admission stays a local recovery. */
 function productRecovery(journal, home) {
   const none = { restore: false, retry: false };
-  // A dead controller can leave its durable stop receipt at claimed. No
-  // software unit can move in that phase; abort may restore the original home.
+  // A dead controller can fail before the first stop or leave its durable stop
+  // receipt at claimed. Neither case has moved software; abort keeps the current home.
   const claimed = journal?.phase === 'claimed';
   if ((!claimed && journal?.phase !== 'recovery_required') || journal.writersAdmitted || journal.acceptedWork || journal.candidateStarted) return none;
-  if (claimed && ((journal.stoppedForUpdate !== true && journal.desiredRunning !== false)
-    || journal.stagedManifestSha256 || journal.retention)) return none;
+  if (claimed && (journal.stagedManifestSha256 || journal.retention)) return none;
   // 187 journals have neither recoveryFrom nor softwareRestored: a recorded
   // staged manifest means the switch began, so they stay local.
   if (journal.stagedManifestSha256 && journal.softwareRestored !== true) return none;
@@ -1365,14 +1396,21 @@ export async function recoverProductUpdate({ homeRoot } = {}, dependencies = {})
       if (classifyProcesses(processes, journal.writerNames || []).unknown.length) {
         return deferred(home, 'unknown_writer', 'An unexpected process is using this home. Wait for it to exit before recovering.', journal);
       }
+      const runningUntouched = untouchedClaim(journal) && journal.desiredRunning === true
+        && await runningRolesOnline(home, journal, processes);
       const reasons = journal.reasons || [];
-      if (journal.phase === 'claimed' || !reasons.some(reason => reason?.code === 'recovered_by_owner')) {
+      const recoveryReasons = reasons.some(reason => reason?.code === 'recovered_by_owner') ? reasons
+        : [...reasons, { code: 'recovered_by_owner', message: 'The owner chose to return the home to service on its current version.' }];
+      if (!journal.desiredRunning || runningUntouched) {
+        // No Start is needed, so close in one durable write. An interrupted
+        // abort must not leave an intermediate journal that asks to restart online roles.
+        journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons: recoveryReasons,
+          ...(runningUntouched ? { runningRestored: true } : {}) }, dependencies);
+      } else if (journal.phase === 'claimed' || recoveryReasons !== reasons) {
         journal = await commitPhase(file, { ...journal,
           ...(journal.phase === 'claimed' ? { phase: 'recovery_required', recoveryFrom: 'claimed' } : {}),
-          reasons: reasons.some(reason => reason?.code === 'recovered_by_owner') ? reasons
-            : [...reasons, { code: 'recovered_by_owner', message: 'The owner chose to return the home to service on its current version.' }] }, dependencies);
+          reasons: recoveryReasons }, dependencies);
       }
-      if (!journal.desiredRunning) journal = await commitPhase(file, { ...journal, phase: 'aborted' }, dependencies);
     } finally { await release(); }
     // Start takes the Host lifecycle lock itself.
     const result = journal.phase === 'aborted' ? publicResult(journal) : await restorePreSwitch(journal, dependencies);
@@ -1403,7 +1441,15 @@ export async function applyProductUpdate({ homeRoot, candidatePayload, staging, 
     try { candidateId = (reuseVerifiedStage ? readProductManifest(candidate) : verify(candidate)).packageId; }
     catch { return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]); }
     if (existing && !['committed', 'rolled_back', 'aborted'].includes(existing.phase)) {
-      if (existing.toPackageId !== candidateId) return refuse(home, [{ code: 'update_in_progress', message: 'An unfinished update belongs to another candidate. Resume that journal before starting a different one.' }]);
+      const newAdmission = admit === true && existing.admit !== true;
+      const abortClaim = (existing.toPackageId !== candidateId || newAdmission)
+        && untouchedClaim(existing) && productRecovery(existing, home).restore;
+      if (existing.toPackageId !== candidateId || (newAdmission && abortClaim)) {
+        const message = abortClaim
+          ? 'An unfinished update never stopped or switched this home. Run product-update-recover.mjs --home <home> --abort before starting a new update.'
+          : 'An unfinished update belongs to another candidate. Resume that journal before starting a different one.';
+        return refuse(home, [{ code: 'update_in_progress', message }]);
+      }
       return withReusedStageLock(existing, verify, () => runTransaction(existing, dependencies, verify));
     }
     if (existing?.phase === 'committed' && existing.toPackageId === candidateId) return publicResult(existing, { replayed: true });

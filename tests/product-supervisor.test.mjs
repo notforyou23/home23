@@ -48,7 +48,7 @@ test('macOS Start admits launchd ownership before any mutating PM2 command', asy
 
 function machine(root) {
   const plan = productSupervisorPlan(root), calls = [];
-  let live = false, loaded = false, pid = 4242, wrongSocket = false, unknown = false, jobPid = 4242, lastExitCode = null;
+  let live = false, loaded = false, pid = 4242, wrongSocket = false, unknown = false, jobPid = 4242, lastExitCode = null, loadedEnvironment;
   const deps = {
     platform: 'darwin', identity: async () => 'fixture-generation', alive: p => live && p === pid,
     listening: async p => unknown ? null : p === path.join(plan.env.PM2_HOME, 'rpc.sock') ? wrongSocket : live && [plan.env.PM2_DAEMON_RPC_PORT, plan.env.PM2_DAEMON_PUB_PORT].includes(p),
@@ -56,7 +56,11 @@ function machine(root) {
       calls.push([file, ...args]);
       assert.equal(file, '/bin/launchctl');
       if (args[0] === 'list') { if (!loaded) throw Object.assign(new Error('absent'), { code: 113 }); return { stdout: `{\n\t"Label" = "${plan.label}";\n${live && jobPid ? `\t"PID" = ${jobPid};\n` : ''}${lastExitCode === null ? '' : `\t"LastExitStatus" = ${lastExitCode};\n`}};\n` }; }
+      if (args[0] === 'bootout') { assert.equal(args[1], plan.service); assert.equal(live, false); loaded = false; return { stdout: '' }; }
       assert.ok(['bootstrap', 'kickstart'].includes(args[0]));
+      // launchd caches the loaded definition: kickstart never re-reads a plist.
+      if (args[0] === 'bootstrap') loadedEnvironment = parsePlist(fs.readFileSync(plan.plist, 'utf8')).EnvironmentVariables;
+      assert.deepEqual(loadedEnvironment, plan.env, 'the resident worker must receive the selected package environment');
       loaded = true; live = true;
       fs.writeFileSync(path.join(plan.env.PM2_HOME, 'pm2.pid'), String(pid));
       const claim = JSON.parse(fs.readFileSync(plan.claim));
@@ -64,7 +68,7 @@ function machine(root) {
       return { stdout: '' };
     },
   };
-  return { plan, calls, deps, get live() { return live; }, set live(v) { live = v; }, get loaded() { return loaded; }, set loaded(v) { loaded = v; }, set pid(v) { pid = v; }, set jobPid(v) { jobPid = v; }, set wrongSocket(v) { wrongSocket = v; }, set unknown(v) { unknown = v; }, set lastExitCode(v) { lastExitCode = v; } };
+  return { plan, calls, deps, get live() { return live; }, set live(v) { live = v; }, get loaded() { return loaded; }, set loaded(v) { loaded = v; }, set pid(v) { pid = v; }, set jobPid(v) { jobPid = v; }, set wrongSocket(v) { wrongSocket = v; }, set unknown(v) { unknown = v; }, set lastExitCode(v) { lastExitCode = v; }, set loadedEnvironment(v) { loadedEnvironment = v; } };
 }
 
 test('launchd config is home-specific, foreground, private, and excludes ambient credentials', t => {
@@ -94,6 +98,172 @@ test('cold Start is launchd-owned and repeated Start joins the same PID without 
   assert.equal(m.calls.filter(c => c[1] === 'bootstrap').length, 1);
   assert.deepEqual(fs.readFileSync(m.plan.claim), claim);
   assert.equal(fs.statSync(m.plan.plist).mode & 0o777, 0o600);
+});
+
+function previousSupervisorPlist(m) {
+  const claim = JSON.parse(fs.readFileSync(m.plan.claim));
+  return supervisorPlist({ ...m.plan, env: { ...m.plan.env,
+    PATH: `${m.plan.homeRoot}/bin:${m.plan.homeRoot}/tools/node_modules/pm2/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
+    LANG: 'en_GB.UTF-8', NODE_ENV: 'previous & product <setting>', PM2_SILENT: 'false',
+  } }, claim.token);
+}
+
+test('owned environment drift remains inspectable without changing the plist or ownership claim', async t => {
+  const root = fixture(t), m = machine(root);
+  await ensureProductSupervisor(root, m.deps);
+  const previous = previousSupervisorPlist(m), claim = fs.readFileSync(m.plan.claim), beforeCalls = m.calls.length;
+  fs.writeFileSync(m.plan.plist, previous);
+  const inode = fs.statSync(m.plan.plist).ino;
+  const status = await inspectProductSupervisor(root, m.deps);
+  assert.equal(status.ownership, 'launchd'); assert.equal(status.pid, 4242);
+  assert.equal(fs.readFileSync(m.plan.plist, 'utf8'), previous);
+  assert.equal(fs.statSync(m.plan.plist).ino, inode);
+  assert.deepEqual(fs.readFileSync(m.plan.claim), claim);
+  assert.ok(m.calls.slice(beforeCalls).every(call => call[1] === 'list'));
+});
+
+test('explicit Start atomically re-renders owned environment drift without restarting an online supervisor', async t => {
+  const root = fixture(t), m = machine(root);
+  await ensureProductSupervisor(root, m.deps);
+  const claim = fs.readFileSync(m.plan.claim), owner = fs.readFileSync(m.plan.owner), beforeCalls = m.calls.length;
+  fs.writeFileSync(m.plan.plist, previousSupervisorPlist(m));
+  const inode = fs.statSync(m.plan.plist).ino;
+  const status = await ensureProductSupervisor(root, m.deps);
+  assert.equal(status.ownership, 'launchd'); assert.equal(status.pid, 4242);
+  assert.equal(fs.readFileSync(m.plan.plist, 'utf8'), supervisorPlist(m.plan, JSON.parse(claim).token));
+  assert.notEqual(fs.statSync(m.plan.plist).ino, inode);
+  assert.equal(fs.statSync(m.plan.plist).mode & 0o777, 0o600);
+  assert.deepEqual(fs.readFileSync(m.plan.claim), claim); assert.deepEqual(fs.readFileSync(m.plan.owner), owner);
+  assert.ok(m.calls.slice(beforeCalls).every(call => call[1] === 'list'));
+  assert.deepEqual(fs.readdirSync(m.plan.env.PM2_HOME).filter(name => name.endsWith('.tmp')), []);
+});
+
+test('cold Start renders the current owned environment before bootstrapping an existing claim', async t => {
+  const root = fixture(t), m = machine(root);
+  await ensureProductSupervisor(root, m.deps);
+  fs.writeFileSync(m.plan.plist, previousSupervisorPlist(m));
+  m.loaded = false; m.live = false;
+  const execute = m.deps.execute;
+  m.deps.execute = async (file, args) => {
+    if (args[0] === 'bootstrap') {
+      const claim = JSON.parse(fs.readFileSync(m.plan.claim));
+      assert.equal(fs.readFileSync(m.plan.plist, 'utf8'), supervisorPlist(m.plan, claim.token));
+      assert.equal(fs.statSync(m.plan.plist).mode & 0o777, 0o600);
+    }
+    return execute(file, args);
+  };
+  assert.equal((await ensureProductSupervisor(root, m.deps)).ownership, 'launchd');
+  assert.equal(m.calls.filter(call => call[1] === 'bootstrap').length, 2);
+});
+
+test('Start reloads cached previous-package environment only after the owned daemon has exited', async t => {
+  for (const refreshWhileOnline of [false, true]) {
+    const root = fixture(t), m = machine(root);
+    await ensureProductSupervisor(root, m.deps);
+    const previous = previousSupervisorPlist(m);
+    m.loadedEnvironment = parsePlist(previous).EnvironmentVariables;
+    fs.writeFileSync(m.plan.plist, previous);
+    if (refreshWhileOnline) assert.equal((await ensureProductSupervisor(root, m.deps)).pid, 4242);
+    const beforeCalls = m.calls.length;
+    m.live = false;
+    assert.equal((await ensureProductSupervisor(root, m.deps)).ownership, 'launchd');
+    assert.deepEqual(m.calls.slice(beforeCalls).filter(call => call[1] !== 'list'), [
+      ['/bin/launchctl', 'bootout', m.plan.service], ['/bin/launchctl', 'bootstrap', m.plan.domain, m.plan.plist],
+    ]);
+    assert.equal(fs.statSync(m.plan.plist).mode & 0o777, 0o600);
+  }
+});
+
+test('Start refreshes an owned inactive job, but defers any live or newly appearing launchd PID', async t => {
+  for (const kind of ['inactive', 'live', 'newly-live']) {
+    const root = fixture(t), m = machine(root);
+    await ensureProductSupervisor(root, m.deps);
+    const previous = previousSupervisorPlist(m), beforeCalls = m.calls.length;
+    fs.writeFileSync(m.plan.plist, previous); m.loadedEnvironment = parsePlist(previous).EnvironmentVariables;
+    m.live = kind === 'live';
+    if (kind === 'inactive') { fs.unlinkSync(m.plan.owner); fs.unlinkSync(path.join(m.plan.env.PM2_HOME, 'pm2.pid')); }
+    if (kind === 'live') m.deps.listening = async () => false;
+    if (kind === 'newly-live') {
+      const execute = m.deps.execute; let inspections = 0;
+      m.deps.execute = async (file, args) => { if (args[0] === 'list' && ++inspections === 2) m.live = true; return execute(file, args); };
+    }
+    if (kind === 'inactive') {
+      assert.equal((await ensureProductSupervisor(root, m.deps)).ownership, 'launchd');
+      assert.deepEqual(m.calls.slice(beforeCalls).filter(call => call[1] !== 'list').map(call => call[1]), ['bootout', 'bootstrap']);
+    } else {
+      await assert.rejects(ensureProductSupervisor(root, m.deps), { code: 'host_supervisor_start_pending' });
+      assert.ok(m.calls.slice(beforeCalls).every(call => call[1] === 'list'));
+      assert.equal(m.live, true);
+    }
+  }
+});
+
+test('environment drift cannot conceal edited identity, routing, structure or unknown environment keys', async t => {
+  const edits = {
+    token: (text, m) => text.replace(JSON.parse(fs.readFileSync(m.plan.claim)).token, 'b'.repeat(36)),
+    service: (text, m) => text.replace(`<key>Label</key><string>${m.plan.label}</string>`, '<key>Label</key><string>com.foreign.service</string>'),
+    program: (text, m) => text.replace(`<string>${m.plan.node}</string>`, '<string>/foreign/bin/node</string>'),
+    module: (text, m) => text.replace(`<string>${m.plan.module}</string>`, '<string>/foreign/supervisor.js</string>'),
+    homeRoot: (text, m) => text.replace(`<string>${m.plan.homeRoot}</string>`, '<string>/foreign/home</string>'),
+    workingDirectory: (text, m) => text.replace(`<key>WorkingDirectory</key><string>${m.plan.homeRoot}/app</string>`, '<key>WorkingDirectory</key><string>/foreign/app</string>'),
+    keepAlive: text => text.replace('<key>KeepAlive</key><false/>', '<key>KeepAlive</key><true/>'),
+    extraJobKey: text => text.replace('<key>RunAtLoad</key>', '<key>Program</key><string>/foreign/program</string><key>RunAtLoad</key>'),
+    extraEnvironmentKey: text => text.replace('<key>EnvironmentVariables</key><dict>', '<key>EnvironmentVariables</key><dict><key>NODE_OPTIONS</key><string>--inspect</string>'),
+    duplicateEnvironmentKey: text => text.replace('<key>EnvironmentVariables</key><dict>', '<key>EnvironmentVariables</key><dict><key>PATH</key><string>/foreign</string>'),
+    missingEnvironmentKey: text => text.replace(/<key>LANG<\/key><string>[^<]*<\/string>/, ''),
+    environmentType: text => text.replace('<key>PM2_SILENT</key><string>false</string>', '<key>PM2_SILENT</key><false/>'),
+    environmentMarkup: text => text.replace('<key>LANG</key><string>en_GB.UTF-8</string>', '<key>LANG</key><string>en_GB.UTF-8<!-- edited --></string>'),
+    malformedEnvironmentText: text => text.replace('<key>LANG</key><string>en_GB.UTF-8</string>', '<key>LANG</key><string>invalid & text</string>'),
+    trailingMarkup: text => text + '<!-- edited -->',
+  };
+  for (const key of ['HOME', 'TMPDIR', 'HOME23_ROOT', 'HOME23_RUNTIME_HOME', 'CDP_USER_DATA_DIR', 'PM2_HOME', 'PM2_DAEMON_RPC_PORT', 'PM2_DAEMON_PUB_PORT', 'PM2_INTERACTOR_RPC_PORT']) {
+    edits[`routing:${key}`] = text => text.replace(new RegExp(`(<key>${key}</key><string>)[^<]*(</string>)`), '$1/foreign/routing$2');
+  }
+  for (const [name, edit] of Object.entries(edits)) {
+    await t.test(name, async t => {
+      const root = fixture(t), m = machine(root);
+      await ensureProductSupervisor(root, m.deps);
+      const edited = edit(previousSupervisorPlist(m), m), beforeCalls = m.calls.length;
+      fs.writeFileSync(m.plan.plist, edited);
+      for (const inspect of [inspectProductSupervisor, ensureProductSupervisor]) {
+        await assert.rejects(inspect(root, m.deps), { code: 'host_supervisor_ambiguous' });
+      }
+      assert.equal(fs.readFileSync(m.plan.plist, 'utf8'), edited);
+      assert.ok(m.calls.slice(beforeCalls).every(call => call[1] === 'list'));
+    });
+  }
+});
+
+test('an owned plist still requires the exact claim schema, service, home root and token', async t => {
+  for (const [key, value] of [['schema', 'foreign.v1'], ['homeRoot', '/foreign/home'], ['service', 'gui/1/foreign'], ['token', 'invalid']]) {
+    const root = fixture(t), m = machine(root);
+    await ensureProductSupervisor(root, m.deps);
+    const plist = previousSupervisorPlist(m), claim = JSON.parse(fs.readFileSync(m.plan.claim));
+    fs.writeFileSync(m.plan.plist, plist); privateJSON(m.plan.claim, { ...claim, [key]: value });
+    await assert.rejects(inspectProductSupervisor(root, m.deps), { code: 'host_supervisor_ambiguous' });
+    await assert.rejects(ensureProductSupervisor(root, m.deps), { code: 'host_supervisor_ambiguous' });
+    assert.equal(fs.readFileSync(m.plan.plist, 'utf8'), plist);
+  }
+});
+
+test('owned environment drift never permits a public or symlinked supervisor plist', async t => {
+  for (const kind of ['public', 'symlink']) {
+    const root = fixture(t), m = machine(root);
+    await ensureProductSupervisor(root, m.deps);
+    const previous = previousSupervisorPlist(m), beforeCalls = m.calls.length;
+    fs.writeFileSync(m.plan.plist, previous);
+    if (kind === 'public') fs.chmodSync(m.plan.plist, 0o644);
+    else {
+      const target = path.join(m.plan.env.PM2_HOME, 'preserved.plist');
+      fs.renameSync(m.plan.plist, target); fs.symlinkSync(target, m.plan.plist);
+    }
+    for (const inspect of [inspectProductSupervisor, ensureProductSupervisor]) {
+      await assert.rejects(inspect(root, m.deps), { code: 'host_supervisor_ambiguous' });
+    }
+    assert.equal(fs.readFileSync(m.plan.plist, 'utf8'), previous);
+    assert.equal(fs.lstatSync(m.plan.plist).isSymbolicLink(), kind === 'symlink');
+    assert.ok(m.calls.slice(beforeCalls).every(call => call[1] === 'list'));
+  }
 });
 
 test('legacy daemon requires explicit update admission; no daemon or role is changed', async t => {
@@ -324,6 +494,42 @@ test('second independent update archives the completed migration and preserves p
   assert.equal(fs.readdirSync(f.m.plan.env.PM2_HOME).filter(f => /^supervisor-migration\.[a-f0-9]+\.json$/.test(f)).length, 1);
 });
 
+test('admitted update handoff refreshes owned plist drift while preserving an independent daemon and paused roles', async t => {
+  const f = await migrationFixture(t);
+  await adoptProductSupervisor(f.root, f.admission, f.m.deps);
+  fs.writeFileSync(f.m.plan.plist, previousSupervisorPlist(f.m));
+  const claim = fs.readFileSync(f.m.plan.claim), beforeCalls = f.m.calls.length, inode = fs.statSync(f.m.plan.plist).ino;
+  privateJSON(f.journalPath, { id: 'environment-update', homeRoot: f.root, ownerToken: 'environment-token', phase: 'verifying', candidateStarted: false });
+  const result = await adoptProductSupervisor(f.root, { ...f.admission, updateId: 'environment-update', updateOwnerToken: 'environment-token' }, f.m.deps);
+  assert.equal(result.ownership, 'launchd'); assert.equal(result.pid, 4242);
+  assert.deepEqual(result.pausedNames, ['home23-milo-dash']); assert.deepEqual(f.signals, [[4242, 'SIGINT']]);
+  assert.equal(fs.readFileSync(f.m.plan.plist, 'utf8'), supervisorPlist(f.m.plan, JSON.parse(claim).token));
+  assert.notEqual(fs.statSync(f.m.plan.plist).ino, inode);
+  assert.equal(fs.statSync(f.m.plan.plist).mode & 0o777, 0o600);
+  assert.deepEqual(fs.readFileSync(f.m.plan.claim), claim);
+  assert.ok(f.m.calls.slice(beforeCalls).every(call => call[1] === 'list'));
+});
+
+test('retained-Node update handoff reloads the owned job with the selected package environment', async t => {
+  const f = await migrationFixture(t);
+  await adoptProductSupervisor(f.root, f.admission, f.m.deps);
+  const previous = previousSupervisorPlist(f.m), beforeCalls = f.m.calls.length;
+  fs.writeFileSync(f.m.plan.plist, previous); f.m.loadedEnvironment = parsePlist(previous).EnvironmentVariables;
+  privateJSON(f.journalPath, { id: 'retained-environment-update', homeRoot: f.root, ownerToken: 'retained-environment-token', phase: 'selected', candidateStarted: false });
+  f.m.deps.identity = async () => ({ generation: 'fixture-generation', executable: f.signals.length === 1
+    ? path.join(path.dirname(f.root), '.Home.home23-update/previous/bin/node') : f.m.plan.node });
+  const result = await adoptProductSupervisor(f.root, { ...f.admission,
+    updateId: 'retained-environment-update', updateOwnerToken: 'retained-environment-token' }, f.m.deps);
+  assert.equal(result.ownership, 'launchd'); assert.equal(result.pid, 4242);
+  assert.deepEqual(result.pausedNames, ['home23-milo-dash']);
+  assert.deepEqual(f.signals, [[4242, 'SIGINT'], [4242, 'SIGINT']]);
+  assert.deepEqual(f.m.calls.slice(beforeCalls).filter(call => call[1] !== 'list'), [
+    ['/bin/launchctl', 'bootout', f.m.plan.service], ['/bin/launchctl', 'bootstrap', f.m.plan.domain, f.m.plan.plist],
+  ]);
+  const claim = JSON.parse(fs.readFileSync(f.m.plan.claim));
+  assert.equal(fs.readFileSync(f.m.plan.plist, 'utf8'), supervisorPlist(f.m.plan, claim.token));
+});
+
 test('same admitted update can restore missing stopped registrations after an independent daemon loss', async t => {
   const f = await migrationFixture(t);
   await adoptProductSupervisor(f.root, f.admission, f.m.deps);
@@ -539,7 +745,9 @@ test('admitted readiness recovers a dead launchd resident and only restores stop
   assert.equal(result.ownership, 'launchd'); assert.equal(result.pid, 8181);
   assert.equal(result.previousPid, 4242); assert.equal(result.previousExitCode, 1);
   assert.deepEqual(result.pausedNames, ['home23-milo-dash']);
-  assert.deepEqual(f.m.calls.slice(before).filter(call => call[1] === 'kickstart'), [['/bin/launchctl', 'kickstart', f.m.plan.service]]);
+  assert.deepEqual(f.m.calls.slice(before).filter(call => call[1] !== 'list'), [
+    ['/bin/launchctl', 'bootout', f.m.plan.service], ['/bin/launchctl', 'bootstrap', f.m.plan.domain, f.m.plan.plist],
+  ]);
   assert.equal(f.commands.some(command => ['start', 'restart', 'delete'].includes(command[0])), false);
   assert.deepEqual(f.signals, [[4242, 'SIGINT']]);
 });
@@ -612,7 +820,8 @@ test('pre-writer selected admission safely restarts its exact exited launchd own
   assert.equal(result.ownership, 'launchd'); assert.equal(result.pid, 8181); assert.equal(result.previousPid, 4242);
   assert.deepEqual(result.pausedNames, ['home23-milo-dash']);
   assert.equal(f.signals.length, signalsBefore);
-  assert.equal(f.m.calls.filter(call => call[1] === 'kickstart').length, 1);
+  assert.equal(f.m.calls.filter(call => call[1] === 'bootout').length, 1);
+  assert.equal(f.m.calls.filter(call => call[1] === 'bootstrap').length, 2);
 });
 
 test('pre-writer recovery rejects mismatched dead PIDs, legacy snapshots and admitted writers without a restart', async t => {

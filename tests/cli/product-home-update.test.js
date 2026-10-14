@@ -833,6 +833,61 @@ test('a failed home service fails the reconnect on the first probe', async t => 
   assert.deepEqual(slept, []);
 });
 
+test('a failed pre-writer claim offers Recover after a returned or thrown update failure', async t => {
+  for (const throws of [false, true]) {
+    const f = fixture(t); await check(f);
+    const accepted = await requestHomeUpdate(input(f.home, 'update', `claimed-${throws}`), noLaunch);
+    let journal = null;
+    await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+      channel: { prepareConfiguredRelease: async () => ({ release, packageId: release.packageId }) },
+      updater: {
+        readUpdateJournal: () => journal,
+        productRecoveryFor: () => ({ available: true, restore: true, retry: false, reasonCodes: [] }),
+        applyProductUpdate: async () => {
+          journal = { phase: 'claimed', writersAdmitted: false, candidateStarted: false, acceptedWork: false };
+          if (throws) throw Object.assign(new Error('Private /secret path'), { code: 'host_supervisor_ambiguous' });
+          return { ok: false, status: 'claimed' };
+        },
+      },
+      appUpdater: unusedAppUpdater,
+    });
+    const saved = f.operation(accepted.operation.id);
+    assert.equal(saved.requiresLocalRecovery, true);
+    assert.equal(saved.recoverable, true);
+    assert.equal(saved.retryable, false);
+    const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+    assert.deepEqual(status.allowedActions, ['recover']);
+    assert.equal(status.operation.errorCode, 'local_recovery_required');
+    assert.doesNotMatch(JSON.stringify(status), /secret/);
+    f.setOperation({ ...saved, pid: null });
+    const recover = await requestHomeUpdate(input(f.home, 'recover', `claimed-recover-${throws}`), noLaunch);
+    assert.equal(recover.operation.id, accepted.operation.id);
+  }
+});
+
+test('a thrown claimed failure keeps native recovery fenced when the updater refuses abort', async t => {
+  const f = fixture(t); await check(f);
+  const accepted = await requestHomeUpdate(input(f.home, 'update', 'unsafe-claimed'), noLaunch);
+  let journal = null;
+  await runHomeUpdateOperation({ homeRoot: f.home, operationId: accepted.operation.id }, {
+    channel: { prepareConfiguredRelease: async () => ({ release, packageId: release.packageId }) },
+    updater: {
+      readUpdateJournal: () => journal,
+      productRecoveryFor: () => ({ available: true, restore: false, retry: false, reasonCodes: [] }),
+      applyProductUpdate: async () => {
+        journal = { phase: 'claimed', candidateStarted: true };
+        throw new Error('Private /secret path');
+      },
+    },
+    appUpdater: unusedAppUpdater,
+  });
+  const status = homeUpdateStatus({ homeRoot: f.home, clientBuild: 180 });
+  assert.deepEqual(status.allowedActions, []);
+  assert.equal(status.operation.errorCode, 'local_recovery_required');
+  assert.equal(status.operation.canResume, false);
+  assert.doesNotMatch(JSON.stringify(status), /secret/);
+});
+
 test('a refused automatic recovery does not advertise an ineffective retry', async t => {
   const f = fixture(t); await check(f);
   const accepted = await requestHomeUpdate(input(f.home, 'update', 'update'), noLaunch);

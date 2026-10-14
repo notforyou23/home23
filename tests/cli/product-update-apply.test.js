@@ -833,6 +833,152 @@ async function interruptedClaimedStop(t, options = {}) {
   return fixture;
 }
 
+/** A supervisor claim failure before the updater records or stops any writer. */
+async function interruptedClaimedBeforeStop(t, options = {}) {
+  const { admit = true, ...homeOptions } = options;
+  const fixture = homeFixture(t, { desiredRunning: true, ...homeOptions });
+  let lists = 0;
+  await assert.rejects(applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit }, { ...quiet,
+    // A non-admitted claim can become busy after its quiet preflight.
+    listProcesses: async () => !admit && lists++ === 0 ? []
+      : ownedWriterNames('milo', { encoderRequired: true }).map(name => ({ name, status: 'online' })),
+    captureSupervisor: async () => { throw Object.assign(new Error('conflicting supervisor claim'), { code: 'host_supervisor_ambiguous' }); },
+    quiesce: async () => { assert.fail('claim failure must precede the first stop'); },
+  }), { code: 'host_supervisor_ambiguous' });
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.phase, 'claimed');
+  for (const field of ['stoppedForUpdate', 'writersAdmitted', 'candidateStarted', 'acceptedWork', 'stagedManifestSha256', 'retention']) {
+    assert.ok(!journal[field], field);
+  }
+  return fixture;
+}
+
+test('claimed recovery aborts a pre-stop failure without starting or stopping online roles', async t => {
+  const fixture = await interruptedClaimedBeforeStop(t);
+  const before = preserved(fixture.home);
+  const unchangedFiles = ['manifest.json', '.home23-install.json', '.home23-host.json'];
+  const unchanged = unchangedFiles.map(file => fs.readFileSync(path.join(fixture.home, file), 'utf8'));
+  assert.deepEqual(productRecoveryFor(fixture.home), { available: true, restore: true, retry: false, reasonCodes: [] });
+  const result = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    listProcesses: async () => ownedWriterNames('milo', { encoderRequired: true }).map(name => ({ name, status: 'online' })),
+    start: async () => { assert.fail('the running house must not receive Start'); },
+    quiesce: async () => { assert.fail('the running house must not receive Stop'); },
+    adoptSupervisor: async () => { assert.fail('abort must not hand off the supervisor'); },
+    afterPhase: async journal => { assert.equal(journal.phase, 'aborted', 'untouched abort must close in one journal write'); },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.runningRestored, true);
+  const journal = readUpdateJournal(fixture.home);
+  assert.equal(journal.phase, 'aborted');
+  assert.equal(updateBlocksStart(journal), false);
+  assert.equal(productRecoveryFor(fixture.home).available, false);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.deepEqual(preserved(fixture.home), before);
+  assert.deepEqual(unchangedFiles.map(file => fs.readFileSync(path.join(fixture.home, file), 'utf8')), unchanged);
+});
+
+test('claimed pre-stop recovery restores missing roles on the current package', async t => {
+  const fixture = await interruptedClaimedBeforeStop(t);
+  let starts = 0;
+  const result = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    start: async (home, journal) => {
+      starts++;
+      assert.equal(journal.recoveryFrom, 'claimed');
+      assert.equal(packageId(home), fixture.installed.packageId);
+      return { ok: true, status: 'ready' };
+    },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(starts, 1);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+});
+
+test('pre-stop recovery leaves configured online roles untouched when optional roles are absent or paused', async t => {
+  const required = ['home23-coordination', 'home23-milo', 'home23-milo-dash', 'home23-milo-harness', 'home23-embedder'];
+  const fixture = await interruptedClaimedBeforeStop(t, { currentExtra: {
+    'app/cli/lib/product-host.js': `export function ownedProcessNamesForState(state) {
+      if (state.profile.name !== 'milo') throw new Error('wrong resident');
+      return ${JSON.stringify(required)};
+    }\n`,
+  } });
+  const result = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    listProcesses: async () => [...required.map(name => ({ name, status: 'online' })), { name: 'home23-milo-seed', status: 'stopped' }],
+    start: async () => { assert.fail('absent optional roles must not trigger Start'); },
+    quiesce: async () => { assert.fail('abort must not stop configured online roles'); },
+  });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.runningRestored, true);
+});
+
+test('a different candidate after a pre-stop claim directs the owner to --abort without changing the house', async t => {
+  const fixture = await interruptedClaimedBeforeStop(t);
+  const otherCandidate = path.join(fixture.root, 'other-candidate');
+  payload(otherCandidate, { sourceCommit: 'c'.repeat(40) });
+  const file = path.join(updateDirectoryFor(fixture.home), 'journal.json');
+  const before = fs.readFileSync(file, 'utf8');
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: otherCandidate,
+    staging: path.join(fixture.root, 'other-staging'), admit: true }, { ...quiet,
+    start: async () => { assert.fail('a replacement candidate must not start the house'); },
+    quiesce: async () => { assert.fail('a replacement candidate must not stop the house'); },
+  });
+  assert.equal(result.reasons[0].code, 'update_in_progress');
+  assert.match(result.reasons[0].message, /product-update-recover\.mjs.*--abort/);
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+});
+
+test('fresh --admit for the same candidate resumes a dead pre-stop claim safely', async t => {
+  const fixture = await interruptedClaimedBeforeStop(t);
+  const original = readUpdateJournal(fixture.home);
+  let online = true, stops = 0, starts = 0, captures = 0;
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    captureSupervisor: async () => { captures++; return { ownership: 'launchd', registrations: [] }; },
+    quiesce: async () => { stops++; online = false; return []; },
+    adoptSupervisor: async () => ({ ownership: 'launchd', pausedNames: [] }),
+    start: async () => { starts++; return { ok: true, status: 'ready' }; },
+  });
+  assert.equal(result.status, 'committed');
+  assert.deepEqual({ captures, stops, starts }, { captures: 1, stops: 1, starts: 1 });
+  assert.equal(readUpdateJournal(fixture.home).id, original.id);
+  assert.equal(packageId(fixture.home), fixture.next.packageId);
+});
+
+test('fresh --admit after an unadmitted dead claim directs --abort instead of repeating a busy claim', async t => {
+  const fixture = await interruptedClaimedBeforeStop(t, { admit: false });
+  const file = path.join(updateDirectoryFor(fixture.home), 'journal.json');
+  const before = fs.readFileSync(file, 'utf8');
+  const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
+    staging: fixture.staging, admit: true }, { ...quiet,
+    listProcesses: async () => [{ name: 'home23-milo', status: 'online' }],
+    captureSupervisor: async () => ({ ownership: 'launchd', registrations: [] }),
+    quiesce: async () => { assert.fail('existing claim admission must not change implicitly'); },
+  });
+  assert.equal(result.reasons[0].code, 'update_in_progress');
+  assert.match(result.reasons[0].message, /product-update-recover\.mjs.*--abort/);
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+});
+
+test('pre-stop --abort entry closes the journal without Start when all owned roles remain online', async t => {
+  const rows = ['home23-coordination', 'home23-milo', 'home23-milo-dash', 'home23-milo-harness', 'home23-embedder']
+    .map(name => ({ name, pm2_env: { status: 'online' } }));
+  const fixture = await interruptedClaimedBeforeStop(t, { currentExtra: {
+    'bin/node': `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' "$@"\n`,
+    'app/cli/lib/product-supervisor.js': `export async function productSupervisorCommand() { return { stdout: ${JSON.stringify(JSON.stringify(rows))} }; }\n`,
+    'app/cli/lib/product-host.js': `export async function runHostAction() { throw new Error('Start must not run during untouched abort'); }\n`,
+  } });
+  const result = await run(process.execPath, [path.join(rootDir, 'cli/lib/product-update-recover.mjs'), '--home', fixture.home, '--abort'], process.env);
+  assert.equal(result.code, 0, result.stderr + result.stdout);
+  assert.equal(JSON.parse(result.stdout).status, 'aborted');
+  assert.equal(JSON.parse(result.stdout).runningRestored, true);
+  assert.equal(packageId(fixture.home), fixture.installed.packageId);
+  assert.equal(readUpdateJournal(fixture.home).phase, 'aborted');
+});
+
 test('claimed recovery restores the same home with an owner-authorized journal and released Host lock', async t => {
   const fixture = await interruptedClaimedStop(t);
   const before = preserved(fixture.home);
@@ -877,8 +1023,9 @@ test('claimed recovery respects desiredRunning false without starting or selecti
 });
 
 test('claimed recovery refuses switch evidence, admission, and changed manifest or install identity', async t => {
-  for (const damage of ['selected', 'stagedManifest', 'retention', 'candidateStarted', 'writersAdmitted', 'acceptedWork', 'manifest', 'install']) {
-    const fixture = await interruptedClaimedStop(t);
+  for (const [create, damage] of [interruptedClaimedStop, interruptedClaimedBeforeStop].flatMap(create =>
+    ['selected', 'stagedManifest', 'retention', 'candidateStarted', 'writersAdmitted', 'acceptedWork', 'manifest', 'install'].map(damage => [create, damage]))) {
+    const fixture = await create(t);
     const file = path.join(updateDirectoryFor(fixture.home), 'journal.json');
     const journal = readUpdateJournal(fixture.home);
     if (damage === 'selected') journal.phase = 'selected';
@@ -898,6 +1045,18 @@ test('claimed recovery refuses switch evidence, admission, and changed manifest 
     assert.equal(result.reasons[0].code, 'recovery_unavailable', damage);
     assert.equal(fs.readFileSync(file, 'utf8'), before, damage);
   }
+});
+
+test('pre-stop recovery defers unknown active writers without changing the journal', async t => {
+  const fixture = await interruptedClaimedBeforeStop(t);
+  const file = path.join(updateDirectoryFor(fixture.home), 'journal.json');
+  const before = fs.readFileSync(file, 'utf8');
+  const result = await recoverProductUpdate({ homeRoot: fixture.home }, { ...quiet,
+    listProcesses: async () => [{ name: 'foreign-writer', status: 'online' }],
+    start: async () => { assert.fail('unknown writers must prevent Start'); },
+  });
+  assert.equal(result.reasons[0].code, 'unknown_writer');
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
 });
 
 test('claimed recovery leaves the journal untouched when the Host or update lock is held', async t => {
