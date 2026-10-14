@@ -299,7 +299,6 @@ function federateRelationshipHits(
 ): Record<string, unknown> {
   if (['queued', 'running', 'failed', 'cancelled', 'interrupted'].includes(String(value.state))) return value;
   const own = canonicalOwn && (!request.target || request.target.agent === ctx.agentName);
-  if (!own || (!ctx.relationshipLedger && !ctx.memoryObjectStore)) return value;
   const { query, topK, tag } = request;
   const nowMs = request.nowMs ?? Date.now();
   const ownerQuery = ownerConversationQuery(query, nowMs);
@@ -319,15 +318,31 @@ function federateRelationshipHits(
     const row = asRecord(hit) ?? {};
     const owner = asRecord(row.ownerConversation);
     const authority = asRecord(row.retrievalAuthority);
-    const conversational = ['conversation', 'conversation_sessions', 'owner_conversation', 'summary', 'consolidated'].includes(String(row.tag));
+    const metadata = asRecord(row.metadata);
+    const provenance = asRecord(row.provenance);
+    const conversational = ['conversation', 'conversation_sessions', 'owner_conversation', 'chat', 'chat_session', 'summary', 'consolidated'].includes(String(row.tag))
+      || ['conversation', 'owner_conversation'].includes(String(provenance?.generation_method ?? metadata?.generation_method))
+      || ['conversation', 'owner_conversation'].includes(String(row.sourceClass ?? row.source_class));
     return classifyOwnerConversation({ ...row,
-      text: owner ? `${owner.quote ?? ''}\n${owner.statement ?? ''}` : conversational ? String(row.concept ?? '') : '',
+      text: owner ? `${owner.quote ?? ''}\n${owner.statement ?? ''}`
+        : conversational ? String(row.concept ?? row.content ?? row.text ?? row.statement ?? '') : '',
       sessionRefs: owner?.sessionRefs ?? row.sessionRefs,
       sourceRefs: owner?.sourceRefs ?? row.sourceRefs,
-      metadata: { ...asRecord(row.metadata),
-        conversationKind: owner?.conversationKind ?? authority?.conversationKind ?? row.conversationKind },
+      metadata: { ...metadata,
+        conversationKind: owner?.conversationKind ?? authority?.conversationKind ?? row.conversationKind ?? metadata?.conversationKind },
     }).kind;
   };
+  // Apply admission to indexed results even when this target has no local
+  // owner stores. Exact-id lookup remains available for retained source content.
+  const excludeVerificationHits = () => {
+    for (let index = hits.length - 1; index >= 0; index--) {
+      if (asRecord(hits[index])?.matchKind !== 'exact_id' && conversationKind(hits[index]) === 'verification') {
+        hits.splice(index, 1);
+      }
+    }
+  };
+  excludeVerificationHits();
+  if (!own || (!ctx.relationshipLedger && !ctx.memoryObjectStore)) return { ...value, results: hits };
   const existing = new Set(hits.map((hit) => String((asRecord(hit) ?? {}).id ?? '')));
   const ownerIds = new Set<string>();
   const ownerHits: OwnerConversationEvidence[] = [];
@@ -339,7 +354,17 @@ function federateRelationshipHits(
     if (record.privacyClass === 'sensitive' || ownerIds.has(record.id)) return;
     record = enrichOwner(record, ownerQuery);
     const score = ownerConversationMatch(record, ownerQuery);
-    if (score === null) return;
+    if (score === null) {
+      if (record.conversationKind === 'verification') {
+        // Source metadata can exclude a legacy pointer whose indexed copy
+        // still has only neutral text. Keep exact-id source inspection available.
+        for (let index = hits.length - 1; index >= 0; index--) {
+          const hit = asRecord(hits[index]);
+          if (String(hit?.id ?? '') === record.id && hit?.matchKind !== 'exact_id') hits.splice(index, 1);
+        }
+      }
+      return;
+    }
     // Upgrade an indexed copy of this pointer instead of keeping its thin head.
     for (let index = hits.length - 1; index >= 0; index--) {
       if (String(asRecord(hits[index])?.id ?? '') === record.id) hits.splice(index, 1);
@@ -408,6 +433,7 @@ function federateRelationshipHits(
       }
     } catch { factsHealth = 'unavailable'; }
   }
+  excludeVerificationHits();
   hits.sort((left, right) => {
     const a = asRecord(left) ?? {};
     const b = asRecord(right) ?? {};

@@ -109,6 +109,34 @@ test('apply backs up exact bytes first, preserves records, marks only verificati
   assert.deepEqual(fs.readdirSync(fx.root).sort(), names);
 });
 
+test('post-fix retrieval trial heads report exact matching ids without excluding a genuine morning brain request', (t) => {
+  const trial = entry('rel_20261014T125830Z_e75f', {
+    title: "For this post-fix check, try the resident's retrieval and memory in practice.",
+    statement: "For this post-fix check, try the resident's retrieval and memory in practice.",
+    evidence_note: 'Yup. Give it a go…',
+    provenance: { generation_method: 'owner_conversation',
+      session_refs: ['owner-session:synthetic'], source_refs: ['coordination.message:synthetic'] },
+  });
+  const owner = entry('genuine-morning', { title: 'Morning discussion',
+    statement: 'Check the brain. We discussed tickets and the guitar lesson this morning.',
+    evidence_note: 'Can you find our earlier conversation in memory? The brain_search report is useful.' });
+  const fx = fixture(t, { entries: [trial, owner] });
+  const dryRun = quarantineOwnerConversationLedger({ inputPath: fx.ledgerPath, since: '2026-10-14' });
+  assert.equal(dryRun.dryRun, true);
+  assert.equal(dryRun.exclusions, 1);
+  assert.deepEqual(dryRun.matchedIds, [trial.id]);
+  assert.deepEqual(dryRun.exclusionReasons, { retrieval_meta_content: 1 });
+  assert.equal(fs.readFileSync(fx.ledgerPath).equals(fx.bytes), true);
+  const applied = quarantineOwnerConversationLedger({ inputPath: fx.ledgerPath, dryRun: false, since: '2026-10-14', now: NOW });
+  assert.equal(applied.applied, 1);
+  assert.deepEqual(fx.read().entries[1], owner);
+  assert.equal(fx.read().entries[0].evidence_note, trial.evidence_note);
+  const repeated = quarantineOwnerConversationLedger({ inputPath: fx.ledgerPath, dryRun: false, since: '2026-10-14', now: NOW });
+  assert.deepEqual(repeated.matchedIds, []);
+  assert.deepEqual(repeated.exclusionReasons, {});
+  assert.equal(repeated.alreadyExcluded, 1);
+});
+
 test('memory objects use their native store shape and session_id with inclusive semantic timestamps', (t) => {
   const object = {
     memory_id: 'mo-synthetic', statement: 'Synthetic ticket test', session_id: 'owner-verification-tickets',

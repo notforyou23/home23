@@ -356,6 +356,32 @@ test('Oct 14 morning owner recall outranks twelve Aug/Sep corrections from the d
     { start: '2026-10-14T04:00:00.000Z', end: '2026-10-14T16:00:00.000Z' });
 });
 
+test('Oct 14 morning question and the live verification paraphrase use healthy authorized owner recall', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-owner-morning-route-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-14T20:11:00Z'));
+  const ledger = new RelationshipLedger(dir);
+  ledger.upsertOwnerConversation({ type: 'decision', statement: 'Owner asked about the brain after restart.',
+    quote: 'Check the brain this morning.', occurredAt: '2026-10-14T10:36:24Z',
+    messageRef: 'coordination.message:msg_morning_route', sessionId: 'owner-session:oct14' });
+  let authorized = 0;
+  const ctx = makeCtx({ relationshipLedger: ledger, brainOperations: {
+    resolveTarget: async () => { authorized++; return { kind: 'resident', ownerAgent: 'jerry', accessMode: 'own', lifecycle: 'resident' }; },
+    search: async () => { throw new Error('morning recall must not reach the graph scan'); },
+  } });
+  for (const query of ['What did we talk about this morning?',
+    'October 14 2026 morning conversation dinner brain surgery re-embedded restarted retrieval fixes']) {
+    const result = await brainSearchTool.execute({ query, limit: 8 }, ctx);
+    assert.equal(result.is_error, undefined);
+    assert.equal(result.metadata?.hitCount, 1);
+    assert.match(result.content, /sourceHealth=healthy retrievalMode=owner-conversation-time-window completeness=complete/);
+    assert.match(result.content, /Check the brain this morning/);
+    assert.deepEqual((result.metadata?.ownerConversationFederation as any).window,
+      { start: '2026-10-14T04:00:00.000Z', end: '2026-10-14T16:00:00.000Z' });
+  }
+  assert.equal(authorized, 2);
+});
+
 test('quoted ISO owner dates use authorized time-window recall without invoking a degraded graph scan', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-owner-date-index-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -404,7 +430,7 @@ test('relationship federation reports actual overlap and cannot bury an owner le
   assert.doesNotMatch(result.content, /kindBoost=900/);
 });
 
-test('brain_search keeps original tickets above owner recaps and verification graph or ledger mentions', async t => {
+test('brain_search excludes verification graph and ledger echoes while retaining original tickets and recaps', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-ticket-echo-ranking-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   t.mock.method(Date, 'now', () => Date.parse('2026-10-14T18:00:00Z'));
@@ -421,11 +447,59 @@ test('brain_search keeps original tickets above owner recaps and verification gr
   const ctx = makeCtx({ relationshipLedger: ledger, brainOperations: { search: async () => ({ results: [
     { id: 'graph-test', concept: 'Test your recall with brain_search for Trey Billy tickets.', tag: 'conversation_sessions', finalRankScore: 900 },
     { id: 'flagged-test', concept: 'Trey Billy tickets.', metadata: { verification: true }, finalRankScore: 901 },
+    { id: 'retest-summary', concept: "Retrieval retest conversation repeated Trey Billy ticket memories alongside owner's reports of further brain fixes",
+      tag: 'owner_conversation', matchKind: 'owner_conversation_lexical', finalRankScore: 902 },
   ] }) } });
   const result = await brainSearchTool.execute({ query: 'Trey/Billy tickets', limit: 5 }, ctx);
   assert.match(result.content, new RegExp(`1\\. id=${original.id}`));
   assert.equal((result.metadata?.ownerConversationHits as any[]).length, 2, 'verification is not federated as owner evidence');
-  assert.match(result.content, /graph-test/, 'verification stays retrievable with demotion');
+  assert.doesNotMatch(result.content, /graph-test|flagged-test|retest-summary|recall test/, 'verification is excluded rather than demoted');
+});
+
+test('verification conversation admission does not depend on local ledger availability', async () => {
+  const resultRows = [
+    { id: 'metadata-test', concept: 'Trey Billy tickets.', tag: 'conversation_sessions', metadata: { conversationKind: 'verification' } },
+    { id: 'chat-test', concept: 'Trey Billy tickets.', tag: 'conversation_sessions', metadata: { chatId: 'home-verify-49' } },
+    { id: 'chat-tag-test', concept: 'Retrieval retest for Trey Billy tickets.', tag: 'chat' },
+    { id: 'conversation-source-test', concept: 'Retrieval retest for Trey Billy tickets.', sourceClass: 'owner_conversation' },
+    { id: 'content-test', content: 'Retrieval retest for Trey Billy tickets.', tag: 'chat' },
+    { id: 'text-test', text: 'Retrieval retest for Trey Billy tickets.', tag: 'chat_session' },
+    { id: 'original', concept: 'I bought Trey Billy tickets.', tag: 'conversation_sessions' },
+  ];
+  for (const target of [undefined, { agent: 'forrest' }]) {
+    const result = await brainSearchTool.execute({ query: 'Trey Billy tickets', ...(target ? { target } : {}) },
+      makeCtx({ brainOperations: { search: async () => ({ results: resultRows }) } }));
+    assert.match(result.content, /id=original/);
+    assert.doesNotMatch(result.content, /metadata-test|chat-test|chat-tag-test|conversation-source-test|content-test|text-test/);
+  }
+  const inspected = await brainSearchTool.execute({ query: 'chat-test' }, makeCtx({
+    brainOperations: { search: async () => ({ results: [{ ...resultRows[1], matchKind: 'exact_id' }] }) },
+  }));
+  assert.match(inspected.content, /id=chat-test/, 'retained content remains inspectable by exact id');
+});
+
+test('verification on a cited source excludes a neutral indexed copy of its owner pointer', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-owner-indexed-policy-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(Date, 'now', () => Date.parse('2026-10-14T18:00:00Z'));
+  const ledger = new RelationshipLedger(dir);
+  const occurredAt = '2026-10-14T13:00:00.000Z';
+  const quote = 'I bought Trey and Billy tickets.';
+  const pointer = ledger.upsertOwnerConversation({ type: 'decision', statement: 'Trey and Billy tickets.', quote,
+    occurredAt, messageRef: 'coordination.message:msg_flagged', sessionId: 'owner-session:hashed' });
+  mkdirSync(join(dir, 'substrate'));
+  writeFileSync(join(dir, 'substrate', 'conversation-stream.jsonl'), JSON.stringify({ role: 'user', voice: 'jtr',
+    text: quote, ts: occurredAt, session: 'coordination:chn_owner', channelKind: 'direct', verification: true,
+    contactId: 'message:msg_flagged', sourceRef: 'coordination.message:msg_flagged', actor: { kind: 'owner', principalId: 'user_owner' },
+  }) + '\n');
+  for (const matchKind of ['semantic', 'exact_id']) {
+    const result = await brainSearchTool.execute({ query: 'Trey Billy tickets' }, makeCtx({ instanceDir: dir,
+      relationshipLedger: ledger, brainOperations: { search: async () => ({ results: [
+        { id: pointer.id, concept: 'Trey and Billy tickets.', tag: 'owner_conversation', matchKind, finalRankScore: 1 },
+      ] }) },
+    }));
+    assert.equal(result.metadata?.hitCount, matchKind === 'exact_id' ? 1 : 0);
+  }
 });
 
 test('dated local recall reports empty or unavailable scoped sources without scanning quoted dates', async t => {

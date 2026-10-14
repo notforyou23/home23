@@ -1431,7 +1431,7 @@ test('context mode still uses a stale ANN instead of scanning the corpus', async
   }
 });
 
-test('explicit exhaustive search uses the logical source fallback', async () => {
+test('explicit exhaustive search uses a healthy complete logical source scan', async () => {
   const dir = await createBrain({
     nodes: [{ id: 'exact', concept: 'exhaustive canary', embedding: [1, 0] }],
   });
@@ -1449,7 +1449,30 @@ test('explicit exhaustive search uses the logical source fallback', async () => 
   assert.equal(result.stats.retrievalMode, 'logical-source-scan');
   assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
   assert.ok(result.results.every((row) => row.retrievalMode === 'logical-source-scan'));
-  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.sourceHealth, 'healthy');
+});
+
+test('an exhaustive scan preserves real encoder faults despite complete logical coverage', async t => {
+  const dir = await createBrain({
+    nodes: [{ id: 'exact', concept: 'exhaustive canary', embedding: [1, 0] }],
+  });
+  for (const reason of ['embedding_unavailable', 'embedding_invalid']) {
+    await t.test(reason, async () => {
+      const result = await sourceSearch({
+        dir, query: 'exhaustive canary',
+        embedQuery: async () => {
+          if (reason === 'embedding_unavailable') throw new Error('encoder unavailable');
+          return [Number.NaN, 0];
+        },
+        loadAnn: async () => null,
+        request: { exhaustive: true },
+      });
+      assert.equal(result.evidence.fallback.reason, reason);
+      assert.equal(result.evidence.completeCoverage, true);
+      assert.equal(result.evidence.sourceHealth, 'degraded');
+      assert.equal(result.results[0]?.id, 'exact');
+    });
+  }
 });
 
 test('fresh ANN applies shared closure and correction authority before returning current state', async () => {
@@ -1566,7 +1589,7 @@ test('ANN authority suppression happens before topK so lower semantic evidence b
   assert.deepEqual(result.results.map((row) => row.id), ['eligible']);
 });
 
-test('bounded ANN label absence falls back to logical source before claiming no match', async () => {
+test('bounded ANN label absence uses a healthy complete logical scan before claiming no match', async () => {
   const concept = `${'prefix '.repeat(100)}exact bounded canary`;
   const node = { id: 'long-label', concept, embedding: [0, 1] };
   const dir = await createBrain({ nodes: [node] });
@@ -1586,7 +1609,8 @@ test('bounded ANN label absence falls back to logical source before claiming no 
 
   assert.deepEqual(result.results.map((row) => row.id), ['long-label']);
   assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
-  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.sourceHealth, 'healthy');
+  assert.equal(result.evidence.completeCoverage, true);
   assert.equal(result.evidence.fallback.reason, 'exact_canary_missing');
 });
 
@@ -1634,6 +1658,8 @@ test('explicitly quoted exact phrase scans past ANN neighbors and truncated labe
   assert.equal(typeof result.results[0]?.finalRankScore, 'number');
   assert.ok(result.results[0].finalRankScore >= (result.results[1]?.finalRankScore ?? 0));
   assert.equal(result.evidence.fallback.reason, 'exact_phrase_missing');
+  assert.equal(result.evidence.sourceHealth, 'healthy');
+  assert.equal(result.evidence.completeCoverage, true);
 });
 
 test('identity queries downrank artifact_log sludge below an exact phrase hit', async () => {

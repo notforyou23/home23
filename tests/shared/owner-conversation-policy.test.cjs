@@ -31,10 +31,7 @@ test('nested metadata identifiers and explicit non-owner evidence flags are reco
 
 test('memory and retrieval testing conversations are classified conservatively', () => {
   for (const text of ['Test your recall of the Trey/Billy tickets.', 'Run a retrieval test for my tickets.',
-    'Use brain_search to find our ticket conversation.', 'Check the brain.',
-    'Can you find the original conversation about Trey and Billy tickets?',
-    'Can you find this in your memory?', 'Let us test whether you remember our ticket discussion.',
-    'Can you find our earlier chat about the tickets?', 'Can you find the tickets using your retrieval?',
+    'Let us test whether you remember our ticket discussion.',
     'Verify your recall of the tickets.', 'Test if you can still remember our conversation.']) {
     assert.equal(classifyOwnerConversation({ text }).verification, true, text);
   }
@@ -45,6 +42,34 @@ test('memory and retrieval testing conversations are classified conservatively',
     'The doctor scheduled a memory test for my mother.', 'Can you find information about memory loss?',
     'Can you find how much memory my computer has?']) {
     assert.equal(classifyOwnerConversation({ text }).kind, 'substantive', text);
+  }
+});
+
+test('retrieval retests and their summaries cannot become new owner evidence', () => {
+  for (const text of [
+    "Retrieval retest conversation repeated Trey Billy ticket memories alongside owner's reports of further brain fixes",
+    'Retrieval-test conversation about Trey and Billy tickets.',
+    'We ran a retrieval retest for the ticket memories.',
+    "For this post-fix check, try the resident's retrieval and memory in practice.",
+  ]) {
+    assert.equal(classifyOwnerConversation({ text }).ownerEvidence, false, text);
+  }
+});
+
+test('normal owner recall requests and brain maintenance remain owner conversation', () => {
+  for (const text of [
+    'Check the brain.', 'Please check your brain after the fixes this morning.',
+    'Can you find the original conversation about Trey and Billy tickets?',
+    'Can you find this in your memory?', 'Can you find our earlier chat about the tickets?',
+    'Can you find the tickets using your retrieval?', 'Use brain_search to find our ticket conversation.',
+    'The brain_search calls were degraded this morning. We discussed the fixes.',
+    'More fixes in. Hopefully your retrieval and brain are better.',
+    'After the fixes, check the brain. We talked about dinner.',
+    'Check your retrieval this morning after the repairs.',
+    'Checking our recall path after the fixes.',
+  ]) {
+    assert.equal(classifyOwnerConversation({ text }).ownerEvidence, true, text);
+    assert.equal(classifyOwnerConversation({ text, chatId: 'home-verify-49' }).ownerEvidence, false, text);
   }
 });
 
