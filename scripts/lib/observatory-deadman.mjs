@@ -3,6 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import pm2Client from '../../engine/src/system/pm2-client.cjs';
+const { runPm2Sync } = pm2Client;
 
 export const THRESHOLD = 3;
 export const COOLDOWN_MS = 30 * 60_000;
@@ -47,9 +49,12 @@ export function validateState(state) {
 const log = (message) => console.log(`${new Date().toISOString()} [deadman] ${message}`);
 const root = resolve(process.env.HOME23_ROOT || fileURLToPath(new URL('../../', import.meta.url)));
 const pm2 = process.env.PM2_BIN || '/opt/homebrew/bin/pm2';
-const command = (bin, args) => execFileSync(bin, args, {
-  cwd: root, encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'],
-});
+const command = (bin, args) => {
+  const options = { cwd: root, encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'] };
+  if (bin !== pm2) return execFileSync(bin, args, options);
+  return runPm2Sync(args, options, (file, argv, routedOptions) =>
+    execFileSync(file === 'pm2' ? pm2 : file, argv, routedOptions));
+};
 
 export async function probe(url = 'http://127.0.0.1:5050/healthz') {
   try {

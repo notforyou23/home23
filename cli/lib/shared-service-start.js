@@ -411,7 +411,7 @@ function runEcosystemProcessCommand(command, {
     stdio,
     timeout: timeoutMs,
   };
-  if (env.HOME23_PRODUCT_HOST === 'true') runPm2Sync(pm2Args, options, execFile);
+  if (process.env.HOME23_PRODUCT_HOST === 'true' || env.HOME23_PRODUCT_HOST === 'true') runPm2Sync(pm2Args, options, execFile);
   else {
     const unsetArgs = PM2_ENV_BLOCKLIST.flatMap((key) => ['-u', key]);
     execFile('env', [...unsetArgs, 'pm2', ...pm2Args], options);

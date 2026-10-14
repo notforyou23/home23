@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -398,7 +399,7 @@ test('retained worker cannot execute before its actual PID is durably admitted',
   const { spawnSync } = await import('node:child_process');
   const f = fixture(t), accepted = await requestHomeUpdate(input(f.home, 'check'), noLaunch);
   const file = join(f.home, `runtime/home-update/${accepted.operation.id}.json`), before = readFileSync(file, 'utf8');
-  const worker = spawnSync(process.execPath, [new URL('../../cli/lib/product-home-update-worker.mjs', import.meta.url).pathname, f.home, accepted.operation.id], { timeout: 10_000, encoding: 'utf8' });
+  const worker = spawnSync(process.execPath, [fileURLToPath(new URL('../../cli/lib/product-home-update-worker.mjs', import.meta.url)), f.home, accepted.operation.id], { timeout: 10_000, encoding: 'utf8' });
   assert.equal(worker.status, 0, worker.stderr);
   assert.equal(readFileSync(file, 'utf8'), before);
 });

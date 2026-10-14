@@ -445,7 +445,7 @@ test('the retained update executor graph imports only node: builtins and sibling
     assert.deepEqual(specifiers.filter(specifier => !specifier.startsWith('node:') && !specifier.startsWith('./')), [], name);
     assert.doesNotMatch(source, /\brequire\s*\(|createRequire/, name);
   }
-  for (const name of ['product-home-update.js', 'product-update-apply.js', 'product-update-inventory.js', 'product-environment.js'])
+  for (const name of ['product-home-update.js', 'product-update-apply.js', 'product-update-inventory.js', 'product-user-pm2.js', 'product-environment.js'])
     assert.ok(graph.has(name), name);
 });
 

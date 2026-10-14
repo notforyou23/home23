@@ -3,6 +3,7 @@
  */
 
 import { exec } from 'node:child_process';
+import { createRequire } from 'node:module';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
 import { refuseShellWrite } from './shell-write-guard.js';
@@ -10,6 +11,10 @@ import {
   refuseShellFsAuthority,
   resolveShellFsAuthority,
 } from './shell-fs-authority.js';
+
+const { refuseProductPm2Shell } = createRequire(import.meta.url)('../../../engine/src/system/pm2-client.cjs') as {
+  refuseProductPm2Shell: (command: string) => ToolResult | null;
+};
 
 const DEFAULT_STDOUT_LIMIT = 8000;
 const DEFAULT_STDERR_LIMIT = 4000;
@@ -58,6 +63,8 @@ export const shellTool: ToolDefinition = {
 
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const command = input.command as string;
+    const supervisorRefused = refuseProductPm2Shell(command);
+    if (supervisorRefused) return supervisorRefused;
     const cwd = (input.cwd as string) || ctx.projectRoot;
     const timeoutMs = (input.timeout_ms as number) || 300_000;
     const stdoutLimit = boundedLimit(input.max_output_chars, DEFAULT_STDOUT_LIMIT);

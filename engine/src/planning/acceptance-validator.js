@@ -1,3 +1,4 @@
+const { refuseProductPm2Shell } = require('../system/pm2-client.cjs');
 /**
  * AcceptanceValidator - Validates task completion against acceptance criteria
  * 
@@ -262,6 +263,7 @@ class AcceptanceValidator {
    * @returns {boolean} - True if command succeeds (exit code 0)
    */
   async checkTool(criterion, artifacts) {
+    if (refuseProductPm2Shell(criterion.command)) return false;
     if (!criterion.command) {
       this.logger?.warn('[AcceptanceValidator] Tool criterion missing command');
       return false;

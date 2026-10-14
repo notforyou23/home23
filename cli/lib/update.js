@@ -11,6 +11,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import pm2Client from '../../engine/src/system/pm2-client.cjs';
 import { readFileSync, writeFileSync, existsSync, readdirSync, lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -21,6 +22,8 @@ import {
   coordinateSharedServiceStartup,
   startEcosystemProcesses,
 } from './shared-service-start.js';
+
+const { runPm2Sync } = pm2Client;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -56,7 +59,7 @@ function semverToString(parts) {
 /** Get list of running home23-* PM2 process names. */
 function getHome23Processes() {
   try {
-    const jlist = exec('pm2 jlist');
+    const jlist = runPm2Sync(['jlist'], { encoding: 'utf8', stdio: 'pipe' }).trim();
     const procs = JSON.parse(jlist);
     return procs.filter(p => p.name.startsWith('home23-'));
   } catch {
@@ -76,7 +79,7 @@ function stopHome23Processes() {
   const stopped = [];
   for (const p of running) {
     try {
-      execSync(`pm2 stop ${p.name}`, { stdio: 'pipe' });
+      runPm2Sync(['stop', p.name], { stdio: 'pipe' });
       stopped.push(p.name);
     } catch {
       // Already stopped

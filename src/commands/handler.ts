@@ -6,6 +6,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentLoop } from '../agent/loop.js';
@@ -18,6 +19,8 @@ import type { OutgoingResponse } from '../channels/router.js';
 import type { StoredMessage } from '../agent/history.js';
 import type { ModelAliases } from '../agent/model-resolution.js';
 import { parseReasoningEffort, type ReasoningEffort } from '../agent/reasoning-effort.js';
+
+const { runPm2Sync } = createRequire(import.meta.url)('../../engine/src/system/pm2-client.cjs');
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -360,8 +363,7 @@ export class CommandHandler {
 
     // PM2
     try {
-      const pm2Path = existsSync('/opt/homebrew/bin/pm2') ? '/opt/homebrew/bin/pm2' : 'pm2';
-      const pm2Raw = execSync(`${pm2Path} jlist`, { timeout: 5000, encoding: 'utf-8' });
+      const pm2Raw = runPm2Sync(['jlist'], { timeout: 5000, encoding: 'utf-8' });
       const pm2List = JSON.parse(pm2Raw) as Array<{ name: string; pm2_env?: { status?: string } }>;
       const cosmoProcs = pm2List.filter(p => p.name.startsWith('cosmo23-'));
       const statuses = cosmoProcs.map(p => `${p.name}: ${p.pm2_env?.status ?? 'unknown'}`);
@@ -559,19 +561,16 @@ export class CommandHandler {
     // Fire build + restart in background so the response reaches Telegram first
     setTimeout(() => {
       try {
-        const pm2Path = existsSync('/opt/homebrew/bin/pm2') ? '/opt/homebrew/bin/pm2' : 'pm2';
         console.log('[rebuild] Running npm run build...');
         execSync('npm run build', {
           timeout: 120_000,
           cwd: this.ctx.projectRoot,
-          shell: '/bin/bash',
           env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' }
         });
         console.log('[rebuild] Build complete, restarting...');
-        execSync(`${pm2Path} restart ${target}`, {
+        runPm2Sync(['restart', target], {
           timeout: 30_000,
           cwd: this.ctx.projectRoot,
-          shell: '/bin/bash',
           env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' }
         });
         console.log('[rebuild] Success');
@@ -596,12 +595,10 @@ export class CommandHandler {
     // Schedule restart after 2 seconds so this response reaches Telegram
     setTimeout(() => {
       try {
-        const pm2Path = existsSync('/opt/homebrew/bin/pm2') ? '/opt/homebrew/bin/pm2' : 'pm2';
-        console.log(`[restart] Restarting ${target} via ${pm2Path}...`);
-        execSync(`${pm2Path} restart ${target}`, {
+        console.log(`[restart] Restarting ${target} through the supervisor...`);
+        runPm2Sync(['restart', target], {
           timeout: 30_000,
           cwd: this.ctx.projectRoot,
-          shell: '/bin/bash',
           env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' }
         });
         console.log('[restart] Success');

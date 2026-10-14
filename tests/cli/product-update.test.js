@@ -882,7 +882,7 @@ test('reviewed managed network bindings keep exact legacy ports through adoption
   assert.throws(() => planManagedSourceAdoption(source.home, { preservationPlan: changed }), /differs from source/);
 });
 
-test('listSourceWriters inventories PATH pm2 with product PM2 sockets stripped', async t => {
+test('listSourceWriters inventories source PATH pm2 with ambient PM2 sockets stripped', async t => {
   const pack = fixture(t);
   const source = managedHome(pack.root, { hostRecord: false, name: 'ada', residents: { ada: {} } });
   const calls = [];
@@ -893,7 +893,6 @@ test('listSourceWriters inventories PATH pm2 with product PM2 sockets stripped',
       PM2_HOME: path.join(source.home, 'runtime/pm2'),
       PM2_DAEMON_RPC_PORT: '/tmp/product-rpc.sock',
       PM2_DAEMON_PUB_PORT: '/tmp/product-pub.sock',
-      HOME23_PRODUCT_HOST: 'true',
       HOME23_AGENT: 'should-strip',
     }),
     executeFile: async (command, args, options) => {
@@ -909,6 +908,18 @@ test('listSourceWriters inventories PATH pm2 with product PM2 sockets stripped',
   assert.equal(calls[0].env.PM2_DAEMON_RPC_PORT, undefined);
   assert.equal(calls[0].env.HOME23_PRODUCT_HOST, undefined);
   assert.equal(calls[0].env.HOME23_AGENT, undefined);
+});
+
+test('source supervisor inventory fails closed in product roles, including a cleaned child environment', async t => {
+  let calls = 0;
+  assert.throws(() => managedSupervisorEnvironment({ HOME23_PRODUCT_HOST: 'true' }), { code: 'process_inventory_unavailable' });
+  const executeFile = async () => { calls++; return { stdout: '[]' }; };
+  await assert.rejects(listSourceWriters('/fixture', { env: { HOME23_PRODUCT_HOST: 'true' }, executeFile }), { code: 'process_inventory_unavailable' });
+  const saved = process.env.HOME23_PRODUCT_HOST;
+  process.env.HOME23_PRODUCT_HOST = 'true';
+  t.after(() => { if (saved === undefined) delete process.env.HOME23_PRODUCT_HOST; else process.env.HOME23_PRODUCT_HOST = saved; });
+  await assert.rejects(listSourceWriters('/fixture', { env: {}, executeFile }), { code: 'process_inventory_unavailable' });
+  assert.equal(calls, 0);
 });
 
 test('listSourceWriters ignores processes that belong to another home', async t => {

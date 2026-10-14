@@ -7,7 +7,10 @@ import { join } from 'node:path';
 import { Pm2Channel } from '../../../engine/src/channels/os/pm2-channel.js';
 
 const require = createRequire(import.meta.url);
-const { pm2Invocation, runPm2, runPm2Sync, schedulePm2 } = require('../../../engine/src/system/pm2-client.cjs');
+const { pm2Invocation, runPm2, runPm2Sync, schedulePm2, refuseProductPm2Shell } = require('../../../engine/src/system/pm2-client.cjs');
+const { BashExecutor } = require('../../../engine/src/agents/execution/bash-executor.js');
+const { ToolExecutor } = require('../../../engine/src/ide/tools.js');
+const AcceptanceValidator = require('../../../engine/src/planning/acceptance-validator.js');
 const { runVerifier } = require('../../../engine/src/live-problems/verifiers.js');
 const crashLoops = require('../../../engine/src/diagnostic/checks/crash-loops.js');
 
@@ -44,10 +47,29 @@ test('product callers use the guarded installed client and reject a lost supervi
   assert.equal(plan.file, process.execPath);
   assert.equal(plan.args[3], f.root);
   assert.deepEqual(plan.options.env, { HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: join(f.root, 'app'), LANG: 'en_US.UTF-8' });
+  assert.equal(plan.options.shell, false);
   assert.equal(JSON.parse(runPm2Sync(['jlist'], options))[0].pid, 4321);
   assert.equal(JSON.parse((await runPm2(['jlist'], options)).stdout)[0].name, 'home23-fixture');
   await assert.rejects(runPm2(['restart', 'home23-unavailable'], options), error => error.code === 75 && /host_supervisor_exited/.test(error.stderr));
   assert.equal(existsSync(f.marker), false, 'no caller invokes a plain daemon-creating PM2 executable');
+});
+
+test('product shell entrypoints refuse opaque PM2 commands before any process starts', async t => {
+  const previous = process.env.HOME23_PRODUCT_HOST;
+  process.env.HOME23_PRODUCT_HOST = 'true';
+  t.after(() => { if (previous === undefined) delete process.env.HOME23_PRODUCT_HOST; else process.env.HOME23_PRODUCT_HOST = previous; });
+  const logger = { info() {}, warn() {}, error() {}, debug() {} };
+  const bash = new BashExecutor(null, logger);
+  const ide = new ToolExecutor(null, process.cwd());
+  const acceptance = new AcceptanceValidator(null, logger);
+  for (const command of ['pm2 jlist', '/opt/homebrew/bin/pm2 status', 'env PM2_HOME=/tmp/stray pm2 start worker.js', 'node -e \'require("pm2").connect()\'', 'npx pm2-runtime app.js', 'npx pm2@latest jlist', `node -e 'new (require("pm2/lib/Client.js"))().start()'`, `node --import pm2/lib/index.js app.js`, `node --input-type=module -e 'import "pm2/bin/pm2";'`]) {
+    assert.match(refuseProductPm2Shell(command).content, /host_supervisor_command_required/);
+    assert.equal((await bash.execute(command)).exitCode, 75);
+    assert.equal((await ide.runCommand(command)).exitCode, 75);
+    assert.equal(await acceptance.checkTool({ command }), false);
+  }
+  assert.equal(refuseProductPm2Shell('tail runtime/pm2/pm2.log'), null);
+  assert.equal(refuseProductPm2Shell('pm2 jlist', { HOME23_PRODUCT_HOST: 'false' }).is_error, true);
 });
 
 test('invalid product routing and supervisor lifecycle commands fail before launching a client', async t => {
@@ -69,6 +91,23 @@ test('scheduled product self-restarts keep the guard and strip inherited PM2 met
   assert.equal(calls[0][2].stdio, 'ignore');
   assert.equal(calls[0][2].env.PM2_HOME, undefined);
   assert.equal(calls[1], 'unref');
+});
+
+test('a product parent cannot bypass the guard by replacing or clearing the child environment', t => {
+  const f = fixture(t), previous = { HOME23_PRODUCT_HOST: process.env.HOME23_PRODUCT_HOST, HOME23_ROOT: process.env.HOME23_ROOT };
+  process.env.HOME23_PRODUCT_HOST = 'true';
+  process.env.HOME23_ROOT = join(f.root, 'app');
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  for (const env of [{}, { HOME23_PRODUCT_HOST: 'false' }, { HOME: join(f.root, 'runtime/user') }]) {
+    const plan = pm2Invocation(['jlist'], { env });
+    assert.equal(plan.file, process.execPath);
+    assert.equal(plan.args[3], f.root);
+  }
+  assert.throws(() => pm2Invocation(['jlist'], { env: { HOME23_ROOT: '/tmp/other/app' } }), { code: 'host_supervisor_ambiguous' });
 });
 
 test('product process observations and verifiers share the guarded client after PM2 env is removed', async t => {

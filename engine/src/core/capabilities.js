@@ -1,3 +1,4 @@
+const { refuseProductPm2Shell } = require('../system/pm2-client.cjs');
 const { ToolExecutor } = require('../ide/tools');
 const { getOpenAIClient } = require('./openai-client');
 const { FilesystemHelpers } = require('../cluster/fs/helpers');
@@ -1089,6 +1090,8 @@ class Capabilities {
    * @private
    */
   async _execWithTimeout(command, timeoutMs = 30000) {
+    const refused = refuseProductPm2Shell(command);
+    if (refused) return { stdout: '', stderr: refused.content, exitCode: 75 };
     return new Promise((resolve, reject) => {
       const child = spawn('sh', ['-c', command], {
         cwd: process.cwd(),

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -91,4 +91,17 @@ test('shell tool stops a running command when the turn abort signal fires', asyn
   assert.equal(result.is_error, true);
   assert.ok(elapsedMs < 500, `expected abort before shell timeout, elapsed=${elapsedMs}ms`);
   assert.match(result.content, /operator_stop|AbortError|SIGTERM|aborted/i);
+});
+
+test('product harness shell refuses PM2 CLI and library commands before executing them', async t => {
+  const previous = process.env.HOME23_PRODUCT_HOST;
+  process.env.HOME23_PRODUCT_HOST = 'true';
+  t.after(() => { if (previous === undefined) delete process.env.HOME23_PRODUCT_HOST; else process.env.HOME23_PRODUCT_HOST = previous; });
+  const cwd = mkdtempSync(join(tmpdir(), 'home23-shell-supervisor-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  for (const command of ['pm2 jlist', '/opt/homebrew/bin/pm2 restart home23-test', 'node -e \'require("pm2").connect()\'']) {
+    const result = await shellTool.execute({ command, cwd }, testContext(cwd));
+    assert.equal(result.is_error, true);
+    assert.match(result.content, /host_supervisor_command_required/);
+  }
 });

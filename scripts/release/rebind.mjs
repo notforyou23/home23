@@ -9,6 +9,13 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { pointerProvenance, status } from './status.mjs';
 
+// The installed managed-restart bundle remains independently importable.
+// Product commands load the private client only at use; a missing client fails closed.
+const runPm2Sync = (args, options = {}, execute = execFileSync) =>
+  process.env.HOME23_PRODUCT_HOST === 'true' || options.env?.HOME23_PRODUCT_HOST === 'true'
+    ? createRequire(import.meta.url)('../../engine/src/system/pm2-client.cjs').runPm2Sync(args, options, execute)
+    : execute('pm2', args, options);
+
 const RELEASE_ID = /^[a-f0-9]{40}$/;
 const SOURCE_COMMIT = /^[a-f0-9]{40}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -268,7 +275,7 @@ export async function rebind(plan, execute = false, dependencies = {}) {
   fs.writeFileSync(plan.receipt, JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   try {
     for (const args of inspection.commands) {
-      runCommand('pm2', args, { stdio: 'pipe', timeout: 60000 });
+      runPm2Sync(args, { stdio: 'pipe', timeout: 60000 }, runCommand);
       receipt.commands.push(args);
       fs.writeFileSync(plan.receipt, JSON.stringify(receipt, null, 2) + '\n');
     }

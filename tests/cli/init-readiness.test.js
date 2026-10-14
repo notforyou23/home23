@@ -99,6 +99,15 @@ test('missing PM2 rejects initialization instead of exiting the caller or advanc
   assert.deepEqual(f.imports, []);
 });
 
+test('product initialization never probes a source PM2 executable', async t => {
+  const previous = process.env.HOME23_PRODUCT_HOST;
+  process.env.HOME23_PRODUCT_HOST = 'true';
+  t.after(() => { if (previous === undefined) delete process.env.HOME23_PRODUCT_HOST; else process.env.HOME23_PRODUCT_HOST = previous; });
+  const f = fixture(t, { fail: ({ command }) => command === 'pm2' });
+  assert.equal((await runInit(f.root, {}, f.dependencies)).status, 'prepared');
+  assert.equal(f.calls.some(({ command }) => command === 'pm2'), false);
+});
+
 test('optional Python failure preserves prepared runtime while reporting unavailable document conversion', async (t) => {
   const f = fixture(t, {
     fail: ({ command, args }) => command === 'python3' && args[0] === '-m',

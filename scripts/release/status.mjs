@@ -6,6 +6,13 @@ import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+// The installed managed-restart bundle remains independently importable.
+// Product commands load the private client only at use; a missing client fails closed.
+const runPm2Sync = (args, options = {}, execute = execFileSync) =>
+  process.env.HOME23_PRODUCT_HOST === 'true' || options.env?.HOME23_PRODUCT_HOST === 'true'
+    ? createRequire(import.meta.url)('../../engine/src/system/pm2-client.cjs').runPm2Sync(args, options, execute)
+    : execute('pm2', args, options);
+
 const SOURCE_COMMIT = /^[a-f0-9]{40}$/;
 const SOURCE_REPOSITORIES = new Set(['home23', 'home23-apple']);
 const SOURCE_PROVENANCE_FIELDS = ['sourceCommit', 'sourceRepo', 'sourceBranch', 'sourceDirty', 'preparedAt', 'sourceProvenance'];
@@ -76,7 +83,7 @@ export function status(root) {
     delete require.cache[require.resolve(file)];
     return require(file).apps.map(app=>({ name:app.name,script:app.script,cwd:app.cwd,runtime:app.env?.HOME23_COORDINATION_RESIDENT_RUNTIME_ROOT }));
   });
-  const rows=JSON.parse(execFileSync('pm2',['jlist'],{encoding:'utf8',maxBuffer:16*1024*1024}));
+  const rows=JSON.parse(runPm2Sync(['jlist'],{encoding:'utf8',maxBuffer:16*1024*1024}));
   const running=rows.map(row=>({name:row.name,pid:row.pid,status:row.pm2_env?.status,script:row.pm2_env?.pm_exec_path,cwd:row.pm2_env?.pm_cwd,runtime:row.pm2_env?.HOME23_COORDINATION_RESIDENT_RUNTIME_ROOT}));
   if(!raw.equals(fs.readFileSync(pointerFile))) throw new Error('Pointer changed during inspection');
   return { observedAt:new Date().toISOString(),releaseId:pointer.releaseId,...provenance,...compareDefinitions({root,release,residents,saved,running}) };

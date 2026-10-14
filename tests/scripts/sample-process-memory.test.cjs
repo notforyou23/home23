@@ -226,6 +226,41 @@ test('PM2 targets use loopback request-time runtime metrics instead of synthetic
   assert.equal(clockValues.length, 0);
 });
 
+test('default product PM2 sampling uses the installed supervisor with PM2 environment removed', async t => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'home23-product-sample-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const app = path.join(root, 'app'), marker = path.join(root, 'plain-pm2-called');
+  fs.mkdirSync(path.join(app, 'cli/lib'), { recursive: true });
+  fs.writeFileSync(path.join(app, 'package.json'), '{"type":"module"}');
+  fs.writeFileSync(path.join(app, 'cli/lib/product-supervisor.js'), `
+    export async function productSupervisorCommand(home, args) {
+      if (home !== ${JSON.stringify(root)} || args[0] !== 'jlist') throw new Error('wrong supervisor route');
+      return { stdout: JSON.stringify([{ name: 'home23-jerry-dash', pid: 101, pm2_env: { restart_time: 3 } }]) };
+    }
+  `);
+  fs.writeFileSync(path.join(root, 'pm2'), `#!/bin/sh\n: > '${marker}'\nexit 88\n`, { mode: 0o755 });
+  const keys = ['HOME23_PRODUCT_HOST', 'HOME23_ROOT', 'HOME', 'PATH', 'PM2_HOME', 'PM2_DAEMON_RPC_PORT'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  Object.assign(process.env, { HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: app, HOME: path.join(root, 'runtime/user'), PATH: root });
+  delete process.env.PM2_HOME;
+  delete process.env.PM2_DAEMON_RPC_PORT;
+  const { createDefaultSampleProvider } = await import('../../scripts/sample-process-memory.mjs');
+  const now = Date.now();
+  const provider = createDefaultSampleProvider({ now: () => now, fetchImpl: async () => new Response(JSON.stringify({
+    schemaVersion: 2, role: 'dashboard', pid: 101, sampledAt: new Date(now).toISOString(),
+    v8HeapUsedBytes: 100, rssBytes: 200, processMaxRssBytes: 220,
+    semantics: { v8HeapUsedBytes: 'request-time-sample', rssBytes: 'request-time-sample', processMaxRssBytes: 'process-lifetime-high-water' },
+  })) });
+  const rows = await provider([targets[0]], now);
+  assert.equal(rows[0].pid, 101);
+  assert.equal(rows[0].restartCount, 3);
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(fs.existsSync(path.join(root, 'runtime/user/.pm2')), false);
+});
+
 test('PM2 runtime metrics reject timestamps outside the request observation window', async () => {
   const { createDefaultSampleProvider } = await import('../../scripts/sample-process-memory.mjs');
   const requestStartedAt = Date.parse('2026-07-11T12:00:00.000Z');

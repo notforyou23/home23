@@ -9,11 +9,19 @@ import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { status } from './status.mjs';
 import { inspect, restartCommands, assertIndependent } from './rebind.mjs';
+
 // Never pass PM2's own name/args/pm_id metadata into a nested PM2 launcher.
 export function operatorEnvironment(environment = process.env) {
   return Object.fromEntries(['HOME', 'PATH', 'USER', 'LOGNAME', 'TMPDIR', 'PM2_HOME'].filter(key => environment[key] !== undefined).map(key => [key, environment[key]]));
 }
-const pm2 = (args, options = {}) => execFileSync('pm2', args, { ...options, env: operatorEnvironment() });
+// The installed managed-restart bundle remains independently importable.
+// Product commands load the private client only at use; a missing client fails closed.
+const runPm2Sync = (args, options = {}, execute = execFileSync) =>
+  process.env.HOME23_PRODUCT_HOST === 'true' || options.env?.HOME23_PRODUCT_HOST === 'true'
+    ? createRequire(import.meta.url)('../../engine/src/system/pm2-client.cjs').runPm2Sync(args, options, execute)
+    : execute('pm2', args, options);
+
+const pm2 = (args, options = {}) => runPm2Sync(args, { ...options, env: operatorEnvironment() });
 const terminal = new Set(['succeeded', 'failed', 'expired', 'interrupted']);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
