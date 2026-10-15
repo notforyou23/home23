@@ -108,6 +108,8 @@ interface PagePresentationRow extends WorkPresentationRow {
 }
 
 // Single and page projections share this text so their semantics cannot drift.
+// The uncorrelated IN builds scheduled provenance once using the existing event
+// aggregate index. CASE treats a NULL tuple as false without a membership scan.
 const PRESENTATION_SELECT = `SELECT h.id AS conversationId,
             CASE WHEN origin.author_principal_id = w.principal_id
                        AND origin.author_kind = 'owner'
@@ -134,13 +136,16 @@ const PRESENTATION_SELECT = `SELECT h.id AS conversationId,
             w.id AS workId,
             product.work_id AS presentationWorkId,
             json_extract(initiative.payload_json,'$.request.purpose') AS initiativePurpose,
-            EXISTS(SELECT 1 FROM events scheduled WHERE scheduled.aggregate_kind='scheduled_channel_run'
-              AND scheduled.aggregate_version=1 AND json_extract(scheduled.payload_json,'$.messageId')=+w.origin_message_id
-              AND scheduled.channel_id=w.channel_id AND scheduled.actor_principal_id=w.principal_id
-              AND json_extract(scheduled.payload_json,'$.channelId')=w.channel_id
-              AND json_extract(scheduled.payload_json,'$.botId')=w.principal_id
-              AND coalesce(json_extract(scheduled.payload_json,'$.targetBotId'),json_extract(scheduled.payload_json,'$.botId'))=w.target_principal_id
-              AND w.kind IN ('channel.bot_turn','bot_turn','resident_turn')) AS scheduledRun
+            CASE WHEN w.kind IN ('channel.bot_turn','bot_turn','resident_turn')
+              AND (+w.origin_message_id,w.channel_id,w.principal_id,w.target_principal_id) IN (
+                SELECT json_extract(scheduled.payload_json,'$.messageId'),scheduled.channel_id,
+                       scheduled.actor_principal_id,
+                       coalesce(json_extract(scheduled.payload_json,'$.targetBotId'),json_extract(scheduled.payload_json,'$.botId'))
+                FROM events scheduled
+                WHERE scheduled.aggregate_kind='scheduled_channel_run' AND scheduled.aggregate_version=1
+                  AND json_extract(scheduled.payload_json,'$.channelId')=scheduled.channel_id
+                  AND json_extract(scheduled.payload_json,'$.botId')=scheduled.actor_principal_id
+              ) THEN 1 ELSE 0 END AS scheduledRun
        FROM works w
        JOIN conversation_handles h ON h.channel_id = w.channel_id
        JOIN bots bot ON bot.principal_id = w.target_principal_id

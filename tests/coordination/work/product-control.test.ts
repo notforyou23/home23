@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 
+import Database from "better-sqlite3";
+
 import { createLeaseService } from "../../../src/coordination/leases/index.js";
+import { COORDINATION_MIGRATIONS } from "../../../src/coordination/migrations/index.js";
 import { PRODUCT_WORK_THREAD_KIND, createProductWorkControl, createWorkService, WorkError } from "../../../src/coordination/work/index.js";
 import { createCanonicalOrphanRecovery } from "../../../src/work/foreground-detach.js";
 import { AT, BOT_ID, CHANNEL_ID, MESSAGE_ID, M11TestDatabase, OWNER_ID, createFixtureIdGenerator, fixtureId, manifestInput } from "./test-fixture.js";
@@ -302,7 +306,7 @@ for (const execution of ['succeeded', 'failed', 'cancelled'] as const) {
   }
 }
 
-test('scheduled card semantics require the exact admission channel, author, and target', t => {
+test('scheduled card semantics require the exact admission channel, author, target, and message', t => {
   const s=setup(89500);t.after(()=>s.database.close());
   const child=s.work.create({principalId:BOT_ID,targetPrincipalId:BOT_ID,channelId:CHANNEL_ID,originMessageId:MESSAGE_ID,roundId:null,
     kind:'channel.bot_turn',idempotencyKey:'unrelated-schedule-admission',manifest:manifestInput(),maxAutomaticOffers:1,
@@ -312,14 +316,108 @@ test('scheduled card semantics require the exact admission channel, author, and 
   s.database.mutateWithEvent(()=>({value:undefined,event:{type:'activity.updated',aggregateKind:'resident_assignment',aggregateId:child.id,
     aggregateVersion:1,channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,requestId:fixtureId('request',89503),correlationId:fixtureId('correlation',89503),
     payload:{workId:child.id,state:'blocked',summary:'Wait for a dependency',evidence:[],waitFor:[],revisitAt:null},createdAt:AT}}));
-  for(const [index,variant] of ['channel','author','target'].entries()) {
+  for(const [index,variant] of ['channel','author','target','payloadChannel','payloadAuthor','message','nullMessage','nonStringMessage'].entries()) {
     s.database.mutateWithEvent(()=>({value:undefined,event:{type:'activity.updated',aggregateKind:'scheduled_channel_run',aggregateId:`unrelated-schedule-${index}`,
       aggregateVersion:1,channelId:variant==='channel'?fixtureId('channel',89504):CHANNEL_ID,
       actorPrincipalId:variant==='author'?fixtureId('bot',89504):BOT_ID,
       requestId:fixtureId('request',89504+index),correlationId:fixtureId('correlation',89504+index),
-      payload:{messageId:MESSAGE_ID,channelId:CHANNEL_ID,botId:BOT_ID,...(variant==='target'?{targetBotId:fixtureId('bot',89504)}:{})},createdAt:AT}}));
+      payload:{messageId:variant==='message'?fixtureId('message',89504):variant==='nullMessage'?null:variant==='nonStringMessage'?{id:MESSAGE_ID}:MESSAGE_ID,
+        channelId:variant==='payloadChannel'?fixtureId('channel',89504):CHANNEL_ID,
+        botId:variant==='payloadAuthor'?fixtureId('bot',89504):BOT_ID,
+        ...(variant==='target'?{targetBotId:fixtureId('bot',89504)}:{})},createdAt:AT}}));
     assert.equal(s.control.get({context:context(89508),workId:child.id}).assignmentState,'blocked',variant);
   }
+});
+
+test("scheduled provenance builds one indexed admission set for single and page projections on schema v21", (t) => {
+  const s = setup(89600); t.after(() => s.database.close());
+  const children = Array.from({ length: 100 }, (_, index) => s.work.create({
+    principalId: BOT_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID, originMessageId: MESSAGE_ID,
+    roundId: null, kind: 'channel.bot_turn', idempotencyKey: `scheduled-plan-${index}`,
+    manifest: manifestInput(), maxAutomaticOffers: 1,
+    requestId: fixtureId('request', 89600 + index), correlationId: fixtureId('correlation', 89600 + index),
+    presentation: { title: 'Scheduled run', summary: 'One bounded execution' },
+  }).work);
+  type Parameters = Array<string | number | bigint | Buffer | null>;
+  const statements: Array<{ sql: string; parameters: Parameters }> = [];
+  const readOne = s.database.readOne.bind(s.database);
+  const readAll = s.database.readAll.bind(s.database);
+  s.database.readOne = ((sql: string, ...parameters: Parameters) => {
+    if (sql.includes(' AS scheduledRun')) statements.push({ sql, parameters });
+    return readOne(sql, ...parameters);
+  }) as typeof s.database.readOne;
+  s.database.readAll = ((sql: string, ...parameters: Parameters) => {
+    if (sql.includes(' AS scheduledRun')) statements.push({ sql, parameters });
+    return readAll(sql, ...parameters);
+  }) as typeof s.database.readAll;
+  s.control.get({ context: context(89700), workId: children[0].id });
+  assert.equal(s.control.list({ context: context(89701), limit: 100 }).works.length, 100);
+  assert.equal(statements.length, 2, 'exercise the actual production single and page SQL');
+
+  const database = new Database(':memory:'); t.after(() => database.close());
+  assert.equal(COORDINATION_MIGRATIONS.at(-1)?.version, 21);
+  for (const migration of COORDINATION_MIGRATIONS) database.exec(migration.sql);
+  assert.equal(database.prepare("SELECT 1 FROM sqlite_schema WHERE name='events_scheduled_origin_message'").get(), undefined);
+  // Copy only the parents and rows needed by the real presentation queries.
+  // The target database uses every existing migration, including v21's triggers.
+  for (const table of ['principals', 'channels', 'conversation_handles', 'bots', 'channel_members',
+    'messages', 'events', 'context_manifests', 'works', 'work_thread_presentations']) {
+    const rows = s.database.raw.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, string | number | bigint | Buffer | null>>;
+    if (!rows.length) continue;
+    const columns = Object.keys(rows[0]);
+    const insert = database.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`);
+    for (const row of rows) insert.run(...columns.map(column => row[column]));
+  }
+  const insertEvent = database.prepare(`INSERT INTO events
+    (id,schema_version,type,durability,aggregate_kind,aggregate_id,aggregate_version,channel_id,actor_principal_id,
+      request_id,correlation_id,payload_json,payload_digest,created_at)
+    VALUES (?,1,'activity.updated','durable',?,?,1,?,?,?,?,?,?,?)`);
+  const scheduledCount = 1024;
+  const unrelatedCount = 4096;
+  database.transaction(() => {
+    for (let index = 0; index <= scheduledCount + unrelatedCount; index++) {
+      const scheduled = index <= scheduledCount;
+      const payload = JSON.stringify({ messageId: index === scheduledCount ? MESSAGE_ID : fixtureId('message', 100000 + index),
+        channelId: CHANNEL_ID, botId: BOT_ID, targetBotId: index === scheduledCount ? null : BOT_ID });
+      insertEvent.run(fixtureId('event', 100000 + index), scheduled ? 'scheduled_channel_run' : 'unrelated_activity',
+        `sched-run-${String(index).padStart(8, '0')}`, CHANNEL_ID, BOT_ID,
+        fixtureId('request', 100000 + index), fixtureId('correlation', 100000 + index),
+        payload, createHash('sha256').update(payload).digest('hex'), AT);
+    }
+  })();
+  database.exec('ANALYZE');
+
+  for (const [index, statement] of statements.entries()) {
+    const label = index === 0 ? 'single' : 'page';
+    const plan = database.prepare(`EXPLAIN QUERY PLAN ${statement.sql}`).all(...statement.parameters) as Array<{ id: number; parent: number; detail: string }>;
+    const eventSeek = plan.find(row => /SEARCH (?:events|scheduled) USING INDEX sqlite_autoindex_events_2 \(aggregate_kind=\?\)/.test(row.detail));
+    assert.ok(eventSeek, `${label}: use the existing event aggregate index`);
+    let parent = plan.find(row => row.id === eventSeek.parent);
+    assert.ok(parent?.detail.startsWith('LIST SUBQUERY'), `${label}: admission history must be an uncorrelated set, not a range scan per Work`);
+    while (parent) {
+      assert.doesNotMatch(parent.detail, /CORRELATED/);
+      parent = plan.find(row => row.id === parent?.parent);
+    }
+    assert.ok(!plan.some(row => /SCAN (?:events|scheduled)\b/.test(row.detail)), `${label}: no event table scan`);
+    const bytecode = database.prepare(`EXPLAIN ${statement.sql}`).all(...statement.parameters) as Array<{
+      addr: number; opcode: string; p1: number; p2: number; p4: string | null;
+    }>;
+    const membership = bytecode.find(row => row.opcode === 'OpenEphemeral' && row.p2 === 4 && row.p4?.startsWith('k(4,'));
+    assert.ok(membership, `${label}: materialize the four provenance keys`);
+    assert.ok(bytecode.some(row => row.opcode === 'Once' && row.addr < membership.addr && row.p2 > membership.addr),
+      `${label}: build the set once per statement`);
+    assert.ok(bytecode.some(row => row.opcode === 'NotFound' && row.p1 === membership.p1 && row.p4 === '4'),
+      `${label}: probe the tuple index without a NULL-detection scan`);
+    const rows = database.prepare(statement.sql).all(...statement.parameters) as Array<{ scheduledRun: number }>;
+    assert.equal(rows.length, index === 0 ? 1 : 100);
+    assert.ok(rows.every(row => row.scheduledRun === 1), `${label}: targetBotId:null retains the botId fallback`);
+    t.diagnostic(`${label} admission plan: ${eventSeek.detail}; uncorrelated LIST SUBQUERY; Once + four-key NotFound`);
+  }
+  const page = database.prepare(statements[1].sql);
+  const start = performance.now();
+  for (let iteration = 0; iteration < 10; iteration++) page.all(...statements[1].parameters);
+  t.diagnostic(`Populated 100-Work page, ${scheduledCount + 1} admissions and ${unrelatedCount} unrelated events: ` +
+    `${((performance.now() - start) / 10).toFixed(2)} ms/query across 10 runs (observation only)`);
 });
 
 test("Working Thread list projects a whole page with constant base queries and matches single-item projection", (t) => {
