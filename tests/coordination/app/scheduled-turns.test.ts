@@ -5,12 +5,10 @@ import {createWorkService} from '../../../src/coordination/work/index.js';
 import { createResidentAssignments } from '../../../src/coordination/app/resident-assignments.js';
 import { createLeaseService } from '../../../src/coordination/leases/index.js';
 import { sha256 } from '../../../src/coordination/work/canonical.js';
-import { COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL } from '../../../src/coordination/migrations/0008-communication-evidence-indexes.js';
 import {M11TestDatabase,AT,BOT_ID,CHANNEL_ID,createFixtureIdGenerator,fixtureId,manifestInput} from '../work/test-fixture.js';
 
 for (const evidence of ['bound', 'stale-attempt', 'wrong-error'] as const) test(`failed scheduled Work reports only receipt-bound resident evidence: ${evidence}`, async t => {
   const database = M11TestDatabase.temporary(); t.after(() => database.close());
-  database.raw.exec(COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL);
   const work = createWorkService({ database, generateId: createFixtureIdGenerator(), now: () => new Date(AT) });
   const options = { database, channels: { getChannel: async () => ({ kind: 'group', lifecycle: 'active', members: [{ principalId: BOT_ID }] }) } as any,
     context: () => ({ principalId: BOT_ID }) as any, beginWork: () => () => {}, submit: { submitMessage: async (input: any) => {

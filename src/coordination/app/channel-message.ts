@@ -35,6 +35,7 @@ import type {
   DirectMessageTargetDescriptor,
 } from "./direct-message.js";
 import { catalogAcceptsTurnSelection } from "./model-selection.js";
+import type { createScheduledChannelNotices } from './scheduled-channel-notices.js';
 
 function responseMessageId(workId: string): string {
   if (!workId.startsWith("wrk_")) throw new Error("Work ID cannot derive a Message ID");
@@ -165,6 +166,7 @@ type WorkExecution = Readonly<{
  * message authority for every admission and recovery operation.
  */
 export function createGroupChannelMessageService(options: {
+  scheduledNotices?: ReturnType<typeof createScheduledChannelNotices>;
   joinedInvocation?(messageId: string): boolean;
   messages: DirectMessageMessagePort;
   context: GroupChannelMessageContextPort;
@@ -195,6 +197,14 @@ export function createGroupChannelMessageService(options: {
   }
   const workInFlight = new Map<string, Promise<WorkExecution>>();
   const roundInFlight = new Map<string, Promise<Readonly<Record<string, unknown>>>>();
+  const hasResult = (workId: string) => {
+    if (options.context.hasResult(workId)) {
+      const current=options.work.get(workId);
+      if(current) options.scheduledNotices?.delivered(current);
+      return true;
+    }
+    return options.scheduledNotices?.hasResult(workId)===true;
+  };
 
   const assertAuthority = (): AuthorityEpoch => {
     const authority = options.authority.current();
@@ -432,7 +442,7 @@ export function createGroupChannelMessageService(options: {
     const existing = workInFlight.get(input.work.id);
     if (existing) return existing;
     const execution = (async (): Promise<WorkExecution> => {
-      if (options.context.hasResult(input.work.id)) {
+      if (hasResult(input.work.id)) {
         return Object.freeze({
           workId: input.work.id,
           disposition: "completed",
@@ -543,6 +553,10 @@ export function createGroupChannelMessageService(options: {
         throw new Error(`resident Work ended ${terminalReceipt.status}`);
       }
       const resultText = agentResponse.text.trim() ? agentResponse.text : null;
+      const completedWork = options.work.get(currentWork.id) ?? currentWork;
+      if (options.scheduledNotices?.prepare(completedWork, resultText, terminalReceipt.artifactIds, agentResponse.toolCallCount)) {
+        return Object.freeze({ workId: currentWork.id, disposition: 'completed', message: null });
+      }
       if (resultText === null && terminalReceipt.artifactIds.length === 0) {
         return Object.freeze({
           workId: currentWork.id,
@@ -575,6 +589,7 @@ export function createGroupChannelMessageService(options: {
         requestId: input.requestId,
         correlationId: input.correlationId,
       });
+      options.scheduledNotices?.delivered(completedWork);
       return Object.freeze({
         workId: currentWork.id,
         disposition: "completed",
@@ -606,7 +621,7 @@ export function createGroupChannelMessageService(options: {
     recovery: boolean;
   }): Promise<readonly WorkExecution[]> {
     const execute = (work: WorkRecord) => {
-      if (options.context.hasResult(work.id)) {
+      if (hasResult(work.id)) {
         return Promise.resolve(Object.freeze({
           workId: work.id,
           disposition: "completed" as const,
@@ -678,7 +693,7 @@ export function createGroupChannelMessageService(options: {
       let prepared: GroupChannelPreparedContext;
       let recovery = input.recovery;
       if (currentWork) {
-        prepared = options.context.hasResult(currentWork.id) ||
+        prepared = hasResult(currentWork.id) ||
           currentWork.state === "failed" || currentWork.state === "cancelled"
           ? Object.freeze({
               ...input.plan,
@@ -1012,7 +1027,7 @@ export function createGroupChannelMessageService(options: {
           const preparedByWork = new Map<string, GroupChannelPreparedContext>();
           for (const work of works) {
             if (
-              !options.context.hasResult(work.id) &&
+              !hasResult(work.id) &&
               !["failed", "cancelled"].includes(work.state)
             ) {
               preparedByWork.set(work.id, await options.context.recover(work));

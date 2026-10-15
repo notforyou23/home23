@@ -52,15 +52,22 @@ export function initiativeReviewCommunication(database: M11Database, input: Appe
  * (tool results also carry terminal=true). Keep receipt status and execution
  * error evidence separate: receipt_failed means a failed execution was recorded. */
 export function workTerminalEvidence(database: M11Database, workId: string): unknown[] {
+  // Signed resident turns use coord-<Work ID>; processless helpers may
+  // recover the same Work as coord-<Work ID>-recovery-N. Seek that bounded
+  // turn-index range before inspecting JSON. A sequence floor at Work creation
+  // instead scanned all newer communication history, including other residents.
+  // Missing/retained-away legacy evidence is empty, never a journal-wide retry.
+  const turnId = `coord-${workId}`;
   return database.readAll<{ payload: string }>(`SELECT e.payload_json AS payload
-    FROM events e JOIN works w ON w.id = ?
-    WHERE e.sequence >= (SELECT min(sequence) FROM events WHERE aggregate_kind = 'work' AND aggregate_id = w.id)
-      AND e.type = 'communication.recorded' AND e.aggregate_kind = 'communication'
+    FROM events e INDEXED BY communication_events_turn_sequence JOIN works w ON w.id = ?
+    WHERE e.type='communication.recorded' AND e.aggregate_kind='communication'
+      AND json_extract(e.payload_json,'$.communication.turnId') >= ?
+      AND json_extract(e.payload_json,'$.communication.turnId') < ?
       AND json_extract(e.payload_json, '$.communication.workId') = w.id
       AND json_extract(e.payload_json, '$.communication.attemptId') = w.current_attempt_id
       AND json_extract(e.payload_json, '$.communication.source.sourceEventType') = 'turn.terminal'
       AND json_extract(e.payload_json, '$.communication.terminal') = 1
-    ORDER BY e.sequence DESC LIMIT 1`, workId).map(row => JSON.parse(row.payload));
+    ORDER BY e.sequence DESC LIMIT 1`, workId, turnId, `${turnId}.`).map(row => JSON.parse(row.payload));
 }
 
 /** Core's durable inbox. Child evidence is data, never a new owner instruction. */

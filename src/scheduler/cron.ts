@@ -78,6 +78,8 @@ export interface CronJob {
 }
 
 export interface JobResult {
+  /** Core suppressed an unchanged blocked notice; execution failures never set this. */
+  scheduledNoticeSuppressed?: boolean;
   deliveryId?: string;
   canonicalRunPending?: boolean;
   media?: import('../types.js').MediaAttachment[];

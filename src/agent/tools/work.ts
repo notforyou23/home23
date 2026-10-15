@@ -59,9 +59,8 @@ export const workStatusTool: ToolDefinition = {
     const requestedId = exactWorkId(input);
     if (!requestedId) return { content: 'work_id is required.', is_error: true };
     if (requestedId.startsWith('wrk_') && ctx.turnRuntime?.coordinationOrigin && ctx.coordinationChannelOperation && ctx.parentToolCallId) {
-      const operation = typeof input.work_id === 'string' ? 'work_status' : 'work_list';
       const result = await ctx.coordinationChannelOperation({ origin: ctx.turnRuntime.coordinationOrigin,
-        invocationId: ctx.parentToolCallId, args: { ...input, operation } });
+        invocationId: ctx.parentToolCallId, args: { work_id: requestedId, operation: 'work_status' } });
       return { content: JSON.stringify(result, null, 2) };
     }
     if (!ctx.workRegistry) return UNAVAILABLE;

@@ -343,6 +343,10 @@ export function createProductWorkControl(options: {
            JOIN conversation_handles h ON h.channel_id = w.channel_id
           WHERE (w.principal_id = ? OR EXISTS(SELECT 1 FROM channels c WHERE c.id=w.channel_id AND c.owner_principal_id=?))
             AND (w.kind = '${PRODUCT_WORK_THREAD_KIND}' OR EXISTS(SELECT 1 FROM work_thread_presentations p WHERE p.work_id=w.id))
+            AND NOT EXISTS(SELECT 1 FROM events quiet WHERE quiet.aggregate_kind='scheduled_channel_notice_work'
+              AND quiet.aggregate_id=w.id AND quiet.aggregate_version=1 AND json_extract(quiet.payload_json,'$.suppressed')=1)
+            AND NOT (w.state IN ('queued','leased','running','cancelling') AND EXISTS(SELECT 1 FROM events pending
+              WHERE pending.aggregate_kind='scheduled_channel_notice_pending' AND pending.aggregate_id=w.origin_message_id AND pending.aggregate_version=1))
             AND EXISTS (
               SELECT 1 FROM channel_members member
                WHERE member.channel_id = w.channel_id

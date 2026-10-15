@@ -12,12 +12,13 @@ export async function runScheduledChannelTurn(input: ScheduledChannelTurn, execu
     if (!execution.persistCanonicalTurn) throw new Error('Durable scheduler admission unavailable');
     execution.persistCanonicalTurn(input);
     for (;;) {
-      const result = await submit(input) as { state?: string; text?: string; error?: string; conclusion?: ScheduledAssignmentConclusion };
+      const result = await submit(input) as { state?: string; text?: string; error?: string; conclusion?: ScheduledAssignmentConclusion; noticeSuppressed?: boolean };
       if (result.state === 'succeeded') {
         const conclusion = result.conclusion;
         if (conclusion?.state === 'blocked' || conclusion?.state === 'cancelled') {
           const reason = `Scheduled Work reported ${conclusion.state}: ${conclusion.summary}`;
           return {status:'error',error:reason,response:result.text??'',durationMs:Date.now()-start,semanticStatus:'failed',
+            ...(conclusion.state==='blocked' && result.noticeSuppressed===true ? {scheduledNoticeSuppressed:true} : {}),
             outcomeLayers:{task:{status:'failed',reason,evidence:{conclusion}},
               intent:{status:'failed',reason,evidence:{conclusion}}}};
         }
@@ -43,7 +44,7 @@ export async function runScheduledChannelTurn(input: ScheduledChannelTurn, execu
 export async function deliverScheduledChannelFailure(result: JobResult,
   deliver: (result: JobResult) => Promise<NonNullable<JobResult['deliveryOutcome']>>,
 ): Promise<JobResult> {
-  if (result.status === 'error' && !result.canonicalRunPending) {
+  if (result.status === 'error' && !result.canonicalRunPending && !result.scheduledNoticeSuppressed) {
     result.deliveryOutcome = await deliver(result);
   }
   return result;

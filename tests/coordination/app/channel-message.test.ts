@@ -169,6 +169,7 @@ function harness(input: {
   turnSelectionDrift?: boolean;
   scheduledOrigin?: boolean;
   durableRefusals?: false | "throwing";
+  scheduledNotices?: Parameters<typeof createGroupChannelMessageService>[0]['scheduledNotices'];
 }) {
   const targets = BOT_IDS.map((botId, index) => Object.freeze({
     targetBotId: botId,
@@ -429,6 +430,7 @@ function harness(input: {
     }
   }
   const service = createGroupChannelMessageService({
+    scheduledNotices: input.scheduledNotices,
     messages: {
       sendMessage: async (request) => {
         if (request.kind === "text") {
@@ -603,6 +605,22 @@ function submissionBody() {
     reasoningEffort: null,
   };
 }
+
+for (const outcome of ['first blocker','unchanged blocker','real progress'] as const) test(`scheduled publication boundary: ${outcome}`, async () => {
+  let prepared=0;const delivered:string[]=[];
+  const quiet=outcome==='unchanged blocker';
+  const h=harness({scheduledOrigin:true,responses:[{text:outcome,model:'fixture',toolCallCount:4,durationMs:1},
+    {text:'',model:'fixture',toolCallCount:0,durationMs:1}],scheduledNotices:{
+      admit:()=>{},hasResult:()=>false,
+      prepare:(_work,text,artifacts,count)=>{if(!text)return false;prepared++;assert.equal(text,outcome);assert.deepEqual(artifacts,[]);assert.equal(count,4);return quiet;},
+      delivered:work=>{delivered.push(work.id);},
+    }});
+  const accepted=await h.service.submitMessage({context:h.context,channelId:CHANNEL_ID,idempotencyKey:`scheduled-publication-${outcome}`,body:submissionBody()});
+  const result=await accepted.response as {outcome:string};assert.equal(result.outcome,'completed');
+  assert.equal(prepared,1);assert.equal(h.sent.filter(row=>row.kind==='result').length,quiet?0:1);
+  assert.deepEqual(delivered,quiet?[]:[WORK_IDS[0]]);
+  assert.equal(h.recorded.filter(row=>row.kind==='result').length,quiet?0:1);
+});
 
 test("group Channel records an explicit pass without fabricating Bot speech", async () => {
   const testHarness = harness({
