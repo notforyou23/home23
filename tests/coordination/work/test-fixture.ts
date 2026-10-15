@@ -1,6 +1,7 @@
 import { COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL } from "../../../src/coordination/migrations/0008-communication-evidence-indexes.js";
 import { EVENT_RETENTION_COUNT_MIGRATION_SQL } from "../../../src/coordination/migrations/0015-event-retention-count.js";
 import { PLANNED_INVOCATIONS_MIGRATION_SQL } from "../../../src/coordination/migrations/0013-planned-invocations.js";
+import { SCHEDULED_ORIGIN_INDEX_MIGRATION_SQL } from "../../../src/coordination/migrations/0022-scheduled-origin-index.js";
 import { mkdtempSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -72,6 +73,7 @@ export class M11TestDatabase {
       this.raw.exec(WORK_THREAD_PRESENTATION_MIGRATION_SQL);
       this.raw.exec(PLANNED_INVOCATIONS_MIGRATION_SQL);
       this.raw.exec(EVENT_RETENTION_COUNT_MIGRATION_SQL);
+      this.raw.exec(SCHEDULED_ORIGIN_INDEX_MIGRATION_SQL);
       if (applyArtifactAudioMigration) {
         this.raw.transaction(() => this.raw.exec(ARTIFACT_AUDIO_MPEG_MIGRATION_SQL))();
       }

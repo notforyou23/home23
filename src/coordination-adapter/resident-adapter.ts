@@ -640,6 +640,16 @@ export class ResidentCoordinationAdapter {
         ? { timestamp: this.now().toISOString() }
         : null;
     };
+    const reconcileStopped = async (terminal: ResidentDurableTerminal | null): Promise<void> => {
+      if (terminal?.status !== 'stopped' || await cancellationState()) return;
+      // stop-turn can stop the resident directly, without a prior Work cancel.
+      // Its exact durable envelope proves execution ended; revoke this binding
+      // before writing the cancellation receipt required by the Work lifecycle.
+      await this.coordination.assertCurrent(binding);
+      await this.coordination.revoke({ ...binding, reasonCode: 'resident_stopped' });
+      const active = this.active.get(origin.workId);
+      if (active) active.cancelling = true;
+    };
     const settleCallbacks = async (): Promise<void> => {
       try {
         await callbackChain;
@@ -754,19 +764,32 @@ export class ResidentCoordinationAdapter {
       throw error;
     });
 
+    // A durable stopped/timeout/error envelope must settle the adapter even
+    // when a provider ignores abort and leaves its response unresolved.
+    const response = started.terminal ? Promise.race([started.response, started.terminal.then(terminal => {
+      if (terminal.status !== 'complete') {
+        throw new Error(terminal.errorMessage ?? terminal.errorCode ?? `Resident turn ended ${terminal.status}`);
+      }
+      return started.response;
+    })]) : started.response;
+
     const receipt = (async (): Promise<ResidentTerminalReceipt> => {
       try {
         let terminal: ResidentTerminalReceipt;
         let durableTerminal: ResidentDurableTerminal | null = null;
         try {
-          const response = await started.response;
+          const completed = await response;
           durableTerminal = started.terminal ? await started.terminal : null;
           await settleCallbacks();
+          await reconcileStopped(durableTerminal);
+          if (durableTerminal && durableTerminal.status !== 'complete' && durableTerminal.status !== 'stopped') {
+            throw new Error(durableTerminal.errorMessage ?? durableTerminal.errorCode ?? `Resident turn ended ${durableTerminal.status}`);
+          }
           let cancellation = await cancellationState();
           let artifactIds: readonly string[] = Object.freeze([]);
           if (cancellation === null) {
             await this.coordination.assertCurrent(binding);
-            const media = (response.media ?? []).filter(
+            const media = (completed.media ?? []).filter(
               (candidate) => isReturnedArtifactGenerator(candidate.generatedBy),
             );
             if (media.length > 0) {
@@ -786,7 +809,7 @@ export class ResidentCoordinationAdapter {
           terminal = Object.freeze({
             status: cancelled ? 'cancelled' : 'succeeded',
             sourceReference: origin.authorityReference,
-            resultDigest: cancelled ? null : digest(response.text),
+            resultDigest: cancelled ? null : digest(completed.text),
             artifactIds: cancelled ? Object.freeze([]) : artifactIds,
             timestamp: cancellation?.timestamp ?? durableTerminal?.endedAt ?? this.now().toISOString(),
           });
@@ -795,6 +818,7 @@ export class ResidentCoordinationAdapter {
             try { durableTerminal = await started.terminal; } catch { durableTerminal = null; }
           }
           await settleCallbacks();
+          await reconcileStopped(durableTerminal);
           const cancellation = await cancellationState();
           const cancelled = cancellation !== null;
           terminal = Object.freeze({
@@ -842,7 +866,7 @@ export class ResidentCoordinationAdapter {
       }
     })();
 
-    return Object.freeze({ turnId: started.turnId, response: started.response, receipt });
+    return Object.freeze({ turnId: started.turnId, response, receipt });
   }
 
   async cancel(workId: string, reasonCode = 'coordination_cancel'): Promise<boolean> {

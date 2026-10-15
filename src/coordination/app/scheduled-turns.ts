@@ -50,11 +50,12 @@ export function createScheduledChannelTurns(options: {
       aggregateVersion:version,channelId:value.channelId,actorPrincipalId:value.botId,requestId:generateCoordinationId('request'),
       correlationId:generateCoordinationId('correlation'),payload:JSON.parse(JSON.stringify({...value,...(error?{error}:{})})),createdAt:new Date().toISOString() } }));
   }
-  const children = (value: Admission) => db.readAll<{id:string;state:string;text:string|null;messageId:string|null;quiet:number|null}>(
+  const children = (value: Admission) => db.readAll<{id:string;state:string;text:string|null;messageId:string|null;quiet:number|null;artifactCount:number|null}>(
     `SELECT w.id,w.state,coalesce(m.body_text,json_extract(quiet.payload_json,'$.text')) AS text,m.id AS messageId,
-       json_extract(quiet.payload_json,'$.suppressed') AS quiet
+       json_extract(quiet.payload_json,'$.suppressed') AS quiet,json_array_length(receipt.artifact_refs_json) AS artifactCount
      FROM works w LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
      LEFT JOIN events quiet ON quiet.aggregate_kind='scheduled_channel_notice_work' AND quiet.aggregate_id=w.id AND quiet.aggregate_version=1
+     LEFT JOIN terminal_receipts receipt ON receipt.work_id=w.id AND receipt.attempt_id=w.current_attempt_id AND receipt.terminal_status=w.state
      WHERE (w.kind IN ('channel.bot_turn','bot_turn') OR
        (w.kind='resident_turn' AND w.principal_id=? AND w.idempotency_key_digest=?))
        AND w.origin_message_id=? AND w.channel_id=? AND w.target_principal_id=?`,
@@ -97,7 +98,10 @@ export function createScheduledChannelTurns(options: {
             ?? 'Scheduled channel Work did not complete.';
         return {state: rows.some(row=>row.state==='cancelled')?'cancelled':'failed',error,workIds:rows.map(row=>row.id)};
       }
-      if (rows.every(row=>row.messageId || row.quiet===1)) {
+      // A durable notice decision also closes an empty (passed) response.
+      // Wait for that decision so polling cannot race repeat suppression.
+      if (rows.every(row=>row.messageId || row.quiet===1 ||
+        (row.quiet===0 && !row.text?.trim() && row.artifactCount===0))) {
         const conclusion = rows.map(row => options.conclusion?.(row.id))
           .find(value => value?.state === 'blocked' || value?.state === 'cancelled');
         return {state:'succeeded',text:rows.map(row=>row.text??'').join('\n\n'),workIds:rows.map(row=>row.id),

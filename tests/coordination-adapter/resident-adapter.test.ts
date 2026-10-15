@@ -98,6 +98,7 @@ function harness(options: {
   response?: any;
   responseError?: Error;
   promotedArtifactIds?: readonly string[];
+  durableStatus?: string;
 } = {}) {
   const calls: string[] = [];
   const observations: unknown[] = [];
@@ -135,7 +136,11 @@ function harness(options: {
           text: 'exact result', model: 'test', toolCallCount: 0, durationMs: 1,
         });
       }
-      return { turnId: 'turn-resident-1', response };
+      return { turnId: 'turn-resident-1', response, ...(options.durableStatus ? { terminal: Promise.resolve({
+        status: options.durableStatus, lastSequence: 1, endedAt: '2026-08-25T12:00:59.000Z',
+        errorCode: options.durableStatus === 'timeout' ? 'turn_timeout' : null,
+        errorMessage: null, provider: 'fixture', model: 'test', reasoningEffort: null,
+      }) } : {}) };
     },
     stop(_chatId, turnId) {
       calls.push(`stop:${turnId}`);
@@ -338,6 +343,33 @@ test('a genuine resident execution error remains a failed receipt with its exact
   assert.equal(receipt.status, 'failed');
   assert.equal(receipt.resultDigest, sha256('publisher rejected exact input'));
   assert.equal(h.calls.includes('terminal:succeeded'), false);
+});
+
+for (const durableStatus of ['stopped', 'timeout', 'error']) {
+  test(`durable ${durableStatus} wins over a resolved partial assistant response`, async () => {
+    const h = harness({ durableStatus });
+    const run = await h.adapter.execute(request());
+    await run.response;
+    const receipt = await run.receipt;
+    assert.equal(receipt.status, durableStatus === 'stopped' ? 'cancelled' : 'failed');
+    assert.equal(receipt.artifactIds.length, 0);
+    if (durableStatus === 'stopped') assert.ok(h.calls.indexOf('revoke') < h.calls.indexOf('terminal:cancelled'));
+  });
+}
+
+test('stop-turn durable stopped evidence cancels Work even when its response rejects', async () => {
+  const h = harness({ durableStatus: 'stopped', responseError: new Error('resident turn ended stopped') });
+  const run = await h.adapter.execute(request());
+  await assert.rejects(run.response, /ended stopped/);
+  assert.equal((await run.receipt).status, 'cancelled');
+});
+
+test('durable stop closes Work without waiting for a provider response that ignores abort', async () => {
+  const h = harness({ durableStatus: 'stopped', deferred: true });
+  const run = await h.adapter.execute(request());
+  const timeout = new Promise<never>((_resolve,reject)=>setTimeout(()=>reject(new Error('terminal receipt still pending')),50));
+  assert.equal((await Promise.race([run.receipt,timeout])).status,'cancelled');
+  await assert.rejects(run.response,/ended stopped/);
 });
 
 test('successful resident generated media is promoted before its immutable terminal receipt', async () => {

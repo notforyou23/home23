@@ -5,6 +5,7 @@ import {createWorkService} from '../../../src/coordination/work/index.js';
 import { createResidentAssignments } from '../../../src/coordination/app/resident-assignments.js';
 import { createLeaseService } from '../../../src/coordination/leases/index.js';
 import { sha256 } from '../../../src/coordination/work/canonical.js';
+import { createScheduledChannelNotices } from '../../../src/coordination/app/scheduled-channel-notices.js';
 import {M11TestDatabase,AT,BOT_ID,CHANNEL_ID,createFixtureIdGenerator,fixtureId,manifestInput} from '../work/test-fixture.js';
 
 for (const evidence of ['bound', 'stale-attempt', 'wrong-error'] as const) test(`failed scheduled Work reports only receipt-bound resident evidence: ${evidence}`, async t => {
@@ -143,6 +144,36 @@ test('busy scheduled admission stays pending and reuses its message after reopen
  let service=createScheduledChannelTurns(options);await service.run(input);await new Promise(r=>setImmediate(r));
  database.reopen();service=createScheduledChannelTurns(options);assert.equal((await service.run(input)).state,'running');await new Promise(r=>setImmediate(r));
  assert.equal(ids.length,2);assert.equal(new Set(ids).size,1);assert.equal(database.readAll("SELECT sequence FROM events WHERE aggregate_kind='scheduled_channel_run' AND aggregate_version=2").length,0);
+});
+
+for (const responseText of ['', 'A completed article']) test(`scheduled publication settles safely for ${responseText ? 'nonempty' : 'empty'} output`, async t => {
+ const database=M11TestDatabase.temporary();t.after(()=>database.close());
+ const work=createWorkService({database,generateId:createFixtureIdGenerator(),now:()=>new Date(AT)});
+ const input={runId:'sched-run-0198d95f-6c00-7000-8000-000000000033',jobId:'empty-result',channelId:CHANNEL_ID,prompt:'Run the cycle'};
+ const messageId=fixtureId('message',1);
+ database.mutateWithEvent(()=>({value:undefined,event:{type:'activity.updated',aggregateKind:'scheduled_channel_run',aggregateId:input.runId,
+  aggregateVersion:1,channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,requestId:fixtureId('request',330),correlationId:fixtureId('correlation',330),
+  payload:{...input,messageId,botId:BOT_ID},createdAt:AT}}));
+ const child=work.create({principalId:BOT_ID,targetPrincipalId:BOT_ID,channelId:CHANNEL_ID,originMessageId:messageId,roundId:null,
+  kind:'channel.bot_turn',idempotencyKey:`scheduled:${input.runId}`,manifest:manifestInput(),maxAutomaticOffers:1,
+  requestId:fixtureId('request',331),correlationId:fixtureId('correlation',331)}).work;
+ const leases=createLeaseService({database,generateId:createFixtureIdGenerator(3000),now:()=>new Date(AT),leaseTtlMs:60000});
+ const offer=leases.offer({workId:child.id,holderPrincipalId:BOT_ID,holderInstanceId:'resident-1',authorityReference:'resident:jerry',automatic:true,
+  requestId:fixtureId('request',332),correlationId:fixtureId('correlation',332)});
+ const binding={workId:child.id,attemptId:offer.attempt.id,leaseId:offer.lease.id,holderPrincipalId:BOT_ID,holderInstanceId:'resident-1',fencingToken:offer.fencingToken,
+  requestId:fixtureId('request',333),correlationId:fixtureId('correlation',333)};
+ leases.accept(binding);leases.start(binding);leases.terminalize({...binding,receipt:{status:'succeeded',sourceReference:'resident:jerry',resultDigest:sha256(responseText),artifactIds:[],timestamp:AT}});
+ const service=createScheduledChannelTurns({database,channels:{} as any,context:()=>({principalId:BOT_ID}) as any,beginWork:()=>()=>{},
+  submit:{submitMessage:async()=>{throw new Error('must not rerun a completed execution');}}});
+ assert.equal((await service.run(input)).state,'running','publication decision must settle before polling observes completion');
+ createScheduledChannelNotices(database).prepare(work.get(child.id)!,responseText,[],0);
+ if (responseText) {
+  assert.equal((await service.run(input)).state,'running','a nonempty result must commit before delivery is reported');
+  database.raw.prepare(`INSERT INTO messages(id,channel_id,channel_sequence,author_principal_id,author_kind,author_display_name,kind,body_text,stored_visibility,created_at,work_id)
+    VALUES(?,?,2,?,'bot','Jerry','result',?,'visible',?,?)`).run(fixtureId('message',334),CHANNEL_ID,BOT_ID,responseText,AT,child.id);
+ }
+ const result=await service.run(input);
+ assert.equal(result.state,'succeeded');assert.deepEqual(result.workIds,[child.id]);assert.equal(result.text,responseText);
 });
 
 test('explicit target keeps resident authorship, tracks only target Work and binds replay to actor and target',async t=>{
