@@ -10,6 +10,16 @@ import { AT, BOT_ID, CHANNEL_ID, MESSAGE_ID, M11TestDatabase, OWNER_ID, createFi
 const context = (suffix: number, principalId = OWNER_ID) => ({ principalId, requestId: fixtureId("request", suffix), correlationId: fixtureId("correlation", suffix), identity: { kind: "owner" as const, auth: {} as any } });
 const CONVERSATION_ID = fixtureId("conversation", 1);
 
+// Mirrors the installed Apple contract's ConnectedAgentsWorkThread.displayState.
+// It recognizes selected assignment states and otherwise falls back to state.
+function appleDisplayState(work: {state:string;assignmentState?:string}): string {
+  switch(work.assignmentState) {
+    case 'complete': case 'cancelled': case 'blocked': case 'needs_review': return work.assignmentState;
+    case 'active': return ['succeeded','failed','cancelled'].includes(work.state) ? 'following_up' : work.state;
+    default: return work.state==='succeeded' ? 'returned' : work.state;
+  }
+}
+
 function setup(start = 8000) {
   const database = M11TestDatabase.temporary();
   database.raw.prepare("INSERT INTO conversation_handles (id, channel_id, created_at) VALUES (?, ?, ?)")
@@ -250,6 +260,66 @@ test('the channel owner can see and stop Jerry-initiated joined Work without a f
   assert.equal(s.control.cancel({context:context(88005),workId:child.id,idempotencyKey:'stop-scheduled-run'}).outcome,'cancellation_requested');
   s.control.recoverCancellations({requestId:fixtureId('request',88006),correlationId:fixtureId('correlation',88006)});
   assert.equal(s.work.get(child.id)!.state,'cancelling','generic recovery must not manufacture a stopped receipt for joined execution');
+});
+
+for (const execution of ['succeeded', 'failed', 'cancelled'] as const) {
+  for (const conclusion of ['active', 'blocked', 'complete', 'cancelled'] as const) {
+    test(`terminal scheduled ${execution} with ${conclusion} assessment has a terminal iOS card`, t => {
+      const s = setup(89000); t.after(() => s.database.close());
+      const child = s.work.create({ principalId: BOT_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
+        originMessageId: MESSAGE_ID, roundId: null, kind: 'channel.bot_turn', idempotencyKey: 'scheduled-terminal-card',
+        manifest: manifestInput(), maxAutomaticOffers: 1, requestId: fixtureId('request',89001), correlationId: fixtureId('correlation',89001),
+        presentation: { title: 'Scheduled channel run', summary: 'Run the cycle' } }).work;
+      s.database.mutateWithEvent(() => ({value:undefined,event:{type:'activity.updated',aggregateKind:'scheduled_channel_run',
+        aggregateId:'sched-run-0198d95f-6c00-7000-8000-000000089000',aggregateVersion:1,channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,
+        requestId:fixtureId('request',89002),correlationId:fixtureId('correlation',89002),
+        payload:{messageId:MESSAGE_ID,channelId:CHANNEL_ID,botId:BOT_ID},createdAt:AT}}));
+      s.database.mutateWithEvent(() => ({value:undefined,event:{type:'activity.updated',aggregateKind:'resident_assignment',
+        aggregateId:child.id,aggregateVersion:1,channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,
+        requestId:fixtureId('request',89003),correlationId:fixtureId('correlation',89003),
+        payload:{workId:child.id,state:conclusion,summary:'Project guard remains enabled',evidence:[],waitFor:[],revisitAt:null},createdAt:AT}}));
+      if (execution === 'cancelled') {
+        s.work.cancelQueued({workId:child.id,actorPrincipalId:BOT_ID,reasonCode:'fixture_stop',sourceReference:'fixture:stop',timestamp:AT,
+          requestId:fixtureId('request',89006),correlationId:fixtureId('correlation',89006)});
+      } else {
+        const offered=s.leases.offer({workId:child.id,holderPrincipalId:BOT_ID,holderInstanceId:'resident-1',authorityReference:'resident:jerry',automatic:true,
+          requestId:fixtureId('request',89006),correlationId:fixtureId('correlation',89006)});
+        const binding={workId:child.id,attemptId:offered.attempt.id,leaseId:offered.lease.id,holderPrincipalId:BOT_ID,holderInstanceId:'resident-1',fencingToken:offered.fencingToken,
+          requestId:fixtureId('request',89007),correlationId:fixtureId('correlation',89007)};
+        s.leases.accept(binding);s.leases.start(binding);
+        s.leases.terminalize({...binding,receipt:{status:execution,sourceReference:'resident:jerry',resultDigest:'a'.repeat(64),artifactIds:[],timestamp:AT}});
+      }
+      const expected = execution !== 'succeeded' ? execution : conclusion === 'blocked' ? 'failed'
+        : conclusion === 'cancelled' ? 'cancelled' : conclusion === 'complete' ? 'complete' : 'returned';
+      const shown = s.control.get({context:context(89004),workId:child.id});
+      assert.equal(shown.assignmentState, expected);
+      assert.equal(appleDisplayState(shown),expected,'current iOS contract must display the terminal task outcome');
+      assert.equal(shown.executionState,execution);
+      assert.equal(s.work.get(child.id)!.state,execution,'presentation must preserve canonical execution history');
+      assert.equal(shown.assignmentSummary,'Project guard remains enabled');
+      assert.deepEqual(s.control.list({context:context(89005)}).works.find(row=>row.id===child.id),shown);
+    });
+  }
+}
+
+test('scheduled card semantics require the exact admission channel, author, and target', t => {
+  const s=setup(89500);t.after(()=>s.database.close());
+  const child=s.work.create({principalId:BOT_ID,targetPrincipalId:BOT_ID,channelId:CHANNEL_ID,originMessageId:MESSAGE_ID,roundId:null,
+    kind:'channel.bot_turn',idempotencyKey:'unrelated-schedule-admission',manifest:manifestInput(),maxAutomaticOffers:1,
+    requestId:fixtureId('request',89501),correlationId:fixtureId('correlation',89501),presentation:{title:'Normal assignment',summary:'Wait for a dependency'}}).work;
+  s.work.cancelQueued({workId:child.id,actorPrincipalId:BOT_ID,reasonCode:'fixture_stop',sourceReference:'fixture:stop',timestamp:AT,
+    requestId:fixtureId('request',89502),correlationId:fixtureId('correlation',89502)});
+  s.database.mutateWithEvent(()=>({value:undefined,event:{type:'activity.updated',aggregateKind:'resident_assignment',aggregateId:child.id,
+    aggregateVersion:1,channelId:CHANNEL_ID,actorPrincipalId:BOT_ID,requestId:fixtureId('request',89503),correlationId:fixtureId('correlation',89503),
+    payload:{workId:child.id,state:'blocked',summary:'Wait for a dependency',evidence:[],waitFor:[],revisitAt:null},createdAt:AT}}));
+  for(const [index,variant] of ['channel','author','target'].entries()) {
+    s.database.mutateWithEvent(()=>({value:undefined,event:{type:'activity.updated',aggregateKind:'scheduled_channel_run',aggregateId:`unrelated-schedule-${index}`,
+      aggregateVersion:1,channelId:variant==='channel'?fixtureId('channel',89504):CHANNEL_ID,
+      actorPrincipalId:variant==='author'?fixtureId('bot',89504):BOT_ID,
+      requestId:fixtureId('request',89504+index),correlationId:fixtureId('correlation',89504+index),
+      payload:{messageId:MESSAGE_ID,channelId:CHANNEL_ID,botId:BOT_ID,...(variant==='target'?{targetBotId:fixtureId('bot',89504)}:{})},createdAt:AT}}));
+    assert.equal(s.control.get({context:context(89508),workId:child.id}).assignmentState,'blocked',variant);
+  }
 });
 
 test("Working Thread list projects a whole page with constant base queries and matches single-item projection", (t) => {

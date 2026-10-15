@@ -39,6 +39,8 @@ export interface ProductWorkProjection {
   title: string;
   summary: string;
   state: "queued" | "running" | "stopping" | "succeeded" | "failed" | "cancelled";
+  /** Canonical execution receipt when a scheduled card shows its task outcome. */
+  executionState?: WorkRecord['state'];
   assignmentState?: string;
   assignmentSummary?: string | null;
   origin?: 'resident_initiative';
@@ -90,6 +92,7 @@ interface WorkPresentationRow {
   durableTitle: string | null;
   durableSummary: string | null;
   initiativePurpose: ProductWorkProjection['purpose'] | null;
+  scheduledRun: number;
 }
 
 function safeWorkText(value: string | null, maximum: number): string {
@@ -130,7 +133,14 @@ const PRESENTATION_SELECT = `SELECT h.id AS conversationId,
             ) AS finalResultMessageId,
             w.id AS workId,
             product.work_id AS presentationWorkId,
-            json_extract(initiative.payload_json,'$.request.purpose') AS initiativePurpose
+            json_extract(initiative.payload_json,'$.request.purpose') AS initiativePurpose,
+            EXISTS(SELECT 1 FROM events scheduled WHERE scheduled.aggregate_kind='scheduled_channel_run'
+              AND scheduled.aggregate_version=1 AND json_extract(scheduled.payload_json,'$.messageId')=+w.origin_message_id
+              AND scheduled.channel_id=w.channel_id AND scheduled.actor_principal_id=w.principal_id
+              AND json_extract(scheduled.payload_json,'$.channelId')=w.channel_id
+              AND json_extract(scheduled.payload_json,'$.botId')=w.principal_id
+              AND coalesce(json_extract(scheduled.payload_json,'$.targetBotId'),json_extract(scheduled.payload_json,'$.botId'))=w.target_principal_id
+              AND w.kind IN ('channel.bot_turn','bot_turn','resident_turn')) AS scheduledRun
        FROM works w
        JOIN conversation_handles h ON h.channel_id = w.channel_id
        JOIN bots bot ON bot.principal_id = w.target_principal_id
@@ -257,6 +267,18 @@ function buildProjection(
   const title = safeWorkText(shown.durableTitle ?? shown.originText, 88) || `${shown.displayName} work`;
   const workingThread = assignments !== null;
   const assessment = assignments ? assignments.latest(work.id) : null;
+  // Each scheduled firing is a bounded execution. A blocked project assessment
+  // must not leave its finished run displayed as an open Waiting assignment.
+  // Existing Apple clients fall back to state for an assignmentState of failed.
+  // Keep canonical execution history separately from the scheduled task outcome.
+  const scheduledTerminal = shown.scheduledRun === 1 && ['succeeded','failed','cancelled'].includes(work.state);
+  const assignmentState = scheduledTerminal
+    ? work.state !== 'succeeded' ? work.state : assessment?.state === 'blocked' ? 'failed'
+      : assessment?.state === 'cancelled' ? 'cancelled' : assessment?.state === 'complete' ? 'complete' : 'returned'
+    : assignments?.presentationState(work.id, work.state, assessment);
+  const taskState = scheduledTerminal && work.state === 'succeeded'
+    ? assessment?.state === 'blocked' ? 'failed' : assessment?.state === 'cancelled' ? 'cancelled' : state
+    : state;
   return Object.freeze({
     id: work.id,
     channelId: work.channelId,
@@ -272,10 +294,11 @@ function buildProjection(
     kind: workingThread ? PRODUCT_WORK_THREAD_KIND : work.kind,
     title,
     summary: summary || title,
-    state,
+    state: taskState,
+    ...(scheduledTerminal ? {executionState:work.state} : {}),
     ...(shown.initiativePurpose ? { origin: 'resident_initiative' as const, purpose: shown.initiativePurpose } : {}),
     ...(assignments && (!shown.initiativePurpose || shown.initiativePurpose === 'action') ? {
-      assignmentState: assignments.presentationState(work.id, work.state, assessment),
+      assignmentState,
       assignmentSummary: assessment?.summary ?? null,
     } : {}),
     cancelAvailable: work.state === "queued" || work.state === "running" || (workingThread && work.state === "leased"),

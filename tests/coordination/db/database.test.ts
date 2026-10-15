@@ -97,17 +97,31 @@ test("bot result notification recovery reads the creation-order partial index", 
   assert.ok(rows.some((row) => row.detail.includes("messages_notification_recovery_order")));
 });
 
-test("an existing schema v20 database upgrades to the notification index", (t) => {
+test('scheduled run card provenance seeks its origin message index', t => {
+  const database=openCoordinationDatabase({path:temporaryDatabase(t),applicationVersion:'scheduled-origin-test'});
+  t.after(()=>database.close());
+  const plan=database.readAll<{detail:string}>(`EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM events scheduled
+    WHERE scheduled.aggregate_kind='scheduled_channel_run' AND scheduled.aggregate_version=1
+      AND json_extract(scheduled.payload_json,'$.messageId')=+w.origin_message_id
+      AND scheduled.channel_id=w.channel_id AND scheduled.actor_principal_id=w.principal_id
+      AND json_extract(scheduled.payload_json,'$.channelId')=w.channel_id
+      AND json_extract(scheduled.payload_json,'$.botId')=w.principal_id
+      AND coalesce(json_extract(scheduled.payload_json,'$.targetBotId'),json_extract(scheduled.payload_json,'$.botId'))=w.target_principal_id
+      AND w.kind IN ('channel.bot_turn','bot_turn','resident_turn')) FROM works w WHERE w.id='wrk_fixture'`).map(row=>row.detail).join('\n');
+  assert.match(plan,/SEARCH scheduled USING INDEX events_scheduled_origin_message \(<expr>=\?\)/);
+});
+
+for (const fromVersion of [20, 21]) test(`an existing schema v${fromVersion} database upgrades only reviewed indexes and triggers`, (t) => {
   const path = temporaryDatabase(t);
   const v20 = new Database(path);
-  for (const migration of COORDINATION_MIGRATIONS.slice(0, 20)) {
+  for (const migration of COORDINATION_MIGRATIONS.slice(0, fromVersion)) {
     v20.exec(migration.sql);
     v20.prepare("INSERT INTO schema_migrations (version, name, checksum, applied_at, application_version) VALUES (?, ?, ?, ?, ?)")
       .run(migration.version, migration.name, migration.checksum, "2026-09-23T00:00:00.000Z", "notification-upgrade-test");
   }
-  const prior = COORDINATION_MIGRATIONS[19]!;
+  const prior = COORDINATION_MIGRATIONS[fromVersion-1]!;
   for (const [key, value] of [
-    ["schema.version", "20"],
+    ["schema.version", String(fromVersion)],
     ["schema.checksum", prior.schemaChecksum],
     ["contract.version", String(CONNECTED_AGENTS_CONTRACT_VERSION)],
     ["contract.pack_sha256", COORDINATION_CONTRACT_PACK_SHA256],
@@ -115,16 +129,17 @@ test("an existing schema v20 database upgrades to the notification index", (t) =
     v20.prepare("INSERT INTO kernel_meta (key, value, updated_at) VALUES (?, ?, ?)")
       .run(key, value, "2026-09-23T00:00:00.000Z");
   }
-  v20.pragma("user_version = 20");
+  v20.pragma(`user_version = ${fromVersion}`);
   v20.close();
 
   const upgraded = openCoordinationDatabase({ path, applicationVersion: "notification-upgrade-test" });
   t.after(() => upgraded.close());
-  assert.equal(upgraded.openReceipt.migratedFrom, 20);
+  assert.equal(upgraded.openReceipt.migratedFrom, fromVersion);
   assert.equal(upgraded.openReceipt.startupCheck, "schema_migration_only");
-  assert.equal(upgraded.openReceipt.schemaVersion, 21);
+  assert.equal(upgraded.openReceipt.schemaVersion, 22);
   assert.equal(upgraded.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.ok(upgraded.readOne("SELECT 1 AS present FROM sqlite_schema WHERE name = 'messages_notification_recovery_order'"));
+  assert.ok(upgraded.readOne("SELECT 1 AS present FROM sqlite_schema WHERE name = 'events_scheduled_origin_message'"));
 });
 
 test("a zero-byte database migrates to the current checksummed schema and reopens", (t) => {
@@ -139,7 +154,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   );
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 21);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 22);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -252,6 +267,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 19, checksum: COORDINATION_MIGRATIONS[18]!.checksum },
       { version: 20, checksum: COORDINATION_MIGRATIONS[19]!.checksum },
       { version: 21, checksum: COORDINATION_MIGRATIONS[20]!.checksum },
+      { version: 22, checksum: COORDINATION_MIGRATIONS[21]!.checksum },
     ],
   );
   assert.deepEqual(

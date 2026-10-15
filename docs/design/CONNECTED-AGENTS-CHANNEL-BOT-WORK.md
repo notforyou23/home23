@@ -27,6 +27,8 @@ Research operations derive their remote request identity from the exact Work/too
 
 The scheduler persists a full run ID before dispatch, and persists the resolved prompt, channel, model, and effort before its first signed Core request. Core journals admission before submitting one canonical channel Message. The scheduler observes the corresponding Work; it does not run a fallback local agent turn. Pending runs reattach with the original resolved prompt after scheduler restart, including disabled one-shot jobs. Core repairs admission gaps from its journal and uses existing group Work recovery for execution/result delivery. Canonical observers do not block unrelated scheduler ticks, and active jobs still count against concurrency limits.
 
+Each scheduled firing has a terminal card when its execution ends. The product Work API projects the scheduled task outcome in `state`: a returned blocked assessment is `failed`, and a cancelled assessment is `cancelled`. The card retains the assessment summary. Its optional `executionState` records the canonical execution status, which can remain `succeeded` when the resident successfully returned a blocker. This presentation does not rewrite the Work receipt or close the broader project assignment. Existing Apple clients use `state` to display unsuccessful scheduled outcomes; an open assignment's `blocked` state still means Waiting.
+
 A terminal scheduled Work enters Jerry's durable outcome inbox. Follow-through reviews saved state and the latest channel context. Interrupted work can be inspected and continued under the original authorization; side effects must not be blindly repeated. Recovery of a recorded result is different from safely replaying an unfinished external action.
 
 ## Activation and verification
