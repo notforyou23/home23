@@ -15,7 +15,6 @@ import { SqliteMessagingRepository, SqliteBotConversationBindingAdapter } from '
 import { SqliteCommunicationEventRepository, stableCommunicationEventId } from '../../../src/coordination/communications/index.js';
 import { RESIDENT_OUTCOMES_MIGRATION_SQL } from '../../../src/coordination/migrations/0014-resident-outcomes.js';
 import { INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL } from '../../../src/coordination/migrations/0019-inbox-and-reconciliation-indexes.js';
-import { COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL } from '../../../src/coordination/migrations/0008-communication-evidence-indexes.js';
 import { AT, BOT_ID, CHANNEL_ID, MESSAGE_ID, M11TestDatabase, createFixtureIdGenerator, fixtureId, manifestInput } from '../work/test-fixture.js';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,7 +29,6 @@ function fixture(t: test.TestContext, queuedOnly = false, replay = true) {
   const database = M11TestDatabase.temporary(); t.after(() => { database.close(); rmSync(dirname(database.path), { recursive: true, force: true }); });
   database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
   database.raw.exec(INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL);
-  if (!replay) database.raw.exec(COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL);
   database.raw.prepare('UPDATE resident_outcome_policy SET enabled_at=?').run(AT);
   const conversationId = fixtureId('conversation', 940);
   database.raw.prepare('INSERT INTO conversation_handles(id,channel_id,created_at) VALUES(?,?,?)').run(conversationId, CHANNEL_ID, AT);

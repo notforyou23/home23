@@ -21,11 +21,13 @@ import { projectResidentWorkIncrementally, residentWorkProjectionChangesSince } 
 import { createResidentAssignments } from './resident-assignments.js';
 import { dirname, join, resolve } from 'node:path';
 import { createScheduledChannelTurns } from './scheduled-turns.js';
+import { createScheduledChannelNotices, scheduledResponseCommunication } from './scheduled-channel-notices.js';
 import { createResidentInitiations } from './resident-initiations.js';
 import { createBotInvocationService } from './bot-invocations.js';
 import { resolveMessagingActor } from '../channels/access.js';
 import { createChannelOperationConsumer } from './channel-operations.js';
-import { createResidentOutcomeStore, initiativeReviewCommunication, workTerminalEvidence } from './resident-outcomes.js';
+import { createWorkDiagnostics } from './work-diagnostics.js';
+import { createResidentOutcomeStore, initiativeReviewCommunication } from './resident-outcomes.js';
 import { createWorkingThreadStop } from "./working-thread-stop.js";
 import { createForegroundDetachmentConsumer } from "./foreground-detachments.js";
 import { residentFence } from "../../coordination-adapter/resident-uds.js";
@@ -515,8 +517,9 @@ export function createCoordinationProcess(
     ? createSqliteActivityReadService({ database, events, messages })
     : undefined;
   const communications = new SqliteCommunicationEventRepository(database);
+  const scheduledNotices = createScheduledChannelNotices(database);
   const appendCommunication = communications.append.bind(communications);
-  communications.append = input => appendCommunication(initiativeReviewCommunication(database, input));
+  communications.append = input => appendCommunication(scheduledResponseCommunication(database, initiativeReviewCommunication(database, input)));
   const notificationConfiguration =
     config.flags["coordination.public_api.enabled"] === true
       ? config.push
@@ -1138,6 +1141,7 @@ export function createCoordinationProcess(
               expectedAuthorityWriter: COORDINATION_MESSAGES_WRITER,
             });
             return createGroupChannelMessageService({
+              scheduledNotices,
               joinedInvocation: messageId => !!database.readOne("SELECT sequence FROM events WHERE aggregate_version = 1 AND ((aggregate_kind = 'bot_invocation' AND aggregate_id = ?) OR (aggregate_kind = 'scheduled_channel_run' AND json_extract(payload_json, '$.messageId') = ?))", messageId, messageId),
               messages,
               context: groupMessageContext,
@@ -1260,6 +1264,7 @@ export function createCoordinationProcess(
     });
     reconcileBotInvocations = botInvocations.reconcile;
     const scheduledTurns = createScheduledChannelTurns({database, channels, submit: messageSubmission, beginWork: lifecycle.beginWork,
+      admit: value => scheduledNotices.admit(value),
       conclusion: workId => residentAssignments.latest(workId),
       canDispatch: input => !input.jobId.startsWith('native-chess:') || !!database.readOne(
         "SELECT i.id FROM chess_turn_intents i JOIN chess_games g ON g.id=i.game_id AND g.version=i.game_version AND g.status='active' WHERE i.run_id=? AND i.status IN ('queued','dispatched')", input.runId),
@@ -1313,39 +1318,7 @@ export function createCoordinationProcess(
         if (!assigned || assigned.targetPrincipalId !== context.principalId) throw new Error('Work is outside this resident assignment scope');
         return stoppedWorkControl.cancel({ context, workId, idempotencyKey });
       },
-      workDiagnostics: (principalId, args, origin) => {
-        const id = typeof args.work_id === 'string' ? args.work_id : null;
-        if (args.operation === 'work_status' && !id) throw new Error('work_id is required');
-        const limit = Math.min(100, Math.max(1, Math.floor(Number(args.limit) || 20)));
-        const rows = database.readAll(`SELECT w.id, w.channel_id AS channelId, w.state,
-          w.terminal_reason AS terminalReason, w.current_attempt_id AS attemptId,
-          p.parent_work_id AS parentWorkId, json_extract(p.assignment_json, '$.toolName') AS toolName,
-          coalesce(t.title, substr(m.body_text,1,160), 'Work') AS title,
-          coalesce(t.summary, m.body_text) AS summary, m.id AS originMessageId,
-          m.body_text AS originalRequest, w.created_at AS createdAt, w.terminal_at AS terminalAt
-          FROM works w LEFT JOIN work_planned_invocations p ON p.work_id = w.id
-          LEFT JOIN work_thread_presentations t ON t.work_id=w.id
-          LEFT JOIN messages m ON m.id=w.origin_message_id
-          WHERE w.target_principal_id = ? ${id ? 'AND w.id = ?' : args.include_terminal === true ? '' : "AND w.state NOT IN ('succeeded','failed','cancelled')"}
-          ${!id && args.assignments_only === true ? "AND (w.kind='resident_work_thread' OR t.work_id IS NOT NULL)" : ''}
-          ORDER BY w.created_at DESC LIMIT ?`, principalId, ...(id ? [id] : []), limit);
-        const unseenOwnerMessages = database.readAll(`SELECT m.id AS messageId,m.channel_sequence AS sequence,m.body_text AS text,m.created_at AS createdAt
-          FROM works w JOIN context_manifests c ON c.id=w.context_manifest_id
-          JOIN messages m ON m.channel_id=w.channel_id AND m.channel_sequence>c.channel_watermark
-          WHERE w.id=? AND m.author_kind='owner' AND m.kind='text' AND m.stored_visibility='visible'
-            AND NOT EXISTS(SELECT 1 FROM events e WHERE e.aggregate_kind='scheduled_channel_run'
-              AND e.aggregate_version=1 AND json_extract(e.payload_json,'$.messageId')=m.id)
-          ORDER BY m.channel_sequence`, origin.workId);
-        const assignments = residentAssignments.list(principalId, args.include_terminal === true, limit);
-        const ownerContact = database.readOne<{ messageId: string; text: string }>(`SELECT m.id AS messageId,m.body_text AS text
-          FROM works w JOIN messages m ON m.id=w.origin_message_id WHERE w.id=?
-          AND w.kind IN ('resident_turn','channel.bot_turn') AND m.author_kind='owner' AND m.kind='text' AND m.body_text IS NOT NULL AND m.stored_visibility='visible'
-          AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.review_work_id=w.id)
-          AND NOT EXISTS(SELECT 1 FROM events e WHERE e.aggregate_kind='scheduled_channel_run'
-            AND e.aggregate_version=1 AND json_extract(e.payload_json,'$.messageId')=m.id)`, origin.workId);
-        return { registry: 'canonical', work: !id && args.assignments_only === true ? assignments : id ? rows.map(row => ({ ...row, terminalEvidence: workTerminalEvidence(database, id) })) : rows,
-          assignments, unseenOwnerMessages, ...residentAssignments.direction(origin.workId), ownerContact: ownerContact ?? null };
-      },
+      workDiagnostics: createWorkDiagnostics({ database, assignments: residentAssignments }),
       botOperation: async (context, args, key) => {
         if (!productionBotLifecycle || !botLifecycleCapabilityAvailable()) throw new Error('Bot lifecycle unavailable');
         const actor = await resolveMessagingActor(context, participantDirectory, 'message:send');

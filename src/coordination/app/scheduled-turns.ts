@@ -29,6 +29,7 @@ export function createScheduledChannelTurns(options: {
   expireWork?(workId: string): void; now?(): number;
   canDispatch?(input: ScheduledChannelTurn): boolean;
   conclusion?(workId: string): ScheduledAssignmentConclusion | null;
+  admit?(value: Admission): void;
 }) {
   const db = options.database;
   const pending = new Map<string,Promise<void>>();
@@ -49,8 +50,11 @@ export function createScheduledChannelTurns(options: {
       aggregateVersion:version,channelId:value.channelId,actorPrincipalId:value.botId,requestId:generateCoordinationId('request'),
       correlationId:generateCoordinationId('correlation'),payload:JSON.parse(JSON.stringify({...value,...(error?{error}:{})})),createdAt:new Date().toISOString() } }));
   }
-  const children = (value: Admission) => db.readAll<{id:string;state:string;text:string|null;messageId:string|null}>(
-    `SELECT w.id,w.state,m.body_text AS text,m.id AS messageId FROM works w LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
+  const children = (value: Admission) => db.readAll<{id:string;state:string;text:string|null;messageId:string|null;quiet:number|null}>(
+    `SELECT w.id,w.state,coalesce(m.body_text,json_extract(quiet.payload_json,'$.text')) AS text,m.id AS messageId,
+       json_extract(quiet.payload_json,'$.suppressed') AS quiet
+     FROM works w LEFT JOIN messages m ON m.work_id=w.id AND m.kind='result'
+     LEFT JOIN events quiet ON quiet.aggregate_kind='scheduled_channel_notice_work' AND quiet.aggregate_id=w.id AND quiet.aggregate_version=1
      WHERE (w.kind IN ('channel.bot_turn','bot_turn') OR
        (w.kind='resident_turn' AND w.principal_id=? AND w.idempotency_key_digest=?))
        AND w.origin_message_id=? AND w.channel_id=? AND w.target_principal_id=?`,
@@ -93,10 +97,11 @@ export function createScheduledChannelTurns(options: {
             ?? 'Scheduled channel Work did not complete.';
         return {state: rows.some(row=>row.state==='cancelled')?'cancelled':'failed',error,workIds:rows.map(row=>row.id)};
       }
-      if (rows.every(row=>row.messageId)) {
+      if (rows.every(row=>row.messageId || row.quiet===1)) {
         const conclusion = rows.map(row => options.conclusion?.(row.id))
           .find(value => value?.state === 'blocked' || value?.state === 'cancelled');
         return {state:'succeeded',text:rows.map(row=>row.text??'').join('\n\n'),workIds:rows.map(row=>row.id),
+          ...(rows.every(row=>row.quiet===1) ? {noticeSuppressed:true} : {}),
           ...(conclusion ? { conclusion } : {})};
       }
     }
@@ -190,6 +195,7 @@ export function createScheduledChannelTurns(options: {
         const {messageId:_,botId:__,deadlineAtMs:___,...original}=value;
         if(canonicalJson(original)!==canonicalJson(normalized)) reject('Scheduled run replay changed');
       }
+      options.admit?.(value!);
       dispatch(value!); return status(value!);
     },
     reconcile() {

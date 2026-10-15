@@ -1,3 +1,4 @@
+import { COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL } from "../../../src/coordination/migrations/0008-communication-evidence-indexes.js";
 import { EVENT_RETENTION_COUNT_MIGRATION_SQL } from "../../../src/coordination/migrations/0015-event-retention-count.js";
 import { PLANNED_INVOCATIONS_MIGRATION_SQL } from "../../../src/coordination/migrations/0013-planned-invocations.js";
 import { mkdtempSync } from "node:fs";
@@ -66,6 +67,7 @@ export class M11TestDatabase {
       this.raw.exec(WORK_SCHEMA_DELTA_SQL);
       this.raw.exec(WORK_PRODUCT_CONTROLS_MIGRATION_SQL);
       this.seedProductRows();
+      this.raw.exec(COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL);
       this.raw.exec(WORK_TURN_SELECTION_MIGRATION_SQL);
       this.raw.exec(WORK_THREAD_PRESENTATION_MIGRATION_SQL);
       this.raw.exec(PLANNED_INVOCATIONS_MIGRATION_SQL);

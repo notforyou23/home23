@@ -297,7 +297,7 @@ test('scheduled terminal Work enters the durable Jerry inbox once after restart'
     f.database.mutateWithEvent(() => ({ value: undefined, event: {
       type: 'communication.recorded', aggregateKind: 'communication', aggregateId: `terminal-evidence-${n}`, aggregateVersion: 1,
       channelId: CHANNEL_ID, actorPrincipalId: BOT_ID, requestId: fixtureId('request', 1000+n), correlationId: fixtureId('correlation', 1000+n),
-      payload: { communication: { workId: origin.workId, attemptId, source: { sourceEventType }, terminal: true, payload } }, createdAt: AT,
+      payload: { communication: { workId: origin.workId, attemptId, turnId: `coord-${origin.workId}`, source: { sourceEventType }, terminal: true, payload } }, createdAt: AT,
     } }));
   };
   record(1, origin.attemptId, 'turn.terminal', {

@@ -37,7 +37,9 @@ test('connected work status routes canonical IDs while preserving old async hand
  const ctx:any={turnRuntime:{coordinationOrigin:{workId:'wrk_parent'}},parentToolCallId:'tool',
  coordinationChannelOperation:async (request:unknown)=>{calls.push(request);return {registry:'canonical'};},
  workRegistry:{get:(id:string)=>({id,status:'completed'})}};
- assert.match((await workStatusTool.execute({work_id:'wrk_child'},ctx)).content,/canonical/);
+ assert.match((await workStatusTool.execute({work_id:'  wrk_child  '},ctx)).content,/canonical/);
+ assert.deepEqual((calls[0] as any).args,{work_id:'wrk_child',operation:'work_status'});
  assert.match((await workStatusTool.execute({work_id:'aw_older'},ctx)).content,/aw_older/);
- assert.equal((await workStatusTool.execute({},ctx)).is_error,true);assert.equal(calls.length,1);
+ assert.equal((await workStatusTool.execute({},ctx)).is_error,true);
+ assert.equal((await workStatusTool.execute({work_id:'   '},ctx)).is_error,true);assert.equal(calls.length,1);
 });
