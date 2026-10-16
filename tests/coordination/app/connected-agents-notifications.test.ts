@@ -458,3 +458,35 @@ test("canonical push does not double-fire iPhone and Mac for the same Message", 
     topic: "com.regina6.home23.mac",
   }]);
 });
+
+test("a failed badge read preserves the displayed count until an authoritative retry can clear it", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-badge-read-retry-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const registry = new DeviceRegistry(join(root, "devices.json"));
+  registry.register({ device_token: "c".repeat(64), bundle_id: "com.regina6.home23.canary", env: "sandbox",
+    chat_ids: [], connected_agents_notifications: true, coordination_device_id: `dev_${suffix}`,
+    coordination_session_id: `ses_${suffix}` });
+  let reads = 0;
+  let displayedBadge = 3;
+  const deliveredBadges: number[] = [];
+  const store = new ConnectedAgentsDeliveryStore(join(root, "deliveries"));
+  const pusher = new ApnsPusher({ send: async (_token: string, payload: { aps: { badge: number } }) => {
+    displayedBadge = payload.aps.badge;
+    deliveredBadges.push(displayedBadge);
+    return { status: 200 };
+  } } as any, registry, "Home23", {
+    connectedAgentsDeliveryStore: store, connectedAgentsRetryDelaysMs: [0], connectedAgentsMaximumAttempts: 2,
+    connectedAgentsBadgeCount: () => {
+      reads += 1;
+      assert.equal(displayedBadge, 3, "failure must not send an invented zero badge");
+      if (reads === 1) throw new Error("unread database temporarily unavailable");
+      return 0;
+    },
+  });
+  await pusher.notifyConnectedAgentsMessage({ conversationId: `cnv_${suffix}`, channelId: `chn_${suffix}`,
+    messageId: `msg_${suffix}`, createdAt: "2026-10-16T12:00:00.000Z", displayName: "Jerry" });
+  assert.equal(reads, 2);
+  assert.deepEqual(deliveredBadges, [0]);
+  assert.equal(displayedBadge, 0);
+  assert.equal(store.snapshot()[0]?.state, "delivered");
+});

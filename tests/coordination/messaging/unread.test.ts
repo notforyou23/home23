@@ -7,6 +7,7 @@ import {
   createChannelService,
 } from "../../../src/coordination/channels/index.js";
 import { createMessageService } from "../../../src/coordination/messages/index.js";
+import { SqliteBootstrapRepository } from "../../../src/coordination/bootstrap/index.js";
 import { ARTIFACT_SCHEMA_DELTA_SQL } from "../../../src/coordination/artifacts/schema-delta.js";
 import { SqliteArtifactRepository } from "../../../src/coordination/artifacts/repository.js";
 import { resolveArtifactActor } from "../../../src/coordination/artifacts/access.js";
@@ -51,6 +52,10 @@ for (const hasArtifacts of [false, true]) {
     });
     const row = async () => (await unread.listInbox({ context: ownerContext(710, ["product:read"]) }))[0]!;
     const badges = new SqliteUnreadRepository(fixture.database);
+    const bootstrapUnread = () => new SqliteBootstrapRepository(fixture.database).readProjection({
+      principalId: OWNER_ID, at: fixture.clock.value.toISOString(),
+      availabilityPolicy: { degradedAfterMs: 30_000, offlineAfterMs: 90_000 },
+    }).snapshot.unreadTotal;
 
     await send(702, "result", "Actual resident reply");
     await send(703, "system", null);
@@ -59,6 +64,7 @@ for (const hasArtifacts of [false, true]) {
     assert.equal(internalOnly.latestMessage?.preview, "Actual resident reply");
     assert.equal(internalOnly.unread.count, 1);
     assert.equal(badges.badgeCountForPrincipal(OWNER_ID), 1);
+    assert.equal(bootstrapUnread(), 1, "bootstrap excludes internal origins too");
     assert.equal((await unread.getUnread({ context: ownerContext(711, ["product:read"]),
       channelId: direct.channel.id })).latestSequence, 2, "canonical cursor still includes the internal origin");
 
@@ -91,6 +97,7 @@ for (const hasArtifacts of [false, true]) {
       assert.equal(attachment.latestMessage?.id, fixtureId("message", 706));
       assert.equal(attachment.latestMessage?.preview, "");
       assert.equal(attachment.unread.count, 2, "an attachment-only message remains unread");
+      assert.equal(bootstrapUnread(), 2, "bootstrap preserves attachment-only messages");
     }
 
     await send(704, "system", "Visible system notice");
@@ -101,6 +108,7 @@ for (const hasArtifacts of [false, true]) {
     assert.equal(tombstone.latestMessage?.preview, "", "tombstone has a String preview without deleted content");
     assert.equal(tombstone.unread.count, hasArtifacts ? 3 : 2);
     assert.equal(badges.badgeCountForPrincipal(OWNER_ID), tombstone.unread.count);
+    assert.equal(bootstrapUnread(), tombstone.unread.count);
   });
 }
 
