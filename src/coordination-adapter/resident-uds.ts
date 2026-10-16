@@ -37,7 +37,6 @@ import {
   legacyModelOptions,
   reasoningCapabilitiesKnown,
   catalogReasoningEffortOptions,
-  defaultReasoningEffortOptionForModel,
   isReasoningEffort,
   REASONING_EFFORTS,
   type ReasoningEffort,
@@ -974,7 +973,7 @@ export class ResidentTurnUdsServer {
           reasoningEfforts:[...legacyReasoningEffortsForModel(value.model,value.provider)],
           reasoningEffortOptions:[...reasoningEffortsForModel(value.model,value.provider)],
           reasoningCapabilitiesKnown:reasoningCapabilitiesKnown(value.model,value.provider),
-          defaultReasoningEffortOption:defaultReasoningEffortOptionForModel(value.model,value.provider),
+          defaultReasoningEffortOption:value.reasoningEffort??null,
         }));
       return {
         capabilities:[...HOUSE_RESIDENT_CAPABILITIES],

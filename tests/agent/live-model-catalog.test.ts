@@ -24,25 +24,25 @@ test('automatic discovery updates a running resident, Settings, and bridge witho
   t.after(() => rmSync(root, {recursive:true,force:true}));
   mkdirSync(join(root,'config'), {recursive:true});
   mkdirSync(join(root,'instances/jerry'), {recursive:true});
-  const initial = { home:{primaryAgent:'jerry'}, chat:{defaultProvider:'openai-codex',defaultModel:'gpt-fixture-base'},
+  const initial = { home:{primaryAgent:'jerry'}, chat:{defaultProvider:'openai-codex',defaultModel:'gpt-fixture-base',reasoningEffort:'high'},
     providers:{'openai-codex':{defaultModels:['gpt-fixture-base']}},
     models:{aliases:{base:{provider:'openai-codex',model:'gpt-fixture-base'}}} };
   const homePath = join(root,'config/home.yaml');
   writeFileSync(homePath,yaml.dump(initial));
   writeFileSync(join(root,'config/secrets.yaml'),'providers:\n  openai-codex:\n    apiKey: fixture-key\n');
-  writeFileSync(join(root,'instances/jerry/config.yaml'),yaml.dump({chat:initial.chat,models:{aliases:{base:{model:'gpt-fixture-base',reasoningEffort:'low'},localOnly:{provider:'openai-codex',model:'gpt-fixture-base'}}}}));
+  writeFileSync(join(root,'instances/jerry/config.yaml'),yaml.dump({chat:initial.chat,models:{aliases:{base:{model:'gpt-fixture-base',reasoningEffort:'high'},futureOverride:{provider:'openai-codex',model:'gpt-fixture-base',reasoningEffort:'ultra'},localOnly:{provider:'openai-codex',model:'gpt-fixture-base'}}}}));
   let listed = ['gpt-fixture-base'];
   let calls = 0;
   const discovery = createModelDiscovery({home23Root:root,env:{},autoStart:false,fetchImpl:async()=>{
     calls++;
     return {ok:true,json:async()=>({models:listed.map(slug=>({slug,supported_in_api:true,visibility:'list',
-      supported_reasoning_levels:slug==='future-only'?[{effort:'ultra'}]:[{effort:'low'},{effort:'ultra'}],default_reasoning_level:slug==='future-only'?'ultra':'low'}))})};
+      supported_reasoning_levels:slug==='future-only'?[{effort:'ultra'}]:[{effort:'low'},{effort:'high'},{effort:'ultra'}],default_reasoning_level:slug==='future-only'?'ultra':'low'}))})};
   }});
   t.after(()=>discovery.close());
   await discovery.refreshAll();
   const readAliases = createModelAliasReader(root,'jerry',discovery);
   const pinnedBeforeEdit = resolveCatalogModelOverride('base',readAliases());
-  const agent = {getModel:()=> 'gpt-fixture-base',getProvider:()=> 'openai-codex',getReasoningEffort:()=> 'medium',
+  const agent = {getModel:()=> 'gpt-fixture-base',getProvider:()=> 'openai-codex',getReasoningEffort:()=> 'high',
     toolContext:{get modelAliases(){return readAliases();}}, isRunning:()=>false,stop:()=>({stopped:false,chatIds:[]})} as any;
   const history = new ConversationHistory(join(root,'history'),400_000,'jerry');
   const credential = createResidentCredential({rootKey:Buffer.alloc(32,7),residentSlug:'jerry',role:'resident',instanceId:'fixture',keyVersion:1});
@@ -72,7 +72,16 @@ test('automatic discovery updates a running resident, Settings, and bridge witho
   const before = await port.modelCatalog(request);
   assert(before.models.some(m=>m.alias==='base'));
   assert(before.modelOptions?.some(m=>m.alias==='localOnly'));
-  assert.equal(before.modelOptions?.find(m=>m.alias==='base')?.reasoningEffort,'low');
+  assert.equal(before.modelOptions?.find(m=>m.alias==='base')?.reasoningEffort,'high');
+  assert.equal(before.modelOptions?.find(m=>m.alias==='base')?.defaultReasoningEffortOption,'high');
+  assert.equal(before.modelOptions?.find(m=>m.alias==='localOnly')?.defaultReasoningEffortOption,null);
+  assert.equal(before.modelOptions?.find(m=>m.alias==='futureOverride')?.reasoningEffort,null);
+  assert.equal(before.modelOptions?.find(m=>m.alias==='futureOverride')?.defaultReasoningEffortOption,'ultra');
+  assert.equal(before.defaultReasoningEffortOption,'high');
+  const initialBridge=await bridge();
+  assert.equal(initialBridge.modelOptions.find((m:any)=>m.alias==='base').defaultReasoningEffortOption,'high');
+  assert.equal(initialBridge.modelOptions.find((m:any)=>m.alias==='localOnly').defaultReasoningEffortOption,null);
+  assert.equal(initialBridge.modelOptions.find((m:any)=>m.alias==='futureOverride').defaultReasoningEffortOption,'ultra');
   listed = ['gpt-fixture-base','future-no-family'];
   await discovery.refreshAll({force:true});
   const alias='openai-codex/future-no-family';
@@ -81,10 +90,11 @@ test('automatic discovery updates a running resident, Settings, and bridge witho
   const option=refreshed.models.find(m=>m.alias===alias)!;
   assert(refreshed.modelOptions?.some(m=>m.alias==='localOnly'));
   assert.equal(option.provider,'openai-codex');
-  assert.deepEqual(option.reasoningEfforts,['low']);
-  assert.deepEqual(option.reasoningEffortOptions,['low','ultra']);
+  assert.deepEqual(option.reasoningEfforts,['low','high']);
+  assert.deepEqual(option.reasoningEffortOptions,['low','high','ultra']);
   const settings=await fetch(base+'/settings/models?agent=jerry').then(r=>r.json());
   assert(settings.catalog.some((m:any)=>m.model==='future-no-family'));
+  assert.equal(settings.catalog.find((m:any)=>m.model==='gpt-fixture-base').defaultReasoningEffortOption,'low');
   assert.equal(settings.discovery.providers['openai-codex'].state,'fresh');
   listed=['future-no-family'];
   await discovery.refreshAll({force:true});

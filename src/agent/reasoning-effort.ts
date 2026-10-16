@@ -67,12 +67,8 @@ export function reasoningCapabilitiesKnown(model: string, provider: string): boo
   return sharedReasoning.modelCapabilities(provider, model)?.reasoningCapabilitiesKnown !== false;
 }
 
-export function defaultReasoningEffortOptionForModel(model: string, provider: string): ReasoningEffort | null {
-  return sharedReasoning.modelCapabilities(provider, model)?.defaultReasoningEffortOption ?? null;
-}
-
-export function catalogReasoningEffortOptions(models: readonly { reasoningEffortOptions?: readonly ReasoningEffort[] }[], defaultEffort: ReasoningEffort): ReasoningEffort[] {
-  return [...new Set([...models.flatMap(row => row.reasoningEffortOptions ?? []), defaultEffort])];
+export function catalogReasoningEffortOptions(models: readonly { reasoningEffortOptions?: readonly ReasoningEffort[]; defaultReasoningEffortOption?: ReasoningEffort | null }[], defaultEffort: ReasoningEffort): ReasoningEffort[] {
+  return [...new Set([...models.flatMap(row => [...(row.reasoningEffortOptions ?? []), ...(row.defaultReasoningEffortOption ? [row.defaultReasoningEffortOption] : [])]), defaultEffort])];
 }
 
 /** Provider metadata, never a model-name guess, controls new reasoning options. */

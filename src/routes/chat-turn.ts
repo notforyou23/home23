@@ -18,7 +18,6 @@ import {
   legacyModelOptions,
   reasoningCapabilitiesKnown,
   catalogReasoningEffortOptions,
-  defaultReasoningEffortOptionForModel,
   isReasoningEffort,
   REASONING_EFFORTS,
   type ReasoningEffort,
@@ -404,7 +403,7 @@ export function createModelsHandler(config: ChatTurnConfig) {
       reasoningEfforts: legacyReasoningEffortsForModel(val.model, val.provider),
       reasoningEffortOptions: reasoningEffortsForModel(val.model, val.provider),
       reasoningCapabilitiesKnown: reasoningCapabilitiesKnown(val.model,val.provider),
-      defaultReasoningEffortOption: defaultReasoningEffortOptionForModel(val.model,val.provider),
+      defaultReasoningEffortOption: val.reasoningEffort ?? null,
     }));
     res.json({
       models: legacyModelOptions(models,config.agent.getProvider(),config.agent.getModel()),

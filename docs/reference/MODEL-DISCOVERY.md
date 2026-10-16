@@ -73,6 +73,12 @@ public execution-options transports. A turn captures its capability/transport
 and provider request descriptor once, so later catalog refreshes cannot alter
 an admitted tool loop.
 
+In execution rows, `defaultReasoningEffortOption` is the saved alias override,
+or null to inherit the envelope's actual agent/home default. It preserves future
+effort IDs that cannot appear in the legacy `reasoningEffort` field. The Settings
+`catalog` retains the provider's model-default metadata separately. Execution UI
+therefore shows the same effort that the runtime resolves.
+
 Legacy `models` contains at most 128 compatible rows, with the current default
 included when compatible. Its `reasoningEfforts` contains only supported members
 of the original six-value vocabulary and is never empty. A model supporting only
