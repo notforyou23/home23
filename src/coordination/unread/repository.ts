@@ -1,3 +1,4 @@
+import { ownerAttentionChannelPredicate, ownerAttentionMessagePredicate } from "../attention/scope.js";
 import type { CoordinationTransaction } from "../db/index.js";
 import type { MessagingDatabase } from "../channels/database.js";
 import { MessagingError } from "../channels/errors.js";
@@ -38,21 +39,10 @@ interface InboxChannelRow {
   pinned: number;
   version: number;
   updatedAt: string;
+  ownerAttention: number;
 }
 
-type UnreadReader = Pick<MessagingDatabase, "readOne"> | Pick<CoordinationTransaction, "readOne">;
-
-/** Internal turn origins remain canonical evidence, not inbox messages. */
-function inboxMessagePredicate(reader: UnreadReader): string {
-  const hasArtifacts = reader.readOne<{ present: number }>(
-    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'message_artifacts'",
-  )?.present === 1;
-  const noAttachments = hasArtifacts
-    ? "NOT EXISTS (SELECT 1 FROM message_artifacts link WHERE link.message_id = m.id)"
-    : "1";
-  return `NOT (m.author_kind = 'bot' AND m.kind = 'system'
-    AND m.body_text IS NULL AND m.tombstones_message_id IS NULL AND ${noAttachments})`;
-}
+type UnreadReader = Pick<MessagingDatabase, "readOne" | "readAll"> | Pick<CoordinationTransaction, "readOne" | "readAll">;
 
 function unreadResultRef(
   unread: UnreadProjection,
@@ -249,7 +239,7 @@ export class SqliteUnreadRepository implements UnreadRepository {
   ): Promise<readonly InboxConversation[]> {
     assertStoredActorBinding(this.database, actor);
     const principalId = actor.principalId;
-    const messagePredicate = inboxMessagePredicate(this.database);
+    const messagePredicate = ownerAttentionMessagePredicate(this.database);
     const channels = this.database.readAll<InboxChannelRow>(
       `SELECT c.id,
               h.id AS conversationId,
@@ -258,7 +248,8 @@ export class SqliteUnreadRepository implements UnreadRepository {
               c.lifecycle,
               c.pinned,
               c.version,
-              c.updated_at AS updatedAt
+              c.updated_at AS updatedAt,
+              ${ownerAttentionChannelPredicate()} AS ownerAttention
        FROM channels c
        JOIN conversation_handles h ON h.channel_id = c.id
        JOIN channel_members member
@@ -349,7 +340,7 @@ export class SqliteUnreadRepository implements UnreadRepository {
         title: channel.title,
         latestMessage,
         unread: Object.freeze({
-          count: unread.unreadCount,
+          count: channel.ownerAttention === 1 ? unread.unreadCount : 0,
           readThroughSequence: unread.readThroughSequence,
         }),
         activity: Object.freeze(activity),
@@ -363,10 +354,13 @@ export class SqliteUnreadRepository implements UnreadRepository {
 
   /** Internal delivery projection; the caller must first validate its registered session. */
   badgeCountForPrincipal(principalId: string): number {
-    const messagePredicate = inboxMessagePredicate(this.database);
+    const messagePredicate = ownerAttentionMessagePredicate(this.database);
     const channels = this.database.readAll<{ id: string }>(
-      `SELECT c.id FROM channels c JOIN channel_members member ON member.channel_id=c.id
-       WHERE member.principal_id=? AND member.active=1 AND c.lifecycle='active'`, principalId);
+      `SELECT c.id FROM channels c
+       JOIN conversation_handles h ON h.channel_id = c.id
+       JOIN channel_members member ON member.channel_id = c.id
+       WHERE member.principal_id = ? AND member.active = 1
+         AND ${ownerAttentionChannelPredicate()}`, principalId);
     return channels.reduce((total, channel) => Math.min(99_999,
       total + Math.min(99_999, this.readUnread(this.database, channel.id, principalId, messagePredicate).unreadCount)), 0);
   }
@@ -375,7 +369,7 @@ export class SqliteUnreadRepository implements UnreadRepository {
     reader: UnreadReader,
     channelId: string,
     principalId: string,
-    messagePredicate = inboxMessagePredicate(reader),
+    messagePredicate = ownerAttentionMessagePredicate(reader),
   ): UnreadProjection {
     const channel = reader.readOne<UnreadChannelRow>(
       `SELECT h.id AS conversationId,

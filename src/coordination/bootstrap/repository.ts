@@ -1,3 +1,4 @@
+import { ownerAttentionChannelPredicate, ownerAttentionMessagePredicate } from "../attention/scope.js";
 import type {
   BootstrapAvailabilityPolicy,
   BootstrapBotProjection,
@@ -23,7 +24,8 @@ interface StoredBotProjection extends Omit<BootstrapBotProjection, "availability
   residentCapabilitiesJson: string;
 }
 
-const BOOTSTRAP_PROJECTION_SQL = `
+function bootstrapProjectionSQL(messagePredicate: string): string {
+  return `
 WITH boundary AS (
   SELECT coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'events'), 0)
     AS through_event_sequence
@@ -92,7 +94,7 @@ SELECT
         h.id,
         c.id AS channelId,
         c.next_message_sequence - 1 AS latestSequence,
-        (
+        CASE WHEN ${ownerAttentionChannelPredicate()} THEN (
           SELECT count(*)
           FROM messages m
           WHERE m.channel_id = c.id
@@ -103,11 +105,12 @@ SELECT
             ), 0)
             AND m.author_principal_id <> ?
             AND m.stored_visibility = 'visible'
+            AND ${messagePredicate}
             AND NOT EXISTS (
               SELECT 1 FROM messages tombstone
               WHERE tombstone.tombstones_message_id = m.id
             )
-        ) AS unreadCount,
+        ) ELSE 0 END AS unreadCount,
         c.version
       FROM authorized_channels c
       JOIN conversation_handles h ON h.channel_id = c.id
@@ -115,6 +118,7 @@ SELECT
     ) ordered
   ) AS conversationsJson
 FROM boundary`;
+}
 
 function availability(
   bot: StoredBotProjection,
@@ -207,8 +211,10 @@ export class SqliteBootstrapRepository {
     ) {
       throw new TypeError("bootstrap availability thresholds are invalid");
     }
+    // Schema capability detection precedes the one data statement. All Bot,
+    // Channel, message, cursor and watermark values share that statement boundary.
     const rows = this.database.readAll<BootstrapBoundaryRow>(
-      BOOTSTRAP_PROJECTION_SQL,
+      bootstrapProjectionSQL(ownerAttentionMessagePredicate(this.database)),
       input.principalId,
       input.principalId,
       input.principalId,
@@ -245,7 +251,7 @@ export class SqliteBootstrapRepository {
       channels: Object.freeze(channels),
       conversations: Object.freeze(conversations),
       unreadTotal: conversations.reduce(
-        (total, conversation) => total + conversation.unreadCount,
+        (total, conversation) => Math.min(99_999, total + Math.min(99_999, Math.max(0, conversation.unreadCount))),
         0,
       ),
     });

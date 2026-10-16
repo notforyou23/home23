@@ -148,7 +148,7 @@ test("a mutation immediately after the snapshot statement cannot leak past its w
   const boundaryProbe: EventReadDatabase = {
     readAll: <T>(sql: string, ...parameters: Array<string | number | bigint | Buffer | null>) => {
       const rows = fixture.database.readAll<T>(sql, ...parameters);
-      if (!injected) {
+      if (!injected && sql.includes("WITH boundary AS")) {
         injected = true;
         fixture.database.mutateWithEvent((transaction) => {
           transaction.run(
