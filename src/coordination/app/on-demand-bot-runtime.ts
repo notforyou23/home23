@@ -28,6 +28,9 @@ import {
   DEFAULT_REASONING_EFFORT,
   modelSupportsReasoningEffort,
   reasoningEffortsForModel,
+  legacyReasoningEffortsForModel,
+  legacyModelOptions,
+  isReasoningEffort,
   REASONING_EFFORTS,
   type ReasoningEffort,
 } from "../../agent/reasoning-effort.js";
@@ -352,7 +355,7 @@ function defaultModelConfiguration(): OnDemandBotModelConfiguration {
     ? ""
     : resolveProviderKey(defaultProvider, configured.apiKey);
   const providerMap = Object.fromEntries([
-    "anthropic", "minimax", "openai", "openai-codex", "xai", "ollama-cloud",
+    "anthropic", "minimax", "openai", "openai-codex", "xai", "ollama-cloud", "ollama-local",
   ].map((provider) => {
     const value = providerDefinition(providers, provider);
     return [provider, {
@@ -445,22 +448,27 @@ function modelCatalog(
   config: OnDemandBotModelConfiguration,
   acceptsAttachments = false,
 ): ResidentModelCatalog {
-  return Object.freeze({
-    capabilities: acceptsAttachments
-      ? ON_DEMAND_BOT_ATTACHMENT_CAPABILITIES
-      : ON_DEMAND_BOT_MESSAGE_CAPABILITIES,
-    models: Object.freeze(Object.entries(config.modelAliases)
+  const modelOptions = Object.freeze(Object.entries(config.modelAliases)
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([alias, value]) => Object.freeze({
         alias,
         provider: value.provider,
         model: value.model,
-        reasoningEffort: value.reasoningEffort ?? null,
-        reasoningEfforts: reasoningEffortsForModel(value.model),
-      }))),
+        reasoningEffort: REASONING_EFFORTS.some(v => v === value.reasoningEffort) ? value.reasoningEffort ?? null : null,
+        reasoningEfforts: legacyReasoningEffortsForModel(value.model, value.provider),
+        reasoningEffortOptions: reasoningEffortsForModel(value.model, value.provider),
+        defaultReasoningEffortOption: value.reasoningEffort ?? null,
+      })));
+  return Object.freeze({
+    capabilities: acceptsAttachments
+      ? ON_DEMAND_BOT_ATTACHMENT_CAPABILITIES
+      : ON_DEMAND_BOT_MESSAGE_CAPABILITIES,
+    models: legacyModelOptions(modelOptions,config.defaultProvider,config.defaultModel),
+    modelOptions,
     defaultModel: config.defaultModel,
     defaultProvider: config.defaultProvider,
-    defaultReasoningEffort: config.defaultReasoningEffort,
+    defaultReasoningEffort: REASONING_EFFORTS.some(v => v === config.defaultReasoningEffort) ? config.defaultReasoningEffort : "medium",
+    defaultReasoningEffortOption: config.defaultReasoningEffort,
     reasoningEfforts: REASONING_EFFORTS,
   });
 }
@@ -583,7 +591,7 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
         this.config.modelReasoningEfforts?.[modelOverride?.model ?? this.config.defaultModel] ??
         this.config.defaultReasoningEffort,
     };
-    if (!modelSupportsReasoningEffort(source.model, source.reasoningEffort)) {
+    if ((requested.reasoningEffort !== null || modelOverride?.reasoningEffort !== undefined) && !modelSupportsReasoningEffort(source.model, source.reasoningEffort, source.provider)) {
       throw new Error("requested on-demand Bot reasoning effort is unavailable for the selected model");
     }
     return {

@@ -180,3 +180,13 @@ test('provider operation runtime hot-refreshes atomically and preserves the prio
     operationType: 'query', requestParameters: { query: 'after failed refresh' },
   })).modelSelection, { provider: 'minimax', model: 'MiniMax-Test' });
 });
+
+test('discovery preserves unavailable defaults while allowing a current exact choice', async (t) => {
+  const root = await makeHome({}); t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const unavailable = { defaultProvider: 'anthropic', defaultModel: 'retired', pgsSweepProvider: 'anthropic', pgsSweepModel: 'retired', pgsSynthProvider: 'anthropic', pgsSynthModel: 'retired' };
+  const runtime = createProviderOperationRuntime({ home23Root: root, catalog: { ...catalog, discoveryManaged: true }, providerRegistry: registry(), queryDefaults: unavailable, logger: { error() {} } });
+  await runtime.settled;
+  assert.equal(runtime.getReadiness().ready, true);
+  await assert.rejects(() => runtime.resolve({ operationType: 'query', requestParameters: { query: 'use saved choice' } }), error => error.code === 'model_not_found');
+  assert.deepEqual((await runtime.resolve({ operationType: 'query', requestParameters: { query: 'use current choice', modelSelection: { provider: 'minimax', model: 'MiniMax-Test' } } })).modelSelection, { provider: 'minimax', model: 'MiniMax-Test' });
+});

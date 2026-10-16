@@ -87,7 +87,7 @@ function exactPair(provider, model) {
     : null;
 }
 
-function buildHome23ModelAuthority({ homeConfig, agentConfig = {} } = {}) {
+function buildHome23ModelAuthority({ homeConfig, agentConfig = {}, discoverySnapshot } = {}) {
   const home = optionalObject(homeConfig, 'Home23 config');
   const agent = optionalObject(agentConfig, 'Agent config');
   const configuredProviders = optionalObject(home.providers, 'Home23 providers');
@@ -110,11 +110,13 @@ function buildHome23ModelAuthority({ homeConfig, agentConfig = {} } = {}) {
       throw catalogError(`Invalid Home23 provider ID: ${provider}`);
     }
     const configured = optionalObject(rawConfig, `Provider ${provider}`);
-    if (configured.defaultModels === undefined || configured.defaultModels === null) continue;
-    if (!Array.isArray(configured.defaultModels)) {
+    if (!discoverySnapshot && (configured.defaultModels === undefined || configured.defaultModels === null)) continue;
+    if (!discoverySnapshot && !Array.isArray(configured.defaultModels)) {
       throw catalogError(`Provider ${provider} defaultModels must be an array`);
     }
-    const declaredModels = configured.defaultModels.map(nonempty).filter(Boolean);
+    const declaredModels = discoverySnapshot
+      ? discoverySnapshot.models.filter(row => row.provider === provider).map(row => row.model)
+      : configured.defaultModels.map(nonempty).filter(Boolean);
     if (declaredModels.length === 0) continue;
     const executionDefaults = BUILTIN_EXECUTION_DEFAULTS[provider];
     if (!executionDefaults) {
@@ -129,14 +131,18 @@ function buildHome23ModelAuthority({ homeConfig, agentConfig = {} } = {}) {
       seen.add(model);
       const key = `${provider}\0${model}`;
       configuredPairs.add(key);
-      const executionRow = makeExecutionRow(provider, model, executionDefaults);
+      const metadata = discoverySnapshot?.models.find(row => row.provider === provider && row.model === model);
+      const capabilityOverrides = metadata ? Object.fromEntries(
+        ['contextWindowTokens', 'maxOutputTokens'].filter(key => Number.isSafeInteger(metadata[key]) && metadata[key] > 0).map(key => [key, metadata[key]])
+      ) : {};
+      const executionRow = { ...makeExecutionRow(provider, model, executionDefaults), ...capabilityOverrides };
       providers[provider].models.push(executionRow);
-      models.push(makeDisplayRow(provider, label, model, executionDefaults));
+      models.push({ ...makeDisplayRow(provider, label, model, executionDefaults), ...metadata, ...capabilityOverrides });
     }
   }
 
   const homeModels = optionalObject(home.models, 'Home23 models config');
-  if (homeModels.aliases !== undefined && homeModels.aliases !== null) {
+  if (!discoverySnapshot && homeModels.aliases !== undefined && homeModels.aliases !== null) {
     const aliases = optionalObject(homeModels.aliases, 'Home23 model aliases');
     const chatPairs = new Set();
     for (const [alias, rawPair] of Object.entries(aliases)) {
@@ -196,7 +202,7 @@ function buildHome23ModelAuthority({ homeConfig, agentConfig = {} } = {}) {
     nonempty(agentChat.defaultModel) || nonempty(agentChat.model)
       || nonempty(homeChat.defaultModel) || nonempty(homeChat.model),
   );
-  if (!chatPair || !configuredPairs.has(`${chatPair.provider}\0${chatPair.model}`)) {
+  if (!chatPair || (!discoverySnapshot && !configuredPairs.has(`${chatPair.provider}\0${chatPair.model}`))) {
     const identity = chatPair ? `${chatPair.provider}/${chatPair.model}` : 'missing';
     throw catalogError(`Current Chat pair is not configured in Home23 defaultModels: ${identity}`);
   }
@@ -206,7 +212,7 @@ function buildHome23ModelAuthority({ homeConfig, agentConfig = {} } = {}) {
     : optionalObject(agent.query, 'Agent query config');
   function resolveRole(provider, model) {
     const preferred = exactPair(provider, model);
-    return preferred && configuredPairs.has(`${preferred.provider}\0${preferred.model}`)
+    return preferred && (discoverySnapshot || configuredPairs.has(`${preferred.provider}\0${preferred.model}`))
       ? preferred
       : { ...chatPair };
   }
@@ -231,6 +237,7 @@ function buildHome23ModelAuthority({ homeConfig, agentConfig = {} } = {}) {
   };
   const executionCatalog = {
     version: 1,
+    ...(discoverySnapshot ? { discoveryManaged: true } : {}),
     providers,
     defaults: {
       queryModel: direct.model,
@@ -244,7 +251,10 @@ function buildHome23ModelAuthority({ homeConfig, agentConfig = {} } = {}) {
     },
   };
 
-  return deepFreeze({ models, queryDefaults, executionCatalog });
+  return deepFreeze({ models, queryDefaults, executionCatalog,
+    ...(discoverySnapshot ? { aliases: discoverySnapshot.aliases, discovery: discoverySnapshot.discovery,
+      unavailableSelections: discoverySnapshot.unavailableSelections } : {}),
+  });
 }
 
 function readYamlRegularFile(filePath, yamlImpl) {
@@ -264,7 +274,7 @@ function readYamlRegularFile(filePath, yamlImpl) {
   }
 }
 
-function loadHome23ModelAuthority({ home23Root, agent, yamlImpl = yaml } = {}) {
+function loadHome23ModelAuthority({ home23Root, agent, yamlImpl = yaml, discoveryService } = {}) {
   if (typeof home23Root !== 'string' || !path.isAbsolute(home23Root)) {
     throw catalogError('Absolute Home23 root required');
   }
@@ -305,7 +315,9 @@ function loadHome23ModelAuthority({ home23Root, agent, yamlImpl = yaml } = {}) {
       }
     }
   }
-  return buildHome23ModelAuthority({ homeConfig, agentConfig });
+  const service = discoveryService || require('../../../shared/model-discovery.cjs').getModelDiscovery(canonicalRoot);
+  const discoverySnapshot = service.snapshot({ homeConfig, agentConfig });
+  return buildHome23ModelAuthority({ homeConfig, agentConfig, discoverySnapshot });
 }
 
 module.exports = {

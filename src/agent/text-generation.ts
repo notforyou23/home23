@@ -9,6 +9,7 @@ import {
   DEFAULT_REASONING_EFFORT,
   supportsResponsesReasoning,
   responsesReasoningConfig,
+  providerReasoningParameters,
   type ReasoningEffort,
 } from './reasoning-effort.js';
 
@@ -138,6 +139,7 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
         ...(provider === 'anthropic' && !anthropicSupportsTemperature(model) ? {} : { temperature }),
         ...(system ? { system } : {}),
         messages: [{ role: 'user', content: opts.prompt }],
+        ...(opts.reasoningEffort ? providerReasoningParameters(provider, model, opts.reasoningEffort) : {}),
       },
       { signal: requestSignal },
     );
@@ -171,6 +173,7 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
         model,
         messages,
         stream: false,
+        ...(opts.reasoningEffort ? providerReasoningParameters(provider, model, opts.reasoningEffort) : {}),
         options: { num_ctx: 32768, temperature },
       }),
       signal: requestSignal,
@@ -195,7 +198,8 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
       ...(opts.system ? [{ role: 'system', content: opts.system }] : []),
       { role: 'user', content: opts.prompt },
     ];
-    const tokenParam = model.includes('gpt-5') || model.includes('gpt5')
+    const modernOpenAI = provider === 'openai' && /^(?:gpt-?(?:[5-9]|[1-9]\d+)|o[1-9])/.test(model);
+    const tokenParam = modernOpenAI
       ? { max_completion_tokens: maxTokens }
       : { max_tokens: maxTokens };
     const res = await fetch(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
@@ -205,7 +209,8 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
         model,
         messages,
         ...tokenParam,
-        temperature,
+        ...(opts.reasoningEffort ? providerReasoningParameters(provider, model, opts.reasoningEffort) : {}),
+        ...(!modernOpenAI ? { temperature } : {}),
       }),
       signal: requestSignal,
     });

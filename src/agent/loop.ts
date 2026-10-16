@@ -67,6 +67,8 @@ import {
   parseReasoningEffort,
   resolveConfiguredReasoningEffort,
   responsesReasoningConfig,
+  providerReasoningParameters,
+  discoveredModelCapabilities,
   type ReasoningEffort,
 } from './reasoning-effort.js';
 import {
@@ -2422,7 +2424,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             turnMessages.push({ role: 'assistant', content: capText });
             persistTurn();
             return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
-          } else if (runtimeProvider === 'xai' || runtimeModel.includes('grok')) {
+          } else if (runtimeProvider === 'xai') {
             // ── xAI Responses API path (all Grok models) ──
             // Read-at-use (2026-08-11): secrets.yaml first, env floor second —
             // the raw env read here was one of the last rotation-blind spots
@@ -2489,6 +2491,8 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 tool_stream: true,
                 stream: true,
                 include: ['reasoning.encrypted_content'],
+                ...(discoveredModelCapabilities(runtimeProvider, runtimeModel)?.reasoningTransport === 'responses'
+                  && runtimeReasoningEffort !== 'none' ? { reasoning: responsesReasoningConfig(runtimeReasoningEffort) } : {}),
               };
 
               const xaiTimeout = 120_000;
@@ -2793,16 +2797,19 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             type ResponseMessage = { role: string; content?: string | null; tool_calls?: ToolCallObj[] };
             let respMsg: ResponseMessage;
 
-            if (isOllamaCloud) {
+            if (isOllamaCloud || (isOllamaLocal && discoveredModelCapabilities(runtimeProvider, runtimeModel)?.reasoningTransport === 'ollama-think')) {
               // Native Ollama /api/chat — proper tool support + num_ctx
-              const res = await fetch('https://ollama.com/api/chat', {
+              const nativeBase = (this.providerMap.get(runtimeProvider)?.baseURL || (isOllamaLocal
+                ? process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434' : 'https://ollama.com')).replace(/\/+$/, '').replace(/\/v1$/, '');
+              const res = await fetch(`${nativeBase}/api/chat`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
                 body: JSON.stringify({
                   model: runtimeModel,
                   messages: apiMessages,
                   tools: oaiTools.length > 0 ? oaiTools : undefined,
                   stream: false,
+                  ...providerReasoningParameters(runtimeProvider, runtimeModel, runtimeReasoningEffort),
                   options: { num_ctx: 32768, temperature: this.temperature },
                 }),
                 signal: combineRequestSignals(ac.signal, pconf.timeout),
@@ -2819,7 +2826,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               const baseUrl = isOllamaLocal
                 ? (process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434/v1')
                 : 'https://api.openai.com/v1';
-              const isGpt5Plus = runtimeModel.includes('gpt-5') || runtimeModel.includes('gpt5');
+              const isGpt5Plus = /^(?:gpt-?(?:[5-9]|[1-9]\d+)|o[1-9])/.test(runtimeModel);
               const tokenParam = isGpt5Plus ? { max_completion_tokens: this.maxTokens } : { max_tokens: this.maxTokens };
 
               const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -2833,7 +2840,8 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   tools: oaiTools.length > 0 ? oaiTools : undefined,
                   ...tokenParam,
                   ...(runtimeProvider === 'openai' ? { prompt_cache_key: cacheKey } : {}),
-                  temperature: this.temperature,
+                  ...providerReasoningParameters(runtimeProvider, runtimeModel, runtimeReasoningEffort),
+                  ...(!isGpt5Plus ? { temperature: this.temperature } : {}),
                 }),
                 signal: combineRequestSignals(ac.signal, pconf.timeout),
               });
@@ -3000,12 +3008,18 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             delete requestParams.temperature;
           }
 
-          const thinkingCfg = runtimeProvider === 'anthropic'
+          const discoveredReasoning = discoveredModelCapabilities(runtimeProvider, runtimeModel);
+          const adaptiveReasoning = discoveredReasoning?.reasoningTransport === 'anthropic-adaptive'
+            ? providerReasoningParameters(runtimeProvider, runtimeModel, runtimeReasoningEffort) : null;
+          const thinkingCfg = runtimeProvider === 'anthropic' && !adaptiveReasoning
             ? anthropicThinkingConfig(runtimeReasoningEffort, this.maxTokens)
             : undefined;
-          let thinkingEnabled = Boolean(thinkingCfg);
+          let thinkingEnabled = Boolean(thinkingCfg || adaptiveReasoning);
           const applyThinking = (): void => {
-            if (thinkingEnabled && thinkingCfg) {
+            if (thinkingEnabled && adaptiveReasoning) {
+              Object.assign(requestParams, adaptiveReasoning);
+              delete requestParams.temperature;
+            } else if (thinkingEnabled && thinkingCfg) {
               requestParams.thinking = thinkingCfg.thinking;
               requestParams.temperature = 1;
               requestParams.max_tokens = thinkingCfg.maxTokens;

@@ -207,7 +207,7 @@ function createOperationModelResolver({ catalog, providerRegistry, queryDefaults
     assertAvailable(pair.provider, pair.model);
     return pair;
   }
-  for (const pair of new Map(Object.values(defaults).map((value) => [
+  for (const pair of new Map((catalog.discoveryManaged ? [] : Object.values(defaults)).map((value) => [
     `${value.provider}\0${value.model}`, value,
   ])).values()) validatePair(pair);
 

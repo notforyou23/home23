@@ -69,10 +69,14 @@ export interface ResidentModelCatalog {
     model: string;
     reasoningEffort: ReasoningEffort | null;
     reasoningEfforts?: readonly ReasoningEffort[];
+    reasoningEffortOptions?: readonly ReasoningEffort[];
+    defaultReasoningEffortOption?: ReasoningEffort | null;
   }>[];
+  modelOptions?: ResidentModelCatalog['models'];
   defaultModel: string;
   defaultProvider: string;
   defaultReasoningEffort: ReasoningEffort;
+  defaultReasoningEffortOption?: ReasoningEffort;
   reasoningEfforts: readonly ReasoningEffort[];
 }
 

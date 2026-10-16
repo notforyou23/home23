@@ -55,3 +55,9 @@ test('default model validation still applies exact Astra capabilities without an
     modelAlias: null, reasoningEffort: "high",
   }), true);
 });
+
+test('new full modelOptions supports a future effort that legacy models cannot represent', () => {
+  const full = { ...catalog, modelOptions: [{ alias: 'future', provider: 'openai-codex', model: 'future-model', reasoningEffort: null, reasoningEfforts: [], reasoningEffortOptions: ['ultra'] }] };
+  assert.equal(catalogAcceptsTurnSelection(full, { modelAlias: 'future', reasoningEffort: 'ultra' }), true);
+  assert.equal(catalogAcceptsTurnSelection(full, { modelAlias: 'future', reasoningEffort: 'high' }), false);
+});

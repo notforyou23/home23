@@ -1245,6 +1245,9 @@ class DashboardServer {
           throw error;
         }
         if (!providerOperationRuntime) throw providerOperationError;
+        // Discovery can add or retire exact pairs while this dashboard remains
+        // running. Publish a validated resolver at the operation boundary.
+        await this.reloadCurrentDashboardModelAuthority({ globalCatalogChanged: true });
         return providerOperationRuntime.resolve(input);
       },
       readSynthesisState: () => readCommittedSynthesisState({ brainDir: this.logsDir }),
