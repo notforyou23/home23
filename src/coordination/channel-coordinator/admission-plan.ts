@@ -1,3 +1,4 @@
+import { isReasoningEffort } from "../../agent/reasoning-effort.js";
 import { createHash } from "node:crypto";
 
 import {
@@ -81,7 +82,7 @@ function parseTarget(value: unknown): CoordinatorAdmissionTarget {
     throw new CoordinatorAdmissionPlanError("durable Channel admission target identity is not exact");
   }
   const selected = row.turnSelection === undefined ? undefined : object(row.turnSelection, "target selection");
-  if (selected && ((selected.modelAlias !== null && (typeof selected.modelAlias !== "string" || !selected.modelAlias.length || selected.modelAlias.length > 256 || /[\0\r\n]/u.test(selected.modelAlias))) || (selected.reasoningEffort !== null && (typeof selected.reasoningEffort !== "string" || !REASONING_EFFORTS.has(selected.reasoningEffort))))) throw new CoordinatorAdmissionPlanError("Invalid target turn selection");
+  if (selected && ((selected.modelAlias !== null && (typeof selected.modelAlias !== "string" || !selected.modelAlias.length || selected.modelAlias.length > 256 || /[\0\r\n]/u.test(selected.modelAlias))) || (selected.reasoningEffort !== null && (typeof selected.reasoningEffort !== "string" || !isReasoningEffort(selected.reasoningEffort))))) throw new CoordinatorAdmissionPlanError("Invalid target turn selection");
   return Object.freeze({
     ...(selected ? { turnSelection: { modelAlias: selected.modelAlias as string | null, reasoningEffort: selected.reasoningEffort as CoordinatorAdmissionPlan["turnSelection"]["reasoningEffort"] } } : {}),
     targetBotId,
@@ -140,7 +141,7 @@ export function parseCoordinatorAdmissionPlan(value: unknown): CoordinatorAdmiss
   }
   if (
     reasoningEffort !== null &&
-    (typeof reasoningEffort !== "string" || !REASONING_EFFORTS.has(reasoningEffort))
+    (typeof reasoningEffort !== "string" || !isReasoningEffort(reasoningEffort))
   ) {
     throw new CoordinatorAdmissionPlanError("durable Channel admission effort selection is invalid");
   }

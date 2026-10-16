@@ -14,6 +14,9 @@ import {
   modelSupportsReasoningEffort,
   parseReasoningEffort,
   reasoningEffortsForModel,
+  legacyReasoningEffortsForModel,
+  legacyModelOptions,
+  isReasoningEffort,
   REASONING_EFFORTS,
   type ReasoningEffort,
 } from '../agent/reasoning-effort.js';
@@ -161,7 +164,7 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
     }
     const selectedModel = modelOverride?.model ?? config.agent.getModel();
     const selectedEffort = effort ?? modelOverride?.reasoningEffort ?? config.agent.getReasoningEffort();
-    if (!modelSupportsReasoningEffort(selectedModel, selectedEffort)) {
+    if ((effort !== undefined || modelOverride?.reasoningEffort !== undefined) && !modelSupportsReasoningEffort(selectedModel, selectedEffort, modelOverride?.provider ?? config.agent.getProvider())) {
       res.status(400).json({
         error: `reasoning effort ${selectedEffort} is unavailable for ${selectedModel}`,
         code: 'reasoning_effort_unsupported',
@@ -395,13 +398,17 @@ export function createModelsHandler(config: ChatTurnConfig) {
       alias,
       provider: val.provider,
       model: val.model,
-      reasoningEfforts: reasoningEffortsForModel(val.model),
+      reasoningEfforts: legacyReasoningEffortsForModel(val.model, val.provider),
+      reasoningEffortOptions: reasoningEffortsForModel(val.model, val.provider),
+      defaultReasoningEffortOption: val.reasoningEffort ?? null,
     }));
     res.json({
-      models,
+      models: legacyModelOptions(models,config.agent.getProvider(),config.agent.getModel()),
+      modelOptions: models,
       defaultModel: config.agent.getModel(),
       defaultProvider: config.agent.getProvider(),
-      defaultReasoningEffort: config.agent.getReasoningEffort(),
+      defaultReasoningEffort: REASONING_EFFORTS.some(v => v === config.agent.getReasoningEffort()) ? config.agent.getReasoningEffort() : "medium",
+      defaultReasoningEffortOption: config.agent.getReasoningEffort(),
       reasoningEfforts: REASONING_EFFORTS,
     });
   };

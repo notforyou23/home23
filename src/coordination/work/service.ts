@@ -1,3 +1,4 @@
+import { isReasoningEffort } from "../../agent/reasoning-effort.js";
 import type { CoordinationTurnOrigin } from "../../agent/types.js";
 import { parseForegroundDetachmentRequest, type ForegroundDetachmentRequest } from "../../coordination-adapter/foreground-detachment-contract.js";
 import { assertCoordinationId } from "../ids/index.js";
@@ -151,7 +152,7 @@ function normalizeTurnSelection(value: WorkTurnSelection | undefined): WorkTurnS
   const reasoningEffort = value.reasoningEffort;
   if (
     reasoningEffort !== null &&
-    (typeof reasoningEffort !== "string" || !REASONING_EFFORTS.has(reasoningEffort))
+    (typeof reasoningEffort !== "string" || !isReasoningEffort(reasoningEffort))
   ) {
     throw new WorkError("invalid_request", "requested reasoning effort is invalid");
   }

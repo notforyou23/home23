@@ -20,7 +20,7 @@ import { ResumableSsePump, resolveEventResumeSequence } from "../events/index.js
 import { encodeCommunicationEventEnvelope } from "../communications/index.js";
 import { MessagingError } from "../channels/index.js";
 import { once } from "node:events";
-import { REASONING_EFFORTS, type ReasoningEffort } from "../../agent/reasoning-effort.js";
+import { isReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from "../../agent/reasoning-effort.js";
 import { mountConsoleRoutes } from "../console/routes.js";
 import { mountLiveVoiceRoutes } from "./live-voice-routes.js";
 import { mountChessRoutes } from "../chess/routes.js";
@@ -528,7 +528,7 @@ export function createCoordinationRouter(input: {
               /[\0\r\n]/u.test(modelAlias))) ||
           (requestedEffort !== null &&
             (typeof requestedEffort !== "string" ||
-              !REASONING_EFFORTS.includes(requestedEffort as ReasoningEffort)))) {
+              !isReasoningEffort(requestedEffort)))) {
         throw new CoordinationHttpError("request_invalid", 400, false);
       }
       if (

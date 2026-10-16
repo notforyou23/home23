@@ -80,6 +80,8 @@ async function startModelFixture() {
       : request instanceof URL
         ? request.href
         : request.url;
+    if (url === `${baseUrl.replace(/\/v1$/, '')}/api/tags`) return new Response(JSON.stringify({ models: [{ name: 'fixture-local-model' }] }), { status: 200 });
+    if (url === `${baseUrl.replace(/\/v1$/, '')}/api/show`) return new Response(JSON.stringify({ capabilities: ['completion', 'tools'] }), { status: 200 });
     if (url !== `${baseUrl}/chat/completions`) return originalFetch(request, init);
     assert.equal(init?.method, "POST");
     assert.equal(typeof init?.body, "string");

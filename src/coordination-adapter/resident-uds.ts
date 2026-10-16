@@ -33,6 +33,9 @@ import {
 import {
   modelSupportsReasoningEffort,
   reasoningEffortsForModel,
+  legacyReasoningEffortsForModel,
+  legacyModelOptions,
+  isReasoningEffort,
   REASONING_EFFORTS,
   type ReasoningEffort,
 } from "../agent/reasoning-effort.js";
@@ -541,7 +544,7 @@ function nullableString(value: JsonValue | undefined, label: string): string | n
 
 function reasoningEffort(value: JsonValue | undefined): ReasoningEffort | null {
   const effort=nullableString(value,"reasoningEffort");
-  if(effort!==null&&!REASONING_EFFORTS.includes(effort as ReasoningEffort)){
+  if(effort!==null&&!isReasoningEffort(effort)){
     throw new ResidentProtocolError("request_invalid","resident reasoning effort is invalid");
   }
   return effort as ReasoningEffort|null;
@@ -756,7 +759,7 @@ function residentModelAliases(
       /[\0\r\n]/u.test(value.provider) || /[\0\r\n]/u.test(value.model) ||
       (value.reasoningEffort !== undefined &&
         (typeof value.reasoningEffort !== "string" ||
-          !REASONING_EFFORTS.includes(value.reasoningEffort as ReasoningEffort)))
+          !isReasoningEffort(value.reasoningEffort)))
     ) {
       throw new TypeError(`resident model alias ${alias} is invalid`);
     }
@@ -863,7 +866,7 @@ export class ResidentTurnUdsServer {
     const actualModel = modelOverride?.model ?? this.options.agent.getModel();
     const actualProvider = modelOverride?.provider ?? this.options.agent.getProvider();
     const actualEffort = requested.reasoningEffort ?? modelOverride?.reasoningEffort ?? this.options.agent.getReasoningEffort();
-    if (!modelSupportsReasoningEffort(actualModel, actualEffort)) {
+    if ((requested.reasoningEffort !== null || modelOverride?.reasoningEffort !== undefined) && !modelSupportsReasoningEffort(actualModel, actualEffort, actualProvider)) {
       throw new ResidentProtocolError("request_invalid", "requested resident reasoning effort is unavailable for the selected model");
     }
     const controller = new AbortController();
@@ -963,15 +966,20 @@ export class ResidentTurnUdsServer {
     }
     if(request.method==="GET"&&request.path===MODEL_CATALOG){
       const aliases=this.#modelAliases;
+      const modelOptions=Object.entries(aliases).sort(([left],[right])=>left.localeCompare(right)).map(([alias,value])=>({
+          alias,provider:value.provider,model:value.model,reasoningEffort:REASONING_EFFORTS.some(v=>v===value.reasoningEffort)?value.reasoningEffort??null:null,
+          reasoningEfforts:[...legacyReasoningEffortsForModel(value.model,value.provider)],
+          reasoningEffortOptions:[...reasoningEffortsForModel(value.model,value.provider)],
+          defaultReasoningEffortOption:value.reasoningEffort??null,
+        }));
       return {
         capabilities:[...HOUSE_RESIDENT_CAPABILITIES],
-        models:Object.entries(aliases).sort(([left],[right])=>left.localeCompare(right)).map(([alias,value])=>({
-          alias,provider:value.provider,model:value.model,reasoningEffort:value.reasoningEffort??null,
-          reasoningEfforts:[...reasoningEffortsForModel(value.model)],
-        })),
+        models:legacyModelOptions(modelOptions,this.options.agent.getProvider(),this.options.agent.getModel()),
+        modelOptions,
         defaultModel:this.options.agent.getModel(),
         defaultProvider:this.options.agent.getProvider(),
-        defaultReasoningEffort:this.options.agent.getReasoningEffort(),
+        defaultReasoningEffort:REASONING_EFFORTS.some(v=>v===this.options.agent.getReasoningEffort())?this.options.agent.getReasoningEffort():"medium",
+        defaultReasoningEffortOption:this.options.agent.getReasoningEffort(),
         reasoningEfforts:[...REASONING_EFFORTS],
       };
     }
@@ -1048,7 +1056,7 @@ export class ResidentTurnUdsServer {
         }
         const selectedModel=modelOverride?.model??this.options.agent.getModel();
         const selectedEffort=requested.reasoningEffort??modelOverride?.reasoningEffort??this.options.agent.getReasoningEffort();
-        if(!modelSupportsReasoningEffort(selectedModel,selectedEffort)){
+        if((requested.reasoningEffort!==null||modelOverride?.reasoningEffort!==undefined)&&!modelSupportsReasoningEffort(selectedModel,selectedEffort,modelOverride?.provider??this.options.agent.getProvider())){
           throw new ResidentProtocolError("request_invalid","requested resident reasoning effort is unavailable for the selected model");
         }
         if (p.plannedExecution !== undefined) {
@@ -1197,21 +1205,28 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
       !exactHouseResidentCapabilities(payload.capabilities)){
       throw new ResidentProtocolError("request_invalid","resident model catalog is invalid");
     }
-    const models=payload.models.map((raw)=>{
+    const decodeModels=(rows:JsonValue[])=>rows.map((raw)=>{
       const value=object(raw);
       return Object.freeze({
         alias:string(value.alias,"model alias"),provider:string(value.provider,"model provider"),
         model:string(value.model,"model"),reasoningEffort:reasoningEffort(value.reasoningEffort),
         reasoningEfforts:Object.freeze((Array.isArray(value.reasoningEfforts)?value.reasoningEfforts:REASONING_EFFORTS).map((raw)=>{
-          if(typeof raw!=="string"||!REASONING_EFFORTS.includes(raw as ReasoningEffort)){
+          if(typeof raw!=="string"||!isReasoningEffort(raw)){
             throw new ResidentProtocolError("request_invalid","resident model reasoning effort catalog is invalid");
           }
           return raw as ReasoningEffort;
         })),
+        ...(Array.isArray(value.reasoningEffortOptions)?{reasoningEffortOptions:Object.freeze(value.reasoningEffortOptions.map(raw=>{
+          if(!isReasoningEffort(raw))throw new ResidentProtocolError("request_invalid","resident model reasoning option is invalid");
+          return raw;
+        }))}:{}),
+        defaultReasoningEffortOption:reasoningEffort(value.defaultReasoningEffortOption??value.reasoningEffort),
       });
     });
+    const models=decodeModels(payload.models);
+    const modelOptions=Array.isArray(payload.modelOptions)?decodeModels(payload.modelOptions):undefined;
     const efforts=payload.reasoningEfforts.map((raw)=>{
-      if(typeof raw!=="string"||!REASONING_EFFORTS.includes(raw as ReasoningEffort)){
+      if(typeof raw!=="string"||!isReasoningEffort(raw)){
         throw new ResidentProtocolError("request_invalid","resident reasoning effort catalog is invalid");
       }
       return raw as ReasoningEffort;
@@ -1222,9 +1237,10 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
     }
     return Object.freeze({
       capabilities:HOUSE_RESIDENT_CAPABILITIES,
-      models:Object.freeze(models),defaultModel:string(payload.defaultModel,"defaultModel"),
+      models:Object.freeze(models),...(modelOptions?{modelOptions:Object.freeze(modelOptions)}:{}),defaultModel:string(payload.defaultModel,"defaultModel"),
       defaultProvider:string(payload.defaultProvider,"defaultProvider"),
       defaultReasoningEffort,
+      defaultReasoningEffortOption:reasoningEffort(payload.defaultReasoningEffortOption??payload.defaultReasoningEffort)??defaultReasoningEffort,
       reasoningEfforts:Object.freeze(efforts),
     });
   }

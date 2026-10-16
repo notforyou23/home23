@@ -1,6 +1,6 @@
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import type { CoordinationApplication } from "../app/types.js";
-import { REASONING_EFFORTS, type ReasoningEffort } from "../../agent/reasoning-effort.js";
+import { isReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from "../../agent/reasoning-effort.js";
 import { LIVE_VOICE_MODEL, LIVE_VOICE_VOICES, LIVE_VOICE_PACES, type LiveVoiceAccess, type LiveVoiceStart } from "../app/live-voice.js";
 import { CoordinationHttpError } from "./errors.js";
 import { requireCoordinationAuth, requireCoordinationContext, requireCoordinationMetadata,
@@ -43,7 +43,7 @@ export function mountLiveVoiceRoutes(router: Express, application: CoordinationA
       (body.modelAlias != null && (typeof body.modelAlias !== "string" || body.modelAlias.length > 256)) ||
       (body.voice != null && !LIVE_VOICE_VOICES.includes(body.voice)) ||
       (body.speakingPace != null && !LIVE_VOICE_PACES.includes(body.speakingPace)) ||
-      (body.reasoningEffort != null && !REASONING_EFFORTS.includes(body.reasoningEffort))) {
+      (body.reasoningEffort != null && !isReasoningEffort(body.reasoningEffort))) {
       throw new CoordinationHttpError("request_invalid", 400, false);
     }
     response.set("Cache-Control", "no-store");

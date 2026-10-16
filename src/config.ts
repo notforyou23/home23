@@ -121,7 +121,10 @@ export function loadConfig(agentName: string): HomeConfig {
   let config = deepMerge(homeConfig, agentConfig);
   config = deepMerge(config, secrets);
 
-  validateReasoningEffortConfig(config);
+  require('../shared/model-discovery.cjs').getModelDiscovery(home23Root).snapshot({ homeConfig, agentConfig });
+  // A retired model/effort remains saved. Fresh picker choices are validated
+  // against discovery at admission; saved history must not prevent startup.
+  validateReasoningEffortConfig(config, { allowUnavailableSelections: true });
   compileProjectWriteRoots(config.files, getAgentPaths(agentName, home23Root).instanceRoot);
 
   // Layer 4: Per-agent secrets (agents.<name>.telegram.botToken → channels.telegram.botToken)
@@ -168,7 +171,8 @@ export function loadHomeConfig(): HomeConfig {
   const homeConfig = loadYaml(join(home23Root, 'config', 'home.yaml'));
   const secrets = loadYaml(join(home23Root, 'config', 'secrets.yaml'));
   const config = deepMerge(homeConfig, secrets) as unknown as HomeConfig;
-  validateReasoningEffortConfig(config);
+  require('../shared/model-discovery.cjs').getModelDiscovery(home23Root).snapshot({ homeConfig });
+  validateReasoningEffortConfig(config, { allowUnavailableSelections: true });
   return config;
 }
 
@@ -180,10 +184,10 @@ export function getAgentScratchDir(agentName: string): string {
   return getAgentPaths(agentName).scratchDir;
 }
 
-/** Read the selected home's editable aliases at request/turn boundaries. Only
- * these public routing fields reload; in-flight turns keep their resolved pair.
- * No provider credentials or agent identity are reloaded by a catalog read. */
-export function createModelAliasReader(homeRoot = getHome23Root(), agentName?: string): () => ModelAliases {
+/** Read saved aliases and current provider snapshots at request/turn boundaries.
+ * In-flight turns retain their resolved pair. Discovery refreshes separately;
+ * this getter never replaces an AgentLoop's identity or current defaults. */
+export function createModelAliasReader(homeRoot = getHome23Root(), agentName?: string, discoveryService?: { snapshot(input: unknown): { aliases: ModelAliases; discovery: { revision: string } } }): () => ModelAliases {
   const homePath = join(homeRoot, 'config', 'home.yaml');
   const agentPath = agentName ? getAgentPaths(agentName, homeRoot).configPath : undefined;
   let revision: string | undefined;
@@ -199,10 +203,12 @@ export function createModelAliasReader(homeRoot = getHome23Root(), agentName?: s
   }
   return () => {
     const current = stamp(homePath) + (agentPath ? `|${stamp(agentPath, true)}` : '');
-    if (current === revision) return aliases;
     const home = loadYaml(homePath);
-    const config = agentPath ? deepMerge(home, loadYaml(agentPath)) : home;
-    const candidate = (config.models as { aliases?: ModelAliases } | undefined)?.aliases ?? {};
+    const discovery = (discoveryService ?? require('../shared/model-discovery.cjs').getModelDiscovery(homeRoot))
+      .snapshot({ homeConfig: home, agentConfig: agentPath ? loadYaml(agentPath) : {} });
+    const effectiveRevision = `${current}|${discovery.discovery.revision}`;
+    if (effectiveRevision === revision) return aliases;
+    const candidate = discovery.aliases as ModelAliases;
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
       throw new Error('Home model aliases must be an object');
     }
@@ -219,7 +225,7 @@ export function createModelAliasReader(homeRoot = getHome23Root(), agentName?: s
     }
     validateReasoningEffortConfig({ models: { aliases: next } });
     aliases = Object.freeze(next);
-    revision = current;
+    revision = effectiveRevision;
     return aliases;
   };
 }

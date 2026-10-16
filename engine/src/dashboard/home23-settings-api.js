@@ -118,6 +118,7 @@ function createSettingsRouter(home23Root, options = {}) {
   const router = express.Router();
   const tileService = options.tileService || new Home23TileService({ home23Root, autoStartBackgroundRefresh: false });
   const oauthBroker = options.oauthBroker || createHome23OAuthBroker({ home23Root });
+  const modelDiscovery = options.modelDiscoveryService || require('../../../shared/model-discovery.cjs').getModelDiscovery(home23Root);
   const getOrchestrator = typeof options.getOrchestrator === 'function'
     ? options.getOrchestrator
     : () => null;
@@ -178,8 +179,9 @@ function createSettingsRouter(home23Root, options = {}) {
     }
   }
 
-  function validateModelAuthority(homeConfig, agentConfig) {
-    const authority = buildHome23ModelAuthority({ homeConfig, agentConfig });
+  function validateModelAuthority(homeConfig, agentConfig, previousHomeConfig = {}, previousAgentConfig = {}) {
+    const discoverySnapshot = modelDiscovery.snapshot({ homeConfig, agentConfig });
+    const authority = buildHome23ModelAuthority({ homeConfig, agentConfig, discoverySnapshot });
     const query = agentConfig.query === undefined || agentConfig.query === null
       ? (homeConfig.query || {})
       : agentConfig.query;
@@ -191,9 +193,20 @@ function createSettingsRouter(home23Root, options = {}) {
     const sweepModel = query.pgsSweepModel || directModel;
     const synthProvider = query.pgsSynthProvider || directProvider;
     const synthModel = query.pgsSynthModel || directModel;
-    assertExactConfiguredPair(authority, directProvider, directModel, 'Direct Query model');
-    assertExactConfiguredPair(authority, sweepProvider, sweepModel, 'PGS sweep model');
-    assertExactConfiguredPair(authority, synthProvider, synthModel, 'PGS synthesis model');
+    const priorChat = previousAgentConfig.chat || previousHomeConfig.chat || {};
+    const priorQuery = previousAgentConfig.query || previousHomeConfig.query || {};
+    const priorProvider = priorQuery.defaultProvider || priorQuery.provider || priorChat.defaultProvider || priorChat.provider;
+    const priorModel = priorQuery.defaultModel || priorChat.defaultModel || priorChat.model;
+    function check(provider, model, label, oldProvider, oldModel) {
+      // Preserve a saved unavailable selection when changing another setting.
+      // Selecting a new pair still requires the current provider snapshot.
+      if (provider === oldProvider && model === oldModel) return;
+      assertExactConfiguredPair(authority, provider, model, label);
+    }
+    check(chat.defaultProvider || chat.provider, chat.defaultModel || chat.model, 'Chat model', priorChat.defaultProvider || priorChat.provider, priorChat.defaultModel || priorChat.model);
+    check(directProvider, directModel, 'Direct Query model', priorProvider, priorModel);
+    check(sweepProvider, sweepModel, 'PGS sweep model', priorQuery.pgsSweepProvider || priorProvider, priorQuery.pgsSweepModel || priorModel);
+    check(synthProvider, synthModel, 'PGS synthesis model', priorQuery.pgsSynthProvider || priorProvider, priorQuery.pgsSynthModel || priorModel);
     return authority;
   }
 
@@ -1737,6 +1750,7 @@ function createSettingsRouter(home23Root, options = {}) {
     const homeConfig = loadHomeConfig();
     const targetAgent = resolveRequestedAgent(req.query.agent);
     const agentConfig = loadAgentConfig(targetAgent);
+    const catalog = modelDiscovery.snapshot({ homeConfig, agentConfig });
     const agentChat = agentConfig.chat || {};
     const effectiveAgentChat = {
       defaultProvider: agentChat.defaultProvider || agentChat.provider || homeConfig.chat?.defaultProvider || '',
@@ -1750,11 +1764,15 @@ function createSettingsRouter(home23Root, options = {}) {
       primaryAgent: getPrimaryAgent({ autoHeal: true }),
       chat: effectiveAgentChat,
       sharedChatDefaults: homeConfig.chat || {},
-      aliases: homeConfig.models?.aliases || {},
+      aliases: catalog.aliases,
+      configuredAliases: homeConfig.models?.aliases || {},
+      catalog: catalog.models,
+      discovery: catalog.discovery,
+      unavailableSelections: catalog.unavailableSelections,
       imageGeneration: normalizeImageGenerationSettings(homeConfig.media?.imageGeneration || {}),
       imageProviders: IMAGE_PROVIDER_CATALOG,
       providers: Object.fromEntries(
-        Object.entries(homeConfig.providers || {}).map(([name, cfg]) => [name, { defaultModels: cfg.defaultModels || [] }])
+        Object.entries(homeConfig.providers || {}).map(([name, cfg]) => [name, { defaultModels: catalog.models.filter(row => row.provider === name).map(row => row.model) }])
       ),
       engineRoles: agentConfig.engine || {},
     });
@@ -1817,7 +1835,10 @@ function createSettingsRouter(home23Root, options = {}) {
           const reasoningEffort = chat.reasoningEffort;
           if (reasoningEffort === null || reasoningEffort === '') {
             delete agentConfig.chat.reasoningEffort;
-          } else if (!REASONING_EFFORT_SET.has(reasoningEffort)) {
+          } else if (!modelDiscovery.snapshot({ homeConfig, agentConfig }).models.some(row =>
+            row.provider === (agentConfig.chat.defaultProvider || agentConfig.chat.provider)
+              && row.model === (agentConfig.chat.defaultModel || agentConfig.chat.model)
+              && row.reasoningEffortOptions.includes(reasoningEffort))) {
             return res.status(400).json({
               ok: false,
               code: 'reasoning_effort_invalid',
@@ -1902,7 +1923,8 @@ function createSettingsRouter(home23Root, options = {}) {
           const prospectiveAgent = agentName === targetAgent && agentConfig
             ? agentConfig
             : loadAgentConfig(agentName);
-          validateModelAuthority(homeConfig, prospectiveAgent);
+          if (catalogChanged) buildHome23ModelAuthority({ homeConfig, agentConfig: prospectiveAgent });
+          validateModelAuthority(homeConfig, prospectiveAgent, previousHomeConfig, loadAgentConfig(agentName));
         }
       }
 
@@ -2027,7 +2049,7 @@ function createSettingsRouter(home23Root, options = {}) {
       if (typeof b.pgsDepth === 'number') agentConfig.query.pgsDepth = b.pgsDepth;
 
       const homeConfig = loadHomeConfig();
-      validateModelAuthority(homeConfig, agentConfig);
+      validateModelAuthority(homeConfig, agentConfig, homeConfig, previousAgentConfig);
       saveYaml(configPath, agentConfig);
       const primaryAgent = getPrimaryAgent({ autoHeal: false });
       const runtimeRefresh = await refreshModelAuthority({

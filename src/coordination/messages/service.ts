@@ -13,7 +13,7 @@ import type {
   MessageTurnSelection,
   PendingMessage,
 } from "./types.js";
-import { REASONING_EFFORTS } from "../../agent/reasoning-effort.js";
+import { isReasoningEffort, REASONING_EFFORTS } from "../../agent/reasoning-effort.js";
 
 const MAX_MESSAGE_BYTES = 65_536;
 
@@ -105,7 +105,7 @@ function canonicalTurnSelection(
   if (
     value.reasoningEffort !== null &&
     (typeof value.reasoningEffort !== "string" ||
-      !REASONING_EFFORTS.includes(value.reasoningEffort))
+      !isReasoningEffort(value.reasoningEffort))
   ) {
     throw new MessagingError("request_invalid");
   }

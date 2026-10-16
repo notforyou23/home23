@@ -578,6 +578,7 @@ async function main(): Promise<void> {
     'openai-codex': { apiKey: resolveApiKey('openai-codex'), baseURL: resolveBaseUrl('openai-codex') },
     xai: { apiKey: resolveApiKey('xai'), baseURL: resolveBaseUrl('xai') },
     'ollama-cloud': { apiKey: resolveApiKey('ollama-cloud'), baseURL: resolveBaseUrl('ollama-cloud') },
+    'ollama-local': { apiKey: '', baseURL: resolveBaseUrl('ollama-local') },
   });
   // Finished-session learning has its own lifecycle; it never runs in a reply.
   const coordinationDatabasePath = process.env.HOME23_COORDINATION_DB_PATH

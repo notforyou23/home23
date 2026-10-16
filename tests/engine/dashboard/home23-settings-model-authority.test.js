@@ -121,6 +121,12 @@ async function withSettingsServer(fn, options = {}) {
 
   const calls = [];
   const routerOptions = {
+    modelDiscoveryService: { snapshot({ homeConfig }) {
+      const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+      return { models: Object.entries(homeConfig.providers || {}).flatMap(([provider, cfg]) =>
+        (cfg.defaultModels || []).map(model => ({ id: model, model, provider, reasoningEffortOptions: efforts }))),
+      aliases: homeConfig.models?.aliases || {}, unavailableSelections: [], discovery: { revision: 'fixture', providers: {}, refreshing: false } };
+    } },
     seedModelAuthority: async ({ agent }) => {
       calls.push({
         type: 'seed',
