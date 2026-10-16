@@ -57,9 +57,21 @@ Execution options, the resident catalog and the chat bridge add `modelOptions`,
 the complete model array. Each row adds `reasoningEffortOptions` and
 `defaultReasoningEffortOption`. New clients prefer these fields. Per-model
 capabilities control admission and transport; arbitrary efforts are not granted
-to unrelated models. Models without documented configurable reasoning expose
-`none`. Provider metadata can introduce new effort IDs without a model-family
+to unrelated models. Missing metadata stays unknown:
+`reasoningCapabilitiesKnown:false`, empty `reasoningEffortOptions`, and a null
+model default. That model inherits the saved runtime defaults without a new
+effort override. An explicit negative provider capability can establish `none`.
+Provider metadata can introduce new effort IDs without a model-family
 allowlist discarding them.
+
+Provider model defaults remain metadata; discovery never inserts them into an
+alias's `reasoningEffort`. Existing explicit alias efforts and the absence of an
+override are both preserved. Agent aliases deep-merge over house aliases.
+The envelope `reasoningEffortOptions` contains the exact advertised option union
+and the effective saved default. All additive fields survive the resident and
+public execution-options transports. A turn captures its capability/transport
+and provider request descriptor once, so later catalog refreshes cannot alter
+an admitted tool loop.
 
 Legacy `models` contains at most 128 compatible rows, with the current default
 included when compatible. Its `reasoningEfforts` contains only supported members

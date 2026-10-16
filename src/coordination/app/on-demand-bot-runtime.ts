@@ -30,6 +30,9 @@ import {
   reasoningEffortsForModel,
   legacyReasoningEffortsForModel,
   legacyModelOptions,
+  reasoningCapabilitiesKnown,
+  catalogReasoningEffortOptions,
+  defaultReasoningEffortOptionForModel,
   isReasoningEffort,
   REASONING_EFFORTS,
   type ReasoningEffort,
@@ -457,7 +460,8 @@ function modelCatalog(
         reasoningEffort: REASONING_EFFORTS.some(v => v === value.reasoningEffort) ? value.reasoningEffort ?? null : null,
         reasoningEfforts: legacyReasoningEffortsForModel(value.model, value.provider),
         reasoningEffortOptions: reasoningEffortsForModel(value.model, value.provider),
-        defaultReasoningEffortOption: value.reasoningEffort ?? null,
+        reasoningCapabilitiesKnown: reasoningCapabilitiesKnown(value.model,value.provider),
+        defaultReasoningEffortOption: defaultReasoningEffortOptionForModel(value.model,value.provider),
       })));
   return Object.freeze({
     capabilities: acceptsAttachments
@@ -469,6 +473,7 @@ function modelCatalog(
     defaultProvider: config.defaultProvider,
     defaultReasoningEffort: REASONING_EFFORTS.some(v => v === config.defaultReasoningEffort) ? config.defaultReasoningEffort : "medium",
     defaultReasoningEffortOption: config.defaultReasoningEffort,
+    reasoningEffortOptions: catalogReasoningEffortOptions(modelOptions,config.defaultReasoningEffort),
     reasoningEfforts: REASONING_EFFORTS,
   });
 }
@@ -591,7 +596,7 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
         this.config.modelReasoningEfforts?.[modelOverride?.model ?? this.config.defaultModel] ??
         this.config.defaultReasoningEffort,
     };
-    if ((requested.reasoningEffort !== null || modelOverride?.reasoningEffort !== undefined) && !modelSupportsReasoningEffort(source.model, source.reasoningEffort, source.provider)) {
+    if ((requested.reasoningEffort !== null || modelOverride?.reasoningEffort !== undefined && reasoningCapabilitiesKnown(source.model,source.provider)) && !modelSupportsReasoningEffort(source.model, source.reasoningEffort, source.provider)) {
       throw new Error("requested on-demand Bot reasoning effort is unavailable for the selected model");
     }
     return {

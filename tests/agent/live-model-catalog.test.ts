@@ -30,7 +30,7 @@ test('automatic discovery updates a running resident, Settings, and bridge witho
   const homePath = join(root,'config/home.yaml');
   writeFileSync(homePath,yaml.dump(initial));
   writeFileSync(join(root,'config/secrets.yaml'),'providers:\n  openai-codex:\n    apiKey: fixture-key\n');
-  writeFileSync(join(root,'instances/jerry/config.yaml'),yaml.dump({chat:initial.chat}));
+  writeFileSync(join(root,'instances/jerry/config.yaml'),yaml.dump({chat:initial.chat,models:{aliases:{base:{model:'gpt-fixture-base',reasoningEffort:'low'},localOnly:{provider:'openai-codex',model:'gpt-fixture-base'}}}}));
   let listed = ['gpt-fixture-base'];
   let calls = 0;
   const discovery = createModelDiscovery({home23Root:root,env:{},autoStart:false,fetchImpl:async()=>{
@@ -71,12 +71,15 @@ test('automatic discovery updates a running resident, Settings, and bridge witho
   assert((await bridge()).models.some((m:any)=>m.alias==='base'));
   const before = await port.modelCatalog(request);
   assert(before.models.some(m=>m.alias==='base'));
+  assert(before.modelOptions?.some(m=>m.alias==='localOnly'));
+  assert.equal(before.modelOptions?.find(m=>m.alias==='base')?.reasoningEffort,'low');
   listed = ['gpt-fixture-base','future-no-family'];
   await discovery.refreshAll({force:true});
   const alias='openai-codex/future-no-family';
   assert.equal((await bridge()).models.find((m:any)=>m.alias===alias).model,'future-no-family');
   const refreshed=await port.modelCatalog(request);
   const option=refreshed.models.find(m=>m.alias===alias)!;
+  assert(refreshed.modelOptions?.some(m=>m.alias==='localOnly'));
   assert.equal(option.provider,'openai-codex');
   assert.deepEqual(option.reasoningEfforts,['low']);
   assert.deepEqual(option.reasoningEffortOptions,['low','ultra']);
@@ -86,6 +89,7 @@ test('automatic discovery updates a running resident, Settings, and bridge witho
   listed=['future-no-family'];
   await discovery.refreshAll({force:true});
   assert.equal((await port.modelCatalog(request)).models.some(m=>m.alias==='base'),false);
+  assert.equal((await port.modelCatalog(request)).modelOptions?.some(m=>m.alias==='localOnly'),false);
   assert.equal(resolveCatalogModelOverride('base',readAliases()),null);
   assert.equal(pinnedBeforeEdit?.model,'gpt-fixture-base','Already resolved in-flight selection retains its original pair');
   assert.equal(restarts,0); assert.equal(calls,3);
@@ -103,4 +107,6 @@ test('automatic discovery updates a running resident, Settings, and bridge witho
   const fullResident=await port.modelCatalog(request);
   assert.equal(fullResident.modelOptions?.length,151);
   assert(fullResident.models.length<=128);
+  assert(fullResident.reasoningEffortOptions?.includes('ultra'));
+  assert(full.reasoningEffortOptions.includes('ultra'));
 });

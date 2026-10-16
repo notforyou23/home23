@@ -10,6 +10,7 @@ import {
 } from "../../../src/coordination/app/index.js";
 import type { AuthorityEpoch } from "../../../src/coordination/epochs/index.js";
 import { createCoordinationHttpServer } from "../../../src/coordination/http/index.js";
+import { catalogReasoningEffortOptions, legacyModelOptions } from "../../../src/agent/reasoning-effort.js";
 
 const fixture = loadCanonicalFixture("bootstrap") as BootstrapResponse;
 const exactMessageFixture = loadCanonicalFixture("message-exact") as any;
@@ -31,6 +32,24 @@ const canonicalMessagesAuthority: AuthorityEpoch = Object.freeze({
   writer: "home23-coordination",
   effectiveAtEventSequence: 41,
   rollbackEpoch: 1,
+});
+
+test('public execution options preserve full capability metadata and a compatible installed-client envelope', async t => {
+  const modelOptions = [...Array.from({length:150},(_,i)=>({alias:`model-${i}`,provider:'openai-codex',model:`model-${i}`,reasoningEffort:null,reasoningEfforts:['low'],reasoningEffortOptions:['low'],reasoningCapabilitiesKnown:true})),
+    {alias:'future',provider:'openai-codex',model:'future',reasoningEffort:null,reasoningEfforts:[],reasoningEffortOptions:['ultra'],reasoningCapabilitiesKnown:true},
+    {alias:'unknown',provider:'openai',model:'gpt-99',reasoningEffort:null,reasoningEfforts:[],reasoningEffortOptions:[],reasoningCapabilitiesKnown:false}];
+  const application = createCoordinationApplication({flags:{...enabledShellFlags,'coordination.resident.jerry.enabled':true},services:{
+    auth:{validateAccessToken:async()=>authPrincipal}, authorityEpochs:{current:()=>canonicalMessagesAuthority,listCurrent:async()=>({epochs:[canonicalMessagesAuthority],throughEventSequence:41})},work:{} as any,leases:{} as any,
+    messageSubmission:{submitMessage:async()=>({accepted:true}),selectionOptions:async({channelId})=>({channelId,capabilities:['messages'],models:legacyModelOptions(modelOptions,'openai-codex','model-149'),modelOptions,defaultModel:'model-149',defaultProvider:'openai-codex',defaultReasoningEffort:'high',defaultReasoningEffortOption:'high',reasoningEfforts:['none','low','medium','high','xhigh','max'],reasoningEffortOptions:catalogReasoningEffortOptions(modelOptions,'high')})},
+  }});
+  const server=createCoordinationHttpServer({application,port:0});t.after(()=>server.drain());const address=await server.start();
+  const result=await fetch(`${address.origin}/api/v1/channels/${fixture.snapshot.channels[0]!.id}/execution-options`,{headers:authHeaders()}); assert.equal(result.status,200);
+  const wire=await result.json() as any; assert.equal(wire.modelOptions.length,152); assert.equal(wire.models.length,128);
+  assert(wire.models.some((row:any)=>row.model==='model-149'));
+  assert(wire.models.every((row:any)=>row.reasoningEfforts.length>0&&row.reasoningEfforts.every((value:string)=>['none','low','medium','high','xhigh','max'].includes(value))));
+  assert(wire.modelOptions.every((row:any)=>row.reasoningEffortOptions.every((value:string)=>wire.reasoningEffortOptions.includes(value))));
+  assert(wire.reasoningEffortOptions.includes('ultra'));assert(wire.reasoningEffortOptions.includes(wire.defaultReasoningEffortOption));
+  assert.equal(wire.modelOptions.find((row:any)=>row.alias==='unknown').reasoningCapabilitiesKnown,false);
 });
 
 function submissionRequest(overrides: Record<string, unknown> = {}) {
@@ -397,7 +416,7 @@ test("malformed execution selections fail before message submission", async (t) 
   for (const [index, selection] of [
     { modelAlias: "" },
     { modelAlias: "bad\nmodel" },
-    { reasoningEffort: "extreme" },
+    { reasoningEffort: "invalid effort" },
   ].entries()) {
     const response = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
       method: "POST",

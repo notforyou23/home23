@@ -223,7 +223,7 @@ export function createModelAliasReader(homeRoot = getHome23Root(), agentName?: s
       next[alias] = Object.freeze({ provider: value.provider, model: value.model,
         ...(value.reasoningEffort ? { reasoningEffort: value.reasoningEffort } : {}) });
     }
-    validateReasoningEffortConfig({ models: { aliases: next } });
+    validateReasoningEffortConfig({ models: { aliases: next } }, { allowUnavailableSelections: true });
     aliases = Object.freeze(next);
     revision = effectiveRevision;
     return aliases;

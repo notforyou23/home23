@@ -70,6 +70,7 @@ export interface ResidentModelCatalog {
     reasoningEffort: ReasoningEffort | null;
     reasoningEfforts?: readonly ReasoningEffort[];
     reasoningEffortOptions?: readonly ReasoningEffort[];
+    reasoningCapabilitiesKnown?: boolean;
     defaultReasoningEffortOption?: ReasoningEffort | null;
   }>[];
   modelOptions?: ResidentModelCatalog['models'];
@@ -78,6 +79,7 @@ export interface ResidentModelCatalog {
   defaultReasoningEffort: ReasoningEffort;
   defaultReasoningEffortOption?: ReasoningEffort;
   reasoningEfforts: readonly ReasoningEffort[];
+  reasoningEffortOptions?: readonly ReasoningEffort[];
 }
 
 export interface ResidentCommunicationContext {

@@ -109,6 +109,48 @@ test('Ollama reads only installed/hosted tags and show metadata; non-chat models
 test('unknown modalities and retired provider records are retained only as diagnostics', () => {
   assert.equal(normalizeProviderModel('xai', { id: 'audio', output_modalities: ['audio'], input_modalities: ['text'] }).eligible, false);
   assert.equal(normalizeProviderModel('anthropic', { id: 'old', type: 'model', lifecycle: 'retired' }), null);
+  assert.equal(normalizeProviderModel('openai', { id: 'gpt-3.5-turbo-instruct' }).eligible, false);
+  assert.equal(normalizeProviderModel('openai', { id: 'gpt-unverified-family' }).eligible, false);
+  assert.equal(normalizeProviderModel('anthropic', { ...claude('new'), max_tokens: 8192 }).maxOutputTokens, 8192);
+});
+
+test('identity-only discovery preserves unknown reasoning and configured alias effort without inventing none', async t => {
+  const f = fixture(t, { providers: { openai: { defaultModels: ['gpt-99'] }, xai: {} }, aliases: { saved: { provider: 'openai', model: 'gpt-99', reasoningEffort: 'high' } }, fetchImpl: async url => response(url.includes('x.ai')
+    ? { models: [{ id: 'grok-future', input_modalities: ['text'], output_modalities: ['text'] }] }
+    : { data: [{ id: 'gpt-99' }] }) });
+  await f.service.refreshAll(); const state = f.service.snapshot();
+  assert(state.models.every(row => row.reasoningCapabilitiesKnown === false));
+  assert(state.models.every(row => row.reasoningEffortOptions.length === 0 && row.defaultReasoningEffortOption === null));
+  assert.equal(state.aliases['openai/gpt-99'].reasoningEffort, undefined);
+  assert.equal(state.aliases.saved.reasoningEffort, 'high');
+  assert.equal(state.aliases['xai/grok-future'].reasoningEffort, undefined);
+});
+
+test('provider defaults do not pin saved or generated aliases and agent scoped overrides survive refresh', async t => {
+  const f = fixture(t, { aliases: { saved: { provider: 'anthropic', model: 'house-model' } }, fetchImpl: async () => response({ data: [claude('house-model'), claude('agent-model')] }) });
+  await f.service.refreshAll();
+  const agentConfig = { chat: { reasoningEffort: 'high' }, models: { aliases: { saved: { model: 'agent-model', reasoningEffort: 'high' }, private: { provider: 'anthropic', model: 'house-model' } } } };
+  const state = f.service.snapshot({ agentConfig });
+  assert.equal(state.aliases.saved.model, 'agent-model'); assert.equal(state.aliases.saved.reasoningEffort, 'high');
+  assert.equal(Object.hasOwn(state.aliases.private, 'reasoningEffort'), false);
+  assert.equal(Object.hasOwn(state.aliases['anthropic/house-model'], 'reasoningEffort'), false);
+  assert.equal(f.service.snapshot().aliases.saved.model, 'house-model');
+});
+
+test('invalid settings during pending refresh retain stale data without an unhandled rejection or config overwrite', async t => {
+  const unhandled = []; const listener = error => unhandled.push(error); process.on('unhandledRejection', listener); t.after(() => process.off('unhandledRejection', listener));
+  let release; let block = false;
+  const f = fixture(t, { fetchImpl: async () => { if (block) await new Promise(resolve => { release = resolve; }); return response({ data: [claude('saved')] }); } });
+  await f.service.refreshAll(); block = true;
+  const pending = f.service.refreshAll({ force: true });
+  f.service.snapshot();
+  const target = path.join(f.root, 'config/secrets.yaml'); fs.writeFileSync(target, 'providers: [broken:'); release();
+  await assert.rejects(pending); // The explicit caller receives the config error; automatic refresh consumes it.
+  await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(unhandled, []);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'providers: [broken:');
+  fs.writeFileSync(target, yaml.dump(f.secrets));
+  const state = f.service.snapshot({ refreshAutomatically: false });
+  assert.equal(state.models[0].model, 'saved'); assert.equal(state.discovery.providers.anthropic.state, 'stale');
 });
 
 test('resident background cadence refreshes an expired catalog without another client read', async t => {

@@ -63,9 +63,21 @@ export function discoveredModelCapabilities(provider: string, model: string): Re
   return sharedReasoning.modelCapabilities(provider, model);
 }
 
+export function reasoningCapabilitiesKnown(model: string, provider: string): boolean {
+  return sharedReasoning.modelCapabilities(provider, model)?.reasoningCapabilitiesKnown !== false;
+}
+
+export function defaultReasoningEffortOptionForModel(model: string, provider: string): ReasoningEffort | null {
+  return sharedReasoning.modelCapabilities(provider, model)?.defaultReasoningEffortOption ?? null;
+}
+
+export function catalogReasoningEffortOptions(models: readonly { reasoningEffortOptions?: readonly ReasoningEffort[] }[], defaultEffort: ReasoningEffort): ReasoningEffort[] {
+  return [...new Set([...models.flatMap(row => row.reasoningEffortOptions ?? []), defaultEffort])];
+}
+
 /** Provider metadata, never a model-name guess, controls new reasoning options. */
-export function providerReasoningParameters(provider: string, model: string, effort: ReasoningEffort): Record<string, unknown> {
-  const caps = sharedReasoning.modelCapabilities(provider, model);
+export function providerReasoningParameters(provider: string, model: string, effort: ReasoningEffort, capturedCapabilities?: Record<string, any> | null): Record<string, unknown> {
+  const caps = capturedCapabilities === undefined ? sharedReasoning.modelCapabilities(provider, model) : capturedCapabilities;
   if (!caps || !caps.reasoningTransport) return {};
   if (!caps.reasoningEffortOptions.includes(effort)) throw new TypeError(`Reasoning effort ${effort} is unavailable for ${provider}/${model}`);
   if (caps.reasoningTransport === 'responses') return effort === 'none' ? {} : { reasoning_effort: effort };
