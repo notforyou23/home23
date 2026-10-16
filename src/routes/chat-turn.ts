@@ -16,6 +16,9 @@ import {
   reasoningEffortsForModel,
   legacyReasoningEffortsForModel,
   legacyModelOptions,
+  reasoningCapabilitiesKnown,
+  catalogReasoningEffortOptions,
+  defaultReasoningEffortOptionForModel,
   isReasoningEffort,
   REASONING_EFFORTS,
   type ReasoningEffort,
@@ -164,7 +167,7 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
     }
     const selectedModel = modelOverride?.model ?? config.agent.getModel();
     const selectedEffort = effort ?? modelOverride?.reasoningEffort ?? config.agent.getReasoningEffort();
-    if ((effort !== undefined || modelOverride?.reasoningEffort !== undefined) && !modelSupportsReasoningEffort(selectedModel, selectedEffort, modelOverride?.provider ?? config.agent.getProvider())) {
+    if ((effort !== undefined || modelOverride?.reasoningEffort !== undefined && reasoningCapabilitiesKnown(selectedModel,modelOverride?.provider ?? config.agent.getProvider())) && !modelSupportsReasoningEffort(selectedModel, selectedEffort, modelOverride?.provider ?? config.agent.getProvider())) {
       res.status(400).json({
         error: `reasoning effort ${selectedEffort} is unavailable for ${selectedModel}`,
         code: 'reasoning_effort_unsupported',
@@ -400,7 +403,8 @@ export function createModelsHandler(config: ChatTurnConfig) {
       model: val.model,
       reasoningEfforts: legacyReasoningEffortsForModel(val.model, val.provider),
       reasoningEffortOptions: reasoningEffortsForModel(val.model, val.provider),
-      defaultReasoningEffortOption: val.reasoningEffort ?? null,
+      reasoningCapabilitiesKnown: reasoningCapabilitiesKnown(val.model,val.provider),
+      defaultReasoningEffortOption: defaultReasoningEffortOptionForModel(val.model,val.provider),
     }));
     res.json({
       models: legacyModelOptions(models,config.agent.getProvider(),config.agent.getModel()),
@@ -409,6 +413,7 @@ export function createModelsHandler(config: ChatTurnConfig) {
       defaultProvider: config.agent.getProvider(),
       defaultReasoningEffort: REASONING_EFFORTS.some(v => v === config.agent.getReasoningEffort()) ? config.agent.getReasoningEffort() : "medium",
       defaultReasoningEffortOption: config.agent.getReasoningEffort(),
+      reasoningEffortOptions: catalogReasoningEffortOptions(models,config.agent.getReasoningEffort()),
       reasoningEfforts: REASONING_EFFORTS,
     });
   };

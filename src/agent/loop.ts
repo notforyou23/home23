@@ -16,8 +16,10 @@ import Anthropic from '@anthropic-ai/sdk';
 import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
 import { resolveProviderKey, isAuthError, refreshManagedOAuth } from './provider-credentials.js';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+const modelDiscovery = createRequire(import.meta.url)('../../shared/model-discovery.cjs');
 import type { ToolRegistry } from './tools/index.js';
 import type { ContextManager } from './context.js';
 import { ConversationHistory, type StoredMessage, type ContentBlock, type HistoryRecord, type SessionBoundary } from './history.js';
@@ -188,6 +190,8 @@ type RuntimeModelContext = {
   client: Anthropic;
   isOAuth: boolean;
   memory: MemoryManager;
+  reasoningCapabilities: Record<string, any> | null;
+  providerRequest: { apiKey: string; baseUrl: string; identity: string; accountId: string | null };
 };
 
 export type TerminalTurnOutcome = {
@@ -702,7 +706,10 @@ export class AgentLoop {
         })
       : this.memory;
 
-    return { model, provider, reasoningEffort, client, isOAuth, memory };
+    const capabilities = discoveredModelCapabilities(provider, model);
+    const reasoningCapabilities = capabilities ? JSON.parse(JSON.stringify(capabilities)) : null;
+    const providerRequest = modelDiscovery.resolveProviderRequestConfig({ provider, fallbackConfig: this.providerMap.get(provider) });
+    return { model, provider, reasoningEffort, client, isOAuth, memory, reasoningCapabilities, providerRequest };
   }
 
   setModel(model: string, provider?: string, reasoningEffort?: ReasoningEffort): void {
@@ -1409,6 +1416,7 @@ export class AgentLoop {
     const runtimeModel = runtime.model;
     const runtimeProvider = runtime.provider;
     const runtimeReasoningEffort = runtime.reasoningEffort;
+    const runtimeReasoningCapabilities = runtime.reasoningCapabilities;
     const runtimeClient = runtime.client;
     const runtimeIsOAuth = runtime.isOAuth;
     const runtimeMemory = runtime.memory;
@@ -2429,7 +2437,8 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             // Read-at-use (2026-08-11): secrets.yaml first, env floor second —
             // the raw env read here was one of the last rotation-blind spots
             // after 159703ef.
-            const xaiKey = resolveProviderKey('xai', undefined);
+            const xaiRequest = runtime.providerRequest;
+            const xaiKey = xaiRequest.apiKey;
             if (!xaiKey) throw new Error('xai credential unavailable (secrets.yaml providers.xai.apiKey or XAI_API_KEY)');
 
             const sysText = typeof systemPrompt === 'string'
@@ -2491,14 +2500,14 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 tool_stream: true,
                 stream: true,
                 include: ['reasoning.encrypted_content'],
-                ...(discoveredModelCapabilities(runtimeProvider, runtimeModel)?.reasoningTransport === 'responses'
+                ...(runtimeReasoningCapabilities?.reasoningTransport === 'responses'
                   && runtimeReasoningEffort !== 'none' ? { reasoning: responsesReasoningConfig(runtimeReasoningEffort) } : {}),
               };
 
               const xaiTimeout = 120_000;
               const fetchSignal = combineRequestSignals(ac.signal, xaiTimeout);
 
-              const res = await fetch('https://api.x.ai/v1/responses', {
+              const res = await fetch(`${xaiRequest.baseUrl}/v1/responses`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${xaiKey}` },
                 body: JSON.stringify(xaiBody),
@@ -2722,7 +2731,8 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           // Read-at-use (2026-08-11): the resolver covers secrets.yaml with
           // pconf.keyEnv as the floor — a rotation reaches a running turn.
           // ollama-local talks to a keyless local endpoint (LOCAL_LLM_BASE_URL).
-          const apiKey = isOllamaLocal ? '' : resolveProviderKey(runtimeProvider, undefined);
+          const providerRequest = runtime.providerRequest;
+          const apiKey = providerRequest.apiKey;
           if (!apiKey && !isOllamaLocal) throw new Error(`${runtimeProvider} credential unavailable (secrets.yaml providers.${runtimeProvider}.apiKey or ${pconf.keyEnv})`);
 
           const sysText = typeof systemPrompt === 'string'
@@ -2751,7 +2761,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           if (isOllamaCloud) {
             if (!ollamaCapabilitiesCache.has(runtimeModel)) {
               try {
-                const showRes = await fetch('https://ollama.com/api/show', {
+                const showRes = await fetch(`${providerRequest.baseUrl}/api/show`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
                   body: JSON.stringify({ model: runtimeModel }),
@@ -2797,10 +2807,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             type ResponseMessage = { role: string; content?: string | null; tool_calls?: ToolCallObj[] };
             let respMsg: ResponseMessage;
 
-            if (isOllamaCloud || (isOllamaLocal && discoveredModelCapabilities(runtimeProvider, runtimeModel)?.reasoningTransport === 'ollama-think')) {
+            if (isOllamaCloud || (isOllamaLocal && runtimeReasoningCapabilities?.reasoningTransport === 'ollama-think')) {
               // Native Ollama /api/chat — proper tool support + num_ctx
-              const nativeBase = (this.providerMap.get(runtimeProvider)?.baseURL || (isOllamaLocal
-                ? process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434' : 'https://ollama.com')).replace(/\/+$/, '').replace(/\/v1$/, '');
+              const nativeBase = providerRequest.baseUrl;
               const res = await fetch(`${nativeBase}/api/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
@@ -2809,7 +2818,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   messages: apiMessages,
                   tools: oaiTools.length > 0 ? oaiTools : undefined,
                   stream: false,
-                  ...providerReasoningParameters(runtimeProvider, runtimeModel, runtimeReasoningEffort),
+                  ...providerReasoningParameters(runtimeProvider, runtimeModel, runtimeReasoningEffort, runtimeReasoningCapabilities),
                   options: { num_ctx: 32768, temperature: this.temperature },
                 }),
                 signal: combineRequestSignals(ac.signal, pconf.timeout),
@@ -2823,9 +2832,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               respMsg = data.message ?? { role: 'assistant', content: '(no response)' };
             } else {
               // OpenAI-compatible /v1/chat/completions (OpenAI, or local Ollama via LOCAL_LLM_BASE_URL)
-              const baseUrl = isOllamaLocal
-                ? (process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434/v1')
-                : 'https://api.openai.com/v1';
+              const baseUrl = `${providerRequest.baseUrl}/v1`;
               const isGpt5Plus = /^(?:gpt-?(?:[5-9]|[1-9]\d+)|o[1-9])/.test(runtimeModel);
               const tokenParam = isGpt5Plus ? { max_completion_tokens: this.maxTokens } : { max_tokens: this.maxTokens };
 
@@ -2840,7 +2847,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   tools: oaiTools.length > 0 ? oaiTools : undefined,
                   ...tokenParam,
                   ...(runtimeProvider === 'openai' ? { prompt_cache_key: cacheKey } : {}),
-                  ...providerReasoningParameters(runtimeProvider, runtimeModel, runtimeReasoningEffort),
+                  ...providerReasoningParameters(runtimeProvider, runtimeModel, runtimeReasoningEffort, runtimeReasoningCapabilities),
                   ...(!isGpt5Plus ? { temperature: this.temperature } : {}),
                 }),
                 signal: combineRequestSignals(ac.signal, pconf.timeout),
@@ -3008,9 +3015,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             delete requestParams.temperature;
           }
 
-          const discoveredReasoning = discoveredModelCapabilities(runtimeProvider, runtimeModel);
+          const discoveredReasoning = runtimeReasoningCapabilities;
           const adaptiveReasoning = discoveredReasoning?.reasoningTransport === 'anthropic-adaptive'
-            ? providerReasoningParameters(runtimeProvider, runtimeModel, runtimeReasoningEffort) : null;
+            ? providerReasoningParameters(runtimeProvider, runtimeModel, runtimeReasoningEffort, runtimeReasoningCapabilities) : null;
           const thinkingCfg = runtimeProvider === 'anthropic' && !adaptiveReasoning
             ? anthropicThinkingConfig(runtimeReasoningEffort, this.maxTokens)
             : undefined;

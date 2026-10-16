@@ -433,7 +433,7 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
   editedHome.models.aliases.fresh = { provider: "ollama-local", model: "fixture-local-model" };
   writeFileSync(join(configDirectory, "home.yaml"), JSON.stringify(editedHome));
   const freshChoices = await firstService.selectionOptions({ context: owner, channelId: CHANNEL_ID });
-  assert.equal(freshChoices.models.find(row => row.alias === "fresh")?.model, "fixture-local-model");
+  assert.equal((freshChoices.modelOptions ?? freshChoices.models).find(row => row.alias === "fresh")?.model, "fixture-local-model");
   writeFileSync(join(configDirectory, "home.yaml"), savedHome);
   const removedChoices = await firstService.selectionOptions({ context: owner, channelId: CHANNEL_ID });
   assert.equal(removedChoices.models.some(row => row.alias === "fresh"), false);

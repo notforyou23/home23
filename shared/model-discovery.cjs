@@ -7,8 +7,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const yaml = require('js-yaml');
 const { createHome23OAuthBroker, extractOpenAIAccountId } = require('./home23-oauth.cjs');
-const { registerModelCapabilities } = require('./responses-reasoning.cjs');
+const { registerModelCapabilities, reviewedReasoningCapabilities } = require('./responses-reasoning.cjs');
 const MAX_AGE_MS = 15 * 60 * 1000;
+const CACHE_VERSION = 2;
 const LEGACY_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
 const PROVIDERS = ['openai', 'openai-codex', 'anthropic', 'xai', 'minimax', 'ollama-cloud', 'ollama-local'];
 const ENV_KEYS = { openai: ['OPENAI_API_KEY'], 'openai-codex': ['OPENAI_CODEX_AUTH_TOKEN', 'OPENAI_OAUTH_TOKEN'], anthropic: ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'], xai: ['XAI_API_KEY'], minimax: ['MINIMAX_API_KEY'], 'ollama-cloud': ['OLLAMA_CLOUD_API_KEY', 'OLLAMA_API_KEY'] };
@@ -43,7 +44,7 @@ function normalize(provider, raw) {
   let eligible = false;
   const caps = raw.capabilities;
   const capList = Array.isArray(caps) ? caps : [];
-  const excluded = /(?:embed|tts|transcrib|whisper|audio|realtime|image|dall-e|sora|moderation|rerank)/i.test(id);
+  const excluded = /(?:embed|tts|transcrib|whisper|audio|realtime|image|dall-e|sora|moderation|rerank|instruct|completions)/i.test(id);
   if (provider === 'openai-codex') eligible = raw.supported_in_api !== false && raw.visibility !== 'hide' && raw.visibility !== 'none';
   else if (provider === 'anthropic') eligible = raw.type === 'model' && caps?.tool_use?.supported !== false;
   else if (provider === 'xai') eligible = modalities(raw, 'output_modalities').includes('text') && modalities(raw, 'input_modalities').includes('text');
@@ -52,7 +53,7 @@ function normalize(provider, raw) {
   // adapter-reviewed text families and collect unknown IDs for diagnosis.
   else if (provider === 'openai') eligible = !excluded && (caps?.chat?.supported === true
     || (modalities(raw, 'output_modalities').includes('text') && caps?.tool_use?.supported === true)
-    || /^(?:gpt-|o[1-9](?:-|$)|chatgpt-|ft:(?:gpt-|o[1-9]))/.test(id));
+    || /^(?:gpt-(?:[4-9]|[1-9]\d+)(?:o|[.\-]|$)|gpt-3\.5-turbo(?:-|$)|o[1-9](?:-|$)|chatgpt-4o(?:-|$)|ft:(?:gpt-|o[1-9]))/.test(id));
   else if (provider === 'minimax') eligible = !excluded && (caps?.chat?.supported === true || /^MiniMax-(?:M\d|Text)/.test(id));
   if (!eligible) return { id, eligible: false };
   let options = raw.supported_reasoning_levels || raw.supported_reasoning_efforts || raw.reasoning_efforts || [];
@@ -72,18 +73,25 @@ function normalize(provider, raw) {
     if (thinkingValues.includes(true)) options.push('high');
     reasoningTransport = 'ollama-think';
   }
-  // No documented effort controls is different from supporting every control.
-  if (!options.length || !reasoningTransport) options = ['none'];
+  // Missing metadata is unknown. Only an explicit negative capability can
+  // establish that this model has no configurable reasoning.
+  let reasoningCapabilitiesKnown = Boolean(reasoningTransport && options.length);
+  if (!reasoningCapabilitiesKnown) options = [];
+  const reviewed = !reasoningCapabilitiesKnown ? reviewedReasoningCapabilities(provider, id) : null;
+  if (reviewed) { options = reviewed.reasoningEffortOptions; reasoningCapabilitiesKnown = true; reasoningTransport = reviewed.reasoningTransport; }
+  const explicitlyNoReasoning = raw.supports_reasoning === false || caps?.thinking?.supported === false
+    || (Array.isArray(raw.thinking?.values) && raw.thinking.values.length === 1 && raw.thinking.values[0] === false);
+  if (explicitlyNoReasoning) { options = ['none']; reasoningCapabilitiesKnown = true; }
   const advertisedDefault = text(raw.default_reasoning_level) || text(raw.default_reasoning_effort)
     || (effort(raw.thinking?.default) ? raw.thinking.default : null)
     || null;
-  const defaultOption = options.includes(advertisedDefault) ? advertisedDefault : options.includes('medium') ? 'medium' : options[0];
+  const defaultOption = options.includes(advertisedDefault) ? advertisedDefault : options.includes('medium') ? 'medium' : options[0] || null;
   return { id, model: id, label: text(raw.display_name) || id, eligible: true,
-    reasoningEffortOptions: [...new Set(options)], defaultReasoningEffortOption: defaultOption,
+    reasoningCapabilitiesKnown, reasoningEffortOptions: [...new Set(options)], defaultReasoningEffortOption: defaultOption,
     reasoningEfforts: options.filter(v => LEGACY_EFFORTS.includes(v)),
     reasoningTransport, thinkingValues,
     contextWindowTokens: raw.context_window || raw.max_input_tokens || null,
-    maxOutputTokens: raw.max_output_tokens || null };
+    maxOutputTokens: raw.max_output_tokens || raw.max_tokens || null };
 }
 function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = Date.now, env = process.env, intervalMs = 60_000, autoStart = true, cachePath = path.join(home23Root, 'instances', '.house', 'model-catalog-cache.json'), credentialsProvider } = {}) {
   if (!path.isAbsolute(home23Root || '')) throw new TypeError('Absolute home23Root required');
@@ -95,7 +103,7 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
       const stat = fs.statSync(cachePath); const stamp = `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
       if (stamp !== diskStamp) {
         const disk = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-        if (disk.version === 1 && disk.providers && typeof disk.providers === 'object') {
+        if (disk.version === CACHE_VERSION && disk.providers && typeof disk.providers === 'object') {
           for (const [provider, value] of Object.entries(disk.providers)) {
             if (PROVIDERS.includes(provider) && Array.isArray(value.models) && typeof value.identity === 'string'
                 && (!entries[provider] || value.checkedAt > entries[provider].checkedAt)) entries[provider] = value;
@@ -109,7 +117,7 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
     syncDisk();
     fs.mkdirSync(path.dirname(cachePath), { recursive: true, mode: 0o700 });
     const temporary = `${cachePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-    try { fs.writeFileSync(temporary, JSON.stringify({ version: 1, revision: ++revision, providers: entries }), { mode: 0o600 }); fs.renameSync(temporary, cachePath); diskStamp = null; }
+    try { fs.writeFileSync(temporary, JSON.stringify({ version: CACHE_VERSION, revision: ++revision, providers: entries }), { mode: 0o600 }); fs.renameSync(temporary, cachePath); diskStamp = null; }
     finally { try { fs.unlinkSync(temporary); } catch {} }
   }
   function configuration() { return { home: readYaml(path.join(home23Root, 'config', 'home.yaml')), secrets: readYaml(env.HOME23_SECRETS_PATH || path.join(home23Root, 'config', 'secrets.yaml')) }; }
@@ -165,8 +173,10 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
         if (current.identity !== desc.identity) return;
         entries[desc.provider] = { identity: desc.identity, checkedAt: now(), attemptedAt: now(), ...snapshot };
       } catch (error) {
-        const cfg = configuration(); const current = descriptor(desc.provider, cfg.home.providers?.[desc.provider] || {}, cfg.secrets, env);
-        if (current.identity !== desc.identity) return;
+        try {
+          const cfg = configuration(); const current = descriptor(desc.provider, cfg.home.providers?.[desc.provider] || {}, cfg.secrets, env);
+          if (current.identity !== desc.identity) return;
+        } catch { /* A torn settings read must not escape an automatic refresh. */ }
         entries[desc.provider] = { ...(old?.identity === desc.identity ? old : { identity: desc.identity, models: [], unclassifiedIds: [] }), attemptedAt: now(), errorCode: /^model_[a-z0-9_]+$/.test(error.code || '') ? error.code : 'model_discovery_unavailable' };
       }
       try { persist(); } catch { /* Read-only filesystems retain an in-memory snapshot. */ }
@@ -180,22 +190,28 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
       if (!home.providers?.[provider]) continue;
       const config = home.providers[provider]; const desc = descriptor(provider, config, cfg.secrets, env);
       const cached = entries[provider]?.identity === desc.identity ? entries[provider] : null;
-      if (refreshAutomatically) void refresh(desc);
+      if (refreshAutomatically) void refresh(desc).catch(() => {});
       const fresh = Boolean(cached?.checkedAt && !cached.errorCode && now() - cached.checkedAt < MAX_AGE_MS);
       providerStates[provider] = { state: !desc.configured ? 'unconfigured' : fresh ? 'fresh' : cached?.checkedAt ? 'stale' : 'loading', checkedAt: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : null, expiresAt: cached?.checkedAt ? new Date(cached.checkedAt + MAX_AGE_MS).toISOString() : null, errorCode: cached?.errorCode || null, modelCount: cached?.models.length || 0, unclassifiedCount: cached?.unclassifiedIds?.length || 0 };
-      const fallback = (config.defaultModels || []).map(id => ({ id, model: id, label: id, reasoningEffortOptions: LEGACY_EFFORTS, reasoningEfforts: LEGACY_EFFORTS, defaultReasoningEffortOption: 'medium' }));
+      const fallback = (config.defaultModels || []).map(id => {
+        const reviewed = reviewedReasoningCapabilities(provider, id);
+        return { id, model: id, label: id, reasoningCapabilitiesKnown: false, reasoningEffortOptions: [], reasoningEfforts: [], defaultReasoningEffortOption: null, ...reviewed,
+          ...(reviewed ? { reasoningEfforts: reviewed.reasoningEffortOptions.filter(v => LEGACY_EFFORTS.includes(v)) } : {}) };
+      });
       const selected = desc.configured ? cached?.checkedAt ? cached.models : fallback : [];
       for (const row of selected) {
         const alias = `${provider}/${row.id}`;
         const publicRow = { ...row, provider, providerLabel: text(config.label) || LABELS[provider], kind: 'chat', alias, available: true, source: cached?.checkedAt ? 'provider-discovery' : 'configured', stale: !fresh };
         models.push(publicRow);
-        aliases[alias] = { provider, model: row.id, ...(row.defaultReasoningEffortOption ? { reasoningEffort: row.defaultReasoningEffortOption } : {}) };
-        if (cached?.checkedAt) registerModelCapabilities(provider, row.id, row);
+        aliases[alias] = { provider, model: row.id };
+        registerModelCapabilities(provider, row.id, row);
       }
     }
-    for (const [alias, pair] of Object.entries(home.models?.aliases || {})) {
+    const scopedAliases = { ...home.models?.aliases };
+    for (const [alias, value] of Object.entries(agentConfig.models?.aliases || {})) scopedAliases[alias] = { ...scopedAliases[alias], ...value };
+    for (const [alias, pair] of Object.entries(scopedAliases)) {
       const row = models.find(value => value.provider === pair.provider && value.model === pair.model);
-      if (row && (!pair.reasoningEffort || row.reasoningEffortOptions.includes(pair.reasoningEffort))) aliases[alias] = { ...aliases[row.alias], ...pair };
+      if (row && (row.reasoningCapabilitiesKnown === false || !pair.reasoningEffort || row.reasoningEffortOptions.includes(pair.reasoningEffort))) aliases[alias] = { ...pair };
       else unavailableSelections.push({ ...pair, alias, available: false });
     }
     for (const chat of [home.chat, agentConfig.chat]) {
@@ -209,4 +225,10 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
   return { snapshot, refreshAll, close() { clearInterval(timer); }, cachePath };
 }
 function getModelDiscovery(home23Root) { const root = path.resolve(home23Root); if (!services.has(root)) services.set(root, createModelDiscovery({ home23Root: root })); return services.get(root); }
-module.exports = { createModelDiscovery, getModelDiscovery, normalizeProviderModel: normalize, MAX_AGE_MS, LEGACY_EFFORTS };
+function resolveProviderRequestConfig({ provider, home23Root = process.env.HOME23_ROOT || path.resolve(__dirname, '..'), fallbackConfig = {}, env = process.env } = {}) {
+  const home = readYaml(path.join(home23Root, 'config', 'home.yaml'));
+  const secrets = readYaml(env.HOME23_SECRETS_PATH || path.join(home23Root, 'config', 'secrets.yaml'));
+  const value = descriptor(provider, home.providers?.[provider] || fallbackConfig, secrets, env);
+  return { apiKey: value.token, baseUrl: value.base, identity: value.identity, accountId: value.account };
+}
+module.exports = { createModelDiscovery, getModelDiscovery, resolveProviderRequestConfig, normalizeProviderModel: normalize, MAX_AGE_MS, LEGACY_EFFORTS };

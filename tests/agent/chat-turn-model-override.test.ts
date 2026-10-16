@@ -1,11 +1,38 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentLoop } from '../../src/agent/loop.js';
 import { ConversationHistory } from '../../src/agent/history.js';
 import { TurnStore } from '../../src/chat/turn-store.js';
+import { createModelAliasReader } from '../../src/config.js';
+import { resolveCatalogModelOverride } from '../../src/agent/model-resolution.js';
+const { createModelDiscovery } = createRequire(import.meta.url)('../../shared/model-discovery.cjs');
+
+test('discovery and both turn iterations use the exact configured endpoint/key and captured reasoning capability', async t => {
+  const root=mkdtempSync(join(tmpdir(),'model-authority-turn-'));const priorRoot=process.env.HOME23_ROOT;const priorSecrets=process.env.HOME23_SECRETS_PATH;const priorFetch=globalThis.fetch;
+  t.after(()=>{globalThis.fetch=priorFetch;if(priorRoot===undefined)delete process.env.HOME23_ROOT;else process.env.HOME23_ROOT=priorRoot;if(priorSecrets===undefined)delete process.env.HOME23_SECRETS_PATH;else process.env.HOME23_SECRETS_PATH=priorSecrets;rmSync(root,{recursive:true,force:true});});
+  process.env.HOME23_ROOT=root;delete process.env.HOME23_SECRETS_PATH;mkdirSync(join(root,'config'));
+  writeFileSync(join(root,'config/home.yaml'),JSON.stringify({providers:{openai:{baseUrl:'https://configured-model.test/v1',apiKey:'configured-static-key'}},models:{aliases:{saved:{provider:'openai',model:'gpt-99'}}},chat:{defaultProvider:'openai',defaultModel:'gpt-99',reasoningEffort:'high'}}));
+  writeFileSync(join(root,'config/secrets.yaml'),JSON.stringify({providers:{openai:{apiKey:'different-secrets-key'}}}));
+  let supported=['low','high'];let calls=0;let discovery:any;
+  globalThis.fetch=(async(url,init)=>{
+    assert.equal((init?.headers as any).authorization??(init?.headers as any).Authorization,'Bearer configured-static-key');
+    if(String(url)==='https://configured-model.test/v1/models')return new Response(JSON.stringify({data:[{id:'gpt-99',reasoning_efforts:supported,default_reasoning_effort:'low'}]}),{status:200});
+    assert.equal(url,'https://configured-model.test/v1/chat/completions');const body=JSON.parse(String(init?.body));assert.equal(body.model,'gpt-99');assert.equal(body.reasoning_effort,'high');calls++;
+    if(calls===1){supported=['low'];await discovery.refreshAll({force:true});discovery.snapshot();return new Response(JSON.stringify({choices:[{message:{role:'assistant',content:null,tool_calls:[{id:'fixture-call',type:'function',function:{name:'fixture',arguments:'{}'}}]}}]}),{status:200});}
+    return new Response(JSON.stringify({choices:[{message:{role:'assistant',content:'done'}}]}),{status:200});
+  }) as typeof fetch;
+  discovery=createModelDiscovery({home23Root:root,autoStart:false,fetchImpl:globalThis.fetch});t.after(()=>discovery.close());await discovery.refreshAll();
+  const aliases=createModelAliasReader(root,undefined,discovery)();assert.equal(aliases.saved?.reasoningEffort,undefined,'Provider low default must not pin the saved alias');
+  const {agent}=makeAgent(root);(agent as any).reasoningEffort='high';
+  (agent as any).registry={getAnthropicTools:()=>[],getOpenAITools:()=>[{type:'function',function:{name:'fixture',parameters:{type:'object',properties:{}}}}],get:()=>undefined,execute:async()=>({content:'fixture result'})};
+  const turn=await agent.runWithTurn('capability-snapshot','hello',{modelOverride:resolveCatalogModelOverride('saved',aliases)!});const result=await turn.response;
+  assert.equal(result.text,'done');assert.equal(calls,2);
+  assert.deepEqual(discovery.snapshot().models[0].reasoningEffortOptions,['low']);
+});
 
 function makeAgent(root: string): { agent: AgentLoop; history: ConversationHistory } {
   mkdirSync(join(root, 'workspace'), { recursive: true });
