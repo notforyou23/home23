@@ -12,7 +12,7 @@
  * present only so old job receipts and event streams stay readable.
  */
 
-import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { unprivilegedChildEnv } from '../security/child-process-env.js';
@@ -22,6 +22,12 @@ import type {
   CodingBackend,
   CodingBackendOptions,
 } from './types.js';
+
+const require = createRequire(import.meta.url);
+const { extraPathDirs, resolveBinFrom } = require('../../shared/cli-binary.cjs') as {
+  extraPathDirs(): string[];
+  resolveBinFrom(candidates: string[], configBin?: string): string | null;
+};
 
 const SUMMARY_MAX = 300;
 const OTHER_RAW_MAX = 500;
@@ -71,10 +77,6 @@ const STRIPPED_ENV_KEYS = [
   'ANTHROPIC_BASE_URL',
 ] as const;
 
-function extraPathDirs(): string[] {
-  return ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local', 'bin')];
-}
-
 function bounded(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
@@ -83,34 +85,9 @@ function oneLine(text: string, max: number): string {
   return bounded(text.replace(/\s*\n\s*/g, ' '), max);
 }
 
-function resolveOnPath(name: string): string | null {
-  const dirs = [
-    ...(process.env.PATH ?? '').split(':').filter(Boolean),
-    ...extraPathDirs(),
-  ];
-  for (const dir of dirs) {
-    const candidate = path.join(dir, name);
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
 /** The current user's local CLI install location — never a baked-in machine path. */
 function userLocalBin(name: string): string {
   return path.join(os.homedir(), '.local', 'bin', name);
-}
-
-function resolveBinFrom(candidates: string[], configBin?: string): string | null {
-  const all = configBin ? [configBin, ...candidates] : candidates;
-  for (const candidate of all) {
-    if (path.isAbsolute(candidate)) {
-      if (existsSync(candidate)) return candidate;
-      continue;
-    }
-    const found = resolveOnPath(candidate);
-    if (found) return found;
-  }
-  return null;
 }
 
 function otherEvent(line: string): BridgeEvent {

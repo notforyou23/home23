@@ -15,7 +15,7 @@ import {
 
 function creationInput(
   manifest = manifestInput(),
-  turnSelection?: { modelAlias: string | null; reasoningEffort: "none" | "low" | "medium" | "high" | "xhigh" | "max" | null },
+  turnSelection?: { modelAlias: string | null; reasoningEffort: string | null },
 ) {
   return {
     principalId: OWNER_ID,
@@ -41,7 +41,7 @@ test("Work creation and its one wake intent survive reopen and exact retry", asy
   const generateId = createFixtureIdGenerator();
   let service = createWorkService({ database, generateId, now: () => new Date(AT) });
 
-  const selection = { modelAlias: "sol", reasoningEffort: "max" as const };
+  const selection = { modelAlias: "sol", reasoningEffort: "ultra" as const };
   const first = service.create(creationInput(manifestInput(), selection));
   assert.equal(first.replayed, false);
   assert.equal(first.work.state, "queued");
@@ -149,6 +149,28 @@ test("legacy Work creation defaults to an explicit durable no-override selection
     })),
     (error: unknown) => error instanceof WorkError && error.code === "invalid_request",
   );
+});
+
+test("Work preserves a valid future effort and rejects malformed wire syntax before durable intent", async t => {
+  const { createWorkService, WorkError } = await import("../../../src/coordination/work/index.js");
+  const database = M11TestDatabase.temporary(); t.after(() => database.close());
+  const generateId = createFixtureIdGenerator();
+  let service = createWorkService({ database, generateId, now: () => new Date(AT) });
+  for (const invalid of ['', 'Ultra', ' ultra', 'a.b', 'a\n', 'a\0b', 'é', 'a'.repeat(33)]) {
+    assert.throws(() => service.create(creationInput(manifestInput(), { modelAlias: null, reasoningEffort: invalid })),
+      (error: unknown) => error instanceof WorkError && error.code === 'invalid_request');
+  }
+  assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 0);
+  assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM outbox")?.count, 0);
+  const selection = { modelAlias: null, reasoningEffort: 'future-effort_2' };
+  const created = service.create(creationInput(manifestInput(), selection));
+  const events = database.readAll("SELECT * FROM events ORDER BY sequence");
+  database.reopen(); service = createWorkService({ database, generateId, now: () => new Date(AT) });
+  const replay = service.create(creationInput(manifestInput(), selection));
+  assert.equal(replay.replayed, true); assert.equal(replay.work.id, created.work.id);
+  assert.deepEqual(service.getTurnSelection(created.work.id), selection);
+  assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM outbox")?.count, 1);
+  assert.deepEqual(database.readAll("SELECT * FROM events ORDER BY sequence"), events);
 });
 
 test("context manifests reject IDs, counts, privacy, and content-bearing or locator fields", async (t) => {

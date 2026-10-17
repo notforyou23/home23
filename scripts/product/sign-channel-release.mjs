@@ -14,8 +14,8 @@ for (let index = 2; index < process.argv.length; index += 2) {
 for (const name of ['--receipt', '--runtime-archive', '--app-archive', '--runtime-url', '--app-url', '--private-key', '--output', '--coordination-schema']) {
   if (!options[name]) throw new Error(`Missing ${name}`);
 }
-if (!['20', '21'].includes(options['--coordination-schema'])) {
-  throw new Error('Coordination schema must be an explicitly reviewed 20 or 21');
+if (!['20', '21', '22'].includes(options['--coordination-schema'])) {
+  throw new Error('Coordination schema must be an explicitly reviewed 20, 21 or 22');
 }
 const receipt = JSON.parse(readFileSync(options['--receipt'], 'utf8'));
 if (receipt.schema !== 'home23.mac-release-set.v1' || receipt.signing !== 'developer-id'

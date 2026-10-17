@@ -18,6 +18,7 @@ import { WORK_PRODUCT_CONTROLS_MIGRATION_SQL } from "../../../src/coordination/m
 import { WORK_TURN_SELECTION_MIGRATION_SQL } from "../../../src/coordination/migrations/0009-work-turn-selection.js";
 import { ARTIFACT_AUDIO_MPEG_MIGRATION_SQL } from "../../../src/coordination/migrations/0011-artifact-audio-mpeg.js";
 import { WORK_THREAD_PRESENTATION_MIGRATION_SQL } from "../../../src/coordination/migrations/0012-work-thread-presentation.js";
+import { WORK_TURN_SELECTION_EFFORT_SYNTAX_MIGRATION_SQL } from "../../../src/coordination/migrations/0022-work-turn-selection-effort-syntax.js";
 
 const PREFIX = {
   attempt: "att",
@@ -72,6 +73,7 @@ export class M11TestDatabase {
       this.raw.exec(WORK_THREAD_PRESENTATION_MIGRATION_SQL);
       this.raw.exec(PLANNED_INVOCATIONS_MIGRATION_SQL);
       this.raw.exec(EVENT_RETENTION_COUNT_MIGRATION_SQL);
+      this.raw.transaction(() => this.raw.exec(WORK_TURN_SELECTION_EFFORT_SYNTAX_MIGRATION_SQL))();
       if (applyArtifactAudioMigration) {
         this.raw.transaction(() => this.raw.exec(ARTIFACT_AUDIO_MPEG_MIGRATION_SQL))();
       }

@@ -7,13 +7,16 @@ const path = require('node:path');
 const yaml = require('js-yaml');
 const { createModelDiscovery, MAX_AGE_MS, normalizeProviderModel } = require('../../shared/model-discovery.cjs');
 const { responsesReasoning } = require('../../shared/responses-reasoning.cjs');
+const { createCodexCatalogVersionDetector } = require('../../shared/cli-binary.cjs');
 function fixture(t, { providers = { anthropic: { defaultModels: ['saved-old'] } }, aliases = {}, fetchImpl, ...options } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-model-discovery-'));
   const home = { providers, chat: { defaultProvider: Object.keys(providers)[0], defaultModel: 'saved-old' }, models: { aliases } };
   fs.mkdirSync(path.join(root, 'config')); fs.writeFileSync(path.join(root, 'config/home.yaml'), yaml.dump(home));
   const secrets = { providers: Object.fromEntries(Object.keys(providers).filter(p => p !== 'ollama-local').map(p => [p, { apiKey: `fixture-${p}-key` }])) };
   fs.writeFileSync(path.join(root, 'config/secrets.yaml'), yaml.dump(secrets));
-  const service = createModelDiscovery({ home23Root: root, autoStart: false, env: {}, fetchImpl, ...options });
+  const service = createModelDiscovery({ home23Root: root, autoStart: false, env: {}, fetchImpl,
+    codexVersionDetector: () => ({ version: '0.162.0', fingerprint: 'fixture', errorCode: null }),
+    codexRegistryFetchImpl: async () => new Response(JSON.stringify({ name: '@openai/codex', version: '0.162.0' })), ...options });
   t.after(() => { service.close(); fs.rmSync(root, { recursive: true, force: true }); });
   return { root, home, service, secrets, saveSecrets() { fs.writeFileSync(path.join(root, 'config/secrets.yaml'), yaml.dump(secrets)); } };
 }
@@ -93,6 +96,104 @@ test('Codex metadata admits future reasoning models and keeps exact providers di
   assert.equal(state.discovery.providers.openai.unclassifiedCount, 1);
 });
 
+test('configured Codex binary version refreshes catalog immediately and retains only same-account stale rows', async t => {
+  const requests = []; let fail = false;
+  const f = fixture(t, { providers: { 'openai-codex': {} }, codexVersionDetector: createCodexCatalogVersionDetector({ env: {} }), fetchImpl: async url => {
+    requests.push(url); if (fail) throw Error('network unavailable');
+    const current = url.includes('client_version=0.163.0');
+    return response({ models: [{ slug: current ? 'gpt-6.1-sol' : 'previous-catalog-model', visibility: 'list', supported_in_api: true,
+      supported_reasoning_levels: [{ effort: 'low' }, { effort: 'ultra' }], default_reasoning_level: 'ultra' }] });
+  } });
+  const bin = path.join(f.root, 'configured-codex');
+  const writeVersion = version => fs.writeFileSync(bin, `#!/bin/sh\nprintf 'codex-cli ${version}\\n'\n`, { mode: 0o700 });
+  writeVersion('0.162.0');
+  f.home.acp = { backends: { codex: { bin } } };
+  f.home.chat = { defaultProvider: 'openai-codex', defaultModel: 'gpt-6.1-sol' };
+  const save = () => fs.writeFileSync(path.join(f.root, 'config/home.yaml'), yaml.dump(f.home)); save();
+  await f.service.refreshAll();
+  assert.match(requests[0], /client_version=0\.162\.0(?:&|$)/);
+  assert.equal(f.service.snapshot({ refreshAutomatically: false }).models[0].id, 'previous-catalog-model');
+  writeVersion('0.163.0'); fail = true;
+  await f.service.refreshAll(); // No clock advance and no force: binary changes bypass the old TTL.
+  assert.match(requests[1], /client_version=0\.163\.0(?:&|$)/);
+  let state = f.service.snapshot({ refreshAutomatically: false });
+  assert.equal(state.models[0].id, 'previous-catalog-model');
+  assert.equal(state.discovery.providers['openai-codex'].state, 'stale');
+  fail = false; await f.service.refreshAll({ force: true }); state = f.service.snapshot({ refreshAutomatically: false });
+  assert.deepEqual(state.models.map(row => row.id), ['gpt-6.1-sol']);
+  assert.deepEqual(state.models[0].reasoningEffortOptions, ['low', 'ultra']);
+  assert.deepEqual(responsesReasoning('gpt-6.1-sol', 'ultra'), { effort: 'ultra', summary: 'auto' });
+  assert.equal(state.unavailableSelections.length, 0);
+  assert.equal(f.home.chat.defaultModel, 'gpt-6.1-sol');
+  fs.writeFileSync(bin, '#!/bin/sh\nprintf "not a version\\n"\n', { mode: 0o700 }); fail = true;
+  await f.service.refreshAll(); state = f.service.snapshot({ refreshAutomatically: false });
+  assert.equal(state.models[0].id, 'gpt-6.1-sol');
+  assert.equal(state.discovery.providers['openai-codex'].state, 'stale');
+  assert.equal(state.discovery.providers['openai-codex'].errorCode, 'model_discovery_unavailable');
+  f.secrets.providers['openai-codex'].apiKey = 'different-account'; f.saveSecrets();
+  state = f.service.snapshot({ refreshAutomatically: false });
+  assert.equal(state.models.length, 0, 'a failed detector must never expose the former account catalog');
+});
+
+test('official stable version hints coalesce, persist and refresh at catalog cadence without becoming model authority', async t => {
+  let time = 1_000_000; let registryVersion = '0.162.0'; let registryCalls = 0; let fail = false; const requests = [];
+  const f = fixture(t, { providers: { 'openai-codex': {} }, now: () => time,
+    codexRegistryFetchImpl: async () => { registryCalls++; if (fail) throw Error('registry down'); return new Response(JSON.stringify({ name: '@openai/codex', version: registryVersion })); },
+    fetchImpl: async url => {
+      requests.push(url); return response({ models: [{ slug: url.includes('0.163.0') ? 'gpt-6.1-sol' : 'previous-catalog-model',
+        visibility: 'list', supported_in_api: true, supported_reasoning_levels: [{ effort: 'ultra' }] }] });
+    } });
+  await Promise.all([f.service.refreshAll(), f.service.refreshAll(), f.service.refreshAll()]);
+  assert.equal(registryCalls, 1); assert.equal(requests.length, 1);
+  registryVersion = '0.163.0'; time += MAX_AGE_MS;
+  await f.service.refreshAll();
+  assert.equal(registryCalls, 2); assert.match(requests[1], /client_version=0\.163\.0/);
+  assert.deepEqual(f.service.snapshot({ refreshAutomatically: false }).models.map(row => row.id), ['gpt-6.1-sol']);
+  fail = true; time += MAX_AGE_MS; await f.service.refreshAll();
+  assert.match(requests[2], /client_version=0\.163\.0/, 'registry failure retains the last stable hint');
+  const disk = JSON.parse(fs.readFileSync(f.service.cachePath)); assert.equal(disk.codexVersionHint.version, '0.163.0');
+  const reader = createModelDiscovery({ home23Root: f.root, env: {}, autoStart: false,
+    codexVersionDetector: () => ({ version: '0.162.0', fingerprint: 'fixture', errorCode: null }),
+    codexRegistryFetchImpl: async () => { assert.fail('fresh persisted hint must not refetch'); },
+    now: () => time, fetchImpl: async () => { assert.fail('fresh catalog must not refetch'); } });
+  t.after(() => reader.close());
+  assert.equal(reader.snapshot({ refreshAutomatically: false }).models[0].id, 'gpt-6.1-sol');
+});
+
+test('a broken optional CLI does not block authenticated discovery using the official compatibility version', async t => {
+  const requests = [];
+  const f = fixture(t, { providers: { 'openai-codex': {} },
+    codexVersionDetector: () => ({ version: '0.162.0', fingerprint: 'broken-cli', errorCode: 'model_discovery_client_version' }),
+    codexRegistryFetchImpl: async () => new Response(JSON.stringify({ name: '@openai/codex', version: '0.163.0' })),
+    fetchImpl: async url => { requests.push(url); return response({ models: [{ slug: 'gpt-6.1-sol', visibility: 'list',
+      supported_in_api: true, supported_reasoning_levels: [{ effort: 'ultra' }] }] }); } });
+  await f.service.refreshAll(); const state = f.service.snapshot({ refreshAutomatically: false });
+  assert.match(requests[0], /client_version=0\.163\.0/);
+  assert.equal(state.discovery.providers['openai-codex'].state, 'fresh');
+  assert.equal(state.models[0].id, 'gpt-6.1-sol'); assert.deepEqual(state.models[0].reasoningEffortOptions, ['ultra']);
+});
+
+test('a pre-versioned Codex snapshot stays stale until a complete current authenticated response replaces it', async t => {
+  const f = fixture(t, { providers: { 'openai-codex': {} }, fetchImpl: async () => response({ models: [{ slug: 'previous-catalog-model', visibility: 'list' }] }) });
+  await f.service.refreshAll(); f.service.close();
+  const disk = JSON.parse(fs.readFileSync(f.service.cachePath));
+  delete disk.codexVersionHint;
+  for (const key of ['catalogIdentity', 'catalogVersion', 'attemptedCatalogIdentity']) delete disk.providers['openai-codex'][key];
+  fs.writeFileSync(f.service.cachePath, JSON.stringify(disk));
+  let fail = true; let calls = 0;
+  const reader = createModelDiscovery({ home23Root: f.root, env: {}, autoStart: false,
+    codexVersionDetector: () => ({ version: '0.162.0', fingerprint: 'fixture', errorCode: null }),
+    codexRegistryFetchImpl: async () => new Response(JSON.stringify({ name: '@openai/codex', version: '0.162.0' })),
+    fetchImpl: async url => { calls++; assert.match(url, /client_version=0\.162\.0/); if (fail) throw Error('network unavailable');
+      return response({ models: [{ slug: 'gpt-6.1-sol', visibility: 'list', supported_reasoning_levels: [{ effort: 'ultra' }] }] }); } });
+  t.after(() => reader.close());
+  assert.equal(reader.snapshot({ refreshAutomatically: false }).discovery.providers['openai-codex'].state, 'stale');
+  await reader.refreshAll(); assert.equal(calls, 1);
+  assert.equal(reader.snapshot({ refreshAutomatically: false }).models[0].id, 'previous-catalog-model');
+  fail = false; await reader.refreshAll({ force: true });
+  assert.deepEqual(reader.snapshot({ refreshAutomatically: false }).models.map(row => row.id), ['gpt-6.1-sol']);
+});
+
 test('Ollama reads only installed/hosted tags and show metadata; non-chat models are not advertised', async t => {
   const calls = [];
   const f = fixture(t, { providers: { 'ollama-local': {}, 'ollama-cloud': {} }, fetchImpl: async (url, init) => {
@@ -151,6 +252,21 @@ test('invalid settings during pending refresh retain stale data without an unhan
   fs.writeFileSync(target, yaml.dump(f.secrets));
   const state = f.service.snapshot({ refreshAutomatically: false });
   assert.equal(state.models[0].model, 'saved'); assert.equal(state.discovery.providers.anthropic.state, 'stale');
+});
+
+test('an older failed account refresh cannot clobber a newer success during a torn settings read', async t => {
+  let mode = 'initial'; let release; let started;
+  const pendingStarted = new Promise(resolve => { started = resolve; });
+  const f = fixture(t, { fetchImpl: async () => {
+    if (mode === 'blocked-old-account') { started(); await new Promise(resolve => { release = resolve; }); throw Error('old request failed'); }
+    return response({ data: [claude(mode === 'initial' ? 'old-account-model' : 'new-account-model')] });
+  } });
+  await f.service.refreshAll(); mode = 'blocked-old-account'; const older = f.service.refreshAll({ force: true }); await pendingStarted;
+  f.secrets.providers.anthropic.apiKey = 'new-account-key'; f.saveSecrets(); mode = 'new-account';
+  await f.service.refreshAll(); assert.equal(f.service.snapshot({ refreshAutomatically: false }).models[0].id, 'new-account-model');
+  fs.writeFileSync(path.join(f.root, 'config/secrets.yaml'), 'providers: [broken:'); release();
+  await assert.rejects(older); f.saveSecrets();
+  assert.deepEqual(f.service.snapshot({ refreshAutomatically: false }).models.map(row => row.id), ['new-account-model']);
 });
 
 test('resident background cadence refreshes an expired catalog without another client read', async t => {

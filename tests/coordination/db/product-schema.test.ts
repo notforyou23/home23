@@ -15,6 +15,7 @@ import {
 } from "../../../src/coordination/db/index.js";
 import { migrateCoordinationSchema } from "../../../src/coordination/db/migration-engine.js";
 import { COORDINATION_SPINE_MIGRATION_SQL } from "../../../src/coordination/migrations/0001-coordination-spine.js";
+import { WORK_TURN_SELECTION_EFFORT_SYNTAX_MIGRATION_SQL } from "../../../src/coordination/migrations/0022-work-turn-selection-effort-syntax.js";
 import {
   computeCoordinationMigrationPlanChecksum,
   COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM,
@@ -308,10 +309,10 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
     now: () => new Date("2026-08-25T12:01:00.000Z"),
   });
   assert.equal(database.openReceipt.migratedFrom, 1);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 21);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 22);
   assert.equal(
     COORDINATION_SCHEMA_CHECKSUM,
-    "ed59b3cd5a64230ee04d6adb92abe713dc2cdabe8af5721d67c167485a7ba5af",
+    "68ac8951b98c7e825452521c3097ae0764b0623e36d21d86e6fed2b883b4ec70",
   );
   assert.equal(
     COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
@@ -319,7 +320,7 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
   );
   assert.equal(
     COORDINATION_MIGRATION_PLAN_CHECKSUM,
-    "1645d515a1394573b24defb84bccdcb50aca8f972a5b2eca6b57b8a286fd1f69",
+    "fae8c1df90b51924e47ab1b9685cf1d79a0bb925b865fe11900ee800f90ec863",
   );
   assert.equal(
     COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
@@ -427,6 +428,7 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
       {version:19,name:"inbox-and-reconciliation-indexes",checksum:"df58e0a3beedf3a7aec735f0e9a5d9f1c2caa2b1c027a00bea4071411ca64275",checksumLength:64},
       {version:20,name:"chess-engines",checksum:"c5d7aad734c6516b629b0879a815f51bdb32ea1c33d2001209fc7c008c60a436",checksumLength:64},
       {version:21,name:"notification-recovery-order",checksum:"b231fa7def776d8c69c2ff2d601ad29d2bf4643ed8ea33140a474359ef88c0e8",checksumLength:64},
+      {version:22,name:"work-turn-selection-effort-syntax",checksum:"673feae1261508e555d2617b839428b6f90e615972cceb77009c5871a37859c7",checksumLength:64},
     ],
   );
   assert.deepEqual(
@@ -465,7 +467,7 @@ test("schema v1 migrates directly through the reconciled M06-M12 final catalog",
   database.close();
 
   const reopened = openCoordinationDatabase({ path });
-  assert.equal(reopened.openReceipt.migratedFrom, 21);
+  assert.equal(reopened.openReceipt.migratedFrom, 22);
   assert.equal(reopened.openReceipt.startupCheck, "schema_only");
   assert.deepEqual(catalogNames(reopened, "table"), EXPECTED_TABLES);
   reopened.close();
@@ -776,7 +778,91 @@ test("restoring an exact schema v1 snapshot permits a clean migration reapply", 
   copyFileSync(snapshot, path);
   const reapplied = openCoordinationDatabase({ path });
   assert.equal(reapplied.openReceipt.migratedFrom, 1);
-  assert.equal(reapplied.openReceipt.schemaVersion, 21);
+  assert.equal(reapplied.openReceipt.schemaVersion, 22);
   assert.deepEqual(catalogNames(reapplied, "table"), EXPECTED_TABLES);
   reapplied.close();
+});
+
+test("schema v21 selection rewrite preserves rows, immutable triggers and integrity while accepting future wire syntax", (t) => {
+  const path = join(temporaryDirectory(t), "coordination-v21.sqlite3");
+  const raw = new Database(path); raw.pragma("foreign_keys = ON");
+  for (const migration of COORDINATION_MIGRATIONS.slice(0, 21)) {
+    raw.exec(migration.sql);
+    raw.prepare(`INSERT INTO schema_migrations (version, name, checksum, applied_at, application_version)
+      VALUES (?, ?, ?, ?, 'v21-selection-fixture')`).run(migration.version, migration.name, migration.checksum, APPLIED_AT);
+  }
+  for (const [key, value] of [
+    ["schema.version", "21"], ["schema.checksum", COORDINATION_MIGRATIONS[20]!.schemaChecksum],
+    ["contract.version", "1"], ["contract.pack_sha256", COORDINATION_CONTRACT_PACK_SHA256],
+  ]) raw.prepare("INSERT INTO kernel_meta (key, value, updated_at) VALUES (?, ?, ?)").run(key, value, APPLIED_AT);
+  raw.pragma("user_version = 21");
+  const owner = "user_owner", bot = "bot_0198d95f-6c00-7000-8000-000000000881";
+  const channel = "chn_0198d95f-6c00-7000-8000-000000000882", manifest = "ctx_0198d95f-6c00-7000-8000-000000000883";
+  raw.prepare("INSERT INTO principals (id, kind, created_at) VALUES (?, 'owner', ?), (?, 'bot', ?)").run(owner, APPLIED_AT, bot, APPLIED_AT);
+  raw.prepare(`INSERT INTO channels (id, kind, title, purpose, owner_principal_id, responder_mode,
+    coordinator_bot_id, response_order, max_bot_turns, lifecycle, pinned, version, next_message_sequence, created_at, updated_at)
+    VALUES (?, 'direct', 'V21', '', ?, 'mentions_only', NULL, 'parallel', 1, 'active', 0, 1, 1, ?, ?)`)
+    .run(channel, owner, APPLIED_AT, APPLIED_AT);
+  raw.prepare(`INSERT INTO context_manifests (id, privacy, channel_id, message_refs_json, artifact_refs_json,
+    message_count, artifact_count, channel_watermark, event_watermark, context_digest, source_digest, created_at)
+    VALUES (?, 'channel_only', ?, '[]', '[]', 0, 0, 0, 0, ?, ?, ?)`)
+    .run(manifest, channel, "a".repeat(64), "b".repeat(64), APPLIED_AT);
+  const insertWork = (db: Database.Database, index: number) => {
+    const id = `wrk_0198d95f-6c00-7000-8000-${String(index).padStart(12, "0")}`;
+    const contextId = `ctx_0198d95f-6c00-7000-8000-${String(index).padStart(12, "0")}`;
+    db.prepare(`INSERT INTO context_manifests (id, privacy, channel_id, message_refs_json, artifact_refs_json,
+      message_count, artifact_count, channel_watermark, event_watermark, context_digest, source_digest, created_at)
+      VALUES (?, 'channel_only', ?, '[]', '[]', 0, 0, 0, 0, ?, ?, ?)`)
+      .run(contextId, channel, "a".repeat(64), "b".repeat(64), APPLIED_AT);
+    db.prepare(`INSERT INTO works (id, principal_id, target_principal_id, channel_id, origin_message_id, round_id,
+      context_manifest_id, kind, idempotency_key_digest, request_digest, state, current_attempt_id, next_fencing_token,
+      automatic_offer_count, max_automatic_offers, terminal_reason, terminal_receipt_digest, version, created_at, updated_at, terminal_at)
+      VALUES (?, ?, ?, ?, NULL, NULL, ?, 'resident_turn', ?, ?, 'queued', NULL, 1, 0, 1, NULL, NULL, 1, ?, ?, NULL)`)
+      .run(id, owner, bot, channel, contextId, sha256(`key-${index}`), sha256(`request-${index}`), APPLIED_AT, APPLIED_AT);
+    return id;
+  };
+  for (const [index, value] of [null, 'none', 'low', 'medium', 'high', 'xhigh', 'max'].entries()) {
+    raw.prepare("INSERT INTO work_turn_selections VALUES (?, ?, ?)")
+      .run(insertWork(raw, index), index === 0 ? null : index === 6 ? "é".repeat(256) : `saved-${index}`, value);
+  }
+  const catalog = (db: Database.Database) => db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type,name").all();
+  const rows = raw.prepare("SELECT * FROM work_turn_selections ORDER BY work_id").all();
+  const works = raw.prepare("SELECT * FROM works ORDER BY id").all();
+  const history = raw.prepare("SELECT * FROM schema_migrations ORDER BY version").all();
+  const beforeCatalog = catalog(raw);
+  assert.deepEqual(raw.pragma("foreign_key_check"), []); assert.deepEqual(raw.pragma("integrity_check"), [{ integrity_check: 'ok' }]);
+  assert.throws(raw.transaction(() => { raw.exec(WORK_TURN_SELECTION_EFFORT_SYNTAX_MIGRATION_SQL); throw Error('injected migration interruption'); }), /injected migration interruption/);
+  assert.deepEqual(catalog(raw), beforeCatalog, 'transaction rollback restores all original DDL and triggers');
+  assert.deepEqual(raw.prepare("SELECT * FROM work_turn_selections ORDER BY work_id").all(), rows);
+  raw.close();
+  const upgraded = openCoordinationDatabase({ path, applicationVersion: 'v22-selection-test' });
+  assert.equal(upgraded.openReceipt.migratedFrom, 21); assert.equal(upgraded.openReceipt.schemaVersion, 22);
+  assert.equal(upgraded.openReceipt.startupCheck, 'integrity_check', 'table rewrite must not use the v21 schema-only shortcut');
+  assert.deepEqual(upgraded.readAll("SELECT * FROM work_turn_selections ORDER BY work_id"), rows);
+  assert.deepEqual(upgraded.readAll("SELECT * FROM works ORDER BY id"), works);
+  assert.deepEqual(upgraded.readAll("SELECT * FROM schema_migrations WHERE version <= 21 ORDER BY version"), history);
+  assert.equal(upgraded.readOne<{ value: string }>("SELECT value FROM kernel_meta WHERE key = 'schema.checksum'")?.value, COORDINATION_SCHEMA_CHECKSUM);
+  assert.deepEqual(upgraded.readAll("PRAGMA foreign_key_check"), []); assert.deepEqual(upgraded.readAll("PRAGMA integrity_check"), [{ integrity_check: 'ok' }]);
+  upgraded.close();
+  const reopened = openCoordinationDatabase({ path });
+  assert.equal(reopened.openReceipt.migratedFrom, 22);
+  assert.deepEqual(reopened.readAll("SELECT * FROM work_turn_selections ORDER BY work_id"), rows); reopened.close();
+  const verified = new Database(path); verified.pragma("foreign_keys = ON"); t.after(() => verified.close());
+  assert.deepEqual(catalog(verified).filter((row: any) => row.name !== 'work_turn_selections'),
+    beforeCatalog.filter((row: any) => row.name !== 'work_turn_selections'));
+  assert.equal((verified.prepare("PRAGMA table_list").all() as any[]).find(row => row.name === 'work_turn_selections').strict, 1);
+  assert.deepEqual(verified.pragma("foreign_key_list(work_turn_selections)"), [{ id: 0, seq: 0, table: 'works', from: 'work_id', to: 'id', on_update: 'NO ACTION', on_delete: 'NO ACTION', match: 'NONE' }]);
+  for (const [index, valid] of ['ultra', 'future-effort_2', 'a', 'a'.repeat(32)].entries()) {
+    verified.prepare("INSERT INTO work_turn_selections VALUES (?, ?, ?)").run(insertWork(verified, 100 + index), null, valid);
+  }
+  for (const [index, invalid] of ['', 'Ultra', ' ultra', 'ultra ', 'a.b', 'a/b', '-low', '9low', 'é', 'a\n', 'a\r', 'a\0b', 'a'.repeat(33)].entries()) {
+    const id = insertWork(verified, 200 + index);
+    assert.throws(() => verified.prepare("INSERT INTO work_turn_selections VALUES (?, NULL, ?)").run(id, invalid), /CHECK constraint failed/);
+  }
+  assert.throws(() => verified.prepare("INSERT INTO work_turn_selections VALUES ('unknown-work', NULL, 'ultra')").run(), /FOREIGN KEY constraint failed/);
+  const workId = (rows[0] as { work_id: string }).work_id;
+  assert.throws(() => verified.prepare("INSERT INTO work_turn_selections VALUES (?, NULL, 'ultra')").run(workId), /UNIQUE constraint failed/);
+  assert.throws(() => verified.prepare("UPDATE work_turn_selections SET requested_reasoning_effort='ultra' WHERE work_id=?").run(workId), /work turn selection is immutable/);
+  assert.throws(() => verified.prepare("DELETE FROM work_turn_selections WHERE work_id=?").run(workId), /work turn selection is immutable/);
+  assert.deepEqual(verified.pragma("foreign_key_check"), []); assert.deepEqual(verified.pragma("integrity_check"), [{ integrity_check: 'ok' }]);
 });

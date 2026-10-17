@@ -7,13 +7,15 @@ import { PRODUCT_STATE_PATHS, isOsMetadataPath, isProductStatePath } from './pro
 import { compareUpdateContracts } from './product-update-plan.js';
 import { inspectUserPm2Artifacts } from './product-user-pm2.js';
 
-export const SUPPORTED_COORDINATION_SCHEMA = 21;
-export const SUPPORTED_COORDINATION_SCHEMA_CHECKSUM = 'ed59b3cd5a64230ee04d6adb92abe713dc2cdabe8af5721d67c167485a7ba5af';
-export const SUPPORTED_COORDINATION_MIGRATION_CHECKSUM = 'b231fa7def776d8c69c2ff2d601ad29d2bf4643ed8ea33140a474359ef88c0e8';
+export const SUPPORTED_COORDINATION_SCHEMA = 22;
+export const SUPPORTED_COORDINATION_SCHEMA_CHECKSUM = '68ac8951b98c7e825452521c3097ae0764b0623e36d21d86e6fed2b883b4ec70';
+export const SUPPORTED_COORDINATION_MIGRATION_CHECKSUM = '673feae1261508e555d2617b839428b6f90e615972cceb77009c5871a37859c7';
 export const SUPPORTED_COORDINATION_SCHEMAS = Object.freeze({
   20: Object.freeze({ schemaChecksum: 'cb80ab7b2c52920dab0ef5434dd9c62fad2e3a6efacabde76e6934b84e5006ec',
     migrationChecksum: 'c5d7aad734c6516b629b0879a815f51bdb32ea1c33d2001209fc7c008c60a436' }),
-  21: Object.freeze({ schemaChecksum: SUPPORTED_COORDINATION_SCHEMA_CHECKSUM,
+  21: Object.freeze({ schemaChecksum: 'ed59b3cd5a64230ee04d6adb92abe713dc2cdabe8af5721d67c167485a7ba5af',
+    migrationChecksum: 'b231fa7def776d8c69c2ff2d601ad29d2bf4643ed8ea33140a474359ef88c0e8' }),
+  22: Object.freeze({ schemaChecksum: SUPPORTED_COORDINATION_SCHEMA_CHECKSUM,
     migrationChecksum: SUPPORTED_COORDINATION_MIGRATION_CHECKSUM }),
 });
 const MIGRATIONS_PREFIX = 'app/dist/coordination/migrations/';
@@ -24,6 +26,22 @@ const V21_INDEX = `${MIGRATIONS_PREFIX}index.js`;
 const V21_ASSET_SHA256 = Object.freeze({
   [V21_MIGRATION]: '71239e12d1d0164cc5e3b0f395664fc56da906b04627f9c743b8240bbf3004ff',
   [V21_INDEX]: 'd436d6b3cbea64c10127e59f27babc1a6783e62ae386bf4dc8990d84c71e6f90',
+});
+const V22_MIGRATION = `${MIGRATIONS_PREFIX}0022-work-turn-selection-effort-syntax.js`;
+// A table-copy migration needs the separately reviewed v22 SQL and exact
+// compiled index. Its v21 predecessor remains immutable in both packages.
+const V22_ASSET_SHA256 = Object.freeze({
+  [V21_MIGRATION]: V21_ASSET_SHA256[V21_MIGRATION],
+  [V22_MIGRATION]: '76438ee1f34b670e22a96ecdd70e985a86956e4ec1b0f1a15661c92423f4af72',
+  [V21_INDEX]: 'e2d0aca0e4fba723905756ac42dca4df714f5a8654df28d770f2ef2e936e719a',
+});
+const V22_GENERATED_SHA256 = Object.freeze({
+  [`${MIGRATIONS_PREFIX}index.d.ts`]: '59bddcc8b298480d3063839d068160f76b18fcd4d04cec0c9ea2a922d40256e4',
+  [`${MIGRATIONS_PREFIX}index.d.ts.map`]: 'b5cd18b2f6bf571d227f5da3dcab095f6d23ed0d22d60c416bb104d3bd73ce9e',
+  [`${MIGRATIONS_PREFIX}index.js.map`]: 'a6638de928922cb7090aa60d7dcc34a8aebf26452f20b750e6e68d344efb2fd6',
+  [`${MIGRATIONS_PREFIX}0022-work-turn-selection-effort-syntax.d.ts`]: '22cb6eeab03c36c1f2597c708454e4a5750ab50c73d0c34bcbb91dd1f8e6d5ac',
+  [`${MIGRATIONS_PREFIX}0022-work-turn-selection-effort-syntax.d.ts.map`]: '5f2f7b71d3f3806266368b8ac43dc0c48cab13d693ea55322ac3ce6799378a44',
+  [`${MIGRATIONS_PREFIX}0022-work-turn-selection-effort-syntax.js.map`]: '0076dce7730a24affbc215d83b94bf8f211fbd0797b125f192b6b325646aea01',
 });
 // TypeScript emits these declarations and maps alongside the two reviewed JS
 // files. They are not executable migrations, but pin their exact signed v21
@@ -57,8 +75,30 @@ function reviewedV21Migration(installed, candidate, group) {
       before.get(path)?.type === 'file' && before.get(path)?.mode === 0o644 && before.get(path)?.sha256 === sha256) &&
     generated.filter(path => path.includes('/0021-')).every(path => !before.has(path));
 }
+function reviewedV22Migration(installed, candidate, group) {
+  if (group.status !== 'changed' || candidateCoordinationSchema(installed) !== 21 ||
+      candidateCoordinationSchema(candidate) !== 22) return false;
+  const before = new Map(installed.files.map(entry => [entry.path, entry]));
+  const after = new Map(candidate.files.map(entry => [entry.path, entry]));
+  const generated = Object.keys(V22_GENERATED_SHA256).filter(path => before.has(path) || after.has(path));
+  if (generated.length !== 0 && generated.length !== Object.keys(V22_GENERATED_SHA256).length) return false;
+  const expectedPaths = [V21_INDEX, V22_MIGRATION, ...generated];
+  if (group.changedPaths.length !== expectedPaths.length ||
+      group.changedPaths.some(path => !expectedPaths.includes(path)) || before.has(V22_MIGRATION)) return false;
+  return Object.entries({ ...V22_ASSET_SHA256, ...generated.length ? V22_GENERATED_SHA256 : {} }).every(([path, sha256]) =>
+    after.get(path)?.type === 'file' && after.get(path)?.mode === 0o644 && after.get(path)?.sha256 === sha256) &&
+    generated.filter(path => path.startsWith(`${MIGRATIONS_PREFIX}index.`)).every(path =>
+      before.get(path)?.type === 'file' && before.get(path)?.mode === 0o644 && before.get(path)?.sha256 === V21_GENERATED_SHA256[path]) &&
+    generated.filter(path => path.includes('/0022-')).every(path => !before.has(path));
+}
 export function candidateCoordinationSchema(candidate) {
   const files = new Map(candidate.files.map(entry => [entry.path, entry]));
+  if (candidate.files.some(entry => entry.path.startsWith(MIGRATIONS_PREFIX) &&
+      Number(entry.path.slice(MIGRATIONS_PREFIX.length).match(/^(\d{4})-/)?.[1] || 0) > SUPPORTED_COORDINATION_SCHEMA)) return null;
+  if (files.has(V22_MIGRATION)) {
+    return Object.entries(V22_ASSET_SHA256).every(([path, sha256]) =>
+      files.get(path)?.type === 'file' && files.get(path)?.mode === 0o644 && files.get(path)?.sha256 === sha256) ? 22 : null;
+  }
   if (!files.has(V21_MIGRATION)) return 20;
   return Object.entries(V21_ASSET_SHA256).every(([path, sha256]) =>
     files.get(path)?.type === 'file' && files.get(path)?.mode === 0o644 && files.get(path)?.sha256 === sha256) ? 21 : null;
@@ -532,7 +572,7 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
   else if (created) reasons.push(reason('database_missing', 'This created home has no coordination database. A schema-preserving update cannot invent one.'));
   if (database.busy) reasons.push(reason('database_busy', 'The coordination database is busy. Wait until writers finish, then retry.'));
   else if (database.unreadable) reasons.push(reason('database_unreadable', 'The coordination database could not be inspected. No files were changed.'));
-  else if (database.present && !database.compatible) reasons.push(reason('unsupported_data_version', `Stored coordination schema ${database.version ?? 'unknown'} does not match a reviewed v20 or v21 schema fingerprint.`));
+  else if (database.present && !database.compatible) reasons.push(reason('unsupported_data_version', `Stored coordination schema ${database.version ?? 'unknown'} does not match a reviewed v20, v21 or v22 schema fingerprint.`));
   if (installed && candidate) {
     const contracts = compareUpdateContracts(installed, candidate);
     const targetSchema = candidateCoordinationSchema(candidate);
@@ -540,9 +580,10 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
       reasons.push(reason('schema_assets_changed', 'The candidate package cannot run the stored coordination schema.'));
     }
     if ((contracts.groups.coordinationMigrations.status !== 'unchanged' &&
-         !reviewedV21Migration(installed, candidate, contracts.groups.coordinationMigrations)) ||
+         !reviewedV21Migration(installed, candidate, contracts.groups.coordinationMigrations) &&
+         !reviewedV22Migration(installed, candidate, contracts.groups.coordinationMigrations)) ||
         contracts.groups.coordinationContracts.status !== 'unchanged') {
-      reasons.push(reason('schema_assets_changed', 'Packaged coordination migrations or contracts differ from the reviewed v20 to v21 transition.'));
+      reasons.push(reason('schema_assets_changed', 'Packaged coordination migrations or contracts differ from the reviewed v20 to v21 or v21 to v22 transitions.'));
     }
     const left = installed.files.find(entry => entry.path === RECIPE_ASSET);
     const right = candidate.files.find(entry => entry.path === RECIPE_ASSET);

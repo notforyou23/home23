@@ -114,7 +114,7 @@ function offeredRelease(feed) {
 
 function compatibilityMatches(compatibility) {
   return compatibility?.installationSchema === INSTALL_SCHEMA
-    && [20, 21].includes(compatibility?.coordinationSchema)
+    && [20, 21, 22].includes(compatibility?.coordinationSchema)
     && compatibility?.stateMigration === 'schema_preserving_only';
 }
 

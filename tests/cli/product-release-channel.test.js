@@ -52,7 +52,7 @@ test('signature covers every app, runtime, compatibility, and delivery field', (
   }
 });
 
-test('signed channel accepts only reviewed coordination schemas 20 and 21', () => {
+test('signed channel accepts only reviewed coordination schemas 20, 21 and 22', () => {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const channel = { publicKey: Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url').toString('base64') };
   const envelopeFor = offered => ({ schema: 'home23.signed-release.v1', release: offered,
@@ -60,17 +60,20 @@ test('signed channel accepts only reviewed coordination schemas 20 and 21', () =
   const next = release();
   next.compatibility.coordinationSchema = 21;
   assert.deepEqual(verifyProductChannelManifest(channel, envelopeFor(next)), next);
+  const newest = release();
+  newest.compatibility.coordinationSchema = 22;
+  assert.deepEqual(verifyProductChannelManifest(channel, envelopeFor(newest)), newest);
   const changed = structuredClone(envelopeFor(next));
   changed.release.compatibility.coordinationSchema = 20;
   assert.throws(() => verifyProductChannelManifest(channel, changed), { code: 'signature_invalid' });
-  for (const schema of [19, 22, '21', null]) {
+  for (const schema of [19, 23, '21', '22', null]) {
     const unsupported = release();
     unsupported.compatibility.coordinationSchema = schema;
     assert.throws(() => verifyProductChannelManifest(channel, envelopeFor(unsupported)), { code: 'manifest_invalid' });
   }
 });
 
-test('channel signer requires explicit schema and signs schema 21 metadata', t => {
+test('channel signer requires explicit schema and signs reviewed schema 21 and 22 metadata', t => {
   const directory = mkdtempSync(join(tmpdir(), 'home23-channel-signer-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -91,13 +94,19 @@ test('channel signer requires explicit schema and signs schema 21 metadata', t =
     '--app-archive', appArchive, '--runtime-url', 'https://example.test/runtime.tar',
     '--app-url', 'https://example.test/app.zip', '--private-key', keyPath, '--output', output];
   assert.throws(() => execFileSync(process.execPath, args, { stdio: 'pipe' }), /Missing --coordination-schema/);
-  assert.throws(() => execFileSync(process.execPath, [...args, '--coordination-schema', '22'], { stdio: 'pipe' }),
-    /Coordination schema must be an explicitly reviewed 20 or 21/);
-  execFileSync(process.execPath, [...args, '--coordination-schema', '21'], { stdio: 'pipe' });
-  const envelope = JSON.parse(readFileSync(output, 'utf8'));
-  assert.equal(envelope.release.compatibility.coordinationSchema, 21);
   const channel = { publicKey: Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url').toString('base64') };
-  assert.deepEqual(verifyProductChannelManifest(channel, envelope), envelope.release);
+  assert.throws(() => execFileSync(process.execPath, [...args, '--coordination-schema', '23'], { stdio: 'pipe' }),
+    /Coordination schema must be an explicitly reviewed/);
+  for (const schema of [21, 22]) {
+    const scopedArgs = args.map(value => value === output ? join(directory, `signed-${schema}.json`) : value);
+    execFileSync(process.execPath, [...scopedArgs, '--coordination-schema', String(schema)], { stdio: 'pipe' });
+    const envelope = JSON.parse(readFileSync(join(directory, `signed-${schema}.json`), 'utf8'));
+    assert.equal(envelope.release.compatibility.coordinationSchema, schema);
+    assert.deepEqual(verifyProductChannelManifest(channel, envelope), envelope.release);
+    const forged = structuredClone(envelope);
+    forged.release.compatibility.coordinationSchema = schema === 22 ? 21 : 22;
+    assert.throws(() => verifyProductChannelManifest(channel, forged), { code: 'signature_invalid' });
+  }
 });
 
 test('missing bundled channel is unavailable rather than current', async t => {

@@ -195,7 +195,7 @@ test('update inventory reads selected supervisor code afresh after a software sw
   assert.equal((await defaultListProcesses(home))[0].name, 'selected-registration');
 });
 
-test('the reviewed v21 migration is the only accepted schema asset transition', async t => {
+test('the reviewed v20 to v21 migration retains its exact schema asset guard', async t => {
   const fixture = homeFixture(t);
   const databaseFile = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
   assert.equal((await inspectCoordinationDatabase(databaseFile)).compatible, true);
@@ -249,6 +249,89 @@ test('the reviewed v21 migration is the only accepted schema asset transition', 
   const db = new DatabaseSync(databaseFile);
   db.exec("UPDATE kernel_meta SET value = 'wrong' WHERE key = 'schema.checksum'");
   db.close();
+  assert.equal((await inspectCoordinationDatabase(databaseFile)).compatible, false);
+  assert.equal((await inspectCoordinationDatabase(databaseFile, { quickCheck: false })).compatible, false);
+});
+
+test('the reviewed v21 to v22 migration pins source, generated assets and history', async t => {
+  const fixture = homeFixture(t, { version: 21 });
+  const prefix = 'app/dist/coordination/migrations/';
+  const priorIndex = 'd436d6b3cbea64c10127e59f27babc1a6783e62ae386bf4dc8990d84c71e6f90';
+  const migration21 = '71239e12d1d0164cc5e3b0f395664fc56da906b04627f9c743b8240bbf3004ff';
+  const next = {
+    'index.js': 'e2d0aca0e4fba723905756ac42dca4df714f5a8654df28d770f2ef2e936e719a',
+    '0022-work-turn-selection-effort-syntax.js': '76438ee1f34b670e22a96ecdd70e985a86956e4ec1b0f1a15661c92423f4af72',
+  };
+  const emitted = {
+    'index.d.ts': ['753b762758943371621b43542a137664e4e111cc75eb311927da2183297a9f81', '59bddcc8b298480d3063839d068160f76b18fcd4d04cec0c9ea2a922d40256e4'],
+    'index.d.ts.map': ['2396ec75a0f10b47cbbebec1aeff7bad20b8fa13bc8ed1fa9309f7c5f7d1f67b', 'b5cd18b2f6bf571d227f5da3dcab095f6d23ed0d22d60c416bb104d3bd73ce9e'],
+    'index.js.map': ['3772dfcd06076ea0961c80dbfcdf433abe60b23c2612c4250efb2d4d59474383', 'a6638de928922cb7090aa60d7dcc34a8aebf26452f20b750e6e68d344efb2fd6'],
+    '0022-work-turn-selection-effort-syntax.d.ts': [null, '22cb6eeab03c36c1f2597c708454e4a5750ab50c73d0c34bcbb91dd1f8e6d5ac'],
+    '0022-work-turn-selection-effort-syntax.d.ts.map': [null, '5f2f7b71d3f3806266368b8ac43dc0c48cab13d693ea55322ac3ce6799378a44'],
+    '0022-work-turn-selection-effort-syntax.js.map': [null, '0076dce7730a24affbc215d83b94bf8f211fbd0797b125f192b6b325646aea01'],
+  };
+  const put = (manifest, name, sha256) => {
+    const existing = manifest.files.find(entry => entry.path === prefix + name);
+    if (existing) Object.assign(existing, { type: 'file', mode: 0o644, sha256 });
+    else manifest.files.push({ path: prefix + name, type: 'file', mode: 0o644, sha256 });
+  };
+  const before = structuredClone(fixture.installed);
+  put(before, 'index.js', priorIndex);
+  put(before, '0021-notification-recovery-order.js', migration21);
+  const after = structuredClone(before);
+  for (const [name, sha256] of Object.entries(next)) put(after, name, sha256);
+  const allowed = async (installed, candidate) => !(await inspectUpdateInventory(fixture.home, { installed, candidate }))
+    .reasons.some(reason => reason.code === 'schema_assets_changed');
+  assert.equal(candidateCoordinationSchema(before), 21);
+  assert.equal(candidateCoordinationSchema(after), 22);
+  assert.equal(await allowed(before, after), true);
+  assert.equal(await allowed(fixture.installed, after), false, 'v20 software cannot skip the reviewed v21 baseline');
+
+  const beforeEmitted = structuredClone(before), afterEmitted = structuredClone(after);
+  for (const [name, [oldHash, newHash]] of Object.entries(emitted)) {
+    if (oldHash) put(beforeEmitted, name, oldHash);
+    put(afterEmitted, name, newHash);
+  }
+  assert.equal(await allowed(beforeEmitted, afterEmitted), true);
+  for (const [name, sha256] of Object.entries({ ...next, ...Object.fromEntries(Object.entries(emitted).map(([key, [, hash]]) => [key, hash])) })) {
+    assert.equal(createHash('sha256').update(fs.readFileSync(path.join(rootDir, 'dist/coordination/migrations', name))).digest('hex'), sha256,
+      `${name} must match the actual reviewed compiler output`);
+    const changed = structuredClone(afterEmitted);
+    changed.files.find(entry => entry.path === prefix + name).sha256 = '0'.repeat(64);
+    assert.equal(await allowed(beforeEmitted, changed), false, `${name} changed after review`);
+  }
+  const partial = structuredClone(afterEmitted);
+  partial.files = partial.files.filter(entry => entry.path !== prefix + '0022-work-turn-selection-effort-syntax.js.map');
+  assert.equal(await allowed(beforeEmitted, partial), false, 'partial generated asset sets cannot bypass pins');
+  const badBaseline = structuredClone(beforeEmitted);
+  put(badBaseline, 'index.js.map', '0'.repeat(64));
+  assert.equal(await allowed(badBaseline, afterEmitted), false, 'the predecessor generated index must match reviewed v21');
+  const changedHistory = structuredClone(afterEmitted);
+  put(changedHistory, '0001-coordination-spine.js', '0'.repeat(64));
+  assert.equal(await allowed(beforeEmitted, changedHistory), false, 'historical migrations are immutable');
+  const altered21 = structuredClone(afterEmitted);
+  put(altered21, '0021-notification-recovery-order.js', '0'.repeat(64));
+  assert.equal(candidateCoordinationSchema(altered21), null);
+  assert.equal(await allowed(beforeEmitted, altered21), false);
+  const wrongMode = structuredClone(afterEmitted);
+  wrongMode.files.find(entry => entry.path === prefix + '0022-work-turn-selection-effort-syntax.js').mode = 0o755;
+  assert.equal(await allowed(beforeEmitted, wrongMode), false);
+  const future = structuredClone(afterEmitted);
+  put(future, '0023-unreviewed.js', '0'.repeat(64));
+  assert.equal(candidateCoordinationSchema(future), null, 'future migration markers require a separate review');
+  assert.equal(await allowed(beforeEmitted, future), false);
+  assert.equal(await allowed(future, future), false, 'unchanged future assets cannot be mistaken for reviewed v22');
+
+  const databaseFile = path.join(fixture.home, 'app/instances/.house/coordination/home23-coordination.sqlite3');
+  fs.rmSync(databaseFile);
+  database(databaseFile, 22);
+  assert.equal((await inspectCoordinationDatabase(databaseFile)).compatible, true);
+  assert.equal((await inspectCoordinationDatabase(databaseFile, { quickCheck: false })).compatible, true);
+  assert.equal(await allowed(afterEmitted, afterEmitted), true, 'subsequent same-schema software updates remain supported');
+  assert.equal(await allowed(afterEmitted, beforeEmitted), false, 'v22 data cannot select a v21 binary');
+  const raw = new DatabaseSync(databaseFile);
+  raw.exec("UPDATE schema_migrations SET checksum='unreviewed' WHERE version=22");
+  raw.close();
   assert.equal((await inspectCoordinationDatabase(databaseFile)).compatible, false);
   assert.equal((await inspectCoordinationDatabase(databaseFile, { quickCheck: false })).compatible, false);
 });
@@ -555,13 +638,13 @@ test('a stopped home updates in place and a running home waits until admission',
 });
 
 test('an admitted busy v21 database pins its reviewed version after owned writers stop', async t => {
-  const v21Assets = Object.fromEntries(['index.js', '0021-notification-recovery-order.js'].map(name => [
+  const currentAssets = Object.fromEntries(['index.js', '0021-notification-recovery-order.js', '0022-work-turn-selection-effort-syntax.js'].map(name => [
     `app/dist/coordination/migrations/${name}`,
     fs.readFileSync(path.join(rootDir, 'dist/coordination/migrations', name)),
   ]));
-  const fixture = homeFixture(t, { desiredRunning: true, version: 21, currentExtra: v21Assets,
-    extra: { ...v21Assets, 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/cli/lib/product-host.js': hostStub } });
-  assert.equal(candidateCoordinationSchema(fixture.next), 21);
+  const fixture = homeFixture(t, { desiredRunning: true, version: 21, currentExtra: currentAssets,
+    extra: { ...currentAssets, 'app/cli/lib/update-marker.txt': 'schema-preserving-apply\n', 'app/cli/lib/product-host.js': hostStub } });
+  assert.equal(candidateCoordinationSchema(fixture.next), 22);
   let online = true;
   const result = await applyProductUpdate({ homeRoot: fixture.home, candidatePayload: fixture.candidate,
     staging: fixture.staging, admit: true }, { ...quiet,

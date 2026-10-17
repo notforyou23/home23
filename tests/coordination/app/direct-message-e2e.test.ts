@@ -26,7 +26,20 @@ const canonicalMessagesAuthority = Object.freeze({
   rollbackEpoch: 1,
 });
 
-test("authenticated direct Message follows one durable M08/M11/M13 correlation chain", async (t) => {
+for (const selectedOverride of [
+  { modelAlias: "sol", reasoningEffort: "xhigh" },
+  { modelAlias: "sol", reasoningEffort: "ultra" },
+  { modelAlias: null, reasoningEffort: "ultra" },
+]) test(`authenticated direct Message preserves ${selectedOverride.modelAlias ?? "default"}/${selectedOverride.reasoningEffort} across durable replay`, async (t) => {
+  const requestedAlias = selectedOverride.modelAlias;
+  const requestedEffort = selectedOverride.reasoningEffort;
+  const catalog = {
+    models: [{ alias: "sol", provider: "openai-codex", model: "gpt-6.1-sol", reasoningEffort: "high" }],
+    modelOptions: [{ alias: "sol", provider: "openai-codex", model: "gpt-6.1-sol", reasoningCapabilitiesKnown: true,
+      reasoningEffortOptions: ["low", "medium", "high", "xhigh", "max", "ultra"], defaultReasoningEffortOption: "medium" }],
+    defaultModel: "gpt-6.1-sol", defaultProvider: "openai-codex", defaultReasoningEffort: "medium",
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+  };
   const database = M11TestDatabase.temporary();
   t.after(() => database.close());
   database.raw.prepare("INSERT INTO conversation_handles (id, channel_id, created_at) VALUES (?, ?, ?)")
@@ -64,21 +77,13 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   const contextPurposes: unknown[] = [];
   const agent: ResidentAgentPort = {
     async modelCatalog() {
-      return {
-        models: [{ alias: "sol", provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" }],
-        defaultModel: "gpt-5.6-terra",
-        defaultProvider: "openai-codex",
-        defaultReasoningEffort: "medium",
-        reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
-      };
+      return catalog;
     },
     async runWithTurn(chatId, _text, options) {
       contextPurposes.push(options.contextPurpose);
       residentAttachments += 1;
       const turnId = `coord-${options.coordinationOrigin.workId}`;
-      const selected = options.turnSelection.modelAlias === "sol"
-        ? { provider: "openai-codex", model: "gpt-5.6-sol" }
-        : { provider: "openai-codex", model: "gpt-5.6-terra" };
+      const selected = { provider: catalog.defaultProvider, model: catalog.defaultModel };
       const actualEffort = options.turnSelection.reasoningEffort ?? "medium";
       await options.onDurableStart({
         turnId, chatId, persistedAt: AT,
@@ -216,11 +221,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
     channelId: CHANNEL_ID,
     conversationId: CONVERSATION_ID,
     targetBotId: BOT_ID,
-    models: [{ alias: "sol", provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" }],
-    defaultModel: "gpt-5.6-terra",
-    defaultProvider: "openai-codex",
-    defaultReasoningEffort: "medium",
-    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    ...catalog,
   });
   const countBeforeInvalidSelection = database.readOne<{ count: number }>(
     "SELECT count(*) AS count FROM messages",
@@ -241,13 +242,24 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   assert.equal(database.readOne<{ count: number }>(
     "SELECT count(*) AS count FROM works",
   )!.count, 0);
+  for (const [index, unsupported] of ["none", "not-advertised"].entries()) {
+    const rejected = await fetch(`${address.origin}/api/v1/channels/${CHANNEL_ID}/messages`, {
+      method: "POST", headers: { authorization: "Bearer m14-test", "content-type": "application/json",
+        "idempotency-key": `m14-unsupported-effort-${index}`, "x-correlation-id": owner.correlationId },
+      body: JSON.stringify({ messageId: fixtureId("message", 890 + index), clientMessageId: `unsupported-${index}`,
+        text: "Must not append an unadvertised effort.", attachmentIds: [], mentions: [], replyToMessageId: null,
+        modelAlias: requestedAlias, reasoningEffort: unsupported }),
+    });
+    assert.equal(rejected.status, 400);
+    assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM messages")!.count, countBeforeInvalidSelection);
+  }
   const accepted = await fetch(`${address.origin}/api/v1/channels/${CHANNEL_ID}/messages`, {
     method: "POST",
     headers: { authorization: "Bearer m14-test", "content-type": "application/json",
       "idempotency-key": "m14-direct-message-0001", "x-correlation-id": owner.correlationId },
     body: JSON.stringify({ messageId: fixtureId("message", 900), clientMessageId: "client-m14-1",
       text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null,
-      modelAlias: "sol", reasoningEffort: "xhigh" }),
+      modelAlias: requestedAlias, reasoningEffort: requestedEffort }),
   });
   assert.equal(accepted.status, 202);
   const acceptedBody = await accepted.json() as {
@@ -278,16 +290,16 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   assert.equal(acceptedBody.response, undefined, "the internal terminal promise must never cross HTTP");
   assert.equal(activeBackgroundWork, 1, "accepted resident execution must remain enrolled in lifecycle drain");
   assert.deepEqual(work.getTurnSelection(submitted.work.id), {
-    modelAlias: "sol",
-    reasoningEffort: "xhigh",
+    modelAlias: requestedAlias,
+    reasoningEffort: requestedEffort,
   });
   assert.deepEqual(JSON.parse(database.readOne<{ resultRef: string }>(
     `SELECT result_ref_json AS resultRef FROM idempotency_records
      WHERE operation = 'message.append' AND principal_id = ?`,
     OWNER_ID,
   )!.resultRef).turnSelection, {
-    modelAlias: "sol",
-    reasoningEffort: "xhigh",
+    modelAlias: requestedAlias,
+    reasoningEffort: requestedEffort,
   });
   for (let index = 0; index < 20 && database.readOne<{ state: string }>(
     "SELECT state FROM works WHERE id = ?", submitted.work.id,
@@ -367,25 +379,25 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   assert.equal(userCommitted?.payload.text, "Jerry, answer canonically.");
   assert.equal((userCommitted?.payload.rawMessage as { clientMessageId?: string })?.clientMessageId,
     "client-m14-1");
-  assert.equal(userCommitted?.payload.requestedModelAlias, "sol");
-  assert.equal(userCommitted?.payload.requestedEffort, "xhigh");
+  assert.equal(userCommitted?.payload.requestedModelAlias, requestedAlias);
+  assert.equal(userCommitted?.payload.requestedEffort, requestedEffort);
   assert.deepEqual(selection?.payload, {
     requestedProvider: null,
-    requestedModelAlias: "sol",
+    requestedModelAlias: requestedAlias,
     requestedModel: null,
-    requestedEffort: "xhigh",
+    requestedEffort,
     resolvedProvider: "openai-codex",
-    resolvedModel: "gpt-5.6-sol",
-    resolvedEffort: "xhigh",
+    resolvedModel: "gpt-6.1-sol",
+    resolvedEffort: requestedEffort,
     actualProvider: "openai-codex",
-    actualModel: "gpt-5.6-sol",
-    actualEffort: "xhigh",
+    actualModel: "gpt-6.1-sol",
+    actualEffort: requestedEffort,
   });
   assert.equal(selection?.source.sourceEventType, "turn.selection");
   assert.equal(status?.payload.status, "working");
   assert.equal(status?.source.provider, "fixture");
   assert.equal(status?.source.model, "test-executor");
-  assert.equal(status?.source.reasoningEffort, "xhigh");
+  assert.equal(status?.source.reasoningEffort, requestedEffort);
   assert.equal(receipt?.parentEventId, status?.eventId);
   assert.equal(receipt?.payload.status, "succeeded");
   assert.equal(assistantCommitted?.payload.text, "Canonical Jerry response.");
@@ -413,7 +425,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
     context: owner, channelId: CHANNEL_ID, idempotencyKey: "m14-direct-message-0001",
     body: { messageId: fixtureId("message", 900), clientMessageId: "client-m14-1",
       text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null,
-      modelAlias: "sol", reasoningEffort: "xhigh" },
+      modelAlias: requestedAlias, reasoningEffort: requestedEffort },
   });
   assert.equal((await replay.response).id, response.id);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 1);
@@ -440,7 +452,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
         context: owner, channelId: CHANNEL_ID, idempotencyKey: "m14-direct-message-0001",
         body: { messageId: fixtureId("message", 900), clientMessageId: "client-m14-1",
           text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null,
-          modelAlias: "sol", reasoningEffort: "xhigh" as const },
+          modelAlias: requestedAlias, reasoningEffort: requestedEffort },
       };
       const attachmentsBefore = residentAttachments;
       const retry = await service.submitMessage(request);
@@ -481,7 +493,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
         context: owner, channelId: CHANNEL_ID, idempotencyKey: "m14-direct-message-0001",
         body: { messageId: fixtureId("message", 900), clientMessageId: "client-m14-1",
           text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null,
-          modelAlias: "sol", reasoningEffort: "xhigh" },
+          modelAlias: requestedAlias, reasoningEffort: requestedEffort },
       });
       assert.equal(retry.work.id, submitted.work.id);
       assert.equal(retry.work.state, state);

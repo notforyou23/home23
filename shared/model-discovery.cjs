@@ -8,6 +8,7 @@ const crypto = require('node:crypto');
 const yaml = require('js-yaml');
 const { createHome23OAuthBroker, extractOpenAIAccountId } = require('./home23-oauth.cjs');
 const { registerModelCapabilities, reviewedReasoningCapabilities } = require('./responses-reasoning.cjs');
+const { createCodexCatalogVersionDetector, fetchCodexRegistryVersion, maxStableVersion, parseCodexVersion } = require('./cli-binary.cjs');
 const MAX_AGE_MS = 15 * 60 * 1000;
 const CACHE_VERSION = 2;
 const LEGACY_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -93,17 +94,38 @@ function normalize(provider, raw) {
     contextWindowTokens: raw.context_window || raw.max_input_tokens || null,
     maxOutputTokens: raw.max_output_tokens || raw.max_tokens || null };
 }
-function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = Date.now, env = process.env, intervalMs = 60_000, autoStart = true, cachePath = path.join(home23Root, 'instances', '.house', 'model-catalog-cache.json'), credentialsProvider } = {}) {
+function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = Date.now, env = process.env, intervalMs = 60_000, autoStart = true, cachePath = path.join(home23Root, 'instances', '.house', 'model-catalog-cache.json'), credentialsProvider, codexVersionDetector = createCodexCatalogVersionDetector({ env }), codexRegistryFetchImpl = globalThis.fetch } = {}) {
   if (!path.isAbsolute(home23Root || '')) throw new TypeError('Absolute home23Root required');
   let entries = {}; let revision = 0; let diskStamp = null; let timer;
   const pending = new Map();
+  let codexVersionHint = null; let versionHintPending;
   const broker = createHome23OAuthBroker({ home23Root });
+  function discoveryDescriptor(provider, config, secrets, home) {
+    const desc = descriptor(provider, config, secrets, env);
+    if (provider === 'openai-codex' && desc.configured) {
+      const detected = codexVersionDetector(home.acp?.backends?.codex?.bin);
+      desc.catalogVersion = maxStableVersion(detected.version, codexVersionHint?.version,
+        entries[provider]?.identity === desc.identity ? entries[provider].catalogVersion : null);
+      desc.catalogErrorCode = detected.errorCode;
+      // Auth/account scope stays separate so a protocol change preserves the
+      // previous complete snapshot as stale while its replacement is fetched.
+      desc.catalogIdentity = hash({ ...detected, version: desc.catalogVersion });
+    }
+    return desc;
+  }
+  const sameCatalog = (entry, desc) => desc.provider !== 'openai-codex' || entry?.catalogIdentity === desc.catalogIdentity;
+  const sameRequest = (left, right) => left.identity === right.identity && left.catalogIdentity === right.catalogIdentity;
   function syncDisk() {
     try {
       const stat = fs.statSync(cachePath); const stamp = `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
       if (stamp !== diskStamp) {
         const disk = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
         if (disk.version === CACHE_VERSION && disk.providers && typeof disk.providers === 'object') {
+          const hint = disk.codexVersionHint;
+          if (hint && parseCodexVersion(hint.version) === hint.version && typeof hint.checkedAt === 'number'
+              && (!codexVersionHint || hint.checkedAt > codexVersionHint.checkedAt)) {
+            codexVersionHint = { ...hint, version: maxStableVersion(codexVersionHint?.version, hint.version) };
+          }
           for (const [provider, value] of Object.entries(disk.providers)) {
             if (PROVIDERS.includes(provider) && Array.isArray(value.models) && typeof value.identity === 'string'
                 && (!entries[provider] || value.checkedAt > entries[provider].checkedAt)) entries[provider] = value;
@@ -117,10 +139,24 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
     syncDisk();
     fs.mkdirSync(path.dirname(cachePath), { recursive: true, mode: 0o700 });
     const temporary = `${cachePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-    try { fs.writeFileSync(temporary, JSON.stringify({ version: CACHE_VERSION, revision: ++revision, providers: entries }), { mode: 0o600 }); fs.renameSync(temporary, cachePath); diskStamp = null; }
+    try { fs.writeFileSync(temporary, JSON.stringify({ version: CACHE_VERSION, revision: ++revision, providers: entries, codexVersionHint }), { mode: 0o600 }); fs.renameSync(temporary, cachePath); diskStamp = null; }
     finally { try { fs.unlinkSync(temporary); } catch {} }
   }
   function configuration() { return { home: readYaml(path.join(home23Root, 'config', 'home.yaml')), secrets: readYaml(env.HOME23_SECRETS_PATH || path.join(home23Root, 'config', 'secrets.yaml')) }; }
+  function refreshCodexVersionHint() {
+    if (versionHintPending) return versionHintPending;
+    if (codexVersionHint && now() - (codexVersionHint.attemptedAt || codexVersionHint.checkedAt) < (codexVersionHint.error ? 60_000 : MAX_AGE_MS)) return Promise.resolve();
+    versionHintPending = (async () => {
+      try {
+        const version = await fetchCodexRegistryVersion(codexRegistryFetchImpl);
+        codexVersionHint = { version: maxStableVersion(codexVersionHint?.version, version), checkedAt: now(), attemptedAt: now() };
+      } catch {
+        codexVersionHint = { version: maxStableVersion(codexVersionHint?.version), checkedAt: codexVersionHint?.checkedAt || 0, attemptedAt: now(), error: true };
+      }
+      try { persist(); } catch { /* Retain the non-secret version hint in memory on read-only homes. */ }
+    })().finally(() => { versionHintPending = null; });
+    return versionHintPending;
+  }
   async function request(url, headers, body) {
     const response = await fetchImpl(url, { method: body ? 'POST' : 'GET', headers: { accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(12_000), redirect: 'error' });
     if (!response.ok) throw Object.assign(new Error('Provider model discovery failed'), { code: response.status === 401 || response.status === 403 ? 'model_discovery_auth' : `model_discovery_http_${response.status}` });
@@ -139,7 +175,7 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
       else { delete headers.authorization; headers['x-api-key'] = token; }
     }
     if (desc.provider === 'openai-codex' && account) headers['chatgpt-account-id'] = account;
-    let url = `${desc.base}${desc.provider === 'openai-codex' ? '/models?client_version=0.153.0' : desc.provider.startsWith('ollama-') ? '/api/tags' : desc.provider === 'xai' ? '/v1/language-models' : '/v1/models'}`;
+    let url = `${desc.base}${desc.provider === 'openai-codex' ? `/models?client_version=${encodeURIComponent(desc.catalogVersion)}` : desc.provider.startsWith('ollama-') ? '/api/tags' : desc.provider === 'xai' ? '/v1/language-models' : '/v1/models'}`;
     const rows = []; const cursors = new Set();
     for (let page = 0; page < 100; page++) {
       const wire = await request(url, headers);
@@ -164,34 +200,48 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
   }
   function refresh(desc, force = false) {
     const old = entries[desc.provider];
-    if (!desc.configured || pending.has(desc.identity) || (!force && old?.identity === desc.identity && now() - (old.attemptedAt || 0) < (old.errorCode ? 60_000 : MAX_AGE_MS))) return pending.get(desc.identity) || Promise.resolve();
+    const requestIdentity = `${desc.identity}:${desc.catalogIdentity || ''}`;
+    const sameAttempt = desc.provider !== 'openai-codex' || old?.attemptedCatalogIdentity === desc.catalogIdentity;
+    if (!desc.configured || pending.has(requestIdentity) || (!force && old?.identity === desc.identity && sameAttempt && now() - (old.attemptedAt || 0) < (old.errorCode ? 60_000 : MAX_AGE_MS))) return pending.get(requestIdentity) || Promise.resolve();
     const operation = (async () => {
       try {
         const snapshot = await discover(desc);
         // A refresh started for a previous account must never replace its successor.
-        const cfg = configuration(); const current = descriptor(desc.provider, cfg.home.providers?.[desc.provider] || {}, cfg.secrets, env);
-        if (current.identity !== desc.identity) return;
-        entries[desc.provider] = { identity: desc.identity, checkedAt: now(), attemptedAt: now(), ...snapshot };
+        const cfg = configuration(); const current = discoveryDescriptor(desc.provider, cfg.home.providers?.[desc.provider] || {}, cfg.secrets, cfg.home);
+        if (!sameRequest(current, desc)) return;
+        entries[desc.provider] = { identity: desc.identity,
+          ...(desc.catalogIdentity ? { catalogIdentity: desc.catalogIdentity, attemptedCatalogIdentity: desc.catalogIdentity, catalogVersion: desc.catalogVersion } : {}),
+          checkedAt: now(), attemptedAt: now(), ...snapshot };
       } catch (error) {
         try {
-          const cfg = configuration(); const current = descriptor(desc.provider, cfg.home.providers?.[desc.provider] || {}, cfg.secrets, env);
-          if (current.identity !== desc.identity) return;
-        } catch { /* A torn settings read must not escape an automatic refresh. */ }
-        entries[desc.provider] = { ...(old?.identity === desc.identity ? old : { identity: desc.identity, models: [], unclassifiedIds: [] }), attemptedAt: now(), errorCode: /^model_[a-z0-9_]+$/.test(error.code || '') ? error.code : 'model_discovery_unavailable' };
+          const cfg = configuration(); const current = discoveryDescriptor(desc.provider, cfg.home.providers?.[desc.provider] || {}, cfg.secrets, cfg.home);
+          if (!sameRequest(current, desc)) return;
+        } catch {
+          // A torn settings read must not let an older failure overwrite a
+          // successful refresh that has already replaced its captured entry.
+          if (entries[desc.provider] !== old) return;
+        }
+        entries[desc.provider] = { ...(old?.identity === desc.identity ? old : { identity: desc.identity, models: [], unclassifiedIds: [] }),
+          ...(desc.catalogIdentity ? { attemptedCatalogIdentity: desc.catalogIdentity } : {}),
+          attemptedAt: now(), errorCode: /^model_[a-z0-9_]+$/.test(error.code || '') ? error.code : 'model_discovery_unavailable' };
       }
       try { persist(); } catch { /* Read-only filesystems retain an in-memory snapshot. */ }
-    })().finally(() => pending.delete(desc.identity));
-    pending.set(desc.identity, operation); return operation;
+    })().finally(() => pending.delete(requestIdentity));
+    pending.set(requestIdentity, operation); return operation;
   }
   function snapshot({ homeConfig, agentConfig = {}, refreshAutomatically = true } = {}) {
     syncDisk(); const cfg = configuration(); const home = homeConfig || cfg.home;
     const models = []; const providerStates = {}; const aliases = Object.create(null); const unavailableSelections = [];
     for (const provider of PROVIDERS) {
       if (!home.providers?.[provider]) continue;
-      const config = home.providers[provider]; const desc = descriptor(provider, config, cfg.secrets, env);
+      const config = home.providers[provider]; const desc = discoveryDescriptor(provider, config, cfg.secrets, home);
       const cached = entries[provider]?.identity === desc.identity ? entries[provider] : null;
+      if (refreshAutomatically && provider === 'openai-codex' && desc.configured) void refreshCodexVersionHint().then(() => {
+        const current = configuration();
+        return refresh(discoveryDescriptor(provider, current.home.providers?.[provider] || {}, current.secrets, current.home));
+      }).catch(() => {});
       if (refreshAutomatically) void refresh(desc).catch(() => {});
-      const fresh = Boolean(cached?.checkedAt && !cached.errorCode && now() - cached.checkedAt < MAX_AGE_MS);
+      const fresh = Boolean(cached?.checkedAt && !cached.errorCode && sameCatalog(cached, desc) && now() - cached.checkedAt < MAX_AGE_MS);
       providerStates[provider] = { state: !desc.configured ? 'unconfigured' : fresh ? 'fresh' : cached?.checkedAt ? 'stale' : 'loading', checkedAt: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : null, expiresAt: cached?.checkedAt ? new Date(cached.checkedAt + MAX_AGE_MS).toISOString() : null, errorCode: cached?.errorCode || null, modelCount: cached?.models.length || 0, unclassifiedCount: cached?.unclassifiedIds?.length || 0 };
       const fallback = (config.defaultModels || []).map(id => {
         const reviewed = reviewedReasoningCapabilities(provider, id);
@@ -220,7 +270,14 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
     }
     return { models, aliases, unavailableSelections, discovery: { revision: hash({ revision, models, providerStates }), refreshing: pending.size > 0, providers: providerStates } };
   }
-  async function refreshAll({ force = false } = {}) { const cfg = configuration(); await Promise.all(PROVIDERS.filter(p => cfg.home.providers?.[p]).map(p => refresh(descriptor(p, cfg.home.providers[p], cfg.secrets, env), force))); return snapshot({ refreshAutomatically: false }); }
+  async function refreshAll({ force = false } = {}) {
+    syncDisk(); let cfg = configuration();
+    if (cfg.home.providers?.['openai-codex'] && descriptor('openai-codex', cfg.home.providers['openai-codex'], cfg.secrets, env).configured) {
+      await refreshCodexVersionHint(); cfg = configuration();
+    }
+    await Promise.all(PROVIDERS.filter(p => cfg.home.providers?.[p]).map(p => refresh(discoveryDescriptor(p, cfg.home.providers[p], cfg.secrets, cfg.home), force)));
+    return snapshot({ refreshAutomatically: false });
+  }
   if (autoStart) { timer = setInterval(() => { try { snapshot(); } catch {} }, Math.min(intervalMs, MAX_AGE_MS)); timer.unref(); }
   return { snapshot, refreshAll, close() { clearInterval(timer); }, cachePath };
 }

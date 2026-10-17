@@ -97,7 +97,7 @@ test("bot result notification recovery reads the creation-order partial index", 
   assert.ok(rows.some((row) => row.detail.includes("messages_notification_recovery_order")));
 });
 
-test("an existing schema v20 database upgrades to the notification index", (t) => {
+test("an existing schema v20 database upgrades through the notification index and selection rewrite with integrity checks", (t) => {
   const path = temporaryDatabase(t);
   const v20 = new Database(path);
   for (const migration of COORDINATION_MIGRATIONS.slice(0, 20)) {
@@ -121,8 +121,8 @@ test("an existing schema v20 database upgrades to the notification index", (t) =
   const upgraded = openCoordinationDatabase({ path, applicationVersion: "notification-upgrade-test" });
   t.after(() => upgraded.close());
   assert.equal(upgraded.openReceipt.migratedFrom, 20);
-  assert.equal(upgraded.openReceipt.startupCheck, "schema_migration_only");
-  assert.equal(upgraded.openReceipt.schemaVersion, 21);
+  assert.equal(upgraded.openReceipt.startupCheck, "integrity_check");
+  assert.equal(upgraded.openReceipt.schemaVersion, 22);
   assert.equal(upgraded.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.ok(upgraded.readOne("SELECT 1 AS present FROM sqlite_schema WHERE name = 'messages_notification_recovery_order'"));
 });
@@ -139,7 +139,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   );
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 21);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 22);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -252,6 +252,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 19, checksum: COORDINATION_MIGRATIONS[18]!.checksum },
       { version: 20, checksum: COORDINATION_MIGRATIONS[19]!.checksum },
       { version: 21, checksum: COORDINATION_MIGRATIONS[20]!.checksum },
+      { version: 22, checksum: COORDINATION_MIGRATIONS[21]!.checksum },
     ],
   );
   assert.deepEqual(
