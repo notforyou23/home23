@@ -142,13 +142,15 @@ export function refuseWorkspaceEscape(
 
 export const readFileTool: ToolDefinition = {
   name: 'read_file',
-  description: 'Read the contents of a file. Supports offset/limit for large files. Path can be absolute or relative to your workspace.',
+  description: 'Read file contents. Optional offset/limit select lines. If the displayed result continues, use its exact offset_chars/limit_chars call to read the rest, including long lines. Use task_context to recover the full requested text when available. Path can be absolute or relative to your workspace.',
   input_schema: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Path to the file (absolute, or relative to your workspace)' },
       offset: { type: 'number', description: 'Line number to start from (0-based)' },
       limit: { type: 'number', description: 'Max lines to return' },
+      offset_chars: { type: 'integer', minimum: 0, description: 'Absolute UTF-16 character offset from a continuation. Do not combine with line offset/limit.' },
+      limit_chars: { type: 'integer', minimum: 1, description: 'Characters remaining in the requested range, from a continuation. Do not combine with line offset/limit.' },
     },
     required: ['path'],
   },
@@ -156,25 +158,33 @@ export const readFileTool: ToolDefinition = {
     const path = resolvePath(input.path as string, ctx.workspacePath);
     const outside = refuseReadOutsideRoots(path, authorityFor(ctx));
     if (outside) return outside;
-    const offset = (input.offset as number) || 0;
-    const limit = input.limit as number | undefined;
     if (!existsSync(path)) return { content: `File not found: ${path}`, is_error: true };
     try {
       const content = readFileSync(path, 'utf-8');
-      let lines = content.split('\n');
-      if (offset > 0) lines = lines.slice(offset);
-      if (limit) lines = lines.slice(0, limit);
-      const result = lines.join('\n');
-      const nextOffset = offset + lines.length;
-      const totalLines = content.split('\n').length;
-      const recovery = limit
-        ? `Continue with read_file path=${JSON.stringify(path)} offset=${nextOffset} limit=${limit}.`
-        : `Continue with read_file path=${JSON.stringify(path)} offset=${nextOffset} limit=80.`;
-      const clipped = clipToolOutput(
-        result,
-        `${recovery} File has ${totalLines} lines / ${content.length} chars.`,
-      );
-      return { content: clipped };
+      const index = (value: unknown, fallback: number, minimum = 0): number => {
+        if (value === undefined) return fallback;
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+          throw new TypeError('File offsets and limits must be valid integers');
+        }
+        return value;
+      };
+      let result: string;
+      let offsetChars: number;
+      if (input.offset_chars !== undefined || input.limit_chars !== undefined) {
+        if (input.offset !== undefined || input.limit !== undefined) throw new TypeError('Use either line or character offsets, not both');
+        offsetChars = Math.min(content.length, index(input.offset_chars, 0));
+        const length = index(input.limit_chars, content.length - offsetChars, 1);
+        result = content.slice(offsetChars, offsetChars + length);
+      } else {
+        const offset = index(input.offset, 0);
+        const lines = content.split('\n');
+        const limit = index(input.limit, lines.length, 1);
+        offsetChars = offset === 0 ? 0 : Math.min(content.length, lines.slice(0, offset).join('\n').length + 1);
+        result = lines.slice(offset, offset + limit).join('\n');
+      }
+      // The registry archives this exact result before the model formatter
+      // chooses a visible page. Never discard unread text in the file tool.
+      return { content: result, fileRead: { path, offsetChars, totalChars: content.length } };
     } catch (err) {
       return { content: `Error reading ${path}: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
     }

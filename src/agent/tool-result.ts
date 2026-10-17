@@ -464,7 +464,26 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
   };
 }
 
+function fileReadExcerpt(result: ToolResult, limit: number): string {
+  const read = result.fileRead!;
+  if (result.content.length <= limit) return result.content;
+  const marker = (consumed: number): string => {
+    const next = read.offsetChars + consumed;
+    const request = { path: read.path, offset_chars: next, limit_chars: result.content.length - consumed };
+    return `\n\n[READ_FILE CONTINUES: chars ${read.offsetChars}-${next} of ${read.totalChars}. Continue with read_file ${JSON.stringify(request)}. This page is incomplete.]`;
+  };
+  // Reserve the widest possible next offset and remaining-count fields.
+  const budget = limit - marker(result.content.length).length - String(result.content.length).length + 1;
+  // A very small display or unusually long path may leave no room for a
+  // useful page. The existing retained-evidence locator still recovers it.
+  if (budget < 2) return recoverableExcerpt(result.content, limit, {});
+  let prefix = result.content.slice(0, budget);
+  if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
+  return prefix + marker(prefix.length);
+}
+
 function visibleContent(result: ToolResult, limit: number, toolName?: string): string {
+  if (toolName === 'read_file' && result.fileRead) return fileReadExcerpt(result, limit);
   const operationId = typeof result.metadata?.operationId === 'string'
     ? result.metadata.operationId
     : null;

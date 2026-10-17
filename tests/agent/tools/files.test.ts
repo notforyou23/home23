@@ -16,6 +16,10 @@ import {
 import * as fileTools from '../../../src/agent/tools/files.js';
 import type { ToolContext } from '../../../src/agent/types.js';
 import { compileProjectWriteRoots } from '../../../src/agent/tools/project-write-roots.js';
+import { taskContextTool } from '../../../src/agent/tools/task-context.js';
+import { ToolRegistry } from '../../../src/agent/tools/index.js';
+import { TaskContextStore } from '../../../src/agent/task-context.js';
+import { executeAndFormatTool } from '../../../src/agent/tool-result.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -306,4 +310,98 @@ test('without ripgrep, the glob fallback never lists outside its folder', async 
   for (const pattern of ['../*', '../../../*', `${root}/*`]) {
     assert.deepEqual(await fileTools.listFilesWithGlob(pattern, workspace, 200), [], pattern);
   }
+});
+
+
+function setupReadFileContinuation(t: { after(fn: () => void): void }, content: string) {
+  const root = mkdtempSync(join(tmpdir(), 'home23-file-continuation-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspace = join(root, 'workspace'); mkdirSync(workspace);
+  const file = join(workspace, 'synthesis.md'); writeFileSync(file, content);
+  const store = new TaskContextStore(join(root, 'context'));
+  const context = { projectRoot: root, workspacePath: workspace, chatId: 'fixture-reading',
+    conversationHistory: { taskContext: store } } as unknown as ToolContext;
+  const registry = new ToolRegistry(); registry.register(readFileTool); registry.register(taskContextTool);
+  const read = (input: Record<string, unknown>) => executeAndFormatTool({ registry, name: 'read_file',
+    toolCallId: 'file-reading-fixture', input: { path: file, ...input }, context, modelLimit: 4000, eventLimit: 4000 });
+  return { file, store, context, registry, read };
+}
+
+function readFilePayload(modelContent: string) {
+  return modelContent.split('\n\n[READ_FILE CONTINUES:')[0]!.split('\n[Retained task evidence:')[0]!;
+}
+function readFileContinuation(modelContent: string): Record<string, unknown> | null {
+  const match = /Continue with read_file (\{[^\n]*\})\. This page is incomplete/.exec(modelContent);
+  return match ? JSON.parse(match[1]!) : null;
+}
+function observedShape() {
+  const lines = Array.from({ length: 85 }, (_, i) => `line-${String(i).padStart(2, '0')}: ${'x'.repeat(125)}`);
+  lines[84] += 'x'.repeat(16);
+  return lines.join('\n') + '\n';
+}
+
+test('the observed 11491-character synthesis retains complete task evidence and pages without false EOF', async t => {
+  const content = observedShape(); assert.equal(content.length, 11_491); assert.equal(content.split('\n').length, 86);
+  const { read, store, context } = setupReadFileContinuation(t, content);
+  const first = await read({});
+  assert.equal(first.result.content, content, 'read_file must retain the entire requested text before model display clipping');
+  const archived = store.read(context.chatId, first.result.contextEvidenceId!, 0, 16000);
+  assert.equal(JSON.parse(archived.text).content, content, 'task_context must recover the full file, not the clipped first page');
+  assert.ok(readFileContinuation(first.modelContent), 'the model must receive a real next read, not offset=86 at EOF');
+  let page = first; let reconstructed = ''; let reads = 0;
+  for (;;) {
+    reconstructed += readFilePayload(page.modelContent); reads++;
+    const next = readFileContinuation(page.modelContent); if (!next) break;
+    assert.ok(Number(next.offset_chars) < content.length, 'continuation cannot skip unread text to EOF');
+    page = await read(next); assert.ok(reads < 20, 'continuation must advance');
+  }
+  assert.equal(reconstructed, content);
+});
+
+test('line-range reads continue inside their actual visible text and preserve the requested end', async t => {
+  const content = observedShape(); const { read } = setupReadFileContinuation(t, content);
+  const expected = content.split('\n').slice(33, 70).join('\n');
+  let page = await read({ offset: 33, limit: 37 }); let reconstructed = '';
+  for (let i = 0; i < 20; i++) {
+    reconstructed += readFilePayload(page.modelContent);
+    const next = readFileContinuation(page.modelContent); if (!next) break;
+    assert.ok(Number(next.offset_chars) > content.indexOf('line-33:'));
+    page = await read(next);
+  }
+  assert.equal(reconstructed, expected, 'paging must not include lines outside the original range');
+});
+
+test('one long Unicode line reconstructs exactly across model-cap continuations', async t => {
+  const content = '🙂𝄞漢字e\u0301'.repeat(3000) + '\nlast line\n';
+  const { read } = setupReadFileContinuation(t, content); let page = await read({}); let reconstructed = '';
+  for (let i = 0; i < 100; i++) {
+    const text = readFilePayload(page.modelContent);
+    assert.doesNotMatch(text, /[\uD800-\uDBFF]$/u, 'a page must not end halfway through a surrogate pair');
+    assert.equal(Buffer.from(text).toString('utf8'), text, 'each page must remain valid Unicode');
+    reconstructed += text;
+    const next = readFileContinuation(page.modelContent); if (!next) break;
+    page = await read(next);
+  }
+  assert.equal(reconstructed, content, 'no Unicode characters or newlines may disappear between pages');
+});
+
+test('the model continuation survives a tighter loop display cap', async t => {
+  const content = observedShape(); const { context, registry, file } = setupReadFileContinuation(t, content);
+  const page = await executeAndFormatTool({ registry, name: 'read_file', toolCallId: 'small-loop-cap',
+    input: { path: file }, context, modelLimit: 1000, eventLimit: 500 });
+  const next = readFileContinuation(page.modelContent); assert.ok(next);
+  assert.equal(content.slice(0, Number(next.offset_chars)), readFilePayload(page.modelContent));
+  assert.ok(page.eventContent.length <= 500, 'event formatting must obey its own display size');
+});
+
+test('recovering complete retained file evidence bypasses display clipping without rereading the file', async t => {
+  const content = observedShape(); const { read, file, context, registry } = setupReadFileContinuation(t, content);
+  const first = await read({});
+  // Recovery must use the original archived result, even if the path changes.
+  writeFileSync(file, 'changed after the read');
+  const recovered = await executeAndFormatTool({ registry, name: 'task_context', toolCallId: 'recover-file-fixture',
+    input: { action: 'read', id: first.result.contextEvidenceId, limit: 16000 }, context, modelLimit: 4000, eventLimit: 4000 });
+  const entry = JSON.parse(recovered.modelContent);
+  assert.equal(JSON.parse(entry.text).content, content);
+  assert.equal(entry.nextOffset, null, 'the complete synthesis should recover in one retained-evidence read');
 });
