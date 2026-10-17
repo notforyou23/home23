@@ -4,11 +4,63 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { readProductManifest } from '../../cli/lib/product-payload.js';
+
+function productSourceStatus(root, authority) {
+  if (typeof authority.recordedAt !== 'string' || !Number.isFinite(Date.parse(authority.recordedAt))
+      || typeof authority.recordedBy !== 'string' || !authority.recordedBy.trim()) {
+    throw new Error('Source authority must identify when and by whom its maintained source mapping was recorded');
+  }
+  const development = {};
+  for (const component of ['backend', 'apple']) {
+    const directory = authority.development?.[component];
+    if (typeof directory !== 'string' || !path.isAbsolute(directory)) {
+      throw new Error(`Source authority must identify an absolute maintained ${component} Git repository`);
+    }
+    try {
+      if (!fs.statSync(directory).isDirectory() || !fs.existsSync(path.join(directory, '.git'))) throw new Error('Missing Git repository');
+      development[component] = fs.realpathSync(directory);
+    } catch {
+      throw new Error(`Source authority does not identify an available maintained ${component} Git repository`);
+    }
+  }
+  // Product homes own the manifest above app/. Do not infer a legacy release
+  // or claim a source-byte preservation baseline from this routing record.
+  const productHomeRoot = path.dirname(root);
+  if (path.basename(root) !== 'app') throw new Error('Source authority v2 requires the product installation app directory');
+  const product = readProductManifest(productHomeRoot);
+  return {
+    ok: true,
+    schemaVersion: 2,
+    installationRoot: root,
+    productHomeRoot,
+    development,
+    recordedAt: authority.recordedAt,
+    recordedBy: authority.recordedBy,
+    selectedProduct: {
+      packageId: product.packageId,
+      sourceCommit: product.sourceCommit,
+      platform: product.platform,
+      arch: product.arch,
+      nodeVersion: product.nodeVersion,
+    },
+    preservation: null,
+    problems: [],
+    changesSinceReconciledBaseline: null,
+    limits: [
+      'No byte-level source reconciliation or preservation baseline is recorded by source authority v2.',
+      'The product manifest identifies selected software; this check does not verify installed runtime file bytes or running process bindings.',
+      'Source checks do not prove installed Apple builds, persistence compatibility, or physical-device acceptance.',
+      'Use git status in each maintained source repository for working edits and untracked files.',
+    ],
+  };
+}
 
 export function sourceStatus(installationRoot) {
   const root = fs.realpathSync(installationRoot);
   const manifestPath = path.join(root, 'instances/.house/source-authority.json');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  if (manifest.schemaVersion === 2) return productSourceStatus(root, manifest);
   if (manifest.schemaVersion !== 1) throw new Error('Unsupported source authority format');
   const active = JSON.parse(fs.readFileSync(path.join(root, 'instances/.house/coordination/active-release.json'), 'utf8'));
   const apple = JSON.parse(fs.readFileSync(path.join(root, 'instances/.house/home23-ios.json'), 'utf8'));
