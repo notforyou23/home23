@@ -77,7 +77,7 @@ export const spawnAgentTool: ToolDefinition = {
   input_schema: {
     type: 'object',
     properties: {
-      task_kind: { type: 'string', enum: ['analysis', 'local_state_change', 'source_change'], description: 'Declare execution needs. Tracked-source changes must use coding_run instead; files/shell specialist grants do not authorize tracked-source edits.' },
+      task_kind: { type: 'string', enum: ['analysis', 'local_state_change', 'source_change'], description: 'Declare execution needs and grant the matching tools. With standing owner machine authority, files/shell specialists can repair local source in its maintained task worktree. Otherwise use coding_run for tracked-source changes.' },
       task: { type: 'string', description: 'Self-contained task for the specialist' },
       label: { type: 'string', description: 'Short human label for the specialist run' },
       mode: {
