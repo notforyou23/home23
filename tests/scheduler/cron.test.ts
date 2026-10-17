@@ -434,6 +434,44 @@ test('scheduler caps total jobs per tick to avoid live harness stampedes', async
   assert.equal(runLog[0].withheld, true);
 });
 
+test('task receipts distinguish an opaque successful process from explicit task outcomes', async (t) => {
+  const cases: Array<{ name: string; result: JobResult; task: string; semantic: string }> = [
+    { name: 'opaque exit zero', result: { status: 'ok', response: 'runner finished', durationMs: 1 },
+      task: 'unknown', semantic: 'unknown' },
+    { name: 'explicit satisfied outcome', result: { status: 'ok', durationMs: 1, semanticStatus: 'satisfied' },
+      task: 'success', semantic: 'satisfied' },
+    { name: 'explicit success receipt', result: { status: 'ok', durationMs: 1, outcomeLayers: {
+      task: { status: 'success', reason: 'Verified the requested artifact', evidence: { artifact: 'report.json' } },
+      intent: { status: 'success', reason: 'The requested artifact passed verification' },
+    } }, task: 'success', semantic: 'satisfied' },
+    { name: 'explicit blocked receipt', result: { status: 'ok', durationMs: 1, outcomeLayers: {
+      task: { status: 'failed', reason: 'The required input is unavailable', evidence: { state: 'blocked' } },
+      intent: { status: 'failed', reason: 'The assignment remains blocked' },
+    } }, task: 'failed', semantic: 'failed' },
+    { name: 'explicit failed outcome', result: { status: 'ok', durationMs: 1, semanticStatus: 'failed' },
+      task: 'failed', semantic: 'failed' },
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'home23-cron-task-outcome-'));
+      const job = makeDueJob({ payload: { kind: 'exec', command: 'project-runner' } });
+      writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job]));
+      const scheduler = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' },
+        async () => item.result, dir);
+      t.after(() => scheduler.stop());
+      await scheduler.runJobNow(job.id);
+      const run = readJsonl(join(dir, 'cron-runs', `${job.id}.jsonl`))[0];
+      assert.equal(run.outcome.mechanicalStatus, 'ok');
+      assert.equal(run.outcome.layers.process.status, 'success');
+      assert.equal(run.outcome.layers.task.status, item.task);
+      assert.equal(run.outcome.semanticStatus, item.semantic);
+      if (item.result.outcomeLayers?.task) {
+        assert.deepEqual(run.outcome.layers.task, item.result.outcomeLayers.task);
+      }
+    });
+  }
+});
+
 test('run logs separate mechanical completion from failed semantic outcome layers', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-cron-semantic-'));
   const job = makeDueJob({
@@ -469,7 +507,7 @@ test('run logs separate mechanical completion from failed semantic outcome layer
   assert.equal(runLog[0].outcome.mechanicalStatus, 'ok');
   assert.equal(runLog[0].outcome.semanticStatus, 'failed');
   assert.equal(runLog[0].outcome.layers.process.status, 'success');
-  assert.equal(runLog[0].outcome.layers.task.status, 'success');
+  assert.equal(runLog[0].outcome.layers.task.status, 'failed');
   assert.equal(runLog[0].outcome.layers.artifact.status, 'failed');
   assert.equal(runLog[0].outcome.layers.intent.status, 'failed');
 
