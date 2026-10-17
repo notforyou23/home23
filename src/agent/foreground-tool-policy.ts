@@ -131,7 +131,7 @@ export function classifyForegroundTool(name: string): ForegroundToolAction {
 }
 
 function copyExistingDetachFacts(
-  ctx: Pick<ToolContext, 'chatId' | 'authenticatedUserMessage'> & {
+  ctx: Pick<ToolContext, 'chatId' | 'authenticatedUserMessage' | 'fileMachineAccess'> & {
     turnRuntime?: TurnRuntimeContext | null;
     channelId?: string;
     conversationId?: string;
@@ -178,7 +178,7 @@ function copyExistingDetachFacts(
 export function applyForegroundToolPolicy(
   name: string,
   input: Record<string, unknown>,
-  ctx: Pick<ToolContext, 'chatId' | 'authenticatedUserMessage'> & {
+  ctx: Pick<ToolContext, 'chatId' | 'authenticatedUserMessage' | 'fileMachineAccess'> & {
     turnRuntime?: TurnRuntimeContext | null;
     channelId?: string;
     conversationId?: string;
@@ -193,7 +193,7 @@ export function applyForegroundToolPolicy(
   },
 ): ForegroundToolDecision {
   if (name === 'spawn_agent') {
-    const reason = delegationCapabilityError(input);
+    const reason = delegationCapabilityError(input, ctx.fileMachineAccess === true);
     if (reason) return { action: 'refuse', tool: name, input, reason };
   }
   if (name === 'brain_synthesize' && input.action === 'status') return { action: 'permit', tool: name, input };

@@ -86,6 +86,9 @@ export function createTrackedAgentRunner(agent: Parameters<typeof executeTracked
     ctx.abortSignal?.throwIfAborted();
     const run = await agent.runWithTurn(ctx.chatId, userMessage, {
       delegatedTurn: true,
+      ...(tools.some(tool => ['write_file', 'edit_file', 'shell'].includes(tool.name)) ? {
+        delegatedFileAuthority: { fileMachineAccess: ctx.fileMachineAccess === true, projectWriteRoots: ctx.projectWriteRoots },
+      } : {}),
       modelOverride: options?.modelOverride,
       effort: options?.effort,
       onEvent: ctx.onEvent,

@@ -411,6 +411,7 @@ async function main(): Promise<void> {
       ? 'full-machine'
       : `roots=[${shellFsAuthority.roots.join(', ')}]`}`,
   );
+  console.log(`[home] File FS authority: ${config.files?.machineAccess === true ? 'full-machine' : 'workspace and configured projects'}`);
 
   const toolContext: ToolContext = {
     scheduler: null,
@@ -419,6 +420,7 @@ async function main(): Promise<void> {
     projectRoot: PROJECT_ROOT,
     instanceDir: INSTANCE_DIR,
     shellFsAuthority,
+    fileMachineAccess: config.files?.machineAccess === true,
     projectWriteRoots,
     enginePort: DASHBOARD_PORT,
     agentName,

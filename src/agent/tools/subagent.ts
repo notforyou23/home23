@@ -98,7 +98,7 @@ export const spawnAgentTool: ToolDefinition = {
   },
 
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-    const capabilityError = delegationCapabilityError(input);
+    const capabilityError = delegationCapabilityError(input, ctx.fileMachineAccess === true);
     if (capabilityError) return { content: capabilityError, is_error: true };
     const task = typeof input.task === 'string' ? input.task.trim() : '';
     if (!task) return { content: 'spawn_agent requires a non-empty task.', is_error: true };

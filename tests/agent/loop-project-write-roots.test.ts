@@ -11,7 +11,7 @@ import { compileProjectWriteRoots } from '../../src/agent/tools/project-write-ro
 import { createTrackedAgentRunner } from '../../src/agent/turn-entrypoint.js';
 import type { ToolContext } from '../../src/agent/types.js';
 
-for (const mode of ['direct', 'group', 'delegated', 'delegated-empty-prompt'] as const) {
+for (const mode of ['direct', 'group', 'delegated', 'delegated-empty-prompt', 'delegated-ungranted', 'delegated-machine'] as const) {
   test(`${mode} turn gets only its own authorized file roots`, async t => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'home23-loop-roots-')));
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -28,6 +28,7 @@ for (const mode of ['direct', 'group', 'delegated', 'delegated-empty-prompt'] as
     } }]);
     let projectReads = 0;
     const toolContext = { workspacePath: workspace, projectRoot: root, instanceDir: instance, projectWriteRoots: grant,
+      fileMachineAccess: mode === 'delegated-machine',
       brainOperations: { withActivityHandler() { return this; } }, turnRuntime: null,
       coordinationChannelOperation: async ({ args }) => { if (args.operation !== 'project_context') return {}; projectReads++; return { available: true, channelId: 'topic', title: 'Topic',
         purpose: 'Shared project', workspacePath: shared, documents: [] }; } } as unknown as ToolContext;
@@ -50,7 +51,10 @@ for (const mode of ['direct', 'group', 'delegated', 'delegated-empty-prompt'] as
       return Response.json({ choices: [{ message: { role: 'assistant', content: 'done' } }] });
     }) as typeof fetch;
     const delegated = mode.startsWith('delegated');
-    if (delegated) {
+    if (mode === 'delegated-ungranted') {
+      const run = await agent.runWithTurn('child', 'Save state', { delegatedTurn: true });
+      await run.response;
+    } else if (delegated) {
       await createTrackedAgentRunner(agent)(mode === 'delegated' ? 'Delegated instructions.' : '', 'Save state', [writeFileTool],
         { ...toolContext, chatId: 'child' }, { registry });
     } else {
@@ -62,9 +66,11 @@ for (const mode of ['direct', 'group', 'delegated', 'delegated-empty-prompt'] as
     }
     assert.equal(seen.length, 1);
     assert.equal(seen[0].workspacePath, mode === 'group' ? shared : workspace);
-    assert.equal(seen[0].projectWriteRoots, delegated ? undefined : grant);
-    assert.equal(existsSync(target), !delegated);
+    assert.equal(seen[0].projectWriteRoots, mode === 'delegated-ungranted' ? undefined : grant);
+    assert.equal(existsSync(target), mode !== 'delegated-ungranted');
+    assert.equal(seen[0].fileMachineAccess, mode === 'delegated-machine');
     assert.equal(projectReads, mode === 'group' ? 1 : 0);
-    assert.equal(prompts[0].includes('File tools may also write these resident project roots'), !delegated);
+    assert.equal(prompts[0].includes('File tools may also write these resident project roots'), !['delegated-ungranted', 'delegated-machine'].includes(mode));
+    assert.equal(prompts[0].includes('standing full-machine filesystem authority'), mode === 'delegated-machine');
   });
 }

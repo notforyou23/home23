@@ -178,6 +178,8 @@ export interface HomeConfig {
   providers?: Record<string, unknown>;
 
   files?: {
+    /** Standing owner authority for local filesystem repairs, including source. */
+    machineAccess?: boolean;
     /** Resident file-tool grants; paths and denials are relative to instanceDir. */
     projectWriteRoots?: Array<{ path: string; deny?: string[] }>;
   };

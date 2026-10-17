@@ -203,9 +203,11 @@ shell:
 # Optional resident file-tool write grants, configured in instances/<resident>/config.yaml.
 # Paths (including deny entries) are relative to that resident's instance directory.
 # Roots must already exist under projects/ and contain no symlink components.
-# These grants cover the resident's own turns, including shared-channel messages
-# from other participants; delegated turns do not inherit them. Shell scope is separate.
+# File-capable workers inherit the parent's grants when explicitly assigned files/shell.
+# Set machineAccess: true for an owner-trusted resident with standing local repair
+# authority, including source edits. Shell command roots remain separately configured.
 # files:
+#   machineAccess: false
 #   projectWriteRoots:
 #     - path: projects
 #       deny:

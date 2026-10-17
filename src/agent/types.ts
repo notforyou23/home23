@@ -84,6 +84,8 @@ export interface TurnRuntimeContext {
   }) => void;
   delegatedContext?: { systemPrompt: string; workspacePath: string };
   delegatedTurn?: boolean;
+  /** Parent authority carried only with explicitly granted local mutation tools. */
+  delegatedFileAuthority?: Pick<ToolContext, 'fileMachineAccess' | 'projectWriteRoots'>;
   delegationOrigin?: DelegationTurnOrigin;
   /** Immutable per-turn registry override. Absent means the loop's shared registry. */
   registry?: ToolRegistry;
@@ -150,7 +152,9 @@ export interface ToolContext {
   };
   /** Absolute instance directory (instances/<agent>), used for default shell roots. */
   instanceDir?: string;
-  /** Owner-configured project grants for resident turns only, never delegated turns. */
+  /** Standing local authority selected by the owner; never inferred from a message. */
+  fileMachineAccess?: boolean;
+  /** Owner-configured project grants, inherited by explicitly file-capable workers. */
   projectWriteRoots?: readonly import('./tools/project-write-roots.js').ProjectWriteRoot[];
   enginePort: number;
   agentName: string;                  // HOME23_AGENT

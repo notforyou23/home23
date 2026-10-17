@@ -13,6 +13,8 @@ export function compileProjectWriteRoots(files: unknown, instanceDir: string): r
   const invalid = (reason: string): never => { throw new Error(`Invalid files.projectWriteRoots: ${reason}`); };
   if (files === undefined) return [];
   if (!files || typeof files !== 'object' || Array.isArray(files)) invalid('files must be an object');
+  const machineAccess = (files as { machineAccess?: unknown }).machineAccess;
+  if (machineAccess !== undefined && typeof machineAccess !== 'boolean') invalid('machineAccess must be a boolean');
   const configured = (files as { projectWriteRoots?: unknown }).projectWriteRoots;
   if (configured === undefined) return [];
   if (!Array.isArray(configured)) return invalid('must be an array');

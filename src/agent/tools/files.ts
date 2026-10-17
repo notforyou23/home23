@@ -20,6 +20,7 @@ import {
 } from './shell-fs-authority.js';
 
 function authorityFor(ctx: ToolContext) {
+  if (ctx.fileMachineAccess === true) return { machineAccess: true, roots: [] };
   return ctx.shellFsAuthority ?? resolveShellFsAuthority(null, {
     projectRoot: ctx.projectRoot,
     instanceDir: ctx.instanceDir,
@@ -183,7 +184,7 @@ export const readFileTool: ToolDefinition = {
 
 export const writeFileTool: ToolDefinition = {
   name: 'write_file',
-  description: 'Create or overwrite a file inside your workspace or explicitly granted resident project roots, respecting denied paths. Creates parent directories if needed. Paths can be absolute or relative to your workspace; use absolute paths for project roots. Tracked repo source is refused.',
+  description: 'Create or overwrite a file under the owner-configured filesystem authority. Creates parent directories if needed. Paths can be absolute or relative to your workspace. Standing machine access permits local source repairs; otherwise workspace/project limits apply.',
   input_schema: {
     type: 'object',
     properties: {
@@ -194,11 +195,11 @@ export const writeFileTool: ToolDefinition = {
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const path = resolvePath(input.path as string, ctx.workspacePath);
-    const escaped = refuseWorkspaceEscape(path, ctx.workspacePath, {
+    const escaped = ctx.fileMachineAccess === true ? null : refuseWorkspaceEscape(path, ctx.workspacePath, {
       allowMissingLeaf: true, projectWriteRoots: ctx.projectWriteRoots, inputPath: input.path as string,
     });
     if (escaped) return escaped;
-    const refused = refuseResidentWrite(path, ctx.projectRoot, ctx.instanceDir);
+    const refused = ctx.fileMachineAccess === true ? null : refuseResidentWrite(path, ctx.projectRoot, ctx.instanceDir);
     if (refused) return refused;
     const content = input.content as string;
     try {
@@ -213,7 +214,7 @@ export const writeFileTool: ToolDefinition = {
 
 export const editFileTool: ToolDefinition = {
   name: 'edit_file',
-  description: 'Replace a string in an existing file inside your workspace or explicitly granted resident project roots, respecting denied paths. The old_string must appear exactly once (or use replace_all). Use absolute paths for project roots. Tracked repo source is refused.',
+  description: 'Replace a string in an existing file under the owner-configured filesystem authority. The old_string must appear exactly once (or use replace_all). Standing machine access permits local source repairs; otherwise workspace/project limits apply.',
   input_schema: {
     type: 'object',
     properties: {
@@ -226,11 +227,11 @@ export const editFileTool: ToolDefinition = {
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const path = resolvePath(input.path as string, ctx.workspacePath);
-    const escaped = refuseWorkspaceEscape(path, ctx.workspacePath, {
+    const escaped = ctx.fileMachineAccess === true ? null : refuseWorkspaceEscape(path, ctx.workspacePath, {
       allowMissingLeaf: false, projectWriteRoots: ctx.projectWriteRoots, inputPath: input.path as string,
     });
     if (escaped) return escaped;
-    const refused = refuseResidentWrite(path, ctx.projectRoot, ctx.instanceDir);
+    const refused = ctx.fileMachineAccess === true ? null : refuseResidentWrite(path, ctx.projectRoot, ctx.instanceDir);
     if (refused) return refused;
     const oldStr = input.old_string as string;
     const newStr = input.new_string as string;

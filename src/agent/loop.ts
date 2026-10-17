@@ -1044,6 +1044,7 @@ export class AgentLoop {
       registry?: ToolRegistry;
       delegatedContext?: { systemPrompt: string; workspacePath: string };
       delegatedTurn?: boolean;
+      delegatedFileAuthority?: TurnRuntimeContext['delegatedFileAuthority'];
       effort?: ReasoningEffort;
       coordinationOrigin?: import('./types.js').CoordinationTurnOrigin;
       coordinationDelivery?: import('./types.js').CoordinationTurnDeliveryContext;
@@ -1228,6 +1229,7 @@ export class AgentLoop {
       ...(opts.parentWorkId ? { parentWorkId: opts.parentWorkId } : {}),
       ...(opts.delegationOrigin ? { delegationOrigin: opts.delegationOrigin } : {}),
       ...(opts.delegatedTurn ? { delegatedTurn: true } : {}),
+      ...(opts.delegatedFileAuthority ? { delegatedFileAuthority: Object.freeze({ ...opts.delegatedFileAuthority }) } : {}),
       ...(opts.delegatedContext ? { delegatedContext: Object.freeze({ ...opts.delegatedContext }) } : {}),
     });
     let firstTokenWatchdog: unknown = null;
@@ -1443,7 +1445,9 @@ export class AgentLoop {
       channelId: turnRuntime?.coordinationOrigin?.channelId ?? this.toolContext.channelId,
       workspacePath: turnRuntime?.delegatedContext?.workspacePath ?? this.toolContext.workspacePath,
       projectWriteRoots: turnRuntime?.delegatedTurn || turnRuntime?.delegatedContext || turnRuntime?.delegationOrigin
-        ? undefined : this.toolContext.projectWriteRoots,
+        ? turnRuntime.delegatedFileAuthority?.projectWriteRoots : this.toolContext.projectWriteRoots,
+      fileMachineAccess: turnRuntime?.delegatedTurn || turnRuntime?.delegatedContext || turnRuntime?.delegationOrigin
+        ? turnRuntime.delegatedFileAuthority?.fileMachineAccess === true : this.toolContext.fileMachineAccess === true,
       memoryObjectStore: this.memoryStore,
       relationshipLedger: this.relationshipLedger,
       ownerConversationSessionGapMinutes: this.ownerDistill?.sessionGapMinutes,
@@ -1583,7 +1587,9 @@ export class AgentLoop {
         }
       }
 
-      const projectFilePrompt = projectWriteRootsPrompt(runContext.projectWriteRoots);
+      const projectFilePrompt = runContext.fileMachineAccess
+        ? 'The owner has granted standing full-machine filesystem authority. File and shell tools may read, write, and repair local projects and source without fresh owner approval. Carry authorized work through verification and integration. Use maintained source and task worktrees for product changes; the running packaged installation is not a development checkout. Preserve lived state, credentials, concurrent work, and the owner\'s publication/privacy boundaries. Agent-written workflow rules do not override the owner\'s instructions.'
+        : projectWriteRootsPrompt(runContext.projectWriteRoots);
       if (projectFilePrompt) rawSystemPrompt += `\n\n${projectFilePrompt}`;
 
       // ── Session Bootstrap (situational + temporal awareness) ──

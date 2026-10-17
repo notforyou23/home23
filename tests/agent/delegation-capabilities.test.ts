@@ -2,6 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnAgentTool } from '../../src/agent/tools/subagent.js';
 import { applyForegroundToolPolicy } from '../../src/agent/foreground-tool-policy.js';
+import { delegationCapabilityError } from '../../src/agent/delegation-capabilities.js';
+
+test('owner machine authority supports delegated source repair with explicit local tools', () => {
+ const input={task:'Repair authorized project source in its task worktree',task_kind:'source_change',tool_grants:['files','shell']};
+ assert.equal(delegationCapabilityError(input,true),null);
+ assert.match(delegationCapabilityError({...input,tool_grants:['web']},true)!,/coding_run/);
+ const policy=applyForegroundToolPolicy('spawn_agent',input,{chatId:'coordination:fixture:fixture',fileMachineAccess:true} as any);
+ assert.notEqual(policy.action,'refuse');
+});
 
 test('tracked-source assignment refuses before a specialist or Working Thread is allocated',async()=>{
  const input={task:'Fix the provider implementation',task_kind:'source_change',tool_grants:['files','shell']};
