@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createServer } from 'node:net';
-import { inspectUpdateInventory, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
+import { inspectUpdateInventory, isRebuildableStatePath, ownedWriterNames } from '../../cli/lib/product-update-inventory.js';
 
 function home(t) {
   // Keep the Unix-domain socket fixture below macOS's sockaddr_un limit.
@@ -14,6 +14,102 @@ function home(t) {
 function relevant(result, target) {
   return result.reasons.filter(item => item.path === target).map(item => item.code);
 }
+
+function codexLauncher(t) {
+  const root = home(t), outside = home(t);
+  const group = 'runtime/user/.codex/tmp/arg0/codex-arg0aB123z';
+  const directory = path.join(root, group);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  fs.chmodSync(path.dirname(directory), 0o700);
+  const target = path.join(outside, 'lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex');
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, 'fixture native executable; never execute or copy', { mode: 0o755 });
+  fs.writeFileSync(path.join(directory, '.lock'), '', { mode: 0o600 });
+  const aliases = ['apply_patch', 'applypatch', 'codex-execve-wrapper'];
+  for (const name of aliases) fs.symlinkSync(target, path.join(directory, name));
+  return { root, outside, group, directory, target, aliases };
+}
+
+test('only the complete private Codex arg0 launcher group is rebuildable without following targets', async t => {
+  const f = codexLauncher(t);
+  const before = fs.readFileSync(f.target, 'utf8');
+  const result = await inspectUpdateInventory(f.root);
+  assert.deepEqual(result.reasons, []);
+  assert.equal(result.complete, true);
+  assert.equal(isRebuildableStatePath(f.group), true);
+  assert(result.warnings.some(item => item.code === 'rebuildable_codex_launcher' && item.path === f.group));
+  assert.deepEqual(fs.readdirSync(f.directory).sort(), ['.lock', ...f.aliases].sort());
+  for (const name of f.aliases) assert.equal(fs.readlinkSync(path.join(f.directory, name)), f.target);
+  assert.equal(fs.readFileSync(f.target, 'utf8'), before);
+  fs.writeFileSync(path.join(f.directory, '.DS_Store'), 'Finder metadata');
+  assert.equal((await inspectUpdateInventory(f.root)).complete, true, 'Product-wide metadata exclusions still apply');
+});
+
+test('Codex generated suffix length is bounded without freezing the current random suffix format', async t => {
+  for (const length of [1, 64, 65]) await t.test(String(length), async t => {
+    const f = codexLauncher(t);
+    const group = f.group.replace('codex-arg0aB123z', 'codex-arg0' + 'a'.repeat(length));
+    fs.renameSync(f.directory, path.join(f.root, group));
+    const result = await inspectUpdateInventory(f.root);
+    assert.equal(result.complete, length <= 64);
+    assert.equal(result.warnings.some(item => item.code === 'rebuildable_codex_launcher'), length <= 64);
+  });
+});
+
+test('a Codex-shaped group never exempts altered contents, lock, authority or executable identity', async t => {
+  const variants = [
+    ['unexpected alias name', f => fs.renameSync(path.join(f.directory, 'applypatch'), path.join(f.directory, 'other'))],
+    ['unexpected extra entry', f => fs.writeFileSync(path.join(f.directory, 'owner-notes'), 'real data')],
+    ['regular alias file', f => { fs.unlinkSync(path.join(f.directory, 'applypatch')); fs.writeFileSync(path.join(f.directory, 'applypatch'), 'not a link'); }],
+    ['alias target mismatch', f => { const other = f.target.replace('/codex-darwin-arm64/', '/codex-darwin-x64/').replace('/aarch64-apple-darwin/', '/x86_64-apple-darwin/'); fs.mkdirSync(path.dirname(other), { recursive: true }); fs.copyFileSync(f.target, other); fs.unlinkSync(path.join(f.directory, 'applypatch')); fs.symlinkSync(other, path.join(f.directory, 'applypatch')); }],
+    ['arbitrary target executable', f => { const other = path.join(f.outside, 'codex'); fs.copyFileSync(f.target, other); for (const name of f.aliases) { fs.unlinkSync(path.join(f.directory, name)); fs.symlinkSync(other, path.join(f.directory, name)); } }],
+    ['nonexecutable native target', f => fs.chmodSync(f.target, 0o644)],
+    ['missing native target', f => fs.unlinkSync(f.target)],
+    ['directory native target', f => { fs.unlinkSync(f.target); fs.mkdirSync(f.target); }],
+    ['writable native target', f => fs.chmodSync(f.target, 0o777)],
+    ['symlink native target', f => { const actual = f.target + '-real'; fs.renameSync(f.target, actual); fs.symlinkSync(actual, f.target); }],
+    ['nonempty lock', f => fs.writeFileSync(path.join(f.directory, '.lock'), 'owner data')],
+    ['nonprivate lock', f => fs.chmodSync(path.join(f.directory, '.lock'), 0o644)],
+    ['linked lock', f => { fs.unlinkSync(path.join(f.directory, '.lock')); fs.symlinkSync(f.target, path.join(f.directory, '.lock')); }],
+    ['hardlinked lock', f => fs.linkSync(path.join(f.directory, '.lock'), path.join(f.outside, 'shared-lock'))],
+    ['nonprivate group', f => fs.chmodSync(f.directory, 0o755)],
+    ['nonprivate arg0 parent', f => fs.chmodSync(path.dirname(f.directory), 0o755)],
+    ['package-declared launcher group', () => {}],
+  ];
+  for (const [name, mutate] of variants) await t.test(name, async t => {
+    const f = codexLauncher(t); mutate(f);
+    const options = name === 'package-declared launcher group'
+      ? { installed: { files: [{ path: f.group, type: 'directory', mode: 0o700 }] } } : {};
+    const result = await inspectUpdateInventory(f.root, options);
+    assert.equal(result.complete, false);
+    assert.equal(result.warnings.some(item => item.code === 'rebuildable_codex_launcher'), false);
+    assert(relevant(result, f.group).includes('unknown_state'));
+  });
+});
+
+test('Codex launcher recognition grants nothing to siblings, auth, sessions or differently named directories', async t => {
+  const f = codexLauncher(t);
+  for (const relative of ['runtime/user/.codex/auth.json', 'runtime/user/.codex/sessions',
+    'runtime/user/.codex/tmp/arg0/sibling', 'runtime/user/.codex/tmp/other/apply_patch']) {
+    fs.mkdirSync(path.dirname(path.join(f.root, relative)), { recursive: true });
+    fs.symlinkSync(f.target, path.join(f.root, relative));
+  }
+  const withValidGroup = await inspectUpdateInventory(f.root);
+  assert(withValidGroup.warnings.some(item => item.code === 'rebuildable_codex_launcher' && item.path === f.group));
+  for (const relative of ['runtime/user/.codex/auth.json', 'runtime/user/.codex/sessions',
+    'runtime/user/.codex/tmp/arg0/sibling', 'runtime/user/.codex/tmp/other/apply_patch']) {
+    assert(relevant(withValidGroup, relative).includes('linked_state_path'), relative);
+  }
+  const renamed = f.group.replace('codex-arg0aB123z', 'other-aB123z');
+  fs.renameSync(f.directory, path.join(f.root, renamed));
+  const result = await inspectUpdateInventory(f.root);
+  for (const relative of ['runtime/user/.codex/auth.json', 'runtime/user/.codex/sessions',
+    'runtime/user/.codex/tmp/arg0/sibling', 'runtime/user/.codex/tmp/other/apply_patch',
+    ...f.aliases.map(name => `${renamed}/${name}`)]) {
+    assert(relevant(result, relative).includes('linked_state_path'), relative);
+  }
+  assert.equal(result.warnings.some(item => item.code === 'rebuildable_codex_launcher'), false);
+});
 
 test('an external brain backup output does not block a software update, including paths with spaces', async t => {
   const root = home(t);

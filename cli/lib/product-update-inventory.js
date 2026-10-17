@@ -110,6 +110,14 @@ const PM2_SOCKETS = new Set(['runtime/pm2/pub.sock', 'runtime/pm2/rpc.sock']);
 const STRAY_PM2_SOCKETS = new Set(['runtime/user/.pm2/pub.sock', 'runtime/user/.pm2/rpc.sock']);
 const CHROME_SINGLETON_SOCKET = 'runtime/user/.home23/chrome-cdp/SingletonSocket';
 const CHROME_SOCKET_TARGET = /^\/var\/folders\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/T\/com\.google\.Chrome\.[A-Za-z0-9_-]+\/SingletonSocket$/;
+const CODEX_ARG0_DIRECTORY = /^runtime\/user\/\.codex\/tmp\/arg0\/codex-arg0[A-Za-z0-9]{1,64}$/;
+const CODEX_ARG0_ALIASES = ['apply_patch', 'applypatch', 'codex-execve-wrapper'];
+const CODEX_NATIVE_TRIPLES = {
+  'darwin-arm64': ['aarch64-apple-darwin'],
+  'darwin-x64': ['x86_64-apple-darwin'],
+  'linux-arm64': ['aarch64-unknown-linux-musl', 'aarch64-unknown-linux-gnu'],
+  'linux-x64': ['x86_64-unknown-linux-musl', 'x86_64-unknown-linux-gnu'],
+};
 // app/config/agents.json is not scanned: every Start regenerates it from the
 // instance configs below before any process runs, so its paths are derived.
 const SCAN_FILES = ['.home23-host.json', 'app/.home23-state.json', 'app/config/home.yaml', 'app/config/targets.yaml', 'app/config/secrets.yaml'];
@@ -157,6 +165,42 @@ export function residentEngines(names) {
 
 const reason = (code, message, extra = {}) => ({ code, message, ...extra });
 const exists = file => { try { lstatSync(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
+
+/** Rust Codex's arg0 aliases are generated launchers, not external home data.
+ * Inspect only the complete private group and target metadata. Never traverse,
+ * execute or copy the native executable; auth/session paths get no exemption.
+ * This classification does not establish that a coding job is idle. */
+function isCodexLauncherGroup(root, relative, manifestPaths) {
+  const directory = join(root, relative), uid = process.getuid?.();
+  if (!Number.isInteger(uid)) return false;
+  const privateDirectory = file => {
+    const stat = lstatSync(file);
+    return stat.isDirectory() && stat.uid === uid && (stat.mode & 0o7777) === 0o700;
+  };
+  try {
+    if (!privateDirectory(directory) || !privateDirectory(dirname(directory))) return false;
+    const names = ['.lock', ...CODEX_ARG0_ALIASES].sort();
+    const entries = readdirSync(directory).filter(name => !isOsMetadataPath(`${relative}/${name}`)).sort();
+    if (JSON.stringify(entries) !== JSON.stringify(names)
+      || [relative, ...names.map(name => `${relative}/${name}`)].some(file => manifestPaths.has(file))) return false;
+    const lock = lstatSync(join(directory, '.lock'));
+    if (!lock.isFile() || lock.uid !== uid || (lock.mode & 0o7777) !== 0o600 || lock.size !== 0 || lock.nlink !== 1) return false;
+    let target;
+    for (const name of CODEX_ARG0_ALIASES) {
+      const file = join(directory, name), stat = lstatSync(file);
+      if (!stat.isSymbolicLink() || stat.uid !== uid) return false;
+      const current = readlinkSync(file);
+      if (target !== undefined && current !== target) return false;
+      target = current;
+    }
+    if (!isAbsolute(target) || target !== resolve(target)) return false;
+    const native = /\/node_modules\/@openai\/codex\/node_modules\/@openai\/codex-(darwin|linux)-(arm64|x64)\/vendor\/([^/]+)\/bin\/codex$/.exec(target);
+    if (!native || !CODEX_NATIVE_TRIPLES[`${native[1]}-${native[2]}`]?.includes(native[3])) return false;
+    const executable = lstatSync(target);
+    return executable.isFile() && (executable.uid === uid || executable.uid === 0)
+      && (executable.mode & 0o111) !== 0 && (executable.mode & 0o6022) === 0;
+  } catch { return false; }
+}
 
 function allowedExternal(home, token) {
   const socket = socketRootFor(home);
@@ -423,6 +467,15 @@ export async function inspectUpdateInventory(homeRoot, { installed, candidate, s
       if (declared || !CHROME_SOCKET_TARGET.test(target))
         reasons.push(reason('linked_state_path', `Chrome endpoint ${relative} is not an owned temporary socket link.`, { path: relative }));
       return;
+    }
+    if (CODEX_ARG0_DIRECTORY.test(relative)) {
+      if (isCodexLauncherGroup(root, relative, manifestPaths)) {
+        warnings.push(reason('rebuildable_codex_launcher', 'The private Codex arg0 aliases are rebuildable launcher artifacts.', { path: relative }));
+        return;
+      }
+      reasons.push(reason('unknown_state', `Codex launcher group ${relative} does not match the complete private generated layout.`, { path: relative }));
+      // Keep scanning malformed groups so ordinary outside-state link checks
+      // still identify every real dependency instead of widening this exception.
     }
     if (!scanSoftware && declared && (
       (stat.isDirectory() && declared.type !== 'directory') ||
