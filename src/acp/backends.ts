@@ -32,13 +32,14 @@ const { extraPathDirs, resolveBinFrom } = require('../../shared/cli-binary.cjs')
 const SUMMARY_MAX = 300;
 const OTHER_RAW_MAX = 500;
 const RESULT_TEXT_MAX = 4000;
-export const CODEX_MODELS = ['gpt-5.6-sol', 'gpt-6-astra'] as const;
-export const DEFAULT_CODEX_MODEL = CODEX_MODELS[0];
+export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 
 export function resolveCodexModel(model?: string): string {
-  const selected = model ?? DEFAULT_CODEX_MODEL;
-  if (!(CODEX_MODELS as readonly string[]).includes(selected)) {
-    throw new Error(`Unsupported Codex model "${selected}". Minimum contract: Sol 5.6. Supported models: ${CODEX_MODELS.join(', ')}; no job was launched and no downgrade was attempted`);
+  const selected = model === undefined ? DEFAULT_CODEX_MODEL : model;
+  // CLI model availability belongs to the CLI's own account and current
+  // catalog. Validate an identifier, not a frozen list of model releases.
+  if (typeof selected !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(selected)) {
+    throw new Error('Invalid Codex model identifier; no job was launched and no fallback was attempted');
   }
   return selected;
 }

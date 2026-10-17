@@ -203,7 +203,7 @@ export const codingRunTool: ToolDefinition = {
       backend: { type: 'string', description: 'Omit to use the configured default. Use coding_backends to discover enabled backends; never guess an id.' },
       cwd: { type: 'string', description: 'Working directory for the job (default: project root)' },
       label: { type: 'string', description: 'Short human label for the job' },
-      model: { type: 'string', description: 'Codex supports gpt-5.6-sol (default minimum) and gpt-6-astra only; older or unknown overrides are rejected without fallback. Cursor accepts its configured CLI model identifiers.' },
+      model: { type: 'string', description: 'Model identifier passed unchanged to the selected CLI. Omit to retain its configured default; a saved continuation retains its original model. The CLI validates availability; failures never trigger a fallback model.' },
       effort: { type: 'string', description: 'Legacy backend field; current Codex/Cursor launches reject this option. Select Cursor parameterized models when Cursor reasoning controls are needed.' },
       isolation: { type: 'string', enum: ['worktree', 'checkpoint', 'none'], description: 'Isolation mode; defaults to worktree inside the Home23 checkout' },
       wait_seconds: { type: 'number', description: 'Seconds to wait for completion before returning (0 = return immediately, max 600)' },
@@ -221,13 +221,14 @@ export const codingRunTool: ToolDefinition = {
     const prompt = String(input.prompt ?? '').trim();
     if (!prompt) return { content: 'coding_run requires a non-empty prompt.', is_error: true };
     const waitSeconds = waitBudget(input.wait_seconds, ctx.chatId);
+    if (input.model !== undefined && typeof input.model !== 'string') return { content: 'coding_run model must be a string.', is_error: true };
     try {
       const job = await bridge.startJob({
         prompt,
         backend: input.backend ? String(input.backend) : undefined,
         cwd: input.cwd ? String(input.cwd) : undefined,
         label: input.label ? String(input.label) : undefined,
-        model: input.model ? String(input.model) : undefined,
+        model: input.model as string | undefined,
         effort: input.effort ? String(input.effort) : undefined,
         isolation: input.isolation ? String(input.isolation) as CodingIsolation : undefined,
         appendSystemPrompt: input.append_system_prompt ? String(input.append_system_prompt) : undefined,
@@ -427,7 +428,7 @@ export const codingBackendsTool: ToolDefinition = {
     const lines = backends.map(b =>
       `- ${b.id}${'enabled' in b && !b.enabled ? " [disabled]" : ""}${'isDefault' in b && b.isDefault ? " [default]" : ""}: ${b.available ? `installed (binary found: ${b.bin})` : 'NOT INSTALLED (binary not found)'}${b.defaultModel ? ` default model ${b.defaultModel}` : ''}${'selectable' in b && !b.selectable ? ` (${b.note ?? 'not selectable'})` : ''}`,
     );
-    lines.push('Supported coding backends are codex and cursor only. Codex models: gpt-5.6-sol (default minimum) and gpt-6-astra; older or unknown overrides are rejected without fallback. Codex accepts model and sandbox configuration plus configured extraArgs; Cursor accepts model and add-dir/extraArgs. Omit effort, append_system_prompt, allowed_tools, disallowed_tools and max_budget_usd for current backends. This list only reports binary resolution; it does not probe authentication, balance, or provider health.');
+    lines.push('Supported coding backends are codex and cursor only. Model identifiers pass unchanged to each CLI; its own account and current catalog determine availability, with no fallback model on failure. Codex accepts model and sandbox configuration plus configured extraArgs; Cursor accepts model and add-dir/extraArgs. Omit effort, append_system_prompt, allowed_tools, disallowed_tools and max_budget_usd for current backends. This list only reports binary resolution; it does not probe authentication, balance, or provider health.');
     return { content: lines.join('\n') };
   },
 };
