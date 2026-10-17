@@ -327,7 +327,8 @@ test('coding_backends reports installed binaries without claiming provider healt
   assert.match(result.content, /cursor: NOT INSTALLED \(binary not found\) default model auto/);
   assert.doesNotMatch(result.content, /grok-build|claude-code/);
   assert.match(result.content, /Supported coding backends are codex and cursor only/);
-  assert.match(result.content, /gpt-5.6-sol.*gpt-6-astra.*rejected without fallback/);
+  assert.doesNotMatch(result.content, /models: gpt-5.6-sol|unknown overrides are rejected|default minimum/);
+  assert.match(result.content, /model.*unchanged|unchanged.*model/i);
   assert.match(result.content, /does not probe authentication, balance, or provider health/i);
 });
 
@@ -494,4 +495,13 @@ test('untracked-only checkpoint never claims the tree was clean or backed up', a
   assert.match(result.content, /pre-job working tree modified/);
   assert.match(result.content, /untracked files are not backed up/);
   assert.doesNotMatch(result.content, /tree was clean/);
+});
+
+
+test('coding_run preserves an explicit empty model for validation instead of silently choosing a default', async () => {
+  const bridge = makeFakeBridge();
+  await codingRunTool.execute({ prompt: 'offline fixture only', model: '' }, ctx(bridge));
+  const start = bridge.calls.find(call => call.method === 'startJob');
+  assert.ok(start);
+  assert.equal((start.args[0] as { model?: string }).model, '');
 });

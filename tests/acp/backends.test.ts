@@ -538,13 +538,15 @@ test('buildChildEnv strips provider secrets, honors safe passthrough, augments P
   }
 });
 
-test('Codex pins the minimum known contract and rejects model/config escape routes', () => {
+test('Codex preserves its default and passes valid current or future model identifiers unchanged', () => {
   assert.ok(codex.buildArgs(baseOpts()).includes('gpt-5.6-sol'));
-  for (const model of ['gpt-5.6-sol', 'gpt-6-astra']) {
-    assert.ok(codex.buildArgs(baseOpts({ model })).includes(model));
+  for (const model of ['gpt-5.6-sol', 'gpt-6-astra', 'gpt-6.1-sol', 'future-coding-model-2027', 'org/custom-model:2027.01']) {
+    const args = codex.buildArgs(baseOpts({ model }));
+    assert.equal(args[args.indexOf('--model') + 1], model);
+    assert.equal(args.filter(arg => arg === '--model').length, 1);
   }
-  for (const model of ['gpt-5', 'gpt-5.5', 'gpt-5.6', 'gpt-6', 'gpt-7', '']) {
-    assert.throws(() => codex.buildArgs(baseOpts({ model })), /Unsupported Codex model/);
+  for (const model of ['', ' gpt-6.1-sol', 'gpt-6.1-sol ', '--help', '-mcurrent', 'name\n--profile=x', 'name\tvalue', 'name\0value', 'name=value']) {
+    assert.throws(() => codex.buildArgs(baseOpts({ model })), /Invalid Codex model/);
   }
   for (const extraArgs of [['--model', 'gpt-5.5'], ['--model=gpt-5.5'], ['-mgpt-5.5'], ['--profile', 'old'], ['--oss'], ['-c', 'model="gpt-5.5"'], ['--config=model_provider="other"'], ['-cmodel="gpt-5"'], ['-c', 'model_reasoning_effort="high"\nmodel="gpt-5"']]) {
     assert.throws(() => codex.buildArgs(baseOpts({ extraArgs })), /extraArgs/);

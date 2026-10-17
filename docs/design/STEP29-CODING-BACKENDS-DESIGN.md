@@ -8,10 +8,13 @@ receipt compatibility; they cannot launch new jobs.
 
 Codex launches `codex exec --json --skip-git-repo-check --model MODEL PROMPT`.
 The working directory comes from process spawn, not a CLI directory override.
-Known supported contracts are `gpt-5.6-sol` (the default and minimum) and
-`gpt-6-astra`. Older and unknown identifiers fail before workspace or job
-creation. Config defaults, explicit overrides and saved continuation settings
-all pass the same validation. No fallback or downgrade is attempted.
+Configured models, explicit selections and saved continuation models pass to
+the CLI unchanged. The existing default remains `gpt-5.6-sol` when neither an
+explicit nor configured model is supplied. Home23 rejects malformed identifiers
+before workspace or job creation; it does not maintain a model release allowlist.
+The CLI validates availability with its own account and current catalog. A
+rejected model fails the job; Home23 never retries with another model. Home23
+provider discovery can inform choices but does not gate the CLI's separate account.
 Execution-policy options precede the `resume SESSION_ID` subcommand, because
 Codex accepts `--sandbox` on `exec`, not on `exec resume`. Continuation retains
 the saved sandbox. Without an explicit sandbox, allowlist mode uses
