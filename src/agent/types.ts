@@ -43,6 +43,9 @@ export interface ToolDefinition {
 export interface ToolResult {
   contextEvidenceId?: string;
   content: string;
+  /** Exact requested file text stays in content for task evidence. Display
+   * pagination uses absolute UTF-16 offsets into the original file. */
+  fileRead?: { path: string; offsetChars: number; totalChars: number };
   media?: MediaAttachment[];
   is_error?: boolean;
   resultHandle?: string;
