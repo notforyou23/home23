@@ -1155,9 +1155,13 @@ export class CronScheduler {
       process: processLayer,
       task: options.withheld
         ? { status: 'skipped', reason: 'task not attempted because scheduler withheld execution' }
-        : result.status === 'ok'
-          ? { status: 'success', reason: 'task handler returned ok' }
-          : { status: 'failed', reason: result.error ?? 'task handler returned error' },
+        : result.status === 'error'
+          ? { status: 'failed', reason: result.error ?? 'task handler returned error' }
+          : result.semanticStatus === 'satisfied'
+            ? { status: 'success', reason: 'handler reported intended task outcome satisfied' }
+            : result.semanticStatus === 'failed'
+              ? { status: 'failed', reason: result.error ?? 'handler reported intended task outcome failed' }
+              : { status: 'unknown', reason: 'handler completed; task accomplishment was not verified' },
       state: options.statePersisted
         ? { status: 'success', reason: 'job state persisted after decision/run update' }
         : { status: 'failed', reason: 'job state persistence failed after decision/run update' },
