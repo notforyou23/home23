@@ -105,7 +105,7 @@ test('an oversized carry-forward surface loads a bounded head with an exact self
   const content = '\n\n# Carry forward\n' + 'Listen carefully 🙂. Preserve the source and read the continuation.\n\n'.repeat(4000) + 'TAIL_SENTINEL';
   const dir = ws({ 'CARRY_FORWARD.md': content });
   try {
-    const result = await assemble(dir, 'carry forward', [{ file: 'CARRY_FORWARD.md', keywords: ['carry forward'] }]);
+    const result = await assemble(dir, 'carry forward', [{ file: 'CARRY_FORWARD.md', keywords: ['carry forward'], budget: AUTHORED_SURFACE_MAX_CHARS }]);
     assert.ok(result.block.length < AUTHORED_SURFACE_MAX_CHARS + 200);
     assert.doesNotMatch(result.block, /TAIL_SENTINEL/);
     const marker = result.block.match(/\[context-cap: CARRY_FORWARD.md is (\d+) chars; loaded first (\d+) chars; continue with self_read file="CARRY_FORWARD.md" offset=(\d+)\]/);
@@ -129,17 +129,23 @@ for (const degraded of [false, true]) test(`authored surfaces share the total ce
       workspacePath: dir, brainDir: path.join(dir, 'brain'), enginePort: 5002, sessionId: 'cap-fixture',
       signal: new AbortController().signal, semanticEmbed: () => null,
       contextSearch: degraded ? async () => { throw new Error('fixture unavailable'); } : emptySearch,
-      triggeredSurfaces: Object.keys(files).map(file => ({ file, keywords: ['carry forward'] })),
+      triggeredSurfaces: Object.keys(files).map(file => ({ file, keywords: ['carry forward'], budget: AUTHORED_SURFACE_MAX_CHARS })),
     }, ledger);
     assert.equal(result.degraded, degraded);
     assert.ok(result.block.length <= SITUATIONAL_AWARENESS_MAX_CHARS);
     assert.ok(result.block.endsWith('[/SITUATIONAL AWARENESS]'));
-    assert.match(result.block, /Relevant context \(NOTE_2.md\):\n\[context-cap: omitted/);
+    assert.match(result.block, /CONTEXT OMISSIONS/);
+    assert.match(result.block, /NOTE_2 \(total_ceiling\)/);
     assert.match(result.block, /self_read file="NOTE_2.md" offset=0/);
     const caps = result.events.filter(event => event.event_type === 'SituationalAwarenessCapped');
     assert.equal(caps.length, 2); assert.ok(caps.every(event => event.payload.reason === 'total_ceiling'));
     assert.deepEqual(ledger.readByType('SituationalAwarenessCapped').map(event => ({ id: event.event_id, payload: event.payload })),
       caps.map(event => ({ id: event.event_id, payload: event.payload })), 'ranking caps reach the ledger on both paths');
+    assert.deepEqual(result.surfacesLoaded, ['NOTE_0', 'NOTE_1']);
+    const receipt = result.events.find(event => event.event_type === 'RetrievalExecuted')!;
+    assert.deepEqual(receipt.payload.surfaces_selected, ['NOTE_0', 'NOTE_1', 'NOTE_2', 'NOTE_3']);
+    assert.deepEqual(receipt.payload.surfaces_loaded, ['NOTE_0', 'NOTE_1']);
+    assert.deepEqual(receipt.payload.surfaces_omitted, ['NOTE_2', 'NOTE_3']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -157,9 +163,7 @@ test('authored surfaces do not consume the separate retrieved-evidence budget', 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('triggered authored doctrine survives both the file target and aggregate context limit', async () => {
-  // DOCTRINE.md is a DOMAIN_SURFACE with a 2500 budget. A >2500 file used to be
-  // sliced mid-content; now whole sections are kept and an omission is marked.
+test('triggered authored doctrine honors its preview budget and leaves the complete source recoverable', async () => {
   const big = '# Doctrine\n' + Array.from({ length: 30 }, (_, i) => `## Rule ${i}\n${'principle '.repeat(30)}`).join('\n');
   const dir = ws({ 'DOCTRINE.md': big });
   try {
@@ -171,8 +175,16 @@ test('triggered authored doctrine survives both the file target and aggregate co
       { file: 'DOCTRINE.md', label: 'DOCTRINE', keywords: ['pursuit'], budget: 500 },
     ]);
     assert.match(withDoctrine.block, /Relevant context \(DOCTRINE\)/);
-    // Budgeted output carries the honest omission diagnostic, not a mid-word cut.
-    assert.ok(withDoctrine.block.includes(big.trim()));
+    assert.ok(!withDoctrine.block.includes(big.trim()));
+    const marker = withDoctrine.block.match(/loaded first (\d+) chars; continue with self_read file="DOCTRINE.md" offset=(\d+)/);
+    assert.ok(marker);
+    assert.equal(marker[1], marker[2]);
+    const offset = Number(marker[1]);
+    assert.ok(offset > 0 && offset < 500);
+    const continuation = await selfReadTool.execute({ file: 'DOCTRINE.md', offset, limit: 200 }, { workspacePath: dir } as never);
+    assert.ok(continuation.content.startsWith(big.slice(offset, offset + 200)));
+    assert.ok(withDoctrine.events.some(event => event.event_type === 'SituationalAwarenessCapped'
+      && event.payload.reason === 'file_budget' && event.payload.ceiling === 500));
     assert.ok(withDoctrine.block.endsWith('[/SITUATIONAL AWARENESS]'));
     void r;
   } finally {
