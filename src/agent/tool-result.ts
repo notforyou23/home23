@@ -10,6 +10,7 @@ import type {
 } from './types.js';
 import { applyForegroundToolPolicy, foregroundDetachRefusal } from './foreground-tool-policy.js';
 import { taskContextTool } from './tools/task-context.js';
+import { buildDelegationHandoff } from './delegation-handoff.js';
 
 const require = createRequire(import.meta.url);
 // One admission-deadline definition for the home and the resident.
@@ -576,9 +577,24 @@ export async function executePlannedTool(input: {
     if (!workBrainOperations?.withWorkingThread) throw new Error('Joined operation runtime is unavailable');
     workBrainOperations = workBrainOperations.withWorkingThread(`${destination.parentWorkId}:${input.toolCallId}`);
   }
+  let executionArgs = input.canonicalArgs;
+  let delegationSnapshot = input.context.delegationSnapshot;
+  if (input.context.chatId !== attemptChatId && (delegationSnapshot || input.name === 'spawn_agent' && input.canonicalArgs.evidence_refs !== undefined)) {
+    // Promotion creates a new task scope. Explicitly carry selected context
+    // across this boundary before spawn_agent reads that scope; never give the
+    // worker a cross-chat selector or leave parent-only IDs pointing nowhere.
+    const handoff = buildDelegationHandoff(input.context,
+      input.name === 'spawn_agent' ? { evidence_refs: input.canonicalArgs.evidence_refs } : {}, attemptChatId);
+    delegationSnapshot = handoff.snapshot;
+    if (input.name === 'spawn_agent' && Array.isArray(input.canonicalArgs.evidence_refs)) {
+      executionArgs = { ...input.canonicalArgs, evidence_refs: input.canonicalArgs.evidence_refs.map(id =>
+        handoff.evidenceRefs.find(entry => entry.parentEvidenceId === id)!.childEvidenceId) };
+    }
+  }
   const exactContext: ToolContext = {
     ...input.context,
     chatId: attemptChatId,
+    delegationSnapshot,
     coordinationWorkDestination: destination,
     parentWorkId: destination.parentWorkId,
     onForegroundDetachRequired: undefined,
@@ -601,11 +617,11 @@ export async function executePlannedTool(input: {
       parentWorkId: destination.parentWorkId,
     },
   };
-  onEvent({ type: 'tool_start', tool: input.name, args: input.canonicalArgs,
+  onEvent({ type: 'tool_start', tool: input.name, args: executionArgs,
     toolCallId: input.toolCallId, sourceEventType: 'runtime.promoted_tool_call' });
   await input.beforeExecute?.();
   abortController.signal.throwIfAborted();
-  const result = await input.registry.execute(input.name, input.canonicalArgs, exactContext);
+  const result = await input.registry.execute(input.name, executionArgs, exactContext);
   onEvent({ type: 'tool_result', tool: input.name, toolCallId: input.toolCallId,
     result: result.content, exactResult: result.content, success: result.is_error !== true,
     resultHandle: result.resultHandle, sourceEventType: 'runtime.promoted_tool_result' });

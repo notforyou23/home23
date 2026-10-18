@@ -59,6 +59,7 @@ export function buildDelegationHandoff(ctx: ToolContext, input: Record<string, u
   block: string;
   snapshot?: Readonly<DelegationSnapshot>;
   needsTaskContext: boolean;
+  evidenceRefs: ReadonlyArray<{ parentEvidenceId: string; childEvidenceId: string }>;
 } {
   if (input.context_summary !== undefined && typeof input.context_summary !== 'string') throw new TypeError('spawn_agent context_summary must be text.');
   const requested = input.evidence_refs ?? [];
@@ -124,5 +125,5 @@ export function buildDelegationHandoff(ctx: ToolContext, input: Record<string, u
     ...(summaryEvidenceId ? [`Complete working summary: task_context read ${summaryEvidenceId}.`] : []),
     '[/DELEGATION HANDOFF]',
   ];
-  return { block: lines.join('\n\n'), snapshot: childSnapshot, needsTaskContext: imported.length > 0 || Boolean(summaryEvidenceId) };
+  return { block: lines.join('\n\n'), snapshot: childSnapshot, needsTaskContext: imported.length > 0 || Boolean(summaryEvidenceId), evidenceRefs: imported };
 }
