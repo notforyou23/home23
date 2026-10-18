@@ -55,7 +55,7 @@ function fixture(t: TestContext, budget = 400_000) {
     registry, history, compaction, maxTokens: 256,
     contextManager: { getSystemPrompt: () => 'DURABLE-IDENTITY: Jerry is a continuous individual.',
       getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
-    toolContext: { brainOperations: operations } as never, workspacePath: workspace });
+    toolContext: { brainOperations: operations, projectRoot: root, workspacePath: workspace, agentName: 'test' } as never, workspacePath: workspace });
   (agent as any).codexCredentialsProvider = async () => ({ accessToken: 'fixture', refreshToken: 'fixture',
     expires: Date.now() + 60000, accountId: 'fixture' });
   (agent as any).relationshipLedger.retrieveForContext = () => ({ text: 'RELATIONSHIP-CONTINUITY: shared history.', entries: [{ id: 'fixture' }] });
