@@ -12,6 +12,30 @@ export interface AssignmentConclusion {
   observedOwnerMessageSequence?: number;
 }
 
+// Match product-control's scheduled admission provenance. A coincidentally
+// shared message or an unrelated schedule must not hide an owner assignment.
+// Build the indexed admission set once per statement, rather than seeking
+// every scheduled event again for each root in an established home's history.
+const SCHEDULED_RUN_MEMBERSHIP = `CASE WHEN w.kind IN ('channel.bot_turn','bot_turn','resident_turn')
+  AND (+w.origin_message_id,w.channel_id,w.principal_id,w.target_principal_id) IN (
+    SELECT json_extract(scheduled.payload_json,'$.messageId'),scheduled.channel_id,
+      scheduled.actor_principal_id,
+      coalesce(json_extract(scheduled.payload_json,'$.targetBotId'),json_extract(scheduled.payload_json,'$.botId'))
+    FROM events scheduled
+    WHERE scheduled.aggregate_kind='scheduled_channel_run' AND scheduled.aggregate_version=1
+      AND json_extract(scheduled.payload_json,'$.channelId')=scheduled.channel_id
+      AND json_extract(scheduled.payload_json,'$.botId')=scheduled.actor_principal_id
+  ) THEN 1 ELSE 0 END`;
+
+/** A scheduled firing is a bounded execution, not a continuing assignment.
+ * Keep the same terminal presentation as the product Work card, without
+ * changing its actual execution receipt or the resident's assessment. */
+function scheduledTerminalState(executionState: string, conclusion: AssignmentConclusion | null): string | null {
+  if (!['succeeded','failed','cancelled'].includes(executionState)) return null;
+  return executionState !== 'succeeded' ? executionState : conclusion?.state === 'blocked' ? 'failed'
+    : conclusion?.state === 'cancelled' ? 'cancelled' : conclusion?.state === 'complete' ? 'complete' : 'returned';
+}
+
 /** Shared assignment conclusions live in Core's existing event journal. They
  * are distinct from execution terminal state and from the resident's private
  * Seed/development. A delivered explanation does not close an assignment. */
@@ -183,6 +207,9 @@ export function createResidentAssignments(database: M11Database) {
         AND (w.state IN ('queued','leased','running','cancelling') OR w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1))
       ORDER BY w.created_at DESC LIMIT 1000`, principalId);
     const roots = [...new Set(works.map(work => root(work.id)))];
+    const scheduled = new Set(roots.length ? database.readAll<{ id: string }>(`SELECT w.id FROM works w
+      WHERE w.id IN (SELECT value FROM json_each(?)) AND ${SCHEDULED_RUN_MEMBERSHIP}`, JSON.stringify(roots))
+      .map(row => row.id) : []);
     const result = [];
     for (const id of roots) {
       const conclusion = latest(id);
@@ -192,8 +219,13 @@ export function createResidentAssignments(database: M11Database) {
         coalesce(p.summary,m.body_text) AS summary,m.body_text AS originalRequest,w.created_at AS createdAt,
         w.terminal_reason AS terminalReason FROM works w LEFT JOIN work_thread_presentations p ON p.work_id=w.id
         LEFT JOIN messages m ON m.id=w.origin_message_id WHERE w.id=?`, id)!;
-      const assignmentState = presentationState(id, String(work.state), conclusion);
+      const boundedState = scheduled.has(id) ? scheduledTerminalState(String(work.state), conclusion) : null;
+      // History remains inspectable with include_terminal or an exact status
+      // read. A past scheduled firing must not fill today's current backlog.
+      if (!includeClosed && boundedState !== null) continue;
+      const assignmentState = boundedState ?? presentationState(id, String(work.state), conclusion);
       if (!includeClosed && ['complete', 'cancelled', 'failed'].includes(assignmentState)) continue;
+      if (scheduled.has(id)) work.scheduledRun = true;
       const initiative = database.readOne<{ payload: string }>("SELECT payload_json AS payload FROM events WHERE aggregate_kind='resident_initiation_work' AND aggregate_id=? AND aggregate_version=1", id);
       if (initiative) {
         const value = JSON.parse(initiative.payload) as ResidentInitiationAdmission;
@@ -269,7 +301,7 @@ export function createResidentAssignments(database: M11Database) {
     const workRows = database.readAll<Record<string, unknown>>(`SELECT w.id,w.channel_id AS channelId,w.state,
       w.origin_message_id AS originMessageId,coalesce(p.title,substr(m.body_text,1,160),'Assignment') AS title,
       coalesce(p.summary,m.body_text) AS summary,m.body_text AS originalRequest,w.created_at AS createdAt,
-      w.terminal_reason AS terminalReason,
+      w.terminal_reason AS terminalReason,${SCHEDULED_RUN_MEMBERSHIP} AS scheduledRun,
       EXISTS(SELECT 1 FROM events stopped WHERE stopped.aggregate_kind='resident_initiation_stop' AND stopped.aggregate_id=w.id AND stopped.aggregate_version=1) AS stoppedByOwner,
       EXISTS(SELECT 1 FROM events initiation WHERE initiation.aggregate_kind='resident_initiation_work'
         AND initiation.aggregate_id=w.id AND initiation.aggregate_version=1
@@ -330,8 +362,9 @@ export function createResidentAssignments(database: M11Database) {
       else if (outcome && (delivered.has(id) || (outcome.settledAt !== null && outcome.reviewState === 'succeeded'))) assignmentState = 'returned';
       else assignmentState = outcome || work.actionInitiative ? 'needs_review' : 'complete';
       if (work.stoppedByOwner) assignmentState = 'cancelled';
-      const { stoppedByOwner: _, actionInitiative: _actionInitiative, ...presentation } = work;
-      return [{ ...presentation, assignmentState, conclusion }];
+      if (work.scheduledRun) assignmentState = scheduledTerminalState(String(work.state), conclusion) ?? assignmentState;
+      const { stoppedByOwner: _, actionInitiative: _actionInitiative, scheduledRun, ...presentation } = work;
+      return [{ ...presentation, ...(scheduledRun ? { scheduledRun: true } : {}), assignmentState, conclusion }];
     });
     return { assignments, cursor, candidateCount: candidates.length, scannedCount: batch.length };
   }
