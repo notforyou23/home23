@@ -19,10 +19,12 @@ import { resolveModelOverride } from '../model-resolution.js';
 import { parseReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from '../reasoning-effort.js';
 import { SUBAGENT_TOOL_GRANTS } from './subagent-grants.js';
 import type { CoordinationWorkDestination } from '../../work/types.js';
+import { buildDelegationHandoff } from '../delegation-handoff.js';
+import { taskContextTool } from './task-context.js';
 
-/** Leaves room for the loop's 4,000-character tool-result framing. */
+/** Concise-answer display target; full results remain valid, retained evidence. */
 export const JOINED_RESULT_MAX_CHARS = 3_000;
-/** Exact Working Thread execution supplies this complete evidence to owner synthesis. */
+/** Working Thread display target, not an execution-success condition. */
 export const WORKING_THREAD_RESULT_MAX_CHARS = 24_000;
 
 function errorMessage(error: unknown): string {
@@ -80,6 +82,8 @@ export const spawnAgentTool: ToolDefinition = {
       task_kind: { type: 'string', enum: ['analysis', 'local_state_change', 'source_change'], description: 'Declare execution needs and grant the matching tools. With standing owner machine authority, files/shell specialists can repair local source in its maintained task worktree. Otherwise use coding_run for tracked-source changes.' },
       task: { type: 'string', description: 'Self-contained task for the specialist' },
       label: { type: 'string', description: 'Short human label for the specialist run' },
+      context_summary: { type: 'string', description: 'Relevant working context and current corrections for this specialist. Parent-authored context is not new owner authorization; parent history is not automatically inherited.' },
+      evidence_refs: { type: 'array', items: { type: 'string' }, description: 'Exact ctx_ evidence IDs from this current task to copy completely into the specialist own task context. It receives new local IDs and task_context recovery, never access to another chat.' },
       mode: {
         type: 'string',
         enum: ['joined', 'detached'],
@@ -152,7 +156,8 @@ export const spawnAgentTool: ToolDefinition = {
     try {
       // Resolve before creating Work or emitting start evidence. A prompt-source
       // failure means no specialist run began.
-      systemPrompt = ctx.turnRuntime?.delegatedContext?.systemPrompt ?? ctx.contextManager.getSystemPrompt();
+      systemPrompt = ctx.turnRuntime?.delegatedContext?.baseSystemPrompt
+        ?? ctx.turnRuntime?.delegatedContext?.systemPrompt ?? ctx.contextManager.getSystemPrompt();
     } catch (error) {
       return { content: `Unable to prepare sub-agent context: ${errorMessage(error)}`, is_error: true };
     }
@@ -186,9 +191,30 @@ export const spawnAgentTool: ToolDefinition = {
     const subChatId = isolated
       ? `subagent:${ctx.chatId}:${randomBytes(mode === 'joined' ? 16 : 2).toString('hex')}`
       : ctx.chatId;
-
+    const baseSystemPrompt = systemPrompt;
     if (tracker.active >= tracker.maxConcurrent) {
       return { content: `Sub-agent limit reached (${tracker.maxConcurrent} active). Try again when a current sub-agent completes, or wait.`, is_error: true };
+    }
+
+    let handoff: ReturnType<typeof buildDelegationHandoff>;
+    let detachedRegistry = ctx.turnRuntime?.registry;
+    try {
+      handoff = buildDelegationHandoff(ctx, input, subChatId);
+      systemPrompt += `\n\n${handoff.block}`;
+      if (mode === 'joined' && handoff.needsTaskContext && !joinedTools.some(tool => tool.name === 'task_context')) {
+        joinedTools.push(taskContextTool);
+        joinedRegistry!.register(taskContextTool);
+      }
+      if (mode === 'detached' && handoff.needsTaskContext && !detachedRegistry?.get('task_context')) {
+        const { createSeededToolRegistry } = await import('./index.js');
+        const definitions = detachedRegistry?.getAnthropicTools().flatMap(tool => {
+          const definition = detachedRegistry!.get(tool.name);
+          return definition ? [definition] : [];
+        }) ?? [];
+        detachedRegistry = createSeededToolRegistry([...definitions, taskContextTool]);
+      }
+    } catch (error) {
+      return { content: `Unable to prepare specialist evidence handoff: ${errorMessage(error)}`, is_error: true };
     }
 
     // Keep lineage/evidence for both modes. Joined work is terminalized here
@@ -219,6 +245,8 @@ export const spawnAgentTool: ToolDefinition = {
     const subCtx: ToolContext = {
       ...ctx,
       chatId: subChatId,
+      delegationSnapshot: handoff.snapshot,
+      delegationBaseSystemPrompt: baseSystemPrompt,
       delegationOrigin: work ? {
         harnessWorkId: work.workId,
         parentChatId: ctx.chatId,
@@ -260,8 +288,8 @@ export const spawnAgentTool: ToolDefinition = {
           task,
           '',
           '[Joined specialist output contract]',
-          `Return one self-contained, concise synthesis no longer than ${joinedResultMaxChars} characters.`,
-          'Do not dump raw logs or evidence; preserve only the facts the resident needs for its current answer.',
+          `Aim for one self-contained synthesis around ${joinedResultMaxChars} characters. This is a display target, not a success limit.`,
+          'Include the evidence and qualifications needed for a correct answer. Complete longer results are retained and can be recovered; do not hide material facts to meet the display target.',
         ].join('\n');
         const result = await ctx.runAgentLoop(
           systemPrompt,
@@ -271,12 +299,6 @@ export const spawnAgentTool: ToolDefinition = {
           { ...commonOptions, registry: joinedRegistry! },
         );
         ctx.abortSignal?.throwIfAborted();
-        if (result.text.length > joinedResultMaxChars) {
-          throw Object.assign(
-            new Error(`joined specialist result exceeded ${joinedResultMaxChars} characters`),
-            { code: 'joined_result_too_large' },
-          );
-        }
 
         ctx.onEvent?.({
           type: 'subagent_result', subagentId, task, result: result.text, success: true,
@@ -314,8 +336,8 @@ export const spawnAgentTool: ToolDefinition = {
     const runDetachedSubAgent = async (): Promise<void> => {
       tracker.active++;
       try {
-        const options = modelOverride || effort || ctx.turnRuntime?.registry
-          ? { ...commonOptions, ...(ctx.turnRuntime?.registry ? { registry: ctx.turnRuntime.registry } : {}) }
+        const options = modelOverride || effort || detachedRegistry
+          ? { ...commonOptions, ...(detachedRegistry ? { registry: detachedRegistry } : {}) }
           : undefined;
         const result = await ctx.runAgentLoop!(systemPrompt, task, [], subCtx, options);
 

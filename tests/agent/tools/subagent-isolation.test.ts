@@ -446,7 +446,7 @@ test('joined specialist waits, stays isolated and restricted, then returns its e
   assert.equal(result.content, 'verbatim specialist result');
   assert.deepEqual(result.media, media);
   assert.match(captured.ctx!.chatId, /^subagent:ios_parent:[0-9a-f]{32}$/);
-  assert.match(captured.message, /no longer than 3000 characters/);
+  assert.match(captured.message, /around 3000 characters/);
   assert.deepEqual(captured.tools, []);
   const registry = (captured.options as { registry: { size: number; get(name: string): unknown } }).registry;
   assert.equal(registry.size, 0, 'an empty grant remains an explicit empty registry');
@@ -631,9 +631,9 @@ test('joined result remains complete through the real parent display boundary', 
     modelLimit: 4_000,
     eventLimit: 4_000,
   });
-  assert.equal(oversized.success, false);
-  assert.equal(oversized.result.is_error, true);
-  assert.match(oversized.modelContent, /exceeded 3000 characters/);
+  assert.equal(oversized.success, true);
+  assert.equal(oversized.result.is_error, undefined);
+  assert.equal(oversized.modelContent, 'z'.repeat(JOINED_RESULT_MAX_CHARS + 1));
   assert.doesNotMatch(oversized.modelContent, /OUTPUT TRUNCATED/);
 });
 
@@ -658,7 +658,7 @@ test('prompt construction failure creates no Work or start event in either mode'
   }
 });
 
-test('canonical exact specialist preserves full evidence through owner synthesis with a bounded Work budget', async () => {
+test('canonical exact specialist preserves full evidence through owner synthesis beyond the display target', async () => {
   const destination = {
     kind: 'coordination' as const, parentWorkId: 'wrk_root', channelId: 'chn_jerry',
     conversationId: 'cnv_jerry', originMessageId: 'msg_owner', attemptId: 'att_root',
@@ -675,7 +675,7 @@ test('canonical exact specialist preserves full evidence through owner synthesis
       calls++;
       assert.equal((options?.registry as ReturnType<typeof createSeededToolRegistry>).getOpenAITools().length, 0);
       if (calls === 1) {
-        assert.match(message, /no longer than 24000 characters/);
+        assert.match(message, /around 24000 characters/);
         return { text: exact, model: 'test', toolCallCount: 0, durationMs: 1 };
       }
       synthesisEvidence = message.split('Completed tool evidence:\n')[1]!;
@@ -687,18 +687,12 @@ test('canonical exact specialist preserves full evidence through owner synthesis
       context: ctx, destination, attemptChatId: ctx.chatId, abortController: new AbortController(),
       onEvent: event => events.push(event as unknown as Record<string, unknown>),
     });
-    if (length > WORKING_THREAD_RESULT_MAX_CHARS) {
-      await assert.rejects(execution, /exceeded 24000 characters/);
-      assert.equal(calls, 1);
-      assert.equal(events.find(event => event.type === 'tool_result')?.success, false);
-    } else {
-      const result = await execution;
-      assert.equal(result.text, 'The supplied reliability review is complete.');
-      assert.equal(calls, 2);
-      assert.equal(synthesisEvidence, exact);
-      assert.equal(events.find(event => event.type === 'tool_result')?.exactResult, exact);
-      assert.equal(events.find(event => event.type === 'subagent_result')?.result, exact);
-    }
+    const result = await execution;
+    assert.equal(result.text, 'The supplied reliability review is complete.');
+    assert.equal(calls, 2);
+    assert.equal(synthesisEvidence, exact);
+    assert.equal(events.find(event => event.type === 'tool_result')?.exactResult, exact);
+    assert.equal(events.find(event => event.type === 'subagent_result')?.result, exact);
   }
 });
 

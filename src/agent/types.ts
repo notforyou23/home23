@@ -45,7 +45,10 @@ export interface ToolResult {
   content: string;
   /** Exact requested file text stays in content for task evidence. Display
    * pagination uses absolute UTF-16 offsets into the original file. */
-  fileRead?: { path: string; offsetChars: number; totalChars: number };
+  fileRead?: {
+    path: string; offsetChars: number; totalChars: number;
+    continuation?: { toolName: 'self_read'; file: string; limit?: number };
+  };
   media?: MediaAttachment[];
   is_error?: boolean;
   resultHandle?: string;
@@ -69,6 +72,17 @@ export interface DelegationTurnOrigin {
   parentToolCallId?: string;
 }
 
+/** Selected current-turn context, never a copy of all resident history. */
+export interface DelegationSnapshot {
+  parentRequest: string;
+  requestSource: 'authenticated_parent_message' | 'parent_turn_input';
+  sourceChatId: string;
+  sourceTurnId?: string;
+  requestEvidenceId?: string;
+  parentInstructions?: ReadonlyArray<{ text: string; evidenceId?: string }>;
+  workspaceBootstrap: string;
+}
+
 export interface TurnRuntimeContext {
   executionOutput?: import('./execution-output.js').ExecutionOutputCapture;
   /** Meaningful provider progress renews inactivity, never the hard deadline. */
@@ -85,7 +99,8 @@ export interface TurnRuntimeContext {
     state: string;
     phase: string | null;
   }) => void;
-  delegatedContext?: { systemPrompt: string; workspacePath: string };
+  delegatedContext?: { systemPrompt: string; workspacePath: string; baseSystemPrompt?: string };
+  delegationSnapshot?: Readonly<DelegationSnapshot>;
   delegatedTurn?: boolean;
   /** Parent authority carried only with explicitly granted local mutation tools. */
   delegatedFileAuthority?: Pick<ToolContext, 'fileMachineAccess' | 'projectWriteRoots'>;
@@ -132,6 +147,9 @@ export interface DurableTurnStart {
 }
 
 export interface ToolContext {
+  delegationSnapshot?: Readonly<DelegationSnapshot>;
+  /** Static delegated identity without accumulated ancestor handoff packets. */
+  delegationBaseSystemPrompt?: string;
   contactOwner?: (input: import('../channels/owner-outreach.js').OwnerOutreachInput) => Promise<import('../channels/owner-outreach.js').OwnerOutreachReceipt>;
   personalWorkspacePath?: string;
   artifactWorkspacePath?: string;

@@ -9,6 +9,7 @@ import type {
   ToolResult,
 } from './types.js';
 import { applyForegroundToolPolicy, foregroundDetachRefusal } from './foreground-tool-policy.js';
+import { taskContextTool } from './tools/task-context.js';
 
 const require = createRequire(import.meta.url);
 // One admission-deadline definition for the home and the resident.
@@ -482,7 +483,28 @@ function fileReadExcerpt(result: ToolResult, limit: number): string {
   return prefix + marker(prefix.length);
 }
 
+/** self_read pages cover the remaining source, including explicit small pages. */
+function selfReadExcerpt(result: ToolResult, limit: number): string {
+  const read = result.fileRead!;
+  const continuation = read.continuation!;
+  if (result.content.length <= limit && read.offsetChars + result.content.length >= read.totalChars) return result.content;
+  const marker = (consumed: number): string => {
+    const next = read.offsetChars + consumed;
+    const request = { file: continuation.file, offset: next,
+      ...(continuation.limit !== undefined ? { limit: continuation.limit } : {}) };
+    return `\n\n[SELF_READ CONTINUES: chars ${read.offsetChars}-${next} of ${read.totalChars}. Continue with self_read ${JSON.stringify(request)}. This page is incomplete.]`;
+  };
+  const chars = Math.min(result.content.length, Math.max(2, limit - marker(result.content.length).length));
+  let prefix = result.content.slice(0, chars);
+  if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
+  // Recovery metadata must survive even an unusually tiny display target.
+  // Normal provider limits leave room for both source and exact continuation.
+  if (!prefix && result.content) prefix = String.fromCodePoint(result.content.codePointAt(0)!);
+  return prefix + marker(prefix.length);
+}
+
 function visibleContent(result: ToolResult, limit: number, toolName?: string): string {
+  if (toolName === 'self_read' && result.fileRead?.continuation?.toolName === 'self_read') return selfReadExcerpt(result, limit);
   if (toolName === 'read_file' && result.fileRead) return fileReadExcerpt(result, limit);
   const operationId = typeof result.metadata?.operationId === 'string'
     ? result.metadata.operationId
@@ -595,7 +617,15 @@ export async function executePlannedTool(input: {
   // this override for an empty tool list falls back to the resident's
   // unrestricted shared registry.
   const { createSeededToolRegistry } = await import('./tools/index.js');
-  const synthesisRegistry = createSeededToolRegistry([]);
+  // A long result is successful evidence. Show an explicit recoverable preview
+  // when its complete original was retained in this exact task. If storage is
+  // unavailable, preserve the full supplied evidence instead of silently
+  // discarding its tail or inventing a specialist failure.
+  const recoverable = result.content.length > 24_000 && Boolean(result.contextEvidenceId && exactContext.conversationHistory?.taskContext);
+  const synthesisRegistry = createSeededToolRegistry(recoverable ? [taskContextTool] : []);
+  const synthesisEvidence = recoverable
+    ? `${recoverableExcerpt(result.content, 24_000, {})}\n[Complete original retained as ${result.contextEvidenceId}. Use task_context read with this ID and page offsets to inspect omitted evidence before concluding.]`
+    : result.content;
   const assignment = input.assignmentLabel ?? 'the assigned work';
   const synthesis = await input.context.runAgentLoop(
     '',
@@ -604,12 +634,14 @@ export async function executePlannedTool(input: {
       'Write the single final result for the owner from the completed tool evidence below.',
       'Use only the supplied evidence. Be concise and useful: say what was accomplished, the verified outcome, and anything genuinely remaining.',
       'Do not expose tool receipts, internal IDs, absolute paths, backend commands, or execution machinery.',
-      'Do not call tools. Do not claim success beyond the evidence.',
+      recoverable
+        ? 'Only task_context is available to recover this task evidence. Read omitted material when it can change the result. Do not claim success beyond the evidence.'
+        : 'Do not call tools. Do not claim success beyond the evidence.',
       '',
       `Assignment: ${assignment}`,
       '',
       'Completed tool evidence:',
-      result.content.slice(0, 24_000),
+      synthesisEvidence,
     ].join('\n'),
     [],
     exactContext,

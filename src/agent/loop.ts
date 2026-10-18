@@ -36,6 +36,7 @@ import { ActivityLease, MAX_TIMER_DELAY_MS, type LeaseExpiryReason } from './act
 import { executeAndFormatTool } from './tool-result.js';
 import { MemoryManager } from './memory.js';
 import { resolveSubstrateStateDir } from './session-bootstrap.js';
+import { appendDelegationInstruction, captureDelegationSnapshot } from './delegation-handoff.js';
 import type { OwnerDistillConfig } from '../types.js';
 import { relieveToolPressure } from './context-window.js';
 import { mergeCompletedResponsesOutput } from './responses-continuity.js';
@@ -920,13 +921,18 @@ export class AgentLoop {
     appendToApi: (text: string) => void,
     onEvent?: AgentEventCallback,
     turnId?: string,
+    context?: ToolContext,
   ): void {
-    if (turnId) this.executionSteering.consume(chatId, turnId, appendToApi, receipt => {
+    const append = (text: string): void => {
+      if (context) appendDelegationInstruction(context, text);
+      appendToApi(text);
+    };
+    if (turnId) this.executionSteering.consume(chatId, turnId, append, receipt => {
       onEvent?.({ type: 'status', status: 'execution_control', operationId: receipt.operationId, controlStatus: receipt.status });
     });
     const text = takeOperatorSteer(chatId);
     if (!text) return;
-    appendToApi(text);
+    append(text);
     const rec = { role: 'user' as const, content: text };
     turnMessages.push(rec);
     this.history.append(chatId, [rec]);
@@ -1042,7 +1048,8 @@ export class AgentLoop {
       maxDurationMs?: number;
       firstTokenTimeoutMs?: number;
       registry?: ToolRegistry;
-      delegatedContext?: { systemPrompt: string; workspacePath: string };
+      delegatedContext?: TurnRuntimeContext['delegatedContext'];
+      delegationSnapshot?: TurnRuntimeContext['delegationSnapshot'];
       delegatedTurn?: boolean;
       delegatedFileAuthority?: TurnRuntimeContext['delegatedFileAuthority'];
       effort?: ReasoningEffort;
@@ -1231,6 +1238,7 @@ export class AgentLoop {
       ...(opts.delegatedTurn ? { delegatedTurn: true } : {}),
       ...(opts.delegatedFileAuthority ? { delegatedFileAuthority: Object.freeze({ ...opts.delegatedFileAuthority }) } : {}),
       ...(opts.delegatedContext ? { delegatedContext: Object.freeze({ ...opts.delegatedContext }) } : {}),
+      ...(opts.delegationSnapshot ? { delegationSnapshot: Object.freeze({ ...opts.delegationSnapshot }) } : {}),
     });
     let firstTokenWatchdog: unknown = null;
     try {
@@ -1442,6 +1450,7 @@ export class AgentLoop {
       contextManager: this.contextManager,
       chatId,
       authenticatedUserMessage: undefined,
+      delegationSnapshot: turnRuntime?.delegationSnapshot,
       channelId: turnRuntime?.coordinationOrigin?.channelId ?? this.toolContext.channelId,
       workspacePath: turnRuntime?.delegatedContext?.workspacePath ?? this.toolContext.workspacePath,
       projectWriteRoots: turnRuntime?.delegatedTurn || turnRuntime?.delegatedContext || turnRuntime?.delegationOrigin
@@ -1596,11 +1605,13 @@ export class AgentLoop {
       // Bootstrap belongs to the dynamic system context, not stored history.
       // Refresh it every resident turn so consecutive, reloaded and compacted
       // conversations receive the current bounded map rather than losing it.
+      let workspaceBootstrap = turnRuntime?.delegationSnapshot?.workspaceBootstrap ?? '';
       if (!turnRuntime?.delegatedContext) {
         try {
           const { buildBootstrapBlock } = await import('./session-bootstrap.js');
           const bootstrap = buildBootstrapBlock(this.workspacePath, this.situationalAwareness);
           if (bootstrap) {
+            workspaceBootstrap = bootstrap;
             rawSystemPrompt += `\n\n${bootstrap}`;
             console.log(`[agent] Workspace bootstrap refreshed (${bootstrap.length} chars)`);
           }
@@ -1745,6 +1756,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
       }
 
       const taskNotes = registry.get('task_context') ? this.history.taskContext?.briefing(chatId) : '';
+      runContext.delegationSnapshot ??= captureDelegationSnapshot(runContext, userText, workspaceBootstrap);
       if (taskNotes) rawSystemPrompt += `\n\n${taskNotes}`;
       const historicalContext = historicalContextBlock(turnRuntime?.historyBackfill ?? []);
       if (historicalContext) rawSystemPrompt += `\n\n${historicalContext}`;
@@ -2001,7 +2013,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               }
               this.consumeOperatorSteer(chatId, turnMessages, (text) => {
                 apiMessages.push({ role: 'user', content: text });
-              }, onEvent, activeTurnId);
+              }, onEvent, activeTurnId, runContext);
               consumeAutomaticEnrichment(apiMessages);
               maintainModelWindow(apiMessages);
 
@@ -2491,7 +2503,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   role: 'user',
                   content: [{ type: 'input_text', text }],
                 });
-              }, onEvent, activeTurnId);
+              }, onEvent, activeTurnId, runContext);
 
               consumeAutomaticEnrichment(xaiInputItems);
               maintainModelWindow(xaiInputItems);
@@ -2805,7 +2817,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             }
             this.consumeOperatorSteer(chatId, turnMessages, (text) => {
               apiMessages.push({ role: 'user', content: text });
-            }, onEvent, activeTurnId);
+            }, onEvent, activeTurnId, runContext);
             consumeAutomaticEnrichment(apiMessages);
             maintainModelWindow(apiMessages);
 
@@ -2997,7 +3009,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
         }
         this.consumeOperatorSteer(chatId, turnMessages, (text) => {
           messages.push({ role: 'user', content: text });
-        }, onEvent, activeTurnId);
+        }, onEvent, activeTurnId, runContext);
 
         let response: Anthropic.Message;
         let streamedThinking = false;
