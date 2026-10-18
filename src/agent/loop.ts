@@ -1593,19 +1593,20 @@ export class AgentLoop {
       if (projectFilePrompt) rawSystemPrompt += `\n\n${projectFilePrompt}`;
 
       // ── Session Bootstrap (situational + temporal awareness) ──
-      // Fresh session OR resumed after idle-gap → inject the files listed in
-      // config.situationalAwareness.bootstrap.reads (NOW.md + PLAYBOOK.md by default).
-      // Turns 2+ within the same session skip this — content persists via history.
-      if (needsBoundary && !turnRuntime?.delegatedContext) {
+      // Bootstrap belongs to the dynamic system context, not stored history.
+      // Refresh it every resident turn so consecutive, reloaded and compacted
+      // conversations receive the current bounded map rather than losing it.
+      if (!turnRuntime?.delegatedContext) {
         try {
           const { buildBootstrapBlock } = await import('./session-bootstrap.js');
           const bootstrap = buildBootstrapBlock(this.workspacePath, this.situationalAwareness);
           if (bootstrap) {
             rawSystemPrompt += `\n\n${bootstrap}`;
-            console.log(`[agent] Session bootstrap injected (${bootstrap.length} chars)`);
+            console.log(`[agent] Workspace bootstrap refreshed (${bootstrap.length} chars)`);
           }
         } catch (err) {
           console.warn('[agent] Session bootstrap failed:', err instanceof Error ? err.message : err);
+          rawSystemPrompt += '\n\n[SESSION BOOTSTRAP unavailable: the workspace map could not be prepared for this turn. Read relevant source files before relying on earlier operational context.]';
         }
       }
 
