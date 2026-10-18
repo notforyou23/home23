@@ -26,7 +26,7 @@ export async function executeTrackedTurn(
     parentWorkId?: string;
     onDurableStart?: (start: DurableTurnStart) => void | Promise<void>;
     suppressCompletionPush?: boolean;
-    delegatedContext?: { systemPrompt: string; workspacePath: string };
+    delegatedContext?: import('./types.js').TurnRuntimeContext['delegatedContext'];
   } = {},
 ): Promise<{ turnId: string; response: AgentResponse }> {
   options.signal?.throwIfAborted();
@@ -86,6 +86,7 @@ export function createTrackedAgentRunner(agent: Parameters<typeof executeTracked
     ctx.abortSignal?.throwIfAborted();
     const run = await agent.runWithTurn(ctx.chatId, userMessage, {
       delegatedTurn: true,
+      ...(ctx.delegationSnapshot ? { delegationSnapshot: ctx.delegationSnapshot } : {}),
       ...(tools.some(tool => ['write_file', 'edit_file', 'shell'].includes(tool.name)) ? {
         delegatedFileAuthority: { fileMachineAccess: ctx.fileMachineAccess === true, projectWriteRoots: ctx.projectWriteRoots },
       } : {}),
@@ -97,7 +98,7 @@ export function createTrackedAgentRunner(agent: Parameters<typeof executeTracked
       onDurableStart: ctx.onDelegatedDurableStart,
       coordinationWorkDestination: ctx.coordinationWorkDestination,
       ...(_systemPrompt
-        ? { delegatedContext: { systemPrompt: _systemPrompt, workspacePath: ctx.workspacePath } }
+        ? { delegatedContext: { systemPrompt: _systemPrompt, workspacePath: ctx.workspacePath, baseSystemPrompt: ctx.delegationBaseSystemPrompt ?? _systemPrompt } }
         : ctx.turnRuntime?.delegatedContext ? { delegatedContext: ctx.turnRuntime.delegatedContext } : {}),
       registry,
     });
