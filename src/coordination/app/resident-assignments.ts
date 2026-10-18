@@ -201,11 +201,20 @@ export function createResidentAssignments(database: M11Database) {
     return { ...value, recordedAt, replayed: false };
   }
   function list(principalId: string, includeClosed = false, limit = 20) {
-    const works = database.readAll<{ id: string }>(`SELECT w.id FROM works w
-      LEFT JOIN work_thread_presentations p ON p.work_id=w.id
-      WHERE w.target_principal_id=? AND (w.kind='resident_work_thread' OR p.work_id IS NOT NULL)
-        AND (w.state IN ('queued','leased','running','cancelling') OR w.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1))
-      ORDER BY w.created_at DESC LIMIT 1000`, principalId);
+    // Bound raw history before filtering eligibility. The resident creation
+    // index supplies this batch without scanning years of unrelated speaking
+    // turns. Prioritize executions within the batch before the caller's small
+    // result limit, so newer unresolved assessments cannot hide older work.
+    // This remains a preview: an older execution can lie beyond the lookback.
+    const works = database.readAll<{ id: string }>(`WITH recent AS MATERIALIZED (
+      SELECT w.id,w.kind,w.state,w.created_at,w.terminal_at FROM works w
+      WHERE w.target_principal_id=? ORDER BY w.created_at DESC,w.id DESC LIMIT 1000
+    ) SELECT recent.id FROM recent
+      LEFT JOIN work_thread_presentations p ON p.work_id=recent.id
+      WHERE (recent.kind='resident_work_thread' OR p.work_id IS NOT NULL)
+        AND (recent.state IN ('queued','leased','running','cancelling') OR recent.terminal_at >= (SELECT enabled_at FROM resident_outcome_policy WHERE id=1))
+      ORDER BY ${includeClosed ? '' : "CASE WHEN recent.state IN ('queued','leased','running','cancelling') THEN 0 ELSE 1 END,"}
+        recent.created_at DESC,recent.id DESC`, principalId);
     const roots = [...new Set(works.map(work => root(work.id)))];
     const scheduled = new Set(roots.length ? database.readAll<{ id: string }>(`SELECT w.id FROM works w
       WHERE w.id IN (SELECT value FROM json_each(?)) AND ${SCHEDULED_RUN_MEMBERSHIP}`, JSON.stringify(roots))

@@ -34,28 +34,31 @@ export function buildForegroundWorkView(input: {
   work?: readonly CompactWorkProjection[] | null;
   commitments?: readonly CompactCommitmentProjection[] | null;
 }): string {
-  const work = (input.work ?? []).slice(0, MAX_WORK_LINES);
+  const work = input.work ?? [];
   const commitments = (input.commitments ?? [])
     .filter((entry) => entry.type === 'promise' || entry.type === 'thread')
-    .filter((entry) => entry.status === undefined || entry.status === 'active')
-    .slice(0, MAX_COMMITMENT_LINES);
+    .filter((entry) => entry.status === undefined || entry.status === 'active');
 
   const activeExecutions = work.filter(item => ['queued','leased','running','cancelling'].includes(item.executionState ?? item.status));
   const unresolved = work.filter(item => !activeExecutions.includes(item));
-  const workLines = (items: CompactWorkProjection[]) => items.length === 0
-    ? ['- none']
-    : items.map((item) => {
+  const workLines = (items: CompactWorkProjection[]) => [
+    `Showing ${Math.min(items.length, MAX_WORK_LINES)} of ${items.length} supplied records.`,
+    ...(items.length === 0 ? ['- none in the supplied view'] : items.slice(0, MAX_WORK_LINES).map((item) => {
       const progress = item.progressSummary ? ` — ${oneLine(item.progressSummary, 80)}` : '';
       return `- ${item.workId} (${item.kind ?? 'work'} ${item.status}): ${oneLine(item.label)}${progress}`;
-    });
+    })),
+    ...(items.length > MAX_WORK_LINES
+      ? [`- ${items.length - MAX_WORK_LINES} supplied records omitted from this preview; inspect work_list and work_status.`] : []),
+  ];
 
   const commitmentLines = commitments.length === 0
-    ? ['- none']
-    : commitments.map((item) => `- ${item.type}: ${oneLine(item.title)} — ${oneLine(item.statement, 100)}`);
+    ? ['- none in the supplied view']
+    : commitments.slice(0, MAX_COMMITMENT_LINES).map((item) => `- ${item.type}: ${oneLine(item.title)} — ${oneLine(item.statement, 100)}`);
 
   return [
     '[FOREGROUND — ACTIVE WORK AND COMMITMENTS]',
     'You are the same resident in this conversation. Background Work does not replace you or this thread.',
+    `Bounded preview of ${work.length} supplied Work records; this is not a complete inventory. Use work_list with limit 100 and exact work_status for omitted or older Work.`,
     '',
     'Active executions:',
     ...workLines(activeExecutions),
@@ -64,7 +67,10 @@ export function buildForegroundWorkView(input: {
     ...workLines(unresolved),
     '',
     'Unfinished commitments:',
+    `Showing ${Math.min(commitments.length, MAX_COMMITMENT_LINES)} of ${commitments.length} supplied commitments.`,
     ...commitmentLines,
+    ...(commitments.length > MAX_COMMITMENT_LINES
+      ? [`- ${commitments.length - MAX_COMMITMENT_LINES} supplied commitments omitted from this preview.`] : []),
     '[/FOREGROUND — ACTIVE WORK AND COMMITMENTS]',
   ].join('\n');
 }
@@ -88,7 +94,7 @@ export function collectForegroundTurnContext(input: {
         ...ledger.listEntries({ type: 'thread', status: 'active' }),
       ].filter((entry) => entry.privacy_class !== 'sensitive')
     : [];
-  return buildForegroundWorkView({ work, commitments });
+  return `${buildForegroundWorkView({ work, commitments })}\nSource: bounded local async registry view, at most ${MAX_WORK_LINES} active Work records from this chat.`;
 }
 
 /** Current canonical assignments are available to app conversation and work
@@ -107,7 +113,7 @@ export async function collectCanonicalWorkContext(read: () => Promise<unknown>, 
       ? `\n[OWNER DIRECTION CHANGED]\nThese canonical owner messages arrived after this turn's prepared context. Read them before deciding what to do. Before another launch, record work_report_outcome with owner_message_sequence=${result.ownerMessageSequence}: active only when continuation fits the new direction, blocked without a revisit for a pause, cancelled when stopped.\n${JSON.stringify(result.unseenOwnerMessages)}\n[/OWNER DIRECTION CHANGED]` : '';
     const commitments = relationshipLedger ? [...relationshipLedger.listEntries({ type: 'promise', status: 'active' }),
       ...relationshipLedger.listEntries({ type: 'thread', status: 'active' })].filter(entry => entry.privacy_class !== 'sensitive') : [];
-    return `${buildForegroundWorkView({ work: rows, commitments })}\nSource: current canonical assignments. Descriptions state intent; execution state and heartbeats do not establish meaningful progress or completion.${correction}`;
+    return `${buildForegroundWorkView({ work: rows, commitments })}\nSource: bounded current canonical assignment preview, selected from at most 1000 recent resident Work records and then limited by the request. Older records may be outside that lookback even when this view is empty. Descriptions state intent; execution state and heartbeats do not establish meaningful progress or completion.${correction}`;
   } catch {
     return '[CURRENT WORK UNAVAILABLE] The canonical assignment view could not be read. Do not infer that no work is active; inspect work_list before starting recovery.';
   }
