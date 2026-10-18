@@ -83,6 +83,7 @@ export class ContextManager implements ContextManagerRef {
     loadedFiles: [],
   };
   private heartbeatLastLoad = 0;
+  private nextStatusRefresh = Infinity;
   private dirty = true;
   private lastProvider = '';
 
@@ -117,6 +118,7 @@ export class ContextManager implements ContextManagerRef {
   }
 
   private rebuild(provider: string = 'anthropic'): void {
+    this.nextStatusRefresh = Infinity;
     const loadedFiles: PromptSourceInfo['loadedFiles'] = [];
     // Collect each present identity file with its budgeted content + layer, so
     // the identity region can be emitted grouped by the six-layer scheme
@@ -162,8 +164,9 @@ export class ContextManager implements ContextManagerRef {
           }
           seenSources.add(canonicalPath);
           const recordedAt = /(?:^|\n)Generated\s*:?\s+(\d{4}-\d{2}-\d{2}T\S+)/i.exec(raw)?.[1];
-          if (/(?:^|_)STATUS\.md$/i.test(filename) && recordedAt && Number.isFinite(Date.parse(recordedAt))
-            && Date.now() - Date.parse(recordedAt) > 86_400_000) {
+          const statusExpiresAt = /(?:^|_)STATUS\.md$/i.test(filename) && recordedAt && Number.isFinite(Date.parse(recordedAt))
+            ? Date.parse(recordedAt) + 86_400_000 : null;
+          if (statusExpiresAt !== null && Date.now() >= statusExpiresAt) {
             loadedFiles.push({ ...source, included: false, includedBytes: 0,
               deferredReason: 'historical_status', sourceRecordedAt: recordedAt });
             const ownerDirections = raw.split('\n').filter(line => /\bDROPPED by\b|\bowner closed\b/i.test(line));
@@ -174,6 +177,7 @@ export class ContextManager implements ContextManagerRef {
             ].join('\n'));
             continue;
           }
+          if (statusExpiresAt !== null) this.nextStatusRefresh = Math.min(this.nextStatusRefresh, statusExpiresAt);
           if (filename === 'HEARTBEAT.md') this.heartbeatLastLoad = Date.now();
           const { budget, strategy } = resolveBudget(filename, this.config.identityBudgets);
           const budgeted = loadAuthoredIdentity(filename, raw, budget);
@@ -251,6 +255,7 @@ export class ContextManager implements ContextManagerRef {
 
   private refreshHeartbeatIfNeeded(): void {
     const now = Date.now();
+    if (now >= this.nextStatusRefresh) this.dirty = true;
     if (now - this.heartbeatLastLoad < this.config.heartbeatRefreshMs) return;
 
     const heartbeatPath = this.findHeartbeatPath();

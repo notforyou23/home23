@@ -54,3 +54,18 @@ test('generated historical status is recoverable context, not an active owner ob
     assert.equal(row.sourceSHA256, createHash('sha256').update(status).digest('hex'));
   } finally {rmSync(workspace, {recursive: true, force: true});}
 });
+
+test('a cached generated status loses current authority when its timestamp ages out', t => {
+  const workspace = mkdtempSync(join(tmpdir(), 'context-status-age-'));
+  let clock = Date.parse('2000-01-01T23:00:00.000Z');
+  t.mock.method(Date, 'now', () => clock);
+  try {
+    writeFileSync(join(workspace, 'SHAKEDOWN_STATUS.md'), '# Status\nGenerated 2000-01-01T00:00:00.000Z by status.mjs.\nNEEDS YOU: dated request');
+    const context = new ContextManager({workspacePath: workspace, identityFiles: ['SHAKEDOWN_STATUS.md'],
+      heartbeatRefreshMs: 60000, enginePort: 1});
+    assert.match(context.getSystemPrompt(), /NEEDS YOU: dated request/);
+    clock = Date.parse('2000-01-02T01:00:00.000Z');
+    assert.doesNotMatch(context.getSystemPrompt(), /NEEDS YOU: dated request/);
+    assert.equal(context.getPromptSourceInfo().loadedFiles[0]?.deferredReason, 'historical_status');
+  } finally {rmSync(workspace, {recursive: true, force: true});}
+});
