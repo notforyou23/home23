@@ -44,7 +44,7 @@ export function classifyIdentityLayer(filename: string): IdentityLayer {
   const f = filename.toUpperCase();
   if (f === 'SOUL.MD' || f === 'BOOT.MD' || f === 'BOOTSTRAP.MD') return 'enduring_self';
   if (f === 'PERSONAL.MD' || f.startsWith('RELATIONSHIP') || f === 'FRIENDSHIP_LEDGER.MD') return 'relationship';
-  if (f === 'MISSION.MD' || f === 'GOOD_LIFE.MD' || f === 'COSMO_RESEARCH.MD' || f === 'SHAKEDOWN_STATUS.MD') return 'role';
+  if (f === 'MISSION.MD' || f === 'GOOD_LIFE.MD' || f === 'COSMO_RESEARCH.MD') return 'role';
   if (f === 'PLAYBOOK.MD' || f === 'DOCTRINE.MD' || f === 'SKILL_ROUTING.MD' || f === 'ALIASES.JSON' || f === 'INVARIANTS.MD') return 'operational';
   // NOW / TEMPORAL / RECENT / MEMORY / LEARNINGS / HEARTBEAT / briefings / receipts …
   return 'world_state';

@@ -52,6 +52,7 @@ test('generated historical status is recoverable context, not an active owner ob
     assert.equal(row.deferredReason, 'historical_status');
     assert.equal(row.sourceRecordedAt, '2000-01-01T00:00:00.000Z');
     assert.equal(row.sourceSHA256, createHash('sha256').update(status).digest('hex'));
+    assert.equal(row.layer, 'world_state');
   } finally {rmSync(workspace, {recursive: true, force: true});}
 });
 
