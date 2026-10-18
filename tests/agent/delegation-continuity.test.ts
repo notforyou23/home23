@@ -208,3 +208,41 @@ test('Working Thread owner synthesis receives an explicit long-result recovery p
   assert.match(result.text, /unfinished/);
   assert.match(supplied, /Read omitted material when it can change the result/);
 });
+
+test('promoted specialist remaps only selected parent evidence into the Working Thread before dispatch', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'promoted-specialist-evidence-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const history = new ConversationHistory(join(root, 'history'), 400000, 'test');
+  const selectedId = history.taskContext.save('owner-foreground', 'tool', 'SELECTED-PARENT-EVIDENCE-END');
+  const unrelatedId = history.taskContext.save('unrelated-chat', 'tool', 'UNRELATED-PRIVATE-TEXT');
+  let childChatId = '';
+  let childSystem = '';
+  const context = { agentName: 'test', chatId: 'owner-foreground', workspacePath: root, projectRoot: root,
+    conversationHistory: history, subAgentTracker: { active: 0, maxConcurrent: 3, queue: [] },
+    contextManager: { getSystemPrompt: () => 'Static identity' },
+    runAgentLoop: async (system, _message, _tools, ctx) => {
+      if (system) { childChatId = ctx.chatId; childSystem = system; }
+      return { text: 'The selected review is finished.', model: 'test', toolCallCount: 0, durationMs: 1 };
+    },
+  } as ToolContext;
+  const original = 'Current parent request. '.repeat(200) + ' CURRENT-REQUEST-END';
+  context.delegationSnapshot = captureDelegationSnapshot(context, original, 'FRESH-MAP');
+  const originalRequestId = context.delegationSnapshot.requestEvidenceId!;
+  const registry = createSeededToolRegistry([spawnAgentTool, taskContextTool]);
+  const destination = { kind: 'coordination' as const, parentWorkId: 'wrk_root', channelId: 'chn_root', conversationId: 'cnv_root',
+    originMessageId: 'msg_root', attemptId: 'att_root', leaseId: 'lse_root', fencingToken: 1, targetPrincipalId: 'bot_test',
+    residentBinding: 'test', residentInstanceId: 'resident-test', authorityReference: 'resident:test' };
+  const canonicalArgs = { task: 'Inspect selected evidence.', task_kind: 'analysis', mode: 'joined', evidence_refs: [selectedId] };
+  const result = await executePlannedTool({ registry, name: 'spawn_agent', toolCallId: 'call-review', canonicalArgs,
+    context, destination, attemptChatId: 'work-attempt', abortController: new AbortController(), onEvent() {} });
+  assert.equal(result.text, 'The selected review is finished.');
+  assert.match(childSystem, /CURRENT-REQUEST-END/);
+  assert.match(childSystem, /FRESH-MAP/);
+  assert.ok(history.taskContext.search('work-attempt', 'SELECTED-PARENT-EVIDENCE-END').matches.length);
+  assert.ok(history.taskContext.search(childChatId, 'SELECTED-PARENT-EVIDENCE-END').matches.length);
+  assert.throws(() => history.taskContext.read('work-attempt', selectedId), /not available/);
+  assert.throws(() => history.taskContext.read(childChatId, selectedId), /not available/);
+  assert.throws(() => history.taskContext.read(childChatId, originalRequestId), /not available/);
+  assert.throws(() => history.taskContext.read(childChatId, unrelatedId), /not available/);
+  assert.deepEqual(canonicalArgs.evidence_refs, [selectedId], 'the planned canonical arguments remain immutable');
+});
