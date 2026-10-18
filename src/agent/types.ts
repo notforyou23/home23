@@ -239,6 +239,10 @@ export interface PromptSourceInfo {
     label: string;
     exists: boolean;
     included: boolean;
+    /** A source may be routed to fresh context or available for deliberate recovery. */
+    deferredReason?: 'session_bootstrap' | 'duplicate_source' | 'historical_status';
+    sourceRecordedAt?: string;
+    sourceSHA256?: string;
     /** Companion Layer (Step 30) inspection fields — omission is now visible. */
     layer?: string;            // one of the six IdentityLayer names
     rawBytes?: number;         // size of the file on disk (trimmed)

@@ -24,11 +24,15 @@ test('maintenance reports excess without rewriting; pre-update history is recove
  } finally { rmSync(root,{recursive:true,force:true}); }
 });
 
-test('bootstrap preserves the final correction beyond its old character cutoff', () => {
+test('bootstrap preserves the final correction and exposes recovery of omitted source', () => {
  const root = mkdtempSync(join(tmpdir(), 'bootstrap-complete-'));
  try { const text = 'Earlier detail. '.repeat(1000) + '\nOwner correction: finish the existing assignment.';
  writeFileSync(join(root,'PLAYBOOK.md'),text);
- assert.ok(buildBootstrapBlock(root,{bootstrap:{reads:['PLAYBOOK.md'],maxBytesPerFile:100}})?.includes(text));
+ const block = buildBootstrapBlock(root,{bootstrap:{reads:['PLAYBOOK.md'],maxBytesPerFile:100}})!;
+ assert.ok(block.includes('Owner correction: finish the existing assignment.'));
+ assert.match(block,/PARTIAL workspace preview/);
+ assert.match(block,/Recover with read_file/);
+ assert.equal(readFileSync(join(root,'PLAYBOOK.md'),'utf8'),text);
  } finally {rmSync(root,{recursive:true,force:true});}
 });
 

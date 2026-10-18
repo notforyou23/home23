@@ -46,6 +46,7 @@ import { DeliveryManager } from './scheduler/delivery.js';
 import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
+import { DEFAULT_BOOTSTRAP_READS } from './agent/session-bootstrap.js';
 import { startResidentCoordinationHarness } from './coordination-adapter/index.js';
 import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
 import { resolveModelOverride, type ModelOverride } from './agent/model-resolution.js';
@@ -286,6 +287,7 @@ async function main(): Promise<void> {
     identityFiles,
     identityLayers: config.chat.identityLayers,
     identityBudgets: config.chat.identityBudgets,
+    dynamicContextFiles: config.situationalAwareness?.bootstrap?.reads ?? DEFAULT_BOOTSTRAP_READS,
     heartbeatRefreshMs: config.chat.heartbeatRefreshMs,
     enginePort: DASHBOARD_PORT,
     ownerName: config.agent?.owner?.name,

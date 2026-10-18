@@ -148,7 +148,7 @@ export interface HomeConfig {
     memorySearch: { enabled: boolean; timeoutMs: number; topK: number };
     identityFiles: string[];
     identityLayers?: IdentityLayerConfig[];
-    /** Per-file identity char budgets (Step 30); overrides built-in defaults. */
+    /** Per-file authored identity maintenance targets; source text remains whole. */
     identityBudgets?: Record<string, number>;
     embeddedAgent?: EmbeddedAgentConfig;
     heartbeatRefreshMs: number;
@@ -218,9 +218,8 @@ export interface HomeConfig {
   browser: BrowserConfig;
   tts: TTSConfig;
 
-  // Situational + temporal awareness primitive. On the first turn of every
-  // fresh session (empty history OR idle-gap exceeded), the harness injects
-  // the listed files into the system prompt once. See src/agent/session-bootstrap.ts.
+  // Situational + temporal awareness: fresh bounded source previews on every
+  // resident turn, kept outside conversation history. See session-bootstrap.ts.
   situationalAwareness?: {
     bootstrap?: {
       reads?: string[];

@@ -5,7 +5,8 @@
  * assembles the system prompt, and handles cache invalidation.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { hostname } from 'node:os';
 import { createRequire } from 'node:module';
@@ -33,6 +34,8 @@ export interface ContextConfig {
   projectRoot?: string;
   identityFiles: string[];
   identityLayers?: IdentityLayerConfig[];
+  /** Exact workspace sources refreshed by session bootstrap on every turn. */
+  dynamicContextFiles?: string[];
   heartbeatRefreshMs: number;
   enginePort: number;
   ownerName?: string;
@@ -40,7 +43,7 @@ export interface ContextConfig {
   /** Agent's IANA timezone (config `agent.timezone`) — renders the prompt
    * timestamp agent-local so the model never reads UTC as the local clock. */
   timezone?: string;
-  /** Per-file identity char budgets (Step 30); overrides DEFAULT_IDENTITY_BUDGETS. */
+  /** Authored identity maintenance targets; they do not truncate the individual. */
   identityBudgets?: Record<string, number>;
 }
 
@@ -120,6 +123,13 @@ export class ContextManager implements ContextManagerRef {
     // instead of raw config order (Step 30).
     interface Loaded { filename: string; label: string; layer: IdentityLayer; budgeted: BudgetedContent; }
     const loaded: Loaded[] = [];
+    const deferred: string[] = [];
+    const sourcePath = (file: string): string => {
+      try { return realpathSync(file); } catch { return file; }
+    };
+    const dynamicSources = new Set((this.config.dynamicContextFiles ?? [])
+      .map(file => sourcePath(resolve(this.config.workspacePath, file))));
+    const seenSources = new Set<string>();
     let anyTruncated = false;
 
     this.getIdentityLayers().forEach((layer, layerIndex) => {
@@ -134,7 +144,36 @@ export class ContextManager implements ContextManagerRef {
           continue;
         }
         try {
-          const raw = readFileSync(filePath, 'utf-8').trim();
+          const rawSource = readFileSync(filePath, 'utf-8');
+          const raw = rawSource.trim();
+          const sourceSHA256 = createHash('sha256').update(rawSource).digest('hex');
+          const canonicalPath = sourcePath(filePath);
+          const source = { layerIndex, basePath: layer.basePath, filename, filePath, label,
+            exists: true, layer: idLayer, rawBytes: raw.length, sourceSHA256 };
+          if (dynamicSources.has(canonicalPath)) {
+            loadedFiles.push({ ...source, included: false, includedBytes: 0, deferredReason: 'session_bootstrap' });
+            if (!seenSources.has(canonicalPath)) deferred.push(`${filePath}: refreshed in fresh session bootstrap on each turn; no cached identity copy.`);
+            seenSources.add(canonicalPath);
+            continue;
+          }
+          if (seenSources.has(canonicalPath)) {
+            loadedFiles.push({ ...source, included: false, includedBytes: 0, deferredReason: 'duplicate_source' });
+            continue;
+          }
+          seenSources.add(canonicalPath);
+          const recordedAt = /(?:^|\n)Generated\s*:?\s+(\d{4}-\d{2}-\d{2}T\S+)/i.exec(raw)?.[1];
+          if (/(?:^|_)STATUS\.md$/i.test(filename) && recordedAt && Number.isFinite(Date.parse(recordedAt))
+            && Date.now() - Date.parse(recordedAt) > 86_400_000) {
+            loadedFiles.push({ ...source, included: false, includedBytes: 0,
+              deferredReason: 'historical_status', sourceRecordedAt: recordedAt });
+            const ownerDirections = raw.split('\n').filter(line => /\bDROPPED by\b|\bowner closed\b/i.test(line));
+            deferred.push([
+              `Historical status: ${filePath}; generated ${recordedAt}; SHA256 ${sourceSHA256}.`,
+              'Its old pending requests are not current assignments. Read the complete source with read_file when relevant and verify present project evidence before reviving them.',
+              ...ownerDirections.map(line => `Recorded owner direction (preserved): ${line}`),
+            ].join('\n'));
+            continue;
+          }
           if (filename === 'HEARTBEAT.md') this.heartbeatLastLoad = Date.now();
           const { budget, strategy } = resolveBudget(filename, this.config.identityBudgets);
           const budgeted = loadAuthoredIdentity(filename, raw, budget);
@@ -142,6 +181,7 @@ export class ContextManager implements ContextManagerRef {
           if (budgeted.truncated) anyTruncated = true;
           loadedFiles.push({ layerIndex, basePath: layer.basePath, filename, filePath, label,
             exists: true, included: true, layer: idLayer,
+            sourceSHA256,
             rawBytes: budgeted.rawBytes, includedBytes: budgeted.includedBytes,
             budget: budgeted.budget, maintenanceNeeded: raw.length > budget, truncated: budgeted.truncated,
             omittedSections: budgeted.omittedSections });
@@ -180,7 +220,7 @@ export class ContextManager implements ContextManagerRef {
       }
     } catch { /* identity never blocks on the biography */ }
 
-    const identity = layerBlocks.join('\n\n---\n\n');
+    const identity = [...layerBlocks, ...(deferred.length ? ['[CONTEXT SOURCE ROUTING]\n' + deferred.join('\n\n') + '\n[/CONTEXT SOURCE ROUTING]'] : [])].join('\n\n---\n\n');
 
     // Keep rebuild timestamps in diagnostics, outside the reusable prompt.
     // Refreshing unchanged files must not invalidate the prefix cache.
