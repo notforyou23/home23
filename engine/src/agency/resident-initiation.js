@@ -42,19 +42,7 @@ export class ResidentInitiationDriver {
     if (!this.enabled()) return { state: 'inactive' };
     if (this.state) { this.configureBoundary(); return { state: 'ready' }; }
     if (existsSync(this.statePath)) {
-      const saved = JSON.parse(readFileSync(this.statePath, 'utf8'));
-      if (saved?.schema !== SCHEMA || saved.agentName !== this.kernel.agentName
-        || !Number.isFinite(saved.initializedAt) || !saved.baseline || Array.isArray(saved.baseline)
-        || typeof saved.baseline !== 'object' || !saved.admissions || Array.isArray(saved.admissions) || typeof saved.admissions !== 'object'
-        || Object.values(saved.baseline).some(value => !/^[a-f0-9]{64}$/.test(value))
-        || Object.entries(saved.admissions).some(([id, entry]) => id !== entry?.request?.initiationId
-          || !validRequest(entry?.request) || !SCOPES.has(entry?.scope)
-          || !Number.isFinite(entry?.nextAttemptAt) || !['pending', ...ACK_STATES, 'withdrawn'].includes(entry?.state))) {
-        throw new Error('Resident initiation state is unavailable or invalid');
-      }
-      saved.responsibilities ||= {};
-      if (typeof saved.responsibilities !== 'object' || Array.isArray(saved.responsibilities)) throw new Error('Resident initiative responsibilities are invalid');
-      this.state = saved;
+      this.state = parseSavedState(JSON.parse(readFileSync(this.statePath, 'utf8')), this.kernel.agentName);
       this.configureBoundary();
       return { state: 'ready' };
     }
@@ -200,13 +188,10 @@ export class ResidentInitiationDriver {
     return request;
   }
 
-  initiationId(snapshot) { return `ri_${digest(`${this.kernel.agentName}:${snapshot}`)}`; }
+  initiationId(snapshot) { return initiationIdFor(this.kernel.agentName, snapshot); }
 
   isDormant(pursuit) {
-    const snapshot = snapshotDigest(pursuit);
-    const responsibility = this.state.responsibilities[responsibilityDigest(pursuit)];
-    return this.state.baseline[pursuit.id] === snapshot
-      || SETTLED.has(this.state.admissions[responsibility?.initiationId || this.initiationId(snapshot)]?.state);
+    return projectInitiationState(this.state, this.kernel.agentName, pursuit).dormant;
   }
 
   configureBoundary() {
@@ -287,6 +272,45 @@ export class ResidentInitiationDriver {
       snapshotDigest: value.snapshotDigest || null, state: value.state || null,
       reason: value.reason || null, workId: value.workId || null, count: value.count ?? null,
       cycleDigest: value.cycleDigest || null });
+  }
+}
+
+function parseSavedState(saved, agentName) {
+  if (saved?.schema !== SCHEMA || saved.agentName !== agentName
+    || !Number.isFinite(saved.initializedAt) || !saved.baseline || Array.isArray(saved.baseline)
+    || typeof saved.baseline !== 'object' || !saved.admissions || Array.isArray(saved.admissions) || typeof saved.admissions !== 'object'
+    || Object.values(saved.baseline).some(value => !/^[a-f0-9]{64}$/.test(value))
+    || Object.entries(saved.admissions).some(([id, entry]) => id !== entry?.request?.initiationId
+      || !validRequest(entry?.request) || !SCOPES.has(entry?.scope)
+      || !Number.isFinite(entry?.nextAttemptAt) || !['pending', ...ACK_STATES, 'withdrawn'].includes(entry?.state))) {
+    throw new Error('Resident initiation state is unavailable or invalid');
+  }
+  saved.responsibilities ||= {};
+  if (typeof saved.responsibilities !== 'object' || Array.isArray(saved.responsibilities)) throw new Error('Resident initiative responsibilities are invalid');
+  return saved;
+}
+
+function initiationIdFor(agentName, snapshot) { return `ri_${digest(`${agentName}:${snapshot}`)}`; }
+
+function projectInitiationState(state, agentName, pursuit) {
+  const snapshot = snapshotDigest(pursuit);
+  const responsibility = state.responsibilities[responsibilityDigest(pursuit)];
+  const entry = state.admissions[responsibility?.initiationId || initiationIdFor(agentName, snapshot)];
+  const baseline = state.baseline[pursuit.id] === snapshot;
+  const settled = SETTLED.has(entry?.state);
+  return { dormant: baseline || settled, dormancyReason: baseline ? 'baseline' : settled ? 'settled' : null,
+    executionState: entry?.state || 'not_admitted', workId: entry?.workId || null };
+}
+
+/** Read-only context projection. Reuses the driver's exact saved-state and
+ * semantic responsibility rules; never initializes, admits or closes work. */
+export function readResidentInitiationContext(statePath, agentName) {
+  if (!existsSync(statePath)) return { availability: 'missing', project: () => ({ dormant: false, executionState: 'unknown' }) };
+  try {
+    const state = parseSavedState(JSON.parse(readFileSync(statePath, 'utf8')), agentName);
+    return { availability: 'available', project: pursuit => projectInitiationState(state, agentName, pursuit) };
+  } catch {
+    return { availability: 'unreadable', project: () => ({ dormant: false, executionState: 'unknown' }) };
   }
 }
 

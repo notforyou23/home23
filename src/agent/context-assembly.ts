@@ -28,6 +28,7 @@ import { classifyOwnerConversation, hasConversationTimeIntent } from '../../shar
 
 const require = createRequire(import.meta.url);
 const { resolveAgentInstancePaths } = require('../../shared/agent-instance-paths.cjs');
+const { readResidentInitiationContext } = require('../../engine/src/agency/resident-initiation.js');
 
 /**
  * A workspace file that loads into situational awareness ONLY when its keyword
@@ -90,6 +91,7 @@ interface AssemblyConfig {
 }
 
 interface AgencyContextSnapshot {
+  agentName: string;
   agencyDir: string;
   statePath: string;
   state: Record<string, unknown>;
@@ -188,13 +190,16 @@ export function shouldLoadOperationalSurface(input: OperationalSurfaceGateInput)
 // ─── Surface Loading ────────────────────────────────────
 
 interface AwarenessCap {
-  source: string; rawChars: number; loadedChars: number; ceiling: number; reason: 'file_ceiling' | 'total_ceiling';
+  source: string; rawChars: number; loadedChars: number; ceiling: number;
+  reason: 'file_ceiling' | 'file_budget' | 'evidence_budget' | 'total_ceiling';
 }
 type OnAwarenessCap = (cap: AwarenessCap) => void;
 
+interface LoadedSurface { text: string; contentChars: number; complete: boolean }
+
 function loadSurface(workspacePath: string, filename: string, budget: number, authored = false,
   onCap?: OnAwarenessCap,
-): string | null {
+): LoadedSurface | null {
   const filePath = join(workspacePath, filename);
   if (!existsSync(filePath)) return null;
   const raw = readFileSync(filePath, 'utf-8');
@@ -204,17 +209,32 @@ function loadSurface(workspacePath: string, filename: string, budget: number, au
   // this did content.slice(0, budget), so a 10k DOCTRINE.md was silently cut to
   // 2.5k mid-content — the same bug fixed for SOUL in the identity path.
   if (authored || ['PERSONAL.md', 'DOCTRINE.md'].includes(basename(filename))) {
-    if (raw.length <= AUTHORED_SURFACE_MAX_CHARS) return content;
+    // Triggered files have a configured prompt allowance. This bounds only
+    // their automatic preview; the complete original remains readable.
+    // PERSONAL/DOCTRINE identity delivery retains its existing larger ceiling.
+    const ceiling = authored && Number.isFinite(budget)
+      ? Math.min(AUTHORED_SURFACE_MAX_CHARS, Math.max(0, Math.floor(budget)))
+      : AUTHORED_SURFACE_MAX_CHARS;
+    if (raw.length <= ceiling) return { text: content, contentChars: content.length, complete: true };
     const marker = (offset: number) => `[context-cap: ${filename} is ${raw.length} chars; loaded first ${offset} chars; continue with self_read file=${JSON.stringify(filename)} offset=${offset}]`;
     // Work in the original JS string, so offset is exact even with leading
     // whitespace or Unicode; self_read uses the same character offsets.
-    const head = boundaryTruncate(raw, AUTHORED_SURFACE_MAX_CHARS - marker(AUTHORED_SURFACE_MAX_CHARS).length - 1);
-    const capped = `${head}\n${marker(head.length)}`;
+    const head = boundaryTruncate(raw, Math.max(0, ceiling - marker(ceiling).length - 1));
+    // A tiny/zero allowance still earns a recovery pointer, not source text.
+    // The pointer itself is charged to the aggregate prompt ceiling.
+    const capped = `${head}${head ? '\n' : ''}${marker(head.length)}`;
     onCap?.({ source: filename, rawChars: raw.length, loadedChars: head.length,
-      ceiling: AUTHORED_SURFACE_MAX_CHARS, reason: 'file_ceiling' });
-    return capped;
+      ceiling, reason: ceiling < AUTHORED_SURFACE_MAX_CHARS ? 'file_budget' : 'file_ceiling' });
+    return { text: capped, contentChars: head.length, complete: false };
   }
-  return budgetIdentityContent(basename(filename), content, budget, 'head').text;
+  const budgeted = budgetIdentityContent(basename(filename), content, budget, 'head');
+  if (budgeted.truncated) {
+    onCap?.({ source: filename, rawChars: content.length, loadedChars: budgeted.includedBytes,
+      ceiling: budget, reason: 'file_budget' });
+  }
+  return { text: budgeted.truncated
+    ? `${budgeted.text}\n[context-recovery: self_read file=${JSON.stringify(filename)} offset=0 for the complete source]`
+    : budgeted.text, contentChars: budgeted.includedBytes, complete: !budgeted.truncated };
 }
 
 /** Read the shared store fresh without mutating it or trusting a stale process cache. */
@@ -311,10 +331,10 @@ function loadTriggeredSurfaces(
   turnText?: string,
   embed?: (t: string) => number[] | null,
   onCap?: OnAwarenessCap,
-): Array<{ label: string; text: string; file: string }> {
+): Array<{ label: string; text: string; file: string; contentChars: number; complete: boolean }> {
   if (!surfaces || surfaces.length === 0) return [];
   const hay = matchText.toLowerCase();
-  const out: Array<{ label: string; text: string; file: string }> = [];
+  const out: Array<{ label: string; text: string; file: string; contentChars: number; complete: boolean }> = [];
   for (const surface of surfaces) {
     const cues = [...(surface.keywords ?? []), ...(surface.domains ?? [])]
       .map(c => c.toLowerCase().trim())
@@ -338,7 +358,7 @@ function loadTriggeredSurfaces(
 
     const content = loadSurface(workspacePath, surface.file, surface.budget ?? 2500, true, onCap);
     if (!content) continue;
-    out.push({ label, text: content, file: surface.file });
+    out.push({ label, ...content, file: surface.file });
   }
   return out;
 }
@@ -350,39 +370,72 @@ interface SalienceItem {
   score: number;
   source: string;
   file?: string;
+  /** Presence identifies a surface; text formatting never decides delivery. */
+  surface?: string;
+  contentChars?: number;
+  complete?: boolean;
+  recovery?: string;
 }
 
-function rankBySalience(items: SalienceItem[], budget: number, totalBudget: number, onCap: OnAwarenessCap): string[] {
+interface ContextOmission { item: SalienceItem; reason: 'evidence_budget' | 'total_ceiling' }
+
+function rankBySalience(items: SalienceItem[], budget: number, totalBudget: number, onCap: OnAwarenessCap,
+  omissionIndexRecovery: string,
+): { selected: SalienceItem[]; omitted: ContextOmission[]; notice: string } {
   items.sort((a, b) => {
     if (a.source === 'trigger' && b.source !== 'trigger') return -1;
     if (b.source === 'trigger' && a.source !== 'trigger') return 1;
     return b.score - a.score;
   });
 
-  const selected: string[] = [];
-  let totalChars = 0;
+  const selected: SalienceItem[] = [];
+  const omitted: ContextOmission[] = [];
   let evidenceChars = 0;
+  const joinedLength = () => selected.reduce((sum, item) => sum + item.text.length, Math.max(0, selected.length - 1));
 
   for (const item of items) {
     const authored = item.source.startsWith('trigger-surface:') || ['surface:PERSONAL', 'surface:DOCTRINE', 'surface:SUBSTRATE', 'surface:RECENT@seed', 'surface:FACTS@seed'].includes(item.source);
-    if (!authored && evidenceChars + item.text.length > budget) continue;
-    let text = item.text;
-    const separator = selected.length ? 1 : 0;
-    if (totalChars + separator + text.length > totalBudget) {
-      const recovery = item.file ? `continue with self_read file=${JSON.stringify(item.file)} offset=0`
-        : 'read this surface from its source before relying on omitted context';
-      text = `\nRelevant context (${item.file ?? item.source}):\n[context-cap: omitted by the ${SITUATIONAL_AWARENESS_MAX_CHARS}-char situational-awareness ceiling; ${recovery}]`;
-      const fits = totalChars + separator + text.length <= totalBudget;
-      onCap({ source: item.file ?? item.source, rawChars: item.text.length, loadedChars: fits && authored ? text.length : 0,
-        ceiling: SITUATIONAL_AWARENESS_MAX_CHARS, reason: 'total_ceiling' });
-      if (!authored || !fits) continue;
+    if (!authored && evidenceChars + item.text.length > budget) {
+      omitted.push({ item, reason: 'evidence_budget' });
+      continue;
     }
-    selected.push(text);
-    totalChars += separator + text.length;
+    if (joinedLength() + (selected.length ? 1 : 0) + item.text.length > totalBudget) {
+      omitted.push({ item, reason: 'total_ceiling' });
+      continue;
+    }
+    selected.push(item);
     if (!authored) evidenceChars += item.text.length;
   }
 
-  return selected;
+  const renderNotice = () => {
+    if (!omitted.length) return '';
+    const heading = `[CONTEXT OMISSIONS: ${omitted.length} selected item(s) did not reach this prompt; not loaded knowledge.]`;
+    const lines = omitted.map(({ item, reason }) =>
+      `- ${item.surface ?? item.source} (${reason}): ${item.recovery ?? `self_read file=${JSON.stringify(item.file)} offset=0`}`);
+    const full = [heading, ...lines, '[/CONTEXT OMISSIONS]'].join('\n');
+    if (full.length <= totalBudget) return full;
+    // An unusually large index must not hide the fact that it too is partial.
+    // The structured receipt retains every path; never truncate a path/call.
+    const tail = `Additional source pointers omitted from this index. ${omissionIndexRecovery}\n[/CONTEXT OMISSIONS]`;
+    const shown = [heading];
+    for (const line of lines) {
+      if (shown.join('\n').length + line.length + tail.length + 2 > totalBudget) break;
+      shown.push(line);
+    }
+    return [...shown, tail].join('\n');
+  };
+  let notice = renderNotice();
+  // Reserve the omission notice before the final model block is constructed.
+  // Whole lower-salience items yield space; the notice is never a sliced tail.
+  while (selected.length && joinedLength() + notice.length + (notice ? 1 : 0) > totalBudget) {
+    omitted.push({ item: selected.pop()!, reason: 'total_ceiling' });
+    notice = renderNotice();
+  }
+  for (const { item, reason } of omitted) {
+    onCap({ source: item.file ?? item.source, rawChars: item.text.length, loadedChars: 0,
+      ceiling: reason === 'evidence_budget' ? budget : SITUATIONAL_AWARENESS_MAX_CHARS, reason });
+  }
+  return { selected, omitted, notice };
 }
 
 // ─── Staleness Verification ─────────────────────────────
@@ -498,7 +551,7 @@ function loadAgencyContextSnapshot(projectRoot: string, agentName: string): Agen
   } catch {
     state = {};
   }
-  return { agencyDir, statePath, state, stateReadable };
+  return { agentName, agencyDir, statePath, state, stateReadable };
 }
 
 function oneLine(value: unknown, max: number): string {
@@ -575,12 +628,15 @@ function renderAgencyContextSection(snapshot: AgencyContextSnapshot): string {
       : null;
     if (pursuit?.id && typeof pursuit.id === 'string') latest.set(pursuit.id, pursuit);
   }
-  const active = Array.from(latest.values())
+  const stored = Array.from(latest.values())
     .filter((pursuit) => ['active', 'watch'].includes(String(pursuit.status || '')))
-    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
-    .slice(0, 5);
+    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  const initiation = readResidentInitiationContext(join(snapshot.agencyDir, 'resident-initiation.json'), snapshot.agentName);
+  const projected = stored.map(pursuit => ({ pursuit, execution: initiation.project(pursuit) }));
+  const active = projected.filter(row => !row.execution.dormant);
+  const dormant = projected.filter(row => row.execution.dormant);
 
-  if (active.length === 0 && Object.keys(state).length === 0) return '';
+  if (stored.length === 0 && Object.keys(state).length === 0) return '';
 
   const attention = state.attention && typeof state.attention === 'object'
     ? state.attention as Record<string, unknown>
@@ -612,31 +668,53 @@ function renderAgencyContextSection(snapshot: AgencyContextSnapshot): string {
         return `- ${name}: kind=${organ.kind || 'organ'} | senses=${senses || 'unknown'} | changes=${changes || 'unknown'} | command=${organ.commandSurface || 'unknown'}`;
       })
     : [];
+  const executionSummary = (execution: { executionState: string; workId?: string | null; dormancyReason?: string | null }) => {
+    const clarification = execution.executionState === 'succeeded' ? 'executor finished; objective verification is not established'
+      : ['failed', 'cancelled'].includes(execution.executionState) ? 'executor settled; objective verification is not established'
+        : execution.executionState === 'withdrawn' ? 'withdrawn locally after Core confirmed no admission'
+          : execution.executionState === 'not_admitted' ? 'no matching resident initiation admission'
+            : execution.executionState === 'unknown' ? `resident initiation state ${initiation.availability}` : null;
+    return `execution=${execution.executionState}${clarification ? ` (${clarification})` : ''}${execution.workId ? ` | Work=${execution.workId}` : ''}`;
+  };
   const lines = active.length > 0
-    ? active.map((pursuit) => [
+    ? active.slice(0, 5).map(({ pursuit, execution }) => [
         `- ${pursuit.id}: ${pursuit.title || pursuit.summary || 'Untitled pursuit'}`,
-        `status=${pursuit.status || 'unknown'}`,
+        `stored_status=${pursuit.status || 'unknown'}`,
+        executionSummary(execution),
         `authority=${pursuit.authorityLevel || 'L1'}`,
         pursuit.nextMove ? `next_move=${pursuit.nextMove}` : null,
         pursuit.desiredChangedFuture ? `changed_future=${pursuit.desiredChangedFuture}` : null,
         pursuit.nextCheckAt ? `next=${pursuit.nextCheckAt}` : null,
       ].filter(Boolean).join(' | '))
     : ['- none'];
+  const dormantLines = dormant.slice(0, 5).map(({ pursuit, execution }) =>
+    `- ${pursuit.id}: ${pursuit.title || pursuit.summary || 'Untitled pursuit'} | initiative=dormant (${execution.dormancyReason}) | ${executionSummary(execution)}; stored pursuit retained, not a completion claim.`);
+  const current = projected.find(row => row.pursuit.id === attention.currentPursuitId);
+  const next = projected.find(row => row.pursuit.id === nextAction?.pursuitId);
+  const currentFocus = current?.execution.dormant
+    ? `none executing from stored focus ${current.pursuit.id} (${current.execution.dormancyReason})`
+    : `${attention.currentPursuitId || 'none'}${current ? ` | ${executionSummary(current.execution)}` : attention.currentPursuitId ? ' | execution=unknown (stored focus only)' : ''}`;
+  const nextMove = next?.execution.dormant
+    ? `none; stored action for ${next.pursuit.id} is dormant (${next.execution.dormancyReason})`
+    : nextAction ? `${[nextAction.kind, nextAction.pursuitId, nextAction.reason].filter(Boolean).join(' | ')} (planning record, not an execution receipt)` : 'none';
 
   return [
     '## Resident Agency',
     '',
     `Mode: ${state.mode || 'unknown'}`,
-    `Current pursuit: ${attention.currentPursuitId || 'none'}`,
-    `Queue depth: ${attention.queueDepth ?? 'unknown'}`,
-    `Attention: active ${attention.activePursuits ?? 'unknown'}/${attention.maxActivePursuits ?? 'unknown'}, watch ${attention.watchItems ?? 'unknown'}/${attention.maxWatchItems ?? 'unknown'}`,
-    `Next autonomous action: ${nextAction ? [nextAction.kind, nextAction.pursuitId, nextAction.reason].filter(Boolean).join(' | ') : 'none'}`,
+    `Current pursuit: ${currentFocus}`,
+    `Stored planning queue depth: ${attention.queueDepth ?? 'unknown'} (not an execution count)`,
+    `Pursuit snapshot: ${active.length} stored active/watch plan(s), ${dormant.length} dormant initiative(s). A plan is not evidence of running work.`,
+    `Next autonomous action: ${nextMove}`,
     `Open contradictions: ${truth.unresolvedContradictions ?? 0}`,
     ...(organLines.length > 0 ? ['', 'Body organs:', ...organLines] : []),
     ...(promptContractLines.length > 0 ? ['', 'Prompt contracts:', ...promptContractLines] : []),
     '',
-    'Active pursuits:',
+    'Pursuit plans (execution shown separately):',
     ...lines,
+    ...(active.length > lines.length ? [`${active.length - lines.length} additional stored plans omitted; read ${JSON.stringify(pursuitsPath)} for the full snapshot.`] : []),
+    ...(dormantLines.length ? ['', 'Dormant initiatives (not currently executing):', ...dormantLines] : []),
+    ...(dormant.length > dormantLines.length ? [`${dormant.length - dormantLines.length} additional dormant initiatives omitted; read ${JSON.stringify(pursuitsPath)} and resident-initiation.json for details.`] : []),
   ].join('\n');
 }
 
@@ -702,17 +780,10 @@ export async function assembleContext(
   const events: EventEnvelope[] = [];
   const onCap: OnAwarenessCap = cap => {
     events.push({ event_id: randomUUID(), event_type: 'SituationalAwarenessCapped', session_id: config.sessionId,
-      timestamp: new Date().toISOString(), actor: 'assembly', payload: { ...cap } });
+      timestamp: new Date().toISOString(), actor: 'assembly', payload: {
+        ...cap, stage: cap.reason === 'file_budget' || cap.reason === 'file_ceiling' ? 'preview' : 'delivery',
+      } });
     console.warn(`[context-assembly] context-cap: ${cap.source} ${cap.rawChars} -> ${cap.loadedChars} chars (${cap.reason})`);
-  };
-  const boundedBlock = (block: string): string => {
-    if (block.length <= SITUATIONAL_AWARENESS_MAX_CHARS) return block;
-    const marker = `[context-cap: situational awareness exceeds ${SITUATIONAL_AWARENESS_MAX_CHARS} chars; read omitted context from its sources]`;
-    const footer = '\n[/SITUATIONAL AWARENESS]';
-    const head = boundaryTruncate(block, SITUATIONAL_AWARENESS_MAX_CHARS - marker.length - footer.length - 1);
-    onCap({ source: 'situational-awareness', rawChars: block.length, loadedChars: head.length,
-      ceiling: SITUATIONAL_AWARENESS_MAX_CHARS, reason: 'total_ceiling' });
-    return `${head}\n${marker}${footer}`;
   };
   const isFirstTurn = recentTurns.length === 0;
   const substrateStateDir = config.substrateStateDir ?? resolveSubstrateStateDir(config.workspacePath);
@@ -899,23 +970,32 @@ export async function assembleContext(
   });
 
   // ── Step 2: Score surfaces based on brain cues ──
-  const surfacesLoaded: string[] = [];
+  const surfacesSelected: string[] = [];
   const salienceItems: SalienceItem[] = [];
+  const readSources = (paths: string[]) => paths.map(path => `read_file path=${JSON.stringify(path)} offset_chars=0`).join('; ');
+  const seedSourcePaths = substrateStateDir
+    ? [join(substrateStateDir, 'seed-ledger.jsonl'), join(substrateStateDir, 'checkpoints')]
+    : [];
+  const seedRecovery = substrateStateDir
+    ? `${readSources(seedSourcePaths.slice(0, 1))}; list_files cwd=${JSON.stringify(seedSourcePaths[1])} pattern="ckpt_*.json", then read the newest checkpoint`
+    : '';
 
   for (const cue of brainCues) {
     salienceItems.push({
-      text: `- ${(cue.concept ?? '').slice(0, 300)}${cue.tag ? ` [${cue.tag}]` : ''}`,
+      text: `- ${cue.concept ?? ''}${cue.tag ? ` [${cue.tag}]` : ''}`,
       score: cue.similarity,
       source: 'brain',
+      recovery: `brain_search query=${JSON.stringify(searchQuery)}${cue.id !== undefined ? `; locate returned record ${JSON.stringify(cue.id)}` : ''}`,
     });
   }
 
   // Add triggered memories to salience items (they outrank brain similarity)
   for (const match of triggerMatches) {
     salienceItems.push({
-      text: `- [trigger: ${match.trigger.trigger_type}] ${match.memory.title}: ${match.memory.statement.slice(0, 250)}`,
+      text: `- [trigger: ${match.trigger.trigger_type}] ${match.memory.title}: ${match.memory.statement}`,
       score: match.memory.confidence.score + 0.1, // boost triggered memories
       source: 'trigger',
+      recovery: `${readSources([join(config.brainDir, 'memory-objects.json')])}; locate memoryId=${JSON.stringify(match.memoryId)}`,
     });
   }
 
@@ -934,30 +1014,38 @@ export async function assembleContext(
     if (surface.name === 'RECENT' && substrateStateDir) {
       const lived = composeLivedRecent(substrateStateDir, surface.budget);
       if (lived) {
-        surfacesLoaded.push('RECENT@seed');
+        surfacesSelected.push('RECENT@seed');
         salienceItems.push({
           text: `\nRelevant context (RECENT — lived, from your Seed's chain):\n${lived}`,
           score: 0.7,
           source: 'surface:RECENT@seed',
+          surface: 'RECENT@seed',
+          recovery: seedRecovery,
         });
         continue;
       }
     }
 
-    let content = loadSurface(config.workspacePath, surface.file, surface.budget, false, onCap);
+    const loaded = loadSurface(config.workspacePath, surface.file, surface.budget, false, onCap);
+    let content = loaded?.text ?? null;
+    let contentChars = loaded?.contentChars ?? 0;
     if (surface.name === 'PERSONAL') {
       const learned = composeLearnedOwnerFacts(config.brainDir, userText, config.ownerDistill);
       content = [content, learned].filter(Boolean).join('\n\n') || null;
+      contentChars += learned?.length ?? 0;
     }
     if (!content) continue;
 
     const verified = verifyFreshness(surface.name, content, surface.isFact);
-    surfacesLoaded.push(surface.name);
+    surfacesSelected.push(surface.name);
     salienceItems.push({
       text: `\nRelevant context (${surface.name}):\n${verified}`,
       score: surface.alwaysBoost ? 0.95 : 0.7,
       source: `surface:${surface.name}`,
       file: surface.file,
+      surface: surface.name,
+      contentChars,
+      complete: loaded?.complete ?? true,
     });
   }
 
@@ -974,11 +1062,13 @@ export async function assembleContext(
   if (substrateStateDir && factsShouldLoad) {
     const livedFacts = composeLivedFacts(substrateStateDir);
     if (livedFacts) {
-      surfacesLoaded.push('FACTS@seed');
+      surfacesSelected.push('FACTS@seed');
       salienceItems.push({
         text: `\nRelevant context (FACTS — lived, from your Seed's chain):\n${livedFacts}`,
         score: 0.7,
         source: 'surface:FACTS@seed',
+        surface: 'FACTS@seed',
+        recovery: seedRecovery,
       });
     }
   }
@@ -988,12 +1078,15 @@ export async function assembleContext(
   // carry-forward — so it reaches the agent when relevant without bloating turns.
   const triggerMatchText = `${userText} ${recentTurns.slice(-3).map(t => t.content ?? '').join(' ')}`;
   for (const ts of loadTriggeredSurfaces(config.workspacePath, config.triggeredSurfaces, triggerMatchText, userText, config.semanticEmbed, onCap)) {
-    surfacesLoaded.push(ts.label);
+    surfacesSelected.push(ts.label);
     salienceItems.push({
       text: `\nRelevant context (${ts.label}):\n${ts.text}`,
       score: 0.92, // deliberately requested by the turn's cues → high salience
       source: `trigger-surface:${ts.label}`,
       file: ts.file,
+      surface: ts.label,
+      contentChars: ts.contentChars,
+      complete: ts.complete,
     });
   }
 
@@ -1015,7 +1108,13 @@ export async function assembleContext(
   const operatorObligationSection = agencySnapshot
     ? renderOperatorObligationContextSection(agencySnapshot, Date.now())
     : '';
-  if (operatorObligationSection) surfacesLoaded.push('OWED_TO_JTR');
+  if (operatorObligationSection) {
+    surfacesSelected.push('OWED_TO_JTR');
+    salienceItems.push({
+      text: operatorObligationSection, score: 1.2, source: 'surface:OWED_TO_JTR', surface: 'OWED_TO_JTR',
+      recovery: readSources([agencySnapshot!.statePath]),
+    });
+  }
 
   if (shouldLoadOperationalSurface({
     ...opsGateBase,
@@ -1025,11 +1124,13 @@ export async function assembleContext(
     try {
       const workerSection = buildWorkerContextSection(projectRoot, agentName);
       if (workerSection) {
-        surfacesLoaded.push('WORKERS');
+        surfacesSelected.push('WORKERS');
         salienceItems.push({
           text: `\nRelevant context (WORKERS):\n${workerSection}`,
           score: 0.9,
           source: 'surface:WORKERS',
+          surface: 'WORKERS',
+          recovery: `${readSources([join(config.brainDir, 'worker-runs.jsonl')])}; list_files cwd=${JSON.stringify(join(projectRoot, 'instances', 'workers'))} pattern="*/worker.yaml"`,
         });
       }
     } catch {
@@ -1045,11 +1146,13 @@ export async function assembleContext(
     try {
       const agencySection = agencySnapshot ? renderAgencyContextSection(agencySnapshot) : '';
       if (agencySection) {
-        surfacesLoaded.push('AGENCY');
+        surfacesSelected.push('AGENCY');
         salienceItems.push({
           text: `\nRelevant context (AGENCY):\n${agencySection}`,
           score: 0.98,
           source: 'surface:AGENCY',
+          surface: 'AGENCY',
+          recovery: readSources([agencySnapshot!.statePath, join(agencySnapshot!.agencyDir, 'pursuits.jsonl')]),
         });
       }
     } catch {
@@ -1070,43 +1173,71 @@ export async function assembleContext(
       budget: config.substrateBudget,
       turnText: userText,
       recipeId: activeAttentionRecipeId(),
+      embed: config.semanticEmbed,
     });
     if (seedSection) {
-      surfacesLoaded.push('SUBSTRATE');
+      surfacesSelected.push('SUBSTRATE');
       salienceItems.push({
         text: `\n${seedSection}`,
         score: 0.96,
         source: 'surface:SUBSTRATE',
+        surface: 'SUBSTRATE',
+        recovery: seedRecovery,
       });
     }
   }
 
-  events.push({
-    event_id: randomUUID(),
-    event_type: 'RetrievalExecuted',
-    session_id: config.sessionId,
-    timestamp: new Date().toISOString(),
-    actor: 'assembly',
-    payload: {
-      brain_cue_count: brainCues.length,
-      surfaces_loaded: surfacesLoaded,
-      degraded,
-      sourceHealth,
-      matchOutcome,
-      retrievalError,
-      fallback: retrievalFallback,
-      retrievalInterpretation: successfulHybridRetrieval
-        ? 'successful_hybrid'
-        : successfulFastRetrieval
-          ? 'successful_fast'
-          : null,
-      retrievalMs,
-      retrievalPending,
-      stage: 'fast',
-    },
-  });
+  // Selection is not delivery. Publish final delivery metadata only after
+  // ranking, including every budget omission and the recovery information.
+  const finish = (prefix: string, footer: string, evidenceBudget: number, keepEmpty = false): AssemblyResult => {
+    const omissionIndexRecovery = ledger
+      ? `Search RetrievalExecuted for session ${JSON.stringify(config.sessionId)} in ${JSON.stringify(join(config.brainDir, 'event-ledger.jsonl'))} for the complete delivery_omissions index.`
+      : 'The returned RetrievalExecuted delivery_omissions metadata contains the complete source index.';
+    const ranked = rankBySalience(salienceItems, evidenceBudget,
+      Math.max(0, SITUATIONAL_AWARENESS_MAX_CHARS - prefix.length - footer.length - 1), onCap,
+      omissionIndexRecovery);
+    const body = [...ranked.selected.map(item => item.text), ...(ranked.notice ? [ranked.notice] : [])].join('\n');
+    const block = body || keepEmpty ? `${prefix}${body}${footer}` : '';
+    const surfacesLoaded = [...new Set(ranked.selected
+      .filter(item => item.surface && (item.contentChars ?? item.text.length) > 0)
+      .map(item => item.surface!))];
+    const surfacesOmitted = [...new Set(surfacesSelected.filter(surface => !surfacesLoaded.includes(surface)))];
+    events.push({
+      event_id: randomUUID(), event_type: 'RetrievalExecuted', session_id: config.sessionId,
+      timestamp: new Date().toISOString(), actor: 'assembly', payload: {
+        brain_cue_count: brainCues.length,
+        surfaces_selected: surfacesSelected,
+        surfaces_loaded: surfacesLoaded,
+        surfaces_omitted: surfacesOmitted,
+        delivery_omissions: ranked.omitted.map(({ item, reason }) => ({
+          source: item.source, surface: item.surface ?? null, file: item.file ?? null,
+          reason, recovery: item.recovery ?? `self_read file=${JSON.stringify(item.file)} offset=0`,
+          delivered_chars: 0,
+        })),
+        surface_delivery: ranked.selected.filter(item => item.surface).map(item => ({
+          surface: item.surface, source: item.source, file: item.file ?? null,
+          delivered_chars: item.contentChars ?? item.text.length,
+          pointer_only: item.contentChars === 0,
+          complete: item.complete ?? true,
+        })),
+        degraded, sourceHealth, matchOutcome, retrievalError, fallback: retrievalFallback,
+        retrievalInterpretation: successfulHybridRetrieval ? 'successful_hybrid' : successfulFastRetrieval ? 'successful_fast' : null,
+        retrievalMs, retrievalPending, stage: 'fast',
+      },
+    });
+    if (ledger) ledger.emit(events);
+    return { block, degraded, brainCueCount: brainCues.length, triggerCount: triggerMatches.length,
+      surfacesLoaded, events, sourceHealth, matchOutcome, retrievalError };
+  };
 
   // ── Step 3: Assemble with salience ranking ──
+  // Provider diagnostics are a preview, not authored continuity. Preserve the
+  // full values in RetrievalExecuted while preventing a malformed error from
+  // consuming the entire model block and its omission/recovery index.
+  const diagnostic = (value: unknown) => {
+    const text = String(value ?? '');
+    return text.length <= 600 ? text : `${oneLine(text, 600)} [diagnostic preview; full value recorded in RetrievalExecuted]`;
+  };
   if (degraded) {
     const pieces: string[] = contextRetrievalTimedOut
       ? [
@@ -1117,85 +1248,38 @@ export async function assembleContext(
         ]
       : [
           '[SITUATIONAL AWARENESS: brain retrieval degraded]',
-          `sourceHealth=${sourceHealth} matchOutcome=${matchOutcome}`,
-          `route=requester_dashboard_brain_search error=${retrievalError || `source reported ${sourceHealth}`}`,
+          `sourceHealth=${diagnostic(sourceHealth)} matchOutcome=${diagnostic(matchOutcome)}`,
+          `route=requester_dashboard_brain_search error=${diagnostic(retrievalError || `source reported ${sourceHealth}`)}`,
           'Returned cues (if any), local trigger matches, and domain surfaces below remain available. ' +
             'Retry the operation or inspect brain_status; success is not yet established.',
         ];
-    if (operatorObligationSection) pieces.push(operatorObligationSection);
-    const footer = '[/SITUATIONAL AWARENESS]';
-    const localEvidence = rankBySalience(salienceItems, CONTEXT_BUDGET - 700,
-      Math.max(0, SITUATIONAL_AWARENESS_MAX_CHARS - pieces.join('\n').length - footer.length - 2), onCap);
-    if (localEvidence.length > 0) pieces.push(localEvidence.join('\n'));
-    pieces.push(footer);
-    const block = boundedBlock(pieces.join('\n'));
-    if (ledger) { ledger.emit(events); }
-
-    return {
-      block,
-      degraded: true,
-      brainCueCount: brainCues.length,
-      triggerCount: triggerMatches.length,
-      surfacesLoaded,
-      events,
-      sourceHealth,
-      matchOutcome,
-      retrievalError,
-    };
+    return finish(`${pieces.join('\n')}\n`, '\n[/SITUATIONAL AWARENESS]', CONTEXT_BUDGET - 700, true);
   }
 
   const hybridRetrievalSection = successfulHybridRetrieval
     ? '[RETRIEVAL NOTE: successful hybrid brain retrieval]\n' +
-      `sourceHealth=${sourceHealth} matchOutcome=${matchOutcome}\n` +
-      `fallback=${String(retrievalFallback?.route)} reason=${String(retrievalFallback?.reason)} ` +
-      `completeness=${String(retrievalFallback?.completeness)}\n` +
+      `sourceHealth=${diagnostic(sourceHealth)} matchOutcome=${diagnostic(matchOutcome)}\n` +
+      `fallback=${diagnostic(retrievalFallback?.route)} reason=${diagnostic(retrievalFallback?.reason)} ` +
+      `completeness=${diagnostic(retrievalFallback?.completeness)}\n` +
       'The preferred ANN route missed an exact canary; the complete logical keyword supplement ' +
       'returned matching cues. Preserve the degraded source-health evidence, but treat these matches as usable.\n' +
       '[/RETRIEVAL NOTE]\n\n'
     : successfulFastRetrieval
       ? '[RETRIEVAL NOTE: successful fast brain retrieval]\n' +
-        `sourceHealth=${sourceHealth} matchOutcome=${matchOutcome}\n` +
-        `fallback=${String(retrievalFallback?.route)} reason=${String(retrievalFallback?.reason)} ` +
-        `completeness=${String(retrievalFallback?.completeness)} retrievalMs=${retrievalMs}\n` +
+        `sourceHealth=${diagnostic(sourceHealth)} matchOutcome=${diagnostic(matchOutcome)}\n` +
+        `fallback=${diagnostic(retrievalFallback?.route)} reason=${diagnostic(retrievalFallback?.reason)} ` +
+        `completeness=${diagnostic(retrievalFallback?.completeness)} retrievalMs=${retrievalMs}\n` +
         'Turn enrichment used the fast index and skipped the full-brain scan. Coverage is incomplete; treat these matches as usable and do not claim the index is fully current.\n' +
         '[/RETRIEVAL NOTE]\n\n'
       : '';
 
-  const prefix = `[SITUATIONAL AWARENESS]\n\n${retrievalPending ? `${pendingAutomaticContextDisclosure()}\n\n` : ''}${operatorObligationSection ? `${operatorObligationSection}\n\n` : ''}${
+  const prefix = `[SITUATIONAL AWARENESS]\n\n${retrievalPending ? `${pendingAutomaticContextDisclosure()}\n\n` : ''}${
     brainCues.length > 0
       ? '[CONTINUITY ENRICHMENT] This block includes automatic pre-turn brain cues. Do not treat them as brain_search results.\n\n'
       : ''
   }${hybridRetrievalSection}`;
-  const footer = '\n\n[/SITUATIONAL AWARENESS]';
-  const brainHeading = brainCues.length > 0 ? 'Brain cues:\n' : '';
-  const rankedParts = rankBySalience(salienceItems, CONTEXT_BUDGET,
-    Math.max(0, SITUATIONAL_AWARENESS_MAX_CHARS - prefix.length - footer.length - brainHeading.length - 1), onCap);
-
-  if (rankedParts.length === 0) {
-    const block = boundedBlock(operatorObligationSection || retrievalPending ? `${prefix}${footer}` : '');
-    if (ledger) { ledger.emit(events); }
-    return { block, degraded: false, brainCueCount: brainCues.length, triggerCount: triggerMatches.length,
-      surfacesLoaded, events, sourceHealth, matchOutcome, retrievalError };
-  }
-
-  const brainSection = brainCues.length > 0
-    ? `${brainHeading}${rankedParts.filter(p => !p.startsWith('\nRelevant context')).join('\n')}\n` : '';
-  const surfaceSection = rankedParts
-    .filter(p => p.startsWith('\nRelevant context'))
-    .join('\n');
-
-  const block = boundedBlock(`${prefix}${brainSection}${surfaceSection}${footer}`);
-
-  if (ledger) { ledger.emit(events); }
-  return {
-    block,
-    degraded: false,
-    brainCueCount: brainCues.length,
-    triggerCount: triggerMatches.length,
-    surfacesLoaded,
-    events,
-    sourceHealth,
-    matchOutcome,
-    retrievalError,
-  };
+  // Every selected item reaches the model regardless of which lookup admitted
+  // it. In particular, Seed context and local trigger memories are independent
+  // of remote brain cues, and are never classified by a rendered text prefix.
+  return finish(prefix, '\n\n[/SITUATIONAL AWARENESS]', CONTEXT_BUDGET, retrievalPending);
 }
