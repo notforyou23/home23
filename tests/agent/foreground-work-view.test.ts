@@ -34,6 +34,26 @@ test('compact view uses existing Work and commitment projections', () => {
   assert.doesNotMatch(view, /Quiet nights/);
 });
 
+test('canonical context separates current execution from unresolved assessments and preserves owner direction', async () => {
+  const view = await collectCanonicalWorkContext(async () => ({ registry: 'canonical', work: [
+    { id: 'wrk_running', title: 'Running repair', state: 'running', assignmentState: 'active' },
+    { id: 'wrk_blocked', title: 'Unresolved repair', state: 'succeeded', assignmentState: 'blocked',
+      conclusion: { summary: 'Source fix remains blocked' } },
+    { id: 'wrk_returned', title: 'Returned report', state: 'succeeded', assignmentState: 'returned' },
+    { id: 'wrk_unknown', title: 'Unassessed result', state: 'succeeded', assignmentState: 'needs_review' },
+    { id: 'wrk_failure', title: 'Failed execution', state: 'failed', assignmentState: 'blocked' },
+  ], unseenOwnerMessages: [{ text: 'Continue the authorized repair' }], ownerMessageSequence: 23 }));
+  const executing = view.split('Active executions:')[1]?.split('Unresolved assignments:')[0];
+  assert.ok(executing); assert.match(executing, /wrk_running/);
+  assert.doesNotMatch(executing, /wrk_blocked|wrk_returned|wrk_unknown|wrk_failure/);
+  const unresolved = view.split('Unresolved assignments:')[1]?.split('Unfinished commitments:')[0];
+  assert.ok(unresolved); assert.match(unresolved, /wrk_blocked.*blocked; execution succeeded/);
+  assert.match(unresolved, /Source fix remains blocked/); assert.match(unresolved, /wrk_returned/);
+  assert.match(unresolved, /wrk_unknown/); assert.match(unresolved, /wrk_failure.*execution failed/);
+  assert.match(view, /Continue the authorized repair/); assert.match(view, /owner_message_sequence=23/);
+  assert.equal(view.match(/execution state and heartbeats do not establish meaningful progress or completion/g)?.length, 1);
+});
+
 test('collectForegroundTurnContext reads the existing registries for a chat', () => {
   const listed: unknown[] = [];
   const view = collectForegroundTurnContext({

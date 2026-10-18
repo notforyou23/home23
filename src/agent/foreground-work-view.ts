@@ -9,6 +9,7 @@ export interface CompactWorkProjection {
   workId: string;
   label: string;
   status: string;
+  executionState?: string;
   kind?: string;
   progressSummary?: string;
 }
@@ -39,9 +40,11 @@ export function buildForegroundWorkView(input: {
     .filter((entry) => entry.status === undefined || entry.status === 'active')
     .slice(0, MAX_COMMITMENT_LINES);
 
-  const workLines = work.length === 0
+  const activeExecutions = work.filter(item => ['queued','leased','running','cancelling'].includes(item.executionState ?? item.status));
+  const unresolved = work.filter(item => !activeExecutions.includes(item));
+  const workLines = (items: CompactWorkProjection[]) => items.length === 0
     ? ['- none']
-    : work.map((item) => {
+    : items.map((item) => {
       const progress = item.progressSummary ? ` — ${oneLine(item.progressSummary, 80)}` : '';
       return `- ${item.workId} (${item.kind ?? 'work'} ${item.status}): ${oneLine(item.label)}${progress}`;
     });
@@ -54,8 +57,11 @@ export function buildForegroundWorkView(input: {
     '[FOREGROUND — ACTIVE WORK AND COMMITMENTS]',
     'You are the same resident in this conversation. Background Work does not replace you or this thread.',
     '',
-    'Active Work:',
-    ...workLines,
+    'Active executions:',
+    ...workLines(activeExecutions),
+    '',
+    'Unresolved assignments:',
+    ...workLines(unresolved),
     '',
     'Unfinished commitments:',
     ...commitmentLines,
@@ -94,6 +100,7 @@ export async function collectCanonicalWorkContext(read: () => Promise<unknown>, 
     if (result?.registry !== 'canonical' || !Array.isArray(result.work)) throw new Error('Invalid canonical work view');
     if (result.ownerContact && typeof result.ownerContact.messageId === 'string' && typeof result.ownerContact.text === 'string') onOwnerContact?.(result.ownerContact);
     const rows = result.work.map(row => ({ workId: String(row.id), label: String(row.title ?? row.id),
+      executionState: String(row.state),
       status: row.assignmentState ? `${row.assignmentState}; execution ${row.state}` : String(row.state), kind: typeof row.toolName === 'string' ? row.toolName : 'assignment',
       progressSummary: typeof (row.conclusion as { summary?: string } | null)?.summary === 'string' ? (row.conclusion as { summary: string }).summary : typeof row.summary === 'string' ? row.summary : undefined }));
     const correction = result.unseenOwnerMessages?.length

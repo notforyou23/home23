@@ -355,8 +355,10 @@ test("scheduled provenance builds one indexed admission set for single and page 
   assert.equal(statements.length, 2, 'exercise the actual production single and page SQL');
 
   const database = new Database(':memory:'); t.after(() => database.close());
-  assert.equal(COORDINATION_MIGRATIONS.at(-1)?.version, 21);
-  for (const migration of COORDINATION_MIGRATIONS) database.exec(migration.sql);
+  // Keep exercising the legacy schema even when the product adds migrations.
+  const legacyMigrations = COORDINATION_MIGRATIONS.filter(migration => migration.version <= 21);
+  assert.equal(legacyMigrations.at(-1)?.version, 21);
+  for (const migration of legacyMigrations) database.exec(migration.sql);
   assert.equal(database.prepare("SELECT 1 FROM sqlite_schema WHERE name='events_scheduled_origin_message'").get(), undefined);
   // Copy only the parents and rows needed by the real presentation queries.
   // The target database uses every existing migration, including v21's triggers.

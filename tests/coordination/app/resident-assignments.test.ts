@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { createResidentAssignments } from '../../../src/coordination/app/resident-assignments.js';
 import { createResidentOutcomeStore } from '../../../src/coordination/app/resident-outcomes.js';
+import { createWorkDiagnostics } from '../../../src/coordination/app/work-diagnostics.js';
 import { projectResidentWork, projectResidentWorkIncrementally } from '../../../src/coordination/app/resident-work-projection.js';
 import { createForegroundDetachmentConsumer } from '../../../src/coordination/app/foreground-detachments.js';
 import { createWorkService } from '../../../src/coordination/work/service.js';
@@ -72,6 +73,114 @@ function bindInitiative(f: ReturnType<typeof fixture>, id: string, purpose: Resi
     aggregateKind: 'resident_initiation_work', aggregateId: id, aggregateVersion: 1,
     channelId: CHANNEL_ID, actorPrincipalId: BOT_ID, requestId: admission.requestId,
     correlationId: admission.correlationId, payload: admission, createdAt: AT } }));
+}
+
+function scheduledAssignment(f: ReturnType<typeof fixture>, key: string) {
+  return f.work.create({ principalId: BOT_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
+    originMessageId: MESSAGE_ID, roundId: null, kind: 'channel.bot_turn', idempotencyKey: key,
+    manifest: manifestInput(), maxAutomaticOffers: 1,
+    requestId: fixtureId('request', 980), correlationId: fixtureId('correlation', 980),
+    presentation: { title: key, summary: 'One bounded scheduled firing' } }).work.id;
+}
+
+function scheduledAdmission(f: ReturnType<typeof fixture>, suffix: number,
+  overrides: { channel?: string; author?: string; payload?: Record<string, unknown> } = {}) {
+  f.database.mutateWithEvent(() => ({ value: undefined, event: { type: 'activity.updated',
+    aggregateKind: 'scheduled_channel_run', aggregateId: `scheduled-fixture-${suffix}`, aggregateVersion: 1,
+    channelId: overrides.channel ?? CHANNEL_ID, actorPrincipalId: overrides.author ?? BOT_ID,
+    requestId: fixtureId('request', 980 + suffix), correlationId: fixtureId('correlation', 980 + suffix),
+    payload: overrides.payload ?? { messageId: MESSAGE_ID, channelId: CHANNEL_ID, botId: BOT_ID }, createdAt: AT } }));
+}
+
+test('current assignments omit historic terminal scheduled firings without changing their receipts or unfinished owner work', t => {
+  const f = fixture(t);
+  scheduledAdmission(f, 1);
+  const scheduled: string[] = [];
+  for (let index = 0; index < 47; index++) {
+    const id = scheduledAssignment(f, `historical-scheduled-${index}`);
+    scheduled.push(id); f.finish(id);
+    if (index < 3) f.assignments.report(f.context, f.origin, { work_id: id, state: 'blocked',
+      summary: 'This firing did not finish the project' }, `scheduled-blocked-${index}`);
+    else {
+      const store = createResidentOutcomeStore(f.database);
+      store.enqueue(`scheduled:${id}`, id, { status: 'succeeded', result: 'Run returned' });
+      const review = f.work.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
+        originMessageId: MESSAGE_ID, roundId: null, kind: 'resident_turn', idempotencyKey: `scheduled-review-${index}`,
+        manifest: manifestInput(), maxAutomaticOffers: 1,
+        requestId: fixtureId('request', 981), correlationId: fixtureId('correlation', 981) }).work;
+      const outcome = store.pending().find(row => row.sourceWorkId === id)!;
+      store.update(outcome, 'review_work_id', review.id); f.finish(review.id);
+      store.update(outcome, 'settled_at', AT);
+    }
+  }
+  const running = scheduledAssignment(f, 'currently-scheduled');
+  const blocked = f.admit('unfinished-owner-assignment'); f.finish(blocked, 'failed');
+  f.assignments.report(f.context, f.origin, { work_id: blocked, state: 'blocked',
+    summary: 'The owner assignment still needs repair' }, 'owner-unfinished');
+  const returned = f.admit('returned-owner-assignment'); f.finish(returned);
+  visibleResult(f, returned); failedFollowThrough(f, returned);
+  const before = JSON.stringify({ works: f.database.readAll('SELECT * FROM works ORDER BY id'),
+    events: f.database.readAll('SELECT * FROM events ORDER BY sequence'),
+    outcomes: f.database.readAll('SELECT * FROM resident_outcomes ORDER BY outcome_key') });
+  assert.deepEqual(new Set(f.assignments.list(BOT_ID, false, 100).map(row => row.id)),
+    new Set([running, blocked, returned]), 'old scheduled firings must not crowd out current owner work');
+  const history = f.assignments.list(BOT_ID, true, 100);
+  for (const [index, id] of scheduled.entries()) {
+    const row = history.find(row => row.id === id)!;
+    assert.equal(row.state, 'succeeded', 'retain the execution receipt');
+    assert.equal(row.scheduledRun, true);
+    assert.equal(row.assignmentState, index < 3 ? 'failed' : 'returned', 'match bounded scheduled card semantics');
+    assert.equal(row.conclusion?.state, index < 3 ? 'blocked' : undefined, 'retain the original assessment');
+  }
+  assert.equal(history.find(row => row.id === running)?.assignmentState, 'active');
+  assert.deepEqual(f.assignments.listForProjection(BOT_ID).sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    history.sort((a, b) => String(a.id).localeCompare(String(b.id))), 'historical projection keeps every receipt');
+  const diagnostics = createWorkDiagnostics({ database: f.database, assignments: f.assignments });
+  const exact = diagnostics(BOT_ID, { operation: 'work_status', work_id: scheduled[0] }, f.origin);
+  assert.equal(exact.lookup?.status, 'found'); assert.equal(exact.work[0]?.state, 'succeeded');
+  const current = diagnostics(BOT_ID, { operation: 'work_list', assignments_only: true }, f.origin);
+  assert.deepEqual(new Set(current.work.map(row => row.id)), new Set([running, blocked, returned]));
+  assert.equal(diagnostics(BOT_ID, { operation: 'work_list', assignments_only: true,
+    include_terminal: true, limit: 100 }, f.origin).work.length, 50);
+  assert.equal(JSON.stringify({ works: f.database.readAll('SELECT * FROM works ORDER BY id'),
+    events: f.database.readAll('SELECT * FROM events ORDER BY sequence'),
+    outcomes: f.database.readAll('SELECT * FROM resident_outcomes ORDER BY outcome_key') }), before,
+  'projection must not close, cancel, assess or otherwise mutate canonical history');
+});
+
+test('scheduled currentness requires the exact admission channel, author, target, message and turn kind', t => {
+  const f = fixture(t), id = scheduledAssignment(f, 'ordinary-blocked-assignment'); f.finish(id);
+  f.assignments.report(f.context, f.origin, { work_id: id, state: 'blocked', summary: 'Unfinished owner work' }, 'unrelated-schedule');
+  const variants = [
+    { channel: fixtureId('channel', 982) }, { author: fixtureId('bot', 982) },
+    { payload: { messageId: MESSAGE_ID, channelId: fixtureId('channel', 982), botId: BOT_ID } },
+    { payload: { messageId: MESSAGE_ID, channelId: CHANNEL_ID, botId: fixtureId('bot', 982) } },
+    { payload: { messageId: MESSAGE_ID, channelId: CHANNEL_ID, botId: BOT_ID, targetBotId: fixtureId('bot', 982) } },
+    { payload: { messageId: fixtureId('message', 982), channelId: CHANNEL_ID, botId: BOT_ID } },
+    { payload: { messageId: null, channelId: CHANNEL_ID, botId: BOT_ID } },
+    { payload: { messageId: { id: MESSAGE_ID }, channelId: CHANNEL_ID, botId: BOT_ID } },
+  ];
+  for (const [index, variant] of variants.entries()) {
+    scheduledAdmission(f, index, variant);
+    assert.equal(f.assignments.list(BOT_ID).find(row => row.id === id)?.assignmentState, 'blocked', `mismatch ${index}`);
+    assert.equal(f.assignments.listForProjection(BOT_ID).find(row => row.id === id)?.assignmentState, 'blocked');
+  }
+  scheduledAdmission(f, 99, { payload: { messageId: MESSAGE_ID, channelId: CHANNEL_ID, botId: BOT_ID, targetBotId: null } });
+  assert.equal(f.assignments.list(BOT_ID).some(row => row.id === id), false, 'null target retains the admitted bot fallback');
+  assert.equal(f.assignments.list(BOT_ID, true).find(row => row.id === id)?.assignmentState, 'failed');
+});
+
+for (const execution of ['succeeded', 'failed', 'cancelled'] as const) {
+  test(`terminal scheduled ${execution} preserves its actual outcome and no assessment becomes completion`, t => {
+    const f = fixture(t), id = scheduledAssignment(f, `scheduled-${execution}`); scheduledAdmission(f, 1);
+    if (execution === 'cancelled') f.cancel(id); else f.finish(id, execution);
+    assert.equal(f.assignments.list(BOT_ID).some(row => row.id === id), false);
+    const row = f.assignments.list(BOT_ID, true).find(row => row.id === id)!;
+    assert.equal(row.state, execution);
+    assert.equal(row.assignmentState, execution === 'succeeded' ? 'returned' : execution);
+    assert.equal(row.conclusion, null);
+    assert.equal(f.assignments.listForProjection(BOT_ID).find(row => row.id === id)?.assignmentState, row.assignmentState);
+  });
 }
 
 test('successful resident action remains unresolved before outcome discovery and closes only with an evidence assessment', async t => {
