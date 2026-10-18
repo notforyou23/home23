@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import { createResidentAssignments } from '../../../src/coordination/app/resident-assignments.js';
 import { createResidentOutcomeStore } from '../../../src/coordination/app/resident-outcomes.js';
 import { createWorkDiagnostics } from '../../../src/coordination/app/work-diagnostics.js';
+import { collectCanonicalWorkContext } from '../../../src/agent/foreground-work-view.js';
 import { projectResidentWork, projectResidentWorkIncrementally } from '../../../src/coordination/app/resident-work-projection.js';
 import { createForegroundDetachmentConsumer } from '../../../src/coordination/app/foreground-detachments.js';
 import { createWorkService } from '../../../src/coordination/work/service.js';
@@ -26,7 +27,8 @@ function fixture(t: { after(fn: () => void): void }) {
   database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
   database.raw.prepare('UPDATE resident_outcome_policy SET enabled_at=?').run(AT);
   database.raw.prepare("UPDATE bots SET active_instance_id='instance-jerry',active_key_version=1 WHERE id=?").run(BOT_ID);
-  const generateId = createFixtureIdGenerator(), now = () => new Date(AT);
+  let currentAt = AT;
+  const generateId = createFixtureIdGenerator(), now = () => new Date(currentAt);
   const work = createWorkService({ database, generateId, now });
   const leases = createLeaseService({ database, generateId, now, leaseTtlMs: 60000 });
   const identity = { requestId: fixtureId('request', 10), correlationId: fixtureId('correlation', 10) };
@@ -45,7 +47,7 @@ function fixture(t: { after(fn: () => void): void }) {
   const admit = (invocationId: string) => consumer.admit({ credential, request: { parentOrigin: origin,
     residentSlug: 'jerry', invocationId, toolName: 'spawn_agent', canonicalArgs: { task: 'Verify the repair' },
     executionInstruction: 'Verify the repair', title: 'Repair the launcher', summary: 'Running and verified', recoveryPolicy: 'safe_before_start' } }).workId;
-  const cancel = (id: string) => work.cancelQueued({ workId: id, actorPrincipalId: OWNER_ID, reasonCode: 'operator_stop', sourceReference: 'owner:stop', timestamp: AT, ...identity });
+  const cancel = (id: string) => work.cancelQueued({ workId: id, actorPrincipalId: OWNER_ID, reasonCode: 'operator_stop', sourceReference: 'owner:stop', timestamp: currentAt, ...identity });
   const finish = (id: string, status: 'succeeded' | 'failed' = 'succeeded') => {
     const offered = leases.offer({ workId: id, holderPrincipalId: BOT_ID, holderInstanceId: 'instance-jerry',
       authorityReference: 'resident:jerry', automatic: true, ...identity });
@@ -53,10 +55,11 @@ function fixture(t: { after(fn: () => void): void }) {
       holderPrincipalId: BOT_ID, holderInstanceId: 'instance-jerry', fencingToken: offered.fencingToken, ...identity };
     leases.accept(execution); leases.start(execution);
     leases.terminalize({ ...execution, receipt: { status, sourceReference: 'resident:jerry',
-      resultDigest: 'a'.repeat(64), artifactIds: [], timestamp: AT } });
+      resultDigest: 'a'.repeat(64), artifactIds: [], timestamp: currentAt } });
   };
   const assignments = createResidentAssignments(database);
-  return { database, work, origin, context, consumer, admit, cancel, finish, assignments };
+  return { database, work, origin, context, consumer, admit, cancel, finish, assignments,
+    advanceTo: (at: string) => { currentAt = at; } };
 }
 
 function bindInitiative(f: ReturnType<typeof fixture>, id: string, purpose: ResidentInitiationAdmission['request']['purpose']) {
@@ -91,6 +94,60 @@ function scheduledAdmission(f: ReturnType<typeof fixture>, suffix: number,
     requestId: fixtureId('request', 980 + suffix), correlationId: fixtureId('correlation', 980 + suffix),
     payload: overrides.payload ?? { messageId: MESSAGE_ID, channelId: CHANNEL_ID, botId: BOT_ID }, createdAt: AT } }));
 }
+
+test('a bounded current assignment request prioritizes an older active execution over eight newer unresolved assessments', async t => {
+  const f = fixture(t);
+  const older = f.admit('older-running-execution');
+  for (let index = 0; index < 8; index++) {
+    f.advanceTo(new Date(Date.parse(AT) + (index + 1) * 1000).toISOString());
+    const id = f.admit(`newer-unresolved-${index}`); f.finish(id);
+    f.assignments.report(f.context, f.origin, { work_id: id, state: 'blocked', summary: 'Assessment remains unresolved' }, `newer-blocked-${index}`);
+  }
+  const diagnostics = createWorkDiagnostics({ database: f.database, assignments: f.assignments });
+  const result = diagnostics(BOT_ID, { operation: 'work_list', assignments_only: true, limit: 8 }, f.origin);
+  assert.equal(result.work.length, 8);
+  assert.equal(result.work[0]?.id, older, 'execution priority must apply before the upstream eight-row limit');
+  const view = await collectCanonicalWorkContext(async () => result);
+  const active = view.split('Active executions:')[1]?.split('Unresolved assignments:')[0] ?? '';
+  assert.match(active, new RegExp(older));
+  assert.match(view, /bounded/i); assert.match(view, /1000/); assert.match(view, /work_list/);
+});
+
+test('assignment preview bounds raw indexed history before eligibility and never turns omitted older work into global absence', async t => {
+  const f = fixture(t);
+  f.database.raw.exec(INBOX_RECONCILIATION_INDEXES_MIGRATION_SQL);
+  const older = f.admit('older-than-preview-lookback');
+  f.advanceTo(new Date(Date.parse(AT) + 60_000).toISOString());
+  for (let index = 0; index < 1001; index++) f.work.create({ principalId: OWNER_ID,
+    targetPrincipalId: BOT_ID, channelId: CHANNEL_ID, originMessageId: MESSAGE_ID,
+    roundId: null, kind: 'resident_turn', idempotencyKey: `recent-speaking-history-${index}`,
+    manifest: manifestInput(), maxAutomaticOffers: 1,
+    requestId: fixtureId('request', 10), correlationId: fixtureId('correlation', 10) });
+  const readAll = f.database.readAll.bind(f.database);
+  let boundedQuery = '', plan: string[] = [];
+  f.database.readAll = <T>(sql: string, ...parameters: Array<string | number | bigint | Buffer | null>): T[] => {
+    if (sql.includes('WITH recent AS MATERIALIZED')) {
+      boundedQuery = sql;
+      plan = f.database.raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters)
+        .map(row => String((row as { detail: string }).detail));
+    }
+    return readAll<T>(sql, ...parameters);
+  };
+  const diagnostics = createWorkDiagnostics({ database: f.database, assignments: f.assignments });
+  const result = diagnostics(BOT_ID, { operation: 'work_list', assignments_only: true, limit: 8 }, f.origin);
+  assert.deepEqual(result.work, [], 'the explicitly bounded preview cannot establish this older assignment');
+  assert.match(boundedQuery, /ORDER BY w\.created_at DESC,w\.id DESC LIMIT 1000/);
+  assert.ok(plan.some(detail => detail.includes('SEARCH w USING INDEX works_target_created')), plan.join('; '));
+  assert.equal(plan.some(detail => /^SCAN w(?:\s|$)/.test(detail)), false, plan.join('; '));
+  assert.equal(f.work.get(older)?.state, 'queued', 'an omitted execution is still genuinely unfinished');
+  const exact = diagnostics(BOT_ID, { operation: 'work_status', work_id: older }, f.origin);
+  assert.equal(exact.lookup?.status, 'found'); assert.equal(exact.work[0]?.state, 'queued');
+  const view = await collectCanonicalWorkContext(async () => result);
+  assert.match(view, /none in (?:the )?supplied view/i);
+  assert.doesNotMatch(view, /Active executions:\n- none\n/);
+  assert.match(view, /1000/); assert.match(view, /not a complete inventory/i);
+  assert.match(view, /work_status/); assert.match(view, /work_list/);
+});
 
 test('current assignments omit historic terminal scheduled firings without changing their receipts or unfinished owner work', t => {
   const f = fixture(t);

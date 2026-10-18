@@ -54,6 +54,29 @@ test('canonical context separates current execution from unresolved assessments 
   assert.equal(view.match(/execution state and heartbeats do not establish meaningful progress or completion/g)?.length, 1);
 });
 
+test('foreground splits supplied work before applying each section limit and exposes recoverable omissions', () => {
+  const unresolved = Array.from({ length: 9 }, (_, index) => ({ workId: `unresolved-${index}`,
+    label: 'Unresolved assignment', status: 'blocked; execution succeeded', executionState: 'succeeded' }));
+  const view = buildForegroundWorkView({ work: [...unresolved,
+    { workId: 'older-running', label: 'Actual current execution', status: 'running', executionState: 'running' }] });
+  const active = view.split('Active executions:')[1]?.split('Unresolved assignments:')[0] ?? '';
+  assert.match(active, /older-running/);
+  assert.match(active, /1 of 1 supplied/);
+  const pending = view.split('Unresolved assignments:')[1]?.split('Unfinished commitments:')[0] ?? '';
+  assert.match(pending, /8 of 9 supplied/); assert.match(pending, /1 supplied.*omitted/);
+  assert.doesNotMatch(pending, /unresolved-8/);
+  assert.match(view, /work_list/); assert.match(view, /work_status/); assert.match(view, /bounded/i);
+});
+
+test('empty canonical and limited legacy previews describe only their supplied view', async () => {
+  const canonical = await collectCanonicalWorkContext(async () => ({ registry: 'canonical', work: [] }));
+  assert.match(canonical, /none in (?:the )?supplied view/i);
+  assert.match(canonical, /not a complete inventory/i); assert.match(canonical, /1000/);
+  const legacy = collectForegroundTurnContext({ chatId: 'legacy', workRegistry: { list: () => [] } });
+  assert.match(legacy, /bounded/i); assert.match(legacy, /none in (?:the )?supplied view/i);
+  assert.match(legacy, /work_list/); assert.doesNotMatch(legacy, /Active executions:\n- none\n/);
+});
+
 test('collectForegroundTurnContext reads the existing registries for a chat', () => {
   const listed: unknown[] = [];
   const view = collectForegroundTurnContext({
