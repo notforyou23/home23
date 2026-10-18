@@ -6,7 +6,6 @@ import { inspectIdentitySource, preserveIdentitySource } from '../identity-maint
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
-import { clipToolOutput } from './clip-output.js';
 
 export const selfUpdateTool: ToolDefinition = {
   name: 'self_update',
@@ -55,19 +54,20 @@ export const selfUpdateTool: ToolDefinition = {
 
 export const selfReadTool: ToolDefinition = {
   name: 'self_read',
-  description: 'Read the current contents of an identity file for introspection.',
+  description: 'Read the complete current contents of an identity file. The displayed page may continue: follow its exact self_read call to recover the rest. When available, task_context retains the original requested text.',
   input_schema: {
     type: 'object',
     properties: {
       file: { type: 'string', description: 'Filename (e.g., MEMORY.md, LEARNINGS.md, SOUL.md, MISSION.md, HEARTBEAT.md, TODO.md)' },
-      offset: { type: 'number', description: 'Character offset to start from (use the offset from an OUTPUT TRUNCATED marker)' },
-      limit: { type: 'number', description: 'Max characters to return (default 3800)' },
+      offset: { type: 'integer', minimum: 0, description: 'Absolute UTF-16 character offset to start from (default 0; use the exact offset from a self_read continuation)' },
+      limit: { type: 'integer', minimum: 1, description: 'Optional requested page size in UTF-16 characters; a surrogate pair stays whole. Omit to read through the end. The displayed page may be smaller and supplies its exact continuation.' },
     },
     required: ['file'],
   },
 
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-    const file = input.file as string;
+    const file = input.file;
+    if (typeof file !== 'string' || !file) return { content: 'Provide a nonempty identity filename.', is_error: true };
     const filePath = join((ctx.personalWorkspacePath ?? ctx.workspacePath), file);
 
     if (!existsSync(filePath)) {
@@ -76,18 +76,26 @@ export const selfReadTool: ToolDefinition = {
 
     try {
       const content = readFileSync(filePath, 'utf-8');
-      const offset = Math.max(0, Number(input.offset) || 0);
-      const limit = Math.max(200, Math.min(Number(input.limit) || 3800, 8000));
-      const slice = content.slice(offset, offset + limit);
-      const next = offset + slice.length;
-      const recovery = next < content.length
-        ? `Continue with self_read file=${JSON.stringify(file)} offset=${next} limit=${limit}.`
-        : 'This is the last page.';
+      const index = (value: unknown, name: string, minimum: number, fallback: number): number => {
+        if (value === undefined) return fallback;
+        if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+          throw new TypeError(`${name} must be an integer greater than or equal to ${minimum}.`);
+        }
+        return value;
+      };
+      const offset = Math.min(content.length, index(input.offset, 'offset', 0, 0));
+      const limit = input.limit === undefined ? undefined : index(input.limit, 'limit', 1, content.length);
+      let end = limit === undefined ? content.length : Math.min(content.length, offset + limit);
+      // A page is a source excerpt, not half a Unicode code point. Including
+      // the paired low surrogate keeps even a one-character page advancing.
+      if (end < content.length && /[\uD800-\uDBFF]/.test(content[end - 1] ?? '') && /[\uDC00-\uDFFF]/.test(content[end] ?? '')) end++;
       return {
-        content: clipToolOutput(
-          slice,
-          `${recovery} File is ${content.length} chars. Started at offset ${offset}.`,
-        ),
+        // Retain the complete requested original before display formatting.
+        // The shared formatter owns the actual visible end and continuation;
+        // a tool-level clipping marker must never skip undisplayed source.
+        content: content.slice(offset, end),
+        fileRead: { path: filePath, offsetChars: offset, totalChars: content.length,
+          continuation: { toolName: 'self_read', file, ...(limit === undefined ? {} : { limit }) } },
       };
     } catch (err) {
       return { content: `Error reading ${file}: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
