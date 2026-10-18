@@ -1,23 +1,23 @@
 /**
  * Home23 — Session Bootstrap
  *
- * When an agent starts a fresh session (first turn, or after idle-gap),
- * inject the files listed under `situationalAwareness.bootstrap.reads`
- * into that turn's system prompt. Turns 2+ in the same session see none
- * of this — the content lives in conversation history from turn 1 onward.
+ * Refresh the files listed under `situationalAwareness.bootstrap.reads`
+ * in each resident turn's dynamic system context. This context is not
+ * conversation history: replaying a cached startup packet would both lose
+ * it after reload/compaction and keep old operational claims alive.
  *
- * Purpose: give every agent (including subagents and scheduled cron runs)
- * a consistent "where am I, what's current, what's the map" wake-up ritual
- * grounded in live files — not cached identity.
+ * Resident turns, including scheduled runs, receive a current workspace map.
+ * Specialists use their explicit delegated handoff, not resident history.
  */
-import { readFileSync, existsSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
 import { composeSeedNow } from '../substrate/seed-now.js';
 
 export interface SituationalAwarenessConfig {
   bootstrap?: {
     reads?: string[];          // relative to workspacePath, e.g. ['NOW.md', 'PLAYBOOK.md']
-    maxBytesPerFile?: number;  // per-file cap; default 4000
+    maxBytesPerFile?: number;  // UTF-8 preview bytes per file; complete source remains readable; default 4000
   };
   /** Keyword-gated workspace files loaded into situational awareness on match (Step 30 cleanup #4). */
   triggeredSurfaces?: Array<{
@@ -37,8 +37,21 @@ export interface SituationalAwarenessConfig {
   };
 }
 
-const DEFAULT_READS = ['NOW.md', 'PLAYBOOK.md'];
+export const DEFAULT_BOOTSTRAP_READS = ['NOW.md', 'PLAYBOOK.md'];
 const DEFAULT_MAX_BYTES = 4000;
+
+/** Keep both the map's beginning and later corrections, never a split code point. */
+function sourcePreview(content: string, maxBytes: number): { head: string; tail: string; omittedStart: number; omittedEnd: number } {
+  const bytes = Buffer.from(content, 'utf8');
+  if (bytes.length <= maxBytes) return { head: content, tail: '', omittedStart: content.length, omittedEnd: content.length };
+  let headEnd = Math.ceil(maxBytes / 2);
+  while (headEnd > 0 && (bytes[headEnd]! & 0xc0) === 0x80) headEnd--;
+  let tailStart = bytes.length - Math.floor(maxBytes / 2);
+  while (tailStart < bytes.length && (bytes[tailStart]! & 0xc0) === 0x80) tailStart++;
+  const head = bytes.subarray(0, headEnd).toString('utf8');
+  const tail = bytes.subarray(tailStart).toString('utf8');
+  return { head, tail, omittedStart: head.length, omittedEnd: content.length - tail.length };
+}
 
 /** Match the biography's Seed location without requiring an unwritten config setting. */
 export function resolveSubstrateStateDir(
@@ -65,15 +78,17 @@ const GENERATOR_CONTRACT = [
 ].join('\n');
 
 /**
- * Build the [SESSION BOOTSTRAP] block to inject into the first turn
- * of a fresh session. Returns null if disabled or no files resolvable.
+ * Build fresh [SESSION BOOTSTRAP] context without changing source or history.
+ * A bounded preview is explicitly partial and supplies exact recovery offsets.
  */
 export function buildBootstrapBlock(
   workspacePath: string,
   cfg: SituationalAwarenessConfig | undefined,
 ): string | null {
-  const reads = cfg?.bootstrap?.reads ?? DEFAULT_READS;
-  const maxBytes = cfg?.bootstrap?.maxBytesPerFile ?? DEFAULT_MAX_BYTES;
+  const reads = cfg?.bootstrap?.reads ?? DEFAULT_BOOTSTRAP_READS;
+  const configuredBytes = cfg?.bootstrap?.maxBytesPerFile;
+  const maxBytes = typeof configuredBytes === 'number' && Number.isFinite(configuredBytes)
+    ? Math.max(0, Math.floor(configuredBytes)) : DEFAULT_MAX_BYTES;
 
   const sections: string[] = [];
 
@@ -92,16 +107,33 @@ export function buildBootstrapBlock(
     }
   }
 
+  const seenPaths = new Set<string>();
   for (const filename of reads) {
-    const filePath = join(workspacePath, filename);
-    if (!existsSync(filePath)) continue;
+    const filePath = resolve(workspacePath, filename);
+    if (seenPaths.has(filePath)) continue;
+    seenPaths.add(filePath);
     try {
-      const content = readFileSync(filePath, 'utf-8').trim();
-      if (!content) continue;
-      sections.push(`— ${filename} —\n${content}`);
-      if (content.length > maxBytes) console.warn(`[bootstrap] ${filename}: ${content.length} chars exceeds maintenance target ${maxBytes}; loaded complete source`);
-    } catch {
-      // skip unreadable files; never block a turn on bootstrap
+      const source = readFileSync(filePath);
+      const content = source.toString('utf8');
+      if (!content.trim()) continue;
+      const preview = sourcePreview(content, maxBytes);
+      const metadata = `Source: ${JSON.stringify(filePath)}; sha256=${createHash('sha256').update(source).digest('hex')}; original bytes=${source.length}; UTF-16 characters=${content.length}.`;
+      if (preview.omittedStart === preview.omittedEnd) {
+        sections.push(`— ${filename} —\n${metadata}\n${content}`);
+      } else {
+        const recovery = { path: filePath, offset_chars: preview.omittedStart, limit_chars: preview.omittedEnd - preview.omittedStart };
+        sections.push([
+          `— ${filename} —`, metadata,
+          `PARTIAL workspace preview: ${Buffer.byteLength(preview.head + preview.tail, 'utf8')} of ${Buffer.byteLength(content, 'utf8')} UTF-8 bytes shown; the middle is omitted, not read evidence.`,
+          preview.head,
+          `[Omitted UTF-16 character interval [${preview.omittedStart}, ${preview.omittedEnd}). Recover with read_file(${JSON.stringify(recovery)}); follow any tool continuation to completion. Verify the source hash if the file changed.]`,
+          preview.tail,
+        ].join('\n'));
+      }
+    } catch (error) {
+      // Unavailability must be visible, but it must not block a turn.
+      const reason = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'read failed';
+      sections.push(`Workspace context unavailable: ${JSON.stringify(filePath)} (${reason}). No contents from this source were supplied.`);
     }
   }
 
@@ -116,9 +148,9 @@ export function buildBootstrapBlock(
 
   return [
     '[SESSION BOOTSTRAP]',
-    'Fresh session. The files below provide workspace context. Dated telemetry and historical procedures may be stale; they do not override the current task or authenticated runtime authority.',
+    'Current-turn workspace context, refreshed from source files; not stored in conversation history. Dated telemetry and historical procedures may be stale; they do not override the current task or authenticated runtime authority.',
     'Use relevant background context silently. Mention it only when it changes the answer or the user asks.',
-    'Reuse this context on later turns; reread a specific file when current state or a material authority question requires verification.',
+    'Read omitted material when relevant. A preview is not complete evidence. Verify operational claims against current runtime state before treating them as unfinished work.',
     '',
     body,
     '[/SESSION BOOTSTRAP]',
