@@ -31,6 +31,7 @@ const executeFile = promisify(execFile);
 const alive = pid => { if (!Number.isInteger(pid) || pid < 1) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const PREFLIGHT_MESSAGES = Object.freeze({
+  payload_mode_mismatch: 'The downloaded Home23 package was unpacked with the wrong file permissions (umask), so it failed its integrity check. Your home was not changed. Resume to unpack it again.',
   unknown_state: 'The home contains files the updater cannot classify. Open Home23 on this Mac to review them before resuming.',
   linked_state_path: 'A home state link points outside its approved location. Open Home23 on this Mac to review it before resuming.',
   linked_state_changed: 'A preserved home link changed since adoption. Open Home23 on this Mac to review it before resuming.',
@@ -604,9 +605,9 @@ export async function runHomeUpdateOperation({ homeRoot, operationId, requireWor
     // Nothing is kept after a completed update; the channel keeps the signed release.
     try { pruneUpdateDelivery(home.root, { ...dependencies.delivery }, dependencies); } catch { /* Housekeeping only. */ }
   } catch (error) {
-    persist({ phase: 'failed', errorCode: error.code ?? 'update_failed', reasonCodes: error.reasonCodes ?? [], message: operation.requiresLocalRecovery ? error.message : error.reasonCodes?.length ? error.message : operation.runtimeCompleted
+    persist({ phase: 'failed', errorCode: error.code ?? 'update_failed', reasonCodes: error.reasonCodes ?? [], message: operation.requiresLocalRecovery ? error.message : PREFLIGHT_MESSAGES[error.code] ?? (error.reasonCodes?.length ? error.message : operation.runtimeCompleted
       ? 'Your home software is updated. Resume to finish the Mac application and reconnect.'
-      : 'The update could not finish. Resume or recover to return your home to service.' });
+      : 'The update could not finish. Resume or recover to return your home to service.') });
   } finally {
     if (TERMINAL.has(operation.phase)) {
       // Under admission: once this phase is durable a new request can retain

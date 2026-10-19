@@ -44,6 +44,8 @@ export async function launchIndependentUpdateWorker({ executor, homeRoot, operat
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   const [homeRoot, operationId] = process.argv.slice(2);
+  // The worker must not inherit the resident supervisor's Umask 077.
+  process.umask(0o022);
   const child = spawn(process.execPath,
     [join(dirname(fileURLToPath(import.meta.url)), 'product-home-update-worker.mjs'), homeRoot, operationId],
     { detached: true, stdio: 'ignore' });

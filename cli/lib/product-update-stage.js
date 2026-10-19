@@ -34,7 +34,23 @@ function inspectPartial(payload, manifest) {
   }
 }
 
-function tryBulkCopy({ candidate, destination, payload, temporary, probe }) {
+/** Give every declared directory and file its manifest mode. Copies (cp -R,
+ * ditto, mkdir) apply the process umask, and an interrupted stage made under
+ * Umask 077 would otherwise fail inspection on every resume. Links are skipped. */
+function applyManifestModes(payload, manifest) {
+  for (const entry of manifest.files) {
+    if (entry.type !== 'directory' && entry.type !== 'file') continue;
+    const target = join(payload, entry.path);
+    let stat;
+    try { stat = fs.lstatSync(target); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (stat.isSymbolicLink()) continue;
+    if (entry.type === 'directory' ? stat.isDirectory() : stat.isFile()) {
+      if ((stat.mode & 0o7777) !== entry.mode) fs.chmodSync(target, entry.mode);
+    }
+  }
+}
+
+function tryBulkCopy({ candidate, destination, payload, temporary, probe, manifest }) {
   if (process.platform !== 'darwin') return false;
   const sameVolume = fs.statSync(candidate).dev === fs.statSync(destination).dev;
   if (sameVolume) {
@@ -55,6 +71,7 @@ function tryBulkCopy({ candidate, destination, payload, temporary, probe }) {
       candidate, temporary], { timeout: 600000 });
   }
   fs.renameSync(temporary, payload);
+  applyManifestModes(payload, manifest);
   return true;
 }
 
@@ -129,6 +146,8 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
     previewRoot(payload);
     const hadPayload = present(payload);
     if (!hadPayload) fs.mkdirSync(payload, { mode: 0o755 });
+    fs.chmodSync(payload, 0o755);
+    applyManifestModes(payload, manifest);
     inspectPartial(payload, manifest);
     const emptyPayload = fs.readdirSync(payload).length === 0;
     // Only this owned regular file may contain incomplete bytes from a failed copy.
@@ -145,13 +164,14 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
       throw new Error('Insufficient free space to stage the candidate with 64 MiB of headroom.');
     }
     if (emptyPayload && !interruptedBulkCopy && manifest.files.length >= BULK_COPY_MIN_ENTRIES &&
-        tryBulkCopy({ candidate, destination, payload, temporary: cloneTemporary, probe: cloneProbe })) {
+        tryBulkCopy({ candidate, destination, payload, temporary: cloneTemporary, probe: cloneProbe, manifest })) {
       return finish();
     }
     const directories = manifest.files.filter(entry => entry.type === 'directory').sort((a, b) => a.path.split('/').length - b.path.split('/').length);
     for (const entry of directories) {
       const target = join(payload, entry.path); previewRoot(target);
       if (!present(target)) fs.mkdirSync(target, { mode: entry.mode });
+      fs.chmodSync(target, entry.mode);
     }
     for (const entry of manifest.files.filter(entry => entry.type === 'file')) {
       const target = join(payload, entry.path);
@@ -177,6 +197,7 @@ export function stageProductPayload({ homeRoot, candidatePayload, staging, verif
     }
     // Retain the verified in-memory manifest rather than rereading mutable source metadata.
     fs.writeFileSync(temporary, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o644 });
+    fs.chmodSync(temporary, 0o644);
     fs.renameSync(temporary, join(payload, 'manifest.json'));
     return finish();
   } finally { unlock(); }
