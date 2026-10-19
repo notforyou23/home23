@@ -54,6 +54,7 @@ function assertLink(root, relative, target) {
     if (!inside(root, resolved)) throw new Error(`Payload symlink escapes its root: ${relative}`);
   }
 }
+const modeMismatch = message => Object.assign(new Error(message), { code: 'payload_mode_mismatch', reasonCodes: ['payload_mode_mismatch'] });
 function entryAt(root, relative) {
   const file = path.join(root, relative), stat = fs.lstatSync(file), mode = stat.mode & 0o7777;
   if (stat.isSymbolicLink()) {
@@ -61,10 +62,11 @@ function entryAt(root, relative) {
     return { path: relative, type: 'symlink', target };
   }
   if (stat.isDirectory()) {
-    if (mode !== 0o755) throw new Error(`Unexpected directory mode: ${relative}`);
+    if (mode !== 0o755) throw modeMismatch(`Unexpected directory mode: ${relative} is ${mode.toString(8)}, expected 755`);
     return { path: relative, type: 'directory', mode };
   }
-  if (!stat.isFile() || ![0o644, 0o755].includes(mode)) throw new Error(`Unexpected payload file or mode: ${relative}`);
+  if (!stat.isFile()) throw new Error(`Unexpected payload file or mode: ${relative}`);
+  if (![0o644, 0o755].includes(mode)) throw modeMismatch(`Unexpected payload file or mode: ${relative} is ${mode.toString(8)}`);
   return { path: relative, type: 'file', mode, size: stat.size, sha256: hash(fs.readFileSync(file)) };
 }
 export function inventoryProductPayload(root) {

@@ -736,6 +736,15 @@ function assertNoSymlinkAncestors(destination, target) {
  * Extract a ustar payload.bin into destinationDirectory.
  * Relative paths only; rejects `..`, absolute paths, and symlink escape.
  */
+/** mkdir -p whose created directories get exactly `mode`, whatever the umask. */
+function makeDirectory(target, mode) {
+  const first = mkdirSync(target, { recursive: true, mode });
+  if (first === undefined) return;
+  for (let current = target; ; current = dirname(current)) {
+    chmodSync(current, mode);
+    if (current === first || dirname(current) === current) break;
+  }
+}
 export function extractProductArchive({ archivePath, destinationDirectory } = {}) {
   if (typeof archivePath !== 'string' || !archivePath || typeof destinationDirectory !== 'string' || !destinationDirectory) {
     throw codedError('archive_unsafe', 'Archive and destination paths are required.');
@@ -794,7 +803,9 @@ export function extractProductArchive({ archivePath, destinationDirectory } = {}
     }
     assertNoSymlinkAncestors(destination, target);
     if (typeFlag === '5' || typeFlag === 'D') {
-      mkdirSync(target, { recursive: true, mode: (mode & 0o7777) || 0o755 });
+      // The archive's declared mode, not the process umask (which may be 077).
+      makeDirectory(target, (mode & 0o7777) || 0o755);
+      chmodSync(target, (mode & 0o7777) || 0o755);
     } else if (typeFlag === '2') {
       const linkTarget = effectiveLink;
       if (!linkTarget || linkTarget.includes('\0') || isAbsolute(linkTarget)) {
@@ -808,10 +819,10 @@ export function extractProductArchive({ archivePath, destinationDirectory } = {}
       // when their resolved target stays in the extraction root, and never
       // follow an existing symlink on the way to that target.
       assertNoSymlinkAncestors(destination, resolved);
-      mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
+      makeDirectory(dirname(target), 0o755);
       symlinkSync(linkTarget, target);
     } else if (typeFlag === '0' || typeFlag === '\0' || typeFlag === '') {
-      mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
+      makeDirectory(dirname(target), 0o755);
       const out = openSync(target, 'wx', (mode & 0o7777) || 0o644);
       try {
         const chunk = Buffer.alloc(1024 * 1024);
