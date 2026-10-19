@@ -7,8 +7,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const yaml = require('js-yaml');
+const { cardinalFromDegrees, readHomeBay, formatHomeBay } = require('./home-bay-feed.cjs');
 const MAX_AGE_MS = 20 * 60 * 1000;
-const READING_NAMES = ['temperature', 'humidity', 'wind', 'gust', 'pressure', 'rainToday', 'feelsLike', 'uv', 'indoorTemperature', 'indoorHumidity'];
+const READING_NAMES = ['temperature', 'humidity', 'wind', 'gust', 'pressure', 'rainToday', 'feelsLike', 'uv', 'indoorTemperature', 'indoorHumidity', 'windDirection'];
 function readBounded(file, parse, maximum = 256 * 1024) {
   try {
     const stat = fs.statSync(file);
@@ -51,9 +52,15 @@ function weatherSnapshot({ tileId, weather, failed = false, now = new Date() }) 
     ['pressure', raw.pressure?.relative], ['rainToday', raw.rainfall?.daily],
     ['feelsLike', raw.outdoor?.feels_like], ['uv', raw.solar_and_uvi?.uvi],
     ['indoorTemperature', raw.indoor?.temperature], ['indoorHumidity', raw.indoor?.humidity],
+    ['windDirection', raw.wind?.wind_direction],
   ]) {
-    const reading = measure(source, name === 'uv' ? 'index' : null);
-    if (reading) readings[name] = reading;
+    const reading = measure(source, name === 'uv' ? 'index' : name === 'windDirection' ? 'deg' : null);
+    if (!reading) continue;
+    if (name === 'windDirection') {
+      const cardinal = cardinalFromDegrees(reading.value);
+      if (cardinal) reading.cardinal = cardinal;
+    }
+    readings[name] = reading;
   }
   const observedAt = readings.temperature?.observedAt || null;
   const age = observedAt ? now.getTime() - Date.parse(observedAt) : NaN;
@@ -66,6 +73,8 @@ function publishHomeWeather({ home23Root, ...input }) {
   if (homeProfile(home23Root).tileId !== input.tileId) return null;
   const snapshot = weatherSnapshot(input);
   const file = weatherPath(home23Root);
+  const existing = readBounded(file, JSON.parse, 32 * 1024);
+  if (existing?.bay?.schema === 'home23.bay-feed.v1') snapshot.bay = existing.bay;
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(snapshot) + '\n', { mode: 0o600 });
@@ -99,7 +108,11 @@ function readHomeWorldContext({ home23Root, timezone, now = new Date() } = {}) {
       const readings = {};
       for (const name of READING_NAMES) {
         const r = saved.readings?.[name];
-        if (r && Number.isFinite(r.value) && typeof r.unit === 'string' && r.unit.length <= 24 && Number.isFinite(Date.parse(r.observedAt))) readings[name] = r;
+        if (r && Number.isFinite(r.value) && typeof r.unit === 'string' && r.unit.length <= 24 && Number.isFinite(Date.parse(r.observedAt))) {
+          const reading = { value: r.value, unit: r.unit, observedAt: r.observedAt };
+          if (typeof r.cardinal === 'string' && /^[NESW]{1,3}$/.test(r.cardinal)) reading.cardinal = r.cardinal;
+          readings[name] = reading;
+        }
       }
       const status = saved.status === 'unavailable' || !readings.temperature || !Number.isFinite(age) || age < -60_000 ? 'unavailable'
         : saved.status === 'stale' || age > MAX_AGE_MS ? 'stale' : 'fresh';
@@ -108,7 +121,8 @@ function readHomeWorldContext({ home23Root, timezone, now = new Date() } = {}) {
         reason: status === 'fresh' ? '' : status === 'stale' ? 'Last station reading; do not describe it as current weather.' : 'Station data unavailable.' };
     }
   }
-  return { now: now.toISOString(), timezone: zone, localTime, localHour, localDay, weather };
+  return { now: now.toISOString(), timezone: zone, localTime, localHour, localDay, weather,
+    bay: readHomeBay({ home23Root, now }) };
 }
 function formatHomeWorldContext(context) {
   const lines = ['[CURRENT HOME CONTEXT — observed now; older conversation dates are historical]', `Current local time: ${context.localTime}.`, `UTC: ${context.now}.`];
@@ -117,11 +131,13 @@ function formatHomeWorldContext(context) {
   else {
     const values = Object.entries(weather.readings).map(([name, reading]) => {
       const old = Date.parse(context.now) - Date.parse(reading.observedAt) > MAX_AGE_MS;
-      return `${name}: ${reading.value} ${reading.unit}${reading.observedAt !== weather.observedAt ? ` (observed ${reading.observedAt}${old ? '; stale' : ''})` : ''}`;
+      const cardinal = reading.cardinal ? ` ${reading.cardinal}` : '';
+      return `${name}: ${reading.value} ${reading.unit}${cardinal}${reading.observedAt !== weather.observedAt ? ` (observed ${reading.observedAt}${old ? '; stale' : ''})` : ''}`;
     });
     lines.push(`Home Ecowitt station: ${weather.status}; observed ${weather.observedAt}; checked ${weather.checkedAt}.`, values.join('; ') + '.');
     if (weather.status === 'stale') lines.push(weather.reason);
   }
+  if (context.bay) lines.push(formatHomeBay(context.bay));
   return lines.join('\n');
 }
-module.exports = { readHomeWorldContext, formatHomeWorldContext, publishHomeWeather, weatherSnapshot };
+module.exports = { readHomeWorldContext, formatHomeWorldContext, publishHomeWeather, weatherSnapshot, READING_NAMES };

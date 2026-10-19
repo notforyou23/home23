@@ -5,6 +5,7 @@ const { ownerHome } = require('../../../shared/owner-home.cjs');
 const { updateSettingsSecrets } = require('./home23-secrets');
 const { writeYamlSafely } = require('./yaml-write-safety');
 const { publishHomeWeather, weatherSnapshot, readHomeWorldContext } = require('../../../shared/home-world-context.cjs');
+const { refreshHomeBay } = require('../../../shared/home-bay-feed.cjs');
 
 // Sensor registry — optional. We lazy-load to keep tiles decoupled from the
 // engine's internal modules. If the engine/src/sensors module isn't present
@@ -858,7 +859,12 @@ async function fetchEcowittData(connection) {
 
 function buildWeatherTilePayload(tileId, station) {
   const readings = station.status === 'unavailable' ? {} : station.readings;
-  const value = name => readings[name] ? `${readings[name].value} ${readings[name].unit}` : '—';
+  const value = name => {
+    const reading = readings[name];
+    if (!reading) return '—';
+    if (name === 'windDirection' && reading.cardinal) return `${reading.cardinal} (${reading.value}°)`;
+    return `${reading.value} ${reading.unit}`;
+  };
   return {
     tileId,
     fetchedAt: station.checkedAt || new Date().toISOString(),
@@ -873,7 +879,7 @@ function buildWeatherTilePayload(tileId, station) {
         readings.humidity ? `${value('humidity')} humidity` : null,
         station.status === 'stale' ? `Last observed ${station.observedAt}` : null,
       ].filter(Boolean).join(' · ') || 'No outdoor readings',
-      metrics: [['Wind', 'wind'], ['Gust', 'gust'], ['Pressure', 'pressure'], ['UV', 'uv'],
+      metrics: [['Wind', 'wind'], ['Dir', 'windDirection'], ['Gust', 'gust'], ['Pressure', 'pressure'], ['UV', 'uv'],
         ['Indoor', 'indoorTemperature'], ['Indoor Humidity', 'indoorHumidity']]
         .map(([label, name]) => ({ label, value: value(name) })),
     },
@@ -1021,6 +1027,8 @@ class Home23TileService {
     this.cache = new Map();
     this.backgroundRefreshTimers = new Map();
     this.backgroundRefreshInFlight = new Set();
+    this.bayRefreshTimer = null;
+    this.bayRefreshInFlight = null;
     // Preserve last-known observations through upstream failures, retaining
     // their station timestamps and explicit stale status.
     this.lastGood = new Map();
@@ -1050,6 +1058,7 @@ class Home23TileService {
           // timer's next tick. Bypass it for station polling, but preserve
           // the cached reading for concurrent UI requests until replacement.
           await this.getTileData(tile.id, { refresh: tile.mode === 'ecowitt-weather' });
+          if (tile.mode === 'ecowitt-weather') await this.refreshBayFeed();
         } catch (err) {
           // A failed refresh is an availability report, not a new station observation.
           this.logger?.warn?.(`[home23-tiles] background refresh failed for ${tile.id}: ${err.message}`);
@@ -1068,11 +1077,39 @@ class Home23TileService {
         run().catch(() => {});
       }, intervalMs));
     }
+    this.startBayRefresh();
+  }
+
+  startBayRefresh() {
+    if (this.bayRefreshTimer) {
+      clearInterval(this.bayRefreshTimer);
+      this.bayRefreshTimer = null;
+    }
+    const primary = this.readHomeConfig().home?.primaryAgent;
+    if (this.agentName && primary && this.agentName !== primary) return;
+    const run = () => this.refreshBayFeed();
+    run().catch(() => {});
+    this.bayRefreshTimer = setInterval(() => { run().catch(() => {}); }, 30 * 60_000);
+  }
+
+  async refreshBayFeed() {
+    if (this.bayRefreshInFlight) return this.bayRefreshInFlight;
+    this.bayRefreshInFlight = refreshHomeBay({ home23Root: this.home23Root })
+      .catch((err) => {
+        this.logger?.warn?.(`[home23-tiles] bay feed refresh failed: ${err.message}`);
+        return null;
+      })
+      .finally(() => { this.bayRefreshInFlight = null; });
+    return this.bayRefreshInFlight;
   }
 
   stopBackgroundRefresh() {
     for (const timer of this.backgroundRefreshTimers.values()) clearInterval(timer);
     this.backgroundRefreshTimers.clear();
+    if (this.bayRefreshTimer) {
+      clearInterval(this.bayRefreshTimer);
+      this.bayRefreshTimer = null;
+    }
   }
 
   getHomeConfigPath() {

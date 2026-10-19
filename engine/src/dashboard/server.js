@@ -24,6 +24,7 @@ const { MissionTracer } = require('../../scripts/TRACE_RESEARCH_MISSIONS');
 const { Home23VibeService } = require('./home23-vibe/service');
 const { Home23BriefsService } = require('./home23-briefs');
 const { Home23TileService } = require('./home23-tiles');
+const { readHomeWorldContext } = require('../../../shared/home-world-context.cjs');
 const { createHome23OAuthBroker } = require('../../../shared/home23-oauth.cjs');
 const { createDefaultLoadAnn, createMemorySearchService } = require('./memory-search');
 const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache');
@@ -2573,6 +2574,14 @@ class DashboardServer {
     this.app.get('/home23/api/tiles/config', (req, res) => {
       try {
         res.json(this.home23Tiles.getRuntimeConfig());
+      } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+
+    this.app.get('/home23/api/world-context', (req, res) => {
+      try {
+        res.json(readHomeWorldContext({ home23Root: this.getHome23Root() }));
       } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
       }
