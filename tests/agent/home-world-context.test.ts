@@ -9,12 +9,26 @@ import { AgentLoop } from '../../src/agent/loop.js';
 import { ConversationHistory } from '../../src/agent/history.js';
 import { WeatherChannel } from '../../engine/src/channels/domain/weather-channel.js';
 const require = createRequire(import.meta.url);
-const { publishHomeWeather, readHomeWorldContext, formatHomeWorldContext } = require('../../shared/home-world-context.cjs');
+const { publishHomeWeather, readHomeWorldContext, formatHomeWorldContext, READING_NAMES } = require('../../shared/home-world-context.cjs');
 const { Home23TileService } = require('../../engine/src/dashboard/home23-tiles.js');
 const { buildTemporalContext } = require('../../engine/src/core/temporal-context.js');
 const { Orchestrator } = require('../../engine/src/core/orchestrator.js');
 const registry = require('../../engine/src/sensors/registry.js');
 const AT = new Date('2026-09-27T03:00:00Z');
+function isEcowittUrl(url: unknown) { return String(url).includes('ecowitt.net'); }
+function isBayUrl(url: unknown) {
+  const value = String(url);
+  return value.includes('tidesandcurrents.noaa.gov') || value.includes('ndbc.noaa.gov');
+}
+function noaaResponse() {
+  return new Response(JSON.stringify({
+    predictions: [
+      { t: '2026-09-27 07:10', v: '0.31', type: 'L' },
+      { t: '2026-09-27 13:20', v: '4.82', type: 'H' },
+    ],
+    data: [{ t: '2026-09-27 02:54', s: '8.4', d: '220', dr: 'SW', g: '11.0' }],
+  }), { status: 200 });
+}
 function fixture(t: { after(fn: () => void): void }) {
   const root = mkdtempSync(join(tmpdir(), 'home-world-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -29,7 +43,8 @@ function fixture(t: { after(fn: () => void): void }) {
   ] } } }));
   const raw = (at = AT) => ({ outdoor: { temperature: { value: '12.5', unit: 'ºC', time: String(at.getTime() / 1000) },
     humidity: { value: '60', unit: '%', time: String(at.getTime() / 1000) } },
-    wind: { wind_speed: { value: '3.5', unit: 'km/h', time: String(at.getTime() / 1000) } },
+    wind: { wind_speed: { value: '3.5', unit: 'km/h', time: String(at.getTime() / 1000) },
+      wind_direction: { value: '220', unit: 'º', time: String(at.getTime() / 1000) } },
     solar_and_uvi: { uvi: { value: '2', unit: '', time: String(at.getTime() / 1000) } } });
   return { root, config, raw };
 }
@@ -41,6 +56,11 @@ test('one configured home supplies advancing local time and timestamped station 
   assert.equal(current.timezone, 'America/Los_Angeles'); assert.equal(current.localHour, 20);
   assert.equal(current.weather.status, 'fresh'); assert.equal(current.weather.observedAt, AT.toISOString());
   assert.equal(current.weather.readings.temperature.unit, '°C'); assert.equal(current.weather.readings.wind.unit, 'km/h');
+  assert.equal(current.weather.readings.windDirection.value, 220);
+  assert.equal(current.weather.readings.windDirection.unit, '°');
+  assert.equal(current.weather.readings.windDirection.cardinal, 'SW');
+  assert.ok(READING_NAMES.includes('windDirection'));
+  assert.equal(current.bay.status, 'unavailable');
   const later = readHomeWorldContext({ home23Root: f.root, now: new Date(AT.getTime() + 21 * 60_000) });
   assert.equal(later.weather.status, 'stale'); assert.equal(later.weather.observedAt, current.weather.observedAt);
   assert.match(formatHomeWorldContext(later), /do not describe it as current/);
@@ -54,7 +74,11 @@ test('the existing background tile refresh publishes without UI; another agent d
   const f = fixture(t); const previous = globalThis.fetch;
   let calls = 0;
   const now = new Date();
-  globalThis.fetch = async () => { calls++; return new Response(JSON.stringify({ code: 0, data: f.raw(now) }), { status: 200 }); };
+  globalThis.fetch = async (url) => {
+    if (isBayUrl(url)) return noaaResponse();
+    calls++;
+    return new Response(JSON.stringify({ code: 0, data: f.raw(now) }), { status: 200 });
+  };
   t.after(() => { globalThis.fetch = previous; registry.remove('tile.outside-weather'); });
   const primary = new Home23TileService({ home23Root: f.root, agentName: 'main', logger: { warn() {} } });
   const helper = new Home23TileService({ home23Root: f.root, agentName: 'another', logger: { warn() {} } });
@@ -64,11 +88,16 @@ test('the existing background tile refresh publishes without UI; another agent d
   assert.equal(readHomeWorldContext({ home23Root: f.root }).weather.status, 'fresh');
   const stamp = readHomeWorldContext({ home23Root: f.root }).weather.observedAt;
   const beforeSecondary = readFileSync(join(f.root, 'instances/.house/world-context/weather.json'), 'utf8');
-  globalThis.fetch = async () => { calls++; throw new Error('secondary dashboards must not fetch Ecowitt'); };
+  globalThis.fetch = async (url) => {
+    if (isBayUrl(url)) return noaaResponse();
+    calls++;
+    throw new Error('secondary dashboards must not fetch Ecowitt');
+  };
   const secondaryTile = await helper.getTileData('outside-weather');
   assert.equal(calls, 1, 'an actual secondary UI request consumes the primary snapshot');
   assert.equal(secondaryTile.content.value, '12.5 °C');
   assert.equal(secondaryTile.content.metrics.find((metric: { label: string }) => metric.label === 'Wind').value, '3.5 km/h');
+  assert.equal(secondaryTile.content.metrics.find((metric: { label: string }) => metric.label === 'Dir').value, 'SW (220°)');
   assert.equal(secondaryTile.content.metrics.find((metric: { label: string }) => metric.label === 'UV').value, '2 index');
   assert.equal(secondaryTile.observedAt, stamp);
   assert.equal(readFileSync(join(f.root, 'instances/.house/world-context/weather.json'), 'utf8'), beforeSecondary,
@@ -91,7 +120,8 @@ test('the first scheduled weather refresh fetches after delayed initial completi
   let calls = 0;
   let finishInitial!: (response: Response) => void;
   let finishScheduled!: (response: Response) => void;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (url) => {
+    if (isBayUrl(url)) return noaaResponse();
     calls++;
     if (calls === 1) return new Promise<Response>(resolve => { finishInitial = resolve; });
     return new Promise<Response>(resolve => { finishScheduled = resolve; });
