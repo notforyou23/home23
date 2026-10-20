@@ -1,5 +1,6 @@
 import { executeChessOperation, resolveChessMoveTurnId } from '../chess/operations.js';
 import { createHomeUpdateService } from '../home-update/service.js';
+import { createJerryStreamService } from '../music/jerry-stream.js';
 import { StockfishEngine } from '../chess/stockfish.js';
 import { NativeChessService } from '../chess/service.js';
 import { createChessTurnDispatcher } from '../chess/turns.js';
@@ -1539,6 +1540,7 @@ export function createCoordinationProcess(
     services: {
       auth, bootstrap, bots: botDirectory, channels, projects, messages, unread, search, console:executionConsole, chess:nativeChess,
       ...(config.home23Root ? { homeUpdate: createHomeUpdateService(config.home23Root) } : {}),
+      jerryStream: createJerryStreamService(),
       ...(liveVoice === undefined ? {} : { liveVoice }),
       work, workControl: stoppedWorkControl, leases, events, communications,
       authorityEpochs,
