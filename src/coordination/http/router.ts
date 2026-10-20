@@ -25,6 +25,7 @@ import { mountConsoleRoutes } from "../console/routes.js";
 import { mountLiveVoiceRoutes } from "./live-voice-routes.js";
 import { mountChessRoutes } from "../chess/routes.js";
 import { mountHomeUpdateRoutes } from "../home-update/routes.js";
+import { mountJerryStreamRoutes } from "../music/routes.js";
 
 type CapabilityName = keyof CoordinationAdvertisedCapabilities;
 
@@ -131,6 +132,7 @@ export function createCoordinationRouter(input: {
   mountConsoleRoutes(router, application, lifecycle);
   mountChessRoutes(router, application, lifecycle);
   mountHomeUpdateRoutes(router, application);
+  mountJerryStreamRoutes(router, application);
 
   const productRead = requireCoordinationAuth(application, ["product:read"]);
   const messageSend = requireCoordinationAuth(application, ["message:send"]);

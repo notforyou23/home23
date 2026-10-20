@@ -192,6 +192,7 @@ export interface CoordinationAttachmentPort {
 export interface CoordinationServices {
   auth: CoordinationAuthPort;
   homeUpdate?: import("../home-update/service.js").HomeUpdateService;
+  jerryStream?: import("../music/jerry-stream.js").JerryStreamService;
   chess?: import('../chess/service.js').NativeChessService;
   console?: import("../console/service.js").ConsoleService;
   bootstrap?: BootstrapService;
