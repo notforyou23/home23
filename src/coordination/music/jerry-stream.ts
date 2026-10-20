@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 
 import { CoordinationHttpError } from "../http/errors.js";
@@ -7,8 +7,23 @@ import { redactStashSecrets } from "./redact.js";
 
 export const DEFAULT_HOUSEHOLD_TOKEN_URL =
   "http://127.0.0.1:3005/api/v1/audio/household-token";
+/**
+ * The resident runtime overrides HOME (to Home/runtime/user), so `homedir()`
+ * would point inside the house. The Shakedown key lives in the account's real
+ * home, which the password database still reports.
+ */
+export function accountHomeDirectory(): string {
+  try {
+    const home = userInfo().homedir;
+    if (home) return home;
+  } catch {
+    // Fall through to HOME when the account has no passwd entry.
+  }
+  return homedir();
+}
+
 export const DEFAULT_HOUSE_SERVICE_KEY_PATH = join(
-  homedir(),
+  accountHomeDirectory(),
   ".config/shakedown/house-service.key",
 );
 export const HOUSEHOLD_TOKEN_CACHE_SKEW_MS = 60_000;

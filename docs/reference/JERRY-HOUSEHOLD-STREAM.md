@@ -98,7 +98,7 @@ plain stash URL. Do not treat `503` as a hard stop.
 
 ## House mint (Mini only)
 
-Core reads `~/.config/shakedown/house-service.key` at request time. The
+Core reads `~/.config/shakedown/house-service.key` at request time, resolving `~` from the account's passwd entry (the resident runtime overrides `HOME` to `Home/runtime/user`). The
 key is never copied into Home23 config, logs, or Git.
 
 It then POSTs only to `http://127.0.0.1:3005/api/v1/audio/household-token`

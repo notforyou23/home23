@@ -204,3 +204,10 @@ test("connection failures and token-bearing error text become unavailable withou
   assert.equal(logs[0]?.includes("au1."), false);
   assert.match(logs[0] ?? "", /token=\[redacted\]/);
 });
+
+test("default key path uses the account home, not the runtime HOME override", async () => {
+  const { userInfo } = await import("node:os");
+  const { DEFAULT_HOUSE_SERVICE_KEY_PATH, accountHomeDirectory } = await import("../../../src/coordination/music/jerry-stream.js");
+  assert.equal(accountHomeDirectory(), userInfo().homedir);
+  assert.equal(DEFAULT_HOUSE_SERVICE_KEY_PATH, join(userInfo().homedir, ".config/shakedown/house-service.key"));
+});
