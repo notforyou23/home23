@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { inventoryProductPayload, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
+import { assertProductNodeVersion, inventoryProductPayload, verifyProductPayload, writeProductManifest } from '../../cli/lib/product-payload.js';
 import { bundleStockfish } from './stockfish.mjs';
 
 const run = (file, args, options = {}) => execFileSync(file, args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options });
@@ -56,6 +56,7 @@ export function inspectProductNode(nodePath) {
   if (!/^v22\./.test(metadata.nodeVersion) || metadata.platform !== process.platform || metadata.arch !== process.arch) {
     throw new Error('Use a Node 22 binary matching the build machine platform and architecture');
   }
+  assertProductNodeVersion(metadata.nodeVersion);
   // Homebrew / nvm-linked Node copies look portable but fail on the recipient.
   // Darwin uses otool; Linux uses ldd. Both require official Node 22 plus its LICENSE.
   if (process.platform === 'darwin') {

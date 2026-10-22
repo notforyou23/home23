@@ -51,7 +51,7 @@ function installMinimalHome(homeRoot) {
     writeFileSync(join(payload, file), content, { mode: file === 'bin/node' ? 0o755 : 0o644 });
   }
   writeProductManifest(payload, {
-    sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2',
+    sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4',
   });
   installProductPayload({ payloadPath: payload, homeRoot });
 }

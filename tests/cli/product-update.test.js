@@ -44,7 +44,7 @@ function fixture(t, { sourceCommit = 'a'.repeat(40), platform = process.platform
     const file = path.join(payload, relative); fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
     fs.writeFileSync(file, contents, { mode: relative === 'bin/node' ? 0o755 : 0o644 });
   }
-  const manifest = writeProductManifest(payload, { sourceCommit, platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+  const manifest = writeProductManifest(payload, { sourceCommit, platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   return { root, payload, home, manifest };
 }
 
@@ -489,7 +489,7 @@ test('adoption refuses differing package-owned examples before install and accep
   fs.writeFileSync(path.join(pack.payload, example), 'signed example\n');
   fs.rmSync(path.join(pack.payload, 'manifest.json'));
   writeProductManifest(pack.payload, { sourceCommit: 'a'.repeat(40), platform: process.platform,
-    arch: process.arch, nodeVersion: 'v22.19.0' });
+    arch: process.arch, nodeVersion: 'v22.23.4' });
   const source = managedHome(pack.root);
   fs.writeFileSync(path.join(source.home, 'config/home.yaml.example'), 'old source example\n');
   const destination = path.join(pack.root, 'destination');

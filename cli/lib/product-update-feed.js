@@ -7,7 +7,7 @@ import {
 import http from 'node:http';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { privateJSON, readPrivateJSON } from './product-environment.js';
-import { readProductManifest } from './product-payload.js';
+import { assertProductNodeVersion, readProductManifest } from './product-payload.js';
 import { stageProductPayload } from './product-update-stage.js';
 
 const FEED_SCHEMA = 'home23.release-feed.v1';
@@ -189,6 +189,12 @@ export function inspectReleaseFeed({ homeRoot, feedPath, trustKeyPath } = {}) {
     if (manifest.packageId !== release.packageId) {
       result.status = 'damaged';
       result.reasons.push(reason('manifest_package_mismatch', 'The artifact manifest package id does not match the offered release.'));
+      return result;
+    }
+    try { assertProductNodeVersion(manifest.nodeVersion); }
+    catch (error) {
+      result.status = 'incompatible';
+      result.reasons.push(reason(error.code, error.message));
       return result;
     }
   }
@@ -601,6 +607,7 @@ export function recoverDownload({ staging } = {}) {
   // staged — compare claim to payload manifest; report damage only (no rewrite/delete).
   try {
     const manifest = readProductManifest(join(destination, 'payload'));
+    assertProductNodeVersion(manifest.nodeVersion);
     if (manifest.packageId !== packageId) {
       return { status: 'damaged', packageId, resumed: false };
     }

@@ -128,7 +128,7 @@ test('signed-runtime resume pins exact package ID and partial app tree before wr
 
 test('signed-runtime manifest must retain original source inventory and a new pinned package ID', () => {
   const original = { schema: 'home23.product-payload.v1', packageId: 'a'.repeat(64),
-    sourceCommit: 'b'.repeat(40), platform: 'darwin', arch: 'arm64', nodeVersion: 'v22.0.0',
+    sourceCommit: 'b'.repeat(40), platform: 'darwin', arch: 'arm64', nodeVersion: 'v22.23.4',
     files: [{ path: 'bin/node', type: 'file' }] };
   const signed = { ...original, packageId: 'c'.repeat(64) };
   assert.doesNotThrow(() => assertResumedRuntimeManifest(original, signed, signed.packageId));

@@ -49,7 +49,7 @@ function fixture(t) {
   }
   fs.mkdirSync(path.join(payload, 'tools/node_modules/.bin'), { mode: 0o755 });
   fs.symlinkSync('../pm2/bin/pm2', path.join(payload, 'tools/node_modules/.bin/pm2'));
-  const manifest = writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2' });
+  const manifest = writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   return { base, payload, homeRoot, manifest };
 }
 
@@ -82,7 +82,7 @@ test('state policy retains the Evobrew prefix exclusion from shipped payloads', 
   fs.mkdirSync(directory, { recursive: true, mode: 0o755 });
   fs.writeFileSync(path.join(directory, 'private-state'), 'must stay local');
   fs.unlinkSync(path.join(payload, 'manifest.json'));
-  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2' });
+  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   assert.throws(() => verifyProductPayload(payload), /cannot contain installation state/);
 });
 
@@ -132,7 +132,7 @@ test('refuses private state in even a freshly recomputed payload manifest', t =>
   fs.unlinkSync(path.join(payload, 'manifest.json'));
   fs.mkdirSync(path.join(payload, 'app/instances/private-resident'), { recursive: true, mode: 0o755 });
   fs.writeFileSync(path.join(payload, 'app/instances/private-resident/memory.txt'), 'private', { mode: 0o644 });
-  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2' });
+  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   assert.throws(() => verifyProductPayload(payload), /installation state/);
 });
 
@@ -171,7 +171,7 @@ test('OS metadata never enters a package and does not stop verification, install
   // Finder browsed the extracted package before its manifest was written.
   fs.unlinkSync(path.join(payload, 'manifest.json'));
   browseInFinder(payload);
-  const manifest = writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2' });
+  const manifest = writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   assert.equal(manifest.files.some(entry => isOsMetadataPath(entry.path)), false);
   assert.equal(verifyProductPayload(payload).packageId, manifest.packageId);
   assert.equal(installProductPayload({ payloadPath: payload, homeRoot }).status, 'installed');

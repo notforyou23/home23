@@ -4,6 +4,19 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 export const PRODUCT_PAYLOAD_SCHEMA = 'home23.product-payload.v1';
+export const MINIMUM_PRODUCT_NODE_VERSION = '22.23.4';
+/** New software must carry the security-fixed Node 22 runtime. Historical
+ * manifests remain readable and verifiable for upgrades, backup and recovery. */
+export function assertProductNodeVersion(version) {
+  const match = typeof version === 'string' && /^v22\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version);
+  const [, minimumMinor, minimumPatch] = MINIMUM_PRODUCT_NODE_VERSION.split('.').map(Number);
+  const minor = match && Number(match[1]), patch = match && Number(match[2]);
+  if (!match || !Number.isSafeInteger(minor) || !Number.isSafeInteger(patch)
+      || minor < minimumMinor || (minor === minimumMinor && patch < minimumPatch)) {
+    throw Object.assign(new Error(`New Home23 packages require Node ${MINIMUM_PRODUCT_NODE_VERSION} or later in the Node 22 release line.`),
+      { code: 'candidate_node_unsupported' });
+  }
+}
 const INSTALL_SCHEMA = 'home23.product-install.v1';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const inside = (root, target) => target === root || target.startsWith(root + path.sep);
@@ -89,6 +102,7 @@ function manifestDigest(manifest) {
   return hash(JSON.stringify(body));
 }
 export function writeProductManifest(root, metadata) {
+  assertProductNodeVersion(metadata.nodeVersion);
   const manifest = { schema: PRODUCT_PAYLOAD_SCHEMA, sourceCommit: metadata.sourceCommit,
     platform: metadata.platform, arch: metadata.arch, nodeVersion: metadata.nodeVersion,
     createdAt: new Date().toISOString(), files: inventoryProductPayload(root) };
@@ -243,6 +257,7 @@ export function installProductPayload({ payloadPath, homeRoot }) {
   realDirectory(homeRoot);
   if (inside(payloadPath, homeRoot) || inside(homeRoot, payloadPath)) throw new Error('Payload and installation must be separate directories');
   const manifest = verifyProductPayload(payloadPath);
+  assertProductNodeVersion(manifest.nodeVersion);
   const parent = path.dirname(homeRoot), name = path.basename(homeRoot);
   fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
   const claimPath = path.join(parent, `.${name}.home23-install.json`);

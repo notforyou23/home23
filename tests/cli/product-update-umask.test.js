@@ -26,7 +26,7 @@ function payloadFixture(t, root, name, commit) {
     fs.writeFileSync(file, contents, { mode: relative === 'bin/node' ? 0o755 : 0o644 });
   }
   for (const directory of execFileSync('/usr/bin/find', [payload, '-type', 'd'], { encoding: 'utf8' }).trim().split('\n')) fs.chmodSync(directory, 0o755);
-  const manifest = writeProductManifest(payload, { sourceCommit: commit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+  const manifest = writeProductManifest(payload, { sourceCommit: commit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   return { payload, manifest };
 }
 function tempRoot(t) {

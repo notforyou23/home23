@@ -3,7 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { verifyProductPayload } from './product-payload.js';
+import { assertProductNodeVersion, verifyProductPayload } from './product-payload.js';
 
 function fail(code, message) { const error = new Error(message); error.code = code; return error; }
 function run(file, args, options = {}) { return execFileSync(file, args, { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, ...options }); }
@@ -94,6 +94,7 @@ export function verifyPreparedMacApplication({ appPath, release, full = true }) 
   }
   const runtimePath = join(helper, 'Contents/Resources/Home23Runtime');
   const runtime = full ? verifyProductPayload(runtimePath) : JSON.parse(readFileSync(join(runtimePath, 'manifest.json'), 'utf8'));
+  assertProductNodeVersion(runtime.nodeVersion);
   if (runtime.packageId !== release.packageId || runtime.sourceCommit !== release.sourceCommit) {
     throw fail('app_invalid', 'Embedded runtime does not match the signed release');
   }

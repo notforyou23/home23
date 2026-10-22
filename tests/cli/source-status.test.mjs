@@ -19,7 +19,7 @@ function productHomeFixture() {
     write(path.join(home, relative), 'fixture');
   }
   fs.chmodSync(path.join(home, 'bin/node'), 0o755);
-  const product = writeProductManifest(home, { sourceCommit: 'a'.repeat(40), platform: 'darwin', arch: 'arm64', nodeVersion: 'v22.19.0' });
+  const product = writeProductManifest(home, { sourceCommit: 'a'.repeat(40), platform: 'darwin', arch: 'arm64', nodeVersion: 'v22.23.4' });
   const development = Object.fromEntries(['backend', 'apple'].map(component => {
     const directory = path.join(root, component);
     fs.mkdirSync(path.join(directory, '.git'), { recursive: true });

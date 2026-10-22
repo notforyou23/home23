@@ -3,7 +3,7 @@
 import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { absoluteHome, readPrivateJSON } from './product-environment.js';
-import { readProductManifest, verifyProductPayload } from './product-payload.js';
+import { assertProductNodeVersion, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { compareUpdateContracts, inspectStatePreservation } from './product-update-plan.js';
 
 const INSTALL_SCHEMA = 'home23.product-install.v1';
@@ -90,6 +90,8 @@ export function previewProductUpdate({ homeRoot, candidatePayload }, { verifyFil
   try { manifest = readProductManifest(candidateRoot); }
   catch { result.reasons.push(reason('candidate_manifest_invalid', 'The candidate manifest is missing or invalid.')); return result; }
   result.candidate = { root: candidateRoot, identity: safeIdentity(manifest) };
+  try { assertProductNodeVersion(manifest.nodeVersion); }
+  catch (error) { result.reasons.push(reason(error.code, error.message)); return result; }
   if (manifest.platform !== process.platform || manifest.arch !== process.arch) {
     result.reasons.push(reason('candidate_platform_unsupported', 'The candidate targets another platform or architecture.'));
     return result;

@@ -40,7 +40,7 @@ function payload(dir, { sourceCommit = 'a'.repeat(40) } = {}) {
     sourceCommit,
     platform: process.platform,
     arch: process.arch,
-    nodeVersion: 'v22.19.0',
+    nodeVersion: 'v22.23.4',
   });
 }
 

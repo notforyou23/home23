@@ -24,7 +24,7 @@ function fixture(t) {
   const helperSource = fileURLToPath(new URL('../../cli/lib/product-pm2-shim.js', import.meta.url));
   fs.copyFileSync(helperSource, path.join(payload, 'app/cli/lib/product-pm2-shim.js'));
   const manifest = writeProductManifest(payload, {
-    sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2',
+    sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4',
   });
   return { payload, homeRoot: path.join(base, 'home'), manifest };
 }

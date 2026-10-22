@@ -9,7 +9,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative as relativePat
 import { choosePortPlan, privateJSON, readPrivateJSON, validatePortPlan } from './product-environment.js';
 import { assertWritersIdle, rebindAdoptedHome, residentInstancePortSets } from './product-backup.js';
 import { projectFencedCoordination, readFencedCoordination } from './product-adoption.js';
-import { installProductPayload, isOsMetadataPath, isProductStatePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
+import { assertProductNodeVersion, installProductPayload, isOsMetadataPath, isProductStatePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation, previewRoot } from './product-update-preview.js';
 import { acquireSupervisorLock } from '../../scripts/release/supervisor.mjs';
 import { DatabaseSync } from 'node:sqlite';
@@ -1171,7 +1171,7 @@ function refuseAdoption(plan, reasons, destination) {
 }
 
 function verifyAdoptionPackages(payload, destination, destinationPresent) {
-  try { verifyProductPayload(payload); }
+  try { assertProductNodeVersion(verifyProductPayload(payload).nodeVersion); }
   catch (error) {
     throw Object.assign(new Error(error.message || 'Candidate package failed integrity verification.'), { code: 'package_integrity_failed' });
   }
@@ -1216,6 +1216,8 @@ export async function adoptManagedSourceHome({ sourceHome, destinationRoot, payl
   catch {
     return refuseAdoption(plan, [reason('candidate_manifest_invalid', 'The candidate manifest is missing or invalid.')], destination);
   }
+  try { assertProductNodeVersion(manifest.nodeVersion); }
+  catch (error) { return refuseAdoption(plan, [reason(error.code, error.message)], destination); }
   for (const authority of retainedAuthorities(plan.inventory.paths)) {
     const path = authority.reviewedDestination;
     if (manifest.files.some(entry => entry.path === path || entry.path.startsWith(`${path}/`))) {

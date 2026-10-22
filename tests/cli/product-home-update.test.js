@@ -142,7 +142,7 @@ async function recoveredFixture(t) {
     mkdirSync(dirname(file), { recursive: true, mode: 0o755 });
     writeFileSync(file, 'fixture\n', { mode: relative === 'bin/node' ? 0o755 : 0o644 });
   }
-  const manifest = writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+  const manifest = writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   copyFileSync(join(payload, 'manifest.json'), join(f.home, 'manifest.json'));
   f.write(join(f.home, '.home23-install.json'), { ...f.receipt, packageId: manifest.packageId });
   await check(f);

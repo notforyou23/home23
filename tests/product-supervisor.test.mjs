@@ -19,7 +19,7 @@ function fixture(t) {
     fs.mkdirSync(path.dirname(path.join(payload, file)), { recursive: true });
     fs.writeFileSync(path.join(payload, file), '', { mode: file === 'bin/node' ? 0o755 : 0o644 });
   }
-  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   installProductPayload({ payloadPath: payload, homeRoot: root });
   productEnvironment(root, { prepare: true });
   return root;

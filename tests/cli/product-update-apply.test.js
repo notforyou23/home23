@@ -50,7 +50,7 @@ export async function ensureProductSupervisor() { return { ownership: 'launchd' 
     fs.writeFileSync(file, contents, { mode: relative === 'bin/node' ? 0o755 : 0o644 });
   }
   fs.mkdirSync(path.join(dir, 'app/config'), { recursive: true, mode: 0o755 });
-  return writeProductManifest(dir, { sourceCommit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+  return writeProductManifest(dir, { sourceCommit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
 }
 function database(file, version = 20) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -92,6 +92,14 @@ function kept(home) {
   finally { db.close(); }
 }
 function packageId(home) { return JSON.parse(fs.readFileSync(path.join(home, '.home23-install.json'), 'utf8')).packageId; }
+function historicalNodeManifest(root) {
+  const file = path.join(root, 'manifest.json');
+  const { packageId, ...body } = JSON.parse(fs.readFileSync(file, 'utf8'));
+  body.nodeVersion = 'v22.19.0';
+  const manifest = { ...body, packageId: createHash('sha256').update(JSON.stringify(body)).digest('hex') };
+  fs.writeFileSync(file, JSON.stringify(manifest));
+  return manifest;
+}
 function preserved(home) {
   return { conversation: fs.readFileSync(path.join(home, 'app/instances/milo/conversations/session.txt'), 'utf8'),
     seed: fs.readFileSync(path.join(home, 'app/instances/milo/brain/event-ledger.jsonl'), 'utf8'),
@@ -596,6 +604,61 @@ test('checkpoint headroom accounts for uncheckpointed coordination WAL bytes', a
     assert.equal(result.reasons[0].code, 'insufficient_space');
     assert.equal(fs.existsSync(updateDirectoryFor(fixture.home)), false);
   } finally { database.close(); }
+});
+
+test('an installed old Node manifest can update to the patched runtime without losing state', async t => {
+  const f = homeFixture(t), before = preserved(f.home), legacy = historicalNodeManifest(f.home);
+  const receiptFile = path.join(f.home, '.home23-install.json');
+  const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
+  fs.writeFileSync(receiptFile, JSON.stringify({ ...receipt, packageId: legacy.packageId }), { mode: 0o600 });
+  const result = await applyProductUpdate({ homeRoot: f.home, candidatePayload: f.candidate, staging: f.staging }, quiet);
+  assert.equal(result.status, 'committed');
+  assert.equal(packageId(f.home), f.next.packageId);
+  assert.deepEqual(preserved(f.home), before);
+});
+
+test('old pending candidates refuse before switching and roll back a partial switch before writer admission', async t => {
+  for (const phase of ['claimed', 'applying']) {
+    const f = homeFixture(t), before = preserved(f.home);
+    await interruptAt(f, phase);
+    const journal = readUpdateJournal(f.home), legacy = historicalNodeManifest(journal.stagedPayload);
+    journal.toPackageId = legacy.packageId;
+    if (journal.stagedManifestSha256) journal.stagedManifestSha256 = createHash('sha256').update(fs.readFileSync(path.join(journal.stagedPayload, 'manifest.json'))).digest('hex');
+    fs.writeFileSync(path.join(updateDirectoryFor(f.home), 'journal.json'), JSON.stringify(journal), { mode: 0o600 });
+    let started = false;
+    const result = await resumeProductUpdate({ homeRoot: f.home }, { ...quiet, start: async () => { started = true; throw new Error('Unsafe candidate must not start'); } });
+    assert.equal(result.status, phase === 'claimed' ? 'aborted' : 'rolled_back');
+    if (phase === 'claimed') assert.equal(result.reasons[0].code, 'candidate_node_unsupported');
+    assert.equal(started, false);
+    assert.equal(packageId(f.home), f.installed.packageId);
+    assert.deepEqual(preserved(f.home), before);
+  }
+});
+
+test('rejecting an old pending runtime restores a home already stopped for its update', async t => {
+  const f = homeFixture(t, { desiredRunning: true }), before = preserved(f.home);
+  let online = true;
+  await assert.rejects(() => applyProductUpdate({ homeRoot: f.home, candidatePayload: f.candidate, staging: f.staging, admit: true }, {
+    ...quiet,
+    listProcesses: async () => online ? [{ name: 'home23-milo', status: 'online' }] : [],
+    quiesce: async () => { online = false; return []; },
+    afterPhase: async journal => { if (journal.phase === 'quiesced') throw new Error('stopped-before-runtime-policy'); },
+  }), /stopped-before-runtime-policy/);
+  const journal = readUpdateJournal(f.home), legacy = historicalNodeManifest(journal.stagedPayload);
+  assert.equal(journal.stoppedForUpdate, true);
+  journal.toPackageId = legacy.packageId;
+  fs.writeFileSync(path.join(updateDirectoryFor(f.home), 'journal.json'), JSON.stringify(journal), { mode: 0o600 });
+  let starts = 0;
+  const result = await resumeProductUpdate({ homeRoot: f.home }, { ...quiet, start: async () => {
+    assert.equal(packageId(f.home), f.installed.packageId);
+    starts += 1;
+    return { ok: true, status: 'ready' };
+  } });
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.reasons[0].code, 'candidate_node_unsupported');
+  assert.equal(starts, 1);
+  assert.equal(readUpdateJournal(f.home).runningRestored, true);
+  assert.deepEqual(preserved(f.home), before);
 });
 
 test('a stopped home updates in place and a running home waits until admission', async t => {

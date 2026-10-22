@@ -947,7 +947,7 @@ test('a resumed move corrects existing directory and file modes from the manifes
   for (const dir of ['bin', 'app', 'app/cli', 'app/cli/lib', 'app/scripts', 'app/scripts/product', 'tools', 'tools/node_modules', 'tools/node_modules/pm2', 'tools/node_modules/pm2/bin']) {
     fs.chmodSync(path.join(home, dir), 0o755);
   }
-  writeProductManifest(home, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+  writeProductManifest(home, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   fs.mkdirSync(path.join(home, 'app/instances/milo/substrate/seed-01'), { recursive: true });
   fs.writeFileSync(path.join(home, 'app/instances/milo/substrate/seed-01/birth-receipt.json'), '{"seedId":"modes"}\n');
   fs.writeFileSync(path.join(home, '.home23-host.json'), JSON.stringify({
@@ -994,7 +994,7 @@ function fixturePayload(root, { commit = 'b'.repeat(40), nodeMarker = '#!/bin/sh
     fs.symlinkSync(symlinkTarget, path.join(payload, symlinkPath));
   }
   const manifest = writeProductManifest(payload, {
-    sourceCommit: commit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0',
+    sourceCommit: commit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4',
   });
   return { payload, manifest, nodeMarker, symlinkPath, symlinkTarget };
 }

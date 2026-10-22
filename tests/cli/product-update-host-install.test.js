@@ -124,7 +124,7 @@ export async function productSupervisorCommand() { return { stdout: '[]' }; }\n`
       fs.writeFileSync(file, contents, { mode: relative === 'bin/node' ? 0o755 : 0o644 });
     }
     fs.mkdirSync(path.join(dir, 'app/config'), { recursive: true, mode: 0o755 });
-    return writeProductManifest(dir, { sourceCommit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+    return writeProductManifest(dir, { sourceCommit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   }
   const current = path.join(root, 'current');
   const candidate = path.join(root, 'candidate');

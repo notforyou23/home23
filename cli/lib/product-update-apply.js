@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { absoluteHome, privateDirectory, productEnvironment, readPrivateJSON } from './product-environment.js';
-import { acquireInstallLock, isOsMetadataPath, isStateBearingSoftwarePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
+import { acquireInstallLock, assertProductNodeVersion, isOsMetadataPath, isStateBearingSoftwarePath, PRODUCT_STATE_PATHS, readProductManifest, verifyProductPayload } from './product-payload.js';
 import { inspectProductInstallation } from './product-update-preview.js';
 import { adoptVerifiedStage, stageLockPath, stageProductPayload } from './product-update-stage.js';
 import { candidateCoordinationSchema, hashFile, inspectCoordinationDatabase, inspectUpdateInventory, isProductStatePath, isRebuildableStatePath, residentEngines, writerStopOrder } from './product-update-inventory.js';
@@ -816,6 +816,16 @@ async function mutate(journal, dependencies, verify) {
     }
     return { done: publicResult(journal) };
   }
+  // Old journals bypass fresh admission. Abort before selection through the
+  // existing restoration path if this update already stopped the home. A partly
+  // switched tree instead reaches finish's fenced verification and rollback.
+  if (rank() < RANK.applying) {
+    try { assertProductNodeVersion(candidateManifest(journal).nodeVersion); }
+    catch (error) {
+      if (error.code !== 'candidate_node_unsupported') throw error;
+      return abortBeforeSwitch(error.code, error.message);
+    }
+  }
   if (rank() < RANK.quiesced) {
     let processes = await (dependencies.listProcesses || defaultListProcesses)(home);
     let classified = classifyProcesses(processes, names);
@@ -999,7 +1009,11 @@ async function finish(journal, dependencies, verify) {
         return publicResult(journal);
       }
       let packageOk = true;
-      try { if (verify(home, { allowRuntimeState: true, fresh: true }).packageId !== journal.toPackageId) packageOk = false; }
+      try {
+        const selected = verify(home, { allowRuntimeState: true, fresh: true });
+        assertProductNodeVersion(selected.nodeVersion);
+        if (selected.packageId !== journal.toPackageId) packageOk = false;
+      }
       catch { packageOk = false; }
       if (!packageOk) rollbackReason = 'The selected package did not verify while writers were still fenced.';
       else {
@@ -1438,8 +1452,15 @@ export async function applyProductUpdate({ homeRoot, candidatePayload, staging, 
   return locked(home, dependencies, async () => {
     const existing = exists(journalPath(home)) ? readUpdateJournal(home) : null;
     let candidateId = null;
-    try { candidateId = (reuseVerifiedStage ? readProductManifest(candidate) : verify(candidate)).packageId; }
-    catch { return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]); }
+    try {
+      const manifest = reuseVerifiedStage ? readProductManifest(candidate) : verify(candidate);
+      assertProductNodeVersion(manifest.nodeVersion);
+      candidateId = manifest.packageId;
+    }
+    catch (error) {
+      if (error.code === 'candidate_node_unsupported') return refuse(home, [{ code: error.code, message: error.message }]);
+      return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]);
+    }
     if (existing && !['committed', 'rolled_back', 'aborted'].includes(existing.phase)) {
       const newAdmission = admit === true && existing.admit !== true;
       const abortClaim = (existing.toPackageId !== candidateId || newAdmission)

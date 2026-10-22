@@ -44,7 +44,7 @@ function payload(dir, { sourceCommit = 'a'.repeat(40) } = {}) {
     sourceCommit,
     platform: process.platform,
     arch: process.arch,
-    nodeVersion: 'v22.19.0',
+    nodeVersion: 'v22.23.4',
   });
 }
 
@@ -173,7 +173,7 @@ test('busy inventory without admit does not apply', async t => {
       sourceCommit,
       platform: process.platform,
       arch: process.arch,
-      nodeVersion: 'v22.19.0',
+      nodeVersion: 'v22.23.4',
     });
   }
   richPayload(current, 'a'.repeat(40));

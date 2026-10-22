@@ -23,7 +23,7 @@ async function fixture(t) {
     fs.mkdirSync(path.dirname(path.join(payload, file)), { recursive: true });
     fs.writeFileSync(path.join(payload, file), file === 'bin/node' ? 'fixture node' : '', { mode: file === 'bin/node' ? 0o755 : 0o644 });
   }
-  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2' });
+  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   installProductPayload({ payloadPath: payload, homeRoot });
   const state = { schema: 'home23.host.v1', homeRoot, ports: await choosePortPlan(), profile: { name: 'milo', provider: 'ollama-local', model: 'fixture' }, phase: 'starting', desiredRunning: true,
     birth: { home: { id: 'home-fixture' }, coordination: { botId: 'bot-fixture' } } };

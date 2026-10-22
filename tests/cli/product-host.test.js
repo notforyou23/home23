@@ -31,7 +31,7 @@ function home(t, { birth = false, omitEvobrew = false } = {}) {
     fs.cpSync(new URL('../../cli/templates', import.meta.url), path.join(payload, 'app/cli/templates'), { recursive: true });
   }
   if (omitEvobrew) fs.writeFileSync(path.join(payload, 'app/.home23-product-no-evobrew'), '');
-  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.2' });
+  writeProductManifest(payload, { sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   installProductPayload({ payloadPath: payload, homeRoot });
   return homeRoot;
 }

@@ -23,7 +23,7 @@ function fixture(t, commit = 'a'.repeat(40), extraFiles = 0) {
     fs.mkdirSync(path.join(payload, 'app/bulk'));
     for (let i = 0; i < extraFiles; i += 1) fs.writeFileSync(path.join(payload, `app/bulk/${i}`), `file ${i}\n`);
   }
-  const manifest = writeProductManifest(payload, { sourceCommit: commit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.19.0' });
+  const manifest = writeProductManifest(payload, { sourceCommit: commit, platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4' });
   installProductPayload({ payloadPath: payload, homeRoot: home });
   return { root, payload, home, manifest };
 }
