@@ -899,6 +899,7 @@ test('crash-left capability lock and atomic temp files remain ignored', (t) => {
   writeFileSync(join(root, '.gitignore'), readFileSync(join(process.cwd(), '.gitignore')));
   for (const candidate of [
     'config/.brain-operations-capability.lock',
+    'runtime/.brain-operations-capability.lock',
     'config/secrets.yaml.1234.00000000-0000-4000-8000-000000000000.tmp',
     'ecosystem.config.cjs.1234.00000000-0000-4000-8000-000000000000.tmp',
   ]) {

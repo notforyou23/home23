@@ -171,3 +171,23 @@ test('known production writers no longer perform direct read-modify-write on sec
   assert.equal((sources.settings.match(/await updateSettingsSecrets\(/g) || []).length, 5);
   assert.match(sources.oauth, /updateHome23Secrets\(/);
 });
+
+test('the capability lock lives under runtime/, not beside secrets.yaml', async (t) => {
+  const root = makeRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const secrets = require('../../shared/home23-secrets.cjs');
+  const coordinates = secrets.lockCoordinates(root);
+  assert.equal(coordinates.lockPath, path.join(root, 'runtime', secrets.LOCK_NAME));
+  assert.equal(coordinates.legacyLockPath, path.join(root, 'config', secrets.LOCK_NAME));
+  await secrets.withHome23SecretsLock(root, async ({ lockPath, legacyLockPath }) => {
+    assert.equal(fs.existsSync(lockPath), true);
+    assert.equal(fs.existsSync(legacyLockPath), false);
+  });
+  const leftover = path.join(root, 'config', secrets.LOCK_NAME);
+  fs.mkdirSync(leftover);
+  const aged = new Date(Date.now() - secrets.LOCK_STALE_MS - 1_000);
+  fs.utimesSync(leftover, aged, aged);
+  await secrets.withHome23SecretsLock(root, async () => {
+    assert.equal(fs.existsSync(leftover), false);
+  });
+});

@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { delimiter, isAbsolute, join, relative, resolve } from 'node:path';
 import { readMoveFence } from './product-backup.js';
@@ -23,6 +23,9 @@ const executeFile = promisify(execFile);
 const PROVIDERS = new Set(['anthropic', 'openai', 'openai-codex', 'minimax', 'xai', 'ollama-cloud', 'ollama-local']);
 const OAUTH_PROVIDERS = new Set(['anthropic', 'openai-codex']);
 const COORDINATION_DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
+const START_FAILURE_SCHEMA = 'home23.host-start-failure.v1';
+const startFailurePath = root => join(root, 'runtime', '.host-start-failure.json');
+const hostLogPath = root => join(root, 'runtime', 'host.log');
 const statePath = root => join(root, '.home23-host.json');
 const receiptPath = root => join(root, '.home23-install.json');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -161,6 +164,67 @@ async function validateInstallation(root, { full = false } = {}) {
     || receipt.homeRoot !== root || receipt.appRoot !== join(root, 'app') || receipt.packageId !== manifest.packageId
     || receipt.nodePath !== join(root, 'bin', 'node') || receipt.pm2Path !== join(root, 'tools', 'node_modules', 'pm2', 'bin', 'pm2')) throw new Error('The Home23 installation receipt does not match this home.');
   if (full) verifyProductPayload(root, { allowRuntimeState: true });
+}
+function startFailureFrom(error) {
+  const message = String(error?.message || 'Home23 Host operation failed.');
+  return { code: error?.code || 'host_operation_failed', message };
+}
+function appendHostLog(homeRoot, line) {
+  try {
+    const file = hostLogPath(homeRoot);
+    mkdirSync(join(homeRoot, 'runtime'), { recursive: true, mode: 0o700 });
+    appendFileSync(file, `${new Date().toISOString()} ${line}\n`, { mode: 0o600 });
+  } catch { /* A missing log must not hide the status receipt. */ }
+}
+export function recordHostStartFailure(homeRoot, error, { action = 'start', resume = false } = {}) {
+  const { code, message } = startFailureFrom(error);
+  const record = { schema: START_FAILURE_SCHEMA, action, resume, at: new Date().toISOString(), code, message };
+  try {
+    mkdirSync(join(homeRoot, 'runtime'), { recursive: true, mode: 0o700 });
+    privateJSON(startFailurePath(homeRoot), record);
+  } catch { /* Status still reports the in-memory failure. */ }
+  const kind = resume ? 'resume' : action;
+  const line = `Home23 Host ${kind} failed: ${code}: ${message}`;
+  appendHostLog(homeRoot, line);
+  console.error(line);
+  return record;
+}
+export function readHostStartFailure(homeRoot) {
+  try {
+    const record = readPrivateJSON(startFailurePath(homeRoot));
+    return record?.schema === START_FAILURE_SCHEMA ? record : null;
+  } catch {
+    return null;
+  }
+}
+export function clearHostStartFailure(homeRoot) {
+  const file = startFailurePath(homeRoot);
+  if (existsSync(file)) unlinkSync(file);
+}
+function resumeIntended(homeRoot) {
+  try { return stateFor(homeRoot)?.desiredRunning === true; }
+  catch { return true; }
+}
+function failStart(homeRoot, error) {
+  const resume = resumeIntended(homeRoot);
+  const startFailure = recordHostStartFailure(homeRoot, error, { action: 'start', resume });
+  return {
+    ok: false,
+    status: 'degraded',
+    homeRoot,
+    desiredRunning: resume,
+    startFailure,
+    error: { code: startFailure.code, message: startFailure.message },
+  };
+}
+function finishStart(homeRoot, result) {
+  if (!result || result.ok === false) {
+    const resume = result?.desiredRunning === true || resumeIntended(homeRoot);
+    const startFailure = recordHostStartFailure(homeRoot, result?.error || { message: result?.status || 'Home23 Host start failed.' }, { action: 'start', resume });
+    return { ...result, startFailure };
+  }
+  if (result.status === 'ready' || result.status === 'starting') clearHostStartFailure(homeRoot);
+  return result;
 }
 function stateFor(root) {
   const state = readPrivateJSON(statePath(root));
@@ -649,6 +713,23 @@ async function permanentRecoveryRefusals(homeRoot) {
     return counts;
   } catch { return null; } finally { database?.close(); }
 }
+function attachStartFailure(homeRoot, state, output) {
+  if (output.status === 'ready') {
+    clearHostStartFailure(homeRoot);
+    return output;
+  }
+  const failure = readHostStartFailure(homeRoot);
+  if (!failure) return output;
+  const next = { ...output, startFailure: failure };
+  if (state?.desiredRunning === true && next.status === 'degraded' && !next.error) {
+    next.ok = false;
+    next.error = {
+      code: failure.code,
+      message: `Home23 did not resume after login or restart: ${failure.message}`,
+    };
+  }
+  return next;
+}
 async function status(homeRoot, dependencies = {}, createSession = false) {
   if (!existsSync(receiptPath(homeRoot))) return { ok: true, status: 'absent', homeRoot, desiredRunning: false, processes: [] };
   await validateInstallation(homeRoot);
@@ -679,13 +760,15 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
     // An unreadable supervisor is neither a stopped nor a running home. Say so,
     // so no client mistakes it for a home that needs Start.
     if (!['host_supervisor_ambiguous', 'host_supervisor_exited'].includes(error.code)) throw error;
-    return { ...output, ok: false, status: 'unavailable', processes: [], error: { code: error.code, message: error.message,
-      ...(error.code === 'host_supervisor_exited' ? { supervisorPid: error.supervisorPid, lastExitCode: error.lastExitCode } : {}) } };
+    return attachStartFailure(homeRoot, state, { ...output, ok: false, status: 'unavailable', processes: [], error: { code: error.code, message: error.message,
+      ...(error.code === 'host_supervisor_exited' ? { supervisorPid: error.supervisorPid, lastExitCode: error.lastExitCode } : {}) } });
   }
   const processes = safeProcesses(rows, homeRoot, ownedProcessNamesForState(state), continuationServicesForState(state));
   output.pausedProcessNames = await updatePausedNames(homeRoot, state);
-  if (state.phase === 'creating') return { ...output, status: 'creating', processes };
-  if (!processes.some(row => row.status === 'online' || row.status === 'launching')) return { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes };
+  if (state.phase === 'creating') return attachStartFailure(homeRoot, state, { ...output, status: 'creating', processes });
+  if (!processes.some(row => row.status === 'online' || row.status === 'launching')) {
+    return attachStartFailure(homeRoot, state, { ...output, status: state.desiredRunning ? 'degraded' : state.phase === 'prepared' ? 'prepared' : 'stopped', processes });
+  }
   let readiness = await (dependencies.probeReadiness || probeReadiness)(homeRoot, state, processes, { createSession });
   if (warnings.length) readiness = { ...readiness, warnings: [...(readiness.warnings || []), ...warnings] };
   if (!output.memorySeal.ok) {
@@ -695,7 +778,8 @@ async function status(homeRoot, dependencies = {}, createSession = false) {
   const failed = processes.some(failedProcess);
   const starting = state.desiredRunning && !readiness.recoveryRequired && !failed
     && Date.now() - Date.parse(state.startedAt || '') < 120000;
-  return { ...output, status: !failed && readiness.ready ? 'ready' : starting ? 'starting' : 'degraded', processes, readiness };
+  const next = { ...output, status: !failed && readiness.ready ? 'ready' : starting ? 'starting' : 'degraded', processes, readiness };
+  return attachStartFailure(homeRoot, state, next);
 }
 async function seedAndCreate(homeRoot, input, state, dependencies) {
   const appRoot = join(homeRoot, 'app');
@@ -807,7 +891,8 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       }
     }
     if (updateBlocksStart(journal, action === 'start' ? input.updateOwnerToken : undefined)) {
-      return { ok: false, status: 'recovery_required', homeRoot, error: { code: 'update_recovery_required', message: 'Resume the unfinished Home23 update before starting this home.' } };
+      const blocked = { ok: false, status: 'recovery_required', homeRoot, error: { code: 'update_recovery_required', message: 'Resume the unfinished Home23 update before starting this home.' } };
+      return action === 'start' ? finishStart(homeRoot, blocked) : blocked;
     }
   }
   if (!['install', 'create', 'start', 'stop', 'semantic-prepare', 'semantic-enable', 'semantic-disable', 'oauth-start', 'oauth-complete', 'oauth-status', 'oauth-cancel', 'oauth-logout'].includes(action)) throw new Error('Unknown Home23 Host action.');
@@ -826,8 +911,9 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
   if (action === 'start' || action === 'semantic-prepare') {
     const semanticEnable = readPrivateJSON(join(homeRoot, 'runtime/semantic-enable.json'));
     if (semanticEnable && !['enabled', 'disabled'].includes(semanticEnable.phase)) {
-      return { ok: false, status: 'recovery_required', homeRoot,
+      const blocked = { ok: false, status: 'recovery_required', homeRoot,
         error: { code: 'host_semantic_rollback_required', message: 'Run semantic-disable to finish the interrupted encoder transition before starting this home.' } };
+      return action === 'start' ? finishStart(homeRoot, blocked) : blocked;
     }
   }
   productEnvironment(homeRoot, { prepare: true });
@@ -837,12 +923,13 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     ? acquireHostLock(homeRoot)
     : null;
   if ((action === 'start' || action === 'stop' || action === 'create' || action === 'semantic-prepare' || oauthAction) && !hostLock) {
-    return { ok: false, status: 'busy', homeRoot, error: { code: 'host_lifecycle_busy', message: 'Another lifecycle operation holds this home.' } };
+    const busy = { ok: false, status: 'busy', homeRoot, error: { code: 'host_lifecycle_busy', message: 'Another lifecycle operation holds this home.' } };
+    return action === 'start' ? finishStart(homeRoot, busy) : busy;
   }
   const release = () => { if (hostLock) hostLock.release(); };
   try {
     if (action === 'start' && readMoveFence(homeRoot)) {
-      return { ok: false, status: 'move_fenced', homeRoot, error: { code: 'move_source_fenced', message: 'This home was moved. Start stays fenced and the destination was not started.' } };
+      return finishStart(homeRoot, { ok: false, status: 'move_fenced', homeRoot, error: { code: 'move_source_fenced', message: 'This home was moved. Start stays fenced and the destination was not started.' } });
     }
     let releaseSupervisor = null;
     if (action === 'start') {
@@ -864,7 +951,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
           for (const releaseHeld of releases.reverse()) {
             try { releaseHeld(); } catch { /* prior lock release */ }
           }
-          return {
+          return finishStart(homeRoot, {
             ok: false,
             status: 'supervisor_locked',
             homeRoot,
@@ -873,7 +960,7 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
               code: 'supervisor_lock_unavailable',
               message: error.message || 'Managed supervisor lock is held; refusing to start writers.',
             },
-          };
+          });
         }
         releaseSupervisor = () => {
           for (const releaseHeld of releases.reverse()) {
@@ -881,16 +968,25 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
           }
         };
       } catch (error) {
-        return {
+        return finishStart(homeRoot, {
           ok: false,
           status: 'supervisor_locked',
           homeRoot,
           error: { code: 'supervisor_lock_unavailable', message: error.message || 'Managed supervisor lock is unavailable.' },
-        };
+        });
       }
     }
     try {
-    await validateInstallation(homeRoot, { full: action === 'create' || action === 'start' });
+    if (action === 'start') {
+      const { clearStaleProductRuntimeLocks } = await import('./product-payload.js');
+      clearStaleProductRuntimeLocks(homeRoot);
+    }
+    try {
+      await validateInstallation(homeRoot, { full: action === 'create' || action === 'start' });
+    } catch (error) {
+      if (action === 'start') return failStart(homeRoot, error);
+      throw error;
+    }
     if (oauthAction) return await runHostOAuthAction(action, homeRoot, input, dependencies);
     let state = stateFor(homeRoot);
     if (action === 'create') return await seedAndCreate(homeRoot, input, state, dependencies);
@@ -958,8 +1054,8 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
       return await status(homeRoot, dependencies);
     }
     if (encoderRequiredFor(state) && semanticStatusView(homeRoot, state).semanticReady !== true) {
-      return { ...await status(homeRoot, dependencies), ok: false, status: 'prepared',
-        error: { code: 'host_semantic_prepare_required', message: 'Semantic memory is still preparing. Resume preparation before starting this home. Your saved home stays in place.' } };
+      return finishStart(homeRoot, { ...await status(homeRoot, dependencies), ok: false, status: 'prepared',
+        error: { code: 'host_semantic_prepare_required', message: 'Semantic memory is still preparing. Resume preparation before starting this home. Your saved home stays in place.' } });
     }
     const paused = action === 'start' ? await updatePausedNames(homeRoot, state, input.updateOwnerToken) : [];
     const startNames = names.filter(name => !paused.includes(name));
@@ -1005,8 +1101,8 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
             if (warm) break;
             await (dependencies.sleep || sleep)(500);
           }
-          if (!warm) return { ...await status(homeRoot, dependencies), ok: false, status: 'degraded', definitionChanged,
-            error: { code: 'host_encoder_not_ready', message: 'The owned semantic encoder did not become ready. Check status, then retry Start. Your saved home stays in place.' } };
+          if (!warm) return finishStart(homeRoot, { ...await status(homeRoot, dependencies), ok: false, status: 'degraded', definitionChanged,
+            error: { code: 'host_encoder_not_ready', message: 'The owned semantic encoder did not become ready. Check status, then retry Start. Your saved home stays in place.' } });
         }
       }
     }
@@ -1015,12 +1111,15 @@ export async function runHostAction(action, { homeRoot, payloadPath, input = {} 
     do {
       result = await status(homeRoot, dependencies, true);
       if (result.status === 'ready') break;
-      if (result.processes?.some(failedProcess)) return { ...result, ok: false, status: 'degraded', definitionChanged,
-        error: { code: 'host_process_failed', message: 'A Home23 service could not stay running. Check this home\'s process logs, then retry Start.' } };
+      if (result.processes?.some(failedProcess)) return finishStart(homeRoot, { ...result, ok: false, status: 'degraded', definitionChanged,
+        error: { code: 'host_process_failed', message: 'A Home23 service could not stay running. Check this home\'s process logs, then retry Start.' } });
       if (Date.now() >= deadline) break;
       await (dependencies.sleep || sleep)(1000);
     } while (true);
-    return { ...result, definitionChanged };
+    return finishStart(homeRoot, { ...result, definitionChanged });
+    } catch (error) {
+      if (action === 'start') recordHostStartFailure(homeRoot, error, { action: 'start', resume: resumeIntended(homeRoot) });
+      throw error;
     } finally {
       if (releaseSupervisor) releaseSupervisor();
     }

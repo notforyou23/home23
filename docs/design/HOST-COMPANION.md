@@ -70,6 +70,20 @@ and rebinds a destination and fences the source against duplicate startup.
 Managed/source adoption is a separate adapter; it does not mean an arbitrary
 existing directory can be overwritten or controlled in place by Host.
 
+Process locks, pid files and atomic temp files belong under `runtime/`, not
+inside the verified product payload. The secrets/capability lock now lives at
+`app/runtime/.brain-operations-capability.lock` (source checkouts: `runtime/`).
+A leftover lock beside `app/config/secrets.yaml` is still treated as runtime
+state so a crash or reboot cannot block Host start. Start removes those
+artifacts only after the lock library's 180-second stale window; a lock whose
+mtime is still inside that window is left in place for a live holder.
+
+If login resume or Start fails, Host writes `runtime/.host-start-failure.json`,
+appends `runtime/host.log`, prints the same line on stderr, and includes
+`startFailure` plus `error` on `status` while `desiredRunning` is true and the
+home is down. The Mac app already decodes Host `error` on status. A later
+successful Start or a `ready` status clears the receipt.
+
 The embedded helper in `Home23.app/Contents/Library/LoginItems/Home23Host.app`
 invokes the bundled Node with `app/scripts/product/host.mjs`.
 The protocol accepts one action and absolute operation paths. Its current action

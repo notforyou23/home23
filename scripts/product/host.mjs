@@ -326,6 +326,14 @@ try {
   const message = redact(error.message || 'Home23 Host operation failed.');
   // Move and recovery name each file (and setting) still to correct.
   const paths = Array.isArray(error.paths) ? JSON.parse(redact(JSON.stringify(error.paths))) : null;
-  originalStdout(JSON.stringify({ ok: false, status: 'degraded', homeRoot, error: { code: error.code || 'host_operation_failed', message, ...(paths ? { paths } : {}) } }) + '\n');
+  const code = error.code || 'host_operation_failed';
+  if (action === 'start' && homeRoot) {
+    try {
+      const { recordHostStartFailure } = await import('../../cli/lib/product-host.js');
+      recordHostStartFailure(homeRoot, { code, message }, { action: 'start', resume: true });
+    } catch { /* The stdout error still names the failure. */ }
+  }
+  process.stderr.write(`Home23 Host ${action || 'operation'} failed: ${code}: ${message}\n`);
+  originalStdout(JSON.stringify({ ok: false, status: 'degraded', homeRoot, error: { code, message, ...(paths ? { paths } : {}) } }) + '\n');
   process.exitCode = 1;
 }
