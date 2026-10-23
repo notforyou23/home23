@@ -329,8 +329,8 @@ try {
   const code = error.code || 'host_operation_failed';
   if (action === 'start' && homeRoot) {
     try {
-      const { recordHostStartFailure } = await import('../../cli/lib/product-host.js');
-      recordHostStartFailure(homeRoot, { code, message }, { action: 'start', resume: true });
+      const { recordHostStartFailure, hostStartWasResume } = await import('../../cli/lib/product-host.js');
+      recordHostStartFailure(homeRoot, { code, message }, { action: 'start', resume: hostStartWasResume(homeRoot) });
     } catch { /* The stdout error still names the failure. */ }
   }
   process.stderr.write(`Home23 Host ${action || 'operation'} failed: ${code}: ${message}\n`);

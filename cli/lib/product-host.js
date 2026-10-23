@@ -201,9 +201,12 @@ export function clearHostStartFailure(homeRoot) {
   const file = startFailurePath(homeRoot);
   if (existsSync(file)) unlinkSync(file);
 }
-function resumeIntended(homeRoot) {
+export function hostStartWasResume(homeRoot) {
   try { return stateFor(homeRoot)?.desiredRunning === true; }
-  catch { return true; }
+  catch { return false; }
+}
+function resumeIntended(homeRoot) {
+  return hostStartWasResume(homeRoot);
 }
 function failStart(homeRoot, error) {
   const resume = resumeIntended(homeRoot);

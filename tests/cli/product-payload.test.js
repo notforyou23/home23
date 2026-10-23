@@ -189,14 +189,35 @@ test('crash-left locks and temp files are runtime state, not packaged software',
     'app/runtime/.brain-operations-capability.lock',
     'runtime/.brain-operations-capability.lock',
     'app/config/secrets.yaml.1234.00000000-0000-4000-8000-000000000000.tmp',
-    'app/engine/runtime/worker.pid',
   ]) {
     assert.equal(isProductRuntimeTransientPath(path), true, path);
     assert.equal(isProductStatePath(path), true, path);
   }
-  for (const path of ['app/config/home.yaml.bak', 'app/cli/home23.js', 'app/config/secrets.yaml']) {
+  assert.equal(isProductStatePath('app/engine/runtime/worker.pid'), true);
+  assert.equal(isProductRuntimeTransientPath('app/engine/runtime/worker.pid'), false);
+  for (const path of [
+    'app/config/home.yaml.bak', 'app/cli/home23.js', 'app/config/secrets.yaml',
+    'app/node_modules/x/yarn.lock', 'app/node_modules/lodash/flake.lock',
+    'tools/node_modules/pm2/yarn.lock',
+  ]) {
     assert.equal(isProductRuntimeTransientPath(path), false, path);
   }
+});
+
+test('a packaged yarn.lock and flake.lock stay payload software', t => {
+  const { payload } = fixture(t);
+  fs.unlinkSync(path.join(payload, 'manifest.json'));
+  for (const relative of ['app/node_modules/x/yarn.lock', 'app/node_modules/lodash/flake.lock']) {
+    const file = path.join(payload, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(file, '# lock\n', { mode: 0o644 });
+    assert.equal(isProductRuntimeTransientPath(relative), false, relative);
+    assert.equal(isProductStatePath(relative), false, relative);
+  }
+  const manifest = writeProductManifest(payload, {
+    sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4',
+  });
+  assert.equal(verifyProductPayload(payload).packageId, manifest.packageId);
 });
 
 test('an installed home may keep leftover locks; a genuine extra product file is still refused', t => {

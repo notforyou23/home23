@@ -177,9 +177,17 @@ const PRODUCT_RUNTIME_CAPABILITY_LOCKS = Object.freeze([
   'app/runtime/.brain-operations-capability.lock',
   'runtime/.brain-operations-capability.lock',
 ]);
+const PRODUCT_RUNTIME_TRANSIENT_ROOTS = Object.freeze(['runtime/', 'app/runtime/']);
+const APP_CONFIG_TRANSIENT = /^app\/config\/[^/]+\.(lock|pid|tmp)(\/|$)/;
 export function isProductRuntimeTransientPath(relative) {
-  return typeof relative === 'string' && relative.split('/').some(part =>
-    part.endsWith('.lock') || part.endsWith('.pid') || part.endsWith('.tmp'));
+  if (typeof relative !== 'string' || !relative) return false;
+  const parts = relative.split('/');
+  // Packaged software ships yarn.lock and flake.lock under node_modules.
+  if (parts.includes('node_modules')) return false;
+  if (!parts.some(part => part.endsWith('.lock') || part.endsWith('.pid') || part.endsWith('.tmp'))) return false;
+  if (PRODUCT_RUNTIME_CAPABILITY_LOCKS.some(lock => relative === lock || relative.startsWith(`${lock}/`))) return true;
+  if (APP_CONFIG_TRANSIENT.test(relative)) return true;
+  return PRODUCT_RUNTIME_TRANSIENT_ROOTS.some(root => relative.startsWith(root));
 }
 export function isStaleProductRuntimeLock(lockPath, { now = Date.now(), staleMs = PRODUCT_RUNTIME_LOCK_STALE_MS } = {}) {
   try {

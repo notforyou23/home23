@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:http';
 import { choosePortPlan, ownerAccountHome, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
-import { definitionMatchesProcess, ownedProcessNames, probeReadiness, productDefinitions, readHostStartFailure, runHostAction, safeProcesses, supervisorListening } from '../../cli/lib/product-host.js';
+import { definitionMatchesProcess, hostStartWasResume, ownedProcessNames, probeReadiness, productDefinitions, readHostStartFailure, runHostAction, safeProcesses, supervisorListening } from '../../cli/lib/product-host.js';
 import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writerStopOrder } from '../../cli/lib/product-update-inventory.js';
@@ -1629,6 +1629,7 @@ test('a leftover unexpected product file still refuses Start and status names th
   assert.equal(started.ok, false);
   assert.match(started.error.message, /Unexpected product file: app\/config\/home.yaml.bak/);
   assert.equal(started.startFailure.code, 'host_operation_failed');
+  assert.equal(started.startFailure.resume, true);
   const viewed = await runHostAction('status', { homeRoot }, startDependencies(homeRoot));
   assert.equal(viewed.ok, false);
   assert.equal(viewed.status, 'degraded');
@@ -1636,4 +1637,15 @@ test('a leftover unexpected product file still refuses Start and status names th
   assert.match(viewed.error.message, /did not resume after login or restart/);
   assert.match(viewed.startFailure.message, /Unexpected product file: app\/config\/home.yaml.bak/);
   assert.match(fs.readFileSync(path.join(homeRoot, 'runtime/host.log'), 'utf8'), /Home23 Host resume failed/);
+});
+
+test('a manual Start failure is recorded as start, not resume', async t => {
+  const { homeRoot } = await prepared(t);
+  assert.equal(hostStartWasResume(homeRoot), false);
+  fs.mkdirSync(path.join(homeRoot, 'app/config'), { recursive: true });
+  fs.writeFileSync(path.join(homeRoot, 'app/config/home.yaml.bak'), 'owner: backup');
+  const started = await runHostAction('start', { homeRoot }, startDependencies(homeRoot));
+  assert.equal(started.ok, false);
+  assert.equal(started.startFailure.resume, false);
+  assert.match(fs.readFileSync(path.join(homeRoot, 'runtime/host.log'), 'utf8'), /Home23 Host start failed/);
 });
