@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { writeProductManifest, verifyProductPayload, installProductPayload, isProductStatePath, isOsMetadataPath, isStateBearingSoftwarePath } from '../../cli/lib/product-payload.js';
+import { writeProductManifest, verifyProductPayload, installProductPayload, isProductStatePath, isOsMetadataPath, isStateBearingSoftwarePath, isProductRuntimeTransientPath, clearStaleProductRuntimeLocks, PRODUCT_RUNTIME_LOCK_STALE_MS } from '../../cli/lib/product-payload.js';
 
 test('mixed operator roots retain state without absorbing maintained software', () => {
   for (const path of ['app/workspace/skills/index.js', 'app/configs/base-engine.yaml',
@@ -181,6 +181,69 @@ test('OS metadata never enters a package and does not stop verification, install
   fs.writeFileSync(path.join(homeRoot, 'app/config/home.yaml'), 'owner: new owner');
   assert.equal(verifyProductPayload(homeRoot, { allowRuntimeState: true }).packageId, manifest.packageId);
   assert.equal(installProductPayload({ payloadPath: payload, homeRoot }).replayed, true);
+});
+
+test('crash-left locks and temp files are runtime state, not packaged software', () => {
+  for (const path of [
+    'app/config/.brain-operations-capability.lock',
+    'app/runtime/.brain-operations-capability.lock',
+    'runtime/.brain-operations-capability.lock',
+    'app/config/secrets.yaml.1234.00000000-0000-4000-8000-000000000000.tmp',
+  ]) {
+    assert.equal(isProductRuntimeTransientPath(path), true, path);
+    assert.equal(isProductStatePath(path), true, path);
+  }
+  assert.equal(isProductStatePath('app/engine/runtime/worker.pid'), true);
+  assert.equal(isProductRuntimeTransientPath('app/engine/runtime/worker.pid'), false);
+  for (const path of [
+    'app/config/home.yaml.bak', 'app/cli/home23.js', 'app/config/secrets.yaml',
+    'app/node_modules/x/yarn.lock', 'app/node_modules/lodash/flake.lock',
+    'tools/node_modules/pm2/yarn.lock',
+  ]) {
+    assert.equal(isProductRuntimeTransientPath(path), false, path);
+  }
+});
+
+test('a packaged yarn.lock and flake.lock stay payload software', t => {
+  const { payload } = fixture(t);
+  fs.unlinkSync(path.join(payload, 'manifest.json'));
+  for (const relative of ['app/node_modules/x/yarn.lock', 'app/node_modules/lodash/flake.lock']) {
+    const file = path.join(payload, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(file, '# lock\n', { mode: 0o644 });
+    assert.equal(isProductRuntimeTransientPath(relative), false, relative);
+    assert.equal(isProductStatePath(relative), false, relative);
+  }
+  const manifest = writeProductManifest(payload, {
+    sourceCommit: 'a'.repeat(40), platform: process.platform, arch: process.arch, nodeVersion: 'v22.23.4',
+  });
+  assert.equal(verifyProductPayload(payload).packageId, manifest.packageId);
+});
+
+test('an installed home may keep leftover locks; a genuine extra product file is still refused', t => {
+  const { payload, homeRoot, manifest } = fixture(t);
+  installProductPayload({ payloadPath: payload, homeRoot });
+  const leftover = path.join(homeRoot, 'app/config/.brain-operations-capability.lock');
+  fs.mkdirSync(leftover);
+  assert.equal(verifyProductPayload(homeRoot, { allowRuntimeState: true }).packageId, manifest.packageId);
+  fs.writeFileSync(path.join(homeRoot, 'app/config/home.yaml.bak'), 'owner: backup');
+  assert.throws(() => verifyProductPayload(homeRoot, { allowRuntimeState: true }),
+    error => error.message === 'Unexpected product file: app/config/home.yaml.bak');
+});
+
+test('stale leftover locks are removed; a live fresh lock is left alone', t => {
+  const { payload, homeRoot } = fixture(t);
+  installProductPayload({ payloadPath: payload, homeRoot });
+  const stale = path.join(homeRoot, 'app/config/.brain-operations-capability.lock');
+  const fresh = path.join(homeRoot, 'app/runtime/.brain-operations-capability.lock');
+  fs.mkdirSync(stale);
+  fs.mkdirSync(path.dirname(fresh), { recursive: true });
+  fs.mkdirSync(fresh);
+  const aged = new Date(Date.now() - PRODUCT_RUNTIME_LOCK_STALE_MS - 5_000);
+  fs.utimesSync(stale, aged, aged);
+  assert.deepEqual(clearStaleProductRuntimeLocks(homeRoot), ['app/config/.brain-operations-capability.lock']);
+  assert.equal(fs.existsSync(stale), false);
+  assert.equal(fs.existsSync(fresh), true);
 });
 
 test('genuinely unknown files stay refused and the error names them, bounded to ten', t => {

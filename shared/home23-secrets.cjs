@@ -11,6 +11,37 @@ const LOCK_NAME = '.brain-operations-capability.lock';
 const SECRET_HEADER = '# Home23 secrets — API keys and tokens\n# This file is gitignored. Never commit it.\n\n';
 const DEFAULT_LOCK_TIMEOUT_MS = 120_000;
 const LOCK_STALE_MS = 180_000;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function lockAgeMs(lockPath, now = Date.now()) {
+  try {
+    return now - fs.lstatSync(lockPath).mtimeMs;
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function isFreshLock(lockPath, now = Date.now()) {
+  const age = lockAgeMs(lockPath, now);
+  return age !== null && age < LOCK_STALE_MS;
+}
+
+function removeStaleLock(lockPath, now = Date.now()) {
+  const age = lockAgeMs(lockPath, now);
+  if (age === null || age < LOCK_STALE_MS) return false;
+  fs.rmSync(lockPath, { recursive: true, force: true });
+  return true;
+}
+
+async function waitOutLegacyLock(lockPath, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (isFreshLock(lockPath)) {
+    if (Date.now() >= deadline) throw secretsError('home23_secrets_lock_timeout');
+    await sleep(50);
+  }
+  removeStaleLock(lockPath);
+}
 
 function secretsError(code, cause) {
   const error = new Error(code, cause ? { cause } : undefined);
@@ -22,10 +53,13 @@ function lockCoordinates(home23Root, options = {}) {
   const secretsPath = options.secretsPath || path.join(home23Root, 'config', 'secrets.yaml');
   if (!path.isAbsolute(secretsPath)) throw secretsError('home23_secrets_path_invalid');
   const configDir = path.dirname(secretsPath);
+  const runtimeDir = options.runtimeDir || path.join(home23Root, 'runtime');
   return {
     secretsPath,
     configDir,
-    lockPath: path.join(configDir, LOCK_NAME),
+    runtimeDir,
+    lockPath: path.join(runtimeDir, LOCK_NAME),
+    legacyLockPath: path.join(configDir, LOCK_NAME),
   };
 }
 
@@ -48,6 +82,8 @@ async function withHome23SecretsLock(home23Root, callback, options = {}) {
   let release;
   try {
     await fs.promises.mkdir(coordinates.configDir, { recursive: true });
+    await fs.promises.mkdir(coordinates.runtimeDir, { recursive: true });
+    await waitOutLegacyLock(coordinates.legacyLockPath, timeoutMs);
     release = await lockfile.lock(coordinates.configDir, lockOptions(coordinates.lockPath, {
       retries: Math.ceil(timeoutMs / 100),
       minTimeout: 20,
@@ -201,7 +237,11 @@ async function updateHome23Secrets(home23Root, mutator, options = {}) {
 
 module.exports = {
   LOCK_NAME,
+  LOCK_STALE_MS,
   SECRET_HEADER,
+  lockCoordinates,
+  isFreshLock,
+  removeStaleLock,
   readHome23Secrets,
   readStableFileSnapshot,
   updateHome23Secrets,

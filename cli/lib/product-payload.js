@@ -168,10 +168,65 @@ export const PRODUCT_STATE_PATHS = Object.freeze([
     ...['runtime', 'logs', 'runs', 'data', 'artifacts', 'outputs', 'backups', '.backups', 'config', '.venv-markitdown'].map(name => `app/engine/${name}`),
   ].map(path => Object.freeze({ path, type: 'directory', role: 'preserve' })),
 ]);
+/** Process locks, pid files and atomic temp siblings. They are the home's
+ * runtime, not packaged software. A crash can leave them under `app/`; Start
+ * and updates must not treat them as unexpected product files. */
+export const PRODUCT_RUNTIME_LOCK_STALE_MS = 180_000;
+const PRODUCT_RUNTIME_CAPABILITY_LOCKS = Object.freeze([
+  'app/config/.brain-operations-capability.lock',
+  'app/runtime/.brain-operations-capability.lock',
+  'runtime/.brain-operations-capability.lock',
+]);
+const PRODUCT_RUNTIME_TRANSIENT_ROOTS = Object.freeze(['runtime/', 'app/runtime/']);
+const APP_CONFIG_TRANSIENT = /^app\/config\/[^/]+\.(lock|pid|tmp)(\/|$)/;
+export function isProductRuntimeTransientPath(relative) {
+  if (typeof relative !== 'string' || !relative) return false;
+  const parts = relative.split('/');
+  // Packaged software ships yarn.lock and flake.lock under node_modules.
+  if (parts.includes('node_modules')) return false;
+  if (!parts.some(part => part.endsWith('.lock') || part.endsWith('.pid') || part.endsWith('.tmp'))) return false;
+  if (PRODUCT_RUNTIME_CAPABILITY_LOCKS.some(lock => relative === lock || relative.startsWith(`${lock}/`))) return true;
+  if (APP_CONFIG_TRANSIENT.test(relative)) return true;
+  return PRODUCT_RUNTIME_TRANSIENT_ROOTS.some(root => relative.startsWith(root));
+}
+export function isStaleProductRuntimeLock(lockPath, { now = Date.now(), staleMs = PRODUCT_RUNTIME_LOCK_STALE_MS } = {}) {
+  try {
+    return now - fs.lstatSync(lockPath).mtimeMs >= staleMs;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+/** Removes leftover lock/pid/temp artifacts older than the lock library's
+ * stale window. A lock whose mtime is still inside that window is left in
+ * place so a live holder keeps exclusivity. */
+export function clearStaleProductRuntimeLocks(root, { now = Date.now(), staleMs = PRODUCT_RUNTIME_LOCK_STALE_MS } = {}) {
+  const cleared = [];
+  const seen = new Set();
+  const consider = relative => {
+    if (!isProductRuntimeTransientPath(relative) || seen.has(relative)) return;
+    seen.add(relative);
+    const absolute = path.join(root, relative);
+    if (!isStaleProductRuntimeLock(absolute, { now, staleMs })) return;
+    fs.rmSync(absolute, { recursive: true, force: true });
+    cleared.push(relative);
+  };
+  for (const relative of PRODUCT_RUNTIME_CAPABILITY_LOCKS) consider(relative);
+  const configDir = path.join(root, 'app/config');
+  try {
+    for (const name of fs.readdirSync(configDir).sort()) consider(`app/config/${name}`);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  return cleared;
+}
 // These maintained files share parent directories with adopted operator state.
 // Keep the software namespace in the package and archive source variants under
 // the reviewed preservation root during adoption.
 export function isProductStatePath(relative) {
+  // Crash-left locks and temp files are installation runtime, including the
+  // historical secrets lock beside app/config/secrets.yaml.
+  if (isProductRuntimeTransientPath(relative)) return true;
   // A packaged skill writes its runtime cache beside its code. That data is
   // the home's, not the package's, so updates preserve it and Start allows it.
   if (/^app\/workspace\/skills\/[^/]+\/data(\/|$)/.test(relative)) return true;

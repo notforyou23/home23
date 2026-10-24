@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { createServer } from 'node:http';
 import { choosePortPlan, ownerAccountHome, privateJSON, productEnvironment, providerEndpoint, socketRootFor, withReservedPorts } from '../../cli/lib/product-environment.js';
-import { definitionMatchesProcess, ownedProcessNames, probeReadiness, productDefinitions, runHostAction, safeProcesses, supervisorListening } from '../../cli/lib/product-host.js';
+import { definitionMatchesProcess, hostStartWasResume, ownedProcessNames, probeReadiness, productDefinitions, readHostStartFailure, runHostAction, safeProcesses, supervisorListening } from '../../cli/lib/product-host.js';
 import { detectForeignBindings } from '../../cli/lib/product-foreign-bindings.js';
 import { beginSemanticPrepare, reconcileSemanticPrep, writeSemanticPrep } from '../../cli/lib/product-embedder.js';
 import { writerStopOrder } from '../../cli/lib/product-update-inventory.js';
@@ -21,7 +21,8 @@ function home(t, { birth = false, omitEvobrew = false } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'host-unit-')));
   const payload = path.join(base, 'payload'), homeRoot = path.join(base, 'home');
   t.after(() => { fs.rmSync(base, { force: true, recursive: true }); fs.rmSync(socketRootFor(homeRoot), { force: true, recursive: true }); });
-  for (const [file, content] of Object.entries({ 'bin/node': 'node', 'app/cli/home23.js': '', 'app/cli/lib/product-payload.js': '', 'app/scripts/product/host.mjs': '', 'tools/node_modules/pm2/bin/pm2': '' })) {
+  for (const [file, content] of Object.entries({ 'bin/node': 'node', 'app/cli/home23.js': '', 'app/cli/lib/product-payload.js': '', 'app/scripts/product/host.mjs': '',
+    'app/config/home.yaml.example': 'home: {}\n', 'tools/node_modules/pm2/bin/pm2': '' })) {
     fs.mkdirSync(path.dirname(path.join(payload, file)), { recursive: true, mode: 0o755 });
     fs.writeFileSync(path.join(payload, file), content, { mode: file === 'bin/node' ? 0o755 : 0o644 });
   }
@@ -1575,4 +1576,76 @@ test('status reports a stale memory seal instead of leaving reads to fail silent
   fs.appendFileSync(path.join(brain, manifest.activeDelta.file), '{"uncommitted":true}\n');
   const tail = await runHostAction('status', { homeRoot }, stopped);
   assert.deepEqual(tail.memorySeal, { ok: true, reasons: [] });
+});
+
+function startDependencies(homeRoot, rows = []) {
+  const execute = async (_node, args) => {
+    if (args[1] === 'jlist') return { stdout: JSON.stringify(rows) };
+    if (args[1] === 'start') rows.push(row(homeRoot, args[args.indexOf('--only') + 1]));
+    return { stdout: '' };
+  };
+  return {
+    execute,
+    definitions: () => productDefinitions(definitions(homeRoot), homeRoot, 'milo'),
+    readinessWaitMs: 0,
+    probeReadiness: async () => ({ ready: true, issues: [] }),
+  };
+}
+
+test('Start succeeds after a reboot leftover capability lock', async t => {
+  const { homeRoot } = await prepared(t);
+  const leftover = path.join(homeRoot, 'app/config/.brain-operations-capability.lock');
+  fs.mkdirSync(path.dirname(leftover), { recursive: true });
+  fs.mkdirSync(leftover);
+  const aged = new Date(Date.now() - 200_000);
+  fs.utimesSync(leftover, aged, aged);
+  const result = await runHostAction('start', { homeRoot }, startDependencies(homeRoot));
+  assert.equal(result.ok, true);
+  assert.ok(['ready', 'starting'].includes(result.status));
+  assert.equal(fs.existsSync(leftover), false);
+  assert.equal(readHostStartFailure(homeRoot), null);
+});
+
+test('Start leaves a live fresh capability lock in place', async t => {
+  const { homeRoot } = await prepared(t);
+  const live = path.join(homeRoot, 'app/runtime/.brain-operations-capability.lock');
+  fs.mkdirSync(path.dirname(live), { recursive: true });
+  fs.mkdirSync(live);
+  const result = await runHostAction('start', { homeRoot }, startDependencies(homeRoot));
+  assert.equal(result.ok, true);
+  assert.equal(fs.existsSync(live), true);
+});
+
+test('a leftover unexpected product file still refuses Start and status names the resume failure', async t => {
+  const { homeRoot } = await prepared(t);
+  privateJSON(path.join(homeRoot, '.home23-host.json'), {
+    ...JSON.parse(fs.readFileSync(path.join(homeRoot, '.home23-host.json'), 'utf8')),
+    desiredRunning: true,
+    phase: 'starting',
+  });
+  fs.mkdirSync(path.join(homeRoot, 'app/config'), { recursive: true });
+  fs.writeFileSync(path.join(homeRoot, 'app/config/home.yaml.bak'), 'owner: backup');
+  const started = await runHostAction('start', { homeRoot }, startDependencies(homeRoot));
+  assert.equal(started.ok, false);
+  assert.match(started.error.message, /Unexpected product file: app\/config\/home.yaml.bak/);
+  assert.equal(started.startFailure.code, 'host_operation_failed');
+  assert.equal(started.startFailure.resume, true);
+  const viewed = await runHostAction('status', { homeRoot }, startDependencies(homeRoot));
+  assert.equal(viewed.ok, false);
+  assert.equal(viewed.status, 'degraded');
+  assert.equal(viewed.desiredRunning, true);
+  assert.match(viewed.error.message, /did not resume after login or restart/);
+  assert.match(viewed.startFailure.message, /Unexpected product file: app\/config\/home.yaml.bak/);
+  assert.match(fs.readFileSync(path.join(homeRoot, 'runtime/host.log'), 'utf8'), /Home23 Host resume failed/);
+});
+
+test('a manual Start failure is recorded as start, not resume', async t => {
+  const { homeRoot } = await prepared(t);
+  assert.equal(hostStartWasResume(homeRoot), false);
+  fs.mkdirSync(path.join(homeRoot, 'app/config'), { recursive: true });
+  fs.writeFileSync(path.join(homeRoot, 'app/config/home.yaml.bak'), 'owner: backup');
+  const started = await runHostAction('start', { homeRoot }, startDependencies(homeRoot));
+  assert.equal(started.ok, false);
+  assert.equal(started.startFailure.resume, false);
+  assert.match(fs.readFileSync(path.join(homeRoot, 'runtime/host.log'), 'utf8'), /Home23 Host start failed/);
 });

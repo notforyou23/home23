@@ -160,3 +160,34 @@ test('check-update with --trust-key verifies development signatures and rejects 
   assert.notEqual(forgedBody.developmentSignatureVerified, true);
   assert.ok(forgedBody.reasons.some(item => item.code === 'signature_invalid'));
 });
+
+function writeHostIntent(homeRoot, desiredRunning) {
+  const state = {
+    schema: 'home23.host.v1',
+    homeRoot,
+    ports: {
+      coordination: 44000, engine: 44001, dashboard: 44002, mcp: 44003,
+      bridge: 44004, evobrew: 44005, observatory: 44006,
+    },
+    profile: { name: 'milo' },
+    phase: 'prepared',
+    desiredRunning,
+  };
+  const file = path.join(homeRoot, '.home23-host.json');
+  fs.writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+}
+
+test('host.mjs Start catch records resume only when desiredRunning is already true', async (t) => {
+  const root = tempRoot(t);
+  for (const desiredRunning of [false, true]) {
+    const home = path.join(root, desiredRunning ? 'resume-home' : 'manual-home');
+    fs.mkdirSync(home, { recursive: true, mode: 0o755 });
+    writeHostIntent(home, desiredRunning);
+    const result = await runHost(['start', '--home', home]);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, desiredRunning ? /Home23 Host resume failed/ : /Home23 Host start failed/);
+    const failure = JSON.parse(fs.readFileSync(path.join(home, 'runtime/.host-start-failure.json'), 'utf8'));
+    assert.equal(failure.resume, desiredRunning);
+  }
+});
