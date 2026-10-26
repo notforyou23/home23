@@ -23,6 +23,7 @@ const {
 } = require('../memory/consolidation-backlog');
 const { applyMemoryRecluster, planMemoryRecluster } = require('../memory/recluster');
 const { applyMemoryCommunities, planMemoryCommunities } = require('../memory/community-detection');
+const { withCommunityBackup } = require('../core/brain-sidecar-backups');
 
 class RealtimeServer {
   constructor(port = 3400, logger = null) {
@@ -736,11 +737,38 @@ class RealtimeServer {
         return json(200, { ok: true, mode: 'apply', unchanged: true, movedNodes: 0 });
       }
 
-      const backup = this._backupBrainSidecars('brain-communities');
-      const applied = applyMemoryCommunities(memory, plan);
-      if (typeof this.orchestrator.saveState === 'function') {
-        await this.orchestrator.saveState();
-      }
+      const revision = memory.persistenceRevision;
+      const waitForStateSave = async () => {
+        while (this.orchestrator._saveStatePromise) {
+          const priorSave = this.orchestrator._saveStatePromise;
+          await priorSave;
+          // saveState clears its shared promise in a separate finally handler.
+          if (this.orchestrator._saveStatePromise === priorSave) await new Promise(resolve => setImmediate(resolve));
+        }
+      };
+      // Let an earlier save finish before capturing the recovery sidecars. A
+      // later async save or memory change is checked before mutation below.
+      await waitForStateSave();
+      const residentId = String(this.orchestrator.instanceId || path.basename(path.dirname(this.orchestrator.logsDir)));
+      // Resident policy and explicit recovery pins take precedence over expiry.
+      const retainAll = this.orchestrator.config?.persistence?.communityBackupRetention?.retainAll === true;
+      const { backup, value: applied } = await withCommunityBackup({
+        brainDir: this.orchestrator.logsDir,
+        residentId,
+        home23Root: this.orchestrator.home23Root || process.env.HOME23_ROOT,
+        retainAll,
+        operation: async () => {
+          if (revision !== memory.persistenceRevision) throw new Error('community_plan_changed_during_backup');
+          await waitForStateSave();
+          if (revision !== memory.persistenceRevision) throw new Error('community_plan_changed_during_backup');
+          if (typeof this.orchestrator.saveState !== 'function') throw new Error('community_save_unavailable');
+          const result = applyMemoryCommunities(memory, plan);
+          const saved = await this.orchestrator.saveState();
+          if (saved?.saved !== true) throw new Error(`community_save_failed:${saved?.reason || 'unconfirmed'}`);
+          return result;
+        },
+      });
+      if (backup.retention.errors.length) this.logger?.warn?.('Community backup retention deferred', { errors: backup.retention.errors });
       return json(200, { ok: true, mode: 'apply', backup, ...summary, ...applied });
     }
 

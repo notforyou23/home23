@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 const require = createRequire(import.meta.url);
 const { RealtimeServer } = require('../../../engine/src/realtime/websocket-server.js');
@@ -79,21 +80,30 @@ async function seededMemory() {
 
 function makeServer(memory, { onSave } = {}) {
   const server = new RealtimeServer(0, silentLogger);
-  const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'communities-admin-test-'));
+  const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'communities-admin-test-'));
+  const logsDir = path.join(home23Root, 'brain');
+  fs.mkdirSync(logsDir);
+  fs.writeFileSync(path.join(logsDir, 'brain-snapshot.json'), JSON.stringify({ fixture: true }));
+  fs.writeFileSync(path.join(logsDir, 'state.json.gz'), gzipSync(JSON.stringify({ fixture: true })));
+  fs.writeFileSync(path.join(logsDir, 'memory-nodes.jsonl.gz'), gzipSync(''));
+  fs.writeFileSync(path.join(logsDir, 'memory-edges.jsonl.gz'), gzipSync(''));
   server.setOrchestrator({
     memory,
     logsDir,
+    home23Root,
     async saveState() {
-      if (onSave) onSave();
+      if (onSave) return onSave() ?? { saved: true };
+      return { saved: true };
     },
   });
   return { server, logsDir };
 }
 
-test('the communities route is reachable (allowlist regression pin) and dry-run never mutates', async () => {
+test('the communities route is reachable (allowlist regression pin) and dry-run never mutates', async (t) => {
   const memory = await seededMemory();
   let saved = 0;
-  const { server } = makeServer(memory, { onSave: () => { saved += 1; } });
+  const { server, logsDir } = makeServer(memory, { onSave: () => { saved += 1; } });
+  t.after(() => fs.rmSync(path.dirname(logsDir), { recursive: true, force: true }));
 
   const res = makeResponse();
   await server._handleMemoryCleanupAdmin(
@@ -121,10 +131,11 @@ test('the communities route is reachable (allowlist regression pin) and dry-run 
   assert.equal(bogus.statusCode, 404);
 });
 
-test('apply moves nodes, takes a backup, saves state; re-apply short-circuits unchanged', async () => {
+test('apply moves nodes, takes a backup, saves state; re-apply short-circuits unchanged', async (t) => {
   const memory = await seededMemory();
   let saved = 0;
   const { server, logsDir } = makeServer(memory, { onSave: () => { saved += 1; } });
+  t.after(() => fs.rmSync(path.dirname(logsDir), { recursive: true, force: true }));
 
   const applyRes = makeResponse();
   await server._handleMemoryCleanupAdmin(
@@ -142,7 +153,7 @@ test('apply moves nodes, takes a backup, saves state; re-apply short-circuits un
   assert.ok(applied.movedNodes > 0);
   assert.equal(applied.communityCount, 2);
   assert.ok(applied.backup && applied.backup.ok, 'apply must take a sidecar backup');
-  assert.ok(String(applied.backup.path).startsWith(logsDir), 'backup lands under the brain dir');
+  assert.ok(String(applied.backup.path).startsWith(fs.realpathSync(logsDir)), 'backup lands under the resolved brain dir');
   assert.equal(saved, 1, 'apply must save state');
   const clusters = new Set(Array.from(memory.nodes.values()).map((n) => String(n.cluster)));
   assert.equal(clusters.size, 2, 'the graph is actually repartitioned');
@@ -165,9 +176,10 @@ test('apply moves nodes, takes a backup, saves state; re-apply short-circuits un
   assert.equal(saved, 1, 'unchanged apply must not save again');
 });
 
-test('POST without a valid mode is rejected; wrong methods are rejected', async () => {
+test('POST without a valid mode is rejected; wrong methods are rejected', async (t) => {
   const memory = await seededMemory();
-  const { server } = makeServer(memory);
+  const { server, logsDir } = makeServer(memory);
+  t.after(() => fs.rmSync(path.dirname(logsDir), { recursive: true, force: true }));
 
   const badMode = makeResponse();
   await server._handleMemoryCleanupAdmin(
@@ -176,4 +188,72 @@ test('POST without a valid mode is rejected; wrong methods are rejected', async 
   );
   assert.equal(badMode.statusCode, 400);
   assert.match(badMode.json().error, /mode must be dry-run or apply/);
+});
+
+const applyRequest = () => makeRequest({
+  url: '/admin/memory/cleanup/communities?minCommunitySize=2', body: { mode: 'apply' },
+});
+
+test('an unconfirmed or failed state save preserves a failed recovery snapshot', async (t) => {
+  for (const failure of ['unconfirmed', 'thrown']) {
+    const memory = await seededMemory();
+    const { server, logsDir } = makeServer(memory, { onSave: () => {
+      if (failure === 'thrown') throw new Error('fixture save exception');
+      return { saved: false, reason: 'fixture refused' };
+    } });
+    t.after(() => fs.rmSync(path.dirname(logsDir), { recursive: true, force: true }));
+    await assert.rejects(server._handleMemoryCleanupAdmin(applyRequest(), makeResponse()), /fixture/);
+    const backups = path.join(logsDir, 'backups');
+    const names = fs.readdirSync(backups).filter((name) => name.endsWith('-brain-communities'));
+    assert.equal(names.length, 1);
+    const receipt = JSON.parse(fs.readFileSync(path.join(backups, names[0], 'community-backup-manifest.json'), 'utf8'));
+    assert.equal(receipt.status, 'complete');
+    assert.equal(receipt.operation.status, 'failed');
+    assert.equal(fs.existsSync(path.join(backups, '.community-retention-receipts')), false);
+  }
+});
+
+test('apply waits for a prior save to clear before starting its fresh save', async (t) => {
+  const memory = await seededMemory();
+  let freshSaves = 0;
+  const { server, logsDir } = makeServer(memory, { onSave: () => {
+    assert.equal(server.orchestrator._saveStatePromise, null);
+    freshSaves += 1;
+  } });
+  t.after(() => fs.rmSync(path.dirname(logsDir), { recursive: true, force: true }));
+  server.orchestrator._saveStatePromise = Promise.resolve({ saved: true });
+  setImmediate(() => { server.orchestrator._saveStatePromise = null; });
+  const response = makeResponse();
+  await server._handleMemoryCleanupAdmin(applyRequest(), response);
+  assert.equal(response.statusCode, 200);
+  assert.equal(freshSaves, 1);
+});
+
+test('a changed memory revision aborts a stale plan before community mutation', async (t) => {
+  const memory = await seededMemory();
+  let freshSaves = 0, releasePrior, entered;
+  const reachedPrior = new Promise((resolve) => { entered = resolve; });
+  let prior = new Promise((resolve) => { releasePrior = resolve; });
+  const { server, logsDir } = makeServer(memory, { onSave: () => { freshSaves += 1; } });
+  t.after(() => fs.rmSync(path.dirname(logsDir), { recursive: true, force: true }));
+  Object.defineProperty(server.orchestrator, '_saveStatePromise', { get() { entered(); return prior; } });
+  const applying = server._handleMemoryCleanupAdmin(applyRequest(), makeResponse());
+  await reachedPrior;
+  memory.recordNodeAccess([memory.nodes.keys().next().value]);
+  prior = null;
+  releasePrior({ saved: true });
+  await assert.rejects(applying, /community_plan_changed_during_backup/);
+  assert.equal(freshSaves, 0);
+  assert.deepEqual([...new Set([...memory.nodes.values()].map((n) => String(n.cluster)))], ['1']);
+});
+
+test('configured resident retention can preserve all recovery snapshots', async (t) => {
+  const memory = await seededMemory();
+  const { server, logsDir } = makeServer(memory);
+  t.after(() => fs.rmSync(path.dirname(logsDir), { recursive: true, force: true }));
+  server.orchestrator.config = { persistence: { communityBackupRetention: { retainAll: true } } };
+  const response = makeResponse();
+  await server._handleMemoryCleanupAdmin(applyRequest(), response);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().backup.retention.retained[0].reason, 'retain-all policy');
 });
