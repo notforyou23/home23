@@ -319,6 +319,7 @@ test('production decision, authenticated owner feedback, Seed restore and later 
   assert.equal(choices.length, 1, 'the production selector retains its actual eligibility witness');
   const adapter = new EventLedgerTailAdapter({ sourcePath: path.join(f.brainDir, 'event-ledger.jsonl'), cursorDir: path.join(f.brainDir, 'cursor'), fromEnd: false });
   for (const event of adapter.pullSync()) { seed.transition(event); adapter.commit(event.endOffset); }
+  seed.checkpoint();
   const statement = 'These routine mild memory notices are noise. Send less of them unless there is an actual impact.';
   const ownerMessage = { chatId: 'owner-fixture', messageRef: 'message:owner-feedback', userText: statement };
   const ledger = new RelationshipLedger(f.brainDir, { agent: 'fixture',
@@ -327,7 +328,8 @@ test('production decision, authenticated owner feedback, Seed restore and later 
     learning: { schema: 'home23.learning-feedback.v1', decisionId: choices[0].payload.decisionId,
       scope: choices[0].payload.scope, direction: 'attenuate', basis: 'owner-feedback',
       tags: ['unsolicited', 'routine', 'mild'], excludes: ['critical'], evidenceRefs: ['message:owner-feedback'] } },
-  { chatId: 'owner-fixture', authenticatedUserMessage: { chatId: 'owner-fixture', messageRef: 'message:owner-feedback', text: statement }, relationshipLedger: ledger });
+  { chatId: 'owner-fixture', seedStateDir: seedDir,
+    authenticatedUserMessage: { chatId: 'owner-fixture', messageRef: 'message:owner-feedback', text: statement }, relationshipLedger: ledger });
   assert.equal(result.is_error, undefined, result.content);
   const teachings = new EventLedgerTailAdapter({ sourcePath: path.join(f.brainDir, 'relationship-ledger.events.jsonl'),
     sourceType: 'relationship-ledger', cursorDir: path.join(f.brainDir, 'teaching-cursor'), fromEnd: false });

@@ -13,9 +13,10 @@
  */
 
 import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
-import { learningLessonId, readSeedLearning } from '../../../shared/seed-learning.cjs';
+import { learningLessonId, normalizeLearningDecision, normalizeLearningFeedback, readSeedLearning } from '../../../shared/seed-learning.cjs';
+import type { LearningDecision } from '../../../shared/seed-learning.cjs';
 import { resolveSubstrateStateDir } from '../session-bootstrap.js';
-import { hasOperationalConductSubject, isExplicitOperationalConductInstruction } from '../relationship-ledger.js';
+import { findStoredTeachingRetry, hasOperationalConductSubject, isExplicitOperationalConductInstruction } from '../relationship-ledger.js';
 import type {
   AuthenticatedCorrectionIngress,
   RelationshipEntryType,
@@ -45,8 +46,8 @@ const LEARNING_INPUT_SCHEMA = {
     scope: { type: 'string', maxLength: 120, description: 'Exact decision scope, not all owner contact.' },
     direction: { type: 'string', enum: ['attenuate', 'reinforce'] },
     basis: { type: 'string', enum: ['owner-feedback'] },
-    tags: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 } },
-    excludes: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 } },
+    tags: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 }, description: 'Exact runtime tags from the selected decision, copied verbatim. Behavior component labels and descriptive phrases are not tags. Never invent a narrowing tag.' },
+    excludes: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 }, description: 'Exact runtime tag tokens to exclude. In foreground.context use requested for direct requests, not a phrase such as direct requests for machine status. Other scopes may use different runtime tokens. Unknown future tags must be canonical single tokens.' },
     evidenceRefs: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 }, description: 'Original evidence references. Runtime adds the authenticated current owner message.' },
     supersedes: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 }, description: 'Prior lesson identities explicitly revised by this feedback.' },
     corroborates: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 }, description: 'Prior lessons supported by this same-scope observed result, not unrelated successes.' },
@@ -77,6 +78,91 @@ function correctionIngress(ctx: ToolContext): AuthenticatedCorrectionIngress | u
   return { chatId: msg.chatId, messageRef: msg.messageRef, userText: msg.text };
 }
 
+/** Check metadata before the writer can spend the current correction token.
+ * The Seed still owns final application; this readback does not grant authority.
+ */
+function preflightLearning(
+  raw: unknown, ctx: ToolContext, ingress: AuthenticatedCorrectionIngress | undefined,
+  ledger: RelationshipLedger, input: { type: RelationshipEntryType; statement: string },
+): ToolResult | undefined {
+  const proposed = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown> : null;
+  const feedback = proposed && normalizeLearningFeedback({ ...proposed,
+    evidenceRefs: Array.isArray(proposed.evidenceRefs) && ingress
+      ? [...new Set([ingress.messageRef, ...proposed.evidenceRefs])] : proposed.evidenceRefs,
+  });
+  const refuse = (code: string, fields: Record<string, unknown> = {}): ToolResult => ({ is_error: true,
+    content: JSON.stringify({ code, recorded: false, correctionAuthorityConsumed: false,
+      instruction: 'Inspect relationship_recall with learning=true. Select the actual matching decision, copy its exact scope, cellId and runtime tags, and preserve the ENTIRE exact current owner message. In foreground.context direct-request exclusions use requested. Retry in this same turn; no entry was written and no correction authority was consumed. Do not drop a narrowing condition merely to make feedback fit.',
+      ...fields }) });
+  if (!feedback || feedback.basis !== 'owner-feedback' || !feedback.decisionId) {
+    return refuse('learning_metadata_invalid');
+  }
+  // An exact stored authenticated source may only retry its existing outbox,
+  // including after its witness expires or superseded targets become inactive.
+  // The writer independently uses this same predicate before spending authority.
+  if (findStoredTeachingRetry(ledger.listEntries({ includeRemoved: true }), input,
+    { ...feedback, basis: 'owner-feedback' }, ingress)) return undefined;
+  if (feedback.supersedes.length && feedback.corroborates.length) return refuse('learning_reference_operations_conflict', {
+    detail: 'New feedback cannot both corroborate and supersede lessons. Corroboration preserves a prior effect; supersession replaces it. Use only the operation the current owner message authorizes, or explain that this combined change was not recorded. Preserve the entire owner message when retrying.',
+  });
+  const workspace = ctx.personalWorkspacePath ?? ctx.workspacePath;
+  const stateDir = (ctx as RelationshipToolContext).seedStateDir
+    ?? (typeof workspace === 'string' ? resolveSubstrateStateDir(workspace) : undefined);
+  if (!stateDir) return refuse('learning_witness_unavailable');
+  const snapshot = readSeedLearning(stateDir);
+  if (snapshot.available === false) return refuse('learning_witness_unavailable');
+  const candidates: LearningDecision[] = [
+    ...snapshot.decisions.filter(decision => decision.decisionId === feedback.decisionId),
+    ...snapshot.lessons.flatMap(lesson => {
+      const eligibility = lesson.eligibility;
+      if (!eligibility || eligibility.decisionId !== feedback.decisionId) return [];
+      const cellId = eligibility.cellId ?? (lesson as typeof lesson & { cellId?: string }).cellId;
+      const decision = normalizeLearningDecision({ ...eligibility, ...(cellId ? { cellId } : {}) });
+      return decision ? [decision] : [];
+    }),
+  ];
+  const normalizedCandidates = candidates.map(normalizeLearningDecision).filter((decision): decision is LearningDecision => decision !== null);
+  const distinct = [...new Map(normalizedCandidates.map(decision => [JSON.stringify(decision), decision])).values()];
+  if (distinct.length !== 1) return refuse(distinct.length ? 'learning_witness_ambiguous' : 'learning_witness_not_retained');
+  const decision = distinct[0]!;
+  const knownExclusionTags = new Set(['requested', 'automatic',
+    ...snapshot.decisions.filter(item => item.scope === decision.scope).flatMap(item => item.tags),
+    ...snapshot.lessons.filter(item => item.scope === decision.scope).flatMap(item => item.tags),
+  ]);
+  const unknownTags = feedback.tags.filter(tag => !decision.tags.includes(tag));
+  const proseExcludes = feedback.excludes.filter(tag => /\s/.test(tag) && !knownExclusionTags.has(tag));
+  const conflictingExcludes = feedback.excludes.filter(tag => decision.tags.includes(tag) || feedback.tags.includes(tag));
+  if (feedback.scope !== decision.scope || (feedback.cellId !== undefined && feedback.cellId !== decision.cellId)
+    || unknownTags.length || proseExcludes.length || conflictingExcludes.length) {
+    return refuse('learning_metadata_context_mismatch', {
+      decisionId: decision.decisionId, allowedScope: decision.scope, allowedCellId: decision.cellId ?? null,
+      allowedTags: decision.tags, knownExclusionTags: [...knownExclusionTags].slice(0, 64),
+      knownExclusionTagsTruncated: knownExclusionTags.size > 64,
+      unknownTags, proseExcludes, conflictingExcludes,
+    });
+  }
+  const sameCell = (lesson: typeof snapshot.lessons[number]) => {
+    const cellId = (lesson as typeof lesson & { cellId?: string }).cellId ?? lesson.eligibility?.cellId;
+    return cellId === decision.cellId;
+  };
+  const missingSupersessions = feedback.supersedes.filter(id => !snapshot.lessons.some(lesson => lesson.lessonId === id
+    && sameCell(lesson) && lesson.scope === decision.scope && lesson.active !== false));
+  if (missingSupersessions.length) return refuse('learning_supersession_target_unavailable', {
+    missingLessonIds: missingSupersessions,
+    detail: 'A saved source entry or predicted lesson identity is not an applied Seed contribution. Preserve that source history; do not supersede a lesson that the Seed does not retain as active. Record new valid feedback without inventing a prior lesson.',
+  });
+  const invalidCorroborations = feedback.corroborates.filter(id => !snapshot.lessons.some(lesson => lesson.lessonId === id
+    && sameCell(lesson) && lesson.active !== false && lesson.scope === decision.scope && lesson.criterion === decision.criterion
+    && (lesson.value < 0) === (feedback.direction === 'attenuate') && lesson.decisionId !== decision.decisionId
+    && lesson.tags.every(tag => decision.tags.includes(tag) || feedback.tags.includes(tag))));
+  if (invalidCorroborations.length) return refuse('learning_corroboration_target_unavailable', {
+    invalidLessonIds: invalidCorroborations,
+    detail: 'Corroboration needs an actual active lesson in the selected decision cell with the same scope, criterion and direction, supported by this different decision and its exact tags. Do not invent or substitute a lesson identity.',
+  });
+  return undefined;
+}
+
 function summarize(entry: RelationshipEntry): string {
   const why = entry.why ? `\nwhy: ${entry.why}` : '';
   return [
@@ -104,7 +190,7 @@ export const relationshipNoteTool: ToolDefinition = {
 
 For an instruction to change your behavior (including "keep routine status out of personal conversations"), use conduct learning, not preference/aversion. First call relationship_recall with learning=true and omit scope to discover actual scopes and decision identities. Select the actual matching prior decision; never guess or use an unrelated decision. Use attenuation to reduce a behavior, or correction with direction reinforce for explicit positive feedback. Preserve the owner's exclusions, including direct requests.
 
-For conduct learning, statement must be the ENTIRE exact current authenticated message, including its attribution and surrounding words (at most 2000 characters), not a quotation extracted from it or your paraphrase. Include learning metadata for that actual decision and narrow scope. Only authenticated owner feedback earns owner authority. Facts and ordinary preferences store context only; they do not become conduct teaching. If no matching decision exists, say that no conduct lesson was recorded rather than claiming learning.`,
+For conduct learning, statement must be the ENTIRE exact current authenticated message, including its attribution and surrounding words (at most 2000 characters), not a quotation extracted from it or your paraphrase. Copy the selected decision's exact runtime scope, cellId and tags; a human-readable component name or an invented phrase is not a runtime tag. In foreground.context a direct-request exclusion is requested. Metadata is checked against the configured Seed before any new source write or correction-token use, so fix a rejected attempt and retry in the same turn. An exact stored authenticated retry can only retry its existing projection. Never silently drop a narrowing condition. Only authenticated owner feedback earns owner authority. Facts and ordinary preferences store context only; they do not become conduct teaching. If no matching decision exists, say that no conduct lesson was recorded rather than claiming learning.`,
   input_schema: {
     type: 'object',
     properties: {
@@ -138,6 +224,10 @@ For conduct learning, statement must be the ENTIRE exact current authenticated m
           instruction: 'This current instruction asks you to change operational conduct. Call relationship_recall with learning=true and omit scope first. Select the actual matching prior decision, then retry as attenuation with learning metadata and the ENTIRE exact current message as statement. Preserve its exclusions. Do not invent a decision; if none matches, report that no conduct teaching was recorded.' }) };
       }
       const ingress = type === 'correction' || type === 'attenuation' ? authenticated : undefined;
+      if (input.learning !== undefined) {
+        const rejected = preflightLearning(input.learning, ctx, ingress, ledger, { type, statement: String(input.statement || '') });
+        if (rejected) return rejected;
+      }
       const entry = ledger.addEntry({
         type,
         title: String(input.title || ''),
@@ -283,6 +373,10 @@ export const relationshipUpdateTool: ToolDefinition = {
             learningLessonId(existing.seed_projection.event.event_id, existing.learning.scope),
           ])] } : proposedLearning;
         const ingress = replacementType === 'correction' || replacementType === 'attenuation' ? correctionIngress(ctx) : undefined;
+        if (learning) {
+          const rejected = preflightLearning(learning, ctx, ingress, ledger, { type: replacementType, statement });
+          if (rejected) return rejected;
+        }
         const created = ledger.supersede(id, {
           type: replacementType,
           title: existing.title,

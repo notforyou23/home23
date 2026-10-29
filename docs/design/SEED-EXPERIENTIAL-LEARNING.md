@@ -186,3 +186,11 @@ their original effect; new feedback can name the narrower status component.
 Descriptions and delivery joins belong to prospective source events and tool
 readback. They do not change the Seed learning-state format, relabel historical
 receipts or grant a model authority to manufacture a lesson.
+
+Runtime tags are identifiers, not behavior descriptions. A conduct-writing tool
+checks the declared scope, tags and cell against the retained decision before
+saving an entry or consuming correction authority. Invalid metadata returns the
+actual permitted values for a same-turn retry. The direct-request exclusion is
+the selector tag `requested`, not a prose description. Native source projection
+and final Seed application remain distinct stages; a projected entry is not an
+applied lesson.

@@ -40,6 +40,7 @@ test('foreground status selection changes after actual authenticated learning wh
   const adapter = new EventLedgerTailAdapter({ sourcePath: join(brainDir, 'event-ledger.jsonl'),
     cursorDir: join(root, 'event-cursor'), fromEnd: false });
   for (const event of adapter.pullSync()) { seed.transition(event); adapter.commit(event.endOffset); }
+  seed.checkpoint();
   const statement = 'Keep routine machine status out of personal conversations unless I ask.';
   const ingress = { chatId: 'owner-chat', messageRef: 'owner:conduct-feedback', userText: statement };
   const relationshipLedger = new RelationshipLedger(brainDir, {
@@ -49,7 +50,7 @@ test('foreground status selection changes after actual authenticated learning wh
     learning: { schema: 'home23.learning-feedback.v1', decisionId: choice.payload.decisionId,
       scope: 'foreground.context', direction: 'attenuate', tags: ['operational', 'agency', 'agency_status', 'automatic'],
       excludes: ['requested'], evidenceRefs: [ingress.messageRef], basis: 'owner-feedback' } },
-  { chatId: ingress.chatId, authenticatedUserMessage: { chatId: ingress.chatId, messageRef: ingress.messageRef, text: statement }, relationshipLedger } as never);
+  { chatId: ingress.chatId, seedStateDir: seedDir, authenticatedUserMessage: { chatId: ingress.chatId, messageRef: ingress.messageRef, text: statement }, relationshipLedger } as never);
   assert.equal(taught.is_error, undefined, taught.content);
   const teaching = new EventLedgerTailAdapter({ sourcePath: join(brainDir, 'relationship-ledger.events.jsonl'),
     sourceType: 'relationship-ledger', cursorDir: join(root, 'teaching-cursor'), fromEnd: false });
@@ -95,6 +96,7 @@ test('foreground status selection changes after actual authenticated learning wh
   const workerChoice = beforePositive.events.find(event => event.event_type === 'LearningDecisionObserved'
     && (event.payload.tags as string[]).includes('workers'))!;
   for (const event of adapter.pullSync()) { seed.transition(event); adapter.commit(event.endOffset); }
+  seed.checkpoint();
   const praise = 'That was useful. Keep bringing that optional context when it is relevant.';
   const positiveRef = 'owner:positive-feedback';
   const positiveLedger = new RelationshipLedger(brainDir, { validateCorrectionIngress: candidate => candidate.messageRef === positiveRef && candidate.userText === praise });
@@ -102,7 +104,7 @@ test('foreground status selection changes after actual authenticated learning wh
     learning: { schema: 'home23.learning-feedback.v1', decisionId: workerChoice.payload.decisionId,
       scope: 'foreground.context', direction: 'reinforce', tags: ['operational', 'workers', 'automatic'],
       evidenceRefs: [positiveRef], basis: 'owner-feedback' } },
-  { chatId: 'owner-chat', authenticatedUserMessage: { chatId: 'owner-chat', messageRef: positiveRef, text: praise }, relationshipLedger: positiveLedger } as never);
+  { chatId: 'owner-chat', seedStateDir: seedDir, authenticatedUserMessage: { chatId: 'owner-chat', messageRef: positiveRef, text: praise }, relationshipLedger: positiveLedger } as never);
   assert.equal(reinforced.is_error, undefined, reinforced.content);
   for (const event of teaching.pullSync()) { seed.transition(event); teaching.commit(event.endOffset); }
   seed.checkpoint();

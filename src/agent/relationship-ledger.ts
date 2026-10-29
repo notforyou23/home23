@@ -317,6 +317,22 @@ function normalizedClaim(value: unknown): string | null {
   return normalized || null;
 }
 
+/** Read-only identity check shared with tool preflight. Only the original
+ * authenticated claim and normalized learning record can retry a source. */
+export function findStoredTeachingRetry(
+  entries: readonly RelationshipEntry[],
+  input: Pick<RelationshipEntryInput, 'type' | 'statement'>,
+  learning: RelationshipLearningFeedback,
+  ingress?: AuthenticatedCorrectionIngress,
+): RelationshipEntry | undefined {
+  const statement = boundedText(input.statement, MAX_STATEMENT);
+  return entries.find(entry => entry.actor === 'jtr' && entry.type === input.type
+    && ingress && entry.provenance.source_refs.includes(ingress.messageRef)
+    && normalizedClaim(ingress.userText) === normalizedClaim(statement)
+    && normalizedClaim(entry.statement) === normalizedClaim(statement)
+    && JSON.stringify(entry.learning) === JSON.stringify(learning));
+}
+
 // ─── Store ──────────────────────────────────────────────────
 
 const LEDGER_SCHEMA = 'home23.relationship-ledger.v1';
@@ -528,11 +544,7 @@ export class RelationshipLedger {
       // Retrying a stored authenticated entry does not mint authority again or
       // consume a second one-shot ingress token. It only retries its source
       // projection. No changed statement, target or scope can take this path.
-      const previous = this.entries.find(entry => entry.actor === 'jtr' && entry.type === input.type
-        && ingress && entry.provenance.source_refs.includes(ingress.messageRef)
-        && normalizedClaim(ingress.userText) === normalizedClaim(statement)
-        && normalizedClaim(entry.statement) === normalizedClaim(statement)
-        && JSON.stringify(entry.learning) === JSON.stringify(learning));
+      const previous = findStoredTeachingRetry(this.entries, input, learning, ingress);
       if (previous) { this.flushSeedTeachingUnlocked(); return previous; }
     }
     if (input.type === 'attenuation' && !learning) {

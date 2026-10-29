@@ -17,7 +17,11 @@ function fixture(t: { after(fn: () => void): void }, text: string) {
   const ledger = new RelationshipLedger(brain, {
     validateCorrectionIngress: candidate => JSON.stringify(candidate) === JSON.stringify(ingress),
   });
+  const seedStateDir = path.join(root, 'seed');
+  writeLearningSnapshot(seedStateDir, [{ schema: 'home23.learning-decision.v1', decisionId: feedback().decisionId,
+    scope: feedback().scope, tags: feedback().tags, sourceRefs: ['machine:observed-1'], criterion: 'owner-value' }]);
   const ctx = { chatId: ingress.chatId, relationshipLedger: ledger,
+    seedStateDir,
     authenticatedUserMessage: { chatId: ingress.chatId, messageRef: ingress.messageRef, text } } as any;
   return { root, brain, ledger, ingress, ctx };
 }
@@ -28,9 +32,9 @@ function feedback(direction: 'attenuate' | 'reinforce' = 'attenuate') {
     tags: ['routine', 'mild'], excludes: ['critical', 'owner-requested'], evidenceRefs: [] };
 }
 
-function writeLearningSnapshot(stateDir: string, decisions: Array<Record<string, unknown>>) {
+function writeLearningSnapshot(stateDir: string, decisions: Array<Record<string, unknown>>, lessons: Array<Record<string, unknown>> = []) {
   fs.mkdirSync(path.join(stateDir, 'checkpoints'), { recursive: true });
-  const development = { 'world.home': { experience: { version: 1, decisions, lessons: [], seenFeedbackIds: [] } } };
+  const development = { 'world.home': { experience: { version: 1, decisions, lessons, seenFeedbackIds: [] } } };
   const stateHash = createHash('sha256').update(JSON.stringify({ cells: [], dispositions: {}, development })).digest('hex');
   const line = JSON.stringify({ seq: 1, prevHash: '0'.repeat(64), category: 'genesis', payload: {}, stateHashAfter: stateHash });
   fs.writeFileSync(path.join(stateDir, 'seed-ledger.jsonl'), `${line}\n`);
@@ -106,6 +110,8 @@ test('natural operational attenuation recognizes keep-out and avoid without acce
     const runtime = { ...ctx, relationshipLedger: ledger };
     const input = { type: 'attenuation', title: 'Optional operational context', statement: text,
       learning: { ...feedback(), decisionId: `actual-choice:${index}` } };
+    writeLearningSnapshot(runtime.seedStateDir, [{ schema: 'home23.learning-decision.v1', decisionId: input.learning.decisionId,
+      scope: input.learning.scope, tags: input.learning.tags, sourceRefs: ['machine:observed-1'], criterion: 'owner-value' }]);
     const excerpt = await relationshipNoteTool.execute({ ...input, statement: text.split(' unless ')[0] }, runtime);
     assert.equal(excerpt.is_error, true, excerpt.content);
     assert.equal(validations, 0);
@@ -311,6 +317,376 @@ test('malformed metadata cannot consume owner authority and a retry does not min
   assert.equal(ledger.listEntries().length, 1);
 });
 
+function statusFeedbackFixture(t: { after(fn: () => void): void }) {
+  const text = 'Keep routine machine status out of personal conversations unless I ask.';
+  const base = fixture(t, text);
+  let validations = 0;
+  const ledger = new RelationshipLedger(base.brain, { validateCorrectionIngress: candidate => {
+    validations++;
+    return validations === 1 && JSON.stringify(candidate) === JSON.stringify(base.ingress);
+  } });
+  const witness = { schema: 'home23.learning-decision.v1', decisionId: 'context:actual-status-choice',
+    scope: 'foreground.context', tags: ['operational', 'agency', 'agency_status', 'automatic'],
+    sourceRefs: ['surface:AGENCY_STATUS'], criterion: 'owner-value', cellId: 'world.home' };
+  writeLearningSnapshot(base.ctx.seedStateDir, [witness]);
+  const runtime = { ...base.ctx, relationshipLedger: ledger };
+  const input = { type: 'attenuation', title: 'Routine machine status', statement: text,
+    learning: { ...feedback(), decisionId: witness.decisionId, scope: witness.scope, cellId: witness.cellId,
+      tags: witness.tags, excludes: ['requested'], standing: true } };
+  return { ...base, ledger, runtime, input, witness, validations: () => validations };
+}
+
+test('invented conduct tags fail before persistence or authority use and the same current correction can retry', async t => {
+  const f = statusFeedbackFixture(t);
+  const rejected = await relationshipNoteTool.execute({ ...f.input, learning: { ...f.input.learning,
+    tags: ['routine-operational-status', 'personal-conversations'], excludes: ['direct requests for machine status'] } }, f.runtime);
+  assert.equal(rejected.is_error, true, rejected.content);
+  const diagnostic = JSON.parse(rejected.content);
+  assert.equal(diagnostic.code, 'learning_metadata_context_mismatch');
+  assert.equal(diagnostic.recorded, false);
+  assert.equal(diagnostic.correctionAuthorityConsumed, false);
+  assert.deepEqual(diagnostic.allowedTags, f.witness.tags);
+  assert.deepEqual(diagnostic.unknownTags, ['routine-operational-status', 'personal-conversations']);
+  assert.deepEqual(diagnostic.proseExcludes, ['direct requests for machine status']);
+  assert.ok(diagnostic.knownExclusionTags.includes('requested'));
+  assert.match(diagnostic.instruction, /Do not drop a narrowing condition/);
+  assert.equal(f.validations(), 0);
+  assert.equal(f.ledger.listEntries().length, 0);
+  assert.equal(fs.existsSync(path.join(f.brain, 'relationship-ledger.json')), false);
+  assert.equal(fs.existsSync(path.join(f.brain, 'relationship-ledger.events.jsonl')), false);
+
+  const accepted = await relationshipNoteTool.execute(f.input, f.runtime);
+  assert.equal(accepted.is_error, undefined, accepted.content);
+  assert.equal(f.validations(), 1);
+  const [entry] = f.ledger.listEntries();
+  assert.equal(entry!.actor, 'jtr');
+  assert.equal(entry!.statement, f.input.statement);
+  assert.equal(entry!.learning!.decisionId, f.witness.decisionId);
+  assert.deepEqual(entry!.learning!.tags, f.witness.tags);
+  assert.deepEqual(entry!.learning!.excludes, ['requested']);
+  assert.match(accepted.content, /Seed application=not yet confirmed/);
+});
+
+test('scope, cell and ambiguous identity mismatches cannot consume the current owner correction', async t => {
+  const f = statusFeedbackFixture(t);
+  for (const learning of [
+    { ...f.input.learning, scope: 'execution:work' },
+    { ...f.input.learning, cellId: 'world.other' },
+  ]) {
+    const rejected = await relationshipNoteTool.execute({ ...f.input, learning }, f.runtime);
+    assert.equal(rejected.is_error, true, rejected.content);
+    const diagnostic = JSON.parse(rejected.content);
+    assert.equal(diagnostic.code, 'learning_metadata_context_mismatch');
+    assert.equal(diagnostic.allowedScope, f.witness.scope);
+    assert.equal(diagnostic.allowedCellId, f.witness.cellId);
+  }
+  writeLearningSnapshot(f.runtime.seedStateDir, [f.witness, { ...f.witness, scope: 'context.other' }]);
+  const ambiguous = await relationshipNoteTool.execute(f.input, f.runtime);
+  assert.equal(ambiguous.is_error, true, ambiguous.content);
+  assert.equal(JSON.parse(ambiguous.content).code, 'learning_witness_ambiguous');
+  assert.equal(f.validations(), 0);
+  assert.equal(f.ledger.listEntries().length, 0);
+  writeLearningSnapshot(f.runtime.seedStateDir, [f.witness]);
+  assert.equal((await relationshipNoteTool.execute(f.input, f.runtime)).is_error, undefined);
+  assert.equal(f.validations(), 1);
+});
+
+test('exclusions use runtime tokens without forbidding future canonical or known literal tags', async t => {
+  const f = statusFeedbackFixture(t);
+  for (const excludes of [['direct requests for machine status'], ['automatic']]) {
+    const rejected = await relationshipNoteTool.execute({ ...f.input, learning: { ...f.input.learning, excludes } }, f.runtime);
+    assert.equal(rejected.is_error, true, rejected.content);
+    assert.equal(JSON.parse(rejected.content).code, 'learning_metadata_context_mismatch');
+  }
+  assert.equal(f.validations(), 0);
+  writeLearningSnapshot(f.runtime.seedStateDir, [f.witness, { ...f.witness, decisionId: 'context:known-literal-tag',
+    tags: ['operational', 'owner requested'] }]);
+  const accepted = await relationshipNoteTool.execute({ ...f.input,
+    learning: { ...f.input.learning, excludes: ['requested', 'urgent', 'owner requested'] } }, f.runtime);
+  assert.equal(accepted.is_error, undefined, accepted.content);
+  assert.deepEqual(f.ledger.listEntries()[0]!.learning!.excludes, ['requested', 'urgent', 'owner requested']);
+  assert.equal(f.validations(), 1);
+});
+
+test('unavailable or missing Seed witnesses refuse tool teaching without guessing or spending authority', async t => {
+  const f = statusFeedbackFixture(t);
+  for (const runtime of [
+    { ...f.runtime, seedStateDir: undefined },
+    { ...f.runtime, seedStateDir: path.join(f.root, 'missing-seed') },
+  ]) {
+    const rejected = await relationshipNoteTool.execute(f.input, runtime);
+    assert.equal(rejected.is_error, true, rejected.content);
+    assert.equal(JSON.parse(rejected.content).code, 'learning_witness_unavailable');
+  }
+  const missing = await relationshipNoteTool.execute({ ...f.input,
+    learning: { ...f.input.learning, decisionId: 'context:not-yet-retained' } }, f.runtime);
+  assert.equal(missing.is_error, true, missing.content);
+  assert.equal(JSON.parse(missing.content).code, 'learning_witness_not_retained');
+  assert.equal(f.validations(), 0);
+  assert.equal(f.ledger.listEntries().length, 0);
+  assert.equal((await relationshipNoteTool.execute(f.input, f.runtime)).is_error, undefined);
+  assert.equal(f.validations(), 1);
+});
+
+test('a retained lesson eligibility remains an exact preflight witness after the decision window moves', async t => {
+  const f = statusFeedbackFixture(t);
+  writeLearningSnapshot(f.runtime.seedStateDir, [], [{ lessonId: 'lesson:retained-status', scope: f.witness.scope,
+    tags: f.witness.tags, excludes: ['requested'], sourceRefs: ['source:past-owner-feedback'],
+    value: -0.25, basis: 'owner-feedback', authority: 'owner', criterion: 'owner-value',
+    decisionId: f.witness.decisionId, eligibility: { ...f.witness, cellId: undefined },
+    createdAt: '2026-10-29T00:00:00.000Z', corroborations: 0, active: true }]);
+  const accepted = await relationshipNoteTool.execute(f.input, f.runtime);
+  assert.equal(accepted.is_error, undefined, accepted.content);
+  assert.equal(f.validations(), 1);
+  assert.equal(f.ledger.listEntries()[0]!.learning!.cellId, 'world.home');
+});
+
+test('omitting cellId preserves identity-based Seed routing without inventing a target cell', async t => {
+  const f = statusFeedbackFixture(t);
+  const { cellId: _cellId, ...learning } = f.input.learning;
+  const accepted = await relationshipNoteTool.execute({ ...f.input, learning }, f.runtime);
+  assert.equal(accepted.is_error, undefined, accepted.content);
+  assert.equal(f.validations(), 1);
+  assert.equal(f.ledger.listEntries()[0]!.learning!.cellId, undefined);
+  assert.equal(f.ledger.listEntries()[0]!.learning!.decisionId, f.witness.decisionId);
+});
+
+test('valid preflight preserves durable projection retries without consuming a second correction token', async t => {
+  const f = statusFeedbackFixture(t);
+  const events = path.join(f.brain, 'relationship-ledger.events.jsonl');
+  fs.mkdirSync(events, { recursive: true });
+  const pending = await relationshipNoteTool.execute(f.input, f.runtime);
+  assert.equal(pending.is_error, undefined, pending.content);
+  assert.match(pending.content, /source projection=pending/);
+  assert.match(pending.content, /Seed application=not yet confirmed/);
+  assert.equal(f.validations(), 1);
+  fs.rmdirSync(events);
+  const retried = await relationshipNoteTool.execute(f.input, f.runtime);
+  assert.equal(retried.is_error, undefined, retried.content);
+  assert.match(retried.content, /source projection=projected/);
+  assert.equal(f.validations(), 1);
+  assert.equal(f.ledger.listEntries().length, 1);
+  assert.equal(fs.readFileSync(events, 'utf8').trim().split('\n').length, 1);
+});
+
+test('an exact stored supersession retries after target deactivation or witness loss without granting a changed claim authority', async t => {
+  const f = statusFeedbackFixture(t);
+  const lesson = { lessonId: 'lesson:actual-prior-status', scope: f.witness.scope,
+    tags: f.witness.tags, excludes: ['requested'], sourceRefs: ['owner:previous-result'],
+    value: -0.25, basis: 'owner-feedback', authority: 'owner', criterion: 'owner-value',
+    decisionId: 'context:previous-status-choice', createdAt: '2026-10-29T00:00:00.000Z', corroborations: 0, active: true };
+  writeLearningSnapshot(f.runtime.seedStateDir, [f.witness], [lesson]);
+  const input = { ...f.input, learning: { ...f.input.learning, supersedes: [lesson.lessonId] } };
+  const events = path.join(f.brain, 'relationship-ledger.events.jsonl');
+  fs.mkdirSync(events, { recursive: true });
+  const pending = await relationshipNoteTool.execute(input, f.runtime);
+  assert.equal(pending.is_error, undefined, pending.content);
+  assert.match(pending.content, /source projection=pending/);
+  assert.equal(f.validations(), 1);
+  const original = f.ledger.listEntries()[0]!;
+
+  // An applied supersession makes its old target inactive. That does not
+  // invalidate the authenticated source's own idempotent delivery retry.
+  writeLearningSnapshot(f.runtime.seedStateDir, [f.witness], [{ ...lesson, active: false }]);
+  fs.rmdirSync(events);
+  const delivered = await relationshipNoteTool.execute(input, f.runtime);
+  assert.equal(delivered.is_error, undefined, delivered.content);
+  assert.match(delivered.content, /source projection=projected/);
+  assert.equal(f.ledger.listEntries()[0]!.id, original.id);
+
+  writeLearningSnapshot(f.runtime.seedStateDir, []);
+  assert.equal((await relationshipNoteTool.execute(input, f.runtime)).is_error, undefined,
+    'the source can retry after the retained witness window expires');
+  fs.rmSync(f.runtime.seedStateDir, { recursive: true });
+  assert.equal((await relationshipNoteTool.execute(input, f.runtime)).is_error, undefined,
+    'a stored authenticated source can retry projection while Seed readback is unavailable');
+  const eventBytes = fs.readFileSync(events);
+  const sourceBytes = fs.readFileSync(path.join(f.brain, 'relationship-ledger.json'));
+  for (const [changed, runtime] of [
+    [{ ...input, statement: `${input.statement} A different claim.` }, f.runtime],
+    [{ ...input, learning: { ...input.learning, excludes: ['requested', 'urgent'] } }, f.runtime],
+    [{ ...input, type: 'correction' }, f.runtime],
+    [input, { ...f.runtime, authenticatedUserMessage: { ...f.runtime.authenticatedUserMessage, messageRef: 'message:different' } }],
+  ] as const) {
+    const rejected = await relationshipNoteTool.execute(changed, runtime);
+    assert.equal(rejected.is_error, true, rejected.content);
+    assert.equal(JSON.parse(rejected.content).code, 'learning_witness_unavailable');
+  }
+  assert.equal(f.validations(), 1);
+  assert.equal(f.ledger.listEntries().length, 1);
+  assert.equal(fs.readFileSync(events, 'utf8').trim().split('\n').length, 1);
+  assert.deepEqual(fs.readFileSync(events), eventBytes);
+  assert.deepEqual(fs.readFileSync(path.join(f.brain, 'relationship-ledger.json')), sourceBytes);
+});
+
+test('new mixed replacement and corroboration refuse note and update before authority, persistence or lifecycle changes', async t => {
+  const f = statusFeedbackFixture(t);
+  const existing = f.ledger.addEntry({ type: 'preference', title: 'Existing context', statement: 'An existing ordinary preference.' });
+  const source = path.join(f.brain, 'relationship-ledger.json');
+  const events = path.join(f.brain, 'relationship-ledger.events.jsonl');
+  const sourceBytes = fs.readFileSync(source);
+  const eventBytes = fs.readFileSync(events);
+  const learning = { ...f.input.learning, supersedes: ['lesson:prior'], corroborates: ['lesson:supported'] };
+  const note = await relationshipNoteTool.execute({ ...f.input, learning }, f.runtime);
+  const update = await relationshipUpdateTool.execute({ id: existing.id, action: 'supersede', type: 'attenuation',
+    statement: f.input.statement, learning }, f.runtime);
+  for (const rejected of [note, update]) {
+    assert.equal(rejected.is_error, true, rejected.content);
+    const diagnostic = JSON.parse(rejected.content);
+    assert.equal(diagnostic.code, 'learning_reference_operations_conflict');
+    assert.equal(diagnostic.recorded, false);
+    assert.equal(diagnostic.correctionAuthorityConsumed, false);
+    assert.match(diagnostic.detail, /current owner message authorizes/);
+  }
+  assert.equal(f.validations(), 0);
+  assert.equal(f.ledger.listEntries().length, 1);
+  assert.equal(f.ledger.getEntry(existing.id)!.status, 'active');
+  assert.deepEqual(fs.readFileSync(source), sourceBytes);
+  assert.deepEqual(fs.readFileSync(events), eventBytes);
+});
+
+test('update cannot combine an automatic teaching replacement with corroboration', async t => {
+  const f = statusFeedbackFixture(t);
+  const recorded = await relationshipNoteTool.execute(f.input, f.runtime);
+  assert.equal(recorded.is_error, undefined, recorded.content);
+  const original = f.ledger.listEntries()[0]!;
+  let validations = 0;
+  const writer = new RelationshipLedger(f.brain, { validateCorrectionIngress: () => { validations++; return true; } });
+  const source = path.join(f.brain, 'relationship-ledger.json');
+  const sourceBytes = fs.readFileSync(source);
+  const rejected = await relationshipUpdateTool.execute({ id: original.id, action: 'supersede',
+    statement: f.input.statement, learning: { ...f.input.learning, corroborates: ['lesson:supported'] } }, {
+    ...f.runtime, relationshipLedger: writer,
+    authenticatedUserMessage: { ...f.runtime.authenticatedUserMessage, messageRef: 'message:revision' },
+  });
+  assert.equal(rejected.is_error, true, rejected.content);
+  assert.equal(JSON.parse(rejected.content).code, 'learning_reference_operations_conflict');
+  assert.equal(validations, 0);
+  assert.equal(writer.listEntries().length, 1);
+  assert.equal(writer.getEntry(original.id)!.status, 'active');
+  assert.deepEqual(fs.readFileSync(source), sourceBytes);
+});
+
+test('an existing authenticated mixed-reference source retains only its exact native projection retry', async t => {
+  const f = statusFeedbackFixture(t);
+  const input = { ...f.input, learning: { ...f.input.learning, supersedes: ['lesson:prior'], corroborates: ['lesson:supported'] } };
+  // Model a historical native source already accepted before tool preflight.
+  // Its retry preserves history; it cannot turn into a new combined operation.
+  const original = f.ledger.addEntry({ type: 'attenuation', title: input.title, statement: input.statement,
+    provenance: { session_refs: [f.ingress.chatId] }, learning: input.learning as any }, f.ingress);
+  assert.equal(original.actor, 'jtr');
+  fs.rmSync(f.runtime.seedStateDir, { recursive: true });
+  const events = path.join(f.brain, 'relationship-ledger.events.jsonl');
+  const eventBytes = fs.readFileSync(events);
+  const retried = await relationshipNoteTool.execute(input, f.runtime);
+  assert.equal(retried.is_error, undefined, retried.content);
+  assert.equal(f.validations(), 1);
+  assert.equal(f.ledger.listEntries().length, 1);
+  assert.equal(f.ledger.listEntries()[0]!.id, original.id);
+  assert.deepEqual(fs.readFileSync(events), eventBytes);
+  const changed = await relationshipNoteTool.execute({ ...input,
+    learning: { ...input.learning, corroborates: ['lesson:different'] } }, f.runtime);
+  assert.equal(changed.is_error, true, changed.content);
+  assert.equal(JSON.parse(changed.content).code, 'learning_reference_operations_conflict');
+  assert.equal(f.validations(), 1);
+  assert.deepEqual(fs.readFileSync(events), eventBytes);
+});
+
+test('supersession uses the same preflight before changing the existing source entry', async t => {
+  const f = statusFeedbackFixture(t);
+  const existing = f.ledger.addEntry({ type: 'preference', title: 'Old context', statement: 'A saved ordinary preference.' });
+  const file = path.join(f.brain, 'relationship-ledger.json');
+  const original = fs.readFileSync(file);
+  const rejected = await relationshipUpdateTool.execute({ id: existing.id, action: 'supersede', type: 'attenuation',
+    statement: f.input.statement, learning: { ...f.input.learning, tags: ['personal-conversations'] } }, f.runtime);
+  assert.equal(rejected.is_error, true, rejected.content);
+  assert.equal(JSON.parse(rejected.content).code, 'learning_metadata_context_mismatch');
+  assert.equal(f.validations(), 0);
+  assert.deepEqual(fs.readFileSync(file), original);
+  assert.equal(f.ledger.getEntry(existing.id)!.status, 'active');
+  const accepted = await relationshipUpdateTool.execute({ id: existing.id, action: 'supersede', type: 'attenuation',
+    statement: f.input.statement, learning: f.input.learning }, f.runtime);
+  assert.equal(accepted.is_error, undefined, accepted.content);
+  assert.equal(f.validations(), 1);
+  assert.equal(f.ledger.getEntry(existing.id)!.status, 'superseded');
+});
+
+test('a projected source entry cannot be mistaken for an active Seed lesson to supersede', async t => {
+  const f = statusFeedbackFixture(t);
+  const original = await relationshipNoteTool.execute(f.input, f.runtime);
+  assert.equal(original.is_error, undefined, original.content);
+  const entry = f.ledger.listEntries()[0]!;
+  const predicted = learningLessonId(entry.seed_projection!.event.event_id, entry.learning!.scope);
+  let revisionValidations = 0;
+  const ledger = new RelationshipLedger(f.brain, { validateCorrectionIngress: () => { revisionValidations++; return true; } });
+  const result = await relationshipUpdateTool.execute({ id: entry.id, action: 'supersede',
+    statement: f.input.statement, learning: f.input.learning }, { ...f.runtime, relationshipLedger: ledger });
+  assert.equal(result.is_error, true, result.content);
+  const diagnostic = JSON.parse(result.content);
+  assert.equal(diagnostic.code, 'learning_supersession_target_unavailable');
+  assert.deepEqual(diagnostic.missingLessonIds, [predicted]);
+  assert.equal(revisionValidations, 0);
+  assert.equal(ledger.listEntries().length, 1);
+  assert.equal(ledger.getEntry(entry.id)!.status, 'active');
+});
+
+test('corroboration validates actual lesson attribution before spending correction authority', async t => {
+  const f = statusFeedbackFixture(t);
+  const lesson = { lessonId: 'lesson:actual-prior-status', scope: f.witness.scope,
+    tags: f.witness.tags, excludes: ['requested'], sourceRefs: ['owner:previous-result'],
+    value: -0.25, basis: 'owner-feedback', authority: 'owner', criterion: 'owner-value',
+    decisionId: 'context:previous-status-choice', createdAt: '2026-10-29T00:00:00.000Z', corroborations: 0, active: true };
+  for (const bad of [
+    null,
+    { ...lesson, active: false },
+    { ...lesson, scope: 'execution:work' },
+    { ...lesson, criterion: 'execution' },
+    { ...lesson, value: 0.25 },
+    { ...lesson, decisionId: f.witness.decisionId },
+    { ...lesson, tags: ['operational', 'unrelated'] },
+  ]) {
+    writeLearningSnapshot(f.runtime.seedStateDir, [f.witness], bad ? [bad] : []);
+    const rejected = await relationshipNoteTool.execute({ ...f.input,
+      learning: { ...f.input.learning, corroborates: [lesson.lessonId] } }, f.runtime);
+    assert.equal(rejected.is_error, true, rejected.content);
+    assert.equal(JSON.parse(rejected.content).code, 'learning_corroboration_target_unavailable');
+    assert.equal(f.validations(), 0);
+    assert.equal(f.ledger.listEntries().length, 0);
+  }
+  writeLearningSnapshot(f.runtime.seedStateDir, [f.witness], [lesson]);
+  const accepted = await relationshipNoteTool.execute({ ...f.input,
+    learning: { ...f.input.learning, corroborates: [lesson.lessonId] } }, f.runtime);
+  assert.equal(accepted.is_error, undefined, accepted.content);
+  assert.equal(f.validations(), 1);
+  assert.deepEqual(f.ledger.listEntries()[0]!.learning!.corroborates, [lesson.lessonId]);
+});
+
+test('same-scope lessons in another cell cannot be superseded or corroborated at this witness', async t => {
+  const f = statusFeedbackFixture(t);
+  const otherLesson = { lessonId: 'lesson:another-cell', scope: f.witness.scope,
+    tags: f.witness.tags, excludes: ['requested'], sourceRefs: ['owner:another-cell-result'],
+    value: -0.25, basis: 'owner-feedback', authority: 'owner', criterion: 'owner-value',
+    decisionId: 'context:another-cell-choice', createdAt: '2026-10-29T00:00:00.000Z', corroborations: 0, active: true };
+  writeLearningSnapshot(f.runtime.seedStateDir, [f.witness]);
+  const checkpointPath = path.join(f.runtime.seedStateDir, 'checkpoints', 'ckpt_0001.json');
+  const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+  checkpoint.development['world.other'] = { experience: { version: 1, decisions: [], lessons: [otherLesson], seenFeedbackIds: [] } };
+  checkpoint.stateHash = createHash('sha256').update(JSON.stringify({ cells: [], dispositions: {}, development: checkpoint.development })).digest('hex');
+  const line = JSON.stringify({ seq: 1, prevHash: '0'.repeat(64), category: 'genesis', payload: {}, stateHashAfter: checkpoint.stateHash });
+  checkpoint.ledgerCursor = createHash('sha256').update(line).digest('hex');
+  fs.writeFileSync(path.join(f.runtime.seedStateDir, 'seed-ledger.jsonl'), `${line}\n`);
+  fs.writeFileSync(checkpointPath, JSON.stringify(checkpoint));
+  for (const field of ['supersedes', 'corroborates']) {
+    const rejected = await relationshipNoteTool.execute({ ...f.input,
+      learning: { ...f.input.learning, [field]: [otherLesson.lessonId] } }, f.runtime);
+    assert.equal(rejected.is_error, true, rejected.content);
+    assert.equal(JSON.parse(rejected.content).code, field === 'supersedes'
+      ? 'learning_supersession_target_unavailable' : 'learning_corroboration_target_unavailable');
+  }
+  assert.equal(f.validations(), 0);
+  assert.equal(f.ledger.listEntries().length, 0);
+});
+
 test('unlinked executable feedback is refused even when labelled standing', async t => {
   const text = 'Those memory messages are noise.';
   const { ledger, ctx } = fixture(t, text);
@@ -460,21 +836,42 @@ test('only new authenticated feedback can supersede a learned contribution; life
   const { brain, ledger, ctx } = fixture(t, text);
   await relationshipNoteTool.execute({ type: 'attenuation', title: 'Memory commentary', statement: text, learning: feedback() }, ctx);
   const original = ledger.listEntries()[0]!;
+  writeLearningSnapshot(ctx.seedStateDir, [], [{ lessonId: learningLessonId(original.seed_projection!.event.event_id, original.learning!.scope),
+    scope: original.learning!.scope, tags: original.learning!.tags, excludes: original.learning!.excludes,
+    sourceRefs: [original.seed_projection!.event.event_id], value: -0.25, basis: 'owner-feedback', authority: 'owner', criterion: 'owner-value',
+    decisionId: feedback().decisionId, eligibility: { schema: 'home23.learning-decision.v1', decisionId: feedback().decisionId,
+      scope: feedback().scope, tags: feedback().tags, sourceRefs: ['machine:observed-1'], criterion: 'owner-value' },
+    createdAt: '2026-10-29T00:00:00.000Z', corroborations: 0, active: true }]);
   const remove = await relationshipUpdateTool.execute({ id: original.id, action: 'remove' }, ctx);
   assert.equal(remove.is_error, true);
   assert.equal(ledger.getEntry(original.id)?.status, 'active');
   const revised = 'That was useful. Keep noticing connections like that.';
   const ingress = { chatId: 'chat:owner', messageRef: 'message:revision', userText: revised };
-  const writer = new RelationshipLedger(brain, { validateCorrectionIngress: candidate => JSON.stringify(candidate) === JSON.stringify(ingress) });
-  const replacement = await relationshipUpdateTool.execute({ id: original.id, action: 'supersede', type: 'correction',
-    statement: revised, learning: feedback('reinforce') }, { ...ctx, relationshipLedger: writer,
-    authenticatedUserMessage: { chatId: ingress.chatId, messageRef: ingress.messageRef, text: revised } });
+  let validations = 0;
+  const writer = new RelationshipLedger(brain, { validateCorrectionIngress: candidate => {
+    validations++;
+    return validations === 1 && JSON.stringify(candidate) === JSON.stringify(ingress);
+  } });
+  const input = { id: original.id, action: 'supersede', type: 'correction', statement: revised, learning: feedback('reinforce') };
+  const runtime = { ...ctx, relationshipLedger: writer,
+    authenticatedUserMessage: { chatId: ingress.chatId, messageRef: ingress.messageRef, text: revised } };
+  const replacement = await relationshipUpdateTool.execute(input, runtime);
   assert.equal(replacement.is_error, undefined, replacement.content);
   assert.equal(writer.getEntry(original.id)?.status, 'superseded');
   const active = writer.listEntries().find(entry => entry.id !== original.id)!;
   assert.equal(active.actor, 'jtr');
   assert.ok(active.learning?.supersedes?.includes(learningLessonId(original.seed_projection!.event.event_id, original.learning!.scope)));
   assert.ok(active.learning?.evidenceRefs.includes('message:revision'));
+  assert.equal(validations, 1);
+  writeLearningSnapshot(ctx.seedStateDir, [], [{ lessonId: learningLessonId(original.seed_projection!.event.event_id, original.learning!.scope),
+    scope: original.learning!.scope, tags: original.learning!.tags, excludes: original.learning!.excludes,
+    sourceRefs: [original.seed_projection!.event.event_id], value: -0.25, basis: 'owner-feedback', authority: 'owner', criterion: 'owner-value',
+    decisionId: feedback().decisionId, createdAt: '2026-10-29T00:00:00.000Z', corroborations: 0, active: false }]);
+  const retry = await relationshipUpdateTool.execute(input, runtime);
+  assert.equal(retry.is_error, undefined, retry.content);
+  assert.match(retry.content, new RegExp(`with ${active.id}`));
+  assert.equal(validations, 1, 'an applied replacement retry cannot spend another owner token');
+  assert.equal(writer.listEntries().length, 2, 'retry preserves the original teaching and its one authenticated replacement');
 });
 
 test('a projection identity conflict remains pending without changing recorded source bytes', async t => {
